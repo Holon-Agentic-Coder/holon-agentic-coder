@@ -33,6 +33,10 @@ event/knowledge logging.
 │       │   └── utils/
 │       └── pyproject.toml
 │
+├── holon-coherence/                      # Optimization Gateway & Wire Telemetry (Git Submodule)
+│   ├── src/holon_coherence/              # Proxy, token reduction algorithms, and telemetry
+│   └── tests/
+│
 ├── holon-config/                         # Governance / Static Priors (Human Authored)
 │   ├── prompts/                          # Agent missions and templates
 │   │   └── planner.template.md
@@ -116,3 +120,11 @@ both strict workspace isolation and cross-project knowledge sharing:
   - This universal knowledge base is hosted in a separate dedicated Git repository (e.g.,
     `github.com/Holon-Agentic-Coder/holon-universal-knowledge`), which is cloned into `~/.config/holon/universal/` and
     pulled/synced dynamically by the Holon engine on startup.
+
+### 4. `holon-coherence/` (Git Submodule)
+
+Embedded optimization and wire proxy repository (`https://github.com/Holon-Agentic-Coder/holon-coherence.git`):
+
+- Houses the MITM streaming proxy, SSE token parsing, prompt compression algorithms, and wire telemetry.
+- Tracked via Git submodule (pinned commit pointer).
+- For complete operational and synchronization instructions, see [`SUBMODULES.md`](../SUBMODULES.md).

@@ -36,6 +36,7 @@ markers = [
 [tool.ruff]
 line-length = 120
 target-version = "py313"
+extend-exclude = ["holon-coherence"]
 
 [tool.ruff.lint]
 select = [

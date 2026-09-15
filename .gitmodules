@@ -1,0 +1,4 @@
+[submodule "holon-coherence"]
+	path = holon-coherence
+	url = https://github.com/Holon-Agentic-Coder/holon-coherence.git
+	branch = main

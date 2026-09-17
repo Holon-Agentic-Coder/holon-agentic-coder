@@ -50,13 +50,32 @@ create.
 
 ---
 
-## Recommended Execution Method (`./holon` CLI)
+## Recommended Execution Methods (Holon CLI)
 
-> [!IMPORTANT] **Use `./holon` instead of raw `docker run` commands.** The host wrapper script [`./holon`](../../holon)
-> automatically discovers GitHub credentials, API keys, and host SSH agent sockets, mounting them safely into the
-> sandboxed container.
+> [!IMPORTANT] **Use the Holon CLI instead of raw `docker run` commands.** The CLI automatically discovers GitHub
+> credentials, API keys, and host SSH agent sockets, mounting them safely into the sandboxed container.
 
-Run from the repository root:
+You can run the Intent Creator via any of the following standard pathways:
+
+### Option A: Globally Installed Tool (`uv tool`)
+
+If installed globally via `uv tool install apps/sandbox-executor`:
+
+```bash
+holon intent intents/intent.json
+```
+
+### Option B: Ephemeral Execution (`uvx`)
+
+Run on-demand without prior installation:
+
+```bash
+uvx --from ./apps/sandbox-executor holon intent intents/intent.json
+```
+
+### Option C: Repository Convenience Script (`./holon`)
+
+Run from the repository root using the [`./holon`](../../holon) host wrapper:
 
 ```bash
 ./holon intent intents/intent.json

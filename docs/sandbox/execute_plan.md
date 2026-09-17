@@ -12,16 +12,39 @@ For in-depth specifications of the execution architecture and credentials mappin
 
 ---
 
-## Recommended Execution Method (`./holon` CLI)
+## Recommended Execution Methods (Holon CLI)
 
-> [!IMPORTANT] **Use `./holon` instead of raw `docker run` commands.** Always run sandbox executions via the
-> [`./holon`](../../holon) host CLI script from the repository root:
+> [!IMPORTANT] **Use the Holon CLI instead of raw `docker run` commands.** Always run sandbox executions via the
+> Holon CLI, which handles setting up the container and environment, mapping directly into the
+> [3-Tier Fallback Contract](../executor/agent_credentials_requirements.md#the-3-tier-fallback-contract).
+
+You can run Sandbox Execution via any of the following standard pathways:
+
+### Option A: Globally Installed Tool (`uv tool`)
+
+If installed globally via `uv tool install apps/sandbox-executor`:
+
+```bash
+holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.5-flash
+```
+
+### Option B: Ephemeral Execution (`uvx`)
+
+Run on-demand without prior installation:
+
+```bash
+uvx --from ./apps/sandbox-executor holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.5-flash
+```
+
+### Option C: Repository Convenience Script (`./holon`)
+
+Run from the repository root using the [`./holon`](../../holon) host wrapper:
 
 ```bash
 ./holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.5-flash
 ```
 
-The `./holon` wrapper script automatically handles setting up the container and environment, mapping directly into the
+The Holon CLI automatically handles setting up the container and environment, mapping directly into the
 [3-Tier Fallback Contract](../executor/agent_credentials_requirements.md#the-3-tier-fallback-contract):
 
 ### 1. Ephemeral Secret & Env Forwarding (Tier 1 & 2)

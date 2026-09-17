@@ -3,7 +3,7 @@ name = "holon-agentic-coder"
 version = "0.1.0"
 requires-python = "==3.13.*"
 dependencies = [
-    "sandbox-executor",
+    "holon",
 ]
 
 [dependency-groups]
@@ -19,7 +19,7 @@ members = [
 ]
 
 [tool.uv.sources]
-sandbox-executor = { path = "apps/sandbox-executor", editable = true }
+holon = { path = "apps/sandbox-executor", editable = true }
 
 [tool.taskipy.tasks]
 clean = 'find . -type d \( -name "__pycache__" -o -name ".pytest_cache" -o -name "*.egg-info" -o -name "build" -o -name "dist" \) -not -path "*/.venv/*" -exec rm -rf {} + && rm -rf .venv'

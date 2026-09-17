@@ -1,15 +1,16 @@
 # NOTE: When hitting stale code in the virtual machine/environment, perform `uv run task clean` to clean up caches and the virtual environment.
-# NOTE: If we ever need to build artifacts (wheels) for this package, the build system should be hatchling
-# and configured as follows. DO NOT REMOVE THIS NOTE AND THE COMMENTED BLOCK BELOW UNTIL BEING EXPLICITLY TOLD.
-#
-# [build-system]
-# requires = ["hatchling"]
-# build-backend = "hatchling.build"
-#
-# [tool.hatch.build.targets.wheel]
-# packages = ["src/sandbox_executor"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
-name = "sandbox-executor"
+name = "holon"
 version = "0.1.0"
 description = "Isolated Docker-based executor environment for Holon Agent"
+
+[project.scripts]
+holon = "sandbox_executor.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sandbox_executor"]

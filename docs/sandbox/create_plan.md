@@ -23,12 +23,32 @@ Before running the command, ensure you have:
 
 ---
 
-## Recommended Execution Method (`./holon` CLI)
+## Recommended Execution Methods (Holon CLI)
 
-> [!IMPORTANT] **Use `./holon` instead of raw `docker run` commands.** The host wrapper script [`./holon`](../../holon)
-> automatically manages image mapping, credential passing, and SSH agent socket mounts.
+> [!IMPORTANT] **Use the Holon CLI instead of raw `docker run` commands.** The CLI automatically manages image mapping,
+> credential passing, and SSH agent socket mounts.
 
-Run from the repository root:
+You can run Plan Generation via any of the following standard pathways:
+
+### Option A: Globally Installed Tool (`uv tool`)
+
+If installed globally via `uv tool install apps/sandbox-executor`:
+
+```bash
+holon plan "I-1782654790-bootstrap-holon-cli-intent/_" --agent pi-agent --model gemini-3.5-flash
+```
+
+### Option B: Ephemeral Execution (`uvx`)
+
+Run on-demand without prior installation:
+
+```bash
+uvx --from ./apps/sandbox-executor holon plan "I-1782654790-bootstrap-holon-cli-intent/_" --agent pi-agent --model gemini-3.5-flash
+```
+
+### Option C: Repository Convenience Script (`./holon`)
+
+Run from the repository root using the [`./holon`](../../holon) host wrapper:
 
 ```bash
 ./holon plan "I-1782654790-bootstrap-holon-cli-intent/_" --agent pi-agent --model gemini-3.5-flash

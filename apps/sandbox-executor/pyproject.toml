@@ -13,3 +13,6 @@
 name = "sandbox-executor"
 version = "0.1.0"
 description = "Isolated Docker-based executor environment for Holon Agent"
+
+[project.scripts]
+holon = "sandbox_executor.cli:main"

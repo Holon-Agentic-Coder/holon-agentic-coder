@@ -7,6 +7,7 @@
 __pycache__
 build
 *.egg-info
-.subagent/
 todo/mitm_wire_logs*/
 todo/cache/
+
+.subagent

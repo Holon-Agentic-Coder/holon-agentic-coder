@@ -1,4 +1,5 @@
 import importlib.metadata
+import io
 import os
 import unittest
 from unittest.mock import MagicMock, patch
@@ -175,7 +176,11 @@ class TestHolonCLI(unittest.TestCase):
 
     @patch("sandbox_executor.cli.run_docker_container", return_value=0)
     def test_console_script_entrypoint_dispatch(self, mock_run_container):
-        holon_ep = next(ep for ep in importlib.metadata.entry_points(group="console_scripts") if ep.name == "holon")
+        holon_ep = next(
+            (ep for ep in importlib.metadata.entry_points(group="console_scripts") if ep.name == "holon"),
+            None,
+        )
+        self.assertIsNotNone(holon_ep, "Console script entrypoint 'holon' not found in distribution metadata")
         loaded_entrypoint = holon_ep.load()
         test_intent_args = ["holon", "intent", "intents/test.json"]
         with patch("sys.argv", test_intent_args):
@@ -191,10 +196,36 @@ class TestHolonCLI(unittest.TestCase):
         )
 
     def test_main_help(self):
-        with patch("sys.argv", ["holon", "--help"]):
-            with self.assertRaises(SystemExit) as cm:
-                main()
-            self.assertEqual(cm.exception.code, 0)
+        with (
+            patch("sys.argv", ["holon", "--help"]),
+            patch("sys.stdout", new_callable=io.StringIO),
+            self.assertRaises(SystemExit) as cm,
+        ):
+            main()
+        self.assertEqual(cm.exception.code, 0)
+
+    def test_main_version(self):
+        for flag in ["-v", "--version"]:
+            with self.subTest(flag=flag):
+                with (
+                    patch("sys.argv", ["holon", flag]),
+                    patch("sys.stdout", new_callable=io.StringIO) as mock_stdout,
+                    self.assertRaises(SystemExit) as cm,
+                ):
+                    main()
+                self.assertEqual(cm.exception.code, 0)
+                self.assertIn("holon 0.1.0", mock_stdout.getvalue())
+
+    @patch("importlib.metadata.version", side_effect=importlib.metadata.PackageNotFoundError)
+    def test_main_version_fallback(self, mock_version):
+        with (
+            patch("sys.argv", ["holon", "--version"]),
+            patch("sys.stdout", new_callable=io.StringIO) as mock_stdout,
+            self.assertRaises(SystemExit) as cm,
+        ):
+            main()
+        self.assertEqual(cm.exception.code, 0)
+        self.assertIn("holon 0.1.0", mock_stdout.getvalue())
 
 
 if __name__ == "__main__":

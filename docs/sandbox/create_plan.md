@@ -44,8 +44,13 @@ holon plan "I-1782654790-bootstrap-holon-cli-intent/_" --agent pi-agent --model 
 
 Run on-demand without prior installation:
 
+> [!WARNING] **Always specify `--from` when invoking via `uvx`.** Do not execute bare `uvx holon`. The package name
+> `holon` is registered on public PyPI by an unrelated third-party project; omitting `--from` introduces a dependency
+> confusion and namespace collision risk where `uvx` will attempt to download and run the third-party PyPI package.
+> Additionally, local path invocations (`uvx --from ./apps/sandbox-executor`) must be run from the repository root.
+
 ```bash
-# Run from local repository clone
+# Run from local repository clone (must be run from repository root)
 uvx --from ./apps/sandbox-executor holon plan "I-1782654790-bootstrap-holon-cli-intent/_" --agent pi-agent --model gemini-3.5-flash
 
 # Or directly from remote Git repository (can pin @main, release @<tag>, or immutable @<commit-sha>)

@@ -71,8 +71,13 @@ holon intent intents/intent.json
 
 Run on-demand without prior installation:
 
+> [!WARNING] **Always specify `--from` when invoking via `uvx`.** Do not execute bare `uvx holon`. The package name
+> `holon` is registered on public PyPI by an unrelated third-party project; omitting `--from` introduces a dependency
+> confusion and namespace collision risk where `uvx` will attempt to download and run the third-party PyPI package.
+> Additionally, local path invocations (`uvx --from ./apps/sandbox-executor`) must be run from the repository root.
+
 ```bash
-# Run from local repository clone
+# Run from local repository clone (must be run from repository root)
 uvx --from ./apps/sandbox-executor holon intent intents/intent.json
 
 # Or directly from remote Git repository (can pin @main, release @<tag>, or immutable @<commit-sha>)

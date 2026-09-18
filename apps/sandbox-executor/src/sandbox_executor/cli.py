@@ -13,6 +13,7 @@ import uuid
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from sandbox_executor.scaffold import init_project
 from sandbox_executor.token_reduction import generate_root_ca
 
 logger = logging.getLogger(__name__)
@@ -619,18 +620,18 @@ def run_docker_container(
     tty_flag = ["-it"] if sys.stdin.isatty() else ["-i"]
     docker_cmd = ["docker", "run", "--rm", *tty_flag]
 
-    # Set Role
-    docker_cmd.extend(["-e", f"HOLON_ROLE={role}"])
-
-    # Forward all host environment variables prefixed with HOLON_AGENT_ and GITHUB_TOKEN
+    # Forward all host environment variables prefixed with HOLON_ and GITHUB_TOKEN
     env_to_forward = {}
     gh_token = find_github_token()
     if gh_token:
         env_to_forward["GITHUB_TOKEN"] = gh_token
 
     for key, value in os.environ.items():
-        if key.startswith("HOLON_AGENT_") or key == "GITHUB_TOKEN":
+        if key.startswith("HOLON_") or key == "GITHUB_TOKEN":
             env_to_forward[key] = value
+
+    # Ensure explicit role parameter takes strict precedence over host environment
+    env_to_forward["HOLON_ROLE"] = role
 
     for key, value in sorted(env_to_forward.items()):
         docker_cmd.extend(["-e", f"{key}={value}"])
@@ -741,7 +742,39 @@ def main() -> None:
         ),
     )
 
+    # Subcommand: init
+    init_parser = subparsers.add_parser(
+        "init",
+        help="Scaffold Holon configuration and knowledge directories in a target project.",
+    )
+    init_parser.add_argument(
+        "target_dir",
+        nargs="?",
+        default=".",
+        help="Target directory to initialize (default: current directory).",
+    )
+    init_parser.add_argument(
+        "--template",
+        choices=["python", "generic"],
+        default="python",
+        help="Project template type (default: python).",
+    )
+    init_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing configuration files (ledger files are never overwritten).",
+    )
+
     args = parser.parse_args()
+
+    if args.command == "init":
+        sys.exit(
+            init_project(
+                target_dir=args.target_dir,
+                template=args.template,
+                force=args.force,
+            )
+        )
 
     agent_id = args.agent.replace("-agent", "").replace("agent-", "") if hasattr(args, "agent") else "antigravity"
     agent_image_mapping = {

@@ -1,3 +1,4 @@
+import importlib.metadata
 import os
 import unittest
 from unittest.mock import MagicMock, patch
@@ -163,6 +164,37 @@ class TestHolonCLI(unittest.TestCase):
                 agent_id="antigravity",
                 token_reduce=False,
             )
+
+    def test_console_script_entrypoint_registered(self):
+        eps = [ep for ep in importlib.metadata.entry_points(group="console_scripts") if ep.name == "holon"]
+        self.assertEqual(len(eps), 1)
+        holon_ep = eps[0]
+        self.assertEqual(holon_ep.value, "sandbox_executor.cli:main")
+        loaded_main = holon_ep.load()
+        self.assertIs(loaded_main, main)
+
+    @patch("sandbox_executor.cli.run_docker_container", return_value=0)
+    def test_console_script_entrypoint_dispatch(self, mock_run_container):
+        holon_ep = next(ep for ep in importlib.metadata.entry_points(group="console_scripts") if ep.name == "holon")
+        loaded_entrypoint = holon_ep.load()
+        test_intent_args = ["holon", "intent", "intents/test.json"]
+        with patch("sys.argv", test_intent_args):
+            with self.assertRaises(SystemExit) as cm:
+                loaded_entrypoint()
+            self.assertEqual(cm.exception.code, 0)
+        mock_run_container.assert_called_once_with(
+            "intent-creator",
+            "holon/orchestrator",
+            [],
+            agent_id="antigravity",
+            intent_file="intents/test.json",
+        )
+
+    def test_main_help(self):
+        with patch("sys.argv", ["holon", "--help"]):
+            with self.assertRaises(SystemExit) as cm:
+                main()
+            self.assertEqual(cm.exception.code, 0)
 
 
 if __name__ == "__main__":

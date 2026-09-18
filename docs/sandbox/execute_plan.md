@@ -22,8 +22,9 @@ You can run Sandbox Execution via any of the following standard pathways:
 
 ### Option A: Globally Installed Tool (`uv tool`)
 
-If installed globally via `uv tool install apps/sandbox-executor` (or
-`uv tool install "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@main#subdirectory=apps/sandbox-executor"`):
+If installed globally via `uv tool install ./apps/sandbox-executor` (from repository root) or
+`uv tool install "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@main#subdirectory=apps/sandbox-executor"`
+(can pin `@main`, release `@<tag>`, or immutable `@<commit-sha>`):
 
 ```bash
 holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.5-flash
@@ -37,7 +38,7 @@ Run on-demand without prior installation:
 # Run from local repository clone
 uvx --from ./apps/sandbox-executor holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.5-flash
 
-# Or directly from remote Git repository
+# Or directly from remote Git repository (can pin @main, release @<tag>, or immutable @<commit-sha>)
 uvx --from "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@main#subdirectory=apps/sandbox-executor" holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.5-flash
 ```
 

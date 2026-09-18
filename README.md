@@ -761,7 +761,7 @@ uvx --from ./apps/sandbox-executor holon intent intents/my-task.json
 uvx --from ./apps/sandbox-executor holon plan "I-1784983150-build-execution/_" --agent pi-agent --model gemini-3.5-flash
 uvx --from ./apps/sandbox-executor holon execute "I-1784983150-build-execution/P-1784988130-pi-agent-gemini-3.5-flash/_" --agent pi-agent --model gemini-3.5-flash
 
-# Run directly from remote Git repository
+# Run directly from remote Git repository (can pin @main, release @<tag>, or immutable @<commit-sha>)
 uvx --from "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@main#subdirectory=apps/sandbox-executor" holon --help
 ```
 
@@ -770,10 +770,10 @@ uvx --from "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@m
 Install the `holon` executable globally onto your `$PATH` using `uv tool`:
 
 ```bash
-# Install from local clone
-uv tool install apps/sandbox-executor
+# Install from local clone (run from repository root)
+uv tool install ./apps/sandbox-executor
 
-# Or install directly from remote Git repository
+# Or install directly from remote Git repository (can pin @main, release @<tag>, or immutable @<commit-sha>)
 uv tool install "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@main#subdirectory=apps/sandbox-executor"
 ```
 
@@ -801,7 +801,7 @@ uv sync
 uv run holon --help
 
 # Or install editably in an existing virtual environment:
-uv pip install -e apps/sandbox-executor
+uv pip install -e ./apps/sandbox-executor
 ```
 
 > [!NOTE] `--token-reduce` is available on `plan` and `execute` (not on `intent`) and is currently **experimental / not

@@ -620,9 +620,6 @@ def run_docker_container(
     tty_flag = ["-it"] if sys.stdin.isatty() else ["-i"]
     docker_cmd = ["docker", "run", "--rm", *tty_flag]
 
-    # Set Role
-    docker_cmd.extend(["-e", f"HOLON_ROLE={role}"])
-
     # Forward all host environment variables prefixed with HOLON_ and GITHUB_TOKEN
     env_to_forward = {}
     gh_token = find_github_token()
@@ -632,6 +629,9 @@ def run_docker_container(
     for key, value in os.environ.items():
         if key.startswith("HOLON_") or key == "GITHUB_TOKEN":
             env_to_forward[key] = value
+
+    # Ensure explicit role parameter takes strict precedence over host environment
+    env_to_forward["HOLON_ROLE"] = role
 
     for key, value in sorted(env_to_forward.items()):
         docker_cmd.extend(["-e", f"{key}={value}"])

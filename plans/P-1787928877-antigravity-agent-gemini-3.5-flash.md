@@ -45,8 +45,8 @@ The overall plan metrics were derived from the individual step-level metrics as 
 - **cost_pred:** 18.0. Aggregated as the sum of individual step costs: 2.0 + 8.0 + 5.0 + 3.0 = 18.0.
 - **learning_value_pred:** 4.5. Represents the combined epistemic value of implementing the cache breakpoint heuristics
   and documenting edge case patterns.
-- **ev_pred:** 35.24. Calculated directly using the overall metrics under EV physics: EV = 0.82 _ 65.0 + 0.5 _ 4.5 -
-  0.3 \* 7.7 - 18.0 = 35.24.
+- **ev_pred:** 35.24. Calculated directly using the overall metrics under EV physics: EV = 0.82 _ 65.0 + 0.5 _ 4.5 - 0.3
+  \* 7.7 - 18.0 = 35.24.
 
 ## Safety & Constraint Alignment
 

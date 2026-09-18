@@ -44,7 +44,7 @@ class TestHolonInit(unittest.TestCase):
         with open(os.path.join(self.target_dir, "holon-config/world/ruleset.md"), encoding="utf-8") as f:
             content = f.read()
             self.assertIn("Python Runtime:", content)
-            self.assertIn("pytest", content)
+            self.assertIn("uv run pytest", content)
 
         # Verify metrics config JSON validity
         for json_file in ["entropy_config.json", "ev_config.json", "system_entropy_config.json"]:
@@ -69,7 +69,10 @@ class TestHolonInit(unittest.TestCase):
         gitignore_path = os.path.join(self.target_dir, ".gitignore")
         self.assertTrue(os.path.exists(gitignore_path))
         with open(gitignore_path, encoding="utf-8") as f:
-            lines = [line.strip() for line in f.readlines()]
+            raw_content = f.read()
+            self.assertFalse(raw_content.startswith("\n"), "New .gitignore must not start with a leading newline")
+            self.assertTrue(raw_content.startswith("# Holon\n"))
+            lines = [line.strip() for line in raw_content.splitlines()]
             for item in PYTHON_GITIGNORE:
                 self.assertIn(item, lines)
 
@@ -204,6 +207,14 @@ class TestHolonInit(unittest.TestCase):
                 template="python",
                 force=False,
             )
+
+    @patch("os.makedirs", side_effect=OSError("Permission denied"))
+    def test_init_oserror_returns_nonzero_with_stderr(self, mock_makedirs):
+        """Verify init_project handles OSError gracefully, logs to stderr, and returns 1."""
+        with patch("sys.stderr") as mock_stderr:
+            ret = init_project(target_dir=self.target_dir)
+            self.assertEqual(ret, 1)
+            self.assertTrue(mock_stderr.write.called)
 
 
 if __name__ == "__main__":

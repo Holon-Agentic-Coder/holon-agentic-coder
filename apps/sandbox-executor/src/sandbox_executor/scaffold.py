@@ -6,6 +6,7 @@ Creates holon-config/, holon-knowledge/, and configures .gitignore with idempote
 
 import json
 import os
+import sys
 
 RULESET_PYTHON = """# Holon World Ruleset
 
@@ -40,7 +41,7 @@ and architectural rules for this repository. All planning and execution agents m
 
 ## 3. Testing Constraints
 
-- **Testing Tool:** `pytest` as standard test runner.
+- **Testing Tool:** `uv run pytest` as standard test runner.
 - **Test Location:** Unit tests must be placed in a corresponding `tests/` directory matching
   the source file being tested.
 - **Execution Boundary:** Sandbox executions are not allowed to modify tests or test assertions unless explicitly
@@ -224,38 +225,49 @@ GENERIC_GITIGNORE = [
 ]
 
 
+def _format_rel(path: str) -> str:
+    """Formats a path relative to the current working directory for clean display."""
+    try:
+        return os.path.relpath(path, os.getcwd())
+    except ValueError:
+        return path
+
+
 def _write_file(path: str, content: str, force: bool = False) -> tuple[bool, str]:
     """Writes a file if it does not exist, or overwrites if force=True.
 
     Returns (written, message).
     """
+    rel_path = _format_rel(path)
     if os.path.exists(path):
         if not force:
-            return False, f"Skipped existing {path} (use --force to overwrite)"
+            return False, f"Skipped existing {rel_path} (use --force to overwrite)"
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
-        return True, f"Overwrote {path}"
+        return True, f"Overwrote {rel_path}"
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
-    return True, f"Created {path}"
+    return True, f"Created {rel_path}"
 
 
 def _ensure_ledger_file(path: str) -> tuple[bool, str]:
     """Ensures ledger file exists. NEVER overwrites or truncates existing ledger files."""
+    rel_path = _format_rel(path)
     if os.path.exists(path):
-        return False, f"Preserved existing ledger {path}"
+        return False, f"Preserved existing ledger {rel_path}"
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8"):
         pass  # create empty file
-    return True, f"Created ledger {path}"
+    return True, f"Created ledger {rel_path}"
 
 
 def _update_gitignore(target_dir: str, template: str) -> tuple[bool, str]:
     """Creates or updates .gitignore with standard ignore patterns without duplicates."""
     gitignore_path = os.path.join(target_dir, ".gitignore")
+    rel_path = _format_rel(gitignore_path)
     patterns = PYTHON_GITIGNORE if template == "python" else GENERIC_GITIGNORE
 
     existing_lines = []
@@ -265,7 +277,7 @@ def _update_gitignore(target_dir: str, template: str) -> tuple[bool, str]:
 
     missing_patterns = [p for p in patterns if p.strip() not in existing_lines]
     if not missing_patterns:
-        return False, f".gitignore already up to date ({gitignore_path})"
+        return False, f".gitignore already up to date ({rel_path})"
 
     needs_newline = False
     if os.path.exists(gitignore_path):
@@ -281,12 +293,15 @@ def _update_gitignore(target_dir: str, template: str) -> tuple[bool, str]:
         if needs_newline:
             f.write("\n")
         if not any("# Holon" in line for line in existing_lines):
-            f.write("\n# Holon\n")
+            if existing_lines:
+                f.write("\n# Holon\n")
+            else:
+                f.write("# Holon\n")
         for p in missing_patterns:
             f.write(f"{p}\n")
 
     action = "Updated" if os.path.exists(gitignore_path) and existing_lines else "Created"
-    return True, f"{action} {gitignore_path} (added: {', '.join(missing_patterns)})"
+    return True, f"{action} {rel_path} (added: {', '.join(missing_patterns)})"
 
 
 def init_project(target_dir: str = ".", template: str = "python", force: bool = False) -> int:
@@ -300,63 +315,67 @@ def init_project(target_dir: str = ".", template: str = "python", force: bool = 
     Returns:
         0 on success, non-zero on error.
     """
-    target_dir = os.path.abspath(target_dir)
-    os.makedirs(target_dir, exist_ok=True)
+    try:
+        target_dir = os.path.abspath(target_dir)
+        os.makedirs(target_dir, exist_ok=True)
 
-    ruleset_content = RULESET_PYTHON if template == "python" else RULESET_GENERIC
+        ruleset_content = RULESET_PYTHON if template == "python" else RULESET_GENERIC
 
-    print(f"Initializing Holon project in {target_dir} (template: {template})...")
+        print(f"Initializing Holon project in {_format_rel(target_dir)} (template: {template})...")
 
-    # 1. Scaffolding holon-config/
-    config_dir = os.path.join(target_dir, "holon-config")
-    files_to_scaffold = [
-        (os.path.join(config_dir, "world", "ruleset.md"), ruleset_content),
-        (os.path.join(config_dir, "world", "constraints.md"), CONSTRAINTS_MD),
-        (os.path.join(config_dir, "metrics", "README.md"), METRICS_README),
-        (
-            os.path.join(config_dir, "metrics", "entropy_config.json"),
-            json.dumps(ENTROPY_CONFIG, indent=2) + "\n",
-        ),
-        (
-            os.path.join(config_dir, "metrics", "ev_config.json"),
-            json.dumps(EV_CONFIG, indent=2) + "\n",
-        ),
-        (
-            os.path.join(config_dir, "metrics", "system_entropy_config.json"),
-            json.dumps(SYSTEM_ENTROPY_CONFIG, indent=2) + "\n",
-        ),
-        (os.path.join(config_dir, "prompts", "planner.template.md"), PLANNER_TEMPLATE),
-        (os.path.join(config_dir, "prompts", "executor.template.md"), EXECUTOR_TEMPLATE),
-    ]
+        # 1. Scaffolding holon-config/
+        config_dir = os.path.join(target_dir, "holon-config")
+        files_to_scaffold = [
+            (os.path.join(config_dir, "world", "ruleset.md"), ruleset_content),
+            (os.path.join(config_dir, "world", "constraints.md"), CONSTRAINTS_MD),
+            (os.path.join(config_dir, "metrics", "README.md"), METRICS_README),
+            (
+                os.path.join(config_dir, "metrics", "entropy_config.json"),
+                json.dumps(ENTROPY_CONFIG, indent=2) + "\n",
+            ),
+            (
+                os.path.join(config_dir, "metrics", "ev_config.json"),
+                json.dumps(EV_CONFIG, indent=2) + "\n",
+            ),
+            (
+                os.path.join(config_dir, "metrics", "system_entropy_config.json"),
+                json.dumps(SYSTEM_ENTROPY_CONFIG, indent=2) + "\n",
+            ),
+            (os.path.join(config_dir, "prompts", "planner.template.md"), PLANNER_TEMPLATE),
+            (os.path.join(config_dir, "prompts", "executor.template.md"), EXECUTOR_TEMPLATE),
+        ]
 
-    for path, content in files_to_scaffold:
-        _, msg = _write_file(path, content, force=force)
-        print(f"  - {msg}")
+        for path, content in files_to_scaffold:
+            _, msg = _write_file(path, content, force=force)
+            print(f"  - {msg}")
 
-    # 2. Scaffolding holon-knowledge/
-    knowledge_dir = os.path.join(target_dir, "holon-knowledge")
-    ledger_files = [
-        os.path.join(knowledge_dir, "ledger", "intents.jsonl"),
-        os.path.join(knowledge_dir, "ledger", "plans.jsonl"),
-        os.path.join(knowledge_dir, "ledger", "executions.jsonl"),
-    ]
+        # 2. Scaffolding holon-knowledge/
+        knowledge_dir = os.path.join(target_dir, "holon-knowledge")
+        ledger_files = [
+            os.path.join(knowledge_dir, "ledger", "intents.jsonl"),
+            os.path.join(knowledge_dir, "ledger", "plans.jsonl"),
+            os.path.join(knowledge_dir, "ledger", "executions.jsonl"),
+        ]
 
-    for ledger_path in ledger_files:
-        _, msg = _ensure_ledger_file(ledger_path)
-        print(f"  - {msg}")
+        for ledger_path in ledger_files:
+            _, msg = _ensure_ledger_file(ledger_path)
+            print(f"  - {msg}")
 
-    for sub_dir in ["plans", "kb"]:
-        full_sub = os.path.join(knowledge_dir, sub_dir)
-        os.makedirs(full_sub, exist_ok=True)
-        gitkeep = os.path.join(full_sub, ".gitkeep")
-        if not os.path.exists(gitkeep):
-            with open(gitkeep, "w", encoding="utf-8"):
-                pass
-            print(f"  - Created {gitkeep}")
+        for sub_dir in ["plans", "kb"]:
+            full_sub = os.path.join(knowledge_dir, sub_dir)
+            os.makedirs(full_sub, exist_ok=True)
+            gitkeep = os.path.join(full_sub, ".gitkeep")
+            if not os.path.exists(gitkeep):
+                with open(gitkeep, "w", encoding="utf-8"):
+                    pass
+                print(f"  - Created {_format_rel(gitkeep)}")
 
-    # 3. Updating .gitignore
-    _, gitignore_msg = _update_gitignore(target_dir, template)
-    print(f"  - {gitignore_msg}")
+        # 3. Updating .gitignore
+        _, gitignore_msg = _update_gitignore(target_dir, template)
+        print(f"  - {gitignore_msg}")
 
-    print("Holon initialization complete.")
-    return 0
+        print("Holon initialization complete.")
+        return 0
+    except OSError as err:
+        print(f"Error: Failed to initialize project in '{target_dir}': {err}", file=sys.stderr)
+        return 1

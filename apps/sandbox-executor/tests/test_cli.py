@@ -87,6 +87,7 @@ class TestHolonCLI(unittest.TestCase):
         mock_run.return_value = MagicMock(returncode=0)
         env = {
             "GITHUB_TOKEN": "my-github-token",
+            "HOLON_ROLE": "host-role-should-be-overridden",
             "HOLON_AGENT_KEY": "my-agent-key",
             "HOLON_AGENT_EFFORT": "high",
             "HOLON_AGENT_PROVIDER": "anthropic",
@@ -102,6 +103,10 @@ class TestHolonCLI(unittest.TestCase):
             self.assertIn("HOLON_AGENT_KEY=my-agent-key", args)
             self.assertIn("HOLON_AGENT_EFFORT=high", args)
             self.assertIn("HOLON_AGENT_PROVIDER=anthropic", args)
+            # Ensure programmatic role takes strict precedence over host environment
+            self.assertIn("HOLON_ROLE=planner", args)
+            self.assertNotIn("HOLON_ROLE=host-role-should-be-overridden", args)
+            self.assertEqual([a for a in args if a.startswith("HOLON_ROLE=")], ["HOLON_ROLE=planner"])
             # Ensure non-prefixed variable is NOT forwarded
             self.assertFalse(any("SOME_OTHER_VAR" in arg for arg in args))
 

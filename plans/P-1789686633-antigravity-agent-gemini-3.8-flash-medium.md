@@ -48,14 +48,14 @@ The overall plan metrics were derived from the individual step-level metrics as 
 - **cost_pred**: 12.0. Computed as the sum of individual step costs (2.0 + 3.0 + 4.0 + 3.0 = 12.0).
 - **learning_value_pred**: 4.0. Epistemic gain from establishing and codifying PEP 517/621 packaging and wheel
   distribution standards within the monorepo workspace.
-- **ev_pred**: 59.65. Calculated according to the standard config-driven EV formula EV = P(success) * Impact + mu *
-  LearningValue - lambda * Entropy - Cost with lambda = 0.3 and mu = 0.5: 0.88 * 80.0 + 0.5 * 4.0 - 0.3 * 2.5 - 12.0 =
+- **ev_pred**: 59.65. Calculated according to the standard config-driven EV formula EV = P(success) _ Impact + mu _
+  LearningValue - lambda _ Entropy - Cost with lambda = 0.3 and mu = 0.5: 0.88 _ 80.0 + 0.5 _ 4.0 - 0.3 _ 2.5 - 12.0 =
   70.4 + 2.0 - 0.75 - 12.0 = 59.65.
 
 ## Safety & Constraint Alignment
 
 - **Key world ruleset constraints that affect this plan:**
-  - holon-config/world/ruleset.md §1 (Runtime & Environment Specification: Python ==3.13.*, uv workspace management,
+  - holon-config/world/ruleset.md §1 (Runtime & Environment Specification: Python ==3.13.\*, uv workspace management,
     [tool.uv.sources] path mappings).
   - holon-config/world/ruleset.md §2 (Coding Conventions & Standards: PEP 8 compliance, docstrings, typing guidelines).
   - holon-config/world/ruleset.md §3 (Testing Constraints: pytest runner, no modifying test assertions).

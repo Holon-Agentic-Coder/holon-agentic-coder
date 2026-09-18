@@ -59,7 +59,8 @@ You can run the Intent Creator via any of the following standard pathways:
 
 ### Option A: Globally Installed Tool (`uv tool`)
 
-If installed globally via `uv tool install apps/sandbox-executor`:
+If installed globally via `uv tool install apps/sandbox-executor` (or
+`uv tool install "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@main#subdirectory=apps/sandbox-executor"`):
 
 ```bash
 holon intent intents/intent.json
@@ -70,7 +71,11 @@ holon intent intents/intent.json
 Run on-demand without prior installation:
 
 ```bash
+# Run from local repository clone
 uvx --from ./apps/sandbox-executor holon intent intents/intent.json
+
+# Or directly from remote Git repository
+uvx --from "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@main#subdirectory=apps/sandbox-executor" holon intent intents/intent.json
 ```
 
 ### Option C: Repository Convenience Script (`./holon`)

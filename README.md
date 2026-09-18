@@ -3,7 +3,8 @@
 **Git-native, sandbox-isolated, self-evolving agentic coding architecture** built around **fractal (recursive)
 intents**, **competitive planning variants**, **append-only learning**, and **entropy-aware decision-making**.
 
-Repository: [https://github.com/thomashan/holon-agentic-coder](https://github.com/thomashan/holon-agentic-coder)
+Repository:
+[https://github.com/Holon-Agentic-Coder/holon-agentic-coder](https://github.com/Holon-Agentic-Coder/holon-agentic-coder)
 
 ---
 
@@ -730,9 +731,9 @@ flowchart TD
 
 ## Sandbox CLI usage
 
-All containerized Holon roles (`intent`, `plan`, `execute`) are driven by the `holon` CLI. It maps agent
-names to images, forwards credentials (`GITHUB_TOKEN`, `HOLON_AGENT_*`), mounts the SSH agent socket, and optionally
-attaches the token-reduction proxy.
+All containerized Holon roles (`intent`, `plan`, `execute`) are driven by the `holon` CLI. It maps agent names to
+images, forwards credentials (`GITHUB_TOKEN`, `HOLON_AGENT_*`), mounts the SSH agent socket, and optionally attaches the
+token-reduction proxy.
 
 The CLI can be executed via multiple standard pathways:
 
@@ -740,7 +741,8 @@ The CLI can be executed via multiple standard pathways:
 
 #### 1. Repository Convenience Script (`./holon`)
 
-From the root of the repository, the convenience script [`./holon`](holon) sets up `PYTHONPATH` and invokes the CLI entrypoint directly:
+From the root of the repository, the convenience script [`./holon`](holon) sets up `PYTHONPATH` and invokes the CLI
+entrypoint directly:
 
 ```bash
 ./holon intent intents/my-task.json                                  # Intent Creator
@@ -760,7 +762,7 @@ uvx --from ./apps/sandbox-executor holon plan "I-1784983150-build-execution/_" -
 uvx --from ./apps/sandbox-executor holon execute "I-1784983150-build-execution/P-1784988130-pi-agent-gemini-3.5-flash/_" --agent pi-agent --model gemini-3.5-flash
 
 # Run directly from remote Git repository
-uvx --from git+https://github.com/thomashan/holon-agentic-coder.git#subdirectory=apps/sandbox-executor holon --help
+uvx --from "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@main#subdirectory=apps/sandbox-executor" holon --help
 ```
 
 #### 3. Global Installation (`uv tool install`)
@@ -772,7 +774,7 @@ Install the `holon` executable globally onto your `$PATH` using `uv tool`:
 uv tool install apps/sandbox-executor
 
 # Or install directly from remote Git repository
-uv tool install git+https://github.com/thomashan/holon-agentic-coder.git --directory apps/sandbox-executor
+uv tool install "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@main#subdirectory=apps/sandbox-executor"
 ```
 
 Once installed, invoke `holon` directly anywhere:
@@ -791,7 +793,8 @@ uv tool upgrade holon
 
 #### 4. Local Development (Editable Installation)
 
-When developing locally within the repository, synchronize the virtual environment using `uv sync` to install `holon` in editable mode:
+When developing locally within the repository, synchronize the virtual environment using `uv sync` to install `holon` in
+editable mode:
 
 ```bash
 uv sync

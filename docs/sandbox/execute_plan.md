@@ -14,15 +14,16 @@ For in-depth specifications of the execution architecture and credentials mappin
 
 ## Recommended Execution Methods (Holon CLI)
 
-> [!IMPORTANT] **Use the Holon CLI instead of raw `docker run` commands.** Always run sandbox executions via the
-> Holon CLI, which handles setting up the container and environment, mapping directly into the
+> [!IMPORTANT] **Use the Holon CLI instead of raw `docker run` commands.** Always run sandbox executions via the Holon
+> CLI, which handles setting up the container and environment, mapping directly into the
 > [3-Tier Fallback Contract](../executor/agent_credentials_requirements.md#the-3-tier-fallback-contract).
 
 You can run Sandbox Execution via any of the following standard pathways:
 
 ### Option A: Globally Installed Tool (`uv tool`)
 
-If installed globally via `uv tool install apps/sandbox-executor`:
+If installed globally via `uv tool install apps/sandbox-executor` (or
+`uv tool install "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@main#subdirectory=apps/sandbox-executor"`):
 
 ```bash
 holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.5-flash
@@ -33,7 +34,11 @@ holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-
 Run on-demand without prior installation:
 
 ```bash
+# Run from local repository clone
 uvx --from ./apps/sandbox-executor holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.5-flash
+
+# Or directly from remote Git repository
+uvx --from "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@main#subdirectory=apps/sandbox-executor" holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.5-flash
 ```
 
 ### Option C: Repository Convenience Script (`./holon`)

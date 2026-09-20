@@ -3,7 +3,8 @@
 **Git-native, sandbox-isolated, self-evolving agentic coding architecture** built around **fractal (recursive)
 intents**, **competitive planning variants**, **append-only learning**, and **entropy-aware decision-making**.
 
-Repository: [https://github.com/thomashan/holon-agentic-coder](https://github.com/thomashan/holon-agentic-coder)
+Repository:
+[https://github.com/Holon-Agentic-Coder/holon-agentic-coder](https://github.com/Holon-Agentic-Coder/holon-agentic-coder)
 
 ---
 
@@ -730,15 +731,82 @@ flowchart TD
 
 ## Sandbox CLI usage
 
-All containerized Holon roles are driven by the [`./holon`](holon) host wrapper from the repository root. It maps agent
-names to images, forwards credentials (`GITHUB_TOKEN`, `HOLON_AGENT_*`), mounts the SSH agent socket, and optionally
-attaches the token-reduction proxy.
+All containerized Holon roles (`intent`, `plan`, `execute`) are driven by the `holon` CLI. It maps agent names to
+images, forwards credentials (`GITHUB_TOKEN`, `HOLON_AGENT_*`), mounts the SSH agent socket, and optionally attaches the
+token-reduction proxy.
+
+The CLI can be executed via multiple standard pathways:
+
+### Execution Pathways
+
+#### 1. Repository Convenience Script (`./holon`)
+
+From the root of the repository, the convenience script [`./holon`](holon) sets up `PYTHONPATH` and invokes the CLI
+entrypoint directly:
 
 ```bash
 ./holon intent intents/my-task.json                                  # Intent Creator
 ./holon plan "I-1784983150-build-execution/_" --agent pi-agent --model gemini-3.5-flash
 ./holon execute "I-1784983150-build-execution/P-1784988130-pi-agent-gemini-3.5-flash/_" \
   --agent pi-agent --model gemini-3.5-flash --token-reduce
+```
+
+#### 2. Ephemeral Execution (`uvx`)
+
+Run the CLI on-demand in an isolated ephemeral environment without installing it into the system:
+
+> [!WARNING] **Always specify `--from` when invoking via `uvx`.** Do not execute bare `uvx holon`. The package name
+> `holon` is registered on public PyPI by an unrelated third-party project; omitting `--from` introduces a dependency
+> confusion and namespace collision risk where `uvx` will attempt to download and run the third-party PyPI package.
+> Additionally, local path invocations (`uvx --from ./apps/sandbox-executor`) must be run from the repository root.
+
+```bash
+# Run from local repository clone (must be run from repository root)
+uvx --from ./apps/sandbox-executor holon intent intents/my-task.json
+uvx --from ./apps/sandbox-executor holon plan "I-1784983150-build-execution/_" --agent pi-agent --model gemini-3.5-flash
+uvx --from ./apps/sandbox-executor holon execute "I-1784983150-build-execution/P-1784988130-pi-agent-gemini-3.5-flash/_" --agent pi-agent --model gemini-3.5-flash
+
+# Run directly from remote Git repository (can pin @main, release @<tag>, or immutable @<commit-sha>)
+uvx --from "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@main#subdirectory=apps/sandbox-executor" holon --help
+```
+
+#### 3. Global Installation (`uv tool install`)
+
+Install the `holon` executable globally onto your `$PATH` using `uv tool`:
+
+```bash
+# Install from local clone (run from repository root)
+uv tool install ./apps/sandbox-executor
+
+# Or install directly from remote Git repository (can pin @main, release @<tag>, or immutable @<commit-sha>)
+uv tool install "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@main#subdirectory=apps/sandbox-executor"
+```
+
+Once installed, invoke `holon` directly anywhere:
+
+```bash
+holon intent intents/my-task.json
+holon plan "I-1784983150-build-execution/_" --agent pi-agent --model gemini-3.5-flash
+holon execute "I-1784983150-build-execution/P-1784988130-pi-agent-gemini-3.5-flash/_" --agent pi-agent --model gemini-3.5-flash
+```
+
+To upgrade a globally installed version:
+
+```bash
+uv tool upgrade holon
+```
+
+#### 4. Local Development (Editable Installation)
+
+When developing locally within the repository, synchronize the virtual environment using `uv sync` to install `holon` in
+editable mode:
+
+```bash
+uv sync
+uv run holon --help
+
+# Or install editably in an existing virtual environment:
+uv pip install -e ./apps/sandbox-executor
 ```
 
 > [!NOTE] `--token-reduce` is available on `plan` and `execute` (not on `intent`) and is currently **experimental / not

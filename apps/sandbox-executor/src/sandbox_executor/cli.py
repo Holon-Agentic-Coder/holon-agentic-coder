@@ -2,6 +2,7 @@
 """Host wrapper CLI for running Holon Docker sandbox roles (intent, plan, execute)."""
 
 import argparse
+import importlib.metadata
 import logging
 import os
 import shutil
@@ -689,6 +690,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="holon",
         description="Holon CLI: Host wrapper for running containerized Holon AI agent roles.",
+    )
+    try:
+        pkg_version = importlib.metadata.version("holon")
+    except importlib.metadata.PackageNotFoundError:
+        pkg_version = "0.1.0"
+    parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"%(prog)s {pkg_version}",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 

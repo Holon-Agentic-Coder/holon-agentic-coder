@@ -47,23 +47,23 @@ done
 
 # Helper function to generate a timestamp (written to the variable name passed as the first argument)
 get_timestamp() {
-  local target_var="$1"
-  local ts_val=""
+  local _target_var="$1"
+  local _ts_val=""
   if [[ -n "${EPOCHREALTIME:-}" ]]; then
-    local epoch="$EPOCHREALTIME"
-    local sec="${epoch%.*}"
-    local usec="${epoch#*.}"
-    local formatted_sec
-    if ! printf -v formatted_sec '%(%Y-%m-%d %H:%M:%S)T' "$sec" 2>/dev/null || [[ -z "$formatted_sec" ]]; then
-      formatted_sec="$(date -d "@$sec" +"%Y-%m-%d %H:%M:%S" 2>/dev/null || date -r "$sec" +"%Y-%m-%d %H:%M:%S" 2>/dev/null || date +"%Y-%m-%d %H:%M:%S")"
+    local _epoch="$EPOCHREALTIME"
+    local _sec="${_epoch%.*}"
+    local _usec="${_epoch#*.}"
+    local _formatted_sec
+    if ! printf -v _formatted_sec '%(%Y-%m-%d %H:%M:%S)T' "$_sec" 2>/dev/null || [[ -z "$_formatted_sec" ]]; then
+      _formatted_sec="$(date -d "@$_sec" +"%Y-%m-%d %H:%M:%S" 2>/dev/null || date -r "$_sec" +"%Y-%m-%d %H:%M:%S" 2>/dev/null || date +"%Y-%m-%d %H:%M:%S")"
     fi
-    ts_val="${formatted_sec}.${usec:0:3}"
+    _ts_val="${_formatted_sec}.${_usec:0:3}"
   else
-    if ! printf -v ts_val '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || [[ -z "$ts_val" ]]; then
-      ts_val="$(date +"%Y-%m-%d %H:%M:%S")"
+    if ! printf -v _ts_val '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || [[ -z "$_ts_val" ]]; then
+      _ts_val="$(date +"%Y-%m-%d %H:%M:%S")"
     fi
   fi
-  printf -v "$target_var" "%s" "$ts_val"
+  printf -v "$_target_var" "%s" "$_ts_val"
 }
 
 # Helper function to print log lines from stdin with timestamps in real-time

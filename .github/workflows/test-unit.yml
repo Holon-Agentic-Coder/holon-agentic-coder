@@ -40,5 +40,5 @@ jobs:
 
       - name: Run unit tests
         run: |
-          uv sync
+          uv sync --locked
           uv run pytest -v -l --tb=short -m "not integration_test"

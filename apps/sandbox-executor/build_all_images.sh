@@ -54,7 +54,9 @@ get_timestamp() {
     local sec="${epoch%.*}"
     local usec="${epoch#*.}"
     local formatted_sec
-    formatted_sec="$(date -d "@$sec" +"%Y-%m-%d %H:%M:%S" 2>/dev/null || date -r "$sec" +"%Y-%m-%d %H:%M:%S" 2>/dev/null || date +"%Y-%m-%d %H:%M:%S")"
+    if ! printf -v formatted_sec '%(%Y-%m-%d %H:%M:%S)T' "$sec" 2>/dev/null || [[ -z "$formatted_sec" ]]; then
+      formatted_sec="$(date -d "@$sec" +"%Y-%m-%d %H:%M:%S" 2>/dev/null || date -r "$sec" +"%Y-%m-%d %H:%M:%S" 2>/dev/null || date +"%Y-%m-%d %H:%M:%S")"
+    fi
     ts_val="${formatted_sec}.${usec:0:3}"
   else
     if ! printf -v ts_val '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || [[ -z "$ts_val" ]]; then

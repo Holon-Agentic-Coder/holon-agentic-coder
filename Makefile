@@ -35,7 +35,7 @@ test:
 
 test-integration:
 	./apps/sandbox-executor/build_all_images.sh --output-log
-	uv run pytest -m "integration_test"
+	uv run pytest -m "integration_test" $(PYTEST_ARGS)
 
 check: lint lint-docs
 

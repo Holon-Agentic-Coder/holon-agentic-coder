@@ -53,5 +53,5 @@ jobs:
 
       - name: Run integration tests
         run: |
-          uv lock --check
+          uv sync --locked
           uv run pytest -v -l --tb=short -m "integration_test"

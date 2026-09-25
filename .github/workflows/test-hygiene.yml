@@ -38,13 +38,13 @@ jobs:
           python-version: '3.13'
           enable-cache: true
 
-      - name: Update dependencies
-        run: uv sync
-
       - name: Check uv.lock is up to date
         run: |
           uv lock --check
           git diff --exit-code uv.lock
+
+      - name: Install dependencies
+        run: uv sync --locked
 
       - name: Lint with Ruff
         run: uv run ruff check .

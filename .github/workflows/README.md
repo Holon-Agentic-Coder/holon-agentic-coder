@@ -22,6 +22,14 @@ This directory contains the CI/CD workflows for the `holon-agentic-coder` projec
 - `build-images.yml`: Manual dispatch workflow to build and verify Docker container images with multi-architecture
   Buildx caching.
 
+## Composite Actions
+
+- `.github/actions/docker-pull/`: Reusable GHCR pull-through caching composite action. It attempts to pull base or
+  dependency container images from GitHub Container Registry (GHCR) mirror cache first. If an image is not present in
+  GHCR, it falls back to pulling from the public registry source, pushes the image to the GHCR mirror cache (when
+  `packages: write` permissions are available), and retags it back to its original name. This minimizes upstream rate
+  limits and accelerates container build pipelines.
+
 ## Standards Alignment
 
 All workflows in this repository conform to the standard Holon modular CI/CD architecture derived from

@@ -6,10 +6,10 @@ DETECTED_ARCH := $(shell uname -m)
 
 PYTEST_ARGS ?=
 
-.PHONY: help setup test test-integration check lint lint-docs format format-docs clean distclean build-images check-prerequisites
+.PHONY: help setup test test-integration check lint lint-docs format format-code format-docs clean distclean build-images check-prerequisites
 
 help:
-	@echo "Usage: make [target]"
+	@echo "Usage: make [target] [PYTEST_ARGS=\"...\"]"
 	@echo ""
 	@echo "Available targets:"
 	@printf "  %-22s %s\n" "setup" "Synchronize dependencies using uv sync."
@@ -18,13 +18,17 @@ help:
 	@printf "  %-22s %s\n" "check" "Run all static checks (lint and lint-docs)."
 	@printf "  %-22s %s\n" "lint" "Run Ruff linter and formatting check."
 	@printf "  %-22s %s\n" "lint-docs" "Check Markdown documentation formatting with Prettier."
-	@printf "  %-22s %s\n" "format" "Auto-format codebase with Ruff."
+	@printf "  %-22s %s\n" "format" "Auto-format codebase and documentation (format-code and format-docs)."
+	@printf "  %-22s %s\n" "format-code" "Auto-format codebase with Ruff."
 	@printf "  %-22s %s\n" "format-docs" "Auto-format Markdown documentation with Prettier."
 	@printf "  %-22s %s\n" "clean" "Remove transient build artifacts, caches, and logs."
 	@printf "  %-22s %s\n" "distclean" "Clean transient artifacts and remove .venv virtual environment."
 	@printf "  %-22s %s\n" "build-images" "Build all sandbox Docker images."
 	@printf "  %-22s %s\n" "check-prerequisites" "Verify presence of required tools (uv, git, docker, npx)."
 	@printf "  %-22s %s\n" "help" "Show this help message."
+	@echo ""
+	@echo "Options:"
+	@printf "  %-22s %s\n" "PYTEST_ARGS" "Pass additional arguments to pytest (e.g. PYTEST_ARGS=\"-k test_name -v\")."
 	@echo ""
 
 setup:
@@ -47,7 +51,9 @@ lint:
 lint-docs:
 	npx --yes prettier@3.8.4 --check "**/*.md"
 
-format:
+format: format-code format-docs
+
+format-code:
 	uv run ruff check --fix .
 	uv run ruff format .
 
@@ -55,8 +61,8 @@ format-docs:
 	npx --yes prettier@3.8.4 --write "**/*.md"
 
 clean:
-	find . -type d \( -name "__pycache__" -o -name ".pytest_cache" -o -name ".ruff_cache" -o -name "*.egg-info" -o -name "build" -o -name "dist" \) -not -path "*/.venv/*" -exec rm -rf {} +
-	rm -f build_all_images.log
+	find . -path "./.git" -prune -o -path "./.venv" -prune -o -type d \( -name "__pycache__" -o -name ".pytest_cache" -o -name ".ruff_cache" \) -exec rm -rf {} +
+	rm -rf .coverage coverage.xml htmlcov apps/sandbox-executor/build_all_images.log build_all_images.log
 
 distclean: clean
 	rm -rf .venv

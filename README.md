@@ -816,10 +816,11 @@ A `Makefile` is provided at the repository root to standardize common contributo
 ```bash
 make help                # Display all available targets and descriptions
 make check-prerequisites # Verify installed tools (uv, git, docker, npx)
+make setup               # Synchronize dependencies with uv sync
 make check               # Run all static linting, formatting, and lockfile checks
 make test                # Run unit tests (excluding container integration tests)
 make test-integration    # Build sandbox images and run container integration tests
-make format              # Automatically format codebase with Ruff
+make format              # Automatically format codebase and documentation
 make clean               # Remove transient build and test caches
 ```
 

@@ -1,0 +1,69 @@
+name: 'Pull from GHCR Mirror with Fallback'
+description: 'Tries to pull an image from the GHCR mirror. If not found, it mirrors it from the public registry first, then provides the image. Calling workflows should pin immutable tags to prevent stale vulnerability caching.'
+inputs:
+  image_name:
+    description: 'The original name and tag of the image (e.g. mitmproxy/mitmproxy:12.2.3 or quay.io/org/repo:tag; immutable tags required)'
+    required: true
+  github_token:
+    description: 'GitHub token for authentication'
+    default: ${{ github.token }}
+    required: false
+outputs:
+  mirrored_name:
+    description: 'The lowercase GHCR mirrored image name'
+    value: ${{ steps.image_names.outputs.mirrored_name }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ inputs.github_token }}
+
+    - name: Define image names
+      id: image_names
+      shell: bash
+      env:
+        GH_REPO: ${{ github.repository }}
+        RAW_IMAGE_NAME: ${{ inputs.image_name }}
+      run: |
+        CLEAN_IMAGE="${RAW_IMAGE_NAME}"
+        if [[ "$CLEAN_IMAGE" == *"/"* ]]; then
+          FIRST_SEG="${CLEAN_IMAGE%%/*}"
+          if [[ "$FIRST_SEG" == *"."* || "$FIRST_SEG" == *":"* ]]; then
+            CLEAN_IMAGE="${CLEAN_IMAGE#*/}"
+          fi
+        fi
+        REPO_LOWER=$(echo "$GH_REPO" | tr '[:upper:]' '[:lower:]')
+        IMAGE_LOWER=$(echo "$CLEAN_IMAGE" | tr '[:upper:]' '[:lower:]')
+        echo "mirrored_name=ghcr.io/${REPO_LOWER}/${IMAGE_LOWER}" >> "$GITHUB_OUTPUT"
+
+    - name: Attempt to pull from GHCR mirror
+      id: pull_from_mirror
+      continue-on-error: true
+      shell: bash
+      env:
+        MIRRORED_NAME: ${{ steps.image_names.outputs.mirrored_name }}
+      run: docker pull "$MIRRORED_NAME"
+
+    # Note: Mirror-pushing requires `packages: write` permissions in the calling job/workflow
+    - name: "Fallback: Pull from source and push to mirror"
+      if: steps.pull_from_mirror.outcome == 'failure'
+      shell: bash
+      env:
+        IMAGE_NAME: ${{ inputs.image_name }}
+        MIRRORED_NAME: ${{ steps.image_names.outputs.mirrored_name }}
+      run: |
+        echo "Image not found in mirror. Pulling from source and mirroring to GHCR..."
+        docker pull "$IMAGE_NAME"
+        docker tag "$IMAGE_NAME" "$MIRRORED_NAME"
+        docker push "${MIRRORED_NAME}" || echo "::warning::Failed to push image to GHCR mirror; continuing with local image"
+
+    - name: Re-tag image to original name
+      shell: bash
+      env:
+        IMAGE_NAME: ${{ inputs.image_name }}
+        MIRRORED_NAME: ${{ steps.image_names.outputs.mirrored_name }}
+      run: docker tag "$MIRRORED_NAME" "$IMAGE_NAME"

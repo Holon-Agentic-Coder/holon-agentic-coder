@@ -39,7 +39,8 @@ Fields:
   - `w4_ser` (0.15): Sandbox Escape Risk (security policy violation probability).
   - `w5_nov` (0.10): Novelty (unfamiliarity relative to knowledge base).
 - **`observable_weights`**: Weight factors ($u_1 \dots u_5$) for actual observed post-execution entropy
-  ($\Delta S_{\text{intent,actual}}$).
+  ($\Delta
+  S_{\text{intent,actual}}$).
 - **`description`** (`string`): Description of the per-intent entropy weight settings.
 
 ---

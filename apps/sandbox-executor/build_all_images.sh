@@ -47,14 +47,26 @@ done
 
 # Helper function to generate a timestamp (written to the variable name passed as the first argument)
 get_timestamp() {
-  local -n ref=$1
+  local _target_var="${1:-}"
+  local _ts_val=""
   if [[ -n "${EPOCHREALTIME:-}" ]]; then
-    local epoch="$EPOCHREALTIME"
-    local sec="${epoch%.*}"
-    local usec="${epoch#*.}"
-    printf -v ref "%(%Y-%m-%d %H:%M:%S)T.%03d" "$sec" "$((10#${usec:0:3}))"
+    local _epoch="$EPOCHREALTIME"
+    local _sec="${_epoch%.*}"
+    local _usec="${_epoch#*.}"
+    local _formatted_sec
+    if ! printf -v _formatted_sec '%(%Y-%m-%d %H:%M:%S)T' "$_sec" 2>/dev/null || [[ -z "$_formatted_sec" ]]; then
+      _formatted_sec="$(date -d "@$_sec" +"%Y-%m-%d %H:%M:%S" 2>/dev/null || date -r "$_sec" +"%Y-%m-%d %H:%M:%S" 2>/dev/null || date +"%Y-%m-%d %H:%M:%S")"
+    fi
+    _ts_val="${_formatted_sec}.${_usec:0:3}"
   else
-    printf -v ref "%(%Y-%m-%d %H:%M:%S)T" -1
+    if ! printf -v _ts_val '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || [[ -z "$_ts_val" ]]; then
+      _ts_val="$(date +"%Y-%m-%d %H:%M:%S")"
+    fi
+  fi
+  if [[ -n "$_target_var" ]]; then
+    printf -v "$_target_var" "%s" "$_ts_val"
+  else
+    echo "$_ts_val"
   fi
 }
 

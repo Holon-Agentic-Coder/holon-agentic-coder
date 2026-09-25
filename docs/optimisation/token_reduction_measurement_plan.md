@@ -406,7 +406,8 @@ _(with denominator guard: defaults to $0.0\%$ if $\text{Tokens}_{\text{raw}} = 0
 
 1. **Exact Cache Hit Rate**: Percentage of requests served directly from SQLite without outbound network calls.
 2. **Semantic Similarity Hit Rate**: Count of queries matched via Jaccard/embedding similarity above threshold
-   ($> 0.85$).
+   ($>
+   0.85$).
 3. **Short-Circuited Token Savings**: Cumulative API prompt and completion tokens avoided ($100\%$ discount on hits).
 4. **Staleness / Error Rate**: Frequency of cache invalidations or faulty tool actions caused by replaying previous
    responses.
@@ -534,12 +535,14 @@ _Note on Ephemeral vs Persistent Context Overhead_: In multi-turn chat architect
 ($O(N)$ or $O(N^2)$ prompt accumulation), making turns saved toward the end of an execution trajectory yield
 significantly higher token reductions than early or average turns. Because $\sum \text{Tokens}_{\text{with\_memory}}$
 already incorporates the injected memory tokens present in the trajectory's prompts, defining Net Tokens Saved as
-$\sum \text{Tokens}_{\text{cold\_start}} - \sum \text{Tokens}_{\text{with\_memory}}$ avoids double-counting the memory
+$\sum
+\text{Tokens}_{\text{cold\_start}} - \sum \text{Tokens}_{\text{with\_memory}}$ avoids double-counting the memory
 overhead. Meanwhile, Token ROI measures the efficiency ratio of net tokens saved per injected memory token.
 Additionally, when episodic memories are injected ephemerally (retrieved on-demand for a single turn or tool execution),
 $\sum \text{Tokens}_{\text{memory\_injected}}$ is incurred only once. Conversely, if injected into persistent system
 prompts or Turn-0 context, the memory tokens recur across all subsequent turns
-($N \times \text{Tokens}_{\text{memory\_injected}}$) unless amortized by provider prompt caching. The cumulative
+($N \times
+\text{Tokens}_{\text{memory\_injected}}$) unless amortized by provider prompt caching. The cumulative
 trajectory formula directly captures this distinction without relying on imprecise per-turn averages.
 
 #### Instrumentation:
@@ -559,7 +562,7 @@ trajectory formula directly captures this distinction without relying on impreci
 2. **Subagent Context Compression**: Token size of raw executor tool logs vs compressed summary returned to the
    architect.
 3. **Composite Financial Cost**: Total cost per completed task under Ringer vs a monolithic single-agent setup.
-4. **Trajectory Wall-Clock Time ($T_{\text{wall}}$)**: Total elapsed execution time across the trajectory to evaluate
+4. **Trajectory Wall-Clock Time ($T\_{\text{wall}}$)**: Total elapsed execution time across the trajectory to evaluate
    parallel subagent concurrency speedups versus inter-agent coordination overhead.
 
 #### Measurement Formula:
@@ -592,7 +595,8 @@ full completion rates.\_
 To ensure statistical rigor and eliminate non-deterministic path variance across frontier LLM trajectories (such as
 differing exploration paths or tool call sequences), benchmark evaluations must fix `temperature: 0.0`, configure a
 deterministic seed parameter (e.g., `seed: 42` for providers supporting deterministic sampling controls), and execute
-$N \ge 3$ iterations per task suite with workspace state resetting (`git clean -fdx` or sandbox container
+$N
+\ge 3$ iterations per task suite with workspace state resetting (`git clean -fdx` or sandbox container
 re-initialization) between runs. The unified scorecard reports sample mean values ($\mu$) and standard deviations
 ($\sigma$) across both baseline (unoptimized) and fully optimized runs on an identical standard task (e.g., executing a
 multi-file refactoring or bug fix). In addition to prompt tokens, cumulative output tokens are tracked explicitly to

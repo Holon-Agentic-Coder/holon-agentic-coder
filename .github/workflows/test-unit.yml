@@ -1,4 +1,4 @@
-name: CI
+name: Test - Unit
 
 on:
   push:
@@ -9,13 +9,22 @@ on:
     branches:
       - main
       - develop
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  test:
-    runs-on: ubuntu-latest
+  unit:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest ]
 
     steps:
       - name: Checkout repository
@@ -29,12 +38,7 @@ jobs:
           python-version: '3.13'
           enable-cache: true
 
-      - name: Lint and format check with Ruff
+      - name: Run unit tests
         run: |
-          uv run ruff check .
-          uv run ruff format --check .
-
-      - name: Run tests
-        run: |
-          uv lock --check
-          uv run pytest -m "not integration_test"
+          uv sync --locked
+          uv run pytest -v -l --tb=short -m "not integration_test"

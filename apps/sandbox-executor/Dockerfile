@@ -81,7 +81,7 @@ RUN --mount=type=cache,id=npm-codex,uid=1000,gid=1000,target=/home/holon/.npm \
 FROM holon-base AS agent-antigravity
 RUN --mount=type=cache,id=uv-antigravity,uid=1000,gid=1000,target=/home/holon/.cache/uv \
     --mount=type=cache,id=npm-antigravity,uid=1000,gid=1000,target=/home/holon/.npm \
-    curl -fsSL https://antigravity.google/cli/install.sh | bash
+    curl --proto '=https' --tlsv1.2 -fsSL --compressed https://antigravity.google/cli/install.sh -o /tmp/install.sh && bash /tmp/install.sh && rm -f /tmp/install.sh
 
 # --- Final Orchestrator Image ---
 FROM holon-base AS holon-orchestrator

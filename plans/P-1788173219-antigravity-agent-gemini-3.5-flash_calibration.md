@@ -51,6 +51,6 @@
 
 ## 4. Calibration Assessment
 
-Plan `P-1788173219` executed with high accuracy ($p\_success\_error = 0.10$, $impact\_error = 0.00$,
-$cost\_error = 1.00$). The post-execution calibration report completes the lifecycle evaluation for
+Plan `P-1788173219` executed with high accuracy ($p\_success\_error = 0.10$, $impact\_error = 0.00$, $cost\_error =
+1.00$). The post-execution calibration report completes the lifecycle evaluation for
 [PR #50](https://github.com/Holon-Agentic-Coder/holon-agentic-coder-ref/pull/50).

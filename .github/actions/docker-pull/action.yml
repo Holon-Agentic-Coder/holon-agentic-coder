@@ -1,0 +1,43 @@
+name: 'Pull from GHCR Mirror with Fallback'
+description: 'Tries to pull an image from the GHCR mirror. If not found, it mirrors it from the public registry first, then provides the image.'
+inputs:
+  image_name:
+    description: 'The original name of the image (e.g. mitmproxy/mitmproxy:12.2.3)'
+    required: true
+  github_token:
+    description: 'GitHub token for authentication'
+    required: true
+runs:
+  using: 'composite'
+  steps:
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ inputs.github_token }}
+
+    - name: Define image names
+      id: image_names
+      shell: bash
+      run: |
+        echo "mirrored_name=ghcr.io/${{ github.repository }}/${{ inputs.image_name }}" >> $GITHUB_OUTPUT
+
+    - name: Attempt to pull from GHCR mirror
+      id: pull_from_mirror
+      continue-on-error: true
+      shell: bash
+      run: docker pull ${{ steps.image_names.outputs.mirrored_name }}
+
+    - name: "Fallback: Pull from source and push to mirror"
+      if: steps.pull_from_mirror.outcome == 'failure'
+      shell: bash
+      run: |
+        echo "Image not found in mirror. Pulling from source and mirroring to GHCR..."
+        docker pull ${{ inputs.image_name }}
+        docker tag ${{ inputs.image_name }} ${{ steps.image_names.outputs.mirrored_name }}
+        docker push ${{ steps.image_names.outputs.mirrored_name }}
+
+    - name: Re-tag image to original name
+      shell: bash
+      run: docker tag ${{ steps.image_names.outputs.mirrored_name }} ${{ inputs.image_name }}

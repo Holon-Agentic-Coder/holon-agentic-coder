@@ -1,2 +1,4 @@
 .subagent/
 holon-coherence/
+.pytest_cache/
+.venv/

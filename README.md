@@ -809,6 +809,20 @@ uv run holon --help
 uv pip install -e ./apps/sandbox-executor
 ```
 
+#### 5. Developer Makefile Workflows
+
+A `Makefile` is provided at the repository root to standardize common contributor workflows:
+
+```bash
+make help                # Display all available targets and descriptions
+make check-prerequisites # Verify installed tools (uv, git, docker, npx)
+make check               # Run all static linting, formatting, and lockfile checks
+make test                # Run unit tests (excluding container integration tests)
+make test-integration    # Build sandbox images and run container integration tests
+make format              # Automatically format codebase with Ruff
+make clean               # Remove transient build and test caches
+```
+
 > [!NOTE] `--token-reduce` is available on `plan` and `execute` (not on `intent`) and is currently **experimental / not
 > yet functional** (Phase 2 addon is missing, so runs degrade to direct egress). See
 > [Running Plan Generation](docs/sandbox/create_plan.md) and [Running Execution](docs/sandbox/execute_plan.md) for the

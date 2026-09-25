@@ -4,10 +4,9 @@
 DETECTED_OS := $(shell uname -s)
 DETECTED_ARCH := $(shell uname -m)
 
-# CI Detection
-CI ?= false
+PYTEST_ARGS ?=
 
-.PHONY: help setup test test-integration lint lint-docs format format-docs clean build-images check-prerequisites
+.PHONY: help setup test test-integration check lint lint-docs format format-docs clean distclean build-images check-prerequisites
 
 help:
 	@echo "Usage: make [target]"
@@ -16,13 +15,15 @@ help:
 	@printf "  %-22s %s\n" "setup" "Synchronize dependencies using uv sync."
 	@printf "  %-22s %s\n" "test" "Run unit tests (excluding container integration tests)."
 	@printf "  %-22s %s\n" "test-integration" "Build images and run integration test suite."
+	@printf "  %-22s %s\n" "check" "Run all static checks (lint and lint-docs)."
 	@printf "  %-22s %s\n" "lint" "Run Ruff linter and formatting check."
 	@printf "  %-22s %s\n" "lint-docs" "Check Markdown documentation formatting with Prettier."
 	@printf "  %-22s %s\n" "format" "Auto-format codebase with Ruff."
 	@printf "  %-22s %s\n" "format-docs" "Auto-format Markdown documentation with Prettier."
-	@printf "  %-22s %s\n" "clean" "Remove transient build artifacts, caches, and virtualenvs."
+	@printf "  %-22s %s\n" "clean" "Remove transient build artifacts, caches, and logs."
+	@printf "  %-22s %s\n" "distclean" "Clean transient artifacts and remove .venv virtual environment."
 	@printf "  %-22s %s\n" "build-images" "Build all sandbox Docker images."
-	@printf "  %-22s %s\n" "check-prerequisites" "Verify presence of required tools (uv, git, docker)."
+	@printf "  %-22s %s\n" "check-prerequisites" "Verify presence of required tools (uv, git, docker, npx)."
 	@printf "  %-22s %s\n" "help" "Show this help message."
 	@echo ""
 
@@ -30,11 +31,13 @@ setup:
 	uv sync
 
 test:
-	uv run pytest -m "not integration_test"
+	uv run pytest -m "not integration_test" $(PYTEST_ARGS)
 
 test-integration:
 	./apps/sandbox-executor/build_all_images.sh --output-log
 	uv run pytest -m "integration_test"
+
+check: lint lint-docs
 
 lint:
 	uv lock --check
@@ -45,14 +48,17 @@ lint-docs:
 	npx --yes prettier@3.8.4 --check "**/*.md"
 
 format:
-	uv run ruff format .
 	uv run ruff check --fix .
+	uv run ruff format .
 
 format-docs:
 	npx --yes prettier@3.8.4 --write "**/*.md"
 
 clean:
 	find . -type d \( -name "__pycache__" -o -name ".pytest_cache" -o -name ".ruff_cache" -o -name "*.egg-info" -o -name "build" -o -name "dist" \) -not -path "*/.venv/*" -exec rm -rf {} +
+	rm -f build_all_images.log
+
+distclean: clean
 	rm -rf .venv
 
 build-images:
@@ -63,6 +69,11 @@ check-prerequisites:
 	@command -v git >/dev/null 2>&1 || (echo "❌ git not found" && exit 1)
 	@command -v uv >/dev/null 2>&1 || (echo "❌ uv not found" && exit 1)
 	@echo "✅ git and uv are installed."
+	@if command -v npx >/dev/null 2>&1; then \
+		echo "✅ npx is installed."; \
+	else \
+		echo "⚠️  npx not found (required for lint-docs and format-docs)."; \
+	fi
 	@if command -v docker >/dev/null 2>&1; then \
 		echo "✅ docker is installed."; \
 	else \

@@ -57,9 +57,11 @@ get_timestamp() {
     formatted_sec="$(date -d "@$sec" +"%Y-%m-%d %H:%M:%S" 2>/dev/null || date -r "$sec" +"%Y-%m-%d %H:%M:%S" 2>/dev/null || date +"%Y-%m-%d %H:%M:%S")"
     ts_val="${formatted_sec}.${usec:0:3}"
   else
-    ts_val="$(date +"%Y-%m-%d %H:%M:%S")"
+    if ! printf -v ts_val '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null || [[ -z "$ts_val" ]]; then
+      ts_val="$(date +"%Y-%m-%d %H:%M:%S")"
+    fi
   fi
-  eval "$target_var=\"\$ts_val\""
+  printf -v "$target_var" "%s" "$ts_val"
 }
 
 # Helper function to print log lines from stdin with timestamps in real-time

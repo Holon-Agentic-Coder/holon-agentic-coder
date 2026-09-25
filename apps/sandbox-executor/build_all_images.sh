@@ -47,15 +47,19 @@ done
 
 # Helper function to generate a timestamp (written to the variable name passed as the first argument)
 get_timestamp() {
-  local -n ref=$1
+  local target_var="$1"
+  local ts_val=""
   if [[ -n "${EPOCHREALTIME:-}" ]]; then
     local epoch="$EPOCHREALTIME"
     local sec="${epoch%.*}"
     local usec="${epoch#*.}"
-    printf -v ref "%(%Y-%m-%d %H:%M:%S)T.%03d" "$sec" "$((10#${usec:0:3}))"
+    local formatted_sec
+    formatted_sec="$(date -d "@$sec" +"%Y-%m-%d %H:%M:%S" 2>/dev/null || date -r "$sec" +"%Y-%m-%d %H:%M:%S" 2>/dev/null || date +"%Y-%m-%d %H:%M:%S")"
+    ts_val="${formatted_sec}.${usec:0:3}"
   else
-    printf -v ref "%(%Y-%m-%d %H:%M:%S)T" -1
+    ts_val="$(date +"%Y-%m-%d %H:%M:%S")"
   fi
+  eval "$target_var=\"\$ts_val\""
 }
 
 # Helper function to print log lines from stdin with timestamps in real-time

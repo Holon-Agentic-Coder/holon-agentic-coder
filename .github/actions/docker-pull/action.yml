@@ -7,6 +7,10 @@ inputs:
   github_token:
     description: 'GitHub token for authentication'
     required: true
+outputs:
+  mirrored_name:
+    description: 'The lowercase GHCR mirrored image name'
+    value: ${{ steps.image_names.outputs.mirrored_name }}
 runs:
   using: 'composite'
   steps:
@@ -20,24 +24,37 @@ runs:
     - name: Define image names
       id: image_names
       shell: bash
+      env:
+        GH_REPO: ${{ github.repository }}
+        RAW_IMAGE_NAME: ${{ inputs.image_name }}
       run: |
-        echo "mirrored_name=ghcr.io/${{ github.repository }}/${{ inputs.image_name }}" >> $GITHUB_OUTPUT
+        REPO_LOWER=$(echo "$GH_REPO" | tr '[:upper:]' '[:lower:]')
+        IMAGE_LOWER=$(echo "$RAW_IMAGE_NAME" | tr '[:upper:]' '[:lower:]')
+        echo "mirrored_name=ghcr.io/${REPO_LOWER}/${IMAGE_LOWER}" >> "$GITHUB_OUTPUT"
 
     - name: Attempt to pull from GHCR mirror
       id: pull_from_mirror
       continue-on-error: true
       shell: bash
-      run: docker pull ${{ steps.image_names.outputs.mirrored_name }}
+      env:
+        MIRRORED_NAME: ${{ steps.image_names.outputs.mirrored_name }}
+      run: docker pull "$MIRRORED_NAME"
 
     - name: "Fallback: Pull from source and push to mirror"
       if: steps.pull_from_mirror.outcome == 'failure'
       shell: bash
+      env:
+        IMAGE_NAME: ${{ inputs.image_name }}
+        MIRRORED_NAME: ${{ steps.image_names.outputs.mirrored_name }}
       run: |
         echo "Image not found in mirror. Pulling from source and mirroring to GHCR..."
-        docker pull ${{ inputs.image_name }}
-        docker tag ${{ inputs.image_name }} ${{ steps.image_names.outputs.mirrored_name }}
-        docker push ${{ steps.image_names.outputs.mirrored_name }}
+        docker pull "$IMAGE_NAME"
+        docker tag "$IMAGE_NAME" "$MIRRORED_NAME"
+        docker push "${MIRRORED_NAME}" || echo "::warning::Failed to push image to GHCR mirror; continuing with local image"
 
     - name: Re-tag image to original name
       shell: bash
-      run: docker tag ${{ steps.image_names.outputs.mirrored_name }} ${{ inputs.image_name }}
+      env:
+        IMAGE_NAME: ${{ inputs.image_name }}
+        MIRRORED_NAME: ${{ steps.image_names.outputs.mirrored_name }}
+      run: docker tag "$MIRRORED_NAME" "$IMAGE_NAME"

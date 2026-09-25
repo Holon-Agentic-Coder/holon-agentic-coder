@@ -7,7 +7,7 @@ DETECTED_ARCH := $(shell uname -m)
 # CI Detection
 CI ?= false
 
-.PHONY: help setup test test-integration lint format clean build-images check-prerequisites
+.PHONY: help setup test test-integration lint lint-docs format format-docs clean build-images check-prerequisites
 
 help:
 	@echo "Usage: make [target]"
@@ -17,7 +17,9 @@ help:
 	@printf "  %-22s %s\n" "test" "Run unit tests (excluding container integration tests)."
 	@printf "  %-22s %s\n" "test-integration" "Build images and run integration test suite."
 	@printf "  %-22s %s\n" "lint" "Run Ruff linter and formatting check."
+	@printf "  %-22s %s\n" "lint-docs" "Check Markdown documentation formatting with Prettier."
 	@printf "  %-22s %s\n" "format" "Auto-format codebase with Ruff."
+	@printf "  %-22s %s\n" "format-docs" "Auto-format Markdown documentation with Prettier."
 	@printf "  %-22s %s\n" "clean" "Remove transient build artifacts, caches, and virtualenvs."
 	@printf "  %-22s %s\n" "build-images" "Build all sandbox Docker images."
 	@printf "  %-22s %s\n" "check-prerequisites" "Verify presence of required tools (uv, git, docker)."
@@ -39,9 +41,15 @@ lint:
 	uv run ruff check .
 	uv run ruff format --check .
 
+lint-docs:
+	npx --yes prettier@3.8.4 --check "**/*.md"
+
 format:
 	uv run ruff format .
 	uv run ruff check --fix .
+
+format-docs:
+	npx --yes prettier@3.8.4 --write "**/*.md"
 
 clean:
 	find . -type d \( -name "__pycache__" -o -name ".pytest_cache" -o -name ".ruff_cache" -o -name "*.egg-info" -o -name "build" -o -name "dist" \) -not -path "*/.venv/*" -exec rm -rf {} +

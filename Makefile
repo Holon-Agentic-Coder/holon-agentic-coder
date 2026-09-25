@@ -45,6 +45,7 @@ check: lint lint-docs
 
 lint:
 	uv lock --check
+	git diff --exit-code uv.lock
 	uv run ruff check .
 	uv run ruff format --check .
 
@@ -61,7 +62,7 @@ format-docs:
 	npx --yes prettier@3.8.4 --write "**/*.md"
 
 clean:
-	find . -path "./.git" -prune -o -path "./.venv" -prune -o -type d \( -name "__pycache__" -o -name ".pytest_cache" -o -name ".ruff_cache" \) -exec rm -rf {} +
+	find . -name ".git" -prune -o -path "./.venv" -prune -o -type d \( -name "__pycache__" -o -name ".pytest_cache" -o -name ".ruff_cache" -o -name "*.egg-info" -o -name "build" -o -name "dist" -o -name ".mypy_cache" \) -exec rm -rf {} +
 	rm -rf .coverage coverage.xml htmlcov apps/sandbox-executor/build_all_images.log build_all_images.log
 
 distclean: clean

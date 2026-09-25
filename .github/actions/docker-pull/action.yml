@@ -1,12 +1,13 @@
 name: 'Pull from GHCR Mirror with Fallback'
-description: 'Tries to pull an image from the GHCR mirror. If not found, it mirrors it from the public registry first, then provides the image (requires packages: write permissions for mirror-pushing).'
+description: 'Tries to pull an image from the GHCR mirror. If not found, it mirrors it from the public registry first, then provides the image. Calling workflows should pin immutable tags to prevent stale vulnerability caching.'
 inputs:
   image_name:
-    description: 'The original name of the image (e.g. mitmproxy/mitmproxy:12.2.3 or quay.io/org/repo:tag)'
+    description: 'The original name and tag of the image (e.g. mitmproxy/mitmproxy:12.2.3 or quay.io/org/repo:tag; immutable tags required)'
     required: true
   github_token:
     description: 'GitHub token for authentication'
-    required: true
+    default: ${{ github.token }}
+    required: false
 outputs:
   mirrored_name:
     description: 'The lowercase GHCR mirrored image name'

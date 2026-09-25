@@ -47,7 +47,7 @@ done
 
 # Helper function to generate a timestamp (written to the variable name passed as the first argument)
 get_timestamp() {
-  local _target_var="$1"
+  local _target_var="${1:-}"
   local _ts_val=""
   if [[ -n "${EPOCHREALTIME:-}" ]]; then
     local _epoch="$EPOCHREALTIME"
@@ -63,7 +63,11 @@ get_timestamp() {
       _ts_val="$(date +"%Y-%m-%d %H:%M:%S")"
     fi
   fi
-  printf -v "$_target_var" "%s" "$_ts_val"
+  if [[ -n "$_target_var" ]]; then
+    printf -v "$_target_var" "%s" "$_ts_val"
+  else
+    echo "$_ts_val"
+  fi
 }
 
 # Helper function to print log lines from stdin with timestamps in real-time

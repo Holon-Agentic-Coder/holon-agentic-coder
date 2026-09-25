@@ -815,7 +815,8 @@ A `Makefile` is provided at the repository root to standardize common contributo
 
 ```bash
 make help                # Display all available targets and descriptions
-make check-prerequisites # Verify installed tools (uv, git, docker, npx)
+make check-prerequisites # Verify installed tools (GNU Make, uv, npx, Docker CLI, Buildx, daemon)
+make check-docker        # Check Docker installation, Buildx, and daemon running status
 make setup               # Synchronize dependencies with uv sync
 make check               # Run all static linting, formatting, and lockfile checks
 make test                # Run unit tests (excluding container integration tests)

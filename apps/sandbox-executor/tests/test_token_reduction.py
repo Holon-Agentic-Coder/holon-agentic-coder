@@ -2437,6 +2437,7 @@ def test_dump_wire_transaction_and_flush(tmp_path):
 def test_cli_mitm_web_configuration(host_paths, monkeypatch):
     monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
     monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli.socket.socket, "connect_ex", lambda *args, **kwargs: 1)
     fake = FakeDocker()
     monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
 
@@ -2512,6 +2513,7 @@ def test_extract_detailed_token_counts_sse_streams():
 def test_cli_mitm_web_custom_port(host_paths, monkeypatch):
     monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
     monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli.socket.socket, "connect_ex", lambda *args, **kwargs: 1)
     monkeypatch.setenv("HOLON_MITM_WEB_PORT", "9090")
     fake = FakeDocker()
     monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
@@ -3377,6 +3379,7 @@ def test_mitm_web_password_support(host_paths, monkeypatch):
     monkeypatch.setenv("HOLON_MITM_WEB_PASSWORD", "secretpass123")
     monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
     monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli.socket.socket, "connect_ex", lambda *args, **kwargs: 1)
     fake = FakeDocker()
     monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
 

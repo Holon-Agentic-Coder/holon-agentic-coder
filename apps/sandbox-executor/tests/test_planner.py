@@ -1,4 +1,5 @@
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -156,11 +157,18 @@ class TestPlanner(unittest.TestCase):
         # Directly modify and restore sys.argv
         old_argv = sys.argv
         sys.argv = test_args
-        try:
-            with patch("builtins.open", side_effect=mock_open_impl):
-                planner.main()
-        finally:
-            sys.argv = old_argv
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            try:
+                with (
+                    patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
+                    patch("sandbox_executor.entrypoint.planner.get_workspace_dir", return_value=tmp_dir),
+                    patch("builtins.open", side_effect=mock_open_impl),
+                ):
+                    planner.main()
+            finally:
+                sys.argv = old_argv
+
+            mock_rmtree.assert_called_once_with(tmp_dir, raise_on_error=True)
 
         self.assertGreaterEqual(mock_run.call_count, 5)
         called_cmds = [" ".join(call[0][0]) for call in mock_run.call_args_list]
@@ -233,13 +241,18 @@ class TestPlanner(unittest.TestCase):
         # Directly modify and restore sys.argv
         old_argv = sys.argv
         sys.argv = test_args
-        try:
-            with patch("builtins.open", side_effect=mock_open_impl):
-                with self.assertRaises(SystemExit) as cm:
-                    planner.main()
-                self.assertEqual(cm.exception.code, 1)
-        finally:
-            sys.argv = old_argv
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            try:
+                with (
+                    patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
+                    patch("sandbox_executor.entrypoint.planner.get_workspace_dir", return_value=tmp_dir),
+                    patch("builtins.open", side_effect=mock_open_impl),
+                ):
+                    with self.assertRaises(SystemExit) as cm:
+                        planner.main()
+                    self.assertEqual(cm.exception.code, 1)
+            finally:
+                sys.argv = old_argv
 
     @patch("subprocess.run")
     @patch("os.path.exists")
@@ -318,36 +331,41 @@ class TestPlanner(unittest.TestCase):
 
             return mock_exists_impl
 
-        for model_name, expected_safe_model in test_cases:
-            with self.subTest(model_name=model_name):
-                mock_run.reset_mock()
-                test_args = ["planner.py", "I-12345/_", "pi-agent", model_name]
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
+            patch("sandbox_executor.entrypoint.planner.get_workspace_dir", return_value=tmp_dir),
+        ):
+            for model_name, expected_safe_model in test_cases:
+                with self.subTest(model_name=model_name):
+                    mock_run.reset_mock()
+                    test_args = ["planner.py", "I-12345/_", "pi-agent", model_name]
 
-                file_contents = {}
-                mock_exists.side_effect = _make_mock_exists()
-                mock_getsize.return_value = 100
+                    file_contents = {}
+                    mock_exists.side_effect = _make_mock_exists()
+                    mock_getsize.return_value = 100
 
-                mock_run_result = MagicMock()
-                mock_run_result.returncode = 0
-                mock_run_result.stdout = "Successful Agent Run Output"
-                mock_run.return_value = mock_run_result
+                    mock_run_result = MagicMock()
+                    mock_run_result.returncode = 0
+                    mock_run_result.stdout = "Successful Agent Run Output"
+                    mock_run.return_value = mock_run_result
 
-                old_argv = sys.argv
-                sys.argv = test_args
-                try:
-                    with patch("builtins.open", side_effect=_make_mock_open(intent_data, file_contents)):
-                        planner.main()
-                finally:
-                    sys.argv = old_argv
+                    old_argv = sys.argv
+                    sys.argv = test_args
+                    try:
+                        with patch("builtins.open", side_effect=_make_mock_open(intent_data, file_contents)):
+                            planner.main()
+                    finally:
+                        sys.argv = old_argv
 
-                # Check git branch checkout command — use explicit list assertion for a clear
-                # AssertionError (not StopIteration) when no matching command is found.
-                called_cmds = [" ".join(call[0][0]) for call in mock_run.call_args_list]
-                checkout_cmds = [cmd for cmd in called_cmds if "git checkout -b" in cmd]
-                self.assertTrue(checkout_cmds, f"No 'git checkout -b' command found in: {called_cmds}")
-                checkout_cmd = checkout_cmds[0]
+                    # Check git branch checkout command — use explicit list assertion for a clear
+                    # AssertionError (not StopIteration) when no matching command is found.
+                    called_cmds = [" ".join(call[0][0]) for call in mock_run.call_args_list]
+                    checkout_cmds = [cmd for cmd in called_cmds if "git checkout -b" in cmd]
+                    self.assertTrue(checkout_cmds, f"No 'git checkout -b' command found in: {called_cmds}")
+                    checkout_cmd = checkout_cmds[0]
 
-                self.assertIn(expected_safe_model, checkout_cmd)
+                    self.assertIn(expected_safe_model, checkout_cmd)
 
     @patch("subprocess.run")
     @patch("os.path.exists")
@@ -400,13 +418,18 @@ class TestPlanner(unittest.TestCase):
 
         old_argv = sys.argv
         sys.argv = test_args
-        try:
-            with patch("builtins.open", side_effect=mock_open_impl):
-                with self.assertRaises(SystemExit) as cm:
-                    planner.main()
-                self.assertEqual(cm.exception.code, 1)
-        finally:
-            sys.argv = old_argv
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            try:
+                with (
+                    patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
+                    patch("sandbox_executor.entrypoint.planner.get_workspace_dir", return_value=tmp_dir),
+                    patch("builtins.open", side_effect=mock_open_impl),
+                ):
+                    with self.assertRaises(SystemExit) as cm:
+                        planner.main()
+                    self.assertEqual(cm.exception.code, 1)
+            finally:
+                sys.argv = old_argv
 
 
 if __name__ == "__main__":

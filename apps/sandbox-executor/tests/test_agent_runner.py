@@ -228,6 +228,11 @@ class TestAgentRunner(unittest.TestCase):
 
         actually exist and are runnable inside the corresponding real Docker images.
         """
+        import shutil
+
+        if not shutil.which("docker"):
+            self.skipTest("Docker is not available in test environment.")
+
         agent_image_mapping = {
             "pi": "holon/agent-pi",
             "claude": "holon/agent-claude",
@@ -266,6 +271,10 @@ class TestAgentRunner(unittest.TestCase):
         inside each real built Docker image for all supported agents.
         """
         import re
+        import shutil
+
+        if not shutil.which("docker"):
+            self.skipTest("Docker is not available in test environment.")
 
         agent_image_mapping = {
             "pi": "holon/agent-pi",
@@ -442,9 +451,11 @@ class TestWorkspaceDirAndCleanup(unittest.TestCase):
 
         from sandbox_executor.agent_runner import get_workspace_dir
 
-        with patch.dict(os.environ, {"HOLON_IN_SANDBOX": "1"}, clear=True):
-            expected = os.path.expanduser("~/.holon-sandbox/workspace")
-            self.assertEqual(get_workspace_dir(), expected)
+        with (
+            patch.dict(os.environ, {"HOLON_IN_SANDBOX": "1"}, clear=True),
+            patch("os.path.expanduser", side_effect=lambda p: p.replace("~", "/fake/home")),
+        ):
+            self.assertEqual(get_workspace_dir(), "/fake/home/.holon-sandbox/workspace")
 
     def test_get_workspace_dir_default(self):
         """Test get_workspace_dir returns default repo path outside sandbox."""
@@ -453,9 +464,12 @@ class TestWorkspaceDirAndCleanup(unittest.TestCase):
 
         from sandbox_executor.agent_runner import get_workspace_dir
 
-        with patch.dict(os.environ, {}, clear=True), patch("os.path.exists", return_value=False):
-            expected = os.path.expanduser("~/.holon/repo")
-            self.assertEqual(get_workspace_dir(), expected)
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("os.path.exists", return_value=False),
+            patch("os.path.expanduser", side_effect=lambda p: p.replace("~", "/fake/home")),
+        ):
+            self.assertEqual(get_workspace_dir(), "/fake/home/.holon/repo")
 
     def test_cleanup_repo_dir_nonexistent(self):
         """Test cleanup_repo_dir does nothing if directory does not exist."""
@@ -472,3 +486,26 @@ class TestWorkspaceDirAndCleanup(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             cleanup_repo_dir("/etc", raise_on_error=True)
+
+    def test_cleanup_invariant_descendant_of_fixture(self):
+        """Test invariant: cleanup operations only operate within designated fixture path."""
+        import os
+        import tempfile
+        from unittest.mock import patch
+
+        from sandbox_executor.agent_runner import _rmtree, cleanup_repo_dir
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            test_subdir = os.path.join(tmp_dir, "test_repo")
+            os.makedirs(test_subdir, exist_ok=True)
+            with open(os.path.join(test_subdir, "file.txt"), "w") as f:
+                f.write("test")
+
+            with patch("sandbox_executor.agent_runner._rmtree", wraps=_rmtree) as spy_rmtree:
+                cleanup_repo_dir(test_subdir, raise_on_error=True)
+                for call in spy_rmtree.call_args_list:
+                    cleaned = os.path.abspath(call.args[0])
+                    self.assertTrue(
+                        cleaned.startswith(os.path.abspath(tmp_dir)),
+                        f"Invariant violated: cleanup called on {cleaned} outside {tmp_dir}",
+                    )

@@ -1,4 +1,6 @@
 import json
+import os
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -40,8 +42,15 @@ class TestIntentCreator(unittest.TestCase):
         mock_run_result.returncode = 0
         mock_run.return_value = mock_run_result
 
-        with patch("builtins.open", side_effect=mock_open_impl):
-            intent_creator.main()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with (
+                patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
+                patch("sandbox_executor.entrypoint.intent_creator.get_workspace_dir", return_value=tmp_dir),
+                patch("builtins.open", side_effect=mock_open_impl),
+            ):
+                intent_creator.main()
+
+            mock_cleanup.assert_called_once_with(tmp_dir, raise_on_error=True)
 
         # Check that subprocess.run was called for git operations
         self.assertTrue(mock_run.call_count >= 5)
@@ -87,8 +96,15 @@ class TestIntentCreator(unittest.TestCase):
         mock_run_result.returncode = 0
         mock_run.return_value = mock_run_result
 
-        with patch("builtins.open", side_effect=mock_open_impl):
-            intent_creator.main()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with (
+                patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
+                patch("sandbox_executor.entrypoint.intent_creator.get_workspace_dir", return_value=tmp_dir),
+                patch("builtins.open", side_effect=mock_open_impl),
+            ):
+                intent_creator.main()
+
+            mock_cleanup.assert_called_once_with(tmp_dir, raise_on_error=True)
 
         # Check that intents.jsonl was written to
         written_file_path = next(k for k in file_contents if "intents.jsonl" in k)
@@ -134,8 +150,15 @@ class TestIntentCreator(unittest.TestCase):
         mock_run_result.returncode = 0
         mock_run.return_value = mock_run_result
 
-        with patch("builtins.open", side_effect=mock_open_impl):
-            intent_creator.main()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with (
+                patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
+                patch("sandbox_executor.entrypoint.intent_creator.get_workspace_dir", return_value=tmp_dir),
+                patch("builtins.open", side_effect=mock_open_impl),
+            ):
+                intent_creator.main()
+
+            mock_cleanup.assert_called_once_with(tmp_dir, raise_on_error=True)
 
         # Check that subprocess.run was called for git clone/checkout with 'develop'
         self.assertTrue(mock_run.call_count >= 5)
@@ -176,8 +199,15 @@ class TestIntentCreator(unittest.TestCase):
         mock_run_result.returncode = 0
         mock_run.return_value = mock_run_result
 
-        with patch("builtins.open", side_effect=mock_open_impl):
-            intent_creator.main()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with (
+                patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
+                patch("sandbox_executor.entrypoint.intent_creator.get_workspace_dir", return_value=tmp_dir),
+                patch("builtins.open", side_effect=mock_open_impl),
+            ):
+                intent_creator.main()
+
+            mock_cleanup.assert_called_once_with(tmp_dir, raise_on_error=True)
 
         # Check that intents.jsonl was written to
         written_file_path = next(k for k in file_contents if "intents.jsonl" in k)

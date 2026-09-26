@@ -1,11 +1,24 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
 
 import pytest
+
+from tests.hermetic_fixtures import relax_bind_mount_permissions, write_trusted_gitconfig
+
+
+def _is_docker_available() -> bool:
+    if not shutil.which("docker"):
+        return False
+    try:
+        res = subprocess.run(["docker", "info"], capture_output=True, timeout=5)
+        return res.returncode == 0
+    except Exception:
+        return False
 
 
 @pytest.mark.integration_test
@@ -14,6 +27,9 @@ class TestIntentCreatorIntegration(unittest.TestCase):
         """Test that running the intent creator without mounting intent.json
         exits with error code 1.
         """
+        if not _is_docker_available():
+            self.skipTest("Docker daemon is not available in test environment.")
+
         cmd = ["docker", "run", "--rm", "-e", "HOLON_ROLE=intent-creator", "holon/orchestrator"]
 
         try:
@@ -26,14 +42,36 @@ class TestIntentCreatorIntegration(unittest.TestCase):
 
     def test_intent_creator_docker_execution(self):
         """Test that running the orchestrator with the intent-creator role successfully
-        creates the intent branch and appends the intent to the ledger.
+        creates the intent branch and appends the intent to the ledger using a local bare repository.
         """
-        ssh_dir = os.path.expanduser("~/.ssh")
-        if not os.path.exists(ssh_dir):
-            self.skipTest("SSH directory ~/.ssh not found, skipping integration test.")
+        if not _is_docker_available():
+            self.skipTest("Docker daemon is not available in test environment.")
 
-        # Create a temp directory for our intent.json
         with tempfile.TemporaryDirectory() as tmp_dir:
+            gitconfig_path = write_trusted_gitconfig(tmp_dir)
+            bare_repo_dir = os.path.join(tmp_dir, "remote.git")
+            subprocess.run(["git", "init", "--bare", bare_repo_dir], check=True, capture_output=True)
+
+            # Seed the bare repository with an initial commit on main
+            seed_dir = os.path.join(tmp_dir, "seed_repo")
+            subprocess.run(["git", "init", "-b", "main", seed_dir], check=True, capture_output=True)
+            subprocess.run(["git", "-C", seed_dir, "config", "user.email", "test@holon.com"], check=True)
+            subprocess.run(["git", "-C", seed_dir, "config", "user.name", "Test User"], check=True)
+
+            ledger_dir = os.path.join(seed_dir, "holon-knowledge", "ledger")
+            os.makedirs(ledger_dir, exist_ok=True)
+            with open(os.path.join(ledger_dir, "intents.jsonl"), "w") as f:
+                f.write("")
+
+            subprocess.run(["git", "-C", seed_dir, "add", "."], check=True, capture_output=True)
+            subprocess.run(["git", "-C", seed_dir, "commit", "-m", "init"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", seed_dir, "remote", "add", "origin", bare_repo_dir], check=True)
+            subprocess.run(["git", "-C", seed_dir, "push", "origin", "main"], check=True, capture_output=True)
+
+            # The container pushes back into this bare repository; on Linux CI its uid differs
+            # from the fixture owner, so the fixture must be group/world writable.
+            relax_bind_mount_permissions(bare_repo_dir)
+
             intent_json_path = os.path.join(tmp_dir, "intent.json")
             intent_data = {
                 "slug": "test-intent-integration",
@@ -48,18 +86,23 @@ class TestIntentCreatorIntegration(unittest.TestCase):
                 "docker",
                 "run",
                 "--rm",
+                "--network",
+                "none",
                 "-e",
                 "HOLON_ROLE=intent-creator",
                 "-e",
-                "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=no",
+                "HOLON_REPO_URL=/mock_remote.git",
+                "-e",
+                "GIT_CONFIG_GLOBAL=/tmp/holon-test.gitconfig",
                 "-v",
-                f"{ssh_dir}:/home/holon/.ssh:ro",
+                f"{gitconfig_path}:/tmp/holon-test.gitconfig:ro",
+                "-v",
+                f"{bare_repo_dir}:/mock_remote.git",
                 "-v",
                 f"{intent_json_path}:/tmp/intent.json",
                 "holon/orchestrator",
             ]
 
-            # Run docker run (with a generous 60-second timeout to allow cloning and pushing)
             try:
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
             except subprocess.TimeoutExpired:
@@ -74,7 +117,6 @@ class TestIntentCreatorIntegration(unittest.TestCase):
             )
 
             # Parse the branch name from stdout
-            # e.g., "Intent branch 'I-1782654790-test-intent-integration/_' created and intent logged."
             match = re.search(
                 r"Intent branch '(I-\d+-test-intent-integration/_)' created and intent logged", result.stdout
             )
@@ -82,20 +124,14 @@ class TestIntentCreatorIntegration(unittest.TestCase):
 
             intent_branch = match.group(1)
 
-            # Fetch from origin to sync the new remote branch
-            subprocess.run(["git", "fetch", "origin"], capture_output=True)
-
-            # Verify the remote branch contains the intents ledger file and our intent
-            show_cmd = ["git", "show", f"origin/{intent_branch}:holon-knowledge/ledger/intents.jsonl"]
+            # Verify the remote branch contains the intents ledger file and our intent from local bare repo
+            show_cmd = ["git", "-C", bare_repo_dir, "show", f"{intent_branch}:holon-knowledge/ledger/intents.jsonl"]
             show_result = subprocess.run(show_cmd, capture_output=True, text=True)
-
-            # Clean up: Delete the remote branch from origin
-            subprocess.run(["git", "push", "origin", "--delete", intent_branch], capture_output=True)
 
             self.assertEqual(
                 show_result.returncode,
                 0,
-                f"Failed to show intents ledger from branch origin/{intent_branch}. Stderr:\n{show_result.stderr}",
+                f"Failed to show intents ledger from branch {intent_branch}. Stderr:\n{show_result.stderr}",
             )
 
             # Verify the ledger contains our intent JSON

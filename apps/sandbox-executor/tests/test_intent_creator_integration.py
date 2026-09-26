@@ -8,6 +8,8 @@ import unittest
 
 import pytest
 
+from tests.hermetic_fixtures import relax_bind_mount_permissions, write_trusted_gitconfig
+
 
 def _is_docker_available() -> bool:
     if not shutil.which("docker"):
@@ -46,11 +48,7 @@ class TestIntentCreatorIntegration(unittest.TestCase):
             self.skipTest("Docker daemon is not available in test environment.")
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # Git refuses to use a repository mounted from the host unless it is declared trusted;
-            # the container runs as uid 1000 while the host temp dir is owned by the CI user.
-            gitconfig_path = os.path.join(tmp_dir, "gitconfig")
-            with open(gitconfig_path, "w", encoding="utf-8") as gf:
-                gf.write("[safe]\n\tdirectory = /mock_remote.git\n")
+            gitconfig_path = write_trusted_gitconfig(tmp_dir)
             bare_repo_dir = os.path.join(tmp_dir, "remote.git")
             subprocess.run(["git", "init", "--bare", bare_repo_dir], check=True, capture_output=True)
 
@@ -69,6 +67,10 @@ class TestIntentCreatorIntegration(unittest.TestCase):
             subprocess.run(["git", "-C", seed_dir, "commit", "-m", "init"], check=True, capture_output=True)
             subprocess.run(["git", "-C", seed_dir, "remote", "add", "origin", bare_repo_dir], check=True)
             subprocess.run(["git", "-C", seed_dir, "push", "origin", "main"], check=True, capture_output=True)
+
+            # The container pushes back into this bare repository; on Linux CI its uid differs
+            # from the fixture owner, so the fixture must be group/world writable.
+            relax_bind_mount_permissions(bare_repo_dir)
 
             intent_json_path = os.path.join(tmp_dir, "intent.json")
             intent_data = {

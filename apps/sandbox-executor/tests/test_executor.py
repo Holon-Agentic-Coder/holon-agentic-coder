@@ -468,6 +468,12 @@ class TestExecutor(unittest.TestCase):
                 executor.main()
 
             mock_rmtree.assert_any_call(default_dir)
+            for call_args in mock_rmtree.call_args_list:
+                cleaned_path = os.path.abspath(call_args.args[0])
+                self.assertTrue(
+                    cleaned_path.startswith(os.path.abspath(tmp_dir)),
+                    f"Invariant violated: _rmtree called on {cleaned_path} outside fixture {tmp_dir}",
+                )
 
             mock_run_cmd_args = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
             self.assertTrue(any("add" in cmd and "-A" in cmd for cmd in mock_run_cmd_args))
@@ -496,21 +502,32 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    @patch("sandbox_executor.agent_runner.os.path.expanduser")
     @patch("sandbox_executor.agent_runner._rmtree")
     @patch("sandbox_executor.agent_runner.os.path.lexists", return_value=True)
     @patch("sandbox_executor.agent_runner.os.path.ismount", return_value=False)
     @patch("sandbox_executor.agent_runner.os.path.islink", return_value=False)
     def test_main_raises_runtime_error_on_cleanup_failure(
-        self, mock_islink, mock_ismount, mock_lexists, mock_rmtree, mock_get_repo_url, mock_get_runner, mock_run_cmd
+        self, mock_islink, mock_ismount, mock_lexists, mock_rmtree, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd
     ):
         mock_rmtree.side_effect = PermissionError("Permission denied")
-        with (
-            patch.dict(os.environ, {}, clear=True),
-            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
-        ):
-            with self.assertRaises(RuntimeError) as ctx:
-                executor.main()
-            self.assertIn("Failed to clean up existing repo dir", str(ctx.exception))
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            mock_expanduser.return_value = tmp_dir
+            env = os.environ.copy()
+            env.pop("HOLON_REPO_DIR", None)
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    executor.main()
+                self.assertIn("Failed to clean up existing repo dir", str(ctx.exception))
+                for call_args in mock_rmtree.call_args_list:
+                    cleaned_path = os.path.abspath(call_args.args[0])
+                    self.assertTrue(
+                        cleaned_path.startswith(os.path.abspath(tmp_dir)),
+                        f"Invariant violated: _rmtree called on {cleaned_path} outside fixture {tmp_dir}",
+                    )
 
     def test_clear_dir_contents(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -738,6 +755,8 @@ class TestExecutor(unittest.TestCase):
                 del env["HOLON_REPO_DIR"]
             if "HOLON_ROLE" in env:
                 del env["HOLON_ROLE"]
+            if "HOLON_IN_SANDBOX" in env:
+                del env["HOLON_IN_SANDBOX"]
             env["HOLON_SKIP_PUSH"] = "1"
             env["HOLON_KEEP_WORKSPACE"] = "true"
             if "USER" in env:
@@ -803,6 +822,12 @@ class TestExecutor(unittest.TestCase):
 
             self.assertTrue(mock_clear_dir_contents.called)
             mock_clear_dir_contents.assert_any_call(default_dir, raise_on_error=True)
+            for call_args in mock_clear_dir_contents.call_args_list:
+                cleared_path = os.path.abspath(call_args.args[0])
+                self.assertTrue(
+                    cleared_path.startswith(os.path.abspath(tmp_dir)),
+                    f"Invariant violated: _clear_dir_contents called on {cleared_path} outside fixture {tmp_dir}",
+                )
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")

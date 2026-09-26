@@ -6,10 +6,11 @@ from sandbox_executor.entrypoint import intent_creator
 
 
 class TestIntentCreator(unittest.TestCase):
+    @patch("sandbox_executor.entrypoint.intent_creator.cleanup_repo_dir")
     @patch("subprocess.run")
     @patch("os.path.exists")
     @patch("os.makedirs")
-    def test_intent_creator_main(self, mock_makedirs, mock_exists, mock_run):
+    def test_intent_creator_main(self, mock_makedirs, mock_exists, mock_run, mock_cleanup):
         mock_exists.return_value = True
 
         intent_json_data = {
@@ -57,10 +58,11 @@ class TestIntentCreator(unittest.TestCase):
         self.assertEqual(written_data["branch"], "I-12345")
         self.assertEqual(written_data["status"], "proposed")
 
+    @patch("sandbox_executor.entrypoint.intent_creator.cleanup_repo_dir")
     @patch("subprocess.run")
     @patch("os.path.exists")
     @patch("os.makedirs")
-    def test_intent_creator_generate_branch_on_the_fly(self, mock_makedirs, mock_exists, mock_run):
+    def test_intent_creator_generate_branch_on_the_fly(self, mock_makedirs, mock_exists, mock_run, mock_cleanup):
         mock_exists.return_value = True
 
         intent_json_data = {"description": "Test description", "goal": "Test goal", "slug": "test-slug"}
@@ -97,10 +99,11 @@ class TestIntentCreator(unittest.TestCase):
         self.assertTrue("test-slug" in written_data["branch"])
         self.assertEqual(written_data["status"], "proposed")
 
+    @patch("sandbox_executor.entrypoint.intent_creator.cleanup_repo_dir")
     @patch("subprocess.run")
     @patch("os.path.exists")
     @patch("os.makedirs")
-    def test_intent_creator_with_target_branch(self, mock_makedirs, mock_exists, mock_run):
+    def test_intent_creator_with_target_branch(self, mock_makedirs, mock_exists, mock_run, mock_cleanup):
         mock_exists.return_value = True
 
         intent_json_data = {
@@ -140,10 +143,11 @@ class TestIntentCreator(unittest.TestCase):
         self.assertTrue(any("git clone --branch develop" in cmd for cmd in called_cmds))
         self.assertTrue(any("git checkout -B I-12345/_ origin/develop" in cmd for cmd in called_cmds))
 
+    @patch("sandbox_executor.entrypoint.intent_creator.cleanup_repo_dir")
     @patch("subprocess.run")
     @patch("os.path.exists")
     @patch("os.makedirs")
-    def test_intent_creator_sanitize_slug_spaces(self, mock_makedirs, mock_exists, mock_run):
+    def test_intent_creator_sanitize_slug_spaces(self, mock_makedirs, mock_exists, mock_run, mock_cleanup):
         mock_exists.return_value = True
 
         intent_json_data = {

@@ -14,6 +14,7 @@ import uuid
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from sandbox_executor.calibration import run_calibrate
 from sandbox_executor.scaffold import init_project
 from sandbox_executor.token_reduction import generate_root_ca
 
@@ -776,7 +777,46 @@ def main() -> None:
         help="Overwrite existing configuration files (ledger files are never overwritten).",
     )
 
+    # Subcommand: calibrate
+    calibrate_parser = subparsers.add_parser(
+        "calibrate",
+        help="Run post-execution plan calibration analysis on an execution branch.",
+    )
+    calibrate_parser.add_argument(
+        "execution_branch",
+        help="Target execution branch name (e.g. I-.../P-.../E-.../_)",
+    )
+    calibrate_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output calibration metrics as JSON to stdout.",
+    )
+    calibrate_parser.add_argument(
+        "--repo-dir",
+        default=".",
+        help="Target repository directory path (default: current directory).",
+    )
+    calibrate_parser.add_argument(
+        "--no-commit",
+        dest="skip_commit",
+        action="store_true",
+        help="Generate report without creating a git branch or committing.",
+    )
+
     args = parser.parse_args()
+
+    if args.command == "calibrate":
+        try:
+            run_calibrate(
+                execution_branch=args.execution_branch,
+                repo_dir=args.repo_dir,
+                json_output=args.json,
+                skip_commit=args.skip_commit,
+            )
+            sys.exit(0)
+        except Exception as e:
+            print(f"Error during calibration: {e}", file=sys.stderr)
+            sys.exit(1)
 
     if args.command == "init":
         sys.exit(

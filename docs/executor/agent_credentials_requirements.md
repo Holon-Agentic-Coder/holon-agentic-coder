@@ -111,8 +111,10 @@ Each agent has specific command-line structures and validation routines:
 
 - **Binary**: `pi`
 - **Command template**: `pi -p --model <model_name> --provider <HOLON_AGENT_PROVIDER> <prompt>`
-- **Validation**: Requires `HOLON_AGENT_KEY` to be set, or active session configuration mounted to
-  `/home/holon/.config/pi`.
+- **Session directories**: `~/.pi/agent` is the agent directory for pi 0.84 and later (it holds `models.json` with the
+  provider definitions); `~/.config/pi` is the legacy layout and is still mounted when present.
+- **Validation**: Requires `HOLON_AGENT_KEY` to be set, active session configuration mounted to `/home/holon/.pi/agent`
+  or `/home/holon/.config/pi`, or host-local model mode (see [Host-Local Model Endpoints](#host-local-model-endpoints)).
 
 ### 5. `opencode`
 
@@ -129,3 +131,45 @@ Each agent has specific command-line structures and validation routines:
   validation is skipped.
 - **Validation**: Requires `HOLON_AGENT_KEY` to be set, `HOLON_AGENT_OSS_MODE=true`, or an active credentials session
   directory mounted to `/home/holon/.codex`.
+
+---
+
+## Host-Local Model Endpoints
+
+An inference server running on the host (vMLX, Ollama, LM Studio, vLLM, llama.cpp, SGLang) is unreachable from the
+sandbox under its natural address: container loopback is the container itself, and the host's own LAN address is not
+routable inside the container namespace. The only address that works is the Docker gateway, `host.docker.internal`,
+which `holon` now maps with `--add-host=host.docker.internal:host-gateway` on every run so the behaviour is identical on
+Docker Desktop and Linux.
+
+Enable it explicitly:
+
+| Variable                 | Purpose                                                                                      |
+| ------------------------ | -------------------------------------------------------------------------------------------- |
+| `HOLON_LOCAL_LLM=1`      | Opt in. Never inferred from the contents of a config file.                                   |
+| `HOLON_LOCAL_BASE_URL`   | Endpoint used when the host has no `models.json` to copy.                                    |
+| `HOLON_LOCAL_PROVIDER`   | Provider name for the generated config (falls back to `HOLON_AGENT_PROVIDER`, then `local`). |
+| `HOLON_LOCAL_MODELS`     | Comma-separated model ids served by that endpoint (required with `HOLON_LOCAL_BASE_URL`).    |
+| `HOLON_HOST_LOCAL_HOSTS` | Comma-separated authorities that may be rewritten (for example the host LAN IP).             |
+
+When opted in, `holon` builds a temporary agent directory for the container:
+
+1. The host `models.json` is read from `~/.pi/agent` (falling back to `~/.config/pi`), or synthesized from
+   `HOLON_LOCAL_BASE_URL` / `HOLON_LOCAL_MODELS` when absent.
+2. Every provider `baseUrl` is rewritten to the gateway **only if** its authority is loopback or explicitly declared in
+   `HOLON_HOST_LOCAL_HOSTS`. All other fields are preserved.
+3. The directory is mounted read-write at `/home/holon/.holon-pi-agent` and exported as `PI_CODING_AGENT_DIR`, and the
+   host agent directory is deliberately **not** mounted, so cloud credentials and session history stay on the host.
+4. Because the endpoint now resolves to the gateway, it is added to `NO_PROXY` when the token-reduction sidecar is
+   active; local traffic is therefore never intercepted, cached, or recorded in the wire logs.
+5. If local mode cannot be satisfied (no host config and no `HOLON_LOCAL_BASE_URL`/`HOLON_LOCAL_MODELS`), the run aborts
+   with an actionable error instead of starting an agent that could only fail later.
+
+> [!WARNING] **No blanket RFC1918 rewriting.** Loopback and explicitly declared authorities only. A genuinely remote
+> inference box on the same LAN must keep its address; silently redirecting it onto the host machine would change which
+> model produced the agent's output without any signal that it had.
+
+Because a local endpoint needs no provider credential, `validate()` accepts local mode in place of `HOLON_AGENT_KEY` for
+runners that require a key (`pi`, `claude`, `opencode`) -- the parity `codex` already had through
+`HOLON_AGENT_OSS_MODE`. The opt-in alone is not sufficient: an actual endpoint (`PI_CODING_AGENT_DIR` or
+`HOLON_LOCAL_BASE_URL`) must be present, so a stray flag cannot mask a missing cloud key.

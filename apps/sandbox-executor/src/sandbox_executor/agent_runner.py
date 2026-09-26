@@ -8,6 +8,8 @@ import tempfile
 from collections.abc import Callable
 from typing import Any
 
+from sandbox_executor import local_llm
+
 logger = logging.getLogger(__name__)
 
 # Directory cleanup and root protection helpers
@@ -303,6 +305,14 @@ class StandardAgentRunner(AgentRunner):
             return
 
         if self.required_keys:
+            # A host-local inference server addressed through the Docker gateway needs no provider credential (Bean
+            # 0049). Only accept this when the operator opted in AND the local endpoint is actually configured, so a
+            # stray opt-in flag cannot mask a missing cloud key.
+            if local_llm.local_llm_requested() and (
+                os.getenv(local_llm.ENV_PI_AGENT_DIR) or os.getenv(local_llm.ENV_LOCAL_BASE_URL)
+            ):
+                return
+
             session_dirs = {
                 "claude": ["/home/holon/.config/claude", "~/.config/claude"],
                 "pi": ["/home/holon/.config/pi", "~/.config/pi"],
@@ -318,7 +328,8 @@ class StandardAgentRunner(AgentRunner):
             if not (has_key or has_session_dir):
                 print(
                     f"Error: Missing required API credentials for agent '{self.agent_id}'.\n"
-                    "Please set 'HOLON_AGENT_KEY' or mount session credentials.",
+                    "Please set 'HOLON_AGENT_KEY', mount session credentials, or select a host-local model with "
+                    f"'{local_llm.ENV_LOCAL_MODE}=1' plus a reachable endpoint.",
                     file=sys.stderr,
                 )
                 sys.exit(1)

@@ -9,11 +9,13 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from sandbox_executor import local_llm
 from sandbox_executor.calibration import run_calibrate
 from sandbox_executor.scaffold import init_project
 from sandbox_executor.token_reduction import generate_root_ca
@@ -153,6 +155,8 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:
             (os.path.join(home, ".codex"), "/home/holon/.codex"),
         ],
         "pi": [
+            # pi >= 0.84 keeps providers and models in ~/.pi/agent; ~/.config/pi is the legacy layout.
+            (os.path.join(home, ".pi/agent"), "/home/holon/.pi/agent"),
             (os.path.join(home, ".config/pi"), "/home/holon/.config/pi"),
         ],
         "gemini": [
@@ -161,6 +165,10 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:
     }
 
     dirs = session_mapping.get(agent_id.lower(), [])
+    # In host-local model mode the container receives a generated agent directory whose base URLs are reachable from it,
+    # so the host directory -- which also holds cloud credentials and session history -- is deliberately not mounted.
+    if agent_id.lower() == "pi" and local_llm.local_llm_requested():
+        return mounts
     for host_path, container_path in dirs:
         if os.path.exists(host_path):
             mounts.extend(["-v", f"{host_path}:{container_path}:ro"])
@@ -644,14 +652,45 @@ def run_docker_container(
     for k, v in ssh_envs.items():
         docker_cmd.extend(["-e", f"{k}={v}"])
 
+    # Containers reach the host only through the gateway name; make it resolvable on Linux as it already is on
+    # Docker Desktop, so agent base URLs rewritten to host.docker.internal work on every platform.
+    docker_cmd.extend(_gateway_host_args())
+
     # Token Reduction Proxy & CA Mounts. From this point on the sidecar (and its network) may exist,
     # so every remaining exit path — early returns included — must run teardown, not just the final
     # subprocess.run.
+    local_agent_dir: str | None = None
     tr_mounts, tr_envs = get_token_reduction_mounts_and_envs(token_reduce=token_reduce, mitm_web=mitm_web)
     try:
         docker_cmd.extend(tr_mounts)
         for k, v in tr_envs.items():
             docker_cmd.extend(["-e", f"{k}={v}"])
+
+        # Host-local inference servers (Bean 0049): loopback and the host's own LAN address are unreachable from the
+        # container namespace, so hand the agent a generated config whose authorities resolve via the gateway.
+        if local_llm.local_llm_requested():
+            try:
+                local_agent_dir = tempfile.mkdtemp(prefix="holon-pi-agent-")
+                local_config = local_llm.prepare_agent_dir(
+                    local_agent_dir,
+                    host_config=local_llm.host_models_json(),
+                    allow_list=local_llm.host_local_allow_list(),
+                )
+            except local_llm.LocalLLMConfigError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                return 1
+            docker_cmd.extend(local_llm.container_mount_args(local_agent_dir))
+            for key, value in local_llm.container_env(local_agent_dir).items():
+                docker_cmd.extend(["-e", f"{key}={value}"])
+            # That endpoint now points at the gateway, so it would otherwise be intercepted by the sidecar.
+            local_hosts = local_llm.rewritten_local_hosts(local_config)
+            if local_hosts and tr_envs.get("NO_PROXY"):
+                exempted = f"{tr_envs['NO_PROXY']},{','.join(local_hosts)}"
+                docker_cmd.extend(["-e", f"NO_PROXY={exempted}", "-e", f"no_proxy={exempted}"])
+                print(
+                    f"Note: host-local endpoint(s) {', '.join(local_hosts)} are exempt from token reduction "
+                    "(no interception, caching, or wire telemetry for that traffic).",
+                )
 
         # Intent file mount for intent-creator role
         if role == "intent-creator" and intent_file:
@@ -685,6 +724,8 @@ def run_docker_container(
         return result.returncode
     finally:
         teardown_token_reduction_proxy()
+        if local_agent_dir:
+            shutil.rmtree(local_agent_dir, ignore_errors=True)
 
 
 def main() -> None:

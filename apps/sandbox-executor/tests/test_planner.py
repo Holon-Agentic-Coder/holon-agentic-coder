@@ -91,7 +91,7 @@ class TestPlanner(unittest.TestCase):
     @patch("os.path.exists")
     @patch("os.path.getsize")
     @patch("os.makedirs")
-    @patch("shutil.rmtree")
+    @patch("sandbox_executor.entrypoint.planner.cleanup_repo_dir")
     def test_planner_main(self, mock_rmtree, mock_makedirs, mock_getsize, mock_exists, mock_run):
         test_args = ["planner.py", "I-12345/_", "pi-agent", "gemini"]
 
@@ -182,7 +182,7 @@ class TestPlanner(unittest.TestCase):
     @patch("os.path.exists")
     @patch("os.path.getsize")
     @patch("os.makedirs")
-    @patch("shutil.rmtree")
+    @patch("sandbox_executor.entrypoint.planner.cleanup_repo_dir")
     def test_planner_main_fail_fast(self, mock_rmtree, mock_makedirs, mock_getsize, mock_exists, mock_run):
         test_args = ["planner.py", "I-12345/_", "pi-agent", "gemini"]
 
@@ -245,7 +245,7 @@ class TestPlanner(unittest.TestCase):
     @patch("os.path.exists")
     @patch("os.path.getsize")
     @patch("os.makedirs")
-    @patch("shutil.rmtree")
+    @patch("sandbox_executor.entrypoint.planner.cleanup_repo_dir")
     def test_planner_main_model_sanitization(self, mock_rmtree, mock_makedirs, mock_getsize, mock_exists, mock_run):
         # Test model names with special characters to ensure robust sanitization
         test_cases = [
@@ -353,7 +353,7 @@ class TestPlanner(unittest.TestCase):
     @patch("os.path.exists")
     @patch("os.path.getsize")
     @patch("os.makedirs")
-    @patch("shutil.rmtree")
+    @patch("sandbox_executor.entrypoint.planner.cleanup_repo_dir")
     def test_planner_invalid_plan_structure_fails_fast(
         self, mock_rmtree, mock_makedirs, mock_getsize, mock_exists, mock_run
     ):

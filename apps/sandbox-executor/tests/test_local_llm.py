@@ -335,6 +335,8 @@ class TestLauncherIntegration(unittest.TestCase):
 
     def test_setup_token_reduction_proxy_excludes_gateway_host_args(self):
         with (
+            patch.object(cli, "generate_root_ca", return_value=("/tmp/mock-ca.crt", "/tmp/mock-ca.key")),
+            patch.object(cli, "_mitm_proxy_ca_paths", return_value=("/tmp/mock-ca.pem", "/tmp/mock-ca-cert.pem")),
             patch.object(cli.os.path, "isfile", lambda path: True),
             patch.object(cli, "_wait_for_proxy", lambda *args, **kwargs: True),
             patch("subprocess.run") as mock_subproc,

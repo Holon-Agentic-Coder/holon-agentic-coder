@@ -698,6 +698,15 @@ def run_docker_container(
             except local_llm.LocalLLMConfigError as exc:
                 print(f"Error: {exc}", file=sys.stderr)
                 return 1
+            # If provider was defaulted to "local" but local_config has a single distinct provider, align them
+            providers = local_config.get("providers", {})
+            if (
+                env_to_forward.get("HOLON_AGENT_PROVIDER") == "local"
+                and "local" not in providers
+                and len(providers) == 1
+            ):
+                chosen = next(iter(providers.keys()))
+                docker_cmd.extend(["-e", f"HOLON_AGENT_PROVIDER={chosen}"])
             docker_cmd.extend(local_llm.container_mount_args(local_agent_dir))
             for key, value in local_llm.container_env(local_agent_dir).items():
                 docker_cmd.extend(["-e", f"{key}={value}"])
@@ -716,6 +725,7 @@ def run_docker_container(
                 print(
                     f"Note: host-local endpoint(s) {', '.join(local_hosts)} are exempt from token reduction "
                     "(no interception, caching, or wire telemetry for that traffic).",
+                    file=sys.stderr,
                 )
 
         # Intent file mount for intent-creator role

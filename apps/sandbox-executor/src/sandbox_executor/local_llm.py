@@ -66,7 +66,7 @@ def host_local_allow_list() -> set[str]:
         cleaned = entry.strip().lower()
         if not cleaned:
             continue
-        cleaned = re.sub(r"^https?://", "", cleaned)
+        cleaned = re.sub(r"^https?://", "", cleaned).rstrip("/")
         allow.add(cleaned)
     return allow
 

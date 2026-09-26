@@ -374,6 +374,20 @@ class TestLauncherIntegration(unittest.TestCase):
         self.assertIn("-e", args)
         self.assertIn("HOLON_AGENT_PROVIDER=local", args)
 
+    def test_host_models_json_named_provider_aligns_agent_provider(self):
+        host_config = {
+            "providers": {
+                "vmlx": {
+                    "baseUrl": "http://localhost:8081/v1",
+                    "models": [{"id": "local-model"}],
+                }
+            }
+        }
+        with patch.object(local_llm, "host_models_json", return_value=host_config):
+            code, args, _ = self._run({"HOLON_LOCAL_LLM": "1"})
+        self.assertEqual(code, 0)
+        self.assertIn("HOLON_AGENT_PROVIDER=vmlx", args)
+
     def test_local_mode_mounts_generated_dir_and_sets_agent_dir(self):
         env = {
             "HOLON_LOCAL_LLM": "1",

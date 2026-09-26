@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -310,7 +311,7 @@ class StandardAgentRunner(AgentRunner):
             # stray opt-in from masking a missing cloud key for another runner -- and only when the local endpoint is
             # actually configured.
             if (
-                self.agent_id == "pi"
+                self.agent_id in ("pi", "pi-agent")
                 and local_llm.local_llm_requested()
                 and (os.getenv(local_llm.ENV_PI_AGENT_DIR) or os.getenv(local_llm.ENV_LOCAL_BASE_URL))
             ):
@@ -355,7 +356,20 @@ class StandardAgentRunner(AgentRunner):
             and local_llm.local_llm_requested()
             and not os.getenv("HOLON_AGENT_PROVIDER")
         ):
-            os.environ["HOLON_AGENT_PROVIDER"] = os.getenv(local_llm.ENV_LOCAL_PROVIDER, "").strip() or "local"
+            local_prov = os.getenv(local_llm.ENV_LOCAL_PROVIDER, "").strip()
+            if not local_prov:
+                agent_dir = os.getenv(local_llm.ENV_PI_AGENT_DIR, "")
+                models_path = os.path.join(agent_dir, "models.json") if agent_dir else ""
+                if models_path and os.path.isfile(models_path):
+                    try:
+                        with open(models_path, encoding="utf-8") as f:
+                            m_data = json.load(f)
+                        provs = m_data.get("providers", {})
+                        if len(provs) == 1:
+                            local_prov = next(iter(provs.keys()))
+                    except Exception:
+                        pass
+            os.environ["HOLON_AGENT_PROVIDER"] = local_prov or "local"
 
         for mapping in self.env_mappings:
             val = os.getenv(mapping.env_var)

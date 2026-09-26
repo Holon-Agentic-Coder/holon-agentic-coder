@@ -272,12 +272,18 @@ def load_checkpoint(filepath: str) -> FlowCheckpoint:
     return FlowCheckpoint.from_dict(data)
 
 
-def run_git(args: list[str], cwd: str = ".", check: bool = True) -> subprocess.CompletedProcess[str]:
+def run_git(
+    args: list[str],
+    cwd: str = ".",
+    check: bool = True,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Execute a git command and return CompletedProcess."""
-    res = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False)
+    res = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True, text=True, check=False)
     if check and res.returncode != 0:
         err = redact_text(res.stderr.strip() or res.stdout.strip())
-        raise RuntimeError(f"Git command 'git {' '.join(args)}' failed ({res.returncode}): {err}")
+        cmd_str = redact_text(" ".join(args))
+        raise RuntimeError(f"Git command 'git {cmd_str}' failed ({res.returncode}): {err}")
     return res
 
 
@@ -341,9 +347,9 @@ def run_intent_stage(context: FlowContext) -> StageResult:
         if is_git:
             has_branch = run_git(["rev-parse", "--verify", intent_branch], cwd=repo_dir, check=False).returncode == 0
             if not has_branch:
-                run_git(["checkout", "-B", intent_branch, target_branch], cwd=repo_dir, check=False)
+                run_git(["checkout", "-B", intent_branch, target_branch], cwd=repo_dir, check=True)
             else:
-                run_git(["checkout", intent_branch], cwd=repo_dir, check=False)
+                run_git(["checkout", intent_branch], cwd=repo_dir, check=True)
 
         # Ledger update (append-only)
         ledger_dir = os.path.join(repo_dir, "holon-knowledge", "ledger")
@@ -368,14 +374,14 @@ def run_intent_stage(context: FlowContext) -> StageResult:
             ledger_entry = intent_data
 
         if is_git:
-            run_git(["add", "holon-knowledge/ledger/intents.jsonl"], cwd=repo_dir, check=False)
+            run_git(["add", "holon-knowledge/ledger/intents.jsonl"], cwd=repo_dir, check=True)
             commit_env = os.environ.copy()
             commit_env.setdefault("GIT_AUTHOR_NAME", "Holon Intent Agent")
             commit_env.setdefault("GIT_AUTHOR_EMAIL", "intent-agent@holon-agentic-coder.com")
             commit_env.setdefault("GIT_COMMITTER_NAME", "Holon Intent Agent")
             commit_env.setdefault("GIT_COMMITTER_EMAIL", "intent-agent@holon-agentic-coder.com")
             msg = f"intent: created {intent_branch}\n\nDescription:\n{description}\n\nGoal:\n{goal}\n"
-            subprocess.run(["git", "commit", "-m", msg], cwd=repo_dir, env=commit_env, capture_output=True, check=False)
+            run_git(["commit", "-m", msg], cwd=repo_dir, env=commit_env, check=True)
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log(f"Stage 1 completed: Intent branch '{intent_branch}' established.")
@@ -432,7 +438,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:
     if not context.dry_run:
         is_git = run_git(["rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False).returncode == 0
         if is_git:
-            run_git(["checkout", "-B", plan_branch, context.intent_branch], cwd=repo_dir, check=False)
+            run_git(["checkout", "-B", plan_branch, context.intent_branch], cwd=repo_dir, check=True)
 
         os.makedirs(os.path.dirname(plan_md_path), exist_ok=True)
         if not os.path.exists(plan_md_path):
@@ -515,14 +521,14 @@ def run_plan_stage(context: FlowContext) -> StageResult:
                 f.write(json.dumps(plan_entry) + "\n")
 
         if is_git:
-            run_git(["add", plan_md_rel, "holon-knowledge/ledger/plans.jsonl"], cwd=repo_dir, check=False)
+            run_git(["add", plan_md_rel, "holon-knowledge/ledger/plans.jsonl"], cwd=repo_dir, check=True)
             commit_env = os.environ.copy()
             commit_env.setdefault("GIT_AUTHOR_NAME", "Holon Planner Agent")
             commit_env.setdefault("GIT_AUTHOR_EMAIL", "planner-agent@holon-agentic-coder.com")
             commit_env.setdefault("GIT_COMMITTER_NAME", "Holon Planner Agent")
             commit_env.setdefault("GIT_COMMITTER_EMAIL", "planner-agent@holon-agentic-coder.com")
             msg = f"plan: {plan_id} created by {context.agent} ({context.model})"
-            subprocess.run(["git", "commit", "-m", msg], cwd=repo_dir, env=commit_env, capture_output=True, check=False)
+            run_git(["commit", "-m", msg], cwd=repo_dir, env=commit_env, check=True)
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log(f"Stage 2 completed: Plan branch '{plan_branch}' created with EV={metrics.get('ev', 0.0):.2f}.")
@@ -575,22 +581,29 @@ def run_execute_stage(context: FlowContext) -> StageResult:
     if not context.dry_run:
         is_git = run_git(["rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False).returncode == 0
         if is_git:
-            run_git(["checkout", "-B", exec_branch, context.plan_branch], cwd=repo_dir, check=False)
+            run_git(["checkout", "-B", exec_branch, context.plan_branch], cwd=repo_dir, check=True)
             rebase_res = run_git(["rebase", context.plan_branch], cwd=repo_dir, check=False)
             if rebase_res.returncode != 0:
                 context.log("Warning: rebase encounter, aborting rebase.")
                 run_git(["rebase", "--abort"], cwd=repo_dir, check=False)
 
         t0 = time.time()
-        test_run = subprocess.run(
-            ["uv", "run", "pytest", "apps/sandbox-executor/tests/test_cli.py", "-q"],
-            cwd=repo_dir,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        duration_seconds = max(0.1, round(time.time() - t0, 2))
-        exit_code = test_run.returncode
+        try:
+            test_run = subprocess.run(
+                ["uv", "run", "pytest", "apps/sandbox-executor/tests/test_cli.py", "-q"],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=300,
+            )
+            duration_seconds = max(0.1, round(time.time() - t0, 2))
+            exit_code = test_run.returncode
+        except subprocess.TimeoutExpired:
+            duration_seconds = 300.0
+            exit_code = -1
+            context.log("Error: Test suite timed out after 300 seconds.")
+
         test_pass_rate = 1.0 if exit_code == 0 else 0.0
 
         os.makedirs(os.path.dirname(exec_md_path), exist_ok=True)
@@ -630,6 +643,7 @@ Execution completed with test pass rate {test_pass_rate}.
             "summary": f"Execution completed with exit code {exit_code}",
             "execution_file": exec_md_rel,
             "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+            "duration": duration_seconds,
             "duration_seconds": duration_seconds,
             "test_pass_rate": test_pass_rate,
             "exit_code": exit_code,
@@ -651,14 +665,14 @@ Execution completed with test pass rate {test_pass_rate}.
                 f.write(json.dumps(exec_entry) + "\n")
 
         if is_git:
-            run_git(["add", exec_md_rel, "holon-knowledge/ledger/executions.jsonl"], cwd=repo_dir, check=False)
+            run_git(["add", exec_md_rel, "holon-knowledge/ledger/executions.jsonl"], cwd=repo_dir, check=True)
             commit_env = os.environ.copy()
             commit_env.setdefault("GIT_AUTHOR_NAME", "Holon Executor Agent")
             commit_env.setdefault("GIT_AUTHOR_EMAIL", "executor-agent@holon-agentic-coder.com")
             commit_env.setdefault("GIT_COMMITTER_NAME", "Holon Executor Agent")
             commit_env.setdefault("GIT_COMMITTER_EMAIL", "executor-agent@holon-agentic-coder.com")
             msg = f"execute: {exec_id} completed for plan {context.plan_branch}"
-            subprocess.run(["git", "commit", "-m", msg], cwd=repo_dir, env=commit_env, capture_output=True, check=False)
+            run_git(["commit", "-m", msg], cwd=repo_dir, env=commit_env, check=True)
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log(f"Stage 3 completed: Execution branch '{exec_branch}' created (pass_rate={test_pass_rate}).")
@@ -794,7 +808,7 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
         return StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.FAILED, start_time=start_time, error=err)
 
     repo_dir = context.repo_dir
-    calibrated_branch = f"{context.execution_branch.rstrip('/')}/calibrated"
+    calibrated_branch = f"{context.execution_branch.rstrip('/_').rstrip('/')}/calibrated"
     report_dict: dict[str, Any] = {}
 
     try:
@@ -901,7 +915,7 @@ class PipelineEngine:
 
     def handle_stage_failure(self, stage: FlowStage, error: Exception) -> StageResult:
         """Handle unexpected exceptions during stage execution."""
-        err_msg = f"Unhandled exception in stage '{stage.value}': {error}"
+        err_msg = redact_text(f"Unhandled exception in stage '{stage.value}': {error}")
         self.context.log(err_msg)
         res = StageResult(
             stage=stage,
@@ -922,7 +936,8 @@ class PipelineEngine:
             try:
                 start_idx = self.STAGE_ORDER.index(self.from_stage)
             except ValueError:
-                start_idx = 0
+                valid = [s.value for s in self.STAGE_ORDER]
+                raise ValueError(f"Invalid resumption stage '{self.from_stage}'. Must be one of: {valid}") from None
 
         self.context.log(
             f"Pipeline run initiated from stage: {self.STAGE_ORDER[start_idx].value.upper()} "

@@ -280,6 +280,38 @@ class TestFlowStages:
         assert res.payload["consensus"]["approved"] is True
         assert "holon review approve" in res.payload["human_approval_command"]
 
+    def test_stage3_execute_failure(self, tmp_path):
+        """Test Stage 3 correctly transitions to FAILED status on test suite failure."""
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            plan_branch="I-100-intent/P-200-plan/_",
+            dry_run=False,
+        )
+        with patch("sandbox_executor.flow.run_git") as mock_git, patch("subprocess.run") as mock_sub:
+            mock_git.return_value = MagicMock(returncode=0)
+            mock_sub.return_value = MagicMock(returncode=1, stdout="FAILED", stderr="Error")
+            res = run_execute_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        assert res.payload["test_pass_rate"] == 0.0
+        assert res.payload["exit_code"] == 1
+
+    def test_stage4_review_rejection_on_test_failure(self, tmp_path):
+        """Test Stage 4 fails consensus and returns FAILED when previous stage failed."""
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            dry_run=True,
+        )
+        ctx.stage_results["execute"] = StageResult(
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.FAILED,
+            payload={"test_pass_rate": 0.0, "exit_code": 1},
+        )
+        res = run_review_stage(ctx)
+        assert res.status == StageStatus.FAILED
+        assert res.payload["consensus"]["approved"] is False
+
     def test_stage5_calibrate_bean_0038(self, tmp_path):
         """Test Stage 5 Post-Execution Calibration generating calibration report."""
         ctx = FlowContext(
@@ -292,7 +324,26 @@ class TestFlowStages:
         assert res.status == StageStatus.SUCCESS
         assert ctx.calibrated_branch is not None
         assert ctx.calibrated_branch.endswith("/calibrated")
+        assert not ctx.calibrated_branch.endswith("/_/calibrated")
         assert "calibrated_branch" in res.payload
+
+    def test_stage5_calibrate_bean_0038_mocked(self, tmp_path):
+        """Test Stage 5 invoking run_calibrate successfully."""
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            dry_run=False,
+        )
+        mock_report = MagicMock()
+        mock_report.calibrated_branch = "I-100-intent/P-200-plan/E-300-exec/calibrated"
+        mock_report.to_dict.return_value = {"calibrated_branch": mock_report.calibrated_branch, "accuracy_score": 0.95}
+
+        with patch("sandbox_executor.flow.run_calibrate", return_value=mock_report):
+            res = run_calibrate_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        assert res.payload["calibration_report"]["accuracy_score"] == 0.95
+        assert ctx.calibrated_branch == "I-100-intent/P-200-plan/E-300-exec/calibrated"
 
 
 class TestFlowResumptionAndErrorHandling:
@@ -343,6 +394,15 @@ class TestFlowResumptionAndErrorHandling:
             assert FlowStage.PLAN not in executed_stages
             assert FlowStage.EXECUTE in executed_stages
 
+    def test_pipeline_invalid_resumption_stage(self, tmp_path):
+        ctx = FlowContext(repo_dir=str(tmp_path), dry_run=True)
+        with pytest.raises(ValueError, match="Unknown FlowStage"):
+            PipelineEngine(ctx, from_stage="invalid_stage")
+
+        engine = PipelineEngine(ctx, from_stage=FlowStage.COMPLETED)
+        with pytest.raises(ValueError, match="Invalid resumption stage"):
+            engine.run()
+
     def test_pipeline_stage_failure_handling(self, tmp_path):
         ctx = FlowContext(
             repo_dir=str(tmp_path),
@@ -378,12 +438,22 @@ class TestFlowCLI:
             called_ctx = mock_pipeline.call_args[1]["context"]
             assert called_ctx.dry_run is True
             assert called_ctx.intent_data["slug"] == "cli-test"
+            assert called_ctx.agent == "antigravity-agent"
+            assert called_ctx.model == "gemini-3.8-flash-medium"
             mock_exit.assert_called_with(0)
 
     def test_cli_flow_missing_intent_file(self):
         with (
             pytest.raises(SystemExit) as exc_info,
             patch("sys.argv", ["holon", "flow", "/non/existent/intent.json"]),
+        ):
+            cli_main()
+        assert exc_info.value.code == 1
+
+    def test_cli_flow_missing_checkpoint_file(self):
+        with (
+            pytest.raises(SystemExit) as exc_info,
+            patch("sys.argv", ["holon", "flow", "--checkpoint", "/non/existent/checkpoint.json"]),
         ):
             cli_main()
         assert exc_info.value.code == 1

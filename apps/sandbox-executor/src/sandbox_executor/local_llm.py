@@ -44,7 +44,7 @@ CONTAINER_AGENT_DIR = "/home/holon/.holon-pi-agent"
 _TRUTHY_ENV_VALUES = ("1", "true", "yes", "on")
 # Names that denote the local machine without being parseable as an address. Address literals are classified with
 # ipaddress so that the whole 127.0.0.0/8 range and IPv6 ::1 are covered, not just 127.0.0.1.
-_LOCAL_HOST_NAMES = frozenset({"localhost", "localhost."})
+_LOCAL_HOST_NAMES = frozenset({"localhost", "localhost.", "localhost.localdomain"})
 # Candidate locations of the pi agent directory, newest layout first.
 _PI_AGENT_DIR_CANDIDATES = (".pi/agent", ".config/pi")
 

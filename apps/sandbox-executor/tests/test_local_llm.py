@@ -419,6 +419,42 @@ class TestLauncherIntegration(unittest.TestCase):
         self.assertEqual(args.count("HOLON_AGENT_PROVIDER=vmlx"), 1)
         self.assertNotIn("HOLON_AGENT_PROVIDER=local", args)
 
+    def test_multiple_local_providers_without_local_or_env_fails(self):
+        host_config = {
+            "providers": {
+                "vmlx": {"baseUrl": "http://localhost:8081/v1", "models": [{"id": "m1"}]},
+                "ollama": {"baseUrl": "http://localhost:11434/v1", "models": [{"id": "m2"}]},
+            }
+        }
+        with patch.object(local_llm, "host_models_json", return_value=host_config):
+            code, _, rmtree = self._run({"HOLON_LOCAL_LLM": "1"}, mkdtemp_dir="/tmp/generated-agent")
+        self.assertEqual(code, 1)
+        rmtree.assert_called_once_with("/tmp/generated-agent", ignore_errors=True)
+
+    def test_multiple_local_providers_with_local_named_provider_defaults_to_local(self):
+        host_config = {
+            "providers": {
+                "local": {"baseUrl": "http://localhost:8081/v1", "models": [{"id": "m1"}]},
+                "ollama": {"baseUrl": "http://localhost:11434/v1", "models": [{"id": "m2"}]},
+            }
+        }
+        with patch.object(local_llm, "host_models_json", return_value=host_config):
+            code, args, _ = self._run({"HOLON_LOCAL_LLM": "1"})
+        self.assertEqual(code, 0)
+        self.assertEqual(args.count("HOLON_AGENT_PROVIDER=local"), 1)
+
+    def test_multiple_local_providers_with_env_provider_disambiguates(self):
+        host_config = {
+            "providers": {
+                "vmlx": {"baseUrl": "http://localhost:8081/v1", "models": [{"id": "m1"}]},
+                "ollama": {"baseUrl": "http://localhost:11434/v1", "models": [{"id": "m2"}]},
+            }
+        }
+        with patch.object(local_llm, "host_models_json", return_value=host_config):
+            code, args, _ = self._run({"HOLON_LOCAL_LLM": "1", "HOLON_LOCAL_PROVIDER": "ollama"})
+        self.assertEqual(code, 0)
+        self.assertEqual(args.count("HOLON_AGENT_PROVIDER=ollama"), 1)
+
     def test_agent_id_normalization_accepts_agent_pi(self):
         env = {
             "HOLON_LOCAL_LLM": "1",

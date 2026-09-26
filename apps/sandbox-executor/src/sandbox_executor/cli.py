@@ -676,8 +676,6 @@ def run_docker_container(
     tr_mounts, tr_envs = get_token_reduction_mounts_and_envs(token_reduce=token_reduce, mitm_web=mitm_web)
     try:
         docker_cmd.extend(tr_mounts)
-        for k, v in tr_envs.items():
-            docker_cmd.extend(["-e", f"{k}={v}"])
 
         # Host-local inference servers (Bean 0049): loopback and the host's own LAN address are unreachable from the
         # container namespace, so hand the agent a generated config whose authorities resolve via the gateway. The
@@ -696,14 +694,22 @@ def run_docker_container(
                     host_config=local_llm.host_models_json(),
                     allow_list=local_llm.host_local_allow_list(),
                 )
+                # If provider was unset, determine whether to use the single distinct provider or "local"
+                if "HOLON_AGENT_PROVIDER" not in env_to_forward:
+                    providers = local_config.get("providers", {})
+                    if len(providers) == 1:
+                        chosen = next(iter(providers.keys()))
+                    elif "local" in providers:
+                        chosen = "local"
+                    else:
+                        raise local_llm.LocalLLMConfigError(
+                            f"Multiple host-local providers found ({', '.join(sorted(providers))}). "
+                            "Please set HOLON_AGENT_PROVIDER or HOLON_LOCAL_PROVIDER to select one."
+                        )
+                    docker_cmd.extend(["-e", f"HOLON_AGENT_PROVIDER={chosen}"])
             except local_llm.LocalLLMConfigError as exc:
                 print(f"Error: {exc}", file=sys.stderr)
                 return 1
-            # If provider was unset, determine whether to use the single distinct provider or "local"
-            if "HOLON_AGENT_PROVIDER" not in env_to_forward:
-                providers = local_config.get("providers", {})
-                chosen = next(iter(providers.keys())) if len(providers) == 1 else "local"
-                docker_cmd.extend(["-e", f"HOLON_AGENT_PROVIDER={chosen}"])
             docker_cmd.extend(local_llm.container_mount_args(local_agent_dir))
             for key, value in local_llm.container_env(local_agent_dir).items():
                 docker_cmd.extend(["-e", f"{key}={value}"])
@@ -721,12 +727,16 @@ def run_docker_container(
                     exempted.insert(0, local_llm.GATEWAY_HOST)
                 existing_no_proxy = [e.strip() for e in tr_envs.get("NO_PROXY", "").split(",") if e.strip()]
                 joined = ",".join(dict.fromkeys(existing_no_proxy + exempted))
-                docker_cmd.extend(["-e", f"NO_PROXY={joined}", "-e", f"no_proxy={joined}"])
+                tr_envs["NO_PROXY"] = joined
+                tr_envs["no_proxy"] = joined
                 print(
                     f"Note: host-local endpoint(s) {', '.join(local_hosts)} are exempt from token reduction "
                     "(no interception, caching, or wire telemetry for that traffic).",
                     file=sys.stderr,
                 )
+
+        for k, v in tr_envs.items():
+            docker_cmd.extend(["-e", f"{k}={v}"])
 
         # Intent file mount for intent-creator role
         if role == "intent-creator":

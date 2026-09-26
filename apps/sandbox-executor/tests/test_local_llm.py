@@ -248,8 +248,8 @@ class TestPrepareAgentDir(unittest.TestCase):
                     on_disk = json.load(handle)
                 self.assertEqual(on_disk, config)
                 self.assertEqual(on_disk["providers"]["vmlx"]["baseUrl"], "http://host.docker.internal:8081/v1")
-                # 0755 directory and 0644 file allow non-root container user (uid=1000) to access them on Linux
-                self.assertEqual(stat.S_IMODE(os.stat(dest).st_mode), 0o755)
+                # 0777 directory and 0644 file allow non-root container user (uid=1000) to access them on Linux
+                self.assertEqual(stat.S_IMODE(os.stat(dest).st_mode), 0o777)
                 self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o644)
         finally:
             os.umask(old_umask)
@@ -296,8 +296,9 @@ class TestPrepareAgentDir(unittest.TestCase):
 
 class TestLauncherIntegration(unittest.TestCase):
     def _run(self, env, mounts=None, tr_envs=None, mkdtemp_dir=None, agent_id="pi", token_reduce=False):
+        merged_env = {"GITHUB_TOKEN": "mock-token", **env}
         with (
-            patch("shutil.which", return_value="/usr/bin/docker"),
+            patch("shutil.which", side_effect=lambda name: "/usr/bin/docker" if name == "docker" else None),
             patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run,
             patch.object(cli, "get_agent_session_mounts", side_effect=mounts or (lambda agent: [])),
             patch.object(
@@ -307,7 +308,7 @@ class TestLauncherIntegration(unittest.TestCase):
             ),
             patch.object(cli.tempfile, "mkdtemp", return_value=mkdtemp_dir or "/tmp/holon-pi-agent-test"),
             patch.object(cli.shutil, "rmtree") as mock_rmtree,
-            patch.dict(os.environ, env, clear=True),
+            patch.dict(os.environ, merged_env, clear=True),
         ):
             code = cli.run_docker_container(
                 "executor",
@@ -316,7 +317,8 @@ class TestLauncherIntegration(unittest.TestCase):
                 agent_id=agent_id,
                 token_reduce=token_reduce,
             )
-        return code, mock_run.call_args[0][0], mock_rmtree
+        args = mock_run.call_args[0][0] if mock_run.called else []
+        return code, args, mock_rmtree
 
     def test_gateway_host_mapping_is_added_to_every_run(self):
         code, args, _ = self._run({})
@@ -334,6 +336,7 @@ class TestLauncherIntegration(unittest.TestCase):
             self.assertEqual(args.count("host.docker.internal:host-gateway"), 1)
 
     def test_setup_token_reduction_proxy_excludes_gateway_host_args(self):
+        self.addCleanup(cli.teardown_token_reduction_proxy)
         with (
             patch.object(cli, "generate_root_ca", return_value=("/tmp/mock-ca.crt", "/tmp/mock-ca.key")),
             patch.object(cli, "_mitm_proxy_ca_paths", return_value=("/tmp/mock-ca.pem", "/tmp/mock-ca-cert.pem")),
@@ -357,6 +360,17 @@ class TestLauncherIntegration(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("-e", args)
         self.assertIn("HOLON_AGENT_PROVIDER=vmlx", args)
+
+    def test_local_provider_defaults_to_local_when_unset(self):
+        env = {
+            "HOLON_LOCAL_LLM": "1",
+            "HOLON_LOCAL_BASE_URL": "http://localhost:8081/v1",
+            "HOLON_LOCAL_MODELS": "qwen3:test",
+        }
+        code, args, _ = self._run(env)
+        self.assertEqual(code, 0)
+        self.assertIn("-e", args)
+        self.assertIn("HOLON_AGENT_PROVIDER=local", args)
 
     def test_local_mode_mounts_generated_dir_and_sets_agent_dir(self):
         env = {

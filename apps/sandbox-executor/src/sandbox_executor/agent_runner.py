@@ -349,14 +349,13 @@ class StandardAgentRunner(AgentRunner):
         self.validate()
         cmd = [self.binary_name, *self.prefix, self.model_flag, model_name, *self.suffix]
 
-        # Coherence with host-local model provider: default HOLON_AGENT_PROVIDER from HOLON_LOCAL_PROVIDER
+        # Coherence with host-local model provider: default HOLON_AGENT_PROVIDER from HOLON_LOCAL_PROVIDER or "local"
         if (
-            self.agent_id == "pi"
+            self.agent_id in ("pi", "pi-agent")
             and local_llm.local_llm_requested()
             and not os.getenv("HOLON_AGENT_PROVIDER")
-            and os.getenv(local_llm.ENV_LOCAL_PROVIDER)
         ):
-            os.environ["HOLON_AGENT_PROVIDER"] = os.getenv(local_llm.ENV_LOCAL_PROVIDER, "").strip()
+            os.environ["HOLON_AGENT_PROVIDER"] = os.getenv(local_llm.ENV_LOCAL_PROVIDER, "").strip() or "local"
 
         for mapping in self.env_mappings:
             val = os.getenv(mapping.env_var)

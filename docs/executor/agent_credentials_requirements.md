@@ -146,13 +146,13 @@ Docker Desktop and Linux.
 
 Enable it explicitly:
 
-| Variable                 | Purpose                                                                                      |
-| ------------------------ | -------------------------------------------------------------------------------------------- |
-| `HOLON_LOCAL_LLM=1`      | Opt in. Never inferred from the contents of a config file.                                   |
-| `HOLON_LOCAL_BASE_URL`   | Endpoint used when the host has no `models.json` to copy.                                    |
-| `HOLON_LOCAL_PROVIDER`   | Provider name for the generated config (falls back to `HOLON_AGENT_PROVIDER`, then `local`). |
-| `HOLON_LOCAL_MODELS`     | Comma-separated model ids served by that endpoint (required with `HOLON_LOCAL_BASE_URL`).    |
-| `HOLON_HOST_LOCAL_HOSTS` | Comma-separated authorities that may be rewritten (for example the host LAN IP).             |
+| Variable                 | Purpose                                                                                                           |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `HOLON_LOCAL_LLM=1`      | Opt in. Never inferred from the contents of a config file.                                                        |
+| `HOLON_LOCAL_BASE_URL`   | Endpoint used when the host has no `models.json` to copy (must include scheme, e.g. `http://localhost:11434/v1`). |
+| `HOLON_LOCAL_PROVIDER`   | Provider name for the generated config (falls back to `HOLON_AGENT_PROVIDER`, then `local`).                      |
+| `HOLON_LOCAL_MODELS`     | Comma-separated model ids served by that endpoint (required with `HOLON_LOCAL_BASE_URL`).                         |
+| `HOLON_HOST_LOCAL_HOSTS` | Comma-separated authorities that may be rewritten (for example the host LAN IP).                                  |
 
 When opted in, `holon` builds a temporary agent directory for the container. Local mode currently applies to the **pi**
 runner only; with any other `--agent` it is ignored with a warning, because the artifact produced is a pi agent
@@ -168,8 +168,8 @@ directory.
    provider qualifies, the synthesized endpoint is used instead.
 4. The directory is mounted read-write at `/home/holon/.holon-pi-agent` and exported as `PI_CODING_AGENT_DIR`; the host
    `models.json` is deliberately **not** mounted. Modes are set for the container user (uid 1000), not the host user --
-   `0755` and `0644`, applied at creation time rather than tightened afterwards -- and are safe precisely because step 3
-   keeps credentials out of the file.
+   `0777` directory and `0644` file, applied at creation time rather than tightened afterwards -- and are safe precisely
+   because step 3 keeps credentials out of the file.
 5. Because the endpoint now resolves through the gateway, it is added to `NO_PROXY` when the token-reduction sidecar is
    active; local traffic is therefore never intercepted, cached, or recorded in the wire logs. With the sidecar the bare
    `host.docker.internal` name is exempted as well, since some `NO_PROXY` implementations compare hostnames only; that

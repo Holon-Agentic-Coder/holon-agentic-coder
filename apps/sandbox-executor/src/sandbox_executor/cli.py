@@ -165,10 +165,11 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:
         ],
     }
 
-    dirs = session_mapping.get(agent_id.lower(), [])
+    norm_agent_id = agent_id.lower().replace("-agent", "").replace("agent-", "")
+    dirs = session_mapping.get(norm_agent_id, [])
     # In host-local model mode the container receives a generated agent directory whose base URLs are reachable from it,
     # so the host's own provider config is deliberately not mounted.
-    if agent_id.lower() == "pi" and local_llm.local_llm_requested():
+    if norm_agent_id == "pi" and local_llm.local_llm_requested():
         return mounts
     for host_path, container_path in dirs:
         if os.path.exists(host_path):
@@ -649,8 +650,8 @@ def run_docker_container(
     # Coherence for local mode: default HOLON_AGENT_PROVIDER from HOLON_LOCAL_PROVIDER if unset
     if local_llm.local_llm_requested():
         local_provider = env_to_forward.get(local_llm.ENV_LOCAL_PROVIDER, "").strip()
-        if local_provider and "HOLON_AGENT_PROVIDER" not in env_to_forward:
-            env_to_forward["HOLON_AGENT_PROVIDER"] = local_provider
+        if "HOLON_AGENT_PROVIDER" not in env_to_forward:
+            env_to_forward["HOLON_AGENT_PROVIDER"] = local_provider or "local"
 
     for key, value in sorted(env_to_forward.items()):
         docker_cmd.extend(["-e", f"{key}={value}"])
@@ -704,8 +705,9 @@ def run_docker_container(
                 # Some NO_PROXY implementations compare only the hostname, so a port-qualified entry can miss. Adding
                 # the bare gateway name is safe when the sidecar is addressed by container name, but not when an
                 # external proxy is reached through host.docker.internal itself.
-                if token_reduce:
+                if token_reduce or mitm_web or bool(_sidecar_state.container_name):
                     exempted.insert(0, local_llm.GATEWAY_HOST)
+                exempted = list(dict.fromkeys(exempted))
                 joined = f"{tr_envs['NO_PROXY']},{','.join(exempted)}"
                 docker_cmd.extend(["-e", f"NO_PROXY={joined}", "-e", f"no_proxy={joined}"])
                 print(

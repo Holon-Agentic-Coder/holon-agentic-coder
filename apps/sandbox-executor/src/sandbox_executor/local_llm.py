@@ -18,6 +18,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 from collections.abc import Iterable
 from urllib.parse import urlsplit, urlunsplit
 
@@ -60,7 +61,14 @@ def local_llm_requested() -> bool:
 def host_local_allow_list() -> set[str]:
     """Authorities explicitly declared rewritable, lower-cased and empty entries dropped."""
     raw = os.getenv(ENV_HOST_LOCAL_HOSTS, "")
-    return {entry.strip().lower() for entry in raw.split(",") if entry.strip()}
+    allow = set()
+    for entry in raw.split(","):
+        cleaned = entry.strip().lower()
+        if not cleaned:
+            continue
+        cleaned = re.sub(r"^https?://", "", cleaned)
+        allow.add(cleaned)
+    return allow
 
 
 def _is_local_host(host: str) -> bool:
@@ -131,7 +139,7 @@ def host_models_json() -> dict | None:
         if not os.path.isfile(path):
             continue
         try:
-            with open(path) as handle:
+            with open(path, encoding="utf-8") as handle:
                 data = json.load(handle)
         except (OSError, json.JSONDecodeError) as exc:
             logger.warning("Could not read %s: %s", path, exc)
@@ -234,12 +242,15 @@ def prepare_agent_dir(dest_dir: str, host_config: dict | None = None, allow_list
     limited to host-local endpoint data -- cloud providers are stripped by :func:`build_container_config`.
     """
     config = build_container_config(host_config, allow_list)
-    os.makedirs(dest_dir, mode=0o755, exist_ok=True)
-    os.chmod(dest_dir, 0o755)
+    os.makedirs(dest_dir, mode=0o777, exist_ok=True)
+    os.chmod(dest_dir, 0o777)
     path = os.path.join(dest_dir, "models.json")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
-    os.chmod(path, 0o644)
-    with os.fdopen(fd, "w") as handle:
+    try:
+        os.fchmod(fd, 0o644)
+    except OSError:
+        os.chmod(path, 0o644)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
         json.dump(config, handle, indent=2)
     return config
 

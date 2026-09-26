@@ -620,7 +620,7 @@ def run_docker_container(
     role: str,
     image_name: str,
     container_args: list[str],
-    agent_id: str | None = None,
+    agent_id: str,
     intent_file: str | None = None,
     token_reduce: bool = False,
     mitm_web: bool = False,
@@ -629,9 +629,6 @@ def run_docker_container(
     if not shutil.which("docker"):
         print("Error: 'docker' CLI command not found. Please install Docker.", file=sys.stderr)
         return 1
-
-    if agent_id is None:
-        agent_id = image_name.split("holon/agent-", 1)[1] if image_name.startswith("holon/agent-") else "antigravity"
 
     tty_flag = ["-it"] if sys.stdin.isatty() else ["-i"]
     docker_cmd = ["docker", "run", "--rm", *tty_flag]

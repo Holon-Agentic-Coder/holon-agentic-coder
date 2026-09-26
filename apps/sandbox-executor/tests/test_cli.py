@@ -75,7 +75,12 @@ class TestHolonCLI(unittest.TestCase):
     def test_run_docker_container(self, mock_which, mock_run, mock_mounts):
         mock_run.return_value = MagicMock(returncode=0)
         with patch.dict(os.environ, {"GITHUB_TOKEN": "secret_token"}, clear=True):
-            code = run_docker_container("planner", "holon/agent-antigravity", ["branch", "agent", "model"])
+            code = run_docker_container(
+                "planner",
+                "holon/agent-antigravity",
+                ["branch", "agent", "model"],
+                agent_id="antigravity",
+            )
             self.assertEqual(code, 0)
             mock_run.assert_called_once()
             args = mock_run.call_args[0][0]
@@ -96,7 +101,12 @@ class TestHolonCLI(unittest.TestCase):
             "SOME_OTHER_VAR": "should-not-be-forwarded",
         }
         with patch.dict(os.environ, env, clear=True):
-            code = run_docker_container("planner", "holon/agent-antigravity", ["branch", "agent", "model"])
+            code = run_docker_container(
+                "planner",
+                "holon/agent-antigravity",
+                ["branch", "agent", "model"],
+                agent_id="antigravity",
+            )
             self.assertEqual(code, 0)
             mock_run.assert_called_once()
             args = mock_run.call_args[0][0]
@@ -111,6 +121,10 @@ class TestHolonCLI(unittest.TestCase):
             self.assertEqual([a for a in args if a.startswith("HOLON_ROLE=")], ["HOLON_ROLE=planner"])
             # Ensure non-prefixed variable is NOT forwarded
             self.assertFalse(any("SOME_OTHER_VAR" in arg for arg in args))
+
+    def test_run_docker_container_requires_agent_id(self):
+        with self.assertRaises(TypeError):
+            run_docker_container("planner", "holon/agent-antigravity", ["branch"])  # type: ignore[call-arg]
 
     @patch("sandbox_executor.cli.run_docker_container", return_value=0)
     def test_main_subcommands(self, mock_run_container):

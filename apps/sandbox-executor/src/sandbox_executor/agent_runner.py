@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -7,6 +8,8 @@ import sys
 import tempfile
 from collections.abc import Callable
 from typing import Any
+
+from sandbox_executor import local_llm
 
 logger = logging.getLogger(__name__)
 
@@ -303,14 +306,39 @@ class StandardAgentRunner(AgentRunner):
             return
 
         if self.required_keys:
+            # A host-local inference server addressed through the Docker gateway needs no provider credential (Bean
+            # 0049). Only accepted for pi -- the generated artifact is a pi agent directory, so a pi-only gate keeps a
+            # stray opt-in from masking a missing cloud key for another runner -- and only when the local endpoint is
+            # actually configured.
+            if (
+                self.agent_id in ("pi", "pi-agent")
+                and local_llm.local_llm_requested()
+                and (os.getenv(local_llm.ENV_PI_AGENT_DIR) or os.getenv(local_llm.ENV_LOCAL_BASE_URL))
+            ):
+                return
+
+            pi_dirs = [
+                "/home/holon/.pi/agent/models.json",
+                "~/.pi/agent/models.json",
+                "/home/holon/.config/pi/models.json",
+                "~/.config/pi/models.json",
+            ]
+            env_pi_dir = os.getenv(local_llm.ENV_PI_AGENT_DIR, "").strip()
+            if env_pi_dir:
+                pi_dirs.insert(0, os.path.join(env_pi_dir, "models.json"))
+
             session_dirs = {
                 "claude": ["/home/holon/.config/claude", "~/.config/claude"],
-                "pi": ["/home/holon/.config/pi", "~/.config/pi"],
+                # pi resolves providers from models.json; that single file is what the launcher mounts, so that is what
+                # counts as an available session here -- not the surrounding directory, which holds auth.json and
+                # transcripts.
+                "pi": pi_dirs,
             }
             has_session_dir = False
-            if self.agent_id in session_dirs:
+            norm_id = local_llm.normalize_agent_id(self.agent_id)
+            if norm_id in session_dirs:
                 has_session_dir = any(
-                    os.path.exists(p) or os.path.exists(os.path.expanduser(p)) for p in session_dirs[self.agent_id]
+                    os.path.exists(p) or os.path.exists(os.path.expanduser(p)) for p in session_dirs[norm_id]
                 )
 
             has_key = any(os.getenv(k) for k in self.required_keys)
@@ -318,7 +346,8 @@ class StandardAgentRunner(AgentRunner):
             if not (has_key or has_session_dir):
                 print(
                     f"Error: Missing required API credentials for agent '{self.agent_id}'.\n"
-                    "Please set 'HOLON_AGENT_KEY' or mount session credentials.",
+                    "Please set 'HOLON_AGENT_KEY', mount session credentials, or select a host-local model with "
+                    f"'{local_llm.ENV_LOCAL_MODE}=1' plus a reachable endpoint.",
                     file=sys.stderr,
                 )
                 sys.exit(1)
@@ -326,6 +355,30 @@ class StandardAgentRunner(AgentRunner):
     def build_cmd(self, model_name: str, prompt_file: str, intent_file: str, full_prompt: str) -> list[str]:
         self.validate()
         cmd = [self.binary_name, *self.prefix, self.model_flag, model_name, *self.suffix]
+
+        # Coherence with host-local model provider: default HOLON_AGENT_PROVIDER from HOLON_LOCAL_PROVIDER or "local"
+        if (
+            local_llm.normalize_agent_id(self.agent_id) == "pi"
+            and local_llm.local_llm_requested()
+            and not os.getenv("HOLON_AGENT_PROVIDER")
+        ):
+            local_prov = os.getenv(local_llm.ENV_LOCAL_PROVIDER, "").strip()
+            if not local_prov:
+                agent_dir = os.getenv(local_llm.ENV_PI_AGENT_DIR, "")
+                models_path = os.path.join(agent_dir, "models.json") if agent_dir else ""
+                if models_path and os.path.isfile(models_path):
+                    try:
+                        with open(models_path, encoding="utf-8") as f:
+                            m_data = json.load(f)
+                        provs = m_data.get("providers", {})
+                        if len(provs) == 1:
+                            local_prov = next(iter(provs.keys()))
+                        elif "local" in provs:
+                            local_prov = "local"
+                    except Exception:
+                        pass
+            if local_prov:
+                os.environ["HOLON_AGENT_PROVIDER"] = local_prov
 
         for mapping in self.env_mappings:
             val = os.getenv(mapping.env_var)

@@ -528,7 +528,11 @@ def test_run_docker_container_tears_down_sidecar_on_early_return(monkeypatch, tm
     monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=lambda *a, **k: pytest.fail("docker must not run")))
 
     rc = cli.run_docker_container(
-        "intent-creator", "holon/orchestrator", [], intent_file=str(tmp_path / "missing-intent.json")
+        "intent-creator",
+        "holon/orchestrator",
+        [],
+        agent_id="antigravity",
+        intent_file=str(tmp_path / "missing-intent.json"),
     )
 
     assert rc == 1

@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from sandbox_executor.cli import (
+    _run_docker,
     find_github_token,
     get_agent_session_mounts,
     get_ssh_auth_mounts,
@@ -75,7 +76,12 @@ class TestHolonCLI(unittest.TestCase):
     def test_run_docker_container(self, mock_which, mock_run, mock_mounts):
         mock_run.return_value = MagicMock(returncode=0)
         with patch.dict(os.environ, {"GITHUB_TOKEN": "secret_token"}, clear=True):
-            code = run_docker_container("planner", "holon/agent-antigravity", ["branch", "agent", "model"])
+            code = run_docker_container(
+                "planner",
+                "holon/agent-antigravity",
+                ["branch", "agent", "model"],
+                agent_id="antigravity",
+            )
             self.assertEqual(code, 0)
             mock_run.assert_called_once()
             args = mock_run.call_args[0][0]
@@ -96,7 +102,12 @@ class TestHolonCLI(unittest.TestCase):
             "SOME_OTHER_VAR": "should-not-be-forwarded",
         }
         with patch.dict(os.environ, env, clear=True):
-            code = run_docker_container("planner", "holon/agent-antigravity", ["branch", "agent", "model"])
+            code = run_docker_container(
+                "planner",
+                "holon/agent-antigravity",
+                ["branch", "agent", "model"],
+                agent_id="antigravity",
+            )
             self.assertEqual(code, 0)
             mock_run.assert_called_once()
             args = mock_run.call_args[0][0]
@@ -111,6 +122,17 @@ class TestHolonCLI(unittest.TestCase):
             self.assertEqual([a for a in args if a.startswith("HOLON_ROLE=")], ["HOLON_ROLE=planner"])
             # Ensure non-prefixed variable is NOT forwarded
             self.assertFalse(any("SOME_OTHER_VAR" in arg for arg in args))
+
+    def test_run_docker_container_requires_agent_id(self):
+        with self.assertRaises(TypeError):
+            run_docker_container("planner", "holon/agent-antigravity", ["branch"])  # type: ignore[call-arg]
+
+    @patch("shutil.which", return_value="/usr/bin/docker")
+    def test_run_docker_container_intent_creator_requires_intent_file(self, mock_which):
+        with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+            rc = run_docker_container("intent-creator", "holon/orchestrator", [], agent_id="antigravity")
+            self.assertEqual(rc, 1)
+            self.assertIn("Error: Intent file is mandatory for intent creation.", mock_stderr.getvalue())
 
     @patch("sandbox_executor.cli.run_docker_container", return_value=0)
     def test_main_subcommands(self, mock_run_container):
@@ -231,6 +253,12 @@ class TestHolonCLI(unittest.TestCase):
             main()
         self.assertEqual(cm.exception.code, 0)
         self.assertIn("holon 0.1.0", mock_stdout.getvalue())
+
+    @patch("subprocess.run", side_effect=FileNotFoundError("docker not found"))
+    def test_run_docker_catches_oserror(self, mock_run):
+        res = _run_docker("version")
+        self.assertEqual(res.returncode, 127)
+        self.assertIn("docker not found", res.stderr)
 
 
 if __name__ == "__main__":

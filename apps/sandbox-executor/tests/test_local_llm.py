@@ -336,7 +336,6 @@ class TestLauncherIntegration(unittest.TestCase):
             self.assertEqual(args.count("host.docker.internal:host-gateway"), 1)
 
     def test_setup_token_reduction_proxy_excludes_gateway_host_args(self):
-        self.addCleanup(cli.teardown_token_reduction_proxy)
         with (
             patch.object(cli, "generate_root_ca", return_value=("/tmp/mock-ca.crt", "/tmp/mock-ca.key")),
             patch.object(cli, "_mitm_proxy_ca_paths", return_value=("/tmp/mock-ca.pem", "/tmp/mock-ca-cert.pem")),
@@ -345,9 +344,12 @@ class TestLauncherIntegration(unittest.TestCase):
             patch("subprocess.run") as mock_subproc,
         ):
             mock_subproc.return_value = MagicMock(returncode=0, stdout="8080\n")
-            mounts, _ = cli.setup_token_reduction_proxy()
-            self.assertNotIn("--add-host", mounts)
-            self.assertNotIn("host.docker.internal:host-gateway", mounts)
+            try:
+                mounts, _ = cli.setup_token_reduction_proxy()
+                self.assertNotIn("--add-host", mounts)
+                self.assertNotIn("host.docker.internal:host-gateway", mounts)
+            finally:
+                cli.teardown_token_reduction_proxy()
 
     def test_local_provider_forwarded_to_agent_provider(self):
         env = {

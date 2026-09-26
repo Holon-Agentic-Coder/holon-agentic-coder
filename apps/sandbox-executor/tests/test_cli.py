@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from sandbox_executor.cli import (
+    _run_docker,
     find_github_token,
     get_agent_session_mounts,
     get_ssh_auth_mounts,
@@ -252,6 +253,12 @@ class TestHolonCLI(unittest.TestCase):
             main()
         self.assertEqual(cm.exception.code, 0)
         self.assertIn("holon 0.1.0", mock_stdout.getvalue())
+
+    @patch("subprocess.run", side_effect=FileNotFoundError("docker not found"))
+    def test_run_docker_catches_oserror(self, mock_run):
+        res = _run_docker("version")
+        self.assertEqual(res.returncode, 127)
+        self.assertIn("docker not found", res.stderr)
 
 
 if __name__ == "__main__":

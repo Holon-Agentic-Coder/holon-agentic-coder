@@ -180,7 +180,10 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:
 
 def _run_docker(*args: str) -> subprocess.CompletedProcess[str]:
     """Run a docker command without raising, capturing stdout/stderr for diagnostics."""
-    return subprocess.run(["docker", *args], capture_output=True, text=True, check=False)
+    try:
+        return subprocess.run(["docker", *args], capture_output=True, text=True, check=False)
+    except OSError as e:
+        return subprocess.CompletedProcess(args=["docker", *args], returncode=127, stdout="", stderr=str(e))
 
 
 def _container_ca_path(ca_cert_path: str) -> str:

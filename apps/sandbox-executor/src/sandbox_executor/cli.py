@@ -714,7 +714,10 @@ def run_docker_container(
                 )
 
         # Intent file mount for intent-creator role
-        if role == "intent-creator" and intent_file:
+        if role == "intent-creator":
+            if not intent_file:
+                print("Error: Intent file is mandatory for intent creation.", file=sys.stderr)
+                return 1
             abs_intent = os.path.abspath(intent_file)
             if not os.path.exists(abs_intent):
                 print(f"Error: Intent file '{intent_file}' does not exist.", file=sys.stderr)

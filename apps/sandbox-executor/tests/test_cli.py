@@ -126,6 +126,13 @@ class TestHolonCLI(unittest.TestCase):
         with self.assertRaises(TypeError):
             run_docker_container("planner", "holon/agent-antigravity", ["branch"])  # type: ignore[call-arg]
 
+    @patch("shutil.which", return_value="/usr/bin/docker")
+    def test_run_docker_container_intent_creator_requires_intent_file(self, mock_which):
+        with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+            rc = run_docker_container("intent-creator", "holon/orchestrator", [], agent_id="antigravity")
+            self.assertEqual(rc, 1)
+            self.assertIn("Error: Intent file is mandatory for intent creation.", mock_stderr.getvalue())
+
     @patch("sandbox_executor.cli.run_docker_container", return_value=0)
     def test_main_subcommands(self, mock_run_container):
         test_args = [

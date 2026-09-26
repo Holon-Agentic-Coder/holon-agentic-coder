@@ -53,6 +53,11 @@ class LocalLLMConfigError(ValueError):
     """Raised when local mode is requested but cannot be satisfied; never silently degraded."""
 
 
+def normalize_agent_id(agent_id: str) -> str:
+    """Normalize agent identifier (e.g. 'pi-agent', 'agent-pi', 'Pi' -> 'pi')."""
+    return agent_id.lower().replace("-agent", "").replace("agent-", "")
+
+
 def local_llm_requested() -> bool:
     """True only when the operator explicitly opts into a host-local model."""
     return os.getenv(ENV_LOCAL_MODE, "").strip().lower() in _TRUTHY_ENV_VALUES

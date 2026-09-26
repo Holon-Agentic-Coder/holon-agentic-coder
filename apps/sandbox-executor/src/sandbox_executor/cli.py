@@ -165,7 +165,7 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:
         ],
     }
 
-    norm_agent_id = agent_id.lower().replace("-agent", "").replace("agent-", "")
+    norm_agent_id = local_llm.normalize_agent_id(agent_id)
     dirs = session_mapping.get(norm_agent_id, [])
     # In host-local model mode the container receives a generated agent directory whose base URLs are reachable from it,
     # so the host's own provider config is deliberately not mounted.
@@ -647,11 +647,13 @@ def run_docker_container(
         if key.startswith("HOLON_") or key == "GITHUB_TOKEN":
             env_to_forward[key] = value
 
+    norm_agent_id = local_llm.normalize_agent_id(agent_id)
+
     # Ensure explicit role parameter takes strict precedence over host environment
     env_to_forward["HOLON_ROLE"] = role
 
-    # Coherence for local mode: default HOLON_AGENT_PROVIDER from HOLON_LOCAL_PROVIDER if unset
-    if local_llm.local_llm_requested():
+    # Coherence for local mode: default HOLON_AGENT_PROVIDER from HOLON_LOCAL_PROVIDER if unset (pi runner only)
+    if local_llm.local_llm_requested() and norm_agent_id == "pi":
         local_provider = env_to_forward.get(local_llm.ENV_LOCAL_PROVIDER, "").strip()
         if "HOLON_AGENT_PROVIDER" not in env_to_forward and local_provider:
             env_to_forward["HOLON_AGENT_PROVIDER"] = local_provider
@@ -680,15 +682,16 @@ def run_docker_container(
         # Host-local inference servers (Bean 0049): loopback and the host's own LAN address are unreachable from the
         # container namespace, so hand the agent a generated config whose authorities resolve via the gateway. The
         # artifact is a pi agent directory, so it is produced for pi only; other runners still need real credentials.
-        norm_agent_id = agent_id.lower().replace("-agent", "").replace("agent-", "")
-        if local_llm.local_llm_requested() and norm_agent_id != "pi":
+        if local_llm.local_llm_requested() and norm_agent_id != "pi" and role in ("planner", "executor"):
             print(
                 f"Warning: host-local model mode applies to the pi runner only; ignoring it for '{agent_id}'.",
                 file=sys.stderr,
             )
         if local_llm.local_llm_requested() and norm_agent_id == "pi":
             try:
-                local_agent_dir = tempfile.mkdtemp(prefix="holon-pi-agent-")
+                base_tmp = os.path.expanduser("~/.holon/tmp")
+                os.makedirs(base_tmp, mode=0o755, exist_ok=True)
+                local_agent_dir = tempfile.mkdtemp(prefix="holon-pi-agent-", dir=base_tmp)
                 local_config = local_llm.prepare_agent_dir(
                     local_agent_dir,
                     host_config=local_llm.host_models_json(),

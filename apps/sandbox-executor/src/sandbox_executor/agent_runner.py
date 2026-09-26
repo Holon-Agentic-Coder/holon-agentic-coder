@@ -317,22 +317,28 @@ class StandardAgentRunner(AgentRunner):
             ):
                 return
 
+            pi_dirs = [
+                "/home/holon/.pi/agent/models.json",
+                "~/.pi/agent/models.json",
+                "/home/holon/.config/pi/models.json",
+                "~/.config/pi/models.json",
+            ]
+            env_pi_dir = os.getenv(local_llm.ENV_PI_AGENT_DIR, "").strip()
+            if env_pi_dir:
+                pi_dirs.insert(0, os.path.join(env_pi_dir, "models.json"))
+
             session_dirs = {
                 "claude": ["/home/holon/.config/claude", "~/.config/claude"],
                 # pi resolves providers from models.json; that single file is what the launcher mounts, so that is what
                 # counts as an available session here -- not the surrounding directory, which holds auth.json and
                 # transcripts.
-                "pi": [
-                    "/home/holon/.pi/agent/models.json",
-                    "~/.pi/agent/models.json",
-                    "/home/holon/.config/pi/models.json",
-                    "~/.config/pi/models.json",
-                ],
+                "pi": pi_dirs,
             }
             has_session_dir = False
-            if self.agent_id in session_dirs:
+            norm_id = local_llm.normalize_agent_id(self.agent_id)
+            if norm_id in session_dirs:
                 has_session_dir = any(
-                    os.path.exists(p) or os.path.exists(os.path.expanduser(p)) for p in session_dirs[self.agent_id]
+                    os.path.exists(p) or os.path.exists(os.path.expanduser(p)) for p in session_dirs[norm_id]
                 )
 
             has_key = any(os.getenv(k) for k in self.required_keys)
@@ -352,7 +358,7 @@ class StandardAgentRunner(AgentRunner):
 
         # Coherence with host-local model provider: default HOLON_AGENT_PROVIDER from HOLON_LOCAL_PROVIDER or "local"
         if (
-            self.agent_id in ("pi", "pi-agent")
+            local_llm.normalize_agent_id(self.agent_id) == "pi"
             and local_llm.local_llm_requested()
             and not os.getenv("HOLON_AGENT_PROVIDER")
         ):
@@ -367,9 +373,12 @@ class StandardAgentRunner(AgentRunner):
                         provs = m_data.get("providers", {})
                         if len(provs) == 1:
                             local_prov = next(iter(provs.keys()))
+                        elif "local" in provs:
+                            local_prov = "local"
                     except Exception:
                         pass
-            os.environ["HOLON_AGENT_PROVIDER"] = local_prov or "local"
+            if local_prov:
+                os.environ["HOLON_AGENT_PROVIDER"] = local_prov
 
         for mapping in self.env_mappings:
             val = os.getenv(mapping.env_var)

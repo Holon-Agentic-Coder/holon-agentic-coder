@@ -595,6 +595,60 @@ class TestRunnerValidation(unittest.TestCase):
             self.assertIn("--provider", cmd)
             self.assertIn("vmlx", cmd)
 
+    def test_pi_build_cmd_aligns_single_provider_from_models_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            models_file = os.path.join(tmp, "models.json")
+            with open(models_file, "w") as handle:
+                json.dump({"providers": {"vmlx": {"baseUrl": "http://localhost:8081/v1"}}}, handle)
+            env = {"HOLON_LOCAL_LLM": "1", "PI_CODING_AGENT_DIR": tmp}
+            with patch.dict(os.environ, env, clear=True), patch("os.path.exists", return_value=False):
+                cmd = get_runner("pi-agent").build_cmd("test-model", "prompt.txt", "intent.json", "Hello")
+                self.assertIn("--provider", cmd)
+                self.assertIn("vmlx", cmd)
+
+    def test_pi_build_cmd_aligns_local_named_provider_from_models_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            models_file = os.path.join(tmp, "models.json")
+            with open(models_file, "w") as handle:
+                json.dump(
+                    {
+                        "providers": {
+                            "local": {"baseUrl": "http://localhost:8081/v1"},
+                            "ollama": {"baseUrl": "http://localhost:11434/v1"},
+                        }
+                    },
+                    handle,
+                )
+            env = {"HOLON_LOCAL_LLM": "1", "PI_CODING_AGENT_DIR": tmp}
+            with patch.dict(os.environ, env, clear=True), patch("os.path.exists", return_value=False):
+                cmd = get_runner("pi-agent").build_cmd("test-model", "prompt.txt", "intent.json", "Hello")
+                self.assertIn("--provider", cmd)
+                self.assertIn("local", cmd)
+
+    def test_pi_build_cmd_multiple_providers_without_local_or_env_does_not_set_provider(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            models_file = os.path.join(tmp, "models.json")
+            with open(models_file, "w") as handle:
+                json.dump(
+                    {
+                        "providers": {
+                            "vmlx": {"baseUrl": "http://localhost:8081/v1"},
+                            "ollama": {"baseUrl": "http://localhost:11434/v1"},
+                        }
+                    },
+                    handle,
+                )
+            env = {"HOLON_LOCAL_LLM": "1", "PI_CODING_AGENT_DIR": tmp}
+            with patch.dict(os.environ, env, clear=True), patch("os.path.exists", return_value=False):
+                cmd = get_runner("pi-agent").build_cmd("test-model", "prompt.txt", "intent.json", "Hello")
+                self.assertNotIn("--provider", cmd)
+
+    def test_normalize_agent_id(self):
+        self.assertEqual(local_llm.normalize_agent_id("pi-agent"), "pi")
+        self.assertEqual(local_llm.normalize_agent_id("agent-pi"), "pi")
+        self.assertEqual(local_llm.normalize_agent_id("Pi"), "pi")
+        self.assertEqual(local_llm.normalize_agent_id("claude-agent"), "claude")
+
 
 if __name__ == "__main__":
     unittest.main()

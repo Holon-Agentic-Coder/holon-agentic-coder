@@ -66,8 +66,10 @@ def host_local_allow_list() -> set[str]:
         cleaned = entry.strip().lower()
         if not cleaned:
             continue
-        cleaned = re.sub(r"^https?://", "", cleaned).rstrip("/")
-        allow.add(cleaned)
+        cleaned = re.sub(r"^https?://", "", cleaned)
+        cleaned = cleaned.split("/")[0].strip()
+        if cleaned:
+            allow.add(cleaned)
     return allow
 
 
@@ -120,7 +122,7 @@ def rewrite_authority(url: str, allow_list: Iterable[str] = ()) -> str:
         netloc = GATEWAY_HOST if port is None else f"{GATEWAY_HOST}:{port}"
         try:
             parsed = urlsplit(url)
-            return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, ""))
+            return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
         except ValueError:
             return url
     return url
@@ -128,8 +130,16 @@ def rewrite_authority(url: str, allow_list: Iterable[str] = ()) -> str:
 
 def pi_agent_dirs() -> list[str]:
     """Host-side pi agent directories, most recent layout first."""
+    candidates = []
+    env_dir = os.getenv(ENV_PI_AGENT_DIR, "").strip()
+    if env_dir:
+        candidates.append(os.path.expanduser(env_dir))
     home = os.path.expanduser("~")
-    return [os.path.join(home, *rel.split("/")) for rel in _PI_AGENT_DIR_CANDIDATES]
+    for rel in _PI_AGENT_DIR_CANDIDATES:
+        path = os.path.join(home, *rel.split("/"))
+        if path not in candidates:
+            candidates.append(path)
+    return candidates
 
 
 def host_models_json() -> dict | None:
@@ -215,6 +225,8 @@ def build_container_config(host_config: dict | None, allow_list: Iterable[str] =
         if rewritten != base_url:
             logger.info("Rewrote provider %r baseUrl for sandbox reachability: %s -> %s", name, base_url, rewritten)
         provider["baseUrl"] = rewritten
+        if not provider.get("apiKey"):
+            provider["apiKey"] = "holon-local"
         kept[name] = provider
 
     if not kept:

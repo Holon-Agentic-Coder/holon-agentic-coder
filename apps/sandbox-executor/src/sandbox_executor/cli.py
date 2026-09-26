@@ -653,8 +653,8 @@ def run_docker_container(
     # Coherence for local mode: default HOLON_AGENT_PROVIDER from HOLON_LOCAL_PROVIDER if unset
     if local_llm.local_llm_requested():
         local_provider = env_to_forward.get(local_llm.ENV_LOCAL_PROVIDER, "").strip()
-        if "HOLON_AGENT_PROVIDER" not in env_to_forward:
-            env_to_forward["HOLON_AGENT_PROVIDER"] = local_provider or "local"
+        if "HOLON_AGENT_PROVIDER" not in env_to_forward and local_provider:
+            env_to_forward["HOLON_AGENT_PROVIDER"] = local_provider
 
     for key, value in sorted(env_to_forward.items()):
         docker_cmd.extend(["-e", f"{key}={value}"])
@@ -682,12 +682,13 @@ def run_docker_container(
         # Host-local inference servers (Bean 0049): loopback and the host's own LAN address are unreachable from the
         # container namespace, so hand the agent a generated config whose authorities resolve via the gateway. The
         # artifact is a pi agent directory, so it is produced for pi only; other runners still need real credentials.
-        if local_llm.local_llm_requested() and agent_id.lower() not in ("pi", "pi-agent"):
+        norm_agent_id = agent_id.lower().replace("-agent", "").replace("agent-", "")
+        if local_llm.local_llm_requested() and norm_agent_id != "pi":
             print(
                 f"Warning: host-local model mode applies to the pi runner only; ignoring it for '{agent_id}'.",
                 file=sys.stderr,
             )
-        if local_llm.local_llm_requested() and agent_id.lower() in ("pi", "pi-agent"):
+        if local_llm.local_llm_requested() and norm_agent_id == "pi":
             try:
                 local_agent_dir = tempfile.mkdtemp(prefix="holon-pi-agent-")
                 local_config = local_llm.prepare_agent_dir(
@@ -698,14 +699,10 @@ def run_docker_container(
             except local_llm.LocalLLMConfigError as exc:
                 print(f"Error: {exc}", file=sys.stderr)
                 return 1
-            # If provider was defaulted to "local" but local_config has a single distinct provider, align them
-            providers = local_config.get("providers", {})
-            if (
-                env_to_forward.get("HOLON_AGENT_PROVIDER") == "local"
-                and "local" not in providers
-                and len(providers) == 1
-            ):
-                chosen = next(iter(providers.keys()))
+            # If provider was unset, determine whether to use the single distinct provider or "local"
+            if "HOLON_AGENT_PROVIDER" not in env_to_forward:
+                providers = local_config.get("providers", {})
+                chosen = next(iter(providers.keys())) if len(providers) == 1 else "local"
                 docker_cmd.extend(["-e", f"HOLON_AGENT_PROVIDER={chosen}"])
             docker_cmd.extend(local_llm.container_mount_args(local_agent_dir))
             for key, value in local_llm.container_env(local_agent_dir).items():
@@ -717,10 +714,13 @@ def run_docker_container(
                 # Some NO_PROXY implementations compare only the hostname, so a port-qualified entry can miss. Adding
                 # the bare gateway name is safe when the sidecar is addressed by container name, but not when an
                 # external proxy is reached through host.docker.internal itself.
-                if token_reduce or mitm_web or bool(_sidecar_state.container_name):
+                proxy_url = tr_envs.get("HTTP_PROXY", "")
+                if (
+                    token_reduce or mitm_web or bool(_sidecar_state.container_name)
+                ) and local_llm.GATEWAY_HOST not in proxy_url:
                     exempted.insert(0, local_llm.GATEWAY_HOST)
-                exempted = list(dict.fromkeys(exempted))
-                joined = f"{tr_envs['NO_PROXY']},{','.join(exempted)}"
+                existing_no_proxy = [e.strip() for e in tr_envs.get("NO_PROXY", "").split(",") if e.strip()]
+                joined = ",".join(dict.fromkeys(existing_no_proxy + exempted))
                 docker_cmd.extend(["-e", f"NO_PROXY={joined}", "-e", f"no_proxy={joined}"])
                 print(
                     f"Note: host-local endpoint(s) {', '.join(local_hosts)} are exempt from token reduction "

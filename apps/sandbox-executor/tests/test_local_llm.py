@@ -86,6 +86,12 @@ class TestRewriteAuthority(unittest.TestCase):
             "http://192.168.2.13:9999/v1",
         )
 
+    def test_rewrite_authority_preserves_fragment(self):
+        self.assertEqual(
+            local_llm.rewrite_authority("http://127.0.0.1:8080/v1#section"),
+            "http://host.docker.internal:8080/v1#section",
+        )
+
 
 class TestOptIn(unittest.TestCase):
     def test_off_by_default_and_never_inferred(self):
@@ -105,6 +111,10 @@ class TestOptIn(unittest.TestCase):
     def test_allow_list_parsing_drops_blanks_and_lowercases(self):
         with patch.dict(os.environ, {"HOLON_HOST_LOCAL_HOSTS": " MyBox.lan, ,192.168.2.13,"}, clear=True):
             self.assertEqual(local_llm.host_local_allow_list(), {"mybox.lan", "192.168.2.13"})
+
+    def test_allow_list_parsing_strips_paths(self):
+        with patch.dict(os.environ, {"HOLON_HOST_LOCAL_HOSTS": " 192.168.1.50:8081/v1, 10.0.0.1/ "}, clear=True):
+            self.assertEqual(local_llm.host_local_allow_list(), {"192.168.1.50:8081", "10.0.0.1"})
 
 
 class TestBuildContainerConfig(unittest.TestCase):
@@ -159,6 +169,20 @@ class TestBuildContainerConfig(unittest.TestCase):
             config["providers"]["local_ollama"]["baseUrl"],
             "http://host.docker.internal:11434/v1",
         )
+        self.assertEqual(config["providers"]["local_ollama"]["apiKey"], "holon-local")
+
+    def test_local_provider_preserves_existing_api_key(self):
+        host_config = {
+            "providers": {
+                "local_vllm": {
+                    "baseUrl": "http://127.0.0.1:8000/v1",
+                    "apiKey": "custom-secret-key",
+                    "models": [{"id": "llama3"}],
+                },
+            },
+        }
+        config = local_llm.build_container_config(host_config)
+        self.assertEqual(config["providers"]["local_vllm"]["apiKey"], "custom-secret-key")
 
     def test_only_cloud_providers_falls_back_to_synthesis(self):
         host_config = {
@@ -293,6 +317,11 @@ class TestPrepareAgentDir(unittest.TestCase):
             with patch.object(local_llm, "pi_agent_dirs", lambda: [tmp]):
                 self.assertIsNone(local_llm.host_models_json())
 
+    def test_pi_agent_dirs_respects_env_var(self):
+        with patch.dict(os.environ, {local_llm.ENV_PI_AGENT_DIR: "/custom/pi/dir"}, clear=True):
+            dirs = local_llm.pi_agent_dirs()
+            self.assertEqual(dirs[0], "/custom/pi/dir")
+
 
 class TestLauncherIntegration(unittest.TestCase):
     def _run(self, env, mounts=None, tr_envs=None, mkdtemp_dir=None, agent_id="pi", token_reduce=False):
@@ -369,7 +398,8 @@ class TestLauncherIntegration(unittest.TestCase):
             "HOLON_LOCAL_BASE_URL": "http://localhost:8081/v1",
             "HOLON_LOCAL_MODELS": "qwen3:test",
         }
-        code, args, _ = self._run(env)
+        with patch.object(local_llm, "host_models_json", return_value=None):
+            code, args, _ = self._run(env)
         self.assertEqual(code, 0)
         self.assertIn("-e", args)
         self.assertIn("HOLON_AGENT_PROVIDER=local", args)
@@ -386,7 +416,20 @@ class TestLauncherIntegration(unittest.TestCase):
         with patch.object(local_llm, "host_models_json", return_value=host_config):
             code, args, _ = self._run({"HOLON_LOCAL_LLM": "1"})
         self.assertEqual(code, 0)
-        self.assertIn("HOLON_AGENT_PROVIDER=vmlx", args)
+        self.assertEqual(args.count("HOLON_AGENT_PROVIDER=vmlx"), 1)
+        self.assertNotIn("HOLON_AGENT_PROVIDER=local", args)
+
+    def test_agent_id_normalization_accepts_agent_pi(self):
+        env = {
+            "HOLON_LOCAL_LLM": "1",
+            "HOLON_LOCAL_BASE_URL": "http://localhost:8081/v1",
+            "HOLON_LOCAL_MODELS": "qwen3:test",
+        }
+        with patch.object(local_llm, "prepare_agent_dir", wraps=local_llm.prepare_agent_dir) as prep:
+            code, args, _ = self._run(env, agent_id="agent-pi")
+        self.assertEqual(code, 0)
+        prep.assert_called_once()
+        self.assertIn(f"PI_CODING_AGENT_DIR={local_llm.CONTAINER_AGENT_DIR}", args)
 
     def test_local_mode_mounts_generated_dir_and_sets_agent_dir(self):
         env = {

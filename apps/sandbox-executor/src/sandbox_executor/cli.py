@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from sandbox_executor.calibration import run_calibrate
+from sandbox_executor.flow import FlowContext, FlowStage, load_checkpoint, run_flow_pipeline
 from sandbox_executor.scaffold import init_project
 from sandbox_executor.token_reduction import generate_root_ca
 
@@ -803,7 +804,136 @@ def main() -> None:
         help="Generate report without creating a git branch or committing.",
     )
 
+    # Subcommand: flow
+    flow_parser = subparsers.add_parser(
+        "flow",
+        help="Run the automated 5-stage Holon Flow lifecycle pipeline.",
+    )
+    flow_parser.add_argument(
+        "intent_file",
+        nargs="?",
+        default=None,
+        help="Path to local intent JSON file (e.g. intents/my-task.json)",
+    )
+    flow_parser.add_argument(
+        "--from-stage",
+        choices=["intent", "plan", "execute", "review", "calibrate"],
+        default=None,
+        help="Resume pipeline from a specific stage.",
+    )
+    flow_parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="Optional path to a flow checkpoint file.",
+    )
+    flow_parser.add_argument(
+        "--agent",
+        default=None,
+        help="Agent runner to execute (default: antigravity-agent)",
+    )
+    flow_parser.add_argument(
+        "--model",
+        default=None,
+        help="Model name to pass to agent (default: gemini-3.8-flash-medium)",
+    )
+    flow_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate stages and branches without executing external agents or git commits.",
+    )
+    flow_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output pipeline status and stage results in structured JSON format to stdout.",
+    )
+    flow_parser.add_argument(
+        "--repo-dir",
+        default=".",
+        help="Target repository directory path (default: current directory).",
+    )
+    flow_parser.add_argument(
+        "--skip-push",
+        action="store_true",
+        help="Skip pushing git branches to remote origin.",
+    )
+
     args = parser.parse_args()
+
+    if args.command == "flow":
+        try:
+            context = None
+            if args.checkpoint:
+                if not os.path.exists(args.checkpoint):
+                    print(f"Error: Checkpoint file '{args.checkpoint}' does not exist.", file=sys.stderr)
+                    sys.exit(1)
+                checkpoint = load_checkpoint(args.checkpoint)
+                context = checkpoint.context
+                if not args.from_stage and checkpoint.current_stage != FlowStage.COMPLETED:
+                    args.from_stage = checkpoint.current_stage.value
+
+            if context is None:
+                intent_data = {}
+                if args.intent_file:
+                    if not os.path.exists(args.intent_file):
+                        print(f"Error: Intent file '{args.intent_file}' does not exist.", file=sys.stderr)
+                        sys.exit(1)
+                    with open(args.intent_file, encoding="utf-8") as f:
+                        import json
+
+                        intent_data = json.load(f)
+                context = FlowContext(
+                    repo_dir=args.repo_dir,
+                    intent_data=intent_data,
+                    agent=args.agent or "antigravity-agent",
+                    model=args.model or "gemini-3.8-flash-medium",
+                    dry_run=args.dry_run,
+                    skip_push=args.skip_push,
+                )
+            else:
+                if args.repo_dir and args.repo_dir != ".":
+                    context.repo_dir = args.repo_dir
+                if args.agent is not None:
+                    context.agent = args.agent
+                if args.model is not None:
+                    context.model = args.model
+                if args.dry_run:
+                    context.dry_run = True
+                if args.skip_push:
+                    context.skip_push = True
+
+            result_dict = run_flow_pipeline(
+                context=context,
+                from_stage=args.from_stage,
+                checkpoint_path=args.checkpoint,
+            )
+
+            if args.json:
+                import json
+
+                print(json.dumps(result_dict, indent=2))
+            else:
+                print("\n================== Holon Flow Summary ==================")
+                stage_order = ["intent", "plan", "execute", "review", "calibrate"]
+                for st in stage_order:
+                    res = context.stage_results.get(st)
+                    status_str = res.status.value.upper() if res else "NOT_RUN"
+                    print(f"  Stage {st.upper():<10}: {status_str}")
+                    if res and res.status.value == "failed" and res.error:
+                        print(f"    -> Error: {res.error}")
+                print("========================================================\n")
+                review_res = context.stage_results.get("review")
+                if review_res and review_res.payload.get("halted_for_human"):
+                    print(
+                        "[BEAN 0034 SAFETY HALT] Pipeline safely halted for human review (autonomous merge prohibited)."
+                    )
+                    if review_res.payload.get("human_approval_command"):
+                        print(f"To approve manually, run: {review_res.payload['human_approval_command']}\n")
+
+            has_failure = any(res.status.value == "failed" for res in context.stage_results.values())
+            sys.exit(1 if has_failure else 0)
+        except Exception as e:
+            print(f"Error during flow execution: {e}", file=sys.stderr)
+            sys.exit(1)
 
     if args.command == "calibrate":
         try:
@@ -827,7 +957,7 @@ def main() -> None:
             )
         )
 
-    agent_id = args.agent.replace("-agent", "").replace("agent-", "") if hasattr(args, "agent") else "antigravity"
+    agent_id = args.agent.replace("-agent", "").replace("agent-", "") if getattr(args, "agent", None) else "antigravity"
     agent_image_mapping = {
         "antigravity": "holon/agent-antigravity",
         "claude": "holon/agent-claude",

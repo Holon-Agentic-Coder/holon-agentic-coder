@@ -48,6 +48,11 @@ class TestPlannerIntegration(unittest.TestCase):
             self.skipTest("Docker daemon is not available in test environment.")
 
         with tempfile.TemporaryDirectory() as tmp_dir:
+            # Git refuses to use a repository mounted from the host unless it is declared trusted;
+            # the container runs as uid 1000 while the host temp dir is owned by the CI user.
+            gitconfig_path = os.path.join(tmp_dir, "gitconfig")
+            with open(gitconfig_path, "w", encoding="utf-8") as gf:
+                gf.write("[safe]\n\tdirectory = /mock_remote.git\n")
             bare_repo_dir = os.path.join(tmp_dir, "remote.git")
             subprocess.run(["git", "init", "--bare", bare_repo_dir], check=True, capture_output=True)
 
@@ -87,6 +92,10 @@ class TestPlannerIntegration(unittest.TestCase):
                 "HOLON_ROLE=intent-creator",
                 "-e",
                 "HOLON_REPO_URL=/mock_remote.git",
+                "-e",
+                "GIT_CONFIG_GLOBAL=/tmp/holon-test.gitconfig",
+                "-v",
+                f"{gitconfig_path}:/tmp/holon-test.gitconfig:ro",
                 "-v",
                 f"{bare_repo_dir}:/mock_remote.git",
                 "-v",
@@ -141,6 +150,10 @@ class TestPlannerIntegration(unittest.TestCase):
                         "HOLON_ROLE=planner",
                         "-e",
                         "HOLON_REPO_URL=/mock_remote.git",
+                        "-e",
+                        "GIT_CONFIG_GLOBAL=/tmp/holon-test.gitconfig",
+                        "-v",
+                        f"{gitconfig_path}:/tmp/holon-test.gitconfig:ro",
                         "-v",
                         f"{bare_repo_dir}:/mock_remote.git",
                         image_name,

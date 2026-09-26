@@ -508,7 +508,15 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.agent_runner.os.path.ismount", return_value=False)
     @patch("sandbox_executor.agent_runner.os.path.islink", return_value=False)
     def test_main_raises_runtime_error_on_cleanup_failure(
-        self, mock_islink, mock_ismount, mock_lexists, mock_rmtree, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd
+        self,
+        mock_islink,
+        mock_ismount,
+        mock_lexists,
+        mock_rmtree,
+        mock_expanduser,
+        mock_get_repo_url,
+        mock_get_runner,
+        mock_run_cmd,
     ):
         mock_rmtree.side_effect = PermissionError("Permission denied")
         with tempfile.TemporaryDirectory() as tmp_dir:

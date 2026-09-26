@@ -521,7 +521,7 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
     if mitm_web:
         logger.info("🌐 mitmweb dashboard active at http://127.0.0.1:%s", web_port)
 
-    mounts = ["--network", network_name, *_gateway_host_args(), *_ca_mount_args(ca_cert_path)]
+    mounts = ["--network", network_name, *_ca_mount_args(ca_cert_path)]
     return mounts, _build_proxy_envs(ca_cert_path, f"http://{container_name}:{PROXY_LISTEN_PORT}")
 
 
@@ -648,6 +648,12 @@ def run_docker_container(
 
     # Ensure explicit role parameter takes strict precedence over host environment
     env_to_forward["HOLON_ROLE"] = role
+
+    # Coherence for local mode: default HOLON_AGENT_PROVIDER from HOLON_LOCAL_PROVIDER if unset
+    if local_llm.local_llm_requested():
+        local_provider = env_to_forward.get(local_llm.ENV_LOCAL_PROVIDER, "").strip()
+        if local_provider and "HOLON_AGENT_PROVIDER" not in env_to_forward:
+            env_to_forward["HOLON_AGENT_PROVIDER"] = local_provider
 
     for key, value in sorted(env_to_forward.items()):
         docker_cmd.extend(["-e", f"{key}={value}"])

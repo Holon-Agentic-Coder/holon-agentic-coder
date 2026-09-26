@@ -322,7 +322,6 @@ class StandardAgentRunner(AgentRunner):
                 # counts as an available session here -- not the surrounding directory, which holds auth.json and
                 # transcripts.
                 "pi": [
-                    f"{local_llm.CONTAINER_AGENT_DIR}/models.json",
                     "/home/holon/.pi/agent/models.json",
                     "~/.pi/agent/models.json",
                     "/home/holon/.config/pi/models.json",
@@ -349,6 +348,15 @@ class StandardAgentRunner(AgentRunner):
     def build_cmd(self, model_name: str, prompt_file: str, intent_file: str, full_prompt: str) -> list[str]:
         self.validate()
         cmd = [self.binary_name, *self.prefix, self.model_flag, model_name, *self.suffix]
+
+        # Coherence with host-local model provider: default HOLON_AGENT_PROVIDER from HOLON_LOCAL_PROVIDER
+        if (
+            self.agent_id == "pi"
+            and local_llm.local_llm_requested()
+            and not os.getenv("HOLON_AGENT_PROVIDER")
+            and os.getenv(local_llm.ENV_LOCAL_PROVIDER)
+        ):
+            os.environ["HOLON_AGENT_PROVIDER"] = os.getenv(local_llm.ENV_LOCAL_PROVIDER, "").strip()
 
         for mapping in self.env_mappings:
             val = os.getenv(mapping.env_var)

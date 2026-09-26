@@ -108,7 +108,7 @@ def rewrite_authority(url: str, allow_list: Iterable[str] = ()) -> str:
     host, port = authority
     if host == GATEWAY_HOST:
         return url
-    if _is_local_host(host) or host in allowed:
+    if _is_local_host(host) or host in allowed or (port is not None and f"{host}:{port}" in allowed):
         netloc = GATEWAY_HOST if port is None else f"{GATEWAY_HOST}:{port}"
         try:
             parsed = urlsplit(url)
@@ -158,6 +158,12 @@ def _synthesized_config(allow_list: Iterable[str]) -> dict:
         )
     provider = os.getenv(ENV_LOCAL_PROVIDER, "").strip() or os.getenv("HOLON_AGENT_PROVIDER", "").strip() or "local"
     rewritten = rewrite_authority(base_url, allow_list)
+    auth = _authority(rewritten)
+    if auth is None or auth[0] != GATEWAY_HOST:
+        raise LocalLLMConfigError(
+            f"The configured {ENV_LOCAL_BASE_URL} ({base_url}) is neither a loopback address nor in "
+            f"{ENV_HOST_LOCAL_HOSTS}."
+        )
     return {
         "providers": {
             provider: {
@@ -232,6 +238,7 @@ def prepare_agent_dir(dest_dir: str, host_config: dict | None = None, allow_list
     os.chmod(dest_dir, 0o755)
     path = os.path.join(dest_dir, "models.json")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    os.chmod(path, 0o644)
     with os.fdopen(fd, "w") as handle:
         json.dump(config, handle, indent=2)
     return config

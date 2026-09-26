@@ -76,6 +76,16 @@ class TestRewriteAuthority(unittest.TestCase):
             "http://host.docker.internal:8081/v1",
         )
 
+    def test_port_qualified_authority_in_allow_list(self):
+        self.assertEqual(
+            local_llm.rewrite_authority("http://192.168.2.13:8081/v1", {"192.168.2.13:8081"}),
+            "http://host.docker.internal:8081/v1",
+        )
+        self.assertEqual(
+            local_llm.rewrite_authority("http://192.168.2.13:9999/v1", {"192.168.2.13:8081"}),
+            "http://192.168.2.13:9999/v1",
+        )
+
 
 class TestOptIn(unittest.TestCase):
     def test_off_by_default_and_never_inferred(self):
@@ -212,21 +222,37 @@ class TestBuildContainerConfig(unittest.TestCase):
             config = local_llm.build_container_config({"providers": {}})
         self.assertEqual(config["providers"]["local"]["baseUrl"], "http://host.docker.internal:8081/v1")
 
+    def test_synthesized_config_unrewritable_endpoint_raises(self):
+        env = {
+            "HOLON_LOCAL_BASE_URL": "http://192.168.2.13:8081/v1",
+            "HOLON_LOCAL_MODELS": "m1",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            self.assertRaises(local_llm.LocalLLMConfigError) as ctx,
+        ):
+            local_llm.build_container_config(None)
+        self.assertIn("HOLON_HOST_LOCAL_HOSTS", str(ctx.exception))
+
 
 class TestPrepareAgentDir(unittest.TestCase):
     def test_writes_rewritten_models_json_with_safe_container_permissions(self):
-        host_config = {"providers": {"vmlx": {"baseUrl": "http://localhost:8081/v1", "models": [{"id": "m"}]}}}
-        with tempfile.TemporaryDirectory() as tmp:
-            dest = os.path.join(tmp, "agent")
-            config = local_llm.prepare_agent_dir(dest, host_config=host_config)
-            path = os.path.join(dest, "models.json")
-            with open(path) as handle:
-                on_disk = json.load(handle)
-            self.assertEqual(on_disk, config)
-            self.assertEqual(on_disk["providers"]["vmlx"]["baseUrl"], "http://host.docker.internal:8081/v1")
-            # 0755 directory and 0644 file allow non-root container user (uid=1000) to access them on Linux
-            self.assertEqual(stat.S_IMODE(os.stat(dest).st_mode), 0o755)
-            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o644)
+        old_umask = os.umask(0o077)
+        try:
+            host_config = {"providers": {"vmlx": {"baseUrl": "http://localhost:8081/v1", "models": [{"id": "m"}]}}}
+            with tempfile.TemporaryDirectory() as tmp:
+                dest = os.path.join(tmp, "agent")
+                config = local_llm.prepare_agent_dir(dest, host_config=host_config)
+                path = os.path.join(dest, "models.json")
+                with open(path) as handle:
+                    on_disk = json.load(handle)
+                self.assertEqual(on_disk, config)
+                self.assertEqual(on_disk["providers"]["vmlx"]["baseUrl"], "http://host.docker.internal:8081/v1")
+                # 0755 directory and 0644 file allow non-root container user (uid=1000) to access them on Linux
+                self.assertEqual(stat.S_IMODE(os.stat(dest).st_mode), 0o755)
+                self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o644)
+        finally:
+            os.umask(old_umask)
 
     def test_container_mount_and_env_point_at_the_same_directory(self):
         mounts = local_llm.container_mount_args("/host/tmp/agent")
@@ -299,6 +325,36 @@ class TestLauncherIntegration(unittest.TestCase):
         if cli.sys.platform not in ("darwin", "win32"):
             self.assertIn("--add-host", args)
             self.assertIn("host.docker.internal:host-gateway", args)
+
+    def test_gateway_host_mapping_not_duplicated_with_token_reduce(self):
+        with patch.object(cli.sys, "platform", "linux"):
+            code, args, _ = self._run({}, token_reduce=True)
+            self.assertEqual(code, 0)
+            self.assertEqual(args.count("--add-host"), 1)
+            self.assertEqual(args.count("host.docker.internal:host-gateway"), 1)
+
+    def test_setup_token_reduction_proxy_excludes_gateway_host_args(self):
+        with (
+            patch.object(cli.os.path, "isfile", lambda path: True),
+            patch.object(cli, "_wait_for_proxy", lambda *args, **kwargs: True),
+            patch("subprocess.run") as mock_subproc,
+        ):
+            mock_subproc.return_value = MagicMock(returncode=0, stdout="8080\n")
+            mounts, _ = cli.setup_token_reduction_proxy()
+            self.assertNotIn("--add-host", mounts)
+            self.assertNotIn("host.docker.internal:host-gateway", mounts)
+
+    def test_local_provider_forwarded_to_agent_provider(self):
+        env = {
+            "HOLON_LOCAL_LLM": "1",
+            "HOLON_LOCAL_BASE_URL": "http://localhost:8081/v1",
+            "HOLON_LOCAL_MODELS": "qwen3:test",
+            "HOLON_LOCAL_PROVIDER": "vmlx",
+        }
+        code, args, _ = self._run(env)
+        self.assertEqual(code, 0)
+        self.assertIn("-e", args)
+        self.assertIn("HOLON_AGENT_PROVIDER=vmlx", args)
 
     def test_local_mode_mounts_generated_dir_and_sets_agent_dir(self):
         env = {
@@ -416,6 +472,17 @@ class TestRunnerValidation(unittest.TestCase):
                 self.assertRaises(SystemExit),
             ):
                 get_runner(agent_name).validate()
+
+    def test_pi_build_cmd_defaults_provider_from_local_provider(self):
+        env = {
+            "HOLON_LOCAL_LLM": "1",
+            "HOLON_LOCAL_PROVIDER": "vmlx",
+            "PI_CODING_AGENT_DIR": "/home/holon/.holon-pi-agent",
+        }
+        with patch.dict(os.environ, env, clear=True), patch("os.path.exists", return_value=False):
+            cmd = get_runner("pi-agent").build_cmd("test-model", "prompt.txt", "intent.json", "Hello")
+            self.assertIn("--provider", cmd)
+            self.assertIn("vmlx", cmd)
 
 
 if __name__ == "__main__":

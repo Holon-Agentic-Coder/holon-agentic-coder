@@ -14,10 +14,10 @@ silently redirected onto the host machine.
 """
 
 import copy
+import ipaddress
 import json
 import logging
 import os
-import stat
 from collections.abc import Iterable
 from urllib.parse import urlsplit, urlunsplit
 
@@ -41,7 +41,9 @@ GATEWAY_HOST = "host.docker.internal"
 CONTAINER_AGENT_DIR = "/home/holon/.holon-pi-agent"
 
 _TRUTHY_ENV_VALUES = ("1", "true", "yes", "on")
-_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"})
+# Names that denote the local machine without being parseable as an address. Address literals are classified with
+# ipaddress so that the whole 127.0.0.0/8 range and IPv6 ::1 are covered, not just 127.0.0.1.
+_LOCAL_HOST_NAMES = frozenset({"localhost", "localhost."})
 # Candidate locations of the pi agent directory, newest layout first.
 _PI_AGENT_DIR_CANDIDATES = (".pi/agent", ".config/pi")
 
@@ -61,6 +63,36 @@ def host_local_allow_list() -> set[str]:
     return {entry.strip().lower() for entry in raw.split(",") if entry.strip()}
 
 
+def _is_local_host(host: str) -> bool:
+    """True for names and addresses that mean 'this machine' (loopback range, ::1, and unspecified)."""
+    if host in _LOCAL_HOST_NAMES:
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    # Unspecified (0.0.0.0 / ::) is how local servers are commonly advertised; as a client destination it can only
+    # resolve to the local machine, so rewriting it is safe.
+    return address.is_loopback or address.is_unspecified
+
+
+def _authority(url: str) -> tuple[str, int | None] | None:
+    """Return ``(host, port)`` or None when the URL is unusable.
+
+    ``SplitResult.port`` validates lazily on access and raises for a malformed port, so every port read goes through
+    here; a bad ``baseUrl`` in a user config must degrade to "untouched", not crash the launcher.
+    """
+    try:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").lower()
+        if not parsed.scheme or not host:
+            return None
+        return host, parsed.port
+    except ValueError:
+        logger.warning("Ignoring base URL with an invalid port or host: %r", url)
+        return None
+
+
 def rewrite_authority(url: str, allow_list: Iterable[str] = ()) -> str:
     """Replace a loopback or allow-listed authority with the Docker gateway host.
 
@@ -68,21 +100,21 @@ def rewrite_authority(url: str, allow_list: Iterable[str] = ()) -> str:
     declared -- is returned untouched, so a remote inference server is never redirected onto the host.
     """
     allowed = {entry.lower() for entry in allow_list}
-    try:
-        parsed = urlsplit(url)
-    except ValueError:
+    authority = _authority(url)
+    if authority is None:
         logger.warning("Ignoring unparseable base URL %r during host-local rewrite", url)
         return url
 
-    host = (parsed.hostname or "").lower()
-    if not parsed.scheme or not host:
-        logger.warning("Ignoring base URL %r without scheme or host during host-local rewrite", url)
-        return url
+    host, port = authority
     if host == GATEWAY_HOST:
         return url
-    if host in _LOOPBACK_HOSTS or host in allowed:
-        netloc = GATEWAY_HOST if parsed.port is None else f"{GATEWAY_HOST}:{parsed.port}"
-        return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, ""))
+    if _is_local_host(host) or host in allowed:
+        netloc = GATEWAY_HOST if port is None else f"{GATEWAY_HOST}:{port}"
+        try:
+            parsed = urlsplit(url)
+            return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, ""))
+        except ValueError:
+            return url
     return url
 
 
@@ -148,30 +180,60 @@ def build_container_config(host_config: dict | None, allow_list: Iterable[str] =
     providers = config.get("providers")
     if not isinstance(providers, dict) or not providers:
         return _synthesized_config(allow_list)
+
+    kept: dict[str, dict] = {}
+    dropped: list[str] = []
     for name, provider in providers.items():
         if not isinstance(provider, dict):
             continue
         base_url = provider.get("baseUrl")
-        if isinstance(base_url, str) and base_url:
-            rewritten = rewrite_authority(base_url, allow_list)
-            if rewritten != base_url:
-                logger.info("Rewrote provider %r baseUrl for sandbox reachability: %s -> %s", name, base_url, rewritten)
-            provider["baseUrl"] = rewritten
+        if not isinstance(base_url, str) or not base_url:
+            dropped.append(name)
+            continue
+        rewritten = rewrite_authority(base_url, allow_list)
+        authority = _authority(rewritten)
+        # Keep only endpoints the container can actually reach. Cloud providers are dropped on purpose: this file is
+        # mounted into the sandbox, and a copied provider entry would carry its literal apiKey across that boundary
+        # while offering an endpoint the local-mode run cannot use anyway.
+        if authority is None or authority[0] != GATEWAY_HOST:
+            dropped.append(name)
+            continue
+        if rewritten != base_url:
+            logger.info("Rewrote provider %r baseUrl for sandbox reachability: %s -> %s", name, base_url, rewritten)
+        provider["baseUrl"] = rewritten
+        kept[name] = provider
+
+    if not kept:
+        logger.warning(
+            "No host-local provider found among %s; falling back to the synthesized endpoint",
+            ", ".join(sorted(providers)) or "<none>",
+        )
+        return _synthesized_config(allow_list)
+
+    if dropped:
+        logger.info("Excluded non-local provider(s) from the sandbox config: %s", ", ".join(sorted(dropped)))
+    config["providers"] = kept
     return config
 
 
 def prepare_agent_dir(dest_dir: str, host_config: dict | None = None, allow_list: Iterable[str] = ()) -> dict:
     """Materialize a writable container-side pi agent directory and return the config it contains.
 
-    The directory holds a ``models.json`` whose authorities are reachable from the container. It is written mode 0700
-    with the file at 0600 and mounted read-write, because pi persists sessions and settings next to ``models.json``.
+    The directory holds a ``models.json`` whose authorities are reachable from the container, and is mounted
+    read-write because pi persists sessions and settings next to ``models.json``.
+
+    Modes are chosen for the *container* user, not the host user: the sandbox runs as uid 1000, so a 0700/0600 tree
+    owned by the host uid would be unreadable on Linux. The file mode is therefore applied at creation time (never
+    tightened afterwards, which would leave a readable-file window in a /tmp path) and the content is deliberately
+    limited to host-local endpoint data -- cloud providers are stripped by :func:`build_container_config`.
     """
     config = build_container_config(host_config, allow_list)
-    os.makedirs(dest_dir, mode=0o700, exist_ok=True)
+    os.makedirs(dest_dir, mode=0o755, exist_ok=True)
+    os.chmod(dest_dir, 0o755)
     path = os.path.join(dest_dir, "models.json")
-    with open(path, "w") as handle:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    with os.fdopen(fd, "w") as handle:
         json.dump(config, handle, indent=2)
-    os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
     return config
 
 
@@ -182,9 +244,10 @@ def rewritten_local_hosts(config: dict) -> list[str]:
         base_url = provider.get("baseUrl") if isinstance(provider, dict) else None
         if not isinstance(base_url, str):
             continue
-        parsed = urlsplit(base_url)
-        if parsed.hostname == GATEWAY_HOST:
-            hosts.append(f"{GATEWAY_HOST}:{parsed.port}" if parsed.port else GATEWAY_HOST)
+        authority = _authority(base_url)
+        if authority is None or authority[0] != GATEWAY_HOST:
+            continue
+        hosts.append(f"{GATEWAY_HOST}:{authority[1]}" if authority[1] else GATEWAY_HOST)
     return sorted(set(hosts))
 
 

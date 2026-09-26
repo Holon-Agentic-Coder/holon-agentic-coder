@@ -111,10 +111,12 @@ Each agent has specific command-line structures and validation routines:
 
 - **Binary**: `pi`
 - **Command template**: `pi -p --model <model_name> --provider <HOLON_AGENT_PROVIDER> <prompt>`
-- **Session directories**: `~/.pi/agent` is the agent directory for pi 0.84 and later (it holds `models.json` with the
-  provider definitions); `~/.config/pi` is the legacy layout and is still mounted when present.
-- **Validation**: Requires `HOLON_AGENT_KEY` to be set, active session configuration mounted to `/home/holon/.pi/agent`
-  or `/home/holon/.config/pi`, or host-local model mode (see [Host-Local Model Endpoints](#host-local-model-endpoints)).
+- **Session directories**: pi >= 0.84 keeps provider definitions in `~/.pi/agent/models.json`;
+  `~/.config/pi/models.json` is the legacy location. **Only `models.json` is mounted**, never the directory around it,
+  because that directory also holds `auth.json`, `sessions/` and `run-history.jsonl`, which a sandboxed agent must not
+  read.
+- **Validation**: Requires `HOLON_AGENT_KEY` to be set, a mounted `models.json` (`/home/holon/.pi/agent/models.json` or
+  the legacy path), or host-local model mode (see [Host-Local Model Endpoints](#host-local-model-endpoints)).
 
 ### 5. `opencode`
 
@@ -152,17 +154,28 @@ Enable it explicitly:
 | `HOLON_LOCAL_MODELS`     | Comma-separated model ids served by that endpoint (required with `HOLON_LOCAL_BASE_URL`).    |
 | `HOLON_HOST_LOCAL_HOSTS` | Comma-separated authorities that may be rewritten (for example the host LAN IP).             |
 
-When opted in, `holon` builds a temporary agent directory for the container:
+When opted in, `holon` builds a temporary agent directory for the container. Local mode currently applies to the **pi**
+runner only; with any other `--agent` it is ignored with a warning, because the artifact produced is a pi agent
+directory.
 
 1. The host `models.json` is read from `~/.pi/agent` (falling back to `~/.config/pi`), or synthesized from
    `HOLON_LOCAL_BASE_URL` / `HOLON_LOCAL_MODELS` when absent.
-2. Every provider `baseUrl` is rewritten to the gateway **only if** its authority is loopback or explicitly declared in
-   `HOLON_HOST_LOCAL_HOSTS`. All other fields are preserved.
-3. The directory is mounted read-write at `/home/holon/.holon-pi-agent` and exported as `PI_CODING_AGENT_DIR`, and the
-   host agent directory is deliberately **not** mounted, so cloud credentials and session history stay on the host.
-4. Because the endpoint now resolves to the gateway, it is added to `NO_PROXY` when the token-reduction sidecar is
-   active; local traffic is therefore never intercepted, cached, or recorded in the wire logs.
-5. If local mode cannot be satisfied (no host config and no `HOLON_LOCAL_BASE_URL`/`HOLON_LOCAL_MODELS`), the run aborts
+2. Each provider `baseUrl` is rewritten to the gateway **only if** its authority is loopback (the whole `127.0.0.0/8`
+   range and `::1`, not merely `127.0.0.1`) or explicitly declared in `HOLON_HOST_LOCAL_HOSTS`. Every other field of a
+   kept provider is preserved.
+3. **Providers that are not host-local are dropped from the generated file.** It is mounted into the sandbox, so copying
+   a cloud provider would carry its literal `apiKey` across that boundary for an endpoint the run cannot use. If no
+   provider qualifies, the synthesized endpoint is used instead.
+4. The directory is mounted read-write at `/home/holon/.holon-pi-agent` and exported as `PI_CODING_AGENT_DIR`; the host
+   `models.json` is deliberately **not** mounted. Modes are set for the container user (uid 1000), not the host user --
+   `0755` and `0644`, applied at creation time rather than tightened afterwards -- and are safe precisely because step 3
+   keeps credentials out of the file.
+5. Because the endpoint now resolves through the gateway, it is added to `NO_PROXY` when the token-reduction sidecar is
+   active; local traffic is therefore never intercepted, cached, or recorded in the wire logs. With the sidecar the bare
+   `host.docker.internal` name is exempted as well, since some `NO_PROXY` implementations compare hostnames only; that
+   widening is skipped when an external proxy is itself reached through `host.docker.internal`, where it would disable
+   proxying altogether.
+6. If local mode cannot be satisfied (no host config and no `HOLON_LOCAL_BASE_URL`/`HOLON_LOCAL_MODELS`), the run aborts
    with an actionable error instead of starting an agent that could only fail later.
 
 > [!WARNING] **No blanket RFC1918 rewriting.** Loopback and explicitly declared authorities only. A genuinely remote
@@ -170,6 +183,7 @@ When opted in, `holon` builds a temporary agent directory for the container:
 > model produced the agent's output without any signal that it had.
 
 Because a local endpoint needs no provider credential, `validate()` accepts local mode in place of `HOLON_AGENT_KEY` for
-runners that require a key (`pi`, `claude`, `opencode`) -- the parity `codex` already had through
-`HOLON_AGENT_OSS_MODE`. The opt-in alone is not sufficient: an actual endpoint (`PI_CODING_AGENT_DIR` or
+**pi** -- the parity `codex` already had through `HOLON_AGENT_OSS_MODE`. The gate is pi-only on purpose: no other runner
+receives the generated configuration, so a bypass for them would only convert a clear credential error into a confusing
+mid-run failure. The opt-in alone is not sufficient either: an actual endpoint (`PI_CODING_AGENT_DIR` or
 `HOLON_LOCAL_BASE_URL`) must be present, so a stray flag cannot mask a missing cloud key.

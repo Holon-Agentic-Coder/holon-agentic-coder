@@ -22,6 +22,8 @@ class TestRewriteAuthority(unittest.TestCase):
         cases = {
             "http://localhost:11434/v1": "http://host.docker.internal:11434/v1",
             "http://127.0.0.1:8081/v1": "http://host.docker.internal:8081/v1",
+            "http://127.0.0.2:8081/v1": "http://host.docker.internal:8081/v1",
+            "http://127.1.2.3:8081/v1": "http://host.docker.internal:8081/v1",
             "http://0.0.0.0:8081/v1": "http://host.docker.internal:8081/v1",
             "http://[::1]:8081/v1": "http://host.docker.internal:8081/v1",
         }
@@ -117,8 +119,55 @@ class TestBuildContainerConfig(unittest.TestCase):
         self.assertEqual(providers["vmlx"]["baseUrl"], "http://host.docker.internal:8081/v1")
         self.assertEqual(providers["vmlx"]["api"], "openai-completions")
         self.assertEqual(providers["vmlx"]["models"][0]["contextWindow"], 999424)
-        self.assertEqual(providers["cloud"]["baseUrl"], "https://api.example.com/v1")
-        self.assertEqual(providers["cloud"]["apiKey"], "$MY_KEY")
+        # Cloud providers are stripped to prevent host credentials crossing the sandbox boundary
+        self.assertNotIn("cloud", providers)
+
+    def test_cloud_providers_with_api_keys_are_pruned(self):
+        host_config = {
+            "providers": {
+                "openai": {
+                    "baseUrl": "https://api.openai.com/v1",
+                    "apiKey": "sk-secret-token",
+                    "models": [{"id": "gpt-4o"}],
+                },
+                "anthropic": {
+                    "baseUrl": "https://api.anthropic.com/v1",
+                    "apiKey": "sk-ant-secret",
+                    "models": [{"id": "claude-3-5-sonnet"}],
+                },
+                "local_ollama": {
+                    "baseUrl": "http://127.0.0.1:11434/v1",
+                    "models": [{"id": "llama3.2"}],
+                },
+            },
+        }
+        config = local_llm.build_container_config(host_config)
+        self.assertIn("local_ollama", config["providers"])
+        self.assertNotIn("openai", config["providers"])
+        self.assertNotIn("anthropic", config["providers"])
+        self.assertEqual(
+            config["providers"]["local_ollama"]["baseUrl"],
+            "http://host.docker.internal:11434/v1",
+        )
+
+    def test_only_cloud_providers_falls_back_to_synthesis(self):
+        host_config = {
+            "providers": {
+                "openai": {
+                    "baseUrl": "https://api.openai.com/v1",
+                    "apiKey": "sk-secret",
+                }
+            }
+        }
+        env = {
+            "HOLON_LOCAL_BASE_URL": "http://localhost:8081/v1",
+            "HOLON_LOCAL_MODELS": "qwen3:8b",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = local_llm.build_container_config(host_config)
+        self.assertIn("local", config["providers"])
+        self.assertNotIn("openai", config["providers"])
+        self.assertEqual(config["providers"]["local"]["baseUrl"], "http://host.docker.internal:8081/v1")
 
     def test_host_config_is_not_mutated(self):
         host_config = {"providers": {"local": {"baseUrl": "http://localhost:11434/v1"}}}
@@ -165,7 +214,7 @@ class TestBuildContainerConfig(unittest.TestCase):
 
 
 class TestPrepareAgentDir(unittest.TestCase):
-    def test_writes_rewritten_models_json_with_owner_only_permissions(self):
+    def test_writes_rewritten_models_json_with_safe_container_permissions(self):
         host_config = {"providers": {"vmlx": {"baseUrl": "http://localhost:8081/v1", "models": [{"id": "m"}]}}}
         with tempfile.TemporaryDirectory() as tmp:
             dest = os.path.join(tmp, "agent")
@@ -175,7 +224,9 @@ class TestPrepareAgentDir(unittest.TestCase):
                 on_disk = json.load(handle)
             self.assertEqual(on_disk, config)
             self.assertEqual(on_disk["providers"]["vmlx"]["baseUrl"], "http://host.docker.internal:8081/v1")
-            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+            # 0755 directory and 0644 file allow non-root container user (uid=1000) to access them on Linux
+            self.assertEqual(stat.S_IMODE(os.stat(dest).st_mode), 0o755)
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o644)
 
     def test_container_mount_and_env_point_at_the_same_directory(self):
         mounts = local_llm.container_mount_args("/host/tmp/agent")
@@ -218,7 +269,7 @@ class TestPrepareAgentDir(unittest.TestCase):
 
 
 class TestLauncherIntegration(unittest.TestCase):
-    def _run(self, env, mounts=None, tr_envs=None, mkdtemp_dir=None):
+    def _run(self, env, mounts=None, tr_envs=None, mkdtemp_dir=None, agent_id="pi", token_reduce=False):
         with (
             patch("shutil.which", return_value="/usr/bin/docker"),
             patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run,
@@ -232,7 +283,13 @@ class TestLauncherIntegration(unittest.TestCase):
             patch.object(cli.shutil, "rmtree") as mock_rmtree,
             patch.dict(os.environ, env, clear=True),
         ):
-            code = cli.run_docker_container("executor", "holon/agent-pi", ["branch", "pi-agent", "m"])
+            code = cli.run_docker_container(
+                "executor",
+                f"holon/agent-{agent_id}",
+                ["branch", f"{agent_id}-agent", "m"],
+                agent_id=agent_id,
+                token_reduce=token_reduce,
+            )
         return code, mock_run.call_args[0][0], mock_rmtree
 
     def test_gateway_host_mapping_is_added_to_every_run(self):
@@ -265,9 +322,14 @@ class TestLauncherIntegration(unittest.TestCase):
             "HOLON_LOCAL_MODELS": "qwen3:test",
         }
         tr_envs = {"NO_PROXY": "localhost,127.0.0.1", "HTTPS_PROXY": "http://host.docker.internal:8080"}
-        code, args, _ = self._run(env, tr_envs=tr_envs)
+        code, args, _ = self._run(env, tr_envs=tr_envs, token_reduce=False)
         self.assertEqual(code, 0)
         self.assertIn("NO_PROXY=localhost,127.0.0.1,host.docker.internal:8081", args)
+
+        # With token reduction active, bare gateway host is also added for domain-only NO_PROXY matchers
+        code, args, _ = self._run(env, tr_envs=tr_envs, token_reduce=True)
+        self.assertEqual(code, 0)
+        self.assertIn("NO_PROXY=localhost,127.0.0.1,host.docker.internal,host.docker.internal:8081", args)
 
     def test_unsatisfiable_local_mode_fails_loudly_and_cleans_up(self):
         with patch.object(local_llm, "host_models_json", return_value=None):
@@ -279,6 +341,9 @@ class TestLauncherIntegration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home:
             agent_dir = os.path.join(home, ".pi", "agent")
             os.makedirs(agent_dir)
+            models_file = os.path.join(agent_dir, "models.json")
+            with open(models_file, "w") as handle:
+                handle.write("{}")
             env = {"HOME": home, "HOLON_LOCAL_LLM": "1"}
             with patch.dict(os.environ, env, clear=True):
                 self.assertEqual(cli.get_agent_session_mounts("pi"), [])
@@ -287,10 +352,30 @@ class TestLauncherIntegration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home:
             agent_dir = os.path.join(home, ".pi", "agent")
             os.makedirs(agent_dir)
+            models_file = os.path.join(agent_dir, "models.json")
+            with open(models_file, "w") as handle:
+                handle.write("{}")
+            # Sensitive files (auth.json, sessions/) must never be mounted
+            with open(os.path.join(agent_dir, "auth.json"), "w") as handle:
+                handle.write("{}")
+            os.makedirs(os.path.join(agent_dir, "sessions"))
             with patch.dict(os.environ, {"HOME": home}, clear=True):
                 mounts = cli.get_agent_session_mounts("pi")
-            self.assertIn(f"{agent_dir}:/home/holon/.pi/agent:ro", mounts)
+            self.assertIn(f"{models_file}:/home/holon/.pi/agent/models.json:ro", mounts)
+            self.assertNotIn(f"{agent_dir}:/home/holon/.pi/agent:ro", mounts)
             self.assertEqual(mounts.count("-v"), 1)
+
+    def test_non_pi_runner_warns_and_ignores_local_mode(self):
+        env = {
+            "HOLON_LOCAL_LLM": "1",
+            "HOLON_LOCAL_BASE_URL": "http://localhost:8081/v1",
+            "HOLON_LOCAL_MODELS": "qwen3:test",
+        }
+        with patch.object(local_llm, "prepare_agent_dir") as mock_prep:
+            code, args, _ = self._run(env, agent_id="claude")
+        self.assertEqual(code, 0)
+        mock_prep.assert_not_called()
+        self.assertNotIn(f"PI_CODING_AGENT_DIR={local_llm.CONTAINER_AGENT_DIR}", args)
 
 
 class TestRunnerValidation(unittest.TestCase):
@@ -315,6 +400,22 @@ class TestRunnerValidation(unittest.TestCase):
             self.assertRaises(SystemExit),
         ):
             get_runner("pi-agent").validate()
+
+    def test_non_pi_runners_still_require_keys_in_local_mode(self):
+        """Host-local model mode is currently pi-only; claude and opencode must not bypass validation."""
+        env = {
+            "HOLON_LOCAL_LLM": "1",
+            "HOLON_LOCAL_BASE_URL": "http://localhost:8081/v1",
+            "PI_CODING_AGENT_DIR": "/home/holon/.holon-pi-agent",
+        }
+        for agent_name in ("claude-agent", "opencode-agent"):
+            with (
+                self.subTest(agent=agent_name),
+                patch.dict(os.environ, env, clear=True),
+                patch("os.path.exists", return_value=False),
+                self.assertRaises(SystemExit),
+            ):
+                get_runner(agent_name).validate()
 
 
 if __name__ == "__main__":

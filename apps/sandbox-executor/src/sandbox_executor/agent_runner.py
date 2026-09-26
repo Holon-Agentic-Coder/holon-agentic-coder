@@ -306,16 +306,28 @@ class StandardAgentRunner(AgentRunner):
 
         if self.required_keys:
             # A host-local inference server addressed through the Docker gateway needs no provider credential (Bean
-            # 0049). Only accept this when the operator opted in AND the local endpoint is actually configured, so a
-            # stray opt-in flag cannot mask a missing cloud key.
-            if local_llm.local_llm_requested() and (
-                os.getenv(local_llm.ENV_PI_AGENT_DIR) or os.getenv(local_llm.ENV_LOCAL_BASE_URL)
+            # 0049). Only accepted for pi -- the generated artifact is a pi agent directory, so a pi-only gate keeps a
+            # stray opt-in from masking a missing cloud key for another runner -- and only when the local endpoint is
+            # actually configured.
+            if (
+                self.agent_id == "pi"
+                and local_llm.local_llm_requested()
+                and (os.getenv(local_llm.ENV_PI_AGENT_DIR) or os.getenv(local_llm.ENV_LOCAL_BASE_URL))
             ):
                 return
 
             session_dirs = {
                 "claude": ["/home/holon/.config/claude", "~/.config/claude"],
-                "pi": ["/home/holon/.config/pi", "~/.config/pi"],
+                # pi resolves providers from models.json; that single file is what the launcher mounts, so that is what
+                # counts as an available session here -- not the surrounding directory, which holds auth.json and
+                # transcripts.
+                "pi": [
+                    f"{local_llm.CONTAINER_AGENT_DIR}/models.json",
+                    "/home/holon/.pi/agent/models.json",
+                    "~/.pi/agent/models.json",
+                    "/home/holon/.config/pi/models.json",
+                    "~/.config/pi/models.json",
+                ],
             }
             has_session_dir = False
             if self.agent_id in session_dirs:

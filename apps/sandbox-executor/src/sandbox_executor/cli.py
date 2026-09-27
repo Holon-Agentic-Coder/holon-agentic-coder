@@ -9,11 +9,13 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from sandbox_executor import local_llm
 from sandbox_executor.calibration import run_calibrate
 from sandbox_executor.flow import FlowContext, FlowStage, load_checkpoint, run_flow_pipeline
 from sandbox_executor.scaffold import init_project
@@ -153,15 +155,23 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:
         "codex": [
             (os.path.join(home, ".codex"), "/home/holon/.codex"),
         ],
+        # Only pi's models.json is mounted, never the whole agent directory: that directory also holds auth.json,
+        # sessions/ and run-history.jsonl, none of which a sandboxed agent needs.
         "pi": [
-            (os.path.join(home, ".config/pi"), "/home/holon/.config/pi"),
+            (os.path.join(home, ".pi/agent/models.json"), "/home/holon/.pi/agent/models.json"),
+            (os.path.join(home, ".config/pi/models.json"), "/home/holon/.config/pi/models.json"),
         ],
         "gemini": [
             (os.path.join(home, ".config/gcloud"), "/home/holon/.config/gcloud"),
         ],
     }
 
-    dirs = session_mapping.get(agent_id.lower(), [])
+    norm_agent_id = local_llm.normalize_agent_id(agent_id)
+    dirs = session_mapping.get(norm_agent_id, [])
+    # In host-local model mode the container receives a generated agent directory whose base URLs are reachable from it,
+    # so the host's own provider config is deliberately not mounted.
+    if norm_agent_id == "pi" and local_llm.local_llm_requested():
+        return mounts
     for host_path, container_path in dirs:
         if os.path.exists(host_path):
             mounts.extend(["-v", f"{host_path}:{container_path}:ro"])
@@ -171,7 +181,10 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:
 
 def _run_docker(*args: str) -> subprocess.CompletedProcess[str]:
     """Run a docker command without raising, capturing stdout/stderr for diagnostics."""
-    return subprocess.run(["docker", *args], capture_output=True, text=True, check=False)
+    try:
+        return subprocess.run(["docker", *args], capture_output=True, text=True, check=False)
+    except OSError as e:
+        return subprocess.CompletedProcess(args=["docker", *args], returncode=127, stdout="", stderr=str(e))
 
 
 def _container_ca_path(ca_cert_path: str) -> str:
@@ -513,7 +526,7 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
     if mitm_web:
         logger.info("🌐 mitmweb dashboard active at http://127.0.0.1:%s", web_port)
 
-    mounts = ["--network", network_name, *_gateway_host_args(), *_ca_mount_args(ca_cert_path)]
+    mounts = ["--network", network_name, *_ca_mount_args(ca_cert_path)]
     return mounts, _build_proxy_envs(ca_cert_path, f"http://{container_name}:{PROXY_LISTEN_PORT}")
 
 
@@ -573,7 +586,9 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
 
     ca_cert_path, _ = generate_root_ca()
 
-    return [*_gateway_host_args(), *_ca_mount_args(ca_cert_path)], _build_proxy_envs(ca_cert_path, proxy_url)
+    # No gateway --add-host here: run_docker_container adds it once for every agent container, and emitting it from
+    # both places produced a duplicate flag whenever an externally attached proxy was in use.
+    return _ca_mount_args(ca_cert_path), _build_proxy_envs(ca_cert_path, proxy_url)
 
 
 def get_token_reduction_mounts_and_envs(
@@ -610,7 +625,7 @@ def run_docker_container(
     role: str,
     image_name: str,
     container_args: list[str],
-    agent_id: str = "antigravity",
+    agent_id: str,
     intent_file: str | None = None,
     token_reduce: bool = False,
     mitm_web: bool = False,
@@ -633,8 +648,16 @@ def run_docker_container(
         if key.startswith("HOLON_") or key == "GITHUB_TOKEN":
             env_to_forward[key] = value
 
+    norm_agent_id = local_llm.normalize_agent_id(agent_id)
+
     # Ensure explicit role parameter takes strict precedence over host environment
     env_to_forward["HOLON_ROLE"] = role
+
+    # Coherence for local mode: default HOLON_AGENT_PROVIDER from HOLON_LOCAL_PROVIDER if unset (pi runner only)
+    if local_llm.local_llm_requested() and norm_agent_id == "pi":
+        local_provider = env_to_forward.get(local_llm.ENV_LOCAL_PROVIDER, "").strip()
+        if "HOLON_AGENT_PROVIDER" not in env_to_forward and local_provider:
+            env_to_forward["HOLON_AGENT_PROVIDER"] = local_provider
 
     for key, value in sorted(env_to_forward.items()):
         docker_cmd.extend(["-e", f"{key}={value}"])
@@ -645,17 +668,85 @@ def run_docker_container(
     for k, v in ssh_envs.items():
         docker_cmd.extend(["-e", f"{k}={v}"])
 
+    # Containers reach the host only through the gateway name; make it resolvable on Linux as it already is on
+    # Docker Desktop, so agent base URLs rewritten to host.docker.internal work on every platform.
+    docker_cmd.extend(_gateway_host_args())
+
     # Token Reduction Proxy & CA Mounts. From this point on the sidecar (and its network) may exist,
     # so every remaining exit path — early returns included — must run teardown, not just the final
     # subprocess.run.
+    local_agent_dir: str | None = None
     tr_mounts, tr_envs = get_token_reduction_mounts_and_envs(token_reduce=token_reduce, mitm_web=mitm_web)
     try:
         docker_cmd.extend(tr_mounts)
+
+        # Host-local inference servers (Bean 0049): loopback and the host's own LAN address are unreachable from the
+        # container namespace, so hand the agent a generated config whose authorities resolve via the gateway. The
+        # artifact is a pi agent directory, so it is produced for pi only; other runners still need real credentials.
+        if local_llm.local_llm_requested() and norm_agent_id != "pi" and role in ("planner", "executor"):
+            print(
+                f"Warning: host-local model mode applies to the pi runner only; ignoring it for '{agent_id}'.",
+                file=sys.stderr,
+            )
+        if local_llm.local_llm_requested() and norm_agent_id == "pi":
+            try:
+                base_tmp = os.path.expanduser("~/.holon/tmp")
+                os.makedirs(base_tmp, mode=0o755, exist_ok=True)
+                local_agent_dir = tempfile.mkdtemp(prefix="holon-pi-agent-", dir=base_tmp)
+                local_config = local_llm.prepare_agent_dir(
+                    local_agent_dir,
+                    host_config=local_llm.host_models_json(),
+                    allow_list=local_llm.host_local_allow_list(),
+                )
+                # If provider was unset, determine whether to use the single distinct provider or "local"
+                if "HOLON_AGENT_PROVIDER" not in env_to_forward:
+                    providers = local_config.get("providers", {})
+                    if len(providers) == 1:
+                        chosen = next(iter(providers.keys()))
+                    elif "local" in providers:
+                        chosen = "local"
+                    else:
+                        raise local_llm.LocalLLMConfigError(
+                            f"Multiple host-local providers found ({', '.join(sorted(providers))}). "
+                            "Please set HOLON_AGENT_PROVIDER or HOLON_LOCAL_PROVIDER to select one."
+                        )
+                    docker_cmd.extend(["-e", f"HOLON_AGENT_PROVIDER={chosen}"])
+            except local_llm.LocalLLMConfigError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                return 1
+            docker_cmd.extend(local_llm.container_mount_args(local_agent_dir))
+            for key, value in local_llm.container_env(local_agent_dir).items():
+                docker_cmd.extend(["-e", f"{key}={value}"])
+            # That endpoint now points at the gateway, so it would otherwise be intercepted by the sidecar.
+            local_hosts = local_llm.rewritten_local_hosts(local_config)
+            if local_hosts and tr_envs.get("NO_PROXY"):
+                exempted = list(local_hosts)
+                # Some NO_PROXY implementations compare only the hostname, so a port-qualified entry can miss. Adding
+                # the bare gateway name is safe when the sidecar is addressed by container name, but not when an
+                # external proxy is reached through host.docker.internal itself.
+                proxy_url = tr_envs.get("HTTP_PROXY", "")
+                if (
+                    token_reduce or mitm_web or bool(_sidecar_state.container_name)
+                ) and local_llm.GATEWAY_HOST not in proxy_url:
+                    exempted.insert(0, local_llm.GATEWAY_HOST)
+                existing_no_proxy = [e.strip() for e in tr_envs.get("NO_PROXY", "").split(",") if e.strip()]
+                joined = ",".join(dict.fromkeys(existing_no_proxy + exempted))
+                tr_envs["NO_PROXY"] = joined
+                tr_envs["no_proxy"] = joined
+                print(
+                    f"Note: host-local endpoint(s) {', '.join(local_hosts)} are exempt from token reduction "
+                    "(no interception, caching, or wire telemetry for that traffic).",
+                    file=sys.stderr,
+                )
+
         for k, v in tr_envs.items():
             docker_cmd.extend(["-e", f"{k}={v}"])
 
         # Intent file mount for intent-creator role
-        if role == "intent-creator" and intent_file:
+        if role == "intent-creator":
+            if not intent_file:
+                print("Error: Intent file is mandatory for intent creation.", file=sys.stderr)
+                return 1
             abs_intent = os.path.abspath(intent_file)
             if not os.path.exists(abs_intent):
                 print(f"Error: Intent file '{intent_file}' does not exist.", file=sys.stderr)
@@ -686,6 +777,8 @@ def run_docker_container(
         return result.returncode
     finally:
         teardown_token_reduction_proxy()
+        if local_agent_dir:
+            shutil.rmtree(local_agent_dir, ignore_errors=True)
 
 
 def main() -> None:

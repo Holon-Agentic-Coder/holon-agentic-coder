@@ -68,11 +68,14 @@ with tempfile.TemporaryDirectory() as tmp_dir:
 Integration tests (`test_intent_creator_integration.py`, `test_planner_integration.py`) must never touch real remotes
 such as `github.com` or mount host `~/.ssh` keys:
 
-- Use `git init --bare` to create local bare git repositories in temporary directories.
-- Mount the bare repository into Docker containers using `-v {bare_repo}:/mock_remote.git` and
-  `-e HOLON_REPO_URL=/mock_remote.git`.
+- Use a named Docker volume as the bare git remote, seeded through `apps/sandbox-executor/tests/hermetic_fixtures.py`.
+- Mount the volume at a path derived from its own volume name (`remote_path(volume)`), and pass that same value as
+  `-e HOLON_REPO_URL=...`. Never hardcode a shared container path: a fixed path is shared state between concurrently
+  running tests, and it happens to coincide with the CLI's `HOLON_MOCK_REMOTE_PATH` override, so a test would silently
+  depend on -- or silently exercise -- that branch instead of the normal one.
 - Isolate container networking using `--network none`.
-- Inspect results and verify commits directly from the local bare repository.
+- Inspect results and verify commits from inside the container against the same volume (`remote_show_file`), and reclaim
+  the volume with `remove_remote_volume` via `self.addCleanup`.
 - Gracefully skip if Docker daemon is not available.
 
 ### Rule 3: Assert Cleanup Invariants
@@ -82,15 +85,36 @@ operations target paths strictly within the allocated temporary fixture director
 
 ### Rule 4: Validate via Canary Regression Guard
 
-All entrypoint test suites are protected by `test_sandbox_hermetic_guard.py`. This canary guard runs tests under
-simulated container conditions (`HOLON_ROLE=executor`, `HOLON_IN_SANDBOX=1`, `USER=holon`) with a simulated
-`~/.holon-sandbox/workspace` containing `canary.txt`. The test fails if the canary directory or marker file is touched
-or deleted.
+The suite is protected by `test_sandbox_hermetic_guard.py`. This canary guard runs under simulated container conditions
+(`HOLON_ROLE=executor`, `HOLON_IN_SANDBOX=1`, `USER=holon`) with a simulated `~/.holon-sandbox/workspace` containing
+`canary.txt`, and fails if that directory or marker file is touched or deleted.
 
-The guard launches its child suite with `uv run pytest -m "not integration_test"` -- the same runner and the same marker
-selection the unit job uses. It must not shell out to `python -m unittest`: `unittest` does not understand pytest
-markers, so it would re-run the `integration_test`-marked Docker image tests that the unit job never builds, and the
-guard would fail for an environment reason unrelated to hermeticity.
+Two properties make the guard worth keeping:
+
+- It runs the **whole** `apps/sandbox-executor/tests` directory. The bean 0019 hazard was suite-wide, so a curated
+  module list cannot prove it is gone -- and such a list is exactly how the earlier version of this guard ended up
+  excluding `test_agent_runner.py`, the module that exercises the real `cleanup_repo_dir`/`_rmtree`.
+- It launches its child with `uv run pytest` and the unit job's marker selection
+  (`-m "not integration_test and not stress"`), through the shared helpers in `hermetic_fixtures.py`
+  (`pytest_suite_command`, `simulated_container_env`). It must not shell out to `python -m unittest`: `unittest` ignores
+  pytest markers, so it re-runs the `integration_test`-marked Docker image tests that the unit job never builds, and the
+  guard then fails for an environment reason unrelated to hermeticity.
+
+### Rule 5: Prove Suite-Wide Safety in CI, Not Locally
+
+No run on a developer machine can establish that the suite is safe for _any_ future test author. Two checks do that job
+on every push, and both are machine-enforced:
+
+1. The canary guard above, which runs the entire directory -- so a new test file is covered the moment it is added.
+2. `test_workspace_survival_stress.py`, marked `stress`, which clones the repository onto the exact path an executor
+   works in (`~/.holon-sandbox/workspace` with `HOME` redirected), runs the unit selection from inside it, and requires
+   the workspace, its `.git` and its `HEAD` commit to survive. That is the incident shape; a throwaway-`HOME` canary
+   never runs _from_ the workspace and so cannot demonstrate it. It runs in the `Workspace survival` job of
+   `.github/workflows/test-unit.yml`, which fails if the suite was skipped rather than executed, and is excluded from
+   the ordinary unit matrix by marker expression because it clones the repository and re-runs the suite.
+
+Markers are declared in `pyproject.toml` and pytest runs with `--strict-markers`, so an unregistered or misspelled
+marker fails the run instead of quietly escaping every `-m` selection.
 
 ---
 
@@ -107,5 +131,5 @@ When verifying tests in an active container environment:
   export HOLON_REPO_DIR=/tmp/holon-test-fixture
   cp -r /home/holon/.holon-sandbox/workspace /tmp/holon-fixture
   cd /tmp/holon-fixture
-  uv run pytest -m "not integration_test"
+  uv run pytest -m "not integration_test and not stress"
   ```

@@ -1,62 +1,40 @@
-"""Canary guard test simulating container environment to ensure unit tests do not mutate live workspaces.
+"""Canary guard test simulating container conditions to prove the whole suite stays hermetic.
+
+Scope note: this guard runs the *entire* ``apps/sandbox-executor/tests`` directory, not a curated
+module list. The bean 0019 defect was suite-wide -- an unguarded test could resolve the live
+workspace and delete it -- so a single-module or few-module canary cannot establish that the
+hazard is gone. A list of "the modules we remember" silently rots as the suite grows, which is
+exactly how the original guard ended up excluding ``test_agent_runner.py``, the one module that
+exercises the real ``cleanup_repo_dir``/``_rmtree``. Running the directory also covers any new
+test file the moment it is added.
 
 The child suite is launched with ``uv run pytest`` -- the repository's only sanctioned test runner
--- so it inherits the suite's own marker policy (``-m "not integration_test"``). Launching it with
-``python -m unittest`` instead bypasses that policy: ``unittest`` has no concept of pytest markers,
-so it re-runs the ``integration_test``-marked Docker image tests that the unit job never builds,
-and the guard then fails for an environment reason that has nothing to do with hermeticity.
+-- so it inherits the root pytest configuration and the unit job's marker selection. Launching it
+with ``python -m unittest`` bypasses both: ``unittest`` has no concept of pytest markers, so it
+re-runs the ``integration_test``-marked Docker image tests that the unit job never builds, and the
+guard then fails for an environment reason that has nothing to do with hermeticity.
 """
 
 import os
-import shutil
 import subprocess
 import tempfile
 import unittest
 
-#: The only sanctioned way to run this suite (see ``.agents/rules.md``): never invoke
-#: ``python``/``pytest`` binaries directly.
-UV = "uv"
+from tests.hermetic_fixtures import (
+    REPO_ROOT,
+    TESTS_DIR,
+    UV,
+    pytest_suite_command,
+    simulated_container_env,
+    uv_available,
+)
 
 #: Sentinel set in the child environment so a child run can never recurse back into this guard.
 CHILD_ENV_VAR = "HOLON_HERMETIC_GUARD_CHILD"
 
-#: Entrypoint test modules that can reach ``get_workspace_dir`` / ``cleanup_repo_dir``.
-#: ``test_agent_runner`` is deliberately included: it is the module that exercises the real
-#: ``cleanup_repo_dir``/``_rmtree``, so excluding it would leave the hazard this guard covers
-#: unmonitored. This list must never contain the guard module itself.
-ENTRYPOINT_TEST_PATHS = [
-    "apps/sandbox-executor/tests/test_intent_creator.py",
-    "apps/sandbox-executor/tests/test_planner.py",
-    "apps/sandbox-executor/tests/test_executor.py",
-    "apps/sandbox-executor/tests/test_agent_runner.py",
-]
-
-#: Repository root -- the directory that owns ``pyproject.toml``, hence the pytest
-#: ``testpaths`` / ``pythonpath`` / ``markers`` configuration this guard must inherit.
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-
-#: Marker expression mirroring the unit job's selection in ``.github/workflows/test-unit.yml``.
-NOT_INTEGRATION = "not integration_test"
-
-CHILD_TIMEOUT_SECONDS = 300
-
-
-def _container_env(sim_home: str) -> dict[str, str]:
-    """Build the environment of an executor container whose home is a throwaway directory.
-
-    ``HOLON_REPO_DIR`` is deliberately absent so that any unpatched ``get_workspace_dir()`` resolves
-    into the simulated workspace -- which is the hazard being guarded.
-    """
-    env = os.environ.copy()
-    env["HOME"] = sim_home
-    env["USER"] = "holon"
-    env["USERNAME"] = "holon"
-    env["HOLON_ROLE"] = "executor"
-    env["HOLON_IN_SANDBOX"] = "1"
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env.pop("HOLON_REPO_DIR", None)
-    env[CHILD_ENV_VAR] = "1"
-    return env
+#: Generous ceiling: the child runs the whole non-integration suite, which itself nests the
+#: negative-control harness.
+CHILD_TIMEOUT_SECONDS = 1800
 
 
 class TestSandboxHermeticGuard(unittest.TestCase):
@@ -69,8 +47,19 @@ class TestSandboxHermeticGuard(unittest.TestCase):
         if os.environ.get(CHILD_ENV_VAR) == "1":
             self.skipTest("running inside the guard's own child suite")
 
-        if not shutil.which(UV):
+        if not uv_available():
             self.skipTest(f"{UV} is not available; this suite runs only under '{UV} run pytest'.")
+
+        # ``cwd=REPO_ROOT`` below must be a real directory, and the child must have a suite to run:
+        # pytest exits 5 on "no tests collected", which would otherwise surface as an opaque
+        # failure of this guard rather than a missing directory.
+        self.assertTrue(os.path.isdir(REPO_ROOT), f"repo root does not exist: {REPO_ROOT}")
+        tests_path = os.path.join(REPO_ROOT, TESTS_DIR)
+        self.assertTrue(os.path.isdir(tests_path), f"test directory does not exist: {tests_path}")
+        self.assertTrue(
+            any(name.startswith("test_") for name in os.listdir(tests_path)),
+            f"no test modules found under {tests_path}",
+        )
 
     def test_canary_workspace_survives_entrypoint_tests(self):
         with tempfile.TemporaryDirectory() as sim_home:
@@ -90,25 +79,13 @@ class TestSandboxHermeticGuard(unittest.TestCase):
             dummy_git_dir = os.path.join(sim_sandbox_workspace, ".git")
             os.makedirs(dummy_git_dir, exist_ok=True)
 
-            # Run the entrypoint test modules through the suite's sanctioned runner and selection,
-            # from the repository root so the child inherits the root pytest configuration.
-            cmd = [
-                UV,
-                "run",
-                "--no-sync",
-                "pytest",
-                "-p",
-                "no:cacheprovider",
-                "-q",
-                "--tb=short",
-                "-m",
-                NOT_INTEGRATION,
-                *ENTRYPOINT_TEST_PATHS,
-            ]
+            # Run the whole suite through the sanctioned runner and the unit job's selection, from
+            # the repository root so the child inherits the root pytest configuration.
+            cmd = pytest_suite_command()
             res = subprocess.run(
                 cmd,
                 cwd=REPO_ROOT,
-                env=_container_env(sim_home),
+                env=simulated_container_env(sim_home, CHILD_ENV_VAR),
                 capture_output=True,
                 text=True,
                 timeout=CHILD_TIMEOUT_SECONDS,
@@ -116,7 +93,7 @@ class TestSandboxHermeticGuard(unittest.TestCase):
             self.assertEqual(
                 res.returncode,
                 0,
-                f"Entrypoint test modules failed under simulated sandbox environment!\n"
+                f"The suite failed under simulated sandbox environment!\n"
                 f"Command: {' '.join(cmd)}\n"
                 f"Stdout:\n{res.stdout}\nStderr:\n{res.stderr}",
             )
@@ -164,7 +141,7 @@ class TestSandboxHermeticGuard(unittest.TestCase):
             with open(canary_marker, "w") as f:
                 f.write("canary-should-not-survive")
 
-            env = _container_env(sim_home)
+            env = simulated_container_env(sim_home, CHILD_ENV_VAR)
             env["SIM_EXPECTED_WORKSPACE"] = sim_sandbox_workspace
 
             script = (

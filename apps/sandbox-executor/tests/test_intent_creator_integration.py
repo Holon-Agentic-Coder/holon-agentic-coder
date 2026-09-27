@@ -8,7 +8,13 @@ import unittest
 
 import pytest
 
-from tests.hermetic_fixtures import create_seeded_remote, remote_show_file, remote_volume_args, remove_remote_volume
+from tests.hermetic_fixtures import (
+    create_seeded_remote,
+    remote_path,
+    remote_show_file,
+    remote_volume_args,
+    remove_remote_volume,
+)
 
 
 def _is_docker_available() -> bool:
@@ -72,7 +78,7 @@ class TestIntentCreatorIntegration(unittest.TestCase):
                 "-e",
                 "HOLON_ROLE=intent-creator",
                 "-e",
-                "HOLON_REPO_URL=/mock_remote.git",
+                f"HOLON_REPO_URL={remote_path(volume)}",
                 *remote_volume_args(volume),
                 "-v",
                 f"{intent_json_path}:/tmp/intent.json",

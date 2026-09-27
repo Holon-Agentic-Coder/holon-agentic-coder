@@ -131,7 +131,3 @@ class TestIntentCreatorIntegration(unittest.TestCase):
             self.assertTrue(
                 found, f"Could not find intent with slug 'test-intent-integration' in ledger:\n{show_result.stdout}"
             )
-
-
-if __name__ == "__main__":
-    unittest.main()

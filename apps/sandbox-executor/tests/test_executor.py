@@ -885,7 +885,3 @@ class TestExecutor(unittest.TestCase):
 
             mock_run_cmd_args = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
             self.assertFalse(any("add" in cmd and "-A" in cmd for cmd in mock_run_cmd_args))
-
-
-if __name__ == "__main__":
-    unittest.main()

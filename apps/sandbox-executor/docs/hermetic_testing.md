@@ -87,17 +87,25 @@ simulated container conditions (`HOLON_ROLE=executor`, `HOLON_IN_SANDBOX=1`, `US
 `~/.holon-sandbox/workspace` containing `canary.txt`. The test fails if the canary directory or marker file is touched
 or deleted.
 
+The guard launches its child suite with `uv run pytest -m "not integration_test"` -- the same runner and the same marker
+selection the unit job uses. It must not shell out to `python -m unittest`: `unittest` does not understand pytest
+markers, so it would re-run the `integration_test`-marked Docker image tests that the unit job never builds, and the
+guard would fail for an environment reason unrelated to hermeticity.
+
 ---
 
 ## 3. Sandbox Safety Rail
 
+Tests are run with `uv run pytest` and nothing else -- never `python3 -m unittest`, never a bare `pytest`, never a
+`.venv` binary (see `.agents/rules.md`).
+
 When verifying tests in an active container environment:
 
-- **NEVER** run full discovery (`python3 -m unittest discover`) directly inside `/home/holon/.holon-sandbox/workspace`.
+- **NEVER** run full discovery (`uv run pytest`) directly inside `/home/holon/.holon-sandbox/workspace`.
 - Always verify from an isolated scratch copy:
   ```bash
   export HOLON_REPO_DIR=/tmp/holon-test-fixture
   cp -r /home/holon/.holon-sandbox/workspace /tmp/holon-fixture
   cd /tmp/holon-fixture
-  PYTHONPATH=apps/sandbox-executor/src python3 -m unittest discover -s apps/sandbox-executor/tests
+  uv run pytest -m "not integration_test"
   ```

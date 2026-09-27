@@ -390,7 +390,3 @@ class TestCLICalibrateCommand(unittest.TestCase):
                 json_output=False,
                 skip_commit=True,
             )
-
-
-if __name__ == "__main__":
-    unittest.main()

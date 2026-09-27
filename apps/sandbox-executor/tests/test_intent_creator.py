@@ -218,7 +218,3 @@ class TestIntentCreator(unittest.TestCase):
         self.assertTrue("bootstrap-holon-cli-intent" in written_data["branch"])
         self.assertEqual(written_data["slug"], "bootstrap-holon-cli-intent")
         self.assertEqual(written_data["status"], "proposed")
-
-
-if __name__ == "__main__":
-    unittest.main()

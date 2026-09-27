@@ -215,7 +215,3 @@ class TestHolonInit(unittest.TestCase):
             ret = init_project(target_dir=self.target_dir)
             self.assertEqual(ret, 1)
             self.assertTrue(mock_stderr.write.called)
-
-
-if __name__ == "__main__":
-    unittest.main()

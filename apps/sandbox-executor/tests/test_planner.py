@@ -430,7 +430,3 @@ class TestPlanner(unittest.TestCase):
                     self.assertEqual(cm.exception.code, 1)
             finally:
                 sys.argv = old_argv
-
-
-if __name__ == "__main__":
-    unittest.main()

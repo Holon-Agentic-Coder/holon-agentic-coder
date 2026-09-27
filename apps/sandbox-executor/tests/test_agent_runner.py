@@ -5,6 +5,17 @@ import pytest
 from sandbox_executor.agent_runner import get_repo_url, get_runner, runners
 
 
+def _docker_image_available(image_name: str) -> bool:
+    """Return True when the named image is present in the local Docker image store.
+
+    An unbuilt image is an absent fixture, not a result: ``docker run`` exits 125 for an image it
+    cannot resolve, so an assertion that only rejects 127 (command not found) would pass without
+    ever having run anything inside the image.
+    """
+    probe = subprocess.run(["docker", "image", "inspect", image_name], capture_output=True, text=True)
+    return probe.returncode == 0
+
+
 class TestAgentRunner(unittest.TestCase):
     def test_runner_mappings(self):
         """Test that get_runner correctly maps agent names and validates support."""
@@ -247,6 +258,9 @@ class TestAgentRunner(unittest.TestCase):
                 image_name = agent_image_mapping.get(agent_id)
                 self.assertIsNotNone(image_name, f"Missing image mapping for agent: {agent_id}")
 
+                if not _docker_image_available(image_name):
+                    self.skipTest(f"Docker image '{image_name}' is not built in this environment.")
+
                 # Run 'docker run --rm <image> <binary> --help'
                 cmd = ["docker", "run", "--rm", image_name, runner.binary_name, "--help"]
                 try:
@@ -289,6 +303,9 @@ class TestAgentRunner(unittest.TestCase):
             with self.subTest(agent=agent_id):
                 image_name = agent_image_mapping.get(agent_id)
                 self.assertIsNotNone(image_name, f"Missing image mapping for agent: {agent_id}")
+
+                if not _docker_image_available(image_name):
+                    self.skipTest(f"Docker image '{image_name}' is not built in this environment.")
 
                 code = (
                     f"from sandbox_executor.agent_runner import get_runner; "

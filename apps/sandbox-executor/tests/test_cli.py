@@ -231,7 +231,3 @@ class TestHolonCLI(unittest.TestCase):
             main()
         self.assertEqual(cm.exception.code, 0)
         self.assertIn("holon 0.1.0", mock_stdout.getvalue())
-
-
-if __name__ == "__main__":
-    unittest.main()

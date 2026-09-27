@@ -166,7 +166,3 @@ class TestPlannerIntegration(unittest.TestCase):
 
                     # Verify that no success/push message was printed
                     self.assertNotIn("successfully created, committed, and pushed", result.stdout)
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -1,82 +1,141 @@
-"""Shared helpers for hermetic, container-mounted test fixtures.
+"""Fixture helpers for container-based integration tests.
 
-These exist because a fixture that behaves correctly under Docker Desktop can fail on a Linux CI
-runner. On macOS the bind-mounted host path is ownership-mapped into the container, so the
-container's unprivileged ``holon`` user (uid 1000) can read and write it. On Linux the bind mount
-keeps the host owner (the CI runner user, typically uid 1001) and the container user has no write
-permission at all, and git additionally refuses to trust a repository owned by a different uid.
+These exist because a fixture that works under Docker Desktop can fail on a Linux CI runner. The
+tests need a git remote that a *container* can clone from and push back to. Bind-mounting a host
+temporary directory cannot provide that: on macOS the mount's ownership is remapped into the
+container, while on Linux it keeps the host owner (the CI runner user), which is unrelated to the
+image's unprivileged ``holon`` user (uid 1000). Every workaround for that mismatch was a dead end:
 
-Both effects are invisible locally, so any test that bind-mounts a host temporary directory into a
-container must handle them explicitly.
+* ``git`` refuses a repository owned by a foreign uid (``detected dubious ownership``), and neither
+  ``GIT_CONFIG_COUNT``/``GIT_CONFIG_KEY_<n>`` (not honoured by ``git clone``, verified against git
+  2.47.3 in ``holon/orchestrator``) nor the ``file://`` transport (``safe.directory`` applies to
+  ``file://`` sources too) can express the exception;
+* the container uid cannot write the mount at all, so a push dies with ``remote unpack failed:
+  unable to create temporary object directory``;
+* relaxing the fixture to ``0o777`` is a CWE-732 insecure-permissions violation (CodeQL, high);
+* ``--user $(id -u)`` breaks the image entrypoint because ``/home/holon`` is ``drwx------``;
+* and whatever the container creates, the host process then cannot delete at teardown.
+
+A named Docker volume removes all of it: one uid owns everything inside it, the fixture is never
+visible to the host, and ``docker volume rm`` reclaims it regardless of inner ownership.
 """
 
-import os
-import shutil
 import subprocess
+import uuid
 
-CONTAINER_TRUSTED_REMOTE = "/mock_remote.git"
+CONTAINER_REMOTE_PATH = "/mock_remote.git"
+DEFAULT_FIXTURE_IMAGE = "holon/orchestrator"
+IMAGE_UID = "1000:1000"
+
+_SEED_SCRIPT = f"""\
+set -eu
+git init --bare -b main {CONTAINER_REMOTE_PATH}
+rm -rf /tmp/holon-fixture-seed
+git init -b main -q /tmp/holon-fixture-seed
+cd /tmp/holon-fixture-seed
+git config user.email test@holon.com
+git config user.name "Holon Fixture"
+mkdir -p holon-knowledge/ledger
+: > holon-knowledge/ledger/intents.jsonl
+git add -A
+git commit -qm "fixture seed"
+git remote add origin {CONTAINER_REMOTE_PATH}
+git push -q origin main
+# A freshly created volume is root-owned and the seed must run as root to populate it, so hand
+# ownership to the image's unprivileged user; otherwise the role container cannot push into it.
+chown -R {IMAGE_UID} {CONTAINER_REMOTE_PATH}
+"""
 
 
-def write_trusted_gitconfig(tmp_dir: str, remote_path: str = CONTAINER_TRUSTED_REMOTE) -> str:
-    """Writes a fixture git config declaring the bind-mounted remote trusted.
+class RemoteFixtureError(RuntimeError):
+    """Raised when the seeded remote fixture cannot be created."""
 
-    Git aborts a clone from a repository owned by another uid with ``detected dubious ownership``.
-    ``GIT_CONFIG_COUNT``/``GIT_CONFIG_KEY_<n>`` cannot express this because those variables are not
-    honoured by ``git clone``, and the ``file://`` transport does not bypass the ownership check
-    either, so the config has to be delivered as a real global config file via ``GIT_CONFIG_GLOBAL``.
 
-    Returns the path to mount read-only into the container.
+def create_seeded_remote(image: str = DEFAULT_FIXTURE_IMAGE) -> str:
+    """Creates a named volume holding a bare repository with one commit on ``main``.
+
+    Returns the volume name. The caller must reclaim it with :func:`remove_remote_volume`, normally
+    via ``self.addCleanup`` so a failing assertion cannot leak the volume.
     """
-    gitconfig_path = os.path.join(tmp_dir, "gitconfig")
-    with open(gitconfig_path, "w", encoding="utf-8") as handle:
-        handle.write(f"[safe]\n\tdirectory = {remote_path}\n")
-    os.chmod(gitconfig_path, 0o644)
-    return gitconfig_path
+    volume = f"holon-it-{uuid.uuid4().hex[:16]}"
+    create = subprocess.run(["docker", "volume", "create", volume], capture_output=True, text=True, check=False)
+    if create.returncode != 0:
+        raise RemoteFixtureError(f"docker volume create failed: {create.stderr}")
 
-
-def container_root_args() -> list[str]:
-    """Runs the test container as root so it can write the bind-mounted fixture.
-
-    The image's default ``holon`` user (uid 1000) is unrelated to the CI runner user that owns the
-    bind-mounted temporary fixture. On macOS Docker Desktop remaps ownership so the mismatch is
-    invisible; on Linux the container uid cannot create objects in the mount, so a ``git push`` into
-    the bind-mounted bare repository dies with ``remote unpack failed: unable to create temporary
-    object directory``.
-
-    Two alternatives were tried and rejected: running as the fixture owner's uid fails because
-    ``/home/holon`` is not traversable by foreign uids (the image entrypoint becomes
-    ``Permission denied``), and making the fixture group/world writable is an insecure-permissions
-    violation that CodeQL reports as a high-severity finding.
-    """
-    return ["--user", "root"]
-
-
-def purge_container_written_tree(path: str) -> None:
-    """Deletes a fixture tree that a container wrote into, as root, then best-effort from the host.
-
-    Files created by the container are not removable by the host test process on Linux CI, which
-    would otherwise surface as a spurious ``PermissionError`` from ``TemporaryDirectory`` teardown
-    long after the assertions passed. Register this with ``self.addCleanup`` so it also runs when an
-    assertion fails.
-    """
-    if shutil.which("docker"):
-        subprocess.run(
+    try:
+        result = subprocess.run(
             [
                 "docker",
                 "run",
                 "--rm",
+                "--network",
+                "none",
                 "--user",
                 "root",
                 "-v",
-                f"{path}:/purge",
+                f"{volume}:{CONTAINER_REMOTE_PATH}",
                 "--entrypoint",
-                "rm",
-                "holon/base",
-                "-rf",
-                "/purge",
+                "bash",
+                image,
+                "-c",
+                _SEED_SCRIPT,
             ],
             capture_output=True,
             text=True,
+            timeout=120,
             check=False,
         )
-    shutil.rmtree(path, ignore_errors=True)
+    except subprocess.SubprocessError as exc:
+        remove_remote_volume(volume)
+        raise RemoteFixtureError(f"seeding docker run failed: {exc}") from exc
+
+    if result.returncode != 0:
+        remove_remote_volume(volume)
+        raise RemoteFixtureError(
+            f"seeding remote fixture failed with code {result.returncode}.\n"
+            f"Stdout:\n{result.stdout}\nStderr:\n{result.stderr}"
+        )
+    return volume
+
+
+def remove_remote_volume(volume: str) -> None:
+    """Best-effort removal of a fixture volume."""
+    subprocess.run(["docker", "volume", "rm", "-f", volume], capture_output=True, text=True, check=False)
+
+
+def remote_volume_args(volume: str) -> list[str]:
+    """Docker arguments mounting the fixture volume at the path ``HOLON_REPO_URL`` refers to."""
+    return ["-v", f"{volume}:{CONTAINER_REMOTE_PATH}"]
+
+
+def remote_show_file(
+    ref: str, path: str, volume: str, image: str = DEFAULT_FIXTURE_IMAGE
+) -> subprocess.CompletedProcess:
+    """Runs ``git show <ref>:<path>`` against the fixture repository from inside a container.
+
+    The repository deliberately never exists on the host, so all inspection goes through the
+    container; the inspecting container runs as the image's own user, which also owns the volume
+    contents, so no ownership exception is required.
+    """
+    return subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "-v",
+            f"{volume}:{CONTAINER_REMOTE_PATH}",
+            "--entrypoint",
+            "git",
+            image,
+            "-C",
+            CONTAINER_REMOTE_PATH,
+            "show",
+            f"{ref}:{path}",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )

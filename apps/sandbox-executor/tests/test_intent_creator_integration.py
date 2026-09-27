@@ -8,7 +8,7 @@ import unittest
 
 import pytest
 
-from tests.hermetic_fixtures import container_root_args, purge_container_written_tree, write_trusted_gitconfig
+from tests.hermetic_fixtures import create_seeded_remote, remote_show_file, remote_volume_args, remove_remote_volume
 
 
 def _is_docker_available() -> bool:
@@ -42,34 +42,16 @@ class TestIntentCreatorIntegration(unittest.TestCase):
 
     def test_intent_creator_docker_execution(self):
         """Test that running the orchestrator with the intent-creator role successfully
-        creates the intent branch and appends the intent to the ledger using a local bare repository.
+        creates the intent branch and appends the intent to the ledger using a bare repository held in a Docker volume.
         """
         if not _is_docker_available():
             self.skipTest("Docker daemon is not available in test environment.")
 
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
-            # The container writes as root, so the host process cannot remove its files;
-            # purge from a root container instead (runs even if an assertion fails).
-            self.addCleanup(purge_container_written_tree, tmp_dir)
-            gitconfig_path = write_trusted_gitconfig(tmp_dir)
-            bare_repo_dir = os.path.join(tmp_dir, "remote.git")
-            subprocess.run(["git", "init", "--bare", bare_repo_dir], check=True, capture_output=True)
-
-            # Seed the bare repository with an initial commit on main
-            seed_dir = os.path.join(tmp_dir, "seed_repo")
-            subprocess.run(["git", "init", "-b", "main", seed_dir], check=True, capture_output=True)
-            subprocess.run(["git", "-C", seed_dir, "config", "user.email", "test@holon.com"], check=True)
-            subprocess.run(["git", "-C", seed_dir, "config", "user.name", "Test User"], check=True)
-
-            ledger_dir = os.path.join(seed_dir, "holon-knowledge", "ledger")
-            os.makedirs(ledger_dir, exist_ok=True)
-            with open(os.path.join(ledger_dir, "intents.jsonl"), "w") as f:
-                f.write("")
-
-            subprocess.run(["git", "-C", seed_dir, "add", "."], check=True, capture_output=True)
-            subprocess.run(["git", "-C", seed_dir, "commit", "-m", "init"], check=True, capture_output=True)
-            subprocess.run(["git", "-C", seed_dir, "remote", "add", "origin", bare_repo_dir], check=True)
-            subprocess.run(["git", "-C", seed_dir, "push", "origin", "main"], check=True, capture_output=True)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # A named volume owns its own uid, so the container can clone from and push back to the
+            # fixture without any host/container uid negotiation.
+            volume = create_seeded_remote()
+            self.addCleanup(remove_remote_volume, volume)
 
             intent_json_path = os.path.join(tmp_dir, "intent.json")
             intent_data = {
@@ -91,17 +73,9 @@ class TestIntentCreatorIntegration(unittest.TestCase):
                 "HOLON_ROLE=intent-creator",
                 "-e",
                 "HOLON_REPO_URL=/mock_remote.git",
-                "-e",
-                "GIT_CONFIG_GLOBAL=/tmp/holon-test.gitconfig",
-                "-v",
-                f"{gitconfig_path}:/tmp/holon-test.gitconfig:ro",
-                "-v",
-                f"{bare_repo_dir}:/mock_remote.git",
+                *remote_volume_args(volume),
                 "-v",
                 f"{intent_json_path}:/tmp/intent.json",
-                # Run as the fixture owner: the image's uid 1000 cannot write a host-owned
-                # bind mount on Linux CI, and the fixture must not be world-writable.
-                *container_root_args(),
                 "holon/orchestrator",
             ]
 
@@ -126,9 +100,9 @@ class TestIntentCreatorIntegration(unittest.TestCase):
 
             intent_branch = match.group(1)
 
-            # Verify the remote branch contains the intents ledger file and our intent from local bare repo
-            show_cmd = ["git", "-C", bare_repo_dir, "show", f"{intent_branch}:holon-knowledge/ledger/intents.jsonl"]
-            show_result = subprocess.run(show_cmd, capture_output=True, text=True)
+            # Verify the pushed branch carries our intent record. The fixture never surfaces on the
+            # host, so the read is done by a container running as the volume's own user.
+            show_result = remote_show_file(intent_branch, "holon-knowledge/ledger/intents.jsonl", volume)
 
             self.assertEqual(
                 show_result.returncode,

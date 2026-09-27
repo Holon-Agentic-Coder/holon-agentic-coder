@@ -9,7 +9,7 @@ import unittest
 
 import pytest
 
-from tests.hermetic_fixtures import relax_bind_mount_permissions, write_trusted_gitconfig
+from tests.hermetic_fixtures import container_root_args, purge_container_written_tree, write_trusted_gitconfig
 
 
 def _is_docker_available() -> bool:
@@ -49,7 +49,10 @@ class TestPlannerIntegration(unittest.TestCase):
         if not _is_docker_available():
             self.skipTest("Docker daemon is not available in test environment.")
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir:
+            # The container writes as root, so the host process cannot remove its files;
+            # purge from a root container instead (runs even if an assertion fails).
+            self.addCleanup(purge_container_written_tree, tmp_dir)
             gitconfig_path = write_trusted_gitconfig(tmp_dir)
             bare_repo_dir = os.path.join(tmp_dir, "remote.git")
             subprocess.run(["git", "init", "--bare", bare_repo_dir], check=True, capture_output=True)
@@ -69,10 +72,6 @@ class TestPlannerIntegration(unittest.TestCase):
             subprocess.run(["git", "-C", seed_dir, "commit", "-m", "init"], check=True, capture_output=True)
             subprocess.run(["git", "-C", seed_dir, "remote", "add", "origin", bare_repo_dir], check=True)
             subprocess.run(["git", "-C", seed_dir, "push", "origin", "main"], check=True, capture_output=True)
-
-            # The container pushes back into this bare repository; on Linux CI its uid differs
-            # from the fixture owner, so the fixture must be group/world writable.
-            relax_bind_mount_permissions(bare_repo_dir)
 
             intent_json_path = os.path.join(tmp_dir, "intent.json")
             intent_data = {
@@ -102,6 +101,9 @@ class TestPlannerIntegration(unittest.TestCase):
                 f"{bare_repo_dir}:/mock_remote.git",
                 "-v",
                 f"{intent_json_path}:/tmp/intent.json",
+                # Run as the fixture owner: the image's uid 1000 cannot write a host-owned
+                # bind mount on Linux CI, and the fixture must not be world-writable.
+                *container_root_args(),
                 "holon/orchestrator",
             ]
 
@@ -158,6 +160,9 @@ class TestPlannerIntegration(unittest.TestCase):
                         f"{gitconfig_path}:/tmp/holon-test.gitconfig:ro",
                         "-v",
                         f"{bare_repo_dir}:/mock_remote.git",
+                        # Run as the fixture owner: the image's uid 1000 cannot write a host-owned
+                        # bind mount on Linux CI, and the fixture must not be world-writable.
+                        *container_root_args(),
                         image_name,
                         intent_branch,
                         agent,

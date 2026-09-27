@@ -11,6 +11,8 @@ container must handle them explicitly.
 """
 
 import os
+import shutil
+import subprocess
 
 CONTAINER_TRUSTED_REMOTE = "/mock_remote.git"
 
@@ -32,17 +34,49 @@ def write_trusted_gitconfig(tmp_dir: str, remote_path: str = CONTAINER_TRUSTED_R
     return gitconfig_path
 
 
-def relax_bind_mount_permissions(path: str) -> None:
-    """Makes a host fixture writable by the container's uid.
+def container_root_args() -> list[str]:
+    """Runs the test container as root so it can write the bind-mounted fixture.
 
-    A read-only-ish ``0700`` temporary directory is fine for the test process itself, but the
-    container's uid differs from the host uid on Linux CI, so a ``git push`` into a bind-mounted
-    bare repository fails with ``remote unpack failed: unable to create temporary object
-    directory`` unless the fixture is group/world writable.
+    The image's default ``holon`` user (uid 1000) is unrelated to the CI runner user that owns the
+    bind-mounted temporary fixture. On macOS Docker Desktop remaps ownership so the mismatch is
+    invisible; on Linux the container uid cannot create objects in the mount, so a ``git push`` into
+    the bind-mounted bare repository dies with ``remote unpack failed: unable to create temporary
+    object directory``.
+
+    Two alternatives were tried and rejected: running as the fixture owner's uid fails because
+    ``/home/holon`` is not traversable by foreign uids (the image entrypoint becomes
+    ``Permission denied``), and making the fixture group/world writable is an insecure-permissions
+    violation that CodeQL reports as a high-severity finding.
     """
-    for root, dirs, files in os.walk(path):
-        for name in dirs:
-            os.chmod(os.path.join(root, name), 0o777)
-        for name in files:
-            os.chmod(os.path.join(root, name), 0o666)
-    os.chmod(path, 0o777)
+    return ["--user", "root"]
+
+
+def purge_container_written_tree(path: str) -> None:
+    """Deletes a fixture tree that a container wrote into, as root, then best-effort from the host.
+
+    Files created by the container are not removable by the host test process on Linux CI, which
+    would otherwise surface as a spurious ``PermissionError`` from ``TemporaryDirectory`` teardown
+    long after the assertions passed. Register this with ``self.addCleanup`` so it also runs when an
+    assertion fails.
+    """
+    if shutil.which("docker"):
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--user",
+                "root",
+                "-v",
+                f"{path}:/purge",
+                "--entrypoint",
+                "rm",
+                "holon/base",
+                "-rf",
+                "/purge",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    shutil.rmtree(path, ignore_errors=True)

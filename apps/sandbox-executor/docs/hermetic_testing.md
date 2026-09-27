@@ -2,9 +2,27 @@
 
 ## 1. Background & Root Cause Analysis
 
-In previous versions, running unit tests such as `test_intent_creator.py` inside the executor container caused
-catastrophic deletion of the active host executor's live workspace (`~/.holon-sandbox/workspace`), leading to
-orphan-commit fallbacks (the Bean 0019 incident).
+In previous versions, running the `apps/sandbox-executor` unit suite inside the executor container could delete the live
+workspace of the running executor (`~/.holon-sandbox/workspace`), which forced the orphan-commit fallback seen in the
+Bean 0019 incident.
+
+### Corrected attribution
+
+The mechanism below is accurate; the earlier blame assigned to `test_intent_creator.py` was **not**. That module already
+patched `cleanup_repo_dir` (decorators at lines 9, 66, 113 and 161 of the pre-fix base), so running it alone never
+removed a live workspace. An audit of every test that calls a role entrypoint without patching cleanup found the actual
+exposed callers, all in one module:
+
+- `test_executor.py`: `test_main_execution_flow`, `test_main_git_recovery_on_corrupted_repo`,
+  `test_main_decomposition_flow`, `test_main_custom_holon_repo_dir_not_deleted`, `test_main_default_workspace_deleted`,
+  `test_main_raises_exception_on_failure`, `test_main_raises_runtime_error_on_cleanup_failure`,
+  `test_main_mount_point_clears_contents`, `test_main_git_add_not_called_on_failure`. Two of these also exercise
+  `_rmtree` directly: `test_main_default_workspace_deleted` and `test_main_raises_runtime_error_on_cleanup_failure`.
+
+Because a guard test that cannot fail is worthless, `tests/test_sandbox_hermetic_guard.py` pairs the canary guard with a
+negative control that runs a deliberately unpinned `cleanup_repo_dir()` and asserts the simulated workspace **is**
+destroyed. If the resolution path ever stops pointing at the workspace, the negative control fails and the guard's
+silence is no longer trusted.
 
 ### Root Cause
 

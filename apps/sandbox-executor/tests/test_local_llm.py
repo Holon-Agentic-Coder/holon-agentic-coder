@@ -648,7 +648,3 @@ class TestRunnerValidation(unittest.TestCase):
         self.assertEqual(local_llm.normalize_agent_id("agent-pi"), "pi")
         self.assertEqual(local_llm.normalize_agent_id("Pi"), "pi")
         self.assertEqual(local_llm.normalize_agent_id("claude-agent"), "claude")
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -30,8 +30,12 @@ auto-format = "ruff format . && ruff check --fix ."
 [tool.pytest.ini_options]
 testpaths = ["apps/sandbox-executor/tests"]
 pythonpath = ["apps/sandbox-executor/src"]
+# Unknown markers are only a warning by default, which is how a typo'd or unregistered marker can
+# sit silently outside every -m selection. Fail the run instead.
+addopts = ["--strict-markers"]
 markers = [
     "integration_test: marks tests as integration tests",
+    "stress: marks long-running workspace-survival checks that run the suite from a live executor workspace",
 ]
 
 [tool.ruff]

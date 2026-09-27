@@ -1,13 +1,11 @@
 *.iml
 .idea
-
 .DS_Store
-
 .venv
 __pycache__
 build
 *.egg-info
 todo/mitm_wire_logs*/
 todo/cache/
-
 .subagent
+stress-report.xml

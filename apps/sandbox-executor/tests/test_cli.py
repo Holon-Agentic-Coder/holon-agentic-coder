@@ -259,7 +259,3 @@ class TestHolonCLI(unittest.TestCase):
         res = _run_docker("version")
         self.assertEqual(res.returncode, 127)
         self.assertIn("docker not found", res.stderr)
-
-
-if __name__ == "__main__":
-    unittest.main()

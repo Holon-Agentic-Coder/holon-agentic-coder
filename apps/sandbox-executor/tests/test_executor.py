@@ -885,3 +885,389 @@ class TestExecutor(unittest.TestCase):
 
             mock_run_cmd_args = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
             self.assertFalse(any("add" in cmd and "-A" in cmd for cmd in mock_run_cmd_args))
+
+    @patch("sandbox_executor.entrypoint.executor.run_cmd")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    def test_agent_output_captured_on_failure(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
+        """Test that failing agent runs capture bounded diagnostic output into execution record."""
+        mock_get_repo_url.return_value = "/mock/repo"
+        mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.1.22"
+        mock_runner.build_cmd.return_value = ["agy", "run"]
+        mock_get_runner.return_value = mock_runner
+
+        diagnostic_line = "printmode.go:521] Print mode: timed out after 1488 polls"
+
+        def side_effect(args, cwd=None, **kwargs):
+            mock_res = MagicMock()
+            if "clone" in args:
+                ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
+                os.makedirs(ledger_dir, exist_ok=True)
+                with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "plan_id": "P-123",
+                                "intent_branch": "I-456/_",
+                                "entropy": 2.0,
+                                "entropy_budget": 5.0,
+                            }
+                        )
+                        + "\n"
+                    )
+            if "agy" in args:
+                mock_res.returncode = 1
+                mock_res.stdout = "Starting agent execution...\n"
+                mock_res.stderr = f"CRITICAL: {diagnostic_line}\n"
+            else:
+                mock_res.returncode = 0
+                mock_res.stdout = ""
+                mock_res.stderr = ""
+            return mock_res
+
+        mock_run_cmd.side_effect = side_effect
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
+            patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
+            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
+        ):
+            executor.main()
+
+            exec_dir = os.path.join(tmp_dir, "executions")
+            self.assertTrue(os.path.isdir(exec_dir))
+            exec_files = os.listdir(exec_dir)
+            self.assertEqual(len(exec_files), 1)
+            with open(os.path.join(exec_dir, exec_files[0])) as ef:
+                record = ef.read()
+
+            self.assertIn("## Status\nFailure", record)
+            self.assertIn("## Summary\nPlan execution failed with exit code 1", record)
+            self.assertIn("## Agent Output", record)
+            self.assertIn(diagnostic_line, record)
+
+    @patch("sandbox_executor.entrypoint.executor.run_cmd")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    def test_agent_output_truncation_marker_and_byte_budget(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
+        """Test that agent output exceeding HOLON_AGENT_LOG_BYTES is truncated with explicit marker."""
+        mock_get_repo_url.return_value = "/mock/repo"
+        mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.1.22"
+        mock_runner.build_cmd.return_value = ["agy", "run"]
+        mock_get_runner.return_value = mock_runner
+
+        head_marker = "EARLY_OUTPUT_HEAD_MARKER_" * 20
+        tail_marker = "LATE_OUTPUT_TAIL_DIAGNOSTIC_MARKER"
+        large_output = head_marker + ("\n" + "x" * 100) * 30 + "\n" + tail_marker + "\n"
+
+        def side_effect(args, cwd=None, **kwargs):
+            mock_res = MagicMock()
+            if "clone" in args:
+                ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
+                os.makedirs(ledger_dir, exist_ok=True)
+                with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "plan_id": "P-123",
+                                "intent_branch": "I-456/_",
+                                "entropy": 2.0,
+                                "entropy_budget": 5.0,
+                            }
+                        )
+                        + "\n"
+                    )
+            if "agy" in args:
+                mock_res.returncode = 1
+                mock_res.stdout = large_output
+                mock_res.stderr = ""
+            else:
+                mock_res.returncode = 0
+                mock_res.stdout = ""
+                mock_res.stderr = ""
+            return mock_res
+
+        mock_run_cmd.side_effect = side_effect
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.dict(
+                os.environ,
+                {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1", "HOLON_AGENT_LOG_BYTES": "1024"},
+            ),
+            patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
+            patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
+            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
+        ):
+            executor.main()
+
+            exec_dir = os.path.join(tmp_dir, "executions")
+            exec_files = os.listdir(exec_dir)
+            with open(os.path.join(exec_dir, exec_files[0])) as ef:
+                record = ef.read()
+
+            self.assertIn("[Agent output truncated:", record)
+            self.assertIn("bytes dropped; showing tail 1024 bytes]", record)
+            self.assertIn(tail_marker, record)
+            self.assertNotIn("EARLY_OUTPUT_HEAD_MARKER_", record)
+
+    @patch("sandbox_executor.entrypoint.executor.run_cmd")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    def test_agent_output_secret_redaction(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
+        """Test that literal token values from GITHUB_TOKEN, GH_TOKEN, and HOLON_AGENT_KEY are stripped."""
+        mock_get_repo_url.return_value = "/mock/repo"
+        mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.1.22"
+        mock_runner.build_cmd.return_value = ["agy", "run"]
+        mock_get_runner.return_value = mock_runner
+
+        secret_gh = "ghp_secretTokenVal12345"
+        secret_gh_tok = "gho_otherTokenVal67890"
+        secret_key = "ak_superSecretAgentKey"
+
+        agent_stdout = f"Agent started with token {secret_gh} and GH_TOKEN={secret_gh_tok}\n"
+        agent_stderr = f"Agent failed authentication: key={secret_key}\n"
+
+        def side_effect(args, cwd=None, **kwargs):
+            mock_res = MagicMock()
+            if "clone" in args:
+                ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
+                os.makedirs(ledger_dir, exist_ok=True)
+                with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "plan_id": "P-123",
+                                "intent_branch": "I-456/_",
+                                "entropy": 2.0,
+                                "entropy_budget": 5.0,
+                            }
+                        )
+                        + "\n"
+                    )
+            if "agy" in args:
+                mock_res.returncode = 1
+                mock_res.stdout = agent_stdout
+                mock_res.stderr = agent_stderr
+            else:
+                mock_res.returncode = 0
+                mock_res.stdout = ""
+                mock_res.stderr = ""
+            return mock_res
+
+        mock_run_cmd.side_effect = side_effect
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.dict(
+                os.environ,
+                {
+                    "HOLON_REPO_DIR": tmp_dir,
+                    "HOLON_SKIP_PUSH": "1",
+                    "GITHUB_TOKEN": secret_gh,
+                    "GH_TOKEN": secret_gh_tok,
+                    "HOLON_AGENT_KEY": secret_key,
+                },
+            ),
+            patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
+            patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
+            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
+        ):
+            executor.main()
+
+            exec_dir = os.path.join(tmp_dir, "executions")
+            exec_files = os.listdir(exec_dir)
+            with open(os.path.join(exec_dir, exec_files[0])) as ef:
+                record = ef.read()
+
+            with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
+                ledger_content = lf.read()
+
+            for secret in (secret_gh, secret_gh_tok, secret_key):
+                self.assertNotIn(secret, record, f"Secret {secret} leaked into execution markdown record!")
+                self.assertNotIn(secret, ledger_content, f"Secret {secret} leaked into executions.jsonl!")
+
+            self.assertIn("*******", record)
+
+    @patch("sandbox_executor.entrypoint.executor.run_cmd")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    @patch("sandbox_executor.entrypoint.executor.sanitize_agent_output")
+    def test_agent_output_logging_failure_fault_tolerance(
+        self, mock_sanitize, mock_get_repo_url, mock_get_runner, mock_run_cmd
+    ):
+        """Test that logging/sanitizing failure does not alter execution status or raise out of main."""
+        mock_get_repo_url.return_value = "/mock/repo"
+        mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.1.22"
+        mock_runner.build_cmd.return_value = ["agy", "run"]
+        mock_get_runner.return_value = mock_runner
+
+        mock_sanitize.side_effect = RuntimeError("Disk failure")
+
+        def side_effect(args, cwd=None, **kwargs):
+            mock_res = MagicMock()
+            if "clone" in args:
+                ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
+                os.makedirs(ledger_dir, exist_ok=True)
+                with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "plan_id": "P-123",
+                                "intent_branch": "I-456/_",
+                                "entropy": 2.0,
+                                "entropy_budget": 5.0,
+                            }
+                        )
+                        + "\n"
+                    )
+            if "agy" in args:
+                mock_res.returncode = 1
+                mock_res.stdout = "Failure output"
+                mock_res.stderr = "Error details"
+            else:
+                mock_res.returncode = 0
+                mock_res.stdout = ""
+                mock_res.stderr = ""
+            return mock_res
+
+        mock_run_cmd.side_effect = side_effect
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
+            patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
+            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
+        ):
+            # Assert executor.main() does not raise
+            executor.main()
+
+            with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
+                entry = json.loads(lf.readline())
+            self.assertEqual(entry["status"], "failure")
+            self.assertEqual(entry["summary"], "Plan execution failed with exit code 1")
+            self.assertFalse(entry["agent_output_truncated"])
+            self.assertEqual(entry["agent_output_bytes"], 0)
+
+    @patch("sandbox_executor.entrypoint.executor.run_cmd")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    def test_executions_ledger_optional_keys(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
+        """Test that executions.jsonl records optional keys without breaking schema invariants."""
+        mock_get_repo_url.return_value = "/mock/repo"
+        mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.1.22"
+        mock_runner.build_cmd.return_value = ["agy", "run"]
+        mock_get_runner.return_value = mock_runner
+
+        def side_effect(args, cwd=None, **kwargs):
+            mock_res = MagicMock()
+            if "clone" in args:
+                ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
+                os.makedirs(ledger_dir, exist_ok=True)
+                with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "plan_id": "P-123",
+                                "intent_branch": "I-456/_",
+                                "entropy": 2.0,
+                                "entropy_budget": 5.0,
+                            }
+                        )
+                        + "\n"
+                    )
+            if "agy" in args:
+                mock_res.returncode = 0
+                mock_res.stdout = "Task complete.\n"
+                mock_res.stderr = ""
+            else:
+                mock_res.returncode = 0
+                mock_res.stdout = ""
+                mock_res.stderr = ""
+            return mock_res
+
+        mock_run_cmd.side_effect = side_effect
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
+            patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
+            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
+        ):
+            executor.main()
+
+            with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
+                entry = json.loads(lf.readline())
+
+            required_keys = {
+                "execution_id",
+                "plan_branch",
+                "agent",
+                "agent_version",
+                "model",
+                "status",
+                "summary",
+                "execution_file",
+                "created_at",
+            }
+            self.assertTrue(required_keys.issubset(entry.keys()))
+            self.assertIn("agent_output_truncated", entry)
+            self.assertIn("agent_output_bytes", entry)
+            self.assertIsInstance(entry["agent_output_truncated"], bool)
+            self.assertIsInstance(entry["agent_output_bytes"], int)
+            self.assertFalse(entry["agent_output_truncated"])
+            self.assertGreater(entry["agent_output_bytes"], 0)
+
+    def test_sanitize_agent_output_helper(self):
+        """Test sanitize_agent_output behavior for budget boundaries and markers."""
+        from sandbox_executor.entrypoint.executor import sanitize_agent_output
+
+        # Below limit
+        out, trunc, dropped = sanitize_agent_output("short output", max_bytes=100)
+        self.assertEqual(out, "short output")
+        self.assertFalse(trunc)
+        self.assertEqual(dropped, 0)
+
+        # Above limit
+        raw = "0123456789" * 10  # 100 bytes
+        out, trunc, dropped = sanitize_agent_output(raw, max_bytes=20)
+        self.assertTrue(trunc)
+        self.assertEqual(dropped, 80)
+        self.assertTrue(out.startswith("[Agent output truncated: 80 bytes dropped; showing tail 20 bytes]\n"))
+        self.assertTrue(out.endswith(raw[-20:]))
+
+        # Default fallback for zero/negative budget
+        out, trunc, dropped = sanitize_agent_output("test", max_bytes=0)
+        self.assertEqual(out, "test")
+        self.assertFalse(trunc)
+
+    def test_redact_agent_secrets_helper(self):
+        """Test redact_agent_secrets strips both regex patterns and literal tokens."""
+        from sandbox_executor.entrypoint.executor import redact_agent_secrets
+
+        env = {
+            "GITHUB_TOKEN": "ghp_alpha123",
+            "GH_TOKEN": "gho_beta456",
+            "HOLON_AGENT_KEY": "ak_gamma789",
+        }
+        with patch.dict(os.environ, env):
+            sample = (
+                "Call: https://x-access-token:ghp_alpha123@github.com/repo.git\n"
+                "Literal: ghp_alpha123 and gho_beta456 and ak_gamma789\n"
+                "Header: Bearer custom_secret_bearer_token\n"
+            )
+            redacted = redact_agent_secrets(sample)
+            self.assertNotIn("ghp_alpha123", redacted)
+            self.assertNotIn("gho_beta456", redacted)
+            self.assertNotIn("ak_gamma789", redacted)
+            self.assertNotIn("custom_secret_bearer_token", redacted)
+            self.assertIn("*******", redacted)

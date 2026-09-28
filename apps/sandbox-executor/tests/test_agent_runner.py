@@ -1,3 +1,4 @@
+import os
 import subprocess
 import unittest
 
@@ -415,7 +416,7 @@ class TestGetRepoUrl(unittest.TestCase):
 
         with unittest.mock.patch.dict("os.environ", {}, clear=True):
             url = get_repo_url()
-            self.assertEqual(url, "git@github.com:Holon-Agentic-Coder/holon-agentic-coder-ref.git")
+            self.assertEqual(url, "git@github.com:Holon-Agentic-Coder/holon-agentic-coder.git")
 
     def test_ssh_agent_forwarding_override(self):
         """Test that get_repo_url respects the HOLON_REPO_URL environment variable."""
@@ -432,7 +433,7 @@ class TestGetRepoUrl(unittest.TestCase):
             url = get_repo_url()
             self.assertEqual(
                 url,
-                "https://x-access-token:ghp_secret123@github.com/Holon-Agentic-Coder/holon-agentic-coder-ref.git",
+                "https://x-access-token:ghp_secret123@github.com/Holon-Agentic-Coder/holon-agentic-coder.git",
             )
 
     def test_fine_grained_pat_token(self):
@@ -443,11 +444,51 @@ class TestGetRepoUrl(unittest.TestCase):
             url = get_repo_url()
             self.assertEqual(
                 url,
-                (
-                    "https://x-access-token:github_pat_secret456@"
-                    "github.com/Holon-Agentic-Coder/holon-agentic-coder-ref.git"
-                ),
+                ("https://x-access-token:github_pat_secret456@github.com/Holon-Agentic-Coder/holon-agentic-coder.git"),
             )
+
+    def test_get_repo_url_all_branches(self):
+        """Test all three URL resolution branches and token precedence."""
+        import unittest.mock
+
+        # Branch 1: Unset env -> default SSH URL
+        with unittest.mock.patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(get_repo_url(), "git@github.com:Holon-Agentic-Coder/holon-agentic-coder.git")
+
+        # Branch 2: Token set (GH_TOKEN, HOLON_AGENT_KEY) -> HTTPS token URL
+        with unittest.mock.patch.dict("os.environ", {"GH_TOKEN": "gho_testToken123"}, clear=True):
+            self.assertEqual(
+                get_repo_url(),
+                "https://x-access-token:gho_testToken123@github.com/Holon-Agentic-Coder/holon-agentic-coder.git",
+            )
+        with unittest.mock.patch.dict("os.environ", {"HOLON_AGENT_KEY": "ghp_agentKey456"}, clear=True):
+            self.assertEqual(
+                get_repo_url(),
+                "https://x-access-token:ghp_agentKey456@github.com/Holon-Agentic-Coder/holon-agentic-coder.git",
+            )
+
+        # Branch 3: HOLON_REPO_URL set -> returns HOLON_REPO_URL unchanged regardless of tokens
+        with unittest.mock.patch.dict(
+            "os.environ",
+            {"HOLON_REPO_URL": "git@github.com:custom/priority.git", "GITHUB_TOKEN": "ghp_ignoredToken"},
+            clear=True,
+        ):
+            self.assertEqual(get_repo_url(), "git@github.com:custom/priority.git")
+
+    def test_guard_no_retired_reference_repo(self):
+        """Guard test: assert no file under apps/sandbox-executor/src mentions holon-agentic-coder-ref."""
+        src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+        for root, _, files in os.walk(src_dir):
+            for file in files:
+                if file.endswith((".py", ".sh", ".json", ".md")):
+                    file_path = os.path.join(root, file)
+                    with open(file_path, encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                    self.assertNotIn(
+                        "holon-agentic-coder-ref",
+                        content,
+                        f"Found retired reference repo 'holon-agentic-coder-ref' in {file_path}",
+                    )
 
 
 class TestWorkspaceDirAndCleanup(unittest.TestCase):

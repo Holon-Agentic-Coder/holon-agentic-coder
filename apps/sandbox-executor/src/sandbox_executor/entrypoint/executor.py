@@ -135,6 +135,72 @@ def redact_args(args: list[str]) -> list[str]:
     return redacted
 
 
+def get_agent_log_byte_budget() -> int:
+    """Retrieve the byte limit for agent log retention from HOLON_AGENT_LOG_BYTES, defaulting to 65536."""
+    val = os.getenv("HOLON_AGENT_LOG_BYTES")
+    if val:
+        try:
+            parsed = int(val)
+            if parsed > 0:
+                return parsed
+        except (ValueError, TypeError):
+            pass
+    return 65536
+
+
+def sanitize_agent_output(raw_output: str, max_bytes: int = 65536) -> tuple[str, bool, int]:
+    """Sanitize and bound agent output to a maximum byte length.
+
+    Truncates the output to the tail `max_bytes` if the UTF-8 encoded length
+    exceeds `max_bytes`, prepending an explicit truncation notice with the
+    count of dropped bytes.
+
+    Args:
+        raw_output: Raw string output from the agent process.
+        max_bytes: Maximum allowed byte length for the tail.
+
+    Returns:
+        A tuple of (bounded_output, is_truncated, dropped_bytes).
+    """
+    if max_bytes <= 0:
+        max_bytes = 65536
+
+    encoded = raw_output.encode("utf-8")
+    total_bytes = len(encoded)
+
+    if total_bytes <= max_bytes:
+        return raw_output, False, 0
+
+    tail_bytes = encoded[-max_bytes:]
+    dropped_bytes = total_bytes - len(tail_bytes)
+    decoded_tail = tail_bytes.decode("utf-8", errors="replace")
+    marker = f"[Agent output truncated: {dropped_bytes} bytes dropped; showing tail {len(tail_bytes)} bytes]\n"
+    return marker + decoded_tail, True, dropped_bytes
+
+
+def redact_agent_secrets(text: str) -> str:
+    """Redact secrets from agent output using redact_text and literal environment token values.
+
+    Args:
+        text: Input string potentially containing sensitive tokens or credentials.
+
+    Returns:
+        Sanitized string with sensitive tokens masked with asterisks.
+    """
+    if not text:
+        return text
+
+    s = redact_text(text)
+    for env_var in ("GITHUB_TOKEN", "GH_TOKEN", "HOLON_AGENT_KEY"):
+        val = os.getenv(env_var)
+        if val and len(val) >= 4:
+            s = s.replace(val, "*******")
+            if val.strip() != val and len(val.strip()) >= 4:
+                s = s.replace(val.strip(), "*******")
+
+    return s
+
+
 def run_cmd(
     args: list[str],
     cwd: str | None = None,
@@ -485,17 +551,46 @@ def main() -> None:
                         with contextlib.suppress(Exception):
                             os.remove(tf)
 
+            agent_output_text = ""
+            agent_output_truncated = False
+            agent_output_bytes = 0
+
+            try:
+                stdout = res.stdout or ""
+                stderr = res.stderr or ""
+                if stdout and stderr:
+                    combined = f"{stdout}\n{stderr}" if not stdout.endswith("\n") else f"{stdout}{stderr}"
+                else:
+                    combined = stdout or stderr
+
+                max_bytes = get_agent_log_byte_budget()
+                sanitized_out, agent_output_truncated, _dropped = sanitize_agent_output(combined, max_bytes)
+                agent_output_text = redact_agent_secrets(sanitized_out)
+                agent_output_bytes = len(agent_output_text.encode("utf-8"))
+            except Exception as e:
+                print(f"Warning: Failed to capture/sanitize agent output: {e}", file=sys.stderr)
+                agent_output_text = ""
+                agent_output_truncated = False
+                agent_output_bytes = 0
+
             exec_file_rel = f"executions/{exec_id}.md"
             exec_file_path = os.path.join(repo_dir, exec_file_rel)
             os.makedirs(os.path.dirname(exec_file_path), exist_ok=True)
-            with open(exec_file_path, "w") as ef:
-                ef.write(f"# Execution Record: {exec_id}\n\n")
-                ef.write(f"- Plan Branch: `{plan_branch}`\n")
-                ef.write(f"- Agent: `{agent_name}`\n")
-                ef.write(f"- Agent Version: `{runner.get_version()}`\n")
-                ef.write(f"- Model: `{model_name}`\n")
-                ef.write(f"- Timestamp: `{timestamp_str}`\n\n")
-                ef.write(f"## Status\n{exec_status.capitalize()}\n\n## Summary\n{summary}\n")
+            try:
+                with open(exec_file_path, "w") as ef:
+                    ef.write(f"# Execution Record: {exec_id}\n\n")
+                    ef.write(f"- Plan Branch: `{plan_branch}`\n")
+                    ef.write(f"- Agent: `{agent_name}`\n")
+                    ef.write(f"- Agent Version: `{runner.get_version()}`\n")
+                    ef.write(f"- Model: `{model_name}`\n")
+                    ef.write(f"- Timestamp: `{timestamp_str}`\n\n")
+                    ef.write(f"## Status\n{exec_status.capitalize()}\n\n## Summary\n{summary}\n\n")
+                    ef.write("## Agent Output\n```\n")
+                    if agent_output_text:
+                        ef.write(agent_output_text if agent_output_text.endswith("\n") else f"{agent_output_text}\n")
+                    ef.write("```\n")
+            except Exception as e:
+                print(f"Warning: Failed to write execution record {exec_file_path}: {e}", file=sys.stderr)
 
             exec_entry = {
                 "execution_id": exec_id,
@@ -507,10 +602,15 @@ def main() -> None:
                 "summary": summary,
                 "execution_file": exec_file_rel,
                 "created_at": timestamp_str,
+                "agent_output_truncated": agent_output_truncated,
+                "agent_output_bytes": agent_output_bytes,
             }
-            os.makedirs(ledger_dir, exist_ok=True)
-            with open(os.path.join(ledger_dir, "executions.jsonl"), "a") as ef:
-                ef.write(json.dumps(exec_entry) + "\n")
+            try:
+                os.makedirs(ledger_dir, exist_ok=True)
+                with open(os.path.join(ledger_dir, "executions.jsonl"), "a") as ef:
+                    ef.write(json.dumps(exec_entry) + "\n")
+            except Exception as e:
+                print(f"Warning: Failed to write execution ledger entry: {e}", file=sys.stderr)
 
             git_check = run_cmd(["git", "rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False)
             if git_check.returncode != 0:
@@ -531,7 +631,13 @@ def main() -> None:
                 run_cmd(["git", "remote", "add", "origin", repo_url], cwd=repo_dir, check=False)
 
             commit_msg = f"execute: {exec_id} completed for plan {plan_branch}"
-            run_cmd(["git", "add", exec_file_rel, "holon-knowledge/ledger/executions.jsonl"], cwd=repo_dir)
+            add_targets = [
+                f
+                for f in (exec_file_rel, "holon-knowledge/ledger/executions.jsonl")
+                if os.path.exists(os.path.join(repo_dir, f))
+            ]
+            if add_targets:
+                run_cmd(["git", "add", *add_targets], cwd=repo_dir, check=False)
             if exec_status == "success":
                 run_cmd(["git", "add", "-A"], cwd=repo_dir)
 

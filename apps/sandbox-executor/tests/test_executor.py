@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -1023,40 +1024,74 @@ class TestExecutor(unittest.TestCase):
             )
             self.assertIn("E-", branches_res.stdout)
 
+    def _clone_workspace(self, base_dir: str, bare_dir: str, plan_branch: str) -> str:
+        workspace_dir = os.path.join(base_dir, "workspace")
+        subprocess.run(
+            ["git", "clone", "--branch", plan_branch, bare_dir, workspace_dir],
+            check=True,
+            capture_output=True,
+        )
+        return workspace_dir
+
     @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
-    @patch("sandbox_executor.entrypoint.executor.get_runner")
-    def test_benign_probe_failures_repaired_without_rebuild(self, mock_get_runner, mock_cleanup):
+    def test_benign_dubious_ownership_is_repaired_without_rebuild(self, mock_cleanup):
+        plan_branch = "I-456/P-123/_"
         with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
-            plan_branch = "I-456/P-123/_"
             bare_dir, _ = self._create_bare_remote_with_plan(base_dir, plan_branch)
-            workspace_dir = os.path.join(base_dir, "workspace")
+            workspace_dir = self._clone_workspace(base_dir, bare_dir, plan_branch)
 
-            subprocess.run(
-                ["git", "clone", "--branch", plan_branch, bare_dir, workspace_dir],
-                check=True,
-                capture_output=True,
-            )
-
-            # Sub-case (a): Dubious ownership repair
             dubious_err = f"fatal: detected dubious ownership in repository at '{workspace_dir}'"
             self.assertTrue(executor._repair_git_repo(workspace_dir, dubious_err, "main"))
             with open(os.path.join(workspace_dir, ".git", "config")) as cf:
                 self.assertIn(f"directory = {workspace_dir}", cf.read())
+            self.assertTrue(executor._probe_git_repo(workspace_dir)[0])
             self.assertEqual([d for d in os.listdir(workspace_dir) if d.startswith(".git-unusable-")], [])
 
-            # Sub-case (b): Stale index.lock repair
-            lock_path = os.path.join(workspace_dir, ".git", "index.lock")
-            with open(lock_path, "w") as f:
-                f.write("stale lock")
+    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
+    def test_lock_repair_removes_only_abandoned_locks(self, mock_cleanup):
+        plan_branch = "I-456/P-123/_"
+        with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
+            bare_dir, _ = self._create_bare_remote_with_plan(base_dir, plan_branch)
+            workspace_dir = self._clone_workspace(base_dir, bare_dir, plan_branch)
+            git_dir = os.path.join(workspace_dir, ".git")
+
+            abandoned = os.path.join(git_dir, "index.lock")
+            with open(abandoned, "w") as lf:
+                lf.write("abandoned by a crashed agent")
+            stale_age = time.time() - 3600
+            os.utime(abandoned, (stale_age, stale_age))
+            # A young ref lock and a protected config lock may belong to live git processes.
+            young = os.path.join(git_dir, "refs", "heads", "in-flight.lock")
+            with open(young, "w") as lf:
+                lf.write("held by a running git process")
+            protected = os.path.join(git_dir, "config.lock")
+            with open(protected, "w") as lf:
+                lf.write("held by git config")
+            os.utime(protected, (stale_age, stale_age))
+
             healthy, err = executor._probe_git_repo(workspace_dir)
             self.assertFalse(healthy)
             self.assertIn("index.lock", err)
-            self.assertTrue(executor._repair_git_repo(workspace_dir, err, "main"))
-            self.assertFalse(os.path.exists(lock_path))
-            healthy_after, _ = executor._probe_git_repo(workspace_dir)
-            self.assertTrue(healthy_after)
 
-            # Sub-case (c): Leaked GIT_DIR stripped from git env
+            removed, still_held = executor._remove_abandoned_locks(workspace_dir)
+            self.assertEqual([abandoned], removed)
+            self.assertIn(young, still_held)
+            self.assertFalse(os.path.exists(abandoned))
+            self.assertTrue(os.path.exists(young))
+            self.assertTrue(os.path.exists(protected))
+
+            self.assertTrue(executor._repair_git_repo(workspace_dir, err, "main"))
+            self.assertTrue(executor._probe_git_repo(workspace_dir)[0])
+            self.assertEqual([d for d in os.listdir(workspace_dir) if d.startswith(".git-unusable-")], [])
+
+    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    def test_leaked_git_dir_env_is_stripped_from_git_calls(self, mock_get_runner, mock_cleanup):
+        plan_branch = "I-456/P-123/_"
+        with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
+            bare_dir, _ = self._create_bare_remote_with_plan(base_dir, plan_branch)
+            workspace_dir = self._clone_workspace(base_dir, bare_dir, plan_branch)
+
             mock_runner = MagicMock()
             mock_runner.get_version.return_value = "1.0.0"
             mock_runner.build_cmd.return_value = ["python3", "-c", "print('agent ran')"]
@@ -1078,15 +1113,50 @@ class TestExecutor(unittest.TestCase):
             ):
                 executor.main()
 
+            self.assertFalse(os.path.exists(os.path.join(workspace_dir, "GIT_DIR")))
             self.assertEqual([d for d in os.listdir(workspace_dir) if d.startswith(".git-unusable-")], [])
+            self.assertTrue(executor._probe_git_repo(workspace_dir)[0])
 
-            # Sub-case (d): Dangling or missing HEAD symref repair
-            head_path = os.path.join(workspace_dir, ".git", "HEAD")
-            os.remove(head_path)
-            healthy, _ = executor._probe_git_repo(workspace_dir)
-            self.assertFalse(healthy)
-            self.assertTrue(executor._repair_git_repo(workspace_dir, "missing HEAD", "main"))
-            self.assertTrue(os.path.exists(head_path))
+    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
+    def test_missing_head_is_restored_on_the_execution_branch(self, mock_cleanup):
+        plan_branch = "I-456/P-123/_"
+        exec_branch = "I-456/P-123/E-1790000000-antigravity-agent-gemini-3.5-flash/_"
+        with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
+            bare_dir, plan_tip = self._create_bare_remote_with_plan(base_dir, plan_branch)
+            workspace_dir = self._clone_workspace(base_dir, bare_dir, plan_branch)
+            os.remove(os.path.join(workspace_dir, ".git", "HEAD"))
+
+            self.assertFalse(executor._probe_git_repo(workspace_dir)[0])
+            self.assertTrue(
+                executor._repair_git_repo(
+                    workspace_dir,
+                    "dangling HEAD",
+                    default_branch=exec_branch,
+                    plan_branch=plan_branch,
+                )
+            )
+
+            head_ref = subprocess.run(
+                ["git", "symbolic-ref", "HEAD"],
+                cwd=workspace_dir,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            self.assertEqual(
+                head_ref,
+                f"refs/heads/{exec_branch}",
+                "HEAD was restored onto an arbitrary branch instead of the execution branch",
+            )
+            head_tip = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=workspace_dir,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            self.assertEqual(head_tip, plan_tip)
+            self.assertEqual([d for d in os.listdir(workspace_dir) if d.startswith(".git-unusable-")], [])
 
     @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
     @patch("sandbox_executor.entrypoint.executor.get_runner")

@@ -39,6 +39,10 @@ from sandbox_executor.agent_runner import (
 
 _MAX_REDACT_INPUT_LEN: int = 100_000
 _MAX_PRINT_LEN: int = 5000
+# How far a truncated tail looks for a line boundary. Advancing to the next newline keeps a
+# credential from being cut in half, while capping the look-ahead bounds how much of the newest
+# diagnostic output the alignment may drop.
+_TAIL_ALIGN_WINDOW: int = 4096
 
 # Explicit list of flags whose next argument must be masked.
 # Note: Suffixes like "-token", "_token", "-secret", "_secret", "-key", and "_key"
@@ -189,9 +193,45 @@ def sanitize_agent_output(raw_output: str, max_bytes: int = 65536) -> tuple[str,
 
     tail_bytes = encoded[-max_bytes:]
     dropped_bytes = total_bytes - len(tail_bytes)
+    # Never sever a line: a credential cut in half matches neither the literal sweep (which needs
+    # the whole value) nor the key-name regex (whose anchor the same cut breaks), so the surviving
+    # fragment would be committed. Advance the tail to the next line boundary when one is near;
+    # a single line longer than the look-ahead window keeps the raw byte cut.
+    newline_at = tail_bytes.find(b"\n")
+    if 0 <= newline_at < len(tail_bytes) - 1 and newline_at <= _TAIL_ALIGN_WINDOW:
+        dropped_bytes += newline_at + 1
+        tail_bytes = tail_bytes[newline_at + 1 :]
     decoded_tail = tail_bytes.decode("utf-8", errors="replace")
     marker = f"[Agent output truncated: {dropped_bytes} bytes dropped; showing tail {len(tail_bytes)} bytes]\n"
     return marker + decoded_tail, True, dropped_bytes
+
+
+def redact_env_literals(text: str) -> str:
+    """Replace the literal values of the environment credential variables, without any length cap.
+
+    Safe on arbitrarily large streams, which is what makes it usable before the byte bound, where
+    a value may still be intact. `redact_text`'s input cap would drop middle content instead of
+    redacting it, so the regex pass is reserved for text that is already within the cap.
+
+    Args:
+        text: Input string potentially containing literal credential values.
+
+    Returns:
+        The input with every whole occurrence of `GITHUB_TOKEN`, `GH_TOKEN` and `HOLON_AGENT_KEY`
+        replaced by asterisks.
+    """
+    if not text:
+        return text
+
+    s = text
+    for env_var in ("GITHUB_TOKEN", "GH_TOKEN", "HOLON_AGENT_KEY"):
+        val = os.getenv(env_var)
+        if val and len(val) >= 4:
+            s = s.replace(val, "*******")
+            if val.strip() != val and len(val.strip()) >= 4:
+                s = s.replace(val.strip(), "*******")
+
+    return s
 
 
 def redact_agent_secrets(text: str) -> str:
@@ -206,15 +246,7 @@ def redact_agent_secrets(text: str) -> str:
     if not text:
         return text
 
-    s = redact_text(text)
-    for env_var in ("GITHUB_TOKEN", "GH_TOKEN", "HOLON_AGENT_KEY"):
-        val = os.getenv(env_var)
-        if val and len(val) >= 4:
-            s = s.replace(val, "*******")
-            if val.strip() != val and len(val.strip()) >= 4:
-                s = s.replace(val.strip(), "*******")
-
-    return s
+    return redact_env_literals(redact_text(text))
 
 
 def run_cmd(
@@ -836,11 +868,13 @@ def main() -> None:
                     combined = stdout or stderr
 
                 max_bytes = get_agent_log_byte_budget()
-                # Redact before bounding the tail: the byte cut severs a credential that straddles the
-                # boundary, and neither the literal sweep (which matches whole values) nor the key-name
-                # regex (whose anchor the same cut also breaks) can remove the surviving fragment.
-                redacted_combined = redact_agent_secrets(combined)
-                sanitized_out, agent_output_truncated, _dropped = sanitize_agent_output(redacted_combined, max_bytes)
+                # Sweep literal credentials across the whole stream first, while no value is severed,
+                # then bound the tail. Ordering matters twice over: bounding first would leave a
+                # credential that straddles the cut as a fragment that matches neither the literal
+                # sweep nor the key-name regex, while redacting the whole stream first would let
+                # redact_text's input cap discard the newest output before the bound sees it.
+                pre_swept = redact_env_literals(combined)
+                sanitized_out, agent_output_truncated, _dropped = sanitize_agent_output(pre_swept, max_bytes)
                 agent_output_text = redact_agent_secrets(sanitized_out)
                 agent_output_bytes = len(agent_output_text.encode("utf-8"))
             except Exception as e:

@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -1035,7 +1036,11 @@ class TestExecutor(unittest.TestCase):
                 record = ef.read()
 
             self.assertIn("[Agent output truncated:", record)
-            self.assertIn("bytes dropped; showing tail 1024 bytes]", record)
+            notice = re.search(r"\[Agent output truncated: (\d+) bytes dropped; showing tail (\d+) bytes\]", record)
+            self.assertIsNotNone(notice, "truncation notice must report both byte counts")
+            tail_kept = int(notice.group(2))
+            self.assertLessEqual(tail_kept, 1024, "kept tail must stay within HOLON_AGENT_LOG_BYTES")
+            self.assertGreater(tail_kept, 0, "bounding must retain the newest output")
             self.assertIn(tail_marker, record)
             self.assertNotIn("EARLY_OUTPUT_HEAD_MARKER_", record)
 
@@ -1213,8 +1218,8 @@ class TestExecutor(unittest.TestCase):
     def test_agent_output_byte_bound_never_strands_secret_fragment(self):
         """Test that no credential fragment survives the pipeline at any straddle offset.
 
-        Also pins why the order matters: bounding before redacting strands a fragment for a
-        non-empty set of offsets, which is the defect this ordering removes.
+        Also pins why the ordering and the line-aligned cut both matter: a raw byte cut followed by
+        redaction strands a fragment for a non-empty set of offsets.
         """
         from sandbox_executor.entrypoint.executor import redact_agent_secrets, sanitize_agent_output
 
@@ -1237,9 +1242,11 @@ class TestExecutor(unittest.TestCase):
                 for window in windows:
                     self.assertNotIn(window, result, f"Secret fragment {window!r} survived at offset {offset}.")
 
-                # Superseded order, kept here as the counter-example: bound first, then redact.
-                bounded_first, _tr, _drop = sanitize_agent_output(stream, budget)
-                if any(w in redact_agent_secrets(bounded_first) for w in windows):
+                # Counter-example, kept so this test cannot silently become vacuous: the superseded
+                # raw byte cut followed by redaction, emulated directly because sanitize_agent_output
+                # now refuses to split a line.
+                raw_cut = stream.encode()[-budget:].decode("utf-8", errors="replace")
+                if any(w in redact_agent_secrets(raw_cut) for w in windows):
                     severed_offsets.append(offset)
 
         self.assertGreater(truncated_cases, 0, "some offsets must actually exercise truncation")
@@ -1380,6 +1387,51 @@ class TestExecutor(unittest.TestCase):
             self.assertIsInstance(entry["agent_output_bytes"], int)
             self.assertFalse(entry["agent_output_truncated"])
             self.assertGreater(entry["agent_output_bytes"], 0)
+
+    def test_sanitize_agent_output_aligns_tail_to_line_boundary(self):
+        """Test that truncation advances to a line boundary instead of splitting a line in half."""
+        from sandbox_executor.entrypoint.executor import sanitize_agent_output
+
+        # A newline 59 bytes into the retained window: the tail must start on the next line.
+        raw = "a" * 300 + "\n" + "b" * 40
+        out, trunc, dropped = sanitize_agent_output(raw, max_bytes=100)
+        self.assertTrue(trunc)
+        self.assertEqual(dropped, len(raw) - 40)
+        self.assertTrue(out.startswith("[Agent output truncated: 301 bytes dropped; showing tail 40 bytes]\n"))
+        self.assertEqual(out.split("\n", 1)[1], "b" * 40)
+
+        # A line with no newline inside the look-ahead window keeps the raw byte cut.
+        out, trunc, dropped = sanitize_agent_output("z" * 300, max_bytes=100)
+        self.assertTrue(trunc)
+        self.assertEqual(dropped, 200)
+        self.assertTrue(out.endswith("z" * 100))
+
+    def test_agent_output_bound_retains_budget_of_newest_output(self):
+        """Test that bounding keeps a byte budget worth of newest output on very large streams.
+
+        Regression guard: redacting the whole stream before bounding let redact_text's input cap
+        discard the newest diagnostics, retaining ~50 KB of a 64 KB budget on large agent output.
+        """
+        from sandbox_executor.entrypoint.executor import (
+            redact_agent_secrets,
+            redact_env_literals,
+            sanitize_agent_output,
+        )
+
+        budget = 65536
+        align_window = 4096  # executor._TAIL_ALIGN_WINDOW, inlined so this holds across revisions
+        stream = "noise line 000000\n" * 12000  # ~204 KB, well above redact_text's 100k input cap
+        self.assertGreater(len(stream), 100_000)
+
+        bounded, trunc, _dropped = sanitize_agent_output(redact_env_literals(stream), budget)
+        self.assertTrue(trunc)
+        kept = redact_agent_secrets(bounded)
+
+        expected_tail = stream[-(budget - align_window) :]
+        self.assertTrue(
+            kept.endswith(expected_tail),
+            "the byte budget must be filled with the newest output, not an input-capped fraction of it",
+        )
 
     def test_sanitize_agent_output_helper(self):
         """Test sanitize_agent_output behavior for budget boundaries and markers."""

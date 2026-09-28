@@ -50,6 +50,22 @@ SECRET_FLAGS = {
     "--auth",
 }
 
+_CLEAN_GIT_ENV_VARS: tuple[str, ...] = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+)
+
+
+def _get_clean_git_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Returns a clean environment dictionary with leaked git variables removed."""
+    env = dict(os.environ if base_env is None else base_env)
+    for var in _CLEAN_GIT_ENV_VARS:
+        env.pop(var, None)
+    return env
+
 
 def redact_text(text: str) -> str:
     if not text:
@@ -205,6 +221,7 @@ def run_cmd(
     args: list[str],
     cwd: str | None = None,
     check: bool = True,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Runs a command and returns the CompletedProcess.
 
@@ -217,7 +234,27 @@ def run_cmd(
     if len(cmd_str) > _MAX_PRINT_LEN:
         cmd_str = cmd_str[: _MAX_PRINT_LEN - 3] + "..."
     print(f"Running: {cmd_str}")
-    result = subprocess.run(args, cwd=cwd, capture_output=True, text=True)
+
+    cmd_env = env
+    cmd_args = list(args)
+    if cmd_args and cmd_args[0] == "git":
+        cmd_env = _get_clean_git_env(env)
+        if cwd:
+            git_config_path = os.path.join(cwd, ".git", "config")
+            if os.path.isfile(git_config_path):
+                try:
+                    with open(git_config_path) as cf:
+                        cfg_content = cf.read()
+                        if (
+                            (f"directory = {cwd}" in cfg_content or "directory = *" in cfg_content)
+                            and len(cmd_args) > 1
+                            and cmd_args[1] != "-c"
+                        ):
+                            cmd_args = [cmd_args[0], "-c", f"safe.directory={cwd}", *cmd_args[1:]]
+                except Exception:
+                    pass
+
+    result = subprocess.run(cmd_args, cwd=cwd, capture_output=True, text=True, env=cmd_env)
     if result.returncode != 0 and check:
         print(f"Command failed with code {result.returncode}", file=sys.stderr)
         print(f"Command args: {cmd_str}", file=sys.stderr)
@@ -235,6 +272,234 @@ def run_cmd(
         print(f"Stderr:\n{err}", file=sys.stderr)
         raise subprocess.CalledProcessError(result.returncode, redacted_args, output=full_out, stderr=full_err)
     return result
+
+
+def _probe_git_repo(repo_dir: str) -> tuple[bool, str]:
+    """Probes the repository at repo_dir to verify if git is healthy and usable.
+
+    Returns a tuple of (is_healthy, error_output).
+    """
+    res = run_cmd(["git", "rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False)
+    if res.returncode != 0:
+        err = (res.stderr or res.stdout).strip()
+        if "detected dubious ownership" in err or "safe.directory" in err:
+            retry_res = run_cmd(
+                ["git", "-c", f"safe.directory={repo_dir}", "rev-parse", "--is-inside-work-tree"],
+                cwd=repo_dir,
+                check=False,
+            )
+            git_config_path = os.path.join(repo_dir, ".git", "config")
+            already_configured = False
+            if os.path.isfile(git_config_path):
+                try:
+                    with open(git_config_path) as cf:
+                        already_configured = f"directory = {repo_dir}" in cf.read()
+                except Exception:
+                    pass
+            if retry_res.returncode == 0 and already_configured:
+                pass
+            else:
+                return False, err
+        else:
+            return False, err
+
+    # Check for stale index.lock
+    index_lock = os.path.join(repo_dir, ".git", "index.lock")
+    if os.path.exists(index_lock):
+        return False, "stale .git/index.lock detected"
+
+    # Check for dangling or missing HEAD symref
+    res_head = run_cmd(["git", "rev-parse", "--verify", "HEAD"], cwd=repo_dir, check=False)
+    if res_head.returncode != 0:
+        err = (res_head.stderr or res_head.stdout).strip()
+        return False, f"dangling HEAD: {err}"
+
+    return True, ""
+
+
+_LOCK_AGE_ENV = "HOLON_GIT_LOCK_AGE_SECONDS"
+_DEFAULT_LOCK_AGE_SECONDS = 60.0
+#: Lock paths that may belong to another live git process and are therefore never removed here.
+_PROTECTED_LOCK_NAMES = ("config.lock", "packed-refs.lock", "shallow.lock", "HEAD.lock")
+
+
+def _lock_age_limit() -> float:
+    """Returns the minimum age in seconds after which a git lock file counts as abandoned."""
+    raw = os.getenv(_LOCK_AGE_ENV)
+    try:
+        limit = float(raw) if raw else _DEFAULT_LOCK_AGE_SECONDS
+    except (TypeError, ValueError):
+        limit = _DEFAULT_LOCK_AGE_SECONDS
+    return limit if limit > 0 else _DEFAULT_LOCK_AGE_SECONDS
+
+
+def _remove_abandoned_locks(repo_dir: str) -> tuple[list[str], list[str]]:
+    """Deletes only lock files that can be shown to be abandoned.
+
+    The candidate set is deliberately narrow: ``.git/index.lock`` plus ``*.lock`` under ``.git/refs``
+    and ``.git/logs``. Locks whose name is known to be written by long-lived plumbing
+    (``config.lock``, ``packed-refs.lock``, ``shallow.lock``, ``HEAD.lock``) are never touched, and no
+    lock is removed while it is younger than ``HOLON_GIT_LOCK_AGE_SECONDS``: a young lock can belong
+    to a git process that is still running in this same workspace, and deleting it corrupts that
+    transaction.
+
+    Returns:
+        A tuple of (removed_paths, still_held_paths).
+    """
+    limit = _lock_age_limit()
+    git_dir = os.path.join(repo_dir, ".git")
+    removed: list[str] = []
+    still_held: list[str] = []
+    if not os.path.isdir(git_dir):
+        return removed, still_held
+
+    candidates = [os.path.join(git_dir, "index.lock")]
+    for subtree in ("refs", "logs"):
+        root_dir = os.path.join(git_dir, subtree)
+        for root, _, files in os.walk(root_dir):
+            candidates.extend(os.path.join(root, name) for name in files if name.endswith(".lock"))
+
+    for lock in candidates:
+        if not os.path.isfile(lock) or os.path.basename(lock) in _PROTECTED_LOCK_NAMES:
+            continue
+        try:
+            age = time.time() - os.path.getmtime(lock)
+        except OSError:
+            continue
+        if age < limit:
+            still_held.append(lock)
+            continue
+        with contextlib.suppress(Exception):
+            os.remove(lock)
+            removed.append(lock)
+    return removed, still_held
+
+
+def _resolve_local_ref(git_dir: str, refname: str) -> str | None:
+    """Reads a local ref straight from the filesystem.
+
+    Used while ``.git/HEAD`` itself is damaged: git refuses to run at all in that state
+    ('fatal: not a git repository'), so the tip has to be found without shelling out.
+    """
+    loose = os.path.join(git_dir, "refs", "heads", *refname.split("/"))
+    with contextlib.suppress(Exception):
+        with open(loose) as rf:
+            sha = rf.read().strip()
+        if len(sha) >= 40:
+            return sha
+    packed = os.path.join(git_dir, "packed-refs")
+    with contextlib.suppress(Exception), open(packed) as pf:
+        for line in pf:
+            line = line.strip()
+            if not line or line.startswith(("#", "^")):
+                continue
+            parts = line.split(" ", 1)
+            if len(parts) == 2 and parts[1] == f"refs/heads/{refname}":
+                return parts[0]
+    return None
+
+
+def _repair_git_repo(
+    repo_dir: str,
+    probe_err: str,
+    default_branch: str = "main",
+    plan_branch: str | None = None,
+) -> bool:
+    """Attempts to repair benign git failures in-place without rebuilding the repository.
+
+    Repairs handled:
+    - (a) Dubious ownership: persists safe.directory to local git config.
+    - (b) Abandoned lock files: removed only when old enough to be provably stale.
+    - (c) Leaked git environment variables: stripped from os.environ.
+    - (d) Dangling or missing HEAD symref: restores HEAD onto ``default_branch`` (the execution
+      branch), never onto whatever branch happens to sort first.
+
+    Args:
+        repo_dir: Workspace path.
+        probe_err: Error text produced by :func:`_probe_git_repo`.
+        default_branch: Branch HEAD must end up on -- the execution branch.
+        plan_branch: Branch the workspace was cloned from, used as the tip source when the
+            execution branch does not exist yet.
+
+    Returns True if the repository was successfully restored to a usable state, False otherwise.
+    """
+    # Case (a): Dubious ownership
+    if "detected dubious ownership" in probe_err or "safe.directory" in probe_err:
+        run_cmd(
+            ["git", "-c", f"safe.directory={repo_dir}", "config", "--local", "--add", "safe.directory", repo_dir],
+            cwd=repo_dir,
+            check=False,
+        )
+        git_config = os.path.join(repo_dir, ".git", "config")
+        if os.path.isfile(git_config):
+            try:
+                with open(git_config) as f:
+                    cfg = f.read()
+                if f"directory = {repo_dir}" not in cfg:
+                    with open(git_config, "a") as f:
+                        f.write(f"\n[safe]\n\tdirectory = {repo_dir}\n")
+            except Exception as e:
+                print(f"Warning: unable to write safe.directory to local config: {e}", file=sys.stderr)
+
+    # Case (b): Stale index lock or locked ref
+    if (
+        "index.lock" in probe_err
+        or "cannot lock ref" in probe_err
+        or os.path.exists(os.path.join(repo_dir, ".git", "index.lock"))
+    ):
+        removed, still_held = _remove_abandoned_locks(repo_dir)
+        for lock in removed:
+            print(f"Warning: removed abandoned git lock file {lock}", file=sys.stderr)
+        if still_held:
+            print(
+                "Warning: git lock file(s) too young to be declared abandoned are left in place: "
+                f"{', '.join(still_held)}. They may belong to a running git process.",
+                file=sys.stderr,
+            )
+
+    # Case (c): Leaked environment variables
+    for var in _CLEAN_GIT_ENV_VARS:
+        if var in os.environ:
+            os.environ.pop(var, None)
+
+    # Case (d): Dangling or missing HEAD symref
+    if (
+        "dangling HEAD" in probe_err
+        or "Needed a single revision" in probe_err
+        or "HEAD" in probe_err
+        or not os.path.exists(os.path.join(repo_dir, ".git", "HEAD"))
+    ):
+        git_dir = os.path.join(repo_dir, ".git")
+        if os.path.isdir(git_dir):
+            head_path = os.path.join(git_dir, "HEAD")
+            target_branch = default_branch or "main"
+            # HEAD damage makes every git command fail, so the tip has to be read from disk. Guessing
+            # an arbitrary branch here would silently put the execution commit on the wrong ref,
+            # so the only acceptable sources are the execution branch itself and the plan branch the
+            # workspace was cloned from.
+            tip_sha = _resolve_local_ref(git_dir, target_branch) or (
+                _resolve_local_ref(git_dir, plan_branch) if plan_branch else None
+            )
+            if tip_sha:
+                target_ref_dir = os.path.join(git_dir, "refs", "heads", *target_branch.split("/")[:-1])
+                with contextlib.suppress(Exception):
+                    os.makedirs(target_ref_dir, exist_ok=True)
+                    with open(os.path.join(git_dir, "refs", "heads", *target_branch.split("/")), "w") as rf:
+                        rf.write(f"{tip_sha}\n")
+                with contextlib.suppress(Exception), open(head_path, "w") as f:
+                    f.write(f"ref: refs/heads/{target_branch}\n")
+                verify = run_cmd(["git", "symbolic-ref", "HEAD"], cwd=repo_dir, check=False)
+                if verify.returncode != 0 or verify.stdout.strip() != f"refs/heads/{target_branch}":
+                    run_cmd(["git", "symbolic-ref", "HEAD", f"refs/heads/{target_branch}"], cwd=repo_dir, check=False)
+            else:
+                print(
+                    f"Warning: cannot restore HEAD to '{target_branch}': no local ref for it or for "
+                    f"'{plan_branch or 'unknown'}'; leaving HEAD untouched.",
+                    file=sys.stderr,
+                )
+
+    healthy, _ = _probe_git_repo(repo_dir)
+    return healthy
 
 
 def _safe_float(val: Any, default: float = 0.0) -> float:
@@ -318,6 +583,13 @@ def main() -> None:
     is_default_repo = False
     repo_dir = None
     keep_workspace = False
+    exec_id: str | None = None
+    exec_file_path: str | None = None
+    exec_file_rel: str | None = None
+    timestamp_str: str = datetime.now(UTC).isoformat()
+    recovery_triggered: bool = False
+    base_tip: str | None = None
+    backup_path: str | None = None
 
     if len(sys.argv) < 2:
         print("Usage: executor.py <plan_branch> [agent_name] [model_name]")
@@ -573,6 +845,81 @@ def main() -> None:
                 agent_output_truncated = False
                 agent_output_bytes = 0
 
+            recovery_triggered = False
+            base_tip = None
+            backup_path = None
+            is_healthy, probe_err = _probe_git_repo(repo_dir)
+            if not is_healthy:
+                repaired = _repair_git_repo(repo_dir, probe_err, default_branch=exec_branch, plan_branch=plan_branch)
+                if not repaired:
+                    recovery_triggered = True
+                    print(
+                        "Warning: git repository invalid or missing after agent execution. Re-initializing git repo...",
+                        file=sys.stderr,
+                    )
+                    git_dot = os.path.join(repo_dir, ".git")
+                    backup_name = None
+                    if os.path.exists(git_dot):
+                        timestamp_suffix = int(datetime.now(UTC).timestamp())
+                        backup_name = f".git-unusable-{timestamp_suffix}"
+                        backup_path = os.path.join(repo_dir, backup_name)
+                        if os.path.exists(backup_path):
+                            backup_name = f".git-unusable-{timestamp_suffix}-{time.time_ns() % 1_000_000}"
+                            backup_path = os.path.join(repo_dir, backup_name)
+                        shutil.move(git_dot, backup_path)
+                        print(f"Warning: unrepairable git repository moved aside to {backup_path}", file=sys.stderr)
+
+                    run_cmd(["git", "init"], cwd=repo_dir)
+                    info_dir = os.path.join(repo_dir, ".git", "info")
+                    os.makedirs(info_dir, exist_ok=True)
+                    exclude_file = os.path.join(info_dir, "exclude")
+                    with open(exclude_file, "a") as ef:
+                        if backup_name:
+                            ef.write(f"\n{backup_name}\n")
+                        ef.write(".git-unusable-*\n")
+
+                    repo_url = get_repo_url()
+                    run_cmd(["git", "remote", "add", "origin", repo_url], cwd=repo_dir, check=False)
+
+                    fetch_retries = 3
+                    try:
+                        fetch_retries = int(os.getenv("HOLON_GIT_FETCH_RETRIES", "3"))
+                    except (ValueError, TypeError):
+                        fetch_retries = 3
+
+                    fetch_success = False
+                    fetch_err = ""
+                    for attempt in range(fetch_retries):
+                        fetch_res = run_cmd(
+                            ["git", "fetch", "--no-tags", "origin", plan_branch],
+                            cwd=repo_dir,
+                            check=False,
+                        )
+                        if fetch_res.returncode == 0:
+                            fetch_success = True
+                            break
+                        fetch_err = (fetch_res.stderr or fetch_res.stdout).strip()
+                        if attempt < fetch_retries - 1:
+                            time.sleep(1)
+
+                    if fetch_success:
+                        tip_res = run_cmd(["git", "rev-parse", "FETCH_HEAD"], cwd=repo_dir, check=False)
+                        if tip_res.returncode == 0 and tip_res.stdout.strip():
+                            base_tip = tip_res.stdout.strip()
+                            run_cmd(["git", "update-ref", f"refs/heads/{exec_branch}", base_tip], cwd=repo_dir)
+                            run_cmd(["git", "symbolic-ref", "HEAD", f"refs/heads/{exec_branch}"], cwd=repo_dir)
+                            run_cmd(["git", "reset", base_tip], cwd=repo_dir)
+
+                    if not base_tip:
+                        exec_status = "failure"
+                        summary = (
+                            f"Git recovery failure: unable to preserve parent history from {plan_branch}. "
+                            f"Corrupted repo backed up at {backup_path or 'unknown'}. Remote push aborted."
+                        )
+                        print(f"Error: {summary}", file=sys.stderr)
+                        if fetch_err:
+                            print(f"Fetch diagnostic error: {fetch_err}", file=sys.stderr)
+
             exec_file_rel = f"executions/{exec_id}.md"
             exec_file_path = os.path.join(repo_dir, exec_file_rel)
             os.makedirs(os.path.dirname(exec_file_path), exist_ok=True)
@@ -604,6 +951,7 @@ def main() -> None:
                 "created_at": timestamp_str,
                 "agent_output_truncated": agent_output_truncated,
                 "agent_output_bytes": agent_output_bytes,
+                "ledger_revision": 1,
             }
             try:
                 os.makedirs(ledger_dir, exist_ok=True)
@@ -611,24 +959,6 @@ def main() -> None:
                     ef.write(json.dumps(exec_entry) + "\n")
             except Exception as e:
                 print(f"Warning: Failed to write execution ledger entry: {e}", file=sys.stderr)
-
-            git_check = run_cmd(["git", "rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False)
-            if git_check.returncode != 0:
-                print(
-                    "Warning: git repository invalid or missing after agent execution. Re-initializing git repo...",
-                    file=sys.stderr,
-                )
-                git_dot = os.path.join(repo_dir, ".git")
-                if os.path.exists(git_dot):
-                    if os.path.isdir(git_dot):
-                        shutil.rmtree(git_dot, ignore_errors=True)
-                    else:
-                        with contextlib.suppress(Exception):
-                            os.remove(git_dot)
-                run_cmd(["git", "init"], cwd=repo_dir)
-                run_cmd(["git", "symbolic-ref", "HEAD", f"refs/heads/{exec_branch}"], cwd=repo_dir)
-                repo_url = get_repo_url()
-                run_cmd(["git", "remote", "add", "origin", repo_url], cwd=repo_dir, check=False)
 
             commit_msg = f"execute: {exec_id} completed for plan {plan_branch}"
             add_targets = [
@@ -651,13 +981,111 @@ def main() -> None:
             run_cmd(["git", "config", "--local", "user.email", "executor-agent@holon-agentic-coder.com"], cwd=repo_dir)
             run_cmd(["git", "config", "--local", "user.name", "Holon Executor Agent"], cwd=repo_dir)
             run_cmd(["git", "commit", "-m", commit_msg], cwd=repo_dir)
-            skip_push = os.getenv("HOLON_SKIP_PUSH")
-            if not (skip_push and skip_push.lower() in ("1", "true", "yes")):
-                run_cmd(["git", "push", "-u", "origin", exec_branch], cwd=repo_dir)
-                print(f"Execution branch '{exec_branch}' successfully committed and pushed.")
+
+            can_push = True
+            if recovery_triggered:
+                if not base_tip:
+                    can_push = False
+                else:
+                    ancestry_check = run_cmd(
+                        ["git", "merge-base", "--is-ancestor", base_tip, "HEAD"],
+                        cwd=repo_dir,
+                        check=False,
+                    )
+                    has_parent = (
+                        run_cmd(["git", "rev-parse", "--verify", "HEAD^"], cwd=repo_dir, check=False).returncode == 0
+                    )
+                    tree_check = run_cmd(["git", "ls-tree", "-r", "--name-only", "HEAD"], cwd=repo_dir, check=False)
+                    head_files = set(tree_check.stdout.splitlines())
+                    base_tree_check = run_cmd(
+                        ["git", "ls-tree", "-r", "--name-only", base_tip],
+                        cwd=repo_dir,
+                        check=False,
+                    )
+                    base_files = set(base_tree_check.stdout.splitlines())
+
+                    tree_valid = bool(head_files & base_files) if base_files else bool(head_files)
+
+                    if ancestry_check.returncode != 0 or not has_parent or not tree_valid:
+                        can_push = False
+                        cause = []
+                        if ancestry_check.returncode != 0:
+                            cause.append(f"HEAD is not a descendant of base {base_tip}")
+                        if not has_parent:
+                            cause.append("HEAD has no parent commit")
+                        if not tree_valid:
+                            cause.append("committed tree missing repository files")
+                        err_reason = "; ".join(cause)
+                        print(f"Error: Git recovery verification failed: {err_reason}", file=sys.stderr)
+
+                        summary = (
+                            f"Git recovery failure: {err_reason}. "
+                            f"Corrupted repo backed up at {backup_path or 'unknown'}. Remote push aborted."
+                        )
+                        if exec_file_path:
+                            # Append, never rewrite: the agent's own summary stays readable, and the
+                            # recovery verdict is recorded below it as its own section.
+                            with contextlib.suppress(Exception):
+                                fresh = not os.path.exists(exec_file_path)
+                                with open(exec_file_path, "w" if fresh else "a") as ef:
+                                    if fresh:
+                                        ef.write(f"# Execution Record: {exec_id}\n\n")
+                                        ef.write(f"- Plan Branch: `{plan_branch}`\n")
+                                        ef.write(f"- Agent: `{agent_name}`\n")
+                                        ef.write(f"- Agent Version: `{runner.get_version()}`\n")
+                                        ef.write(f"- Model: `{model_name}`\n")
+                                        ef.write(f"- Timestamp: `{timestamp_str}`\n\n")
+                                    ef.write(f"\n## Git Recovery Failure\n{summary}\n\n")
+                                    ef.write("- Status after verification: `Failure`\n")
+                                    ef.write(f"- Verified base: `{base_tip or 'unresolved'}`\n")
+                                    ef.write("- Push: refused, HEAD is not a descendant of the plan base\n")
+
+                        fail_ledger_entry = {
+                            "execution_id": exec_id,
+                            "plan_branch": plan_branch,
+                            "agent": agent_name,
+                            "agent_version": runner.get_version(),
+                            "model": model_name,
+                            "status": "failure",
+                            "summary": summary,
+                            "execution_file": exec_file_rel,
+                            "created_at": datetime.now(UTC).isoformat(),
+                            # The ledger is append-only, so this row supersedes the one written before
+                            # verification; the revision marks it as authoritative for readers.
+                            "ledger_revision": 2,
+                        }
+                        with open(os.path.join(ledger_dir, "executions.jsonl"), "a") as ef:
+                            ef.write(json.dumps(fail_ledger_entry) + "\n")
+
+                        run_cmd(
+                            ["git", "add", exec_file_rel, "holon-knowledge/ledger/executions.jsonl"],
+                            cwd=repo_dir,
+                            check=False,
+                        )
+                        run_cmd(
+                            ["git", "commit", "-m", f"execute: record failure for {exec_id}"],
+                            cwd=repo_dir,
+                            check=False,
+                        )
+
+            # Invariant: A branch with no parent must never be pushed, whatever the execution status.
+            parent_verify = run_cmd(["git", "rev-parse", "--verify", "HEAD^"], cwd=repo_dir, check=False)
+            if parent_verify.returncode != 0:
+                can_push = False
+
+            if not can_push:
+                print(
+                    "Refusing to push execution branch: branch shares no history with plan base commit.",
+                    file=sys.stderr,
+                )
             else:
-                print(f"Skipping git push for {exec_branch} (push disabled via environment variable).")
-                print(f"Execution branch '{exec_branch}' successfully committed locally.")
+                skip_push = os.getenv("HOLON_SKIP_PUSH")
+                if not (skip_push and skip_push.lower() in ("1", "true", "yes")):
+                    run_cmd(["git", "push", "-u", "origin", exec_branch], cwd=repo_dir)
+                    print(f"Execution branch '{exec_branch}' successfully committed and pushed.")
+                else:
+                    print(f"Skipping git push for {exec_branch} (push disabled via environment variable).")
+                    print(f"Execution branch '{exec_branch}' successfully committed locally.")
         else:
             print("No staged changes to commit.")
 

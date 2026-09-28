@@ -200,8 +200,8 @@ This plan resolves the two confirmed defects from Bean 0019 in apps/sandbox-exec
 ### Step Metrics Rationale
 
 This step is a straightforward configuration fix with minimal surface area (1 source file, 1 test file) and zero
-novelty, resulting in high p_success (0.98) and low entropy (0.8). It delivers high impact (85.0) by repairing the
-broken default remote across all unconfigured runs. EV = 0.98 _ 85.0 + 0.5 _ 1.5 - 0.3 \* 0.8 - 1.5 = 82.31.
+novelty, resulting in high p*success (0.98) and low entropy (0.8). It delivers high impact (85.0) by repairing the
+broken default remote across all unconfigured runs. EV = 0.98 * 85.0 + 0.5 \_ 1.5 - 0.3 \* 0.8 - 1.5 = 82.31.
 
 ---
 
@@ -305,9 +305,9 @@ broken default remote across all unconfigured runs. EV = 0.98 _ 85.0 + 0.5 _ 1.5
 
 ### Step Metrics Rationale
 
-Step 2 has a moderate state surface area in executor.py and introduces secret redaction logic, giving entropy_pred 2.1.
+Step 2 has a moderate state surface area in executor.py and introduces secret redaction logic, giving entropy*pred 2.1.
 With high impact (92.0) from eliminating blind failures and epistemic gain (5.0) in fail-safe log recording, expected
-value is high. EV = 0.92 _ 92.0 + 0.5 _ 5.0 - 0.3 \* 2.1 - 3.5 = 84.64 + 2.50 - 0.63 - 3.5 = 83.01.
+value is high. EV = 0.92 * 92.0 + 0.5 \_ 5.0 - 0.3 \* 2.1 - 3.5 = 84.64 + 2.50 - 0.63 - 3.5 = 83.01.
 
 ---
 
@@ -412,9 +412,9 @@ value is high. EV = 0.92 _ 92.0 + 0.5 _ 5.0 - 0.3 \* 2.1 - 3.5 = 84.64 + 2.50 - 
 
 ### Step Metrics Rationale
 
-Writing comprehensive unit tests across multiple failure scenarios has p_success 0.90 due to strict hermetic mock
+Writing comprehensive unit tests across multiple failure scenarios has p*success 0.90 due to strict hermetic mock
 alignment. It delivers strong learning value (4.5) by confirming test suite hermeticity and solidifying secret scrubbing
-verification. EV = 0.90 _ 88.0 + 0.5 _ 4.5 - 0.3 \* 1.6 - 3.0 = 79.20 + 2.25 - 0.48 - 3.0 = 77.97.
+verification. EV = 0.90 * 88.0 + 0.5 \_ 4.5 - 0.3 \* 1.6 - 3.0 = 79.20 + 2.25 - 0.48 - 3.0 = 77.97.
 
 ---
 
@@ -478,5 +478,5 @@ verification. EV = 0.90 _ 88.0 + 0.5 _ 4.5 - 0.3 \* 1.6 - 3.0 = 79.20 + 2.25 - 0
 
 ### Step Metrics Rationale
 
-Standard verification and formatting step with high predictability (p_success 0.95), low entropy (0.9), and low cost
-(2.0). EV = 0.95 _ 75.0 + 0.5 _ 2.0 - 0.3 \* 0.9 - 2.0 = 71.25 + 1.0 - 0.27 - 2.0 = 69.98.
+Standard verification and formatting step with high predictability (p*success 0.95), low entropy (0.9), and low cost
+(2.0). EV = 0.95 * 75.0 + 0.5 \_ 2.0 - 0.3 \* 0.9 - 2.0 = 71.25 + 1.0 - 0.27 - 2.0 = 69.98.

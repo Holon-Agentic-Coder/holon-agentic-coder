@@ -836,7 +836,11 @@ def main() -> None:
                     combined = stdout or stderr
 
                 max_bytes = get_agent_log_byte_budget()
-                sanitized_out, agent_output_truncated, _dropped = sanitize_agent_output(combined, max_bytes)
+                # Redact before bounding the tail: the byte cut severs a credential that straddles the
+                # boundary, and neither the literal sweep (which matches whole values) nor the key-name
+                # regex (whose anchor the same cut also breaks) can remove the surviving fragment.
+                redacted_combined = redact_agent_secrets(combined)
+                sanitized_out, agent_output_truncated, _dropped = sanitize_agent_output(redacted_combined, max_bytes)
                 agent_output_text = redact_agent_secrets(sanitized_out)
                 agent_output_bytes = len(agent_output_text.encode("utf-8"))
             except Exception as e:

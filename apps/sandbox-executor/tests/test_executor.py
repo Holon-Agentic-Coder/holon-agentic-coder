@@ -1121,6 +1121,136 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    def test_agent_output_truncation_never_severs_secret(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
+        """Test that the byte-tail cut cannot strand a credential fragment in the committed record.
+
+        Regression: bounding the tail before redacting severed a secret straddling the boundary,
+        and neither the literal sweep (which matches whole values only) nor the key-name regex
+        (whose anchor the same cut also breaks) could remove what survived on the kept side.
+        """
+        mock_get_repo_url.return_value = "/mock/repo"
+        mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.1.22"
+        mock_runner.build_cmd.return_value = ["agy", "run"]
+        mock_get_runner.return_value = mock_runner
+
+        budget = 1024
+        secret = "ghp_StraddleS3cr3tXYzWq7Q4tR9LMNop"
+        straddle = 5
+        # boundary = len(output) - budget must land `straddle` bytes into the secret, which starts
+        # after the "GH_TOKEN=" anchor: suffix_len = budget + straddle - len(secret) - 1.
+        prefix = "noise line\n" * 400
+        suffix = "y" * (budget + straddle - len(secret) - 1)
+        agent_stdout = f"{prefix}GH_TOKEN={secret}\n{suffix}"
+        self.assertEqual(
+            len(agent_stdout) - budget,
+            len(prefix) + len("GH_TOKEN=") + straddle,
+            "Test geometry must put the truncation boundary inside the secret.",
+        )
+
+        def side_effect(args, cwd=None, **kwargs):
+            mock_res = MagicMock()
+            if "clone" in args:
+                ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
+                os.makedirs(ledger_dir, exist_ok=True)
+                with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "plan_id": "P-123",
+                                "intent_branch": "I-456/_",
+                                "entropy": 2.0,
+                                "entropy_budget": 5.0,
+                            }
+                        )
+                        + "\n"
+                    )
+            if "agy" in args:
+                mock_res.returncode = 1
+                mock_res.stdout = agent_stdout
+                mock_res.stderr = ""
+            else:
+                mock_res.returncode = 0
+                mock_res.stdout = ""
+                mock_res.stderr = ""
+            return mock_res
+
+        mock_run_cmd.side_effect = side_effect
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.dict(
+                os.environ,
+                {
+                    "HOLON_REPO_DIR": tmp_dir,
+                    "HOLON_SKIP_PUSH": "1",
+                    "HOLON_AGENT_LOG_BYTES": str(budget),
+                    "GITHUB_TOKEN": secret,
+                    "GH_TOKEN": secret,
+                    "HOLON_AGENT_KEY": secret,
+                },
+            ),
+            patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
+            patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
+            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
+        ):
+            executor.main()
+
+            exec_dir = os.path.join(tmp_dir, "executions")
+            exec_files = os.listdir(exec_dir)
+            with open(os.path.join(exec_dir, exec_files[0])) as ef:
+                record = ef.read()
+            with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
+                ledger_content = lf.read()
+
+            self.assertIn("[Agent output truncated:", record)
+            self.assertNotIn(secret, record)
+            for start in range(len(secret) - 7):
+                window = secret[start : start + 8]
+                self.assertNotIn(window, record, f"Secret fragment {window!r} leaked into the execution record.")
+                self.assertNotIn(window, ledger_content, f"Secret fragment {window!r} leaked into the ledger row.")
+
+    def test_agent_output_byte_bound_never_strands_secret_fragment(self):
+        """Test that no credential fragment survives the pipeline at any straddle offset.
+
+        Also pins why the order matters: bounding before redacting strands a fragment for a
+        non-empty set of offsets, which is the defect this ordering removes.
+        """
+        from sandbox_executor.entrypoint.executor import redact_agent_secrets, sanitize_agent_output
+
+        budget = 256
+        secret = "ghp_StraddleS3cr3tXYzWq7Q4tR9LMNop"
+        windows = [secret[start : start + 8] for start in range(len(secret) - 7)]
+
+        truncated_cases = 0
+        severed_offsets = []
+        with patch.dict(os.environ, {"GITHUB_TOKEN": secret, "GH_TOKEN": secret}):
+            for offset in range(1, len(secret) - 1):
+                suffix = "y" * (budget + offset - len(secret) - 1)
+                stream = f"GH_TOKEN={secret}\n{suffix}"
+                self.assertGreater(len(stream), budget, "the byte budget must be exceeded for this case")
+
+                # Shipped order: redact the whole stream, then bound, then sweep again.
+                bounded, truncated, _dropped = sanitize_agent_output(redact_agent_secrets(stream), budget)
+                truncated_cases += 1 if truncated else 0
+                result = redact_agent_secrets(bounded)
+                for window in windows:
+                    self.assertNotIn(window, result, f"Secret fragment {window!r} survived at offset {offset}.")
+
+                # Superseded order, kept here as the counter-example: bound first, then redact.
+                bounded_first, _tr, _drop = sanitize_agent_output(stream, budget)
+                if any(w in redact_agent_secrets(bounded_first) for w in windows):
+                    severed_offsets.append(offset)
+
+        self.assertGreater(truncated_cases, 0, "some offsets must actually exercise truncation")
+        self.assertTrue(
+            severed_offsets,
+            "bounding before redacting must demonstrably strand a fragment, or this test proves nothing",
+        )
+
+    @patch("sandbox_executor.entrypoint.executor.run_cmd")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
     @patch("sandbox_executor.entrypoint.executor.sanitize_agent_output")
     def test_agent_output_logging_failure_fault_tolerance(
         self, mock_sanitize, mock_get_repo_url, mock_get_runner, mock_run_cmd

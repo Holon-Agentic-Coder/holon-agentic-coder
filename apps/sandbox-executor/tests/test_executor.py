@@ -1613,6 +1613,55 @@ class TestExecutor(unittest.TestCase):
         superseded = f"[Agent output truncated: 1 bytes dropped; showing tail {1024} bytes]\n" + "z" * 1024
         self.assertGreater(len(superseded.encode("utf-8")), 1024)
 
+    def test_agent_output_block_stays_within_budget_when_redaction_grows_it(self):
+        """Test the budget is enforced after redaction, not only before it.
+
+        Regression F-IT6-1: masking rewrites the secret value, and any value shorter than the
+        7-character mask gets LONGER (`api_key=ab` -> `api_key=*******`). Bounding first and redacting
+        afterwards therefore let a secret-dense dump commit 95 KB under a 65,536 byte budget, and the
+        growth is unbounded in the number of matches, so the execution record silently stopped being
+        bounded. The block is refitted after redaction by dropping whole leading lines, which keeps
+        the never-mid-line invariant intact.
+        """
+        from sandbox_executor.entrypoint.executor import (
+            _TRUNCATION_MARKER_RESERVE,
+            prepare_agent_output_block,
+            redact_agent_secrets,
+            redact_env_literals,
+            sanitize_agent_output,
+        )
+
+        budget = 65536
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "", "GH_TOKEN": "", "HOLON_AGENT_KEY": ""}):
+            for unit in ("api_key=ab\n", "token=xy\n", "secret=1\n"):
+                stream = unit * 9000  # ~144 KB of ordinary-looking config dump, dense in short values
+                self.assertGreater(len(stream), budget)
+
+                block, truncated, dropped = prepare_agent_output_block(stream, budget)
+                self.assertTrue(truncated)
+                self.assertGreater(dropped, 0)
+                encoded = block.encode("utf-8")
+                self.assertLessEqual(len(encoded), budget, f"{unit!r}: the committed block must fit the budget")
+                self.assertGreater(
+                    len(encoded),
+                    budget - 2 * _TRUNCATION_MARKER_RESERVE,
+                    f"{unit!r}: refitting must trim whole lines, not gut the retained tail",
+                )
+                # Whole lines only: the first retained line must be a complete masked record of the
+                # input, never a fragment joined from the middle of one.
+                expected_line = redact_agent_secrets(unit.rstrip("\n"))
+                self.assertEqual(block.split("\n", 1)[1].split("\n")[0], expected_line)
+
+                # Counter-example, so this test cannot rot: the superseded order bounded first and
+                # redacted afterwards, with no refit, and it overshot.
+                bounded, _trunc, _drop = sanitize_agent_output(redact_env_literals(stream), budget)
+                superseded = redact_agent_secrets(bounded)
+                self.assertGreater(
+                    len(superseded.encode("utf-8")),
+                    budget,
+                    f"{unit!r}: the superseded order must still demonstrate the overshoot",
+                )
+
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
@@ -1701,7 +1750,7 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    @patch("sandbox_executor.entrypoint.executor.sanitize_agent_output")
+    @patch("sandbox_executor.entrypoint.executor.prepare_agent_output_block")
     def test_agent_output_logging_failure_fault_tolerance(
         self, mock_sanitize, mock_get_repo_url, mock_get_runner, mock_run_cmd
     ):

@@ -202,23 +202,100 @@ def get_agent_log_byte_budget() -> int:
     return 65536
 
 
+def _marker_line(dropped_bytes: int, tail_len: int, reason: str = "") -> str:
+    return f"[Agent output truncated: {dropped_bytes} bytes dropped; showing tail {tail_len} bytes{reason}]\n"
+
+
+def _bound_tail(encoded: bytes, max_bytes: int) -> tuple[bytes, int, str]:
+    """Cut `encoded` down to a tail that fits the budget next to a marker.
+
+    Returns (tail_bytes, dropped_bytes, marker_reason).
+
+    The tail must start on a line boundary, or be empty. Every redactor here needs text that a byte
+    cut can delete: the literal sweep needs the whole value, the provider sweep needs the vendor
+    prefix, and the key-name pass needs the key name, which frequently sits a token ahead of its
+    value (`api_key: SECRET`, `"api_key": "SECRET"`, `Bearer SECRET`). Whatever the cut lands inside
+    is therefore not redactable, and none of that line may be committed. Dropping only the leading
+    fragment is provably insufficient: when the anchor and the value are separate tokens that deletes
+    the anchor and keeps the credential whole in the next fragment. Aligning forward discards only the
+    oldest bytes of the window, never the newest, so safety needs no look-ahead cap.
+    """
+    reserve = min(_TRUNCATION_MARKER_RESERVE, max_bytes // 2)
+    tail_budget = max_bytes - reserve
+    tail_bytes = encoded[-tail_budget:] if tail_budget > 0 else b""
+    dropped_bytes = len(encoded) - len(tail_bytes)
+    newline_at = tail_bytes.find(b"\n")
+    if 0 <= newline_at < len(tail_bytes) - 1:
+        dropped_bytes += newline_at + 1
+        return tail_bytes[newline_at + 1 :], dropped_bytes, ""
+    # One unterminated line longer than the whole budget: it cannot be redacted faithfully, so the
+    # record keeps the notice and none of the line.
+    return b"", dropped_bytes + len(tail_bytes), "; no complete line within budget"
+
+
+def prepare_agent_output_block(raw_output: str, max_bytes: int = 65536) -> tuple[str, bool, int]:
+    """Produce the `## Agent Output` block: redacted, and never larger than the byte budget.
+
+    Ordering matters three times over:
+
+    1. Sweep environment-literal credentials across the whole stream first, uncapped, while no value
+       has been severed. `redact_text` cannot run here: its input cap would discard the newest output
+       the bound is about to keep.
+    2. Bound the tail on a line boundary, so nothing unredactable is ever committed.
+    3. Redact the bounded tail, where every line is intact and every anchor is present.
+
+    The bound runs before the redaction, but the redaction also *changes* the size: masking a value
+    shorter than the 7-character mask grows it (`api_key=ab` -> `api_key=*******`). That growth is
+    unbounded in the number of matches, so a secret-dense dump once committed 95 KB under a 65,536
+    budget. The block is therefore refitted after redaction, dropping whole leading lines -- which
+    keeps the never-mid-line invariant -- until it genuinely fits.
+
+    Args:
+        raw_output: Combined stdout/stderr of the agent process.
+        max_bytes: Maximum allowed byte length of the whole returned block.
+
+    Returns:
+        A tuple of (block, is_truncated, dropped_bytes).
+    """
+    if max_bytes <= 0:
+        max_bytes = 65536
+
+    swept = redact_env_literals(raw_output)
+    encoded = swept.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return redact_agent_secrets(raw_output), False, 0
+
+    tail_bytes, dropped_bytes, reason = _bound_tail(encoded, max_bytes)
+    tail = redact_agent_secrets(tail_bytes.decode("utf-8", errors="replace"))
+
+    reserve = min(_TRUNCATION_MARKER_RESERVE, max_bytes // 2)
+    allowed = max_bytes - reserve
+    encoded_tail = tail.encode("utf-8")
+    while len(encoded_tail) > allowed:
+        newline_at = encoded_tail.find(b"\n")
+        if newline_at < 0 or newline_at == len(encoded_tail) - 1:
+            dropped_bytes += len(encoded_tail)
+            encoded_tail = b""
+            reason = "; refitted after redaction"
+            break
+        dropped_bytes += newline_at + 1
+        encoded_tail = encoded_tail[newline_at + 1 :]
+
+    tail = encoded_tail.decode("utf-8", errors="replace")
+    marker = _marker_line(dropped_bytes, len(encoded_tail), reason)
+    return marker + tail, True, dropped_bytes
+
+
 def sanitize_agent_output(raw_output: str, max_bytes: int = 65536) -> tuple[str, bool, int]:
-    """Sanitize and bound agent output to a maximum byte length.
+    """Bound `raw_output` to a trailing `max_bytes` block with a truncation notice.
 
-    Truncates the output to the tail `max_bytes` if the UTF-8 encoded length exceeds `max_bytes`,
-    prepending an explicit truncation notice with the count of dropped bytes.
-
-    Field contract: the returned text is `marker + tail`, and for any budget of at least twice the
-    marker reserve (256 bytes) that block is at most `max_bytes` before the post-bound redaction.
-    `agent_output_bytes` is the only exact size: the redaction applied afterwards rewrites secret
-    values, which shrinks any value longer than the 7-character mask but grows a shorter one by a few
-    bytes, so the committed block can overshoot the budget by that much per masked value. The
-    `showing tail N bytes` figure is likewise an upper bound, measured before that redaction.
-
-    The returned tail never begins mid-line: it starts immediately after a newline, or the budget
-    could not reach a line boundary at all and the tail is empty with the marker saying why. A partial
-    line is never committed, because the bytes a byte cut deletes are exactly the bytes the redactors
-    need in order to recognise a secret.
+    Field contract: the returned text is `marker + tail` and, for any budget of at least twice the
+    marker reserve (256 bytes), that block is at most `max_bytes`. The returned tail never begins
+    mid-line: it starts immediately after a newline, or the budget could not reach a line boundary at
+    all and the tail is empty with the marker saying why. A partial line is never committed, because
+    the bytes a byte cut deletes are exactly the bytes the redactors need in order to recognise a
+    secret. This bounds only; it does not redact -- callers that also redact must refit afterwards,
+    which is what `prepare_agent_output_block` does.
 
     Args:
         raw_output: Raw string output from the agent process.
@@ -238,32 +315,9 @@ def sanitize_agent_output(raw_output: str, max_bytes: int = 65536) -> tuple[str,
 
     # Leave room for the marker so marker + tail stays inside the budget, without letting the marker
     # swallow a small budget whole.
-    reserve = min(_TRUNCATION_MARKER_RESERVE, max_bytes // 2)
-    tail_budget = max_bytes - reserve
-    tail_bytes = encoded[-tail_budget:] if tail_budget > 0 else b""
-    dropped_bytes = total_bytes - len(tail_bytes)
-    # The committed tail must start on a line boundary, or be empty. Every redactor here needs text
-    # that a byte cut can delete: the literal sweep needs the whole value, the provider sweep needs
-    # the vendor prefix, and the key-name pass needs the key name, which frequently sits a token
-    # ahead of its value (`api_key: SECRET`, `"api_key": "SECRET"`, `Bearer SECRET`). Whatever the cut
-    # lands inside is therefore not redactable, and none of that line may be committed. Dropping just
-    # the leading fragment is provably insufficient: when the anchor and the value are separate
-    # tokens, that deletes the anchor and keeps the credential whole in the next fragment. Aligning
-    # forward discards only the oldest bytes of the window, never the newest, so safety needs no
-    # look-ahead cap.
-    newline_at = tail_bytes.find(b"\n")
-    if 0 <= newline_at < len(tail_bytes) - 1:
-        dropped_bytes += newline_at + 1
-        tail_bytes = tail_bytes[newline_at + 1 :]
-        reason = ""
-    else:
-        # One unterminated line longer than the whole budget: it cannot be redacted faithfully, so
-        # the record keeps the notice and none of the line.
-        dropped_bytes += len(tail_bytes)
-        tail_bytes = b""
-        reason = "; no complete line within budget"
+    tail_bytes, dropped_bytes, reason = _bound_tail(encoded, max_bytes)
     decoded_tail = tail_bytes.decode("utf-8", errors="replace")
-    marker = f"[Agent output truncated: {dropped_bytes} bytes dropped; showing tail {len(tail_bytes)} bytes{reason}]\n"
+    marker = _marker_line(dropped_bytes, len(tail_bytes), reason)
     return marker + decoded_tail, True, dropped_bytes
 
 
@@ -934,14 +988,9 @@ def main() -> None:
                     combined = stdout or stderr
 
                 max_bytes = get_agent_log_byte_budget()
-                # Sweep literal credentials across the whole stream first, while no value is severed,
-                # then bound the tail. Ordering matters twice over: bounding first would leave a
-                # credential that straddles the cut as a fragment that matches neither the literal
-                # sweep nor the key-name regex, while redacting the whole stream first would let
-                # redact_text's input cap discard the newest output before the bound sees it.
-                pre_swept = redact_env_literals(combined)
-                sanitized_out, agent_output_truncated, _dropped = sanitize_agent_output(pre_swept, max_bytes)
-                agent_output_text = redact_agent_secrets(sanitized_out)
+                # Sweep, bound on a line boundary, redact, then refit: see prepare_agent_output_block
+                # for why that order and that final refit are both required.
+                agent_output_text, agent_output_truncated, _dropped = prepare_agent_output_block(combined, max_bytes)
                 agent_output_bytes = len(agent_output_text.encode("utf-8"))
             except Exception as e:
                 print(f"Warning: Failed to capture/sanitize agent output: {e}", file=sys.stderr)

@@ -1613,6 +1613,56 @@ class TestExecutor(unittest.TestCase):
         superseded = f"[Agent output truncated: 1 bytes dropped; showing tail {1024} bytes]\n" + "z" * 1024
         self.assertGreater(len(superseded.encode("utf-8")), 1024)
 
+    def test_agent_output_under_budget_shortcut_redacts_the_text_it_measured(self):
+        """Test the fits-the-budget shortcut cannot let redact_text cut its own input.
+
+        Regression F-IT7-1: the shortcut measured the swept stream but returned the redacted
+        PRE-SWEEP original. Sweeping shrinks every credential occurrence, so the original can sit far
+        above `redact_text`'s input cap while the swept text fits the budget; the cap then
+        head/tail-cuts that original on a path that reports `truncated=False`, and a secret
+        straddling its split is committed with real characters exposed -- 40 leaking placements at the
+        default budget. The shortcut now redacts exactly what it measured, and the budget is clamped
+        to the cap, so the cap cannot fire at all.
+        """
+        from sandbox_executor.entrypoint.executor import (
+            _MAX_REDACT_INPUT_LEN,
+            prepare_agent_output_block,
+            redact_agent_secrets,
+            redact_env_literals,
+        )
+
+        # Built by concatenation so no vendor-format literal exists in the file.
+        token = ("gh" + "p_") + "A" * 90
+        opaque = "Xk9Q" * 40  # opaque, not an env value, no listed provider prefix
+        budget = 65536
+
+        with patch.dict(os.environ, {"GITHUB_TOKEN": token, "GH_TOKEN": "", "HOLON_AGENT_KEY": ""}):
+            unit = "run log entry with token " + token + " "
+            body = unit * 1500  # single line, so redact_text cannot snap its split to a boundary
+            swept = redact_env_literals(body)
+            self.assertGreater(len(body), _MAX_REDACT_INPUT_LEN, "the raw stream must exceed the cap")
+            self.assertLessEqual(len(swept.encode("utf-8")), budget, "the swept stream must fit the budget")
+
+            split = len(body) - _MAX_REDACT_INPUT_LEN // 2
+            probe = body[:split] + f"x_api_key={opaque}" + body[split:]
+            block, truncated, dropped = prepare_agent_output_block(probe, budget)
+
+            self.assertNotIn(opaque[:8], block, "a credential straddling the cap split was committed")
+            self.assertNotIn(
+                "... (truncated) ...",
+                block,
+                "redact_text cut its own input, so this block is not a faithful record of the output",
+            )
+            self.assertLessEqual(len(block.encode("utf-8")), budget)
+            self.assertEqual((truncated, dropped), (False, 0), "the swept stream genuinely fits")
+
+            # Counter-example: redacting the pre-sweep original, which is what the shortcut used to do.
+            superseded = redact_agent_secrets(probe)
+            self.assertTrue(
+                opaque[:8] in superseded or "... (truncated) ..." in superseded,
+                "the superseded shortcut must still demonstrate the defect, or this test proves nothing",
+            )
+
     def test_agent_output_block_stays_within_budget_when_redaction_grows_it(self):
         """Test the budget is enforced after redaction, not only before it.
 

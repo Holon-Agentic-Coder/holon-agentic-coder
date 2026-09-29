@@ -248,22 +248,35 @@ def prepare_agent_output_block(raw_output: str, max_bytes: int = 65536) -> tuple
     shorter than the 7-character mask grows it (`api_key=ab` -> `api_key=*******`). That growth is
     unbounded in the number of matches, so a secret-dense dump once committed 95 KB under a 65,536
     budget. The block is therefore refitted after redaction, dropping whole leading lines -- which
-    keeps the never-mid-line invariant -- until it genuinely fits.
+    keeps the never-mid-line invariant -- until it genuinely fits. A stream that already fits is
+    returned unredacted-in-size only when redacting it keeps it inside the budget as well.
 
     Args:
         raw_output: Combined stdout/stderr of the agent process.
-        max_bytes: Maximum allowed byte length of the whole returned block.
+        max_bytes: Maximum allowed byte length of the whole returned block, clamped to
+            `redact_text`'s input cap because redaction above that cap is not faithful.
 
     Returns:
         A tuple of (block, is_truncated, dropped_bytes).
     """
     if max_bytes <= 0:
         max_bytes = 65536
+    if max_bytes > _MAX_REDACT_INPUT_LEN:
+        # Above that cap `redact_text` head/tail-cuts its own input. That cut is another raw byte cut
+        # with the same severing problem as the bound, and it also throws away output this function was
+        # asked to retain, so the budget can never be larger than what the redactors handle faithfully.
+        max_bytes = _MAX_REDACT_INPUT_LEN
 
     swept = redact_env_literals(raw_output)
     encoded = swept.encode("utf-8")
     if len(encoded) <= max_bytes:
-        return redact_agent_secrets(raw_output), False, 0
+        # Redact the text that was measured, never the pre-sweep original: sweeping shrinks every
+        # credential occurrence, so the original can sit above redact_text's input cap while the swept
+        # text fits the budget. Redacting that original lets the cap fire on a path that reports
+        # `truncated=False`, and a secret straddling its split is committed unredacted.
+        redacted = redact_agent_secrets(swept)
+        if len(redacted.encode("utf-8")) <= max_bytes:
+            return redacted, False, 0
 
     tail_bytes, dropped_bytes, reason = _bound_tail(encoded, max_bytes)
     tail = redact_agent_secrets(tail_bytes.decode("utf-8", errors="replace"))

@@ -1374,6 +1374,81 @@ class TestExecutor(unittest.TestCase):
             "is severed, or this test proves nothing about the reported witness",
         )
 
+    def test_agent_output_cut_never_splits_a_secret_from_its_anchor(self):
+        """Test that a byte cut cannot separate a credential from the key name that gets it masked.
+
+        Regression F-IT5-1: the iteration-4 fix dropped the leading whitespace-delimited fragment of
+        an unalignable cut on the premise that a credential never contains whitespace. That premise
+        is false in the case that matters: redaction is anchored on the key NAME, and the anchor often
+        sits a token ahead of the value (``api_key: SECRET``, spaced ``=``, pretty JSON, ``Bearer``).
+        For those shapes the heuristic deleted the anchor and committed the credential whole, which is
+        worse than the raw cut it replaced. The shipped rule is that the tail starts on a line
+        boundary or is empty, so no partial line is ever committed.
+        """
+        from sandbox_executor.entrypoint.executor import (
+            _TRUNCATION_MARKER_RESERVE,
+            redact_agent_secrets,
+            redact_env_literals,
+            sanitize_agent_output,
+        )
+
+        budget = 65536  # the default, so this witnesses the shipped configuration
+        # The budget is shared with the marker, so the cut lands this far into the credential line.
+        tail_budget = budget - _TRUNCATION_MARKER_RESERVE
+        secret = _fake_token("sk-proj-", "9f3Aq7ZxR2tKp8WmB4VdNc6Ye1Hg")
+        # Opaque on purpose: no listed provider prefix may rescue these shapes.
+        self.assertIsNone(re.match(r"sk_live_|sk_test_", secret))
+        windows = [secret[start : start + 8] for start in range(len(secret) - 7)]
+
+        shapes = {
+            "single token": f"api_key={secret}",
+            "space after colon": f"api_key: {secret}",
+            "spaced equals": f"api_key = {secret}",
+            "pretty json": f'{{\n  "api_key": "{secret}"}}',
+            "bearer": f"Authorization: Bearer {secret}",
+            "column padded": f"password:    {secret}",
+        }
+
+        def superseded_fragment_heuristic(stream: str) -> str:
+            """The iteration-4 rule, kept as a counter-example so it cannot quietly come back."""
+            tail = stream.encode("utf-8")[-tail_budget:]
+            newline_at = tail.find(b"\n")
+            if 0 <= newline_at < len(tail) - 1 and newline_at <= max(4096, budget // 2):
+                tail = tail[newline_at + 1 :]
+            else:
+                tail = tail[re.match(rb"\S*", tail).end() :]
+            notice = f"[Agent output truncated: 0 bytes dropped; showing tail {len(tail)} bytes]\n"
+            return redact_agent_secrets(notice + tail.decode("utf-8", errors="replace"))
+
+        superseded_leaks = {}
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "", "GH_TOKEN": "", "HOLON_AGENT_KEY": ""}):
+            self.assertEqual(redact_env_literals(secret), secret, "the sweep must not know this value")
+            for label, unit in shapes.items():
+                # Without a cut the same bytes are masked: the cut, not redactor scope, is the defect.
+                baseline, _trunc, _dropped = sanitize_agent_output(redact_env_literals("n\n" * 400 + unit), budget)
+                self.assertNotIn(secret[:8], redact_agent_secrets(baseline))
+
+                legacy_leaks = 0
+                for cut_at in range(1, len(unit)):
+                    stream = ("noise line\n" * 8000) + unit + "y" * (tail_budget - (len(unit) - cut_at))
+                    bounded, truncated, _ = sanitize_agent_output(redact_env_literals(stream), budget)
+                    self.assertTrue(truncated)
+                    result = redact_agent_secrets(bounded)
+                    for window in windows:
+                        self.assertNotIn(window, result, f"{label}: fragment {window!r} survived cut {cut_at}.")
+                    legacy = superseded_fragment_heuristic(stream)
+                    if any(window in legacy for window in windows):
+                        legacy_leaks += 1
+                superseded_leaks[label] = legacy_leaks
+
+        # The replaced heuristic must demonstrably leak on the split-anchor shapes, or this test has
+        # no counter-example and proves nothing about why the rule changed. (The pretty-JSON shape
+        # carries its own newline, so both rules align it and it is swept but not asserted here.)
+        self.assertGreater(superseded_leaks["space after colon"], 0, str(superseded_leaks))
+        self.assertGreater(superseded_leaks["spaced equals"], 0, str(superseded_leaks))
+        self.assertGreater(superseded_leaks["bearer"], 0, str(superseded_leaks))
+        self.assertEqual(superseded_leaks["single token"], 0, "the shape the old rule handled still passes")
+
     def test_redact_agent_secrets_masks_unanchored_provider_tokens(self):
         """Test that well-known provider credentials are masked without a key-name anchor.
 
@@ -1780,19 +1855,25 @@ class TestExecutor(unittest.TestCase):
         self.assertTrue(out.startswith("[Agent output truncated: 20001 bytes dropped; showing tail 6871 bytes]\n"))
         self.assertEqual(out.split("\n", 1)[1], "b" * 6871)
 
-        # A single line with no whitespace at all: the cut severs the only token in the retained
-        # region, so that fragment is dropped rather than committed. Fail-closed and marker-only.
-        # This is the behaviour the pre-fix code asserted the opposite of (it committed the raw
-        # z * 100 slice), which is exactly the credential-fragment leak F-IT4-1 reported.
+        # A single unterminated line longer than the budget cannot be redacted faithfully: the bytes
+        # the cut removed may have been a key name or a provider prefix, so none of the line is
+        # committed and the marker says why. The pre-fix code asserted the opposite (it committed the
+        # raw z * 100 slice), which is the credential exposure F-IT4-1 reported.
         out, trunc, dropped = sanitize_agent_output("z" * 300, max_bytes=100)
         self.assertTrue(trunc)
         self.assertEqual(dropped, 300)
-        self.assertEqual(out, "[Agent output truncated: 300 bytes dropped; showing tail 0 bytes]\n")
+        self.assertEqual(
+            out,
+            "[Agent output truncated: 300 bytes dropped; showing tail 0 bytes; no complete line within budget]\n",
+        )
 
         out, trunc, dropped = sanitize_agent_output("z" * 3000, max_bytes=512)
         self.assertTrue(trunc)
         self.assertEqual(dropped, 3000)
-        self.assertEqual(out, "[Agent output truncated: 3000 bytes dropped; showing tail 0 bytes]\n")
+        self.assertEqual(
+            out,
+            "[Agent output truncated: 3000 bytes dropped; showing tail 0 bytes; no complete line within budget]\n",
+        )
 
     def test_agent_output_bound_retains_budget_of_newest_output(self):
         """Test that bounding keeps a byte budget worth of newest output on very large streams.
@@ -1831,21 +1912,24 @@ class TestExecutor(unittest.TestCase):
         self.assertFalse(trunc)
         self.assertEqual(dropped, 0)
 
-        # Above limit on a payload with no whitespace at all: the single token is unrecoverable, so
-        # the fail-closed cut drops it whole and only the marker is committed.
+        # Above limit on a payload with no line boundary at all: nothing in it can be redacted
+        # faithfully, so the fail-closed cut commits only the marker, and names the reason.
         raw = "0123456789" * 10  # 100 bytes
         out, trunc, dropped = sanitize_agent_output(raw, max_bytes=20)
         self.assertTrue(trunc)
         self.assertEqual(dropped, 100)
-        self.assertEqual(out, "[Agent output truncated: 100 bytes dropped; showing tail 0 bytes]\n")
+        self.assertEqual(
+            out,
+            "[Agent output truncated: 100 bytes dropped; showing tail 0 bytes; no complete line within budget]\n",
+        )
 
-        # Above limit with whitespace: the retained tail starts after the fragment the byte cut
-        # severed, and the whole block stays inside the budget the marker shares.
-        raw = "0123456789 " * 100  # 1100 bytes
+        # Above limit with line boundaries: the tail starts on the next line and the whole block stays
+        # inside the budget the marker shares.
+        raw = "0123456789 line\n" * 100  # 1600 bytes
         out, trunc, dropped = sanitize_agent_output(raw, max_bytes=200)
         self.assertTrue(trunc)
-        self.assertEqual(dropped, 1000)
-        self.assertTrue(out.startswith("[Agent output truncated: 1000 bytes dropped; showing tail 100 bytes]\n"))
+        self.assertEqual(dropped, 1504)
+        self.assertTrue(out.startswith("[Agent output truncated: 1504 bytes dropped; showing tail 96 bytes]\n"))
         self.assertEqual(out.split("\n", 1)[1], raw[dropped:])
         self.assertLessEqual(len(out.encode("utf-8")), 200)
 

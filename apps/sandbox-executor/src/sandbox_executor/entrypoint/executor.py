@@ -39,23 +39,14 @@ from sandbox_executor.agent_runner import (
 
 _MAX_REDACT_INPUT_LEN: int = 100_000
 _MAX_PRINT_LEN: int = 5000
-# How far a truncated tail looks for a line boundary. Advancing to the next newline keeps a
-# credential from being cut in half, while capping the look-ahead bounds how much of the newest
-# diagnostic output the alignment may drop. sanitize_agent_output may widen it with the budget.
-_TAIL_ALIGN_WINDOW: int = 4096
-
 # Room taken out of the byte budget for the truncation marker itself, so the whole committed block
 # (marker + tail) fits the budget rather than exceeding it by the marker length. The marker is a
 # fixed ~60 character phrase plus at most two 10-digit byte counts, so it stays under 128 bytes for
 # any realistic size. A budget below twice this still shares itself with the marker, so the reserve
 # is capped at half the budget: a small budget keeps content instead of degrading to a marker-only
 # record. Below 256 bytes the marker can still outrun the reserve, which costs budget accuracy, not
-# the never-mid-token guarantee.
+# the never-mid-line guarantee.
 _TRUNCATION_MARKER_RESERVE: int = 128
-
-# The leading fragment of a raw byte cut: the run of non-whitespace bytes the cut landed inside.
-# Applied to bytes, because the cut is made on the encoded stream.
-_LEADING_FRAGMENT_RE = re.compile(rb"\S*")
 
 # Well-known provider credential prefixes, swept as whole tokens with no key-name anchor required.
 # `redact_text` anchors on a key NAME, so a bare provider token (`token was: sk_live_...`) matches
@@ -224,10 +215,10 @@ def sanitize_agent_output(raw_output: str, max_bytes: int = 65536) -> tuple[str,
     bytes, so the committed block can overshoot the budget by that much per masked value. The
     `showing tail N bytes` figure is likewise an upper bound, measured before that redaction.
 
-    The returned tail never begins mid-token. It either starts on a line boundary or, when no line
-    boundary is reachable, immediately after the first whitespace-delimited fragment, which is the
-    token the byte cut severed. A retained region containing no whitespace at all yields an empty
-    tail: fail-closed, because a single token longer than the whole budget is unrecoverable.
+    The returned tail never begins mid-line: it starts immediately after a newline, or the budget
+    could not reach a line boundary at all and the tail is empty with the marker saying why. A partial
+    line is never committed, because the bytes a byte cut deletes are exactly the bytes the redactors
+    need in order to recognise a secret.
 
     Args:
         raw_output: Raw string output from the agent process.
@@ -251,27 +242,28 @@ def sanitize_agent_output(raw_output: str, max_bytes: int = 65536) -> tuple[str,
     tail_budget = max_bytes - reserve
     tail_bytes = encoded[-tail_budget:] if tail_budget > 0 else b""
     dropped_bytes = total_bytes - len(tail_bytes)
-    # Never sever a line: a credential cut in half matches neither the literal sweep (which needs
-    # the whole value) nor the key-name regex (whose anchor the same cut breaks), so the surviving
-    # fragment would be committed. Advancing to the next newline discards the *oldest* bytes inside
-    # the look-ahead, so the window may scale with the budget, but may never retain less than half
-    # of what the operator asked for.
+    # The committed tail must start on a line boundary, or be empty. Every redactor here needs text
+    # that a byte cut can delete: the literal sweep needs the whole value, the provider sweep needs
+    # the vendor prefix, and the key-name pass needs the key name, which frequently sits a token
+    # ahead of its value (`api_key: SECRET`, `"api_key": "SECRET"`, `Bearer SECRET`). Whatever the cut
+    # lands inside is therefore not redactable, and none of that line may be committed. Dropping just
+    # the leading fragment is provably insufficient: when the anchor and the value are separate
+    # tokens, that deletes the anchor and keeps the credential whole in the next fragment. Aligning
+    # forward discards only the oldest bytes of the window, never the newest, so safety needs no
+    # look-ahead cap.
     newline_at = tail_bytes.find(b"\n")
-    align_limit = max(_TAIL_ALIGN_WINDOW, max_bytes // 2)
-    if 0 <= newline_at < len(tail_bytes) - 1 and newline_at <= align_limit:
+    if 0 <= newline_at < len(tail_bytes) - 1:
         dropped_bytes += newline_at + 1
         tail_bytes = tail_bytes[newline_at + 1 :]
+        reason = ""
     else:
-        # No line boundary is reachable, so whatever the cut landed inside is still severed and no
-        # later pass can recover it: the literal sweep needs the whole value and the key-name regex
-        # needs the key name the cut discarded. A credential never contains whitespace, so the first
-        # whitespace-delimited fragment of a raw cut is by construction that partial token; drop it
-        # and every retained token is whole, exactly as for unbounded output.
-        severed = _LEADING_FRAGMENT_RE.match(tail_bytes).end()
-        dropped_bytes += severed
-        tail_bytes = tail_bytes[severed:]
+        # One unterminated line longer than the whole budget: it cannot be redacted faithfully, so
+        # the record keeps the notice and none of the line.
+        dropped_bytes += len(tail_bytes)
+        tail_bytes = b""
+        reason = "; no complete line within budget"
     decoded_tail = tail_bytes.decode("utf-8", errors="replace")
-    marker = f"[Agent output truncated: {dropped_bytes} bytes dropped; showing tail {len(tail_bytes)} bytes]\n"
+    marker = f"[Agent output truncated: {dropped_bytes} bytes dropped; showing tail {len(tail_bytes)} bytes{reason}]\n"
     return marker + decoded_tail, True, dropped_bytes
 
 

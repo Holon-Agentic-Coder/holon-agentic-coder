@@ -41,8 +41,37 @@ _MAX_REDACT_INPUT_LEN: int = 100_000
 _MAX_PRINT_LEN: int = 5000
 # How far a truncated tail looks for a line boundary. Advancing to the next newline keeps a
 # credential from being cut in half, while capping the look-ahead bounds how much of the newest
-# diagnostic output the alignment may drop.
+# diagnostic output the alignment may drop. sanitize_agent_output may widen it with the budget.
 _TAIL_ALIGN_WINDOW: int = 4096
+
+# Room taken out of the byte budget for the truncation marker itself, so the whole committed block
+# (marker + tail) fits the budget rather than exceeding it by the marker length. The marker is a
+# fixed ~60 character phrase plus at most two 10-digit byte counts, so it stays under 128 bytes for
+# any realistic size. A budget below twice this still shares itself with the marker, so the reserve
+# is capped at half the budget: a small budget keeps content instead of degrading to a marker-only
+# record. Below 256 bytes the marker can still outrun the reserve, which costs budget accuracy, not
+# the never-mid-token guarantee.
+_TRUNCATION_MARKER_RESERVE: int = 128
+
+# The leading fragment of a raw byte cut: the run of non-whitespace bytes the cut landed inside.
+# Applied to bytes, because the cut is made on the encoded stream.
+_LEADING_FRAGMENT_RE = re.compile(rb"\S*")
+
+# Well-known provider credential prefixes, swept as whole tokens with no key-name anchor required.
+# `redact_text` anchors on a key NAME, so a bare provider token (`token was: sk_live_...`) matches
+# nothing there. Deliberately a closed list of literal prefixes: a generic high-entropy rule would
+# shred legitimate base64 and minified-JSON diagnostics, which is a coverage regression.
+_PROVIDER_TOKEN_RE = re.compile(
+    r"(?:"
+    r"(?:sk|pk)_(?:live|test)_[A-Za-z0-9_-]{8,}"
+    r"|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_-]{8,}"
+    r"|github_pat_[A-Za-z0-9_-]{8,}"
+    r"|glpat-[A-Za-z0-9_-]{8,}"
+    r"|xox[baprs]-[A-Za-z0-9_-]{8,}"
+    r"|AIza[0-9A-Za-z_-]{30,}"
+    r"|AKIA[0-9A-Z]{16}"
+    r")"
+)
 
 # Explicit list of flags whose next argument must be masked.
 # Note: Suffixes like "-token", "_token", "-secret", "_secret", "-key", and "_key"
@@ -156,12 +185,26 @@ def redact_args(args: list[str]) -> list[str]:
 
 
 def get_agent_log_byte_budget() -> int:
-    """Retrieve the byte limit for agent log retention from HOLON_AGENT_LOG_BYTES, defaulting to 65536."""
+    """Retrieve the byte limit for agent log retention from HOLON_AGENT_LOG_BYTES, defaulting to 65536.
+
+    Clamped to `redact_text`'s input cap: the bounded tail is redacted *after* the byte cut, and
+    above the cap that pass head/tail-cuts its own input, which would both discard the newest output
+    the bound just retained and sever a key name at its own split. A byte clamp is a safe character
+    clamp because UTF-8 never encodes a character in fewer than one byte.
+    """
     val = os.getenv("HOLON_AGENT_LOG_BYTES")
     if val:
         try:
             parsed = int(val)
             if parsed > 0:
+                if parsed > _MAX_REDACT_INPUT_LEN:
+                    print(
+                        f"Warning: HOLON_AGENT_LOG_BYTES={parsed} exceeds the {_MAX_REDACT_INPUT_LEN} "
+                        "byte redaction input limit; bounding to the limit instead, because output "
+                        "beyond it is not redacted faithfully.",
+                        file=sys.stderr,
+                    )
+                    return _MAX_REDACT_INPUT_LEN
                 return parsed
         except (ValueError, TypeError):
             pass
@@ -171,13 +214,24 @@ def get_agent_log_byte_budget() -> int:
 def sanitize_agent_output(raw_output: str, max_bytes: int = 65536) -> tuple[str, bool, int]:
     """Sanitize and bound agent output to a maximum byte length.
 
-    Truncates the output to the tail `max_bytes` if the UTF-8 encoded length
-    exceeds `max_bytes`, prepending an explicit truncation notice with the
-    count of dropped bytes.
+    Truncates the output to the tail `max_bytes` if the UTF-8 encoded length exceeds `max_bytes`,
+    prepending an explicit truncation notice with the count of dropped bytes.
+
+    Field contract: the returned text is `marker + tail`, and for any budget of at least twice the
+    marker reserve (256 bytes) that block is at most `max_bytes` before the post-bound redaction.
+    `agent_output_bytes` is the only exact size: the redaction applied afterwards rewrites secret
+    values, which shrinks any value longer than the 7-character mask but grows a shorter one by a few
+    bytes, so the committed block can overshoot the budget by that much per masked value. The
+    `showing tail N bytes` figure is likewise an upper bound, measured before that redaction.
+
+    The returned tail never begins mid-token. It either starts on a line boundary or, when no line
+    boundary is reachable, immediately after the first whitespace-delimited fragment, which is the
+    token the byte cut severed. A retained region containing no whitespace at all yields an empty
+    tail: fail-closed, because a single token longer than the whole budget is unrecoverable.
 
     Args:
         raw_output: Raw string output from the agent process.
-        max_bytes: Maximum allowed byte length for the tail.
+        max_bytes: Maximum allowed byte length for the whole returned block.
 
     Returns:
         A tuple of (bounded_output, is_truncated, dropped_bytes).
@@ -191,16 +245,31 @@ def sanitize_agent_output(raw_output: str, max_bytes: int = 65536) -> tuple[str,
     if total_bytes <= max_bytes:
         return raw_output, False, 0
 
-    tail_bytes = encoded[-max_bytes:]
+    # Leave room for the marker so marker + tail stays inside the budget, without letting the marker
+    # swallow a small budget whole.
+    reserve = min(_TRUNCATION_MARKER_RESERVE, max_bytes // 2)
+    tail_budget = max_bytes - reserve
+    tail_bytes = encoded[-tail_budget:] if tail_budget > 0 else b""
     dropped_bytes = total_bytes - len(tail_bytes)
     # Never sever a line: a credential cut in half matches neither the literal sweep (which needs
     # the whole value) nor the key-name regex (whose anchor the same cut breaks), so the surviving
-    # fragment would be committed. Advance the tail to the next line boundary when one is near;
-    # a single line longer than the look-ahead window keeps the raw byte cut.
+    # fragment would be committed. Advancing to the next newline discards the *oldest* bytes inside
+    # the look-ahead, so the window may scale with the budget, but may never retain less than half
+    # of what the operator asked for.
     newline_at = tail_bytes.find(b"\n")
-    if 0 <= newline_at < len(tail_bytes) - 1 and newline_at <= _TAIL_ALIGN_WINDOW:
+    align_limit = max(_TAIL_ALIGN_WINDOW, max_bytes // 2)
+    if 0 <= newline_at < len(tail_bytes) - 1 and newline_at <= align_limit:
         dropped_bytes += newline_at + 1
         tail_bytes = tail_bytes[newline_at + 1 :]
+    else:
+        # No line boundary is reachable, so whatever the cut landed inside is still severed and no
+        # later pass can recover it: the literal sweep needs the whole value and the key-name regex
+        # needs the key name the cut discarded. A credential never contains whitespace, so the first
+        # whitespace-delimited fragment of a raw cut is by construction that partial token; drop it
+        # and every retained token is whole, exactly as for unbounded output.
+        severed = _LEADING_FRAGMENT_RE.match(tail_bytes).end()
+        dropped_bytes += severed
+        tail_bytes = tail_bytes[severed:]
     decoded_tail = tail_bytes.decode("utf-8", errors="replace")
     marker = f"[Agent output truncated: {dropped_bytes} bytes dropped; showing tail {len(tail_bytes)} bytes]\n"
     return marker + decoded_tail, True, dropped_bytes
@@ -235,7 +304,10 @@ def redact_env_literals(text: str) -> str:
 
 
 def redact_agent_secrets(text: str) -> str:
-    """Redact secrets from agent output using redact_text and literal environment token values.
+    """Redact secrets from agent output using redact_text, provider token shapes and literal env values.
+
+    The provider-token sweep is anchored on the token itself rather than on a key name, so it still
+    fires on `token was: sk_live_...`, where the key-name regex has nothing to match.
 
     Args:
         text: Input string potentially containing sensitive tokens or credentials.
@@ -246,7 +318,9 @@ def redact_agent_secrets(text: str) -> str:
     if not text:
         return text
 
-    return redact_env_literals(redact_text(text))
+    s = redact_text(text)
+    s = _PROVIDER_TOKEN_RE.sub("*******", s)
+    return redact_env_literals(s)
 
 
 def run_cmd(
@@ -970,10 +1044,16 @@ def main() -> None:
                     ef.write(f"- Model: `{model_name}`\n")
                     ef.write(f"- Timestamp: `{timestamp_str}`\n\n")
                     ef.write(f"## Status\n{exec_status.capitalize()}\n\n## Summary\n{summary}\n\n")
-                    ef.write("## Agent Output\n```\n")
+                    # Agent output is untrusted and may contain a line of three backticks, which would
+                    # close the fence early and render the rest of the record as markdown. CommonMark
+                    # resolves this by a fence longer than the longest backtick run in the payload; the
+                    # raw file and executions.jsonl stay authoritative either way.
+                    longest_backtick_run = max((len(r) for r in re.findall(r"`+", agent_output_text)), default=0)
+                    fence = "`" * max(3, longest_backtick_run + 1)
+                    ef.write(f"## Agent Output\n{fence}\n")
                     if agent_output_text:
                         ef.write(agent_output_text if agent_output_text.endswith("\n") else f"{agent_output_text}\n")
-                    ef.write("```\n")
+                    ef.write(f"{fence}\n")
             except Exception as e:
                 print(f"Warning: Failed to write execution record {exec_file_path}: {e}", file=sys.stderr)
 

@@ -16,6 +16,18 @@ from sandbox_executor.agent_runner import (
 )
 from sandbox_executor.entrypoint import executor
 
+# Provider credentials are exercised as *shapes*, never as real keys. The filler is spliced in right
+# after the vendor prefix, so no contiguous vendor-format secret ever exists in this file (GitHub
+# push protection correctly refuses to accept one, even a documentation example) while the sweep
+# under test still sees a token-shaped value: every pattern it accepts allows these characters after
+# the prefix. Build them through this helper rather than writing a literal.
+_FAKE_FILLER = "NOTREAL_not-a-live-key_"
+
+
+def _fake_token(prefix: str, body: str = "9f3Aq7ZxR2tKp8Wm") -> str:
+    """Assemble a token-shaped fake credential from a vendor prefix and a declared-fake filler."""
+    return prefix + _FAKE_FILLER + body
+
 
 class TestExecutor(unittest.TestCase):
     def test_redact_args(self):
@@ -1140,15 +1152,17 @@ class TestExecutor(unittest.TestCase):
         mock_get_runner.return_value = mock_runner
 
         budget = 1024
+        # The budget is shared with the truncation marker, so the byte cut happens this far in.
+        tail_budget = budget - executor._TRUNCATION_MARKER_RESERVE
         secret = "ghp_StraddleS3cr3tXYzWq7Q4tR9LMNop"
         straddle = 5
-        # boundary = len(output) - budget must land `straddle` bytes into the secret, which starts
-        # after the "GH_TOKEN=" anchor: suffix_len = budget + straddle - len(secret) - 1.
+        # boundary = len(output) - tail_budget must land `straddle` bytes into the secret, which
+        # starts after the "GH_TOKEN=" anchor: suffix_len = tail_budget + straddle - len(secret) - 1.
         prefix = "noise line\n" * 400
-        suffix = "y" * (budget + straddle - len(secret) - 1)
+        suffix = "y" * (tail_budget + straddle - len(secret) - 1)
         agent_stdout = f"{prefix}GH_TOKEN={secret}\n{suffix}"
         self.assertEqual(
-            len(agent_stdout) - budget,
+            len(agent_stdout) - tail_budget,
             len(prefix) + len("GH_TOKEN=") + straddle,
             "Test geometry must put the truncation boundary inside the secret.",
         )
@@ -1254,6 +1268,360 @@ class TestExecutor(unittest.TestCase):
             severed_offsets,
             "bounding before redacting must demonstrably strand a fragment, or this test proves nothing",
         )
+
+    @staticmethod
+    def _agent_capture_side_effect(agent_stdout: str, agent_stderr: str = ""):
+        """Build a run_cmd side effect that clones a ledger-bearing repo and returns agent output."""
+
+        def side_effect(args, cwd=None, **kwargs):
+            mock_res = MagicMock()
+            if "clone" in args:
+                ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
+                os.makedirs(ledger_dir, exist_ok=True)
+                with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "plan_id": "P-123",
+                                "intent_branch": "I-456/_",
+                                "entropy": 2.0,
+                                "entropy_budget": 5.0,
+                            }
+                        )
+                        + "\n"
+                    )
+            if "agy" in args:
+                mock_res.returncode = 1
+                mock_res.stdout = agent_stdout
+                mock_res.stderr = agent_stderr
+            else:
+                mock_res.returncode = 0
+                mock_res.stdout = ""
+                mock_res.stderr = ""
+            return mock_res
+
+        return side_effect
+
+    def test_agent_output_unalignable_cut_drops_the_severed_token(self):
+        """Test that a byte cut with no reachable line boundary never commits a severed credential.
+
+        Regression: the unalignable branch of the tail bound kept the raw bytes, so a credential that
+        is not one of the swept env literal values and whose key name the cut severed (``api_key=``
+        reduced to ``key=``, which is not a key-name anchor) was committed intact, because every
+        later pass needs bytes the cut had already discarded. The tail now drops the first
+        whitespace-delimited fragment, which is by construction the token the cut landed inside.
+        """
+        from sandbox_executor.entrypoint.executor import (
+            _TRUNCATION_MARKER_RESERVE,
+            redact_agent_secrets,
+            redact_env_literals,
+            redact_text,
+            sanitize_agent_output,
+        )
+
+        budget = 1024
+        tail_budget = budget - _TRUNCATION_MARKER_RESERVE
+        secret = _fake_token("sk_live_")
+        unit = f"api_key={secret}"
+        windows = [secret[start : start + 8] for start in range(len(secret) - 7)]
+
+        def superseded_cut(stream: str) -> str:
+            """The superseded pipeline: raw byte cut, fixed 4096 look-ahead, then the old redaction."""
+            tail = stream.encode("utf-8")[-budget:]
+            newline_at = tail.find(b"\n")
+            if 0 <= newline_at < len(tail) - 1 and newline_at <= 4096:
+                tail = tail[newline_at + 1 :]
+            notice = f"[Agent output truncated: 0 bytes dropped; showing tail {len(tail)} bytes]\n"
+            return redact_env_literals(redact_text(notice + tail.decode("utf-8", errors="replace")))
+
+        truncated_cases = 0
+        superseded_leaks = []
+        superseded_whole_secret_leaks = []
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "", "GH_TOKEN": "", "HOLON_AGENT_KEY": ""}):
+            # The literal sweep cannot rescue this credential; only the cut geometry can, because it
+            # is not the value of any environment variable the pipeline knows.
+            self.assertEqual(redact_env_literals(secret), secret)
+            for cut_at in range(1, len(unit)):
+                # Exactly `cut_at` bytes of `unit` fall to the cut, the rest of the retained tail is
+                # padding, and the final line is unterminated: no newline is reachable from the cut.
+                stream = ("noise line\n" * 200) + unit + "y" * (tail_budget - (len(unit) - cut_at))
+                self.assertGreater(len(stream), budget, "the byte budget must be exceeded for this case")
+
+                bounded, truncated, _dropped = sanitize_agent_output(redact_env_literals(stream), budget)
+                truncated_cases += 1 if truncated else 0
+                result = redact_agent_secrets(bounded)
+                for window in windows:
+                    self.assertNotIn(window, result, f"Secret fragment {window!r} survived at cut {cut_at}.")
+
+                # Counter-example, kept so this test cannot silently become vacuous. The superseded
+                # cut landed `reserve` bytes earlier, so the credential is placed for that geometry
+                # as well; it then strands a fragment (or the whole credential) at the same offset.
+                legacy_stream = ("noise line\n" * 200) + unit + "y" * (budget - (len(unit) - cut_at))
+                legacy = superseded_cut(legacy_stream)
+                if any(window in legacy for window in windows):
+                    superseded_leaks.append(cut_at)
+                    if secret in legacy:
+                        superseded_whole_secret_leaks.append(cut_at)
+
+        self.assertEqual(truncated_cases, len(unit) - 1, "every offset must actually truncate")
+        self.assertTrue(
+            superseded_leaks,
+            "the superseded raw cut must demonstrably strand a fragment, or this test proves nothing",
+        )
+        self.assertTrue(
+            superseded_whole_secret_leaks,
+            "the superseded raw cut must demonstrably commit the whole credential once the key name "
+            "is severed, or this test proves nothing about the reported witness",
+        )
+
+    def test_redact_agent_secrets_masks_unanchored_provider_tokens(self):
+        """Test that well-known provider credentials are masked without a key-name anchor.
+
+        Regression: `redact_text` anchors on a key name, so a whole provider token reported as prose
+        matched nothing and was committed verbatim. The sweep is a closed list of literal prefixes,
+        so legitimate high-entropy diagnostics must still survive untouched.
+        """
+        from sandbox_executor.entrypoint.executor import redact_agent_secrets, redact_env_literals, redact_text
+
+        tokens = [
+            _fake_token("sk_live_"),
+            _fake_token("sk_test_"),
+            _fake_token("pk_live_"),
+            _fake_token("pk_test_"),
+            _fake_token("ghp_"),
+            _fake_token("gho_"),
+            _fake_token("ghu_"),
+            _fake_token("ghs_"),
+            _fake_token("ghr_"),
+            _fake_token("github_pat_"),
+            _fake_token("glpat-"),
+            _fake_token("xoxb-"),
+            _fake_token("AIza", "A1234567890abcdefghijklmnopqrstuvw"),
+            # AKIA's shape is uppercase-only, so no filler can be spliced inside it; the prefix is
+            # split across two literals instead, which keeps the vendor pattern out of the file.
+            ("AK" + "IA") + "FAKEEXAMPLEKEY01",
+        ]
+        benign = (
+            "upload payload U1VDQ0VTU19EQVRBX2hlbGxvd29ybGRzdHVmZg== digest "
+            "8f14e45fceea167a5d36dedd4bea2543 build 0123456789abcdef0123456789abcdef\n"
+        )
+
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "", "GH_TOKEN": "", "HOLON_AGENT_KEY": ""}):
+            for token in tokens:
+                line = f"agent reported token was: {token}\n"
+                # Counter-example: the superseded pass leaves an unanchored provider token verbatim.
+                self.assertEqual(redact_env_literals(redact_text(line)), line)
+                masked = redact_agent_secrets(line)
+                self.assertNotIn(token, masked, f"Provider token {token!r} leaked without a key= anchor")
+                self.assertIn("*******", masked)
+
+            # No generic high-entropy rule: base64 and hex diagnostics must not be shredded.
+            self.assertEqual(redact_agent_secrets(benign), benign)
+
+    @patch("sandbox_executor.entrypoint.executor.run_cmd")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    def test_agent_output_budget_above_redaction_cap_is_clamped(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
+        """Test that a configured budget over redact_text's input cap is clamped, and announced."""
+        from sandbox_executor.entrypoint.executor import _MAX_REDACT_INPUT_LEN, _TRUNCATION_MARKER_RESERVE
+
+        mock_get_repo_url.return_value = "/mock/repo"
+        mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.1.22"
+        mock_runner.build_cmd.return_value = ["agy", "run"]
+        mock_get_runner.return_value = mock_runner
+
+        # The cut must land inside the key name, so the whole credential is retained on a line that
+        # no pass can anchor, which is the witness F-IT4-2 reported at a 200 KB budget.
+        secret = _fake_token("sk_live_")
+        unit = f"api_key={secret}"
+        tail_budget = _MAX_REDACT_INPUT_LEN - _TRUNCATION_MARKER_RESERVE
+        agent_stdout = ("noise line 000000\n" * 20000) + unit + "y" * (tail_budget - (len(unit) - 5))
+        self.assertGreater(len(agent_stdout), 200_000, "the stream must exceed the configured budget")
+        mock_run_cmd.side_effect = self._agent_capture_side_effect(agent_stdout)
+
+        configured = 200_000
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.dict(
+                os.environ,
+                {
+                    "HOLON_REPO_DIR": tmp_dir,
+                    "HOLON_SKIP_PUSH": "1",
+                    "HOLON_AGENT_LOG_BYTES": str(configured),
+                    "GITHUB_TOKEN": "",
+                    "GH_TOKEN": "",
+                    "HOLON_AGENT_KEY": "",
+                },
+            ),
+            patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
+            patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
+            patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
+            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
+        ):
+            executor.main()
+
+            warning = mock_stderr.getvalue()
+            self.assertIn(str(configured), warning, "the clamp must name the configured value")
+            self.assertIn(str(_MAX_REDACT_INPUT_LEN), warning, "the clamp must name the limit it applied")
+
+            exec_dir = os.path.join(tmp_dir, "executions")
+            with open(os.path.join(exec_dir, os.listdir(exec_dir)[0])) as ef:
+                record = ef.read()
+            with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
+                entry = json.loads(lf.readline())
+
+            self.assertIn("[Agent output truncated:", record)
+            self.assertLessEqual(entry["agent_output_bytes"], _MAX_REDACT_INPUT_LEN)
+            # The ledger byte count is exactly what was committed inside the fence, marker included.
+            block = record.split("## Agent Output\n", 1)[1]
+            fence = block.split("\n", 1)[0]
+            body = block.split("\n", 1)[1]
+            self.assertTrue(body.endswith(f"{fence}\n"))
+            self.assertEqual(entry["agent_output_bytes"], len(body[: -len(f"{fence}\n")].encode("utf-8")))
+            for start in range(len(secret) - 7):
+                window = secret[start : start + 8]
+                self.assertNotIn(window, record, f"Secret fragment {window!r} leaked at a 200 KB budget.")
+
+    def test_agent_log_byte_budget_clamps_and_falls_back(self):
+        """Test the HOLON_AGENT_LOG_BYTES clamp to the redaction input cap and its fallbacks."""
+        from sandbox_executor.entrypoint.executor import _MAX_REDACT_INPUT_LEN, get_agent_log_byte_budget, redact_text
+
+        with patch.dict(os.environ, {"HOLON_AGENT_LOG_BYTES": "200000"}):
+            self.assertEqual(get_agent_log_byte_budget(), _MAX_REDACT_INPUT_LEN)
+        with (
+            patch.dict(os.environ, {"HOLON_AGENT_LOG_BYTES": "200000"}),
+            patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
+        ):
+            get_agent_log_byte_budget()
+            warning = mock_stderr.getvalue()
+            self.assertIn("200000", warning)
+            self.assertIn(str(_MAX_REDACT_INPUT_LEN), warning)
+            self.assertIn("redaction", warning)
+
+        # At or below the cap the operator's number is honoured verbatim.
+        with patch.dict(os.environ, {"HOLON_AGENT_LOG_BYTES": str(_MAX_REDACT_INPUT_LEN)}):
+            self.assertEqual(get_agent_log_byte_budget(), _MAX_REDACT_INPUT_LEN)
+        with patch.dict(os.environ, {"HOLON_AGENT_LOG_BYTES": "4096"}):
+            self.assertEqual(get_agent_log_byte_budget(), 4096)
+        for unusable in ("not-a-number", "0", "-1"):
+            with patch.dict(os.environ, {"HOLON_AGENT_LOG_BYTES": unusable}):
+                self.assertEqual(get_agent_log_byte_budget(), 65536)
+
+        # Counter-example: the input cap really does discard content, which is why a bigger budget
+        # was a leak and a coverage hole rather than a longer tail.
+        oversized = "q" * 150_000
+        self.assertLess(len(redact_text(oversized)), len(oversized))
+
+    def test_agent_output_committed_block_fits_the_byte_budget(self):
+        """Test that marker plus tail never exceed the budget the record advertises.
+
+        Regression: the tail alone filled the budget and the truncation marker was appended on top of
+        it, so the committed block exceeded `HOLON_AGENT_LOG_BYTES` while the plan called that number
+        a hard cap. The budget is now shared with the marker.
+        """
+        from sandbox_executor.entrypoint.executor import _TRUNCATION_MARKER_RESERVE, sanitize_agent_output
+
+        stream = "noise line 000000\n" * 20000  # 320 KB of ordinary newline-terminated output
+        for budget in (512, 1024, 4096, 65536, 100_000):
+            bounded, truncated, _dropped = sanitize_agent_output(stream, budget)
+            self.assertTrue(truncated)
+            block_len = len(bounded.encode("utf-8"))
+            self.assertLessEqual(block_len, budget, f"budget {budget}: the committed block must fit")
+            self.assertGreater(
+                block_len,
+                budget - _TRUNCATION_MARKER_RESERVE,
+                f"budget {budget}: reserving for the marker must not gut the retained tail",
+            )
+
+        # Counter-example: the superseded shape was a full-budget tail with the marker on top of it.
+        superseded = f"[Agent output truncated: 1 bytes dropped; showing tail {1024} bytes]\n" + "z" * 1024
+        self.assertGreater(len(superseded.encode("utf-8")), 1024)
+
+    @patch("sandbox_executor.entrypoint.executor.run_cmd")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    def test_agent_output_ledger_byte_count_matches_the_budget_field(
+        self, mock_get_repo_url, mock_get_runner, mock_run_cmd
+    ):
+        """Test the documented field contract: marker tail claim <= agent_output_bytes <= budget."""
+        mock_get_repo_url.return_value = "/mock/repo"
+        mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.1.22"
+        mock_runner.build_cmd.return_value = ["agy", "run"]
+        mock_get_runner.return_value = mock_runner
+
+        budget = 1024
+        agent_stdout = "noise line 000000\n" * 20000
+        mock_run_cmd.side_effect = self._agent_capture_side_effect(agent_stdout)
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.dict(
+                os.environ,
+                {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1", "HOLON_AGENT_LOG_BYTES": str(budget)},
+            ),
+            patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
+            patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
+            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
+        ):
+            executor.main()
+
+            exec_dir = os.path.join(tmp_dir, "executions")
+            with open(os.path.join(exec_dir, os.listdir(exec_dir)[0])) as ef:
+                record = ef.read()
+            with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
+                entry = json.loads(lf.readline())
+
+            notice = re.search(r"\[Agent output truncated: (\d+) bytes dropped; showing tail (\d+) bytes\]", record)
+            self.assertIsNotNone(notice)
+            self.assertTrue(entry["agent_output_truncated"])
+            # `showing tail N` is an upper bound on the retained tail; the exact committed size is the
+            # ledger field, which counts marker plus tail and stays inside the configured budget.
+            self.assertLess(int(notice.group(2)), entry["agent_output_bytes"])
+            self.assertLessEqual(entry["agent_output_bytes"], budget)
+
+    @patch("sandbox_executor.entrypoint.executor.run_cmd")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    def test_execution_record_fence_outlasts_backticks_in_agent_output(
+        self, mock_get_repo_url, mock_get_runner, mock_run_cmd
+    ):
+        """Test that agent output containing a fence line cannot close the record's block early."""
+        mock_get_repo_url.return_value = "/mock/repo"
+        mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.1.22"
+        mock_runner.build_cmd.return_value = ["agy", "run"]
+        mock_get_runner.return_value = mock_runner
+
+        payload = "starting line\n```\n## Status\nFORGED HEADING AFTER AN EARLY FENCE CLOSE\n``\nending line\n"
+        mock_run_cmd.side_effect = self._agent_capture_side_effect(payload)
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
+            patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
+            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
+        ):
+            executor.main()
+
+            exec_dir = os.path.join(tmp_dir, "executions")
+            with open(os.path.join(exec_dir, os.listdir(exec_dir)[0])) as ef:
+                record = ef.read()
+
+        payload_lines = payload.rstrip("\n").split("\n")
+        longest_run = max(len(match.group(0)) for match in re.finditer(r"`+", payload))
+        lines = record.split("\n")
+        header_at = lines.index("## Agent Output")
+        opener = lines[header_at + 1]
+        closer = lines[header_at + 2 + len(payload_lines)]
+
+        # Counter-example: the superseded fixed fence was not longer than the payload's own delimiter.
+        self.assertLessEqual(3, longest_run)
+        self.assertEqual(lines[header_at + 2 : header_at + 2 + len(payload_lines)], payload_lines)
+        self.assertEqual(opener, closer, "the block must close with the fence it opened with")
+        self.assertGreater(len(opener), longest_run, "the fence must outlast the longest backtick run")
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
@@ -1392,7 +1760,9 @@ class TestExecutor(unittest.TestCase):
         """Test that truncation advances to a line boundary instead of splitting a line in half."""
         from sandbox_executor.entrypoint.executor import sanitize_agent_output
 
-        # A newline 59 bytes into the retained window: the tail must start on the next line.
+        # A newline 59 bytes into the retained window: the tail must start on the next line. This is
+        # the pre-existing geometry, kept so a small budget provably behaves exactly as before the
+        # marker reserve and the budget-scaled look-ahead existed.
         raw = "a" * 300 + "\n" + "b" * 40
         out, trunc, dropped = sanitize_agent_output(raw, max_bytes=100)
         self.assertTrue(trunc)
@@ -1400,11 +1770,29 @@ class TestExecutor(unittest.TestCase):
         self.assertTrue(out.startswith("[Agent output truncated: 301 bytes dropped; showing tail 40 bytes]\n"))
         self.assertEqual(out.split("\n", 1)[1], "b" * 40)
 
-        # A line with no newline inside the look-ahead window keeps the raw byte cut.
+        # The look-ahead scales with the budget: a newline 5000 bytes into the tail is farther than
+        # the fixed 4096 look-ahead, yet aligning it discards old bytes, not new ones, so it is
+        # taken whenever it still leaves at least half the requested budget.
+        raw = "a" * 20000 + "\n" + "b" * 6871
+        out, trunc, dropped = sanitize_agent_output(raw, max_bytes=12000)
+        self.assertTrue(trunc)
+        self.assertEqual(dropped, 20001)
+        self.assertTrue(out.startswith("[Agent output truncated: 20001 bytes dropped; showing tail 6871 bytes]\n"))
+        self.assertEqual(out.split("\n", 1)[1], "b" * 6871)
+
+        # A single line with no whitespace at all: the cut severs the only token in the retained
+        # region, so that fragment is dropped rather than committed. Fail-closed and marker-only.
+        # This is the behaviour the pre-fix code asserted the opposite of (it committed the raw
+        # z * 100 slice), which is exactly the credential-fragment leak F-IT4-1 reported.
         out, trunc, dropped = sanitize_agent_output("z" * 300, max_bytes=100)
         self.assertTrue(trunc)
-        self.assertEqual(dropped, 200)
-        self.assertTrue(out.endswith("z" * 100))
+        self.assertEqual(dropped, 300)
+        self.assertEqual(out, "[Agent output truncated: 300 bytes dropped; showing tail 0 bytes]\n")
+
+        out, trunc, dropped = sanitize_agent_output("z" * 3000, max_bytes=512)
+        self.assertTrue(trunc)
+        self.assertEqual(dropped, 3000)
+        self.assertEqual(out, "[Agent output truncated: 3000 bytes dropped; showing tail 0 bytes]\n")
 
     def test_agent_output_bound_retains_budget_of_newest_output(self):
         """Test that bounding keeps a byte budget worth of newest output on very large streams.
@@ -1443,13 +1831,23 @@ class TestExecutor(unittest.TestCase):
         self.assertFalse(trunc)
         self.assertEqual(dropped, 0)
 
-        # Above limit
+        # Above limit on a payload with no whitespace at all: the single token is unrecoverable, so
+        # the fail-closed cut drops it whole and only the marker is committed.
         raw = "0123456789" * 10  # 100 bytes
         out, trunc, dropped = sanitize_agent_output(raw, max_bytes=20)
         self.assertTrue(trunc)
-        self.assertEqual(dropped, 80)
-        self.assertTrue(out.startswith("[Agent output truncated: 80 bytes dropped; showing tail 20 bytes]\n"))
-        self.assertTrue(out.endswith(raw[-20:]))
+        self.assertEqual(dropped, 100)
+        self.assertEqual(out, "[Agent output truncated: 100 bytes dropped; showing tail 0 bytes]\n")
+
+        # Above limit with whitespace: the retained tail starts after the fragment the byte cut
+        # severed, and the whole block stays inside the budget the marker shares.
+        raw = "0123456789 " * 100  # 1100 bytes
+        out, trunc, dropped = sanitize_agent_output(raw, max_bytes=200)
+        self.assertTrue(trunc)
+        self.assertEqual(dropped, 1000)
+        self.assertTrue(out.startswith("[Agent output truncated: 1000 bytes dropped; showing tail 100 bytes]\n"))
+        self.assertEqual(out.split("\n", 1)[1], raw[dropped:])
+        self.assertLessEqual(len(out.encode("utf-8")), 200)
 
         # Default fallback for zero/negative budget
         out, trunc, dropped = sanitize_agent_output("test", max_bytes=0)

@@ -29,6 +29,40 @@ def _fake_token(prefix: str, body: str = "9f3Aq7ZxR2tKp8Wm") -> str:
     return prefix + _FAKE_FILLER + body
 
 
+def _superseded_bound_then_redact(stream: str, budget: int) -> str:
+    """The pipeline as shipped at `38fe087`, kept so counter-examples can be run against it.
+
+    Bound the swept stream to a line-aligned tail, THEN redact that tail. Two of this loop's six
+    credential findings live in this ordering: the byte cut severs whatever the redactors need, and
+    `redact_text` anchors on the key name, whose separator to the value (`\\s*(:\\s*|=)\\s*`,
+    `Bearer\\s+`) is pure whitespace and therefore legally crosses lines. F-IT8-1 is the case this
+    helper exists to keep leaking: the anchor sits on the line above the value, the bound discards
+    that line, and the credential is committed whole.
+    """
+    from sandbox_executor.entrypoint.executor import (
+        _TRUNCATION_MARKER_RESERVE,
+        redact_agent_secrets,
+        redact_env_literals,
+    )
+
+    tail = redact_env_literals(stream).encode("utf-8")[-(budget - _TRUNCATION_MARKER_RESERVE) :]
+    newline_at = tail.find(b"\n")
+    tail = tail[newline_at + 1 :] if 0 <= newline_at < len(tail) - 1 else b""
+    text = redact_agent_secrets(tail.decode("utf-8", errors="replace"))
+    notice = f"[Agent output truncated: 0 bytes dropped; showing tail {len(text.encode('utf-8'))} bytes]\n"
+    return notice + text
+
+
+def _exact_filler(total_bytes: int, tag: str) -> str:
+    """Return exactly `total_bytes` of newline-terminated filler, so cut offsets can be asserted."""
+    lines, rem = divmod(total_bytes, 13)
+    block = "".join(f"{tag}{i:08d}\n" for i in range(lines))
+    if rem:
+        block += "y" * (rem - 1) + "\n"
+    assert len(block) == total_bytes, (len(block), total_bytes)
+    return block
+
+
 class TestExecutor(unittest.TestCase):
     def test_redact_args(self):
         from sandbox_executor.entrypoint.executor import redact_args
@@ -1449,6 +1483,126 @@ class TestExecutor(unittest.TestCase):
         self.assertGreater(superseded_leaks["bearer"], 0, str(superseded_leaks))
         self.assertEqual(superseded_leaks["single token"], 0, "the shape the old rule handled still passes")
 
+    def test_agent_output_anchor_on_a_preceding_line_is_redacted(self):
+        """Test that a key name sitting ABOVE its value survives the byte cut. Regression F-IT8-1.
+
+        Redaction is anchored on the key NAME and the separator between a key name and its value
+        (`\\s*(:\\s*|=)\\s*`, `Bearer\\s+`) is pure whitespace, which includes newlines. So `api_key:`
+        legally sits on the line above the value that gets it masked, and the shipped-until-now
+        ordering -- bound the stream, then redact the tail -- discarded that anchor line together with
+        the rest of the partial line and committed the credential whole. Aligning the cut to a line
+        boundary (a5ee8ce) never closed this: alignment says where the tail starts, not whether the
+        anchor line is inside the window. The pipeline now redacts a region that reaches back past the
+        cut, so these shapes are masked instead of committed, and the region's unanchorable front is
+        dropped rather than trusted.
+        """
+        from sandbox_executor.entrypoint.executor import (
+            _TRUNCATION_MARKER_RESERVE,
+            prepare_agent_output_block,
+            redact_env_literals,
+        )
+
+        budget = 65536  # the default, so this witnesses the shipped configuration
+        tail_budget = budget - _TRUNCATION_MARKER_RESERVE
+        head = 16384
+        secret = _fake_token("sk-proj-", "9f3Aq7ZxR2tKp8WmB4VdNc6Ye1Hg")
+        windows = [secret[start : start + 8] for start in range(len(secret) - 7)]
+
+        shapes = {
+            "yaml key line": f"api_key:\n    {secret}",
+            "pretty json key line": f'"api_key":\n    "{secret}"',
+            "wrapped bearer header": f"Authorization: Bearer\n  {secret}",
+            "nested yaml": f"credentials:\n  api_key:\n    {secret}",
+        }
+
+        superseded_leaks = {}
+        masked_shapes = []
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "", "GH_TOKEN": "", "HOLON_AGENT_KEY": ""}):
+            self.assertEqual(redact_env_literals(secret), secret, "the uncapped sweep must not know this value")
+            for label, cred in shapes.items():
+                masked, superseded = 0, 0
+                for k in range(len(cred)):
+                    # The raw byte cut lands exactly k bytes into the credential block, so every
+                    # offset that can cut the anchor away from its value is exercised.
+                    tail_len = tail_budget - len(cred) - 1 + k
+                    stream = _exact_filler(head, "head") + cred + "\n" + _exact_filler(tail_len, "tail")
+                    self.assertEqual(len(stream.encode("utf-8")) - tail_budget, head + k, "cut geometry")
+
+                    uncut, _trunc, _dropped = prepare_agent_output_block(stream, 100_000)
+                    for window in windows:
+                        self.assertNotIn(window, uncut, f"{label}: uncut stream at offset {k} was not masked")
+
+                    block, truncated, _dropped = prepare_agent_output_block(stream, budget)
+                    self.assertTrue(truncated)
+                    for window in windows:
+                        self.assertNotIn(window, block, f"{label}: fragment {window!r} survived cut {k}")
+                    if "*******" in block:
+                        masked += 1
+                    if any(window in _superseded_bound_then_redact(stream, budget) for window in windows):
+                        superseded += 1
+                self.assertGreater(masked, 0, f"{label}: the anchor was never in reach, so context did not reach")
+                # The replaced ordering must demonstrably leak these shapes, or this test carries no
+                # counter-example and proves nothing about why the region redaction exists.
+                self.assertGreater(superseded, 0, f"{label}: superseded ordering did not reproduce F-IT8-1")
+                superseded_leaks[label] = superseded
+                masked_shapes.append(label)
+
+        self.assertEqual(len(masked_shapes), len(shapes), str(superseded_leaks))
+
+    def test_agent_output_region_first_value_line_is_never_committed(self):
+        """Test the structural half of F-IT8-1: an anchor beyond the region still cannot be committed.
+
+        The whitespace between a key name and its value is unbounded, so an anchor can sit arbitrarily
+        far above its value -- further back than `_ANCHOR_CONTEXT_BYTES`, past anywhere the redaction
+        region can reach. Masking such a value is impossible, so safety cannot rest on the window's
+        size. It rests on the drop instead: the committed block never begins with the region's first
+        non-whitespace line, because a matched value never spans a line (both value branches of
+        `redact_text`'s pattern exclude whitespace, the quoted branch is non-DOTALL) and every later
+        line is preceded inside the region by a non-whitespace line that a whitespace-only separator
+        cannot cross. The witness here is a credential the redactors CAN mask when nothing is cut, so
+        a leak would be caused by the cut alone.
+        """
+        from sandbox_executor.entrypoint.executor import (
+            _ANCHOR_CONTEXT_BYTES,
+            _TRUNCATION_MARKER_RESERVE,
+            prepare_agent_output_block,
+        )
+
+        budget = 65536
+        tail_budget = budget - _TRUNCATION_MARKER_RESERVE
+        secret = _fake_token("sk-proj-", "9f3Aq7ZxR2tKp8WmB4VdNc6Ye1Hg")
+        windows = [secret[start : start + 8] for start in range(len(secret) - 7)]
+
+        head = _exact_filler(8192, "head")
+        anchor = "api_key:\n"
+        gap = "\n" * (_ANCHOR_CONTEXT_BYTES * 2)  # whitespace the separator happily crosses
+        prefix = head + anchor + gap
+        # Land the cut 2048 bytes above the value line, inside the gap, so the region opens below the
+        # anchor and the value line is the first thing in it that could carry a credential.
+        cut = len(prefix.encode("utf-8")) - 2048
+        tail = _exact_filler(tail_budget - len(secret) - 1 - 2048, "tail")
+        stream = prefix + secret + "\n" + tail
+        self.assertEqual(len(stream.encode("utf-8")) - tail_budget, cut, "cut geometry")
+        region_start = cut - _ANCHOR_CONTEXT_BYTES
+        anchor_end = len(head.encode("utf-8")) + len(anchor)
+        self.assertLess(anchor_end, region_start, "the witness needs the anchor OUTSIDE the region")
+        self.assertLess(region_start, len(prefix.encode("utf-8")), "the value line must open the region")
+
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "", "GH_TOKEN": "", "HOLON_AGENT_KEY": ""}):
+            uncut, _trunc, _dropped = prepare_agent_output_block(stream, 100_000)
+            self.assertNotIn(secret, uncut, "the redactor must be able to anchor this value when nothing is cut")
+
+            block, truncated, _dropped = prepare_agent_output_block(stream, budget)
+            self.assertTrue(truncated)
+            for window in windows:
+                self.assertNotIn(window, block, f"fragment {window!r} survived as the region's first line")
+
+            superseded = _superseded_bound_then_redact(stream, budget)
+            self.assertTrue(
+                any(window in superseded for window in windows),
+                "the superseded bound-then-redact ordering must commit this credential",
+            )
+
     def test_redact_agent_secrets_masks_unanchored_provider_tokens(self):
         """Test that well-known provider credentials are masked without a key-name anchor.
 
@@ -1559,11 +1713,21 @@ class TestExecutor(unittest.TestCase):
                 self.assertNotIn(window, record, f"Secret fragment {window!r} leaked at a 200 KB budget.")
 
     def test_agent_log_byte_budget_clamps_and_falls_back(self):
-        """Test the HOLON_AGENT_LOG_BYTES clamp to the redaction input cap and its fallbacks."""
-        from sandbox_executor.entrypoint.executor import _MAX_REDACT_INPUT_LEN, get_agent_log_byte_budget, redact_text
+        """Test the HOLON_AGENT_LOG_BYTES clamp to the redaction ceiling and its fallbacks."""
+        from sandbox_executor.entrypoint.executor import (
+            _AGENT_LOG_BYTE_CEILING,
+            _ANCHOR_CONTEXT_BYTES,
+            _MAX_REDACT_INPUT_LEN,
+            get_agent_log_byte_budget,
+            redact_text,
+        )
 
+        # The ceiling is the input cap minus the anchor context the redaction region needs, so a
+        # budget at the cap can no longer be honoured verbatim: the region would be longer than what
+        # `redact_text` redacts faithfully.
+        self.assertEqual(_AGENT_LOG_BYTE_CEILING, _MAX_REDACT_INPUT_LEN - _ANCHOR_CONTEXT_BYTES)
         with patch.dict(os.environ, {"HOLON_AGENT_LOG_BYTES": "200000"}):
-            self.assertEqual(get_agent_log_byte_budget(), _MAX_REDACT_INPUT_LEN)
+            self.assertEqual(get_agent_log_byte_budget(), _AGENT_LOG_BYTE_CEILING)
         with (
             patch.dict(os.environ, {"HOLON_AGENT_LOG_BYTES": "200000"}),
             patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
@@ -1572,11 +1736,14 @@ class TestExecutor(unittest.TestCase):
             warning = mock_stderr.getvalue()
             self.assertIn("200000", warning)
             self.assertIn(str(_MAX_REDACT_INPUT_LEN), warning)
+            self.assertIn(str(_AGENT_LOG_BYTE_CEILING), warning)
             self.assertIn("redaction", warning)
 
-        # At or below the cap the operator's number is honoured verbatim.
+        # At or below the ceiling the operator's number is honoured verbatim; above it, clamped.
+        with patch.dict(os.environ, {"HOLON_AGENT_LOG_BYTES": str(_AGENT_LOG_BYTE_CEILING)}):
+            self.assertEqual(get_agent_log_byte_budget(), _AGENT_LOG_BYTE_CEILING)
         with patch.dict(os.environ, {"HOLON_AGENT_LOG_BYTES": str(_MAX_REDACT_INPUT_LEN)}):
-            self.assertEqual(get_agent_log_byte_budget(), _MAX_REDACT_INPUT_LEN)
+            self.assertEqual(get_agent_log_byte_budget(), _AGENT_LOG_BYTE_CEILING)
         with patch.dict(os.environ, {"HOLON_AGENT_LOG_BYTES": "4096"}):
             self.assertEqual(get_agent_log_byte_budget(), 4096)
         for unusable in ("not-a-number", "0", "-1"):
@@ -1608,6 +1775,27 @@ class TestExecutor(unittest.TestCase):
                 budget - _TRUNCATION_MARKER_RESERVE,
                 f"budget {budget}: reserving for the marker must not gut the retained tail",
             )
+
+        # The redacting seam must hold the same line, including when masking rewrites sizes: a value
+        # shorter than the 7-character mask grows, and a cross-line anchor is what the region reaches
+        # back for, so both are present here.
+        from sandbox_executor.entrypoint.executor import _AGENT_LOG_BYTE_CEILING, prepare_agent_output_block
+
+        secret = _fake_token("sk-proj-", "9f3Aq7ZxR2tKp8WmB4VdNc6Ye1Hg")
+        redacting = "noise line 000000\n" * 20000 + f"api_key:\n  {secret}\n" + "noise line 000001\n" * 2000
+        for budget in (512, 1024, 4096, 65536, 100_000):
+            block, truncated, _dropped = prepare_agent_output_block(redacting, budget)
+            self.assertTrue(truncated)
+            block_len = len(block.encode("utf-8"))
+            ceiling = min(budget, _AGENT_LOG_BYTE_CEILING)
+            self.assertLessEqual(block_len, ceiling, f"budget {budget}: the committed block must fit")
+            self.assertGreater(
+                block_len,
+                ceiling - _TRUNCATION_MARKER_RESERVE,
+                f"budget {budget}: reserving for the marker must not gut the retained tail",
+            )
+            for start in range(len(secret) - 7):
+                self.assertNotIn(secret[start : start + 8], block, f"budget {budget}: credential fragment leaked")
 
         # Counter-example: the superseded shape was a full-budget tail with the marker on top of it.
         superseded = f"[Agent output truncated: 1 bytes dropped; showing tail {1024} bytes]\n" + "z" * 1024

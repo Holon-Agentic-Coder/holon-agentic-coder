@@ -545,6 +545,6 @@ def get_repo_url() -> str:
 
     token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN") or os.getenv("HOLON_AGENT_KEY")
     if token and (token.startswith("gh") or token.startswith("github_pat_")):
-        return f"https://x-access-token:{token}@github.com/Holon-Agentic-Coder/holon-agentic-coder-ref.git"
+        return f"https://x-access-token:{token}@github.com/Holon-Agentic-Coder/holon-agentic-coder.git"
 
-    return "git@github.com:Holon-Agentic-Coder/holon-agentic-coder-ref.git"
+    return "git@github.com:Holon-Agentic-Coder/holon-agentic-coder.git"

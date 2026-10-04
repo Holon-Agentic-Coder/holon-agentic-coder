@@ -383,7 +383,7 @@ class TestRefResolution(unittest.TestCase):
 
     def test_resolve_git_ref_pr_head_ref(self):
         def mock_subp(cmd, **kwargs):
-            if isinstance(cmd, list) and "pull/99/head:pr-99" in cmd:
+            if isinstance(cmd, list) and any("pull/99/head:pr-99" in str(arg) for arg in cmd):
                 return MagicMock(returncode=0, stdout="")
             return MagicMock(returncode=1, stderr="")
 
@@ -543,8 +543,28 @@ class TestAppendOnlyCalibratedBranch(unittest.TestCase):
         with patch("subprocess.run", side_effect=mock_subp):
             run_calibrate("I-1/P-2/E-3/_", repo_dir="/tmp/repo", skip_commit=False)
 
-        expected_co = ["git", "checkout", "-b", "I-1/P-2/E-3/calibrated", "I-1/P-2/E-3/_"]
-        self.assertIn(expected_co, called_cmds)
+        expected_prefix = ["git", "checkout", "-b", "I-1/P-2/E-3/calibrated"]
+        matching_cmds = [cmd for cmd in called_cmds if isinstance(cmd, list) and cmd[:4] == expected_prefix]
+        self.assertTrue(matching_cmds, "Expected checkout -b command was not executed")
+
+    @patch("sandbox_executor.calibration.converge_prettier")
+    @patch("builtins.open", new_callable=unittest.mock.mock_open)
+    @patch("os.makedirs")
+    def test_run_calibrate_remote_only_execution_branch_strips_origin(self, mock_makedirs, mock_open, mock_prettier):
+        called_cmds = []
+
+        def mock_subp(cmd, **kwargs):
+            called_cmds.append(cmd)
+            if isinstance(cmd, list) and "rev-parse" in cmd and any("commit" in str(a) for a in cmd):
+                return MagicMock(returncode=0, stdout="deadbeef1234567890deadbeef1234567890dead\n")
+            if isinstance(cmd, list) and "diff" in cmd:
+                return MagicMock(returncode=0, stdout="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=mock_subp):
+            report = run_calibrate("origin/I-1/P-2/E-3/_", repo_dir="/tmp/repo", skip_commit=False)
+
+        self.assertEqual(report.calibrated_branch, "I-1/P-2/E-3/calibrated")
 
 
 class TestEvaluatedCommitShaAndStaleness(unittest.TestCase):

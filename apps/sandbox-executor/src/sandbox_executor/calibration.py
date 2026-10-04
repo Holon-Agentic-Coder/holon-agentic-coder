@@ -154,9 +154,11 @@ def fetch_remote_ref_if_needed(ref_name: str, repo_dir: str = ".") -> bool:
         True if fetch succeeded, False otherwise.
     """
     clean_ref = ref_name.strip().strip("/")
+    if not clean_ref or clean_ref.startswith("-"):
+        return False
     fetch_commands = [
-        ["git", "fetch", "origin", f"{clean_ref}:{clean_ref}"],
-        ["git", "fetch", "origin", clean_ref],
+        ["git", "fetch", "origin", f"+{clean_ref}:{clean_ref}"],
+        ["git", "fetch", "origin", f"+{clean_ref}"],
     ]
     for cmd in fetch_commands:
         try:
@@ -166,13 +168,16 @@ def fetch_remote_ref_if_needed(ref_name: str, repo_dir: str = ".") -> bool:
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=15,
+                timeout=30,
             )
             if res.returncode == 0:
                 return True
         except Exception as e:
             logger.debug("git fetch failed for %s: %s", cmd, e)
     return False
+
+
+fetch_ref_if_needed = fetch_remote_ref_if_needed
 
 
 def resolve_commit_sha(ref: str, repo_dir: str = ".") -> str:
@@ -260,9 +265,12 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:
             capture_output=True,
             text=True,
             check=False,
-            timeout=15,
+            timeout=30,
         )
         if res.returncode == 0:
+            # Check if origin has an updated ref and fetch it if tracking exists
+            with contextlib.suppress(Exception):
+                fetch_remote_ref_if_needed(clean_ref, repo_dir=repo_dir)
             return clean_ref
     except Exception as e:
         logger.debug("rev-parse local branch check failed: %s", e)
@@ -276,7 +284,7 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=15,
+                timeout=30,
             )
             if res.returncode == 0:
                 return clean_ref
@@ -292,7 +300,7 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=15,
+                timeout=30,
             )
             if res.returncode == 0:
                 return f"origin/{clean_ref}"
@@ -308,7 +316,7 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=15,
+                timeout=30,
             )
             if res.returncode == 0:
                 return clean_ref
@@ -318,7 +326,7 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=15,
+                timeout=30,
             )
             if res_remote.returncode == 0:
                 return f"origin/{clean_ref}"
@@ -332,12 +340,12 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:
         pr_target = f"pr-{pr_num}"
         try:
             res = subprocess.run(
-                ["git", "fetch", "origin", f"pull/{pr_num}/head:{pr_target}"],
+                ["git", "fetch", "origin", f"+pull/{pr_num}/head:{pr_target}"],
                 cwd=repo_dir,
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=15,
+                timeout=30,
             )
             if res.returncode == 0:
                 return pr_target
@@ -418,7 +426,12 @@ def parse_evaluated_commit_sha(report_content_or_path: str) -> str | None:
         Lowercase commit SHA string if found, None otherwise.
     """
     content = report_content_or_path
-    if os.path.exists(report_content_or_path):
+    if (
+        "\n" not in report_content_or_path
+        and len(report_content_or_path) < 1024
+        and not report_content_or_path.startswith("-")
+        and os.path.exists(report_content_or_path)
+    ):
         try:
             with open(report_content_or_path, encoding="utf-8") as f:
                 content = f.read()
@@ -440,7 +453,7 @@ def is_calibration_stale(
     """Check whether a calibration report's evaluated SHA matches current HEAD.
 
     Args:
-        report_path: Path to the calibration markdown report.
+        report_path: Path to the calibration markdown report (or raw markdown content).
         current_head_ref: Optional git reference to compare against (defaults to HEAD).
         repo_dir: Path to the target repository directory.
 
@@ -448,11 +461,16 @@ def is_calibration_stale(
         tuple[bool, str, str]: (is_stale, evaluated_sha, current_head_sha).
         If evaluated SHA is missing, returns (True, "", "missing_evaluated_sha").
     """
-    full_path = (
-        os.path.join(repo_dir, report_path)
-        if not os.path.isabs(report_path) and not os.path.exists(report_path)
-        else report_path
-    )
+    full_path = report_path
+    if (
+        "\n" not in report_path
+        and len(report_path) < 1024
+        and not os.path.isabs(report_path)
+        and not os.path.exists(report_path)
+    ):
+        candidate = os.path.join(repo_dir, report_path)
+        if os.path.exists(candidate):
+            full_path = candidate
     evaluated_sha = parse_evaluated_commit_sha(full_path)
     if not evaluated_sha:
         return (True, "", "missing_evaluated_sha")
@@ -745,7 +763,7 @@ def parse_actual_metrics(
     if execution_branch and base_ref != target_ref:
         diff_args = ["git", "diff", "--shortstat", f"{base_ref}..{target_ref}", "--"]
     else:
-        diff_args = ["git", "diff", "--shortstat", base_ref, "--"]
+        diff_args = ["git", "diff", "--shortstat", f"{target_ref}~1..{target_ref}", "--"]
 
     res = subprocess.run(
         diff_args,
@@ -753,6 +771,7 @@ def parse_actual_metrics(
         capture_output=True,
         text=True,
         check=False,
+        timeout=30,
     )
     if res.returncode != 0:
         error_message = res.stderr.strip()
@@ -1072,6 +1091,12 @@ def generate_calibration(
 
     # Target calibrated branch
     raw_branch = execution_branch.rstrip("/_").rstrip("/")
+    if raw_branch.startswith("refs/remotes/origin/"):
+        raw_branch = raw_branch[len("refs/remotes/origin/") :]
+    elif raw_branch.startswith("origin/"):
+        raw_branch = raw_branch[len("origin/") :]
+    elif raw_branch.startswith("refs/heads/"):
+        raw_branch = raw_branch[len("refs/heads/") :]
     calibrated_branch = f"{raw_branch}/calibrated"
 
     predicted, plan_meta = parse_predicted_metrics(plan_id, repo_dir=repo_dir)
@@ -1201,6 +1226,7 @@ def run_calibrate(
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=30,
             )
             if res_co.returncode != 0:
                 raise RuntimeError(
@@ -1213,6 +1239,7 @@ def run_calibrate(
                     capture_output=True,
                     text=True,
                     check=False,
+                    timeout=30,
                 )
                 if res_mg.returncode != 0:
                     logger.warning("Could not fast-forward calibrated branch to remote: %s", res_mg.stderr.strip())
@@ -1223,23 +1250,28 @@ def run_calibrate(
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=30,
             )
             if res_co.returncode != 0:
                 raise RuntimeError(
                     f"Failed to checkout remote calibrated branch '{calibrated_branch}': {res_co.stderr.strip()}"
                 )
         else:
+            start_point = (
+                report.evaluated_commit_sha or resolve_git_ref(execution_branch, repo_dir=repo_dir) or execution_branch
+            )
             res_co = subprocess.run(
-                ["git", "checkout", "-b", calibrated_branch, execution_branch],
+                ["git", "checkout", "-b", calibrated_branch, start_point],
                 cwd=repo_dir,
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=30,
             )
             if res_co.returncode != 0:
                 err_msg = res_co.stderr.strip()
                 raise RuntimeError(
-                    f"Failed to create calibrated branch '{calibrated_branch}' from '{execution_branch}': {err_msg}"
+                    f"Failed to create calibrated branch '{calibrated_branch}' from '{start_point}': {err_msg}"
                 )
 
     # 2. Write calibration markdown report to plans/P-{plan_id}_calibration.md

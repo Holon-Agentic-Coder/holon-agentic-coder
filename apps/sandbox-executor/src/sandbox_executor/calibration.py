@@ -105,7 +105,7 @@ class CalibrationReport:
     intent_branch: str
     plan_branch: str
     execution_branch: str
-    calibrated_branch: str
+    calibrated_branch: str | None
     agent_id: str
     agent_version: str
     model_name: str
@@ -117,6 +117,8 @@ class CalibrationReport:
     accuracy_ratings: dict[str, str]
     bias_directions: dict[str, str]
     markdown_content: str
+    evaluated_commit_sha: str = ""
+    committed: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -136,7 +138,360 @@ class CalibrationReport:
             "entropy_factors": self.entropy_factors.to_dict(),
             "accuracy_ratings": self.accuracy_ratings,
             "bias_directions": self.bias_directions,
+            "evaluated_commit_sha": self.evaluated_commit_sha,
+            "committed": self.committed,
         }
+
+
+def fetch_remote_ref_if_needed(ref_name: str, repo_dir: str = ".") -> bool:
+    """Attempt to fetch a git reference from the remote repository.
+
+    Args:
+        ref_name: Name of branch or git reference to fetch.
+        repo_dir: Path to the target repository directory.
+
+    Returns:
+        True if fetch succeeded, False otherwise.
+    """
+    clean_ref = ref_name.strip().strip("/")
+    fetch_commands = [
+        ["git", "fetch", "origin", f"{clean_ref}:{clean_ref}"],
+        ["git", "fetch", "origin", clean_ref],
+    ]
+    for cmd in fetch_commands:
+        try:
+            res = subprocess.run(
+                cmd,
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15,
+            )
+            if res.returncode == 0:
+                return True
+        except Exception as e:
+            logger.debug("git fetch failed for %s: %s", cmd, e)
+    return False
+
+
+def resolve_commit_sha(ref: str, repo_dir: str = ".") -> str:
+    """Resolve any git ref (branch, tag, SHA, HEAD) to a 40-character commit SHA.
+
+    Args:
+        ref: Git reference to resolve (branch name, commit SHA, HEAD, etc.)
+        repo_dir: Path to the target repository directory.
+
+    Returns:
+        The 40-character hexadecimal commit SHA.
+
+    Raises:
+        RuntimeError: If ref cannot be resolved to a commit object.
+    """
+    clean_ref = ref.strip()
+    if not clean_ref:
+        raise RuntimeError("Empty reference provided for commit SHA resolution.")
+    try:
+        res = subprocess.run(
+            ["git", "rev-parse", "--verify", f"{clean_ref}^{{commit}}"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout.strip()
+        err = res.stderr.strip() or "commit object not found"
+        raise RuntimeError(f"Cannot resolve commit SHA for '{ref}': {err}")
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"Timeout resolving commit SHA for '{ref}'") from e
+    except Exception as e:
+        if isinstance(e, RuntimeError):
+            raise
+        raise RuntimeError(f"Error resolving commit SHA for '{ref}': {e}") from e
+
+
+def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:
+    """Resolve execution or plan ref across commit SHAs, local branches, and remote refs.
+
+    Lookup order:
+    1. Commit SHA (40-char or short hex matching valid commit object).
+    2. Local branch ref (`refs/heads/<ref_name>`).
+    3. Remote tracking ref (`origin/<ref_name>` or `refs/remotes/origin/<ref_name>`).
+    4. Remote fetch fallback (attempt fetch from origin).
+    5. PR head ref (`pull/<n>/head` or `refs/pull/<n>/head` or `pr-<n>`).
+
+    Args:
+        ref_name: Target git reference string.
+        repo_dir: Path to the target repository directory.
+
+    Returns:
+        The resolvable git ref string or canonical commit SHA.
+
+    Raises:
+        RuntimeError: If the reference cannot be resolved locally or remotely.
+    """
+    clean_ref = ref_name.strip().strip("/")
+    if not clean_ref:
+        raise RuntimeError("Cannot resolve empty git ref.")
+
+    # 1. Check if clean_ref is a hex commit SHA (7 to 40 hex chars)
+    if re.fullmatch(r"[0-9a-fA-F]{7,40}", clean_ref):
+        try:
+            res = subprocess.run(
+                ["git", "rev-parse", "--verify", f"{clean_ref}^{{commit}}"],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout.strip()
+        except Exception as e:
+            logger.debug("rev-parse commit check failed: %s", e)
+
+    # 2. Check if clean_ref is a valid local branch
+    try:
+        res = subprocess.run(
+            ["git", "rev-parse", "--verify", f"refs/heads/{clean_ref}"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        if res.returncode == 0:
+            return clean_ref
+    except Exception as e:
+        logger.debug("rev-parse local branch check failed: %s", e)
+
+    # Check if clean_ref already starts with origin/ or refs/
+    if clean_ref.startswith("origin/") or clean_ref.startswith("refs/"):
+        try:
+            res = subprocess.run(
+                ["git", "rev-parse", "--verify", clean_ref],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15,
+            )
+            if res.returncode == 0:
+                return clean_ref
+        except Exception as e:
+            logger.debug("rev-parse direct ref check failed: %s", e)
+
+    # 3. Check if origin/<clean_ref> or refs/remotes/origin/<clean_ref> exists
+    for remote_candidate in [f"origin/{clean_ref}", f"refs/remotes/origin/{clean_ref}"]:
+        try:
+            res = subprocess.run(
+                ["git", "rev-parse", "--verify", remote_candidate],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15,
+            )
+            if res.returncode == 0:
+                return f"origin/{clean_ref}"
+        except Exception as e:
+            logger.debug("rev-parse remote tracking check failed: %s", e)
+
+    # 4. Attempt remote fetch if not found locally
+    if fetch_remote_ref_if_needed(clean_ref, repo_dir=repo_dir):
+        try:
+            res = subprocess.run(
+                ["git", "rev-parse", "--verify", f"refs/heads/{clean_ref}"],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15,
+            )
+            if res.returncode == 0:
+                return clean_ref
+            res_remote = subprocess.run(
+                ["git", "rev-parse", "--verify", f"origin/{clean_ref}"],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15,
+            )
+            if res_remote.returncode == 0:
+                return f"origin/{clean_ref}"
+        except Exception as e:
+            logger.debug("rev-parse after fetch failed: %s", e)
+
+    # 5. Check if clean_ref matches PR ref (e.g. pull/<n>/head or refs/pull/<n>/head or pr-<n>)
+    pr_match = re.search(r"pull/(\d+)/head", clean_ref) or re.search(r"pr-(\d+)", clean_ref)
+    if pr_match:
+        pr_num = pr_match.group(1)
+        pr_target = f"pr-{pr_num}"
+        try:
+            res = subprocess.run(
+                ["git", "fetch", "origin", f"pull/{pr_num}/head:{pr_target}"],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15,
+            )
+            if res.returncode == 0:
+                return pr_target
+        except Exception as e:
+            logger.debug("fetch PR ref failed: %s", e)
+
+        try:
+            res = subprocess.run(
+                ["gh", "pr", "view", pr_num, "--json", "headRefOid", "-q", ".headRefOid"],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout.strip()
+        except Exception as e:
+            logger.debug("gh pr view failed: %s", e)
+
+    # Final direct check with git rev-parse --verify clean_ref
+    try:
+        res = subprocess.run(
+            ["git", "rev-parse", "--verify", clean_ref],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return clean_ref
+    except Exception as e:
+        logger.debug("Final rev-parse failed: %s", e)
+
+    raise RuntimeError(f"Target git reference '{ref_name}' could not be resolved locally or remotely.")
+
+
+def read_git_file(ref: str, rel_path: str, repo_dir: str = ".") -> str | None:
+    """Read file content from a specific git ref using `git show <ref>:<path>`.
+
+    Args:
+        ref: Git reference (branch, tag, or commit SHA).
+        rel_path: Relative path to the file within the repository.
+        repo_dir: Path to the target repository directory.
+
+    Returns:
+        File contents as string if successful, None if git show fails.
+    """
+    clean_ref = ref.strip()
+    if not clean_ref:
+        return None
+    try:
+        res = subprocess.run(
+            ["git", "show", f"{clean_ref}:{rel_path}"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        if res.returncode == 0:
+            return res.stdout
+        logger.debug("git show %s:%s returned %d: %s", clean_ref, rel_path, res.returncode, res.stderr.strip())
+        return None
+    except Exception as e:
+        logger.debug("Exception running git show %s:%s: %s", clean_ref, rel_path, e)
+        return None
+
+
+def parse_evaluated_commit_sha(report_content_or_path: str) -> str | None:
+    """Parse evaluated commit SHA from markdown report content or file path.
+
+    Args:
+        report_content_or_path: Markdown report string or path to calibration markdown file.
+
+    Returns:
+        Lowercase commit SHA string if found, None otherwise.
+    """
+    content = report_content_or_path
+    if os.path.exists(report_content_or_path):
+        try:
+            with open(report_content_or_path, encoding="utf-8") as f:
+                content = f.read()
+        except Exception as e:
+            logger.debug("Failed reading %s: %s", report_content_or_path, e)
+            return None
+
+    m = re.search(r"-\s+\*\*Evaluated Commit SHA:\*\*\s+`?([0-9a-fA-F]{7,40})`?", content)
+    if m:
+        return m.group(1).lower()
+    return None
+
+
+def is_calibration_stale(
+    report_path: str,
+    current_head_ref: str | None = None,
+    repo_dir: str = ".",
+) -> tuple[bool, str, str]:
+    """Check whether a calibration report's evaluated SHA matches current HEAD.
+
+    Args:
+        report_path: Path to the calibration markdown report.
+        current_head_ref: Optional git reference to compare against (defaults to HEAD).
+        repo_dir: Path to the target repository directory.
+
+    Returns:
+        tuple[bool, str, str]: (is_stale, evaluated_sha, current_head_sha).
+        If evaluated SHA is missing, returns (True, "", "missing_evaluated_sha").
+    """
+    full_path = (
+        os.path.join(repo_dir, report_path)
+        if not os.path.isabs(report_path) and not os.path.exists(report_path)
+        else report_path
+    )
+    evaluated_sha = parse_evaluated_commit_sha(full_path)
+    if not evaluated_sha:
+        return (True, "", "missing_evaluated_sha")
+
+    target_head = current_head_ref or "HEAD"
+    try:
+        current_head_sha = resolve_commit_sha(target_head, repo_dir=repo_dir).lower()
+    except Exception as e:
+        logger.debug("Failed to resolve current head SHA for %s: %s", target_head, e)
+        current_head_sha = ""
+
+    if not current_head_sha:
+        return (True, evaluated_sha, "unresolvable_head")
+
+    is_stale = (
+        evaluated_sha != current_head_sha
+        and not current_head_sha.startswith(evaluated_sha)
+        and not evaluated_sha.startswith(current_head_sha)
+    )
+    return (is_stale, evaluated_sha, current_head_sha)
+
+
+def verify_calibration_freshness(
+    report_path: str,
+    current_head_ref: str | None = None,
+    repo_dir: str = ".",
+) -> bool:
+    """Verify that a calibration report is fresh (evaluated SHA matches current HEAD).
+
+    Args:
+        report_path: Path to the calibration markdown report.
+        current_head_ref: Optional git reference to compare against (defaults to HEAD).
+        repo_dir: Path to the target repository directory.
+
+    Returns:
+        True if the report is fresh, False if stale or missing SHA.
+    """
+    is_stale, _, _ = is_calibration_stale(report_path, current_head_ref=current_head_ref, repo_dir=repo_dir)
+    return not is_stale
 
 
 def extract_branch_components(branch_str: str) -> dict[str, str]:
@@ -146,6 +501,8 @@ def extract_branch_components(branch_str: str) -> dict[str, str]:
     - Full execution branch: I-123-slug/P-456-agent-model/E-789-agent-model/_
     - Short execution ID: E-789-agent-model
     - Plan branch: I-123-slug/P-456-agent-model/_
+    - Remote tracking branch: origin/I-123-slug/P-456-agent-model/E-789-agent-model/_
+    - Raw commit SHA: 40-character hex string
     """
     clean = branch_str.strip().rstrip("/_").rstrip("/")
     parts = clean.split("/")
@@ -167,6 +524,10 @@ def extract_branch_components(branch_str: str) -> dict[str, str]:
             components["plan_id"] = part
         elif part.startswith("E-"):
             components["execution_id"] = part
+
+    # Handle raw commit SHA or short ref where execution_id is not yet set
+    if not components["execution_id"] and re.fullmatch(r"[0-9a-fA-F]{7,40}", clean):
+        components["execution_id"] = clean
 
     if components["intent_id"] and components["plan_id"]:
         components["plan_branch"] = f"{components['intent_id']}/{components['plan_id']}/_"
@@ -278,86 +639,140 @@ def parse_actual_metrics(
     execution_branch: str = "",
     repo_dir: str = ".",
 ) -> tuple[ActualMetrics, dict[str, Any]]:
-    """Ingest actual execution telemetry and metrics from ledger and git."""
+    """Ingest actual execution telemetry and metrics from ledger and git.
+
+    Args:
+        execution_id: Execution identifier (e.g. E-...).
+        plan_branch: Plan branch reference (e.g. I-.../P-.../_).
+        predicted: Predicted metrics model.
+        execution_branch: Execution branch or commit reference.
+        repo_dir: Target repository directory.
+
+    Returns:
+        tuple[ActualMetrics, dict[str, Any]]: Actual metrics object and raw telemetry dict.
+
+    Raises:
+        RuntimeError: If git diff calculation encounters non-zero exit code.
+    """
     exec_meta: dict[str, Any] = {}
     actual = ActualMetrics()
+    target_ref = execution_branch if execution_branch else "HEAD"
 
-    # 1. Search holon-knowledge/ledger/executions.jsonl
-    executions_jsonl = os.path.join(repo_dir, "holon-knowledge", "ledger", "executions.jsonl")
-    if os.path.exists(executions_jsonl):
-        try:
-            with open(executions_jsonl, encoding="utf-8") as f:
-                for line in f:
-                    if not line.strip():
-                        continue
-                    try:
-                        record = json.loads(line)
-                        rec_exec_id = record.get("execution_id", "")
-                        rec_plan_branch = record.get("plan_branch", "")
-                        if (execution_id and rec_exec_id == execution_id) or (
-                            plan_branch and rec_plan_branch.rstrip("/_") == plan_branch.rstrip("/_")
-                        ):
-                            exec_meta = record
-                            status = record.get("status", "success")
-                            actual.exit_code = 0 if status == "success" else int(record.get("exit_code", 1))
-                            actual.p_success = 1.0 if status == "success" and actual.exit_code == 0 else 0.0
-                            if "duration" in record:
-                                actual.duration_seconds = float(record["duration"])
-                            if "tokens" in record:
-                                actual.tokens = int(record["tokens"])
-                            break
-                    except (json.JSONDecodeError, ValueError):
-                        continue
-        except Exception as e:
-            logger.debug("Error reading executions.jsonl: %s", e)
+    # 1. Search holon-knowledge/ledger/executions.jsonl via git show first, then fallback to disk
+    jsonl_content = read_git_file(target_ref, "holon-knowledge/ledger/executions.jsonl", repo_dir=repo_dir)
+    found_record = False
+    if jsonl_content:
+        for line in jsonl_content.splitlines():
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+                rec_exec_id = record.get("execution_id", "")
+                rec_plan_branch = record.get("plan_branch", "")
+                if (execution_id and rec_exec_id == execution_id) or (
+                    plan_branch and rec_plan_branch.rstrip("/_") == plan_branch.rstrip("/_")
+                ):
+                    exec_meta = record
+                    status = record.get("status", "success")
+                    actual.exit_code = 0 if status == "success" else int(record.get("exit_code", 1))
+                    actual.p_success = 1.0 if status == "success" and actual.exit_code == 0 else 0.0
+                    if "duration" in record:
+                        actual.duration_seconds = float(record["duration"])
+                    if "tokens" in record:
+                        actual.tokens = int(record["tokens"])
+                    found_record = True
+                    break
+            except (json.JSONDecodeError, ValueError):
+                continue
 
-    # 2. Inspect execution markdown file if present
-    exec_md_path = os.path.join(repo_dir, "executions", f"{execution_id}.md")
-    if os.path.exists(exec_md_path):
-        try:
-            with open(exec_md_path, encoding="utf-8") as f:
-                content = f.read()
-            if "status: success" in content.lower() or "## status\nsuccess" in content.lower():
-                actual.p_success = 1.0
-                actual.exit_code = 0
-            elif "failure" in content.lower():
-                actual.p_success = 0.0
-                actual.exit_code = 1
-        except Exception as e:
-            logger.debug("Error reading execution markdown: %s", e)
+    if not found_record:
+        executions_jsonl = os.path.join(repo_dir, "holon-knowledge", "ledger", "executions.jsonl")
+        if os.path.exists(executions_jsonl):
+            logger.info("Falling back to reading local executions.jsonl from disk at %s", executions_jsonl)
+            try:
+                with open(executions_jsonl, encoding="utf-8") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        try:
+                            record = json.loads(line)
+                            rec_exec_id = record.get("execution_id", "")
+                            rec_plan_branch = record.get("plan_branch", "")
+                            if (execution_id and rec_exec_id == execution_id) or (
+                                plan_branch and rec_plan_branch.rstrip("/_") == plan_branch.rstrip("/_")
+                            ):
+                                exec_meta = record
+                                status = record.get("status", "success")
+                                actual.exit_code = 0 if status == "success" else int(record.get("exit_code", 1))
+                                actual.p_success = 1.0 if status == "success" and actual.exit_code == 0 else 0.0
+                                if "duration" in record:
+                                    actual.duration_seconds = float(record["duration"])
+                                if "tokens" in record:
+                                    actual.tokens = int(record["tokens"])
+                                break
+                        except (json.JSONDecodeError, ValueError):
+                            continue
+            except Exception as e:
+                logger.debug("Error reading executions.jsonl: %s", e)
 
-    # 3. Compute patch size via git diff between plan_branch and execution_branch
-    try:
-        base_ref = plan_branch if plan_branch else "HEAD~1"
-        target_ref = execution_branch if execution_branch else "HEAD"
-        if execution_branch and base_ref != target_ref:
-            diff_args = ["git", "diff", "--shortstat", f"{base_ref}..{target_ref}", "--"]
-        else:
-            diff_args = ["git", "diff", "--shortstat", base_ref, "--"]
-        res = subprocess.run(
-            diff_args,
-            cwd=repo_dir,
-            capture_output=True,
-            text=True,
-            check=False,
+    # 2. Inspect execution markdown file via git show first, then fallback to disk
+    exec_md_rel = f"executions/{execution_id}.md"
+    md_content = read_git_file(target_ref, exec_md_rel, repo_dir=repo_dir)
+    if not md_content:
+        exec_md_path = os.path.join(repo_dir, exec_md_rel)
+        if os.path.exists(exec_md_path):
+            try:
+                with open(exec_md_path, encoding="utf-8") as f:
+                    md_content = f.read()
+            except Exception as e:
+                logger.debug("Error reading execution markdown: %s", e)
+
+    if md_content:
+        content_lower = md_content.lower()
+        if (
+            "status: success" in content_lower
+            or "## status\nsuccess" in content_lower
+            or "status:\nsuccess" in content_lower
+        ):
+            actual.p_success = 1.0
+            actual.exit_code = 0
+        elif "failure" in content_lower:
+            actual.p_success = 0.0
+            actual.exit_code = 1
+
+    # 3. Compute patch size via git diff between plan_branch and execution_branch (fail loudly on non-zero exit)
+    base_ref = plan_branch if plan_branch else "HEAD~1"
+    if execution_branch and base_ref != target_ref:
+        diff_args = ["git", "diff", "--shortstat", f"{base_ref}..{target_ref}", "--"]
+    else:
+        diff_args = ["git", "diff", "--shortstat", base_ref, "--"]
+
+    res = subprocess.run(
+        diff_args,
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if res.returncode != 0:
+        error_message = res.stderr.strip()
+        raise RuntimeError(
+            f"Git diff failed between '{base_ref}' and '{target_ref}' with exit code {res.returncode}: {error_message}"
         )
-        if res.returncode == 0 and res.stdout.strip():
-            # e.g. "3 files changed, 120 insertions(+), 10 deletions(-)"
-            text = res.stdout.strip()
-            fc_m = re.search(r"(\d+)\s+file", text)
-            ins_m = re.search(r"(\d+)\s+insertion", text)
-            del_m = re.search(r"(\d+)\s+deletion", text)
-            actual.files_changed = int(fc_m.group(1)) if fc_m else 0
-            actual.insertions = int(ins_m.group(1)) if ins_m else 0
-            actual.deletions = int(del_m.group(1)) if del_m else 0
-    except Exception as e:
-        logger.debug("Error computing git diff shortstat: %s", e)
+
+    if res.stdout.strip():
+        text = res.stdout.strip()
+        fc_m = re.search(r"(\d+)\s+file", text)
+        ins_m = re.search(r"(\d+)\s+insertion", text)
+        del_m = re.search(r"(\d+)\s+deletion", text)
+        actual.files_changed = int(fc_m.group(1)) if fc_m else 0
+        actual.insertions = int(ins_m.group(1)) if ins_m else 0
+        actual.deletions = int(del_m.group(1)) if del_m else 0
 
     # Derive actual impact, cost, learning_value, and entropy
     actual.impact = predicted.impact if actual.p_success > 0.5 else 0.0
     actual.learning_value = predicted.learning_value
 
-    # Ingest actual execution cost from telemetry if available, fallback to heuristic
     if "cost" in exec_meta:
         actual.cost = float(exec_meta["cost"])
     elif "cost_actual" in exec_meta:
@@ -365,8 +780,6 @@ def parse_actual_metrics(
     else:
         actual.cost = round(max(0.5, predicted.cost * (0.85 if actual.p_success == 1.0 else 1.1)), 2)
 
-    # Compute ΔS_actual = Σ u_i * F_i (SSA, IRR, CL, SER, NOV)
-    # Observable approximations normalized to 0-10 scale
     ssa_obs = round(min(10.0, max(0.2, actual.files_changed * 0.2 + (actual.insertions + actual.deletions) * 0.005)), 2)
     irr_obs = 0.0
     cl_obs = 0.0
@@ -383,7 +796,6 @@ def parse_actual_metrics(
     )
     exec_meta["ssa_obs"] = ssa_obs
 
-    # Compute actual EV
     lambda_p, mu_p = load_metrics_physics(repo_dir)
     actual.ev = round(
         (actual.p_success * actual.impact) + (mu_p * actual.learning_value) - (lambda_p * actual.entropy) - actual.cost,
@@ -457,6 +869,7 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
     agent_id = report_data["agent_id"]
     model_name = report_data["model_name"]
     timestamp = report_data["timestamp"]
+    evaluated_sha = report_data.get("evaluated_commit_sha", "")
     pred = report_data["predicted"]
     act = report_data["actual"]
     deltas = report_data["deltas"]
@@ -477,6 +890,7 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
         f"- **Intent Branch:** `{intent_branch}`",
         f"- **Evaluating Agent:** `{agent_id}/{model_name}`",
         f"- **Evaluation Timestamp:** `{timestamp}`",
+        f"- **Evaluated Commit SHA:** `{evaluated_sha}`",
         "",
         "---",
         "",
@@ -592,7 +1006,15 @@ def generate_calibration(
     execution_branch: str,
     repo_dir: str = ".",
 ) -> CalibrationReport:
-    """Run calibration calculation and return a complete CalibrationReport."""
+    """Run calibration calculation and return a complete CalibrationReport.
+
+    Args:
+        execution_branch: Execution branch, remote tracking ref, or commit SHA.
+        repo_dir: Path to the target repository directory.
+
+    Returns:
+        CalibrationReport: Complete calibration report.
+    """
     components = extract_branch_components(execution_branch)
     plan_id = components["plan_id"] or "P-unknown"
     execution_id = components["execution_id"] or "E-unknown"
@@ -615,6 +1037,39 @@ def generate_calibration(
                             intent_branch = pb_comp["intent_branch"]
                             break
 
+    # Resolve execution reference and plan reference using resolve_git_ref
+    try:
+        resolved_exec_ref = resolve_git_ref(execution_branch, repo_dir=repo_dir)
+    except Exception as e:
+        logger.debug("Could not resolve execution_branch '%s': %s", execution_branch, e)
+        resolved_exec_ref = execution_branch
+
+    resolved_plan_ref = plan_branch
+    if plan_branch:
+        try:
+            resolved_plan_ref = resolve_git_ref(plan_branch, repo_dir=repo_dir)
+        except Exception as e:
+            logger.debug("Could not resolve plan_branch '%s': %s", plan_branch, e)
+            resolved_plan_ref = plan_branch
+
+    # Resolve canonical commit SHA for execution ref
+    evaluated_commit_sha = ""
+    try:
+        evaluated_commit_sha = resolve_commit_sha(resolved_exec_ref, repo_dir=repo_dir)
+    except Exception as e:
+        logger.debug("Could not resolve commit SHA for '%s': %s", resolved_exec_ref, e)
+        if re.fullmatch(r"[0-9a-fA-F]{40}", execution_branch.strip()):
+            evaluated_commit_sha = execution_branch.strip()
+
+    # Warn if PR head differs from evaluated commit SHA
+    pr_head_ref = os.environ.get("HOLON_PR_HEAD_SHA")
+    if pr_head_ref and evaluated_commit_sha and pr_head_ref != evaluated_commit_sha:
+        logger.warning(
+            "Evaluated commit SHA (%s) diverges from PR head reference (%s).",
+            evaluated_commit_sha,
+            pr_head_ref,
+        )
+
     # Target calibrated branch
     raw_branch = execution_branch.rstrip("/_").rstrip("/")
     calibrated_branch = f"{raw_branch}/calibrated"
@@ -622,9 +1077,9 @@ def generate_calibration(
     predicted, plan_meta = parse_predicted_metrics(plan_id, repo_dir=repo_dir)
     actual, exec_meta = parse_actual_metrics(
         execution_id,
-        plan_branch,
+        resolved_plan_ref,
         predicted,
-        execution_branch=execution_branch,
+        execution_branch=resolved_exec_ref,
         repo_dir=repo_dir,
     )
 
@@ -665,6 +1120,8 @@ def generate_calibration(
         "bias_directions": biases,
         "lambda": lambda_val,
         "mu": mu_val,
+        "evaluated_commit_sha": evaluated_commit_sha,
+        "committed": True,
     }
 
     markdown_content = format_markdown_report(report_dict)
@@ -687,6 +1144,8 @@ def generate_calibration(
         accuracy_ratings=ratings,
         bias_directions=biases,
         markdown_content=markdown_content,
+        evaluated_commit_sha=evaluated_commit_sha,
+        committed=True,
     )
 
 
@@ -696,19 +1155,92 @@ def run_calibrate(
     json_output: bool = False,
     skip_commit: bool = False,
 ) -> CalibrationReport:
-    """Execute holon calibrate workflow: checkout calibrated branch, generate & commit report."""
-    report = generate_calibration(execution_branch, repo_dir=repo_dir)
+    """Execute holon calibrate workflow: checkout calibrated branch, generate & commit report.
 
-    # 1. Switch or create /calibrated branch
+    Args:
+        execution_branch: Target execution branch or commit reference.
+        repo_dir: Path to the target repository directory.
+        json_output: Whether to print report JSON to stdout.
+        skip_commit: If True, writes report to working tree without creating a branch or commit.
+
+    Returns:
+        CalibrationReport: Generated calibration report.
+
+    Raises:
+        RuntimeError: If git branch checkout or diff operations fail.
+    """
+    report = generate_calibration(execution_branch, repo_dir=repo_dir)
+    report.committed = not skip_commit
+    if skip_commit:
+        report.calibrated_branch = None
+
+    # 1. Switch or create /calibrated branch (only if not skip_commit)
     if not skip_commit:
-        checkout_cmd = ["git", "checkout", "-B", report.calibrated_branch, execution_branch]
-        res = subprocess.run(checkout_cmd, cwd=repo_dir, capture_output=True, text=True, check=False)
-        if res.returncode != 0:
-            err_msg = res.stderr.strip()
-            raise RuntimeError(
-                f"Failed to checkout calibrated branch '{report.calibrated_branch}' "
-                f"from '{execution_branch}': {err_msg}"
+        calibrated_branch = report.calibrated_branch
+        local_check = subprocess.run(
+            ["git", "rev-parse", "--verify", f"refs/heads/{calibrated_branch}"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        remote_check = subprocess.run(
+            ["git", "rev-parse", "--verify", f"refs/remotes/origin/{calibrated_branch}"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        local_exists = local_check.returncode == 0
+        remote_exists = remote_check.returncode == 0
+
+        if local_exists:
+            res_co = subprocess.run(
+                ["git", "checkout", calibrated_branch],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                check=False,
             )
+            if res_co.returncode != 0:
+                raise RuntimeError(
+                    f"Failed to checkout existing calibrated branch '{calibrated_branch}': {res_co.stderr.strip()}"
+                )
+            if remote_exists:
+                res_mg = subprocess.run(
+                    ["git", "merge", "--ff-only", f"origin/{calibrated_branch}"],
+                    cwd=repo_dir,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if res_mg.returncode != 0:
+                    logger.warning("Could not fast-forward calibrated branch to remote: %s", res_mg.stderr.strip())
+        elif remote_exists:
+            res_co = subprocess.run(
+                ["git", "checkout", "-b", calibrated_branch, f"origin/{calibrated_branch}"],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if res_co.returncode != 0:
+                raise RuntimeError(
+                    f"Failed to checkout remote calibrated branch '{calibrated_branch}': {res_co.stderr.strip()}"
+                )
+        else:
+            res_co = subprocess.run(
+                ["git", "checkout", "-b", calibrated_branch, execution_branch],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if res_co.returncode != 0:
+                err_msg = res_co.stderr.strip()
+                raise RuntimeError(
+                    f"Failed to create calibrated branch '{calibrated_branch}' from '{execution_branch}': {err_msg}"
+                )
 
     # 2. Write calibration markdown report to plans/P-{plan_id}_calibration.md
     plans_dir = os.path.join(repo_dir, "plans")
@@ -744,16 +1276,23 @@ def run_calibrate(
                 text=True,
                 check=False,
             )
-            if commit_res.returncode != 0 and "nothing to commit" not in commit_res.stdout.lower():
-                logger.warning("Git commit output: %s", commit_res.stderr.strip())
+            if commit_res.returncode != 0:
+                combined_output = (commit_res.stdout + " " + commit_res.stderr).lower()
+                if "nothing to commit" in combined_output:
+                    logger.info("Nothing to commit for calibration report on %s", report.calibrated_branch)
+                else:
+                    logger.warning("Git commit output: %s", commit_res.stderr.strip())
         except Exception as e:
             logger.debug("Git commit error: %s", e)
 
     if json_output:
         print(json.dumps(report.to_dict(), indent=2))
     else:
-        print(f"Calibration report generated and committed at {report_rel}")
-        print(f"Calibrated branch: {report.calibrated_branch}")
+        if skip_commit:
+            print(f"Calibration report generated in working tree at {report_rel} (uncommitted)")
+        else:
+            print(f"Calibration report generated and committed at {report_rel}")
+            print(f"Calibrated branch: {report.calibrated_branch}")
         ev_msg = (
             f"Predicted EV: {report.predicted.ev:.2f} | Actual EV: {report.actual.ev:.2f} "
             f"(ΔEV: {report.deltas.delta_ev:+.2f})"

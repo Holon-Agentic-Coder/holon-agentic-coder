@@ -871,7 +871,10 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
         context.calibrated_branch = calibrated_branch
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    context.log(f"Stage 5 completed: Calibration analysis generated on branch '{context.calibrated_branch}'.")
+    if context.calibrated_branch:
+        context.log(f"Stage 5 completed: Calibration analysis generated on branch '{context.calibrated_branch}'.")
+    else:
+        context.log("Stage 5 completed: Calibration analysis generated in working tree (uncommitted).")
     result = StageResult(
         stage=FlowStage.CALIBRATE,
         status=StageStatus.SUCCESS,

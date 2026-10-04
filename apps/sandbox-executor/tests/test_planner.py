@@ -430,3 +430,73 @@ class TestPlanner(unittest.TestCase):
                     self.assertEqual(cm.exception.code, 1)
             finally:
                 sys.argv = old_argv
+
+    @patch("sandbox_executor.entrypoint.planner.converge_prettier")
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("os.path.getsize")
+    @patch("os.makedirs")
+    @patch("sandbox_executor.entrypoint.planner.cleanup_repo_dir")
+    def test_planner_main_converges_prettier(
+        self, mock_cleanup, mock_makedirs, mock_getsize, mock_exists, mock_run, mock_converge
+    ):
+        """Test that planner.main() invokes converge_prettier on the plan markdown file before committing."""
+        test_args = ["planner.py", "I-12345/_", "pi-agent", "gemini-3.5-flash"]
+        intent_data = {
+            "branch": "I-12345",
+            "intent_id": "I-12345",
+            "description": "Test description",
+            "goal": "Test goal",
+        }
+
+        def mock_open_impl(file, mode="r", *args, **kwargs):
+            file_str = str(file)
+            mock_file = MagicMock()
+            if "intents.jsonl" in file_str:
+                mock_file.__iter__.return_value = [json.dumps(intent_data) + "\n"]
+            elif "planner.template.md" in file_str:
+                mock_file.read.return_value = "Template content {intent_json}"
+            elif "plans/P-" in file_str and "md" in file_str:
+                mock_file.read.return_value = (
+                    "# Plan for I-12345\n\n"
+                    "| metric | value |\n"
+                    "| p_success_pred | 0.9 |\n"
+                    "| entropy_pred | 1.0 |\n"
+                    "| impact_pred | 10.0 |\n"
+                    "| cost_pred | 2.0 |\n"
+                    "| learning_value_pred | 1.0 |\n"
+                    "| ev_pred | 5.0 |\n"
+                    "## Safety & Constraint Alignment\n"
+                    "## Step 1: Implementation\n"
+                )
+            mock_file.__enter__.return_value = mock_file
+            return mock_file
+
+        mock_exists.side_effect = lambda p: any(
+            k in str(p) for k in ("intents.jsonl", "planner.template.md", "plans/P-")
+        )
+        mock_getsize.return_value = 200
+
+        mock_run_result = MagicMock()
+        mock_run_result.returncode = 0
+        mock_run_result.stdout = "Plan generated successfully"
+        mock_run.return_value = mock_run_result
+
+        old_argv = sys.argv
+        sys.argv = test_args
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            try:
+                with (
+                    patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
+                    patch("sandbox_executor.entrypoint.planner.get_workspace_dir", return_value=tmp_dir),
+                    patch("builtins.open", side_effect=mock_open_impl),
+                ):
+                    planner.main()
+                    mock_cleanup.assert_called_once_with(tmp_dir, raise_on_error=True)
+                    mock_converge.assert_called_once()
+                    call_files = mock_converge.call_args[0][0]
+                    self.assertEqual(len(call_files), 1)
+                    self.assertTrue(call_files[0].startswith("plans/P-") and call_files[0].endswith(".md"))
+                    self.assertEqual(mock_converge.call_args[1].get("repo_dir"), tmp_dir)
+            finally:
+                sys.argv = old_argv

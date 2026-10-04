@@ -36,6 +36,7 @@ from sandbox_executor.agent_runner import (
     get_runner,
     get_workspace_dir,
 )
+from sandbox_executor.formatting import converge_prettier
 
 _MAX_REDACT_INPUT_LEN: int = 100_000
 _MAX_PRINT_LEN: int = 5000
@@ -1242,6 +1243,33 @@ def main() -> None:
                     ef.write(json.dumps(exec_entry) + "\n")
             except Exception as e:
                 print(f"Warning: Failed to write execution ledger entry: {e}", file=sys.stderr)
+
+            # Format modified/untracked markdown files and execution record with prettier
+            try:
+                md_files: list[str] = []
+                status_res = run_cmd(["git", "status", "--porcelain"], cwd=repo_dir, check=False)
+                if status_res.returncode == 0:
+                    for line in status_res.stdout.splitlines():
+                        line = line.strip()
+                        if not line or len(line) < 3:
+                            continue
+                        file_part = line[2:].strip()
+                        if " -> " in file_part:
+                            file_part = file_part.split(" -> ")[1].strip()
+                        file_part = file_part.strip("\"'")
+                        if file_part.endswith(".md"):
+                            md_files.append(file_part)
+                if (
+                    exec_file_rel
+                    and exec_file_rel.endswith(".md")
+                    and exec_file_rel not in md_files
+                    and os.path.exists(os.path.join(repo_dir, exec_file_rel))
+                ):
+                    md_files.append(exec_file_rel)
+                if md_files:
+                    converge_prettier(md_files, repo_dir=repo_dir)
+            except Exception as e:
+                print(f"Warning: Prettier formatting failed: {e}", file=sys.stderr)
 
             commit_msg = f"execute: {exec_id} completed for plan {plan_branch}"
             add_targets = [

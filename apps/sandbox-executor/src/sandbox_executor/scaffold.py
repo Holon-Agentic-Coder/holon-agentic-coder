@@ -187,7 +187,8 @@ Based on the following intent:
 {intent_json}
 ```
 
-and the current state of the project give a detailed plan.
+and the current state of the project give a detailed plan. Enclose all arithmetic formulas and derivations in
+backtick code spans to maintain single-pass prettier convergence.
 """
 
 EXECUTOR_TEMPLATE = """You are an autonomous execution agent operating directly inside the repository workspace at
@@ -201,6 +202,9 @@ creating, and deleting codebase files.
    file creation and editing tools.
 3. Run the relevant test suite using your terminal tools to verify your implementation and ensure all tests pass.
 4. Ensure code formatting, linting, and repo conventions are followed.
+5. All generated or updated markdown documentation and execution records must use code spans (backticks) for formulas,
+   arithmetic expressions, and metric notations (e.g., `EV = 0.90 * 95.0`) to avoid CommonMark emphasis parsing
+   oscillations and maintain immediate single-pass prettier compatibility.
 
 **Plan Content:** {plan_content}
 

@@ -328,6 +328,67 @@ class TestExecutor(unittest.TestCase):
                 self.assertIn("P-123", content)
                 self.assertIn("success", content)
 
+    @patch("sandbox_executor.entrypoint.executor.converge_prettier")
+    @patch("sandbox_executor.entrypoint.executor.run_cmd")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    def test_main_converges_prettier_on_markdown_artifacts(
+        self, mock_get_repo_url, mock_get_runner, mock_run_cmd, mock_converge
+    ):
+        """Test that executor.main() collects modified markdown files and execution record.
+
+        Also asserts that converge_prettier is invoked before git commit.
+        """
+        mock_get_repo_url.return_value = "/mock/repo"
+        mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.0.0"
+        mock_runner.build_cmd.return_value = ["agy", "--model", "gemini-3.5-flash", "prompt"]
+        mock_get_runner.return_value = mock_runner
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "OK"
+
+        def side_effect(args, cwd=None, **kwargs):
+            if "clone" in args:
+                ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
+                os.makedirs(ledger_dir, exist_ok=True)
+                with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "plan_id": "P-123",
+                                "intent_branch": "I-456/_",
+                                "entropy": 2.0,
+                                "entropy_budget": 5.0,
+                            }
+                        )
+                        + "\n"
+                    )
+            elif "status" in args and "--porcelain" in args:
+                res = MagicMock()
+                res.returncode = 0
+                res.stdout = " M docs/guide.md\n?? notes.md\n M src/code.py\n"
+                return res
+            return mock_result
+
+        mock_run_cmd.side_effect = side_effect
+
+        with (
+            tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as tmp_dir,
+            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+        ):
+            with patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]):
+                executor.main()
+
+            mock_converge.assert_called_once()
+            call_files = mock_converge.call_args[0][0]
+            self.assertIn("docs/guide.md", call_files)
+            self.assertIn("notes.md", call_files)
+            self.assertNotIn("src/code.py", call_files)
+            self.assertTrue(any(f.startswith("executions/E-") and f.endswith(".md") for f in call_files))
+            self.assertEqual(mock_converge.call_args[1].get("repo_dir"), tmp_dir)
+
     @patch("sandbox_executor.entrypoint.executor.shutil.rmtree")
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
@@ -1015,8 +1076,11 @@ class TestExecutor(unittest.TestCase):
             with open(os.path.join(exec_dir, exec_files[0])) as ef:
                 record = ef.read()
 
-            self.assertIn("## Status\nFailure", record)
-            self.assertIn("## Summary\nPlan execution failed with exit code 1", record)
+            self.assertTrue("## Status\nFailure" in record or "## Status\n\nFailure" in record)
+            self.assertTrue(
+                "## Summary\nPlan execution failed with exit code 1" in record
+                or "## Summary\n\nPlan execution failed with exit code 1" in record
+            )
             self.assertIn("## Agent Output", record)
             self.assertIn(diagnostic_line, record)
 
@@ -1703,7 +1767,7 @@ class TestExecutor(unittest.TestCase):
             self.assertIn("[Agent output truncated:", record)
             self.assertLessEqual(entry["agent_output_bytes"], _MAX_REDACT_INPUT_LEN)
             # The ledger byte count is exactly what was committed inside the fence, marker included.
-            block = record.split("## Agent Output\n", 1)[1]
+            block = record.split("## Agent Output\n", 1)[1].lstrip("\n")
             fence = block.split("\n", 1)[0]
             body = block.split("\n", 1)[1]
             self.assertTrue(body.endswith(f"{fence}\n"))
@@ -1976,12 +2040,15 @@ class TestExecutor(unittest.TestCase):
         longest_run = max(len(match.group(0)) for match in re.finditer(r"`+", payload))
         lines = record.split("\n")
         header_at = lines.index("## Agent Output")
-        opener = lines[header_at + 1]
-        closer = lines[header_at + 2 + len(payload_lines)]
+        opener_idx = header_at + 1
+        while opener_idx < len(lines) and not lines[opener_idx]:
+            opener_idx += 1
+        opener = lines[opener_idx]
+        closer = lines[opener_idx + 1 + len(payload_lines)]
 
         # Counter-example: the superseded fixed fence was not longer than the payload's own delimiter.
         self.assertLessEqual(3, longest_run)
-        self.assertEqual(lines[header_at + 2 : header_at + 2 + len(payload_lines)], payload_lines)
+        self.assertEqual(lines[opener_idx + 1 : opener_idx + 1 + len(payload_lines)], payload_lines)
         self.assertEqual(opener, closer, "the block must close with the fence it opened with")
         self.assertGreater(len(opener), longest_run, "the fence must outlast the longest backtick run")
 

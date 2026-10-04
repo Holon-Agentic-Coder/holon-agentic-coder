@@ -189,7 +189,7 @@ class TestFlowStages:
         assert plan_file.exists()
         content = plan_file.read_text()
         assert "# Plan for" in content
-        assert "| metric |" in content
+        assert "| metric" in content
 
         # Verify EV in metrics payload
         metrics = res.payload["metrics"]
@@ -344,6 +344,88 @@ class TestFlowStages:
         assert res.status == StageStatus.SUCCESS
         assert res.payload["calibration_report"]["accuracy_score"] == 0.95
         assert ctx.calibrated_branch == "I-100-intent/P-200-plan/E-300-exec/calibrated"
+
+    def test_stage2_plan_invokes_converge_prettier(self, tmp_path):
+        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
+        ledger_dir.mkdir(parents=True)
+        plans_dir = tmp_path / "plans"
+        plans_dir.mkdir(parents=True)
+
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_branch="I-12345-my-intent/_",
+            intent_data={"slug": "my-intent", "goal": "Generate plan"},
+            agent="antigravity-agent",
+            model="gemini-3.8-flash-medium",
+            dry_run=False,
+        )
+
+        with (
+            patch("sandbox_executor.flow.run_git") as mock_git,
+            patch("sandbox_executor.flow.converge_prettier") as mock_converge,
+        ):
+            mock_git.return_value = MagicMock(returncode=0)
+            res = run_plan_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        mock_converge.assert_called_once()
+        call_files = mock_converge.call_args[0][0]
+        assert len(call_files) == 1
+        assert call_files[0].startswith("plans/P-") and call_files[0].endswith(".md")
+        assert mock_converge.call_args[1].get("repo_dir") == str(tmp_path)
+
+    def test_stage3_execute_invokes_converge_prettier(self, tmp_path):
+        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
+        ledger_dir.mkdir(parents=True)
+
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            plan_branch="I-123-intent/P-456-plan/_",
+            agent="antigravity-agent",
+            model="gemini-3.8-flash-medium",
+            dry_run=False,
+        )
+
+        with (
+            patch("sandbox_executor.flow.run_git") as mock_git,
+            patch("subprocess.run") as mock_sub,
+            patch("sandbox_executor.flow.converge_prettier") as mock_converge,
+        ):
+            mock_git_res = MagicMock()
+            mock_git_res.returncode = 0
+            mock_git_res.stdout = " M docs/readme.md\n"
+
+            def mock_git_side_effect(args, **kwargs):
+                if "status" in args and "--porcelain" in args:
+                    return mock_git_res
+                return MagicMock(returncode=0)
+
+            mock_git.side_effect = mock_git_side_effect
+            mock_sub.return_value = MagicMock(returncode=0, stdout="test pass", stderr="")
+            res = run_execute_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        mock_converge.assert_called_once()
+        call_files = mock_converge.call_args[0][0]
+        assert "docs/readme.md" in call_files
+        assert any(f.startswith("executions/E-") and f.endswith(".md") for f in call_files)
+        assert mock_converge.call_args[1].get("repo_dir") == str(tmp_path)
+
+    def test_stage5_calibrate_fallback_invokes_converge_prettier(self, tmp_path):
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            dry_run=False,
+        )
+
+        with (
+            patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError("calibration failed")),
+            patch("sandbox_executor.flow.converge_prettier") as mock_converge,
+        ):
+            res = run_calibrate_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        mock_converge.assert_called_once_with(["plans/P-200-plan_calibration.md"], repo_dir=str(tmp_path))
 
 
 class TestFlowResumptionAndErrorHandling:

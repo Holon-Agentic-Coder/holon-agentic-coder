@@ -33,6 +33,7 @@ from sandbox_executor.entrypoint.planner import (
     load_metrics_config,
     parse_metrics,
 )
+from sandbox_executor.formatting import converge_prettier
 
 logger = logging.getLogger(__name__)
 
@@ -521,6 +522,10 @@ def run_plan_stage(context: FlowContext) -> StageResult:
                 f.write(json.dumps(plan_entry) + "\n")
 
         if is_git:
+            try:
+                converge_prettier([plan_md_rel], repo_dir=repo_dir)
+            except Exception as e:
+                context.log(f"Warning: Prettier formatting failed for {plan_md_rel}: {e}")
             run_git(["add", plan_md_rel, "holon-knowledge/ledger/plans.jsonl"], cwd=repo_dir, check=True)
             commit_env = os.environ.copy()
             commit_env.setdefault("GIT_AUTHOR_NAME", "Holon Planner Agent")
@@ -665,6 +670,24 @@ Execution completed with test pass rate {test_pass_rate}.
                 f.write(json.dumps(exec_entry) + "\n")
 
         if is_git:
+            md_files = [exec_md_rel]
+            try:
+                status_res = run_git(["status", "--porcelain"], cwd=repo_dir, check=False)
+                if status_res.returncode == 0:
+                    for line in status_res.stdout.splitlines():
+                        line = line.strip()
+                        if not line or len(line) < 3:
+                            continue
+                        file_part = line[2:].strip()
+                        if " -> " in file_part:
+                            file_part = file_part.split(" -> ")[1].strip()
+                        file_part = file_part.strip("\"'")
+                        if file_part.endswith(".md") and file_part not in md_files:
+                            md_files.append(file_part)
+                converge_prettier(md_files, repo_dir=repo_dir)
+            except Exception as e:
+                context.log(f"Warning: Prettier formatting failed during execute stage: {e}")
+
             run_git(["add", exec_md_rel, "holon-knowledge/ledger/executions.jsonl"], cwd=repo_dir, check=True)
             commit_env = os.environ.copy()
             commit_env.setdefault("GIT_AUTHOR_NAME", "Holon Executor Agent")
@@ -836,6 +859,10 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
         if not os.path.exists(report_path):
             with open(report_path, "w", encoding="utf-8") as f:
                 f.write(f"# Calibration Report for {plan_id}\n\nFallback calibration generated.\n")
+        try:
+            converge_prettier([report_rel], repo_dir=repo_dir)
+        except Exception as e:
+            context.log(f"Warning: Prettier formatting failed for fallback {report_rel}: {e}")
         report_dict = {
             "plan_id": plan_id,
             "calibrated_branch": calibrated_branch,

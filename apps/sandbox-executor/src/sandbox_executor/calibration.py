@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from sandbox_executor.formatting import converge_prettier
+
 logger = logging.getLogger(__name__)
 
 
@@ -716,6 +718,12 @@ def run_calibrate(
 
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report.markdown_content)
+
+    # Format calibration report before git commit
+    try:
+        converge_prettier([report_rel], repo_dir=repo_dir)
+    except Exception as e:
+        logger.warning("Failed to converge prettier on %s: %s", report_rel, e)
 
     # 3. Commit on calibrated branch
     if not skip_commit:

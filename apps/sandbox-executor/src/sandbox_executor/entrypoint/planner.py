@@ -8,6 +8,7 @@ import time
 from datetime import UTC, datetime
 
 from sandbox_executor.agent_runner import cleanup_repo_dir, get_repo_url, get_runner, get_workspace_dir
+from sandbox_executor.formatting import converge_prettier
 
 
 def run_cmd(args, cwd=None, env=None, check=True):
@@ -364,6 +365,12 @@ Include metrics in this format:
     plans_ledger_path = os.path.join(plans_ledger_dir, "plans.jsonl")
     with open(plans_ledger_path, "a") as lf:
         lf.write(json.dumps(plan_entry) + "\n")
+
+    # Format plan markdown before git commit
+    try:
+        converge_prettier([plan_md_rel], repo_dir=repo_dir)
+    except Exception as e:
+        print(f"Warning: Failed to converge prettier on {plan_md_rel}: {e}", file=sys.stderr)
 
     # Git commit and push
     run_cmd(["git", "add", plan_md_rel, "holon-knowledge/ledger/plans.jsonl"], cwd=repo_dir)

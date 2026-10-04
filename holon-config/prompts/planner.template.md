@@ -39,6 +39,17 @@ You will be eliminated from the selection process if you:
 - fail to output the complete plan according to the template format with valid metrics table
 - make any code change outside of the plan definition
 
+**Markdown Hygiene & Formula Formatting Requirements:**
+
+- All arithmetic, formulas, and metric derivations (e.g. EV formulas, Delta_S, cost derivations) MUST be enclosed in
+  markdown code spans (backticks) or use asterisks (`*`) for multiplication rather than raw unescaped underscores.
+- Raw unescaped underscores or asterisks in mathematical notation (e.g., writing `0.90 * 92.0 + 0.5 * 4.8` without code
+  spans, or `p_success * impact`) trigger CommonMark emphasis parsing ambiguity, causing multi-pass prettier formatting
+  oscillations.
+- Positive example: Always write derivations inside code spans:
+  `EV = P(success) * Impact + mu * LearningValue - lambda * Delta_S_intent - Cost` and
+  `EV = 0.91 * 95.0 + 0.5 * 5.2 - 0.3 * 1.8 - 12.0 = 86.45 + 2.60 - 0.54 - 12.0 = 76.51`.
+
 The plan format is as below.
 
 ```markdown

@@ -317,6 +317,21 @@ class TestRunCalibrateWorkflow(unittest.TestCase):
         self.assertEqual(len(checkout_cmd_list), 1)
         self.assertEqual(checkout_cmd_list[0], ["git", "checkout", "-B", report.calibrated_branch, branch])
 
+    @patch("sandbox_executor.calibration.converge_prettier")
+    @patch("subprocess.run")
+    @patch("builtins.open", new_callable=unittest.mock.mock_open)
+    @patch("os.makedirs")
+    def test_run_calibrate_invokes_converge_prettier(self, mock_makedirs, mock_open, mock_run, mock_converge):
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        branch = "I-123-intent/P-456-plan/E-789-exec/_"
+
+        report = run_calibrate(branch, repo_dir="/tmp/test_repo", json_output=False, skip_commit=False)
+
+        mock_converge.assert_called_once_with(
+            [f"plans/{report.plan_id}_calibration.md"],
+            repo_dir="/tmp/test_repo",
+        )
+
     @patch("subprocess.run")
     @patch("builtins.open", new_callable=unittest.mock.mock_open)
     @patch("os.makedirs")

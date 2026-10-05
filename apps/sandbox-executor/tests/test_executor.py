@@ -63,6 +63,37 @@ def _exact_filler(total_bytes: int, tag: str) -> str:
     return block
 
 
+def _boundary_cut_offsets(cred: str, secret: str) -> list[int]:
+    """Calculate boundary-critical cut offsets across syntax boundaries for a credential shape.
+
+    Yields block start, 1 byte into anchor, separator punctuation (: or "), pre-newline,
+    newline, post-newline, indentation whitespace boundaries, secret start, mid-secret,
+    end-of-secret, and block end.
+    """
+    offsets = {0, 1, len(cred) - 1}
+    for idx, ch in enumerate(cred):
+        if ch in (":", '"'):
+            offsets.add(idx)
+        if ch == "\n":
+            if idx > 0:
+                offsets.add(idx - 1)
+            offsets.add(idx)
+            if idx + 1 < len(cred):
+                offsets.add(idx + 1)
+            cur = idx + 1
+            while cur < len(cred) and cred[cur].isspace():
+                offsets.add(cur)
+                cur += 1
+            if cur < len(cred):
+                offsets.add(cur)
+    secret_start = cred.find(secret)
+    if secret_start != -1:
+        offsets.add(secret_start)
+        offsets.add(secret_start + len(secret) // 2)
+        offsets.add(secret_start + len(secret))
+    return sorted(o for o in offsets if 0 <= o < len(cred))
+
+
 class TestExecutor(unittest.TestCase):
     def test_redact_args(self):
         from sandbox_executor.entrypoint.executor import redact_args
@@ -1585,16 +1616,20 @@ class TestExecutor(unittest.TestCase):
             self.assertEqual(redact_env_literals(secret), secret, "the uncapped sweep must not know this value")
             for label, cred in shapes.items():
                 masked, superseded = 0, 0
-                for k in range(len(cred)):
-                    # The raw byte cut lands exactly k bytes into the credential block, so every
-                    # offset that can cut the anchor away from its value is exercised.
+                # Hoist uncut stream check outside the cut loop: verify redactor
+                # capability on uncut text once per shape.
+                tail_len_0 = tail_budget - len(cred) - 1
+                uncut_stream = _exact_filler(head, "head") + cred + "\n" + _exact_filler(tail_len_0, "tail")
+                uncut, _trunc, _dropped = prepare_agent_output_block(uncut_stream, 100_000)
+                for window in windows:
+                    self.assertNotIn(window, uncut, f"{label}: uncut stream was not masked")
+
+                for k in _boundary_cut_offsets(cred, secret):
+                    # The raw byte cut lands exactly k bytes into the credential block, exercising
+                    # boundary cut offsets across syntax boundaries.
                     tail_len = tail_budget - len(cred) - 1 + k
                     stream = _exact_filler(head, "head") + cred + "\n" + _exact_filler(tail_len, "tail")
                     self.assertEqual(len(stream.encode("utf-8")) - tail_budget, head + k, "cut geometry")
-
-                    uncut, _trunc, _dropped = prepare_agent_output_block(stream, 100_000)
-                    for window in windows:
-                        self.assertNotIn(window, uncut, f"{label}: uncut stream at offset {k} was not masked")
 
                     block, truncated, _dropped = prepare_agent_output_block(stream, budget)
                     self.assertTrue(truncated)

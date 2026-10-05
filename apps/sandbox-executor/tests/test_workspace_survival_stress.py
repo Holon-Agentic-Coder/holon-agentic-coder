@@ -15,7 +15,7 @@ the unit selection there, and requires the directory, its ``.git`` and its ``HEA
 afterwards.
 
 It is marked ``stress`` and runs in a dedicated CI job (``Workspace survival`` in
-``.github/workflows/test-unit.yml``) that also asserts the suite really executed instead of
+``.github/workflows/test-stress.yml``) that also asserts the suite really executed instead of
 skipping. It is excluded from the ordinary unit matrix by marker expression, because it clones the
 repository and re-runs the whole suite and would otherwise nest.
 """

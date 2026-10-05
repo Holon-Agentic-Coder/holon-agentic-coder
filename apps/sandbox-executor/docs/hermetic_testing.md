@@ -110,7 +110,7 @@ on every push, and both are machine-enforced:
    works in (`~/.holon-sandbox/workspace` with `HOME` redirected), runs the unit selection from inside it, and requires
    the workspace, its `.git` and its `HEAD` commit to survive. That is the incident shape; a throwaway-`HOME` canary
    never runs _from_ the workspace and so cannot demonstrate it. It runs in the `Workspace survival` job of
-   `.github/workflows/test-unit.yml`, which fails if the suite was skipped rather than executed, and is excluded from
+   `.github/workflows/test-stress.yml`, which fails if the suite was skipped rather than executed, and is excluded from
    the ordinary unit matrix by marker expression because it clones the repository and re-runs the suite.
 
 Markers are declared in `pyproject.toml` and pytest runs with `--strict-markers`, so an unregistered or misspelled

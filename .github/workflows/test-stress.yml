@@ -1,0 +1,74 @@
+name: Test - Stress
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  workspace-survival:
+    name: Workspace survival
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest ]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.3.0
+        with:
+          python-version: '3.13'
+          enable-cache: true
+
+      - name: Run workspace-survival stress suite
+        # Clones the repository onto the exact path an executor works in (~/.holon-sandbox/workspace
+        # with HOME redirected), runs this suite's unit selection from there, and requires the
+        # workspace, its .git and its HEAD commit to survive -- the bean 0019 incident deleted the
+        # workspace, which pushed executor.py into its destructive git re-initialisation.
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          uv sync --locked
+          time uv run pytest -v -l --tb=short -m stress --junitxml=stress-report.xml
+
+      - name: Assert the stress suite really ran
+        # Non-skippable by construction: pytest exits non-zero when nothing is collected, and a
+        # skipped or absent stress test reports tests=1/skipped=1, which fails here instead of
+        # passing quietly. The report is parsed rather than grepped, so the check does not depend on
+        # junit attribute ordering, quoting, or an extra wrapper element.
+        run: |
+          uv run python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          suites = ET.parse("stress-report.xml").getroot().iter("testsuite")
+          totals = {k: 0 for k in ("tests", "skipped", "failures", "errors")}
+          for suite in suites:
+              for key in totals:
+                  totals[key] += int(suite.get(key, 0))
+
+          print(f"stress report: {totals}")
+          if totals["tests"] < 1:
+              sys.exit("no stress test was collected: the stress suite is missing or not selected")
+          if totals["skipped"]:
+              sys.exit("a stress test was skipped: the workspace-survival guarantee was not proven")
+          PY

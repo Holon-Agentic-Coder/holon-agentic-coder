@@ -4,32 +4,28 @@ This directory contains the CI/CD workflows for the `holon-agentic-coder` projec
 
 ## Workflows
 
-- `make.yml`: Runs on pushes to `main` and `develop` and on pull requests across both `ubuntu-latest` and
-  `macos-latest`. It verifies `uname -m`, `make help`, and default `make`.
-- `test-hygiene.yml`: Runs on pushes to `main` and `develop` and on pull requests on `ubuntu-latest`. It executes fast
-  repository hygiene in an isolated job:
+- `make.yml`: Runs on pushes to `main` and on pull requests across both `ubuntu-latest` and `macos-latest`. It verifies
+  `uname -m`, `make help`, and default `make`.
+- `test-hygiene.yml`: Runs on pushes to `main` and on pull requests on `ubuntu-latest`. It executes fast repository
+  hygiene in an isolated job:
   - Verifying lockfile currency with `uv lock --check` and `git diff --exit-code uv.lock`.
   - Running static linting with `uv run ruff check .`.
   - Checking formatting with `uv run ruff format --check .`.
   - Checking markdown formatting with Prettier (`npx --yes prettier@3.8.4 --check "**/*.md"`).
   - Validating repository cleanup via `make clean`.
-- `test-unit.yml`: Runs on pushes to `main` and `develop` and on pull requests across both `ubuntu-latest` and
-  `macos-latest`. It executes unit tests (`uv run pytest -m "not integration_test and not stress"`) using cached `uv`
-  dependencies.
-- `test-stress.yml`: Runs on pushes to `main` and `develop` and on pull requests on `ubuntu-latest`. It runs the
-  workspace-survival stress suite (`uv run pytest -m stress`), measuring the execution time explicitly in its own
-  workflow.
-- `test-integration.yml`: Runs on pushes to `main` and `develop` and on pull requests on `ubuntu-latest`. It builds all
-  sandbox Docker images via `./apps/sandbox-executor/build_all_images.sh --output-log` and executes integration tests
-  that require Docker services. For why containerized tests run exclusively on Linux, see
-  [macos-docker.md](../macos-docker.md).
+- `test-unit.yml`: Runs on pushes to `main` and on pull requests across both `ubuntu-latest` and `macos-latest`. It
+  executes unit tests (`uv run pytest -m "not integration_test and not stress"`) using cached `uv` dependencies.
+- `test-stress.yml`: Runs on pushes to `main` and on pull requests on `ubuntu-latest`. It runs the workspace-survival
+  stress suite (`uv run pytest -m stress`), measuring the execution time explicitly in its own workflow.
+- `test-integration.yml`: Runs on pushes to `main` and on pull requests on `ubuntu-latest`. It builds all sandbox Docker
+  images via `./apps/sandbox-executor/build_all_images.sh --output-log` and executes integration tests that require
+  Docker services. For why containerized tests run exclusively on Linux, see [macos-docker.md](../macos-docker.md).
 - `build-images.yml`: Manual dispatch workflow to build and verify Docker container images with multi-architecture
   Buildx caching.
 
 ## Branch Protection Status Checks
 
-Repository maintainers configuring branch protection rulesets on `main` or `develop` should require the following status
-checks:
+Repository maintainers configuring branch protection rulesets on `main` should require the following status checks:
 
 - `Test - Hygiene / hygiene (ubuntu-latest)`
 - `Test - Unit / unit (ubuntu-latest)`

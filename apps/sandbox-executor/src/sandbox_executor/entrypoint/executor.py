@@ -162,14 +162,14 @@ def redact_text(text: str) -> str:
     s = re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
     # Redact sensitive URL query parameters including auth_code and code
     s = re.sub(
-        r"([?&](?:token|api_key|access_token|secret|password|auth|bearer|auth_code|code|client_secret|db_password|credential|credentials|key|pwd|passwd)[^=\r\n]*=)[^\s&]+",
+        r"([?&](?:token|api_key|access_token|secret|password|auth|bearer|auth_code|code|client_secret|db_password|credential|credentials|key(?=[=_-])|pwd|passwd)[^=\s&]*=)[^\s&]+",
         r"\1*******",
         s,
         flags=re.IGNORECASE,
     )
     pattern = (
         r'(["\']?)('
-        r"\bkey\b"
+        r"(?<![a-zA-Z0-9_-])key\b"
         r"|\b[a-zA-Z0-9_-]*(?:api|secret|private|public|signing|encryption|auth|access|session|consumer|client|master|token)[_-]key\b"
         r"|\b[a-zA-Z0-9_-]*(?:token|access_token|secret|password|passwd|pwd|client_secret|db_password|credential|credentials|auth|bearer|_pat|-pat|\bpat|auth_token|auth_code)\b"
         r")\1"
@@ -178,7 +178,7 @@ def redact_text(text: str) -> str:
         r'(?:(["\'])(.*?)\5|([^&\s\'"{}\[\],]+))'
         r"|"
         r"([ \t]*:[ \t]*\n\s*)"
-        r'(?:(["\'])(.*?)\9|([^&\s\'"{}\[\],:]+)(?=[ \t]*(?:\n|$)))'
+        r'(?:(?:(["\'])([^"\'\r\n]*)\9|([^&\s\'"{}\[\],:]+))(?=[ \t]*(?:,|\n|$)))'
         r")"
     )
 
@@ -186,7 +186,7 @@ def redact_text(text: str) -> str:
         q_key = match.group(1) or ""
         key = match.group(2)
         if match.group(3) is not None:
-            sep = match.group(4)
+            sep = match.group(3)
             q_val = match.group(5) or ""
         else:
             sep = match.group(8)

@@ -205,17 +205,17 @@ class TestExecutor(unittest.TestCase):
         from sandbox_executor.entrypoint.executor import redact_args, redact_text
 
         # Bare key masking
-        self.assertEqual(redact_text('key = "synthetic_val"'), 'key="*******"')
+        self.assertEqual(redact_text('key = "synthetic_val"'), 'key = "*******"')
         self.assertEqual(redact_text("key: synthetic_val"), "key: *******")
         self.assertEqual(redact_text("key=val"), "key=*******")
 
         # Expanded credential alternations
-        self.assertEqual(redact_text('pwd = "my_pass"'), 'pwd="*******"')
-        self.assertEqual(redact_text('passwd = "secret"'), 'passwd="*******"')
-        self.assertEqual(redact_text('client_secret = "cs_xyz"'), 'client_secret="*******"')
-        self.assertEqual(redact_text('db_password = "db_pass"'), 'db_password="*******"')
-        self.assertEqual(redact_text('credential = "cred_abc"'), 'credential="*******"')
-        self.assertEqual(redact_text('credentials = "creds_123"'), 'credentials="*******"')
+        self.assertEqual(redact_text('pwd = "my_pass"'), 'pwd = "*******"')
+        self.assertEqual(redact_text('passwd = "secret"'), 'passwd = "*******"')
+        self.assertEqual(redact_text('client_secret = "cs_xyz"'), 'client_secret = "*******"')
+        self.assertEqual(redact_text('db_password = "db_pass"'), 'db_password = "*******"')
+        self.assertEqual(redact_text('credential = "cred_abc"'), 'credential = "*******"')
+        self.assertEqual(redact_text('credentials = "creds_123"'), 'credentials = "*******"')
 
         # CLI flag masking in redact_args
         args = [
@@ -269,6 +269,16 @@ class TestExecutor(unittest.TestCase):
         wp2_3 = "https://example.com/api?token=dummy_val\nmode=debug\n"
         self.assertEqual(redact_text(wp2_3), "https://example.com/api?token=*******\nmode=debug\n")
 
+        # Benign URL query parameters must remain unmasked and not bleed across &
+        wp2_4 = "https://example.com/api?keyword=search_term&token=secret_val"
+        self.assertEqual(
+            redact_text(wp2_4),
+            "https://example.com/api?keyword=search_term&token=*******",
+        )
+
+        wp2_5 = "https://example.com/api?key&other=123"
+        self.assertEqual(redact_text(wp2_5), "https://example.com/api?key&other=123")
+
     def test_witness_pattern_3_multiline_yaml_json_nested_keys(self):
         from sandbox_executor.entrypoint.executor import redact_text
 
@@ -276,6 +286,11 @@ class TestExecutor(unittest.TestCase):
         yaml_input = "cfg:\n  secret:\n    api_key: synthetic_secret_value\n"
         expected_yaml = "cfg:\n  secret:\n    api_key: *******\n"
         self.assertEqual(redact_text(yaml_input), expected_yaml)
+
+        # Multiline YAML with quoted child key must mask value and preserve child key name
+        yaml_quoted = 'cfg:\n  secret:\n    "api_key": "secret_val"\n'
+        expected_yaml_quoted = 'cfg:\n  secret:\n    "api_key": "*******"\n'
+        self.assertEqual(redact_text(yaml_quoted), expected_yaml_quoted)
 
         # Multiline JSON nested dictionary keys should not be swallowed
         json_input = '{\n  "secret": {\n    "api_key": "synthetic_secret_value"\n  }\n}'
@@ -292,9 +307,24 @@ class TestExecutor(unittest.TestCase):
         )
         self.assertEqual(redact_text(benign_text), benign_text)
 
+        # Kebab-case diagnostic keys must remain unmasked
+        kebab_text = "sort-key=asc cache-key=123 --sort-key=val"
+        self.assertEqual(redact_text(kebab_text), kebab_text)
+
         # Non-secret flags in redact_args must remain untouched
-        args = ["--sort-key", "asc", "--cache-key", "123", "--sort_key=desc"]
-        self.assertEqual(redact_args(args), ["--sort-key", "asc", "--cache-key", "123", "--sort_key=desc"])
+        args = ["--sort-key", "asc", "--cache-key", "123", "--sort_key=desc", "--sort-key=val"]
+        self.assertEqual(
+            redact_args(args),
+            ["--sort-key", "asc", "--cache-key", "123", "--sort_key=desc", "--sort-key=val"],
+        )
+
+    def test_delimiter_whitespace_preservation(self):
+        from sandbox_executor.entrypoint.executor import redact_text
+
+        self.assertEqual(redact_text('key = "val"'), 'key = "*******"')
+        self.assertEqual(redact_text("key  :  val"), "key  :  *******")
+        self.assertEqual(redact_text('api_key   =   "secret"'), 'api_key   =   "*******"')
+        self.assertEqual(redact_text('token : "secret"'), 'token : "*******"')
 
     def test_redact_text_oversized_input(self):
         from sandbox_executor.entrypoint.executor import _MAX_REDACT_INPUT_LEN, redact_text

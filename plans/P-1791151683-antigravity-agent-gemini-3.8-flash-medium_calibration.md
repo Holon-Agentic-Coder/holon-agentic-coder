@@ -6,8 +6,8 @@
   [`executions/E-1791151927-antigravity-agent-gemini-3.8-flash-medium.md`](../executions/E-1791151927-antigravity-agent-gemini-3.8-flash-medium.md)
 - **Intent Branch:** `I-1791151674-calibration-integrity-resilience-and-staleness-detection/_`
 - **Evaluating Agent:** `antigravity-agent/gemini-3.8-flash-medium`
-- **Evaluation Timestamp:** `2026-10-05T07:48:15.000Z`
-- **Evaluated Commit SHA:** `570d4920f71c1fb21ecd551a3fc0707acaa595a2`
+- **Evaluation Timestamp:** `2026-10-05T07:51:18.000Z`
+- **Evaluated Commit SHA:** `948df369ec630f50dfaa7b622639f280416d908a`
 
 ---
 
@@ -39,7 +39,7 @@
 
 ## 3. Entropy Factor Breakdown
 
-- **State Surface Area (SSA):** Predicted `0.6` vs Observed `10.0` (15 files modified).
+- **State Surface Area (SSA):** Predicted `0.6` vs Observed `10.0` (14 files modified).
 - **Irreversibility (IRR):** Predicted `0.0` vs Observed `0.0` (Zero destructive or stateful changes).
 - **Conflict Likelihood (CL):** Predicted `0.1` vs Observed `0.0` (Clean sequential branch merges).
 - **Sandbox Escape Risk (SER):** Predicted `0.0` vs Observed `0.0` (Zero security exceptions).

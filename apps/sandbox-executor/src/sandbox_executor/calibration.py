@@ -117,7 +117,7 @@ class CalibrationReport:
     accuracy_ratings: dict[str, str]
     bias_directions: dict[str, str]
     markdown_content: str
-    evaluated_commit_sha: str = ""
+    evaluated_commit_sha: str | None = None
     committed: bool = True
 
     def to_dict(self) -> dict[str, Any]:
@@ -888,7 +888,8 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
     agent_id = report_data["agent_id"]
     model_name = report_data["model_name"]
     timestamp = report_data["timestamp"]
-    evaluated_sha = report_data.get("evaluated_commit_sha", "")
+    evaluated_sha = report_data.get("evaluated_commit_sha")
+    sha_display = f"`{evaluated_sha}`" if evaluated_sha else "N/A"
     pred = report_data["predicted"]
     act = report_data["actual"]
     deltas = report_data["deltas"]
@@ -909,7 +910,7 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
         f"- **Intent Branch:** `{intent_branch}`",
         f"- **Evaluating Agent:** `{agent_id}/{model_name}`",
         f"- **Evaluation Timestamp:** `{timestamp}`",
-        f"- **Evaluated Commit SHA:** `{evaluated_sha}`",
+        f"- **Evaluated Commit SHA:** {sha_display}",
         "",
         "---",
         "",
@@ -1072,7 +1073,7 @@ def generate_calibration(
             resolved_plan_ref = plan_branch
 
     # Resolve canonical commit SHA for execution ref
-    evaluated_commit_sha = ""
+    evaluated_commit_sha: str | None = None
     try:
         evaluated_commit_sha = resolve_commit_sha(resolved_exec_ref, repo_dir=repo_dir)
     except Exception as e:

@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, patch
 
 from sandbox_executor.calibration import (
     ActualMetrics,
+    CalibrationDeltas,
+    CalibrationReport,
     EntropyFactors,
     PredictedMetrics,
     compute_calibration_deltas,
@@ -575,6 +577,62 @@ class TestEvaluatedCommitShaAndStaleness(unittest.TestCase):
         md_text = f"# Report\n\n- **Evaluated Commit SHA:** `{sha}`\n"
         parsed = parse_evaluated_commit_sha(md_text)
         self.assertEqual(parsed, sha)
+
+        # None/missing cases return None
+        na_text = "# Report\n\n- **Evaluated Commit SHA:** N/A\n"
+        self.assertIsNone(parse_evaluated_commit_sha(na_text))
+        empty_text = "# Report\n\n- **Evaluated Commit SHA:** ``\n"
+        self.assertIsNone(parse_evaluated_commit_sha(empty_text))
+
+    def test_calibration_report_evaluated_commit_sha_defaults_to_none(self):
+        pred = PredictedMetrics()
+        act = ActualMetrics()
+        deltas = CalibrationDeltas(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        ef = EntropyFactors()
+        report = CalibrationReport(
+            plan_id="P-1",
+            execution_id="E-1",
+            intent_branch="I-1",
+            plan_branch="P-1",
+            execution_branch="E-1",
+            calibrated_branch="C-1",
+            agent_id="test-agent",
+            agent_version="1.0",
+            model_name="model",
+            timestamp="2026-10-05T00:00:00.000Z",
+            predicted=pred,
+            actual=act,
+            deltas=deltas,
+            entropy_factors=ef,
+            accuracy_ratings={},
+            bias_directions={},
+            markdown_content="",
+        )
+        self.assertIsNone(report.evaluated_commit_sha)
+        self.assertIsNone(report.to_dict()["evaluated_commit_sha"])
+
+    def test_format_markdown_report_with_none_evaluated_commit_sha(self):
+        pred = PredictedMetrics()
+        act = ActualMetrics()
+        deltas, ratings, biases = compute_calibration_deltas(pred, act)
+        ef = EntropyFactors()
+        report_dict = {
+            "plan_id": "P-1",
+            "execution_id": "E-1",
+            "intent_branch": "I-1",
+            "agent_id": "test-agent",
+            "model_name": "model",
+            "timestamp": "2026-10-05T00:00:00.000Z",
+            "evaluated_commit_sha": None,
+            "predicted": pred.to_dict(),
+            "actual": act.to_dict(),
+            "deltas": deltas.to_dict(),
+            "entropy_factors": ef.to_dict(),
+            "accuracy_ratings": ratings,
+            "bias_directions": biases,
+        }
+        md = format_markdown_report(report_dict)
+        self.assertIn("- **Evaluated Commit SHA:** N/A", md)
 
     def test_is_calibration_stale_detection(self):
         eval_sha = "1111111111111111111111111111111111111111"

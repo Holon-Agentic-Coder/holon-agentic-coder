@@ -171,9 +171,7 @@ class TestExecutor(unittest.TestCase):
         redacted_ext = redact_text(extended_text)
         expected_ext = (
             "api_key=******* auth=******* bearer=******* pat=******* "
-            # Note: bare `key=` is intentionally NOT redacted to avoid over-masking non-secret
-            # patterns like cache_key, sort_key, foreign_key etc. Only compound forms are matched.
-            "key=jkl Bearer ******* Authorization: Bearer *******"
+            "key=******* Bearer ******* Authorization: Bearer *******"
         )
         self.assertEqual(redacted_ext, expected_ext)
 
@@ -191,6 +189,10 @@ class TestExecutor(unittest.TestCase):
         expected_spaces = 'token="*******" api_key=\'*******\' {"auth_token": "*******"}'
         self.assertEqual(redacted_spaces, expected_spaces)
 
+        # Diagnostic keys unmasked check
+        diagnostic_text = "sort_key=xyz cache_key=xyz"
+        self.assertEqual(redact_text(diagnostic_text), diagnostic_text)
+
         benign_text = (
             "--pattern=*.py --author=alice --path=/tmp/test git log -p "
             "monkey=banana donkey=kong compat=1.0.0 compact=true impact=high"
@@ -198,6 +200,101 @@ class TestExecutor(unittest.TestCase):
         self.assertEqual(redact_text(benign_text), benign_text)
 
         self.assertEqual(redact_text(""), "")
+
+    def test_witness_pattern_1_bare_keys_and_credentials(self):
+        from sandbox_executor.entrypoint.executor import redact_args, redact_text
+
+        # Bare key masking
+        self.assertEqual(redact_text('key = "synthetic_val"'), 'key="*******"')
+        self.assertEqual(redact_text("key: synthetic_val"), "key: *******")
+        self.assertEqual(redact_text("key=val"), "key=*******")
+
+        # Expanded credential alternations
+        self.assertEqual(redact_text('pwd = "my_pass"'), 'pwd="*******"')
+        self.assertEqual(redact_text('passwd = "secret"'), 'passwd="*******"')
+        self.assertEqual(redact_text('client_secret = "cs_xyz"'), 'client_secret="*******"')
+        self.assertEqual(redact_text('db_password = "db_pass"'), 'db_password="*******"')
+        self.assertEqual(redact_text('credential = "cred_abc"'), 'credential="*******"')
+        self.assertEqual(redact_text('credentials = "creds_123"'), 'credentials="*******"')
+
+        # CLI flag masking in redact_args
+        args = [
+            "--pwd",
+            "dummy_pwd",
+            "--passwd",
+            "dummy_passwd",
+            "--client-secret",
+            "dummy_cs",
+            "--client_secret",
+            "dummy_cs2",
+            "--db-password",
+            "dummy_db",
+            "--credential",
+            "dummy_cred",
+            "--credentials",
+            "dummy_creds",
+            "--key",
+            "dummy_key",
+        ]
+        expected_args = [
+            "--pwd",
+            "*******",
+            "--passwd",
+            "*******",
+            "--client-secret",
+            "*******",
+            "--client_secret",
+            "*******",
+            "--db-password",
+            "*******",
+            "--credential",
+            "*******",
+            "--credentials",
+            "*******",
+            "--key",
+            "*******",
+        ]
+        self.assertEqual(redact_args(args), expected_args)
+
+    def test_witness_pattern_2_multiline_url_query_isolation(self):
+        from sandbox_executor.entrypoint.executor import redact_text
+
+        # Anchor prefix with trailing newline must not swallow following line's '=' expression
+        wp2_1 = "https://example.com/api?token=\nmode=debug\n"
+        self.assertEqual(redact_text(wp2_1), "https://example.com/api?token=\nmode=debug\n")
+
+        wp2_2 = "https://example.com/api?key=\ncount=42\n"
+        self.assertEqual(redact_text(wp2_2), "https://example.com/api?key=\ncount=42\n")
+
+        wp2_3 = "https://example.com/api?token=dummy_val\nmode=debug\n"
+        self.assertEqual(redact_text(wp2_3), "https://example.com/api?token=*******\nmode=debug\n")
+
+    def test_witness_pattern_3_multiline_yaml_json_nested_keys(self):
+        from sandbox_executor.entrypoint.executor import redact_text
+
+        # Multiline YAML nested dictionary keys should not be swallowed
+        yaml_input = "cfg:\n  secret:\n    api_key: synthetic_secret_value\n"
+        expected_yaml = "cfg:\n  secret:\n    api_key: *******\n"
+        self.assertEqual(redact_text(yaml_input), expected_yaml)
+
+        # Multiline JSON nested dictionary keys should not be swallowed
+        json_input = '{\n  "secret": {\n    "api_key": "synthetic_secret_value"\n  }\n}'
+        expected_json = '{\n  "secret": {\n    "api_key": "*******"\n  }\n}'
+        self.assertEqual(redact_text(json_input), expected_json)
+
+    def test_diagnostic_retention_invariants(self):
+        from sandbox_executor.entrypoint.executor import redact_args, redact_text
+
+        # Benign diagnostic keys must remain unmasked
+        benign_text = (
+            "sort_key=asc cache_key=123 primary_key=id foreign_key=user_id "
+            "compat=1.0.0 compact=true impact=high monkey=banana donkey=kong"
+        )
+        self.assertEqual(redact_text(benign_text), benign_text)
+
+        # Non-secret flags in redact_args must remain untouched
+        args = ["--sort-key", "asc", "--cache-key", "123", "--sort_key=desc"]
+        self.assertEqual(redact_args(args), ["--sort-key", "asc", "--cache-key", "123", "--sort_key=desc"])
 
     def test_redact_text_oversized_input(self):
         from sandbox_executor.entrypoint.executor import _MAX_REDACT_INPUT_LEN, redact_text

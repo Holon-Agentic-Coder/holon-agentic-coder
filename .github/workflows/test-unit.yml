@@ -39,6 +39,5 @@ jobs:
       - name: Run unit tests
         run: |
           uv sync --locked
-          # 'stress' is excluded here and partitioned into its own workflow (.github/workflows/test-stress.yml)
           uv run pytest -v -l --tb=short -m "not integration_test and not stress"
 

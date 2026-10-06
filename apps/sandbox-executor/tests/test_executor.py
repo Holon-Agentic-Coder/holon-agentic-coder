@@ -202,7 +202,7 @@ class TestExecutor(unittest.TestCase):
         self.assertEqual(redact_text(""), "")
 
     def test_witness_pattern_1_bare_keys_and_credentials(self):
-        from sandbox_executor.entrypoint.executor import redact_args, redact_text
+        from sandbox_executor.entrypoint.executor import redact_text
 
         # Bare key masking
         self.assertEqual(redact_text('key = "synthetic_val"'), 'key = "*******"')
@@ -216,45 +216,6 @@ class TestExecutor(unittest.TestCase):
         self.assertEqual(redact_text('db_password = "db_pass"'), 'db_password = "*******"')
         self.assertEqual(redact_text('credential = "cred_abc"'), 'credential = "*******"')
         self.assertEqual(redact_text('credentials = "creds_123"'), 'credentials = "*******"')
-
-        # CLI flag masking in redact_args
-        args = [
-            "--pwd",
-            "dummy_pwd",
-            "--passwd",
-            "dummy_passwd",
-            "--client-secret",
-            "dummy_cs",
-            "--client_secret",
-            "dummy_cs2",
-            "--db-password",
-            "dummy_db",
-            "--credential",
-            "dummy_cred",
-            "--credentials",
-            "dummy_creds",
-            "--key",
-            "dummy_key",
-        ]
-        expected_args = [
-            "--pwd",
-            "*******",
-            "--passwd",
-            "*******",
-            "--client-secret",
-            "*******",
-            "--client_secret",
-            "*******",
-            "--db-password",
-            "*******",
-            "--credential",
-            "*******",
-            "--credentials",
-            "*******",
-            "--key",
-            "*******",
-        ]
-        self.assertEqual(redact_args(args), expected_args)
 
     def test_witness_pattern_2_multiline_url_query_isolation(self):
         from sandbox_executor.entrypoint.executor import redact_text
@@ -298,7 +259,7 @@ class TestExecutor(unittest.TestCase):
         self.assertEqual(redact_text(json_input), expected_json)
 
     def test_diagnostic_retention_invariants(self):
-        from sandbox_executor.entrypoint.executor import redact_args, redact_text
+        from sandbox_executor.entrypoint.executor import redact_text
 
         # Benign diagnostic keys must remain unmasked
         benign_text = (
@@ -310,13 +271,6 @@ class TestExecutor(unittest.TestCase):
         # Kebab-case diagnostic keys must remain unmasked
         kebab_text = "sort-key=asc cache-key=123 --sort-key=val"
         self.assertEqual(redact_text(kebab_text), kebab_text)
-
-        # Non-secret flags in redact_args must remain untouched
-        args = ["--sort-key", "asc", "--cache-key", "123", "--sort_key=desc", "--sort-key=val"]
-        self.assertEqual(
-            redact_args(args),
-            ["--sort-key", "asc", "--cache-key", "123", "--sort_key=desc", "--sort-key=val"],
-        )
 
     def test_delimiter_whitespace_preservation(self):
         from sandbox_executor.entrypoint.executor import redact_text

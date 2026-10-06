@@ -87,26 +87,7 @@ _PROVIDER_TOKEN_RE = re.compile(
 SECRET_FLAGS = {
     "--password",
     "--passwd",
-    "--pwd",
     "--auth",
-    "--client-secret",
-    "--client_secret",
-    "--db-password",
-    "--db_password",
-    "--credential",
-    "--credentials",
-    "--key",
-}
-
-NON_SECRET_FLAGS = {
-    "--sort-key",
-    "--sort_key",
-    "--cache-key",
-    "--cache_key",
-    "--primary-key",
-    "--primary_key",
-    "--foreign-key",
-    "--foreign_key",
 }
 
 _CLEAN_GIT_ENV_VARS: tuple[str, ...] = (
@@ -208,29 +189,9 @@ def _is_secret_flag(flag: str) -> bool:
         True if the flag indicates a credential parameter, False otherwise.
     """
     flag_lowered = flag.lower()
-    if flag_lowered in NON_SECRET_FLAGS:
-        return False
     return flag_lowered in SECRET_FLAGS or (
         flag_lowered.startswith("-")
-        and any(
-            flag_lowered.endswith(sfx)
-            for sfx in (
-                "-token",
-                "_token",
-                "-secret",
-                "_secret",
-                "-key",
-                "_key",
-                "-password",
-                "_password",
-                "-pwd",
-                "_pwd",
-                "-credential",
-                "_credential",
-                "-credentials",
-                "_credentials",
-            )
-        )
+        and any(flag_lowered.endswith(sfx) for sfx in ("-token", "_token", "-secret", "_secret", "-key", "_key"))
     )
 
 

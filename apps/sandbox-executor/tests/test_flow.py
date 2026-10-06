@@ -12,7 +12,13 @@ from sandbox_executor.flow import (
     PipelineEngine,
     StageResult,
     StageStatus,
+    check_pr_mergeability,
+    extract_valid_ledger_rows,
     load_checkpoint,
+    reconcile_ledger_content,
+    reconcile_ledger_file,
+    reconcile_ledger_rows,
+    reconcile_ledgers,
     run_calibrate_stage,
     run_execute_stage,
     run_intent_stage,
@@ -539,3 +545,237 @@ class TestFlowCLI:
         ):
             cli_main()
         assert exc_info.value.code == 1
+
+
+class TestLedgerReconciliation:
+    """Tests for deterministic ledger union reconciliation and conflict resolution."""
+
+    def test_extract_valid_ledger_rows_filters_conflict_markers(self):
+        conflicted_content = (
+            "<<<<<<< HEAD\n"
+            '{"branch": "b1", "slug": "s1", "created_at": "2026-10-06T10:00:00Z"}\n'
+            "||||||| parent\n"
+            "malformed non-json line\n"
+            "=======\n"
+            '{"branch": "b2", "slug": "s2", "created_at": "2026-10-06T10:05:00Z"}\n'
+            ">>>>>>> origin/main\n"
+        )
+        rows = extract_valid_ledger_rows(conflicted_content)
+        assert len(rows) == 2
+        assert rows[0]["slug"] == "s1"
+        assert rows[1]["slug"] == "s2"
+
+    def test_reconcile_intents_ledger_deduplication_and_order(self):
+        content = (
+            '{"slug": "intent-2", "branch": "I-intent-2", "created_at": "2026-10-06T12:00:00Z"}\n'
+            '{"slug": "intent-1", "branch": "I-intent-1", "created_at": "2026-10-06T08:00:00Z"}\n'
+            '{"slug": "intent-1", "branch": "I-intent-1", "created_at": "2026-10-06T09:00:00Z", "extra": "latest"}\n'
+        )
+        result = reconcile_ledger_content(content, "intents")
+        lines = [json.loads(line) for line in result.splitlines() if line.strip()]
+        assert len(lines) == 2
+        # Ordered chronologically by created_at
+        assert lines[0]["slug"] == "intent-1"
+        assert lines[0]["extra"] == "latest"
+        assert lines[1]["slug"] == "intent-2"
+
+    def test_reconcile_plans_ledger_deduplication(self):
+        content = (
+            '{"plan_id": "P-100", "created_at": "2026-10-06T10:00:00Z", "status": "proposed"}\n'
+            '{"plan_id": "P-100", "created_at": "2026-10-06T10:00:00Z", "status": "superseded", "ledger_revision": 2}\n'
+            '{"plan_id": "P-200", "created_at": "2026-10-06T11:00:00Z", "status": "proposed"}\n'
+        )
+        result = reconcile_ledger_content(content, "plans")
+        lines = [json.loads(line) for line in result.splitlines() if line.strip()]
+        assert len(lines) == 2
+        assert lines[0]["plan_id"] == "P-100"
+        assert lines[0]["status"] == "superseded"
+        assert lines[0]["ledger_revision"] == 2
+        assert lines[1]["plan_id"] == "P-200"
+
+    def test_reconcile_executions_ledger_deduplication(self):
+        content = (
+            '{"execution_id": "E-2", "created_at": "2026-10-06T11:00:00Z", "status": "success"}\n'
+            '{"execution_id": "E-1", "created_at": "2026-10-06T09:00:00Z", "status": "failed"}\n'
+            '{"execution_id": "E-1", "created_at": "2026-10-06T09:30:00Z", "status": "success"}\n'
+        )
+        result = reconcile_ledger_content(content, "executions")
+        lines = [json.loads(line) for line in result.splitlines() if line.strip()]
+        assert len(lines) == 2
+        assert lines[0]["execution_id"] == "E-1"
+        assert lines[0]["status"] == "success"
+        assert lines[1]["execution_id"] == "E-2"
+
+    def test_reconcile_ledger_with_git_conflict_markers(self, tmp_path):
+        ledger_path = tmp_path / "executions.jsonl"
+        conflicted = (
+            "<<<<<<< HEAD\n"
+            '{"execution_id": "E-head", "created_at": "2026-10-06T10:00:00Z"}\n'
+            "=======\n"
+            '{"execution_id": "E-main", "created_at": "2026-10-06T09:00:00Z"}\n'
+            ">>>>>>> origin/main\n"
+        )
+        ledger_path.write_text(conflicted, encoding="utf-8")
+        success = reconcile_ledger_file(str(ledger_path))
+        assert success is True
+
+        reconciled = ledger_path.read_text(encoding="utf-8")
+        assert "<<<<<<<" not in reconciled
+        assert "=======" not in reconciled
+        assert ">>>>>>>" not in reconciled
+        lines = [json.loads(line) for line in reconciled.splitlines() if line.strip()]
+        assert len(lines) == 2
+        # Chronological order: E-main (09:00) before E-head (10:00)
+        assert lines[0]["execution_id"] == "E-main"
+        assert lines[1]["execution_id"] == "E-head"
+
+    def test_reconcile_ledger_rows_direct(self):
+        raw_rows = [
+            {"plan_id": "P-1", "created_at": "2026-10-06T10:00:00Z", "v": 1},
+            {"plan_id": "P-1", "created_at": "2026-10-06T10:00:00Z", "v": 2, "ledger_revision": 2},
+        ]
+        reconciled = reconcile_ledger_rows(raw_rows, "plans")
+        assert len(reconciled) == 1
+        assert reconciled[0]["v"] == 2
+
+    def test_reconcile_ledger_rows_with_none_or_invalid_revision(self):
+        raw_rows = [
+            {"plan_id": "P-1", "created_at": "2026-10-06T10:00:00Z", "v": 1, "ledger_revision": None},
+            {"plan_id": "P-1", "created_at": "2026-10-06T10:00:00Z", "v": 2, "ledger_revision": 2},
+        ]
+        # Should not raise TypeError and higher revision should win
+        reconciled = reconcile_ledger_rows(raw_rows, "plans")
+        assert len(reconciled) == 1
+        assert reconciled[0]["v"] == 2
+
+        # Invalid string revision should fallback gracefully to 1
+        raw_rows_invalid = [
+            {"plan_id": "P-2", "created_at": "2026-10-06T10:00:00Z", "v": 1, "ledger_revision": "invalid"},
+            {"plan_id": "P-2", "created_at": "2026-10-06T10:00:00Z", "v": 2, "ledger_revision": 1},
+        ]
+        reconciled_invalid = reconcile_ledger_rows(raw_rows_invalid, "plans")
+        assert len(reconciled_invalid) == 1
+        assert reconciled_invalid[0]["v"] == 1
+
+    def test_reconcile_ledger_file_atomic(self, tmp_path):
+        ledger_file = tmp_path / "plans.jsonl"
+        ledger_file.write_text('{"plan_id": "p1", "created_at": "2026-10-06T10:00:00Z"}\n')
+        assert reconcile_ledger_file(str(ledger_file)) is True
+        # Verify no temp files remain in directory
+        dir_files = [f.name for f in tmp_path.iterdir()]
+        assert dir_files == ["plans.jsonl"]
+
+    def test_reconcile_ledgers_utility(self, tmp_path):
+        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
+        ledger_dir.mkdir(parents=True)
+        intents_file = ledger_dir / "intents.jsonl"
+        plans_file = ledger_dir / "plans.jsonl"
+        intents_file.write_text('{"branch": "b1", "slug": "s1", "created_at": "2026-10-06T10:00:00Z"}\n')
+        plans_file.write_text('{"plan_id": "p1", "created_at": "2026-10-06T10:05:00Z"}\n')
+
+        reconciled = reconcile_ledgers(str(tmp_path))
+        assert "holon-knowledge/ledger/intents.jsonl" in reconciled
+        assert "holon-knowledge/ledger/plans.jsonl" in reconciled
+
+
+class TestReviewMergeabilityGuards:
+    """Tests for PR mergeability inspection and DIRTY / CONFLICTING guardrails."""
+
+    def test_review_stage_flags_dirty_merge_state(self):
+        context = FlowContext(
+            repo_dir=".",
+            execution_branch="I-100/P-100/E-100",
+            plan_branch="I-100/P-100",
+            intent_branch="I-100",
+            dry_run=True,
+        )
+        context.stage_results["execute"] = StageResult(
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.SUCCESS,
+            payload={"test_pass_rate": 1.0, "exit_code": 0},
+        )
+
+        mock_mergeability = {
+            "is_dirty": True,
+            "merge_state_status": "DIRTY",
+            "mergeable": "CONFLICTING",
+            "source": "github_cli",
+        }
+
+        with patch("sandbox_executor.flow.check_pr_mergeability", return_value=mock_mergeability):
+            result = run_review_stage(context)
+
+        assert result.status == StageStatus.FAILED
+        assert result.payload["consensus"]["approved"] is False
+        assert result.payload["consensus"]["status"] == "conflicted_dirty"
+        assert result.error is not None
+        assert "CI SIGNAL SUPPRESSED" in result.error
+        assert "DIRTY" in result.error
+
+    def test_check_pr_mergeability_via_gh_cli(self):
+        with (
+            patch("shutil.which", return_value="/usr/bin/gh"),
+            patch("subprocess.run") as mock_subproc,
+        ):
+            mock_subproc.return_value = MagicMock(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "number": 42,
+                        "mergeable": "CONFLICTING",
+                        "mergeStateStatus": "DIRTY",
+                        "statusCheckRollup": [],
+                    }
+                ),
+            )
+            res = check_pr_mergeability(".", "my-branch", "main")
+            assert res["is_dirty"] is True
+            assert res["mergeable"] == "CONFLICTING"
+            assert res["merge_state_status"] == "DIRTY"
+            assert res["source"] == "github_cli"
+            assert res["pr_number"] == 42
+
+    def test_check_pr_mergeability_short_circuit_on_gh_error(self):
+        with (
+            patch("shutil.which", return_value="/usr/bin/gh"),
+            patch("subprocess.run") as mock_subproc,
+            patch("sandbox_executor.flow.run_git") as mock_git,
+        ):
+            # gh pr view returns error (e.g. no PR found)
+            mock_subproc.return_value = MagicMock(returncode=1, stdout="", stderr="no pull requests found")
+            mock_git.return_value = MagicMock(returncode=0, stdout="")
+
+            res = check_pr_mergeability(".", "my-branch", "main")
+            # Should short-circuit and call gh pr view only ONCE, not 3 times
+            assert mock_subproc.call_count == 1
+            assert res["source"] == "git_local"
+
+    def test_check_pr_mergeability_local_git_fallback_with_remote_tracking_ref(self):
+        with (
+            patch("shutil.which", return_value=None),
+            patch("sandbox_executor.flow.run_git") as mock_git,
+        ):
+
+            def git_side_effect(args, **kwargs):
+                cmd = args[0]
+                if cmd == "rev-parse":
+                    ref = args[2]
+                    if ref == "origin/main":
+                        return MagicMock(returncode=0, stdout="origin/main")
+                    if ref == "feature-branch":
+                        return MagicMock(returncode=1, stdout="")
+                    if ref == "origin/feature-branch":
+                        return MagicMock(returncode=0, stdout="origin/feature-branch")
+                    return MagicMock(returncode=1, stdout="")
+                if cmd == "merge-tree":
+                    # args: ['merge-tree', '--write-tree', branch_ref, target_ref]
+                    assert args[2] == "origin/feature-branch"
+                    assert args[3] == "origin/main"
+                    return MagicMock(returncode=0, stdout="tree-sha")
+                return MagicMock(returncode=0, stdout="")
+
+            mock_git.side_effect = git_side_effect
+            res = check_pr_mergeability(".", "feature-branch", "main")
+            assert res["source"] == "git_local"
+            assert res["is_dirty"] is False
+            assert res["mergeable"] == "MERGEABLE"

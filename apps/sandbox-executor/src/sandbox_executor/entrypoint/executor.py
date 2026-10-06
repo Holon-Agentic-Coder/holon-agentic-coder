@@ -900,6 +900,139 @@ def should_decompose(plan_data: dict[str, Any], plan_content: str) -> tuple[bool
     return False, []
 
 
+def sync_and_reconcile_pre_push(repo_dir: str, target_branch: str = "main") -> tuple[bool, str]:
+    """Inspect whether remote target branch has advanced, merge it, and reconcile ledger conflicts.
+
+    If the target branch on remote origin has diverged from HEAD, attempts an in-flight
+    merge. If merge conflicts are strictly confined to holon-knowledge/ledger/*.jsonl,
+    reconciles each conflicted ledger via deterministic union, stages the resolved files,
+    verifies that no unmerged paths remain, and commits the merge.
+    If any non-ledger file has conflicts, aborts the merge via `git merge --abort` and fails loudly.
+
+    Args:
+        repo_dir: Working directory of the git repository.
+        target_branch: Target base branch name (defaults to "main").
+
+    Returns:
+        tuple[bool, str]: (success, message).
+
+    Raises:
+        None: Aborts any in-flight merge on failure and returns (False, err_msg).
+    """
+    from sandbox_executor.flow import reconcile_ledger_file
+
+    # 1. Check if remote origin exists
+    remotes_res = run_cmd(["git", "remote", "get-url", "origin"], cwd=repo_dir, check=False)
+    if remotes_res.returncode != 0:
+        return True, "No remote origin configured"
+
+    # 2. Fetch target branch tip
+    run_cmd(["git", "fetch", "origin", target_branch], cwd=repo_dir, check=False)
+    target_ref = f"origin/{target_branch}"
+    ref_check = run_cmd(["git", "rev-parse", "--verify", target_ref], cwd=repo_dir, check=False)
+    if ref_check.returncode != 0:
+        return True, f"Remote branch {target_ref} not found"
+
+    remote_tip = run_cmd(["git", "rev-parse", target_ref], cwd=repo_dir, check=False).stdout.strip()
+
+    # 3. Check divergence with HEAD
+    mb_cmd = run_cmd(["git", "merge-base", "HEAD", target_ref], cwd=repo_dir, check=False)
+    if mb_cmd.returncode != 0:
+        is_shallow = run_cmd(["git", "rev-parse", "--is-shallow-repository"], cwd=repo_dir, check=False)
+        if is_shallow.stdout.strip().lower() == "true":
+            print(f"Warning: Shallow repository detected. Deepening history for {target_ref}...", file=sys.stderr)
+            run_cmd(["git", "fetch", "--deepen=50", "origin", target_branch], cwd=repo_dir, check=False)
+            mb_cmd = run_cmd(["git", "merge-base", "HEAD", target_ref], cwd=repo_dir, check=False)
+
+    if mb_cmd.returncode != 0:
+        print(f"Warning: Unable to compute merge-base with {target_ref}; skipping pre-push sync.", file=sys.stderr)
+        return True, f"Unable to compute merge-base with {target_ref}"
+
+    merge_base = mb_cmd.stdout.strip()
+    if merge_base == remote_tip:
+        return True, f"Branch is already up to date with {target_ref}"
+
+    # 4. Divergence detected: Attempt merge
+    run_cmd(
+        ["git", "config", "--local", "user.email", "executor-agent@holon-agentic-coder.com"],
+        cwd=repo_dir,
+        check=False,
+    )
+    run_cmd(
+        ["git", "config", "--local", "user.name", "Holon Executor Agent"],
+        cwd=repo_dir,
+        check=False,
+    )
+
+    merge_res = run_cmd(["git", "merge", target_ref, "--no-commit", "--no-ff"], cwd=repo_dir, check=False)
+    if merge_res.returncode == 0:
+        from sandbox_executor.flow import reconcile_ledgers
+
+        reconciled_all = reconcile_ledgers(repo_dir)
+        for rel in reconciled_all:
+            run_cmd(["git", "add", rel], cwd=repo_dir, check=False)
+        staged = run_cmd(["git", "diff", "--cached", "--quiet"], cwd=repo_dir, check=False)
+        if staged.returncode != 0:
+            run_cmd(
+                ["git", "commit", "-m", f"chore(sync): sync target branch {target_branch} before push"],
+                cwd=repo_dir,
+                check=False,
+            )
+        return True, f"Cleanly merged {target_ref}"
+
+    # Merge conflict detected
+    unmerged_res = run_cmd(["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_dir, check=False)
+    conflicted_files = [f.strip() for f in unmerged_res.stdout.splitlines() if f.strip()]
+    if not conflicted_files:
+        status_res = run_cmd(["git", "status", "--porcelain"], cwd=repo_dir, check=False)
+        for line in status_res.stdout.splitlines():
+            if any(line.startswith(c) for c in ("UU ", "AA ", "UD ", "DU ", "AU ", "UA ", "DD ")):
+                conflicted_files.append(line[3:].strip())
+
+    non_ledger_files = [
+        f for f in conflicted_files if not (f.startswith("holon-knowledge/ledger/") and f.endswith(".jsonl"))
+    ]
+    if non_ledger_files:
+        run_cmd(["git", "merge", "--abort"], cwd=repo_dir, check=False)
+        err_msg = (
+            f"Non-ledger merge conflicts detected with {target_ref} in files: "
+            f"{non_ledger_files}. Aborting auto-merge and refusing push."
+        )
+        print(f"Error: {err_msg}", file=sys.stderr)
+        return False, err_msg
+
+    ledger_conflicts = [f for f in conflicted_files if f.startswith("holon-knowledge/ledger/") and f.endswith(".jsonl")]
+    try:
+        for ledger_path in ledger_conflicts:
+            full_path = os.path.join(repo_dir, ledger_path)
+            if not reconcile_ledger_file(full_path):
+                run_cmd(["git", "merge", "--abort"], cwd=repo_dir, check=False)
+                return False, f"Failed to reconcile ledger file {ledger_path}"
+            run_cmd(["git", "add", ledger_path], cwd=repo_dir, check=True)
+
+        from sandbox_executor.flow import reconcile_ledgers
+
+        reconciled_all = reconcile_ledgers(repo_dir)
+        for rel in reconciled_all:
+            run_cmd(["git", "add", rel], cwd=repo_dir, check=False)
+
+        rem_unmerged = run_cmd(["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_dir, check=False)
+        if rem_unmerged.stdout.strip():
+            rem_paths = rem_unmerged.stdout.strip()
+            run_cmd(["git", "merge", "--abort"], cwd=repo_dir, check=False)
+            return False, f"Unmerged paths remain after ledger reconciliation: {rem_paths}"
+
+        run_cmd(
+            ["git", "commit", "-m", f"chore(ledger): reconcile concurrent ledger updates with {target_ref}"],
+            cwd=repo_dir,
+            check=True,
+        )
+        return True, f"Successfully reconciled ledger conflicts and committed merge with {target_ref}"
+    except Exception as exc:
+        run_cmd(["git", "merge", "--abort"], cwd=repo_dir, check=False)
+        return False, f"Exception during ledger reconciliation merge: {exc}"
+
+
 def main() -> None:
     is_default_repo = False
     repo_dir = None
@@ -1428,9 +1561,49 @@ def main() -> None:
             if parent_verify.returncode != 0:
                 can_push = False
 
+            if can_push:
+                target_base = (
+                    os.getenv("HOLON_TARGET_BRANCH")
+                    or (intent_data.get("target_branch") if intent_data else None)
+                    or "main"
+                )
+                sync_ok, sync_msg = sync_and_reconcile_pre_push(repo_dir, target_branch=target_base)
+                if not sync_ok:
+                    can_push = False
+                    print(f"Error: Pre-push sync failed: {sync_msg}", file=sys.stderr)
+                    sync_summary = f"Pre-push sync failure: {sync_msg}. Remote push aborted."
+                    if exec_file_path:
+                        with contextlib.suppress(Exception), open(exec_file_path, "a") as ef:
+                            ef.write(f"\n## Pre-Push Synchronization Failure\n{sync_summary}\n\n")
+                            ef.write("- Push: refused, unresolvable merge conflicts with target branch\n")
+                    fail_ledger_entry = {
+                        "execution_id": exec_id,
+                        "plan_branch": plan_branch,
+                        "agent": agent_name,
+                        "agent_version": runner.get_version(),
+                        "model": model_name,
+                        "status": "failure",
+                        "summary": sync_summary,
+                        "execution_file": exec_file_rel,
+                        "created_at": datetime.now(UTC).isoformat(),
+                        "ledger_revision": 2,
+                    }
+                    with open(os.path.join(ledger_dir, "executions.jsonl"), "a") as ef:
+                        ef.write(json.dumps(fail_ledger_entry) + "\n")
+                    run_cmd(
+                        ["git", "add", "holon-knowledge/ledger/executions.jsonl"],
+                        cwd=repo_dir,
+                        check=False,
+                    )
+                    run_cmd(
+                        ["git", "commit", "-m", f"execute: record sync failure for {exec_id}"],
+                        cwd=repo_dir,
+                        check=False,
+                    )
+
             if not can_push:
                 print(
-                    "Refusing to push execution branch: branch shares no history with plan base commit.",
+                    "Refusing to push execution branch: safety or sync verification failed.",
                     file=sys.stderr,
                 )
             else:

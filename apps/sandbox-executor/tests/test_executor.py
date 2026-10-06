@@ -2598,6 +2598,7 @@ class TestExecutor(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
             bare_dir, _ = self._create_bare_remote_with_plan(base_dir, plan_branch)
             workspace_dir = self._clone_workspace(base_dir, bare_dir, plan_branch)
+            canonical_path = os.path.realpath(workspace_dir)
 
             # Simulate unwritable .git/config by mocking run_cmd failure when executing config --add
             orig_run_cmd = executor.run_cmd
@@ -2607,21 +2608,36 @@ class TestExecutor(unittest.TestCase):
                     return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr="permission denied")
                 return orig_run_cmd(args, **kwargs)
 
-            with patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=mock_run_cmd):
-                dubious_err = "fatal: detected dubious ownership in repository"
-                # Should not raise exception
-                executor._repair_git_repo(workspace_dir, dubious_err, "main")
+            try:
+                with patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=mock_run_cmd):
+                    dubious_err = "fatal: detected dubious ownership in repository"
+                    # Should not raise exception
+                    executor._repair_git_repo(workspace_dir, dubious_err, "main")
 
-            # Verify run_cmd injects per-invocation -c safe.directory when cwd is not in local config
-            # (which it wasn't, because the write failed)
-            with patch("subprocess.run") as mock_subproc:
-                mock_subproc.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-                executor.run_cmd(["git", "status"], cwd=workspace_dir, check=False)
-                called_args = mock_subproc.call_args[0][0]
-                self.assertEqual(called_args[0], "git")
-                self.assertEqual(called_args[1], "-c")
-                self.assertEqual(called_args[2], f"safe.directory={workspace_dir}")
-                self.assertEqual(called_args[3], "status")
+                # Verify workspace_dir is tracked in fallback safe directories
+                self.assertIn(canonical_path, executor._FALLBACK_SAFE_DIRECTORIES)
+
+                # Verify run_cmd injects per-invocation -c safe.directory when dubious
+                # ownership repair config write fails
+                with patch("subprocess.run") as mock_subproc:
+                    mock_subproc.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+                    executor.run_cmd(["git", "status"], cwd=workspace_dir, check=False)
+                    called_args = mock_subproc.call_args[0][0]
+                    self.assertEqual(called_args[0], "git")
+                    self.assertEqual(called_args[1], "-c")
+                    self.assertEqual(called_args[2], f"safe.directory={workspace_dir}")
+                    self.assertEqual(called_args[3], "status")
+
+                # Verify clean repo without safe directory config or fallback does NOT inject -c safe.directory
+                clean_dir = os.path.join(base_dir, "clean_repo")
+                os.makedirs(clean_dir, exist_ok=True)
+                with patch("subprocess.run") as mock_subproc:
+                    mock_subproc.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+                    executor.run_cmd(["git", "status"], cwd=clean_dir, check=False)
+                    called_args = mock_subproc.call_args[0][0]
+                    self.assertEqual(called_args, ["git", "status"])
+            finally:
+                executor._FALLBACK_SAFE_DIRECTORIES.discard(canonical_path)
 
     @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
     def test_lock_repair_removes_only_abandoned_locks(self, mock_cleanup):

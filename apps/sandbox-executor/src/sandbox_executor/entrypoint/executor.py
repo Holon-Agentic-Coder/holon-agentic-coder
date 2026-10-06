@@ -538,6 +538,9 @@ def redact_agent_secrets(text: str) -> str:
     return redact_env_literals(s)
 
 
+_FALLBACK_SAFE_DIRECTORIES: set[str] = set()
+
+
 def _get_local_safe_directories(repo_dir: str) -> list[str]:
     """Retrieve safe.directory entries registered in the repository's local git config via git plumbing.
 
@@ -575,13 +578,14 @@ def run_cmd(
         if cwd:
             norm_cwd = os.path.realpath(cwd)
             safe_dirs = _get_local_safe_directories(cwd)
-            is_safe = False
-            for sd in safe_dirs:
-                if sd == "*" or os.path.realpath(sd) == norm_cwd:
-                    is_safe = True
-                    break
-            # If not configured as safe in local config, or if falling back, inject safe.directory per-invocation
-            if not is_safe and len(cmd_args) > 1 and cmd_args[1] != "-c":
+            is_safe = norm_cwd in _FALLBACK_SAFE_DIRECTORIES
+            if not is_safe:
+                for sd in safe_dirs:
+                    if sd == "*" or os.path.realpath(sd) == norm_cwd:
+                        is_safe = True
+                        break
+            # If configured as safe in local config, or if falling back, inject safe.directory per-invocation
+            if is_safe and len(cmd_args) > 1 and cmd_args[1] != "-c":
                 cmd_args = [cmd_args[0], "-c", f"safe.directory={cwd}", *cmd_args[1:]]
 
     result = subprocess.run(cmd_args, cwd=cwd, capture_output=True, text=True, env=cmd_env)
@@ -620,7 +624,9 @@ def _probe_git_repo(repo_dir: str) -> tuple[bool, str]:
             )
             norm_repo = os.path.realpath(repo_dir)
             configured_dirs = _get_local_safe_directories(repo_dir)
-            already_configured = any(sd == "*" or os.path.realpath(sd) == norm_repo for sd in configured_dirs)
+            already_configured = norm_repo in _FALLBACK_SAFE_DIRECTORIES or any(
+                sd == "*" or os.path.realpath(sd) == norm_repo for sd in configured_dirs
+            )
             if retry_res.returncode == 0 and already_configured:
                 pass
             else:
@@ -762,6 +768,7 @@ def _repair_git_repo(
                 f"falling back to per-invocation -c safe.directory",
                 file=sys.stderr,
             )
+            _FALLBACK_SAFE_DIRECTORIES.add(os.path.realpath(repo_dir))
 
     # Case (b): Stale index lock or locked ref
     if (

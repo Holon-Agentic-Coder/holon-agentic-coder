@@ -33,6 +33,8 @@ graph TD
   - If `jq` is not found on `PATH` when a secret bundle is present, `role_dispatcher.sh` emits an actionable warning to
     `stderr` identifying the bundle path and noting that downstream agent authentication may fail, rather than silently
     skipping.
+  - Skills and host scripts invoking `gh --jq` rely on the GitHub CLI's built-in Go parser/templating and do not require
+    a host `jq` binary installed.
   - Parsing is resilient under `set -euo pipefail`: if the bundle contains malformed JSON, a warning is logged to
     `stderr` and container startup proceeds without terminating.
   - If the bundle includes an `api_key` or `token`, it is written to the `HOLON_AGENT_KEY` environment variable.

@@ -94,8 +94,7 @@ format-docs:
 	uv run task format-docs
 
 clean:
-	find . -name ".git" -prune -o -path "./.venv" -prune -o -type d \( -name "__pycache__" -o -name ".pytest_cache" -o -name ".ruff_cache" -o -name "*.egg-info" -o -name "build" -o -name "dist" -o -name ".mypy_cache" \) -exec rm -rf {} +
-	rm -rf .coverage coverage.xml htmlcov apps/sandbox-executor/build_all_images.log build_all_images.log
+	uv run task clean
 
 distclean: clean
 	rm -rf .venv

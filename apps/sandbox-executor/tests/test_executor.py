@@ -2563,10 +2563,65 @@ class TestExecutor(unittest.TestCase):
 
             dubious_err = f"fatal: detected dubious ownership in repository at '{workspace_dir}'"
             self.assertTrue(executor._repair_git_repo(workspace_dir, dubious_err, "main"))
-            with open(os.path.join(workspace_dir, ".git", "config")) as cf:
-                self.assertIn(f"directory = {workspace_dir}", cf.read())
+            safe_dirs = executor._get_local_safe_directories(workspace_dir)
+            self.assertIn(workspace_dir, safe_dirs)
             self.assertTrue(executor._probe_git_repo(workspace_dir)[0])
             self.assertEqual([d for d in os.listdir(workspace_dir) if d.startswith(".git-unusable-")], [])
+
+    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
+    def test_safe_directory_probe_plumbing_and_realpath_normalization(self, mock_cleanup):
+        plan_branch = "I-456/P-123/_"
+        with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
+            bare_dir, _ = self._create_bare_remote_with_plan(base_dir, plan_branch)
+            workspace_dir = self._clone_workspace(base_dir, bare_dir, plan_branch)
+
+            # Register safe.directory with redundant trailing slash or relative segments
+            canonical_path = os.path.realpath(workspace_dir)
+            redundant_path = os.path.join(canonical_path, "sub", "..")
+            subprocess.run(
+                ["git", "config", "--local", "--add", "safe.directory", redundant_path],
+                cwd=workspace_dir,
+                check=True,
+            )
+
+            # _get_local_safe_directories retrieves the entry via plumbing
+            entries = executor._get_local_safe_directories(workspace_dir)
+            self.assertIn(redundant_path, entries)
+
+            # _probe_git_repo detects the normalized path matches
+            healthy, _ = executor._probe_git_repo(workspace_dir)
+            self.assertTrue(healthy)
+
+    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
+    def test_safe_directory_fallback_on_unwritable_config(self, mock_cleanup):
+        plan_branch = "I-456/P-123/_"
+        with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
+            bare_dir, _ = self._create_bare_remote_with_plan(base_dir, plan_branch)
+            workspace_dir = self._clone_workspace(base_dir, bare_dir, plan_branch)
+
+            # Simulate unwritable .git/config by mocking run_cmd failure when executing config --add
+            orig_run_cmd = executor.run_cmd
+
+            def mock_run_cmd(args, **kwargs):
+                if "config" in args and "--add" in args and "safe.directory" in args:
+                    return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr="permission denied")
+                return orig_run_cmd(args, **kwargs)
+
+            with patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=mock_run_cmd):
+                dubious_err = "fatal: detected dubious ownership in repository"
+                # Should not raise exception
+                executor._repair_git_repo(workspace_dir, dubious_err, "main")
+
+            # Verify run_cmd injects per-invocation -c safe.directory when cwd is not in local config
+            # (which it wasn't, because the write failed)
+            with patch("subprocess.run") as mock_subproc:
+                mock_subproc.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+                executor.run_cmd(["git", "status"], cwd=workspace_dir, check=False)
+                called_args = mock_subproc.call_args[0][0]
+                self.assertEqual(called_args[0], "git")
+                self.assertEqual(called_args[1], "-c")
+                self.assertEqual(called_args[2], f"safe.directory={workspace_dir}")
+                self.assertEqual(called_args[3], "status")
 
     @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
     def test_lock_repair_removes_only_abandoned_locks(self, mock_cleanup):

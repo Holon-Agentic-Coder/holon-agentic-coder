@@ -4,17 +4,26 @@ set -euo pipefail
 
 # Extract key from ephemeral secret bundle if present
 SECRET_BUNDLE="${HOLON_SECRET_BUNDLE_PATH:-/run/secrets/holon_auth.json}"
-if [ -f "$SECRET_BUNDLE" ] && command -v jq &>/dev/null; then
-    BUNDLE_AGENT=$(jq -r '.agent_id // ""' "$SECRET_BUNDLE" | tr '[:upper:]' '[:lower:]')
-    BUNDLE_AGENT_ID="${BUNDLE_AGENT//-agent/}"
-    BUNDLE_AGENT_ID="${BUNDLE_AGENT_ID//agent-/}"
-    
-    TARGET_AGENT_ID=$(echo "${HOLON_AGENT_ID:-}" | tr '[:upper:]' '[:lower:]' | sed 's/-agent//g' | sed 's/agent-//g')
-    
-    if [ -z "$BUNDLE_AGENT_ID" ] || [ "$BUNDLE_AGENT_ID" = "$TARGET_AGENT_ID" ]; then
-        API_KEY=$(jq -r '.api_key // .token // ""' "$SECRET_BUNDLE")
-        if [ -n "$API_KEY" ] && [ "$API_KEY" != "null" ]; then
-            export HOLON_AGENT_KEY="$API_KEY"
+if [ -f "$SECRET_BUNDLE" ]; then
+    if ! command -v jq &>/dev/null; then
+        echo "role_dispatcher: WARNING: secret bundle detected at '$SECRET_BUNDLE' but 'jq' is not installed or available on PATH; skipping secret bundle ingestion (downstream agent authentication may fail)" >&2
+    else
+        # Safely extract bundle parameters under set -euo pipefail without crashing on malformed JSON
+        if BUNDLE_AGENT=$(jq -r '.agent_id // ""' "$SECRET_BUNDLE" 2>/dev/null); then
+            BUNDLE_AGENT=$(echo "$BUNDLE_AGENT" | tr '[:upper:]' '[:lower:]')
+            BUNDLE_AGENT_ID="${BUNDLE_AGENT//-agent/}"
+            BUNDLE_AGENT_ID="${BUNDLE_AGENT_ID//agent-/}"
+            
+            TARGET_AGENT_ID=$(echo "${HOLON_AGENT_ID:-}" | tr '[:upper:]' '[:lower:]' | sed 's/-agent//g' | sed 's/agent-//g')
+            
+            if [ -z "$BUNDLE_AGENT_ID" ] || [ "$BUNDLE_AGENT_ID" = "$TARGET_AGENT_ID" ]; then
+                API_KEY=$(jq -r '.api_key // .token // ""' "$SECRET_BUNDLE" 2>/dev/null || true)
+                if [ -n "$API_KEY" ] && [ "$API_KEY" != "null" ]; then
+                    export HOLON_AGENT_KEY="$API_KEY"
+                fi
+            fi
+        else
+            echo "role_dispatcher: WARNING: failed to parse secret bundle at '$SECRET_BUNDLE'; skipping secret bundle ingestion" >&2
         fi
     fi
 fi

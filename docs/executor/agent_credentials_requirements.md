@@ -28,7 +28,13 @@ graph TD
 - **Use Case**: Typically used in automated CI/CD pipelines or orchestrated sandbox grids where credentials are
   provisioned dynamically for a single execution.
 - **Handling**:
-  - The executor reads and parses the JSON secret bundle.
+  - The executor reads and parses the JSON secret bundle. Container images must have `jq` installed to support
+    credential extraction.
+  - If `jq` is not found on `PATH` when a secret bundle is present, `role_dispatcher.sh` emits an actionable warning to
+    `stderr` identifying the bundle path and noting that downstream agent authentication may fail, rather than silently
+    skipping.
+  - Parsing is resilient under `set -euo pipefail`: if the bundle contains malformed JSON, a warning is logged to
+    `stderr` and container startup proceeds without terminating.
   - If the bundle includes an `api_key` or `token`, it is written to the `HOLON_AGENT_KEY` environment variable.
   - If the bundle includes a `config_files` dictionary, its key-value pairs (relative paths to file contents) are
     unpacked into the sandbox user's home directory.

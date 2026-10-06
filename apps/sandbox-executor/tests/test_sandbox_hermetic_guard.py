@@ -21,6 +21,7 @@ import tempfile
 import unittest
 
 from tests.hermetic_fixtures import (
+    CHILD_SUITE_SENTINEL,
     REPO_ROOT,
     TESTS_DIR,
     UV,
@@ -44,8 +45,12 @@ class TestSandboxHermeticGuard(unittest.TestCase):
 
     def setUp(self):
         """Skip inside a child run, so the guard can never recurse into itself."""
-        if os.environ.get(CHILD_ENV_VAR) == "1":
-            self.skipTest("running inside the guard's own child suite")
+        if (
+            os.environ.get(CHILD_ENV_VAR) == "1"
+            or os.environ.get("HOLON_STRESS_CHILD") == "1"
+            or os.environ.get(CHILD_SUITE_SENTINEL) == "1"
+        ):
+            self.skipTest("running inside a child suite")
 
         if not uv_available():
             self.skipTest(f"{UV} is not available; this suite runs only under '{UV} run pytest'.")

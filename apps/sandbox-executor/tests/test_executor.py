@@ -15,6 +15,7 @@ from sandbox_executor.agent_runner import (
     cleanup_repo_dir,
 )
 from sandbox_executor.entrypoint import executor
+from sandbox_executor.entrypoint.executor import sync_and_reconcile_pre_push
 
 # Provider credentials are exercised as *shapes*, never as real keys. The filler is spliced in right
 # after the vendor prefix, so no contiguous vendor-format secret ever exists in this file (GitHub
@@ -2733,3 +2734,100 @@ class TestExecutor(unittest.TestCase):
             failure_entry = [entry for entry in lines if entry.get("status") == "failure"][-1]
             self.assertIn("Git recovery failure", failure_entry.get("summary", ""))
             self.assertIn(backup_dirs[0], failure_entry.get("summary", ""))
+
+
+class TestExecutorPrePushSync(unittest.TestCase):
+    """Unit tests for executor pre-push remote synchronization and conflict isolation."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.root = self.temp_dir.name
+        self.remote_dir = os.path.join(self.root, "remote.git")
+        self.work_dir = os.path.join(self.root, "work")
+
+        subprocess.run(["git", "init", "--bare", "-b", "main", self.remote_dir], check=True, capture_output=True)
+        subprocess.run(["git", "init", "-b", "main", self.work_dir], check=True, capture_output=True)
+
+        self._git(self.work_dir, "config", "user.email", "test@holon.com")
+        self._git(self.work_dir, "config", "user.name", "Test User")
+        ledger_dir = os.path.join(self.work_dir, "holon-knowledge", "ledger")
+        os.makedirs(ledger_dir, exist_ok=True)
+        exec_file = os.path.join(ledger_dir, "executions.jsonl")
+        with open(exec_file, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"execution_id": "E-base", "created_at": "2026-10-06T09:00:00Z"}) + "\n")
+        self._git(self.work_dir, "add", "-A")
+        self._git(self.work_dir, "commit", "-m", "initial commit")
+        self._git(self.work_dir, "remote", "add", "origin", self.remote_dir)
+        self._git(self.work_dir, "push", "-u", "origin", "main")
+
+    def _git(self, cwd: str, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+    def test_pre_push_sync_reconciles_ledger_only_conflicts(self):
+        # 1. On work branch 'feature', append an execution record
+        self._git(self.work_dir, "checkout", "-b", "feature")
+        ledger_file = os.path.join(self.work_dir, "holon-knowledge", "ledger", "executions.jsonl")
+        with open(ledger_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"execution_id": "E-feature", "created_at": "2026-10-06T10:00:00Z"}) + "\n")
+        self._git(self.work_dir, "commit", "-am", "feature commit")
+
+        # 2. Advance main in a separate clone with a concurrent execution record
+        peer_dir = os.path.join(self.root, "peer")
+        subprocess.run(["git", "clone", self.remote_dir, peer_dir], check=True, capture_output=True)
+        self._git(peer_dir, "config", "user.email", "peer@holon.com")
+        self._git(peer_dir, "config", "user.name", "Peer User")
+        peer_ledger = os.path.join(peer_dir, "holon-knowledge", "ledger", "executions.jsonl")
+        with open(peer_ledger, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"execution_id": "E-remote", "created_at": "2026-10-06T09:30:00Z"}) + "\n")
+        self._git(peer_dir, "commit", "-am", "peer commit")
+        self._git(peer_dir, "push", "origin", "main")
+
+        # 3. Pre-push sync on feature branch
+        success, msg = sync_and_reconcile_pre_push(self.work_dir, target_branch="main")
+        self.assertTrue(success, f"Pre-push sync failed: {msg}")
+        self.assertIn("Successfully reconciled", msg)
+
+        # 4. Verify that executions.jsonl contains all 3 entries sorted chronologically
+        with open(ledger_file, encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[0]["execution_id"], "E-base")
+        self.assertEqual(rows[1]["execution_id"], "E-remote")
+        self.assertEqual(rows[2]["execution_id"], "E-feature")
+
+    def test_pre_push_sync_aborts_loudly_on_non_ledger_conflict(self):
+        # 1. On work branch 'feature-conflict', modify a non-ledger file
+        self._git(self.work_dir, "checkout", "-b", "feature-conflict")
+        code_file = os.path.join(self.work_dir, "code.py")
+        with open(code_file, "w", encoding="utf-8") as f:
+            f.write("x = 1\n")
+        self._git(self.work_dir, "add", "code.py")
+        self._git(self.work_dir, "commit", "-m", "feature code")
+
+        # 2. Advance main on remote with conflicting change
+        peer_dir = os.path.join(self.root, "peer2")
+        subprocess.run(["git", "clone", self.remote_dir, peer_dir], check=True, capture_output=True)
+        self._git(peer_dir, "config", "user.email", "peer@holon.com")
+        self._git(peer_dir, "config", "user.name", "Peer User")
+        peer_code = os.path.join(peer_dir, "code.py")
+        with open(peer_code, "w", encoding="utf-8") as f:
+            f.write("x = 2\n")
+        self._git(peer_dir, "add", "code.py")
+        self._git(peer_dir, "commit", "-m", "peer conflicting code")
+        self._git(peer_dir, "push", "origin", "main")
+
+        # 3. Pre-push sync should fail and abort the merge
+        success, msg = sync_and_reconcile_pre_push(self.work_dir, target_branch="main")
+        self.assertFalse(success)
+        self.assertIn("Non-ledger merge conflicts detected", msg)
+
+        # 4. Ensure git merge was aborted and working tree is clean
+        status = self._git(self.work_dir, "status", "--porcelain").stdout.strip()
+        self.assertEqual(status, "")
+
+    def test_pre_push_sync_no_remote_configured(self):
+        self._git(self.work_dir, "remote", "remove", "origin")
+        success, msg = sync_and_reconcile_pre_push(self.work_dir, target_branch="main")
+        self.assertTrue(success)
+        self.assertIn("No remote origin", msg)

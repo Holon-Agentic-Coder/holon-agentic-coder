@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -286,6 +287,348 @@ def run_git(
         cmd_str = redact_text(" ".join(args))
         raise RuntimeError(f"Git command 'git {cmd_str}' failed ({res.returncode}): {err}")
     return res
+
+
+# ---------------------------------------------------------------------------
+# Ledger Reconciliation & Conflict Resolution Utilities
+# ---------------------------------------------------------------------------
+
+
+def _parse_ledger_timestamp(val: Any) -> datetime:
+    """Parse an ISO-8601 timestamp string into a timezone-aware UTC datetime.
+
+    Args:
+        val: Timestamp value (usually string).
+
+    Returns:
+        datetime: Parsed datetime object in UTC, or datetime.min in UTC if parsing fails.
+    """
+    if not val or not isinstance(val, str):
+        return datetime.min.replace(tzinfo=UTC)
+    try:
+        clean = val.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(clean)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=UTC)
+        return dt
+    except Exception:
+        return datetime.min.replace(tzinfo=UTC)
+
+
+def extract_valid_ledger_rows(content: str) -> list[dict[str, Any]]:
+    """Extract valid JSON dictionary objects from ledger content, skipping git conflict markers.
+
+    Args:
+        content: String content of a JSONL ledger, potentially containing git conflict markers.
+
+    Returns:
+        list[dict[str, Any]]: Parsed valid JSON dictionary rows.
+
+    Raises:
+        None: Malformed lines and git conflict markers are ignored.
+    """
+    rows: list[dict[str, Any]] = []
+    conflict_prefixes = ("<<<<<<<", "=======", ">>>>>>>", "|||||||")
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if any(stripped.startswith(prefix) for prefix in conflict_prefixes):
+            continue
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, dict):
+                rows.append(parsed)
+            else:
+                logger.warning(f"Skipping non-dictionary JSON ledger line: {stripped[:100]}")
+        except Exception:
+            logger.debug(f"Skipping unparseable ledger line: {stripped[:100]}")
+    return rows
+
+
+def reconcile_ledger_rows(rows: list[dict[str, Any]], ledger_type: str) -> list[dict[str, Any]]:
+    """Deterministically deduplicate and chronologically order ledger entries.
+
+    For rows with matching primary keys:
+    - If `ledger_revision` is present, the entry with the higher revision is preferred.
+    - Otherwise, the entry with the later `created_at` timestamp is retained, or
+      the first entry is preserved if timestamps are identical.
+    All entries are returned sorted ascending by `created_at`.
+
+    Primary key mappings:
+    - intents: 'branch' then 'slug'
+    - plans: 'plan_id'
+    - executions: 'execution_id'
+
+    Args:
+        rows: List of ledger entry dictionaries.
+        ledger_type: Type of ledger ('intents', 'plans', 'executions', or generic).
+
+    Returns:
+        list[dict[str, Any]]: Deduplicated, chronologically sorted list of ledger entry dictionaries.
+
+    Raises:
+        None: Handles arbitrary schema rows safely.
+    """
+    clean_type = str(ledger_type).lower().removesuffix(".jsonl").strip()
+
+    def get_pk(row: dict[str, Any]) -> str:
+        if "intent" in clean_type:
+            val = row.get("branch") or row.get("slug")
+            if val:
+                return str(val)
+        elif "plan" in clean_type:
+            val = row.get("plan_id")
+            if val:
+                return str(val)
+        elif "exec" in clean_type:
+            val = row.get("execution_id")
+            if val:
+                return str(val)
+        # Fallback cascade for generic ledger types
+        for candidate in ("execution_id", "plan_id", "branch", "slug"):
+            if row.get(candidate):
+                return str(row[candidate])
+        return json.dumps(row, sort_keys=True)
+
+    deduped: dict[str, dict[str, Any]] = {}
+
+    for row in rows:
+        pk = get_pk(row)
+        if pk not in deduped:
+            deduped[pk] = row
+            continue
+
+        existing = deduped[pk]
+        cand_rev = int(row.get("ledger_revision", 1))
+        exist_rev = int(existing.get("ledger_revision", 1))
+
+        if cand_rev > exist_rev:
+            deduped[pk] = row
+        elif cand_rev < exist_rev:
+            continue
+        else:
+            cand_ts = _parse_ledger_timestamp(row.get("created_at"))
+            exist_ts = _parse_ledger_timestamp(existing.get("created_at"))
+            if cand_ts > exist_ts:
+                deduped[pk] = row
+            # If timestamps are identical, retain existing entry
+
+    result = list(deduped.values())
+    result.sort(key=lambda r: (_parse_ledger_timestamp(r.get("created_at")), str(r.get("created_at", ""))))
+    return result
+
+
+def reconcile_ledger_content(content: str, ledger_type: str) -> str:
+    """Parse, reconcile, and serialize ledger content by union.
+
+    Args:
+        content: Raw JSONL string content, potentially containing git conflict markers.
+        ledger_type: Ledger type name ('intents', 'plans', 'executions').
+
+    Returns:
+        str: Formatted, reconciled JSONL content string ending with a newline.
+
+    Raises:
+        None: Malformed lines are dropped gracefully.
+    """
+    rows = extract_valid_ledger_rows(content)
+    reconciled = reconcile_ledger_rows(rows, ledger_type)
+    if not reconciled:
+        return ""
+    return "\n".join(json.dumps(r) for r in reconciled) + "\n"
+
+
+def reconcile_ledger_file(file_path: str, ledger_type: str | None = None) -> bool:
+    """Reconcile a single JSONL ledger file in place, resolving conflicts by union.
+
+    Args:
+        file_path: Absolute or relative path to the ledger file.
+        ledger_type: Optional ledger type name. Inferred from file basename if None.
+
+    Returns:
+        bool: True if reconciliation succeeded and file was written, False on IO or other failure.
+
+    Raises:
+        None: Exceptions are caught, logged, and return False.
+    """
+    if not os.path.exists(file_path):
+        logger.warning(f"Ledger file does not exist: {file_path}")
+        return False
+
+    if ledger_type is None:
+        base = os.path.basename(file_path).lower()
+        if "intent" in base:
+            ledger_type = "intents"
+        elif "plan" in base:
+            ledger_type = "plans"
+        elif "exec" in base:
+            ledger_type = "executions"
+        else:
+            ledger_type = "generic"
+
+    try:
+        with open(file_path, encoding="utf-8") as f:
+            content = f.read()
+        reconciled = reconcile_ledger_content(content, ledger_type)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(reconciled)
+        return True
+    except Exception as exc:
+        logger.error(f"Failed to reconcile ledger file '{file_path}': {exc}")
+        return False
+
+
+def reconcile_ledgers(repo_dir: str) -> list[str]:
+    """Reconcile all three Holon ledger files in a repository.
+
+    Args:
+        repo_dir: Path to repository root.
+
+    Returns:
+        list[str]: List of reconciled relative file paths.
+
+    Raises:
+        None: Non-existent files are skipped safely.
+    """
+    ledger_files = [
+        os.path.join("holon-knowledge", "ledger", "intents.jsonl"),
+        os.path.join("holon-knowledge", "ledger", "plans.jsonl"),
+        os.path.join("holon-knowledge", "ledger", "executions.jsonl"),
+    ]
+    reconciled_paths: list[str] = []
+    for rel_path in ledger_files:
+        full_path = os.path.join(repo_dir, rel_path)
+        if os.path.exists(full_path) and reconcile_ledger_file(full_path):
+            reconciled_paths.append(rel_path)
+    return reconciled_paths
+
+
+def check_pr_mergeability(
+    repo_dir: str,
+    branch: str,
+    target_branch: str = "main",
+) -> dict[str, Any]:
+    """Inspect PR and branch mergeability status against target branch.
+
+    Detects DIRTY or CONFLICTING states using GitHub CLI (gh) when available,
+    falling back to local git merge-tree analysis in offline or sandbox environments.
+
+    Args:
+        repo_dir: Path to git repository.
+        branch: Name of branch or PR branch to evaluate.
+        target_branch: Target base branch name (defaults to 'main').
+
+    Returns:
+        dict[str, Any]: Mergeability diagnostics dictionary with keys:
+            - mergeable: str ("MERGEABLE", "CONFLICTING", "UNKNOWN")
+            - merge_state_status: str ("CLEAN", "DIRTY", "BLOCKED", "BEHIND", "UNKNOWN")
+            - is_dirty: bool
+            - source: str ("github_cli" or "git_local")
+            - pr_number: int | None
+            - status_check_rollup: list | None
+
+    Raises:
+        None: Gracefully falls back to git_local or UNKNOWN on exceptions.
+    """
+    clean_branch = branch.strip() if branch else ""
+
+    # 1. Attempt GitHub CLI inspection if gh is installed and available
+    if shutil.which("gh") and clean_branch:
+        for attempt in range(3):
+            try:
+                gh_proc = subprocess.run(
+                    [
+                        "gh",
+                        "pr",
+                        "view",
+                        clean_branch,
+                        "--json",
+                        "number,mergeable,mergeStateStatus,statusCheckRollup",
+                    ],
+                    cwd=repo_dir,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if gh_proc.returncode == 0 and gh_proc.stdout.strip():
+                    data = json.loads(gh_proc.stdout)
+                    mergeable = str(data.get("mergeable") or "UNKNOWN").upper()
+                    merge_state_status = str(data.get("mergeStateStatus") or "UNKNOWN").upper()
+
+                    # Retry briefly if GitHub is still computing mergeability (UNKNOWN)
+                    if mergeable == "UNKNOWN" and attempt < 2:
+                        time.sleep(2)
+                        continue
+
+                    is_dirty = (merge_state_status == "DIRTY") or (mergeable == "CONFLICTING")
+                    return {
+                        "mergeable": mergeable,
+                        "merge_state_status": merge_state_status,
+                        "is_dirty": is_dirty,
+                        "source": "github_cli",
+                        "pr_number": data.get("number"),
+                        "status_check_rollup": data.get("statusCheckRollup"),
+                    }
+            except Exception as e:
+                logger.debug(f"gh pr view check failed: {e}")
+                break
+
+    # 2. Fallback to local git inspection
+    is_dirty = False
+    mergeable = "MERGEABLE"
+    merge_state_status = "CLEAN"
+
+    try:
+        target_ref = f"origin/{target_branch}"
+        ref_check = run_git(["rev-parse", "--verify", target_ref], cwd=repo_dir, check=False)
+        if ref_check.returncode != 0:
+            target_ref = target_branch
+
+        branch_ref = clean_branch or "HEAD"
+
+        # Try git merge-tree --write-tree
+        mt_proc = run_git(["merge-tree", "--write-tree", branch_ref, target_ref], cwd=repo_dir, check=False)
+        if mt_proc.returncode == 0:
+            is_dirty = False
+            mergeable = "MERGEABLE"
+            merge_state_status = "CLEAN"
+        elif mt_proc.returncode == 1:
+            is_dirty = True
+            mergeable = "CONFLICTING"
+            merge_state_status = "DIRTY"
+        else:
+            # Fallback to 3-way trivial merge check via merge-base
+            mb_proc = run_git(["merge-base", branch_ref, target_ref], cwd=repo_dir, check=False)
+            if mb_proc.returncode == 0 and mb_proc.stdout.strip():
+                base_commit = mb_proc.stdout.strip()
+                legacy_mt = run_git(["merge-tree", base_commit, branch_ref, target_ref], cwd=repo_dir, check=False)
+                if "+<<<<<<<" in legacy_mt.stdout or "CONFLICT" in legacy_mt.stdout:
+                    is_dirty = True
+                    mergeable = "CONFLICTING"
+                    merge_state_status = "DIRTY"
+                else:
+                    is_dirty = False
+                    mergeable = "MERGEABLE"
+                    merge_state_status = "CLEAN"
+            else:
+                is_dirty = False
+                mergeable = "UNKNOWN"
+                merge_state_status = "UNKNOWN"
+    except Exception as exc:
+        logger.debug(f"Local git mergeability check encountered error: {exc}")
+        is_dirty = False
+        mergeable = "UNKNOWN"
+        merge_state_status = "UNKNOWN"
+
+    return {
+        "mergeable": mergeable,
+        "merge_state_status": merge_state_status,
+        "is_dirty": is_dirty,
+        "source": "git_local",
+        "pr_number": None,
+        "status_check_rollup": None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -755,17 +1098,27 @@ def run_review_stage(context: FlowContext) -> StageResult:
             )
             stat_text = stat_res.stdout.strip()
             if stat_text:
-                m_f = re.search(r"(\\d+)\\s+file", stat_text)
-                m_i = re.search(r"(\\d+)\\s+insertion", stat_text)
-                m_d = re.search(r"(\\d+)\\s+deletion", stat_text)
+                m_f = re.search(r"(\d+)\s+file", stat_text)
+                m_i = re.search(r"(\d+)\s+insertion", stat_text)
+                m_d = re.search(r"(\d+)\s+deletion", stat_text)
                 diff_summary = {
                     "files_changed": int(m_f.group(1)) if m_f else 0,
                     "insertions": int(m_i.group(1)) if m_i else 0,
                     "deletions": int(m_d.group(1)) if m_d else 0,
                 }
 
-    consensus_reached = test_pass_rate == 1.0 and exit_code == 0
+    target_branch = context.intent_data.get("target_branch", "main")
+    branch_to_check = context.execution_branch or context.intent_branch or "HEAD"
+    mergeability = check_pr_mergeability(repo_dir, branch_to_check, target_branch=target_branch)
+    is_dirty = bool(mergeability.get("is_dirty"))
+    merge_status = str(mergeability.get("merge_state_status", "UNKNOWN"))
+    mergeable_state = str(mergeability.get("mergeable", "UNKNOWN"))
+
+    tests_ok = (test_pass_rate == 1.0) and (exit_code == 0)
+    consensus_reached = tests_ok and not is_dirty
     approval_score = 1.0 if consensus_reached else 0.0
+
+    consensus_status = "approved" if consensus_reached else ("conflicted_dirty" if is_dirty else "rejected")
 
     review_package = {
         "intent_branch": context.intent_branch,
@@ -777,15 +1130,62 @@ def run_review_stage(context: FlowContext) -> StageResult:
             "pass_rate": test_pass_rate,
             "passed": exit_code == 0,
         },
+        "mergeability": mergeability,
         "consensus": {
             "approved": consensus_reached,
             "score": approval_score,
             "iterations": 1,
-            "status": "approved" if consensus_reached else "rejected",
+            "status": consensus_status,
         },
     }
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    if is_dirty:
+        err_msg = (
+            f"[CRITICAL: CI SIGNAL SUPPRESSED] Pull Request has merge conflicts against {target_branch} "
+            f"(mergeStateStatus={merge_status}, mergeable={mergeable_state}). "
+            "GitHub Actions suppresses test workflows on refs/pull/<PR>/merge. "
+            "Halting consensus approval."
+        )
+        context.log(err_msg)
+        result = StageResult(
+            stage=FlowStage.REVIEW,
+            status=StageStatus.FAILED,
+            start_time=start_time,
+            end_time=end_time,
+            payload={
+                "review_package": review_package,
+                "consensus": review_package["consensus"],
+                "halted_for_human": False,
+                "bean_0034_enforced": False,
+                "mergeability": mergeability,
+            },
+            error=err_msg,
+        )
+        context.stage_results["review"] = result
+        return result
+
+    if not consensus_reached:
+        err_msg = "Autonomous review consensus failed: test suite reported failures."
+        context.log(f"Stage 4 failed: {err_msg}")
+        result = StageResult(
+            stage=FlowStage.REVIEW,
+            status=StageStatus.FAILED,
+            start_time=start_time,
+            end_time=end_time,
+            payload={
+                "review_package": review_package,
+                "consensus": review_package["consensus"],
+                "halted_for_human": False,
+                "bean_0034_enforced": False,
+                "mergeability": mergeability,
+            },
+            error=err_msg,
+        )
+        context.stage_results["review"] = result
+        return result
+
     human_instruction = f"holon review approve {context.intent_branch or 'intent'}"
     context.log(
         "[BEAN 0034 SAFETY HALT] PR Review Loop reached consensus approval. "
@@ -795,17 +1195,18 @@ def run_review_stage(context: FlowContext) -> StageResult:
 
     result = StageResult(
         stage=FlowStage.REVIEW,
-        status=StageStatus.HALTED_FOR_HUMAN if consensus_reached else StageStatus.FAILED,
+        status=StageStatus.HALTED_FOR_HUMAN,
         start_time=start_time,
         end_time=end_time,
         payload={
             "review_package": review_package,
             "consensus": review_package["consensus"],
-            "halted_for_human": bool(consensus_reached),
+            "halted_for_human": True,
             "bean_0034_enforced": True,
             "human_approval_command": human_instruction,
+            "mergeability": mergeability,
         },
-        error=None if consensus_reached else "Autonomous review consensus failed: test suite reported failures.",
+        error=None,
     )
     context.stage_results["review"] = result
     return result

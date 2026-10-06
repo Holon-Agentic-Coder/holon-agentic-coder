@@ -10,7 +10,7 @@ if [ -f "$SECRET_BUNDLE" ]; then
     else
         # Safely extract bundle parameters under set -euo pipefail without crashing on malformed JSON
         if BUNDLE_AGENT=$(jq -r '.agent_id // ""' "$SECRET_BUNDLE" 2>/dev/null); then
-            BUNDLE_AGENT=$(echo "$BUNDLE_AGENT" | tr '[:upper:]' '[:lower:]')
+            BUNDLE_AGENT="${BUNDLE_AGENT,,}"
             BUNDLE_AGENT_ID="${BUNDLE_AGENT//-agent/}"
             BUNDLE_AGENT_ID="${BUNDLE_AGENT_ID//agent-/}"
             

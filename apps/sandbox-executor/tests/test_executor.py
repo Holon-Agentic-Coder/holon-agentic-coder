@@ -2584,9 +2584,12 @@ class TestExecutor(unittest.TestCase):
                 check=True,
             )
 
-            # _get_local_safe_directories retrieves the entry via plumbing
-            entries = executor._get_local_safe_directories(workspace_dir)
-            self.assertIn(redundant_path, entries)
+            # _get_local_safe_directories retrieves the entry via plumbing passing -c safe.directory
+            with patch("subprocess.run", wraps=subprocess.run) as mock_subproc:
+                entries = executor._get_local_safe_directories(workspace_dir)
+                self.assertIn(redundant_path, entries)
+                plumbing_cmd = mock_subproc.call_args[0][0]
+                self.assertEqual(plumbing_cmd[:3], ["git", "-c", f"safe.directory={workspace_dir}"])
 
             # _probe_git_repo detects the normalized path matches
             healthy, _ = executor._probe_git_repo(workspace_dir)
@@ -2627,6 +2630,34 @@ class TestExecutor(unittest.TestCase):
                     self.assertEqual(called_args[1], "-c")
                     self.assertEqual(called_args[2], f"safe.directory={workspace_dir}")
                     self.assertEqual(called_args[3], "status")
+
+                # Verify run_cmd injects -c safe.directory even when other -c flags are present
+                with patch("subprocess.run") as mock_subproc:
+                    mock_subproc.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+                    executor.run_cmd(["git", "-c", "core.quotePath=false", "status"], cwd=workspace_dir, check=False)
+                    called_args = mock_subproc.call_args[0][0]
+                    self.assertEqual(called_args[0], "git")
+                    self.assertEqual(called_args[1], "-c")
+                    self.assertEqual(called_args[2], f"safe.directory={workspace_dir}")
+                    self.assertEqual(called_args[3:], ["-c", "core.quotePath=false", "status"])
+
+                # Verify run_cmd does not duplicate safe.directory if already specified
+                with patch("subprocess.run") as mock_subproc:
+                    mock_subproc.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+                    executor.run_cmd(
+                        ["git", "-c", f"safe.directory={workspace_dir}", "status"], cwd=workspace_dir, check=False
+                    )
+                    called_args = mock_subproc.call_args[0][0]
+                    self.assertEqual(called_args, ["git", "-c", f"safe.directory={workspace_dir}", "status"])
+
+                # Verify fallback skips _get_local_safe_directories subprocess call
+                with (
+                    patch("sandbox_executor.entrypoint.executor._get_local_safe_directories") as mock_local_safe,
+                    patch("subprocess.run") as mock_subproc,
+                ):
+                    mock_subproc.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+                    executor.run_cmd(["git", "status"], cwd=workspace_dir, check=False)
+                    mock_local_safe.assert_not_called()
 
                 # Verify clean repo without safe directory config or fallback does NOT inject -c safe.directory
                 clean_dir = os.path.join(base_dir, "clean_repo")

@@ -67,7 +67,8 @@ def test_role_dispatcher_warns_on_missing_jq(tmp_path):
     MOCK_PATH="{tmp_path}/mock_bin"
     mkdir -p "$MOCK_PATH"
     for b in tr sed echo cat chmod dirname basename bash true; do
-        target=$(which $b 2>/dev/null || true)
+        target=$(command -v "$b" 2>/dev/null || true)
+        if [ "$target" = "$b" ]; then target=$(type -P "$b" 2>/dev/null || true); fi
         if [ -n "$target" ]; then ln -s "$target" "$MOCK_PATH/$b"; fi
     done
     export PATH="$MOCK_PATH"

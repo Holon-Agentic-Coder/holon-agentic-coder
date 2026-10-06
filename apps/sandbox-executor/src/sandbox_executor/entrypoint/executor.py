@@ -546,7 +546,7 @@ def _get_local_safe_directories(repo_dir: str) -> list[str]:
 
     Paths are returned as stripped strings.
     """
-    cmd = ["git", "config", "--local", "--get-all", "safe.directory"]
+    cmd = ["git", "-c", f"safe.directory={repo_dir}", "config", "--local", "--get-all", "safe.directory"]
     res = subprocess.run(cmd, cwd=repo_dir, capture_output=True, text=True)
     if res.returncode == 0:
         return [line.strip() for line in res.stdout.splitlines() if line.strip()]
@@ -577,15 +577,16 @@ def run_cmd(
         cmd_env = _get_clean_git_env(env)
         if cwd:
             norm_cwd = os.path.realpath(cwd)
-            safe_dirs = _get_local_safe_directories(cwd)
             is_safe = norm_cwd in _FALLBACK_SAFE_DIRECTORIES
             if not is_safe:
+                safe_dirs = _get_local_safe_directories(cwd)
                 for sd in safe_dirs:
                     if sd == "*" or os.path.realpath(sd) == norm_cwd:
                         is_safe = True
                         break
             # If configured as safe in local config, or if falling back, inject safe.directory per-invocation
-            if is_safe and len(cmd_args) > 1 and cmd_args[1] != "-c":
+            has_safe_dir = any(arg == "safe.directory" or arg.startswith("safe.directory=") for arg in cmd_args)
+            if is_safe and not has_safe_dir and len(cmd_args) > 1:
                 cmd_args = [cmd_args[0], "-c", f"safe.directory={cwd}", *cmd_args[1:]]
 
     result = subprocess.run(cmd_args, cwd=cwd, capture_output=True, text=True, env=cmd_env)

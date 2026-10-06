@@ -59,4 +59,4 @@ jobs:
         run: npx prettier --check "**/*.md"
 
       - name: Test clean task
-        run: make clean
+        run: uv run task clean

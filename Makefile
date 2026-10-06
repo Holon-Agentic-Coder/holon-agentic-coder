@@ -35,25 +35,12 @@ COLOR_YELLOW := \033[1;33m
 COLOR_RESET := \033[0m
 endif
 
-PYTEST_ARGS ?=
-
-.PHONY: help setup test test-integration check lint lint-docs format format-code format-docs clean distclean build-images check-prerequisites prerequisites check-docker install-docker install-homebrew
+.PHONY: help build-images check-prerequisites prerequisites check-docker install-docker install-homebrew
 
 help:
-	@echo "Usage: make [target] [PYTEST_ARGS=\"...\"]"
+	@echo "Usage: make [target]"
 	@echo ""
 	@echo "Available targets:"
-	@printf "  %-22s %s\n" "setup" "Synchronize dependencies using uv sync."
-	@printf "  %-22s %s\n" "test" "Run unit tests (excluding container integration tests)."
-	@printf "  %-22s %s\n" "test-integration" "Build images and run integration test suite."
-	@printf "  %-22s %s\n" "check" "Run all static checks (lint and lint-docs)."
-	@printf "  %-22s %s\n" "lint" "Run Ruff linter and formatting check."
-	@printf "  %-22s %s\n" "lint-docs" "Check Markdown documentation formatting with Prettier."
-	@printf "  %-22s %s\n" "format" "Auto-format codebase and documentation (format-code and format-docs)."
-	@printf "  %-22s %s\n" "format-code" "Auto-format codebase with Ruff."
-	@printf "  %-22s %s\n" "format-docs" "Auto-format Markdown documentation with Prettier."
-	@printf "  %-22s %s\n" "clean" "Remove transient build artifacts, caches, and logs."
-	@printf "  %-22s %s\n" "distclean" "Clean transient artifacts and remove .venv virtual environment."
 	@printf "  %-22s %s\n" "build-images" "Build all sandbox Docker images."
 	@printf "  %-22s %s\n" "check-prerequisites" "Verify development prerequisites (GNU Make, uv, npx, Docker CLI, Buildx, daemon)."
 	@printf "  %-22s %s\n" "check-docker" "Check Docker installation, Buildx, and daemon running status."
@@ -61,43 +48,6 @@ help:
 	@printf "  %-22s %s\n" "install-homebrew" "Install Homebrew (macOS only)."
 	@printf "  %-22s %s\n" "help" "Show this help message."
 	@echo ""
-	@echo "Options:"
-	@printf "  %-22s %s\n" "PYTEST_ARGS" "Pass additional arguments to pytest (e.g. PYTEST_ARGS=\"-k test_name -v\")."
-	@echo ""
-
-setup:
-	uv sync
-
-test:
-	uv run task test $(PYTEST_ARGS)
-
-test-integration:
-	./apps/sandbox-executor/build_all_images.sh --output-log
-	uv run pytest -m "integration_test" $(PYTEST_ARGS)
-
-check:
-	uv run task check
-
-lint:
-	uv run task lint
-
-lint-docs:
-	uv run task lint-docs
-
-format:
-	uv run task format
-
-format-code:
-	uv run task format-code
-
-format-docs:
-	uv run task format-docs
-
-clean:
-	uv run task clean
-
-distclean: clean
-	rm -rf .venv
 
 build-images:
 	./apps/sandbox-executor/build_all_images.sh
@@ -295,7 +245,7 @@ check-prerequisites:
 		echo "$(COLOR_GREEN)✅ Found: npx v$$NPX_VER$(COLOR_RESET)"; \
 	else \
 		echo "$(COLOR_YELLOW)⚠️  Missing: npx not found$(COLOR_RESET)"; \
-		echo "   npx is required for 'make lint-docs' and 'make format-docs' (Prettier)."; \
+		echo "   npx is required for 'uv run task lint-docs' and 'uv run task format-docs' (Prettier)."; \
 		WARNINGS=$$((WARNINGS + 1)); \
 	fi; \
 	\

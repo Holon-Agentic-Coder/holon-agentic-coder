@@ -29,6 +29,7 @@ import unittest
 import pytest
 
 from tests.hermetic_fixtures import (
+    CHILD_SUITE_SENTINEL,
     REPO_ROOT,
     UNIT_MARKER_EXPRESSION,
     UV,
@@ -43,7 +44,7 @@ CHILD_ENV_VAR = "HOLON_STRESS_CHILD"
 #: Suite directory relative to the clone that becomes the workspace.
 TESTS_SUBDIR = "apps/sandbox-executor/tests"
 
-#: A child run nests a full suite plus the canary guard's own child run.
+#: A child run runs a full non-integration suite.
 CHILD_TIMEOUT_SECONDS = 1800
 
 
@@ -57,7 +58,7 @@ class TestSuiteWorkspaceSurvival(unittest.TestCase):
         ``uv`` and ``git`` are hard requirements of the reproduction, so their absence is reported
         as a skip here and turned into a hard CI failure by the job's post-run assertion.
         """
-        if os.environ.get(CHILD_ENV_VAR) == "1":
+        if os.environ.get(CHILD_ENV_VAR) == "1" or os.environ.get(CHILD_SUITE_SENTINEL) == "1":
             self.skipTest("running inside the stress suite's own child run")
 
         if not uv_available():

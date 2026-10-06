@@ -187,6 +187,11 @@ TESTS_DIR = os.path.relpath(os.path.dirname(os.path.abspath(__file__)), REPO_ROO
 CHILD_TIMEOUT_SECONDS = 1800
 
 
+#: Sentinel set across all child suite environments to prevent nested child runners from
+#: spawning downstream child suites.
+CHILD_SUITE_SENTINEL = "HOLON_CHILD_SUITE_ACTIVE"
+
+
 def pytest_suite_command(*extra_args: str) -> list[str]:
     """Build the sanctioned command that runs the whole suite in a child process.
 
@@ -228,6 +233,7 @@ def simulated_container_env(sim_home: str, sentinel_var: str) -> dict[str, str]:
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env.pop("HOLON_REPO_DIR", None)
     env[sentinel_var] = "1"
+    env[CHILD_SUITE_SENTINEL] = "1"
     # ``HOME`` no longer points at the real user home, so uv can neither find its managed
     # interpreters nor the project environment on its own: a child launched this way was observed
     # downloading CPython and building a fresh ``.venv`` inside the fixture, which then failed on

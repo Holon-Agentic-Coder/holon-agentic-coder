@@ -938,6 +938,14 @@ def sync_and_reconcile_pre_push(repo_dir: str, target_branch: str = "main") -> t
     # 3. Check divergence with HEAD
     mb_cmd = run_cmd(["git", "merge-base", "HEAD", target_ref], cwd=repo_dir, check=False)
     if mb_cmd.returncode != 0:
+        is_shallow = run_cmd(["git", "rev-parse", "--is-shallow-repository"], cwd=repo_dir, check=False)
+        if is_shallow.stdout.strip().lower() == "true":
+            print(f"Warning: Shallow repository detected. Deepening history for {target_ref}...", file=sys.stderr)
+            run_cmd(["git", "fetch", "--deepen=50", "origin", target_branch], cwd=repo_dir, check=False)
+            mb_cmd = run_cmd(["git", "merge-base", "HEAD", target_ref], cwd=repo_dir, check=False)
+
+    if mb_cmd.returncode != 0:
+        print(f"Warning: Unable to compute merge-base with {target_ref}; skipping pre-push sync.", file=sys.stderr)
         return True, f"Unable to compute merge-base with {target_ref}"
 
     merge_base = mb_cmd.stdout.strip()
@@ -958,6 +966,11 @@ def sync_and_reconcile_pre_push(repo_dir: str, target_branch: str = "main") -> t
 
     merge_res = run_cmd(["git", "merge", target_ref, "--no-commit", "--no-ff"], cwd=repo_dir, check=False)
     if merge_res.returncode == 0:
+        from sandbox_executor.flow import reconcile_ledgers
+
+        reconciled_all = reconcile_ledgers(repo_dir)
+        for rel in reconciled_all:
+            run_cmd(["git", "add", rel], cwd=repo_dir, check=False)
         staged = run_cmd(["git", "diff", "--cached", "--quiet"], cwd=repo_dir, check=False)
         if staged.returncode != 0:
             run_cmd(
@@ -973,7 +986,7 @@ def sync_and_reconcile_pre_push(repo_dir: str, target_branch: str = "main") -> t
     if not conflicted_files:
         status_res = run_cmd(["git", "status", "--porcelain"], cwd=repo_dir, check=False)
         for line in status_res.stdout.splitlines():
-            if any(line.startswith(c) for c in ("UU ", "AA ", "UD ", "DU ")):
+            if any(line.startswith(c) for c in ("UU ", "AA ", "UD ", "DU ", "AU ", "UA ", "DD ")):
                 conflicted_files.append(line[3:].strip())
 
     non_ledger_files = [
@@ -996,6 +1009,12 @@ def sync_and_reconcile_pre_push(repo_dir: str, target_branch: str = "main") -> t
                 run_cmd(["git", "merge", "--abort"], cwd=repo_dir, check=False)
                 return False, f"Failed to reconcile ledger file {ledger_path}"
             run_cmd(["git", "add", ledger_path], cwd=repo_dir, check=True)
+
+        from sandbox_executor.flow import reconcile_ledgers
+
+        reconciled_all = reconcile_ledgers(repo_dir)
+        for rel in reconciled_all:
+            run_cmd(["git", "add", rel], cwd=repo_dir, check=False)
 
         rem_unmerged = run_cmd(["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_dir, check=False)
         if rem_unmerged.stdout.strip():
@@ -1543,7 +1562,11 @@ def main() -> None:
                 can_push = False
 
             if can_push:
-                target_base = os.getenv("HOLON_TARGET_BRANCH", "main")
+                target_base = (
+                    os.getenv("HOLON_TARGET_BRANCH")
+                    or (intent_data.get("target_branch") if intent_data else None)
+                    or "main"
+                )
                 sync_ok, sync_msg = sync_and_reconcile_pre_push(repo_dir, target_branch=target_base)
                 if not sync_ok:
                     can_push = False

@@ -2831,3 +2831,110 @@ class TestExecutorPrePushSync(unittest.TestCase):
         success, msg = sync_and_reconcile_pre_push(self.work_dir, target_branch="main")
         self.assertTrue(success)
         self.assertIn("No remote origin", msg)
+
+    def test_pre_push_sync_multi_ledger_conflicts(self):
+        # 1. On feature branch, append to plans.jsonl and executions.jsonl
+        self._git(self.work_dir, "checkout", "-b", "feature-multi")
+        ledger_dir = os.path.join(self.work_dir, "holon-knowledge", "ledger")
+        plan_file = os.path.join(ledger_dir, "plans.jsonl")
+        exec_file = os.path.join(ledger_dir, "executions.jsonl")
+
+        with open(plan_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"plan_id": "P-feat", "created_at": "2026-10-06T10:00:00Z"}) + "\n")
+        with open(exec_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"execution_id": "E-feat", "created_at": "2026-10-06T10:05:00Z"}) + "\n")
+        self._git(self.work_dir, "add", "-A")
+        self._git(self.work_dir, "commit", "-m", "feature multi ledger")
+
+        # 2. Advance main on remote with conflicting plans and executions records
+        peer_dir = os.path.join(self.root, "peer-multi")
+        subprocess.run(["git", "clone", self.remote_dir, peer_dir], check=True, capture_output=True)
+        self._git(peer_dir, "config", "user.email", "peer@holon.com")
+        self._git(peer_dir, "config", "user.name", "Peer User")
+        peer_ledger_dir = os.path.join(peer_dir, "holon-knowledge", "ledger")
+        peer_plan_file = os.path.join(peer_ledger_dir, "plans.jsonl")
+        peer_exec_file = os.path.join(peer_ledger_dir, "executions.jsonl")
+
+        with open(peer_plan_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"plan_id": "P-peer", "created_at": "2026-10-06T09:30:00Z"}) + "\n")
+        with open(peer_exec_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"execution_id": "E-peer", "created_at": "2026-10-06T09:35:00Z"}) + "\n")
+        self._git(peer_dir, "add", "-A")
+        self._git(peer_dir, "commit", "-m", "peer multi ledger")
+        self._git(peer_dir, "push", "origin", "main")
+
+        # 3. Pre-push sync
+        success, msg = sync_and_reconcile_pre_push(self.work_dir, target_branch="main")
+        self.assertTrue(success, f"Pre-push sync failed: {msg}")
+
+        # 4. Verify both files reconciled cleanly
+        with open(plan_file, encoding="utf-8") as f:
+            p_rows = [json.loads(line) for line in f if line.strip()]
+        self.assertEqual(len(p_rows), 2)
+        self.assertEqual(p_rows[0]["plan_id"], "P-peer")
+        self.assertEqual(p_rows[1]["plan_id"], "P-feat")
+
+        with open(exec_file, encoding="utf-8") as f:
+            e_rows = [json.loads(line) for line in f if line.strip()]
+        self.assertEqual(len(e_rows), 3)
+
+    def test_pre_push_sync_shallow_clone_deepen_handling(self):
+        # Verify shallow repository check and deepening behavior via mocked run_cmd
+        with patch("sandbox_executor.entrypoint.executor.run_cmd") as mock_run_cmd:
+
+            def side_effect(args, **kwargs):
+                cmd_str = " ".join(args)
+                if "remote get-url" in cmd_str:
+                    return MagicMock(returncode=0, stdout="origin")
+                if "rev-parse --verify origin/main" in cmd_str:
+                    return MagicMock(returncode=0, stdout="origin/main")
+                if "rev-parse origin/main" in cmd_str:
+                    return MagicMock(returncode=0, stdout="abc1234")
+                if "merge-base HEAD origin/main" in cmd_str:
+                    # Fail on first call, succeed after deepening
+                    if mock_run_cmd.deepen_called:
+                        return MagicMock(returncode=0, stdout="abc1234")
+                    return MagicMock(returncode=1, stdout="")
+                if "--is-shallow-repository" in cmd_str:
+                    return MagicMock(returncode=0, stdout="true")
+                if "fetch --deepen=50" in cmd_str:
+                    mock_run_cmd.deepen_called = True
+                    return MagicMock(returncode=0, stdout="")
+                return MagicMock(returncode=0, stdout="")
+
+            mock_run_cmd.deepen_called = False
+            mock_run_cmd.side_effect = side_effect
+
+            success, msg = sync_and_reconcile_pre_push(self.work_dir, target_branch="main")
+            self.assertTrue(success, msg)
+            self.assertTrue(mock_run_cmd.deepen_called)
+
+    def test_pre_push_sync_recognizes_expanded_unmerged_prefixes(self):
+        # Verify unmerged status check recognizes AU, UA, and DD prefixes
+        with patch("sandbox_executor.entrypoint.executor.run_cmd") as mock_run_cmd:
+
+            def side_effect(args, **kwargs):
+                cmd_str = " ".join(args)
+                if "remote get-url" in cmd_str:
+                    return MagicMock(returncode=0, stdout="origin")
+                if "rev-parse --verify origin/main" in cmd_str:
+                    return MagicMock(returncode=0, stdout="origin/main")
+                if "rev-parse origin/main" in cmd_str:
+                    return MagicMock(returncode=0, stdout="tip123")
+                if "merge-base HEAD origin/main" in cmd_str:
+                    return MagicMock(returncode=0, stdout="base123")
+                if "merge origin/main" in cmd_str:
+                    return MagicMock(returncode=1, stdout="CONFLICT")
+                if "diff --name-only --diff-filter=U" in cmd_str:
+                    return MagicMock(returncode=0, stdout="")
+                if "status --porcelain" in cmd_str:
+                    return MagicMock(returncode=0, stdout="AU non_ledger_conflict.txt\n")
+                if "merge --abort" in cmd_str:
+                    return MagicMock(returncode=0, stdout="")
+                return MagicMock(returncode=0, stdout="")
+
+            mock_run_cmd.side_effect = side_effect
+            success, msg = sync_and_reconcile_pre_push(self.work_dir, target_branch="main")
+            self.assertFalse(success)
+            self.assertIn("Non-ledger merge conflicts detected", msg)
+            self.assertIn("non_ledger_conflict.txt", msg)

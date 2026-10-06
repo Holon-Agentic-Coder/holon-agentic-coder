@@ -638,6 +638,33 @@ class TestLedgerReconciliation:
         assert len(reconciled) == 1
         assert reconciled[0]["v"] == 2
 
+    def test_reconcile_ledger_rows_with_none_or_invalid_revision(self):
+        raw_rows = [
+            {"plan_id": "P-1", "created_at": "2026-10-06T10:00:00Z", "v": 1, "ledger_revision": None},
+            {"plan_id": "P-1", "created_at": "2026-10-06T10:00:00Z", "v": 2, "ledger_revision": 2},
+        ]
+        # Should not raise TypeError and higher revision should win
+        reconciled = reconcile_ledger_rows(raw_rows, "plans")
+        assert len(reconciled) == 1
+        assert reconciled[0]["v"] == 2
+
+        # Invalid string revision should fallback gracefully to 1
+        raw_rows_invalid = [
+            {"plan_id": "P-2", "created_at": "2026-10-06T10:00:00Z", "v": 1, "ledger_revision": "invalid"},
+            {"plan_id": "P-2", "created_at": "2026-10-06T10:00:00Z", "v": 2, "ledger_revision": 1},
+        ]
+        reconciled_invalid = reconcile_ledger_rows(raw_rows_invalid, "plans")
+        assert len(reconciled_invalid) == 1
+        assert reconciled_invalid[0]["v"] == 1
+
+    def test_reconcile_ledger_file_atomic(self, tmp_path):
+        ledger_file = tmp_path / "plans.jsonl"
+        ledger_file.write_text('{"plan_id": "p1", "created_at": "2026-10-06T10:00:00Z"}\n')
+        assert reconcile_ledger_file(str(ledger_file)) is True
+        # Verify no temp files remain in directory
+        dir_files = [f.name for f in tmp_path.iterdir()]
+        assert dir_files == ["plans.jsonl"]
+
     def test_reconcile_ledgers_utility(self, tmp_path):
         ledger_dir = tmp_path / "holon-knowledge" / "ledger"
         ledger_dir.mkdir(parents=True)
@@ -707,3 +734,48 @@ class TestReviewMergeabilityGuards:
             assert res["merge_state_status"] == "DIRTY"
             assert res["source"] == "github_cli"
             assert res["pr_number"] == 42
+
+    def test_check_pr_mergeability_short_circuit_on_gh_error(self):
+        with (
+            patch("shutil.which", return_value="/usr/bin/gh"),
+            patch("subprocess.run") as mock_subproc,
+            patch("sandbox_executor.flow.run_git") as mock_git,
+        ):
+            # gh pr view returns error (e.g. no PR found)
+            mock_subproc.return_value = MagicMock(returncode=1, stdout="", stderr="no pull requests found")
+            mock_git.return_value = MagicMock(returncode=0, stdout="")
+
+            res = check_pr_mergeability(".", "my-branch", "main")
+            # Should short-circuit and call gh pr view only ONCE, not 3 times
+            assert mock_subproc.call_count == 1
+            assert res["source"] == "git_local"
+
+    def test_check_pr_mergeability_local_git_fallback_with_remote_tracking_ref(self):
+        with (
+            patch("shutil.which", return_value=None),
+            patch("sandbox_executor.flow.run_git") as mock_git,
+        ):
+
+            def git_side_effect(args, **kwargs):
+                cmd = args[0]
+                if cmd == "rev-parse":
+                    ref = args[2]
+                    if ref == "origin/main":
+                        return MagicMock(returncode=0, stdout="origin/main")
+                    if ref == "feature-branch":
+                        return MagicMock(returncode=1, stdout="")
+                    if ref == "origin/feature-branch":
+                        return MagicMock(returncode=0, stdout="origin/feature-branch")
+                    return MagicMock(returncode=1, stdout="")
+                if cmd == "merge-tree":
+                    # args: ['merge-tree', '--write-tree', branch_ref, target_ref]
+                    assert args[2] == "origin/feature-branch"
+                    assert args[3] == "origin/main"
+                    return MagicMock(returncode=0, stdout="tree-sha")
+                return MagicMock(returncode=0, stdout="")
+
+            mock_git.side_effect = git_side_effect
+            res = check_pr_mergeability(".", "feature-branch", "main")
+            assert res["source"] == "git_local"
+            assert res["is_dirty"] is False
+            assert res["mergeable"] == "MERGEABLE"

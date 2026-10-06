@@ -12,6 +12,7 @@ Automates the complete 5-stage Holon Flow lifecycle:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -400,8 +401,14 @@ def reconcile_ledger_rows(rows: list[dict[str, Any]], ledger_type: str) -> list[
             continue
 
         existing = deduped[pk]
-        cand_rev = int(row.get("ledger_revision", 1))
-        exist_rev = int(existing.get("ledger_revision", 1))
+        try:
+            cand_rev = int(row.get("ledger_revision") or 1)
+        except (ValueError, TypeError):
+            cand_rev = 1
+        try:
+            exist_rev = int(existing.get("ledger_revision") or 1)
+        except (ValueError, TypeError):
+            exist_rev = 1
 
         if cand_rev > exist_rev:
             deduped[pk] = row
@@ -471,8 +478,16 @@ def reconcile_ledger_file(file_path: str, ledger_type: str | None = None) -> boo
         with open(file_path, encoding="utf-8") as f:
             content = f.read()
         reconciled = reconcile_ledger_content(content, ledger_type)
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(reconciled)
+        dir_name = os.path.dirname(os.path.abspath(file_path))
+        temp_file = os.path.join(dir_name, f".{os.path.basename(file_path)}.tmp.{os.getpid()}")
+        try:
+            with open(temp_file, "w", encoding="utf-8") as f:
+                f.write(reconciled)
+            os.replace(temp_file, file_path)
+        finally:
+            if os.path.exists(temp_file):
+                with contextlib.suppress(OSError):
+                    os.remove(temp_file)
         return True
     except Exception as exc:
         logger.error(f"Failed to reconcile ledger file '{file_path}': {exc}")
@@ -551,6 +566,8 @@ def check_pr_mergeability(
                     text=True,
                     check=False,
                 )
+                if gh_proc.returncode != 0:
+                    break
                 if gh_proc.returncode == 0 and gh_proc.stdout.strip():
                     data = json.loads(gh_proc.stdout)
                     mergeable = str(data.get("mergeable") or "UNKNOWN").upper()
@@ -586,6 +603,13 @@ def check_pr_mergeability(
             target_ref = target_branch
 
         branch_ref = clean_branch or "HEAD"
+        if clean_branch:
+            b_check = run_git(["rev-parse", "--verify", clean_branch], cwd=repo_dir, check=False)
+            if b_check.returncode != 0:
+                remote_b_ref = f"origin/{clean_branch}"
+                rb_check = run_git(["rev-parse", "--verify", remote_b_ref], cwd=repo_dir, check=False)
+                if rb_check.returncode == 0:
+                    branch_ref = remote_b_ref
 
         # Try git merge-tree --write-tree
         mt_proc = run_git(["merge-tree", "--write-tree", branch_ref, target_ref], cwd=repo_dir, check=False)

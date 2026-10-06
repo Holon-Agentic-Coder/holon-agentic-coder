@@ -69,31 +69,29 @@ setup:
 	uv sync
 
 test:
-	uv run pytest -m "not integration_test" $(PYTEST_ARGS)
+	uv run task test $(PYTEST_ARGS)
 
 test-integration:
 	./apps/sandbox-executor/build_all_images.sh --output-log
 	uv run pytest -m "integration_test" $(PYTEST_ARGS)
 
-check: lint lint-docs
+check:
+	uv run task check
 
 lint:
-	uv lock --check
-	git diff --exit-code uv.lock
-	uv run ruff check .
-	uv run ruff format --check .
+	uv run task lint
 
 lint-docs:
-	npx prettier --check "**/*.md"
+	uv run task lint-docs
 
-format: format-code format-docs
+format:
+	uv run task format
 
 format-code:
-	uv run ruff check --fix .
-	uv run ruff format .
+	uv run task format-code
 
 format-docs:
-	npx prettier --write "**/*.md"
+	uv run task format-docs
 
 clean:
 	find . -name ".git" -prune -o -path "./.venv" -prune -o -type d \( -name "__pycache__" -o -name ".pytest_cache" -o -name ".ruff_cache" -o -name "*.egg-info" -o -name "build" -o -name "dist" -o -name ".mypy_cache" \) -exec rm -rf {} +

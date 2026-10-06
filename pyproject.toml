@@ -22,10 +22,14 @@ members = [
 holon = { path = "apps/sandbox-executor", editable = true }
 
 [tool.taskipy.tasks]
-clean = 'find . -type d \( -name "__pycache__" -o -name ".pytest_cache" -o -name "*.egg-info" -o -name "build" -o -name "dist" \) -not -path "*/.venv/*" -exec rm -rf {} + && rm -rf .venv'
-lint = "ruff check ."
-format = "ruff format --check ."
-auto-format = "ruff format . && ruff check --fix ."
+clean = 'find . -name ".git" -prune -o -path "./.venv" -prune -o -type d \( -name "__pycache__" -o -name ".pytest_cache" -o -name ".ruff_cache" -o -name "*.egg-info" -o -name "build" -o -name "dist" -o -name ".mypy_cache" \) -exec rm -rf {} + && rm -rf .coverage coverage.xml htmlcov apps/sandbox-executor/build_all_images.log build_all_images.log'
+lint = "uv lock --check && git diff --exit-code uv.lock && ruff check . && ruff format --check ."
+lint-docs = 'npx prettier --check "**/*.md"'
+check = "task lint && task lint-docs"
+format-code = "ruff check --fix . && ruff format ."
+format-docs = 'npx prettier --write "**/*.md"'
+format = "task format-code && task format-docs"
+test = 'pytest -m "not integration_test and not stress"'
 
 [tool.pytest.ini_options]
 testpaths = ["apps/sandbox-executor/tests"]

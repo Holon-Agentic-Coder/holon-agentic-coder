@@ -809,19 +809,29 @@ uv run holon --help
 uv pip install -e ./apps/sandbox-executor
 ```
 
-#### 5. Developer Makefile Workflows
+#### 5. Developer Workflows (`uv` & `Makefile`)
 
-A `Makefile` is provided at the repository root to standardize common contributor workflows:
+Task execution is standardized via `taskipy` and `uv` in `pyproject.toml`, with `Makefile` targets delegating cleanly to
+them:
 
 ```bash
+# Via uv and taskipy (primary entrypoint):
+uv run task check        # Run all static linting, formatting, and lockfile checks
+uv run task lint         # Run lockfile verification and Ruff checks
+uv run task lint-docs    # Check Markdown documentation formatting with Prettier
+uv run task format       # Automatically format codebase (Ruff) and documentation (Prettier)
+uv run task test         # Run unit tests (excluding container integration tests)
+uv run task clean        # Remove transient build and test caches
+
+# Or via Make:
 make help                # Display all available targets and descriptions
 make check-prerequisites # Verify installed tools (GNU Make, uv, npx, Docker CLI, Buildx, daemon)
 make check-docker        # Check Docker installation, Buildx, and daemon running status
 make setup               # Synchronize dependencies with uv sync
-make check               # Run all static linting, formatting, and lockfile checks
-make test                # Run unit tests (excluding container integration tests)
+make check               # Run all static linting, formatting, and lockfile checks (delegates to uv run task check)
+make test                # Run unit tests (delegates to uv run task test)
 make test-integration    # Build sandbox images and run container integration tests
-make format              # Automatically format codebase and documentation
+make format              # Automatically format codebase and documentation (delegates to uv run task format)
 make clean               # Remove transient build and test caches
 ```
 

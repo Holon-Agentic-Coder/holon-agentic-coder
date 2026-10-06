@@ -7,3 +7,9 @@
   environments must exist exclusively at the root `.venv`.
 - **Cleaning virtual environments**: If the virtual environment/stale code requires cleanup, always run
   `uv run task clean` instead of manually removing `.venv` or cache directories yourself.
+- **Task Runner (`taskipy`)**: Use standardized `uv run task <name>` tasks configured in `pyproject.toml`:
+  - `uv run task check` (runs lint and lint-docs)
+  - `uv run task lint` (runs uv lock --check, git diff uv.lock, ruff check, and ruff format --check)
+  - `uv run task lint-docs` (runs prettier check on markdown)
+  - `uv run task format` (formats python and markdown files)
+  - `uv run task test` (runs unit tests excluding integration and stress)

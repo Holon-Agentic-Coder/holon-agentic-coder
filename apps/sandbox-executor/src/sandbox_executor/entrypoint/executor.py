@@ -108,6 +108,20 @@ def _get_clean_git_env(base_env: dict[str, str] | None = None) -> dict[str, str]
 
 
 def redact_text(text: str) -> str:
+    """Mask credentials and sensitive tokens in text with asterisks.
+
+    Recognizes standard secret keys (token, secret, password, pwd, passwd, api_key,
+    credentials, client_secret, db_password, bare key), provider token prefixes,
+    HTTP authorization headers, and URL query parameters while preserving non-secret
+    diagnostic keys (such as sort_key and cache_key). Enforces line scoping on
+    separators and URL anchors to prevent multiline bleeding or nested structure corruption.
+
+    Args:
+        text: The string content to redact.
+
+    Returns:
+        The sanitized string with matched secret values masked as '*******'.
+    """
     if not text:
         return text
     # Guard against abnormally large inputs to prevent regex performance degradation on
@@ -129,21 +143,35 @@ def redact_text(text: str) -> str:
     s = re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
     # Redact sensitive URL query parameters including auth_code and code
     s = re.sub(
-        r"([?&](?:token|api_key|access_token|secret|password|auth|bearer|auth_code|code)[^=]*=)[^\s&]+",
+        r"([?&](?:token|api_key|access_token|secret|password|auth|bearer|auth_code|code|client_secret|db_password|credential|credentials|key(?=[=_-])|pwd|passwd)[^=\s&]*=)[^\s&]+",
         r"\1*******",
         s,
         flags=re.IGNORECASE,
     )
     pattern = (
-        r'(["\']?)(\b[a-zA-Z0-9_-]*(?:token|access_token|secret|password|api_key|auth|bearer|_pat|-pat|\bpat|_key|-key|secret_key|private_key|signing_key|encryption_key))\1'
-        r'\s*(:\s*|=)\s*(?:(["\'])(.*?)\4|([^&\s\'"]+))'
+        r'(["\']?)('
+        r"(?<![a-zA-Z0-9_-])key\b"
+        r"|\b[a-zA-Z0-9_-]*(?:api|secret|private|public|signing|encryption|auth|access|session|consumer|client|master|token)[_-]key\b"
+        r"|\b[a-zA-Z0-9_-]*(?:token|access_token|secret|password|passwd|pwd|client_secret|db_password|credential|credentials|auth|bearer|_pat|-pat|\bpat|auth_token|auth_code)\b"
+        r")\1"
+        r"(?:"
+        r"([ \t]*(:[ \t]*|=)[ \t]*)"
+        r'(?:(["\'])(.*?)\5|([^&\s\'"{}\[\],]+))'
+        r"|"
+        r"([ \t]*:[ \t]*\n\s*)"
+        r'(?:(?:(["\'])([^"\'\r\n]*)\9|([^&\s\'"{}\[\],:]+))(?=[ \t]*(?:,|\n|$)))'
+        r")"
     )
 
     def _replace_secret(match: re.Match) -> str:
         q_key = match.group(1) or ""
         key = match.group(2)
-        sep = match.group(3)
-        q_val = match.group(4) or ""
+        if match.group(3) is not None:
+            sep = match.group(3)
+            q_val = match.group(5) or ""
+        else:
+            sep = match.group(8)
+            q_val = match.group(9) or ""
         return f"{q_key}{key}{q_key}{sep}{q_val}*******{q_val}"
 
     s = re.sub(pattern, _replace_secret, s, flags=re.IGNORECASE)
@@ -152,6 +180,14 @@ def redact_text(text: str) -> str:
 
 
 def _is_secret_flag(flag: str) -> bool:
+    """Check whether a command-line flag identifies a sensitive credential.
+
+    Args:
+        flag: The command-line flag string (e.g. '--password', '--token').
+
+    Returns:
+        True if the flag indicates a credential parameter, False otherwise.
+    """
     flag_lowered = flag.lower()
     return flag_lowered in SECRET_FLAGS or (
         flag_lowered.startswith("-")
@@ -160,6 +196,14 @@ def _is_secret_flag(flag: str) -> bool:
 
 
 def redact_args(args: list[str]) -> list[str]:
+    """Redact sensitive credentials from command-line arguments.
+
+    Args:
+        args: List of command-line arguments.
+
+    Returns:
+        List of sanitized command-line arguments with secrets masked as '*******'.
+    """
     redacted = []
     mask_next = False
     for arg in args:

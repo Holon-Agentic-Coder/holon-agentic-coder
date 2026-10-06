@@ -84,7 +84,7 @@ lint:
 	uv run ruff format --check .
 
 lint-docs:
-	npx --yes prettier@3.8.4 --check "**/*.md"
+	npx prettier --check "**/*.md"
 
 format: format-code format-docs
 
@@ -93,7 +93,7 @@ format-code:
 	uv run ruff format .
 
 format-docs:
-	npx --yes prettier@3.8.4 --write "**/*.md"
+	npx prettier --write "**/*.md"
 
 clean:
 	find . -name ".git" -prune -o -path "./.venv" -prune -o -type d \( -name "__pycache__" -o -name ".pytest_cache" -o -name ".ruff_cache" -o -name "*.egg-info" -o -name "build" -o -name "dist" -o -name ".mypy_cache" \) -exec rm -rf {} +

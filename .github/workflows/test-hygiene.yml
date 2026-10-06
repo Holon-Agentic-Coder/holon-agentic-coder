@@ -56,7 +56,7 @@ jobs:
           node-version: '24'
 
       - name: Check markdown formatting with Prettier
-        run: npx --yes prettier@3.8.4 --check "**/*.md"
+        run: npx prettier --check "**/*.md"
 
       - name: Test clean task
         run: make clean

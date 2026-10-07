@@ -365,6 +365,12 @@ def init_project(target_dir: str = ".", template: str = "python", force: bool = 
             _, msg = _ensure_ledger_file(ledger_path)
             print(f"  - {msg}")
 
+        ledger_gitkeep = os.path.join(knowledge_dir, "ledger", ".gitkeep")
+        if not os.path.exists(ledger_gitkeep):
+            with open(ledger_gitkeep, "w", encoding="utf-8"):
+                pass
+            print(f"  - Created {_format_rel(ledger_gitkeep)}")
+
         for sub_dir in ["plans", "kb"]:
             full_sub = os.path.join(knowledge_dir, sub_dir)
             os.makedirs(full_sub, exist_ok=True)
@@ -374,7 +380,16 @@ def init_project(target_dir: str = ".", template: str = "python", force: bool = 
                     pass
                 print(f"  - Created {_format_rel(gitkeep)}")
 
-        # 3. Updating .gitignore
+        # 3. Scaffolding intents/
+        intents_dir = os.path.join(target_dir, "intents")
+        os.makedirs(intents_dir, exist_ok=True)
+        intents_gitkeep = os.path.join(intents_dir, ".gitkeep")
+        if not os.path.exists(intents_gitkeep):
+            with open(intents_gitkeep, "w", encoding="utf-8"):
+                pass
+            print(f"  - Created {_format_rel(intents_gitkeep)}")
+
+        # 4. Updating .gitignore
         _, gitignore_msg = _update_gitignore(target_dir, template)
         print(f"  - {gitignore_msg}")
 

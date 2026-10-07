@@ -58,12 +58,16 @@ class TestHolonInit(unittest.TestCase):
             "holon-knowledge/ledger/intents.jsonl",
             "holon-knowledge/ledger/plans.jsonl",
             "holon-knowledge/ledger/executions.jsonl",
+            "holon-knowledge/ledger/.gitkeep",
             "holon-knowledge/plans/.gitkeep",
             "holon-knowledge/kb/.gitkeep",
+            "intents/.gitkeep",
         ]
         for rel_path in expected_knowledge_files:
             full_path = os.path.join(self.target_dir, rel_path)
-            self.assertTrue(os.path.exists(full_path), f"Expected knowledge file {rel_path} was not created")
+            self.assertTrue(os.path.exists(full_path), f"Expected file {rel_path} was not created")
+
+        self.assertTrue(os.path.isdir(os.path.join(self.target_dir, "intents")))
 
         # Verify .gitignore creation and entries
         gitignore_path = os.path.join(self.target_dir, ".gitignore")
@@ -123,6 +127,8 @@ class TestHolonInit(unittest.TestCase):
             self.assertEqual(f.read(), plan_data)
         with open(execs_path, encoding="utf-8") as f:
             self.assertEqual(f.read(), exec_data)
+        self.assertTrue(os.path.exists(os.path.join(self.target_dir, "holon-knowledge/ledger/.gitkeep")))
+        self.assertTrue(os.path.exists(os.path.join(self.target_dir, "intents/.gitkeep")))
 
         # 4. Third init WITH force - data must STILL persist!
         ret2 = init_project(target_dir=self.target_dir, template="python", force=True)
@@ -133,6 +139,8 @@ class TestHolonInit(unittest.TestCase):
             self.assertEqual(f.read(), plan_data)
         with open(execs_path, encoding="utf-8") as f:
             self.assertEqual(f.read(), exec_data)
+        self.assertTrue(os.path.exists(os.path.join(self.target_dir, "holon-knowledge/ledger/.gitkeep")))
+        self.assertTrue(os.path.exists(os.path.join(self.target_dir, "intents/.gitkeep")))
 
     def test_force_overwrites_config_files(self):
         """Verify that --force overwrites config files, while non-force preserves modifications."""

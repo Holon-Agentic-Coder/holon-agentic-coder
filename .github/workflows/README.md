@@ -11,8 +11,8 @@ This directory contains the CI/CD workflows for the `holon-agentic-coder` projec
   - Verifying lockfile currency with `uv lock --check` and `git diff --exit-code uv.lock`.
   - Running static linting with `uv run ruff check .`.
   - Checking formatting with `uv run ruff format --check .`.
-  - Checking markdown formatting with Prettier (`npx --yes prettier@3.8.4 --check "**/*.md"`).
-  - Validating repository cleanup via `make clean`.
+  - Checking markdown formatting with Prettier (`npx prettier --check "**/*.md"`).
+  - Validating repository cleanup via `uv run task clean`.
 - `test-unit.yml`: Runs on pushes to `main` and on pull requests across both `ubuntu-latest` and `macos-latest`. It
   executes unit tests (`uv run pytest -m "not integration_test and not stress"`) using cached `uv` dependencies.
 - `test-stress.yml`: Runs on pushes to `main` and on pull requests on `ubuntu-latest`. It runs the workspace-survival

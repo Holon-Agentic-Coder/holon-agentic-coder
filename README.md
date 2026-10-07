@@ -809,20 +809,29 @@ uv run holon --help
 uv pip install -e ./apps/sandbox-executor
 ```
 
-#### 5. Developer Makefile Workflows
+#### 5. Developer Workflows (`uv` & `Makefile`)
 
-A `Makefile` is provided at the repository root to standardize common contributor workflows:
+Task execution is standardized via `uv` and `taskipy` in `pyproject.toml`. Python testing, linting, formatting, and
+maintenance tasks are executed directly with `uv run task <target>` or `uv sync`. `Makefile` is reserved strictly for
+Docker image orchestration and system prerequisite provisioning:
 
 ```bash
-make help                # Display all available targets and descriptions
+# Via uv and taskipy (Python project tasks):
+uv sync                  # Synchronize virtual environment dependencies
+uv run task check        # Run all static linting, formatting, and lockfile checks
+uv run task lint         # Run lockfile verification and Ruff checks
+uv run task lint-docs    # Check Markdown documentation formatting with Prettier
+uv run task format       # Automatically format codebase (Ruff) and documentation (Prettier)
+uv run task test         # Run unit tests (excluding container integration tests)
+uv run task clean        # Remove transient build and test caches
+
+# Via Make (Docker & system prerequisites only):
+make help                # Display all available Docker/system targets and descriptions
+make build-images        # Build all sandbox Docker images
 make check-prerequisites # Verify installed tools (GNU Make, uv, npx, Docker CLI, Buildx, daemon)
 make check-docker        # Check Docker installation, Buildx, and daemon running status
-make setup               # Synchronize dependencies with uv sync
-make check               # Run all static linting, formatting, and lockfile checks
-make test                # Run unit tests (excluding container integration tests)
-make test-integration    # Build sandbox images and run container integration tests
-make format              # Automatically format codebase and documentation
-make clean               # Remove transient build and test caches
+make install-docker      # Install Docker for the detected operating system
+make install-homebrew    # Install Homebrew (macOS only)
 ```
 
 > [!NOTE] `--token-reduce` is available on `plan` and `execute` (not on `intent`) and is currently **experimental / not

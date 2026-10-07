@@ -538,6 +538,21 @@ def redact_agent_secrets(text: str) -> str:
     return redact_env_literals(s)
 
 
+_FALLBACK_SAFE_DIRECTORIES: set[str] = set()
+
+
+def _get_local_safe_directories(repo_dir: str) -> list[str]:
+    """Retrieve safe.directory entries registered in the repository's local git config via git plumbing.
+
+    Paths are returned as stripped strings.
+    """
+    cmd = ["git", "-c", f"safe.directory={repo_dir}", "config", "--local", "--get-all", "safe.directory"]
+    res = subprocess.run(cmd, cwd=repo_dir, capture_output=True, text=True)
+    if res.returncode == 0:
+        return [line.strip() for line in res.stdout.splitlines() if line.strip()]
+    return []
+
+
 def run_cmd(
     args: list[str],
     cwd: str | None = None,
@@ -561,19 +576,18 @@ def run_cmd(
     if cmd_args and cmd_args[0] == "git":
         cmd_env = _get_clean_git_env(env)
         if cwd:
-            git_config_path = os.path.join(cwd, ".git", "config")
-            if os.path.isfile(git_config_path):
-                try:
-                    with open(git_config_path) as cf:
-                        cfg_content = cf.read()
-                        if (
-                            (f"directory = {cwd}" in cfg_content or "directory = *" in cfg_content)
-                            and len(cmd_args) > 1
-                            and cmd_args[1] != "-c"
-                        ):
-                            cmd_args = [cmd_args[0], "-c", f"safe.directory={cwd}", *cmd_args[1:]]
-                except Exception:
-                    pass
+            norm_cwd = os.path.realpath(cwd)
+            is_safe = norm_cwd in _FALLBACK_SAFE_DIRECTORIES
+            if not is_safe:
+                safe_dirs = _get_local_safe_directories(cwd)
+                for sd in safe_dirs:
+                    if sd == "*" or os.path.realpath(sd) == norm_cwd:
+                        is_safe = True
+                        break
+            # If configured as safe in local config, or if falling back, inject safe.directory per-invocation
+            has_safe_dir = any(arg == "safe.directory" or arg.startswith("safe.directory=") for arg in cmd_args)
+            if is_safe and not has_safe_dir and len(cmd_args) > 1:
+                cmd_args = [cmd_args[0], "-c", f"safe.directory={cwd}", *cmd_args[1:]]
 
     result = subprocess.run(cmd_args, cwd=cwd, capture_output=True, text=True, env=cmd_env)
     if result.returncode != 0 and check:
@@ -609,14 +623,11 @@ def _probe_git_repo(repo_dir: str) -> tuple[bool, str]:
                 cwd=repo_dir,
                 check=False,
             )
-            git_config_path = os.path.join(repo_dir, ".git", "config")
-            already_configured = False
-            if os.path.isfile(git_config_path):
-                try:
-                    with open(git_config_path) as cf:
-                        already_configured = f"directory = {repo_dir}" in cf.read()
-                except Exception:
-                    pass
+            norm_repo = os.path.realpath(repo_dir)
+            configured_dirs = _get_local_safe_directories(repo_dir)
+            already_configured = norm_repo in _FALLBACK_SAFE_DIRECTORIES or any(
+                sd == "*" or os.path.realpath(sd) == norm_repo for sd in configured_dirs
+            )
             if retry_res.returncode == 0 and already_configured:
                 pass
             else:
@@ -746,21 +757,19 @@ def _repair_git_repo(
     """
     # Case (a): Dubious ownership
     if "detected dubious ownership" in probe_err or "safe.directory" in probe_err:
-        run_cmd(
+        res = run_cmd(
             ["git", "-c", f"safe.directory={repo_dir}", "config", "--local", "--add", "safe.directory", repo_dir],
             cwd=repo_dir,
             check=False,
         )
-        git_config = os.path.join(repo_dir, ".git", "config")
-        if os.path.isfile(git_config):
-            try:
-                with open(git_config) as f:
-                    cfg = f.read()
-                if f"directory = {repo_dir}" not in cfg:
-                    with open(git_config, "a") as f:
-                        f.write(f"\n[safe]\n\tdirectory = {repo_dir}\n")
-            except Exception as e:
-                print(f"Warning: unable to write safe.directory to local config: {e}", file=sys.stderr)
+        if res.returncode != 0:
+            err_msg = (res.stderr or res.stdout).strip()
+            print(
+                f"Warning: unable to write safe.directory to local git config ({err_msg}); "
+                f"falling back to per-invocation -c safe.directory",
+                file=sys.stderr,
+            )
+            _FALLBACK_SAFE_DIRECTORIES.add(os.path.realpath(repo_dir))
 
     # Case (b): Stale index lock or locked ref
     if (

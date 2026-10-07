@@ -226,8 +226,7 @@ $$EV = 0.95 \times 75.0 + 0.5 \times 2.0 - 0.3 \times 1.6 - 3.5 = 71.25 + 1.0 - 
   - Invoke planner agent runner (or container sandbox according to trust/entropy policy).
   - Verify generated plan file `plans/P-{plan_id}.md` exists, conforms to required markdown headers, and contains a
     valid metrics table.
-  - Parse metrics from markdown table, compute Expected Value using config-driven constants
-    ($\\lambda = 0.3, \\mu =
+  - Parse metrics from markdown table, compute Expected Value using config-driven constants ($\\lambda = 0.3, \\mu =
     0.5$).
   - Append plan record to `holon-knowledge/ledger/plans.jsonl`.
   - Commit plan document and ledger update to git.

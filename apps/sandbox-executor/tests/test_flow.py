@@ -237,6 +237,8 @@ class TestFlowStages:
         assert ctx.execution_branch is not None
         assert "E-" in ctx.execution_branch
         assert res.payload["test_pass_rate"] == 1.0
+        assert "execution_file" not in res.payload
+        assert not (tmp_path / "executions").exists()
 
         # Verify executions ledger
         exec_ledger = ledger_dir / "executions.jsonl"
@@ -245,6 +247,7 @@ class TestFlowStages:
             lines = [json.loads(line) for line in f if line.strip()]
         assert len(lines) == 1
         assert lines[0]["execution_id"] == res.payload["execution_id"]
+        assert "execution_file" not in lines[0]
 
     def test_stage4_review_missing_execution_branch(self):
         ctx = FlowContext(execution_branch=None)
@@ -414,7 +417,7 @@ class TestFlowStages:
         mock_converge.assert_called_once()
         call_files = mock_converge.call_args[0][0]
         assert "docs/readme.md" in call_files
-        assert any(f.startswith("executions/E-") and f.endswith(".md") for f in call_files)
+        assert not any(f.startswith("executions/") for f in call_files)
         assert mock_converge.call_args[1].get("repo_dir") == str(tmp_path)
 
     def test_stage5_calibrate_fallback_invokes_converge_prettier(self, tmp_path):

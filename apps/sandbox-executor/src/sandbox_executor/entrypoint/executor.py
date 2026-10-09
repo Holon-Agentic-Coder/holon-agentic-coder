@@ -1047,8 +1047,6 @@ def main() -> None:
     repo_dir = None
     keep_workspace = False
     exec_id: str | None = None
-    exec_file_path: str | None = None
-    exec_file_rel: str | None = None
     timestamp_str: str = datetime.now(UTC).isoformat()
     recovery_triggered: bool = False
     base_tip: str | None = None
@@ -1384,31 +1382,6 @@ def main() -> None:
                         if fetch_err:
                             print(f"Fetch diagnostic error: {fetch_err}", file=sys.stderr)
 
-            exec_file_rel = f"executions/{exec_id}.md"
-            exec_file_path = os.path.join(repo_dir, exec_file_rel)
-            os.makedirs(os.path.dirname(exec_file_path), exist_ok=True)
-            try:
-                with open(exec_file_path, "w") as ef:
-                    ef.write(f"# Execution Record: {exec_id}\n\n")
-                    ef.write(f"- Plan Branch: `{plan_branch}`\n")
-                    ef.write(f"- Agent: `{agent_name}`\n")
-                    ef.write(f"- Agent Version: `{runner.get_version()}`\n")
-                    ef.write(f"- Model: `{model_name}`\n")
-                    ef.write(f"- Timestamp: `{timestamp_str}`\n\n")
-                    ef.write(f"## Status\n{exec_status.capitalize()}\n\n## Summary\n{summary}\n\n")
-                    # Agent output is untrusted and may contain a line of three backticks, which would
-                    # close the fence early and render the rest of the record as markdown. CommonMark
-                    # resolves this by a fence longer than the longest backtick run in the payload; the
-                    # raw file and executions.jsonl stay authoritative either way.
-                    longest_backtick_run = max((len(r) for r in re.findall(r"`+", agent_output_text)), default=0)
-                    fence = "`" * max(3, longest_backtick_run + 1)
-                    ef.write(f"## Agent Output\n{fence}\n")
-                    if agent_output_text:
-                        ef.write(agent_output_text if agent_output_text.endswith("\n") else f"{agent_output_text}\n")
-                    ef.write(f"{fence}\n")
-            except Exception as e:
-                print(f"Warning: Failed to write execution record {exec_file_path}: {e}", file=sys.stderr)
-
             exec_entry = {
                 "execution_id": exec_id,
                 "plan_branch": plan_branch,
@@ -1417,7 +1390,6 @@ def main() -> None:
                 "model": model_name,
                 "status": exec_status,
                 "summary": summary,
-                "execution_file": exec_file_rel,
                 "created_at": timestamp_str,
                 "agent_output_truncated": agent_output_truncated,
                 "agent_output_bytes": agent_output_bytes,
@@ -1430,7 +1402,7 @@ def main() -> None:
             except Exception as e:
                 print(f"Warning: Failed to write execution ledger entry: {e}", file=sys.stderr)
 
-            # Format modified/untracked markdown files and execution record with prettier
+            # Format modified/untracked markdown files with prettier
             try:
                 md_files: list[str] = []
                 status_res = run_cmd(["git", "status", "--porcelain"], cwd=repo_dir, check=False)
@@ -1445,13 +1417,6 @@ def main() -> None:
                         file_part = file_part.strip("\"'")
                         if file_part.endswith(".md"):
                             md_files.append(file_part)
-                if (
-                    exec_file_rel
-                    and exec_file_rel.endswith(".md")
-                    and exec_file_rel not in md_files
-                    and os.path.exists(os.path.join(repo_dir, exec_file_rel))
-                ):
-                    md_files.append(exec_file_rel)
                 if md_files:
                     converge_prettier(md_files, repo_dir=repo_dir)
             except Exception as e:
@@ -1459,9 +1424,7 @@ def main() -> None:
 
             commit_msg = f"execute: {exec_id} completed for plan {plan_branch}"
             add_targets = [
-                f
-                for f in (exec_file_rel, "holon-knowledge/ledger/executions.jsonl")
-                if os.path.exists(os.path.join(repo_dir, f))
+                f for f in ("holon-knowledge/ledger/executions.jsonl",) if os.path.exists(os.path.join(repo_dir, f))
             ]
             if add_targets:
                 run_cmd(["git", "add", *add_targets], cwd=repo_dir, check=False)
@@ -1519,24 +1482,10 @@ def main() -> None:
                             f"Git recovery failure: {err_reason}. "
                             f"Corrupted repo backed up at {backup_path or 'unknown'}. Remote push aborted."
                         )
-                        if exec_file_path:
-                            # Append, never rewrite: the agent's own summary stays readable, and the
-                            # recovery verdict is recorded below it as its own section.
-                            with contextlib.suppress(Exception):
-                                fresh = not os.path.exists(exec_file_path)
-                                with open(exec_file_path, "w" if fresh else "a") as ef:
-                                    if fresh:
-                                        ef.write(f"# Execution Record: {exec_id}\n\n")
-                                        ef.write(f"- Plan Branch: `{plan_branch}`\n")
-                                        ef.write(f"- Agent: `{agent_name}`\n")
-                                        ef.write(f"- Agent Version: `{runner.get_version()}`\n")
-                                        ef.write(f"- Model: `{model_name}`\n")
-                                        ef.write(f"- Timestamp: `{timestamp_str}`\n\n")
-                                    ef.write(f"\n## Git Recovery Failure\n{summary}\n\n")
-                                    ef.write("- Status after verification: `Failure`\n")
-                                    ef.write(f"- Verified base: `{base_tip or 'unresolved'}`\n")
-                                    ef.write("- Push: refused, HEAD is not a descendant of the plan base\n")
-
+                        # The ledger is append-only; a superseding row (e.g. ledger_revision >= 2) must
+                        # repeat every authoritative field that readers should rely on, including
+                        # agent_output_truncated and agent_output_bytes, so readers do not have to
+                        # merge fields backwards.
                         fail_ledger_entry = {
                             "execution_id": exec_id,
                             "plan_branch": plan_branch,
@@ -1545,17 +1494,16 @@ def main() -> None:
                             "model": model_name,
                             "status": "failure",
                             "summary": summary,
-                            "execution_file": exec_file_rel,
                             "created_at": datetime.now(UTC).isoformat(),
-                            # The ledger is append-only, so this row supersedes the one written before
-                            # verification; the revision marks it as authoritative for readers.
+                            "agent_output_truncated": agent_output_truncated,
+                            "agent_output_bytes": agent_output_bytes,
                             "ledger_revision": 2,
                         }
                         with open(os.path.join(ledger_dir, "executions.jsonl"), "a") as ef:
                             ef.write(json.dumps(fail_ledger_entry) + "\n")
 
                         run_cmd(
-                            ["git", "add", exec_file_rel, "holon-knowledge/ledger/executions.jsonl"],
+                            ["git", "add", "holon-knowledge/ledger/executions.jsonl"],
                             cwd=repo_dir,
                             check=False,
                         )
@@ -1581,10 +1529,6 @@ def main() -> None:
                     can_push = False
                     print(f"Error: Pre-push sync failed: {sync_msg}", file=sys.stderr)
                     sync_summary = f"Pre-push sync failure: {sync_msg}. Remote push aborted."
-                    if exec_file_path:
-                        with contextlib.suppress(Exception), open(exec_file_path, "a") as ef:
-                            ef.write(f"\n## Pre-Push Synchronization Failure\n{sync_summary}\n\n")
-                            ef.write("- Push: refused, unresolvable merge conflicts with target branch\n")
                     fail_ledger_entry = {
                         "execution_id": exec_id,
                         "plan_branch": plan_branch,
@@ -1593,8 +1537,9 @@ def main() -> None:
                         "model": model_name,
                         "status": "failure",
                         "summary": sync_summary,
-                        "execution_file": exec_file_rel,
                         "created_at": datetime.now(UTC).isoformat(),
+                        "agent_output_truncated": agent_output_truncated,
+                        "agent_output_bytes": agent_output_bytes,
                         "ledger_revision": 2,
                     }
                     with open(os.path.join(ledger_dir, "executions.jsonl"), "a") as ef:

@@ -609,9 +609,17 @@ Appended when a plan execution begins/finishes:
 - `model`: The model used for execution.
 - `status`: Execution status (e.g. `success`, `failure`, `decomposed`).
 - `summary`: Description of execution outcome (only for terminal states).
-- `execution_file`: Relative path to the execution markdown file (only for terminal states).
+- `execution_file`: _(Deprecated / Omitted for new records)_ Historical relative path to execution markdown file.
+- `agent_output_truncated`: Boolean flag indicating if captured agent logs exceeded byte budget and were truncated.
+- `agent_output_bytes`: Byte length of captured (and potentially truncated/sanitized) agent output payload.
+- `ledger_revision`: Integer revision number (defaults to `1` on creation).
 - `sub_intents`: List of sub-intents generated upon decomposition (only for `decomposed` state).
 - `created_at`: Creation timestamp.
+
+**Reader Contract for Superseding Rows:** When a ledger row is superseded (e.g. `ledger_revision >= 2` due to
+post-execution verification or git recovery failures), the superseding row must repeat all authoritative fields that
+readers should rely on (including `agent_output_truncated` and `agent_output_bytes`). Readers must select the row with
+the highest `ledger_revision` for a given `execution_id` without needing to merge fields backwards.
 
 ---
 

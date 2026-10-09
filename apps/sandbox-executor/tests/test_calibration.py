@@ -241,6 +241,41 @@ class TestMetricsParsing(unittest.TestCase):
             self.assertEqual(actual.deletions, 5)
             self.assertEqual(actual.impact, 35.0)
 
+    def test_parse_actual_metrics_selects_highest_ledger_revision_when_superseded(self):
+        predicted = PredictedMetrics(p_success=0.98, entropy=1.2, impact=35.0, cost=4.0, learning_value=2.5, ev=31.19)
+        rec_rev1 = {
+            "execution_id": "E-test-superseded",
+            "plan_branch": "I-test/P-test/_",
+            "status": "success",
+            "ledger_revision": 1,
+        }
+        rec_rev2 = {
+            "execution_id": "E-test-superseded",
+            "plan_branch": "I-test/P-test/_",
+            "status": "failure",
+            "exit_code": 1,
+            "agent_output_truncated": False,
+            "agent_output_bytes": 128,
+            "ledger_revision": 2,
+        }
+        jsonl_content = json.dumps(rec_rev1) + "\n" + json.dumps(rec_rev2) + "\n"
+
+        def mock_subp(cmd, **kwargs):
+            if isinstance(cmd, list) and "diff" in cmd:
+                return MagicMock(returncode=0, stdout="1 file changed, 1 deletion(-)\n")
+            return MagicMock(returncode=1, stdout="", stderr="")
+
+        with (
+            patch("os.path.exists", side_effect=lambda p: "executions.jsonl" in str(p)),
+            patch("builtins.open", unittest.mock.mock_open(read_data=jsonl_content)),
+            patch("subprocess.run", side_effect=mock_subp),
+        ):
+            actual, meta = parse_actual_metrics("E-test-superseded", "I-test/P-test/_", predicted)
+            self.assertEqual(meta["ledger_revision"], 2)
+            self.assertEqual(meta["status"], "failure")
+            self.assertEqual(actual.p_success, 0.0)
+            self.assertEqual(actual.exit_code, 1)
+
 
 class TestCalibrationCalculations(unittest.TestCase):
     """Test error calculations, accuracy classifications, and bias ratings."""
@@ -301,6 +336,8 @@ class TestReportFormatting(unittest.TestCase):
 
         md = format_markdown_report(report_dict)
         self.assertIn("# Plan Calibration Report: P-1787051525", md)
+        self.assertIn("- **Execution ID:** `E-1787051559`", md)
+        self.assertNotIn("executions/E-", md)
         self.assertIn("- **Evaluated Commit SHA:** `abcdef1234567890abcdef1234567890abcdef12`", md)
         self.assertIn("## 1. Executive Calibration Summary", md)
         self.assertIn("## 2. Mathematical Derivations & Calibration Errors", md)
@@ -443,13 +480,10 @@ class TestActualMetricsIntegrity(unittest.TestCase):
             "tokens": 1500,
         }
         jsonl_str = json.dumps(exec_record) + "\n"
-        md_str = "## Status\nSuccess\n"
 
         def mock_read_git_file(ref, rel_path, repo_dir="."):
             if "executions.jsonl" in rel_path:
                 return jsonl_str
-            if "E-prov-1.md" in rel_path:
-                return md_str
             return None
 
         diff_res = MagicMock(returncode=0, stdout="3 files changed, 100 insertions(+), 10 deletions(-)\n")

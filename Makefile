@@ -42,7 +42,7 @@ help:
 	@echo ""
 	@echo "Available targets:"
 	@printf "  %-22s %s\n" "build-images" "Build all sandbox Docker images."
-	@printf "  %-22s %s\n" "check-prerequisites" "Verify development prerequisites (GNU Make, uv, npx, Docker CLI, Buildx, daemon)."
+	@printf "  %-22s %s\n" "check-prerequisites" "Verify development prerequisites (GNU Make, uv, npx, gh, openssl, Docker CLI, Buildx, daemon)."
 	@printf "  %-22s %s\n" "check-docker" "Check Docker installation, Buildx, and daemon running status."
 	@printf "  %-22s %s\n" "install-docker" "Install Docker for the detected operating system."
 	@printf "  %-22s %s\n" "install-homebrew" "Install Homebrew (macOS only)."
@@ -72,7 +72,7 @@ install-homebrew:
 # Install Docker based on operating system
 install-docker:
 	@echo "$(COLOR_BOLD)Checking Docker installation for $(DETECTED_OS)...$(COLOR_RESET)"
-	@if [ -n "$(findstring n,$(filter-out --%,$(MAKEFLAGS)))" ]; then exit 0; \
+	@if [ -n "$(findstring n,$(filter-out --%,$(firstword -$(MAKEFLAGS))))" ]; then exit 0; \
 	elif command -v docker >/dev/null 2>&1; then \
 		echo "$(COLOR_GREEN)✅ Docker is already installed: $$(docker --version)$(COLOR_RESET)"; \
 	else \
@@ -110,7 +110,7 @@ install-docker:
 
 # Check Docker prerequisite (CLI, buildx, daemon)
 check-docker:
-	@if [ -n "$(findstring n,$(filter-out --%,$(MAKEFLAGS)))" ]; then exit 0; fi; \
+	@if [ -n "$(findstring n,$(filter-out --%,$(firstword -$(MAKEFLAGS))))" ]; then exit 0; fi; \
 	ERRORS=0; \
 	printf "%-32s " "Checking Docker CLI..."; \
 	if ! command -v docker >/dev/null 2>&1; then \
@@ -216,7 +216,7 @@ check-prerequisites:
 	@echo "$(COLOR_BOLD) Checking Prerequisites for holon-agentic-coder$(COLOR_RESET)"
 	@echo "$(COLOR_BOLD) OS: $(DETECTED_OS) | Architecture: $(DETECTED_ARCH)$(COLOR_RESET)"
 	@echo "$(COLOR_BOLD)====================================================$(COLOR_RESET)"
-	@if [ -n "$(findstring n,$(filter-out --%,$(MAKEFLAGS)))" ]; then exit 0; fi; \
+	@if [ -n "$(findstring n,$(filter-out --%,$(firstword -$(MAKEFLAGS))))" ]; then exit 0; fi; \
 	ERRORS=0; \
 	WARNINGS=0; \
 	printf "%-32s " "Checking GNU Make..."; \
@@ -247,6 +247,39 @@ check-prerequisites:
 		echo "$(COLOR_YELLOW)⚠️  Missing: npx not found$(COLOR_RESET)"; \
 		echo "   npx is required for 'uv run task lint-docs' and 'uv run task format-docs' (Prettier)."; \
 		WARNINGS=$$((WARNINGS + 1)); \
+	fi; \
+	\
+	printf "%-32s " "Checking GitHub CLI (gh)..."; \
+	if command -v gh >/dev/null 2>&1; then \
+		GH_VER=$$(gh --version 2>/dev/null | head -n 1 || true); \
+		echo "$(COLOR_GREEN)✅ Found: $$GH_VER$(COLOR_RESET)"; \
+		if ! gh auth status >/dev/null 2>&1; then \
+			echo "$(COLOR_YELLOW)⚠️  gh is not authenticated. Run 'gh auth login' to authenticate.$(COLOR_RESET)"; \
+			WARNINGS=$$((WARNINGS + 1)); \
+		fi; \
+	else \
+		echo "$(COLOR_RED)❌ Missing: GitHub CLI (gh) not found$(COLOR_RESET)"; \
+		if [ "$(DETECTED_OS)" = "Darwin" ]; then \
+			echo "   Install gh via: brew install gh"; \
+		else \
+			echo "   Install gh via: sudo apt install gh"; \
+		fi; \
+		ERRORS=$$((ERRORS + 1)); \
+	fi; \
+	\
+	printf "%-32s " "Checking OpenSSL..."; \
+	if command -v openssl >/dev/null 2>&1; then \
+		OPENSSL_VER=$$(openssl version 2>/dev/null || true); \
+		echo "$(COLOR_GREEN)✅ Found: $$OPENSSL_VER$(COLOR_RESET)"; \
+	else \
+		echo "$(COLOR_RED)❌ Missing: openssl not found$(COLOR_RESET)"; \
+		echo "   OpenSSL is required for token reduction Root CA generation (ca_generator.py)."; \
+		if [ "$(DETECTED_OS)" = "Darwin" ]; then \
+			echo "   Install OpenSSL via: brew install openssl"; \
+		else \
+			echo "   Install OpenSSL via: sudo apt install openssl"; \
+		fi; \
+		ERRORS=$$((ERRORS + 1)); \
 	fi; \
 	\
 	$(MAKE) check-docker AUTO_INSTALL=false || WARNINGS=$$((WARNINGS + 1)); \

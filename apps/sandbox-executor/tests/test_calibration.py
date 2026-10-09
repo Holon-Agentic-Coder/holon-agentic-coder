@@ -241,6 +241,41 @@ class TestMetricsParsing(unittest.TestCase):
             self.assertEqual(actual.deletions, 5)
             self.assertEqual(actual.impact, 35.0)
 
+    def test_parse_actual_metrics_selects_highest_ledger_revision_when_superseded(self):
+        predicted = PredictedMetrics(p_success=0.98, entropy=1.2, impact=35.0, cost=4.0, learning_value=2.5, ev=31.19)
+        rec_rev1 = {
+            "execution_id": "E-test-superseded",
+            "plan_branch": "I-test/P-test/_",
+            "status": "success",
+            "ledger_revision": 1,
+        }
+        rec_rev2 = {
+            "execution_id": "E-test-superseded",
+            "plan_branch": "I-test/P-test/_",
+            "status": "failure",
+            "exit_code": 1,
+            "agent_output_truncated": False,
+            "agent_output_bytes": 128,
+            "ledger_revision": 2,
+        }
+        jsonl_content = json.dumps(rec_rev1) + "\n" + json.dumps(rec_rev2) + "\n"
+
+        def mock_subp(cmd, **kwargs):
+            if isinstance(cmd, list) and "diff" in cmd:
+                return MagicMock(returncode=0, stdout="1 file changed, 1 deletion(-)\n")
+            return MagicMock(returncode=1, stdout="", stderr="")
+
+        with (
+            patch("os.path.exists", side_effect=lambda p: "executions.jsonl" in str(p)),
+            patch("builtins.open", unittest.mock.mock_open(read_data=jsonl_content)),
+            patch("subprocess.run", side_effect=mock_subp),
+        ):
+            actual, meta = parse_actual_metrics("E-test-superseded", "I-test/P-test/_", predicted)
+            self.assertEqual(meta["ledger_revision"], 2)
+            self.assertEqual(meta["status"], "failure")
+            self.assertEqual(actual.p_success, 0.0)
+            self.assertEqual(actual.exit_code, 1)
+
 
 class TestCalibrationCalculations(unittest.TestCase):
     """Test error calculations, accuracy classifications, and bias ratings."""

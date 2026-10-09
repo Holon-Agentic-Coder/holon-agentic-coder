@@ -678,7 +678,9 @@ def parse_actual_metrics(
 
     # 1. Search holon-knowledge/ledger/executions.jsonl via git show first, then fallback to disk
     jsonl_content = read_git_file(target_ref, "holon-knowledge/ledger/executions.jsonl", repo_dir=repo_dir)
-    found_record = False
+    best_record: dict[str, Any] | None = None
+    best_rev = -1
+
     if jsonl_content:
         for line in jsonl_content.splitlines():
             if not line.strip():
@@ -690,20 +692,14 @@ def parse_actual_metrics(
                 if (execution_id and rec_exec_id == execution_id) or (
                     plan_branch and rec_plan_branch.rstrip("/_") == plan_branch.rstrip("/_")
                 ):
-                    exec_meta = record
-                    status = record.get("status", "success")
-                    actual.exit_code = 0 if status == "success" else int(record.get("exit_code", 1))
-                    actual.p_success = 1.0 if status == "success" and actual.exit_code == 0 else 0.0
-                    if "duration" in record:
-                        actual.duration_seconds = float(record["duration"])
-                    if "tokens" in record:
-                        actual.tokens = int(record["tokens"])
-                    found_record = True
-                    break
+                    rev = int(record.get("ledger_revision", 1))
+                    if best_record is None or rev >= best_rev:
+                        best_record = record
+                        best_rev = rev
             except (json.JSONDecodeError, ValueError):
                 continue
 
-    if not found_record:
+    if best_record is None:
         executions_jsonl = os.path.join(repo_dir, "holon-knowledge", "ledger", "executions.jsonl")
         if os.path.exists(executions_jsonl):
             logger.info("Falling back to reading local executions.jsonl from disk at %s", executions_jsonl)
@@ -719,19 +715,24 @@ def parse_actual_metrics(
                             if (execution_id and rec_exec_id == execution_id) or (
                                 plan_branch and rec_plan_branch.rstrip("/_") == plan_branch.rstrip("/_")
                             ):
-                                exec_meta = record
-                                status = record.get("status", "success")
-                                actual.exit_code = 0 if status == "success" else int(record.get("exit_code", 1))
-                                actual.p_success = 1.0 if status == "success" and actual.exit_code == 0 else 0.0
-                                if "duration" in record:
-                                    actual.duration_seconds = float(record["duration"])
-                                if "tokens" in record:
-                                    actual.tokens = int(record["tokens"])
-                                break
+                                rev = int(record.get("ledger_revision", 1))
+                                if best_record is None or rev >= best_rev:
+                                    best_record = record
+                                    best_rev = rev
                         except (json.JSONDecodeError, ValueError):
                             continue
             except Exception as e:
                 logger.debug("Error reading executions.jsonl: %s", e)
+
+    if best_record is not None:
+        exec_meta = best_record
+        status = best_record.get("status", "success")
+        actual.exit_code = 0 if status == "success" else int(best_record.get("exit_code", 1))
+        actual.p_success = 1.0 if status == "success" and actual.exit_code == 0 else 0.0
+        if "duration" in best_record:
+            actual.duration_seconds = float(best_record["duration"])
+        if "tokens" in best_record:
+            actual.tokens = int(best_record["tokens"])
 
     # 2. Compute patch size via git diff between plan_branch and execution_branch (fail loudly on non-zero exit)
     base_ref = plan_branch if plan_branch else "HEAD~1"

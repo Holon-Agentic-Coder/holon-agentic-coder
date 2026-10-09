@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import os
 import pathlib
+import shutil
 import subprocess
 import typing
 
@@ -47,6 +48,10 @@ def _run_make(
     )
 
 
+OS_LINUX = "DETECTED_OS=Linux"
+OS_DARWIN = "DETECTED_OS=Darwin"
+
+
 def test_makefile_help_lists_core_targets() -> None:
     """Verify that make help documents all core targets and tool prerequisites."""
     result = _run_make(["help"], check=True)
@@ -67,8 +72,13 @@ def test_makefile_help_lists_core_targets() -> None:
     assert "openssl" in stdout, "Expected 'openssl' to be mentioned in 'make help' description"
 
 
-def test_makefile_dry_run_core_targets() -> None:
-    """Verify that dry-run mode (make -n) exits 0 without side effects across core targets."""
+def test_makefile_dry_run_core_targets(tmp_path: pathlib.Path) -> None:
+    """Verify that dry-run mode (make -n) exits 0 without running recipes across core targets.
+
+    The PATH contains no docker/gh/openssl, so a recipe that actually executed its checks would
+    exit non-zero; exit 0 therefore proves the recipes were only echoed.
+    """
+    env = _setup_mock_env(tmp_path, mock_docker=False)
     core_targets = [
         "help",
         "check-prerequisites",
@@ -79,9 +89,41 @@ def test_makefile_dry_run_core_targets() -> None:
         "prerequisites",
     ]
     for target in core_targets:
-        result = _run_make(["-n", target])
+        result = _run_make(["-n", target, OS_LINUX], env=env)
         msg = f"make -n {target} failed with code {result.returncode}. stdout: {result.stdout} stderr: {result.stderr}"
         assert result.returncode == 0, msg
+
+
+def _write_exe(path: pathlib.Path, script: str) -> None:
+    """Write an executable shell script at path."""
+    path.write_text(script, encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _create_openssl(bin_dir: pathlib.Path) -> None:
+    """Create a mock openssl executable."""
+    _write_exe(bin_dir / "openssl", "#!/bin/sh\necho 'OpenSSL 3.0.0'\n")
+
+
+def _gh_script(auth_exit: int, auth_output: str = "") -> str:
+    """Return a mock gh script whose `auth status` exits with auth_exit."""
+    auth_echo = f'echo "{auth_output}"; ' if auth_output else ""
+    return (
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "gh version 2.50.0 (2026-05-01)"; exit 0; fi\n'
+        f'if [ "$1" = "auth" ] && [ "$2" = "status" ]; then {auth_echo}exit {auth_exit}; fi\n'
+        "exit 0\n"
+    )
+
+
+def _create_auth_gh(bin_dir: pathlib.Path) -> None:
+    """Create a mock authenticated gh executable."""
+    _write_exe(bin_dir / "gh", _gh_script(0, "Logged in to github.com"))
+
+
+def _create_unauth_gh(bin_dir: pathlib.Path) -> None:
+    """Create a mock unauthenticated gh executable."""
+    _write_exe(bin_dir / "gh", _gh_script(1))
 
 
 def _setup_mock_env(
@@ -90,16 +132,17 @@ def _setup_mock_env(
     mock_gh: typing.Callable[[pathlib.Path], None] | None = None,
     mock_openssl: typing.Callable[[pathlib.Path], None] | None = None,
     mock_docker: bool = True,
-    os_name: str = "Linux",
 ) -> dict[str, str]:
     """Create an isolated PATH environment with fake binaries and essential tools.
+
+    The host OS is not controlled here: ``DETECTED_OS`` is assigned with ``:=`` in the
+    Makefile, so tests must pass it as a make command-line variable (see ``OS_LINUX``).
 
     Args:
         tmp_path: Pytest temporary directory.
         mock_gh: Optional callable to configure mock gh executable.
         mock_openssl: Optional callable to configure mock openssl executable.
         mock_docker: Whether to provide a mock docker binary satisfying check-docker.
-        os_name: Operating system string to set for DETECTED_OS override in make.
 
     Returns:
         Environment dictionary with isolated PATH.
@@ -107,16 +150,10 @@ def _setup_mock_env(
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
 
-    uv_bin = bin_dir / "uv"
-    uv_bin.write_text("#!/bin/sh\necho 'uv 0.12.0'\n", encoding="utf-8")
-    uv_bin.chmod(0o755)
-
-    npx_bin = bin_dir / "npx"
-    npx_bin.write_text("#!/bin/sh\necho '11.0.0'\n", encoding="utf-8")
-    npx_bin.chmod(0o755)
+    _write_exe(bin_dir / "uv", "#!/bin/sh\necho 'uv 0.12.0'\n")
+    _write_exe(bin_dir / "npx", "#!/bin/sh\necho '11.0.0'\n")
 
     if mock_docker:
-        docker_bin = bin_dir / "docker"
         docker_script = (
             "#!/bin/sh\n"
             'if [ "$1" = "--version" ]; then echo "Docker version 27.0.0"; exit 0; fi\n'
@@ -124,8 +161,7 @@ def _setup_mock_env(
             'if [ "$1" = "info" ]; then echo "Server Version: 27.0.0"; exit 0; fi\n'
             "exit 0\n"
         )
-        docker_bin.write_text(docker_script, encoding="utf-8")
-        docker_bin.chmod(0o755)
+        _write_exe(bin_dir / "docker", docker_script)
 
     if mock_gh is not None:
         mock_gh(bin_dir)
@@ -149,66 +185,31 @@ def _setup_mock_env(
         "mkdir",
     ]
     for tool in essential_tools:
-        target = subprocess.run(["which", tool], capture_output=True, text=True).stdout.strip()
+        target = shutil.which(tool)
         if target and os.path.exists(target):
             with contextlib.suppress(OSError):
                 (clean_bin / tool).symlink_to(target)
 
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{clean_bin}"
-    env["DETECTED_OS"] = os_name
     return env
 
 
 def test_check_prerequisites_fails_when_gh_missing(tmp_path: pathlib.Path) -> None:
     """Verify that check-prerequisites fails with exit code 1 when gh is missing."""
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir(parents=True, exist_ok=True)
+    env = _setup_mock_env(tmp_path, mock_gh=None, mock_openssl=_create_openssl)
 
-    def _create_openssl(b: pathlib.Path) -> None:
-        openssl_file = b / "openssl"
-        openssl_file.write_text("#!/bin/sh\necho 'OpenSSL 3.0.0'\n", encoding="utf-8")
-        openssl_file.chmod(0o755)
-
-    env = _setup_mock_env(
-        tmp_path,
-        mock_gh=None,
-        mock_openssl=_create_openssl,
-    )
-
-    result = _run_make(["check-prerequisites"], env=env)
-    assert result.returncode != 0
+    result = _run_make(["check-prerequisites", OS_LINUX], env=env)
+    assert result.returncode == 2  # make exits 2 when a recipe fails
     assert "GitHub CLI (gh) not found" in result.stdout
     assert "sudo apt install gh" in result.stdout
 
 
 def test_check_prerequisites_warns_when_gh_unauthenticated(tmp_path: pathlib.Path) -> None:
     """Verify advisory warning when gh is present but unauthenticated."""
+    env = _setup_mock_env(tmp_path, mock_gh=_create_unauth_gh, mock_openssl=_create_openssl)
 
-    def _create_unauth_gh(b: pathlib.Path) -> None:
-        gh_file = b / "gh"
-        script = (
-            "#!/bin/sh\n"
-            'if [ "$1" = "--version" ]; then echo "gh version 2.50.0 (2026-05-01)"; exit 0; fi\n'
-            'if [ "$1" = "auth" ] && [ "$2" = "status" ]; then exit 1; fi\n'
-            "exit 0\n"
-        )
-        gh_file.write_text(script, encoding="utf-8")
-        gh_file.chmod(0o755)
-
-    def _create_openssl(b: pathlib.Path) -> None:
-        openssl_file = b / "openssl"
-        openssl_file.write_text("#!/bin/sh\necho 'OpenSSL 3.0.0'\n", encoding="utf-8")
-        openssl_file.chmod(0o755)
-
-    env = _setup_mock_env(
-        tmp_path,
-        mock_gh=_create_unauth_gh,
-        mock_openssl=_create_openssl,
-        mock_docker=True,
-    )
-
-    result = _run_make(["check-prerequisites"], env=env)
+    result = _run_make(["check-prerequisites", OS_LINUX], env=env)
     assert result.returncode == 0
     assert "gh is not authenticated" in result.stdout
     assert "gh auth login" in result.stdout
@@ -217,31 +218,9 @@ def test_check_prerequisites_warns_when_gh_unauthenticated(tmp_path: pathlib.Pat
 
 def test_check_prerequisites_passes_when_gh_authenticated(tmp_path: pathlib.Path) -> None:
     """Verify that check-prerequisites passes with no warnings when gh is authenticated."""
+    env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_openssl)
 
-    def _create_auth_gh(b: pathlib.Path) -> None:
-        gh_file = b / "gh"
-        script = (
-            "#!/bin/sh\n"
-            'if [ "$1" = "--version" ]; then echo "gh version 2.50.0 (2026-05-01)"; exit 0; fi\n'
-            'if [ "$1" = "auth" ] && [ "$2" = "status" ]; then echo "Logged in to github.com"; exit 0; fi\n'
-            "exit 0\n"
-        )
-        gh_file.write_text(script, encoding="utf-8")
-        gh_file.chmod(0o755)
-
-    def _create_openssl(b: pathlib.Path) -> None:
-        openssl_file = b / "openssl"
-        openssl_file.write_text("#!/bin/sh\necho 'OpenSSL 3.0.0'\n", encoding="utf-8")
-        openssl_file.chmod(0o755)
-
-    env = _setup_mock_env(
-        tmp_path,
-        mock_gh=_create_auth_gh,
-        mock_openssl=_create_openssl,
-        mock_docker=True,
-    )
-
-    result = _run_make(["check-prerequisites"], env=env)
+    result = _run_make(["check-prerequisites", OS_LINUX], env=env)
     assert result.returncode == 0
     assert "gh is not authenticated" not in result.stdout
     assert "All prerequisites are satisfied!" in result.stdout
@@ -249,27 +228,10 @@ def test_check_prerequisites_passes_when_gh_authenticated(tmp_path: pathlib.Path
 
 def test_check_prerequisites_fails_when_openssl_missing(tmp_path: pathlib.Path) -> None:
     """Verify that check-prerequisites fails with exit code 1 when openssl is missing."""
+    env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=None)
 
-    def _create_auth_gh(b: pathlib.Path) -> None:
-        gh_file = b / "gh"
-        script = (
-            "#!/bin/sh\n"
-            'if [ "$1" = "--version" ]; then echo "gh version 2.50.0 (2026-05-01)"; exit 0; fi\n'
-            'if [ "$1" = "auth" ] && [ "$2" = "status" ]; then exit 0; fi\n'
-            "exit 0\n"
-        )
-        gh_file.write_text(script, encoding="utf-8")
-        gh_file.chmod(0o755)
-
-    env = _setup_mock_env(
-        tmp_path,
-        mock_gh=_create_auth_gh,
-        mock_openssl=None,
-        mock_docker=True,
-    )
-
-    result = _run_make(["check-prerequisites"], env=env)
-    assert result.returncode != 0
+    result = _run_make(["check-prerequisites", OS_LINUX], env=env)
+    assert result.returncode == 2  # make exits 2 when a recipe fails
     assert "openssl not found" in result.stdout
     assert "ca_generator.py" in result.stdout
     assert "sudo apt install openssl" in result.stdout
@@ -277,15 +239,9 @@ def test_check_prerequisites_fails_when_openssl_missing(tmp_path: pathlib.Path) 
 
 def test_check_prerequisites_darwin_install_instructions(tmp_path: pathlib.Path) -> None:
     """Verify that check-prerequisites prints brew install instructions on Darwin."""
-    env = _setup_mock_env(
-        tmp_path,
-        mock_gh=None,
-        mock_openssl=None,
-        mock_docker=True,
-        os_name="Darwin",
-    )
+    env = _setup_mock_env(tmp_path, mock_gh=None, mock_openssl=None)
 
-    result = _run_make(["check-prerequisites", "DETECTED_OS=Darwin"], env=env)
-    assert result.returncode != 0
+    result = _run_make(["check-prerequisites", OS_DARWIN], env=env)
+    assert result.returncode == 2  # make exits 2 when a recipe fails
     assert "brew install gh" in result.stdout
     assert "brew install openssl" in result.stdout

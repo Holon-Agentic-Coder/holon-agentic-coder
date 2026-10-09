@@ -733,32 +733,7 @@ def parse_actual_metrics(
             except Exception as e:
                 logger.debug("Error reading executions.jsonl: %s", e)
 
-    # 2. Inspect execution markdown file via git show first, then fallback to disk
-    exec_md_rel = f"executions/{execution_id}.md"
-    md_content = read_git_file(target_ref, exec_md_rel, repo_dir=repo_dir)
-    if not md_content:
-        exec_md_path = os.path.join(repo_dir, exec_md_rel)
-        if os.path.exists(exec_md_path):
-            try:
-                with open(exec_md_path, encoding="utf-8") as f:
-                    md_content = f.read()
-            except Exception as e:
-                logger.debug("Error reading execution markdown: %s", e)
-
-    if md_content:
-        content_lower = md_content.lower()
-        if (
-            "status: success" in content_lower
-            or "## status\nsuccess" in content_lower
-            or "status:\nsuccess" in content_lower
-        ):
-            actual.p_success = 1.0
-            actual.exit_code = 0
-        elif "failure" in content_lower:
-            actual.p_success = 0.0
-            actual.exit_code = 1
-
-    # 3. Compute patch size via git diff between plan_branch and execution_branch (fail loudly on non-zero exit)
+    # 2. Compute patch size via git diff between plan_branch and execution_branch (fail loudly on non-zero exit)
     base_ref = plan_branch if plan_branch else "HEAD~1"
     if execution_branch and base_ref != target_ref:
         diff_args = ["git", "diff", "--shortstat", f"{base_ref}..{target_ref}", "--"]
@@ -888,6 +863,7 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
     agent_id = report_data["agent_id"]
     model_name = report_data["model_name"]
     timestamp = report_data["timestamp"]
+    execution_branch = report_data.get("execution_branch") or "N/A"
     evaluated_sha = report_data.get("evaluated_commit_sha")
     sha_display = f"`{evaluated_sha}`" if evaluated_sha else "N/A"
     pred = report_data["predicted"]
@@ -906,7 +882,8 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
         f"# Plan Calibration Report: {plan_id}",
         "",
         f"- **Plan Reference:** [`plans/{plan_id}.md`]({plan_id}.md)",
-        f"- **Execution Reference:** [`executions/{execution_id}.md`](../executions/{execution_id}.md)",
+        f"- **Execution ID:** `{execution_id}`",
+        f"- **Execution Branch:** `{execution_branch}`",
         f"- **Intent Branch:** `{intent_branch}`",
         f"- **Evaluating Agent:** `{agent_id}/{model_name}`",
         f"- **Evaluation Timestamp:** `{timestamp}`",

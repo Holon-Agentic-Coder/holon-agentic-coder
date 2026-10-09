@@ -301,6 +301,8 @@ class TestReportFormatting(unittest.TestCase):
 
         md = format_markdown_report(report_dict)
         self.assertIn("# Plan Calibration Report: P-1787051525", md)
+        self.assertIn("- **Execution ID:** `E-1787051559`", md)
+        self.assertNotIn("executions/E-", md)
         self.assertIn("- **Evaluated Commit SHA:** `abcdef1234567890abcdef1234567890abcdef12`", md)
         self.assertIn("## 1. Executive Calibration Summary", md)
         self.assertIn("## 2. Mathematical Derivations & Calibration Errors", md)
@@ -443,13 +445,10 @@ class TestActualMetricsIntegrity(unittest.TestCase):
             "tokens": 1500,
         }
         jsonl_str = json.dumps(exec_record) + "\n"
-        md_str = "## Status\nSuccess\n"
 
         def mock_read_git_file(ref, rel_path, repo_dir="."):
             if "executions.jsonl" in rel_path:
                 return jsonl_str
-            if "E-prov-1.md" in rel_path:
-                return md_str
             return None
 
         diff_res = MagicMock(returncode=0, stdout="3 files changed, 100 insertions(+), 10 deletions(-)\n")

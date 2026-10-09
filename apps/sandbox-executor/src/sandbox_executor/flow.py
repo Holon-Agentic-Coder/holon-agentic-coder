@@ -941,10 +941,7 @@ def run_execute_stage(context: FlowContext) -> StageResult:
     exec_id = f"E-{exec_seq}-{context.agent}-{safe_model}"
     exec_branch = f"{plan_prefix}/{exec_id}/_"
     context.execution_branch = exec_branch
-
     repo_dir = context.repo_dir
-    exec_md_rel = f"executions/{exec_id}.md"
-    exec_md_path = os.path.join(repo_dir, exec_md_rel)
 
     test_pass_rate = 1.0
     exit_code = 0
@@ -978,29 +975,6 @@ def run_execute_stage(context: FlowContext) -> StageResult:
 
         test_pass_rate = 1.0 if exit_code == 0 else 0.0
 
-        os.makedirs(os.path.dirname(exec_md_path), exist_ok=True)
-        status_text = "Success" if exit_code == 0 else "Failed"
-        exec_content = f"""# Execution Record: {exec_id}
-
-- Plan Branch: `{context.plan_branch}`
-- Agent: `{context.agent}`
-- Agent Version: `1.1.22`
-- Model: `{context.model}`
-- Timestamp: `{datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")}`
-- Test Pass Rate: `{test_pass_rate}`
-- Duration: `{duration_seconds}s`
-
-## Status
-
-{status_text}
-
-## Summary
-
-Execution completed with test pass rate {test_pass_rate}.
-"""
-        with open(exec_md_path, "w", encoding="utf-8") as f:
-            f.write(exec_content)
-
         ledger_dir = os.path.join(repo_dir, "holon-knowledge", "ledger")
         os.makedirs(ledger_dir, exist_ok=True)
         exec_file = os.path.join(ledger_dir, "executions.jsonl")
@@ -1013,7 +987,6 @@ Execution completed with test pass rate {test_pass_rate}.
             "model": context.model,
             "status": "success" if exit_code == 0 else "failed",
             "summary": f"Execution completed with exit code {exit_code}",
-            "execution_file": exec_md_rel,
             "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
             "duration": duration_seconds,
             "duration_seconds": duration_seconds,
@@ -1037,7 +1010,7 @@ Execution completed with test pass rate {test_pass_rate}.
                 f.write(json.dumps(exec_entry) + "\n")
 
         if is_git:
-            md_files = [exec_md_rel]
+            md_files: list[str] = []
             try:
                 status_res = run_git(["status", "--porcelain"], cwd=repo_dir, check=False)
                 if status_res.returncode == 0:
@@ -1051,11 +1024,12 @@ Execution completed with test pass rate {test_pass_rate}.
                         file_part = file_part.strip("\"'")
                         if file_part.endswith(".md") and file_part not in md_files:
                             md_files.append(file_part)
-                converge_prettier(md_files, repo_dir=repo_dir)
+                if md_files:
+                    converge_prettier(md_files, repo_dir=repo_dir)
             except Exception as e:
                 context.log(f"Warning: Prettier formatting failed during execute stage: {e}")
 
-            run_git(["add", exec_md_rel, "holon-knowledge/ledger/executions.jsonl"], cwd=repo_dir, check=True)
+            run_git(["add", "holon-knowledge/ledger/executions.jsonl"], cwd=repo_dir, check=True)
             commit_env = os.environ.copy()
             commit_env.setdefault("GIT_AUTHOR_NAME", "Holon Executor Agent")
             commit_env.setdefault("GIT_AUTHOR_EMAIL", "executor-agent@holon-agentic-coder.com")
@@ -1074,7 +1048,6 @@ Execution completed with test pass rate {test_pass_rate}.
         payload={
             "execution_id": exec_id,
             "execution_branch": exec_branch,
-            "execution_file": exec_md_rel,
             "test_pass_rate": test_pass_rate,
             "exit_code": exit_code,
             "duration_seconds": duration_seconds,

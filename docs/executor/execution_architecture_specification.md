@@ -61,7 +61,7 @@ sequenceDiagram
     else Direct execution
         Exec->>Agent: Construct cmd & invoke with plan prompt
         Agent-->>Exec: Return output (success or failure)
-        Exec->>Exec: Write execution log (executions/E-*.md) and update executions.jsonl
+        Exec->>Exec: Update executions.jsonl
         Exec->>Git: Commit and push execution branch
     end
     Exec->>Exec: Clean up workspace (if HOLON_KEEP_WORKSPACE=0)
@@ -115,13 +115,14 @@ the full prompt. The executor intercepts the exit code to determine the outcome.
 
 ### 7. Result Recording & Ledger Updates
 
-An execution log is generated under `executions/E-{id}.md` containing execution metadata, status, and summaries. A
-matching JSON line is appended to `holon-knowledge/ledger/executions.jsonl`.
+Execution state and verdicts are recorded exclusively in `holon-knowledge/ledger/executions.jsonl`, which serves as the
+single authoritative append-only source of truth for execution telemetry. Execution markdown files under `executions/`
+are deprecated and omitted.
 
 ### 8. Git Commit & Push
 
-All modified files, ledgers, and logs are added, committed, and pushed back to the origin repository under the unique
-execution branch (unless `HOLON_SKIP_PUSH=1` is specified).
+All modified files and ledgers are added, committed, and pushed back to the origin repository under the unique execution
+branch (unless `HOLON_SKIP_PUSH=1` is specified).
 
 ---
 

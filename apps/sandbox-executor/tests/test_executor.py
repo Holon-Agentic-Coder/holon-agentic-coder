@@ -499,7 +499,7 @@ class TestExecutor(unittest.TestCase):
             self.assertIn("docs/guide.md", call_files)
             self.assertIn("notes.md", call_files)
             self.assertNotIn("src/code.py", call_files)
-            self.assertTrue(any(f.startswith("executions/E-") and f.endswith(".md") for f in call_files))
+            self.assertFalse(any(f.startswith("executions/") for f in call_files))
             self.assertEqual(mock_converge.call_args[1].get("repo_dir"), tmp_dir)
 
     @patch("sandbox_executor.entrypoint.executor.shutil.rmtree")
@@ -1182,20 +1182,11 @@ class TestExecutor(unittest.TestCase):
         ):
             executor.main()
 
-            exec_dir = os.path.join(tmp_dir, "executions")
-            self.assertTrue(os.path.isdir(exec_dir))
-            exec_files = os.listdir(exec_dir)
-            self.assertEqual(len(exec_files), 1)
-            with open(os.path.join(exec_dir, exec_files[0])) as ef:
-                record = ef.read()
-
-            self.assertTrue("## Status\nFailure" in record or "## Status\n\nFailure" in record)
-            self.assertTrue(
-                "## Summary\nPlan execution failed with exit code 1" in record
-                or "## Summary\n\nPlan execution failed with exit code 1" in record
-            )
-            self.assertIn("## Agent Output", record)
-            self.assertIn(diagnostic_line, record)
+            self.assertFalse(os.path.exists(os.path.join(tmp_dir, "executions")))
+            with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
+                entry = json.loads(lf.readline())
+            self.assertEqual(entry["status"], "failure")
+            self.assertEqual(entry["summary"], "Plan execution failed with exit code 1")
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
@@ -1253,19 +1244,12 @@ class TestExecutor(unittest.TestCase):
         ):
             executor.main()
 
-            exec_dir = os.path.join(tmp_dir, "executions")
-            exec_files = os.listdir(exec_dir)
-            with open(os.path.join(exec_dir, exec_files[0])) as ef:
-                record = ef.read()
-
-            self.assertIn("[Agent output truncated:", record)
-            notice = re.search(r"\[Agent output truncated: (\d+) bytes dropped; showing tail (\d+) bytes\]", record)
-            self.assertIsNotNone(notice, "truncation notice must report both byte counts")
-            tail_kept = int(notice.group(2))
-            self.assertLessEqual(tail_kept, 1024, "kept tail must stay within HOLON_AGENT_LOG_BYTES")
-            self.assertGreater(tail_kept, 0, "bounding must retain the newest output")
-            self.assertIn(tail_marker, record)
-            self.assertNotIn("EARLY_OUTPUT_HEAD_MARKER_", record)
+            self.assertFalse(os.path.exists(os.path.join(tmp_dir, "executions")))
+            with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
+                entry = json.loads(lf.readline())
+            self.assertTrue(entry["agent_output_truncated"])
+            self.assertLessEqual(entry["agent_output_bytes"], 1024)
+            self.assertGreater(entry["agent_output_bytes"], 0)
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
@@ -1332,19 +1316,12 @@ class TestExecutor(unittest.TestCase):
         ):
             executor.main()
 
-            exec_dir = os.path.join(tmp_dir, "executions")
-            exec_files = os.listdir(exec_dir)
-            with open(os.path.join(exec_dir, exec_files[0])) as ef:
-                record = ef.read()
-
+            self.assertFalse(os.path.exists(os.path.join(tmp_dir, "executions")))
             with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
                 ledger_content = lf.read()
 
             for secret in (secret_gh, secret_gh_tok, secret_key):
-                self.assertNotIn(secret, record, f"Secret {secret} leaked into execution markdown record!")
                 self.assertNotIn(secret, ledger_content, f"Secret {secret} leaked into executions.jsonl!")
-
-            self.assertIn("*******", record)
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
@@ -1426,18 +1403,13 @@ class TestExecutor(unittest.TestCase):
         ):
             executor.main()
 
-            exec_dir = os.path.join(tmp_dir, "executions")
-            exec_files = os.listdir(exec_dir)
-            with open(os.path.join(exec_dir, exec_files[0])) as ef:
-                record = ef.read()
+            self.assertFalse(os.path.exists(os.path.join(tmp_dir, "executions")))
             with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
                 ledger_content = lf.read()
 
-            self.assertIn("[Agent output truncated:", record)
-            self.assertNotIn(secret, record)
+            self.assertNotIn(secret, ledger_content)
             for start in range(len(secret) - 7):
                 window = secret[start : start + 8]
-                self.assertNotIn(window, record, f"Secret fragment {window!r} leaked into the execution record.")
                 self.assertNotIn(window, ledger_content, f"Secret fragment {window!r} leaked into the ledger row.")
 
     def test_agent_output_byte_bound_never_strands_secret_fragment(self):
@@ -1875,23 +1847,15 @@ class TestExecutor(unittest.TestCase):
             self.assertIn(str(configured), warning, "the clamp must name the configured value")
             self.assertIn(str(_MAX_REDACT_INPUT_LEN), warning, "the clamp must name the limit it applied")
 
-            exec_dir = os.path.join(tmp_dir, "executions")
-            with open(os.path.join(exec_dir, os.listdir(exec_dir)[0])) as ef:
-                record = ef.read()
+            self.assertFalse(os.path.exists(os.path.join(tmp_dir, "executions")))
             with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
                 entry = json.loads(lf.readline())
 
-            self.assertIn("[Agent output truncated:", record)
+            self.assertTrue(entry["agent_output_truncated"])
             self.assertLessEqual(entry["agent_output_bytes"], _MAX_REDACT_INPUT_LEN)
-            # The ledger byte count is exactly what was committed inside the fence, marker included.
-            block = record.split("## Agent Output\n", 1)[1].lstrip("\n")
-            fence = block.split("\n", 1)[0]
-            body = block.split("\n", 1)[1]
-            self.assertTrue(body.endswith(f"{fence}\n"))
-            self.assertEqual(entry["agent_output_bytes"], len(body[: -len(f"{fence}\n")].encode("utf-8")))
             for start in range(len(secret) - 7):
                 window = secret[start : start + 8]
-                self.assertNotIn(window, record, f"Secret fragment {window!r} leaked at a 200 KB budget.")
+                self.assertNotIn(window, json.dumps(entry), f"Secret fragment {window!r} leaked at a 200 KB budget.")
 
     def test_agent_log_byte_budget_clamps_and_falls_back(self):
         """Test the HOLON_AGENT_LOG_BYTES clamp to the redaction ceiling and its fallbacks."""
@@ -2110,18 +2074,11 @@ class TestExecutor(unittest.TestCase):
         ):
             executor.main()
 
-            exec_dir = os.path.join(tmp_dir, "executions")
-            with open(os.path.join(exec_dir, os.listdir(exec_dir)[0])) as ef:
-                record = ef.read()
+            self.assertFalse(os.path.exists(os.path.join(tmp_dir, "executions")))
             with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
                 entry = json.loads(lf.readline())
 
-            notice = re.search(r"\[Agent output truncated: (\d+) bytes dropped; showing tail (\d+) bytes\]", record)
-            self.assertIsNotNone(notice)
             self.assertTrue(entry["agent_output_truncated"])
-            # `showing tail N` is an upper bound on the retained tail; the exact committed size is the
-            # ledger field, which counts marker plus tail and stays inside the configured budget.
-            self.assertLess(int(notice.group(2)), entry["agent_output_bytes"])
             self.assertLessEqual(entry["agent_output_bytes"], budget)
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
@@ -2149,25 +2106,11 @@ class TestExecutor(unittest.TestCase):
         ):
             executor.main()
 
-            exec_dir = os.path.join(tmp_dir, "executions")
-            with open(os.path.join(exec_dir, os.listdir(exec_dir)[0])) as ef:
-                record = ef.read()
-
-        payload_lines = payload.rstrip("\n").split("\n")
-        longest_run = max(len(match.group(0)) for match in re.finditer(r"`+", payload))
-        lines = record.split("\n")
-        header_at = lines.index("## Agent Output")
-        opener_idx = header_at + 1
-        while opener_idx < len(lines) and not lines[opener_idx]:
-            opener_idx += 1
-        opener = lines[opener_idx]
-        closer = lines[opener_idx + 1 + len(payload_lines)]
-
-        # Counter-example: the superseded fixed fence was not longer than the payload's own delimiter.
-        self.assertLessEqual(3, longest_run)
-        self.assertEqual(lines[opener_idx + 1 : opener_idx + 1 + len(payload_lines)], payload_lines)
-        self.assertEqual(opener, closer, "the block must close with the fence it opened with")
-        self.assertGreater(len(opener), longest_run, "the fence must outlast the longest backtick run")
+            self.assertFalse(os.path.exists(os.path.join(tmp_dir, "executions")))
+            with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
+                entry = json.loads(lf.readline())
+            self.assertEqual(entry["status"], "failure")
+            self.assertGreater(entry["agent_output_bytes"], 0)
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
@@ -2291,10 +2234,10 @@ class TestExecutor(unittest.TestCase):
                 "model",
                 "status",
                 "summary",
-                "execution_file",
                 "created_at",
             }
             self.assertTrue(required_keys.issubset(entry.keys()))
+            self.assertNotIn("execution_file", entry)
             self.assertIn("agent_output_truncated", entry)
             self.assertIn("agent_output_bytes", entry)
             self.assertIsInstance(entry["agent_output_truncated"], bool)
@@ -2528,7 +2471,8 @@ class TestExecutor(unittest.TestCase):
             self.assertIn("src/codebase.py", tree_files)
             self.assertIn("src/agent_edit.py", tree_files)
             self.assertIn("holon-knowledge/ledger/executions.jsonl", tree_files)
-            self.assertTrue(any(f.startswith("executions/E-") and f.endswith(".md") for f in tree_files))
+            self.assertFalse(any(f.startswith("executions/") for f in tree_files))
+            self.assertFalse(os.path.exists(os.path.join(workspace_dir, "executions")))
 
             backup_dirs = [d for d in os.listdir(workspace_dir) if d.startswith(".git-unusable-")]
             self.assertEqual(len(backup_dirs), 1)
@@ -2544,6 +2488,148 @@ class TestExecutor(unittest.TestCase):
                 ["git", "branch", "-a"], cwd=bare_dir, capture_output=True, text=True, check=True
             )
             self.assertIn("E-", branches_res.stdout)
+
+    @patch("sandbox_executor.entrypoint.executor.shutil.rmtree")
+    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    def test_git_recovery_failure_superseding_row_carries_agent_output_accounting(
+        self, mock_get_runner, mock_cleanup, mock_rmtree
+    ):
+        """Regression test for Bean 0064: superseding ledger_revision: 2 row carries agent output accounting."""
+        with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
+            plan_branch = "I-456/P-123/_"
+            bare_dir, _plan_tip = self._create_bare_remote_with_plan(base_dir, plan_branch)
+            workspace_dir = os.path.join(base_dir, "workspace")
+
+            mock_runner = MagicMock()
+            mock_runner.get_version.return_value = "1.0.0"
+
+            # Simulate agent run with output, and corrupted git objects
+            def build_cmd_side_effect(*args, **kwargs):
+                agent_script = (
+                    "import os, shutil; print('Agent stdout line for accounting'); shutil.rmtree('.git/objects')"
+                )
+                return ["python3", "-c", agent_script]
+
+            mock_runner.build_cmd.side_effect = build_cmd_side_effect
+            mock_runner.validate.return_value = None
+            mock_get_runner.return_value = mock_runner
+
+            # Force git recovery verification to fail by breaking ancestry_check or tree_valid
+            orig_run_cmd = executor.run_cmd
+
+            def failing_run_cmd(cmd, cwd=None, **kwargs):
+                if isinstance(cmd, list) and len(cmd) >= 4 and cmd[:3] == ["git", "merge-base", "--is-ancestor"]:
+                    # Return non-zero to fail recovery verification
+                    return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="not ancestor")
+                return orig_run_cmd(cmd, cwd=cwd, **kwargs)
+
+            with (
+                patch.dict(os.environ, {"HOLON_REPO_DIR": workspace_dir}),
+                patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=workspace_dir),
+                patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value=bare_dir),
+                patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=failing_run_cmd),
+                patch("sys.argv", ["executor.py", plan_branch, "antigravity-agent", "gemini-3.5-flash"]),
+            ):
+                executor.main()
+
+            ledger_file = os.path.join(workspace_dir, "holon-knowledge", "ledger", "executions.jsonl")
+            self.assertTrue(os.path.exists(ledger_file))
+            with open(ledger_file) as f:
+                entries = [json.loads(line) for line in f if line.strip()]
+
+            # There should be 2 entries: rev 1 and rev 2
+            self.assertEqual(len(entries), 2)
+            rev1 = entries[0]
+            rev2 = entries[1]
+
+            self.assertEqual(rev1["ledger_revision"], 1)
+            self.assertEqual(rev2["ledger_revision"], 2)
+            self.assertEqual(rev2["status"], "failure")
+            self.assertIn("Git recovery failure", rev2["summary"])
+
+            # Reader contract: superseding row repeats authoritative fields
+            self.assertNotIn("execution_file", rev1)
+            self.assertNotIn("execution_file", rev2)
+            self.assertEqual(rev2["agent_output_truncated"], rev1["agent_output_truncated"])
+            self.assertEqual(rev2["agent_output_bytes"], rev1["agent_output_bytes"])
+            self.assertGreater(rev2["agent_output_bytes"], 0)
+
+    @patch("sandbox_executor.entrypoint.executor.sync_and_reconcile_pre_push")
+    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    def test_pre_push_sync_failure_superseding_row_carries_agent_output_accounting(
+        self, mock_get_repo_url, mock_get_runner, mock_cleanup, mock_sync
+    ):
+        """Test that pre-push sync failure rev-2 row carries agent output accounting and omits execution_file."""
+        mock_get_repo_url.return_value = "/mock/repo"
+        mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.1.22"
+        mock_runner.build_cmd.return_value = ["agy", "run"]
+        mock_get_runner.return_value = mock_runner
+
+        mock_sync.return_value = (False, "unresolvable conflicts")
+
+        def side_effect(args, cwd=None, **kwargs):
+            mock_res = MagicMock()
+            if "clone" in args:
+                ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
+                os.makedirs(ledger_dir, exist_ok=True)
+                with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "plan_id": "P-123",
+                                "intent_branch": "I-456/_",
+                                "entropy": 2.0,
+                                "entropy_budget": 5.0,
+                            }
+                        )
+                        + "\n"
+                    )
+            if "agy" in args:
+                mock_res.returncode = 0
+                mock_res.stdout = "Task complete with output.\n"
+                mock_res.stderr = ""
+            elif "diff" in args and "--cached" in args and "--quiet" in args:
+                mock_res.returncode = 1
+                mock_res.stdout = ""
+                mock_res.stderr = ""
+            elif "rev-parse" in args and "--verify" in args and "HEAD^" in args:
+                mock_res.returncode = 0
+                mock_res.stdout = "parent-commit-sha\n"
+            else:
+                mock_res.returncode = 0
+                mock_res.stdout = ""
+                mock_res.stderr = ""
+            return mock_res
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect),
+            patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
+            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
+        ):
+            executor.main()
+
+            ledger_file = os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")
+            self.assertTrue(os.path.exists(ledger_file))
+            with open(ledger_file) as lf:
+                entries = [json.loads(line) for line in lf if line.strip()]
+
+            self.assertEqual(len(entries), 2)
+            rev1, rev2 = entries[0], entries[1]
+            self.assertEqual(rev1["ledger_revision"], 1)
+            self.assertEqual(rev2["ledger_revision"], 2)
+            self.assertEqual(rev2["status"], "failure")
+            self.assertIn("Pre-push sync failure", rev2["summary"])
+            self.assertNotIn("execution_file", rev1)
+            self.assertNotIn("execution_file", rev2)
+            self.assertEqual(rev2["agent_output_truncated"], rev1["agent_output_truncated"])
+            self.assertEqual(rev2["agent_output_bytes"], rev1["agent_output_bytes"])
+            self.assertGreater(rev2["agent_output_bytes"], 0)
 
     def _clone_workspace(self, base_dir: str, bare_dir: str, plan_branch: str) -> str:
         workspace_dir = os.path.join(base_dir, "workspace")

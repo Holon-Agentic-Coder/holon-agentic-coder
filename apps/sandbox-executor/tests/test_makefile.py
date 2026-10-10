@@ -515,3 +515,58 @@ def test_detected_os_is_derived_from_uname_not_written_as_a_constant() -> None:
     assert detected == ["DETECTED_OS := $(shell uname -s)"], (
         f"DETECTED_OS must be derived from `uname -s`, found: {detected}"
     )
+
+
+def _probe_lines(stdout: str) -> list[str]:
+    """Lines the target prints only when it actually runs its probes."""
+    return [line for line in stdout.splitlines() if line.startswith("Checking ")]
+
+
+def test_check_prerequisites_stays_inert_under_every_dry_run_spelling(tmp_path: pathlib.Path) -> None:
+    """`-n`, `-s -n`, `-Bn` and `--dry-run` must all probe nothing."""
+    env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_openssl)
+    for flags in (["-n"], ["-n", "-s"], ["-Bn"], ["--dry-run"]):
+        result = _run_make([*flags, "check-prerequisites"], env=env)
+        assert result.returncode == 0, f"{flags} failed: {result.stderr}"
+        assert _probe_lines(result.stdout) == [], f"{flags} executed the checks: {result.stdout}"
+
+
+def test_check_prerequisites_runs_when_an_option_argument_spells_n(tmp_path: pathlib.Path) -> None:
+    """`make -I incdir_n ...` must probe for real: GNU make keeps -n only in the first word.
+
+    The guard used to scan every MAKEFLAGS word that is not a VAR=value or --long token, so
+    the -I argument itself was scanned, "incdir_n" matched the n, and the target printed its
+    banner, probed nothing and exited 0. Measured on this branch before the fix: 0 probe
+    lines and exit 0. The sibling repository carries the same guard and had the same hole.
+    """
+    include_dir = tmp_path / "incdir_n"
+    include_dir.mkdir()
+    env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_openssl)
+    result = _run_make(["-I", str(include_dir), "check-prerequisites"], env=env)
+
+    probes = _probe_lines(result.stdout)
+    assert probes, f"the guard misread an option argument as a dry run:\n{result.stdout}"
+    assert any(line.startswith("Checking GitHub CLI") for line in probes)
+
+
+def test_check_prerequisites_runs_when_a_command_line_assignment_spells_n(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The older first-word-only form failed here: 'Linux' contains an n."""
+    env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_openssl)
+    result = _run_make(["DETECTED_OS=Linux", "check-prerequisites"], env=env)
+
+    probes = _probe_lines(result.stdout)
+    assert probes, f"the guard misread an assignment as a dry run:\n{result.stdout}"
+    assert any(line.startswith("Checking uv") for line in probes)
+
+
+def test_dry_run_guard_does_not_scan_every_makeflags_word() -> None:
+    """Static pin: the word-scan form must not come back.
+
+    Both wrong answers are measurable (see the two tests above), so the shape of the
+    detector is pinned too: consult the compacted option cluster only.
+    """
+    makefile = (_get_repo_root() / "Makefile").read_text(encoding="utf-8")
+    assert "findstring n,$(foreach" not in makefile, "MAKEFLAGS word scan is back"
+    assert "DRY_RUN := $(if $(findstring n,$(MF_OPTION_CLUSTER)),1,)" in makefile

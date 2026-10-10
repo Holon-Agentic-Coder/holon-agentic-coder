@@ -4,6 +4,20 @@
 DETECTED_OS := $(shell uname -s)
 DETECTED_ARCH := $(shell uname -m)
 
+# Dry-run detection, consulted by the guarded targets below. GNU make compacts every
+# single-letter option into the FIRST word of MAKEFLAGS ("n", "nI", "sn") and places option
+# arguments and VAR=value assignments after it ("I incdir_n", "n -- DETECTED_OS=Linux"), so
+# only that leading cluster may be consulted. Scanning every word -- as this file's guard
+# did -- reads an option's own argument as a -n: `make -I incdir_n check-prerequisites`
+# printed its banner, probed nothing and exited 0, a prerequisite check silently reporting
+# success. Scanning only the first word without this filtering was the older failure:
+# `make DETECTED_OS=Linux` puts an assignment there and "Linux" contains an n. A first word
+# that is an assignment or a long option means no short options were given at all.
+MF_OPTION_CLUSTER := $(firstword $(MAKEFLAGS))
+MF_OPTION_CLUSTER := $(if $(findstring =,$(MF_OPTION_CLUSTER)),,$(MF_OPTION_CLUSTER))
+MF_OPTION_CLUSTER := $(if $(filter --%,$(MF_OPTION_CLUSTER)),,$(MF_OPTION_CLUSTER))
+DRY_RUN := $(if $(findstring n,$(MF_OPTION_CLUSTER)),1,)
+
 # CI Detection
 CI ?= false
 
@@ -42,7 +56,7 @@ help:
 	@echo ""
 	@echo "Available targets:"
 	@printf "  %-22s %s\n" "build-images" "Build all sandbox Docker images."
-	@printf "  %-22s %s\n" "check-prerequisites" "Verify development prerequisites (GNU Make, uv, npx, Docker CLI, Buildx, daemon)."
+	@printf "  %-22s %s\n" "check-prerequisites" "Verify development prerequisites (fatal: uv, gh, openssl; advisory: GNU Make, npx, gh auth, Docker CLI/Buildx/daemon)."
 	@printf "  %-22s %s\n" "check-docker" "Check Docker installation, Buildx, and daemon running status."
 	@printf "  %-22s %s\n" "install-docker" "Install Docker for the detected operating system."
 	@printf "  %-22s %s\n" "install-homebrew" "Install Homebrew (macOS only)."
@@ -72,7 +86,7 @@ install-homebrew:
 # Install Docker based on operating system
 install-docker:
 	@echo "$(COLOR_BOLD)Checking Docker installation for $(DETECTED_OS)...$(COLOR_RESET)"
-	@if [ -n "$(findstring n,$(filter-out --%,$(MAKEFLAGS)))" ]; then exit 0; \
+	@if [ -n "$(DRY_RUN)" ]; then exit 0; \
 	elif command -v docker >/dev/null 2>&1; then \
 		echo "$(COLOR_GREEN)✅ Docker is already installed: $$(docker --version)$(COLOR_RESET)"; \
 	else \
@@ -110,7 +124,7 @@ install-docker:
 
 # Check Docker prerequisite (CLI, buildx, daemon)
 check-docker:
-	@if [ -n "$(findstring n,$(filter-out --%,$(MAKEFLAGS)))" ]; then exit 0; fi; \
+	@if [ -n "$(DRY_RUN)" ]; then exit 0; fi; \
 	ERRORS=0; \
 	printf "%-32s " "Checking Docker CLI..."; \
 	if ! command -v docker >/dev/null 2>&1; then \
@@ -216,7 +230,7 @@ check-prerequisites:
 	@echo "$(COLOR_BOLD) Checking Prerequisites for holon-agentic-coder$(COLOR_RESET)"
 	@echo "$(COLOR_BOLD) OS: $(DETECTED_OS) | Architecture: $(DETECTED_ARCH)$(COLOR_RESET)"
 	@echo "$(COLOR_BOLD)====================================================$(COLOR_RESET)"
-	@if [ -n "$(findstring n,$(filter-out --%,$(MAKEFLAGS)))" ]; then exit 0; fi; \
+	@if [ -n "$(DRY_RUN)" ]; then exit 0; fi; \
 	ERRORS=0; \
 	WARNINGS=0; \
 	printf "%-32s " "Checking GNU Make..."; \
@@ -232,7 +246,13 @@ check-prerequisites:
 	printf "%-32s " "Checking uv..."; \
 	if command -v uv >/dev/null 2>&1; then \
 		UV_VER=$$(uv --version 2>/dev/null || true); \
-		echo "$(COLOR_GREEN)✅ Found: $$UV_VER$(COLOR_RESET)"; \
+		if [ -z "$$(printf '%s' "$$UV_VER" | tr -d '[:space:]')" ]; then \
+			echo "$(COLOR_RED)❌ Unusable: uv is on PATH but 'uv --version' produced no output$(COLOR_RESET)"; \
+			echo "   A uv that cannot report its version cannot run the pinned task runner; reinstall it, or repair the PATH entry shadowing it."; \
+			ERRORS=$$((ERRORS + 1)); \
+		else \
+			echo "$(COLOR_GREEN)✅ Found: $$UV_VER$(COLOR_RESET)"; \
+		fi; \
 	else \
 		echo "$(COLOR_RED)❌ Missing: uv not found$(COLOR_RESET)"; \
 		echo "   Install uv via: curl -LsSf https://astral.sh/uv/install.sh | sh"; \
@@ -242,11 +262,75 @@ check-prerequisites:
 	printf "%-32s " "Checking npx (Prettier)..."; \
 	if command -v npx >/dev/null 2>&1; then \
 		NPX_VER=$$(npx --version 2>/dev/null || true); \
-		echo "$(COLOR_GREEN)✅ Found: npx v$$NPX_VER$(COLOR_RESET)"; \
+		if [ -z "$$(printf '%s' "$$NPX_VER" | tr -d '[:space:]')" ]; then \
+			echo "$(COLOR_YELLOW)⚠️  Unusable: npx is on PATH but 'npx --version' produced no output$(COLOR_RESET)"; \
+			echo "   The Prettier-backed doc targets cannot run through it; reinstall node, or repair the PATH entry shadowing it."; \
+			WARNINGS=$$((WARNINGS + 1)); \
+		else \
+			echo "$(COLOR_GREEN)✅ Found: npx v$$NPX_VER$(COLOR_RESET)"; \
+		fi; \
 	else \
 		echo "$(COLOR_YELLOW)⚠️  Missing: npx not found$(COLOR_RESET)"; \
 		echo "   npx is required for 'uv run task lint-docs' and 'uv run task format-docs' (Prettier)."; \
 		WARNINGS=$$((WARNINGS + 1)); \
+	fi; \
+	\
+	printf "%-32s " "Checking GitHub CLI (gh)..."; \
+	if command -v gh >/dev/null 2>&1; then \
+		GH_OUT=$$(gh --version 2>/dev/null || true); \
+		GH_VER=$$(printf '%s\n' "$$GH_OUT" | grep '^gh version' | head -n 1 || true); \
+		if [ -z "$$(printf '%s' "$$GH_VER" | tr -d '[:space:]')" ]; then GH_VER=$$(printf '%s\n' "$$GH_OUT" | head -n 1); fi; \
+		if [ -z "$$(printf '%s' "$$GH_OUT" | tr -d '[:space:]')" ]; then \
+			echo "$(COLOR_RED)❌ Unusable: gh is on PATH but 'gh --version' produced no output$(COLOR_RESET)"; \
+			echo "   A binary that cannot report its version cannot be trusted to resolve PR refs; reinstall it, or repair the PATH entry shadowing it."; \
+			ERRORS=$$((ERRORS + 1)); \
+		else \
+			echo "$(COLOR_GREEN)✅ Found: $$GH_VER$(COLOR_RESET)"; \
+			if ! gh auth status >/dev/null 2>&1; then \
+				echo "$(COLOR_YELLOW)⚠️  gh is not authenticated. Run 'gh auth login' to authenticate.$(COLOR_RESET)"; \
+				WARNINGS=$$((WARNINGS + 1)); \
+			fi; \
+		fi; \
+	else \
+		echo "$(COLOR_RED)❌ Missing: GitHub CLI (gh) not found$(COLOR_RESET)"; \
+		echo "   Needed to resolve Pull Request refs during the flow; 'gh auth token' is the fallback when GITHUB_TOKEN/GH_TOKEN are unset."; \
+		if [ "$(DETECTED_OS)" = "Darwin" ]; then \
+			echo "   Install gh via: brew install gh"; \
+		else \
+			echo "   Install gh via: sudo apt install gh (see https://github.com/cli/cli#installation for the apt repository)"; \
+		fi; \
+		ERRORS=$$((ERRORS + 1)); \
+	fi; \
+	\
+	printf "%-32s " "Checking OpenSSL..."; \
+	if command -v openssl >/dev/null 2>&1; then \
+		OPENSSL_OUT=$$(openssl version 2>/dev/null || true); \
+		OPENSSL_VER=$$(printf '%s\n' "$$OPENSSL_OUT" | grep -E 'OpenSSL|LibreSSL' | head -n 1 || true); \
+		if [ -z "$$(printf '%s' "$$OPENSSL_VER" | tr -d '[:space:]')" ]; then OPENSSL_VER=$$(printf '%s\n' "$$OPENSSL_OUT" | head -n 1); fi; \
+		if [ -z "$$(printf '%s' "$$OPENSSL_OUT" | tr -d '[:space:]')" ]; then \
+			echo "$(COLOR_RED)❌ Unusable: openssl is on PATH but 'openssl version' produced no output$(COLOR_RESET)"; \
+			echo "   ca_generator.py cannot mint or read certificates through a build that cannot report its version; reinstall it, or repair the PATH entry shadowing it."; \
+			ERRORS=$$((ERRORS + 1)); \
+		else \
+			echo "$(COLOR_GREEN)✅ Found: $$OPENSSL_VER$(COLOR_RESET)"; \
+			case "$$OPENSSL_OUT" in \
+				*OpenSSL*) : ;; \
+				*) \
+					echo "$(COLOR_YELLOW)⚠️  Not OpenSSL: the Root CA step needs it (ca_generator.py passes -addext, which LibreSSL does not support), so this build may still fail.$(COLOR_RESET)"; \
+					echo "   Install real OpenSSL — on macOS: brew install openssl; on Debian/Ubuntu: sudo apt install openssl.$(COLOR_RESET)"; \
+					WARNINGS=$$((WARNINGS + 1)); \
+					;; \
+			esac; \
+		fi; \
+	else \
+		echo "$(COLOR_RED)❌ Missing: openssl not found$(COLOR_RESET)"; \
+		echo "   OpenSSL is required for token reduction Root CA generation (ca_generator.py)."; \
+		if [ "$(DETECTED_OS)" = "Darwin" ]; then \
+			echo "   Install OpenSSL via: brew install openssl"; \
+		else \
+			echo "   Install OpenSSL via: sudo apt install openssl"; \
+		fi; \
+		ERRORS=$$((ERRORS + 1)); \
 	fi; \
 	\
 	$(MAKE) check-docker AUTO_INSTALL=false || WARNINGS=$$((WARNINGS + 1)); \

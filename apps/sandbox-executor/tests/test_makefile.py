@@ -55,7 +55,9 @@ OS_DARWIN = "DETECTED_OS=Darwin"
 # Asserting bare substrings instead is vacuous: a reviewer removed `gh` and `openssl` from
 # the prerequisite description, planted those two words in an unrelated target's
 # description, and every test stayed green while the documented list no longer named either
-# tool. One shared constant also keeps `make help` and README from drifting apart.
+# tool. The shared constant is asserted against both `make help` and README by
+# test_prerequisite_list_is_identical_in_make_help_and_readme, so the two cannot drift apart
+# silently.
 PREREQUISITE_HELP_LIST = "(fatal: uv, gh, openssl; advisory: GNU Make, npx, gh auth, Docker CLI/Buildx/daemon)"
 
 
@@ -291,3 +293,44 @@ def test_check_prerequisites_darwin_install_instructions(tmp_path: pathlib.Path)
     assert result.returncode == 2  # make exits 2 when a recipe fails
     assert "brew install gh" in result.stdout
     assert "brew install openssl" in result.stdout
+
+
+def test_prerequisite_list_is_identical_in_make_help_and_readme(tmp_path: pathlib.Path) -> None:
+    """Assert the sync claim instead of merely asserting it in a comment.
+
+    The constant's comment says it keeps `make help` and README from drifting apart. Until
+    this test existed that was true of `make help` only: README restates the same list by
+    hand at the Quick Start block and nothing compared the two, so either could change and
+    stay green.
+    """
+    help_stdout = _run_make(
+        ["help"], env=_setup_mock_env(tmp_path, mock_docker=False), check=True
+    ).stdout
+    assert PREREQUISITE_HELP_LIST in help_stdout
+    readme_text = (_get_repo_root() / "README.md").read_text(encoding="utf-8")
+    assert PREREQUISITE_HELP_LIST in readme_text, (
+        "README's prerequisite list drifted from the list `make help` prints"
+    )
+
+
+def test_check_prerequisites_treats_docker_as_advisory_not_fatal(tmp_path: pathlib.Path) -> None:
+    """Pin the advisory half of the documented split, which had no coverage.
+
+    The list names uv, gh and openssl as fatal and GNU Make, npx and all of Docker as
+    advisory, but only the fatal half was tested: turning the Docker probes into hard
+    failures kept the suite green, so a change meant as a warning could start failing CI on
+    any machine without a running daemon. Docker is absent here via mock_docker=False.
+
+    Coverage stated honestly: npx is stubbed unconditionally by the fixture at line 194, so
+    this cannot exercise the npx-missing branch. Pinning that one needs a mock_npx knob;
+    until then its advisory treatment is established by reading Makefile:242-249, not by a
+    test.
+    """
+    env = _setup_mock_env(
+        tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_openssl, mock_docker=False
+    )
+    result = _run_make(["check-prerequisites", OS_LINUX], env=env)
+
+    assert result.returncode == 0, f"the advisory Docker check was treated as fatal:\n{result.stdout}"
+    assert "optional/advisory check(s) raised warnings" in result.stdout
+    assert "All prerequisites are satisfied!" not in result.stdout

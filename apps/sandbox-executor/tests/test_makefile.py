@@ -303,14 +303,10 @@ def test_prerequisite_list_is_identical_in_make_help_and_readme(tmp_path: pathli
     hand at the Quick Start block and nothing compared the two, so either could change and
     stay green.
     """
-    help_stdout = _run_make(
-        ["help"], env=_setup_mock_env(tmp_path, mock_docker=False), check=True
-    ).stdout
+    help_stdout = _run_make(["help"], env=_setup_mock_env(tmp_path, mock_docker=False), check=True).stdout
     assert PREREQUISITE_HELP_LIST in help_stdout
     readme_text = (_get_repo_root() / "README.md").read_text(encoding="utf-8")
-    assert PREREQUISITE_HELP_LIST in readme_text, (
-        "README's prerequisite list drifted from the list `make help` prints"
-    )
+    assert PREREQUISITE_HELP_LIST in readme_text, "README's prerequisite list drifted from the list `make help` prints"
 
 
 def test_check_prerequisites_treats_docker_as_advisory_not_fatal(tmp_path: pathlib.Path) -> None:
@@ -326,9 +322,7 @@ def test_check_prerequisites_treats_docker_as_advisory_not_fatal(tmp_path: pathl
     until then its advisory treatment is established by reading Makefile:242-249, not by a
     test.
     """
-    env = _setup_mock_env(
-        tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_openssl, mock_docker=False
-    )
+    env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_openssl, mock_docker=False)
     result = _run_make(["check-prerequisites", OS_LINUX], env=env)
 
     assert result.returncode == 0, f"the advisory Docker check was treated as fatal:\n{result.stdout}"

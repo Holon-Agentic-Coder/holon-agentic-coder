@@ -828,7 +828,7 @@ uv run task clean        # Remove transient build and test caches
 # Via Make (Docker & system prerequisites only):
 make help                # Display all available Docker/system targets and descriptions
 make build-images        # Build all sandbox Docker images
-make check-prerequisites # Verify installed tools (GNU Make, uv, npx, gh, openssl, Docker CLI, Buildx, daemon)
+make check-prerequisites # Verify installed tools (fatal: uv, gh, openssl; advisory: GNU Make, npx, gh auth, Docker CLI/Buildx/daemon)
 make check-docker        # Check Docker installation, Buildx, and daemon running status
 make install-docker      # Install Docker for the detected operating system
 make install-homebrew    # Install Homebrew (macOS only)

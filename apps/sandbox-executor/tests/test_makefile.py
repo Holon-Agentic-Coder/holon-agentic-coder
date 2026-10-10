@@ -2,8 +2,8 @@
 
 This test module verifies Makefile behavior including the help target, dry-run
 execution across all core targets, and prerequisite detection permutations for
-tools such as the GitHub CLI (gh) and OpenSSL (openssl). All tests are hermetic
-and execute using isolated subprocess environments.
+tools such as the GitHub CLI (gh) and OpenSSL (openssl). Each make invocation runs with an
+test-owned environment, so nothing here depends on the developer's shell.
 """
 
 from __future__ import annotations
@@ -51,10 +51,20 @@ def _run_make(
 OS_LINUX = "DETECTED_OS=Linux"
 OS_DARWIN = "DETECTED_OS=Darwin"
 
+# The prerequisite list exactly as `make help` and README state it, asserted as one string.
+# Asserting bare substrings instead is vacuous: a reviewer removed `gh` and `openssl` from
+# the prerequisite description, planted those two words in an unrelated target's
+# description, and every test stayed green while the documented list no longer named either
+# tool. One shared constant also keeps `make help` and README from drifting apart.
+PREREQUISITE_HELP_LIST = "(fatal: uv, gh, openssl; advisory: GNU Make, npx, gh auth, Docker CLI/Buildx/daemon)"
 
-def test_makefile_help_lists_core_targets() -> None:
-    """Verify that make help documents all core targets and tool prerequisites."""
-    result = _run_make(["help"], check=True)
+
+def test_makefile_help_lists_core_targets(tmp_path: pathlib.Path) -> None:
+    """Verify that make help documents all core targets and the fatal/advisory split."""
+    # Run with the test-owned environment: `make help` inherits PATH, CI, MAKEFLAGS and
+    # MAKELEVEL from the caller otherwise, which made the module's hermeticity claim false
+    # for this one test even though its output does not depend on them today.
+    result = _run_make(["help"], env=_setup_mock_env(tmp_path, mock_docker=False), check=True)
     stdout = result.stdout
 
     expected_targets = [
@@ -68,8 +78,31 @@ def test_makefile_help_lists_core_targets() -> None:
     for target in expected_targets:
         assert target in stdout, f"Expected target '{target}' to be listed in 'make help' output"
 
-    assert "gh" in stdout, "Expected 'gh' to be mentioned in 'make help' description"
-    assert "openssl" in stdout, "Expected 'openssl' to be mentioned in 'make help' description"
+    assert PREREQUISITE_HELP_LIST in stdout, (
+        "'make help' prerequisite list drifted from the documented fatal/advisory split "
+        f"(expected exactly: {PREREQUISITE_HELP_LIST})"
+    )
+
+
+def test_makefile_detects_the_host_platform_without_an_os_override(tmp_path: pathlib.Path) -> None:
+    """Pin `DETECTED_OS := $(shell uname -s)`, which every other test overrides away.
+
+    Each prerequisite test passes OS_LINUX or OS_DARWIN on the command line, so nothing
+    exercised autodetection: replacing the shell call with the constant `Linux` left all
+    seven tests green, and no CI job runs check-prerequisites at all. That matters because
+    the user-visible half of the target is per-OS install advice, and Darwin gating decides
+    whether install-docker/install-homebrew fire - a developer on macOS would have been told
+    to run `sudo apt install gh` with nothing reported red.
+    """
+    env = _setup_mock_env(tmp_path, mock_docker=False)
+    result = _run_make(["-n", "check-prerequisites"], env=env)
+    assert result.returncode == 0, result.stderr
+    host_os = os.uname().sysname
+    assert f"OS: {host_os} |" in result.stdout, (
+        f"make did not expand DETECTED_OS to the host platform {host_os!r}; a hardcoded "
+        f"value would silently misdirect install advice. Header seen: "
+        f"{[line for line in result.stdout.splitlines() if 'OS:' in line]}"
+    )
 
 
 def test_makefile_dry_run_core_targets(tmp_path: pathlib.Path) -> None:

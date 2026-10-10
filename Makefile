@@ -42,7 +42,7 @@ help:
 	@echo ""
 	@echo "Available targets:"
 	@printf "  %-22s %s\n" "build-images" "Build all sandbox Docker images."
-	@printf "  %-22s %s\n" "check-prerequisites" "Verify development prerequisites (GNU Make, uv, npx, gh, openssl, Docker CLI, Buildx, daemon)."
+	@printf "  %-22s %s\n" "check-prerequisites" "Verify development prerequisites (fatal: uv, gh, openssl; advisory: GNU Make, npx, gh auth, Docker CLI/Buildx/daemon)."
 	@printf "  %-22s %s\n" "check-docker" "Check Docker installation, Buildx, and daemon running status."
 	@printf "  %-22s %s\n" "install-docker" "Install Docker for the detected operating system."
 	@printf "  %-22s %s\n" "install-homebrew" "Install Homebrew (macOS only)."
@@ -259,6 +259,7 @@ check-prerequisites:
 		fi; \
 	else \
 		echo "$(COLOR_RED)❌ Missing: GitHub CLI (gh) not found$(COLOR_RESET)"; \
+		echo "   Needed to resolve Pull Request refs during the flow; 'gh auth token' is the fallback when GITHUB_TOKEN/GH_TOKEN are unset."; \
 		if [ "$(DETECTED_OS)" = "Darwin" ]; then \
 			echo "   Install gh via: brew install gh"; \
 		else \

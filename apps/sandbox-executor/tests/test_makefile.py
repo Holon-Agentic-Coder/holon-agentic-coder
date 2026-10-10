@@ -570,3 +570,38 @@ def test_dry_run_guard_does_not_scan_every_makeflags_word() -> None:
     makefile = (_get_repo_root() / "Makefile").read_text(encoding="utf-8")
     assert "findstring n,$(foreach" not in makefile, "MAKEFLAGS word scan is back"
     assert "DRY_RUN := $(if $(findstring n,$(MF_OPTION_CLUSTER)),1,)" in makefile
+
+
+def _create_noisy_gh(bin_dir: pathlib.Path) -> None:
+    """Create a gh that emits a loader warning before its version line."""
+    _write_exe(
+        bin_dir / "gh",
+        "#!/bin/sh\nprintf 'dyld: warning, malformed path\\n'\nprintf 'gh version 2.50.0 (2026-05-01)\\n'\n",
+    )
+
+
+def _create_noisy_openssl(bin_dir: pathlib.Path) -> None:
+    """Create an openssl that emits a loader warning before its version line."""
+    _write_exe(
+        bin_dir / "openssl",
+        "#!/bin/sh\nprintf 'dyld: warning, malformed path\\n'\nprintf 'OpenSSL 3.0.0  1 Jan 2026\\n'\n",
+    )
+
+
+def test_version_probes_pick_the_version_line_not_the_first_line(tmp_path: pathlib.Path) -> None:
+    """A warning printed before the version must not become the reported version.
+
+    Taking the first line did two wrong things at once: it displayed `dyld: warning,
+    malformed path` as the tool's version, and, because the OpenSSL classification keyed off
+    that same first line, it warned "Not OpenSSL" about a perfectly working OpenSSL. The
+    probes now look for the version line and classify on the whole output.
+    """
+    env = _setup_mock_env(tmp_path, mock_gh=_create_noisy_gh, mock_openssl=_create_noisy_openssl)
+
+    result = _run_make(["check-prerequisites", OS_LINUX], env=env)
+
+    assert result.returncode == 0, result.stdout
+    assert "gh version 2.50.0" in result.stdout
+    assert "OpenSSL 3.0.0" in result.stdout
+    assert "Not OpenSSL" not in result.stdout, "a working OpenSSL was misclassified"
+    assert "dyld" not in result.stdout, f"loader noise reported as a version: {result.stdout}"

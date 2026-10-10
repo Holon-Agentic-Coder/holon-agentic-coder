@@ -277,8 +277,10 @@ check-prerequisites:
 	\
 	printf "%-32s " "Checking GitHub CLI (gh)..."; \
 	if command -v gh >/dev/null 2>&1; then \
-		GH_VER=$$(gh --version 2>/dev/null | head -n 1 || true); \
-		if [ -z "$$(printf '%s' "$$GH_VER" | tr -d '[:space:]')" ]; then \
+		GH_OUT=$$(gh --version 2>/dev/null || true); \
+		GH_VER=$$(printf '%s\n' "$$GH_OUT" | grep '^gh version' | head -n 1 || true); \
+		if [ -z "$$(printf '%s' "$$GH_VER" | tr -d '[:space:]')" ]; then GH_VER=$$(printf '%s\n' "$$GH_OUT" | head -n 1); fi; \
+		if [ -z "$$(printf '%s' "$$GH_OUT" | tr -d '[:space:]')" ]; then \
 			echo "$(COLOR_RED)❌ Unusable: gh is on PATH but 'gh --version' produced no output$(COLOR_RESET)"; \
 			echo "   A binary that cannot report its version cannot be trusted to resolve PR refs; reinstall it, or repair the PATH entry shadowing it."; \
 			ERRORS=$$((ERRORS + 1)); \
@@ -302,15 +304,17 @@ check-prerequisites:
 	\
 	printf "%-32s " "Checking OpenSSL..."; \
 	if command -v openssl >/dev/null 2>&1; then \
-		OPENSSL_VER=$$(openssl version 2>/dev/null || true); \
-		if [ -z "$$(printf '%s' "$$OPENSSL_VER" | tr -d '[:space:]')" ]; then \
+		OPENSSL_OUT=$$(openssl version 2>/dev/null || true); \
+		OPENSSL_VER=$$(printf '%s\n' "$$OPENSSL_OUT" | grep -E 'OpenSSL|LibreSSL' | head -n 1 || true); \
+		if [ -z "$$(printf '%s' "$$OPENSSL_VER" | tr -d '[:space:]')" ]; then OPENSSL_VER=$$(printf '%s\n' "$$OPENSSL_OUT" | head -n 1); fi; \
+		if [ -z "$$(printf '%s' "$$OPENSSL_OUT" | tr -d '[:space:]')" ]; then \
 			echo "$(COLOR_RED)❌ Unusable: openssl is on PATH but 'openssl version' produced no output$(COLOR_RESET)"; \
 			echo "   ca_generator.py cannot mint or read certificates through a build that cannot report its version; reinstall it, or repair the PATH entry shadowing it."; \
 			ERRORS=$$((ERRORS + 1)); \
 		else \
 			echo "$(COLOR_GREEN)✅ Found: $$OPENSSL_VER$(COLOR_RESET)"; \
-			case "$$OPENSSL_VER" in \
-				OpenSSL*) : ;; \
+			case "$$OPENSSL_OUT" in \
+				*OpenSSL*) : ;; \
 				*) \
 					echo "$(COLOR_YELLOW)⚠️  Not OpenSSL: the Root CA step needs it (ca_generator.py passes -addext, which LibreSSL does not support), so this build may still fail.$(COLOR_RESET)"; \
 					echo "   Install real OpenSSL — on macOS: brew install openssl; on Debian/Ubuntu: sudo apt install openssl.$(COLOR_RESET)"; \

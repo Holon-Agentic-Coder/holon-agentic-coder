@@ -242,7 +242,11 @@ def _setup_mock_env(
 
 
 def test_check_prerequisites_fails_when_gh_missing(tmp_path: pathlib.Path) -> None:
-    """Verify that check-prerequisites fails with exit code 1 when gh is missing."""
+    """Verify that check-prerequisites fails with exit code 2 when gh is missing.
+
+    make reports a failed recipe as exit 2, not 1; the docstring said 1 while the assertion
+    below has always measured 2.
+    """
     env = _setup_mock_env(tmp_path, mock_gh=None, mock_openssl=_create_openssl)
 
     result = _run_make(["check-prerequisites", OS_LINUX], env=env)
@@ -275,7 +279,7 @@ def test_check_prerequisites_passes_when_gh_authenticated(tmp_path: pathlib.Path
 
 
 def test_check_prerequisites_fails_when_openssl_missing(tmp_path: pathlib.Path) -> None:
-    """Verify that check-prerequisites fails with exit code 1 when openssl is missing."""
+    """Verify that check-prerequisites fails with exit code 2 when openssl is missing."""
     env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=None)
 
     result = _run_make(["check-prerequisites", OS_LINUX], env=env)
@@ -317,9 +321,9 @@ def test_check_prerequisites_treats_docker_as_advisory_not_fatal(tmp_path: pathl
     failures kept the suite green, so a change meant as a warning could start failing CI on
     any machine without a running daemon. Docker is absent here via mock_docker=False.
 
-    Coverage stated honestly: npx is stubbed unconditionally by the fixture at line 194, so
-    this cannot exercise the npx-missing branch. Pinning that one needs a mock_npx knob;
-    until then its advisory treatment is established by reading Makefile:242-249, not by a
+    Coverage stated honestly: the fixture stubs npx unconditionally inside _setup_mock_env,
+    so this cannot exercise the npx-missing branch. Pinning that one needs a mock_npx knob;
+    until then its advisory treatment is established by reading Makefile's npx probe, not by a
     test.
     """
     env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_openssl, mock_docker=False)
@@ -328,3 +332,68 @@ def test_check_prerequisites_treats_docker_as_advisory_not_fatal(tmp_path: pathl
     assert result.returncode == 0, f"the advisory Docker check was treated as fatal:\n{result.stdout}"
     assert "optional/advisory check(s) raised warnings" in result.stdout
     assert "All prerequisites are satisfied!" not in result.stdout
+
+
+def _create_silent_gh(bin_dir: pathlib.Path) -> None:
+    """Create a gh that exists on PATH but reports no version (a broken or shadowed binary)."""
+    _write_exe(bin_dir / "gh", "#!/bin/sh\nexit 0\n")
+
+
+def _create_silent_openssl(bin_dir: pathlib.Path) -> None:
+    """Create an openssl that exists on PATH but reports no version."""
+    _write_exe(bin_dir / "openssl", "#!/bin/sh\nexit 0\n")
+
+
+def test_check_prerequisites_fails_when_gh_is_present_but_unusable(tmp_path: pathlib.Path) -> None:
+    """A gh that cannot answer `--version` must not be reported as satisfied.
+
+    `command -v gh` succeeds for a broken binary, a crashed wrapper or a PATH entry that
+    shadows the real install, and the probe used to print a green tick with an empty version
+    and exit 0 - so the gate this whole PR exists to create would green-light a machine
+    where the flow cannot resolve a single Pull Request ref.
+    """
+    env = _setup_mock_env(tmp_path, mock_gh=_create_silent_gh, mock_openssl=_create_openssl)
+
+    result = _run_make(["check-prerequisites", OS_LINUX], env=env)
+
+    assert result.returncode == 2
+    assert "Unusable: gh is on PATH" in result.stdout
+    assert "All prerequisites are satisfied!" not in result.stdout
+
+
+def test_check_prerequisites_fails_when_openssl_is_present_but_unusable(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Same failure mode for openssl, whose consumer mints the proxy root CA."""
+    env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_silent_openssl)
+
+    result = _run_make(["check-prerequisites", OS_LINUX], env=env)
+
+    assert result.returncode == 2
+    assert "Unusable: openssl is on PATH" in result.stdout
+    assert "All prerequisites are satisfied!" not in result.stdout
+
+
+def _create_libressl(bin_dir: pathlib.Path) -> None:
+    """Create an openssl that is really LibreSSL, as macOS's /usr/bin/openssl reports itself."""
+    _write_exe(bin_dir / "openssl", "#!/bin/sh\necho 'LibreSSL 3.3.6'\n")
+
+
+def test_check_prerequisites_warns_when_the_gate_is_satisfied_by_libressl(
+    tmp_path: pathlib.Path,
+) -> None:
+    """LibreSSL satisfies `command -v openssl` but cannot build this repository's Root CA.
+
+    ca_generator.py passes -addext three times and LibreSSL does not support it, so a green
+    tick here can still precede a failing CA step. The remedy is deliberately advisory - the
+    intent asked for a presence-and-version report, so failing the run for a non-OpenSSL
+    build would exceed it - but it must not stay silent, which is what this test pins.
+    """
+    env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_libressl)
+
+    result = _run_make(["check-prerequisites", OS_LINUX], env=env)
+
+    assert result.returncode == 0, "a non-OpenSSL build must warn, not fail"
+    assert "LibreSSL 3.3.6" in result.stdout
+    assert "Not OpenSSL" in result.stdout
+    assert "optional/advisory check(s) raised warnings" in result.stdout

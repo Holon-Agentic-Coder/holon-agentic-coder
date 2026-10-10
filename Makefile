@@ -252,10 +252,16 @@ check-prerequisites:
 	printf "%-32s " "Checking GitHub CLI (gh)..."; \
 	if command -v gh >/dev/null 2>&1; then \
 		GH_VER=$$(gh --version 2>/dev/null | head -n 1 || true); \
-		echo "$(COLOR_GREEN)✅ Found: $$GH_VER$(COLOR_RESET)"; \
-		if ! gh auth status >/dev/null 2>&1; then \
-			echo "$(COLOR_YELLOW)⚠️  gh is not authenticated. Run 'gh auth login' to authenticate.$(COLOR_RESET)"; \
-			WARNINGS=$$((WARNINGS + 1)); \
+		if [ -z "$$GH_VER" ]; then \
+			echo "$(COLOR_RED)❌ Unusable: gh is on PATH but 'gh --version' produced no output$(COLOR_RESET)"; \
+			echo "   A binary that cannot report its version cannot be trusted to resolve PR refs; reinstall it, or repair the PATH entry shadowing it."; \
+			ERRORS=$$((ERRORS + 1)); \
+		else \
+			echo "$(COLOR_GREEN)✅ Found: $$GH_VER$(COLOR_RESET)"; \
+			if ! gh auth status >/dev/null 2>&1; then \
+				echo "$(COLOR_YELLOW)⚠️  gh is not authenticated. Run 'gh auth login' to authenticate.$(COLOR_RESET)"; \
+				WARNINGS=$$((WARNINGS + 1)); \
+			fi; \
 		fi; \
 	else \
 		echo "$(COLOR_RED)❌ Missing: GitHub CLI (gh) not found$(COLOR_RESET)"; \
@@ -271,7 +277,21 @@ check-prerequisites:
 	printf "%-32s " "Checking OpenSSL..."; \
 	if command -v openssl >/dev/null 2>&1; then \
 		OPENSSL_VER=$$(openssl version 2>/dev/null || true); \
-		echo "$(COLOR_GREEN)✅ Found: $$OPENSSL_VER$(COLOR_RESET)"; \
+		if [ -z "$$OPENSSL_VER" ]; then \
+			echo "$(COLOR_RED)❌ Unusable: openssl is on PATH but 'openssl version' produced no output$(COLOR_RESET)"; \
+			echo "   ca_generator.py cannot mint or read certificates through a build that cannot report its version; reinstall it, or repair the PATH entry shadowing it."; \
+			ERRORS=$$((ERRORS + 1)); \
+		else \
+			echo "$(COLOR_GREEN)✅ Found: $$OPENSSL_VER$(COLOR_RESET)"; \
+			case "$$OPENSSL_VER" in \
+				OpenSSL*) : ;; \
+				*) \
+					echo "$(COLOR_YELLOW)⚠️  Not OpenSSL: the Root CA step needs it (ca_generator.py passes -addext, which LibreSSL does not support), so this build may still fail.$(COLOR_RESET)"; \
+					echo "   Install real OpenSSL — on macOS: brew install openssl; on Debian/Ubuntu: sudo apt install openssl.$(COLOR_RESET)"; \
+					WARNINGS=$$((WARNINGS + 1)); \
+					;; \
+			esac; \
+		fi; \
 	else \
 		echo "$(COLOR_RED)❌ Missing: openssl not found$(COLOR_RESET)"; \
 		echo "   OpenSSL is required for token reduction Root CA generation (ca_generator.py)."; \

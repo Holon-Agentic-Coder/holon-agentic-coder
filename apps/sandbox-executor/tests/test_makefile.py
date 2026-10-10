@@ -168,12 +168,20 @@ def _create_unauth_gh(bin_dir: pathlib.Path) -> None:
     _write_exe(bin_dir / "gh", _gh_script(1))
 
 
+def _create_uv(bin_dir: pathlib.Path) -> None:
+    """Create a mock uv executable that answers --version, as a healthy install would."""
+    _write_exe(bin_dir / "uv", "#!/bin/sh\necho 'uv 0.12.0'\n")
+
+
 def _setup_mock_env(
     tmp_path: pathlib.Path,
     *,
     mock_gh: typing.Callable[[pathlib.Path], None] | None = None,
     mock_openssl: typing.Callable[[pathlib.Path], None] | None = None,
     mock_docker: bool = True,
+    mock_uv: typing.Callable[[pathlib.Path], None] | None = None,
+    uv_present: bool = True,
+    npx_present: bool = True,
 ) -> dict[str, str]:
     """Create an isolated PATH environment with fake binaries and essential tools.
 
@@ -185,6 +193,9 @@ def _setup_mock_env(
         mock_gh: Optional callable to configure mock gh executable.
         mock_openssl: Optional callable to configure mock openssl executable.
         mock_docker: Whether to provide a mock docker binary satisfying check-docker.
+        mock_uv: Callable replacing the default healthy uv stub (see _create_uv).
+        uv_present: Set False to omit uv entirely, exercising the fatal missing-uv path.
+        npx_present: Set False to omit npx, exercising the advisory missing-npx path.
 
     Returns:
         Environment dictionary with isolated PATH.
@@ -192,8 +203,10 @@ def _setup_mock_env(
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
 
-    _write_exe(bin_dir / "uv", "#!/bin/sh\necho 'uv 0.12.0'\n")
-    _write_exe(bin_dir / "npx", "#!/bin/sh\necho '11.0.0'\n")
+    if uv_present:
+        (mock_uv or _create_uv)(bin_dir)
+    if npx_present:
+        _write_exe(bin_dir / "npx", "#!/bin/sh\necho '11.0.0'\n")
 
     if mock_docker:
         docker_script = (
@@ -321,10 +334,8 @@ def test_check_prerequisites_treats_docker_as_advisory_not_fatal(tmp_path: pathl
     failures kept the suite green, so a change meant as a warning could start failing CI on
     any machine without a running daemon. Docker is absent here via mock_docker=False.
 
-    Coverage stated honestly: the fixture stubs npx unconditionally inside _setup_mock_env,
-    so this cannot exercise the npx-missing branch. Pinning that one needs a mock_npx knob;
-    until then its advisory treatment is established by reading Makefile's npx probe, not by a
-    test.
+    Coverage stated honestly: the advisory missing-npx path is covered by its own test
+    (npx_present=False), and the unusable-npx path by a stub whose --version returns nothing.
     """
     env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_openssl, mock_docker=False)
     result = _run_make(["check-prerequisites", OS_LINUX], env=env)
@@ -397,3 +408,72 @@ def test_check_prerequisites_warns_when_the_gate_is_satisfied_by_libressl(
     assert "LibreSSL 3.3.6" in result.stdout
     assert "Not OpenSSL" in result.stdout
     assert "optional/advisory check(s) raised warnings" in result.stdout
+
+
+def _create_silent_uv(bin_dir: pathlib.Path) -> None:
+    """Create a uv that exists on PATH but reports no version."""
+    _write_exe(bin_dir / "uv", "#!/bin/sh\nexit 0\n")
+
+
+def test_check_prerequisites_fails_when_uv_is_present_but_unusable(tmp_path: pathlib.Path) -> None:
+    """`make help` names uv as fatal, so the unusable-tool rule must cover it too.
+
+    gh and openssl gained an empty-version guard; uv had the same `command -v` plus unchecked
+    version capture, so a shadowed or half-installed uv printed a green tick while `uv run
+    task …` could not work. Before these two uv tests existed the whole uv block had no
+    coverage at all: deleting it left every test green.
+    """
+    env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_openssl, mock_uv=_create_silent_uv)
+
+    result = _run_make(["check-prerequisites", OS_LINUX], env=env)
+
+    assert result.returncode == 2
+    assert "Unusable: uv is on PATH" in result.stdout
+    assert "All prerequisites are satisfied!" not in result.stdout
+
+
+def test_check_prerequisites_fails_when_uv_is_missing(tmp_path: pathlib.Path) -> None:
+    """The fatal path for uv, previously unasserted despite being listed first in help."""
+    env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_openssl, uv_present=False)
+
+    result = _run_make(["check-prerequisites", OS_LINUX], env=env)
+
+    assert result.returncode == 2
+    assert "Missing: uv not found" in result.stdout
+    assert "Install uv via" in result.stdout
+
+
+def test_check_prerequisites_warns_without_failing_when_npx_is_missing(
+    tmp_path: pathlib.Path,
+) -> None:
+    """npx is documented advisory, so its absence must warn and exit 0.
+
+    This is the path the fixture previously could not express: npx was written
+    unconditionally, so the yellow branch had no test and turning it fatal stayed green.
+    """
+    env = _setup_mock_env(
+        tmp_path,
+        mock_gh=_create_auth_gh,
+        mock_openssl=_create_openssl,
+        npx_present=False,
+    )
+
+    result = _run_make(["check-prerequisites", OS_LINUX], env=env)
+
+    assert result.returncode == 0, "missing npx was treated as fatal"
+    assert "Missing: npx not found" in result.stdout
+    assert "optional/advisory check(s) raised warnings" in result.stdout
+
+
+def test_check_prerequisites_reports_unusable_npx_without_calling_it_found(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A broken npx must be reported as unusable, not as `✅ Found: npx v` with nothing after it."""
+    env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_openssl)
+    _write_exe(tmp_path / "bin" / "npx", "#!/bin/sh\nexit 0\n")
+
+    result = _run_make(["check-prerequisites", OS_LINUX], env=env)
+
+    assert result.returncode == 0, "an advisory tool's failure must not fail the run"
+    assert "Unusable: npx is on PATH" in result.stdout
+    assert "Found: npx v" not in result.stdout

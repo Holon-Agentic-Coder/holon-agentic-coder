@@ -232,7 +232,13 @@ check-prerequisites:
 	printf "%-32s " "Checking uv..."; \
 	if command -v uv >/dev/null 2>&1; then \
 		UV_VER=$$(uv --version 2>/dev/null || true); \
-		echo "$(COLOR_GREEN)✅ Found: $$UV_VER$(COLOR_RESET)"; \
+		if [ -z "$$UV_VER" ]; then \
+			echo "$(COLOR_RED)❌ Unusable: uv is on PATH but 'uv --version' produced no output$(COLOR_RESET)"; \
+			echo "   A uv that cannot report its version cannot run the pinned task runner; reinstall it, or repair the PATH entry shadowing it."; \
+			ERRORS=$$((ERRORS + 1)); \
+		else \
+			echo "$(COLOR_GREEN)✅ Found: $$UV_VER$(COLOR_RESET)"; \
+		fi; \
 	else \
 		echo "$(COLOR_RED)❌ Missing: uv not found$(COLOR_RESET)"; \
 		echo "   Install uv via: curl -LsSf https://astral.sh/uv/install.sh | sh"; \
@@ -242,7 +248,13 @@ check-prerequisites:
 	printf "%-32s " "Checking npx (Prettier)..."; \
 	if command -v npx >/dev/null 2>&1; then \
 		NPX_VER=$$(npx --version 2>/dev/null || true); \
-		echo "$(COLOR_GREEN)✅ Found: npx v$$NPX_VER$(COLOR_RESET)"; \
+		if [ -z "$$NPX_VER" ]; then \
+			echo "$(COLOR_YELLOW)⚠️  Unusable: npx is on PATH but 'npx --version' produced no output$(COLOR_RESET)"; \
+			echo "   The Prettier-backed doc targets cannot run through it; reinstall node, or repair the PATH entry shadowing it."; \
+			WARNINGS=$$((WARNINGS + 1)); \
+		else \
+			echo "$(COLOR_GREEN)✅ Found: npx v$$NPX_VER$(COLOR_RESET)"; \
+		fi; \
 	else \
 		echo "$(COLOR_YELLOW)⚠️  Missing: npx not found$(COLOR_RESET)"; \
 		echo "   npx is required for 'uv run task lint-docs' and 'uv run task format-docs' (Prettier)."; \

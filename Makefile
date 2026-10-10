@@ -262,7 +262,7 @@ check-prerequisites:
 		if [ "$(DETECTED_OS)" = "Darwin" ]; then \
 			echo "   Install gh via: brew install gh"; \
 		else \
-			echo "   Install gh via: sudo apt install gh"; \
+			echo "   Install gh via: sudo apt install gh (see https://github.com/cli/cli#installation for the apt repository)"; \
 		fi; \
 		ERRORS=$$((ERRORS + 1)); \
 	fi; \

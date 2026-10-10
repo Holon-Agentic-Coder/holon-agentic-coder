@@ -76,18 +76,25 @@ def test_makefile_dry_run_core_targets(tmp_path: pathlib.Path) -> None:
     """Verify that dry-run mode (make -n) exits 0 without running recipes across core targets.
 
     The PATH contains no docker/gh/openssl, so a recipe that actually executed its checks would
-    exit non-zero; exit 0 therefore proves the recipes were only echoed.
+    exit non-zero; exit 0 therefore proves the in-shell guard fired and short-circuited before
+    the checks ran. Note that ``make -n`` still executes recipe lines containing ``$(MAKE)``,
+    which is why ``check-prerequisites`` guards itself in-shell rather than relying on dry-run
+    alone.
+
+    Only the four guard-bearing targets are real regression cases here: ``check-prerequisites``,
+    ``check-docker``, ``install-docker`` and ``prerequisites``. The remaining three
+    (``help``, ``build-images``, ``install-homebrew``) are inert under ``-n`` regardless of the
+    guard, since their recipes echo or delegate without running prerequisite probes.
     """
     env = _setup_mock_env(tmp_path, mock_docker=False)
-    core_targets = [
-        "help",
+    guard_regression_targets = [
         "check-prerequisites",
         "check-docker",
-        "build-images",
         "install-docker",
-        "install-homebrew",
         "prerequisites",
     ]
+    inert_under_dry_run_targets = ["help", "build-images", "install-homebrew"]
+    core_targets = guard_regression_targets + inert_under_dry_run_targets
     for target in core_targets:
         result = _run_make(["-n", target, OS_LINUX], env=env)
         msg = f"make -n {target} failed with code {result.returncode}. stdout: {result.stdout} stderr: {result.stderr}"
@@ -192,6 +199,10 @@ def _setup_mock_env(
 
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{clean_bin}"
+    # A pytest suite launched from inside a make recipe would otherwise inherit the parent's
+    # MAKEFLAGS (including -n) and MAKELEVEL, silently turning every child make into a dry run.
+    env["MAKEFLAGS"] = ""
+    env["MAKELEVEL"] = ""
     return env
 
 
@@ -213,6 +224,7 @@ def test_check_prerequisites_warns_when_gh_unauthenticated(tmp_path: pathlib.Pat
     assert result.returncode == 0
     assert "gh is not authenticated" in result.stdout
     assert "gh auth login" in result.stdout
+    assert "OpenSSL 3.0.0" in result.stdout
     assert "optional/advisory check(s) raised warnings" in result.stdout
 
 
@@ -222,6 +234,7 @@ def test_check_prerequisites_passes_when_gh_authenticated(tmp_path: pathlib.Path
 
     result = _run_make(["check-prerequisites", OS_LINUX], env=env)
     assert result.returncode == 0
+    assert "gh version 2.50.0" in result.stdout
     assert "gh is not authenticated" not in result.stdout
     assert "All prerequisites are satisfied!" in result.stdout
 

@@ -58,7 +58,10 @@ OS_DARWIN = "DETECTED_OS=Darwin"
 # tool. The shared constant is asserted against both `make help` and README by
 # test_prerequisite_list_is_identical_in_make_help_and_readme, so the two cannot drift apart
 # silently.
-PREREQUISITE_HELP_LIST = "(fatal: uv, gh, openssl; advisory: GNU Make, npx, gh auth, Docker CLI/Buildx/daemon)"
+PREREQUISITE_HELP_LIST = (
+    "(fatal: uv, gh, openssl which must be OpenSSL not LibreSSL; advisory: GNU Make, npx, "
+    "gh auth, Docker CLI/Buildx/daemon)"
+)
 
 
 def test_makefile_help_lists_core_targets(tmp_path: pathlib.Path) -> None:
@@ -605,3 +608,75 @@ def test_version_probes_pick_the_version_line_not_the_first_line(tmp_path: pathl
     assert "OpenSSL 3.0.0" in result.stdout
     assert "Not OpenSSL" not in result.stdout, "a working OpenSSL was misclassified"
     assert "dyld" not in result.stdout, f"loader noise reported as a version: {result.stdout}"
+
+
+def _create_failing_gh(bin_dir: pathlib.Path) -> None:
+    """Create a gh that prints a version and then exits non-zero, as a broken config dir does."""
+    _write_exe(bin_dir / "gh", "#!/bin/sh\nprintf 'gh version 2.50.0 (2026-05-01)\\n'\nexit 3\n")
+
+
+def _create_failing_openssl(bin_dir: pathlib.Path) -> None:
+    """Create an openssl that prints a version and then exits non-zero."""
+    _write_exe(bin_dir / "openssl", "#!/bin/sh\nprintf 'OpenSSL 3.0.0  1 Jan 2026\\n'\nexit 2\n")
+
+
+def _create_compatible_not_openssl(bin_dir: pathlib.Path) -> None:
+    """Create a build that claims OpenSSL compatibility in prose without being OpenSSL."""
+    _write_exe(bin_dir / "openssl", "#!/bin/sh\nprintf 'FooSSL 1.0 (OpenSSL compatible)\\n'\n")
+
+
+def test_check_prerequisites_fails_when_a_fatal_probe_exits_nonzero(tmp_path: pathlib.Path) -> None:
+    """Exit status used to be discarded, so a failing probe with output still passed.
+
+    `cmd 2>/dev/null || true` throws away the status, and only empty stdout counted as
+    unusable: a gh that prints its version and exits 3 (a broken config directory does this)
+    printed a green tick and left ERRORS untouched. A probe that fails is a failed probe
+    whatever it printed.
+    """
+    env = _setup_mock_env(
+        tmp_path,
+        mock_gh=_create_failing_gh,
+        mock_openssl=_create_failing_openssl,
+    )
+
+    result = _run_make(["check-prerequisites", OS_LINUX], env=env)
+
+    assert result.returncode == 2
+    assert "Unusable: gh is on PATH but 'gh --version' failed (exit 3)" in result.stdout
+    assert "Unusable: openssl is on PATH but 'openssl version' failed (exit 2)" in result.stdout
+    assert "All prerequisites are satisfied!" not in result.stdout
+
+
+def test_check_prerequisites_warns_when_the_advisory_npx_probe_exits_nonzero(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The same rule for npx, but advisory: report it, do not fail the run."""
+    env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_openssl)
+    _write_exe(tmp_path / "bin" / "npx", "#!/bin/sh\nprintf '11.0.0\\n'\nexit 4\n")
+
+    result = _run_make(["check-prerequisites", OS_LINUX], env=env)
+
+    assert result.returncode == 0, "an advisory probe failure must not fail the run"
+    assert "Unusable: npx is on PATH but 'npx --version' failed (exit 4)" in result.stdout
+
+
+def test_check_prerequisites_warns_for_a_build_that_only_claims_openssl_compatibility(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Classifying anywhere in the capture let "FooSSL 1.0 (OpenSSL compatible)" pass.
+
+    The Root CA step needs the -addext flag, so what matters is what the tool is, not whether
+    the word OpenSSL appears in its self-description. Classification now reads the version
+    line's first token.
+    """
+    env = _setup_mock_env(
+        tmp_path,
+        mock_gh=_create_auth_gh,
+        mock_openssl=_create_compatible_not_openssl,
+    )
+
+    result = _run_make(["check-prerequisites", OS_LINUX], env=env)
+
+    assert result.returncode == 0, "a non-OpenSSL build warns; it is not fatal"
+    assert "Not OpenSSL" in result.stdout
+    assert "optional/advisory check(s) raised warnings" in result.stdout

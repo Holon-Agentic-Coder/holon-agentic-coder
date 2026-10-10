@@ -56,7 +56,7 @@ help:
 	@echo ""
 	@echo "Available targets:"
 	@printf "  %-22s %s\n" "build-images" "Build all sandbox Docker images."
-	@printf "  %-22s %s\n" "check-prerequisites" "Verify development prerequisites (fatal: uv, gh, openssl; advisory: GNU Make, npx, gh auth, Docker CLI/Buildx/daemon)."
+	@printf "  %-22s %s\n" "check-prerequisites" "Verify development prerequisites (fatal: uv, gh, openssl which must be OpenSSL not LibreSSL; advisory: GNU Make, npx, gh auth, Docker CLI/Buildx/daemon)."
 	@printf "  %-22s %s\n" "check-docker" "Check Docker installation, Buildx, and daemon running status."
 	@printf "  %-22s %s\n" "install-docker" "Install Docker for the detected operating system."
 	@printf "  %-22s %s\n" "install-homebrew" "Install Homebrew (macOS only)."
@@ -245,9 +245,9 @@ check-prerequisites:
 	\
 	printf "%-32s " "Checking uv..."; \
 	if command -v uv >/dev/null 2>&1; then \
-		UV_VER=$$(uv --version 2>/dev/null || true); \
-		if [ -z "$$(printf '%s' "$$UV_VER" | tr -d '[:space:]')" ]; then \
-			echo "$(COLOR_RED)❌ Unusable: uv is on PATH but 'uv --version' produced no output$(COLOR_RESET)"; \
+		UV_STATUS=0; UV_VER=$$(uv --version 2>/dev/null) || UV_STATUS=$$?; \
+		if [ "$$UV_STATUS" -ne 0 ] || [ -z "$$(printf '%s' "$$UV_VER" | tr -d '[:space:]')" ]; then \
+			echo "$(COLOR_RED)❌ Unusable: uv is on PATH but 'uv --version' failed (exit $$UV_STATUS) or produced no output$(COLOR_RESET)"; \
 			echo "   A uv that cannot report its version cannot run the pinned task runner; reinstall it, or repair the PATH entry shadowing it."; \
 			ERRORS=$$((ERRORS + 1)); \
 		else \
@@ -261,9 +261,9 @@ check-prerequisites:
 	\
 	printf "%-32s " "Checking npx (Prettier)..."; \
 	if command -v npx >/dev/null 2>&1; then \
-		NPX_VER=$$(npx --version 2>/dev/null || true); \
-		if [ -z "$$(printf '%s' "$$NPX_VER" | tr -d '[:space:]')" ]; then \
-			echo "$(COLOR_YELLOW)⚠️  Unusable: npx is on PATH but 'npx --version' produced no output$(COLOR_RESET)"; \
+		NPX_STATUS=0; NPX_VER=$$(npx --version 2>/dev/null) || NPX_STATUS=$$?; \
+		if [ "$$NPX_STATUS" -ne 0 ] || [ -z "$$(printf '%s' "$$NPX_VER" | tr -d '[:space:]')" ]; then \
+			echo "$(COLOR_YELLOW)⚠️  Unusable: npx is on PATH but 'npx --version' failed (exit $$NPX_STATUS) or produced no output$(COLOR_RESET)"; \
 			echo "   The Prettier-backed doc targets cannot run through it; reinstall node, or repair the PATH entry shadowing it."; \
 			WARNINGS=$$((WARNINGS + 1)); \
 		else \
@@ -277,11 +277,11 @@ check-prerequisites:
 	\
 	printf "%-32s " "Checking GitHub CLI (gh)..."; \
 	if command -v gh >/dev/null 2>&1; then \
-		GH_OUT=$$(gh --version 2>/dev/null || true); \
+		GH_STATUS=0; GH_OUT=$$(gh --version 2>/dev/null) || GH_STATUS=$$?; \
 		GH_VER=$$(printf '%s\n' "$$GH_OUT" | grep '^gh version' | head -n 1 || true); \
 		if [ -z "$$(printf '%s' "$$GH_VER" | tr -d '[:space:]')" ]; then GH_VER=$$(printf '%s\n' "$$GH_OUT" | head -n 1); fi; \
-		if [ -z "$$(printf '%s' "$$GH_OUT" | tr -d '[:space:]')" ]; then \
-			echo "$(COLOR_RED)❌ Unusable: gh is on PATH but 'gh --version' produced no output$(COLOR_RESET)"; \
+		if [ "$$GH_STATUS" -ne 0 ] || [ -z "$$(printf '%s' "$$GH_OUT" | tr -d '[:space:]')" ]; then \
+			echo "$(COLOR_RED)❌ Unusable: gh is on PATH but 'gh --version' failed (exit $$GH_STATUS) or produced no output$(COLOR_RESET)"; \
 			echo "   A binary that cannot report its version cannot be trusted to resolve PR refs; reinstall it, or repair the PATH entry shadowing it."; \
 			ERRORS=$$((ERRORS + 1)); \
 		else \
@@ -304,17 +304,17 @@ check-prerequisites:
 	\
 	printf "%-32s " "Checking OpenSSL..."; \
 	if command -v openssl >/dev/null 2>&1; then \
-		OPENSSL_OUT=$$(openssl version 2>/dev/null || true); \
+		OPENSSL_STATUS=0; OPENSSL_OUT=$$(openssl version 2>/dev/null) || OPENSSL_STATUS=$$?; \
 		OPENSSL_VER=$$(printf '%s\n' "$$OPENSSL_OUT" | grep -E 'OpenSSL|LibreSSL' | head -n 1 || true); \
 		if [ -z "$$(printf '%s' "$$OPENSSL_VER" | tr -d '[:space:]')" ]; then OPENSSL_VER=$$(printf '%s\n' "$$OPENSSL_OUT" | head -n 1); fi; \
-		if [ -z "$$(printf '%s' "$$OPENSSL_OUT" | tr -d '[:space:]')" ]; then \
-			echo "$(COLOR_RED)❌ Unusable: openssl is on PATH but 'openssl version' produced no output$(COLOR_RESET)"; \
+		if [ "$$OPENSSL_STATUS" -ne 0 ] || [ -z "$$(printf '%s' "$$OPENSSL_OUT" | tr -d '[:space:]')" ]; then \
+			echo "$(COLOR_RED)❌ Unusable: openssl is on PATH but 'openssl version' failed (exit $$OPENSSL_STATUS) or produced no output$(COLOR_RESET)"; \
 			echo "   ca_generator.py cannot mint or read certificates through a build that cannot report its version; reinstall it, or repair the PATH entry shadowing it."; \
 			ERRORS=$$((ERRORS + 1)); \
 		else \
 			echo "$(COLOR_GREEN)✅ Found: $$OPENSSL_VER$(COLOR_RESET)"; \
-			case "$$OPENSSL_OUT" in \
-				*OpenSSL*) : ;; \
+			case "$$OPENSSL_VER" in \
+				OpenSSL*) : ;; \
 				*) \
 					echo "$(COLOR_YELLOW)⚠️  Not OpenSSL: the Root CA step needs it (ca_generator.py passes -addext, which LibreSSL does not support), so this build may still fail.$(COLOR_RESET)"; \
 					echo "   Install real OpenSSL — on macOS: brew install openssl; on Debian/Ubuntu: sudo apt install openssl.$(COLOR_RESET)"; \

@@ -232,7 +232,7 @@ check-prerequisites:
 	printf "%-32s " "Checking uv..."; \
 	if command -v uv >/dev/null 2>&1; then \
 		UV_VER=$$(uv --version 2>/dev/null || true); \
-		if [ -z "$$UV_VER" ]; then \
+		if [ -z "$$(printf '%s' "$$UV_VER" | tr -d '[:space:]')" ]; then \
 			echo "$(COLOR_RED)❌ Unusable: uv is on PATH but 'uv --version' produced no output$(COLOR_RESET)"; \
 			echo "   A uv that cannot report its version cannot run the pinned task runner; reinstall it, or repair the PATH entry shadowing it."; \
 			ERRORS=$$((ERRORS + 1)); \
@@ -248,7 +248,7 @@ check-prerequisites:
 	printf "%-32s " "Checking npx (Prettier)..."; \
 	if command -v npx >/dev/null 2>&1; then \
 		NPX_VER=$$(npx --version 2>/dev/null || true); \
-		if [ -z "$$NPX_VER" ]; then \
+		if [ -z "$$(printf '%s' "$$NPX_VER" | tr -d '[:space:]')" ]; then \
 			echo "$(COLOR_YELLOW)⚠️  Unusable: npx is on PATH but 'npx --version' produced no output$(COLOR_RESET)"; \
 			echo "   The Prettier-backed doc targets cannot run through it; reinstall node, or repair the PATH entry shadowing it."; \
 			WARNINGS=$$((WARNINGS + 1)); \
@@ -264,7 +264,7 @@ check-prerequisites:
 	printf "%-32s " "Checking GitHub CLI (gh)..."; \
 	if command -v gh >/dev/null 2>&1; then \
 		GH_VER=$$(gh --version 2>/dev/null | head -n 1 || true); \
-		if [ -z "$$GH_VER" ]; then \
+		if [ -z "$$(printf '%s' "$$GH_VER" | tr -d '[:space:]')" ]; then \
 			echo "$(COLOR_RED)❌ Unusable: gh is on PATH but 'gh --version' produced no output$(COLOR_RESET)"; \
 			echo "   A binary that cannot report its version cannot be trusted to resolve PR refs; reinstall it, or repair the PATH entry shadowing it."; \
 			ERRORS=$$((ERRORS + 1)); \
@@ -289,7 +289,7 @@ check-prerequisites:
 	printf "%-32s " "Checking OpenSSL..."; \
 	if command -v openssl >/dev/null 2>&1; then \
 		OPENSSL_VER=$$(openssl version 2>/dev/null || true); \
-		if [ -z "$$OPENSSL_VER" ]; then \
+		if [ -z "$$(printf '%s' "$$OPENSSL_VER" | tr -d '[:space:]')" ]; then \
 			echo "$(COLOR_RED)❌ Unusable: openssl is on PATH but 'openssl version' produced no output$(COLOR_RESET)"; \
 			echo "   ca_generator.py cannot mint or read certificates through a build that cannot report its version; reinstall it, or repair the PATH entry shadowing it."; \
 			ERRORS=$$((ERRORS + 1)); \

@@ -234,6 +234,7 @@ def _setup_mock_env(
         "head",
         "uname",
         "printf",
+        "tr",
         "echo",
         "cat",
         "rm",
@@ -477,3 +478,40 @@ def test_check_prerequisites_reports_unusable_npx_without_calling_it_found(
     assert result.returncode == 0, "an advisory tool's failure must not fail the run"
     assert "Unusable: npx is on PATH" in result.stdout
     assert "Found: npx v" not in result.stdout
+
+
+def _create_whitespace_gh(bin_dir: pathlib.Path) -> None:
+    """Create a gh whose --version emits only whitespace, which `[ -z ]` alone calls non-empty."""
+    _write_exe(bin_dir / "gh", "#!/bin/sh\nprintf '   '\n")
+
+
+def test_check_prerequisites_treats_a_whitespace_version_as_unusable(tmp_path: pathlib.Path) -> None:
+    """`[ -z ]` is false for a blank-but-spaced string, so the guard must trim first.
+
+    A tool printing "   " from --version is not reporting a version; without trimming the run
+    prints a green tick with invisible content, which is the same false confidence the
+    empty-string case was fixed for.
+    """
+    env = _setup_mock_env(
+        tmp_path,
+        mock_gh=_create_whitespace_gh,
+        mock_openssl=_create_openssl,
+    )
+
+    result = _run_make(["check-prerequisites", OS_LINUX], env=env)
+
+    assert result.returncode == 2
+    assert "Unusable: gh is on PATH" in result.stdout
+
+
+def test_detected_os_is_derived_from_uname_not_written_as_a_constant() -> None:
+    """The runtime header check cannot tell `$(shell uname -s)` from a constant that equals it.
+
+    Hardcoding `DETECTED_OS := Darwin` passes the host-matching test on a macOS runner and
+    misdirects every Linux user, so the derivation itself is pinned here as well.
+    """
+    makefile_lines = (_get_repo_root() / "Makefile").read_text(encoding="utf-8").splitlines()
+    detected = [line for line in makefile_lines if line.startswith("DETECTED_OS")]
+    assert detected == ["DETECTED_OS := $(shell uname -s)"], (
+        f"DETECTED_OS must be derived from `uname -s`, found: {detected}"
+    )

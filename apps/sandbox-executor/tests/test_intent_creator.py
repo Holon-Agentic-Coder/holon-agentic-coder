@@ -227,3 +227,85 @@ class TestIntentCreator(unittest.TestCase):
         self.assertTrue("bootstrap-holon-cli-intent" in written_data["branch"])
         self.assertEqual(written_data["slug"], "bootstrap-holon-cli-intent")
         self.assertEqual(written_data["status"], "proposed")
+
+    @patch("os.path.exists")
+    def test_intent_creator_fails_fast_on_unresolved_questions(self, mock_exists):
+        mock_exists.return_value = True
+        intent_json_data = {
+            "branch": "I-12345",
+            "description": "Test description",
+            "goal": "Test goal",
+            "open_questions": ["What database should we use?"],
+        }
+
+        mock_file = MagicMock()
+        mock_file.read.return_value = json.dumps(intent_json_data)
+        mock_file.__enter__.return_value = mock_file
+
+        with (
+            patch("builtins.open", return_value=mock_file),
+            patch("sys.stderr.write") as mock_stderr,
+            self.assertRaises(SystemExit) as cm,
+        ):
+            intent_creator.main()
+
+        self.assertEqual(cm.exception.code, 1)
+        mock_stderr.assert_called()
+
+    @patch("sandbox_executor.entrypoint.intent_creator.cleanup_repo_dir")
+    @patch("subprocess.run")
+    @patch("os.path.exists")
+    @patch("os.makedirs")
+    def test_intent_creator_succeeds_with_resolved_questions(self, mock_makedirs, mock_exists, mock_run, mock_cleanup):
+        mock_exists.return_value = True
+        intent_json_data = {
+            "branch": "I-12345",
+            "description": "Test description",
+            "goal": "Test goal",
+            "slug": "test-slug",
+            "questions": ["What database should we use?"],
+            "answers": {"What database should we use?": "Postgres"},
+        }
+
+        file_contents = {}
+
+        def mock_open_impl(file, mode="r", *args, **kwargs):
+            file_str = str(file)
+            if "/tmp/intent.json" in file_str:
+                mock_file = MagicMock()
+                mock_file.read.return_value = json.dumps(intent_json_data)
+                mock_file.__enter__.return_value = mock_file
+                return mock_file
+            else:
+                mock_file = MagicMock()
+                mock_file.write = MagicMock()
+                mock_file.__enter__.return_value = mock_file
+                file_contents[file_str] = mock_file
+                return mock_file
+
+        mock_run_result = MagicMock()
+        mock_run_result.returncode = 0
+        mock_run.return_value = mock_run_result
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
+            patch("sandbox_executor.entrypoint.intent_creator.get_workspace_dir", return_value=tmp_dir),
+            patch("builtins.open", side_effect=mock_open_impl),
+        ):
+            intent_creator.main()
+
+        # Check that intents.jsonl contains resolved questions and answers
+        written_file_path = next(k for k in file_contents if "intents.jsonl" in k)
+        written_mock = file_contents[written_file_path]
+        written_mock.write.assert_called()
+        written_data = json.loads(written_mock.write.call_args[0][0].strip())
+        self.assertEqual(written_data["questions"], ["What database should we use?"])
+        self.assertEqual(written_data["answers"], {"What database should we use?": "Postgres"})
+
+        # Check commit message includes resolved questions summary
+        commit_calls = [call[0][0] for call in mock_run.call_args_list if "commit" in call[0][0]]
+        self.assertTrue(len(commit_calls) > 0)
+        commit_msg = commit_calls[0][commit_calls[0].index("-m") + 1]
+        self.assertIn("Resolved Questions", commit_msg)
+        self.assertIn("Postgres", commit_msg)

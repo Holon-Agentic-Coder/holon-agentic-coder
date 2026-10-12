@@ -655,6 +655,113 @@ def check_pr_mergeability(
     }
 
 
+def validate_intent_questions(intent_data: dict[str, Any]) -> tuple[bool, list[str]]:
+    """Validate that an intent payload has no unresolved open questions.
+
+    Checks `questions`, `open_questions`, and `clarifications` fields in `intent_data`.
+    If any open question exists without a matching answer in `answers` or `resolved_questions`,
+    or if a question item is explicitly marked as open/unresolved, this returns False
+    along with a list of descriptions of the unresolved questions.
+
+    Args:
+        intent_data: Dictionary containing intent metadata and questions.
+
+    Returns:
+        tuple[bool, list[str]]: (is_valid, list_of_unresolved_question_descriptions)
+    """
+    unresolved: list[str] = []
+
+    answers_map: dict[str, Any] = {}
+    answers_raw = intent_data.get("answers") or intent_data.get("resolved_questions") or {}
+    if isinstance(answers_raw, dict):
+        answers_map.update(answers_raw)
+    elif isinstance(answers_raw, list):
+        for idx, item in enumerate(answers_raw):
+            if isinstance(item, dict):
+                q_key = item.get("question") or item.get("id") or str(idx)
+                answers_map[q_key] = item.get("answer", "")
+            else:
+                answers_map[str(idx)] = item
+
+    def is_answered(q_key: str, q_idx: int) -> bool:
+        if q_key in answers_map and answers_map[q_key] not in (None, ""):
+            return True
+        return str(q_idx) in answers_map and answers_map[str(q_idx)] not in (None, "")
+
+    # 1. Check open_questions
+    open_qs = intent_data.get("open_questions")
+    if open_qs:
+        if isinstance(open_qs, list):
+            for idx, q in enumerate(open_qs):
+                if isinstance(q, dict):
+                    q_text = q.get("question") or q.get("id") or f"open_question_{idx}"
+                    q_status = str(q.get("status", "open")).lower()
+                    has_ans = (
+                        (q.get("answer") not in (None, ""))
+                        or is_answered(q_text, idx)
+                        or is_answered(q.get("id", ""), idx)
+                    )
+                    if q_status in ("open", "unresolved") and not has_ans:
+                        unresolved.append(f"{q_text} (unresolved open_question)")
+                    elif not has_ans:
+                        unresolved.append(f"{q_text} (missing answer)")
+                elif isinstance(q, str):
+                    if not is_answered(q, idx):
+                        unresolved.append(f"{q} (unanswered open_question)")
+        elif isinstance(open_qs, dict):
+            for k, v in open_qs.items():
+                if v in (None, "") and not is_answered(k, 0):
+                    unresolved.append(f"{k} (unresolved open_question)")
+
+    # 2. Check questions
+    questions = intent_data.get("questions")
+    if questions:
+        if isinstance(questions, list):
+            for idx, q in enumerate(questions):
+                if isinstance(q, dict):
+                    q_text = q.get("question") or q.get("id") or f"question_{idx}"
+                    q_status = str(q.get("status", "")).lower()
+                    has_ans = (
+                        (q.get("answer") not in (None, ""))
+                        or is_answered(q_text, idx)
+                        or is_answered(q.get("id", ""), idx)
+                    )
+                    if q_status in ("open", "unresolved") and not has_ans:
+                        unresolved.append(f"{q_text} (marked as {q_status})")
+                    elif not has_ans:
+                        unresolved.append(f"{q_text} (unanswered question)")
+                elif isinstance(q, str):
+                    if not is_answered(q, idx):
+                        unresolved.append(f"{q} (unanswered question)")
+        elif isinstance(questions, dict):
+            for k, v in questions.items():
+                if v in (None, "") and not is_answered(k, 0):
+                    unresolved.append(f"{k} (unanswered question)")
+
+    # 3. Check clarifications
+    clarifications = intent_data.get("clarifications")
+    if clarifications:
+        if isinstance(clarifications, list):
+            for idx, c in enumerate(clarifications):
+                if isinstance(c, dict):
+                    c_text = c.get("question") or c.get("clarification") or f"clarification_{idx}"
+                    c_status = str(c.get("status", "")).lower()
+                    has_ans = (c.get("answer") not in (None, "")) or is_answered(c_text, idx)
+                    if c_status in ("open", "unresolved") and not has_ans:
+                        unresolved.append(f"{c_text} (unresolved clarification)")
+                    elif not has_ans:
+                        unresolved.append(f"{c_text} (unanswered clarification)")
+                elif isinstance(c, str):
+                    if not is_answered(c, idx):
+                        unresolved.append(f"{c} (unanswered clarification)")
+        elif isinstance(clarifications, dict):
+            for k, v in clarifications.items():
+                if v in (None, "") and not is_answered(k, 0):
+                    unresolved.append(f"{k} (unresolved clarification)")
+
+    return (len(unresolved) == 0, unresolved)
+
+
 # ---------------------------------------------------------------------------
 # Stage 1: Intent Stage
 # ---------------------------------------------------------------------------
@@ -673,6 +780,25 @@ def run_intent_stage(context: FlowContext) -> StageResult:
 
     if not goal and not raw_desc:
         error_msg = "Validation failed: Intent must have at least 'goal' or 'description'."
+        context.log(error_msg)
+        res = StageResult(
+            stage=FlowStage.INTENT,
+            status=StageStatus.FAILED,
+            start_time=start_time,
+            end_time=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            error=error_msg,
+        )
+        context.stage_results["intent"] = res
+        return res
+
+    # Front-load clarifying questions validation (Bean 0085)
+    valid_questions, unresolved = validate_intent_questions(intent_data)
+    if not valid_questions:
+        unresolved_list_str = "; ".join(unresolved)
+        error_msg = (
+            f"Validation failed: Unresolved questions detected in intent payload. "
+            f"All clarifying questions must be resolved prior to completing Stage 1. Unresolved: {unresolved_list_str}"
+        )
         context.log(error_msg)
         res = StageResult(
             stage=FlowStage.INTENT,
@@ -748,7 +874,13 @@ def run_intent_stage(context: FlowContext) -> StageResult:
             commit_env.setdefault("GIT_AUTHOR_EMAIL", "intent-agent@holon-agentic-coder.com")
             commit_env.setdefault("GIT_COMMITTER_NAME", "Holon Intent Agent")
             commit_env.setdefault("GIT_COMMITTER_EMAIL", "intent-agent@holon-agentic-coder.com")
-            msg = f"intent: created {intent_branch}\n\nDescription:\n{description}\n\nGoal:\n{goal}\n"
+            q_summary = ""
+            if intent_data.get("questions") or intent_data.get("answers") or intent_data.get("open_questions"):
+                resolved_content = (
+                    intent_data.get("answers") or intent_data.get("questions") or intent_data.get("open_questions")
+                )
+                q_summary = f"\n\nResolved Questions:\n{json.dumps(resolved_content, indent=2)}"
+            msg = f"intent: created {intent_branch}\n\nDescription:\n{description}\n\nGoal:\n{goal}{q_summary}\n"
             run_git(["commit", "-m", msg], cwd=repo_dir, env=commit_env, check=True)
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -775,7 +907,10 @@ def run_intent_stage(context: FlowContext) -> StageResult:
 
 
 def run_plan_stage(context: FlowContext) -> StageResult:
-    """Execute Stage 2: Create plan branch off intent branch, generate plan, and record in ledger."""
+    """Execute Stage 2: Create plan branch off intent branch, generate plan, and record in ledger.
+
+    Downstream stages operate unattended: picks conservative defaults and never stalls on interactive questions.
+    """
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log("Starting Stage 2: Plan Generation")
 
@@ -926,7 +1061,10 @@ def run_plan_stage(context: FlowContext) -> StageResult:
 
 
 def run_execute_stage(context: FlowContext) -> StageResult:
-    """Execute Stage 3: Create execution branch, rebase on plan, run agent/tests, and record execution."""
+    """Execute Stage 3: Create execution branch, rebase on plan, run agent/tests, and record execution.
+
+    Downstream stages operate unattended: picks conservative non-blocking execution options.
+    """
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log("Starting Stage 3: Plan Execution")
 
@@ -1067,6 +1205,7 @@ def run_review_stage(context: FlowContext) -> StageResult:
 
     Evaluates diffs, test logs, and safety invariants. Enforces Bean 0034 (Human-Only PR Merging):
     Upon consensus approval, halts unconditionally with status HALTED_FOR_HUMAN and NEVER merges to main.
+    Operates unattended: never prompts for interactive review questions.
     """
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log("Starting Stage 4: PR Review Loop")
@@ -1219,6 +1358,7 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
 
     Runs post-execution calibration analysis on the execution branch and creates
     the calibration markdown report on the /calibrated branch.
+    Operates unattended: applies conservative calibrated updates automatically.
     """
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log("Starting Stage 5: Post-Execution Calibration (Bean 0038)")

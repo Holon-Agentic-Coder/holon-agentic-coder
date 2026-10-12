@@ -55,8 +55,21 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Check markdown formatting with Prettier
-        run: npx prettier --check "**/*.md"
+      - name: Install system linters
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck yamllint
+          ARCH="$(dpkg --print-architecture)"
+          case "${ARCH##*-}" in
+            amd64) YQ_ARCH='amd64';;
+            arm64) YQ_ARCH='arm64';;
+            *) echo "unsupported architecture for yq"; exit 1 ;;
+          esac
+          sudo curl -fsSL "https://github.com/mikefarah/yq/releases/download/v4.44.1/yq_linux_${YQ_ARCH}" -o /usr/local/bin/yq
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Run Makefile lint
+        run: make lint
 
       - name: Test clean task
         run: uv run task clean

@@ -696,7 +696,11 @@ def validate_intent_questions(intent_data: dict[str, Any]) -> tuple[bool, list[s
                 if isinstance(q, dict):
                     q_text = q.get("question") or q.get("id") or f"open_question_{idx}"
                     q_status = str(q.get("status", "open")).lower()
-                    has_ans = bool(q.get("answer")) or is_answered(q_text, idx) or is_answered(q.get("id", ""), idx)
+                    has_ans = (
+                        (q.get("answer") not in (None, ""))
+                        or is_answered(q_text, idx)
+                        or is_answered(q.get("id", ""), idx)
+                    )
                     if q_status in ("open", "unresolved") and not has_ans:
                         unresolved.append(f"{q_text} (unresolved open_question)")
                     elif not has_ans:
@@ -717,10 +721,14 @@ def validate_intent_questions(intent_data: dict[str, Any]) -> tuple[bool, list[s
                 if isinstance(q, dict):
                     q_text = q.get("question") or q.get("id") or f"question_{idx}"
                     q_status = str(q.get("status", "")).lower()
-                    has_ans = bool(q.get("answer")) or is_answered(q_text, idx) or is_answered(q.get("id", ""), idx)
+                    has_ans = (
+                        (q.get("answer") not in (None, ""))
+                        or is_answered(q_text, idx)
+                        or is_answered(q.get("id", ""), idx)
+                    )
                     if q_status in ("open", "unresolved") and not has_ans:
                         unresolved.append(f"{q_text} (marked as {q_status})")
-                    elif not has_ans and ("answer" in q or q_status or not answers_map):
+                    elif not has_ans:
                         unresolved.append(f"{q_text} (unanswered question)")
                 elif isinstance(q, str):
                     if not is_answered(q, idx):
@@ -738,9 +746,11 @@ def validate_intent_questions(intent_data: dict[str, Any]) -> tuple[bool, list[s
                 if isinstance(c, dict):
                     c_text = c.get("question") or c.get("clarification") or f"clarification_{idx}"
                     c_status = str(c.get("status", "")).lower()
-                    has_ans = bool(c.get("answer")) or is_answered(c_text, idx)
-                    if (c_status in ("open", "unresolved") or not has_ans) and not bool(c.get("answer")):
+                    has_ans = (c.get("answer") not in (None, "")) or is_answered(c_text, idx)
+                    if c_status in ("open", "unresolved") and not has_ans:
                         unresolved.append(f"{c_text} (unresolved clarification)")
+                    elif not has_ans:
+                        unresolved.append(f"{c_text} (unanswered clarification)")
                 elif isinstance(c, str):
                     if not is_answered(c, idx):
                         unresolved.append(f"{c} (unanswered clarification)")

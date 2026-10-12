@@ -429,7 +429,7 @@ tools:
 			if [ -z "$$(printf '%s' "$$tool_ver" | tr -d '[:space:]')" ]; then tool_ver="unknown version"; fi; \
 			printf "  %-12s %-35s %s\n" "$$tool" "$$tool_path" "$$tool_ver"; \
 		else \
-			printf "  %-12s %-35s %s\n" "$$tool" "NOT FOUND" "$(COLOR_RED)missing$(COLOR_RESET)"; \
+			printf "  %-12s %-35s %b\n" "$$tool" "NOT FOUND" "$(COLOR_RED)missing$(COLOR_RESET)"; \
 			ERRORS=$$((ERRORS + 1)); \
 		fi; \
 	done; \

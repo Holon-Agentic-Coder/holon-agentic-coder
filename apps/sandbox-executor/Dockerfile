@@ -18,7 +18,7 @@ RUN dpkgArch="$(dpkg --print-architecture)" && \
       arm64) ARCH='arm64';; \
       *) echo "unsupported architecture for yq"; exit 1 ;; \
     esac && \
-    curl -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${ARCH}" -o /usr/local/bin/yq && \
+    curl -fsSL "https://github.com/mikefarah/yq/releases/download/v4.44.1/yq_linux_${ARCH}" -o /usr/local/bin/yq && \
     chmod +x /usr/local/bin/yq
 
 # Configure SSH globally inside the container to automatically accept host keys

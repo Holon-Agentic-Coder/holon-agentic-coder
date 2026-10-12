@@ -119,6 +119,9 @@ class CalibrationReport:
     markdown_content: str
     evaluated_commit_sha: str | None = None
     committed: bool = True
+    base_sha: str | None = None
+    merge_base_sha: str | None = None
+    merged_commit_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -140,6 +143,9 @@ class CalibrationReport:
             "bias_directions": self.bias_directions,
             "evaluated_commit_sha": self.evaluated_commit_sha,
             "committed": self.committed,
+            "base_sha": self.base_sha,
+            "merge_base_sha": self.merge_base_sha,
+            "merged_commit_count": self.merged_commit_count,
         }
 
 
@@ -737,7 +743,7 @@ def parse_actual_metrics(
     # 2. Compute patch size via git diff between plan_branch and execution_branch (fail loudly on non-zero exit)
     base_ref = plan_branch if plan_branch else "HEAD~1"
     if execution_branch and base_ref != target_ref:
-        diff_args = ["git", "diff", "--shortstat", f"{base_ref}..{target_ref}", "--"]
+        diff_args = ["git", "diff", "--shortstat", f"{base_ref}...{target_ref}", "--"]
     else:
         diff_args = ["git", "diff", "--shortstat", f"{target_ref}~1..{target_ref}", "--"]
 
@@ -754,6 +760,61 @@ def parse_actual_metrics(
         raise RuntimeError(
             f"Git diff failed between '{base_ref}' and '{target_ref}' with exit code {res.returncode}: {error_message}"
         )
+
+    if execution_branch and base_ref != target_ref:
+        res_base = subprocess.run(
+            ["git", "rev-parse", base_ref],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        if res_base.returncode != 0:
+            error_message = res_base.stderr.strip()
+            raise RuntimeError(
+                f"Git rev-parse failed for '{base_ref}' with exit code {res_base.returncode}: {error_message}"
+            )
+        base_sha = res_base.stdout.strip()
+
+        res_mb = subprocess.run(
+            ["git", "merge-base", base_ref, target_ref],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        if res_mb.returncode != 0:
+            error_message = res_mb.stderr.strip()
+            raise RuntimeError(
+                f"Git merge-base failed between '{base_ref}' and '{target_ref}' "
+                f"with exit code {res_mb.returncode}: {error_message}"
+            )
+        merge_base_sha = res_mb.stdout.strip()
+
+        res_merges = subprocess.run(
+            ["git", "rev-list", "--count", "--merges", f"{base_ref}..{target_ref}"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        if res_merges.returncode != 0:
+            error_message = res_merges.stderr.strip()
+            raise RuntimeError(
+                f"Git rev-list failed between '{base_ref}' and '{target_ref}' "
+                f"with exit code {res_merges.returncode}: {error_message}"
+            )
+        try:
+            merged_commit_count = int(res_merges.stdout.strip())
+        except ValueError:
+            merged_commit_count = 0
+
+        exec_meta["base_sha"] = base_sha
+        exec_meta["merge_base_sha"] = merge_base_sha
+        exec_meta["merged_commit_count"] = merged_commit_count
 
     if res.stdout.strip():
         text = res.stdout.strip()
@@ -889,114 +950,127 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
         f"- **Evaluating Agent:** `{agent_id}/{model_name}`",
         f"- **Evaluation Timestamp:** `{timestamp}`",
         f"- **Evaluated Commit SHA:** {sha_display}",
-        "",
-        "---",
-        "",
-        "## 1. Executive Calibration Summary",
-        "",
-        (
-            "| Metric                    | Predicted (`pred`) | Actual (`actual`) | "
-            "Absolute Error (`abs(pred - actual)`) | Accuracy Rating   | Bias Direction             |"
-        ),
-        (
-            "| :------------------------ | :----------------- | :---------------- | "
-            ":------------------------------------ | :---------------- | :------------------------- |"
-        ),
-        (
-            f"| **$P(\\text{{success}})$**   | `{pred['p_success']:.2f}`             | "
-            f"`{act['p_success']:.2f}`            | `{deltas['p_success_error']:.2f}`"
-            f"                                | {ratings['p_success']:<17} | {biases['p_success']:<26} |"
-        ),
-        (
-            f"| **Entropy ($\\Delta S$)**  | `{pred['entropy']:.2f}`             | "
-            f"`{act['entropy']:.2f}`            | `{deltas['entropy_error']:.2f}`"
-            f"                                | {ratings['entropy']:<17} | {biases['entropy']:<26} |"
-        ),
-        (
-            f"| **Impact**                | `{pred['impact']:.2f}`            | "
-            f"`{act['impact']:.2f}`           | `{deltas['impact_error']:.2f}`"
-            f"                                | {ratings['impact']:<17} | {biases['impact']:<26} |"
-        ),
-        (
-            f"| **Cost**                  | `{pred['cost']:.2f}`             | "
-            f"`{act['cost']:.2f}`            | `{deltas['cost_error']:.2f}`"
-            f"                                | {ratings['cost']:<17} | {biases['cost']:<26} |"
-        ),
-        (
-            f"| **Learning Value**        | `{pred['learning_value']:.2f}`             | "
-            f"`{act['learning_value']:.2f}`            | `{deltas['learning_value_error']:.2f}`"
-            f"                                | {ratings['learning_value']:<17} | {biases['learning_value']:<26} |"
-        ),
-        (
-            f"| **Expected Value ($EV$)** | `{pred['ev']:.2f}`            | "
-            f"`{act['ev']:.2f}`           | `{deltas['ev_error']:.2f}`"
-            f"                                | {ratings['ev']:<17} | {biases['ev']:<26} |"
-        ),
-        "",
-        "---",
-        "",
-        "## 2. Mathematical Derivations & Calibration Errors",
-        "",
-        (
-            f"- **Success Probability Error:** $|{pred['p_success']:.2f} - {act['p_success']:.2f}| = "
-            f"{deltas['p_success_error']:.2f}$"
-        ),
-        f"- **Entropy Error:** $|{pred['entropy']:.2f} - {act['entropy']:.2f}| = {deltas['entropy_error']:.2f}$",
-        f"- **Impact Error:** $|{pred['impact']:.2f} - {act['impact']:.2f}| = {deltas['impact_error']:.2f}$",
-        f"- **Cost Error:** $|{pred['cost']:.2f} - {act['cost']:.2f}| = {deltas['cost_error']:.2f}$",
-        (
-            f"- **Learning Value Error:** $|{pred['learning_value']:.2f} - {act['learning_value']:.2f}| = "
-            f"{deltas['learning_value_error']:.2f}$"
-        ),
-        "- **Expected Value Realization:**",
-        (
-            f"  $$EV_{{\\text{{pred}}}} = {pred['p_success']:.2f} \\times {pred['impact']:.1f} + {mu_val:.1f} \\times "
-            f"{pred['learning_value']:.1f} - {lambda_val:.1f} \\times {pred['entropy']:.2f} - {pred['cost']:.2f} = "
-            f"{pred['ev']:.2f}$$"
-        ),
-        (
-            f"  $$EV_{{\\text{{actual}}}} = {act['p_success']:.2f} \\times {act['impact']:.1f} + {mu_val:.1f} \\times "
-            f"{act['learning_value']:.1f} - {lambda_val:.1f} \\times {act['entropy']:.2f} - {act['cost']:.2f} = "
-            f"{act['ev']:.2f}$$"
-        ),
-        f"  $$\\Delta EV = {delta_ev_str}$$",
-        "",
-        "---",
-        "",
-        "## 3. Entropy Factor Breakdown",
-        "",
-        (
-            f"- **State Surface Area (SSA):** Predicted `{ef['ssa']['predicted']:.1f}` vs Observed "
-            f"`{ef['ssa']['observed']:.1f}` ({act.get('files_changed', 1)} files modified)."
-        ),
-        (
-            f"- **Irreversibility (IRR):** Predicted `{ef['irr']['predicted']:.1f}` vs Observed "
-            f"`{ef['irr']['observed']:.1f}` (Zero destructive or stateful changes)."
-        ),
-        (
-            f"- **Conflict Likelihood (CL):** Predicted `{ef['cl']['predicted']:.1f}` vs Observed "
-            f"`{ef['cl']['observed']:.1f}` (Clean sequential branch merges)."
-        ),
-        (
-            f"- **Sandbox Escape Risk (SER):** Predicted `{ef['ser']['predicted']:.1f}` vs Observed "
-            f"`{ef['ser']['observed']:.1f}` (Zero security exceptions)."
-        ),
-        (
-            f"- **Novelty (NOV):** Predicted `{ef['nov']['predicted']:.1f}` vs Observed "
-            f"`{ef['nov']['observed']:.1f}` (Standard calibration reporting schema)."
-        ),
-        "",
-        "---",
-        "",
-        "## 4. Calibration Assessment",
-        "",
-        (
-            f"Plan `{plan_id}` executed with minimal error ($p\\_success\\_error = {deltas['p_success_error']:.2f}$, "
-            f"$cost\\_error = {deltas['cost_error']:.2f}$). The calibration step successfully completed the "
-            "execution lifecycle and delivered verified post-execution analysis."
-        ),
-        "",
     ]
+    if report_data.get("base_sha"):
+        lines.append(f"- **Base SHA:** `{report_data['base_sha']}`")
+    if report_data.get("merge_base_sha"):
+        lines.append(f"- **Merge-Base SHA:** `{report_data['merge_base_sha']}`")
+    if "merged_commit_count" in report_data and (
+        report_data.get("merge_base_sha") or report_data["merged_commit_count"] > 0
+    ):
+        lines.append(f"- **Merged Commits:** `{report_data['merged_commit_count']}`")
+    lines.extend(
+        [
+            "",
+            "---",
+            "",
+            "## 1. Executive Calibration Summary",
+            "",
+            (
+                "| Metric                    | Predicted (`pred`) | Actual (`actual`) | "
+                "Absolute Error (`abs(pred - actual)`) | Accuracy Rating   | Bias Direction             |"
+            ),
+            (
+                "| :------------------------ | :----------------- | :---------------- | "
+                ":------------------------------------ | :---------------- | :------------------------- |"
+            ),
+            (
+                f"| **$P(\\text{{success}})$**   | `{pred['p_success']:.2f}`             | "
+                f"`{act['p_success']:.2f}`            | `{deltas['p_success_error']:.2f}`"
+                f"                                | {ratings['p_success']:<17} | {biases['p_success']:<26} |"
+            ),
+            (
+                f"| **Entropy ($\\Delta S$)**  | `{pred['entropy']:.2f}`             | "
+                f"`{act['entropy']:.2f}`            | `{deltas['entropy_error']:.2f}`"
+                f"                                | {ratings['entropy']:<17} | {biases['entropy']:<26} |"
+            ),
+            (
+                f"| **Impact**                | `{pred['impact']:.2f}`            | "
+                f"`{act['impact']:.2f}`           | `{deltas['impact_error']:.2f}`"
+                f"                                | {ratings['impact']:<17} | {biases['impact']:<26} |"
+            ),
+            (
+                f"| **Cost**                  | `{pred['cost']:.2f}`             | "
+                f"`{act['cost']:.2f}`            | `{deltas['cost_error']:.2f}`"
+                f"                                | {ratings['cost']:<17} | {biases['cost']:<26} |"
+            ),
+            (
+                f"| **Learning Value**        | `{pred['learning_value']:.2f}`             | "
+                f"`{act['learning_value']:.2f}`            | `{deltas['learning_value_error']:.2f}`"
+                f"                                | {ratings['learning_value']:<17} | {biases['learning_value']:<26} |"
+            ),
+            (
+                f"| **Expected Value ($EV$)** | `{pred['ev']:.2f}`            | "
+                f"`{act['ev']:.2f}`           | `{deltas['ev_error']:.2f}`"
+                f"                                | {ratings['ev']:<17} | {biases['ev']:<26} |"
+            ),
+            "",
+            "---",
+            "",
+            "## 2. Mathematical Derivations & Calibration Errors",
+            "",
+            (
+                f"- **Success Probability Error:** $|{pred['p_success']:.2f} - {act['p_success']:.2f}| = "
+                f"{deltas['p_success_error']:.2f}$"
+            ),
+            f"- **Entropy Error:** $|{pred['entropy']:.2f} - {act['entropy']:.2f}| = {deltas['entropy_error']:.2f}$",
+            f"- **Impact Error:** $|{pred['impact']:.2f} - {act['impact']:.2f}| = {deltas['impact_error']:.2f}$",
+            f"- **Cost Error:** $|{pred['cost']:.2f} - {act['cost']:.2f}| = {deltas['cost_error']:.2f}$",
+            (
+                f"- **Learning Value Error:** $|{pred['learning_value']:.2f} - {act['learning_value']:.2f}| = "
+                f"{deltas['learning_value_error']:.2f}$"
+            ),
+            "- **Expected Value Realization:**",
+            (
+                f"  $$EV_{{\\text{{pred}}}} = {pred['p_success']:.2f} \\times {pred['impact']:.1f} + "
+                f"{mu_val:.1f} \\times {pred['learning_value']:.1f} - {lambda_val:.1f} \\times "
+                f"{pred['entropy']:.2f} - {pred['cost']:.2f} = {pred['ev']:.2f}$$"
+            ),
+            (
+                f"  $$EV_{{\\text{{actual}}}} = {act['p_success']:.2f} \\times {act['impact']:.1f} + "
+                f"{mu_val:.1f} \\times {act['learning_value']:.1f} - {lambda_val:.1f} \\times "
+                f"{act['entropy']:.2f} - {act['cost']:.2f} = {act['ev']:.2f}$$"
+            ),
+            f"  $$\\Delta EV = {delta_ev_str}$$",
+            "",
+            "---",
+            "",
+            "## 3. Entropy Factor Breakdown",
+            "",
+            (
+                f"- **State Surface Area (SSA):** Predicted `{ef['ssa']['predicted']:.1f}` vs Observed "
+                f"`{ef['ssa']['observed']:.1f}` ({act.get('files_changed', 1)} files modified)."
+            ),
+            (
+                f"- **Irreversibility (IRR):** Predicted `{ef['irr']['predicted']:.1f}` vs Observed "
+                f"`{ef['irr']['observed']:.1f}` (Zero destructive or stateful changes)."
+            ),
+            (
+                f"- **Conflict Likelihood (CL):** Predicted `{ef['cl']['predicted']:.1f}` vs Observed "
+                f"`{ef['cl']['observed']:.1f}` (Clean sequential branch merges)."
+            ),
+            (
+                f"- **Sandbox Escape Risk (SER):** Predicted `{ef['ser']['predicted']:.1f}` vs Observed "
+                f"`{ef['ser']['observed']:.1f}` (Zero security exceptions)."
+            ),
+            (
+                f"- **Novelty (NOV):** Predicted `{ef['nov']['predicted']:.1f}` vs Observed "
+                f"`{ef['nov']['observed']:.1f}` (Standard calibration reporting schema)."
+            ),
+            "",
+            "---",
+            "",
+            "## 4. Calibration Assessment",
+            "",
+            (
+                f"Plan `{plan_id}` executed with minimal error "
+                f"($p\\_success\\_error = {deltas['p_success_error']:.2f}$, "
+                f"$cost\\_error = {deltas['cost_error']:.2f}$). The calibration step successfully completed the "
+                "execution lifecycle and delivered verified post-execution analysis."
+            ),
+            "",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -1105,6 +1179,10 @@ def generate_calibration(
         nov=(0.4, 0.4),
     )
 
+    base_sha = exec_meta.get("base_sha")
+    merge_base_sha = exec_meta.get("merge_base_sha")
+    merged_commit_count = int(exec_meta.get("merged_commit_count", 0))
+
     report_dict: dict[str, Any] = {
         "plan_id": plan_id,
         "execution_id": execution_id,
@@ -1126,6 +1204,9 @@ def generate_calibration(
         "mu": mu_val,
         "evaluated_commit_sha": evaluated_commit_sha,
         "committed": True,
+        "base_sha": base_sha,
+        "merge_base_sha": merge_base_sha,
+        "merged_commit_count": merged_commit_count,
     }
 
     markdown_content = format_markdown_report(report_dict)
@@ -1150,6 +1231,9 @@ def generate_calibration(
         markdown_content=markdown_content,
         evaluated_commit_sha=evaluated_commit_sha,
         committed=True,
+        base_sha=base_sha,
+        merge_base_sha=merge_base_sha,
+        merged_commit_count=merged_commit_count,
     )
 
 

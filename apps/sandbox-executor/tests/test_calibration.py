@@ -74,6 +74,38 @@ class TestCalibrationDataModels(unittest.TestCase):
         self.assertEqual(d["ssa"]["observed"], 0.4)
         self.assertEqual(d["cl"]["predicted"], 0.1)
 
+    def test_calibration_report_with_merge_telemetry(self):
+        pm = PredictedMetrics()
+        am = ActualMetrics()
+        deltas, ratings, biases = compute_calibration_deltas(pm, am)
+        ef = EntropyFactors()
+        cr = CalibrationReport(
+            plan_id="P-1",
+            execution_id="E-1",
+            intent_branch="I-1/_",
+            plan_branch="I-1/P-1/_",
+            execution_branch="I-1/P-1/E-1/_",
+            calibrated_branch="I-1/P-1/E-1/calibrated",
+            agent_id="test-agent",
+            agent_version="1.0",
+            model_name="test-model",
+            timestamp="2026-10-12T00:00:00.000Z",
+            predicted=pm,
+            actual=am,
+            deltas=deltas,
+            entropy_factors=ef,
+            accuracy_ratings=ratings,
+            bias_directions=biases,
+            markdown_content="# Test",
+            base_sha="base_sha_123",
+            merge_base_sha="mb_sha_456",
+            merged_commit_count=2,
+        )
+        d = cr.to_dict()
+        self.assertEqual(d["base_sha"], "base_sha_123")
+        self.assertEqual(d["merge_base_sha"], "mb_sha_456")
+        self.assertEqual(d["merged_commit_count"], 2)
+
 
 class TestBranchComponentExtraction(unittest.TestCase):
     """Test branch string parsing logic."""
@@ -499,6 +531,131 @@ class TestActualMetricsIntegrity(unittest.TestCase):
             self.assertEqual(actual.files_changed, 3)
             self.assertEqual(actual.insertions, 100)
             self.assertEqual(actual.deletions, 10)
+
+    def test_parse_actual_metrics_excludes_merged_history(self):
+        predicted = PredictedMetrics(p_success=0.95, entropy=1.0, impact=50.0, cost=3.0, learning_value=2.0, ev=45.0)
+        exec_record = {
+            "execution_id": "E-merge-1",
+            "plan_branch": "I-test/P-test/_",
+            "status": "success",
+            "duration": 25.0,
+            "tokens": 1000,
+        }
+        jsonl_str = json.dumps(exec_record) + "\n"
+
+        def mock_read_git_file(ref, rel_path, repo_dir="."):
+            if "executions.jsonl" in rel_path:
+                return jsonl_str
+            return None
+
+        def mock_subp(cmd, **kwargs):
+            if isinstance(cmd, list):
+                if "diff" in cmd:
+                    self.assertIn("I-test/P-test/_...exec-branch", cmd[3])
+                    return MagicMock(returncode=0, stdout="1 file changed, 10 insertions(+), 2 deletions(-)\n")
+                if "rev-parse" in cmd:
+                    return MagicMock(returncode=0, stdout="base1234567890abcdef1234567890abcdef1234\n")
+                if "merge-base" in cmd:
+                    return MagicMock(returncode=0, stdout="mergebase1234567890abcdef1234567890abcde\n")
+                if "rev-list" in cmd:
+                    return MagicMock(returncode=0, stdout="1\n")
+            return MagicMock(returncode=0, stdout="")
+
+        with (
+            patch("sandbox_executor.calibration.read_git_file", side_effect=mock_read_git_file),
+            patch("subprocess.run", side_effect=mock_subp),
+        ):
+            actual, meta = parse_actual_metrics("E-merge-1", "I-test/P-test/_", predicted, "exec-branch")
+            self.assertEqual(actual.files_changed, 1)
+            self.assertEqual(actual.insertions, 10)
+            self.assertEqual(actual.deletions, 2)
+            self.assertEqual(meta["base_sha"], "base1234567890abcdef1234567890abcdef1234")
+            self.assertEqual(meta["merge_base_sha"], "mergebase1234567890abcdef1234567890abcde")
+            self.assertEqual(meta["merged_commit_count"], 1)
+
+            deltas, ratings, biases = compute_calibration_deltas(predicted, actual)
+            report_dict = {
+                "plan_id": "P-test",
+                "execution_id": "E-merge-1",
+                "intent_branch": "I-test/_",
+                "agent_id": "antigravity-agent",
+                "model_name": "gemini-3.8-flash-medium",
+                "timestamp": "2026-10-12T00:00:00.000Z",
+                "predicted": predicted.to_dict(),
+                "actual": actual.to_dict(),
+                "deltas": deltas.to_dict(),
+                "accuracy_ratings": ratings,
+                "bias_directions": biases,
+                "entropy_factors": EntropyFactors().to_dict(),
+                "base_sha": meta["base_sha"],
+                "merge_base_sha": meta["merge_base_sha"],
+                "merged_commit_count": meta["merged_commit_count"],
+            }
+            md = format_markdown_report(report_dict)
+            self.assertIn("- **Base SHA:** `base1234567890abcdef1234567890abcdef1234`", md)
+            self.assertIn("- **Merge-Base SHA:** `mergebase1234567890abcdef1234567890abcde`", md)
+            self.assertIn("- **Merged Commits:** `1`", md)
+
+    def test_parse_actual_metrics_linear_history(self):
+        predicted = PredictedMetrics(p_success=0.95, entropy=1.0, impact=50.0, cost=3.0, learning_value=2.0, ev=45.0)
+        exec_record = {
+            "execution_id": "E-linear-1",
+            "plan_branch": "I-test/P-test/_",
+            "status": "success",
+            "duration": 20.0,
+            "tokens": 500,
+        }
+        jsonl_str = json.dumps(exec_record) + "\n"
+
+        def mock_read_git_file(ref, rel_path, repo_dir="."):
+            if "executions.jsonl" in rel_path:
+                return jsonl_str
+            return None
+
+        def mock_subp(cmd, **kwargs):
+            if isinstance(cmd, list):
+                if "diff" in cmd:
+                    return MagicMock(returncode=0, stdout="2 files changed, 25 insertions(+), 4 deletions(-)\n")
+                if "rev-parse" in cmd:
+                    return MagicMock(returncode=0, stdout="linearbase1234567890abcdef1234567890abcd\n")
+                if "merge-base" in cmd:
+                    return MagicMock(returncode=0, stdout="linearbase1234567890abcdef1234567890abcd\n")
+                if "rev-list" in cmd:
+                    return MagicMock(returncode=0, stdout="0\n")
+            return MagicMock(returncode=0, stdout="")
+
+        with (
+            patch("sandbox_executor.calibration.read_git_file", side_effect=mock_read_git_file),
+            patch("subprocess.run", side_effect=mock_subp),
+        ):
+            actual, meta = parse_actual_metrics("E-linear-1", "I-test/P-test/_", predicted, "exec-linear")
+            self.assertEqual(actual.files_changed, 2)
+            self.assertEqual(actual.insertions, 25)
+            self.assertEqual(actual.deletions, 4)
+            self.assertEqual(meta["base_sha"], "linearbase1234567890abcdef1234567890abcd")
+            self.assertEqual(meta["merge_base_sha"], "linearbase1234567890abcdef1234567890abcd")
+            self.assertEqual(meta["merged_commit_count"], 0)
+
+    def test_merge_base_failure_raises_runtime_error(self):
+        predicted = PredictedMetrics()
+
+        def mock_subp(cmd, **kwargs):
+            if isinstance(cmd, list):
+                if "diff" in cmd:
+                    return MagicMock(returncode=0, stdout="")
+                if "rev-parse" in cmd:
+                    return MagicMock(returncode=0, stdout="sha1\n")
+                if "merge-base" in cmd:
+                    return MagicMock(returncode=1, stderr="fatal: Not a valid object name")
+            return MagicMock(returncode=0, stdout="")
+
+        with (
+            patch("os.path.exists", return_value=False),
+            patch("subprocess.run", side_effect=mock_subp),
+        ):
+            with self.assertRaises(RuntimeError) as cm:
+                parse_actual_metrics("E-test", "base-ref", predicted, execution_branch="target-ref")
+            self.assertIn("Git merge-base failed between", str(cm.exception))
 
 
 class TestAppendOnlyCalibratedBranch(unittest.TestCase):

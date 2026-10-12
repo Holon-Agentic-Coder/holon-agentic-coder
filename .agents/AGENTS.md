@@ -30,3 +30,16 @@
   deleted immediately after use.
 - **No Per-Command Environment Injection**: Forbid per-command `export VAR=... &&` prefixes. Instruct agents to rely on
   standard `ENV PATH` discoverability.
+
+## Action Ledger & Provenance Guidelines
+
+- **Action-Level Execution Logging**: When executing tasks, record discrete operations (code edits, test runs, config
+  updates, git mutations) as `"entry_type": "action"` in `holon-knowledge/ledger/executions.jsonl`.
+- **Commit Trailers for Review & CI Provenance**: When resolving PR review comments or CI failures, append resolver
+  trailers to the commit message:
+  - `Action-Origin: pr_review` (or `ci_fix`, `operator`, `calibration`)
+  - `Review-Severity: critical` (or `important`, `nit`)
+  - `Review-Iteration: <iteration_number>`
+  - `Review-Finding-Ids: FIND-001, FIND-002`
+- **Pre-execution Failure Querying**: Before embarking on risky refactors or complex implementations, query past
+  failures and lessons using `holon ledger query --outcome failure --category <cat>` to avoid repeating past mistakes.

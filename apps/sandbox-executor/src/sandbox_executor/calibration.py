@@ -693,6 +693,8 @@ def parse_actual_metrics(
                 continue
             try:
                 record = json.loads(line)
+                if record.get("entry_type", "summary") != "summary":
+                    continue
                 rec_exec_id = record.get("execution_id", "")
                 rec_plan_branch = record.get("plan_branch", "")
                 if (execution_id and rec_exec_id == execution_id) or (
@@ -716,6 +718,8 @@ def parse_actual_metrics(
                             continue
                         try:
                             record = json.loads(line)
+                            if record.get("entry_type", "summary") != "summary":
+                                continue
                             rec_exec_id = record.get("execution_id", "")
                             rec_plan_branch = record.get("plan_branch", "")
                             if (execution_id and rec_exec_id == execution_id) or (
@@ -1101,6 +1105,8 @@ def generate_calibration(
                 for line in f:
                     if execution_id in line:
                         data = json.loads(line)
+                        if data.get("entry_type", "summary") != "summary":
+                            continue
                         if data.get("execution_id") == execution_id and data.get("plan_branch"):
                             resolved_pb = data["plan_branch"]
                             pb_comp = extract_branch_components(resolved_pb)

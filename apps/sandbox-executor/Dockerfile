@@ -8,8 +8,18 @@
 # --- Base Layer ---
 FROM python:3.13-slim AS holon-base
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends git curl jq build-essential ca-certificates ssh vim && \
+    apt-get install -y --no-install-recommends git curl jq build-essential ca-certificates ssh vim shellcheck yamllint && \
     rm -rf /var/lib/apt/lists/*
+
+# Install yq (mikefarah static binary with multi-architecture support)
+RUN dpkgArch="$(dpkg --print-architecture)" && \
+    case "${dpkgArch##*-}" in \
+      amd64) ARCH='amd64';; \
+      arm64) ARCH='arm64';; \
+      *) echo "unsupported architecture for yq"; exit 1 ;; \
+    esac && \
+    curl -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${ARCH}" -o /usr/local/bin/yq && \
+    chmod +x /usr/local/bin/yq
 
 # Configure SSH globally inside the container to automatically accept host keys
 # NOTE: Disabling StrictHostKeyChecking globally is acceptable for throwaway sandboxes.

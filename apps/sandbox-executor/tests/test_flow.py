@@ -160,6 +160,68 @@ class TestFlowStages:
         assert len(lines) == 1
         assert lines[0]["slug"] == "stage1-test"
 
+    def test_intent_stage_fails_fast_on_unresolved_open_questions(self):
+        ctx = FlowContext(
+            intent_data={
+                "slug": "unresolved-q",
+                "goal": "Build stage 1",
+                "open_questions": ["What authentication protocol should we use?"],
+            },
+            dry_run=True,
+        )
+        res = run_intent_stage(ctx)
+        assert res.status == StageStatus.FAILED
+        assert "Unresolved questions detected" in (res.error or "")
+        assert "What authentication protocol should we use?" in (res.error or "")
+
+    def test_intent_stage_persists_resolved_questions_to_ledger(self, tmp_path):
+        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
+        ledger_dir.mkdir(parents=True)
+
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_data={
+                "slug": "resolved-q",
+                "goal": "Build stage 1",
+                "questions": ["What protocol?"],
+                "answers": {"What protocol?": "OAuth2"},
+            },
+            dry_run=False,
+        )
+
+        with patch("sandbox_executor.flow.run_git") as mock_git:
+            mock_git.return_value = MagicMock(returncode=0)
+            res = run_intent_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        ledger_file = ledger_dir / "intents.jsonl"
+        assert ledger_file.exists()
+        with open(ledger_file) as f:
+            lines = [json.loads(line) for line in f if line.strip()]
+        assert len(lines) == 1
+        assert lines[0]["questions"] == ["What protocol?"]
+        assert lines[0]["answers"] == {"What protocol?": "OAuth2"}
+
+    def test_downstream_stages_run_unattended(self, tmp_path):
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_branch="I-12345-slug/_",
+            plan_branch="I-12345-slug/P-12345-agent-model/_",
+            execution_branch="I-12345-slug/P-12345-agent-model/E-12345-action/_",
+            dry_run=True,
+        )
+        plan_res = run_plan_stage(ctx)
+        assert plan_res.status in (StageStatus.SUCCESS, StageStatus.PENDING)
+
+        exec_res = run_execute_stage(ctx)
+        assert exec_res.status in (StageStatus.SUCCESS, StageStatus.PENDING)
+
+        review_res = run_review_stage(ctx)
+        assert review_res.status in (StageStatus.SUCCESS, StageStatus.HALTED_FOR_HUMAN)
+
+        cal_res = run_calibrate_stage(ctx)
+        assert cal_res.status in (StageStatus.SUCCESS, StageStatus.PENDING)
+
     def test_stage2_plan_missing_intent_branch(self):
         ctx = FlowContext(intent_branch=None)
         res = run_plan_stage(ctx)

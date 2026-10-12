@@ -49,7 +49,11 @@ COLOR_YELLOW := \033[1;33m
 COLOR_RESET := \033[0m
 endif
 
-.PHONY: help build-images check-prerequisites prerequisites check-docker install-docker install-homebrew
+TARGET_DIR ?=
+DIR ?=
+LINT_TARGET = $(if $(TARGET_DIR),$(TARGET_DIR),$(if $(DIR),$(DIR),.))
+
+.PHONY: help build-images check-prerequisites prerequisites check-docker install-docker install-homebrew tools lint lint-json lint-yaml lint-shell lint-md
 
 help:
 	@echo "Usage: make [target]"
@@ -60,6 +64,12 @@ help:
 	@printf "  %-22s %s\n" "check-docker" "Check Docker installation, Buildx, and daemon running status."
 	@printf "  %-22s %s\n" "install-docker" "Install Docker for the detected operating system."
 	@printf "  %-22s %s\n" "install-homebrew" "Install Homebrew (macOS only)."
+	@printf "  %-22s %s\n" "tools" "Print absolute resolved path and version of every required toolbelt tool."
+	@printf "  %-22s %s\n" "lint" "Run all linters (json, yaml, shell, md, python)."
+	@printf "  %-22s %s\n" "lint-json" "Validate all JSON and JSONL files with jq."
+	@printf "  %-22s %s\n" "lint-yaml" "Validate all YAML files with yq."
+	@printf "  %-22s %s\n" "lint-shell" "Validate shell scripts with shellcheck."
+	@printf "  %-22s %s\n" "lint-md" "Check markdown formatting with Prettier."
 	@printf "  %-22s %s\n" "help" "Show this help message."
 	@echo ""
 
@@ -388,3 +398,99 @@ check-prerequisites:
 
 # Alias for check-prerequisites
 prerequisites: check-prerequisites
+
+## ==============================================================================
+## OS Toolbelt & Linting Targets (Bean 0085)
+## ==============================================================================
+
+# Inspect baked-in OS toolbelt paths and versions
+tools:
+	@if [ -n "$(DRY_RUN)" ]; then exit 0; fi; \
+	ERRORS=0; \
+	echo "$(COLOR_BOLD)OS Toolbelt Inspection:$(COLOR_RESET)"; \
+	for tool in git jq yq shellcheck yamllint uv gh npx openssl; do \
+		tool_path=$$(command -v "$$tool" 2>/dev/null || true); \
+		if [ -n "$$tool_path" ]; then \
+			case "$$tool" in \
+				git) tool_ver=$$("$$tool_path" --version 2>/dev/null | head -n 1 || true) ;; \
+				jq) tool_ver=$$("$$tool_path" --version 2>/dev/null | head -n 1 || true) ;; \
+				yq) tool_ver=$$("$$tool_path" --version 2>/dev/null | head -n 1 || true) ;; \
+				shellcheck) tool_ver=$$("$$tool_path" --version 2>/dev/null | grep -E 'version:' | head -n 1 || true); \
+					if [ -z "$$tool_ver" ]; then tool_ver=$$("$$tool_path" -V 2>/dev/null | head -n 2 | tail -n 1 || true); fi; \
+					if [ -z "$$tool_ver" ]; then tool_ver=$$("$$tool_path" --version 2>/dev/null | head -n 1 || true); fi ;; \
+				yamllint) tool_ver=$$("$$tool_path" --version 2>/dev/null | head -n 1 || true) ;; \
+				uv) tool_ver=$$("$$tool_path" --version 2>/dev/null | head -n 1 || true) ;; \
+				gh) tool_ver=$$("$$tool_path" --version 2>/dev/null | grep -E 'gh version' | head -n 1 || true); \
+					if [ -z "$$tool_ver" ]; then tool_ver=$$("$$tool_path" --version 2>/dev/null | head -n 1 || true); fi ;; \
+				npx) tool_ver=$$("$$tool_path" --version 2>/dev/null | head -n 1 || true) ;; \
+				openssl) tool_ver=$$("$$tool_path" version 2>/dev/null | head -n 1 || true) ;; \
+				*) tool_ver=$$("$$tool_path" --version 2>/dev/null | head -n 1 || true) ;; \
+			esac; \
+			if [ -z "$$(printf '%s' "$$tool_ver" | tr -d '[:space:]')" ]; then tool_ver="unknown version"; fi; \
+			printf "  %-12s %-35s %s\n" "$$tool" "$$tool_path" "$$tool_ver"; \
+		else \
+			printf "  %-12s %-35s %s\n" "$$tool" "NOT FOUND" "$(COLOR_RED)missing$(COLOR_RESET)"; \
+			ERRORS=$$((ERRORS + 1)); \
+		fi; \
+	done; \
+	if [ $$ERRORS -gt 0 ]; then \
+		echo "$(COLOR_RED)❌ $$ERRORS required toolbelt tool(s) missing from PATH.$(COLOR_RESET)"; \
+		exit 1; \
+	else \
+		echo "$(COLOR_GREEN)✅ All toolbelt tools are present.$(COLOR_RESET)"; \
+	fi
+
+# Validate all JSON and JSONL files using jq
+lint-json:
+	@if [ -n "$(DRY_RUN)" ]; then exit 0; fi; \
+	echo "$(COLOR_BOLD)Validating JSON and JSONL files with jq...$(COLOR_RESET)"; \
+	FILES=$$(find $(LINT_TARGET) -type d \( -name ".git" -o -name ".venv" -o -name "holon-coherence" \) -prune -o -type f \( -name "*.json" -o -name "*.jsonl" \) -print); \
+	for file in $$FILES; do \
+		jq -e . "$$file" >/dev/null || { echo "$(COLOR_RED)❌ JSON/JSONL validation failed for $$file$(COLOR_RESET)"; exit 1; }; \
+	done; \
+	echo "$(COLOR_GREEN)✅ All JSON and JSONL files are valid.$(COLOR_RESET)"
+
+# Validate all YAML files using yq
+lint-yaml:
+	@if [ -n "$(DRY_RUN)" ]; then exit 0; fi; \
+	echo "$(COLOR_BOLD)Validating YAML files with yq...$(COLOR_RESET)"; \
+	FILES=$$(find $(LINT_TARGET) -type d \( -name ".git" -o -name ".venv" -o -name "holon-coherence" \) -prune -o -type f \( -name "*.yml" -o -name "*.yaml" \) -print); \
+	for file in $$FILES; do \
+		if command -v yq >/dev/null 2>&1; then \
+			yq -e 'true' "$$file" >/dev/null 2>&1 || { echo "$(COLOR_RED)❌ YAML validation failed for $$file$(COLOR_RESET)"; exit 1; }; \
+		elif command -v yamllint >/dev/null 2>&1; then \
+			yamllint -d relaxed "$$file" >/dev/null 2>&1 || { echo "$(COLOR_RED)❌ YAML validation failed for $$file$(COLOR_RESET)"; exit 1; }; \
+		else \
+			echo "$(COLOR_RED)❌ Neither yq nor yamllint is available to validate $$file$(COLOR_RESET)"; exit 1; \
+		fi; \
+	done; \
+	echo "$(COLOR_GREEN)✅ All YAML files are valid.$(COLOR_RESET)"
+
+# Validate all shell scripts using shellcheck
+lint-shell:
+	@if [ -n "$(DRY_RUN)" ]; then exit 0; fi; \
+	echo "$(COLOR_BOLD)Validating shell scripts with shellcheck...$(COLOR_RESET)"; \
+	FILES=$$(find $(LINT_TARGET) -type d \( -name ".git" -o -name ".venv" -o -name "holon-coherence" \) -prune -o -type f -name "*.sh" -print); \
+	for file in $$FILES; do \
+		shellcheck "$$file" || { echo "$(COLOR_RED)❌ ShellCheck validation failed for $$file$(COLOR_RESET)"; exit 1; }; \
+	done; \
+	echo "$(COLOR_GREEN)✅ All shell scripts passed shellcheck.$(COLOR_RESET)"
+
+# Check markdown formatting with Prettier
+lint-md:
+	@if [ -n "$(DRY_RUN)" ]; then exit 0; fi; \
+	echo "$(COLOR_BOLD)Checking markdown formatting with Prettier...$(COLOR_RESET)"; \
+	if [ "$(LINT_TARGET)" = "." ]; then \
+		npx prettier --check "**/*.md" || { echo "$(COLOR_RED)❌ Markdown formatting check failed$(COLOR_RESET)"; exit 1; }; \
+	else \
+		npx prettier --check "$(LINT_TARGET)" || { echo "$(COLOR_RED)❌ Markdown formatting check failed$(COLOR_RESET)"; exit 1; }; \
+	fi; \
+	echo "$(COLOR_GREEN)✅ Markdown formatting check passed.$(COLOR_RESET)"
+
+# Composite linter running JSON, YAML, Shell, Markdown, and Python linters
+lint: lint-json lint-yaml lint-shell lint-md
+	@if [ -n "$(DRY_RUN)" ]; then exit 0; fi; \
+	echo "$(COLOR_BOLD)Running Python linting...$(COLOR_RESET)"; \
+	uv run task lint || { echo "$(COLOR_RED)❌ Python linting failed$(COLOR_RESET)"; exit 1; }; \
+	echo "$(COLOR_GREEN)✅ All lint checks passed successfully!$(COLOR_RESET)"
+

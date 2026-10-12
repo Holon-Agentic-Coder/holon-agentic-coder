@@ -78,6 +78,12 @@ def test_makefile_help_lists_core_targets(tmp_path: pathlib.Path) -> None:
         "check-docker",
         "install-docker",
         "install-homebrew",
+        "tools",
+        "lint",
+        "lint-json",
+        "lint-yaml",
+        "lint-shell",
+        "lint-md",
         "help",
     ]
     for target in expected_targets:
@@ -130,6 +136,12 @@ def test_makefile_dry_run_core_targets(tmp_path: pathlib.Path) -> None:
         "check-docker",
         "install-docker",
         "prerequisites",
+        "tools",
+        "lint",
+        "lint-json",
+        "lint-yaml",
+        "lint-shell",
+        "lint-md",
     ]
     inert_under_dry_run_targets = ["help", "build-images", "install-homebrew"]
     core_targets = guard_regression_targets + inert_under_dry_run_targets
@@ -200,6 +212,49 @@ def _create_silent_buildx(bin_dir: pathlib.Path) -> None:
     _write_exe(bin_dir / "docker", docker_script)
 
 
+def _create_mock_toolbelt(bin_dir: pathlib.Path) -> None:
+    """Create stubs for git, jq, yq, shellcheck, and yamllint."""
+    _write_exe(bin_dir / "git", "#!/bin/sh\necho 'git version 2.43.0'\n")
+    _write_exe(
+        bin_dir / "jq",
+        '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "jq-1.7"; exit 0; fi\n'
+        'python3 -c "\n'
+        "import sys, json\n"
+        "files = [a for a in sys.argv[1:] if not a.startswith('-') and a != '.']\n"
+        "for f in files:\n"
+        "    for line in open(f):\n"
+        "        if line.strip():\n"
+        "            json.loads(line)\n"
+        '" "$@" 2>/dev/null || exit 1\n',
+    )
+    _write_exe(
+        bin_dir / "yq",
+        '#!/bin/sh\nif [ "$1" = "--version" ]; then\n'
+        '    echo "yq (https://github.com/mikefarah/yq/) version v4.44.1"; exit 0; fi\n'
+        'python3 -c "\n'
+        "import sys\n"
+        "files = [a for a in sys.argv[1:] if not a.startswith('-') and a != 'true']\n"
+        "for f in files:\n"
+        "    content = open(f).read()\n"
+        "    if 'invalid' in content or 'error' in content:\n"
+        "        sys.exit(1)\n"
+        '" "$@" 2>/dev/null || exit 1\n',
+    )
+    _write_exe(
+        bin_dir / "shellcheck",
+        '#!/bin/sh\nif [ "$1" = "--version" ] || [ "$1" = "-V" ]; then echo "version: 0.9.0"; exit 0; fi\n'
+        'python3 -c "\n'
+        "import sys\n"
+        "files = [a for a in sys.argv[1:] if not a.startswith('-')]\n"
+        "for f in files:\n"
+        "    content = open(f).read()\n"
+        "    if 'syntax_error' in content or 'invalid' in content:\n"
+        "        sys.exit(1)\n"
+        '" "$@" 2>/dev/null || exit 1\n',
+    )
+    _write_exe(bin_dir / "yamllint", "#!/bin/sh\necho 'yamllint 1.35.1'\n")
+
+
 def _setup_mock_env(
     tmp_path: pathlib.Path,
     *,
@@ -209,6 +264,7 @@ def _setup_mock_env(
     mock_uv: typing.Callable[[pathlib.Path], None] | None = None,
     uv_present: bool = True,
     npx_present: bool = True,
+    mock_toolbelt: bool = False,
 ) -> dict[str, str]:
     """Create an isolated PATH environment with fake binaries and essential tools.
 
@@ -224,6 +280,7 @@ def _setup_mock_env(
         mock_uv: Callable replacing the default healthy uv stub (see _create_uv).
         uv_present: Set False to omit uv entirely, exercising the fatal missing-uv path.
         npx_present: Set False to omit npx, exercising the advisory missing-npx path.
+        mock_toolbelt: Whether to install mock stubs for the OS toolbelt.
 
     Returns:
         Environment dictionary with isolated PATH.
@@ -254,6 +311,9 @@ def _setup_mock_env(
     if mock_openssl is not None:
         mock_openssl(bin_dir)
 
+    if mock_toolbelt:
+        _create_mock_toolbelt(bin_dir)
+
     clean_bin = tmp_path / "system_bin"
     clean_bin.mkdir(parents=True, exist_ok=True)
     essential_tools = [
@@ -269,6 +329,8 @@ def _setup_mock_env(
         "cat",
         "rm",
         "mkdir",
+        "find",
+        "python3",
     ]
     for tool in essential_tools:
         target = shutil.which(tool)
@@ -735,3 +797,72 @@ def test_check_docker_fails_when_buildx_is_present_but_unusable(tmp_path: pathli
     assert result.returncode != 0, f"Expected non-zero exit code, got {result.returncode}"
     assert "Unusable: docker buildx is on PATH" in result.stdout
     assert "Found: github.com/docker/buildx" not in result.stdout
+
+
+def test_tools_target_reports_paths_and_versions(tmp_path: pathlib.Path) -> None:
+    """Verify that make tools reports paths and versions for all required toolbelt tools."""
+    env = _setup_mock_env(
+        tmp_path,
+        mock_gh=_create_auth_gh,
+        mock_openssl=_create_openssl,
+        mock_docker=True,
+        mock_toolbelt=True,
+    )
+    result = _run_make(["tools", OS_LINUX], env=env)
+    assert result.returncode == 0, f"make tools failed: stdout={result.stdout} stderr={result.stderr}"
+    stdout = result.stdout
+    for tool in ["git", "jq", "yq", "shellcheck", "yamllint", "uv", "gh", "npx", "openssl"]:
+        assert tool in stdout, f"Expected {tool} to be reported by make tools"
+    assert "All toolbelt tools are present." in stdout
+
+
+def test_lint_json_fails_on_malformed_fixture(tmp_path: pathlib.Path) -> None:
+    """Verify that make lint-json fails when encountering a malformed JSON file."""
+    fixture_dir = tmp_path / "fixture"
+    fixture_dir.mkdir()
+    (fixture_dir / "malformed.json").write_text("{ unclosed: json\n", encoding="utf-8")
+
+    env = _setup_mock_env(tmp_path, mock_docker=False, mock_toolbelt=True)
+    result = _run_make(["lint-json", f"TARGET_DIR={fixture_dir}", OS_LINUX], env=env)
+    assert result.returncode != 0, f"Expected non-zero exit code, got {result.returncode}"
+    assert "JSON/JSONL validation failed" in result.stdout
+
+
+def test_lint_yaml_fails_on_malformed_fixture(tmp_path: pathlib.Path) -> None:
+    """Verify that make lint-yaml fails when encountering a malformed YAML file."""
+    fixture_dir = tmp_path / "fixture"
+    fixture_dir.mkdir()
+    (fixture_dir / "malformed.yaml").write_text("invalid: : yaml\n", encoding="utf-8")
+
+    env = _setup_mock_env(tmp_path, mock_docker=False, mock_toolbelt=True)
+    result = _run_make(["lint-yaml", f"TARGET_DIR={fixture_dir}", OS_LINUX], env=env)
+    assert result.returncode != 0, f"Expected non-zero exit code, got {result.returncode}"
+    assert "YAML validation failed" in result.stdout
+
+
+def test_lint_shell_fails_on_malformed_fixture(tmp_path: pathlib.Path) -> None:
+    """Verify that make lint-shell fails when encountering a malformed shell script."""
+    fixture_dir = tmp_path / "fixture"
+    fixture_dir.mkdir()
+    (fixture_dir / "malformed.sh").write_text("#!/bin/sh\nsyntax_error unquoted\n", encoding="utf-8")
+
+    env = _setup_mock_env(tmp_path, mock_docker=False, mock_toolbelt=True)
+    result = _run_make(["lint-shell", f"TARGET_DIR={fixture_dir}", OS_LINUX], env=env)
+    assert result.returncode != 0, f"Expected non-zero exit code, got {result.returncode}"
+    assert "ShellCheck validation failed" in result.stdout
+
+
+def test_lint_md_fails_on_unformatted_fixture(tmp_path: pathlib.Path) -> None:
+    """Verify that make lint-md fails when encountering an unformatted markdown file."""
+    fixture_dir = tmp_path / "fixture"
+    fixture_dir.mkdir()
+    (fixture_dir / "unformatted.md").write_text("# Title\n\n\n\nExtra blank lines\n", encoding="utf-8")
+
+    env = _setup_mock_env(tmp_path, mock_docker=False, mock_toolbelt=True)
+    # Mock npx to fail when checking this fixture
+    bin_dir = tmp_path / "bin"
+    _write_exe(bin_dir / "npx", "#!/bin/sh\nexit 1\n")
+
+    result = _run_make(["lint-md", f"TARGET_DIR={fixture_dir}", OS_LINUX], env=env)
+    assert result.returncode != 0, f"Expected non-zero exit code, got {result.returncode}"
+    assert "Markdown formatting check failed" in result.stdout

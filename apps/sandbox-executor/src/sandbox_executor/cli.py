@@ -5,6 +5,7 @@ import argparse
 import importlib.metadata
 import logging
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -75,6 +76,77 @@ def find_github_token() -> str | None:
         except Exception as e:
             logger.debug("Failed to retrieve token via gh CLI: %s", e)
     return None
+
+
+def normalize_repo_remote(remote_url: str) -> tuple[str, str]:
+    """Normalize a git remote URL into (host, path_with_git).
+
+    Handles SSH SCP-like syntax (git@host:org/repo.git), URI-style SSH
+    (ssh://git@host/org/repo.git), and HTTPS/HTTP remotes (https://host/org/repo.git).
+
+    Returns:
+        A tuple of (host, repo_path) where repo_path always ends with .git.
+
+    Raises:
+        ValueError: If remote_url cannot be parsed.
+    """
+    clean_url = remote_url.strip()
+    if "://" in clean_url:
+        parsed = urlparse(clean_url)
+        host = parsed.hostname or parsed.netloc.split("@")[-1].split(":")[0]
+        if parsed.port and parsed.port not in (22, 443):
+            host = f"{host}:{parsed.port}"
+        path = parsed.path.lstrip("/")
+    else:
+        m = re.match(r"^(?:(?P<user>[^@]+)@)?(?P<host>[^:]+):(?P<path>.+)$", clean_url)
+        if not m:
+            raise ValueError(f"Unable to parse remote URL: {remote_url}")
+        host = m.group("host")
+        path = m.group("path").lstrip("/")
+
+    if path.endswith(".git"):
+        path = path[:-4]
+    path_with_git = f"{path}.git"
+    return host, path_with_git
+
+
+def resolve_target_repo_url(repo_dir: str | None = None) -> str:
+    """Resolve target git repository URL dynamically.
+
+    Checks HOLON_REPO_URL environment variable first. If unset, queries
+    git remote.origin.url in repo_dir (or cwd). If a GitHub token is found,
+    constructs an authenticated HTTPS URL. Otherwise, returns the raw remote URL.
+
+    Raises:
+        RuntimeError: If remote.origin.url cannot be resolved or is empty.
+    """
+    override = os.getenv("HOLON_REPO_URL")
+    if override and override.strip():
+        return override.strip()
+
+    target_dir = os.path.abspath(repo_dir) if repo_dir else os.getcwd()
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    proc = subprocess.run(
+        ["git", "-C", target_dir, "config", "--get", "remote.origin.url"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise RuntimeError(
+            f"Error: Unable to resolve git remote 'origin' in '{target_dir}'. "
+            "Ensure the command is run inside a git repository with an 'origin' remote configured, "
+            "or set HOLON_REPO_URL explicitly."
+        )
+
+    raw_url = proc.stdout.strip()
+    token = find_github_token()
+    if token:
+        host, repo_path = normalize_repo_remote(raw_url)
+        return f"https://x-access-token:{token}@{host}/{repo_path}"
+
+    return raw_url
 
 
 def get_ssh_auth_mounts() -> tuple[list[str], dict[str, str]]:
@@ -629,10 +701,17 @@ def run_docker_container(
     intent_file: str | None = None,
     token_reduce: bool = False,
     mitm_web: bool = False,
+    repo_dir: str | None = None,
 ) -> int:
     """Constructs docker run command with auto-discovered credentials and executes it."""
     if not shutil.which("docker"):
         print("Error: 'docker' CLI command not found. Please install Docker.", file=sys.stderr)
+        return 1
+
+    try:
+        resolved_repo_url = resolve_target_repo_url(repo_dir)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
         return 1
 
     tty_flag = ["-it"] if sys.stdin.isatty() else ["-i"]
@@ -647,6 +726,8 @@ def run_docker_container(
     for key, value in os.environ.items():
         if key.startswith("HOLON_") or key == "GITHUB_TOKEN":
             env_to_forward[key] = value
+
+    env_to_forward["HOLON_REPO_URL"] = resolved_repo_url
 
     norm_agent_id = local_llm.normalize_agent_id(agent_id)
 
@@ -770,6 +851,14 @@ def run_docker_container(
             if any(item.startswith(f"{key}=") for key in sensitive_keys):
                 k, _ = item.split("=", 1)
                 sanitized_cmd.append(f"{k}=***REDACTED***")
+            elif item.startswith("HOLON_REPO_URL="):
+                if "://" in item and "@" in item:
+                    masked = re.sub(r"://([^:]+):([^@]+)@", r"://\1:***REDACTED***@", item)
+                    if masked == item:
+                        masked = re.sub(r"://([^@]+)@", r"://***REDACTED***@", item)
+                    sanitized_cmd.append(masked)
+                else:
+                    sanitized_cmd.append(item)
             else:
                 sanitized_cmd.append(item)
         print(f"Executing: {' '.join(sanitized_cmd)}")
@@ -801,6 +890,11 @@ def main() -> None:
     # Subcommand: intent
     intent_parser = subparsers.add_parser("intent", help="Run Intent Creator to initialize a new intent branch.")
     intent_parser.add_argument("intent_file", help="Path to local intent JSON/YAML file (e.g. intents/my-task.json)")
+    intent_parser.add_argument(
+        "--repo-dir",
+        default=None,
+        help="Target repository directory path (default: current directory).",
+    )
 
     # Subcommand: plan
     plan_parser = subparsers.add_parser("plan", help="Run Plan Generator to create a detailed markdown plan branch.")
@@ -828,6 +922,11 @@ def main() -> None:
             "For shared staging environments, pass HOLON_MITM_WEB_PASSWORD to restrict access."
         ),
     )
+    plan_parser.add_argument(
+        "--repo-dir",
+        default=None,
+        help="Target repository directory path (default: current directory).",
+    )
 
     # Subcommand: execute
     exec_parser = subparsers.add_parser("execute", help="Run Sandbox Executor to execute code changes for a plan.")
@@ -846,6 +945,11 @@ def main() -> None:
             "Launch mitmweb dashboard on port 8081 (or HOLON_MITM_WEB_PORT) for real-time traffic inspection. "
             "For shared staging environments, pass HOLON_MITM_WEB_PASSWORD to restrict access."
         ),
+    )
+    exec_parser.add_argument(
+        "--repo-dir",
+        default=None,
+        help="Target repository directory path (default: current directory).",
     )
 
     # Subcommand: init
@@ -1062,9 +1166,10 @@ def main() -> None:
 
     if args.command == "intent":
         image_name = "holon/orchestrator"
-        sys.exit(
-            run_docker_container("intent-creator", image_name, [], agent_id="antigravity", intent_file=args.intent_file)
-        )
+        kwargs = {"agent_id": "antigravity", "intent_file": args.intent_file}
+        if getattr(args, "repo_dir", None):
+            kwargs["repo_dir"] = args.repo_dir
+        sys.exit(run_docker_container("intent-creator", image_name, [], **kwargs))
 
     elif args.command == "plan":
         image_name = agent_image_mapping.get(agent_id, f"holon/agent-{agent_id}")
@@ -1072,6 +1177,8 @@ def main() -> None:
         kwargs = {"agent_id": agent_id, "token_reduce": args.token_reduce}
         if getattr(args, "mitm_web", False):
             kwargs["mitm_web"] = True
+        if getattr(args, "repo_dir", None):
+            kwargs["repo_dir"] = args.repo_dir
         sys.exit(
             run_docker_container(
                 "planner",
@@ -1087,6 +1194,8 @@ def main() -> None:
         kwargs = {"agent_id": agent_id, "token_reduce": args.token_reduce}
         if getattr(args, "mitm_web", False):
             kwargs["mitm_web"] = True
+        if getattr(args, "repo_dir", None):
+            kwargs["repo_dir"] = args.repo_dir
         sys.exit(
             run_docker_container(
                 "executor",

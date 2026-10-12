@@ -1,6 +1,8 @@
 import importlib.metadata
 import io
 import os
+import subprocess
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -10,6 +12,8 @@ from sandbox_executor.cli import (
     get_agent_session_mounts,
     get_ssh_auth_mounts,
     main,
+    normalize_repo_remote,
+    resolve_target_repo_url,
     run_docker_container,
 )
 
@@ -70,10 +74,11 @@ class TestHolonCLI(unittest.TestCase):
         self.assertTrue(any("/run/user/1001/bus:/run/user/1000/bus" in m for m in mounts))
         self.assertTrue(any("/home/holon/.gemini/antigravity-cli:rw" in m for m in mounts))
 
+    @patch("sandbox_executor.cli.resolve_target_repo_url", return_value="git@github.com:test/repo.git")
     @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"])
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
-    def test_run_docker_container(self, mock_which, mock_run, mock_mounts):
+    def test_run_docker_container(self, mock_which, mock_run, mock_mounts, mock_resolve_repo):
         mock_run.return_value = MagicMock(returncode=0)
         with patch.dict(os.environ, {"GITHUB_TOKEN": "secret_token"}, clear=True):
             code = run_docker_container(
@@ -87,11 +92,13 @@ class TestHolonCLI(unittest.TestCase):
             args = mock_run.call_args[0][0]
             self.assertIn("docker", args)
             self.assertIn("GITHUB_TOKEN=secret_token", args)
+            self.assertIn("HOLON_REPO_URL=git@github.com:test/repo.git", args)
 
+    @patch("sandbox_executor.cli.resolve_target_repo_url", return_value="git@github.com:test/repo.git")
     @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"])
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
-    def test_run_docker_container_forward_env_vars(self, mock_which, mock_run, mock_mounts):
+    def test_run_docker_container_forward_env_vars(self, mock_which, mock_run, mock_mounts, mock_resolve_repo):
         mock_run.return_value = MagicMock(returncode=0)
         env = {
             "GITHUB_TOKEN": "my-github-token",
@@ -122,13 +129,15 @@ class TestHolonCLI(unittest.TestCase):
             self.assertEqual([a for a in args if a.startswith("HOLON_ROLE=")], ["HOLON_ROLE=planner"])
             # Ensure non-prefixed variable is NOT forwarded
             self.assertFalse(any("SOME_OTHER_VAR" in arg for arg in args))
+            self.assertIn("HOLON_REPO_URL=git@github.com:test/repo.git", args)
 
     def test_run_docker_container_requires_agent_id(self):
         with self.assertRaises(TypeError):
             run_docker_container("planner", "holon/agent-antigravity", ["branch"])  # type: ignore[call-arg]
 
+    @patch("sandbox_executor.cli.resolve_target_repo_url", return_value="git@github.com:test/repo.git")
     @patch("shutil.which", return_value="/usr/bin/docker")
-    def test_run_docker_container_intent_creator_requires_intent_file(self, mock_which):
+    def test_run_docker_container_intent_creator_requires_intent_file(self, mock_which, mock_resolve_repo):
         with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
             rc = run_docker_container("intent-creator", "holon/orchestrator", [], agent_id="antigravity")
             self.assertEqual(rc, 1)
@@ -259,3 +268,180 @@ class TestHolonCLI(unittest.TestCase):
         res = _run_docker("version")
         self.assertEqual(res.returncode, 127)
         self.assertIn("docker not found", res.stderr)
+
+
+class TestRepoUrlResolution(unittest.TestCase):
+    def test_normalize_repo_remote_ssh_scp(self):
+        """Test SSH SCP format normalization."""
+        host, path = normalize_repo_remote("git@github.com:org/repo.git")
+        self.assertEqual(host, "github.com")
+        self.assertEqual(path, "org/repo.git")
+
+    def test_normalize_repo_remote_ssh_url(self):
+        """Test SSH URL format normalization."""
+        host, path = normalize_repo_remote("ssh://git@github.com/org/repo.git")
+        self.assertEqual(host, "github.com")
+        self.assertEqual(path, "org/repo.git")
+
+    def test_normalize_repo_remote_https(self):
+        """Test HTTPS format normalization."""
+        host, path = normalize_repo_remote("https://github.com/org/repo.git")
+        self.assertEqual(host, "github.com")
+        self.assertEqual(path, "org/repo.git")
+
+    def test_normalize_repo_remote_custom_host_nested_path(self):
+        """Test custom host and nested path normalization."""
+        host, path = normalize_repo_remote("git@gitlab.internal.corp:group/subgroup/project.git")
+        self.assertEqual(host, "gitlab.internal.corp")
+        self.assertEqual(path, "group/subgroup/project.git")
+
+    def test_normalize_repo_remote_without_git_suffix(self):
+        """Test that missing .git suffix is automatically appended."""
+        host, path = normalize_repo_remote("https://github.com/org/repo")
+        self.assertEqual(host, "github.com")
+        self.assertEqual(path, "org/repo.git")
+
+    def test_normalize_repo_remote_invalid(self):
+        """Test invalid remote URL raises ValueError."""
+        with self.assertRaises(ValueError):
+            normalize_repo_remote("invalid-remote-url-without-colons")
+
+    def test_resolve_target_repo_url_explicit_override(self):
+        """Test that HOLON_REPO_URL takes absolute precedence."""
+        with patch.dict(os.environ, {"HOLON_REPO_URL": "https://custom.override/repo.git"}, clear=True):
+            self.assertEqual(resolve_target_repo_url(), "https://custom.override/repo.git")
+
+    def test_resolve_target_repo_url_ssh_with_token(self):
+        """Test SSH remote paired with detected GitHub token."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            subprocess.run(["git", "init", "-b", "main", tmp_dir], capture_output=True, check=True)
+            subprocess.run(
+                ["git", "-C", tmp_dir, "remote", "add", "origin", "git@github.com:myorg/myrepo.git"],
+                capture_output=True,
+                check=True,
+            )
+            with patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_mock_token_123"}, clear=True):
+                resolved = resolve_target_repo_url(repo_dir=tmp_dir)
+                self.assertEqual(
+                    resolved,
+                    "https://x-access-token:ghp_mock_token_123@github.com/myorg/myrepo.git",
+                )
+
+    def test_resolve_target_repo_url_ssh_without_token(self):
+        """Test SSH remote without token returns raw remote URL for SSH agent forwarding."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            subprocess.run(["git", "init", "-b", "main", tmp_dir], capture_output=True, check=True)
+            subprocess.run(
+                ["git", "-C", tmp_dir, "remote", "add", "origin", "git@github.com:myorg/myrepo.git"],
+                capture_output=True,
+                check=True,
+            )
+            with patch.dict(os.environ, {}, clear=True), patch("shutil.which", return_value=None):
+                resolved = resolve_target_repo_url(repo_dir=tmp_dir)
+                self.assertEqual(resolved, "git@github.com:myorg/myrepo.git")
+
+    def test_resolve_target_repo_url_https_with_token(self):
+        """Test HTTPS remote paired with token."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            subprocess.run(["git", "init", "-b", "main", tmp_dir], capture_output=True, check=True)
+            subprocess.run(
+                ["git", "-C", tmp_dir, "remote", "add", "origin", "https://github.com/myorg/myrepo.git"],
+                capture_output=True,
+                check=True,
+            )
+            with patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_mock_token_456"}, clear=True):
+                resolved = resolve_target_repo_url(repo_dir=tmp_dir)
+                self.assertEqual(
+                    resolved,
+                    "https://x-access-token:ghp_mock_token_456@github.com/myorg/myrepo.git",
+                )
+
+    def test_resolve_target_repo_url_worktree(self):
+        """Test worktree inherits origin from main repository."""
+        with tempfile.TemporaryDirectory() as base_dir:
+            main_repo = os.path.join(base_dir, "main_repo")
+            worktree_dir = os.path.join(base_dir, "worktree_repo")
+            os.makedirs(main_repo, exist_ok=True)
+            subprocess.run(["git", "init", "-b", "main", main_repo], capture_output=True, check=True)
+            subprocess.run(["git", "-C", main_repo, "config", "user.name", "Tester"], capture_output=True, check=True)
+            subprocess.run(
+                ["git", "-C", main_repo, "config", "user.email", "test@test.org"],
+                capture_output=True,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", main_repo, "remote", "add", "origin", "git@github.com:worktree/repo.git"],
+                capture_output=True,
+                check=True,
+            )
+            dummy_file = os.path.join(main_repo, "file.txt")
+            with open(dummy_file, "w") as f:
+                f.write("test")
+            subprocess.run(["git", "-C", main_repo, "add", "file.txt"], capture_output=True, check=True)
+            subprocess.run(["git", "-C", main_repo, "commit", "-m", "init"], capture_output=True, check=True)
+            subprocess.run(
+                ["git", "-C", main_repo, "worktree", "add", "-b", "branch1", worktree_dir],
+                capture_output=True,
+                check=True,
+            )
+
+            with patch.dict(os.environ, {}, clear=True), patch("shutil.which", return_value=None):
+                resolved = resolve_target_repo_url(repo_dir=worktree_dir)
+                self.assertEqual(resolved, "git@github.com:worktree/repo.git")
+
+    def test_resolve_target_repo_url_missing_origin(self):
+        """Test that repository without origin remote raises RuntimeError."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            subprocess.run(["git", "init", "-b", "main", tmp_dir], capture_output=True, check=True)
+            with patch.dict(os.environ, {}, clear=True):
+                with self.assertRaises(RuntimeError) as cm:
+                    resolve_target_repo_url(repo_dir=tmp_dir)
+                self.assertIn("Unable to resolve git remote 'origin'", str(cm.exception))
+
+    def test_resolve_target_repo_url_non_git_dir(self):
+        """Test that non-git directory raises RuntimeError."""
+        with tempfile.TemporaryDirectory() as tmp_dir, patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(RuntimeError) as cm:
+                resolve_target_repo_url(repo_dir=tmp_dir)
+            self.assertIn("Unable to resolve git remote 'origin'", str(cm.exception))
+
+    @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=[])
+    @patch("subprocess.run")
+    @patch("shutil.which", return_value="/usr/bin/docker")
+    def test_sanitized_cmd_masks_tokenized_repo_url(self, mock_which, mock_run, mock_mounts):
+        """Test that run_docker_container masks tokenized HOLON_REPO_URL in sanitized_cmd log."""
+        mock_run.return_value = MagicMock(returncode=0)
+        token = "ghp_super_secret_pat_999"
+        token_url = f"https://x-access-token:{token}@github.com/myorg/myrepo.git"
+        with (
+            patch.dict(os.environ, {"HOLON_REPO_URL": token_url}, clear=True),
+            patch("sys.stdout", new_callable=io.StringIO) as mock_stdout,
+        ):
+            code = run_docker_container(
+                "planner",
+                "holon/agent-antigravity",
+                ["branch", "agent", "model"],
+                agent_id="antigravity",
+            )
+            self.assertEqual(code, 0)
+            output = mock_stdout.getvalue()
+            self.assertIn("HOLON_REPO_URL=https://x-access-token:***REDACTED***@github.com/myorg/myrepo.git", output)
+            self.assertNotIn(token, output)
+
+    @patch("shutil.which", return_value="/usr/bin/docker")
+    def test_run_docker_container_fails_fast_on_missing_origin(self, mock_which):
+        """Test that run_docker_container exits non-zero without calling Docker if origin is unresolvable."""
+        with (
+            tempfile.TemporaryDirectory() as empty_dir,
+            patch.dict(os.environ, {}, clear=True),
+            patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
+        ):
+            code = run_docker_container(
+                "planner",
+                "holon/agent-antigravity",
+                ["branch", "agent", "model"],
+                agent_id="antigravity",
+                repo_dir=empty_dir,
+            )
+            self.assertEqual(code, 1)
+            self.assertIn("Error: Unable to resolve git remote 'origin'", mock_stderr.getvalue())

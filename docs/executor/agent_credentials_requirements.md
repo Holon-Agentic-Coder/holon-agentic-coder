@@ -66,9 +66,15 @@ overwriting `/etc/shadow` or `/usr/bin/`).
     external API keys.
   - `HOLON_AGENT_PROVIDER`: Specifies the target model provider (e.g., `openai`, `anthropic`, `google`).
   - `HOLON_AGENT_SETTINGS`: Custom JSON or file-path configurations passed directly to the agent.
+  - `HOLON_REPO_URL`: (Optional override). The target git repository URL. The `./holon` host CLI automatically resolves
+    the active repository remote (`remote.origin.url`) and combines it with `find_github_token()` to forward an
+    authenticated HTTPS URL (`https://x-access-token:<token>@<host>/<org>/<repo>.git`). If no token is detected, the raw
+    remote URL is forwarded unchanged to allow SSH agent forwarding. Setting `HOLON_REPO_URL` on the host serves as an
+    explicit override.
   - `GITHUB_TOKEN` / `GH_TOKEN`: Authenticates git fetch and push operations. The `./holon` host CLI automatically
     retrieves this token using `find_github_token()`, falling back to the local `gh` CLI credentials if not set in the
-    environment.
+    environment. When present, it is combined with the discovered remote origin to construct an authenticated
+    `HOLON_REPO_URL`.
 
 ---
 

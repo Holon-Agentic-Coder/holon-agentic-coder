@@ -176,12 +176,36 @@ def _create_uv(bin_dir: pathlib.Path) -> None:
     _write_exe(bin_dir / "uv", "#!/bin/sh\necho 'uv 0.12.0'\n")
 
 
+def _create_silent_docker(bin_dir: pathlib.Path) -> None:
+    """Create a mock docker binary that exits 0 with empty stdout for --version."""
+    docker_script = (
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then exit 0; fi\n'
+        'if [ "$1" = "buildx" ] && [ "$2" = "version" ]; then echo "github.com/docker/buildx v0.15.0"; exit 0; fi\n'
+        'if [ "$1" = "info" ]; then echo "Server Version: 27.0.0"; exit 0; fi\n'
+        "exit 0\n"
+    )
+    _write_exe(bin_dir / "docker", docker_script)
+
+
+def _create_silent_buildx(bin_dir: pathlib.Path) -> None:
+    """Create a mock docker binary that responds to --version and info but produces empty output for buildx version."""
+    docker_script = (
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "Docker version 27.0.0"; exit 0; fi\n'
+        'if [ "$1" = "buildx" ] && [ "$2" = "version" ]; then exit 0; fi\n'
+        'if [ "$1" = "info" ]; then echo "Server Version: 27.0.0"; exit 0; fi\n'
+        "exit 0\n"
+    )
+    _write_exe(bin_dir / "docker", docker_script)
+
+
 def _setup_mock_env(
     tmp_path: pathlib.Path,
     *,
     mock_gh: typing.Callable[[pathlib.Path], None] | None = None,
     mock_openssl: typing.Callable[[pathlib.Path], None] | None = None,
-    mock_docker: bool = True,
+    mock_docker: bool | typing.Callable[[pathlib.Path], None] = True,
     mock_uv: typing.Callable[[pathlib.Path], None] | None = None,
     uv_present: bool = True,
     npx_present: bool = True,
@@ -195,7 +219,8 @@ def _setup_mock_env(
         tmp_path: Pytest temporary directory.
         mock_gh: Optional callable to configure mock gh executable.
         mock_openssl: Optional callable to configure mock openssl executable.
-        mock_docker: Whether to provide a mock docker binary satisfying check-docker.
+        mock_docker: Whether to provide a mock docker binary satisfying check-docker,
+            or callable to create custom binary.
         mock_uv: Callable replacing the default healthy uv stub (see _create_uv).
         uv_present: Set False to omit uv entirely, exercising the fatal missing-uv path.
         npx_present: Set False to omit npx, exercising the advisory missing-npx path.
@@ -211,7 +236,9 @@ def _setup_mock_env(
     if npx_present:
         _write_exe(bin_dir / "npx", "#!/bin/sh\necho '11.0.0'\n")
 
-    if mock_docker:
+    if callable(mock_docker):
+        mock_docker(bin_dir)
+    elif mock_docker:
         docker_script = (
             "#!/bin/sh\n"
             'if [ "$1" = "--version" ]; then echo "Docker version 27.0.0"; exit 0; fi\n'
@@ -680,3 +707,31 @@ def test_check_prerequisites_warns_for_a_build_that_only_claims_openssl_compatib
     assert result.returncode == 0, "a non-OpenSSL build warns; it is not fatal"
     assert "Not OpenSSL" in result.stdout
     assert "optional/advisory check(s) raised warnings" in result.stdout
+
+
+def test_check_docker_fails_when_docker_is_present_but_unusable(tmp_path: pathlib.Path) -> None:
+    """Verify that a present-but-silent docker binary is flagged as unusable."""
+    env = _setup_mock_env(
+        tmp_path,
+        mock_docker=_create_silent_docker,
+        mock_gh=_create_auth_gh,
+        mock_openssl=_create_openssl,
+    )
+    result = _run_make(["check-docker", OS_LINUX], env=env)
+    assert result.returncode != 0, f"Expected non-zero exit code, got {result.returncode}"
+    assert "Unusable: docker is on PATH" in result.stdout
+    assert "Found: Docker version" not in result.stdout
+
+
+def test_check_docker_fails_when_buildx_is_present_but_unusable(tmp_path: pathlib.Path) -> None:
+    """Verify that a present-but-silent docker buildx plugin is flagged as unusable."""
+    env = _setup_mock_env(
+        tmp_path,
+        mock_docker=_create_silent_buildx,
+        mock_gh=_create_auth_gh,
+        mock_openssl=_create_openssl,
+    )
+    result = _run_make(["check-docker", OS_LINUX, "AUTO_INSTALL=false"], env=env)
+    assert result.returncode != 0, f"Expected non-zero exit code, got {result.returncode}"
+    assert "Unusable: docker buildx is on PATH" in result.stdout
+    assert "Found: github.com/docker/buildx" not in result.stdout

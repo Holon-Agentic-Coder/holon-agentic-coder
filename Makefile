@@ -15,7 +15,7 @@ DETECTED_ARCH := $(shell uname -m)
 # that is an assignment or a long option means no short options were given at all.
 MF_OPTION_CLUSTER := $(firstword $(MAKEFLAGS))
 MF_OPTION_CLUSTER := $(if $(findstring =,$(MF_OPTION_CLUSTER)),,$(MF_OPTION_CLUSTER))
-MF_OPTION_CLUSTER := $(if $(filter --%,$(MF_OPTION_CLUSTER)),,$(MF_OPTION_CLUSTER))
+MF_OPTION_CLUSTER := $(filter-out -%,$(MF_OPTION_CLUSTER))
 DRY_RUN := $(if $(findstring n,$(MF_OPTION_CLUSTER)),1,)
 
 # CI Detection
@@ -134,8 +134,14 @@ check-docker:
 		fi; \
 	fi; \
 	if command -v docker >/dev/null 2>&1; then \
-		DOCKER_VER=$$(docker --version 2>/dev/null); \
-		echo "$(COLOR_GREEN)✅ Found: $$DOCKER_VER$(COLOR_RESET)"; \
+		DOCKER_STATUS=0; DOCKER_VER=$$(docker --version 2>/dev/null) || DOCKER_STATUS=$$?; \
+		if [ "$$DOCKER_STATUS" -ne 0 ] || [ -z "$$(printf '%s' "$$DOCKER_VER" | tr -d '[:space:]')" ]; then \
+			echo "$(COLOR_RED)❌ Unusable: docker is on PATH but 'docker --version' failed (exit $$DOCKER_STATUS) or produced no output$(COLOR_RESET)"; \
+			echo "   A docker CLI that cannot report its version cannot run containerized workflows; reinstall it, or repair the PATH entry shadowing it."; \
+			exit 1; \
+		else \
+			echo "$(COLOR_GREEN)✅ Found: $$DOCKER_VER$(COLOR_RESET)"; \
+		fi; \
 	else \
 		echo "$(COLOR_RED)❌ Missing: Docker CLI not found$(COLOR_RESET)"; \
 		echo "   Run $(COLOR_BOLD)make install-docker$(COLOR_RESET) to install."; \
@@ -143,38 +149,72 @@ check-docker:
 	fi; \
 	\
 	printf "%-32s " "Checking Docker Buildx..."; \
-	if docker buildx version >/dev/null 2>&1; then \
-		BUILDX_VER=$$(docker buildx version 2>/dev/null); \
+	BUILDX_STATUS=0; BUILDX_VER=$$(docker buildx version 2>/dev/null) || BUILDX_STATUS=$$?; \
+	if [ "$$BUILDX_STATUS" -eq 0 ] && [ -n "$$(printf '%s' "$$BUILDX_VER" | tr -d '[:space:]')" ]; then \
 		echo "$(COLOR_GREEN)✅ Found: $$BUILDX_VER$(COLOR_RESET)"; \
 	else \
-		if [ "$(AUTO_INSTALL)" = "true" ]; then \
-			echo "$(COLOR_YELLOW)⚠️  Docker Buildx plugin not found. Attempting installation...$(COLOR_RESET)"; \
-			if [ "$(DETECTED_OS)" = "Darwin" ]; then \
-				if [ -x /opt/homebrew/bin/brew ]; then eval "$$(/opt/homebrew/bin/brew shellenv)"; fi; \
-				if command -v brew >/dev/null 2>&1; then \
-					brew install docker-buildx 2>/dev/null || true; \
+		BUILDX_UNUSABLE=false; \
+		if command -v docker-buildx >/dev/null 2>&1 || [ "$$BUILDX_STATUS" -eq 0 ]; then \
+			BUILDX_UNUSABLE=true; \
+		fi; \
+		if [ "$$BUILDX_UNUSABLE" = "true" ]; then \
+			echo "$(COLOR_RED)❌ Unusable: docker buildx is on PATH but 'docker buildx version' failed (exit $$BUILDX_STATUS) or produced no output$(COLOR_RESET)"; \
+			echo "   Reinstall the buildx plugin or repair the PATH entry shadowing it."; \
+			if [ "$(AUTO_INSTALL)" = "true" ]; then \
+				if [ "$(DETECTED_OS)" = "Darwin" ]; then \
+					if [ -x /opt/homebrew/bin/brew ]; then eval "$$(/opt/homebrew/bin/brew shellenv)"; fi; \
+					if command -v brew >/dev/null 2>&1; then \
+						brew install docker-buildx 2>/dev/null || true; \
+					fi; \
+				elif [ "$(DETECTED_OS)" = "Linux" ]; then \
+					SUDO=$$([ "$$(id -u)" -ne 0 ] && echo "sudo" || true); \
+					if command -v apt-get >/dev/null 2>&1; then \
+						$$SUDO apt-get update -qq && $$SUDO apt-get install -y docker-buildx-plugin 2>/dev/null || true; \
+					elif command -v dnf >/dev/null 2>&1; then \
+						$$SUDO dnf install -y docker-buildx-plugin 2>/dev/null || true; \
+					elif command -v pacman >/dev/null 2>&1; then \
+						$$SUDO pacman -S --noconfirm docker-buildx 2>/dev/null || true; \
+					fi; \
 				fi; \
-			elif [ "$(DETECTED_OS)" = "Linux" ]; then \
-				SUDO=$$([ "$$(id -u)" -ne 0 ] && echo "sudo" || true); \
-				if command -v apt-get >/dev/null 2>&1; then \
-					$$SUDO apt-get update -qq && $$SUDO apt-get install -y docker-buildx-plugin 2>/dev/null || true; \
-				elif command -v dnf >/dev/null 2>&1; then \
-					$$SUDO dnf install -y docker-buildx-plugin 2>/dev/null || true; \
-				elif command -v pacman >/dev/null 2>&1; then \
-					$$SUDO pacman -S --noconfirm docker-buildx 2>/dev/null || true; \
+				BUILDX_STATUS=0; BUILDX_VER=$$(docker buildx version 2>/dev/null) || BUILDX_STATUS=$$?; \
+				if [ "$$BUILDX_STATUS" -eq 0 ] && [ -n "$$(printf '%s' "$$BUILDX_VER" | tr -d '[:space:]')" ]; then \
+					echo "$(COLOR_GREEN)✅ Found: $$BUILDX_VER$(COLOR_RESET)"; \
+				else \
+					ERRORS=$$((ERRORS + 1)); \
 				fi; \
-			fi; \
-			if docker buildx version >/dev/null 2>&1; then \
-				BUILDX_VER=$$(docker buildx version 2>/dev/null); \
-				echo "$(COLOR_GREEN)✅ Found: $$BUILDX_VER$(COLOR_RESET)"; \
 			else \
-				echo "$(COLOR_RED)❌ Missing: Docker Buildx plugin not found$(COLOR_RESET)"; \
 				ERRORS=$$((ERRORS + 1)); \
 			fi; \
 		else \
-			echo "$(COLOR_RED)❌ Missing: Docker Buildx plugin not found$(COLOR_RESET)"; \
-			echo "   Run $(COLOR_BOLD)make check-docker$(COLOR_RESET) to install."; \
-			ERRORS=$$((ERRORS + 1)); \
+			if [ "$(AUTO_INSTALL)" = "true" ]; then \
+				echo "$(COLOR_YELLOW)⚠️  Docker Buildx plugin not found. Attempting installation...$(COLOR_RESET)"; \
+				if [ "$(DETECTED_OS)" = "Darwin" ]; then \
+					if [ -x /opt/homebrew/bin/brew ]; then eval "$$(/opt/homebrew/bin/brew shellenv)"; fi; \
+					if command -v brew >/dev/null 2>&1; then \
+						brew install docker-buildx 2>/dev/null || true; \
+					fi; \
+				elif [ "$(DETECTED_OS)" = "Linux" ]; then \
+					SUDO=$$([ "$$(id -u)" -ne 0 ] && echo "sudo" || true); \
+					if command -v apt-get >/dev/null 2>&1; then \
+						$$SUDO apt-get update -qq && $$SUDO apt-get install -y docker-buildx-plugin 2>/dev/null || true; \
+					elif command -v dnf >/dev/null 2>&1; then \
+						$$SUDO dnf install -y docker-buildx-plugin 2>/dev/null || true; \
+					elif command -v pacman >/dev/null 2>&1; then \
+						$$SUDO pacman -S --noconfirm docker-buildx 2>/dev/null || true; \
+					fi; \
+				fi; \
+				BUILDX_STATUS=0; BUILDX_VER=$$(docker buildx version 2>/dev/null) || BUILDX_STATUS=$$?; \
+				if [ "$$BUILDX_STATUS" -eq 0 ] && [ -n "$$(printf '%s' "$$BUILDX_VER" | tr -d '[:space:]')" ]; then \
+					echo "$(COLOR_GREEN)✅ Found: $$BUILDX_VER$(COLOR_RESET)"; \
+				else \
+					echo "$(COLOR_RED)❌ Missing: Docker Buildx plugin not found$(COLOR_RESET)"; \
+					ERRORS=$$((ERRORS + 1)); \
+				fi; \
+			else \
+				echo "$(COLOR_RED)❌ Missing: Docker Buildx plugin not found$(COLOR_RESET)"; \
+				echo "   Run $(COLOR_BOLD)make check-docker$(COLOR_RESET) to install."; \
+				ERRORS=$$((ERRORS + 1)); \
+			fi; \
 		fi; \
 	fi; \
 	\

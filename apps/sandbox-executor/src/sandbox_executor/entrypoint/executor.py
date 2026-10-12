@@ -1374,7 +1374,9 @@ def main() -> None:
                             labels=["agent", agent_name, "execution"],
                             target=f"{agent_name}:{model_name}",
                             outcome="success" if res.returncode == 0 else "failure",
-                            error_context=(res.stderr[:500] if res.returncode != 0 and res.stderr else None),
+                            error_context=(
+                                redact_text(res.stderr[:500]) if res.returncode != 0 and res.stderr else None
+                            ),
                             action_origin=action_origin,
                             review_severity=review_severity,
                             review_iteration=review_iteration,
@@ -1564,24 +1566,6 @@ def main() -> None:
             if action_origin != "initial_implementation" or review_severity or review_iteration or review_finding_ids:
                 commit_msg = f"{commit_msg}\n\n{trailers}"
 
-            add_targets = [
-                f for f in ("holon-knowledge/ledger/executions.jsonl",) if os.path.exists(os.path.join(repo_dir, f))
-            ]
-            if add_targets:
-                run_cmd(["git", "add", *add_targets], cwd=repo_dir, check=False)
-            if exec_status == "success":
-                run_cmd(["git", "add", "-A"], cwd=repo_dir)
-
-            # Log staged changes to provide visibility
-            status_output = run_cmd(["git", "status", "--short"], cwd=repo_dir, check=False)
-            print("Current git repository status:")
-            print(redact_text(status_output.stdout))
-
-        staged_check = run_cmd(["git", "diff", "--cached", "--quiet"], cwd=repo_dir, check=False)
-        if staged_check.returncode != 0:
-            run_cmd(["git", "config", "--local", "user.email", "executor-agent@holon-agentic-coder.com"], cwd=repo_dir)
-            run_cmd(["git", "config", "--local", "user.name", "Holon Executor Agent"], cwd=repo_dir)
-            run_cmd(["git", "commit", "-m", commit_msg], cwd=repo_dir)
             if is_action_logging_enabled(intent_data):
                 with contextlib.suppress(Exception):
                     append_action_record(
@@ -1601,6 +1585,25 @@ def main() -> None:
                             review_finding_ids=review_finding_ids,
                         ),
                     )
+
+            add_targets = [
+                f for f in ("holon-knowledge/ledger/executions.jsonl",) if os.path.exists(os.path.join(repo_dir, f))
+            ]
+            if add_targets:
+                run_cmd(["git", "add", *add_targets], cwd=repo_dir, check=False)
+            if exec_status == "success":
+                run_cmd(["git", "add", "-A"], cwd=repo_dir)
+
+            # Log staged changes to provide visibility
+            status_output = run_cmd(["git", "status", "--short"], cwd=repo_dir, check=False)
+            print("Current git repository status:")
+            print(redact_text(status_output.stdout))
+
+        staged_check = run_cmd(["git", "diff", "--cached", "--quiet"], cwd=repo_dir, check=False)
+        if staged_check.returncode != 0:
+            run_cmd(["git", "config", "--local", "user.email", "executor-agent@holon-agentic-coder.com"], cwd=repo_dir)
+            run_cmd(["git", "config", "--local", "user.name", "Holon Executor Agent"], cwd=repo_dir)
+            run_cmd(["git", "commit", "-m", commit_msg], cwd=repo_dir)
 
             can_push = True
             if recovery_triggered:

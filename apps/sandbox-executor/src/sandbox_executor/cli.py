@@ -1118,7 +1118,7 @@ def main() -> None:
         "-q",
         dest="query",
         default=None,
-        help="Keyword text search across action descriptions, summaries, and error contexts.",
+        help="Case-insensitive substring search across action descriptions, summaries, and error contexts.",
     )
     query_parser.add_argument(
         "--keyword",

@@ -180,17 +180,42 @@ class TestCommitTrailers(unittest.TestCase):
         self.assertIsNone(res["review_severity"])
         self.assertIsNone(res["review_iteration"])
 
+    def test_parse_commit_trailers_all_fields(self):
+        msg = (
+            "fix: resolve reviewer comments\n\n"
+            "Action-Origin: pr_review\n"
+            "Review-Severity: critical\n"
+            "Review-Iteration: 2\n"
+            "Review-Finding-Ids: FIND-01, FIND-02\n"
+            "Review-Disposition: applied\n"
+            "Rejection-Reason: Not applicable\n"
+            "Introduced-By-Action-Id: ACT-12345\n"
+        )
+        res = parse_commit_trailers(msg)
+        self.assertEqual(res["action_origin"], "pr_review")
+        self.assertEqual(res["review_severity"], "critical")
+        self.assertEqual(res["review_iteration"], 2)
+        self.assertEqual(res["review_finding_ids"], ["FIND-01", "FIND-02"])
+        self.assertEqual(res["review_disposition"], "applied")
+        self.assertEqual(res["rejection_reason"], "Not applicable")
+        self.assertEqual(res["introduced_by_action_id"], "ACT-12345")
+
     def test_format_commit_trailers(self):
         formatted = format_commit_trailers(
             action_origin="pr_review",
             review_severity="important",
             review_iteration=2,
             review_finding_ids=["FIND-1", "FIND-2"],
+            review_disposition="applied",
+            rejection_reason=None,
+            introduced_by_action_id="ACT-999",
         )
         self.assertIn("Action-Origin: pr_review", formatted)
         self.assertIn("Review-Severity: important", formatted)
         self.assertIn("Review-Iteration: 2", formatted)
         self.assertIn("Review-Finding-Ids: FIND-1, FIND-2", formatted)
+        self.assertIn("Review-Disposition: applied", formatted)
+        self.assertIn("Introduced-By-Action-Id: ACT-999", formatted)
 
     @patch("subprocess.run")
     def test_extract_action_provenance_from_commit(self, mock_subp):
@@ -399,6 +424,80 @@ class TestLedgerQueryEngine(unittest.TestCase):
     def test_query_nonexistent_file(self):
         res = query_ledger("/nonexistent/file.jsonl")
         self.assertEqual(res, [])
+
+    def test_query_corrupted_lines_resilience(self):
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as f:
+            f.write("\n")  # empty line
+            f.write("corrupted json { line\n")  # malformed JSON
+            f.write(
+                json.dumps(
+                    {
+                        "entry_type": "action",
+                        "action_id": "ACT-OK",
+                        "action": "Valid action",
+                        "category": "code",
+                        "target": "a.py",
+                        "outcome": "success",
+                    }
+                )
+                + "\n"
+            )
+            f.write("another bad line\n")
+            f_path = f.name
+        try:
+            results = query_ledger(f_path)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["action_id"], "ACT-OK")
+        finally:
+            os.unlink(f_path)
+
+    def test_query_string_encoded_labels(self):
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as f:
+            f.write(
+                json.dumps(
+                    {
+                        "entry_type": "action",
+                        "action_id": "ACT-STR-LBL",
+                        "action": "String label action",
+                        "category": "code",
+                        "labels": "refactor, database",
+                        "target": "db.py",
+                        "outcome": "success",
+                    }
+                )
+                + "\n"
+            )
+            f_path = f.name
+        try:
+            results = query_ledger(f_path, labels="database")
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["action_id"], "ACT-STR-LBL")
+        finally:
+            os.unlink(f_path)
+
+    def test_query_outcome_failed_maps_to_failure(self):
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as f:
+            f.write(
+                json.dumps(
+                    {
+                        "entry_type": "summary",
+                        "execution_id": "E-FAILED-LEGACY",
+                        "plan_branch": "I-test/P-test/_",
+                        "agent": "antigravity-agent",
+                        "model": "gemini",
+                        "status": "failed",
+                        "summary": "Old failed status",
+                    }
+                )
+                + "\n"
+            )
+            f_path = f.name
+        try:
+            results = query_ledger(f_path, outcome="failure")
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["execution_id"], "E-FAILED-LEGACY")
+        finally:
+            os.unlink(f_path)
 
     def test_format_query_results_table(self):
         records = [self.sample_records[0], self.sample_records[1]]

@@ -75,6 +75,8 @@ class ActionRecord:
             raise ValueError(
                 f"Invalid review_disposition '{self.review_disposition}'. Must be one of: {sorted(VALID_DISPOSITIONS)}"
             )
+        if self.review_iteration is not None and self.review_iteration < 1:
+            raise ValueError(f"review_iteration must be a positive integer >= 1, got {self.review_iteration}")
 
     def to_dict(self) -> dict[str, Any]:
         """Convert record to dictionary, validating constraints."""
@@ -248,6 +250,9 @@ def parse_commit_trailers(commit_message: str) -> dict[str, Any]:
     review_severity: str | None = None
     review_iteration: int | None = None
     review_finding_ids: list[str] | None = None
+    review_disposition: str | None = None
+    rejection_reason: str | None = None
+    introduced_by_action_id: str | None = None
 
     if not commit_message:
         return {
@@ -255,10 +260,13 @@ def parse_commit_trailers(commit_message: str) -> dict[str, Any]:
             "review_severity": review_severity,
             "review_iteration": review_iteration,
             "review_finding_ids": review_finding_ids,
+            "review_disposition": review_disposition,
+            "rejection_reason": rejection_reason,
+            "introduced_by_action_id": introduced_by_action_id,
         }
 
     pattern = re.compile(
-        r"^(action-origin|review-severity|review-iteration|review-finding-ids):\s*(.+)$",
+        r"^(action-origin|review-severity|review-iteration|review-finding-ids|review-disposition|rejection-reason|introduced-by-action-id):\s*(.+)$",
         re.MULTILINE | re.IGNORECASE,
     )
 
@@ -275,18 +283,31 @@ def parse_commit_trailers(commit_message: str) -> dict[str, Any]:
                 review_severity = clean_val
         elif trailer_key == "review-iteration":
             try:
-                review_iteration = int(val)
+                parsed_iter = int(val)
+                if parsed_iter >= 1:
+                    review_iteration = parsed_iter
             except ValueError:
                 review_iteration = None
         elif trailer_key == "review-finding-ids":
             parts = [p.strip() for p in re.split(r"[,;\s]+", val) if p.strip()]
             review_finding_ids = parts if parts else None
+        elif trailer_key == "review-disposition":
+            clean_val = val.lower()
+            if clean_val in VALID_DISPOSITIONS:
+                review_disposition = clean_val
+        elif trailer_key == "rejection-reason":
+            rejection_reason = val if val else None
+        elif trailer_key == "introduced-by-action-id":
+            introduced_by_action_id = val if val else None
 
     return {
         "action_origin": action_origin,
         "review_severity": review_severity,
         "review_iteration": review_iteration,
         "review_finding_ids": review_finding_ids,
+        "review_disposition": review_disposition,
+        "rejection_reason": rejection_reason,
+        "introduced_by_action_id": introduced_by_action_id,
     }
 
 
@@ -311,6 +332,9 @@ def format_commit_trailers(
     review_severity: str | None = None,
     review_iteration: int | None = None,
     review_finding_ids: list[str] | None = None,
+    review_disposition: str | None = None,
+    rejection_reason: str | None = None,
+    introduced_by_action_id: str | None = None,
 ) -> str:
     """Format structured commit trailers block for git commit messages."""
     lines: list[str] = [f"Action-Origin: {action_origin}"]
@@ -320,6 +344,12 @@ def format_commit_trailers(
         lines.append(f"Review-Iteration: {review_iteration}")
     if review_finding_ids:
         lines.append(f"Review-Finding-Ids: {', '.join(review_finding_ids)}")
+    if review_disposition:
+        lines.append(f"Review-Disposition: {review_disposition}")
+    if rejection_reason:
+        lines.append(f"Rejection-Reason: {rejection_reason}")
+    if introduced_by_action_id:
+        lines.append(f"Introduced-By-Action-Id: {introduced_by_action_id}")
     return "\n".join(lines)
 
 
@@ -388,9 +418,12 @@ def query_ledger(
             # 3. Filter by labels
             if target_labels:
                 rec_labels = rec.get("labels")
-                if not isinstance(rec_labels, list):
+                if isinstance(rec_labels, str):
+                    clean_rec_labels = [lbl.strip().lower() for lbl in rec_labels.split(",") if lbl.strip()]
+                elif isinstance(rec_labels, list):
+                    clean_rec_labels = [str(lbl).strip().lower() for lbl in rec_labels if str(lbl).strip()]
+                else:
                     continue
-                clean_rec_labels = [str(lbl).strip().lower() for lbl in rec_labels]
                 if not any(tl in clean_rec_labels for tl in target_labels):
                     continue
 
@@ -400,10 +433,16 @@ def query_ledger(
                 if target.lower() not in rec_target.lower():
                     continue
 
-            # 5. Filter by outcome (matches outcome or status)
+            # 5. Filter by outcome (matches outcome or status, normalizing failure/failed)
             if outcome:
-                rec_outcome = str(rec.get("outcome") or rec.get("status") or "")
-                if rec_outcome.lower() != outcome.lower():
+                rec_outcome = str(rec.get("outcome") or rec.get("status") or "").lower()
+                req_outcome = outcome.lower()
+                outcome_matches = False
+                if req_outcome in ("failure", "failed"):
+                    outcome_matches = rec_outcome in ("failure", "failed")
+                else:
+                    outcome_matches = rec_outcome == req_outcome
+                if not outcome_matches:
                     continue
 
             # 6. Filter by origin

@@ -639,7 +639,8 @@ config/env changes, command executions, test runs, git mutations):
   `git_mutation`).
 - `action`: Concise description of the operation.
 - `category`: Classification category (`code`, `doc`, `config`, `test`, `build`, `dependency`).
-- `labels`: List of searchable tags/labels (e.g. `["refactor", "ci", "core"]`).
+- `labels`: List of searchable tags/labels (e.g. `["refactor", "ci", "core"]`). Ingestion also supports comma-separated
+  strings (e.g. `"refactor, ci"`), which are automatically normalized to arrays.
 - `target`: Target path, command name, or artifact.
 - `outcome`: Outcome status (`success`, `failure`, `reverted`, `blocked`).
 - `error_context`: Optional error message or stderr excerpt if the action failed.
@@ -654,7 +655,7 @@ When actions originate from pull request reviews (`action_origin == "pr_review"`
 review tracking:
 
 - `review_severity`: Severity of finding (`critical`, `important`, `nit`).
-- `review_iteration`: Integer iteration or review round.
+- `review_iteration`: Integer iteration or review round (>= 1).
 - `review_finding_ids`: List of review finding identifiers addressed by this action.
 - `review_disposition`: Disposition of finding (`applied`, `rejected`).
 - `rejection_reason`: Justification if review suggestion was rejected.
@@ -667,8 +668,11 @@ history:
 
 - `Action-Origin`: Origin category (e.g. `pr_review`, `ci_fix`).
 - `Review-Severity`: Severity level (`critical`, `important`, `nit`).
-- `Review-Iteration`: Round number (e.g. `1`, `2`).
+- `Review-Iteration`: Round number (`1`, `2`, ...).
 - `Review-Finding-Ids`: Comma-separated list of finding IDs.
+- `Review-Disposition`: Outcome disposition (`applied`, `rejected`).
+- `Rejection-Reason`: Optional reason for rejection.
+- `Introduced-By-Action-Id`: Causative action ID when linking defects to initial implementation.
 
 Example commit message:
 
@@ -679,6 +683,8 @@ Action-Origin: pr_review
 Review-Severity: critical
 Review-Iteration: 2
 Review-Finding-Ids: FIND-001, FIND-002
+Review-Disposition: applied
+Introduced-By-Action-Id: ACT-1791839487-a1b2c3d4
 ```
 
 ##### CLI Query Interface (`holon ledger query`)

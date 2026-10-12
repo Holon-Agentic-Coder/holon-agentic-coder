@@ -539,12 +539,20 @@ def get_runner(agent_name: str) -> AgentRunner:
 
 
 def get_repo_url() -> str:
-    """Helper to get the repository URL for git operations."""
-    if os.getenv("HOLON_REPO_URL"):
-        return os.environ["HOLON_REPO_URL"]
+    """Get the target repository URL for git operations from HOLON_REPO_URL.
 
-    token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN") or os.getenv("HOLON_AGENT_KEY")
-    if token and (token.startswith("gh") or token.startswith("github_pat_")):
-        return f"https://x-access-token:{token}@github.com/Holon-Agentic-Coder/holon-agentic-coder.git"
+    Returns:
+        The repository URL string from the HOLON_REPO_URL environment variable.
 
-    return "git@github.com:Holon-Agentic-Coder/holon-agentic-coder.git"
+    Raises:
+        RuntimeError: If HOLON_REPO_URL is unset or empty.
+    """
+    repo_url = os.getenv("HOLON_REPO_URL")
+    if repo_url and repo_url.strip():
+        return repo_url.strip()
+
+    raise RuntimeError(
+        "HOLON_REPO_URL environment variable is not set or empty. "
+        "In containerized execution, HOLON_REPO_URL is normally populated dynamically by the host CLI wrapper (holon). "
+        "Please run via the holon CLI wrapper or export HOLON_REPO_URL explicitly."
+    )

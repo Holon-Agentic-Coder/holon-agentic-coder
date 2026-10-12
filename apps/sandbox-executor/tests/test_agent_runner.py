@@ -410,70 +410,55 @@ class TestAgentRunner(unittest.TestCase):
 
 
 class TestGetRepoUrl(unittest.TestCase):
-    def test_ssh_agent_forwarding_default(self):
-        """Test that get_repo_url returns the standard SSH URL."""
+    def test_get_repo_url_returns_env_var(self):
+        """Test that get_repo_url returns HOLON_REPO_URL when set."""
         import unittest.mock
 
-        with unittest.mock.patch.dict("os.environ", {}, clear=True):
-            url = get_repo_url()
-            self.assertEqual(url, "git@github.com:Holon-Agentic-Coder/holon-agentic-coder.git")
-
-    def test_ssh_agent_forwarding_override(self):
-        """Test that get_repo_url respects the HOLON_REPO_URL environment variable."""
-        import unittest.mock
-
-        with unittest.mock.patch.dict("os.environ", {"HOLON_REPO_URL": "git@github.com:custom/repo.git"}):
+        with unittest.mock.patch.dict("os.environ", {"HOLON_REPO_URL": "git@github.com:custom/repo.git"}, clear=True):
             self.assertEqual(get_repo_url(), "git@github.com:custom/repo.git")
 
-    def test_classic_pat_token(self):
-        """Test that get_repo_url supports classic GitHub PAT tokens starting with gh."""
+    def test_get_repo_url_raises_when_unset(self):
+        """Test that get_repo_url raises RuntimeError mentioning HOLON_REPO_URL and host CLI when unset."""
         import unittest.mock
 
-        with unittest.mock.patch.dict("os.environ", {"GITHUB_TOKEN": "ghp_secret123"}, clear=True):
-            url = get_repo_url()
-            self.assertEqual(
-                url,
-                "https://x-access-token:ghp_secret123@github.com/Holon-Agentic-Coder/holon-agentic-coder.git",
-            )
-
-    def test_fine_grained_pat_token(self):
-        """Test that get_repo_url supports fine-grained GitHub PAT tokens starting with github_pat_."""
-        import unittest.mock
-
-        with unittest.mock.patch.dict("os.environ", {"GITHUB_TOKEN": "github_pat_secret456"}, clear=True):
-            url = get_repo_url()
-            self.assertEqual(
-                url,
-                ("https://x-access-token:github_pat_secret456@github.com/Holon-Agentic-Coder/holon-agentic-coder.git"),
-            )
-
-    def test_get_repo_url_all_branches(self):
-        """Test all three URL resolution branches and token precedence."""
-        import unittest.mock
-
-        # Branch 1: Unset env -> default SSH URL
         with unittest.mock.patch.dict("os.environ", {}, clear=True):
-            self.assertEqual(get_repo_url(), "git@github.com:Holon-Agentic-Coder/holon-agentic-coder.git")
+            with self.assertRaises(RuntimeError) as cm:
+                get_repo_url()
+            self.assertIn("HOLON_REPO_URL", str(cm.exception))
+            self.assertIn("holon", str(cm.exception))
 
-        # Branch 2: Token set (GH_TOKEN, HOLON_AGENT_KEY) -> HTTPS token URL
-        with unittest.mock.patch.dict("os.environ", {"GH_TOKEN": "gho_testToken123"}, clear=True):
-            self.assertEqual(
-                get_repo_url(),
-                "https://x-access-token:gho_testToken123@github.com/Holon-Agentic-Coder/holon-agentic-coder.git",
-            )
-        with unittest.mock.patch.dict("os.environ", {"HOLON_AGENT_KEY": "ghp_agentKey456"}, clear=True):
-            self.assertEqual(
-                get_repo_url(),
-                "https://x-access-token:ghp_agentKey456@github.com/Holon-Agentic-Coder/holon-agentic-coder.git",
-            )
+    def test_get_repo_url_raises_even_when_token_is_set(self):
+        """Test that setting tokens without HOLON_REPO_URL still raises RuntimeError without falling back."""
+        import unittest.mock
 
-        # Branch 3: HOLON_REPO_URL set -> returns HOLON_REPO_URL unchanged regardless of tokens
-        with unittest.mock.patch.dict(
-            "os.environ",
-            {"HOLON_REPO_URL": "git@github.com:custom/priority.git", "GITHUB_TOKEN": "ghp_ignoredToken"},
-            clear=True,
-        ):
-            self.assertEqual(get_repo_url(), "git@github.com:custom/priority.git")
+        tokens_to_test = [
+            {"GITHUB_TOKEN": "ghp_secret123"},
+            {"GH_TOKEN": "gho_testToken123"},
+            {"HOLON_AGENT_KEY": "github_pat_secret456"},
+        ]
+        for token_env in tokens_to_test:
+            with (
+                self.subTest(env=token_env),
+                unittest.mock.patch.dict("os.environ", token_env, clear=True),
+            ):
+                with self.assertRaises(RuntimeError) as cm:
+                    get_repo_url()
+                self.assertIn("HOLON_REPO_URL", str(cm.exception))
+
+    def test_guard_no_hardcoded_holon_agentic_coder_repo_in_src(self):
+        """Guard test: assert no file under apps/sandbox-executor/src mentions 'holon-agentic-coder.git'."""
+        src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+        for root, _, files in os.walk(src_dir):
+            for file in files:
+                if file.endswith((".py", ".sh", ".json", ".md")):
+                    file_path = os.path.join(root, file)
+                    with open(file_path, encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                    self.assertNotIn(
+                        "holon-agentic-coder.git",
+                        content,
+                        f"Found hardcoded repository 'holon-agentic-coder.git' in {file_path}",
+                    )
 
     def test_guard_no_retired_reference_repo(self):
         """Guard test: assert no file under apps/sandbox-executor/src mentions holon-agentic-coder-ref."""

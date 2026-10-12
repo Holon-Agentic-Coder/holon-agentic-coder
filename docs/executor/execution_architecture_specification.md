@@ -76,6 +76,18 @@ validation under the **3-Tier Fallback Contract**.
 
 Depending on the environment configuration:
 
+- **Dynamic Repository URL Resolution**: In containerized workflows, `HOLON_REPO_URL` is automatically resolved on the
+  host by the `holon` CLI wrapper. It inspects the target repository's git remote (`git config --get remote.origin.url`,
+  respecting `--repo-dir` and git worktrees) and normalizes SSH (`git@`, `ssh://`) or HTTPS formats. When paired with
+  `find_github_token()`, an authenticated URL (`https://x-access-token:<token>@<host>/<org>/<repo>.git`) is constructed
+  and forwarded to the container. If no token is detected, the raw remote URL is forwarded to enable SSH agent
+  forwarding.
+- **Host Override & Fail-Fast**: Exporting `HOLON_REPO_URL` on the host serves as an optional override that takes
+  absolute precedence. If the host CLI cannot resolve an `origin` remote and no override is present, it fails fast with
+  a descriptive error and exits non-zero before invoking Docker.
+- **Container-Side Strict Contract**: Inside the execution container, `get_repo_url()` strictly reads `HOLON_REPO_URL`.
+  If it is unset or empty, it raises an explicit `RuntimeError`. Silent fallbacks to hardcoded repositories (such as
+  `holon-agentic-coder.git`) have been completely eliminated.
 - **Clean Workspace**: If `HOLON_REPO_DIR` is empty or not configured, a default workspace is initialized (either
   `~/.holon-sandbox/workspace` in sandbox mode or `~/.holon/repo` locally).
 - **Stale Workspace Discarding**: If the workspace already contains a `.git` folder but its remote URL does not match

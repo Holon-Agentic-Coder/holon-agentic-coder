@@ -8,6 +8,15 @@ from sandbox_executor.entrypoint import intent_creator
 
 
 class TestIntentCreator(unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.env_patcher = patch.dict(os.environ, {"HOLON_REPO_URL": "git@github.com:example/repo.git"})
+        self.env_patcher.start()
+
+    def tearDown(self):
+        self.env_patcher.stop()
+        super().tearDown()
+
     @patch("sandbox_executor.entrypoint.intent_creator.cleanup_repo_dir")
     @patch("subprocess.run")
     @patch("os.path.exists")

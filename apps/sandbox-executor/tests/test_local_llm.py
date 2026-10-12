@@ -325,7 +325,7 @@ class TestPrepareAgentDir(unittest.TestCase):
 
 class TestLauncherIntegration(unittest.TestCase):
     def _run(self, env, mounts=None, tr_envs=None, mkdtemp_dir=None, agent_id="pi", token_reduce=False):
-        merged_env = {"GITHUB_TOKEN": "mock-token", **env}
+        merged_env = {"GITHUB_TOKEN": "mock-token", "HOLON_REPO_URL": "git@github.com:dummy/repo.git", **env}
         with (
             patch("shutil.which", side_effect=lambda name: "/usr/bin/docker" if name == "docker" else None),
             patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run,

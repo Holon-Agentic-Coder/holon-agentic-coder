@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 from sandbox_executor.entrypoint import planner
 
 
-@patch.dict("os.environ", {"HOLON_AGENT_KEY": "dummy"})
+@patch.dict("os.environ", {"HOLON_AGENT_KEY": "dummy", "HOLON_REPO_URL": "git@github.com:example/repo.git"})
 class TestPlanner(unittest.TestCase):
     def test_get_file_structure(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

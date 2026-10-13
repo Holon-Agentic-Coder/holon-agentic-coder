@@ -955,3 +955,55 @@ class TestCLICalibrateCommand(unittest.TestCase):
                 json_output=False,
                 skip_commit=True,
             )
+
+
+class TestCalibrationInterleavedActionLedger(unittest.TestCase):
+    """Regression test suite verifying backward compatibility with interleaved action ledger records."""
+
+    def test_parse_actual_metrics_with_interleaved_action_records(self):
+        """Verify parse_actual_metrics ignores action records and matches summary record."""
+        action_1 = {
+            "entry_type": "action",
+            "action_id": "ACT-101",
+            "execution_id": "E-interleave",
+            "action": "Modify code",
+            "category": "code",
+            "target": "ledger.py",
+            "outcome": "success",
+        }
+        summary = {
+            "entry_type": "summary",
+            "execution_id": "E-interleave",
+            "plan_branch": "I-test/P-test/_",
+            "status": "success",
+            "duration": 25.0,
+            "tokens": 1200,
+        }
+        action_2 = {
+            "entry_type": "action",
+            "action_id": "ACT-102",
+            "execution_id": "E-interleave",
+            "action": "Run tests",
+            "category": "test",
+            "target": "pytest",
+            "outcome": "failure",
+        }
+        jsonl_str = json.dumps(action_1) + "\n" + json.dumps(summary) + "\n" + json.dumps(action_2) + "\n"
+
+        def mock_read_git_file(ref, rel_path, repo_dir="."):
+            if "executions.jsonl" in rel_path:
+                return jsonl_str
+            return None
+
+        diff_res = MagicMock(returncode=0, stdout="1 file changed, 10 insertions(+), 0 deletions(-)\n")
+
+        with (
+            patch("sandbox_executor.calibration.read_git_file", side_effect=mock_read_git_file),
+            patch("subprocess.run", return_value=diff_res),
+        ):
+            actual, meta = parse_actual_metrics("E-interleave", "I-test/P-test/_", PredictedMetrics(), "exec-sha")
+            self.assertEqual(actual.p_success, 1.0)
+            self.assertEqual(actual.duration_seconds, 25.0)
+            self.assertEqual(actual.tokens, 1200)
+            self.assertEqual(meta.get("entry_type"), "summary")
+            self.assertEqual(meta.get("execution_id"), "E-interleave")

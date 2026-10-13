@@ -3126,3 +3126,99 @@ class TestExecutorPrePushSync(unittest.TestCase):
             self.assertFalse(success)
             self.assertIn("Non-ledger merge conflicts detected", msg)
             self.assertIn("non_ledger_conflict.txt", msg)
+
+    @patch("sandbox_executor.entrypoint.executor.run_cmd")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    def test_execution_run_records_action_and_summary_records_with_entry_type(
+        self, mock_get_repo_url, mock_get_runner, mock_run_cmd
+    ):
+        """Test that execution run with action logging enabled records both action and summary records."""
+        mock_get_repo_url.return_value = "/mock/repo"
+        mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.3.3"
+        mock_runner.build_cmd.return_value = ["agy", "run"]
+        mock_get_runner.return_value = mock_runner
+
+        def side_effect(args, cwd=None, **kwargs):
+            mock_res = MagicMock()
+            if "clone" in args:
+                ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
+                os.makedirs(ledger_dir, exist_ok=True)
+                with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "plan_id": "P-777",
+                                "intent_branch": "I-777/_",
+                                "entropy": 1.0,
+                                "entropy_budget": 5.0,
+                            }
+                        )
+                        + "\n"
+                    )
+            if "agy" in args:
+                mock_res.returncode = 0
+                mock_res.stdout = "Task complete.\n"
+                mock_res.stderr = ""
+            elif "diff" in args and "--cached" in args and "--quiet" in args:
+                mock_res.returncode = 1
+                mock_res.stdout = ""
+                mock_res.stderr = ""
+            elif "rev-parse" in args and "--verify" in args and "HEAD^" in args:
+                mock_res.returncode = 0
+                mock_res.stdout = "parent-commit-sha\n"
+            else:
+                mock_res.returncode = 0
+                mock_res.stdout = ""
+                mock_res.stderr = ""
+            return mock_res
+
+        mock_run_cmd.side_effect = side_effect
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.dict(
+                os.environ,
+                {
+                    "HOLON_REPO_DIR": tmp_dir,
+                    "HOLON_SKIP_PUSH": "1",
+                    "HOLON_ACTION_LOGGING": "1",
+                    "HOLON_ACTION_ORIGIN": "pr_review",
+                    "HOLON_REVIEW_SEVERITY": "critical",
+                    "HOLON_REVIEW_ITERATION": "2",
+                    "HOLON_REVIEW_FINDING_IDS": "FIND-777",
+                },
+            ),
+            patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
+            patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
+            patch("sys.argv", ["executor.py", "I-777/P-777/_", "antigravity-agent", "gemini-3.8-flash"]),
+        ):
+            executor.main()
+
+            ledger_file = os.path.join(tmp_dir, "holon-knowledge", "ledger", "executions.jsonl")
+            self.assertTrue(os.path.exists(ledger_file))
+            with open(ledger_file, encoding="utf-8") as f:
+                entries = [json.loads(line) for line in f if line.strip()]
+
+            # Should contain action records and summary record
+            action_entries = [e for e in entries if e.get("entry_type") == "action"]
+            summary_entries = [e for e in entries if e.get("entry_type") == "summary"]
+
+            self.assertGreaterEqual(len(action_entries), 1)
+            self.assertEqual(len(summary_entries), 1)
+
+            # Check action entry fields
+            cmd_action = action_entries[0]
+            self.assertEqual(cmd_action["entry_type"], "action")
+            self.assertEqual(cmd_action["event_type"], "command_execution")
+            self.assertEqual(cmd_action["action_origin"], "pr_review")
+            self.assertEqual(cmd_action["review_severity"], "critical")
+            self.assertEqual(cmd_action["review_iteration"], 2)
+            self.assertEqual(cmd_action["review_finding_ids"], ["FIND-777"])
+            self.assertEqual(cmd_action["outcome"], "success")
+
+            # Check summary entry
+            summary = summary_entries[0]
+            self.assertEqual(summary["entry_type"], "summary")
+            self.assertEqual(summary["status"], "success")

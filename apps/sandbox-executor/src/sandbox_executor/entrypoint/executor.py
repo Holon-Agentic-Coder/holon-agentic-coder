@@ -37,6 +37,13 @@ from sandbox_executor.agent_runner import (
     get_workspace_dir,
 )
 from sandbox_executor.formatting import converge_prettier
+from sandbox_executor.ledger import (
+    ActionRecord,
+    append_action_record,
+    extract_action_provenance_from_commit,
+    format_commit_trailers,
+    generate_action_id,
+)
 
 _MAX_REDACT_INPUT_LEN: int = 100_000
 _MAX_PRINT_LEN: int = 5000
@@ -105,6 +112,20 @@ def _get_clean_git_env(base_env: dict[str, str] | None = None) -> dict[str, str]
     for var in _CLEAN_GIT_ENV_VARS:
         env.pop(var, None)
     return env
+
+
+def is_action_logging_enabled(intent_data: dict[str, Any] | None = None) -> bool:
+    """Determine if discrete action logging should be recorded to executions.jsonl."""
+    flag = os.getenv("HOLON_ACTION_LOGGING") or os.getenv("HOLON_RECORD_ACTIONS")
+    if flag is not None:
+        return flag.lower() in ("1", "true", "yes", "on")
+    if os.getenv("HOLON_ACTION_ORIGIN") or os.getenv("HOLON_REVIEW_SEVERITY"):
+        return True
+    if intent_data and any(
+        k in intent_data for k in ("action_origin", "review_severity", "review_iteration", "review_finding_ids")
+    ):
+        return True
+    return "PYTEST_CURRENT_TEST" not in os.environ
 
 
 def redact_text(text: str) -> str:
@@ -1237,6 +1258,7 @@ def main() -> None:
                 created_sub_intents.append(sub_entry)
 
             exec_entry = {
+                "entry_type": "summary",
                 "execution_id": exec_id,
                 "plan_branch": plan_branch,
                 "agent": agent_name,
@@ -1248,6 +1270,23 @@ def main() -> None:
             }
             with open(os.path.join(ledger_dir, "executions.jsonl"), "a") as ef:
                 ef.write(json.dumps(exec_entry) + "\n")
+
+            if is_action_logging_enabled(intent_data):
+                with contextlib.suppress(Exception):
+                    append_action_record(
+                        os.path.join(ledger_dir, "executions.jsonl"),
+                        ActionRecord(
+                            action_id=generate_action_id(),
+                            execution_id=exec_id,
+                            event_type="plan_decomposition",
+                            action=f"Decomposed {plan_branch} into {len(created_sub_intents)} sub-intents",
+                            category="config",
+                            labels=["decomposition", "workflow"],
+                            target=plan_branch,
+                            outcome="success",
+                            action_origin="initial_implementation",
+                        ),
+                    )
 
             commit_msg = f"execute: decomposed {plan_branch} into {len(created_sub_intents)} sub-intents"
             run_cmd(
@@ -1283,6 +1322,67 @@ def main() -> None:
                     if os.path.exists(tf):
                         with contextlib.suppress(Exception):
                             os.remove(tf)
+
+            action_origin = (
+                os.getenv("HOLON_ACTION_ORIGIN")
+                or (intent_data.get("action_origin") or intent_data.get("origin") if intent_data else None)
+                or "initial_implementation"
+            )
+            review_severity = os.getenv("HOLON_REVIEW_SEVERITY") or (
+                intent_data.get("review_severity") if intent_data else None
+            )
+            review_iteration = None
+            raw_iter = os.getenv("HOLON_REVIEW_ITERATION") or (
+                intent_data.get("review_iteration") if intent_data else None
+            )
+            if raw_iter is not None:
+                try:
+                    review_iteration = int(raw_iter)
+                except (ValueError, TypeError):
+                    review_iteration = None
+            review_finding_ids = None
+            raw_findings = os.getenv("HOLON_REVIEW_FINDING_IDS") or (
+                intent_data.get("review_finding_ids") if intent_data else None
+            )
+            if raw_findings:
+                if isinstance(raw_findings, str):
+                    review_finding_ids = [f.strip() for f in re.split(r"[,;\s]+", raw_findings) if f.strip()]
+                elif isinstance(raw_findings, list):
+                    review_finding_ids = [str(f).strip() for f in raw_findings if str(f).strip()]
+
+            if action_origin == "initial_implementation":
+                extracted_prov = extract_action_provenance_from_commit(repo_dir=repo_dir, commit_ref="HEAD")
+                if extracted_prov.get("action_origin") != "initial_implementation":
+                    action_origin = extracted_prov["action_origin"]
+                    review_severity = extracted_prov.get("review_severity") or review_severity
+                    review_iteration = (
+                        extracted_prov.get("review_iteration") if review_iteration is None else review_iteration
+                    )
+                    review_finding_ids = extracted_prov.get("review_finding_ids") or review_finding_ids
+
+            if is_action_logging_enabled(intent_data):
+                with contextlib.suppress(Exception):
+                    os.makedirs(ledger_dir, exist_ok=True)
+                    append_action_record(
+                        os.path.join(ledger_dir, "executions.jsonl"),
+                        ActionRecord(
+                            action_id=generate_action_id(),
+                            execution_id=exec_id,
+                            event_type="command_execution",
+                            action=f"Executed agent {agent_name} with model {model_name}",
+                            category="code",
+                            labels=["agent", agent_name, "execution"],
+                            target=f"{agent_name}:{model_name}",
+                            outcome="success" if res.returncode == 0 else "failure",
+                            error_context=(
+                                redact_text(res.stderr[:500]) if res.returncode != 0 and res.stderr else None
+                            ),
+                            action_origin=action_origin,
+                            review_severity=review_severity,
+                            review_iteration=review_iteration,
+                            review_finding_ids=review_finding_ids,
+                        ),
+                    )
 
             agent_output_text = ""
             agent_output_truncated = False
@@ -1382,7 +1482,25 @@ def main() -> None:
                         if fetch_err:
                             print(f"Fetch diagnostic error: {fetch_err}", file=sys.stderr)
 
+                    if is_action_logging_enabled(intent_data):
+                        with contextlib.suppress(Exception):
+                            append_action_record(
+                                os.path.join(ledger_dir, "executions.jsonl"),
+                                ActionRecord(
+                                    action_id=generate_action_id(),
+                                    execution_id=exec_id,
+                                    event_type="git_mutation",
+                                    action="Re-initialized git repo due to corrupted repository",
+                                    category="config",
+                                    labels=["git", "recovery"],
+                                    target=".git",
+                                    outcome="success" if base_tip else "failure",
+                                    action_origin=action_origin,
+                                ),
+                            )
+
             exec_entry = {
+                "entry_type": "summary",
                 "execution_id": exec_id,
                 "plan_branch": plan_branch,
                 "agent": agent_name,
@@ -1419,10 +1537,55 @@ def main() -> None:
                             md_files.append(file_part)
                 if md_files:
                     converge_prettier(md_files, repo_dir=repo_dir)
+                    if is_action_logging_enabled(intent_data):
+                        with contextlib.suppress(Exception):
+                            append_action_record(
+                                os.path.join(ledger_dir, "executions.jsonl"),
+                                ActionRecord(
+                                    action_id=generate_action_id(),
+                                    execution_id=exec_id,
+                                    event_type="doc_update",
+                                    action=f"Formatted {len(md_files)} markdown files with prettier",
+                                    category="doc",
+                                    labels=["formatting", "prettier"],
+                                    target=", ".join(md_files[:3]),
+                                    outcome="success",
+                                    action_origin=action_origin,
+                                ),
+                            )
             except Exception as e:
                 print(f"Warning: Prettier formatting failed: {e}", file=sys.stderr)
 
             commit_msg = f"execute: {exec_id} completed for plan {plan_branch}"
+            trailers = format_commit_trailers(
+                action_origin=action_origin,
+                review_severity=review_severity,
+                review_iteration=review_iteration,
+                review_finding_ids=review_finding_ids,
+            )
+            if action_origin != "initial_implementation" or review_severity or review_iteration or review_finding_ids:
+                commit_msg = f"{commit_msg}\n\n{trailers}"
+
+            if is_action_logging_enabled(intent_data):
+                with contextlib.suppress(Exception):
+                    append_action_record(
+                        os.path.join(ledger_dir, "executions.jsonl"),
+                        ActionRecord(
+                            action_id=generate_action_id(),
+                            execution_id=exec_id,
+                            event_type="git_mutation",
+                            action=f"Committed execution changes: {commit_msg.splitlines()[0]}",
+                            category="code",
+                            labels=["git", "commit"],
+                            target="HEAD",
+                            outcome="success",
+                            action_origin=action_origin,
+                            review_severity=review_severity,
+                            review_iteration=review_iteration,
+                            review_finding_ids=review_finding_ids,
+                        ),
+                    )
+
             add_targets = [
                 f for f in ("holon-knowledge/ledger/executions.jsonl",) if os.path.exists(os.path.join(repo_dir, f))
             ]
@@ -1487,6 +1650,7 @@ def main() -> None:
                         # agent_output_truncated and agent_output_bytes, so readers do not have to
                         # merge fields backwards.
                         fail_ledger_entry = {
+                            "entry_type": "summary",
                             "execution_id": exec_id,
                             "plan_branch": plan_branch,
                             "agent": agent_name,
@@ -1530,6 +1694,7 @@ def main() -> None:
                     print(f"Error: Pre-push sync failed: {sync_msg}", file=sys.stderr)
                     sync_summary = f"Pre-push sync failure: {sync_msg}. Remote push aborted."
                     fail_ledger_entry = {
+                        "entry_type": "summary",
                         "execution_id": exec_id,
                         "plan_branch": plan_branch,
                         "agent": agent_name,

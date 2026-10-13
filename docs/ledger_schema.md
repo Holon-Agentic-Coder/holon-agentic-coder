@@ -600,8 +600,13 @@ Appended when a plan is proposed by the planner:
 
 #### Execution Ledger (`executions.jsonl`)
 
-Appended when a plan execution begins/finishes:
+The execution ledger contains two entry types discriminated by `entry_type`:
 
+##### 1. Summary Records (`"entry_type": "summary"`)
+
+Appended when a plan execution begins, completes, fails, or decomposes into sub-intents:
+
+- `entry_type`: Always `"summary"` (defaults to `"summary"` for backward compatibility if omitted).
 - `execution_id`: Unique identifier for the execution record.
 - `plan_branch`: Branch of the plan being executed.
 - `agent`: The active agent name.
@@ -620,6 +625,85 @@ Appended when a plan execution begins/finishes:
 post-execution verification or git recovery failures), the superseding row must repeat all authoritative fields that
 readers should rely on (including `agent_output_truncated` and `agent_output_bytes`). Readers must select the row with
 the highest `ledger_revision` for a given `execution_id` without needing to merge fields backwards.
+
+##### 2. Discrete Action Records (`"entry_type": "action"`)
+
+Appended as fine-grained, discrete execution actions occur during a plan run (code modifications, doc updates,
+config/env changes, command executions, test runs, git mutations):
+
+- `entry_type`: Always `"action"`.
+- `action_id`: Unique identifier for the action (e.g. `ACT-{timestamp}-{suffix}`).
+- `execution_id`: Identifier associating the action with the parent execution.
+- `parent_action_id`: Optional parent action ID if nested under another action.
+- `event_type`: Type of event (e.g. `code_modification`, `doc_update`, `config_change`, `command_execution`, `test_run`,
+  `git_mutation`).
+- `action`: Concise description of the operation.
+- `category`: Classification category (`code`, `doc`, `config`, `test`, `build`, `dependency`).
+- `labels`: List of searchable tags/labels (e.g. `["refactor", "ci", "core"]`). Ingestion also supports comma-separated
+  strings (e.g. `"refactor, ci"`), which are automatically normalized to arrays.
+- `target`: Target path, command name, or artifact.
+- `outcome`: Outcome status (`success`, `failure`, `reverted`, `blocked`).
+- `error_context`: Optional error message or stderr excerpt if the action failed.
+- `mistake_category`: Optional mistake category or lesson learned for evolutionary adaptation.
+- `action_origin`: Provenance origin (`initial_implementation`, `pr_review`, `ci_fix`, `calibration`, `operator`).
+  Defaults to `initial_implementation`.
+- `created_at`: Creation timestamp (ISO 8601 UTC).
+
+###### PR Review Provenance & Review Criticality
+
+When actions originate from pull request reviews (`action_origin == "pr_review"`), provenance fields provide granular
+review tracking:
+
+- `review_severity`: Severity of finding (`critical`, `important`, `nit`).
+- `review_iteration`: Integer iteration or review round (>= 1).
+- `review_finding_ids`: List of review finding identifiers addressed by this action.
+- `review_disposition`: Disposition of finding (`applied`, `rejected`).
+- `rejection_reason`: Justification if review suggestion was rejected.
+- `introduced_by_action_id`: Action ID that originally introduced the issue being resolved.
+
+###### Resolver Commit Trailers
+
+When committing fixes, agents and operators include standardized commit trailers to record provenance directly in git
+history:
+
+- `Action-Origin`: Origin category (e.g. `pr_review`, `ci_fix`).
+- `Review-Severity`: Severity level (`critical`, `important`, `nit`).
+- `Review-Iteration`: Round number (`1`, `2`, ...).
+- `Review-Finding-Ids`: Comma-separated list of finding IDs.
+- `Review-Disposition`: Outcome disposition (`applied`, `rejected`).
+- `Rejection-Reason`: Optional reason for rejection.
+- `Introduced-By-Action-Id`: Causative action ID when linking defects to initial implementation.
+
+Example commit message:
+
+```text
+fix: resolve null check exception in flow runner
+
+Action-Origin: pr_review
+Review-Severity: critical
+Review-Iteration: 2
+Review-Finding-Ids: FIND-001, FIND-002
+Review-Disposition: applied
+Introduced-By-Action-Id: ACT-1791839487-a1b2c3d4
+```
+
+##### CLI Query Interface (`holon ledger query`)
+
+The execution ledger can be queried and filtered via `holon ledger query`:
+
+```bash
+# Query recent actions in formatted table view
+holon ledger query --entry-type action --limit 20
+
+# Query failed actions in JSON format
+holon ledger query --outcome failure --json
+
+# Query review fixes for critical findings
+holon ledger query --origin pr_review --review-severity critical
+
+# Search for specific keywords across errors and action summaries
+holon ledger query --query "git recovery"
+```
 
 ---
 

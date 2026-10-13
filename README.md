@@ -848,33 +848,33 @@ flowchart TD
     C1 -- "--skip-review" --> C2{"Skip Calibrate?"}
     C1 -- "default" --> S4["Stage 4: PR Review Loop (Diffs, Tests, Mergeability)"]
     S4 --> H1{"Consensus Approved?"}
-    H1 -- "Yes" --> H2["HALTED_FOR_HUMAN (Bean 0034 Safety Halt)"]
+    H1 -- "Yes" --> C2
     H1 -- "No" --> F1["FAILED (Review Rejection)"]
-    H2 --> C2
     C2 -- "--skip-calibrate" --> S_SKIP["Stage 5: SKIPPED"]
     C2 -- "default" --> S5["Stage 5: Post-Execution Calibration (/calibrated branch)"]
-    S5 --> DONE["Pipeline Completed"]
-    S_SKIP --> DONE
+    S5 --> HALT["HALTED_FOR_HUMAN (Bean 0034 Safety Merge Boundary)"]
+    S_SKIP --> HALT
+    HALT --> DONE["Human Maintainer Merges PR"]
 ```
 
 ##### Command Options Reference
 
-| Option                    | Type       | Default                   | Description                                                               |
-| ------------------------- | ---------- | ------------------------- | ------------------------------------------------------------------------- |
-| `intent_file`             | Positional | `None`                    | Path to intent JSON file (e.g., `intents/my-task.json`).                  |
-| `--from-stage`            | Choice     | `None`                    | Resume from stage: `intent`, `plan`, `execute`, `review`, `calibrate`.    |
-| `--checkpoint`            | Path       | `None`                    | Path to pipeline checkpoint `.json` file for state resumption.            |
-| `--agent`                 | String     | `antigravity-agent`       | Agent runner identifier.                                                  |
-| `--model`                 | String     | `gemini-3.8-flash-medium` | LLM model identifier.                                                     |
-| `--dry-run`               | Flag       | `False`                   | Dry run mode without executing agent containers or committing.            |
-| `--json`                  | Flag       | `False`                   | Output pipeline status and stage results in structured JSON format.       |
-| `--repo-dir`              | Path       | `.`                       | Repository directory path.                                                |
-| `--skip-push`             | Flag       | `False`                   | Skip pushing git branches to remote origin.                               |
-| `--skip-review`           | Flag       | `False`                   | Skip Stage 4 (PR review loop) and proceed to calibration.                 |
-| `--skip-calibrate`        | Flag       | `False`                   | Skip Stage 5 (post-execution calibration report generation).              |
-| `--max-review-iterations` | Integer    | `3`                       | Maximum autonomous review loop iterations in Stage 4.                     |
-| `--token-reduce`          | Flag       | `False`                   | Route through mitmproxy sidecar for token compression and prompt caching. |
-| `--mitm-web`              | Flag       | `False`                   | Launch mitmweb web UI on port 8081 for live traffic inspection.           |
+| Option                    | Type       | Default                   | Description                                                                                              |
+| ------------------------- | ---------- | ------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `intent_file`             | Positional | `None`                    | Path to intent JSON file (e.g., `intents/my-task.json`).                                                 |
+| `--from-stage`            | Choice     | `None`                    | Resume from stage: `intent`, `plan`, `execute`, `review`, `calibrate`.                                   |
+| `--checkpoint`            | Path       | `None`                    | Path to pipeline checkpoint `.json` file for state resumption.                                           |
+| `--agent`                 | String     | `antigravity-agent`       | Agent runner identifier.                                                                                 |
+| `--model`                 | String     | `gemini-3.8-flash-medium` | LLM model identifier.                                                                                    |
+| `--dry-run`               | Flag       | `False`                   | Dry run mode without executing agent containers or committing.                                           |
+| `--json`                  | Flag       | `False`                   | Output pipeline status and stage results in structured JSON format.                                      |
+| `--repo-dir`              | Path       | `.`                       | Repository directory path.                                                                               |
+| `--skip-push`             | Flag       | `False`                   | Skip pushing git branches to remote origin.                                                              |
+| `--skip-review`           | Flag       | `False`                   | Skip Stage 4 (PR review loop) and proceed to calibration.                                                |
+| `--skip-calibrate`        | Flag       | `False`                   | Skip Stage 5 (post-execution calibration report generation).                                             |
+| `--max-review-iterations` | Integer    | `25`                      | Maximum autonomous review loop iterations in Stage 4 (must be `>= 1`, default: `25`).                    |
+| `--token-reduce`          | Flag       | `False`                   | Route through mitmproxy sidecar for token compression and prompt caching.                                |
+| `--mitm-web`              | Flag       | `False`                   | Launch mitmweb web UI on port 8081 (configurable via `HOLON_MITM_WEB_PORT`) for live traffic inspection. |
 
 ##### Common Usage Examples
 
@@ -898,8 +898,8 @@ flowchart TD
 For in-depth architecture details, state diagrams, and lifecycle hooks, see
 [.agents/holon_flow.md](.agents/holon_flow.md) and [apps/sandbox-executor/README.md](apps/sandbox-executor/README.md).
 
-> [!NOTE] `--token-reduce` is available on `plan` and `execute` (not on `intent`) and is currently **experimental / not
-> yet functional** (Phase 2 addon is missing, so runs degrade to direct egress). See
+> [!NOTE] `--token-reduce` is available on `flow`, `plan`, and `execute` (not on `intent`) and is currently
+> **experimental / not yet functional** (Phase 2 addon is missing, so runs degrade to direct egress). See
 > [Running Plan Generation](docs/sandbox/create_plan.md) and [Running Execution](docs/sandbox/execute_plan.md) for the
 > full contract.
 

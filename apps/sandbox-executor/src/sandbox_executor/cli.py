@@ -1067,8 +1067,8 @@ def main() -> None:
     flow_parser.add_argument(
         "--max-review-iterations",
         type=int,
-        default=3,
-        help="Maximum number of autonomous review loop iterations in Stage 4 (default: 3).",
+        default=25,
+        help="Maximum number of autonomous review loop iterations in Stage 4 (must be >= 1, default: 25).",
     )
     flow_parser.add_argument(
         "--token-reduce",
@@ -1078,7 +1078,10 @@ def main() -> None:
     flow_parser.add_argument(
         "--mitm-web",
         action="store_true",
-        help="Launch mitmweb dashboard on port 8081 for real-time traffic inspection.",
+        help=(
+            "Launch mitmweb dashboard on port 8081 (configurable via HOLON_MITM_WEB_PORT) "
+            "for real-time traffic inspection. Automatically enables --token-reduce."
+        ),
     )
 
     # Subcommand: ledger
@@ -1197,6 +1200,8 @@ def main() -> None:
                         import json
 
                         intent_data = json.load(f)
+            effective_token_reduce = bool(args.token_reduce or args.mitm_web)
+            if context is None:
                 context = FlowContext(
                     repo_dir=args.repo_dir,
                     intent_data=intent_data,
@@ -1208,7 +1213,7 @@ def main() -> None:
                     skip_calibrate=args.skip_calibrate,
                     auto_calibrate=not args.skip_calibrate,
                     max_review_iterations=args.max_review_iterations,
-                    token_reduce=args.token_reduce,
+                    token_reduce=effective_token_reduce,
                     mitm_web=args.mitm_web,
                 )
             else:
@@ -1229,7 +1234,7 @@ def main() -> None:
                     context.auto_calibrate = False
                 if args.max_review_iterations is not None:
                     context.max_review_iterations = args.max_review_iterations
-                if args.token_reduce:
+                if effective_token_reduce:
                     context.token_reduce = True
                 if args.mitm_web:
                     context.mitm_web = True

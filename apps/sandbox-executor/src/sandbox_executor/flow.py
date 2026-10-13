@@ -137,7 +137,7 @@ class FlowContext:
     skip_push: bool = False
     skip_review: bool = False
     skip_calibrate: bool = False
-    max_review_iterations: int = 3
+    max_review_iterations: int = 25
     mitm_web: bool = False
     stage_results: dict[str, StageResult] = field(default_factory=dict)
     logs: list[str] = field(default_factory=list)
@@ -193,7 +193,7 @@ class FlowContext:
             skip_push=data.get("skip_push", False),
             skip_review=data.get("skip_review", False),
             skip_calibrate=data.get("skip_calibrate", False),
-            max_review_iterations=data.get("max_review_iterations", 3),
+            max_review_iterations=data.get("max_review_iterations", 25),
             mitm_web=data.get("mitm_web", False),
             stage_results=parsed_results,
             logs=data.get("logs", []),
@@ -1279,6 +1279,8 @@ def run_review_stage(context: FlowContext) -> StageResult:
             "passed": exit_code == 0,
         },
         "mergeability": mergeability,
+        # In-engine single pass evaluates baseline health; max_review_iterations records the
+        # configured iteration limit budget for provenance and downstream pr-review-loop orchestration.
         "consensus": {
             "approved": consensus_reached,
             "score": approval_score,

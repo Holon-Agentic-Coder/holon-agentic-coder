@@ -19,17 +19,19 @@ The Holon Flow pipeline executes sequentially through five distinct lifecycle st
 |                                                  |                                |
 |                                                  v                                |
 |                           +------------- [Stage 4: Review] <---+                  |
-|                           |                      |             |                  |
-|          (--skip-review)  |       [Consensus]    v             | (revisions)      |
-|                           |      +---------------+             |                  |
-|                           |      | Bean 0034     |             |                  |
-|                           |      | Human Halt    | ------------+                  |
-|                           |      +---------------+                                |
-|                           |              |                                        |
-|                           +------> [Stage 5: Calibrate]                           |
-|                                          |                                        |
-|                                          v                                        |
-|                                     [Completed]                                   |
+|                           |                      |             | (revisions)      |
+|          (--skip-review)  |       [Consensus]    v             |                  |
+|                           |             [Stage 5: Calibrate] --+                  |
+|                           |                      |                                |
+|                           |                      v                                |
+|                           |              +---------------+                        |
+|                           |              | Bean 0034     |                        |
+|                           |              | Human Halt    |                        |
+|                           |              | (Merge Sign)  |                        |
+|                           |              +---------------+                        |
+|                           |                      |                                |
+|                           +--------------------->v                                |
+|                                             [Completed]                           |
 +-----------------------------------------------------------------------------------+
 ```
 
@@ -132,9 +134,9 @@ The pipeline provides crash resilience and state preservation via atomic checkpo
 | `--skip-push`             | Flag       | `False`                   | Skip pushing local git branches to remote origin during stages.                       |
 | `--skip-review`           | Flag       | `False`                   | Skip Stage 4 (PR review loop) and proceed directly to calibration.                    |
 | `--skip-calibrate`        | Flag       | `False`                   | Skip Stage 5 (post-execution calibration report generation).                          |
-| `--max-review-iterations` | Integer    | `3`                       | Maximum autonomous review loop iterations in Stage 4. Must be `>= 1`.                 |
+| `--max-review-iterations` | Integer    | `25`                      | Maximum autonomous review loop iterations in Stage 4. Must be `>= 1` (default: `25`). |
 | `--token-reduce`          | Flag       | `False`                   | Enable mitmproxy token reduction sidecar for caching and context compression.         |
-| `--mitm-web`              | Flag       | `False`                   | Launch mitmweb web dashboard on port 8081 for real-time network inspection.           |
+| `--mitm-web`              | Flag       | `False`                   | Launch mitmweb web dashboard on port 8081 (configurable via `HOLON_MITM_WEB_PORT`).   |
 
 ---
 

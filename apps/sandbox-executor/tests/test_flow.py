@@ -133,7 +133,7 @@ class TestFlowDataModels:
         ctx = FlowContext.from_dict(legacy_data)
         assert ctx.skip_review is False
         assert ctx.skip_calibrate is False
-        assert ctx.max_review_iterations == 3
+        assert ctx.max_review_iterations == 25
         assert ctx.mitm_web is False
         assert ctx.token_reduce is False
 

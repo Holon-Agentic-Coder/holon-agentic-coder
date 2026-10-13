@@ -505,14 +505,15 @@ class TestHolonFlowCLI(unittest.TestCase):
             with open(intent_file, "w", encoding="utf-8") as f:
                 json.dump({"slug": "test-invalid-iter"}, f)
 
-            with (
-                patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
-                self.assertRaises(SystemExit) as cm,
-                patch("sys.argv", ["holon", "flow", intent_file, "--max-review-iterations", "0"]),
-            ):
-                main()
-            self.assertEqual(cm.exception.code, 1)
-            self.assertIn("--max-review-iterations must be at least 1", mock_stderr.getvalue())
+            for invalid_val in ["0", "-1"]:
+                with (
+                    patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
+                    self.assertRaises(SystemExit) as cm,
+                    patch("sys.argv", ["holon", "flow", intent_file, "--max-review-iterations", invalid_val]),
+                ):
+                    main()
+                self.assertEqual(cm.exception.code, 1)
+                self.assertIn("--max-review-iterations must be at least 1", mock_stderr.getvalue())
 
     def test_flow_token_reduce_and_mitm_web_flags(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -523,6 +524,17 @@ class TestHolonFlowCLI(unittest.TestCase):
             with patch("sandbox_executor.cli.run_flow_pipeline") as mock_pipeline, patch("sys.exit") as mock_exit:
                 mock_pipeline.return_value = {"status": "ok"}
                 with patch("sys.argv", ["holon", "flow", intent_file, "--token-reduce", "--mitm-web"]):
+                    main()
+                mock_pipeline.assert_called_once()
+                ctx = mock_pipeline.call_args[1]["context"]
+                self.assertTrue(ctx.token_reduce)
+                self.assertTrue(ctx.mitm_web)
+                mock_exit.assert_called_with(0)
+
+            # Test coupling: --mitm-web alone automatically enables token_reduce
+            with patch("sandbox_executor.cli.run_flow_pipeline") as mock_pipeline, patch("sys.exit") as mock_exit:
+                mock_pipeline.return_value = {"status": "ok"}
+                with patch("sys.argv", ["holon", "flow", intent_file, "--mitm-web"]):
                     main()
                 mock_pipeline.assert_called_once()
                 ctx = mock_pipeline.call_args[1]["context"]
@@ -622,3 +634,44 @@ class TestHolonFlowCLI(unittest.TestCase):
                 with patch("sys.argv", ["holon", "flow", intent_file]):
                     main()
                 mock_exit.assert_called_with(1)
+
+    def test_flow_checkpoint_resumption_flag_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            from sandbox_executor.flow import FlowContext
+
+            # Create existing context with default flags
+            orig_ctx = FlowContext(
+                repo_dir=tmp_dir,
+                intent_data={"slug": "test-resume"},
+                skip_review=False,
+                skip_calibrate=False,
+                max_review_iterations=5,
+            )
+            checkpoint_file = os.path.join(tmp_dir, "checkpoint.json")
+            with open(checkpoint_file, "w", encoding="utf-8") as f:
+                json.dump({"context": orig_ctx.to_dict(), "current_stage": "execute"}, f)
+
+            with patch("sandbox_executor.cli.run_flow_pipeline") as mock_pipeline, patch("sys.exit") as mock_exit:
+                mock_pipeline.return_value = {"status": "ok"}
+                args = [
+                    "holon",
+                    "flow",
+                    "--checkpoint",
+                    checkpoint_file,
+                    "--skip-review",
+                    "--skip-calibrate",
+                    "--max-review-iterations",
+                    "10",
+                    "--mitm-web",
+                ]
+                with patch("sys.argv", args):
+                    main()
+                mock_pipeline.assert_called_once()
+                ctx = mock_pipeline.call_args[1]["context"]
+                self.assertTrue(ctx.skip_review)
+                self.assertTrue(ctx.skip_calibrate)
+                self.assertFalse(ctx.auto_calibrate)
+                self.assertEqual(ctx.max_review_iterations, 10)
+                self.assertTrue(ctx.token_reduce)
+                self.assertTrue(ctx.mitm_web)
+                mock_exit.assert_called_with(0)

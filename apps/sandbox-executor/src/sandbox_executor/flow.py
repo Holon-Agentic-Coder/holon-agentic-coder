@@ -135,6 +135,10 @@ class FlowContext:
     auto_calibrate: bool = True
     token_reduce: bool = False
     skip_push: bool = False
+    skip_review: bool = False
+    skip_calibrate: bool = False
+    max_review_iterations: int = 3
+    mitm_web: bool = False
     stage_results: dict[str, StageResult] = field(default_factory=dict)
     logs: list[str] = field(default_factory=list)
 
@@ -161,6 +165,10 @@ class FlowContext:
             "auto_calibrate": self.auto_calibrate,
             "token_reduce": self.token_reduce,
             "skip_push": self.skip_push,
+            "skip_review": self.skip_review,
+            "skip_calibrate": self.skip_calibrate,
+            "max_review_iterations": self.max_review_iterations,
+            "mitm_web": self.mitm_web,
             "stage_results": {k: v.to_dict() for k, v in self.stage_results.items()},
             "logs": self.logs,
         }
@@ -183,6 +191,10 @@ class FlowContext:
             auto_calibrate=data.get("auto_calibrate", True),
             token_reduce=data.get("token_reduce", False),
             skip_push=data.get("skip_push", False),
+            skip_review=data.get("skip_review", False),
+            skip_calibrate=data.get("skip_calibrate", False),
+            max_review_iterations=data.get("max_review_iterations", 3),
+            mitm_web=data.get("mitm_web", False),
             stage_results=parsed_results,
             logs=data.get("logs", []),
         )
@@ -1271,6 +1283,7 @@ def run_review_stage(context: FlowContext) -> StageResult:
             "approved": consensus_reached,
             "score": approval_score,
             "iterations": 1,
+            "max_review_iterations": context.max_review_iterations,
             "status": consensus_status,
         },
     }
@@ -1466,8 +1479,20 @@ class PipelineEngine:
         elif stage == FlowStage.EXECUTE:
             return run_execute_stage(self.context)
         elif stage == FlowStage.REVIEW:
+            if self.context.skip_review:
+                return StageResult(
+                    stage=FlowStage.REVIEW,
+                    status=StageStatus.SKIPPED,
+                    payload={"skipped_by_flag": True},
+                )
             return run_review_stage(self.context)
         elif stage == FlowStage.CALIBRATE:
+            if self.context.skip_calibrate:
+                return StageResult(
+                    stage=FlowStage.CALIBRATE,
+                    status=StageStatus.SKIPPED,
+                    payload={"skipped_by_flag": True},
+                )
             return run_calibrate_stage(self.context)
         else:
             return StageResult(
@@ -1514,6 +1539,29 @@ class PipelineEngine:
 
         for i in range(start_idx, len(self.STAGE_ORDER)):
             stage = self.STAGE_ORDER[i]
+
+            if stage == FlowStage.REVIEW and self.context.skip_review:
+                self.context.log("Stage 4 (REVIEW) skipped due to --skip-review flag.")
+                result = StageResult(
+                    stage=FlowStage.REVIEW,
+                    status=StageStatus.SKIPPED,
+                    payload={"skipped_by_flag": True},
+                )
+                self.after_stage(stage, result)
+                self.save_checkpoint()
+                continue
+
+            if stage == FlowStage.CALIBRATE and self.context.skip_calibrate:
+                self.context.log("Stage 5 (CALIBRATE) skipped due to --skip-calibrate flag.")
+                result = StageResult(
+                    stage=FlowStage.CALIBRATE,
+                    status=StageStatus.SKIPPED,
+                    payload={"skipped_by_flag": True},
+                )
+                self.after_stage(stage, result)
+                self.save_checkpoint()
+                continue
+
             self.before_stage(stage)
             try:
                 result = self.execute_stage(stage)
@@ -1528,15 +1576,25 @@ class PipelineEngine:
                 break
 
             if result.status == StageStatus.HALTED_FOR_HUMAN:
-                if stage == FlowStage.REVIEW and self.context.auto_calibrate:
-                    cal_stage = FlowStage.CALIBRATE
-                    self.before_stage(cal_stage)
-                    try:
-                        cal_result = self.execute_stage(cal_stage)
-                    except Exception as e:
-                        cal_result = self.handle_stage_failure(cal_stage, e)
-                    self.after_stage(cal_stage, cal_result)
-                    self.save_checkpoint()
+                if stage == FlowStage.REVIEW:
+                    if self.context.auto_calibrate and not self.context.skip_calibrate:
+                        cal_stage = FlowStage.CALIBRATE
+                        self.before_stage(cal_stage)
+                        try:
+                            cal_result = self.execute_stage(cal_stage)
+                        except Exception as e:
+                            cal_result = self.handle_stage_failure(cal_stage, e)
+                        self.after_stage(cal_stage, cal_result)
+                        self.save_checkpoint()
+                    elif self.context.skip_calibrate:
+                        self.context.log("Stage 5 (CALIBRATE) skipped due to --skip-calibrate flag.")
+                        cal_result = StageResult(
+                            stage=FlowStage.CALIBRATE,
+                            status=StageStatus.SKIPPED,
+                            payload={"skipped_by_flag": True},
+                        )
+                        self.after_stage(FlowStage.CALIBRATE, cal_result)
+                        self.save_checkpoint()
 
                 self.context.log(
                     f"Pipeline safely halted for human intervention at stage '{stage.value}'. "

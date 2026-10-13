@@ -1054,6 +1054,32 @@ def main() -> None:
         action="store_true",
         help="Skip pushing git branches to remote origin.",
     )
+    flow_parser.add_argument(
+        "--skip-review",
+        action="store_true",
+        help="Skip Stage 4 (PR review loop) and proceed to calibration.",
+    )
+    flow_parser.add_argument(
+        "--skip-calibrate",
+        action="store_true",
+        help="Skip Stage 5 (post-execution calibration report generation).",
+    )
+    flow_parser.add_argument(
+        "--max-review-iterations",
+        type=int,
+        default=3,
+        help="Maximum number of autonomous review loop iterations in Stage 4 (default: 3).",
+    )
+    flow_parser.add_argument(
+        "--token-reduce",
+        action="store_true",
+        help=_TOKEN_REDUCE_HELP,
+    )
+    flow_parser.add_argument(
+        "--mitm-web",
+        action="store_true",
+        help="Launch mitmweb dashboard on port 8081 for real-time traffic inspection.",
+    )
 
     # Subcommand: ledger
     ledger_parser = subparsers.add_parser(
@@ -1147,6 +1173,10 @@ def main() -> None:
 
     if args.command == "flow":
         try:
+            if getattr(args, "max_review_iterations", None) is not None and args.max_review_iterations < 1:
+                print("Error: --max-review-iterations must be at least 1.", file=sys.stderr)
+                sys.exit(1)
+
             context = None
             if args.checkpoint:
                 if not os.path.exists(args.checkpoint):
@@ -1174,6 +1204,12 @@ def main() -> None:
                     model=args.model or "gemini-3.8-flash-medium",
                     dry_run=args.dry_run,
                     skip_push=args.skip_push,
+                    skip_review=args.skip_review,
+                    skip_calibrate=args.skip_calibrate,
+                    auto_calibrate=not args.skip_calibrate,
+                    max_review_iterations=args.max_review_iterations,
+                    token_reduce=args.token_reduce,
+                    mitm_web=args.mitm_web,
                 )
             else:
                 if args.repo_dir and args.repo_dir != ".":
@@ -1186,6 +1222,17 @@ def main() -> None:
                     context.dry_run = True
                 if args.skip_push:
                     context.skip_push = True
+                if args.skip_review:
+                    context.skip_review = True
+                if args.skip_calibrate:
+                    context.skip_calibrate = True
+                    context.auto_calibrate = False
+                if args.max_review_iterations is not None:
+                    context.max_review_iterations = args.max_review_iterations
+                if args.token_reduce:
+                    context.token_reduce = True
+                if args.mitm_web:
+                    context.mitm_web = True
 
             result_dict = run_flow_pipeline(
                 context=context,

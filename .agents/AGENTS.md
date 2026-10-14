@@ -17,12 +17,12 @@
 ## OS Toolbelt & Script Hygiene Rules
 
 - **Mandatory Tool Probing**: Always probe for tools before writing scripts using `command -v <tool>` (e.g.
-  `command -v jq`, `command -v yq`, `command -v shellcheck`).
+  `command -v jq`, `command -v shellcheck`).
 - **No Throwaway Scripts**: Strictly forbid writing one-off Python or Node throwaway scripts to inspect, filter,
   pretty-print, or validate JSON, YAML, or text files.
 - **Mandatory Baked-in Tools**:
   - Require `jq` for JSON and JSONL inspection, transformation, and validation (`jq -r`, `jq -s`, `jq -e .`).
-  - Require `yq` for YAML inspection, transformation, and validation (`yq -e 'true' <file>`).
+  - Require Prettier (`npx prettier --check`) for YAML and markdown validation.
   - Require `grep`, `awk`, and `sed` for text and line extraction.
   - Require `diff` and `cmp` for file comparisons.
   - Require `gh api --jq` for GitHub CLI queries and filtering.

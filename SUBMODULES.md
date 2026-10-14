@@ -37,7 +37,7 @@ Git manages submodules through two separate mechanisms:
 2. **Git Tree Object (`160000` Gitlink)**: Git records a special tree entry with file mode `160000` pointing to an
    **exact, pinned commit SHA** in the submodule's history:
    ```text
-   160000 commit 87dc438254e5c229d3b46fb8a4afe03febf4a7e8 holon-coherence
+   160000 commit 4da97f7270e7ba043faabfe0dd6631cd53005b29 holon-coherence
    ```
    Git **never** automatically advances the submodule to the tip of `main`. The parent repository stays pinned to this
    exact commit until you explicitly update and commit a new gitlink.

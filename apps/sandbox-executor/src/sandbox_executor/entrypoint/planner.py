@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 from sandbox_executor.agent_runner import cleanup_repo_dir, get_repo_url, get_runner, get_workspace_dir
 from sandbox_executor.formatting import converge_prettier
+from sandbox_executor.ledger import atomic_ledger_append
 
 
 def run_cmd(args, cwd=None, env=None, check=True):
@@ -290,6 +291,7 @@ Include metrics in this format:
         exit_code = 1
 
     # Clean up temp files
+    runner.cleanup_ephemeral_credentials()
     for temp_f in [prompt_file, intent_file]:
         if os.path.exists(temp_f):
             os.remove(temp_f)
@@ -363,7 +365,7 @@ Include metrics in this format:
     plans_ledger_dir = os.path.join(repo_dir, "holon-knowledge/ledger")
     os.makedirs(plans_ledger_dir, exist_ok=True)
     plans_ledger_path = os.path.join(plans_ledger_dir, "plans.jsonl")
-    with open(plans_ledger_path, "a") as lf:
+    with atomic_ledger_append(plans_ledger_path) as lf:
         lf.write(json.dumps(plan_entry) + "\n")
 
     # Format plan markdown before git commit

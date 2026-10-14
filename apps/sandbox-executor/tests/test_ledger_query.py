@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import sys
 import tempfile
 import threading
 import unittest
@@ -625,6 +626,7 @@ class TestAtomicLedgerLocking(unittest.TestCase):
             f.write(json.dumps({"fsync": True}) + "\n")
         self.assertTrue(mock_fsync.called)
 
+    @unittest.skipIf(sys.platform == "win32", "fcntl advisory locking requires POSIX")
     def test_atomic_ledger_contention_and_backoff(self):
         """Simulate initial contention with BlockingIOError followed by success."""
         ledger_path = os.path.join(self.temp_dir.name, "test_contention.jsonl")
@@ -652,6 +654,7 @@ class TestAtomicLedgerLocking(unittest.TestCase):
             data = json.loads(f.readline())
         self.assertEqual(data, {"retry": "success"})
 
+    @unittest.skipIf(sys.platform == "win32", "fcntl advisory locking requires POSIX")
     def test_atomic_ledger_timeout(self):
         """Verify TimeoutError is raised when lock contention exceeds timeout."""
         ledger_path = os.path.join(self.temp_dir.name, "test_timeout.jsonl")

@@ -78,10 +78,10 @@ def build_network_isolation_args(
 ) -> list[str]:
     """Construct Docker CLI arguments enforcing container network isolation and egress controls.
 
-    When token_reduce is False (direct/fallback egress), drops NET_RAW capability to prevent packet
-    sniffing and port scanning, and sinkholes cloud metadata endpoints to 127.0.0.1.
-    If network_mode is provided, sets --network.
-    When token_reduce is True, network routing and isolation are managed by the proxy sidecar.
+    Drops NET_RAW capability to prevent packet sniffing and port scanning, and sinkholes cloud
+    metadata endpoints to 127.0.0.1.
+    If network_mode is provided and token_reduce is False, sets --network.
+    When token_reduce is True, container network routing is managed by the proxy sidecar.
 
     Args:
         token_reduce: Whether token reduction proxy network is active.
@@ -90,15 +90,12 @@ def build_network_isolation_args(
     Returns:
         List of Docker CLI argument strings.
     """
-    if token_reduce:
-        return []
-
     args = ["--cap-drop=NET_RAW"]
 
     for host in BLOCKED_METADATA_HOSTS:
         args.extend(["--add-host", f"{host}:{SINKHOLE_IP}"])
 
-    if network_mode:
+    if network_mode and not token_reduce:
         args.extend(["--network", network_mode])
 
     return args
@@ -236,7 +233,7 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:
                     "Please initialize the Antigravity session in an interactive TTY by running:\n\n"
                     f"  mkdir -p {dedicated_session}\n"
                     "  docker run -it "
-                    f"-v {dedicated_session}:/home/holon/.gemini/antigravity-cli:ro holon/agent-antigravity agy\n\n"
+                    f"-v {dedicated_session}:/home/holon/.gemini/antigravity-cli:rw holon/agent-antigravity agy\n\n"
                     "After completing interactive authentication, rerun this command.",
                     file=sys.stderr,
                 )
@@ -1073,6 +1070,14 @@ def run_docker_container(
         teardown_token_reduction_proxy()
         if local_agent_dir:
             shutil.rmtree(local_agent_dir, ignore_errors=True)
+        try:
+            from sandbox_executor.agent_runner import get_runner
+
+            runner = get_runner(agent_id)
+            if hasattr(runner, "cleanup_ephemeral_credentials"):
+                runner.cleanup_ephemeral_credentials()
+        except Exception:
+            pass
 
 
 def main() -> None:

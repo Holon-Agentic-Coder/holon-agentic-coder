@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, mock_open, patch
 import pytest
 from sandbox_executor.cli import main as cli_main
 from sandbox_executor.flow import (
+    FlowCheckpoint,
     FlowContext,
     FlowStage,
     PipelineEngine,
@@ -224,6 +225,25 @@ class TestFlowDataModels:
 
         with pytest.raises(ValueError, match="Unsupported checkpoint schema_version 999"):
             load_checkpoint(str(future_file))
+
+    def test_none_schema_version_handling(self):
+        v0_null = {
+            "schema_version": None,
+            "intent_slug": "legacy-slug",
+            "current_stage": "intent",
+            "context": {"schema_version": None},
+        }
+        cp = FlowCheckpoint.from_dict(v0_null)
+        assert cp.schema_version == 1
+        assert cp.context.schema_version == 1
+
+        ctx = FlowContext.from_dict({"schema_version": None, "agent": "claude"})
+        assert ctx.schema_version == 1
+        assert ctx.agent == "claude"
+
+    def test_future_context_schema_version_rejection(self):
+        with pytest.raises(ValueError, match="Unsupported context schema_version 999"):
+            FlowContext.from_dict({"schema_version": 999})
 
 
 class TestFlowStages:

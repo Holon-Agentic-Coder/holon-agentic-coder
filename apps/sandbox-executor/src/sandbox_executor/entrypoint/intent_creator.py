@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 from sandbox_executor.agent_runner import cleanup_repo_dir, get_repo_url, get_workspace_dir
 from sandbox_executor.flow import validate_intent_questions
+from sandbox_executor.ledger import atomic_ledger_append
 
 
 def run_cmd(args, cwd=None, env=None, check=True):
@@ -84,7 +85,7 @@ def main():
     os.makedirs(ledger_dir, exist_ok=True)
     intents_file_path = os.path.join(ledger_dir, "intents.jsonl")
 
-    with open(intents_file_path, "a") as lf:
+    with atomic_ledger_append(intents_file_path) as lf:
         lf.write(json.dumps(intent_data) + "\n")
 
     questions_summary = ""

@@ -564,8 +564,9 @@ class TestWorkspaceDirAndCleanup(unittest.TestCase):
 
         runner = StandardAgentRunner("test-agent", "binary", "-m")
         with tempfile.TemporaryDirectory() as tmp_dir:
-            secret_file = os.path.join(tmp_dir, "secret.json")
-            target_config = os.path.join(tmp_dir, "config", "test.json")
+            real_tmp_dir = os.path.realpath(tmp_dir)
+            secret_file = os.path.join(real_tmp_dir, "secret.json")
+            target_config = os.path.join(real_tmp_dir, "config", "test.json")
             bundle_data = {
                 "agent_id": "test-agent",
                 "api_key": "test-key-123",
@@ -578,7 +579,7 @@ class TestWorkspaceDirAndCleanup(unittest.TestCase):
 
             with (
                 patch.dict(os.environ, {"HOLON_SECRET_BUNDLE_PATH": secret_file}),
-                patch("os.path.expanduser", side_effect=lambda p: p.replace("~", tmp_dir)),
+                patch("os.path.expanduser", side_effect=lambda p: p.replace("~", real_tmp_dir)),
             ):
                 runner.resolve_credentials()
                 self.assertTrue(os.path.exists(target_config))

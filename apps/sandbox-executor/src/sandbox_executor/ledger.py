@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Generator
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal, TextIO
@@ -189,7 +189,7 @@ def atomic_ledger_append(
     timeout: float = 10.0,
     initial_delay: float = 0.02,
     max_delay: float = 0.5,
-) -> Generator[TextIO]:
+) -> Iterator[TextIO]:
     """Atomic context manager for appending records to a ledger file with advisory locking.
 
     Uses non-blocking advisory file locking (fcntl.flock with LOCK_EX | LOCK_NB) with bounded
@@ -254,6 +254,13 @@ def atomic_ledger_append(
                     locked = True
                     break
                 except (BlockingIOError, OSError) as e:
+                    if isinstance(e, OSError) and e.errno in (errno.ENOSYS, getattr(errno, "EOPNOTSUPP", 45)):
+                        logger.warning(
+                            "Advisory file locking not supported on filesystem for %s; "
+                            "falling back to uncoordinated append",
+                            filepath,
+                        )
+                        break
                     if (
                         isinstance(e, OSError)
                         and e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK)

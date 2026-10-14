@@ -1,3 +1,4 @@
+import atexit
 import json
 import logging
 import os
@@ -248,6 +249,8 @@ class StandardAgentRunner(AgentRunner):
                         with open(full_dest, "w") as sf:
                             sf.write(content)
                         self._ephemeral_files.append(full_dest)
+                    if self._ephemeral_files:
+                        atexit.register(self.cleanup_ephemeral_credentials)
             except Exception as e:
                 logger.warning(f"Failed to process secret bundle {secret_bundle_path}: {e}")
 

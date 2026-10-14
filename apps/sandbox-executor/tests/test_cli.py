@@ -100,6 +100,23 @@ class TestHolonCLI(unittest.TestCase):
         self.assertIn("metadata.google.internal:127.0.0.1", args)
         self.assertIn("instance-data:127.0.0.1", args)
 
+    def test_build_network_isolation_args_token_reduce(self):
+        args = build_network_isolation_args(token_reduce=True)
+        self.assertIn("--cap-drop=NET_RAW", args)
+        self.assertIn("--add-host", args)
+        self.assertIn("169.254.169.254:127.0.0.1", args)
+        self.assertNotIn("--network", args)
+
+    @patch("sys.platform", "darwin")
+    @patch("os.path.exists", return_value=False)
+    @patch("sys.stderr", new_callable=io.StringIO)
+    def test_antigravity_darwin_missing_session_guidance_uses_rw(self, mock_stderr, mock_exists):
+        with patch.dict(os.environ, {}, clear=True), self.assertRaises(SystemExit):
+            get_agent_session_mounts("antigravity")
+        err_msg = mock_stderr.getvalue()
+        self.assertIn(":rw", err_msg)
+        self.assertNotIn(":ro", err_msg)
+
     @patch("sandbox_executor.cli.resolve_target_repo_url", return_value="git@github.com:test/repo.git")
     @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock:ro"])
     @patch("subprocess.run")

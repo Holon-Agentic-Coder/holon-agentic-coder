@@ -182,7 +182,7 @@ def migrate_checkpoint_data(
         ValueError: If current schema version exceeds target version, or if an intermediate migration
             pathway is missing in CHECKPOINT_MIGRATION_REGISTRY.
     """
-    current_version = int(data.get("schema_version", 0))
+    current_version = int(data.get("schema_version") or 0)
     if current_version > target_version:
         raise ValueError(
             f"Unsupported checkpoint schema_version {current_version}. Supported version is {target_version}."
@@ -196,7 +196,10 @@ def migrate_checkpoint_data(
             raise ValueError(f"No migration registered for transition {step}")
         transform = CHECKPOINT_MIGRATION_REGISTRY[step]
         current_data = transform(current_data)
-        v = int(current_data.get("schema_version", v + 1))
+        next_v = int(current_data.get("schema_version") or (v + 1))
+        if next_v <= v:
+            raise ValueError(f"Migration step {step} failed to advance schema version from {v}")
+        v = next_v
 
     return current_data
 
@@ -271,6 +274,11 @@ class FlowContext:
         parsed_results = {k: StageResult.from_dict(v) if isinstance(v, dict) else v for k, v in raw_results.items()}
         raw_version = data.get("schema_version")
         schema_version = CURRENT_CONTEXT_SCHEMA_VERSION if raw_version is None or raw_version == 0 else int(raw_version)
+        if schema_version > CURRENT_CONTEXT_SCHEMA_VERSION:
+            raise ValueError(
+                f"Unsupported context schema_version {schema_version}. "
+                f"Supported version is {CURRENT_CONTEXT_SCHEMA_VERSION}."
+            )
         return cls(
             schema_version=schema_version,
             repo_dir=data.get("repo_dir", "."),
@@ -319,10 +327,11 @@ class FlowCheckpoint:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> FlowCheckpoint:
         """Construct FlowCheckpoint from dictionary."""
-        schema_version = data.get("schema_version", 0)
+        raw_version = data.get("schema_version")
+        schema_version = int(raw_version or 0)
         if schema_version > CURRENT_CHECKPOINT_SCHEMA_VERSION:
             raise ValueError(
-                f"Unsupported checkpoint schema_version {data['schema_version']}. "
+                f"Unsupported checkpoint schema_version {raw_version}. "
                 f"Supported version is {CURRENT_CHECKPOINT_SCHEMA_VERSION}."
             )
         if schema_version < CURRENT_CHECKPOINT_SCHEMA_VERSION:
@@ -390,8 +399,7 @@ def load_checkpoint(filepath: str) -> FlowCheckpoint:
         raise FileNotFoundError(f"Checkpoint file '{filepath}' does not exist.")
     with open(filepath, encoding="utf-8") as f:
         data = json.load(f)
-    migrated_data = migrate_checkpoint_data(data)
-    return FlowCheckpoint.from_dict(migrated_data)
+    return FlowCheckpoint.from_dict(data)
 
 
 def run_git(

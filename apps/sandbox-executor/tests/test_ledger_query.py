@@ -4,6 +4,7 @@ import io
 import json
 import os
 import tempfile
+import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -13,6 +14,7 @@ from sandbox_executor.ledger import (
     SummaryRecord,
     append_action_record,
     append_summary_record,
+    atomic_ledger_append,
     extract_action_provenance_from_commit,
     format_commit_trailers,
     format_query_results_table,
@@ -593,6 +595,129 @@ class TestLedgerCli(unittest.TestCase):
                 cli_main()
             self.assertEqual(cm.exception.code, 1)
         self.assertIn("does not exist", stderr.getvalue())
+
+
+class TestAtomicLedgerLocking(unittest.TestCase):
+    """Hermetic unit tests verifying atomic ledger locking and concurrency safety."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_atomic_ledger_append_success(self):
+        """Verify standard append creates parent dir, locks, writes JSONL, and releases lock."""
+        ledger_path = os.path.join(self.temp_dir.name, "sub", "test_atomic.jsonl")
+        with atomic_ledger_append(ledger_path) as f:
+            f.write(json.dumps({"test": "value"}) + "\n")
+        self.assertTrue(os.path.exists(ledger_path))
+        with open(ledger_path, encoding="utf-8") as f:
+            lines = [json.loads(line) for line in f if line.strip()]
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0], {"test": "value"})
+
+    @patch("sandbox_executor.ledger.os.fsync")
+    def test_atomic_ledger_append_fsync_called(self, mock_fsync):
+        """Verify os.fsync is called with file descriptor before file close."""
+        ledger_path = os.path.join(self.temp_dir.name, "test_fsync.jsonl")
+        with atomic_ledger_append(ledger_path) as f:
+            f.write(json.dumps({"fsync": True}) + "\n")
+        self.assertTrue(mock_fsync.called)
+
+    def test_atomic_ledger_contention_and_backoff(self):
+        """Simulate initial contention with BlockingIOError followed by success."""
+        ledger_path = os.path.join(self.temp_dir.name, "test_contention.jsonl")
+        calls = []
+
+        import fcntl as real_fcntl
+
+        original_flock = real_fcntl.flock
+
+        def mock_flock(fd, op):
+            if op & real_fcntl.LOCK_EX:
+                calls.append(op)
+                if len(calls) < 3:
+                    raise BlockingIOError(11, "Resource temporarily unavailable")
+            return original_flock(fd, op)
+
+        with (
+            patch("sandbox_executor.ledger.fcntl.flock", side_effect=mock_flock),
+            atomic_ledger_append(ledger_path, timeout=5.0, initial_delay=0.01) as f,
+        ):
+            f.write(json.dumps({"retry": "success"}) + "\n")
+
+        self.assertGreaterEqual(len(calls), 3)
+        with open(ledger_path, encoding="utf-8") as f:
+            data = json.loads(f.readline())
+        self.assertEqual(data, {"retry": "success"})
+
+    def test_atomic_ledger_timeout(self):
+        """Verify TimeoutError is raised when lock contention exceeds timeout."""
+        ledger_path = os.path.join(self.temp_dir.name, "test_timeout.jsonl")
+
+        def mock_flock(fd, op):
+            import fcntl as real_fcntl
+
+            if op & real_fcntl.LOCK_EX:
+                raise BlockingIOError(11, "Resource temporarily unavailable")
+
+        with (
+            patch("sandbox_executor.ledger.fcntl.flock", side_effect=mock_flock),
+            self.assertRaises(TimeoutError) as ctx,
+            atomic_ledger_append(ledger_path, timeout=0.1, initial_delay=0.01),
+        ):
+            pass
+        self.assertIn("Timed out waiting for exclusive lock", str(ctx.exception))
+
+    def test_atomic_ledger_non_posix_fallback(self):
+        """Verify non-POSIX systems without fcntl log warning and fall back to open."""
+        ledger_path = os.path.join(self.temp_dir.name, "test_fallback.jsonl")
+        with (
+            patch("sandbox_executor.ledger.fcntl", None),
+            self.assertLogs("sandbox_executor.ledger", level="WARNING") as cm,
+            atomic_ledger_append(ledger_path) as f,
+        ):
+            f.write(json.dumps({"fallback": True}) + "\n")
+        self.assertTrue(any("Advisory file locking" in log for log in cm.output))
+        with open(ledger_path, encoding="utf-8") as f:
+            data = json.loads(f.readline())
+        self.assertEqual(data, {"fallback": True})
+
+    def test_concurrent_multithreaded_appends(self):
+        """Verify concurrent multi-threaded appends preserve all records without line interleaving."""
+        ledger_path = os.path.join(self.temp_dir.name, "test_threads.jsonl")
+        num_threads = 10
+        records_per_thread = 20
+        barrier = threading.Barrier(num_threads)
+        errors = []
+
+        def worker(thread_idx: int):
+            try:
+                barrier.wait(timeout=5.0)
+                for item_idx in range(records_per_thread):
+                    with atomic_ledger_append(ledger_path, timeout=10.0, initial_delay=0.005) as f:
+                        record = {"thread": thread_idx, "item": item_idx, "payload": "x" * 100}
+                        f.write(json.dumps(record) + "\n")
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15.0)
+
+        self.assertEqual(errors, [])
+        with open(ledger_path, encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip()]
+
+        self.assertEqual(len(lines), num_threads * records_per_thread)
+        parsed = [json.loads(line) for line in lines]
+        for t_idx in range(num_threads):
+            t_items = [p["item"] for p in parsed if p["thread"] == t_idx]
+            self.assertEqual(len(t_items), records_per_thread)
+            self.assertEqual(sorted(t_items), list(range(records_per_thread)))
 
 
 if __name__ == "__main__":

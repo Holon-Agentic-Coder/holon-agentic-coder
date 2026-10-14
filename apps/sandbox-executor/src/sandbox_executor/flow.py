@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -36,6 +37,7 @@ from sandbox_executor.entrypoint.planner import (
     parse_metrics,
 )
 from sandbox_executor.formatting import converge_prettier
+from sandbox_executor.ledger import atomic_ledger_append
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +121,86 @@ class StageResult:
         )
 
 
+CURRENT_CHECKPOINT_SCHEMA_VERSION: int = 1
+CURRENT_CONTEXT_SCHEMA_VERSION: int = 1
+
+MigrationTransform = Callable[[dict[str, Any]], dict[str, Any]]
+CHECKPOINT_MIGRATION_REGISTRY: dict[tuple[int, int], MigrationTransform] = {}
+
+
+def _migrate_v0_to_v1(data: dict[str, Any]) -> dict[str, Any]:
+    """Migrate legacy v0 checkpoint dictionary to v1 schema."""
+    migrated = dict(data)
+    migrated["schema_version"] = 1
+    migrated["intent_slug"] = str(migrated.get("intent_slug") or "unknown")
+    migrated["current_stage"] = str(migrated.get("current_stage") or "intent")
+    migrated["completed_stages"] = list(migrated.get("completed_stages") or [])
+    migrated["timestamp"] = str(migrated.get("timestamp") or "")
+
+    raw_context = migrated.get("context")
+    context = dict(raw_context) if isinstance(raw_context, dict) else {}
+    context.setdefault("schema_version", CURRENT_CONTEXT_SCHEMA_VERSION)
+    context.setdefault("repo_dir", ".")
+    context.setdefault("intent_data", {})
+    context.setdefault("intent_branch", None)
+    context.setdefault("plan_branch", None)
+    context.setdefault("execution_branch", None)
+    context.setdefault("calibrated_branch", None)
+    context.setdefault("agent", "antigravity-agent")
+    context.setdefault("model", "gemini-3.8-flash-medium")
+    context.setdefault("dry_run", False)
+    context.setdefault("auto_calibrate", True)
+    context.setdefault("token_reduce", False)
+    context.setdefault("skip_push", False)
+    context.setdefault("skip_review", False)
+    context.setdefault("skip_calibrate", False)
+    context.setdefault("max_review_iterations", 25)
+    context.setdefault("mitm_web", False)
+    context.setdefault("stage_results", {})
+    context.setdefault("logs", [])
+    migrated["context"] = context
+    return migrated
+
+
+CHECKPOINT_MIGRATION_REGISTRY[(0, 1)] = _migrate_v0_to_v1
+
+
+def migrate_checkpoint_data(
+    data: dict[str, Any],
+    target_version: int = CURRENT_CHECKPOINT_SCHEMA_VERSION,
+) -> dict[str, Any]:
+    """Migrate checkpoint data dictionary to target schema version using registered transforms.
+
+    Args:
+        data: Raw checkpoint dictionary.
+        target_version: Desired target schema version (default: CURRENT_CHECKPOINT_SCHEMA_VERSION).
+
+    Returns:
+        Migrated checkpoint dictionary matching target schema version.
+
+    Raises:
+        ValueError: If current schema version exceeds target version, or if an intermediate migration
+            pathway is missing in CHECKPOINT_MIGRATION_REGISTRY.
+    """
+    current_version = int(data.get("schema_version", 0))
+    if current_version > target_version:
+        raise ValueError(
+            f"Unsupported checkpoint schema_version {current_version}. Supported version is {target_version}."
+        )
+
+    current_data = dict(data)
+    v = current_version
+    while v < target_version:
+        step = (v, v + 1)
+        if step not in CHECKPOINT_MIGRATION_REGISTRY:
+            raise ValueError(f"No migration registered for transition {step}")
+        transform = CHECKPOINT_MIGRATION_REGISTRY[step]
+        current_data = transform(current_data)
+        v = int(current_data.get("schema_version", v + 1))
+
+    return current_data
+
+
 @dataclass
 class FlowContext:
     """Carries complete state and configuration across all pipeline stages."""
@@ -141,6 +223,7 @@ class FlowContext:
     mitm_web: bool = False
     stage_results: dict[str, StageResult] = field(default_factory=dict)
     logs: list[str] = field(default_factory=list)
+    schema_version: int = CURRENT_CONTEXT_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         """Resolve dynamic defaults such as proxy auto-detection."""
@@ -160,6 +243,7 @@ class FlowContext:
     def to_dict(self) -> dict[str, Any]:
         """Convert FlowContext to a JSON-serializable dictionary."""
         return {
+            "schema_version": self.schema_version,
             "repo_dir": self.repo_dir,
             "intent_data": self.intent_data,
             "intent_branch": self.intent_branch,
@@ -185,7 +269,10 @@ class FlowContext:
         """Construct FlowContext from a dictionary."""
         raw_results = data.get("stage_results", {})
         parsed_results = {k: StageResult.from_dict(v) if isinstance(v, dict) else v for k, v in raw_results.items()}
+        raw_version = data.get("schema_version")
+        schema_version = CURRENT_CONTEXT_SCHEMA_VERSION if raw_version is None or raw_version == 0 else int(raw_version)
         return cls(
+            schema_version=schema_version,
             repo_dir=data.get("repo_dir", "."),
             intent_data=data.get("intent_data", {}),
             intent_branch=data.get("intent_branch"),
@@ -216,10 +303,12 @@ class FlowCheckpoint:
     completed_stages: list[str] = field(default_factory=list)
     context: FlowContext = field(default_factory=FlowContext)
     timestamp: str = field(default_factory=lambda: datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z")
+    schema_version: int = CURRENT_CHECKPOINT_SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
         """Convert FlowCheckpoint to dictionary."""
         return {
+            "schema_version": self.schema_version,
             "intent_slug": self.intent_slug,
             "current_stage": self.current_stage.value,
             "completed_stages": self.completed_stages,
@@ -230,7 +319,17 @@ class FlowCheckpoint:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> FlowCheckpoint:
         """Construct FlowCheckpoint from dictionary."""
+        schema_version = data.get("schema_version", 0)
+        if schema_version > CURRENT_CHECKPOINT_SCHEMA_VERSION:
+            raise ValueError(
+                f"Unsupported checkpoint schema_version {data['schema_version']}. "
+                f"Supported version is {CURRENT_CHECKPOINT_SCHEMA_VERSION}."
+            )
+        if schema_version < CURRENT_CHECKPOINT_SCHEMA_VERSION:
+            data = migrate_checkpoint_data(data, target_version=CURRENT_CHECKPOINT_SCHEMA_VERSION)
+
         return cls(
+            schema_version=data.get("schema_version", CURRENT_CHECKPOINT_SCHEMA_VERSION),
             intent_slug=data.get("intent_slug", "unknown"),
             current_stage=FlowStage.from_str(data.get("current_stage", "intent")),
             completed_stages=data.get("completed_stages", []),
@@ -291,7 +390,8 @@ def load_checkpoint(filepath: str) -> FlowCheckpoint:
         raise FileNotFoundError(f"Checkpoint file '{filepath}' does not exist.")
     with open(filepath, encoding="utf-8") as f:
         data = json.load(f)
-    return FlowCheckpoint.from_dict(data)
+    migrated_data = migrate_checkpoint_data(data)
+    return FlowCheckpoint.from_dict(migrated_data)
 
 
 def run_git(
@@ -886,7 +986,7 @@ def run_intent_stage(context: FlowContext) -> StageResult:
                         except Exception:
                             continue
         if not exists:
-            with open(intents_file, "a", encoding="utf-8") as f:
+            with atomic_ledger_append(intents_file) as f:
                 f.write(json.dumps(intent_data) + "\n")
             ledger_entry = intent_data
 
@@ -1043,7 +1143,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:
                         except Exception:
                             continue
         if not plan_exists:
-            with open(plans_file, "a", encoding="utf-8") as f:
+            with atomic_ledger_append(plans_file) as f:
                 f.write(json.dumps(plan_entry) + "\n")
 
         if is_git:
@@ -1189,7 +1289,7 @@ def run_execute_stage(context: FlowContext) -> StageResult:
                         except Exception:
                             continue
         if not exec_exists:
-            with open(exec_file, "a", encoding="utf-8") as f:
+            with atomic_ledger_append(exec_file) as f:
                 f.write(json.dumps(exec_entry) + "\n")
 
         if is_git:

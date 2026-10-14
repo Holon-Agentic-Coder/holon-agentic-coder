@@ -64,6 +64,45 @@ class _SidecarState:
 
 _sidecar_state = _SidecarState()
 
+BLOCKED_METADATA_HOSTS: list[str] = [
+    "169.254.169.254",
+    "metadata.google.internal",
+    "instance-data",
+]
+SINKHOLE_IP: str = "127.0.0.1"
+
+
+def build_network_isolation_args(
+    token_reduce: bool = False,
+    network_mode: str | None = None,
+) -> list[str]:
+    """Construct Docker CLI arguments enforcing container network isolation and egress controls.
+
+    When token_reduce is False (direct/fallback egress), drops NET_RAW capability to prevent packet
+    sniffing and port scanning, and sinkholes cloud metadata endpoints to 127.0.0.1.
+    If network_mode is provided, sets --network.
+    When token_reduce is True, network routing and isolation are managed by the proxy sidecar.
+
+    Args:
+        token_reduce: Whether token reduction proxy network is active.
+        network_mode: Optional Docker network mode (e.g. bridge, host) when token_reduce is False.
+
+    Returns:
+        List of Docker CLI argument strings.
+    """
+    if token_reduce:
+        return []
+
+    args = ["--cap-drop=NET_RAW"]
+
+    for host in BLOCKED_METADATA_HOSTS:
+        args.extend(["--add-host", f"{host}:{SINKHOLE_IP}"])
+
+    if network_mode:
+        args.extend(["--network", network_mode])
+
+    return args
+
 
 def find_github_token() -> str | None:
     """Auto-detect GitHub token from environment variables or gh CLI."""
@@ -187,7 +226,7 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:
         # On macOS, ~/.holon/sessions/antigravity is required if not using HOLON_AGENT_KEY
         if sys.platform == "darwin":
             if os.path.exists(dedicated_session):
-                mounts.extend(["-v", f"{dedicated_session}:/home/holon/.gemini/antigravity-cli:rw"])
+                mounts.extend(["-v", f"{dedicated_session}:/home/holon/.gemini/antigravity-cli:ro"])
                 mounts.extend(["--tmpfs", "/home/holon/.gemini/config:uid=1000,gid=1000"])
                 return mounts
             elif not has_key:
@@ -197,7 +236,7 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:
                     "Please initialize the Antigravity session in an interactive TTY by running:\n\n"
                     f"  mkdir -p {dedicated_session}\n"
                     "  docker run -it "
-                    f"-v {dedicated_session}:/home/holon/.gemini/antigravity-cli:rw holon/agent-antigravity agy\n\n"
+                    f"-v {dedicated_session}:/home/holon/.gemini/antigravity-cli:ro holon/agent-antigravity agy\n\n"
                     "After completing interactive authentication, rerun this command.",
                     file=sys.stderr,
                 )
@@ -205,20 +244,14 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:
 
         # On Linux and other platforms, mount ~/.holon/sessions/antigravity or host ~/.gemini/antigravity-cli
         if os.path.exists(dedicated_session):
-            mounts.extend(["-v", f"{dedicated_session}:/home/holon/.gemini/antigravity-cli:rw"])
+            mounts.extend(["-v", f"{dedicated_session}:/home/holon/.gemini/antigravity-cli:ro"])
             mounts.extend(["--tmpfs", "/home/holon/.gemini/config:uid=1000,gid=1000"])
             return mounts
 
         host_agy_cli = os.path.join(home, ".gemini", "antigravity-cli")
         if os.path.exists(host_agy_cli):
-            mounts.extend(["-v", f"{host_agy_cli}:/home/holon/.gemini/antigravity-cli:rw"])
-
-        # Linux Host D-Bus session socket mount if present
-        if sys.platform.startswith("linux"):
-            uid = os.getuid() if hasattr(os, "getuid") else 1000
-            dbus_socket = f"/run/user/{uid}/bus"
-            if os.path.exists(dbus_socket):
-                mounts.extend(["-v", f"{dbus_socket}:/run/user/1000/bus"])
+            mounts.extend(["-v", f"{host_agy_cli}:/home/holon/.gemini/antigravity-cli:ro"])
+            mounts.extend(["--tmpfs", "/home/holon/.gemini/config:uid=1000,gid=1000"])
 
         return mounts
 
@@ -1005,6 +1038,10 @@ def run_docker_container(
         # Auto-detect Session Mounts
         session_mounts = get_agent_session_mounts(agent_id)
         docker_cmd.extend(session_mounts)
+
+        # Network isolation and egress controls (Bean 0092)
+        network_isolation_args = build_network_isolation_args(token_reduce=token_reduce)
+        docker_cmd.extend(network_isolation_args)
 
         # Image and args
         docker_cmd.append(image_name)

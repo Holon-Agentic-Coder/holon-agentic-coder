@@ -453,9 +453,9 @@ lint-yaml:
 	@if [ -n "$(DRY_RUN)" ]; then exit 0; fi; \
 	echo "$(COLOR_BOLD)Validating YAML files with Prettier...$(COLOR_RESET)"; \
 	FILES=$$(find $(LINT_TARGET) -type d \( -name ".git" -o -name ".venv" -o -name "holon-coherence" \) -prune -o -type f \( -name "*.yml" -o -name "*.yaml" \) -print); \
-	for file in $$FILES; do \
-		npx prettier --check "$$file" >/dev/null 2>&1 || { echo "$(COLOR_RED)❌ YAML validation failed for $$file$(COLOR_RESET)"; exit 1; }; \
-	done; \
+	if [ -n "$$FILES" ]; then \
+		echo "$$FILES" | xargs npx prettier --check >/dev/null || { echo "$(COLOR_RED)❌ YAML validation failed$(COLOR_RESET)"; exit 1; }; \
+	fi; \
 	echo "$(COLOR_GREEN)✅ All YAML files are valid.$(COLOR_RESET)"
 
 # Validate all shell scripts using shellcheck

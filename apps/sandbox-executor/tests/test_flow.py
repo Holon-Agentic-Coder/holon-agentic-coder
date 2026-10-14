@@ -102,6 +102,41 @@ class TestFlowDataModels:
         assert reconstructed.stage_results["intent"].status == StageStatus.SUCCESS
         assert len(reconstructed.logs) == 1
 
+    def test_flow_context_new_flags_serialization(self):
+        ctx = FlowContext(
+            skip_review=True,
+            skip_calibrate=True,
+            max_review_iterations=5,
+            mitm_web=True,
+            token_reduce=True,
+        )
+        d = ctx.to_dict()
+        assert d["skip_review"] is True
+        assert d["skip_calibrate"] is True
+        assert d["max_review_iterations"] == 5
+        assert d["mitm_web"] is True
+        assert d["token_reduce"] is True
+
+        reconstructed = FlowContext.from_dict(d)
+        assert reconstructed.skip_review is True
+        assert reconstructed.skip_calibrate is True
+        assert reconstructed.max_review_iterations == 5
+        assert reconstructed.mitm_web is True
+        assert reconstructed.token_reduce is True
+
+    def test_legacy_checkpoint_loading_defaults(self):
+        legacy_data = {
+            "repo_dir": ".",
+            "agent": "antigravity-agent",
+            "model": "gemini-3.8-flash-medium",
+        }
+        ctx = FlowContext.from_dict(legacy_data)
+        assert ctx.skip_review is False
+        assert ctx.skip_calibrate is False
+        assert ctx.max_review_iterations == 25
+        assert ctx.mitm_web is False
+        assert ctx.token_reduce is False
+
     def test_atomic_checkpoint_save_and_load(self, tmp_path):
         ctx = FlowContext(
             repo_dir=str(tmp_path),
@@ -567,6 +602,98 @@ class TestFlowResumptionAndErrorHandling:
         assert results["intent"].status == StageStatus.FAILED
         # Following stages must not have executed
         assert "plan" not in results
+
+    def test_pipeline_engine_skip_review(self, tmp_path):
+        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
+        ledger_dir.mkdir(parents=True)
+
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_data={"slug": "skip-rev-flow", "goal": "Skip review"},
+            skip_review=True,
+            auto_calibrate=True,
+            dry_run=True,
+        )
+
+        engine = PipelineEngine(ctx)
+        results = engine.run()
+
+        assert "review" in results
+        assert results["review"].status == StageStatus.SKIPPED
+        assert results["review"].payload.get("skipped_by_flag") is True
+        assert "calibrate" in results
+        assert results["calibrate"].status == StageStatus.SUCCESS
+
+    def test_pipeline_engine_skip_calibrate(self, tmp_path):
+        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
+        ledger_dir.mkdir(parents=True)
+
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_data={"slug": "skip-cal-flow", "goal": "Skip calibrate"},
+            skip_calibrate=True,
+            auto_calibrate=False,
+            dry_run=True,
+        )
+
+        engine = PipelineEngine(ctx)
+        results = engine.run()
+
+        assert "calibrate" in results
+        assert results["calibrate"].status == StageStatus.SKIPPED
+        assert results["calibrate"].payload.get("skipped_by_flag") is True
+
+    def test_pipeline_engine_skip_review_and_calibrate(self, tmp_path):
+        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
+        ledger_dir.mkdir(parents=True)
+
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_data={"slug": "skip-both-flow", "goal": "Skip both"},
+            skip_review=True,
+            skip_calibrate=True,
+            dry_run=True,
+        )
+
+        engine = PipelineEngine(ctx)
+        results = engine.run()
+
+        assert results["review"].status == StageStatus.SKIPPED
+        assert results["calibrate"].status == StageStatus.SKIPPED
+
+    def test_review_stage_records_max_review_iterations(self, tmp_path):
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            max_review_iterations=7,
+            dry_run=True,
+        )
+        ctx.stage_results["execute"] = StageResult(
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.SUCCESS,
+            payload={"test_pass_rate": 1.0, "exit_code": 0},
+        )
+        res = run_review_stage(ctx)
+        assert res.payload["consensus"]["max_review_iterations"] == 7
+        assert res.payload["review_package"]["consensus"]["max_review_iterations"] == 7
+
+    def test_review_halted_for_human_respects_skip_calibrate(self, tmp_path):
+        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
+        ledger_dir.mkdir(parents=True)
+
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_data={"slug": "halt-skip-cal", "goal": "Test halt with skip cal"},
+            skip_calibrate=True,
+            dry_run=True,
+        )
+
+        engine = PipelineEngine(ctx)
+        results = engine.run()
+
+        assert results["review"].status == StageStatus.HALTED_FOR_HUMAN
+        assert results["calibrate"].status == StageStatus.SKIPPED
+        assert results["calibrate"].payload.get("skipped_by_flag") is True
 
 
 class TestFlowCLI:

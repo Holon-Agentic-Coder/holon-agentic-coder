@@ -3455,3 +3455,77 @@ def test_check_wire_log_disk_usage(tmp_path, capsys):
     ab.check_wire_log_disk_usage(wire_dir, max_mb=0.0001)
     captured = capsys.readouterr()
     assert "Warning: Wire log directory and archives consume" in captured.err
+
+
+# --------------------------------------------------------------------------------------
+# Bean 0089: Multi-tier Proxy Auto-Detection, Opt-Out Precedence, & Graceful Fallback
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("opt_out_val", ["0", "false", "no", "off"])
+def test_detect_holon_coherence_explicit_opt_out(monkeypatch, opt_out_val):
+    """Explicit opt-out must return False immediately even if socket is active."""
+    monkeypatch.setenv("HOLON_TOKEN_REDUCE", opt_out_val)
+    monkeypatch.setattr(cli.socket, "create_connection", lambda *args, **kwargs: True)
+    assert cli.detect_holon_coherence(token_reduce=True) is False
+    assert cli.detect_holon_coherence(token_reduce=False) is False
+
+
+def test_detect_holon_coherence_tcp_listening(monkeypatch):
+    """When proxy is listening on TCP, detection returns True unless opted out."""
+    monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
+    monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
+    monkeypatch.setattr(cli.socket, "create_connection", lambda *args, **kwargs: True)
+    assert cli.detect_holon_coherence(token_reduce=False) is True
+
+
+def test_detect_holon_coherence_docker_image(monkeypatch):
+    """When TCP socket fails but docker image is present, returns True."""
+    monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
+    monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
+    monkeypatch.setattr(cli.socket, "create_connection", MagicMock(side_effect=OSError("connection refused")))
+    monkeypatch.setattr(cli.shutil, "which", lambda cmd: "/usr/bin/docker" if cmd == "docker" else None)
+
+    def mock_run(cmd, *args, **kwargs):
+        if "inspect" in cmd and "holon-coherence:latest" in cmd:
+            return SimpleNamespace(returncode=0, stdout="[{}]", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="error")
+
+    monkeypatch.setattr(cli.subprocess, "run", mock_run)
+    assert cli.detect_holon_coherence(token_reduce=False) is True
+
+
+def test_detect_holon_coherence_cli_binary(monkeypatch):
+    """When TCP and docker fail but CLI binary is found on PATH, returns True."""
+    monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
+    monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
+    monkeypatch.setattr(cli.socket, "create_connection", MagicMock(side_effect=OSError("connection refused")))
+    monkeypatch.setattr(
+        cli.shutil,
+        "which",
+        lambda cmd: "/usr/local/bin/holon-coherence" if cmd == "holon-coherence" else None,
+    )
+    assert cli.detect_holon_coherence(token_reduce=False) is True
+
+
+def test_detect_holon_coherence_all_negative(monkeypatch):
+    """When all tiers fail, returns False."""
+    monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
+    monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
+    monkeypatch.setattr(cli.socket, "create_connection", MagicMock(side_effect=OSError("connection refused")))
+    monkeypatch.setattr(cli.shutil, "which", lambda cmd: None)
+    assert cli.detect_holon_coherence(token_reduce=False) is False
+
+
+def test_proxy_unreachable_fallback_direct_egress(host_paths, monkeypatch, caplog):
+    """When proxy TCP probe fails, get_token_reduction_mounts_and_envs returns empty mounts/envs and logs warning."""
+    monkeypatch.setenv("HOLON_TOKEN_REDUCE", "1")
+    monkeypatch.setenv("HOLON_PROXY_URL", "http://127.0.0.1:8080")
+    monkeypatch.setattr(cli, "_wait_for_proxy", MagicMock(side_effect=OSError("unreachable")))
+
+    with caplog.at_level(logging.WARNING, logger="sandbox_executor.cli"):
+        mounts, envs = cli.get_token_reduction_mounts_and_envs(token_reduce=False)
+
+    assert mounts == []
+    assert envs == {}
+    assert "DIRECT egress fallback" in caplog.text

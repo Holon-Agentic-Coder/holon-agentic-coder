@@ -2,7 +2,7 @@
 
 import json
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 from sandbox_executor.cli import main as cli_main
@@ -971,3 +971,106 @@ class TestReviewMergeabilityGuards:
             assert res["source"] == "git_local"
             assert res["is_dirty"] is False
             assert res["mergeable"] == "MERGEABLE"
+
+    def test_flow_context_token_reduce_auto_detection(self, monkeypatch):
+        """Verify FlowContext defaults token_reduce=True when proxy is detected and preserves False when opted out."""
+        with patch("sandbox_executor.cli.detect_holon_coherence", return_value=True):
+            ctx = FlowContext()
+            assert ctx.token_reduce is True
+
+        monkeypatch.setenv("HOLON_TOKEN_REDUCE", "0")
+        ctx_opt_out = FlowContext()
+        assert ctx_opt_out.token_reduce is False
+
+        # When explicitly passed False, preserves False
+        ctx_explicit_false = FlowContext(token_reduce=False)
+        assert ctx_explicit_false.token_reduce is False
+
+    def test_flow_stage_environment_propagation(self, monkeypatch):
+        """Verify subprocess environments in execute and review stages contain proxy env vars when token_reduce=True."""
+        host_proxy_envs = {
+            "HTTP_PROXY": "http://127.0.0.1:8080",
+            "HTTPS_PROXY": "http://127.0.0.1:8080",
+            "NODE_EXTRA_CA_CERTS": "/tmp/mitmproxy-ca-cert.pem",
+            "SSL_CERT_FILE": "/tmp/mitmproxy-ca-cert.pem",
+        }
+        monkeypatch.setattr(
+            "sandbox_executor.cli.get_host_proxy_envs",
+            lambda: host_proxy_envs,
+        )
+
+        # 1. Execute stage propagation
+        ctx = FlowContext(token_reduce=True, plan_branch="I-test/P-1/_", dry_run=False)
+        with (
+            patch("sandbox_executor.flow.run_git") as mock_git,
+            patch("subprocess.run") as mock_subproc,
+            patch("os.path.exists", return_value=True),
+            patch("builtins.open", mock_open(read_data="")),
+        ):
+            mock_git.return_value = MagicMock(returncode=0, stdout="")
+            mock_subproc.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            res = run_execute_stage(ctx)
+            assert res.status == StageStatus.SUCCESS
+            assert mock_subproc.call_count >= 1
+            call_kwargs = mock_subproc.call_args.kwargs
+            env = call_kwargs.get("env")
+            assert env is not None
+            assert env.get("HTTP_PROXY") == "http://127.0.0.1:8080"
+            assert env.get("HTTPS_PROXY") == "http://127.0.0.1:8080"
+            assert env.get("NODE_EXTRA_CA_CERTS") == "/tmp/mitmproxy-ca-cert.pem"
+            assert env.get("SSL_CERT_FILE") == "/tmp/mitmproxy-ca-cert.pem"
+            assert res.payload.get("token_reduce") is True
+            assert res.payload.get("proxy_active") is True
+
+        # 2. Review stage propagation
+        ctx_rev = FlowContext(
+            token_reduce=True,
+            execution_branch="I-test/P-1/E-1/_",
+            plan_branch="I-test/P-1/_",
+            dry_run=False,
+        )
+        ctx_rev.stage_results["execute"] = StageResult(
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.SUCCESS,
+            payload={"test_pass_rate": 1.0, "exit_code": 0},
+        )
+        with (
+            patch("shutil.which", return_value="/usr/bin/gh"),
+            patch("sandbox_executor.flow.run_git") as mock_git,
+            patch("subprocess.run") as mock_subproc,
+        ):
+            mock_git.return_value = MagicMock(returncode=0, stdout="")
+            mock_subproc.return_value = MagicMock(
+                returncode=0,
+                stdout=json.dumps({"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "number": 123}),
+            )
+            res_rev = run_review_stage(ctx_rev)
+            assert mock_subproc.call_count >= 1
+            gh_call_kwargs = mock_subproc.call_args.kwargs
+            gh_env = gh_call_kwargs.get("env")
+            assert gh_env is not None
+            assert gh_env.get("HTTP_PROXY") == "http://127.0.0.1:8080"
+            assert gh_env.get("NODE_EXTRA_CA_CERTS") == "/tmp/mitmproxy-ca-cert.pem"
+            assert res_rev.payload.get("review_package", {}).get("token_reduce") is True
+            assert res_rev.payload.get("review_package", {}).get("proxy_active") is True
+
+    def test_get_host_proxy_envs_contract(self, monkeypatch):
+        """Verify get_host_proxy_envs returns localhost URLs and CA paths when probe succeeds."""
+        from sandbox_executor.cli import get_host_proxy_envs
+
+        # When opted out, returns empty dict
+        monkeypatch.setenv("HOLON_TOKEN_REDUCE", "0")
+        assert get_host_proxy_envs() == {}
+
+        monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
+
+        # When socket connects and CA exists, returns host envs
+        with (
+            patch("socket.create_connection"),
+            patch("os.path.exists", return_value=True),
+        ):
+            envs = get_host_proxy_envs()
+            assert envs["HTTP_PROXY"] == "http://127.0.0.1:8080"
+            assert envs["HTTPS_PROXY"] == "http://127.0.0.1:8080"
+            assert "NODE_EXTRA_CA_CERTS" in envs
+            assert "SSL_CERT_FILE" in envs

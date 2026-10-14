@@ -203,6 +203,30 @@ class TestHolonCLI(unittest.TestCase):
                 token_reduce=False,
             )
 
+    @patch("sandbox_executor.cli.run_docker_container", return_value=0)
+    def test_main_subcommands_token_reduce_flag(self, mock_run_container):
+        test_args = [
+            "holon",
+            "plan",
+            "intent_branch_name",
+            "--token-reduce",
+            "--agent",
+            "antigravity-agent",
+            "--model",
+            "gemini-3.5-flash",
+        ]
+        with patch("sys.argv", test_args):
+            with self.assertRaises(SystemExit) as cm:
+                main()
+            self.assertEqual(cm.exception.code, 0)
+            mock_run_container.assert_called_once_with(
+                "planner",
+                "holon/agent-antigravity",
+                ["intent_branch_name", "antigravity-agent", "gemini-3.5-flash"],
+                agent_id="antigravity",
+                token_reduce=True,
+            )
+
     def test_console_script_entrypoint_registered(self):
         eps = [ep for ep in importlib.metadata.entry_points(group="console_scripts") if ep.name == "holon"]
         self.assertEqual(len(eps), 1)

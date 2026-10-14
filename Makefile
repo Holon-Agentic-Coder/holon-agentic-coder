@@ -67,7 +67,7 @@ help:
 	@printf "  %-22s %s\n" "tools" "Print absolute resolved path and version of every required toolbelt tool."
 	@printf "  %-22s %s\n" "lint" "Run all linters (json, yaml, shell, md, python)."
 	@printf "  %-22s %s\n" "lint-json" "Validate all JSON and JSONL files with jq."
-	@printf "  %-22s %s\n" "lint-yaml" "Validate all YAML files with yq."
+	@printf "  %-22s %s\n" "lint-yaml" "Validate all YAML files with Prettier."
 	@printf "  %-22s %s\n" "lint-shell" "Validate shell scripts with shellcheck."
 	@printf "  %-22s %s\n" "lint-md" "Check markdown formatting with Prettier."
 	@printf "  %-22s %s\n" "help" "Show this help message."
@@ -408,17 +408,15 @@ tools:
 	@if [ -n "$(DRY_RUN)" ]; then exit 0; fi; \
 	ERRORS=0; \
 	echo "$(COLOR_BOLD)OS Toolbelt Inspection:$(COLOR_RESET)"; \
-	for tool in git jq yq shellcheck yamllint uv gh npx openssl; do \
+	for tool in git jq shellcheck uv gh npx openssl; do \
 		tool_path=$$(command -v "$$tool" 2>/dev/null || true); \
 		if [ -n "$$tool_path" ]; then \
 			case "$$tool" in \
 				git) tool_ver=$$("$$tool_path" --version 2>/dev/null | head -n 1 || true) ;; \
 				jq) tool_ver=$$("$$tool_path" --version 2>/dev/null | head -n 1 || true) ;; \
-				yq) tool_ver=$$("$$tool_path" --version 2>/dev/null | head -n 1 || true) ;; \
 				shellcheck) tool_ver=$$("$$tool_path" --version 2>/dev/null | grep -E 'version:' | head -n 1 || true); \
 					if [ -z "$$tool_ver" ]; then tool_ver=$$("$$tool_path" -V 2>/dev/null | head -n 2 | tail -n 1 || true); fi; \
 					if [ -z "$$tool_ver" ]; then tool_ver=$$("$$tool_path" --version 2>/dev/null | head -n 1 || true); fi ;; \
-				yamllint) tool_ver=$$("$$tool_path" --version 2>/dev/null | head -n 1 || true) ;; \
 				uv) tool_ver=$$("$$tool_path" --version 2>/dev/null | head -n 1 || true) ;; \
 				gh) tool_ver=$$("$$tool_path" --version 2>/dev/null | grep -E 'gh version' | head -n 1 || true); \
 					if [ -z "$$tool_ver" ]; then tool_ver=$$("$$tool_path" --version 2>/dev/null | head -n 1 || true); fi ;; \
@@ -450,19 +448,13 @@ lint-json:
 	done; \
 	echo "$(COLOR_GREEN)✅ All JSON and JSONL files are valid.$(COLOR_RESET)"
 
-# Validate all YAML files using yq
+# Validate all YAML files using Prettier
 lint-yaml:
 	@if [ -n "$(DRY_RUN)" ]; then exit 0; fi; \
-	echo "$(COLOR_BOLD)Validating YAML files with yq...$(COLOR_RESET)"; \
+	echo "$(COLOR_BOLD)Validating YAML files with Prettier...$(COLOR_RESET)"; \
 	FILES=$$(find $(LINT_TARGET) -type d \( -name ".git" -o -name ".venv" -o -name "holon-coherence" \) -prune -o -type f \( -name "*.yml" -o -name "*.yaml" \) -print); \
 	for file in $$FILES; do \
-		if command -v yq >/dev/null 2>&1; then \
-			yq -e 'true' "$$file" >/dev/null 2>&1 || { echo "$(COLOR_RED)❌ YAML validation failed for $$file$(COLOR_RESET)"; exit 1; }; \
-		elif command -v yamllint >/dev/null 2>&1; then \
-			yamllint -d relaxed "$$file" >/dev/null 2>&1 || { echo "$(COLOR_RED)❌ YAML validation failed for $$file$(COLOR_RESET)"; exit 1; }; \
-		else \
-			echo "$(COLOR_RED)❌ Neither yq nor yamllint is available to validate $$file$(COLOR_RESET)"; exit 1; \
-		fi; \
+		npx prettier --check "$$file" >/dev/null 2>&1 || { echo "$(COLOR_RED)❌ YAML validation failed for $$file$(COLOR_RESET)"; exit 1; }; \
 	done; \
 	echo "$(COLOR_GREEN)✅ All YAML files are valid.$(COLOR_RESET)"
 

@@ -213,7 +213,7 @@ def _create_silent_buildx(bin_dir: pathlib.Path) -> None:
 
 
 def _create_mock_toolbelt(bin_dir: pathlib.Path) -> None:
-    """Create stubs for git, jq, yq, shellcheck, and yamllint."""
+    """Create stubs for git, jq, and shellcheck."""
     _write_exe(bin_dir / "git", "#!/bin/sh\necho 'git version 2.43.0'\n")
     _write_exe(
         bin_dir / "jq",
@@ -228,19 +228,6 @@ def _create_mock_toolbelt(bin_dir: pathlib.Path) -> None:
         '" "$@" 2>/dev/null || exit 1\n',
     )
     _write_exe(
-        bin_dir / "yq",
-        '#!/bin/sh\nif [ "$1" = "--version" ]; then\n'
-        '    echo "yq (https://github.com/mikefarah/yq/) version v4.44.1"; exit 0; fi\n'
-        'python3 -c "\n'
-        "import sys\n"
-        "files = [a for a in sys.argv[1:] if not a.startswith('-') and a != 'true']\n"
-        "for f in files:\n"
-        "    content = open(f).read()\n"
-        "    if 'invalid' in content or 'error' in content:\n"
-        "        sys.exit(1)\n"
-        '" "$@" 2>/dev/null || exit 1\n',
-    )
-    _write_exe(
         bin_dir / "shellcheck",
         '#!/bin/sh\nif [ "$1" = "--version" ] || [ "$1" = "-V" ]; then echo "version: 0.9.0"; exit 0; fi\n'
         'python3 -c "\n'
@@ -252,7 +239,6 @@ def _create_mock_toolbelt(bin_dir: pathlib.Path) -> None:
         "        sys.exit(1)\n"
         '" "$@" 2>/dev/null || exit 1\n',
     )
-    _write_exe(bin_dir / "yamllint", "#!/bin/sh\necho 'yamllint 1.35.1'\n")
 
 
 def _setup_mock_env(
@@ -811,7 +797,7 @@ def test_tools_target_reports_paths_and_versions(tmp_path: pathlib.Path) -> None
     result = _run_make(["tools", OS_LINUX], env=env)
     assert result.returncode == 0, f"make tools failed: stdout={result.stdout} stderr={result.stderr}"
     stdout = result.stdout
-    for tool in ["git", "jq", "yq", "shellcheck", "yamllint", "uv", "gh", "npx", "openssl"]:
+    for tool in ["git", "jq", "shellcheck", "uv", "gh", "npx", "openssl"]:
         assert tool in stdout, f"Expected {tool} to be reported by make tools"
     assert "All toolbelt tools are present." in stdout
 
@@ -835,6 +821,10 @@ def test_lint_yaml_fails_on_malformed_fixture(tmp_path: pathlib.Path) -> None:
     (fixture_dir / "malformed.yaml").write_text("invalid: : yaml\n", encoding="utf-8")
 
     env = _setup_mock_env(tmp_path, mock_docker=False, mock_toolbelt=True)
+    # Mock npx to fail when checking this fixture
+    bin_dir = tmp_path / "bin"
+    _write_exe(bin_dir / "npx", "#!/bin/sh\nexit 1\n")
+
     result = _run_make(["lint-yaml", f"TARGET_DIR={fixture_dir}", OS_LINUX], env=env)
     assert result.returncode != 0, f"Expected non-zero exit code, got {result.returncode}"
     assert "YAML validation failed" in result.stdout

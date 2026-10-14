@@ -144,8 +144,9 @@ class TestHolonCLI(unittest.TestCase):
             self.assertEqual(rc, 1)
             self.assertIn("Error: Intent file is mandatory for intent creation.", mock_stderr.getvalue())
 
+    @patch("sandbox_executor.cli.detect_holon_coherence", return_value=False)
     @patch("sandbox_executor.cli.run_docker_container", return_value=0)
-    def test_main_subcommands(self, mock_run_container):
+    def test_main_subcommands(self, mock_run_container, mock_detect):
         test_args = [
             "holon",
             "plan",
@@ -203,6 +204,30 @@ class TestHolonCLI(unittest.TestCase):
                 token_reduce=False,
             )
 
+    @patch("sandbox_executor.cli.detect_holon_coherence", return_value=True)
+    @patch("sandbox_executor.cli.run_docker_container", return_value=0)
+    def test_main_subcommands_auto_detect_token_reduce(self, mock_run_container, mock_detect):
+        test_args = [
+            "holon",
+            "plan",
+            "intent_branch_name",
+            "--agent",
+            "antigravity-agent",
+            "--model",
+            "gemini-3.5-flash",
+        ]
+        with patch("sys.argv", test_args):
+            with self.assertRaises(SystemExit) as cm:
+                main()
+            self.assertEqual(cm.exception.code, 0)
+            mock_run_container.assert_called_once_with(
+                "planner",
+                "holon/agent-antigravity",
+                ["intent_branch_name", "antigravity-agent", "gemini-3.5-flash"],
+                agent_id="antigravity",
+                token_reduce=True,
+            )
+
     def test_console_script_entrypoint_registered(self):
         eps = [ep for ep in importlib.metadata.entry_points(group="console_scripts") if ep.name == "holon"]
         self.assertEqual(len(eps), 1)
@@ -211,8 +236,9 @@ class TestHolonCLI(unittest.TestCase):
         loaded_main = holon_ep.load()
         self.assertIs(loaded_main, main)
 
+    @patch("sandbox_executor.cli.detect_holon_coherence", return_value=False)
     @patch("sandbox_executor.cli.run_docker_container", return_value=0)
-    def test_console_script_entrypoint_dispatch(self, mock_run_container):
+    def test_console_script_entrypoint_dispatch(self, mock_run_container, mock_detect):
         holon_ep = next(
             (ep for ep in importlib.metadata.entry_points(group="console_scripts") if ep.name == "holon"),
             None,

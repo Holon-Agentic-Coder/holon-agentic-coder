@@ -133,7 +133,7 @@ class FlowContext:
     model: str = "gemini-3.8-flash-medium"
     dry_run: bool = False
     auto_calibrate: bool = True
-    token_reduce: bool = False
+    token_reduce: bool | None = None
     skip_push: bool = False
     skip_review: bool = False
     skip_calibrate: bool = False
@@ -141,6 +141,13 @@ class FlowContext:
     mitm_web: bool = False
     stage_results: dict[str, StageResult] = field(default_factory=dict)
     logs: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        """Resolve dynamic defaults such as proxy auto-detection."""
+        if self.token_reduce is None:
+            from sandbox_executor.cli import detect_holon_coherence
+
+            self.token_reduce = detect_holon_coherence()
 
     def log(self, message: str) -> None:
         """Append a timestamped, secret-redacted message to context logs."""
@@ -535,6 +542,7 @@ def check_pr_mergeability(
     repo_dir: str,
     branch: str,
     target_branch: str = "main",
+    proxy_env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Inspect PR and branch mergeability status against target branch.
 
@@ -545,6 +553,7 @@ def check_pr_mergeability(
         repo_dir: Path to git repository.
         branch: Name of branch or PR branch to evaluate.
         target_branch: Target base branch name (defaults to 'main').
+        proxy_env: Optional proxy environment variables for network-intercepted runs.
 
     Returns:
         dict[str, Any]: Mergeability diagnostics dictionary with keys:
@@ -562,6 +571,7 @@ def check_pr_mergeability(
 
     # 1. Attempt GitHub CLI inspection if gh is installed and available
     if shutil.which("gh") and clean_branch:
+        gh_env = {**os.environ, **(proxy_env or {})} if proxy_env else None
         for attempt in range(3):
             try:
                 gh_proc = subprocess.run(
@@ -577,6 +587,7 @@ def check_pr_mergeability(
                     capture_output=True,
                     text=True,
                     check=False,
+                    env=gh_env,
                 )
                 if gh_proc.returncode != 0:
                     break
@@ -1096,6 +1107,7 @@ def run_execute_stage(context: FlowContext) -> StageResult:
     test_pass_rate = 1.0
     exit_code = 0
     duration_seconds = 1.0
+    proxy_env: dict[str, str] = {}
 
     if not context.dry_run:
         is_git = run_git(["rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False).returncode == 0
@@ -1107,6 +1119,25 @@ def run_execute_stage(context: FlowContext) -> StageResult:
                 run_git(["rebase", "--abort"], cwd=repo_dir, check=False)
 
         t0 = time.time()
+        if context.token_reduce:
+            try:
+                from sandbox_executor.cli import get_token_reduction_mounts_and_envs
+
+                _, tr_envs = get_token_reduction_mounts_and_envs(token_reduce=True, mitm_web=context.mitm_web)
+                proxy_env = dict(tr_envs)
+                if proxy_env:
+                    context.log("Token reduction proxy active for execute stage subprocesses.")
+                else:
+                    context.log("Token reduction proxy unavailable; falling back to direct egress.")
+            except Exception as exc:
+                context.log(
+                    f"Warning: Failed to configure token reduction proxy in execute stage: {exc}. "
+                    "Falling back to direct egress."
+                )
+                logger.warning("Failed to configure token reduction proxy in execute stage: %s", exc)
+                proxy_env = {}
+
+        sub_env = {**os.environ, **proxy_env} if proxy_env else None
         try:
             test_run = subprocess.run(
                 ["uv", "run", "pytest", "apps/sandbox-executor/tests/test_cli.py", "-q"],
@@ -1115,6 +1146,7 @@ def run_execute_stage(context: FlowContext) -> StageResult:
                 text=True,
                 check=False,
                 timeout=300,
+                env=sub_env,
             )
             duration_seconds = max(0.1, round(time.time() - t0, 2))
             exit_code = test_run.returncode
@@ -1142,6 +1174,8 @@ def run_execute_stage(context: FlowContext) -> StageResult:
             "duration_seconds": duration_seconds,
             "test_pass_rate": test_pass_rate,
             "exit_code": exit_code,
+            "token_reduce": context.token_reduce,
+            "proxy_active": bool(proxy_env),
         }
 
         exec_exists = False
@@ -1201,6 +1235,8 @@ def run_execute_stage(context: FlowContext) -> StageResult:
             "test_pass_rate": test_pass_rate,
             "exit_code": exit_code,
             "duration_seconds": duration_seconds,
+            "token_reduce": context.token_reduce,
+            "proxy_active": bool(proxy_env),
         },
     )
     context.stage_results["execute"] = result
@@ -1257,7 +1293,27 @@ def run_review_stage(context: FlowContext) -> StageResult:
 
     target_branch = context.intent_data.get("target_branch", "main")
     branch_to_check = context.execution_branch or context.intent_branch or "HEAD"
-    mergeability = check_pr_mergeability(repo_dir, branch_to_check, target_branch=target_branch)
+
+    proxy_env: dict[str, str] = {}
+    if context.token_reduce:
+        try:
+            from sandbox_executor.cli import get_token_reduction_mounts_and_envs
+
+            _, tr_envs = get_token_reduction_mounts_and_envs(token_reduce=True, mitm_web=context.mitm_web)
+            proxy_env = dict(tr_envs)
+            if proxy_env:
+                context.log("Token reduction proxy active for review stage.")
+            else:
+                context.log("Token reduction proxy unavailable; falling back to direct egress.")
+        except Exception as exc:
+            context.log(
+                f"Warning: Failed to configure token reduction proxy in review stage: {exc}. "
+                "Falling back to direct egress."
+            )
+            logger.warning("Failed to configure token reduction proxy in review stage: %s", exc)
+            proxy_env = {}
+
+    mergeability = check_pr_mergeability(repo_dir, branch_to_check, target_branch=target_branch, proxy_env=proxy_env)
     is_dirty = bool(mergeability.get("is_dirty"))
     merge_status = str(mergeability.get("merge_state_status", "UNKNOWN"))
     mergeable_state = str(mergeability.get("mergeable", "UNKNOWN"))
@@ -1279,6 +1335,8 @@ def run_review_stage(context: FlowContext) -> StageResult:
             "passed": exit_code == 0,
         },
         "mergeability": mergeability,
+        "token_reduce": context.token_reduce,
+        "proxy_active": bool(proxy_env),
         # In-engine single pass evaluates baseline health; max_review_iterations records the
         # configured iteration limit budget for provenance and downstream pr-review-loop orchestration.
         "consensus": {

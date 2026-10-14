@@ -43,6 +43,7 @@ PROXY_ATTACH_TIMEOUT_SECONDS = 3.0
 PROXY_POLL_INTERVAL_SECONDS = 0.5
 PROXY_CONNECT_TIMEOUT_SECONDS = 0.5
 _TRUTHY_ENV_VALUES = ("1", "true", "yes", "on")
+_EXPLICIT_OPT_OUT_VALUES = {"0", "false", "no", "off"}
 
 _TOKEN_REDUCE_HELP = (
     "Cut agent token usage by routing sandbox egress through a locally-owned mitmproxy sidecar "
@@ -349,13 +350,96 @@ def _gateway_host_args() -> list[str]:
     return ["--add-host", "host.docker.internal:host-gateway"]
 
 
-def _token_reduce_opt_in(token_reduce: bool) -> bool:
-    """True only on explicit opt-in; host HTTP_PROXY/HTTPS_PROXY are never treated as opt-in."""
+def _proxy_host_port(proxy_url: str) -> tuple[str, int] | None:
+    """Split a proxy URL into ``(host, port)``; None when it cannot be parsed."""
+    parsed = urlparse(proxy_url if "//" in proxy_url else f"//{proxy_url}")
+    if not parsed.hostname:
+        return None
+    return parsed.hostname, parsed.port or PROXY_LISTEN_PORT
+
+
+def detect_holon_coherence(token_reduce: bool = False) -> bool:
+    """Detect whether holon-coherence proxy is available or explicitly requested.
+
+    Evaluation hierarchy:
+    - Tier 1 (Explicit Opt-Out): If HOLON_TOKEN_REDUCE is in ("0", "false", "no", "off"),
+      return False immediately.
+    - Tier 2 (Explicit Opt-In): If token_reduce is True, or HOLON_TOKEN_REDUCE /
+      HOLON_PASSIVE_MONITORING is truthy, return True.
+    - Tier 3 (TCP Port Probe): Determine target proxy host and port from HOLON_PROXY_URL,
+      or 127.0.0.1 and HOLON_PROXY_PORT (default 8080). Attempt a quick non-blocking TCP socket
+      connection with a 0.2-second timeout. If successful, return True.
+    - Tier 4 (Docker Image Probe): If docker CLI exists on host PATH, probe if either
+      'holon-coherence:latest' or 'ghcr.io/holon-agentic-coder/holon-coherence:latest' is present
+      locally via docker image inspect. If found, return True.
+    - Tier 5 (CLI Binary Probe): Check if 'holon-coherence' executable exists on PATH.
+      If found, return True.
+    - If all tiers evaluate negative, return False.
+    """
+    env_reduce = os.getenv("HOLON_TOKEN_REDUCE", "").strip().lower()
+    if env_reduce in _EXPLICIT_OPT_OUT_VALUES:
+        return False
+
     if token_reduce:
+        return True
+    if env_reduce in _TRUTHY_ENV_VALUES:
         return True
     if os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES:
         return True
-    return os.getenv("HOLON_TOKEN_REDUCE", "").strip().lower() in _TRUTHY_ENV_VALUES
+
+    # Tier 3: TCP Port Probe
+    proxy_url = os.getenv("HOLON_PROXY_URL")
+    if proxy_url:
+        host_port = _proxy_host_port(proxy_url)
+    else:
+        try:
+            port = int(os.getenv("HOLON_PROXY_PORT", str(PROXY_LISTEN_PORT)))
+        except ValueError:
+            port = PROXY_LISTEN_PORT
+        host_port = ("127.0.0.1", port)
+
+    if host_port is not None:
+        try:
+            sock = socket.create_connection(host_port, timeout=0.2)
+            try:
+                if hasattr(sock, "close"):
+                    sock.close()
+            except Exception:
+                pass
+            return True
+        except (OSError, TimeoutError):
+            pass
+
+    # Tier 4: Docker Image Probe
+    if shutil.which("docker"):
+        for img in ("holon-coherence:latest", "ghcr.io/holon-agentic-coder/holon-coherence:latest"):
+            try:
+                proc = subprocess.run(
+                    ["docker", "image", "inspect", img],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=2.0,
+                )
+                if proc.returncode == 0:
+                    return True
+            except (subprocess.SubprocessError, OSError):
+                pass
+
+    # Tier 5: CLI Binary Probe
+    return bool(shutil.which("holon-coherence"))
+
+
+def _token_reduce_opt_in(token_reduce: bool = False) -> bool:
+    """True only on explicit opt-in; respects opt-out."""
+    env_reduce = os.getenv("HOLON_TOKEN_REDUCE", "").strip().lower()
+    if env_reduce in _EXPLICIT_OPT_OUT_VALUES:
+        return False
+    if token_reduce:
+        return True
+    if env_reduce in _TRUTHY_ENV_VALUES:
+        return True
+    return os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES
 
 
 def _wait_for_proxy(host: str, port: int, timeout: float = PROXY_READY_TIMEOUT_SECONDS) -> bool:
@@ -369,14 +453,6 @@ def _wait_for_proxy(host: str, port: int, timeout: float = PROXY_READY_TIMEOUT_S
             if time.monotonic() >= deadline:
                 return False
             time.sleep(PROXY_POLL_INTERVAL_SECONDS)
-
-
-def _proxy_host_port(proxy_url: str) -> tuple[str, int] | None:
-    """Split a proxy URL into ``(host, port)``; None when it cannot be parsed."""
-    parsed = urlparse(proxy_url if "//" in proxy_url else f"//{proxy_url}")
-    if not parsed.hostname:
-        return None
-    return parsed.hostname, parsed.port or PROXY_LISTEN_PORT
 
 
 def _ensure_network(network_name: str) -> bool:
@@ -639,6 +715,11 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
     proxy_url = os.getenv("HOLON_PROXY_URL") or _proxy_gateway_url()
     host_port = _proxy_host_port(proxy_url)
     if host_port is None:
+        logger.warning(
+            "holon-coherence proxy probe failed: HOLON_PROXY_URL='%s' is not a valid proxy URL. "
+            "Proceeding with DIRECT egress fallback.",
+            proxy_url,
+        )
         logger.error(
             "HOLON_TOKEN_REDUCE is enabled but HOLON_PROXY_URL='%s' is not a valid proxy URL. "
             "This run continues with DIRECT egress (no token reduction).",
@@ -648,7 +729,31 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
 
     # Probe before generating: an unreachable proxy must not leave a fresh CA behind on a host that
     # is about to run with direct egress.
-    if not _wait_for_proxy(host_port[0], host_port[1], timeout=PROXY_ATTACH_TIMEOUT_SECONDS):
+    ready = False
+    try:
+        ready = _wait_for_proxy(host_port[0], host_port[1], timeout=PROXY_ATTACH_TIMEOUT_SECONDS)
+    except (OSError, TimeoutError) as exc:
+        logger.warning(
+            "holon-coherence proxy probe failed at %s:%s. Proceeding with DIRECT egress fallback.",
+            host_port[0],
+            host_port[1],
+        )
+        logger.error(
+            "HOLON_TOKEN_REDUCE is enabled but proxy probe failed at %s:%s (%s: %s). "
+            "This run continues with DIRECT egress (no token reduction).",
+            host_port[0],
+            host_port[1],
+            type(exc).__name__,
+            exc,
+        )
+        return [], {}
+
+    if not ready:
+        logger.warning(
+            "holon-coherence proxy probe failed at %s:%s. Proceeding with DIRECT egress fallback.",
+            host_port[0],
+            host_port[1],
+        )
         logger.error(
             "HOLON_TOKEN_REDUCE is enabled but no proxy accepted a TCP connection at %s:%s. Start the proxy or "
             "point HOLON_PROXY_URL at it; this run continues with DIRECT egress (no token reduction).",
@@ -668,11 +773,12 @@ def get_token_reduction_mounts_and_envs(
     token_reduce: bool = False,
     mitm_web: bool = False,
 ) -> tuple[list[str], dict[str, str]]:
-    """Build token-reduction mounts/env vars for an explicitly opted-in run.
+    """Build token-reduction mounts/env vars for an explicitly opted-in or auto-detected run.
 
-    Opt-in is strictly ``--token-reduce``, ``--mitm-web``, or ``HOLON_TOKEN_REDUCE`` in ``("1", "true", "yes",
-    "on")``. Host ``HTTP_PROXY``/``HTTPS_PROXY`` alone never change sandbox networking. Any failure
-    degrades to direct egress (empty mounts/envs) with an actionable error log.
+    Opt-in is strictly ``--token-reduce``, ``--mitm-web``, ``HOLON_TOKEN_REDUCE`` in ``("1", "true", "yes",
+    "on")``, or auto-detected holon-coherence proxy. Host ``HTTP_PROXY``/``HTTPS_PROXY`` alone never
+    change sandbox networking. Any failure degrades to direct egress (empty mounts/envs) with an
+    actionable warning log.
     """
     if not _token_reduce_opt_in(token_reduce or mitm_web):
         return [], {}
@@ -685,6 +791,11 @@ def get_token_reduction_mounts_and_envs(
             return setup_token_reduction_proxy()
         return _attach_external_proxy()
     except (FileNotFoundError, RuntimeError, OSError) as exc:
+        logger.warning(
+            "holon-coherence proxy configuration failed (%s: %s). Proceeding with DIRECT egress fallback.",
+            type(exc).__name__,
+            exc,
+        )
         logger.error(
             "Token reduction is enabled but could not be configured (%s: %s). This run continues with DIRECT "
             "egress (no TLS interception, no token reduction).",
@@ -895,6 +1006,19 @@ def main() -> None:
         "--repo-dir",
         default=None,
         help="Target repository directory path (default: current directory).",
+    )
+    intent_parser.add_argument(
+        "--token-reduce",
+        action="store_true",
+        help=_TOKEN_REDUCE_HELP,
+    )
+    intent_parser.add_argument(
+        "--mitm-web",
+        action="store_true",
+        help=(
+            "Launch mitmweb dashboard on port 8081 (or HOLON_MITM_WEB_PORT) for real-time traffic inspection. "
+            "For shared staging environments, pass HOLON_MITM_WEB_PASSWORD to restrict access."
+        ),
     )
 
     # Subcommand: plan
@@ -1200,7 +1324,7 @@ def main() -> None:
                         import json
 
                         intent_data = json.load(f)
-            effective_token_reduce = bool(args.token_reduce or args.mitm_web)
+            effective_token_reduce = detect_holon_coherence(bool(args.token_reduce or args.mitm_web))
             if context is None:
                 context = FlowContext(
                     repo_dir=args.repo_dir,
@@ -1340,6 +1464,13 @@ def main() -> None:
     if args.command == "intent":
         image_name = "holon/orchestrator"
         kwargs = {"agent_id": "antigravity", "intent_file": args.intent_file}
+        effective_token_reduce = detect_holon_coherence(
+            getattr(args, "token_reduce", False) or getattr(args, "mitm_web", False)
+        )
+        if effective_token_reduce:
+            kwargs["token_reduce"] = True
+        if getattr(args, "mitm_web", False):
+            kwargs["mitm_web"] = True
         if getattr(args, "repo_dir", None):
             kwargs["repo_dir"] = args.repo_dir
         sys.exit(run_docker_container("intent-creator", image_name, [], **kwargs))
@@ -1347,7 +1478,8 @@ def main() -> None:
     elif args.command == "plan":
         image_name = agent_image_mapping.get(agent_id, f"holon/agent-{agent_id}")
         container_args = [args.intent_branch, args.agent, args.model]
-        kwargs = {"agent_id": agent_id, "token_reduce": args.token_reduce}
+        effective_token_reduce = detect_holon_coherence(args.token_reduce or getattr(args, "mitm_web", False))
+        kwargs = {"agent_id": agent_id, "token_reduce": effective_token_reduce}
         if getattr(args, "mitm_web", False):
             kwargs["mitm_web"] = True
         if getattr(args, "repo_dir", None):
@@ -1364,7 +1496,8 @@ def main() -> None:
     elif args.command == "execute":
         image_name = agent_image_mapping.get(agent_id, f"holon/agent-{agent_id}")
         container_args = [args.plan_branch, args.agent, args.model]
-        kwargs = {"agent_id": agent_id, "token_reduce": args.token_reduce}
+        effective_token_reduce = detect_holon_coherence(args.token_reduce or getattr(args, "mitm_web", False))
+        kwargs = {"agent_id": agent_id, "token_reduce": effective_token_reduce}
         if getattr(args, "mitm_web", False):
             kwargs["mitm_web"] = True
         if getattr(args, "repo_dir", None):

@@ -1121,14 +1121,13 @@ def run_execute_stage(context: FlowContext) -> StageResult:
         t0 = time.time()
         if context.token_reduce:
             try:
-                from sandbox_executor.cli import get_token_reduction_mounts_and_envs
+                from sandbox_executor.cli import get_host_proxy_envs
 
-                _, tr_envs = get_token_reduction_mounts_and_envs(token_reduce=True, mitm_web=context.mitm_web)
-                proxy_env = dict(tr_envs)
+                proxy_env = get_host_proxy_envs()
                 if proxy_env:
                     context.log("Token reduction proxy active for execute stage subprocesses.")
                 else:
-                    context.log("Token reduction proxy unavailable; falling back to direct egress.")
+                    context.log("Token reduction proxy unavailable or inactive on host; falling back to direct egress.")
             except Exception as exc:
                 context.log(
                     f"Warning: Failed to configure token reduction proxy in execute stage: {exc}. "
@@ -1297,14 +1296,13 @@ def run_review_stage(context: FlowContext) -> StageResult:
     proxy_env: dict[str, str] = {}
     if context.token_reduce:
         try:
-            from sandbox_executor.cli import get_token_reduction_mounts_and_envs
+            from sandbox_executor.cli import get_host_proxy_envs
 
-            _, tr_envs = get_token_reduction_mounts_and_envs(token_reduce=True, mitm_web=context.mitm_web)
-            proxy_env = dict(tr_envs)
+            proxy_env = get_host_proxy_envs()
             if proxy_env:
                 context.log("Token reduction proxy active for review stage.")
             else:
-                context.log("Token reduction proxy unavailable; falling back to direct egress.")
+                context.log("Token reduction proxy unavailable or inactive on host; falling back to direct egress.")
         except Exception as exc:
             context.log(
                 f"Warning: Failed to configure token reduction proxy in review stage: {exc}. "
@@ -1671,6 +1669,15 @@ def run_flow_pipeline(
     checkpoint_path: str | None = None,
 ) -> dict[str, Any]:
     """Top-level invocation wrapper for running the Holon Flow pipeline."""
-    engine = PipelineEngine(context, from_stage=from_stage, checkpoint_path=checkpoint_path)
-    engine.run()
-    return context.to_dict()
+    try:
+        engine = PipelineEngine(context, from_stage=from_stage, checkpoint_path=checkpoint_path)
+        engine.run()
+        return context.to_dict()
+    finally:
+        if context.token_reduce:
+            try:
+                from sandbox_executor.cli import teardown_token_reduction_proxy
+
+                teardown_token_reduction_proxy()
+            except Exception:
+                pass

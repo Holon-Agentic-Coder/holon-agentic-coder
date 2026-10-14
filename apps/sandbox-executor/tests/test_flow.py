@@ -988,15 +988,15 @@ class TestReviewMergeabilityGuards:
 
     def test_flow_stage_environment_propagation(self, monkeypatch):
         """Verify subprocess environments in execute and review stages contain proxy env vars when token_reduce=True."""
-        fake_tr_envs = {
+        host_proxy_envs = {
             "HTTP_PROXY": "http://127.0.0.1:8080",
             "HTTPS_PROXY": "http://127.0.0.1:8080",
-            "NODE_EXTRA_CA_CERTS": "/tmp/holon-ca.crt",
-            "SSL_CERT_FILE": "/home/holon/.holon-ca-bundle.crt",
+            "NODE_EXTRA_CA_CERTS": "/tmp/mitmproxy-ca-cert.pem",
+            "SSL_CERT_FILE": "/tmp/mitmproxy-ca-cert.pem",
         }
         monkeypatch.setattr(
-            "sandbox_executor.cli.get_token_reduction_mounts_and_envs",
-            lambda *args, **kwargs: ([], fake_tr_envs),
+            "sandbox_executor.cli.get_host_proxy_envs",
+            lambda: host_proxy_envs,
         )
 
         # 1. Execute stage propagation
@@ -1017,8 +1017,8 @@ class TestReviewMergeabilityGuards:
             assert env is not None
             assert env.get("HTTP_PROXY") == "http://127.0.0.1:8080"
             assert env.get("HTTPS_PROXY") == "http://127.0.0.1:8080"
-            assert env.get("NODE_EXTRA_CA_CERTS") == "/tmp/holon-ca.crt"
-            assert env.get("SSL_CERT_FILE") == "/home/holon/.holon-ca-bundle.crt"
+            assert env.get("NODE_EXTRA_CA_CERTS") == "/tmp/mitmproxy-ca-cert.pem"
+            assert env.get("SSL_CERT_FILE") == "/tmp/mitmproxy-ca-cert.pem"
             assert res.payload.get("token_reduce") is True
             assert res.payload.get("proxy_active") is True
 
@@ -1050,6 +1050,27 @@ class TestReviewMergeabilityGuards:
             gh_env = gh_call_kwargs.get("env")
             assert gh_env is not None
             assert gh_env.get("HTTP_PROXY") == "http://127.0.0.1:8080"
-            assert gh_env.get("NODE_EXTRA_CA_CERTS") == "/tmp/holon-ca.crt"
+            assert gh_env.get("NODE_EXTRA_CA_CERTS") == "/tmp/mitmproxy-ca-cert.pem"
             assert res_rev.payload.get("review_package", {}).get("token_reduce") is True
             assert res_rev.payload.get("review_package", {}).get("proxy_active") is True
+
+    def test_get_host_proxy_envs_contract(self, monkeypatch):
+        """Verify get_host_proxy_envs returns localhost URLs and CA paths when probe succeeds."""
+        from sandbox_executor.cli import get_host_proxy_envs
+
+        # When opted out, returns empty dict
+        monkeypatch.setenv("HOLON_TOKEN_REDUCE", "0")
+        assert get_host_proxy_envs() == {}
+
+        monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
+
+        # When socket connects and CA exists, returns host envs
+        with (
+            patch("socket.create_connection"),
+            patch("os.path.exists", return_value=True),
+        ):
+            envs = get_host_proxy_envs()
+            assert envs["HTTP_PROXY"] == "http://127.0.0.1:8080"
+            assert envs["HTTPS_PROXY"] == "http://127.0.0.1:8080"
+            assert "NODE_EXTRA_CA_CERTS" in envs
+            assert "SSL_CERT_FILE" in envs

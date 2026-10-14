@@ -144,9 +144,8 @@ class TestHolonCLI(unittest.TestCase):
             self.assertEqual(rc, 1)
             self.assertIn("Error: Intent file is mandatory for intent creation.", mock_stderr.getvalue())
 
-    @patch("sandbox_executor.cli.detect_holon_coherence", return_value=False)
     @patch("sandbox_executor.cli.run_docker_container", return_value=0)
-    def test_main_subcommands(self, mock_run_container, mock_detect):
+    def test_main_subcommands(self, mock_run_container):
         test_args = [
             "holon",
             "plan",
@@ -204,13 +203,13 @@ class TestHolonCLI(unittest.TestCase):
                 token_reduce=False,
             )
 
-    @patch("sandbox_executor.cli.detect_holon_coherence", return_value=True)
     @patch("sandbox_executor.cli.run_docker_container", return_value=0)
-    def test_main_subcommands_auto_detect_token_reduce(self, mock_run_container, mock_detect):
+    def test_main_subcommands_token_reduce_flag(self, mock_run_container):
         test_args = [
             "holon",
             "plan",
             "intent_branch_name",
+            "--token-reduce",
             "--agent",
             "antigravity-agent",
             "--model",
@@ -236,9 +235,8 @@ class TestHolonCLI(unittest.TestCase):
         loaded_main = holon_ep.load()
         self.assertIs(loaded_main, main)
 
-    @patch("sandbox_executor.cli.detect_holon_coherence", return_value=False)
     @patch("sandbox_executor.cli.run_docker_container", return_value=0)
-    def test_console_script_entrypoint_dispatch(self, mock_run_container, mock_detect):
+    def test_console_script_entrypoint_dispatch(self, mock_run_container):
         holon_ep = next(
             (ep for ep in importlib.metadata.entry_points(group="console_scripts") if ep.name == "holon"),
             None,

@@ -401,18 +401,19 @@ def detect_holon_coherence(token_reduce: bool = False) -> bool:
     if host_port is not None:
         try:
             sock = socket.create_connection(host_port, timeout=0.2)
-            try:
-                if hasattr(sock, "close"):
-                    sock.close()
-            except Exception:
-                pass
+            if hasattr(sock, "close"):
+                sock.close()
             return True
         except (OSError, TimeoutError):
             pass
 
-    # Tier 4: Docker Image Probe
+    # Tier 4: Docker Image Probe (checks for coherence or mitmproxy images that sidecar runner supports)
     if shutil.which("docker"):
-        for img in ("holon-coherence:latest", "ghcr.io/holon-agentic-coder/holon-coherence:latest"):
+        for img in (
+            "holon-coherence:latest",
+            "ghcr.io/holon-agentic-coder/holon-coherence:latest",
+            "mitmproxy/mitmproxy:12.2.3",
+        ):
             try:
                 proc = subprocess.run(
                     ["docker", "image", "inspect", img],
@@ -730,18 +731,19 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
     # Probe before generating: an unreachable proxy must not leave a fresh CA behind on a host that
     # is about to run with direct egress.
     ready = False
+    probe_host = "127.0.0.1" if host_port[0] in ("host.docker.internal", "172.17.0.1", "localhost") else host_port[0]
     try:
-        ready = _wait_for_proxy(host_port[0], host_port[1], timeout=PROXY_ATTACH_TIMEOUT_SECONDS)
+        ready = _wait_for_proxy(probe_host, host_port[1], timeout=PROXY_ATTACH_TIMEOUT_SECONDS)
     except (OSError, TimeoutError) as exc:
         logger.warning(
             "holon-coherence proxy probe failed at %s:%s. Proceeding with DIRECT egress fallback.",
-            host_port[0],
+            probe_host,
             host_port[1],
         )
         logger.error(
             "HOLON_TOKEN_REDUCE is enabled but proxy probe failed at %s:%s (%s: %s). "
             "This run continues with DIRECT egress (no token reduction).",
-            host_port[0],
+            probe_host,
             host_port[1],
             type(exc).__name__,
             exc,
@@ -803,6 +805,60 @@ def get_token_reduction_mounts_and_envs(
             exc,
         )
         return [], {}
+
+
+def get_host_proxy_envs() -> dict[str, str]:
+    """Return environment variables for host-side processes to route through an active coherence proxy.
+
+    Only returns proxy env vars if a proxy is actively listening on localhost or HOLON_PROXY_URL,
+    and the root CA certificate exists on the host. Otherwise returns empty dict (direct egress).
+    """
+    env_reduce = os.getenv("HOLON_TOKEN_REDUCE", "").strip().lower()
+    if env_reduce in _EXPLICIT_OPT_OUT_VALUES:
+        return {}
+
+    proxy_url = os.getenv("HOLON_PROXY_URL")
+    if proxy_url:
+        host_port = _proxy_host_port(proxy_url)
+    else:
+        try:
+            port = int(os.getenv("HOLON_PROXY_PORT", str(PROXY_LISTEN_PORT)))
+        except ValueError:
+            port = PROXY_LISTEN_PORT
+        host_port = ("127.0.0.1", port)
+        proxy_url = f"http://127.0.0.1:{port}"
+
+    if host_port is None:
+        return {}
+
+    # Probe if proxy is actively accepting connections
+    try:
+        with socket.create_connection(host_port, timeout=0.2):
+            pass
+    except (OSError, TimeoutError):
+        return {}
+
+    # Check for host CA cert
+    ca_dir = os.path.join(os.path.expanduser(os.path.join("~", ".holon")), "proxy-ca")
+    ca_cert_path = os.path.join(ca_dir, "mitmproxy-ca-cert.pem")
+    if not os.path.exists(ca_cert_path):
+        try:
+            ca_cert_path, _ = generate_root_ca()
+        except Exception:
+            return {}
+
+    envs = {
+        "HTTP_PROXY": proxy_url,
+        "HTTPS_PROXY": proxy_url,
+        "http_proxy": proxy_url,
+        "https_proxy": proxy_url,
+    }
+    if os.path.exists(ca_cert_path):
+        envs["NODE_EXTRA_CA_CERTS"] = ca_cert_path
+        envs["SSL_CERT_FILE"] = ca_cert_path
+        envs["REQUESTS_CA_BUNDLE"] = ca_cert_path
+
+    return envs
 
 
 def run_docker_container(
@@ -1464,10 +1520,7 @@ def main() -> None:
     if args.command == "intent":
         image_name = "holon/orchestrator"
         kwargs = {"agent_id": "antigravity", "intent_file": args.intent_file}
-        effective_token_reduce = detect_holon_coherence(
-            getattr(args, "token_reduce", False) or getattr(args, "mitm_web", False)
-        )
-        if effective_token_reduce:
+        if getattr(args, "token_reduce", False):
             kwargs["token_reduce"] = True
         if getattr(args, "mitm_web", False):
             kwargs["mitm_web"] = True
@@ -1478,8 +1531,7 @@ def main() -> None:
     elif args.command == "plan":
         image_name = agent_image_mapping.get(agent_id, f"holon/agent-{agent_id}")
         container_args = [args.intent_branch, args.agent, args.model]
-        effective_token_reduce = detect_holon_coherence(args.token_reduce or getattr(args, "mitm_web", False))
-        kwargs = {"agent_id": agent_id, "token_reduce": effective_token_reduce}
+        kwargs = {"agent_id": agent_id, "token_reduce": getattr(args, "token_reduce", False)}
         if getattr(args, "mitm_web", False):
             kwargs["mitm_web"] = True
         if getattr(args, "repo_dir", None):
@@ -1496,8 +1548,7 @@ def main() -> None:
     elif args.command == "execute":
         image_name = agent_image_mapping.get(agent_id, f"holon/agent-{agent_id}")
         container_args = [args.plan_branch, args.agent, args.model]
-        effective_token_reduce = detect_holon_coherence(args.token_reduce or getattr(args, "mitm_web", False))
-        kwargs = {"agent_id": agent_id, "token_reduce": effective_token_reduce}
+        kwargs = {"agent_id": agent_id, "token_reduce": getattr(args, "token_reduce", False)}
         if getattr(args, "mitm_web", False):
             kwargs["mitm_web"] = True
         if getattr(args, "repo_dir", None):

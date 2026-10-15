@@ -361,8 +361,8 @@ class TestLauncherIntegration(unittest.TestCase):
         with patch.object(cli.sys, "platform", "linux"):
             code, args, _ = self._run({}, token_reduce=True)
             self.assertEqual(code, 0)
-            self.assertEqual(args.count("--add-host"), 1)
             self.assertEqual(args.count("host.docker.internal:host-gateway"), 1)
+            self.assertEqual(args.count("--add-host"), 1 + len(cli.BLOCKED_METADATA_HOSTS))
 
     def test_setup_token_reduction_proxy_excludes_gateway_host_args(self):
         with (

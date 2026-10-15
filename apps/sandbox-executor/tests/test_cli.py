@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 from sandbox_executor.cli import (
     _run_docker,
+    build_network_isolation_args,
     find_github_token,
     get_agent_session_mounts,
     get_ssh_auth_mounts,
@@ -48,12 +49,12 @@ class TestHolonCLI(unittest.TestCase):
 
     @patch("sys.platform", "darwin")
     @patch("os.path.exists")
-    def test_antigravity_macos_existing_session_mounts_rw(self, mock_exists):
+    def test_antigravity_macos_existing_session_mounts(self, mock_exists):
         mock_exists.side_effect = lambda p: ".holon/sessions/antigravity" in p or "antigravity" in p
         mounts = get_agent_session_mounts("antigravity")
         self.assertIsInstance(mounts, list)
         self.assertIn("-v", mounts)
-        self.assertTrue(any("/home/holon/.gemini/antigravity-cli:rw" in m for m in mounts))
+        self.assertTrue(any("/home/holon/.gemini/antigravity-cli:ro" in m for m in mounts))
         self.assertIn("--tmpfs", mounts)
 
     @patch("sys.platform", "linux")
@@ -63,7 +64,7 @@ class TestHolonCLI(unittest.TestCase):
         mounts = get_agent_session_mounts("antigravity")
         self.assertIsInstance(mounts, list)
         self.assertIn("-v", mounts)
-        self.assertTrue(any("/home/holon/.gemini/antigravity-cli:rw" in m for m in mounts))
+        self.assertTrue(any("/home/holon/.gemini/antigravity-cli:ro" in m for m in mounts))
 
     @patch("sys.platform", "linux")
     @patch("os.path.exists")
@@ -71,9 +72,70 @@ class TestHolonCLI(unittest.TestCase):
     def test_antigravity_linux_dbus_mount(self, mock_uid, mock_exists):
         mock_exists.side_effect = lambda p: p in ("/run/user/1001/bus", os.path.expanduser("~/.gemini/antigravity-cli"))
         mounts = get_agent_session_mounts("antigravity")
-        self.assertIn("-v", mounts)
-        self.assertTrue(any("/run/user/1001/bus:/run/user/1000/bus" in m for m in mounts))
-        self.assertTrue(any("/home/holon/.gemini/antigravity-cli:rw" in m for m in mounts))
+        self.assertFalse(any("bus" in m for m in mounts))
+        self.assertTrue(any("/home/holon/.gemini/antigravity-cli:ro" in m for m in mounts))
+
+    def test_all_agent_session_mounts_are_read_only(self):
+        """Iterate across all supported agents and verify any -v directory mounts contain :ro."""
+        agents = ["antigravity", "antigravity-agent", "claude", "codex", "pi", "gemini"]
+        with patch("os.path.exists", return_value=True):
+            for agent in agents:
+                mounts = get_agent_session_mounts(agent)
+                for idx, m in enumerate(mounts):
+                    if m == "-v" and idx + 1 < len(mounts):
+                        target = mounts[idx + 1]
+                        self.assertTrue(
+                            target.endswith(":ro"),
+                            f"Mount for agent {agent} is not read-only: {target}",
+                        )
+
+    def test_build_network_isolation_args_contains_cap_drop(self):
+        args = build_network_isolation_args()
+        self.assertIn("--cap-drop=NET_RAW", args)
+
+    def test_build_network_isolation_args_sinkholes_metadata(self):
+        args = build_network_isolation_args()
+        self.assertIn("--add-host", args)
+        self.assertIn("169.254.169.254:127.0.0.1", args)
+        self.assertIn("metadata.google.internal:127.0.0.1", args)
+        self.assertIn("instance-data:127.0.0.1", args)
+
+    def test_build_network_isolation_args_token_reduce(self):
+        args = build_network_isolation_args(token_reduce=True)
+        self.assertIn("--cap-drop=NET_RAW", args)
+        self.assertIn("--add-host", args)
+        self.assertIn("169.254.169.254:127.0.0.1", args)
+        self.assertNotIn("--network", args)
+
+    @patch("sys.platform", "darwin")
+    @patch("os.path.exists", return_value=False)
+    @patch("sys.stderr", new_callable=io.StringIO)
+    def test_antigravity_darwin_missing_session_guidance_uses_rw(self, mock_stderr, mock_exists):
+        with patch.dict(os.environ, {}, clear=True), self.assertRaises(SystemExit):
+            get_agent_session_mounts("antigravity")
+        err_msg = mock_stderr.getvalue()
+        self.assertIn(":rw", err_msg)
+        self.assertNotIn(":ro", err_msg)
+
+    @patch("sandbox_executor.cli.resolve_target_repo_url", return_value="git@github.com:test/repo.git")
+    @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock:ro"])
+    @patch("subprocess.run")
+    @patch("shutil.which", return_value="/usr/bin/docker")
+    def test_run_docker_container_includes_network_isolation(
+        self, mock_which, mock_run, mock_mounts, mock_resolve_repo
+    ):
+        mock_run.return_value = MagicMock(returncode=0)
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "secret_token"}, clear=True):
+            code = run_docker_container(
+                "planner",
+                "holon/agent-antigravity",
+                ["branch", "agent", "model"],
+                agent_id="antigravity",
+            )
+            self.assertEqual(code, 0)
+            executed_cmd = mock_run.call_args[0][0]
+            self.assertIn("--cap-drop=NET_RAW", executed_cmd)
+            self.assertIn("169.254.169.254:127.0.0.1", executed_cmd)
 
     @patch("sandbox_executor.cli.resolve_target_repo_url", return_value="git@github.com:test/repo.git")
     @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"])

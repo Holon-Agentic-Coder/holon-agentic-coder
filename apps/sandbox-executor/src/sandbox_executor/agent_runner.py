@@ -1,3 +1,4 @@
+import atexit
 import json
 import logging
 import os
@@ -217,6 +218,7 @@ class StandardAgentRunner(AgentRunner):
         self.env_mappings = env_mappings or []
         self.required_keys = required_keys or []
         self.custom_validator = custom_validator
+        self._ephemeral_files: list[str] = []
 
     def resolve_credentials(self) -> None:
         """Processes Tier 1 secret bundles to unpack configuration files."""
@@ -246,8 +248,24 @@ class StandardAgentRunner(AgentRunner):
                         os.makedirs(os.path.dirname(full_dest), exist_ok=True)
                         with open(full_dest, "w") as sf:
                             sf.write(content)
+                        self._ephemeral_files.append(full_dest)
+                    if self._ephemeral_files:
+                        atexit.register(self.cleanup_ephemeral_credentials)
             except Exception as e:
                 logger.warning(f"Failed to process secret bundle {secret_bundle_path}: {e}")
+
+    def cleanup_ephemeral_credentials(self) -> None:
+        """Securely wipe temporary secret bundles or session artifacts generated during the run."""
+        for path in self._ephemeral_files:
+            try:
+                if os.path.exists(path):
+                    if os.path.isdir(path):
+                        _rmtree(path)
+                    else:
+                        os.remove(path)
+            except Exception as e:
+                logger.warning(f"Failed to clean up ephemeral file {path}: {e}")
+        self._ephemeral_files.clear()
 
     def validate(self) -> None:
         """Validates that required environment variables or credentials exist across the 3-Tier Fallback Contract."""
@@ -293,8 +311,6 @@ class StandardAgentRunner(AgentRunner):
                 or os.path.exists("/home/holon/.config/gcloud")
                 or os.path.exists(os.path.expanduser("~/.config/gcloud"))
                 or os.path.exists(os.path.expanduser("~/.holon/sessions/antigravity"))
-                or os.path.exists("/run/user/1000/bus")
-                or bool(os.getenv("DBUS_SESSION_BUS_ADDRESS"))
             )
             if not (has_key or has_session):
                 print(

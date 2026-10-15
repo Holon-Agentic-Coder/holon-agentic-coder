@@ -40,6 +40,7 @@ from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.ledger import (
     ActionRecord,
     append_action_record,
+    atomic_ledger_append,
     extract_action_provenance_from_commit,
     format_commit_trailers,
     generate_action_id,
@@ -1253,7 +1254,7 @@ def main() -> None:
                     "status": "proposed",
                     "created_at": timestamp_str,
                 }
-                with open(os.path.join(ledger_dir, "intents.jsonl"), "a") as lf:
+                with atomic_ledger_append(os.path.join(ledger_dir, "intents.jsonl")) as lf:
                     lf.write(json.dumps(sub_entry) + "\n")
                 created_sub_intents.append(sub_entry)
 
@@ -1268,7 +1269,7 @@ def main() -> None:
                 "sub_intents": created_sub_intents,
                 "created_at": timestamp_str,
             }
-            with open(os.path.join(ledger_dir, "executions.jsonl"), "a") as ef:
+            with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as ef:
                 ef.write(json.dumps(exec_entry) + "\n")
 
             if is_action_logging_enabled(intent_data):
@@ -1515,7 +1516,7 @@ def main() -> None:
             }
             try:
                 os.makedirs(ledger_dir, exist_ok=True)
-                with open(os.path.join(ledger_dir, "executions.jsonl"), "a") as ef:
+                with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as ef:
                     ef.write(json.dumps(exec_entry) + "\n")
             except Exception as e:
                 print(f"Warning: Failed to write execution ledger entry: {e}", file=sys.stderr)
@@ -1663,7 +1664,7 @@ def main() -> None:
                             "agent_output_bytes": agent_output_bytes,
                             "ledger_revision": 2,
                         }
-                        with open(os.path.join(ledger_dir, "executions.jsonl"), "a") as ef:
+                        with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as ef:
                             ef.write(json.dumps(fail_ledger_entry) + "\n")
 
                         run_cmd(
@@ -1707,7 +1708,7 @@ def main() -> None:
                         "agent_output_bytes": agent_output_bytes,
                         "ledger_revision": 2,
                     }
-                    with open(os.path.join(ledger_dir, "executions.jsonl"), "a") as ef:
+                    with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as ef:
                         ef.write(json.dumps(fail_ledger_entry) + "\n")
                     run_cmd(
                         ["git", "add", "holon-knowledge/ledger/executions.jsonl"],
@@ -1740,6 +1741,8 @@ def main() -> None:
         print(f"Execution failed: {e}", file=sys.stderr)
         raise
     finally:
+        if "runner" in locals() and hasattr(runner, "cleanup_ephemeral_credentials"):
+            runner.cleanup_ephemeral_credentials()
         # reuse `keep_workspace` already computed at function start
         if is_default_repo and repo_dir and not keep_workspace:
             cleanup_repo_dir(repo_dir, raise_on_error=False)

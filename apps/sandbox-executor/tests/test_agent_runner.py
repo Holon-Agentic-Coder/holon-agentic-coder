@@ -552,3 +552,39 @@ class TestWorkspaceDirAndCleanup(unittest.TestCase):
                         cleaned.startswith(os.path.abspath(tmp_dir)),
                         f"Invariant violated: cleanup called on {cleaned} outside {tmp_dir}",
                     )
+
+    def test_cleanup_ephemeral_credentials(self):
+        """Verify ephemeral files unpacked during resolve_credentials are wiped on cleanup."""
+        import json
+        import os
+        import tempfile
+        from unittest.mock import patch
+
+        from sandbox_executor.agent_runner import StandardAgentRunner
+
+        runner = StandardAgentRunner("test-agent", "binary", "-m")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            real_tmp_dir = os.path.realpath(tmp_dir)
+            secret_file = os.path.join(real_tmp_dir, "secret.json")
+            target_config = os.path.join(real_tmp_dir, "config", "test.json")
+            bundle_data = {
+                "agent_id": "test-agent",
+                "api_key": "test-key-123",
+                "config_files": {
+                    target_config: '{"token": "xyz"}',
+                },
+            }
+            with open(secret_file, "w") as f:
+                json.dump(bundle_data, f)
+
+            with (
+                patch.dict(os.environ, {"HOLON_SECRET_BUNDLE_PATH": secret_file}),
+                patch("os.path.expanduser", side_effect=lambda p: p.replace("~", real_tmp_dir)),
+            ):
+                runner.resolve_credentials()
+                self.assertTrue(os.path.exists(target_config))
+                self.assertIn(target_config, runner._ephemeral_files)
+
+                runner.cleanup_ephemeral_credentials()
+                self.assertFalse(os.path.exists(target_config))
+                self.assertEqual(runner._ephemeral_files, [])

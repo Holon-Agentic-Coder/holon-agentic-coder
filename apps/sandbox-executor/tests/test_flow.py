@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, mock_open, patch
 import pytest
 from sandbox_executor.cli import main as cli_main
 from sandbox_executor.flow import (
+    FlowCheckpoint,
     FlowContext,
     FlowStage,
     PipelineEngine,
@@ -15,6 +16,7 @@ from sandbox_executor.flow import (
     check_pr_mergeability,
     extract_valid_ledger_rows,
     load_checkpoint,
+    migrate_checkpoint_data,
     reconcile_ledger_content,
     reconcile_ledger_file,
     reconcile_ledger_rows,
@@ -157,6 +159,91 @@ class TestFlowDataModels:
         # Test non-existent checkpoint
         with pytest.raises(FileNotFoundError):
             load_checkpoint(str(tmp_path / "does_not_exist.json"))
+
+    def test_checkpoint_schema_version_serialized(self, tmp_path):
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_data={"slug": "version-test", "goal": "Check version"},
+            agent="antigravity-agent",
+        )
+        checkpoint_file = str(tmp_path / "checkpoint-version.json")
+        saved_path = save_checkpoint(ctx, checkpoint_file)
+        with open(saved_path, encoding="utf-8") as f:
+            data = json.load(f)
+        assert data.get("schema_version") == 1
+        assert data.get("context", {}).get("schema_version") == 1
+
+    def test_load_legacy_v0_checkpoint_auto_migration(self, tmp_path):
+        v0_data = {
+            "intent_slug": "legacy-intent",
+            "current_stage": "intent",
+            "completed_stages": [],
+            "context": {
+                "repo_dir": str(tmp_path),
+                "agent": "antigravity-agent",
+                "model": "gemini-3.8-flash-medium",
+            },
+            "timestamp": "2026-01-01T00:00:00Z",
+        }
+        legacy_file = tmp_path / "checkpoint-legacy.json"
+        legacy_file.write_text(json.dumps(v0_data), encoding="utf-8")
+
+        loaded = load_checkpoint(str(legacy_file))
+        assert loaded.schema_version == 1
+        assert loaded.context.schema_version == 1
+        assert loaded.context.max_review_iterations == 25
+        assert loaded.context.token_reduce is False
+        assert loaded.context.mitm_web is False
+
+    def test_migration_dispatch_table_execution(self):
+        v0_raw = {
+            "intent_slug": "test-dispatch",
+            "current_stage": "plan",
+            "completed_stages": ["intent"],
+            "context": {
+                "agent": "codex",
+            },
+        }
+        migrated = migrate_checkpoint_data(v0_raw, target_version=1)
+        assert migrated["schema_version"] == 1
+        assert migrated["context"]["schema_version"] == 1
+        assert migrated["context"]["agent"] == "codex"
+        assert migrated["context"]["max_review_iterations"] == 25
+        assert migrated["context"]["token_reduce"] is False
+
+    def test_future_schema_version_rejection(self, tmp_path):
+        future_data = {
+            "schema_version": 999,
+            "intent_slug": "future-intent",
+            "current_stage": "intent",
+            "completed_stages": [],
+            "context": {},
+            "timestamp": "2028-01-01T00:00:00Z",
+        }
+        future_file = tmp_path / "checkpoint-future.json"
+        future_file.write_text(json.dumps(future_data), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="Unsupported checkpoint schema_version 999"):
+            load_checkpoint(str(future_file))
+
+    def test_none_schema_version_handling(self):
+        v0_null = {
+            "schema_version": None,
+            "intent_slug": "legacy-slug",
+            "current_stage": "intent",
+            "context": {"schema_version": None},
+        }
+        cp = FlowCheckpoint.from_dict(v0_null)
+        assert cp.schema_version == 1
+        assert cp.context.schema_version == 1
+
+        ctx = FlowContext.from_dict({"schema_version": None, "agent": "claude"})
+        assert ctx.schema_version == 1
+        assert ctx.agent == "claude"
+
+    def test_future_context_schema_version_rejection(self):
+        with pytest.raises(ValueError, match="Unsupported context schema_version 999"):
+            FlowContext.from_dict({"schema_version": 999})
 
 
 class TestFlowStages:

@@ -1026,10 +1026,11 @@ def generate_semantic_pr_metadata(
             line.strip().lstrip("-* ").strip()
             for line in goal_text.splitlines()
             if line.strip().startswith(("-", "*", "1.", "2.", "3.", "4.", "5.", "6.", "7.", "8.", "9."))
+            or bool(re.match(r"^\d+[\.\)]", line.strip()))
         ]
         if bullet_candidates:
             for cand in bullet_candidates:
-                clean_cand = re.sub(r"^\d+\)\s*", "", cand).strip()
+                clean_cand = re.sub(r"^\d+[\.\)]\s*", "", cand).strip()
                 if clean_cand:
                     body_lines.append(f"- {clean_cand}")
             changes_listed = True
@@ -1158,12 +1159,15 @@ def create_or_update_pr(
                 env=gh_env,
                 timeout=60,
             )
+            out = f"{create_proc.stdout or ''}\n{create_proc.stderr or ''}".strip()
+            pr_match = re.search(r"/pull/(\d+)", out)
+            pr_num = int(pr_match.group(1)) if pr_match else None
             return {
                 "attempted": True,
                 "success": create_proc.returncode == 0,
                 "action": "create",
-                "pr_number": None,
-                "output": f"{create_proc.stdout or ''}\n{create_proc.stderr or ''}".strip(),
+                "pr_number": pr_num,
+                "output": out,
             }
     except Exception as exc:
         return {"attempted": True, "success": False, "action": "error", "pr_number": None, "output": str(exc)}

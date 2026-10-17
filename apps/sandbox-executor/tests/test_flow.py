@@ -1567,6 +1567,7 @@ class TestSemanticPRAndConsensusReview:
             res_create = create_or_update_pr("/tmp", "my-branch", "main", "feat: title", "body")
             assert res_create["action"] == "create"
             assert res_create["success"] is True
+            assert res_create["pr_number"] == 1
             create_args = mock_run.call_args_list[1][0][0]
             assert "create" in create_args
 

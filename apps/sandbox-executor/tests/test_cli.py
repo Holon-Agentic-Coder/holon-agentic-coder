@@ -83,6 +83,15 @@ class TestHolonCLI(unittest.TestCase):
         self.assertIn("/home/holon/.gemini/antigravity-cli/log:uid=1000,gid=1000", mounts)
         self.assertIn("/home/holon/.gemini/antigravity-cli/cache:uid=1000,gid=1000", mounts)
 
+    @patch("os.path.exists", return_value=True)
+    def test_codex_session_mounts_tmpfs(self, mock_exists):
+        mounts = get_agent_session_mounts("codex")
+        self.assertIn("-v", mounts)
+        self.assertTrue(any("/home/holon/.codex:ro" in m for m in mounts))
+        self.assertIn("--tmpfs", mounts)
+        self.assertIn("/home/holon/.codex/log:uid=1000,gid=1000", mounts)
+        self.assertIn("/home/holon/.codex/cache:uid=1000,gid=1000", mounts)
+
     def test_all_agent_session_mounts_are_read_only(self):
         """Iterate across all supported agents and verify any -v directory mounts contain :ro."""
         agents = ["antigravity", "antigravity-agent", "claude", "codex", "pi", "gemini"]

@@ -97,17 +97,17 @@ Buildx Bake compiles the dependency graph of all eight images into a unified DAG
 concurrently while sharing intermediate base layers in memory. The table below outlines benchmark comparisons between a
 cold build (`--no-cache`) and an incremental cached build:
 
-| Target Image              | Cold Build (`--no-cache`) | Incremental Cached Build | Primary Bottleneck / Activity                     |
-| ------------------------- | ------------------------- | ------------------------ | ------------------------------------------------- |
-| `holon/base`              | ~72s                      | ~0.4s                    | Node.js / Python base layer compilation, apt pkgs |
-| `holon/orchestrator`      | ~4s                       | ~0.2s                    | Entrypoint script injection & source packaging    |
-| `holon/agent-claude`      | ~38s                      | ~0.5s                    | `@anthropic-ai/claude-code@2.1.302` npm install   |
-| `holon/agent-codex`       | ~24s                      | ~0.4s                    | `@openai/codex@0.163.0` npm install               |
-| `holon/agent-gemini`      | ~42s                      | ~0.5s                    | `@google/gemini-cli@0.64.0` npm install           |
-| `holon/agent-opencode`    | ~31s                      | ~0.4s                    | `opencode-ai@1.19.3` npm install                  |
-| `holon/agent-pi`          | ~35s                      | ~0.5s                    | `@earendil-works/pi-coding-agent@1.3.0` npm       |
-| `holon/agent-antigravity` | ~29s                      | ~0.4s                    | Antigravity CLI installer execution               |
-| **Total Build & Load**    | **~118s (concurrent)**    | **~2.8s (DAG eval)**     | Local daemon export & layer loading               |
+| Target Image              | Cold Build (`--no-cache`) | Incremental Cached Build | Primary Bottleneck / Activity                       |
+| ------------------------- | ------------------------- | ------------------------ | --------------------------------------------------- |
+| `holon/base`              | ~72s                      | ~0.4s                    | Node.js / Python base layer compilation, apt pkgs   |
+| `holon/orchestrator`      | ~4s                       | ~0.2s                    | Entrypoint script injection & source packaging      |
+| `holon/agent-claude`      | ~38s                      | ~0.5s                    | `@anthropic-ai/claude-code@2.1.302` npm install     |
+| `holon/agent-codex`       | ~24s                      | ~0.4s                    | `@openai/codex@0.163.0` npm install                 |
+| `holon/agent-gemini`      | ~42s                      | ~0.5s                    | `@google/gemini-cli@0.64.0` npm install             |
+| `holon/agent-opencode`    | ~31s                      | ~0.4s                    | `opencode-ai@1.19.3` npm install                    |
+| `holon/agent-pi`          | ~35s                      | ~0.5s                    | `@earendil-works/pi-coding-agent@1.3.0` npm install |
+| `holon/agent-antigravity` | ~29s                      | ~0.4s                    | Antigravity CLI installer execution                 |
+| **Total Build & Load**    | **~118s (concurrent)**    | **~2.8s (DAG eval)**     | Local daemon export & layer loading                 |
 
 ---
 
@@ -120,8 +120,8 @@ without cross-target contamination:
    (`--mount=type=cache,id=npm-<agent>,uid=1000,gid=1000,target=/home/holon/.npm`). Isolating cache IDs per target
    prevents concurrent npm process lock contention and cache corruption during parallel stage execution.
 2. **Unified Remote Cache Scope**: For CI environments, `docker-bake.hcl` assigns a single cache scope
-   (`type=gha,scope=holon-sandbox-executor`). This ensures BuildKit shares common base layer hashes across all downstream
-   agent targets in GitHub Actions workflows.
+   (`type=gha,scope=holon-sandbox-executor`). This ensures BuildKit shares common base layer hashes across all
+   downstream agent targets in GitHub Actions workflows.
 3. **In-Memory Context Propagation**: Downstream agent targets reference `holon-base` directly from memory during the
    DAG evaluation, avoiding costly intermediary disk writes or local Docker engine load/unload cycles.
 
@@ -131,7 +131,7 @@ without cross-target contamination:
 
 Under Holon's strict sandbox containment policy (`holon-config/world/constraints.md` §2 and `docs/safety.md` §2), host
 credential directories mounted into containers must remain strictly read-only (`:ro`) to eliminate the risk of
-credential tampering, credential leakage, or unauthorized token mutation.
+credential tampering, credential leakage, or unauthorised token mutation.
 
 However, modern CLI agent runners frequently require runtime write access to local log directories and execution caches.
 To satisfy both constraints simultaneously, `sandbox_executor/cli.py` provisions in-memory Docker tmpfs overlays:
@@ -152,8 +152,7 @@ purged upon container termination, preserving complete credential boundary isola
 
 ## Developer Best Practices
 
-> [!IMPORTANT]
-> **Run the build script locally before pushing changes:** Whenever you modify the
+> [!IMPORTANT] **Run the build script locally before pushing changes:** Whenever you modify the
 > [Dockerfile](../Dockerfile) or [docker-bake.hcl](../docker-bake.hcl), you must run
 > `./apps/sandbox-executor/build_all_images.sh` locally to ensure there are no compilation, dependency, or concurrency
 > conflicts before pushing to remote.

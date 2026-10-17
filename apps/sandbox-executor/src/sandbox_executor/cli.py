@@ -297,6 +297,9 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:
     for host_path, container_path in dirs:
         if os.path.exists(host_path):
             mounts.extend(["-v", f"{host_path}:{container_path}:ro"])
+            if norm_agent_id == "codex" and container_path == "/home/holon/.codex":
+                mounts.extend(["--tmpfs", "/home/holon/.codex/log:uid=1000,gid=1000"])
+                mounts.extend(["--tmpfs", "/home/holon/.codex/cache:uid=1000,gid=1000"])
 
     return mounts
 

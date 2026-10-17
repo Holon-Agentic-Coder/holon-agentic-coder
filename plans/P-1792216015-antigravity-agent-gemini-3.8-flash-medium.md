@@ -14,10 +14,10 @@
 - **Safety priority level:** elevated
 - **Priority Justification:** Triggered by `docs/safety.md` §1 (Git as safety boundary), §2 (Mandatory execution
   sandboxing), `holon-config/world/constraints.md` §2 (Sandbox Containment Tiers: container isolation, network
-  containment, read-only root filesystems, strict credential boundary enforcement),
-  `holon-config/world/constraints.md` §3 (Ledger Immutability: zero modification policy for append-only archives), and
-  `holon-config/world/ruleset.md` §1, §2, §3 (Python `==3.13.*`, workspace layout under `apps/sandbox-executor`, PEP 8,
-  static typing, docstring integrity, hermetic test boundary). Elevated safety ensures that writable tmpfs overlays for
+  containment, read-only root filesystems, strict credential boundary enforcement), `holon-config/world/constraints.md`
+  §3 (Ledger Immutability: zero modification policy for append-only archives), and `holon-config/world/ruleset.md` §1,
+  §2, §3 (Python `==3.13.*`, workspace layout under `apps/sandbox-executor`, PEP 8, static typing, docstring integrity,
+  hermetic test boundary). Elevated safety ensures that writable tmpfs overlays for
   `/home/holon/.gemini/antigravity-cli/log` and `/cache` strictly preserve credential isolation without leaking host
   secrets or exposing write access to host authentication tokens.
 
@@ -25,8 +25,8 @@
 
 - **Proportion of steps that are exploratory:** 0.17
 - **Justification:** Step 1 performs a focused exploratory audit of package changelogs, non-interactive execution
-  switches, model resolution overrides, browser driver dependencies, and npm cache mounts across all five upgraded
-  agent CLIs prior to committing Dockerfile modifications, preventing runtime regressions during image builds.
+  switches, model resolution overrides, browser driver dependencies, and npm cache mounts across all five upgraded agent
+  CLIs prior to committing Dockerfile modifications, preventing runtime regressions during image builds.
 
 ## Overall Plan Metrics
 
@@ -46,15 +46,16 @@ The overall plan metrics were derived from individual step-level metrics as foll
 - **p_success_pred**: 0.93. Governed by the critical bottleneck step (Step 4: 0.93), which builds and loads all eight
   Docker container targets using Docker Buildx Bake concurrently. Network package fetching, npm compilation steps, and
   local Docker daemon ingestion represent the primary failure surface.
-- **entropy_pred**: 0.40. Evaluated as the maximum single-step risk profile (Step 4: 0.40), where multi-stage Buildx
-  DAG evaluation, npm cache mount binding, and image export introduce concurrency and cache interaction entropy. The
+- **entropy_pred**: 0.40. Evaluated as the maximum single-step risk profile (Step 4: 0.40), where multi-stage Buildx DAG
+  evaluation, npm cache mount binding, and image export introduce concurrency and cache interaction entropy. The
   cumulative sum of predicted step entropies across all six steps is 1.65
   (`0.30 + 0.35 + 0.25 + 0.40 + 0.20 + 0.15 = 1.65`), remaining well within the allocated entropy budget of 15.0.
 - **impact_pred**: 94.0. High architectural impact concurrently fulfilling Bean 0112 (upgrading all agent runner
   packages to latest stable releases and introducing writable tmpfs overlays for logs and caches under read-only
   container policies) and Bean 0114 (full Buildx Bake image compilation, daemon loading, container smoke verification,
   and comprehensive build performance documentation).
-- **cost_pred**: 12.5. Calculated as the direct sum of predicted step costs (`1.6 + 2.2 + 2.0 + 3.5 + 1.8 + 1.4 = 12.5`).
+- **cost_pred**: 12.5. Calculated as the direct sum of predicted step costs
+  (`1.6 + 2.2 + 2.0 + 3.5 + 1.8 + 1.4 = 12.5`).
 - **learning_value_pred**: 5.6. Substantial epistemic gain delivered to the system through empirical discovery of agent
   CLI flags, BuildKit caching characteristics across multi-stage targets, and secure tmpfs permission scoping
   (`uid=1000,gid=1000`) for host session mounting.
@@ -70,8 +71,10 @@ The overall plan metrics were derived from individual step-level metrics as foll
     active step branch, mandatory rebase discipline).
   - `holon-config/world/constraints.md` §2 (Sandbox Containment Tiers: container sandbox with read-only root, no network
     at runtime, resource constraints, zero credential leakage).
-  - `holon-config/world/constraints.md` §3 (Ledger Immutability: zero modifications to `holon-knowledge/ledger/*.jsonl`).
-  - `holon-config/world/ruleset.md` §1 (Runtime & Environment Specification: Python `==3.13.*`, uv workspace management).
+  - `holon-config/world/constraints.md` §3 (Ledger Immutability: zero modifications to
+    `holon-knowledge/ledger/*.jsonl`).
+  - `holon-config/world/ruleset.md` §1 (Runtime & Environment Specification: Python `==3.13.*`, uv workspace
+    management).
   - `holon-config/world/ruleset.md` §2 (Coding Conventions & Standards: PEP 8, static typing annotations, docstring
     preservation).
   - `holon-config/world/ruleset.md` §3 (Testing Constraints: pytest 9.1.1, test hermeticity, preserve test boundaries in
@@ -96,8 +99,8 @@ The overall plan metrics were derived from individual step-level metrics as foll
   - Validate non-interactive flags, telemetry disable switches, and model override flags during discovery before
     finalising image configurations.
   - Test Docker Buildx Bake both with and without `--no-cache` to ensure reproducible compilation.
-  - Update unit test assertions in `test_cli.py` to assert both the `-v ...:ro` mount and the `--tmpfs` overlay arguments
-    for both macOS and Linux code paths.
+  - Update unit test assertions in `test_cli.py` to assert both the `-v ...:ro` mount and the `--tmpfs` overlay
+    arguments for both macOS and Linux code paths.
   - Execute full quality verification (`make lint`, `uv run pytest`, `ruff check`, `ruff format --check`,
     `prettier --check`) to prevent regressions.
 - **Residual risk accepted (and why):**
@@ -192,8 +195,8 @@ This plan implements Bean 0112 and Bean 0114 across `apps/sandbox-executor`:
 
 - **Relevant rules:** `holon-config/world/constraints.md` §2 (Sandbox containment tiers), `docs/safety.md` §2 (Mandatory
   sandboxing), `docs/safety.md` §4 (Exploration vs exploitation safety).
-- **Potential failure modes for this step:** Incomplete flag discovery leading to interactive prompts stalling
-  headless execution.
+- **Potential failure modes for this step:** Incomplete flag discovery leading to interactive prompts stalling headless
+  execution.
 - **Guardrails and early‑abort checks:** Validate that all agent runners support headless non-interactive flags before
   updating Dockerfile.
 
@@ -268,8 +271,8 @@ value is high (`4.0`) as it resolves package dependency risks prior to compilati
 
 ### Safety & Constraint Considerations
 
-- **Relevant rules:** `holon-config/world/ruleset.md` §1 (Project Layout: sub-packages under `apps/`),
-  `docs/safety.md` §2 (Container sandbox standard).
+- **Relevant rules:** `holon-config/world/ruleset.md` §1 (Project Layout: sub-packages under `apps/`), `docs/safety.md`
+  §2 (Container sandbox standard).
 - **Potential failure modes for this step:** Syntax typo in package version strings causing npm install failure during
   image build.
 - **Guardrails and early‑abort checks:** Double-check exact version strings against Intent Q1 specifications before
@@ -277,9 +280,9 @@ value is high (`4.0`) as it resolves package dependency risks prior to compilati
 
 ### Success & Discard Criteria
 
-- **Success:** `apps/sandbox-executor/Dockerfile` pins the exact target versions:
-  `@anthropic-ai/claude-code@2.1.302`, `@google/gemini-cli@0.64.0`, `opencode-ai@1.19.3`,
-  `@earendil-works/pi-coding-agent@1.3.0`, and `@openai/codex@0.163.0`.
+- **Success:** `apps/sandbox-executor/Dockerfile` pins the exact target versions: `@anthropic-ai/claude-code@2.1.302`,
+  `@google/gemini-cli@0.64.0`, `opencode-ai@1.19.3`, `@earendil-works/pi-coding-agent@1.3.0`, and
+  `@openai/codex@0.163.0`.
 - **Discard:** Discard if any version string deviates from the intent definition or if Dockerfile syntax is invalid.
 
 ### Metrics
@@ -295,8 +298,8 @@ value is high (`4.0`) as it resolves package dependency risks prior to compilati
 
 ### Step Metrics Rationale
 
-High probability (`0.95`) and moderate entropy (`0.35`) as package specifications are pinned deterministically.
-Directly delivers core Bean 0112 upgrade value (`92.0`). Expected value derivation:
+High probability (`0.95`) and moderate entropy (`0.35`) as package specifications are pinned deterministically. Directly
+delivers core Bean 0112 upgrade value (`92.0`). Expected value derivation:
 `EV = 0.95 * 92.0 + 0.5 * 3.0 - 0.3 * 0.35 - 2.2 = 87.40 + 1.5 - 0.105 - 2.2 = 86.595 -> 86.60`.
 
 ---
@@ -336,8 +339,8 @@ Directly delivers core Bean 0112 upgrade value (`92.0`). Expected value derivati
      paths with `uid=1000,gid=1000`.
    - Update `test_antigravity_linux_mounts_gemini_cli` to assert that `--tmpfs` mounts for `/log` and `/cache` are
      present.
-   - Update `test_antigravity_linux_dbus_mount` to ensure tmpfs arguments are properly returned and do not conflict
-     with dbus filtering.
+   - Update `test_antigravity_linux_dbus_mount` to ensure tmpfs arguments are properly returned and do not conflict with
+     dbus filtering.
    - Ensure `test_all_agent_session_mounts_are_read_only` continues to pass, validating that all directory bind mounts
      retain `:ro` suffixes while recognizing that tmpfs flags are overlay mounts rather than `-v` directories.
 5. Run pytest on `test_cli.py`: `uv run pytest apps/sandbox-executor/tests/test_cli.py`.
@@ -350,8 +353,8 @@ Directly delivers core Bean 0112 upgrade value (`92.0`). Expected value derivati
 ### Safety & Constraint Considerations
 
 - **Relevant rules:** `holon-config/world/constraints.md` §2 (Sandbox Containment Tiers: complete credential isolation,
-  read-only mounts), `holon-config/world/ruleset.md` §2 (PEP 8, type hints, docstrings),
-  `holon-config/world/ruleset.md` §3 (Testing constraints).
+  read-only mounts), `holon-config/world/ruleset.md` §2 (PEP 8, type hints, docstrings), `holon-config/world/ruleset.md`
+  §3 (Testing constraints).
 - **Potential failure modes for this step:** Passing invalid tmpfs mount options to Docker; accidentally overriding the
   read-only policy of the root Antigravity config directory.
 - **Guardrails and early‑abort checks:** Ensure tmpfs paths target `/home/holon/.gemini/antigravity-cli/log` and
@@ -490,13 +493,13 @@ compilation dependencies. Carries the largest resource cost (`3.5`) and high imp
    - Verify image IDs, creation timestamps, and virtual sizes for all eight images.
    - Confirm proper tagging (`holon/base:latest`, `holon/orchestrator:latest`, etc.).
 2. Execute container smoke checks:
-   - Run entrypoint executor help verification on `holon/orchestrator`:
-     execute container with `python -m sandbox_executor.cli --help` or entrypoint `--help` and verify exit code 0 with
-     valid argument descriptions.
-   - Run importability smoke check across all images:
-     execute container with `python -c "import sandbox_executor; print('OK')"` and verify clean output.
-   - Run agent CLI binary existence checks in respective agent images:
-     verify `claude --version`, `gemini --version`, `opencode --version`, `pi --version`, and `codex --version`.
+   - Run entrypoint executor help verification on `holon/orchestrator`: execute container with
+     `python -m sandbox_executor.cli --help` or entrypoint `--help` and verify exit code 0 with valid argument
+     descriptions.
+   - Run importability smoke check across all images: execute container with
+     `python -c "import sandbox_executor; print('OK')"` and verify clean output.
+   - Run agent CLI binary existence checks in respective agent images: verify `claude --version`, `gemini --version`,
+     `opencode --version`, `pi --version`, and `codex --version`.
 3. Update `apps/sandbox-executor/docs/docker_bake.md`:
    - Add empirical benchmark table documenting build times for fresh build (`--no-cache`) versus cached build.
    - Document layer caching considerations, npm cache mount scoping, and GHA cache behaviour.
@@ -510,8 +513,8 @@ compilation dependencies. Carries the largest resource cost (`3.5`) and high imp
 
 ### Safety & Constraint Considerations
 
-- **Relevant rules:** `holon-config/world/ruleset.md` §2 (Docstring and documentation standards),
-  `docs/safety.md` §2 (Container sandbox smoke verification).
+- **Relevant rules:** `holon-config/world/ruleset.md` §2 (Docstring and documentation standards), `docs/safety.md` §2
+  (Container sandbox smoke verification).
 - **Potential failure modes for this step:** Module import error due to missing `PYTHONPATH` or missing dependencies in
   built container; unformatted documentation failing Prettier.
 - **Guardrails and early‑abort checks:** Ensure smoke check commands execute with `--rm` flag to prevent container
@@ -538,8 +541,8 @@ compilation dependencies. Carries the largest resource cost (`3.5`) and high imp
 ### Step Metrics Rationale
 
 High probability (`0.96`) and low entropy (`0.20`) as this step verifies completed build artifacts and captures
-documentation. Impact is high (`90.0`) by providing operational clarity for developers and CI pipelines. Expected
-value derivation: `EV = 0.96 * 90.0 + 0.5 * 3.0 - 0.3 * 0.20 - 1.8 = 86.40 + 1.5 - 0.06 - 1.8 = 86.04`.
+documentation. Impact is high (`90.0`) by providing operational clarity for developers and CI pipelines. Expected value
+derivation: `EV = 0.96 * 90.0 + 0.5 * 3.0 - 0.3 * 0.20 - 1.8 = 86.40 + 1.5 - 0.06 - 1.8 = 86.04`.
 
 ---
 
@@ -588,8 +591,8 @@ value derivation: `EV = 0.96 * 90.0 + 0.5 * 3.0 - 0.3 * 0.20 - 1.8 = 86.40 + 1.5
 ### Safety & Constraint Considerations
 
 - **Relevant rules:** `holon-config/world/ruleset.md` §1, §2, §3, `docs/safety.md` §1 & §5 (Human review as final gate).
-- **Potential failure modes for this step:** Unchecked formatting discrepancy in Markdown; unexpected regression in
-  unit test assertions.
+- **Potential failure modes for this step:** Unchecked formatting discrepancy in Markdown; unexpected regression in unit
+  test assertions.
 - **Guardrails and early‑abort checks:** Run all validation commands sequentially; halt immediately if any check fails
   and resolve root cause.
 

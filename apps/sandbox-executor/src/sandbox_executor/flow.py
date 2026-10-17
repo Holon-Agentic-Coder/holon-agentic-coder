@@ -37,6 +37,14 @@ from sandbox_executor.entrypoint.planner import (
     parse_metrics,
 )
 from sandbox_executor.formatting import converge_prettier
+from sandbox_executor.knowledge import (
+    ActionIndexDatabase,
+    ConsultEngine,
+    append_action_event,
+    compute_context_fingerprint,
+    promote_pending_candidates,
+    reconcile_records,
+)
 from sandbox_executor.ledger import atomic_ledger_append
 
 logger = logging.getLogger(__name__)
@@ -904,6 +912,23 @@ def run_intent_stage(context: FlowContext) -> StageResult:
     context.log("Starting Stage 1: Intent Creation")
 
     intent_data = dict(context.intent_data)
+
+    # Pre-action wisdom consult (Bean 0052)
+    consulted_ids: list[str] = []
+    try:
+        db_path = os.path.join(context.repo_dir, "holon-knowledge/.index/action_index.db")
+        consult_engine = ConsultEngine(project_db_path=db_path)
+        intent_labels = intent_data.get("labels", [])
+        if isinstance(intent_labels, str):
+            intent_labels = [l.strip() for l in intent_labels.split(",") if l.strip()]
+        consult_res = consult_engine.consult_records(all_labels=intent_labels, top_k=6, max_tokens=1200)
+        consulted_ids = consult_res.consulted_ids
+        if consulted_ids:
+            context.log(f"Consulted {len(consulted_ids)} knowledge records for intent: {consulted_ids}")
+            intent_data["consulted_knowledge_ids"] = consulted_ids
+    except Exception as e:
+        logger.debug("Non-fatal consult failure during intent stage: %s", e)
+
     goal = intent_data.get("goal")
     raw_desc = intent_data.get("description")
     raw_slug = intent_data.get("slug")
@@ -1012,6 +1037,8 @@ def run_intent_stage(context: FlowContext) -> StageResult:
                 )
                 q_summary = f"\n\nResolved Questions:\n{json.dumps(resolved_content, indent=2)}"
             msg = f"intent: created {intent_branch}\n\nDescription:\n{description}\n\nGoal:\n{goal}{q_summary}\n"
+            if consulted_ids:
+                msg += f"\nConsulted-Knowledge-IDs: {', '.join(consulted_ids)}\n"
             run_git(["commit", "-m", msg], cwd=repo_dir, env=commit_env, check=True)
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1025,6 +1052,7 @@ def run_intent_stage(context: FlowContext) -> StageResult:
             "intent_branch": intent_branch,
             "branch": branch,
             "slug": raw_slug,
+            "consulted_knowledge_ids": consulted_ids,
             "ledger_entry": ledger_entry or intent_data,
         },
     )
@@ -1061,6 +1089,30 @@ def run_plan_stage(context: FlowContext) -> StageResult:
     plan_md_rel = f"plans/{plan_id}.md"
     plan_md_path = os.path.join(repo_dir, plan_md_rel)
 
+    # Pre-planning wisdom consult (Bean 0052)
+    consulted_ids: list[str] = []
+    advisories: list[str] = []
+    try:
+        db_path = os.path.join(repo_dir, "holon-knowledge/.index/action_index.db")
+        consult_engine = ConsultEngine(project_db_path=db_path)
+        intent_labels = context.intent_data.get("labels", [])
+        if isinstance(intent_labels, str):
+            intent_labels = [l.strip() for l in intent_labels.split(",") if l.strip()]
+        consult_res = consult_engine.consult_records(any_labels=intent_labels, top_k=6, max_tokens=1200)
+        consulted_ids = consult_res.consulted_ids
+        for r in consult_res.records:
+            if r.get("verdict") == "success":
+                act = r.get("action", "")
+                advisories.append(f"- Advisory (Proven tactic): Consider evaluating '{act}'")
+            elif r.get("verdict") == "failure":
+                tgt = r.get("target", "")
+                err = r.get("error_context", "")
+                advisories.append(f"- Advisory (Failure mode): Exercise caution regarding {tgt}: {err}")
+        if consulted_ids:
+            context.log(f"Consulted {len(consulted_ids)} knowledge records for plan: {consulted_ids}")
+    except Exception as e:
+        logger.debug("Non-fatal consult failure during plan stage: %s", e)
+
     metrics = {
         "p_success": 0.90,
         "entropy": 2.0,
@@ -1076,6 +1128,9 @@ def run_plan_stage(context: FlowContext) -> StageResult:
 
         os.makedirs(os.path.dirname(plan_md_path), exist_ok=True)
         if not os.path.exists(plan_md_path):
+            advisory_section = ""
+            if advisories:
+                advisory_section = f"\n## Wisdom Advisories\n\n" + "\n".join(advisories) + "\n"
             plan_content = f"""# Plan for {intent_prefix}
 
 - **Plan ID:** {plan_id}
@@ -1093,7 +1148,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:
 | cost_pred | {metrics["cost"]} |
 | learning_value_pred | {metrics["learning_value"]} |
 | ev_pred | 0.0 |
-
+{advisory_section}
 ## Proposed Steps
 
 1. Implementation step for {context.intent_data.get("slug", "task")}.
@@ -1137,6 +1192,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:
             "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
             "plan_file": plan_md_rel,
             "status": "proposed",
+            "consulted_knowledge_ids": consulted_ids,
         }
 
         plan_exists = False
@@ -1166,6 +1222,8 @@ def run_plan_stage(context: FlowContext) -> StageResult:
             commit_env.setdefault("GIT_COMMITTER_NAME", "Holon Planner Agent")
             commit_env.setdefault("GIT_COMMITTER_EMAIL", "planner-agent@holon-agentic-coder.com")
             msg = f"plan: {plan_id} created by {context.agent} ({context.model})"
+            if consulted_ids:
+                msg += f"\n\nConsulted-Knowledge-IDs: {', '.join(consulted_ids)}"
             run_git(["commit", "-m", msg], cwd=repo_dir, env=commit_env, check=True)
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1180,6 +1238,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:
             "plan_branch": plan_branch,
             "plan_file": plan_md_rel,
             "metrics": metrics,
+            "consulted_knowledge_ids": consulted_ids,
         },
     )
     context.stage_results["plan"] = result
@@ -1211,6 +1270,35 @@ def run_execute_stage(context: FlowContext) -> StageResult:
     exec_branch = f"{plan_prefix}/{exec_id}/_"
     context.execution_branch = exec_branch
     repo_dir = context.repo_dir
+
+    # Deterministic failure veto check (Bean 0052 Goal 4)
+    exec_fp = compute_context_fingerprint(
+        target=context.plan_branch,
+        tool=context.agent,
+        command_prefix="pytest",
+    )
+    db_path = os.path.join(repo_dir, "holon-knowledge/.index/action_index.db")
+    try:
+        if os.path.exists(db_path):
+            index_db = ActionIndexDatabase(db_path=db_path)
+            conn = index_db.get_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT is_shadow, state FROM active_vetoes WHERE context_fingerprint = ? AND state != 'lifted';",
+                (exec_fp,),
+            )
+            veto_match = cur.fetchone()
+            conn.close()
+            if veto_match:
+                is_shadow = bool(veto_match["is_shadow"])
+                if is_shadow:
+                    context.log(f"[VETO SHADOW WARNING] Known failure pattern matches context {exec_fp}")
+                else:
+                    err = f"Execution blocked by deterministic failure veto for context fingerprint: {exec_fp}"
+                    context.log(f"[VETO BLOCKED] {err}")
+                    return StageResult(stage=FlowStage.EXECUTE, status=StageStatus.FAILED, start_time=start_time, error=err)
+    except Exception as e:
+        logger.debug("Non-fatal veto check exception: %s", e)
 
     test_pass_rate = 1.0
     exit_code = 0
@@ -1300,6 +1388,24 @@ def run_execute_stage(context: FlowContext) -> StageResult:
             with atomic_ledger_append(exec_file) as f:
                 f.write(json.dumps(exec_entry) + "\n")
 
+        # Record discrete action event in actions.jsonl (Bean 0052 Goal 3)
+        try:
+            actions_file = os.path.join(ledger_dir, "actions.jsonl")
+            action_event = {
+                "execution_id": exec_id,
+                "action": f"Executed test suite for plan {context.plan_branch}",
+                "category": "test",
+                "target": context.plan_branch,
+                "verdict": "success" if exit_code == 0 else "failure",
+                "outcome": "success" if exit_code == 0 else "failure",
+                "context_fingerprint": exec_fp,
+                "labels": ["execute", "test", context.agent],
+                "error_context": None if exit_code == 0 else f"pytest exited with code {exit_code}",
+            }
+            append_action_event(action_event, ledger_path=actions_file, db_path=db_path)
+        except Exception as e:
+            logger.debug("Non-fatal append action event in execute stage: %s", e)
+
         if is_git:
             md_files: list[str] = []
             try:
@@ -1321,12 +1427,18 @@ def run_execute_stage(context: FlowContext) -> StageResult:
                 context.log(f"Warning: Prettier formatting failed during execute stage: {e}")
 
             run_git(["add", "holon-knowledge/ledger/executions.jsonl"], cwd=repo_dir, check=True)
+            if os.path.exists(os.path.join(ledger_dir, "actions.jsonl")):
+                run_git(["add", "holon-knowledge/ledger/actions.jsonl"], cwd=repo_dir, check=False)
             commit_env = os.environ.copy()
             commit_env.setdefault("GIT_AUTHOR_NAME", "Holon Executor Agent")
             commit_env.setdefault("GIT_AUTHOR_EMAIL", "executor-agent@holon-agentic-coder.com")
             commit_env.setdefault("GIT_COMMITTER_NAME", "Holon Executor Agent")
             commit_env.setdefault("GIT_COMMITTER_EMAIL", "executor-agent@holon-agentic-coder.com")
             msg = f"execute: {exec_id} completed for plan {context.plan_branch}"
+            plan_res = context.stage_results.get("plan")
+            if plan_res and plan_res.payload.get("consulted_knowledge_ids"):
+                cids = plan_res.payload["consulted_knowledge_ids"]
+                msg += f"\n\nConsulted-Knowledge-IDs: {', '.join(cids)}"
             run_git(["commit", "-m", msg], cwd=repo_dir, env=commit_env, check=True)
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1372,6 +1484,20 @@ def run_review_stage(context: FlowContext) -> StageResult:
 
     repo_dir = context.repo_dir
     exec_result = context.stage_results.get("execute")
+
+    # Consult review heuristics (Bean 0052 Goal 6)
+    review_consulted_ids: list[str] = []
+    try:
+        db_path = os.path.join(repo_dir, "holon-knowledge/.index/action_index.db")
+        if os.path.exists(db_path):
+            consult_engine = ConsultEngine(project_db_path=db_path)
+            consult_res = consult_engine.consult_records(any_labels=["review", "pr_review", "code_review"], top_k=6, max_tokens=1200)
+            review_consulted_ids = consult_res.consulted_ids
+            if review_consulted_ids:
+                context.log(f"Consulted {len(review_consulted_ids)} review heuristics: {review_consulted_ids}")
+    except Exception as e:
+        logger.debug("Non-fatal consult in review stage: %s", e)
+
     test_pass_rate = 1.0
     exit_code = 0
     if exec_result and exec_result.payload:
@@ -1587,6 +1713,36 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
         }
         context.calibrated_branch = calibrated_branch
 
+    # Reconcile pending action outcomes and promote knowledge candidates (Bean 0052 Goal 6)
+    promoted_candidates: list[dict[str, Any]] = []
+    try:
+        actions_file = os.path.join(repo_dir, "holon-knowledge/ledger/actions.jsonl")
+        db_path = os.path.join(repo_dir, "holon-knowledge/.index/action_index.db")
+        exec_status = context.stage_results.get("execute")
+        outcome = "success" if exec_status and exec_status.status == StageStatus.SUCCESS else "failure"
+        if os.path.exists(actions_file):
+            reconcile_records(
+                ledger_path=actions_file,
+                max_age_days=14,
+                target_action_id=context.execution_branch,
+                verdict=outcome,
+                reason=f"Stage 5 calibration reconciled execution outcome to {outcome}",
+                db_path=db_path,
+            )
+        if os.path.exists(db_path):
+            index_db = ActionIndexDatabase(db_path=db_path)
+            promoted_candidates = promote_pending_candidates(
+                index_db=index_db,
+                kb_dir=os.path.join(repo_dir, "holon-knowledge/kb"),
+                wb_dir=os.path.join(repo_dir, "holon-knowledge/wisdom"),
+                min_trials=2,
+                dry_run=context.dry_run,
+            )
+            if promoted_candidates:
+                context.log(f"Stage 5 promoted {len(promoted_candidates)} knowledge/wisdom candidate(s).")
+    except Exception as e:
+        logger.debug("Non-fatal knowledge reconciliation during calibrate stage: %s", e)
+
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     if context.calibrated_branch:
         context.log(f"Stage 5 completed: Calibration analysis generated on branch '{context.calibrated_branch}'.")
@@ -1600,6 +1756,7 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
         payload={
             "calibrated_branch": context.calibrated_branch,
             "calibration_report": report_dict,
+            "promoted_candidates": promoted_candidates,
         },
     )
     context.stage_results["calibrate"] = result

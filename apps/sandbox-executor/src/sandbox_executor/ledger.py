@@ -357,6 +357,7 @@ def parse_commit_trailers(commit_message: str) -> dict[str, Any]:
     review_disposition: str | None = None
     rejection_reason: str | None = None
     introduced_by_action_id: str | None = None
+    consulted_knowledge_ids: list[str] | None = None
 
     if not commit_message:
         return {
@@ -367,10 +368,11 @@ def parse_commit_trailers(commit_message: str) -> dict[str, Any]:
             "review_disposition": review_disposition,
             "rejection_reason": rejection_reason,
             "introduced_by_action_id": introduced_by_action_id,
+            "consulted_knowledge_ids": consulted_knowledge_ids,
         }
 
     pattern = re.compile(
-        r"^(action-origin|review-severity|review-iteration|review-finding-ids|review-disposition|rejection-reason|introduced-by-action-id):\s*(.+)$",
+        r"^(action-origin|review-severity|review-iteration|review-finding-ids|review-disposition|rejection-reason|introduced-by-action-id|consulted-knowledge-ids):\s*(.+)$",
         re.MULTILINE | re.IGNORECASE,
     )
 
@@ -403,6 +405,9 @@ def parse_commit_trailers(commit_message: str) -> dict[str, Any]:
             rejection_reason = val if val else None
         elif trailer_key == "introduced-by-action-id":
             introduced_by_action_id = val if val else None
+        elif trailer_key == "consulted-knowledge-ids":
+            parts = [p.strip() for p in re.split(r"[,;\s]+", val) if p.strip()]
+            consulted_knowledge_ids = parts if parts else None
 
     return {
         "action_origin": action_origin,
@@ -412,6 +417,7 @@ def parse_commit_trailers(commit_message: str) -> dict[str, Any]:
         "review_disposition": review_disposition,
         "rejection_reason": rejection_reason,
         "introduced_by_action_id": introduced_by_action_id,
+        "consulted_knowledge_ids": consulted_knowledge_ids,
     }
 
 
@@ -439,6 +445,7 @@ def format_commit_trailers(
     review_disposition: str | None = None,
     rejection_reason: str | None = None,
     introduced_by_action_id: str | None = None,
+    consulted_knowledge_ids: list[str] | None = None,
 ) -> str:
     """Format structured commit trailers block for git commit messages."""
     lines: list[str] = [f"Action-Origin: {action_origin}"]
@@ -454,6 +461,8 @@ def format_commit_trailers(
         lines.append(f"Rejection-Reason: {rejection_reason}")
     if introduced_by_action_id:
         lines.append(f"Introduced-By-Action-Id: {introduced_by_action_id}")
+    if consulted_knowledge_ids:
+        lines.append(f"Consulted-Knowledge-IDs: {', '.join(consulted_knowledge_ids)}")
     return "\n".join(lines)
 
 

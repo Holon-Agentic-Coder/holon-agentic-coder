@@ -19,6 +19,18 @@ from urllib.parse import urlparse
 from sandbox_executor import local_llm
 from sandbox_executor.calibration import run_calibrate
 from sandbox_executor.flow import FlowContext, FlowStage, load_checkpoint, run_flow_pipeline
+from sandbox_executor.knowledge import (
+    ActionIndexDatabase,
+    ConsultEngine,
+    TelemetryCollector,
+    append_action_event,
+    lift_veto,
+    list_vetoes,
+    promote_pending_candidates,
+    reconcile_records,
+)
+from sandbox_executor.knowledge.consult import format_consult_results_table
+from sandbox_executor.knowledge.stats import format_stats_dashboard
 from sandbox_executor.ledger import format_query_results_table, query_ledger
 from sandbox_executor.scaffold import init_project
 from sandbox_executor.token_reduction import generate_root_ca
@@ -1394,6 +1406,244 @@ def main() -> None:
         help="Target repository directory path (default: current directory).",
     )
 
+    # Subcommand: consult
+    consult_parser = subparsers.add_parser(
+        "consult",
+        help="Consult knowledge records and wisdom using multi-label queries (Bean 0052).",
+    )
+    consult_parser.add_argument(
+        "--all",
+        dest="all_labels",
+        nargs="+",
+        default=None,
+        help="Conjunctive filter: records matching all specified labels.",
+    )
+    consult_parser.add_argument(
+        "--any",
+        dest="any_labels",
+        nargs="+",
+        default=None,
+        help="Disjunctive filter: records matching any specified labels.",
+    )
+    consult_parser.add_argument(
+        "--not",
+        dest="not_labels",
+        nargs="+",
+        default=None,
+        help="Negated filter: exclude records matching any of these labels.",
+    )
+    consult_parser.add_argument(
+        "--query",
+        "-q",
+        dest="query",
+        default=None,
+        help="Full-text FTS5 search query.",
+    )
+    consult_parser.add_argument(
+        "--top-k",
+        dest="top_k",
+        type=int,
+        default=6,
+        help="Maximum records to retrieve (ceiling 6).",
+    )
+    consult_parser.add_argument(
+        "--max-tokens",
+        dest="max_tokens",
+        type=int,
+        default=1200,
+        help="Maximum total payload tokens injected (default: 1200).",
+    )
+    consult_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output structured JSON results.",
+    )
+    consult_parser.add_argument(
+        "--format",
+        choices=["table", "json"],
+        default="table",
+        help="Output format (table or json; default: table).",
+    )
+    consult_parser.add_argument(
+        "--repo-dir",
+        default=".",
+        help="Target repository directory path (default: current directory).",
+    )
+    consult_parser.add_argument(
+        "--db-path",
+        default=None,
+        help="Override SQLite index database path.",
+    )
+
+    # Subcommand: record
+    record_parser = subparsers.add_parser(
+        "record",
+        help="Record a discrete action event to the ledger with credential scrubbing (Bean 0052).",
+    )
+    record_parser.add_argument(
+        "--action",
+        required=True,
+        help="Description of the action performed.",
+    )
+    record_parser.add_argument(
+        "--category",
+        default="code",
+        help="Action category (code, doc, config, test, build, dependency).",
+    )
+    record_parser.add_argument(
+        "--target",
+        default="",
+        help="Action target or affected component.",
+    )
+    record_parser.add_argument(
+        "--verdict",
+        default="attempted",
+        help="Action outcome verdict (attempted, success, failure, unknown, inconclusive, abandoned).",
+    )
+    record_parser.add_argument(
+        "--labels",
+        default=None,
+        help="Comma-separated labels associated with this action.",
+    )
+    record_parser.add_argument(
+        "--context",
+        default=None,
+        help="Error context or execution details.",
+    )
+    record_parser.add_argument(
+        "--ledger-path",
+        default="holon-knowledge/ledger/actions.jsonl",
+        help="Path to actions ledger JSONL file.",
+    )
+    record_parser.add_argument(
+        "--repo-dir",
+        default=".",
+        help="Repository root directory.",
+    )
+
+    # Subcommand: reconcile
+    reconcile_parser = subparsers.add_parser(
+        "reconcile",
+        help="Reconcile pending action outcomes and expire stale unknown records (Bean 0052).",
+    )
+    reconcile_parser.add_argument(
+        "--action-id",
+        default=None,
+        help="Target action ID to reconcile.",
+    )
+    reconcile_parser.add_argument(
+        "--verdict",
+        default=None,
+        help="New terminal verdict (success, failure, superseded).",
+    )
+    reconcile_parser.add_argument(
+        "--reason",
+        default=None,
+        help="Reason for late verdict reconciliation.",
+    )
+    reconcile_parser.add_argument(
+        "--expire-ttl",
+        type=int,
+        default=14,
+        help="Days after which unknown actions expire to unresolved (default: 14).",
+    )
+    reconcile_parser.add_argument(
+        "--ledger-path",
+        default="holon-knowledge/ledger/actions.jsonl",
+        help="Path to actions ledger JSONL file.",
+    )
+    reconcile_parser.add_argument(
+        "--repo-dir",
+        default=".",
+        help="Repository root directory.",
+    )
+
+    # Subcommand: promote
+    promote_parser = subparsers.add_parser(
+        "promote",
+        help="Evaluate and promote qualified knowledge to KB and WB (Bean 0052).",
+    )
+    promote_parser.add_argument(
+        "--pending",
+        action="store_true",
+        help="Promote all qualified pending candidates.",
+    )
+    promote_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Simulate promotion without persisting files.",
+    )
+    promote_parser.add_argument(
+        "--min-trials",
+        type=int,
+        default=2,
+        help="Minimum execution trials required for promotion consideration (default: 2).",
+    )
+    promote_parser.add_argument(
+        "--repo-dir",
+        default=".",
+        help="Repository root directory.",
+    )
+
+    # Subcommand: veto
+    veto_parser = subparsers.add_parser(
+        "veto",
+        help="Inspect and manage deterministic failure vetoes (Bean 0052).",
+    )
+    veto_subparsers = veto_parser.add_subparsers(
+        dest="veto_command",
+        required=True,
+    )
+    veto_list_parser = veto_subparsers.add_parser(
+        "list",
+        help="List active and shadowed failure vetoes.",
+    )
+    veto_list_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output in JSON format.",
+    )
+    veto_list_parser.add_argument(
+        "--repo-dir",
+        default=".",
+        help="Repository root directory.",
+    )
+    veto_lift_parser = veto_subparsers.add_parser(
+        "lift",
+        help="Manually lift an active or shadowed failure veto.",
+    )
+    veto_lift_parser.add_argument(
+        "--context",
+        required=True,
+        help="Context fingerprint to lift.",
+    )
+    veto_lift_parser.add_argument(
+        "--reason",
+        default="Manual operator override",
+        help="Audit reason for lifting veto.",
+    )
+    veto_lift_parser.add_argument(
+        "--repo-dir",
+        default=".",
+        help="Repository root directory.",
+    )
+
+    # Subcommand: stats
+    stats_parser = subparsers.add_parser(
+        "stats",
+        help="Display operational self-metrics and consult telemetry (Bean 0052).",
+    )
+    stats_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output telemetry in JSON format.",
+    )
+    stats_parser.add_argument(
+        "--repo-dir",
+        default=".",
+        help="Repository root directory.",
+    )
+
     args = parser.parse_args()
 
     if args.command == "flow":
@@ -1547,6 +1797,117 @@ def main() -> None:
         else:
             table = format_query_results_table(results)
             print(table)
+        sys.exit(0)
+
+    if args.command == "consult":
+        db_path = args.db_path
+        if not db_path:
+            db_path = os.path.join(args.repo_dir, "holon-knowledge/.index/action_index.db")
+        engine = ConsultEngine(project_db_path=db_path)
+        result = engine.consult_records(
+            all_labels=args.all_labels,
+            any_labels=args.any_labels,
+            not_labels=args.not_labels,
+            query_text=args.query,
+            top_k=args.top_k,
+            max_tokens=args.max_tokens,
+        )
+        if args.json or args.format == "json":
+            import json
+
+            print(json.dumps(result.to_dict(), indent=2))
+        else:
+            print(format_consult_results_table(result))
+        sys.exit(0)
+
+    if args.command == "record":
+        ledger_path = args.ledger_path
+        if not os.path.isabs(ledger_path):
+            ledger_path = os.path.join(args.repo_dir, ledger_path)
+        labels_list = [lbl.strip() for lbl in args.labels.split(",") if lbl.strip()] if args.labels else []
+        record_data = {
+            "action": args.action,
+            "category": args.category,
+            "target": args.target,
+            "verdict": args.verdict,
+            "labels": labels_list,
+            "error_context": args.context,
+        }
+        res = append_action_event(record_data, ledger_path=ledger_path)
+        print(f"Recorded action: {res['action_id']} [{res['verdict']}]")
+        sys.exit(0)
+
+    if args.command == "reconcile":
+        ledger_path = args.ledger_path
+        if not os.path.isabs(ledger_path):
+            ledger_path = os.path.join(args.repo_dir, ledger_path)
+        rec_stats = reconcile_records(
+            ledger_path=ledger_path,
+            max_age_days=args.expire_ttl,
+            target_action_id=args.action_id,
+            verdict=args.verdict,
+            reason=args.reason,
+        )
+        print(f"Reconciled: {rec_stats['reconciled']}, Expired: {rec_stats['expired']}, Scanned: {rec_stats['total_scanned']}")
+        sys.exit(0)
+
+    if args.command == "promote":
+        db_path = os.path.join(args.repo_dir, "holon-knowledge/.index/action_index.db")
+        db = ActionIndexDatabase(db_path=db_path)
+        promoted = promote_pending_candidates(
+            index_db=db,
+            kb_dir=os.path.join(args.repo_dir, "holon-knowledge/kb"),
+            wb_dir=os.path.join(args.repo_dir, "holon-knowledge/wisdom"),
+            min_trials=args.min_trials,
+            dry_run=args.dry_run,
+        )
+        mode = "Dry-run: candidate" if args.dry_run else "Promoted"
+        print(f"{mode} knowledge items: {len(promoted)}")
+        for item in promoted:
+            item_id = item.get("kb_id") or item.get("wb_id")
+            item_type = item.get("kb_type") or item.get("wb_type")
+            name = item.get("payload", {}).get("name", "")
+            print(f" - {item_id} [{item_type}]: {name}")
+        sys.exit(0)
+
+    if args.command == "veto":
+        db_path = os.path.join(args.repo_dir, "holon-knowledge/.index/action_index.db")
+        db = ActionIndexDatabase(db_path=db_path)
+        if args.veto_command == "list":
+            vetoes = list_vetoes(db)
+            if args.json:
+                import json
+
+                print(json.dumps(vetoes, indent=2))
+            else:
+                if not vetoes:
+                    print("No active or shadowed failure vetoes recorded.")
+                else:
+                    for v in vetoes:
+                        shadow_str = "SHADOW" if v.get("is_shadow") else "ENFORCED"
+                        print(
+                            f" - [{v.get('state')}/{shadow_str}] Fingerprint: {v.get('context_fingerprint')} "
+                            f"(reproductions: {v.get('reproduction_count')}, decay: {v.get('decay_weight'):.2f})"
+                        )
+            sys.exit(0)
+        elif args.veto_command == "lift":
+            lifted = lift_veto(db, context_fingerprint=args.context, reason=args.reason)
+            if lifted:
+                print(f"Successfully lifted veto for fingerprint: {args.context}")
+            else:
+                print(f"No active veto found for fingerprint: {args.context}", file=sys.stderr)
+            sys.exit(0)
+
+    if args.command == "stats":
+        db_path = os.path.join(args.repo_dir, "holon-knowledge/.index/action_index.db")
+        db = ActionIndexDatabase(db_path=db_path)
+        telemetry_stats = TelemetryCollector.get_telemetry_stats(db)
+        if args.json:
+            import json
+
+            print(json.dumps(telemetry_stats, indent=2))
+        else:
+            print(format_stats_dashboard(telemetry_stats))
         sys.exit(0)
 
     agent_id = args.agent.replace("-agent", "").replace("agent-", "") if getattr(args, "agent", None) else "antigravity"

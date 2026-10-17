@@ -1327,6 +1327,60 @@ def main() -> None:
         ),
     )
 
+    # Subcommand: review-loop (Bean 0118)
+    review_parser = subparsers.add_parser(
+        "review-loop",
+        aliases=["review", "pr-review-loop"],
+        help="Run autonomous native review loop on an execution branch or pull request (Bean 0118).",
+    )
+    review_parser.add_argument(
+        "target",
+        help="Target execution branch name, PR number, or PR URL.",
+    )
+    review_parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=25,
+        help="Maximum number of review loop iterations (default: 25).",
+    )
+    review_parser.add_argument(
+        "--ensemble-size",
+        type=int,
+        default=3,
+        help="Number of review models/heuristics in evaluation ensemble (default: 3).",
+    )
+    review_parser.add_argument(
+        "--auto-pr",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Automatically create PR if only a branch exists (default: True).",
+    )
+    review_parser.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help="Halt immediately upon first unrecoverable review or test failure.",
+    )
+    review_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run review evaluation without applying changes or git commits.",
+    )
+    review_parser.add_argument(
+        "--repo-dir",
+        default=".",
+        help="Target repository directory path (default: current directory).",
+    )
+    review_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output review loop results in JSON format.",
+    )
+    review_parser.add_argument(
+        "--token-reduce",
+        action="store_true",
+        help=_TOKEN_REDUCE_HELP,
+    )
+
     # Subcommand: ledger
     ledger_parser = subparsers.add_parser(
         "ledger",
@@ -1752,6 +1806,26 @@ def main() -> None:
             sys.exit(1 if has_failure else 0)
         except Exception as e:
             print(f"Error during flow execution: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    if args.command in ("review-loop", "review", "pr-review-loop"):
+        try:
+            if getattr(args, "max_iterations", 25) < 1:
+                print("Error: --max-iterations must be at least 1.", file=sys.stderr)
+                sys.exit(1)
+                return
+            if getattr(args, "ensemble_size", 3) < 1:
+                print("Error: --ensemble-size must be at least 1.", file=sys.stderr)
+                sys.exit(1)
+                return
+
+            effective_token_reduce = detect_holon_coherence(bool(getattr(args, "token_reduce", False)))
+            from sandbox_executor.flow import run_review_loop_cli
+
+            exit_code = run_review_loop_cli(args, token_reduce=effective_token_reduce)
+            sys.exit(exit_code)
+        except Exception as e:
+            print(f"Error during review-loop execution: {e}", file=sys.stderr)
             sys.exit(1)
 
     if args.command == "calibrate":

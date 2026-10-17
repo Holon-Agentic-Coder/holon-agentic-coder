@@ -15,8 +15,10 @@ from sandbox_executor.flow import (
     StageStatus,
     check_pr_mergeability,
     extract_valid_ledger_rows,
+    format_review_git_trailers,
     load_checkpoint,
     migrate_checkpoint_data,
+    probe_ci_checks,
     reconcile_ledger_content,
     reconcile_ledger_file,
     reconcile_ledger_rows,
@@ -25,6 +27,8 @@ from sandbox_executor.flow import (
     run_execute_stage,
     run_intent_stage,
     run_plan_stage,
+    run_review_loop,
+    run_review_loop_cli,
     run_review_stage,
     save_checkpoint,
 )
@@ -1161,3 +1165,162 @@ class TestReviewMergeabilityGuards:
             assert envs["HTTPS_PROXY"] == "http://127.0.0.1:8080"
             assert "NODE_EXTRA_CA_CERTS" in envs
             assert "SSL_CERT_FILE" in envs
+
+
+class TestReviewLoopStage:
+    """Comprehensive tests for native multi-pass review loop, CI check probing, git trailers, and Bean 0034."""
+
+    def test_probe_ci_checks_github_cli_success(self):
+        checks_json = json.dumps([
+            {"bucket": "pass", "name": "unit-tests", "state": "COMPLETED", "event": "pull_request"},
+            {"bucket": "pass", "name": "lint", "state": "COMPLETED", "event": "pull_request"},
+        ])
+        with (
+            patch("shutil.which", return_value="/usr/bin/gh"),
+            patch("subprocess.run") as mock_subproc,
+        ):
+            mock_subproc.return_value = MagicMock(returncode=0, stdout=checks_json)
+            res = probe_ci_checks("/tmp/repo", "my-exec-branch")
+            assert res["source"] == "github_cli"
+            assert res["total"] == 2
+            assert res["passed"] == 2
+            assert res["failed"] == 0
+            assert res["pending"] == 0
+            assert res["all_passed"] is True
+
+    def test_probe_ci_checks_github_cli_failures(self):
+        checks_json = json.dumps([
+            {"bucket": "pass", "name": "unit-tests", "state": "COMPLETED", "event": "pull_request"},
+            {"bucket": "fail", "name": "lint", "state": "FAILURE", "event": "pull_request"},
+        ])
+        with (
+            patch("shutil.which", return_value="/usr/bin/gh"),
+            patch("subprocess.run") as mock_subproc,
+        ):
+            mock_subproc.return_value = MagicMock(returncode=0, stdout=checks_json)
+            res = probe_ci_checks("/tmp/repo", "my-exec-branch")
+            assert res["source"] == "github_cli"
+            assert res["total"] == 2
+            assert res["passed"] == 1
+            assert res["failed"] == 1
+            assert res["all_passed"] is False
+
+    def test_probe_ci_checks_fallback_when_gh_missing(self):
+        with patch("shutil.which", return_value=None):
+            res = probe_ci_checks("/tmp/repo", "my-exec-branch")
+            assert res["source"] == "local_tests"
+            assert res["all_passed"] is True
+            assert res["passed"] == 1
+            assert res["failed"] == 0
+
+    def test_format_review_git_trailers(self):
+        trailers = format_review_git_trailers(
+            action_origin="pr_review",
+            iteration=3,
+            finding_ids=["FIND-001", "FIND-002"],
+            severity="important",
+        )
+        assert "Action-Origin: pr_review" in trailers
+        assert "Review-Iteration: 3" in trailers
+        assert "Review-Finding-Ids: FIND-001, FIND-002" in trailers
+        assert "Review-Severity: important" in trailers
+
+        clean_trailers = format_review_git_trailers(iteration=1, finding_ids=None, severity="clean")
+        assert "Review-Finding-Ids: none" in clean_trailers
+        assert "Review-Severity: clean" in clean_trailers
+
+    def test_review_loop_consensus_approval_halts_under_bean_0034(self, tmp_path):
+        """Verify review loop halts with HALTED_FOR_HUMAN and never invokes git merge main."""
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            dry_run=False,
+        )
+        ctx.stage_results["execute"] = StageResult(
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.SUCCESS,
+            payload={"test_pass_rate": 1.0, "exit_code": 0},
+        )
+        with patch("sandbox_executor.flow.run_git") as mock_git:
+            mock_git.return_value = MagicMock(returncode=0, stdout=" 1 file changed, 10 insertions(+)\n")
+            res = run_review_loop(ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=5)
+
+            # Bean 0034 check: git merge main must never have been called
+            for call in mock_git.call_args_list:
+                args = call[0][0]
+                assert "merge" not in args, f"VIOLATION OF BEAN 0034: Autonomous merge detected with args {args}"
+
+        assert res["consensus"]["approved"] is True
+        assert res["halted_for_human"] is True
+        assert res["bean_0034_enforced"] is True
+        assert "holon review approve" in res["human_approval_command"]
+
+    def test_review_loop_max_iterations_exhaustion(self, tmp_path):
+        """Simulate failing tests and verify loop terminates at max_iterations without infinite looping."""
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            dry_run=True,
+        )
+        ctx.stage_results["execute"] = StageResult(
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.FAILED,
+            payload={"test_pass_rate": 0.0, "exit_code": 1},
+        )
+        res = run_review_loop(ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=3)
+        assert res["consensus"]["approved"] is False
+        assert res["total_iterations"] == 3
+        assert res["consensus"]["status"] == "rejected"
+
+    def test_review_loop_fail_fast_abort(self, tmp_path):
+        """Simulate merge conflicts with fail-fast flag and verify immediate termination."""
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            dry_run=True,
+        )
+        with patch(
+            "sandbox_executor.flow.check_pr_mergeability",
+            return_value={"is_dirty": True, "merge_state_status": "DIRTY", "mergeable": "CONFLICTING"},
+        ):
+            res = run_review_loop(
+                ctx,
+                target="I-100-intent/P-200-plan/E-300-exec/_",
+                max_iterations=10,
+                fail_fast=True,
+            )
+            assert res["total_iterations"] == 1
+            assert res["consensus"]["approved"] is False
+            assert res["consensus"]["status"] == "conflicted_dirty"
+
+    def test_review_loop_appends_executions_ledger(self, tmp_path):
+        """Assert executions.jsonl receives structured iteration and summary records with trailers."""
+        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
+        ledger_dir.mkdir(parents=True)
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            dry_run=True,
+        )
+        ctx.stage_results["execute"] = StageResult(
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.SUCCESS,
+            payload={"test_pass_rate": 1.0, "exit_code": 0},
+        )
+
+        run_review_loop(ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=2)
+        exec_file = ledger_dir / "executions.jsonl"
+        assert exec_file.exists()
+
+        records = [json.loads(line) for line in exec_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+        action_records = [r for r in records if r.get("entry_type") == "action"]
+        summary_records = [r for r in records if r.get("entry_type") == "summary"]
+
+        assert len(action_records) >= 1
+        assert action_records[0]["action_origin"] == "pr_review"
+        assert action_records[0]["review_iteration"] == 1
+
+        assert len(summary_records) >= 1
+        assert summary_records[0]["status"] == "halted_for_human"
+        assert summary_records[0]["total_iterations"] == 1
+        assert summary_records[0]["trailers"]["action_origin"] == "pr_review"

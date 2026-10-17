@@ -74,6 +74,7 @@ def test_makefile_help_lists_core_targets(tmp_path: pathlib.Path) -> None:
 
     expected_targets = [
         "build-images",
+        "build-image",
         "check-prerequisites",
         "check-docker",
         "install-docker",
@@ -143,12 +144,23 @@ def test_makefile_dry_run_core_targets(tmp_path: pathlib.Path) -> None:
         "lint-shell",
         "lint-md",
     ]
-    inert_under_dry_run_targets = ["help", "build-images", "install-homebrew"]
+    inert_under_dry_run_targets = ["help", "build-images", "build-image", "install-homebrew"]
     core_targets = guard_regression_targets + inert_under_dry_run_targets
     for target in core_targets:
         result = _run_make(["-n", target, OS_LINUX], env=env)
         msg = f"make -n {target} failed with code {result.returncode}. stdout: {result.stdout} stderr: {result.stderr}"
         assert result.returncode == 0, msg
+
+
+def test_makefile_build_image_alias(tmp_path: pathlib.Path) -> None:
+    """Verify that build-image is an alias for build-images and delegates identically under dry-run."""
+    env = _setup_mock_env(tmp_path, mock_docker=False)
+    res_images = _run_make(["-n", "build-images", OS_LINUX], env=env)
+    res_image = _run_make(["-n", "build-image", OS_LINUX], env=env)
+    assert res_images.returncode == 0
+    assert res_image.returncode == 0
+    assert "./apps/sandbox-executor/build_all_images.sh" in res_image.stdout
+    assert res_image.stdout == res_images.stdout
 
 
 def _write_exe(path: pathlib.Path, script: str) -> None:

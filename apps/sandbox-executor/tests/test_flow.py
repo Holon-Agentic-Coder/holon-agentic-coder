@@ -15,10 +15,13 @@ from sandbox_executor.flow import (
     StageResult,
     StageStatus,
     check_pr_mergeability,
+    create_or_update_pr,
     extract_valid_ledger_rows,
     format_review_git_trailers,
+    generate_semantic_pr_metadata,
     load_checkpoint,
     migrate_checkpoint_data,
+    post_pr_review_consensus,
     probe_ci_checks,
     reconcile_ledger_content,
     reconcile_ledger_file,
@@ -1315,8 +1318,11 @@ class TestReviewLoopStage:
             payload={"test_pass_rate": 1.0, "exit_code": 0},
         )
 
-        with patch("sandbox_executor.flow.run_git") as mock_git:
+        with patch("sandbox_executor.flow.run_git") as mock_git, patch(
+            "sandbox_executor.flow.post_pr_review_consensus"
+        ) as mock_post:
             mock_git.return_value = MagicMock(returncode=0, stdout=" 1 file changed, 10 insertions(+)\n")
+            mock_post.return_value = {"dual_posted": True, "official_review": {"success": True}}
             run_review_loop(ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=2, dry_run=False)
 
         exec_file = ledger_dir / "executions.jsonl"
@@ -1371,3 +1377,260 @@ class TestReviewLoopStage:
             }
             code = run_review_loop_cli(args)
             assert code == 1
+
+
+class TestSemanticPRAndConsensusReview:
+    """Hermetic unit tests for semantic PR generation, dual-posting review consensus, and granular ledger action logging."""
+
+    def test_generate_semantic_pr_metadata_conventional_categories(self):
+        """Verify category mapping to conventional commit prefixes and scope detection."""
+        cases = [
+            ({"category": "feature", "slug": "my-feat", "title": "Add cool feature"}, "feat(my): Add cool feature"),
+            ({"category": "fix", "labels": ["api"], "title": "Fix crash on null"}, "fix(api): Fix crash on null"),
+            ({"category": "bugfix", "slug": "db-patch", "title": "Patch database leak"}, "fix(db): Patch database leak"),
+            ({"category": "refactor", "slug": "cleanup-flow", "title": "Refactor flow stages"}, "refactor(cleanup): Refactor flow stages"),
+            ({"category": "documentation", "slug": "docs-guide", "title": "Update README"}, "docs(docs): Update README"),
+            ({"category": "chore", "title": "Bump dependencies"}, "chore(core): Bump dependencies"),
+            ({"category": "test", "labels": ["flow"], "title": "Add unit tests"}, "test(flow): Add unit tests"),
+            ({"category": "ci", "labels": ["github-actions"], "title": "Update matrix"}, "ci(githubactions): Update matrix"),
+        ]
+        for intent, expected_prefix in cases:
+            title, _ = generate_semantic_pr_metadata(intent)
+            assert title == expected_prefix, f"Expected '{expected_prefix}', got '{title}'"
+
+    def test_generate_semantic_pr_metadata_markdown_structure(self):
+        """Verify structured markdown body includes Summary, Key Changes, Referenced Beans, and Plan Metadata."""
+        intent = {
+            "category": "feature",
+            "slug": "flow-enhancements",
+            "title": "Enhance review loop and PR generation",
+            "description": "Comprehensive flow pipeline enhancements.",
+            "goal": "1) MAKEFILE ALIGNMENT (Bean 0116)\n2) LEDGER ACTIONS (Bean 0113)\n3) PR CONSENSUS (Bean 0119)",
+            "beans": ["0116", "0113", "0119", "0109"],
+            "labels": ["makefile", "flow"],
+        }
+        plan_meta = {
+            "plan_id": "P-1792243199-antigravity",
+            "ev": 81.0,
+            "agent": "antigravity-agent",
+            "model": "gemini-3.8-flash-medium",
+        }
+        title, body = generate_semantic_pr_metadata(intent, plan_meta)
+
+        assert title == "feat(makefile): Enhance review loop and PR generation"
+        assert "## Summary" in body
+        assert "Comprehensive flow pipeline enhancements." in body
+        assert "## Key Changes" in body
+        assert "- MAKEFILE ALIGNMENT (Bean 0116)" in body
+        assert "- LEDGER ACTIONS (Bean 0113)" in body
+        assert "- PR CONSENSUS (Bean 0119)" in body
+        assert "## Referenced Beans" in body
+        assert "Closes Bean 0116, 0113, 0119, 0109" in body
+        assert "## Plan & Validation Metadata" in body
+        assert "- **Plan ID:** `P-1792243199-antigravity`" in body
+        assert "- **Expected Value (EV):** `81.00`" in body
+        assert "- **Agent:** `antigravity-agent`" in body
+        assert "- **Model:** `gemini-3.8-flash-medium`" in body
+
+    def test_generate_semantic_pr_metadata_fallback_handling(self):
+        """Verify resilient fallback defaults for empty or missing intent data."""
+        title, body = generate_semantic_pr_metadata({})
+        assert title == "feat(core): Update components"
+        assert "## Summary" in body
+        assert "No description provided." in body
+        assert "## Key Changes" in body
+        assert "## Referenced Beans" in body
+        assert "None" in body
+        assert "## Plan & Validation Metadata" in body
+        assert "- **Plan ID:** `N/A`" in body
+
+    def test_generate_semantic_pr_metadata_title_length_truncation(self):
+        """Verify title truncation when length exceeds 100 characters."""
+        intent = {
+            "category": "feature",
+            "labels": ["extremely-long-label-scope"],
+            "title": "A" * 120,
+        }
+        title, _ = generate_semantic_pr_metadata(intent)
+        assert len(title) <= 100
+        assert title.endswith("...")
+
+    def test_post_pr_review_consensus_dual_posting(self):
+        """Verify dual-posting runs both gh pr comment and gh pr review --approve."""
+        with patch("shutil.which", return_value="/usr/bin/gh"), patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="success", stderr="")
+            consensus_data = {
+                "approved": True,
+                "status": "approved",
+                "iterations": 1,
+                "max_review_iterations": 25,
+                "ci_checks": {"passed": 5, "total": 5, "source": "github_cli"},
+                "mergeability": {"mergeable": "MERGEABLE", "merge_state_status": "CLEAN"},
+                "trailers": "Action-Origin: pr_review",
+            }
+            res = post_pr_review_consensus(repo_dir="/tmp", target="42", consensus_data=consensus_data)
+
+            assert res["dual_posted"] is True
+            assert res["discussion_comment"]["success"] is True
+            assert res["official_review"]["success"] is True
+            assert res["official_review"]["self_approval_fallback"] is False
+            assert res["official_review"]["flag"] == "--approve"
+
+            # Verify subprocess call args
+            assert mock_run.call_count == 2
+            comment_args = mock_run.call_args_list[0][0][0]
+            review_args = mock_run.call_args_list[1][0][0]
+            assert comment_args[:4] == ["gh", "pr", "comment", "42"]
+            assert review_args[:5] == ["gh", "pr", "review", "42", "--approve"]
+
+    def test_post_pr_review_consensus_self_approval_422_fallback(self):
+        """Verify HTTP 422 author self-approval restriction triggers graceful fallback to --comment."""
+        with patch("shutil.which", return_value="/usr/bin/gh"), patch("subprocess.run") as mock_run:
+            mock_comment = MagicMock(returncode=0, stdout="comment posted", stderr="")
+            mock_approve = MagicMock(
+                returncode=1,
+                stdout="",
+                stderr="GraphQL: Can not approve your own pull request (HTTP 422)",
+            )
+            mock_fallback = MagicMock(returncode=0, stdout="review comment posted", stderr="")
+            mock_run.side_effect = [mock_comment, mock_approve, mock_fallback]
+
+            consensus_data = {
+                "approved": True,
+                "status": "approved",
+                "iterations": 1,
+                "max_review_iterations": 25,
+            }
+            res = post_pr_review_consensus(repo_dir="/tmp", target="42", consensus_data=consensus_data)
+
+            assert res["dual_posted"] is True
+            assert res["discussion_comment"]["success"] is True
+            assert res["official_review"]["success"] is True
+            assert res["official_review"]["self_approval_fallback"] is True
+            assert res["official_review"]["flag"] == "--comment"
+
+            assert mock_run.call_count == 3
+            fallback_args = mock_run.call_args_list[2][0][0]
+            assert fallback_args[:5] == ["gh", "pr", "review", "42", "--comment"]
+
+    def test_post_pr_review_consensus_comment_failure_proceeds_to_review(self):
+        """Verify failure in gh pr comment does not prevent official review submission."""
+        with patch("shutil.which", return_value="/usr/bin/gh"), patch("subprocess.run") as mock_run:
+            mock_comment = MagicMock(returncode=1, stdout="", stderr="API rate limit")
+            mock_review = MagicMock(returncode=0, stdout="approved", stderr="")
+            mock_run.side_effect = [mock_comment, mock_review]
+
+            consensus_data = {"approved": True}
+            res = post_pr_review_consensus(repo_dir="/tmp", target="42", consensus_data=consensus_data)
+
+            assert res["discussion_comment"]["success"] is False
+            assert res["official_review"]["success"] is True
+            assert res["dual_posted"] is False
+            assert mock_run.call_count == 2
+
+    def test_post_pr_review_consensus_non_422_failure_no_fallback(self):
+        """Verify non-422 error does not trigger self-approval fallback."""
+        with patch("shutil.which", return_value="/usr/bin/gh"), patch("subprocess.run") as mock_run:
+            mock_comment = MagicMock(returncode=0, stdout="commented", stderr="")
+            mock_review = MagicMock(returncode=1, stdout="", stderr="Internal Server Error (HTTP 500)")
+            mock_run.side_effect = [mock_comment, mock_review]
+
+            consensus_data = {"approved": True}
+            res = post_pr_review_consensus(repo_dir="/tmp", target="42", consensus_data=consensus_data)
+
+            assert res["official_review"]["success"] is False
+            assert res["official_review"]["self_approval_fallback"] is False
+            assert mock_run.call_count == 2
+
+    def test_create_or_update_pr(self):
+        """Verify create_or_update_pr handles creation when absent and edit when present."""
+        with patch("shutil.which", return_value="/usr/bin/gh"), patch("subprocess.run") as mock_run:
+            # Case 1: PR does not exist -> create
+            mock_view_fail = MagicMock(returncode=1, stdout="", stderr="no pull requests found")
+            mock_create_ok = MagicMock(returncode=0, stdout="https://github.com/org/repo/pull/1\n", stderr="")
+            mock_run.side_effect = [mock_view_fail, mock_create_ok]
+
+            res_create = create_or_update_pr("/tmp", "my-branch", "main", "feat: title", "body")
+            assert res_create["action"] == "create"
+            assert res_create["success"] is True
+            create_args = mock_run.call_args_list[1][0][0]
+            assert "create" in create_args
+
+            # Case 2: PR exists -> edit
+            mock_view_ok = MagicMock(returncode=0, stdout=json.dumps({"number": 99, "title": "Old"}), stderr="")
+            mock_edit_ok = MagicMock(returncode=0, stdout="https://github.com/org/repo/pull/99\n", stderr="")
+            mock_run.side_effect = [mock_view_ok, mock_edit_ok]
+
+            res_edit = create_or_update_pr("/tmp", "my-branch", "main", "feat: new title", "new body")
+            assert res_edit["action"] == "edit"
+            assert res_edit["pr_number"] == 99
+            assert res_edit["success"] is True
+            edit_args = mock_run.call_args_list[3][0][0]
+            assert "edit" in edit_args
+
+    def test_review_loop_granular_ledger_records(self, tmp_path):
+        """Verify executions.jsonl records discrete evaluations, findings, resolver events, and dual-posting."""
+        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
+        ledger_dir.mkdir(parents=True)
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            dry_run=False,
+            max_review_iterations=3,
+        )
+        ctx.stage_results["execute"] = StageResult(
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.SUCCESS,
+            payload={"test_pass_rate": 1.0, "exit_code": 0},
+        )
+
+        with patch("sandbox_executor.flow.check_pr_mergeability") as mock_merge, patch(
+            "sandbox_executor.flow.probe_ci_checks"
+        ) as mock_ci, patch("sandbox_executor.flow.post_pr_review_consensus") as mock_post:
+            # Iteration 1: finding detected (dirty conflict)
+            # Iteration 2: clean and passes (resolver pass)
+            mock_merge.side_effect = [
+                {"is_dirty": True, "merge_state_status": "DIRTY", "mergeable": "CONFLICTING"},
+                {"is_dirty": False, "merge_state_status": "CLEAN", "mergeable": "MERGEABLE"},
+            ]
+            mock_ci.return_value = {"all_passed": True, "passed": 1, "total": 1, "source": "github_cli"}
+            mock_post.return_value = {
+                "target": "I-100-intent/P-200-plan/E-300-exec/_",
+                "dual_posted": True,
+                "official_review": {"success": True},
+            }
+
+            res = run_review_loop(ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=3, dry_run=False)
+            assert res["consensus"]["approved"] is True
+
+        exec_file = ledger_dir / "executions.jsonl"
+        assert exec_file.exists()
+        records = [json.loads(line) for line in exec_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+        action_records = [r for r in records if r.get("entry_type") == "action"]
+
+        # 1. Evaluation records
+        eval_records = [r for r in action_records if "evaluation for" in r.get("action", "")]
+        assert len(eval_records) == 2
+        assert eval_records[0]["review_iteration"] == 1
+        assert eval_records[0]["category"] == "code"
+        assert eval_records[1]["review_iteration"] == 2
+
+        # 2. Finding detection records
+        finding_records = [r for r in action_records if "findings detected" in r.get("action", "")]
+        assert len(finding_records) == 1
+        assert finding_records[0]["review_finding_ids"] == ["FIND-DIRTY-001"]
+        assert finding_records[0]["review_severity"] == "critical"
+        assert finding_records[0]["outcome"] == "failure"
+
+        # 3. Resolver iteration record (iteration 2)
+        resolver_records = [r for r in action_records if "resolver triggered" in r.get("action", "")]
+        assert len(resolver_records) == 1
+        assert resolver_records[0]["review_iteration"] == 2
+        assert resolver_records[0]["outcome"] == "success"
+
+        # 4. PR review dual-posting action record
+        post_records = [r for r in action_records if "PR Review consensus dual-posted" in r.get("action", "")]
+        assert len(post_records) == 1
+        assert post_records[0]["outcome"] == "success"
+        assert "dual-post" in post_records[0]["labels"]

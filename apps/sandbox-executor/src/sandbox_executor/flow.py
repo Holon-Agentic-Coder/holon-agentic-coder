@@ -922,6 +922,411 @@ def format_review_git_trailers(
     return "\n".join(lines)
 
 
+def generate_semantic_pr_metadata(
+    intent_data: dict[str, Any],
+    plan_metadata: dict[str, Any] | None = None,
+) -> tuple[str, str]:
+    """Generate conventional commit PR title and structured markdown description (Bean 0109).
+
+    Transforms intent data and optional plan metadata into Conventional Commits
+    title format (e.g. 'feat(scope): title') and a structured markdown PR body
+    containing Summary, Key Changes, Referenced Beans, and Plan & Validation Metadata.
+
+    Args:
+        intent_data: Dictionary containing intent fields (category, slug, title, description, goal, beans, labels).
+        plan_metadata: Optional dictionary containing plan fields (plan_id, ev, agent, model).
+
+    Returns:
+        tuple[str, str]: (pr_title, pr_body)
+    """
+    category_map: dict[str, str] = {
+        "feature": "feat",
+        "feat": "feat",
+        "fix": "fix",
+        "bugfix": "fix",
+        "bug": "fix",
+        "refactor": "refactor",
+        "refactoring": "refactor",
+        "documentation": "docs",
+        "doc": "docs",
+        "docs": "docs",
+        "chore": "chore",
+        "test": "test",
+        "tests": "test",
+        "testing": "test",
+        "build": "build",
+        "ci": "ci",
+        "perf": "perf",
+    }
+    raw_cat = str(intent_data.get("category") or "feat").strip().lower()
+    conv_prefix = category_map.get(raw_cat, "feat")
+
+    # Scope extraction: primary label or first slug component
+    scope = ""
+    labels = intent_data.get("labels")
+    if isinstance(labels, list) and labels:
+        first_lbl = str(labels[0]).strip().lower()
+        if first_lbl:
+            scope = first_lbl
+    elif isinstance(labels, str) and labels.strip():
+        scope = labels.split(",")[0].strip().lower()
+
+    if not scope:
+        raw_slug = str(intent_data.get("slug") or "").strip()
+        if raw_slug:
+            scope = raw_slug.split("-")[0].strip().lower()
+
+    if not scope:
+        scope = "core"
+
+    # Sanitize scope
+    scope = re.sub(r"[^a-zA-Z0-9_-]+", "", scope) or "core"
+
+    # Title extraction
+    raw_title = str(
+        intent_data.get("title")
+        or intent_data.get("description")
+        or intent_data.get("goal")
+        or "Update components"
+    ).strip()
+    # Strip any multiline text
+    raw_title = raw_title.splitlines()[0].strip()
+    # Strip existing conventional commit prefixes to avoid duplicate prefixes
+    raw_title = re.sub(
+        r"^(feat|fix|refactor|docs|chore|test|build|ci|perf)(\([^)]+\))?:\s*",
+        "",
+        raw_title,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    full_title = f"{conv_prefix}({scope}): {raw_title}"
+    if len(full_title) > 100:
+        full_title = full_title[:97].rstrip() + "..."
+
+    # Description generation
+    body_lines: list[str] = []
+
+    # Summary section
+    body_lines.append("## Summary")
+    desc = intent_data.get("description")
+    goal = intent_data.get("goal")
+    if desc:
+        body_lines.append(str(desc).strip())
+    if goal and goal != desc:
+        if desc:
+            body_lines.append("")
+        body_lines.append(f"**Goal:**\n{str(goal).strip()}")
+    if not desc and not goal:
+        body_lines.append("No description provided.")
+    body_lines.append("")
+
+    # Key Changes section
+    body_lines.append("## Key Changes")
+    changes_listed = False
+    if goal:
+        goal_text = str(goal).strip()
+        bullet_candidates = [
+            line.strip().lstrip("-* ").strip()
+            for line in goal_text.splitlines()
+            if line.strip().startswith(("-", "*", "1.", "2.", "3.", "4.", "5.", "6.", "7.", "8.", "9."))
+        ]
+        if bullet_candidates:
+            for cand in bullet_candidates:
+                clean_cand = re.sub(r"^\d+\)\s*", "", cand).strip()
+                if clean_cand:
+                    body_lines.append(f"- {clean_cand}")
+            changes_listed = True
+    if not changes_listed:
+        body_lines.append(f"- Implement {raw_title}")
+    body_lines.append("")
+
+    # Referenced Beans section
+    body_lines.append("## Referenced Beans")
+    beans = intent_data.get("beans")
+    if beans:
+        if isinstance(beans, list):
+            bean_list = [str(b).strip() for b in beans if str(b).strip()]
+        elif isinstance(beans, str):
+            bean_list = [b.strip() for b in beans.split(",") if b.strip()]
+        else:
+            bean_list = []
+        if bean_list:
+            body_lines.append(f"Closes Bean {', '.join(bean_list)}")
+        else:
+            body_lines.append("None")
+    else:
+        body_lines.append("None")
+    body_lines.append("")
+
+    # Plan & Validation Metadata section
+    body_lines.append("## Plan & Validation Metadata")
+    plan_meta = plan_metadata or {}
+    plan_id = plan_meta.get("plan_id") or "N/A"
+    ev = plan_meta.get("ev")
+    if ev is None and isinstance(plan_meta.get("metrics"), dict):
+        ev = plan_meta["metrics"].get("ev")
+    ev_str = f"{ev:.2f}" if isinstance(ev, (int, float)) else str(ev or "N/A")
+    agent = plan_meta.get("agent") or intent_data.get("agent", "N/A")
+    model = plan_meta.get("model") or intent_data.get("model", "N/A")
+    body_lines.append(f"- **Plan ID:** `{plan_id}`")
+    body_lines.append(f"- **Expected Value (EV):** `{ev_str}`")
+    body_lines.append(f"- **Agent:** `{agent}`")
+    body_lines.append(f"- **Model:** `{model}`")
+    body_lines.append("")
+
+    return full_title, "\n".join(body_lines)
+
+
+def create_or_update_pr(
+    repo_dir: str,
+    branch: str,
+    target_branch: str = "main",
+    title: str = "",
+    body: str = "",
+    proxy_env: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Create a new pull request or update existing PR title and body via GitHub CLI.
+
+    Args:
+        repo_dir: Path to git repository.
+        branch: Head branch name.
+        target_branch: Base target branch (default: 'main').
+        title: PR title.
+        body: PR markdown description.
+        proxy_env: Optional proxy environment variables.
+
+    Returns:
+        dict[str, Any]: Outcome dictionary with keys 'attempted', 'success', 'action', 'pr_number', 'output'.
+    """
+    clean_branch = branch.strip() if branch else ""
+    if not shutil.which("gh") or not clean_branch:
+        return {"attempted": False, "success": False, "action": "none", "pr_number": None, "output": ""}
+
+    gh_env = {**os.environ, **(proxy_env or {})} if proxy_env else None
+
+    try:
+        view_proc = subprocess.run(
+            ["gh", "pr", "view", clean_branch, "--json", "number,title"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=gh_env,
+        )
+        if view_proc.returncode == 0 and view_proc.stdout.strip():
+            data = json.loads(view_proc.stdout)
+            pr_num = data.get("number")
+            edit_cmd = ["gh", "pr", "edit", clean_branch]
+            if title:
+                edit_cmd.extend(["--title", title])
+            if body:
+                edit_cmd.extend(["--body", body])
+            edit_proc = subprocess.run(
+                edit_cmd,
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=gh_env,
+            )
+            return {
+                "attempted": True,
+                "success": edit_proc.returncode == 0,
+                "action": "edit",
+                "pr_number": pr_num,
+                "output": (edit_proc.stdout or "") + (edit_proc.stderr or ""),
+            }
+        else:
+            create_cmd = [
+                "gh",
+                "pr",
+                "create",
+                "--base",
+                target_branch,
+                "--head",
+                clean_branch,
+                "--title",
+                title or clean_branch,
+                "--body",
+                body or f"Automated PR for branch {clean_branch}",
+            ]
+            create_proc = subprocess.run(
+                create_cmd,
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=gh_env,
+            )
+            return {
+                "attempted": True,
+                "success": create_proc.returncode == 0,
+                "action": "create",
+                "pr_number": None,
+                "output": (create_proc.stdout or "") + (create_proc.stderr or ""),
+            }
+    except Exception as exc:
+        return {"attempted": True, "success": False, "action": "error", "pr_number": None, "output": str(exc)}
+
+
+def post_pr_review_consensus(
+    repo_dir: str,
+    target: str,
+    consensus_data: dict[str, Any],
+    proxy_env: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Dual-post PR review consensus to GitHub and handle author self-approval HTTP 422 fallback (Bean 0119).
+
+    Always posts a top-level discussion comment via 'gh pr comment' for conversation tab
+    visibility, and submits an official review via 'gh pr review'. When GitHub returns
+    HTTP 422 ('Can not approve your own pull request'), it gracefully falls back to
+    'gh pr review --comment'. Strictly enforces Bean 0034 (Human-Only PR Merging).
+
+    Args:
+        repo_dir: Path to git repository.
+        target: Target PR number, URL, or branch name.
+        consensus_data: Review consensus diagnostics dictionary.
+        proxy_env: Optional proxy environment variables.
+
+    Returns:
+        dict[str, Any]: Posting outcome diagnostics.
+    """
+    clean_target = str(target or "").strip()
+    approved = bool(consensus_data.get("approved"))
+    status_str = str(consensus_data.get("status", "unknown")).upper()
+    verdict = "APPROVED" if approved else status_str
+    iterations = consensus_data.get("iterations", 1)
+    max_iterations = consensus_data.get("max_review_iterations", 25)
+    ci_status = consensus_data.get("ci_checks") or {}
+    mergeability = consensus_data.get("mergeability") or {}
+    trailers = consensus_data.get("trailers", "")
+    findings = consensus_data.get("findings") or []
+
+    report_lines = [
+        "## Holon Flow PR Review Consensus Report",
+        "",
+        f"- **Verdict:** `{verdict}`",
+        f"- **Review Iterations:** {iterations} / {max_iterations}",
+        f"- **CI Status:** {ci_status.get('passed', 0)}/{ci_status.get('total', 0)} passed ({ci_status.get('source', 'local')})",
+        f"- **Mergeability:** `{mergeability.get('mergeable', 'UNKNOWN')}` (State: `{mergeability.get('merge_state_status', 'UNKNOWN')}`)",
+        f"- **Findings Detected:** {', '.join(findings) if findings else 'None'}",
+        "",
+        "### Commit Trailers",
+        "```",
+        str(trailers).strip() if trailers else "none",
+        "```",
+        "",
+        "> [!NOTE]",
+        "> **Bean 0034 Notice:** Under Bean 0034 (Human-Only PR Merging), autonomous merging to `main` is strictly prohibited. Pipeline halts for manual human approval.",
+    ]
+    report_text = "\n".join(report_lines)
+
+    gh_available = bool(shutil.which("gh"))
+    gh_env = {**os.environ, **(proxy_env or {})} if proxy_env else None
+
+    # Action 1: Top-Level Discussion Comment
+    comment_attempted = gh_available and bool(clean_target)
+    comment_success = False
+    comment_output = ""
+
+    if comment_attempted:
+        try:
+            comment_proc = subprocess.run(
+                ["gh", "pr", "comment", clean_target, "--body", report_text],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=gh_env,
+            )
+            comment_output = (comment_proc.stdout or "") + (comment_proc.stderr or "")
+            if comment_proc.returncode == 0:
+                comment_success = True
+            else:
+                logger.warning(
+                    "gh pr comment failed with returncode %s: %s",
+                    comment_proc.returncode,
+                    comment_proc.stderr,
+                )
+        except Exception as exc:
+            comment_output = str(exc)
+            logger.warning("gh pr comment encountered exception: %s", exc)
+
+    # Action 2: Official Review Submission
+    review_attempted = gh_available and bool(clean_target)
+    review_success = False
+    review_output = ""
+    self_approval_fallback = False
+    initial_flag = "--approve" if approved else "--comment"
+    submitted_flag = initial_flag
+
+    if review_attempted:
+        try:
+            review_proc = subprocess.run(
+                ["gh", "pr", "review", clean_target, initial_flag, "--body", report_text],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=gh_env,
+            )
+            raw_stderr = review_proc.stderr or ""
+            raw_stdout = review_proc.stdout or ""
+
+            if review_proc.returncode == 0:
+                review_success = True
+                review_output = raw_stdout or "Official review submitted."
+            else:
+                is_self_approval = (
+                    "422" in raw_stderr
+                    or "Can not approve your own pull request" in raw_stderr
+                    or "PullRequestReviewAuthorError" in raw_stderr
+                )
+                if is_self_approval and initial_flag == "--approve":
+                    logger.info(
+                        "Author self-approval restriction encountered (HTTP 422). Falling back to official review comment."
+                    )
+                    self_approval_fallback = True
+                    submitted_flag = "--comment"
+                    fallback_proc = subprocess.run(
+                        ["gh", "pr", "review", clean_target, "--comment", "--body", report_text],
+                        cwd=repo_dir,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        env=gh_env,
+                    )
+                    if fallback_proc.returncode == 0:
+                        review_success = True
+                        review_output = fallback_proc.stdout or "Fallback review comment submitted."
+                    else:
+                        review_success = False
+                        review_output = fallback_proc.stderr or "Fallback review comment failed."
+                else:
+                    review_success = False
+                    review_output = raw_stderr or "Official review submission failed."
+        except Exception as exc:
+            review_output = str(exc)
+            logger.warning("gh pr review encountered exception: %s", exc)
+
+    return {
+        "target": clean_target,
+        "discussion_comment": {
+            "attempted": comment_attempted,
+            "success": comment_success,
+            "output": comment_output.strip(),
+        },
+        "official_review": {
+            "attempted": review_attempted,
+            "flag": submitted_flag,
+            "success": review_success,
+            "self_approval_fallback": self_approval_fallback,
+            "output": review_output.strip(),
+        },
+        "dual_posted": comment_success and review_success,
+    }
+
+
 def validate_intent_questions(intent_data: dict[str, Any]) -> tuple[bool, list[str]]:
     """Validate that an intent payload has no unresolved open questions.
 
@@ -1666,9 +2071,50 @@ def run_review_loop(
     os.makedirs(ledger_dir, exist_ok=True)
     exec_file = os.path.join(ledger_dir, "executions.jsonl")
 
+    # Automate semantic PR generation if auto_pr is requested (Bean 0109)
+    pr_res: dict[str, Any] = {}
+    if auto_pr and not effective_dry_run and shutil.which("gh"):
+        try:
+            plan_res = context.stage_results.get("plan")
+            plan_meta = plan_res.payload if plan_res and isinstance(plan_res.payload, dict) else None
+            pr_title, pr_body = generate_semantic_pr_metadata(context.intent_data, plan_metadata=plan_meta)
+            pr_res = create_or_update_pr(
+                repo_dir=repo_dir,
+                branch=review_target,
+                target_branch=target_branch,
+                title=pr_title,
+                body=pr_body,
+                proxy_env=proxy_env,
+            )
+            if pr_res.get("success"):
+                context.log(f"[Review Loop] PR {pr_res.get('action')} successful for '{review_target}'.")
+        except Exception as exc:
+            logger.debug("Non-fatal PR create/update in review loop: %s", exc)
+
     while iteration < budget:
         iteration += 1
         context.log(f"[Review Loop] Starting review iteration {iteration}/{budget} for target '{review_target}'.")
+
+        # Discrete Action 3: Resolver Iteration Events (Bean 0113)
+        if iteration > 1 and not effective_dry_run:
+            resolver_record = {
+                "action_id": generate_action_id("ACT-RES"),
+                "execution_id": f"REV-RES-{iteration}-{int(time.time())}",
+                "action": f"PR Review Loop iteration {iteration} resolver triggered",
+                "category": "code",
+                "target": review_target,
+                "outcome": "success",
+                "entry_type": "action",
+                "action_origin": "pr_review",
+                "review_iteration": iteration,
+                "labels": ["review", "resolver", f"iteration-{iteration}"],
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+            try:
+                with atomic_ledger_append(exec_file) as f:
+                    f.write(json.dumps(resolver_record) + "\n")
+            except Exception as e:
+                logger.debug("Non-fatal atomic ledger append during resolver event: %s", e)
 
         # 1. Mergeability inspection
         last_mergeability = check_pr_mergeability(
@@ -1699,12 +2145,12 @@ def run_review_loop(
         last_trailers_str = format_review_git_trailers("pr_review", iteration, finding_ids, severity)
         last_trailers_dict = parse_commit_trailers(last_trailers_str)
 
-        # 5. Append discrete action record to executions.jsonl if not dry-run
+        # 5. Append discrete action record to executions.jsonl if not dry-run (Bean 0113)
         action_record = {
             "action_id": generate_action_id("ACT-REV"),
             "execution_id": f"REV-ITR-{iteration}-{int(time.time())}",
             "action": f"PR Review Loop iteration {iteration} evaluation for {review_target}",
-            "category": "test",
+            "category": "code",
             "target": review_target,
             "outcome": "success" if (not finding_ids and not is_dirty) else "failure",
             "entry_type": "action",
@@ -1723,6 +2169,30 @@ def run_review_loop(
             except Exception as e:
                 logger.debug("Non-fatal atomic ledger append during review iteration: %s", e)
 
+        # Discrete Action 2: Finding Detection Events (Bean 0113)
+        if finding_ids and not effective_dry_run:
+            finding_record = {
+                "action_id": generate_action_id("ACT-FIND"),
+                "execution_id": f"REV-FIND-{iteration}-{int(time.time())}",
+                "action": f"PR Review Loop iteration {iteration} findings detected: {', '.join(finding_ids)}",
+                "category": "code",
+                "target": review_target,
+                "outcome": "failure",
+                "entry_type": "action",
+                "action_origin": "pr_review",
+                "review_severity": severity if severity in ("critical", "important", "nit") else None,
+                "review_iteration": iteration,
+                "review_finding_ids": finding_ids,
+                "labels": ["review", "finding", f"iteration-{iteration}"],
+                "error_context": f"Findings detected: {finding_ids}",
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+            try:
+                with atomic_ledger_append(exec_file) as f:
+                    f.write(json.dumps(finding_record) + "\n")
+            except Exception as e:
+                logger.debug("Non-fatal atomic ledger append during finding detection: %s", e)
+
         # 7. Check termination criteria
         if not is_dirty and not finding_ids and last_ci_status.get("all_passed", False):
             consensus_reached = True
@@ -1738,6 +2208,51 @@ def run_review_loop(
 
     consensus_status = "approved" if consensus_reached else ("conflicted_dirty" if is_dirty else "rejected")
     approval_score = 1.0 if consensus_reached else 0.0
+
+    consensus_data = {
+        "approved": consensus_reached,
+        "status": consensus_status,
+        "iterations": iteration,
+        "max_review_iterations": budget,
+        "ci_checks": last_ci_status,
+        "mergeability": last_mergeability,
+        "trailers": last_trailers_str,
+        "findings": finding_ids,
+        "severity": severity,
+    }
+
+    # Dual-post review consensus to GitHub and handle self-approval restriction (Bean 0119)
+    posting_res: dict[str, Any] = {}
+    if not effective_dry_run:
+        try:
+            posting_res = post_pr_review_consensus(
+                repo_dir=repo_dir,
+                target=review_target,
+                consensus_data=consensus_data,
+                proxy_env=proxy_env,
+            )
+            # Discrete Action 4: PR Review Posting Event (Bean 0113)
+            posting_action_record = {
+                "action_id": generate_action_id("ACT-POST"),
+                "execution_id": f"REV-POST-{int(time.time())}",
+                "action": f"PR Review consensus dual-posted to GitHub for {review_target}",
+                "category": "code",
+                "target": review_target,
+                "outcome": (
+                    "success"
+                    if (posting_res.get("dual_posted") or posting_res.get("official_review", {}).get("success"))
+                    else "failure"
+                ),
+                "entry_type": "action",
+                "action_origin": "pr_review",
+                "review_iteration": iteration,
+                "labels": ["review", "github", "dual-post"],
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+            with atomic_ledger_append(exec_file) as f:
+                f.write(json.dumps(posting_action_record) + "\n")
+        except Exception as exc:
+            logger.debug("Non-fatal posting consensus or ledger write: %s", exc)
 
     # Record overall summary in executions.jsonl
     review_exec_id = f"REV-{int(time.time())}-{context.agent}"
@@ -1811,6 +2326,8 @@ def run_review_loop(
         "max_iterations": budget,
         "findings": finding_ids,
         "severity": severity,
+        "posting": posting_res,
+        "pr": pr_res,
     }
 
 
@@ -1908,6 +2425,8 @@ def run_review_stage(context: FlowContext) -> StageResult:
         "ci_checks": loop_res.get("ci_checks"),
         "trailers": loop_res.get("trailers"),
         "consulted_knowledge_ids": review_consulted_ids,
+        "posting": loop_res.get("posting"),
+        "pr": loop_res.get("pr"),
     }
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1932,6 +2451,8 @@ def run_review_stage(context: FlowContext) -> StageResult:
                 "halted_for_human": False,
                 "bean_0034_enforced": False,
                 "mergeability": mergeability,
+                "posting": loop_res.get("posting"),
+                "pr": loop_res.get("pr"),
             },
             error=err_msg,
         )
@@ -1952,6 +2473,8 @@ def run_review_stage(context: FlowContext) -> StageResult:
                 "halted_for_human": False,
                 "bean_0034_enforced": False,
                 "mergeability": mergeability,
+                "posting": loop_res.get("posting"),
+                "pr": loop_res.get("pr"),
             },
             error=err_msg,
         )
@@ -1977,6 +2500,8 @@ def run_review_stage(context: FlowContext) -> StageResult:
             "bean_0034_enforced": True,
             "human_approval_command": human_instruction,
             "mergeability": mergeability,
+            "posting": loop_res.get("posting"),
+            "pr": loop_res.get("pr"),
         },
         error=None,
     )

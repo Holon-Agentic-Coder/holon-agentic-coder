@@ -1318,9 +1318,10 @@ class TestReviewLoopStage:
             payload={"test_pass_rate": 1.0, "exit_code": 0},
         )
 
-        with patch("sandbox_executor.flow.run_git") as mock_git, patch(
-            "sandbox_executor.flow.post_pr_review_consensus"
-        ) as mock_post:
+        with (
+            patch("sandbox_executor.flow.run_git") as mock_git,
+            patch("sandbox_executor.flow.post_pr_review_consensus") as mock_post,
+        ):
             mock_git.return_value = MagicMock(returncode=0, stdout=" 1 file changed, 10 insertions(+)\n")
             mock_post.return_value = {"dual_posted": True, "official_review": {"success": True}}
             run_review_loop(ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=2, dry_run=False)
@@ -1380,19 +1381,32 @@ class TestReviewLoopStage:
 
 
 class TestSemanticPRAndConsensusReview:
-    """Hermetic unit tests for semantic PR generation, dual-posting review consensus, and granular ledger action logging."""
+    """Hermetic unit tests for semantic PR generation, dual-posting review consensus,
+    and granular ledger action logging."""
 
     def test_generate_semantic_pr_metadata_conventional_categories(self):
         """Verify category mapping to conventional commit prefixes and scope detection."""
         cases = [
             ({"category": "feature", "slug": "my-feat", "title": "Add cool feature"}, "feat(my): Add cool feature"),
             ({"category": "fix", "labels": ["api"], "title": "Fix crash on null"}, "fix(api): Fix crash on null"),
-            ({"category": "bugfix", "slug": "db-patch", "title": "Patch database leak"}, "fix(db): Patch database leak"),
-            ({"category": "refactor", "slug": "cleanup-flow", "title": "Refactor flow stages"}, "refactor(cleanup): Refactor flow stages"),
-            ({"category": "documentation", "slug": "docs-guide", "title": "Update README"}, "docs(docs): Update README"),
+            (
+                {"category": "bugfix", "slug": "db-patch", "title": "Patch database leak"},
+                "fix(db): Patch database leak",
+            ),
+            (
+                {"category": "refactor", "slug": "cleanup-flow", "title": "Refactor flow stages"},
+                "refactor(cleanup): Refactor flow stages",
+            ),
+            (
+                {"category": "documentation", "slug": "docs-guide", "title": "Update README"},
+                "docs(docs): Update README",
+            ),
             ({"category": "chore", "title": "Bump dependencies"}, "chore(core): Bump dependencies"),
             ({"category": "test", "labels": ["flow"], "title": "Add unit tests"}, "test(flow): Add unit tests"),
-            ({"category": "ci", "labels": ["github-actions"], "title": "Update matrix"}, "ci(githubactions): Update matrix"),
+            (
+                {"category": "ci", "labels": ["github-actions"], "title": "Update matrix"},
+                "ci(github-actions): Update matrix",
+            ),
         ]
         for intent, expected_prefix in cases:
             title, _ = generate_semantic_pr_metadata(intent)
@@ -1584,9 +1598,11 @@ class TestSemanticPRAndConsensusReview:
             payload={"test_pass_rate": 1.0, "exit_code": 0},
         )
 
-        with patch("sandbox_executor.flow.check_pr_mergeability") as mock_merge, patch(
-            "sandbox_executor.flow.probe_ci_checks"
-        ) as mock_ci, patch("sandbox_executor.flow.post_pr_review_consensus") as mock_post:
+        with (
+            patch("sandbox_executor.flow.check_pr_mergeability") as mock_merge,
+            patch("sandbox_executor.flow.probe_ci_checks") as mock_ci,
+            patch("sandbox_executor.flow.post_pr_review_consensus") as mock_post,
+        ):
             # Iteration 1: finding detected (dirty conflict)
             # Iteration 2: clean and passes (resolver pass)
             mock_merge.side_effect = [

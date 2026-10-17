@@ -984,10 +984,7 @@ def generate_semantic_pr_metadata(
 
     # Title extraction
     raw_title = str(
-        intent_data.get("title")
-        or intent_data.get("description")
-        or intent_data.get("goal")
-        or "Update components"
+        intent_data.get("title") or intent_data.get("description") or intent_data.get("goal") or "Update components"
     ).strip()
     # Strip any multiline text
     raw_title = raw_title.splitlines()[0].strip()
@@ -1112,6 +1109,7 @@ def create_or_update_pr(
             text=True,
             check=False,
             env=gh_env,
+            timeout=60,
         )
         if view_proc.returncode == 0 and view_proc.stdout.strip():
             data = json.loads(view_proc.stdout)
@@ -1128,13 +1126,14 @@ def create_or_update_pr(
                 text=True,
                 check=False,
                 env=gh_env,
+                timeout=60,
             )
             return {
                 "attempted": True,
                 "success": edit_proc.returncode == 0,
                 "action": "edit",
                 "pr_number": pr_num,
-                "output": (edit_proc.stdout or "") + (edit_proc.stderr or ""),
+                "output": f"{edit_proc.stdout or ''}\n{edit_proc.stderr or ''}".strip(),
             }
         else:
             create_cmd = [
@@ -1157,13 +1156,14 @@ def create_or_update_pr(
                 text=True,
                 check=False,
                 env=gh_env,
+                timeout=60,
             )
             return {
                 "attempted": True,
                 "success": create_proc.returncode == 0,
                 "action": "create",
                 "pr_number": None,
-                "output": (create_proc.stdout or "") + (create_proc.stderr or ""),
+                "output": f"{create_proc.stdout or ''}\n{create_proc.stderr or ''}".strip(),
             }
     except Exception as exc:
         return {"attempted": True, "success": False, "action": "error", "pr_number": None, "output": str(exc)}
@@ -1202,13 +1202,19 @@ def post_pr_review_consensus(
     trailers = consensus_data.get("trailers", "")
     findings = consensus_data.get("findings") or []
 
+    ci_passed = ci_status.get("passed", 0)
+    ci_total = ci_status.get("total", 0)
+    ci_src = ci_status.get("source", "local")
+    m_mergeable = mergeability.get("mergeable", "UNKNOWN")
+    m_status = mergeability.get("merge_state_status", "UNKNOWN")
+
     report_lines = [
         "## Holon Flow PR Review Consensus Report",
         "",
         f"- **Verdict:** `{verdict}`",
         f"- **Review Iterations:** {iterations} / {max_iterations}",
-        f"- **CI Status:** {ci_status.get('passed', 0)}/{ci_status.get('total', 0)} passed ({ci_status.get('source', 'local')})",
-        f"- **Mergeability:** `{mergeability.get('mergeable', 'UNKNOWN')}` (State: `{mergeability.get('merge_state_status', 'UNKNOWN')}`)",
+        f"- **CI Status:** {ci_passed}/{ci_total} passed ({ci_src})",
+        f"- **Mergeability:** `{m_mergeable}` (State: `{m_status}`)",
         f"- **Findings Detected:** {', '.join(findings) if findings else 'None'}",
         "",
         "### Commit Trailers",
@@ -1217,7 +1223,11 @@ def post_pr_review_consensus(
         "```",
         "",
         "> [!NOTE]",
-        "> **Bean 0034 Notice:** Under Bean 0034 (Human-Only PR Merging), autonomous merging to `main` is strictly prohibited. Pipeline halts for manual human approval.",
+        (
+            "> **Bean 0034 Notice:** Under Bean 0034 (Human-Only PR Merging), "
+            "autonomous merging to `main` is strictly prohibited. "
+            "Pipeline halts for manual human approval."
+        ),
     ]
     report_text = "\n".join(report_lines)
 
@@ -1237,9 +1247,10 @@ def post_pr_review_consensus(
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=60,
                 env=gh_env,
             )
-            comment_output = (comment_proc.stdout or "") + (comment_proc.stderr or "")
+            comment_output = f"{comment_proc.stdout or ''}\n{comment_proc.stderr or ''}".strip()
             if comment_proc.returncode == 0:
                 comment_success = True
             else:
@@ -1268,6 +1279,7 @@ def post_pr_review_consensus(
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=60,
                 env=gh_env,
             )
             raw_stderr = review_proc.stderr or ""
@@ -1284,7 +1296,8 @@ def post_pr_review_consensus(
                 )
                 if is_self_approval and initial_flag == "--approve":
                     logger.info(
-                        "Author self-approval restriction encountered (HTTP 422). Falling back to official review comment."
+                        "Author self-approval restriction encountered (HTTP 422). "
+                        "Falling back to official review comment."
                     )
                     self_approval_fallback = True
                     submitted_flag = "--comment"
@@ -1294,6 +1307,7 @@ def post_pr_review_consensus(
                         capture_output=True,
                         text=True,
                         check=False,
+                        timeout=60,
                         env=gh_env,
                     )
                     if fallback_proc.returncode == 0:

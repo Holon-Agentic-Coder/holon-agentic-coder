@@ -237,6 +237,8 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:
             if os.path.exists(dedicated_session):
                 mounts.extend(["-v", f"{dedicated_session}:/home/holon/.gemini/antigravity-cli:ro"])
                 mounts.extend(["--tmpfs", "/home/holon/.gemini/config:uid=1000,gid=1000"])
+                mounts.extend(["--tmpfs", "/home/holon/.gemini/antigravity-cli/log:uid=1000,gid=1000"])
+                mounts.extend(["--tmpfs", "/home/holon/.gemini/antigravity-cli/cache:uid=1000,gid=1000"])
                 return mounts
             elif not has_key:
                 print(
@@ -255,12 +257,16 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:
         if os.path.exists(dedicated_session):
             mounts.extend(["-v", f"{dedicated_session}:/home/holon/.gemini/antigravity-cli:ro"])
             mounts.extend(["--tmpfs", "/home/holon/.gemini/config:uid=1000,gid=1000"])
+            mounts.extend(["--tmpfs", "/home/holon/.gemini/antigravity-cli/log:uid=1000,gid=1000"])
+            mounts.extend(["--tmpfs", "/home/holon/.gemini/antigravity-cli/cache:uid=1000,gid=1000"])
             return mounts
 
         host_agy_cli = os.path.join(home, ".gemini", "antigravity-cli")
         if os.path.exists(host_agy_cli):
             mounts.extend(["-v", f"{host_agy_cli}:/home/holon/.gemini/antigravity-cli:ro"])
             mounts.extend(["--tmpfs", "/home/holon/.gemini/config:uid=1000,gid=1000"])
+            mounts.extend(["--tmpfs", "/home/holon/.gemini/antigravity-cli/log:uid=1000,gid=1000"])
+            mounts.extend(["--tmpfs", "/home/holon/.gemini/antigravity-cli/cache:uid=1000,gid=1000"])
 
         return mounts
 

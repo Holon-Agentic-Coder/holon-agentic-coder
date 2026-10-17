@@ -56,6 +56,8 @@ class TestHolonCLI(unittest.TestCase):
         self.assertIn("-v", mounts)
         self.assertTrue(any("/home/holon/.gemini/antigravity-cli:ro" in m for m in mounts))
         self.assertIn("--tmpfs", mounts)
+        self.assertIn("/home/holon/.gemini/antigravity-cli/log:uid=1000,gid=1000", mounts)
+        self.assertIn("/home/holon/.gemini/antigravity-cli/cache:uid=1000,gid=1000", mounts)
 
     @patch("sys.platform", "linux")
     @patch("os.path.exists")
@@ -65,6 +67,9 @@ class TestHolonCLI(unittest.TestCase):
         self.assertIsInstance(mounts, list)
         self.assertIn("-v", mounts)
         self.assertTrue(any("/home/holon/.gemini/antigravity-cli:ro" in m for m in mounts))
+        self.assertIn("--tmpfs", mounts)
+        self.assertIn("/home/holon/.gemini/antigravity-cli/log:uid=1000,gid=1000", mounts)
+        self.assertIn("/home/holon/.gemini/antigravity-cli/cache:uid=1000,gid=1000", mounts)
 
     @patch("sys.platform", "linux")
     @patch("os.path.exists")
@@ -74,6 +79,9 @@ class TestHolonCLI(unittest.TestCase):
         mounts = get_agent_session_mounts("antigravity")
         self.assertFalse(any("bus" in m for m in mounts))
         self.assertTrue(any("/home/holon/.gemini/antigravity-cli:ro" in m for m in mounts))
+        self.assertIn("--tmpfs", mounts)
+        self.assertIn("/home/holon/.gemini/antigravity-cli/log:uid=1000,gid=1000", mounts)
+        self.assertIn("/home/holon/.gemini/antigravity-cli/cache:uid=1000,gid=1000", mounts)
 
     def test_all_agent_session_mounts_are_read_only(self):
         """Iterate across all supported agents and verify any -v directory mounts contain :ro."""

@@ -9,10 +9,9 @@ import time
 from typing import Any
 
 import pytest
-
 from sandbox_executor.cli import main
-from sandbox_executor.knowledge.consult import ConsultEngine, ConsultResult, format_consult_results_table
-from sandbox_executor.knowledge.index import ActionIndexDatabase, sync_ledger_incremental
+from sandbox_executor.knowledge.consult import ConsultEngine
+from sandbox_executor.knowledge.index import ActionIndexDatabase
 from sandbox_executor.knowledge.promotion import (
     compute_beta_posterior,
     compute_context_fingerprint,
@@ -22,7 +21,6 @@ from sandbox_executor.knowledge.promotion import (
 )
 from sandbox_executor.knowledge.records import (
     CredentialRedactor,
-    Verdict,
     append_action_event,
     reconcile_records,
     validate_verdict_transition,
@@ -193,7 +191,7 @@ def test_consult_latency_benchmark(temp_dir: str) -> None:
         assert res.total_matched > 0
 
     latencies_ms.sort()
-    p95_latency = latencies_ms[int(round(99 * 0.95))]
+    p95_latency = latencies_ms[round(99 * 0.95)]
     # Verify strict SLA: warm consult latency p95 is sub-15ms
     assert p95_latency < 15.0, f"p95 latency was {p95_latency:.2f}ms, expected < 15.0ms"
 
@@ -273,9 +271,7 @@ def test_outcome_logging_state_machine(temp_dir: str) -> None:
     # 5. TTL expiration for unknown records older than 14 days
     old_time = "2020-01-01T00:00:00Z"
     with open(ledger_path, "a", encoding="utf-8") as f:
-        f.write(
-            json.dumps({"action_id": "act-old-unknown", "verdict": "unknown", "created_at": old_time}) + "\n"
-        )
+        f.write(json.dumps({"action_id": "act-old-unknown", "verdict": "unknown", "created_at": old_time}) + "\n")
 
     expire_stats = reconcile_records(ledger_path=ledger_path, max_age_days=14, db_path=db_path)
     assert expire_stats["expired"] >= 1

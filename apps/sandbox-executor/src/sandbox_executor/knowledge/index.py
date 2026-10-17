@@ -19,7 +19,7 @@ DEFAULT_GLOBAL_DB_PATH = os.path.expanduser("~/.holon/index/action_index.db")
 
 def compute_signature_hash(context_fingerprint: str, action_origin: str = "initial_implementation") -> str:
     """Compute deterministic SHA256 signature hash from context fingerprint and origin."""
-    payload = f"{context_fingerprint}:{action_origin}".encode("utf-8")
+    payload = f"{context_fingerprint}:{action_origin}".encode()
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -196,7 +196,7 @@ def _derive_context_fingerprint(data: dict[str, Any]) -> str:
     target = str(data.get("target") or data.get("plan_branch") or data.get("branch") or "")
     action = str(data.get("action") or data.get("slug") or data.get("summary") or "")
     error = str(data.get("error_context") or "")
-    raw = f"{target}|{action}|{error}".encode("utf-8")
+    raw = f"{target}|{action}|{error}".encode()
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
@@ -241,7 +241,7 @@ def sync_ledger_incremental(db_path: str, ledger_path: str) -> int:
         fts_to_insert: list[tuple[str, str, str, str, str]] = []
         signatures_to_update: dict[str, dict[str, Any]] = {}
 
-        with open(ledger_path, "r", encoding="utf-8") as f:
+        with open(ledger_path, encoding="utf-8") as f:
             f.seek(last_byte_offset)
             while True:
                 line_offset = f.tell()

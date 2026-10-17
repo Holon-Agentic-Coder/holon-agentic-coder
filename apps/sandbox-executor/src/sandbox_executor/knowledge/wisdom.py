@@ -8,7 +8,7 @@ import os
 from datetime import UTC, datetime
 from typing import Any
 
-from sandbox_executor.knowledge.index import ActionIndexDatabase, DEFAULT_PROJECT_DB_PATH
+from sandbox_executor.knowledge.index import DEFAULT_PROJECT_DB_PATH, ActionIndexDatabase
 from sandbox_executor.knowledge.promotion import evaluate_action_promotion
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ def _update_directory_index(subfolder_path: str, entry_meta: dict[str, Any]) -> 
 
     if os.path.exists(index_file):
         try:
-            with open(index_file, "r", encoding="utf-8") as f:
+            with open(index_file, encoding="utf-8") as f:
                 index_data = json.load(f)
         except Exception:
             pass
@@ -207,7 +207,9 @@ def promote_pending_candidates(
                     "tags": [records[0]["category"] if records else "failure", "veto"],
                     "payload": {
                         "name": f"Failure mode in {sample_tgt}",
-                        "description": f"Reproduced failure across {eval_res.failure_count} executions with identical context.",
+                        "description": (
+                            f"Reproduced failure across {eval_res.failure_count} executions with identical context."
+                        ),
                         "action": sample_act,
                         "symptoms": [records[0]["error_context"]] if records and records[0]["error_context"] else [],
                     },

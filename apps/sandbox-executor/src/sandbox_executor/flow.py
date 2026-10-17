@@ -920,7 +920,7 @@ def run_intent_stage(context: FlowContext) -> StageResult:
         consult_engine = ConsultEngine(project_db_path=db_path)
         intent_labels = intent_data.get("labels", [])
         if isinstance(intent_labels, str):
-            intent_labels = [l.strip() for l in intent_labels.split(",") if l.strip()]
+            intent_labels = [lbl.strip() for lbl in intent_labels.split(",") if lbl.strip()]
         consult_res = consult_engine.consult_records(all_labels=intent_labels, top_k=6, max_tokens=1200)
         consulted_ids = consult_res.consulted_ids
         if consulted_ids:
@@ -1097,7 +1097,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:
         consult_engine = ConsultEngine(project_db_path=db_path)
         intent_labels = context.intent_data.get("labels", [])
         if isinstance(intent_labels, str):
-            intent_labels = [l.strip() for l in intent_labels.split(",") if l.strip()]
+            intent_labels = [lbl.strip() for lbl in intent_labels.split(",") if lbl.strip()]
         consult_res = consult_engine.consult_records(any_labels=intent_labels, top_k=6, max_tokens=1200)
         consulted_ids = consult_res.consulted_ids
         for r in consult_res.records:
@@ -1130,7 +1130,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:
         if not os.path.exists(plan_md_path):
             advisory_section = ""
             if advisories:
-                advisory_section = f"\n## Wisdom Advisories\n\n" + "\n".join(advisories) + "\n"
+                advisory_section = "\n## Wisdom Advisories\n\n" + "\n".join(advisories) + "\n"
             plan_content = f"""# Plan for {intent_prefix}
 
 - **Plan ID:** {plan_id}
@@ -1296,7 +1296,12 @@ def run_execute_stage(context: FlowContext) -> StageResult:
                 else:
                     err = f"Execution blocked by deterministic failure veto for context fingerprint: {exec_fp}"
                     context.log(f"[VETO BLOCKED] {err}")
-                    return StageResult(stage=FlowStage.EXECUTE, status=StageStatus.FAILED, start_time=start_time, error=err)
+                    return StageResult(
+                        stage=FlowStage.EXECUTE,
+                        status=StageStatus.FAILED,
+                        start_time=start_time,
+                        error=err,
+                    )
     except Exception as e:
         logger.debug("Non-fatal veto check exception: %s", e)
 
@@ -1491,7 +1496,11 @@ def run_review_stage(context: FlowContext) -> StageResult:
         db_path = os.path.join(repo_dir, "holon-knowledge/.index/action_index.db")
         if os.path.exists(db_path):
             consult_engine = ConsultEngine(project_db_path=db_path)
-            consult_res = consult_engine.consult_records(any_labels=["review", "pr_review", "code_review"], top_k=6, max_tokens=1200)
+            consult_res = consult_engine.consult_records(
+                any_labels=["review", "pr_review", "code_review"],
+                top_k=6,
+                max_tokens=1200,
+            )
             review_consulted_ids = consult_res.consulted_ids
             if review_consulted_ids:
                 context.log(f"Consulted {len(review_consulted_ids)} review heuristics: {review_consulted_ids}")

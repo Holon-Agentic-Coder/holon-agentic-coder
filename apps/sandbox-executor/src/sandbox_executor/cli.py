@@ -1848,7 +1848,10 @@ def main() -> None:
             verdict=args.verdict,
             reason=args.reason,
         )
-        print(f"Reconciled: {rec_stats['reconciled']}, Expired: {rec_stats['expired']}, Scanned: {rec_stats['total_scanned']}")
+        print(
+            f"Reconciled: {rec_stats['reconciled']}, Expired: {rec_stats['expired']}, "
+            f"Scanned: {rec_stats['total_scanned']}"
+        )
         sys.exit(0)
 
     if args.command == "promote":

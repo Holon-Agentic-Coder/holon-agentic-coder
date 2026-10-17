@@ -1,16 +1,17 @@
-"""Asymmetric promotion engine: deterministic failure veto ladder and statistical Beta-Wilson success advisories (Bean 0052 Goal 4)."""
+"""Asymmetric promotion engine: deterministic failure veto ladder and
+statistical Beta-Wilson success advisories (Bean 0052 Goal 4).
+"""
 
 from __future__ import annotations
 
 import hashlib
 import logging
 import math
-import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from sandbox_executor.knowledge.index import ActionIndexDatabase, DEFAULT_PROJECT_DB_PATH
+from sandbox_executor.knowledge.index import DEFAULT_PROJECT_DB_PATH, ActionIndexDatabase
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ def compute_context_fingerprint(
     clean_exts = sorted({ext.strip().lower().lstrip(".") for ext in (file_extensions or []) if ext.strip()})
     ext_str = ",".join(clean_exts)
 
-    raw = f"{norm_target}|{norm_tool}|{norm_cmd}|{norm_err}|{ext_str}".encode("utf-8")
+    raw = f"{norm_target}|{norm_tool}|{norm_cmd}|{norm_err}|{ext_str}".encode()
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
@@ -292,13 +293,11 @@ def evaluate_action_promotion(
             success_ladder = "none"
         elif successes == 1:
             success_ladder = "observed"
-        elif 2 <= successes <= 4:
-            success_ladder = "repeated"
-        elif successes >= 5 and wilson_lower >= 0.70 and successes < 10:
-            success_ladder = "likely-success"
         elif successes >= 10 and wilson_lower >= 0.85:
             success_ladder = "proven-success"
-        elif successes >= 5:
+        elif successes >= 5 and wilson_lower >= 0.70:
+            success_ladder = "likely-success"
+        elif successes >= 2:
             success_ladder = "repeated"
         else:
             success_ladder = "observed"

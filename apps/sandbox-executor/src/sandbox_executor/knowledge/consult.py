@@ -5,13 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import math
-import sqlite3
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from sandbox_executor.knowledge.index import ActionIndexDatabase, DEFAULT_PROJECT_DB_PATH
+from sandbox_executor.knowledge.index import DEFAULT_PROJECT_DB_PATH, ActionIndexDatabase
 
 logger = logging.getLogger(__name__)
 

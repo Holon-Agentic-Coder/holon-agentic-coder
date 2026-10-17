@@ -6,7 +6,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from sandbox_executor.knowledge.index import ActionIndexDatabase, DEFAULT_PROJECT_DB_PATH
+from sandbox_executor.knowledge.index import DEFAULT_PROJECT_DB_PATH, ActionIndexDatabase
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,7 @@ class TelemetryCollector:
             def percentile(vals: list[float], pct: float) -> float:
                 if not vals:
                     return 0.0
-                idx = int(round((len(vals) - 1) * pct))
+                idx = round((len(vals) - 1) * pct)
                 return vals[idx]
 
             p50 = percentile(latencies, 0.50)

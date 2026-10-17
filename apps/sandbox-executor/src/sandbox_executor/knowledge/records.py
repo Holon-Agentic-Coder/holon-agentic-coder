@@ -8,7 +8,7 @@ import os
 import re
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Any
+from typing import Any, ClassVar
 
 from sandbox_executor.knowledge.index import DEFAULT_PROJECT_DB_PATH, sync_ledger_incremental
 from sandbox_executor.ledger import atomic_ledger_append, generate_action_id
@@ -83,13 +83,13 @@ def validate_verdict_transition(old_verdict: Verdict | str, new_verdict: Verdict
 class CredentialRedactor:
     """Multi-pattern secret and API key redactor to prevent credential leaks into the ledger."""
 
-    _PATTERNS: list[tuple[re.Pattern, str]] = [
+    _PATTERNS: ClassVar[list[tuple[re.Pattern, str]]] = [
         # OpenAI API Keys
         (re.compile(r"\b(sk-[a-zA-Z0-9_\-]{20,})\b"), "[REDACTED_SECRET]"),
         # Anthropic API Keys
         (re.compile(r"\b(sk-ant-[a-zA-Z0-9_\-]{20,})\b"), "[REDACTED_SECRET]"),
         # Google AI / Gemini API Keys
-        (re.compile(r"\b(AIza[0-9A-Za-z\-_]{35})\b"), "[REDACTED_SECRET]"),
+        (re.compile(r"\b(AIza[0-9A-Za-z\-_]{30,40})\b"), "[REDACTED_SECRET]"),
         # GitHub Personal Access Tokens (Classic and Fine-Grained)
         (re.compile(r"\b(ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{82})\b"), "[REDACTED_SECRET]"),
         # Generic Bearer Tokens
@@ -184,7 +184,7 @@ def reconcile_records(
         return {"reconciled": 0, "expired": 0, "total_scanned": 0}
 
     scanned_records: list[dict[str, Any]] = []
-    with open(ledger_path, "r", encoding="utf-8") as f:
+    with open(ledger_path, encoding="utf-8") as f:
         for line in f:
             line_str = line.strip()
             if not line_str:

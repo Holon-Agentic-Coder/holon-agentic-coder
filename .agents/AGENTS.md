@@ -1,4 +1,4 @@
-# Behavioral Rules for Holon Agentic Coder
+# Behavioural Rules for Holon Agentic Coder
 
 - **Pytest execution**: Always execute `pytest` commands using `uv run pytest` (e.g., `uv run pytest <args>`) to ensure
   environment consistency and dependencies are resolved correctly.
@@ -7,7 +7,7 @@
   environments must exist exclusively at the root `.venv`.
 - **Cleaning virtual environments**: If the virtual environment/stale code requires cleanup, always run
   `uv run task clean` instead of manually removing `.venv` or cache directories yourself.
-- **Task Runner (`taskipy`)**: Use standardized `uv run task <name>` tasks configured in `pyproject.toml`:
+- **Task Runner (`taskipy`)**: Use standardised `uv run task <name>` tasks configured in `pyproject.toml`:
   - `uv run task check` (runs lint and lint-docs)
   - `uv run task lint` (runs uv lock --check, git diff uv.lock, ruff check, and ruff format --check)
   - `uv run task lint-docs` (runs prettier check on markdown)

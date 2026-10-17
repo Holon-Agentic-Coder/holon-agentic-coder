@@ -31,7 +31,7 @@ from sandbox_executor.flow import (
 
 
 class TestFlowDataModels:
-    """Test data structures, enums, serialization, and atomic checkpoint persistence."""
+    """Test data structures, enums, serialisation, and atomic checkpoint persistence."""
 
     def test_flow_stage_enum(self):
         assert FlowStage.INTENT.value == "intent"

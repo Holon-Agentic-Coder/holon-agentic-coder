@@ -148,8 +148,8 @@ These agents are invoked dynamically depending on the task's complexity, cost, u
 4. **Complexity Routing Agent:**
    - **Role:** Pre-evaluates the intent text and workspace context to select the appropriate reasoning models (
      Flash/Medium/Deep).
-   - **Status:** **OPTIONAL** (Invoked at the beginning of the planning lifecycle to optimize model costs).
-5. **Resource & Cost Optimization Agent (Budget Agent):**
+   - **Status:** **OPTIONAL** (Invoked at the beginning of the planning lifecycle to optimise model costs).
+5. **Resource & Cost Optimisation Agent (Budget Agent):**
    - **Role:** Forecasts API token cost and sandbox VM computation times to ensure plan complies with the project's
      financial budget.
    - **Status:** **OPTIONAL** (Triggered for high-complexity/deep-model routing plans).
@@ -157,10 +157,10 @@ These agents are invoked dynamically depending on the task's complexity, cost, u
    - **Role:** Mandates and verifies the insertion of rollback/cleanup steps for any plan steps that alter schema or
      write to database state.
    - **Status:** **OPTIONAL** (Triggered for plans that involve stateful modifications).
-7. **Context Window Optimizer Agent (Attention Agent):**
+7. **Context Window Optimiser Agent (Attention Agent):**
    - **Role:** Prunes irrelevant codebase source files and documentation from the prompt context.
    - **Status:** **OPTIONAL** (Triggered for larger codebase scopes to control prompt sizes).
-8. **Dependency & License Auditor Agent (Compliance Officer):**
+8. **Dependency & Licence Auditor Agent (Compliance Officer):**
    - **Role:** Audits proposed third-party packages for copyleft conflicts (e.g. GPL compatibility) and CVE safety.
    - **Status:** **OPTIONAL** (Triggered when the plan modifies `pyproject.toml` or environment lockfiles).
 9. **Test Specification Generator Agent (QA Architect):**

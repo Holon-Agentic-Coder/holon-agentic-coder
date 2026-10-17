@@ -1,7 +1,7 @@
 """Holon Flow Orchestration Pipeline Engine.
 
 Automates the complete 5-stage Holon Flow lifecycle:
-1. Stage 1 (Intent Creation): Validate intent payload, initialize branch prefix, append to intents ledger.
+1. Stage 1 (Intent Creation): Validate intent payload, initialise branch prefix, append to intents ledger.
 2. Stage 2 (Plan Generation): Create plan branch, generate/validate plan markdown, compute EV, append to plans ledger.
 3. Stage 3 (Plan Execution): Create execution branch, rebase on plan, run agent/tests, append to executions ledger.
 4. Stage 4 (PR Review Loop): Autonomous review loop evaluating diffs and test results, strictly enforcing
@@ -106,7 +106,7 @@ class StageResult:
     error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert StageResult to a JSON-serializable dictionary."""
+        """Convert StageResult to a JSON-serialisable dictionary."""
         return {
             "stage": self.stage.value,
             "status": self.status.value,
@@ -252,7 +252,7 @@ class FlowContext:
         logger.info(formatted)
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert FlowContext to a JSON-serializable dictionary."""
+        """Convert FlowContext to a JSON-serialisable dictionary."""
         return {
             "schema_version": self.schema_version,
             "repo_dir": self.repo_dir,
@@ -562,7 +562,7 @@ def reconcile_ledger_rows(rows: list[dict[str, Any]], ledger_type: str) -> list[
 
 
 def reconcile_ledger_content(content: str, ledger_type: str) -> str:
-    """Parse, reconcile, and serialize ledger content by union.
+    """Parse, reconcile, and serialise ledger content by union.
 
     Args:
         content: Raw JSONL string content, potentially containing git conflict markers.
@@ -907,7 +907,7 @@ def validate_intent_questions(intent_data: dict[str, Any]) -> tuple[bool, list[s
 
 
 def run_intent_stage(context: FlowContext) -> StageResult:
-    """Execute Stage 1: Validate payload, initialize intent branch, and record in ledger."""
+    """Execute Stage 1: Validate payload, initialise intent branch, and record in ledger."""
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log("Starting Stage 1: Intent Creation")
 

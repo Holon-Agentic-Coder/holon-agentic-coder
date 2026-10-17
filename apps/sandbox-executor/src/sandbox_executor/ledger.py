@@ -41,7 +41,7 @@ def generate_action_id(prefix: str = "ACT") -> str:
 
 @dataclass
 class ActionRecord:
-    """Standardized discrete action record for the execution ledger."""
+    """Standardised discrete action record for the execution ledger."""
 
     action_id: str
     execution_id: str
@@ -131,7 +131,7 @@ class ActionRecord:
 
 @dataclass
 class SummaryRecord:
-    """Standardized summary record for plan executions."""
+    """Standardised summary record for plan executions."""
 
     execution_id: str
     plan_branch: str
@@ -339,7 +339,7 @@ def append_summary_record(ledger_path: str, record: SummaryRecord | dict[str, An
 
 
 def parse_commit_trailers(commit_message: str) -> dict[str, Any]:
-    """Parse standardized action provenance trailers from commit message.
+    """Parse standardised action provenance trailers from commit message.
 
     Trailers parsed (case-insensitive):
     - Action-Origin: initial_implementation, pr_review, ci_fix, calibration, operator

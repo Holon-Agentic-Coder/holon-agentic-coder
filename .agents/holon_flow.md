@@ -37,7 +37,7 @@ The Holon Flow pipeline executes sequentially through five distinct lifecycle st
 
 ### Stage 1: Intent Creation (`FlowStage.INTENT`)
 
-- **Purpose**: Ingest and validate the intent specification, initialize isolated branch namespaces, and append
+- **Purpose**: Ingest and validate the intent specification, initialise isolated branch namespaces, and append
   provenance records to the ledger.
 - **Git Branch**: `I-{timestamp}-{slug}/_` created from target base (usually `main`).
 - **Validation**: Schema validation on `slug`, `title`, `category`, `priority`, `labels`, and clarification questions

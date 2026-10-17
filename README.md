@@ -6,6 +6,8 @@ intents**, **competitive planning variants**, **append-only learning**, and **en
 Repository:
 [https://github.com/Holon-Agentic-Coder/holon-agentic-coder](https://github.com/Holon-Agentic-Coder/holon-agentic-coder)
 
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
 ---
 
 ## What is Holon?
@@ -723,7 +725,7 @@ flowchart TD
   - [`docs/wisdombase_schema.md`](docs/wisdombase_schema.md) — Universal code invariants and meta-principles.
   - [`docs/ledger_schema.md`](docs/ledger_schema.md) — JSON schemas for the evolution ledger.
 - **Execution & Integrations:**
-  - [`docs/agent_design.md`](docs/agent_design.md) — High-level agent architecture and behavioral contracts.
+  - [`docs/agent_design.md`](docs/agent_design.md) — High-level agent architecture and behavioural contracts.
   - [`docs/agents.md`](docs/agents.md) — Instructions for integrating specific agents (Gemini, Claude, etc.).
   - [`docs/examples.md`](docs/examples.md) — End-to-end practical walkthroughs.
 
@@ -798,7 +800,7 @@ uv tool upgrade holon
 
 #### 4. Local Development (Editable Installation)
 
-When developing locally within the repository, synchronize the virtual environment using `uv sync` to install `holon` in
+When developing locally within the repository, synchronise the virtual environment using `uv sync` to install `holon` in
 editable mode:
 
 ```bash
@@ -811,13 +813,13 @@ uv pip install -e ./apps/sandbox-executor
 
 #### 5. Developer Workflows (`uv` & `Makefile`)
 
-Task execution is standardized via `uv` and `taskipy` in `pyproject.toml`. Python testing, linting, formatting, and
+Task execution is standardised via `uv` and `taskipy` in `pyproject.toml`. Python testing, linting, formatting, and
 maintenance tasks are executed directly with `uv run task <target>` or `uv sync`. `Makefile` is reserved strictly for
 Docker image orchestration and system prerequisite provisioning:
 
 ```bash
 # Via uv and taskipy (Python project tasks):
-uv sync                  # Synchronize virtual environment dependencies
+uv sync                  # Synchronise virtual environment dependencies
 uv run task check        # Run all static linting, formatting, and lockfile checks
 uv run task lint         # Run lockfile verification and Ruff checks
 uv run task lint-docs    # Check Markdown documentation formatting with Prettier
@@ -972,6 +974,14 @@ Please open **issues** or **discussions** for:
 
 **Note:** This repository is a **blueprint and specification**, not a reference implementation. There are no plans to
 accept implementation PRs at this time.
+
+---
+
+## Licence
+
+Holon is open-source software licensed under the [Apache License, Version 2.0](LICENSE).
+
+Copyright 2026 Holon Agentic Coder Contributors.
 
 ---
 

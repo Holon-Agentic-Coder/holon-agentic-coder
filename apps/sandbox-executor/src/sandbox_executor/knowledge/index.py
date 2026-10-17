@@ -32,7 +32,7 @@ class ActionIndexDatabase:
         self._init_db(self.db_path)
 
     def _init_db(self, path: str) -> None:
-        """Initialize schema and tables with WAL mode enabled."""
+        """Initialise schema and tables with WAL mode enabled."""
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         conn = sqlite3.connect(path, timeout=5.0)
         try:
@@ -185,7 +185,7 @@ class ActionIndexDatabase:
         return conn
 
     def sync_ledger(self, ledger_path: str) -> int:
-        """Incrementally synchronize a ledger file into this index database."""
+        """Incrementally synchronise a ledger file into this index database."""
         return sync_ledger_incremental(self.db_path, ledger_path)
 
 

@@ -101,7 +101,7 @@ uv run task clean
 ```
 
 _Note: This command clears all python cache directories (`__pycache__`), test caches (`.pytest_cache`), and removes the
-root `.venv`. You should run `uv sync` afterwards to re-initialize a clean environment._
+root `.venv`. You should run `uv sync` afterwards to re-initialise a clean environment._
 
 ### Re-syncing Workspace Dependencies
 
@@ -112,5 +112,5 @@ uv sync
 ```
 
 > [!IMPORTANT] **Single Virtual Environment Rule:** Always use the `.venv` located at the root of the workspace. Do NOT
-> run commands that initialize a separate virtual environment inside subdirectories (e.g.,
+> run commands that initialise a separate virtual environment inside subdirectories (e.g.,
 > `apps/sandbox-executor/.venv`), as this will cause package resolution mismatches.

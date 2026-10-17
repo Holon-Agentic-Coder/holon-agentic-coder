@@ -132,7 +132,7 @@ def is_action_logging_enabled(intent_data: dict[str, Any] | None = None) -> bool
 def redact_text(text: str) -> str:
     """Mask credentials and sensitive tokens in text with asterisks.
 
-    Recognizes standard secret keys (token, secret, password, pwd, passwd, api_key,
+    Recognises standard secret keys (token, secret, password, pwd, passwd, api_key,
     credentials, client_secret, db_password, bare key), provider token prefixes,
     HTTP authorization headers, and URL query parameters while preserving non-secret
     diagnostic keys (such as sort_key and cache_key). Enforces line scoping on
@@ -142,7 +142,7 @@ def redact_text(text: str) -> str:
         text: The string content to redact.
 
     Returns:
-        The sanitized string with matched secret values masked as '*******'.
+        The sanitised string with matched secret values masked as '*******'.
     """
     if not text:
         return text

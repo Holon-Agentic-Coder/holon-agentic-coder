@@ -82,7 +82,7 @@ uv run python ../../todo/ab_benchmark_mock_api.py
 
 Performs a raw `curl` pre-check against the target URL, spawns the Docker mitmproxy sidecar container
 (`mitmproxy/mitmproxy:12.2.3` running `mitm_addon.py`), routes real client socket traffic through the container to
-**arbitrary target LLM URLs** via a strictly required `--url` parameter (zero hardcoded default URLs), standardizes on
+**arbitrary target LLM URLs** via a strictly required `--url` parameter (zero hardcoded default URLs), standardises on
 `HOLON_AGENT_KEY`, and outputs all structured execution logs and response payloads into the `todo/` directory
 (`todo/ab_real_api_results.json` and `todo/ab_real_api_results.md`):
 

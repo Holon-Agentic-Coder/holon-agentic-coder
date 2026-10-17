@@ -1,4 +1,4 @@
-"""Context cleaning, tool output deduplication, and prompt cache optimization for LLM payloads."""
+"""Context cleaning, tool output deduplication, and prompt cache optimisation for LLM payloads."""
 
 import copy
 import hashlib
@@ -10,12 +10,12 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _RECENT_TURNS_TO_KEEP = 6
-"""Number of recent conversation turns preserved verbatim at the end of the history during summarization."""
+"""Number of recent conversation turns preserved verbatim at the end of the history during summarisation."""
 
 
 @dataclass
 class CleaningResult:
-    """Result of context cleaning, tool output deduplication, and prompt cache optimization."""
+    """Result of context cleaning, tool output deduplication, and prompt cache optimisation."""
 
     payload: dict[str, Any]
     tool_outputs_omitted: int = 0
@@ -25,7 +25,7 @@ class CleaningResult:
 
 
 class JSONContextCleaner:
-    """Cleans JSON LLM payloads by deduplicating tool outputs, summarizing history,
+    """Cleans JSON LLM payloads by deduplicating tool outputs, summarising history,
 
     and inserting prompt cache control breakpoints for Anthropic API schemas.
     """
@@ -41,19 +41,19 @@ class JSONContextCleaner:
         self.max_turns = max_turns
 
     def process_payload(self, payload: dict[str, Any], provider: str = "anthropic") -> dict[str, Any]:
-        """Processes and optimizes an outgoing LLM JSON request payload.
+        """Processes and optimises an outgoing LLM JSON request payload.
 
         Args:
             payload: Parsed JSON payload dictionary.
             provider: Provider format ('anthropic', 'openai', or 'gemini').
 
         Returns:
-            dict[str, Any]: Optimized JSON payload dictionary.
+            dict[str, Any]: Optimised JSON payload dictionary.
         """
         return self.process_payload_with_stats(payload, provider=provider).payload
 
     def process_payload_with_stats(self, payload: dict[str, Any], provider: str = "anthropic") -> CleaningResult:
-        """Processes and optimizes an outgoing LLM JSON request payload and returns metrics.
+        """Processes and optimises an outgoing LLM JSON request payload and returns metrics.
 
         Args:
             payload: Parsed JSON payload dictionary.
@@ -106,7 +106,7 @@ class JSONContextCleaner:
         if self.enable_deduplication:
             messages = self._deduplicate_anthropic_tool_outputs(messages, seen_content_hashes, stats=stats)
 
-        # 2. History summarization if message turns exceed max_turns
+        # 2. History summarisation if message turns exceed max_turns
         if len(messages) > self.max_turns:
             messages = self._summarize_anthropic_history(messages, stats=stats)
             messages = self._merge_consecutive_roles(messages)
@@ -448,7 +448,7 @@ class JSONContextCleaner:
             )
             target_idx = max(prefix_len + 1, len(cleaned_messages) - _RECENT_TURNS_TO_KEEP)
             suffix_idx = None
-            # Search forward first from target_idx to find clean user message that leaves middle turns to summarize
+            # Search forward first from target_idx to find clean user message that leaves middle turns to summarise
             for i in range(target_idx, len(cleaned_messages)):
                 if self._is_clean_user_message(cleaned_messages[i], "openai"):
                     suffix_idx = i

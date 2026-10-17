@@ -22,7 +22,7 @@ and architectural rules for this repository. All planning and execution agents m
   all dependencies must be declared in `pyproject.toml`.
 - **Project Layout:** Monorepo / Package structure:
   - Root project matches metadata constraints.
-  - Sub-packages isolated or organized under `src/` or `apps/`.
+  - Sub-packages isolated or organised under `src/` or `apps/`.
 
 ---
 
@@ -198,7 +198,7 @@ creating, and deleting codebase files.
 **Critical Execution Directives:**
 
 1. You must implement all changes specified in the plan by directly writing and modifying the files in this repository.
-2. Do NOT merely summarize or discuss the plan in text—you MUST modify the actual files on the filesystem using your
+2. Do NOT merely summarise or discuss the plan in text—you MUST modify the actual files on the filesystem using your
    file creation and editing tools.
 3. Run the relevant test suite using your terminal tools to verify your implementation and ensure all tests pass.
 4. Ensure code formatting, linting, and repo conventions are followed.
@@ -312,7 +312,7 @@ def init_project(target_dir: str = ".", template: str = "python", force: bool = 
     """Scaffolds Holon directories, templates, and ledgers in target_dir.
 
     Args:
-        target_dir: The project root directory to initialize.
+        target_dir: The project root directory to initialise.
         template: Project template type ('python' or 'generic').
         force: If True, overwrite configuration files (ledger files are never overwritten).
 

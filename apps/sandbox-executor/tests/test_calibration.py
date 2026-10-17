@@ -32,7 +32,7 @@ from sandbox_executor.cli import main as cli_main
 
 
 class TestCalibrationDataModels(unittest.TestCase):
-    """Test calibration dataclass models and serialization."""
+    """Test calibration dataclass models and serialisation."""
 
     def test_predicted_metrics_defaults_and_dict(self):
         pm = PredictedMetrics(p_success=0.95, entropy=1.5, impact=70.0, cost=3.0, learning_value=2.0, ev=60.0)

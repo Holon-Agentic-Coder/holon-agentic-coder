@@ -1,4 +1,4 @@
-"""MITM proxy interceptor & addon for LLM API request optimization and response caching (Phase 3)."""
+"""MITM proxy interceptor & addon for LLM API request optimisation and response caching (Phase 3)."""
 
 import atexit
 import concurrent.futures
@@ -123,7 +123,7 @@ def scrub_headers(headers: Any) -> dict[str, str]:
 
 
 def scrub_payload(data: Any, max_depth: int = 50) -> Any:
-    """Recursively scrubs sensitive keys and credentials in JSON-serializable payloads."""
+    """Recursively scrubs sensitive keys and credentials in JSON-serialisable payloads."""
     if max_depth <= 0:
         return data
     if isinstance(data, dict):
@@ -292,7 +292,7 @@ def derive_turn_id(
 
 class MITMProxyInterceptor:
     """Interceptor for LLM requests that performs context cleaning,
-    deduplication, prompt cache optimization, and local response caching.
+    deduplication, prompt cache optimisation, and local response caching.
     """
 
     def __init__(self, cache_dir: str | None = None, enable_caching: bool = True):
@@ -359,7 +359,7 @@ class MITMProxyInterceptor:
     def intercept_request_with_stats(
         self, endpoint: str, request_json: dict[str, Any]
     ) -> tuple[dict[str, Any], dict[str, Any] | None, CleaningResult | None]:
-        """Intercepts and optimizes an outgoing JSON API request payload, returning per-request stats cleanly.
+        """Intercepts and optimises an outgoing JSON API request payload, returning per-request stats cleanly.
 
         Tuple Return Design:
             1. First Element (cleaned_request_json): The cleaned request body (with deduplicated tool
@@ -390,7 +390,7 @@ class MITMProxyInterceptor:
             logger.warning("Unknown LLM provider for endpoint: %s. Bypassing payload cleaning.", endpoint)
             return request_json, None, None
 
-        # Step 1: Clean and optimize request payload
+        # Step 1: Clean and optimise request payload
         clean_res = self.cleaner.process_payload_with_stats(request_json, provider=provider)
         cleaned_request = clean_res.payload
 
@@ -414,7 +414,7 @@ class MITMProxyInterceptor:
     def intercept_request(
         self, endpoint: str, request_json: dict[str, Any]
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-        """Intercepts and optimizes an outgoing JSON API request payload (backward-compatible 2-tuple)."""
+        """Intercepts and optimises an outgoing JSON API request payload (backward-compatible 2-tuple)."""
         cleaned_request, cached_response, _ = self.intercept_request_with_stats(endpoint, request_json)
         return cleaned_request, cached_response
 

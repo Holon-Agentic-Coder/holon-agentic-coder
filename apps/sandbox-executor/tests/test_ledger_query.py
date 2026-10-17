@@ -26,7 +26,7 @@ from sandbox_executor.ledger import (
 
 
 class TestActionRecordModels(unittest.TestCase):
-    """Test ActionRecord and SummaryRecord dataclass behavior and validation."""
+    """Test ActionRecord and SummaryRecord dataclass behaviour and validation."""
 
     def test_action_record_creation_and_to_dict(self):
         record = ActionRecord(

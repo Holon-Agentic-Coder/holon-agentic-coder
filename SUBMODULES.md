@@ -14,7 +14,7 @@ independent release lifecycles.
 
 - **Path**: `holon-coherence/`
 - **Remote Repository**: `https://github.com/Holon-Agentic-Coder/holon-coherence.git`
-- **Role**: Provides the LLM optimization gateway, MITM proxy, token reduction techniques, wire telemetry logging, and
+- **Role**: Provides the LLM optimisation gateway, MITM proxy, token reduction techniques, wire telemetry logging, and
   SSE stream parsing.
 - **Default Branch**: `main`
 
@@ -46,7 +46,7 @@ Git manages submodules through two separate mechanisms:
 
 ## 2. Developer Workflow & Operations
 
-### Initializing Submodules
+### Initialising Submodules
 
 When checking out the repository, creating a new Git worktree, or cloning freshly, submodules will initially appear as
 empty directories. Run:
@@ -55,7 +55,7 @@ empty directories. Run:
 git submodule update --init --recursive
 ```
 
-To clone and initialize submodules in a single step:
+To clone and initialise submodules in a single step:
 
 ```bash
 git clone --recurse-submodules <repo-url>
@@ -72,7 +72,7 @@ git submodule status
 Status indicators:
 
 - ` ` (space): Submodule is clean and matches the commit pinned in the parent repository.
-- `-` (minus): Submodule is uninitialized (run `git submodule update --init`).
+- `-` (minus): Submodule is uninitialised (run `git submodule update --init`).
 - `+` (plus): Checked-out submodule commit differs from the pinned commit in the parent repository.
 - `U` (uppercase U): Submodule has merge conflicts.
 
@@ -85,7 +85,7 @@ git ls-tree HEAD holon-coherence
 
 ### Updating `holon-coherence` to Latest Main
 
-When new features, bug fixes, or token optimization enhancements are pushed to `holon-coherence`:
+When new features, bug fixes, or token optimisation enhancements are pushed to `holon-coherence`:
 
 ```bash
 # 1. Update submodule to the remote tracking branch tip
@@ -175,7 +175,7 @@ submodules: recursive
 If a submodule is ever deprecated or replaced:
 
 ```bash
-# De-initialize the submodule from .git/config
+# De-initialise the submodule from .git/config
 git submodule deinit -f holon-coherence
 
 # Remove the submodule working tree and .gitmodules entry

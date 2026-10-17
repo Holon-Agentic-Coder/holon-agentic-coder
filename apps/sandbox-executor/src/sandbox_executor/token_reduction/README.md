@@ -1,29 +1,29 @@
 # AI Agent Token Reduction Subpackage
 
-This subpackage implements a multi-tiered token optimization system designed to significantly reduce LLM token usage,
+This subpackage implements a multi-tiered token optimisation system designed to significantly reduce LLM token usage,
 context sizes, and API costs during autonomous agent operations.
 
 ---
 
 ## 🚀 Features & Components
 
-The system operates across four primary optimization layers:
+The system operates across four primary optimisation layers:
 
 1. **Phase 1: MITM Interception & Certificate Trust**
    - Intercepts outbound agent HTTPS requests to LLM APIs (Anthropic, OpenAI, Gemini).
    - Automatically bootstraps self-signed Root CA certificates to enable secure SSL/TLS traffic interception.
    - Injectable proxy settings via volume mounts and container trust environment variables.
 
-2. **Phase 2: Context Cleaning & Prompt Cache Optimization**
+2. **Phase 2: Context Cleaning & Prompt Cache Optimisation**
    - **Tool Result Deduplication**: Omit repeating redundant payloads (e.g., repeating `cat` or `grep` file reads) from
      previous turns and replace them with structural references.
    - **Prompt Cache Control Breakpoints**: Inject Anthropic-specific `"cache_control": {"type": "ephemeral"}`
      breakpoints to utilize cheaper prompt caching.
-   - **Summarization**: Condenses conversation history dynamically when turn count exceeds thresholds.
+   - **Summarisation**: Condenses conversation history dynamically when turn count exceeds thresholds.
 
 3. **Phase 3: Hybrid & Semantic Prompt Caching**
    - Disk-backed SQLite exact and semantic prompt caching.
-   - Normalizes transient values (timestamps, run IDs, UUIDs) before checking hits.
+   - Normalises transient values (timestamps, run IDs, UUIDs) before checking hits.
    - Token-based semantic similarity checking using Jaccard indexes for minor prompt variations.
    - **Tuple Return & Operational Short-Circuiting**: `intercept_request` returns
      `(cleaned_request_json, cached_response_or_none)`. If a cached response is present, `MitmproxyAddon.request(flow)`
@@ -111,7 +111,7 @@ agy
 ```python
 from sandbox_executor.token_reduction import HybridCacheStore
 
-# Initialize the cache store pointing to the local SQLite DB
+# Initialise the cache store pointing to the local SQLite DB
 cache = HybridCacheStore(cache_dir="~/.holon/cache", similarity_threshold=0.85)
 
 payload = {
@@ -119,7 +119,7 @@ payload = {
     "messages": [{"role": "user", "content": "Fix bug in task-4567 at 2026-08-29T10:00:00Z"}]
 }
 
-# Lookup will normalize timestamps/IDs and check exact or semantic matches
+# Lookup will normalise timestamps/IDs and check exact or semantic matches
 cached_response = cache.get(payload, provider="anthropic")
 if cached_response:
     print("Cache hit:", cached_response)
@@ -129,7 +129,7 @@ else:
     cache.put(payload, api_response, provider="anthropic")
 ```
 
-### Context Deduplication & Summarization
+### Context Deduplication & Summarisation
 
 ```python
 from sandbox_executor.token_reduction import ContextCleaner
@@ -144,7 +144,7 @@ raw_payload = {
     ]
 }
 
-# Optimizes messages history and injects Anthropic cache control markers
+# Optimises messages history and injects Anthropic cache control markers
 optimized_payload = cleaner.process_payload(raw_payload, provider="anthropic")
 ```
 

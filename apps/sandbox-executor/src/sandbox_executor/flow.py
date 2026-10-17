@@ -1631,6 +1631,7 @@ def run_review_loop(
     budget = max(1, max_iterations or context.max_review_iterations or 25)
     repo_dir = context.repo_dir
     target_branch = context.intent_data.get("target_branch", "main")
+    effective_dry_run = bool(dry_run or context.dry_run)
 
     proxy_env: dict[str, str] = {}
     if context.token_reduce:
@@ -1677,12 +1678,11 @@ def run_review_loop(
 
         # 2. CI status inspection
         last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
-        if last_ci_status.get("source") == "local_tests":
-            if exit_code != 0 or test_pass_rate < 1.0:
-                last_ci_status["all_passed"] = False
-                last_ci_status["passed"] = 0
-                last_ci_status["failed"] = 1
-                last_ci_status["checks"] = [{"name": "local_tests", "bucket": "fail", "state": "FAILURE"}]
+        if last_ci_status.get("source") == "local_tests" and (exit_code != 0 or test_pass_rate < 1.0):
+            last_ci_status["all_passed"] = False
+            last_ci_status["passed"] = 0
+            last_ci_status["failed"] = 1
+            last_ci_status["checks"] = [{"name": "local_tests", "bucket": "fail", "state": "FAILURE"}]
 
         # 3. Analyze findings
         finding_ids = []
@@ -1699,7 +1699,7 @@ def run_review_loop(
         last_trailers_str = format_review_git_trailers("pr_review", iteration, finding_ids, severity)
         last_trailers_dict = parse_commit_trailers(last_trailers_str)
 
-        # 5. Append discrete action record to executions.jsonl
+        # 5. Append discrete action record to executions.jsonl if not dry-run
         action_record = {
             "action_id": generate_action_id("ACT-REV"),
             "execution_id": f"REV-ITR-{iteration}-{int(time.time())}",
@@ -1716,23 +1716,12 @@ def run_review_loop(
             "error_context": f"Findings detected: {finding_ids}" if finding_ids else None,
             "created_at": datetime.now(UTC).isoformat(),
         }
-        try:
-            with atomic_ledger_append(exec_file) as f:
-                f.write(json.dumps(action_record) + "\n")
-        except Exception as e:
-            logger.debug("Non-fatal atomic ledger append during review iteration: %s", e)
-
-        # 6. Git commit with trailers if not dry-run
-        if not dry_run:
-            is_git = run_git(["rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False).returncode == 0
-            if is_git:
-                commit_env = os.environ.copy()
-                commit_env.setdefault("GIT_AUTHOR_NAME", "Holon Review Agent")
-                commit_env.setdefault("GIT_AUTHOR_EMAIL", "review-agent@holon-agentic-coder.com")
-                commit_env.setdefault("GIT_COMMITTER_NAME", "Holon Review Agent")
-                commit_env.setdefault("GIT_COMMITTER_EMAIL", "review-agent@holon-agentic-coder.com")
-                commit_msg = f"review: iteration {iteration} evaluation\n\n{last_trailers_str}"
-                run_git(["commit", "--allow-empty", "-m", commit_msg], cwd=repo_dir, env=commit_env, check=False)
+        if not effective_dry_run:
+            try:
+                with atomic_ledger_append(exec_file) as f:
+                    f.write(json.dumps(action_record) + "\n")
+            except Exception as e:
+                logger.debug("Non-fatal atomic ledger append during review iteration: %s", e)
 
         # 7. Check termination criteria
         if not is_dirty and not finding_ids and last_ci_status.get("all_passed", False):
@@ -1772,33 +1761,36 @@ def run_review_loop(
         "ci_checks_summary": last_ci_status,
         "trailers": last_trailers_dict,
     }
-    try:
-        with atomic_ledger_append(exec_file) as f:
-            f.write(json.dumps(summary_entry) + "\n")
-    except Exception as e:
-        logger.debug("Non-fatal atomic ledger append during review summary: %s", e)
+    if not effective_dry_run:
+        try:
+            with atomic_ledger_append(exec_file) as f:
+                f.write(json.dumps(summary_entry) + "\n")
+        except Exception as e:
+            logger.debug("Non-fatal atomic ledger append during review summary: %s", e)
 
     # Record action event in actions.jsonl if available
-    try:
-        actions_file = os.path.join(ledger_dir, "actions.jsonl")
-        append_action_event(
-            {
-                "execution_id": review_exec_id,
-                "action": f"PR Review Loop executed for {review_target}",
-                "category": "test",
-                "target": review_target,
-                "verdict": "success" if consensus_reached else "failure",
-                "outcome": "success" if consensus_reached else "failure",
-                "context_fingerprint": compute_context_fingerprint(
-                    target=review_target, tool=context.agent, command_prefix="review-loop"
-                ),
-                "labels": ["review", "review-loop", context.agent],
-                "error_context": None if consensus_reached else f"Consensus failed: findings={finding_ids}",
-            },
-            ledger_path=actions_file,
-        )
-    except Exception as e:
-        logger.debug("Non-fatal append action event in review loop: %s", e)
+    if not effective_dry_run:
+        try:
+            actions_file = os.path.join(ledger_dir, "actions.jsonl")
+            append_action_event(
+                {
+                    "execution_id": review_exec_id,
+                    "action": f"PR Review Loop executed for {review_target}",
+                    "category": "test",
+                    "target": review_target,
+                    "verdict": "success" if consensus_reached else "failure",
+                    "outcome": "success" if consensus_reached else "failure",
+                    "context_fingerprint": compute_context_fingerprint(
+                        target=review_target, tool=context.agent, command_prefix="review-loop"
+                    ),
+                    "labels": ["review", "review-loop", context.agent],
+                    "error_context": None if consensus_reached else f"Consensus failed: findings={finding_ids}",
+                },
+                ledger_path=actions_file,
+                project_db_path=os.path.join(repo_dir, "holon-knowledge", ".index", "action_index.db"),
+            )
+        except Exception as e:
+            logger.debug("Non-fatal append action event in review loop: %s", e)
 
     return {
         "target": review_target,
@@ -2048,7 +2040,8 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
         if approved:
             print("[BEAN 0034 SAFETY HALT] PR Review Loop reached consensus approval.")
             print("Pipeline halted for human review (autonomous merge prohibited).")
-            print(f"To approve manually, run: {loop_res.get('human_approval_command', f'holon review approve {target}')}\n")
+            cmd = loop_res.get("human_approval_command", f"holon review approve {target}")
+            print(f"To approve manually, run: {cmd}\n")
         else:
             print(f"PR Review Loop did not reach consensus approval (status={consensus.get('status')}).\n")
 

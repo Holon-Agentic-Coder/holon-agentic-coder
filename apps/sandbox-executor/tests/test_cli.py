@@ -788,7 +788,10 @@ class TestHolonFlowCLI(unittest.TestCase):
             self.assertIn("review-loop", help_output)
 
     def test_review_loop_cli_argument_parsing(self):
-        with patch("sandbox_executor.flow.run_review_loop_cli", return_value=0) as mock_runner, patch("sys.exit") as mock_exit:
+        with (
+            patch("sandbox_executor.flow.run_review_loop_cli", return_value=0) as mock_runner,
+            patch("sys.exit") as mock_exit,
+        ):
             args = [
                 "holon",
                 "review-loop",
@@ -830,10 +833,12 @@ class TestHolonFlowCLI(unittest.TestCase):
             with (
                 patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
                 patch("sys.exit") as mock_exit,
+                patch("sandbox_executor.flow.run_review_loop_cli") as mock_runner,
             ):
                 with patch("sys.argv", ["holon", "review-loop", "target-branch", *invalid_arg]):
                     main()
                 mock_exit.assert_called_with(1)
+                mock_runner.assert_not_called()
                 self.assertIn("Error:", mock_stderr.getvalue())
 
     def test_review_loop_cli_json_output(self):

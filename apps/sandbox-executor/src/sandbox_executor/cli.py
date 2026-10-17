@@ -1813,9 +1813,11 @@ def main() -> None:
             if getattr(args, "max_iterations", 25) < 1:
                 print("Error: --max-iterations must be at least 1.", file=sys.stderr)
                 sys.exit(1)
+                return
             if getattr(args, "ensemble_size", 3) < 1:
                 print("Error: --ensemble-size must be at least 1.", file=sys.stderr)
                 sys.exit(1)
+                return
 
             effective_token_reduce = detect_holon_coherence(bool(getattr(args, "token_reduce", False)))
             from sandbox_executor.flow import run_review_loop_cli

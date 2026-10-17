@@ -140,6 +140,7 @@ def append_action_event(
     record: dict[str, Any],
     ledger_path: str = DEFAULT_ACTIONS_LEDGER,
     db_path: str | None = None,
+    project_db_path: str | None = None,
 ) -> dict[str, Any]:
     """Scrub credentials and append discrete action event to actions.jsonl with atomic locking."""
     rec = dict(record)
@@ -162,7 +163,7 @@ def append_action_event(
         f.write(json.dumps(redacted_rec) + "\n")
 
     # Incrementally update index
-    target_db = db_path or DEFAULT_PROJECT_DB_PATH
+    target_db = project_db_path or db_path or DEFAULT_PROJECT_DB_PATH
     try:
         sync_ledger_incremental(target_db, ledger_path)
     except Exception as e:

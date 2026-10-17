@@ -1,5 +1,6 @@
 """Unit and integration tests for sandbox_executor.flow."""
 
+import argparse
 import json
 import os
 from unittest.mock import MagicMock, mock_open, patch
@@ -1077,7 +1078,7 @@ class TestReviewMergeabilityGuards:
         ctx_explicit_false = FlowContext(token_reduce=False)
         assert ctx_explicit_false.token_reduce is False
 
-    def test_flow_stage_environment_propagation(self, monkeypatch):
+    def test_flow_stage_environment_propagation(self, monkeypatch, tmp_path):
         """Verify subprocess environments in execute and review stages contain proxy env vars when token_reduce=True."""
         host_proxy_envs = {
             "HTTP_PROXY": "http://127.0.0.1:8080",
@@ -1115,10 +1116,11 @@ class TestReviewMergeabilityGuards:
 
         # 2. Review stage propagation
         ctx_rev = FlowContext(
+            repo_dir=str(tmp_path),
             token_reduce=True,
             execution_branch="I-test/P-1/E-1/_",
             plan_branch="I-test/P-1/_",
-            dry_run=False,
+            dry_run=True,
         )
         ctx_rev.stage_results["execute"] = StageResult(
             stage=FlowStage.EXECUTE,
@@ -1171,10 +1173,12 @@ class TestReviewLoopStage:
     """Comprehensive tests for native multi-pass review loop, CI check probing, git trailers, and Bean 0034."""
 
     def test_probe_ci_checks_github_cli_success(self):
-        checks_json = json.dumps([
-            {"bucket": "pass", "name": "unit-tests", "state": "COMPLETED", "event": "pull_request"},
-            {"bucket": "pass", "name": "lint", "state": "COMPLETED", "event": "pull_request"},
-        ])
+        checks_json = json.dumps(
+            [
+                {"bucket": "pass", "name": "unit-tests", "state": "COMPLETED", "event": "pull_request"},
+                {"bucket": "pass", "name": "lint", "state": "COMPLETED", "event": "pull_request"},
+            ]
+        )
         with (
             patch("shutil.which", return_value="/usr/bin/gh"),
             patch("subprocess.run") as mock_subproc,
@@ -1189,10 +1193,12 @@ class TestReviewLoopStage:
             assert res["all_passed"] is True
 
     def test_probe_ci_checks_github_cli_failures(self):
-        checks_json = json.dumps([
-            {"bucket": "pass", "name": "unit-tests", "state": "COMPLETED", "event": "pull_request"},
-            {"bucket": "fail", "name": "lint", "state": "FAILURE", "event": "pull_request"},
-        ])
+        checks_json = json.dumps(
+            [
+                {"bucket": "pass", "name": "unit-tests", "state": "COMPLETED", "event": "pull_request"},
+                {"bucket": "fail", "name": "lint", "state": "FAILURE", "event": "pull_request"},
+            ]
+        )
         with (
             patch("shutil.which", return_value="/usr/bin/gh"),
             patch("subprocess.run") as mock_subproc,
@@ -1267,7 +1273,7 @@ class TestReviewLoopStage:
             status=StageStatus.FAILED,
             payload={"test_pass_rate": 0.0, "exit_code": 1},
         )
-        res = run_review_loop(ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=3)
+        res = run_review_loop(ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=3, dry_run=True)
         assert res["consensus"]["approved"] is False
         assert res["total_iterations"] == 3
         assert res["consensus"]["status"] == "rejected"
@@ -1288,19 +1294,20 @@ class TestReviewLoopStage:
                 target="I-100-intent/P-200-plan/E-300-exec/_",
                 max_iterations=10,
                 fail_fast=True,
+                dry_run=True,
             )
             assert res["total_iterations"] == 1
             assert res["consensus"]["approved"] is False
             assert res["consensus"]["status"] == "conflicted_dirty"
 
     def test_review_loop_appends_executions_ledger(self, tmp_path):
-        """Assert executions.jsonl receives structured iteration and summary records with trailers."""
+        """Assert executions.jsonl receives structured iteration and summary records with trailers when not dry_run."""
         ledger_dir = tmp_path / "holon-knowledge" / "ledger"
         ledger_dir.mkdir(parents=True)
         ctx = FlowContext(
             repo_dir=str(tmp_path),
             execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
-            dry_run=True,
+            dry_run=False,
         )
         ctx.stage_results["execute"] = StageResult(
             stage=FlowStage.EXECUTE,
@@ -1308,7 +1315,10 @@ class TestReviewLoopStage:
             payload={"test_pass_rate": 1.0, "exit_code": 0},
         )
 
-        run_review_loop(ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=2)
+        with patch("sandbox_executor.flow.run_git") as mock_git:
+            mock_git.return_value = MagicMock(returncode=0, stdout=" 1 file changed, 10 insertions(+)\n")
+            run_review_loop(ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=2, dry_run=False)
+
         exec_file = ledger_dir / "executions.jsonl"
         assert exec_file.exists()
 
@@ -1324,3 +1334,40 @@ class TestReviewLoopStage:
         assert summary_records[0]["status"] == "halted_for_human"
         assert summary_records[0]["total_iterations"] == 1
         assert summary_records[0]["trailers"]["action_origin"] == "pr_review"
+
+    def test_run_review_loop_cli_direct(self, tmp_path, capsys):
+        """Directly exercise run_review_loop_cli return codes and summary output formatting."""
+        args = argparse.Namespace(
+            target="I-100-intent/P-200-plan/E-300-exec/_",
+            repo_dir=str(tmp_path),
+            max_iterations=2,
+            ensemble_size=3,
+            no_auto_pr=False,
+            fail_fast=False,
+            dry_run=True,
+            json=False,
+            token_reduce=False,
+        )
+        with patch("sandbox_executor.flow.run_review_loop") as mock_loop:
+            mock_loop.return_value = {
+                "consensus": {"approved": True, "status": "approved", "iterations": 1},
+                "max_iterations": 2,
+                "ci_checks": {"total": 1, "passed": 1, "failed": 0, "pending": 0, "source": "local_tests"},
+                "human_approval_command": "holon review approve I-100-intent/P-200-plan/E-300-exec/_",
+            }
+            code = run_review_loop_cli(args)
+            assert code == 0
+            captured = capsys.readouterr().out
+            assert "Holon Review Loop Summary" in captured
+            assert "BEAN 0034 SAFETY HALT" in captured
+            assert "holon review approve" in captured
+
+        # Test rejected exit code
+        with patch("sandbox_executor.flow.run_review_loop") as mock_loop:
+            mock_loop.return_value = {
+                "consensus": {"approved": False, "status": "rejected", "iterations": 2},
+                "max_iterations": 2,
+                "ci_checks": {"total": 1, "passed": 0, "failed": 1, "pending": 0, "source": "local_tests"},
+            }
+            code = run_review_loop_cli(args)
+            assert code == 1

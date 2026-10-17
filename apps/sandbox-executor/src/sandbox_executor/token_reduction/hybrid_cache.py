@@ -21,7 +21,7 @@ class HybridCacheStore:
         similarity_threshold: float = 0.85,
         candidate_limit: int = 100,
     ) -> None:
-        """Initialize HybridCacheStore.
+        """Initialise HybridCacheStore.
 
         Args:
             cache_dir: Directory path for SQLite storage. Defaults to ~/.holon/cache.
@@ -86,7 +86,7 @@ class HybridCacheStore:
 
     def _extract_user_content(self, payload: dict[str, Any], max_recent_turns: int = 2) -> str:
         """Extracts user message content specifically to avoid system prompt and JSON key token pollution.
-        Prioritizes the most recent user turns to prevent long conversation history token dilution.
+        Prioritises the most recent user turns to prevent long conversation history token dilution.
         """
 
         def _extract_item_text(item: Any) -> list[str]:

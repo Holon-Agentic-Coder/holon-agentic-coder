@@ -2240,7 +2240,7 @@ def test_payload_cleaner_cleaning_result_metrics():
     assert result.chars_saved > 0
     assert "[Omitted:" in json.dumps(result.payload)
 
-    # 2. History summarization
+    # 2. History summarisation
     many_turns_payload = {
         "messages": [
             {"role": "user", "content": f"Turn {i} " + "content " * 10}

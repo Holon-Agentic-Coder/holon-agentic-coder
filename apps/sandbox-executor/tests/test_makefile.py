@@ -1,6 +1,6 @@
 """Hermetic unit tests for repository Makefile targets and prerequisite checks.
 
-This test module verifies Makefile behavior including the help target, dry-run
+This test module verifies Makefile behaviour including the help target, dry-run
 execution across all core targets, and prerequisite detection permutations for
 tools such as the GitHub CLI (gh) and OpenSSL (openssl). Each make invocation runs with an
 test-owned environment, so nothing here depends on the developer's shell.

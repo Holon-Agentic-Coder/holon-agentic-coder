@@ -55,7 +55,7 @@ explicitly segmented into namespaces:
 
 ---
 
-## Synchronization Lifecycle
+## Synchronisation Lifecycle
 
 ### 1. Bootstrapping
 

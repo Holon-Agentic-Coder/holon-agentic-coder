@@ -64,7 +64,7 @@ Extract token counts from final HTTP response payloads or SSE stream usage objec
 
 ### Phase 3: Metric Calculation & Header Injection
 
-Compute performance metrics and inject standardized response headers into `flow.response.headers`:
+Compute performance metrics and inject standardised response headers into `flow.response.headers`:
 
 - `X-Holon-TTFT-Ms`: Time-to-first-token in milliseconds.
 - `X-Holon-Prefill-TPS`: Prompt processing speed (tokens/sec).
@@ -91,5 +91,5 @@ output/prefill TPS in `todo/ab_real_api_results.json` and `todo/ab_real_api_resu
 ## 📈 Expected Outcomes
 
 1. Automated recording of Prefill TPS and Output TPS for all live network tests in `todo/`.
-2. Standardized response headers returned to all sandbox agent containers.
+2. Standardised response headers returned to all sandbox agent containers.
 3. Empirically verified latency and throughput benchmarks across arbitrary LLM APIs and arbitrary agents.

@@ -100,10 +100,10 @@ layered priority:
 
 ---
 
-## 4. Ledger Synchronization & Re-runs
+## 4. Ledger Synchronisation & Re-runs
 
 When a PR description is updated, the orchestrator triggers again. Since the intent branch may already exist, the
-synchronization logic behaves as follows:
+synchronisation logic behaves as follows:
 
 - **Checking Existing Branch**: The orchestrator checks if a remote branch matches the target `branch` or
   `I-{timestamp}-{slug}`.

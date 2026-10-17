@@ -1,7 +1,7 @@
 # Executing Antigravity CLI (`agy`) within Sandbox Environments (Linux & macOS Hosts)
 
-This document provides the definitive architecture, authentication behavior, empirical findings, and concrete solutions
-for executing the Antigravity AI coding agent CLI (`agy`) inside containerized Docker sandbox environments
+This document provides the definitive architecture, authentication behaviour, empirical findings, and concrete solutions
+for executing the Antigravity AI coding agent CLI (`agy`) inside containerised Docker sandbox environments
 (`holon/agent-antigravity`) on both **Linux** and **macOS** hosts.
 
 ---

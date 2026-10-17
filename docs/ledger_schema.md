@@ -663,7 +663,7 @@ review tracking:
 
 ###### Resolver Commit Trailers
 
-When committing fixes, agents and operators include standardized commit trailers to record provenance directly in git
+When committing fixes, agents and operators include standardised commit trailers to record provenance directly in git
 history:
 
 - `Action-Origin`: Origin category (e.g. `pr_review`, `ci_fix`).

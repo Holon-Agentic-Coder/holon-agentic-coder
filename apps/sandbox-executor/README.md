@@ -37,8 +37,8 @@ apps/sandbox-executor/
   planner and executor agents.
 - **`ledger.py`**: Provides structured querying, deduplication, conflict resolution, and filtering across
   `intents.jsonl`, `plans.jsonl`, and `executions.jsonl`.
-- **`token_reduction/`**: Runs a locally-contained mitmproxy sidecar performing prompt cache optimization, local body
-  caching, and wire log sanitization.
+- **`token_reduction/`**: Runs a locally-contained mitmproxy sidecar performing prompt cache optimisation, local body
+  caching, and wire log sanitisation.
 
 ---
 

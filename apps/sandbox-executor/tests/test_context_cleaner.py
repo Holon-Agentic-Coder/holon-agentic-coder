@@ -179,7 +179,7 @@ def test_anthropic_history_summarization_and_role_merging() -> None:
     cleaned = cleaner.process_payload({"messages": messages}, provider="anthropic")
     cleaned_msgs = cleaned["messages"]
 
-    # Should summarize intermediate turns
+    # Should summarise intermediate turns
     assert len(cleaned_msgs) < len(messages)
     # Check that summary text exists in user turn
     summary_found = any("[Summary of omitted" in str(msg.get("content")) for msg in cleaned_msgs)
@@ -236,7 +236,7 @@ def test_openai_cleaning() -> None:
     cleaned = cleaner.process_payload(payload, provider="openai")
     cleaned_msgs = cleaned["messages"]
 
-    # Exceeded max_turns (10 > 6), history is summarized
+    # Exceeded max_turns (10 > 6), history is summarised
     assert len(cleaned_msgs) < 10
 
     # Non-list messages payload returns unmodified

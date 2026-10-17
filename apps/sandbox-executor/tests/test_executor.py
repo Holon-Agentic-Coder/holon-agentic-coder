@@ -2317,7 +2317,7 @@ class TestExecutor(unittest.TestCase):
         )
 
     def test_sanitize_agent_output_helper(self):
-        """Test sanitize_agent_output behavior for budget boundaries and markers."""
+        """Test sanitize_agent_output behaviour for budget boundaries and markers."""
         from sandbox_executor.entrypoint.executor import sanitize_agent_output
 
         # Below limit
@@ -2925,7 +2925,7 @@ class TestExecutor(unittest.TestCase):
 
 
 class TestExecutorPrePushSync(unittest.TestCase):
-    """Unit tests for executor pre-push remote synchronization and conflict isolation."""
+    """Unit tests for executor pre-push remote synchronisation and conflict isolation."""
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -3067,7 +3067,7 @@ class TestExecutorPrePushSync(unittest.TestCase):
         self.assertEqual(len(e_rows), 3)
 
     def test_pre_push_sync_shallow_clone_deepen_handling(self):
-        # Verify shallow repository check and deepening behavior via mocked run_cmd
+        # Verify shallow repository check and deepening behaviour via mocked run_cmd
         with patch("sandbox_executor.entrypoint.executor.run_cmd") as mock_run_cmd:
 
             def side_effect(args, **kwargs):
@@ -3098,7 +3098,7 @@ class TestExecutorPrePushSync(unittest.TestCase):
             self.assertTrue(mock_run_cmd.deepen_called)
 
     def test_pre_push_sync_recognizes_expanded_unmerged_prefixes(self):
-        # Verify unmerged status check recognizes AU, UA, and DD prefixes
+        # Verify unmerged status check recognises AU, UA, and DD prefixes
         with patch("sandbox_executor.entrypoint.executor.run_cmd") as mock_run_cmd:
 
             def side_effect(args, **kwargs):

@@ -30,11 +30,11 @@ Under sandbox conditions (indicated by `HOLON_ROLE=executor`, `HOLON_IN_SANDBOX=
 
 1. `get_workspace_dir()` defaults to `~/.holon-sandbox/workspace` when `HOLON_REPO_DIR` is not explicitly set.
 2. Entrypoints (`intent_creator.main()`, `planner.main()`, `executor.main()`) invoke
-   `cleanup_repo_dir(repo_dir, raise_on_error=True)` upon initialization.
+   `cleanup_repo_dir(repo_dir, raise_on_error=True)` upon initialisation.
 3. If a unit test executes an entrypoint without setting `HOLON_REPO_DIR` or patching `get_workspace_dir()`,
    `cleanup_repo_dir` deletes `~/.holon-sandbox/workspace`.
 4. As a result, subsequent git operations in the host executor fail (`fatal: not a git repository`), forcing the
-   executor into fallback re-initialization and pushing orphan commits.
+   executor into fallback re-initialisation and pushing orphan commits.
 
 ---
 

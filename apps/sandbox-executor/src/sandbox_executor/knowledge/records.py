@@ -155,7 +155,7 @@ def append_action_event(
     if "created_at" not in rec or not rec["created_at"]:
         rec["created_at"] = datetime.now(UTC).isoformat()
 
-    # Redact credentials before serializing to disk
+    # Redact credentials before serialising to disk
     redacted_rec = CredentialRedactor.redact_structure(rec)
 
     with atomic_ledger_append(ledger_path) as f:

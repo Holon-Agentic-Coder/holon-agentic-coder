@@ -33,7 +33,7 @@ event/knowledge logging.
 │       │   └── utils/
 │       └── pyproject.toml
 │
-├── holon-coherence/                      # Optimization Gateway & Wire Telemetry (Git Submodule)
+├── holon-coherence/                      # Optimisation Gateway & Wire Telemetry (Git Submodule)
 │   ├── src/holon_coherence/              # Proxy, token reduction algorithms, and telemetry
 │   └── tests/
 │
@@ -123,8 +123,8 @@ both strict workspace isolation and cross-project knowledge sharing:
 
 ### 4. `holon-coherence/` (Git Submodule)
 
-Embedded optimization and wire proxy repository (`https://github.com/Holon-Agentic-Coder/holon-coherence.git`):
+Embedded optimisation and wire proxy repository (`https://github.com/Holon-Agentic-Coder/holon-coherence.git`):
 
 - Houses the MITM streaming proxy, SSE token parsing, prompt compression algorithms, and wire telemetry.
 - Tracked via Git submodule (pinned commit pointer).
-- For complete operational and synchronization instructions, see [`SUBMODULES.md`](../SUBMODULES.md).
+- For complete operational and synchronisation instructions, see [`SUBMODULES.md`](../SUBMODULES.md).

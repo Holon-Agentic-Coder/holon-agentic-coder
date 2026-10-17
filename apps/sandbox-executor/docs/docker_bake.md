@@ -36,7 +36,7 @@ HCL) file: `docker-bake.hcl`.
 ### 1. Directed Acyclic Graph (DAG) Execution
 
 BuildKit compiles all targets into a single dependency tree. It resolves which stages to execute concurrently,
-optimising CPU usage and maximizing build parallelization.
+optimising CPU usage and maximising build parallelisation.
 
 ### 2. In-Memory Context References (`target:base`)
 

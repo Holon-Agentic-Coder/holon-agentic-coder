@@ -383,7 +383,7 @@ _(with denominator guard: defaults to $0.0\%$ if $\text{Tokens}_{\text{raw}} = 0
 - Obtain structured reduction statistics by extending the `JSONContextCleaner` API contract to return a
   `CleaningResult(payload=..., stats=...)` dataclass (or invoke `process_payload_with_stats()`), or alternatively
   compute deltas by comparing pre-cleaned vs post-cleaned message trees in `mitm_addon.py`.
-- Emit a `CLEANER_METRICS` event standardized to match wire schema `delta` properties:
+- Emit a `CLEANER_METRICS` event standardised to match wire schema `delta` properties:
   - `chars_saved` (net character reduction: `raw_chars - cleaned_chars`)
   - `tool_outputs_omitted` (count of pruned tool execution blocks)
   - `turns_summarized` (count of historical conversation turns condensed)

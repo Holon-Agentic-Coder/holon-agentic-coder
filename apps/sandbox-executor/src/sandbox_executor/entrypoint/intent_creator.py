@@ -6,7 +6,7 @@ import sys
 from datetime import UTC, datetime
 
 from sandbox_executor.agent_runner import cleanup_repo_dir, get_repo_url, get_workspace_dir
-from sandbox_executor.flow import validate_intent_questions
+from sandbox_executor.flow import check_and_resolve_stage_conflicts, validate_intent_questions
 from sandbox_executor.ledger import atomic_ledger_append
 
 
@@ -75,6 +75,9 @@ def main():
 
     # Checkout intent branch
     run_cmd(["git", "checkout", "-B", intent_branch, f"origin/{target_branch}"], cwd=repo_dir)
+
+    # Proactively check and resolve any stage conflicts
+    check_and_resolve_stage_conflicts(repo_dir=repo_dir, target_branch=target_branch, stage_name="intent")
 
     # Update intents.jsonl
     timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"

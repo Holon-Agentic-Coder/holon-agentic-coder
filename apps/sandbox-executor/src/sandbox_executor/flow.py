@@ -434,6 +434,10 @@ def run_git(
 # ---------------------------------------------------------------------------
 
 
+class ConflictResolutionError(RuntimeError):
+    """Raised when an unresolvable merge conflict is encountered during a pipeline stage."""
+
+
 def _parse_ledger_timestamp(val: Any) -> datetime:
     """Parse an ISO-8601 timestamp string into a timezone-aware UTC datetime.
 
@@ -522,11 +526,11 @@ def reconcile_ledger_rows(rows: list[dict[str, Any]], ledger_type: str) -> list[
             if val:
                 return str(val)
         elif "exec" in clean_type:
-            val = row.get("execution_id")
+            val = row.get("action_id") or row.get("execution_id")
             if val:
                 return str(val)
         # Fallback cascade for generic ledger types
-        for candidate in ("execution_id", "plan_id", "branch", "slug"):
+        for candidate in ("action_id", "execution_id", "plan_id", "branch", "slug"):
             if row.get(candidate):
                 return str(row[candidate])
         return json.dumps(row, sort_keys=True)
@@ -565,6 +569,67 @@ def reconcile_ledger_rows(rows: list[dict[str, Any]], ledger_type: str) -> list[
     return result
 
 
+def reconcile_jsonl_ledger_conflict(content: str, ledger_type: str) -> str:
+    """Parse, reconcile, and resolve JSONL ledger content containing standard or diff3 conflict markers.
+
+    Handles diff3 conflict blocks:
+        <<<<<<< HEAD (ours)
+        ||||||| merged common ancestors (base)
+        ======= (theirs)
+        >>>>>>> branch
+
+    Section state flags are reset upon encountering ||||||| so ancestor blocks are processed cleanly.
+    Valid JSON dictionary rows are extracted and deduplicated, prioritising 'action_id' before 'execution_id'
+    in primary key resolution so discrete action records do not collide.
+    """
+    clean_type = str(ledger_type).lower().removesuffix(".jsonl").strip()
+
+    rows: list[dict[str, Any]] = []
+    in_ours = False
+    in_base = False
+    in_theirs = False
+
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("<<<<<<<"):
+            in_ours = True
+            in_base = False
+            in_theirs = False
+            continue
+        elif stripped.startswith("|||||||"):
+            # diff3 ancestor / base marker: reset section flags
+            in_ours = False
+            in_base = True
+            in_theirs = False
+            continue
+        elif stripped.startswith("======="):
+            in_ours = False
+            in_base = False
+            in_theirs = True
+            continue
+        elif stripped.startswith(">>>>>>>"):
+            in_ours = False
+            in_base = False
+            in_theirs = False
+            continue
+
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, dict):
+                rows.append(parsed)
+            else:
+                logger.warning(f"Skipping non-dictionary JSON ledger line: {stripped[:100]}")
+        except Exception:
+            logger.debug(f"Skipping unparseable ledger line: {stripped[:100]}")
+
+    reconciled = reconcile_ledger_rows(rows, clean_type)
+    if not reconciled:
+        return ""
+    return "\n".join(json.dumps(r) for r in reconciled) + "\n"
+
+
 def reconcile_ledger_content(content: str, ledger_type: str) -> str:
     """Parse, reconcile, and serialise ledger content by union.
 
@@ -578,11 +643,7 @@ def reconcile_ledger_content(content: str, ledger_type: str) -> str:
     Raises:
         None: Malformed lines are dropped gracefully.
     """
-    rows = extract_valid_ledger_rows(content)
-    reconciled = reconcile_ledger_rows(rows, ledger_type)
-    if not reconciled:
-        return ""
-    return "\n".join(json.dumps(r) for r in reconciled) + "\n"
+    return reconcile_jsonl_ledger_conflict(content, ledger_type)
 
 
 def reconcile_ledger_file(file_path: str, ledger_type: str | None = None) -> bool:
@@ -656,6 +717,138 @@ def reconcile_ledgers(repo_dir: str) -> list[str]:
         if os.path.exists(full_path) and reconcile_ledger_file(full_path):
             reconciled_paths.append(rel_path)
     return reconciled_paths
+
+
+def check_and_resolve_stage_conflicts(
+    repo_dir: str,
+    target_branch: str = "main",
+    stage_name: str = "",
+) -> dict[str, Any]:
+    """Inspect and resolve stage merge conflicts proactively before stage execution.
+
+    - Runs git status --porcelain to detect conflicting files, with isinstance(..., str) guards
+      on stdout for test mock safety.
+    - Inspects upstream mergeability against target_branch.
+    - If conflicts exist in holon-knowledge/ledger/*.jsonl, applies reconcile_jsonl_ledger_conflict
+      to resolve them automatically and stages them.
+    - If non-ledger code conflicts exist and cannot be cleanly resolved, raises ConflictResolutionError.
+
+    Args:
+        repo_dir: Path to git repository.
+        target_branch: Target base branch name (defaults to 'main').
+        stage_name: Optional pipeline stage name for telemetry.
+
+    Returns:
+        dict[str, Any]: Conflict check outcome with keys:
+            - status: str ('clean', 'resolved', 'conflict')
+            - conflicting_files: list[str]
+            - resolved_ledgers: list[str]
+            - stage: str
+
+    Raises:
+        ConflictResolutionError: When unresolvable non-ledger conflicts exist.
+    """
+    conflicting_files: list[str] = []
+    resolved_ledgers: list[str] = []
+
+    # 1. Inspect git status --porcelain with isinstance guard for MagicMock test compatibility
+    status_proc = run_git(["status", "--porcelain"], cwd=repo_dir, check=False)
+    raw_out = getattr(status_proc, "stdout", "")
+    stdout = raw_out if isinstance(raw_out, str) else ""
+
+    unmerged_prefixes = ("UU", "AA", "UD", "DU", "DD", "AU", "UA")
+    for line in stdout.splitlines():
+        line_str = line.strip()
+        if not line_str or len(line_str) < 3:
+            continue
+        prefix = line_str[:2]
+        if prefix in unmerged_prefixes or prefix.startswith("U") or prefix.endswith("U"):
+            file_path = line_str[2:].strip().strip("\"'")
+            if " -> " in file_path:
+                file_path = file_path.split(" -> ")[1].strip().strip("\"'")
+            if file_path not in conflicting_files:
+                conflicting_files.append(file_path)
+
+    # 2. Check mergeability against target_branch if clean so far
+    if not conflicting_files:
+        try:
+            merge_diag = check_pr_mergeability(repo_dir, branch="HEAD", target_branch=target_branch)
+            if merge_diag.get("is_dirty") or merge_diag.get("mergeable") == "CONFLICTING":
+                target_ref = f"origin/{target_branch}"
+                ref_chk = run_git(["rev-parse", "--verify", target_ref], cwd=repo_dir, check=False)
+                if ref_chk.returncode != 0:
+                    target_ref = target_branch
+
+                mt_proc = run_git(["merge-tree", "HEAD", target_ref], cwd=repo_dir, check=False)
+                mt_raw = getattr(mt_proc, "stdout", "")
+                mt_out = mt_raw if isinstance(mt_raw, str) else ""
+                if mt_out:
+                    for line in mt_out.splitlines():
+                        if "CONFLICT" in line or line.startswith("changed in both"):
+                            parts = line.split()
+                            for p in parts:
+                                p_clean = p.strip(",:\"'")
+                                if (os.sep in p_clean or "." in p_clean) and p_clean not in conflicting_files:
+                                    conflicting_files.append(p_clean)
+        except Exception as exc:
+            logger.debug("Non-fatal upstream mergeability probe in check_and_resolve_stage_conflicts: %s", exc)
+
+    # Also check if any ledger files in the working directory contain conflict markers
+    ledger_files = [
+        os.path.join("holon-knowledge", "ledger", "intents.jsonl"),
+        os.path.join("holon-knowledge", "ledger", "plans.jsonl"),
+        os.path.join("holon-knowledge", "ledger", "executions.jsonl"),
+    ]
+    for rel_path in ledger_files:
+        full_path = os.path.join(repo_dir, rel_path)
+        if os.path.exists(full_path):
+            try:
+                with open(full_path, encoding="utf-8") as f:
+                    content = f.read()
+                if any(m in content for m in ("<<<<<<<", "|||||||", "=======", ">>>>>>>")):
+                    if rel_path not in conflicting_files:
+                        conflicting_files.append(rel_path)
+            except Exception:
+                pass
+
+    # 3. Resolve ledger conflicts
+    non_ledger_conflicts: list[str] = []
+    for f in conflicting_files:
+        norm_f = f.replace("\\", "/")
+        if "holon-knowledge/ledger" in norm_f and norm_f.endswith(".jsonl"):
+            full_path = os.path.join(repo_dir, norm_f)
+            if os.path.exists(full_path):
+                try:
+                    with open(full_path, encoding="utf-8") as lf:
+                        raw_c = lf.read()
+                    base = os.path.basename(norm_f).removesuffix(".jsonl")
+                    reconciled = reconcile_jsonl_ledger_conflict(raw_c, base)
+                    with open(full_path, "w", encoding="utf-8") as lf:
+                        lf.write(reconciled)
+                    run_git(["add", norm_f], cwd=repo_dir, check=False)
+                    resolved_ledgers.append(norm_f)
+                except Exception as exc:
+                    logger.error("Failed to reconcile ledger conflict in %s: %s", norm_f, exc)
+                    non_ledger_conflicts.append(norm_f)
+            else:
+                non_ledger_conflicts.append(norm_f)
+        else:
+            non_ledger_conflicts.append(f)
+
+    if non_ledger_conflicts:
+        err_msg = (
+            f"Unresolvable conflicts detected in stage '{stage_name or 'unknown'}': "
+            f"{', '.join(non_ledger_conflicts)}"
+        )
+        raise ConflictResolutionError(err_msg)
+
+    status_str = "resolved" if resolved_ledgers else "clean"
+    return {
+        "status": status_str,
+        "conflicting_files": conflicting_files,
+        "resolved_ledgers": resolved_ledgers,
+        "stage": stage_name,
+    }
 
 
 def check_pr_mergeability(
@@ -1544,6 +1737,7 @@ def run_intent_stage(context: FlowContext) -> StageResult:
     ledger_entry = None
     if not context.dry_run:
         repo_dir = context.repo_dir
+        check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="intent")
         is_git = run_git(["rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False).returncode == 0
         if is_git:
             has_branch = run_git(["rev-parse", "--verify", intent_branch], cwd=repo_dir, check=False).returncode == 0
@@ -1673,6 +1867,8 @@ def run_plan_stage(context: FlowContext) -> StageResult:
     }
 
     if not context.dry_run:
+        target_branch = context.intent_data.get("target_branch", "main")
+        check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="plan")
         is_git = run_git(["rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False).returncode == 0
         if is_git:
             run_git(["checkout", "-B", plan_branch, context.intent_branch], cwd=repo_dir, check=True)
@@ -1862,6 +2058,8 @@ def run_execute_stage(context: FlowContext) -> StageResult:
     proxy_env: dict[str, str] = {}
 
     if not context.dry_run:
+        target_branch = context.intent_data.get("target_branch", "main")
+        check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="execute")
         is_git = run_git(["rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False).returncode == 0
         if is_git:
             run_git(["checkout", "-B", exec_branch, context.plan_branch], cwd=repo_dir, check=True)
@@ -2023,6 +2221,14 @@ def run_execute_stage(context: FlowContext) -> StageResult:
 # ---------------------------------------------------------------------------
 
 
+REVIEW_GIT_ENV: dict[str, str] = {
+    "GIT_AUTHOR_NAME": "Holon Review Loop Agent",
+    "GIT_AUTHOR_EMAIL": "review-loop-agent@holon-agentic-coder.com",
+    "GIT_COMMITTER_NAME": "Holon Review Loop Agent",
+    "GIT_COMMITTER_EMAIL": "review-loop-agent@holon-agentic-coder.com",
+}
+
+
 def run_review_loop(
     context: FlowContext,
     target: str | None = None,
@@ -2055,6 +2261,9 @@ def run_review_loop(
     repo_dir = context.repo_dir
     target_branch = context.intent_data.get("target_branch", "main")
     effective_dry_run = bool(dry_run or context.dry_run)
+
+    if not effective_dry_run:
+        check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="review")
 
     proxy_env: dict[str, str] = {}
     if context.token_reduce:
@@ -2365,6 +2574,10 @@ def run_review_stage(context: FlowContext) -> StageResult:
         return StageResult(stage=FlowStage.REVIEW, status=StageStatus.FAILED, start_time=start_time, error=err)
 
     repo_dir = context.repo_dir
+    if not context.dry_run:
+        target_branch = context.intent_data.get("target_branch", "main")
+        check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="review")
+
     exec_result = context.stage_results.get("execute")
 
     # Consult review heuristics (Bean 0052 Goal 6)
@@ -2612,6 +2825,10 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
         return StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.FAILED, start_time=start_time, error=err)
 
     repo_dir = context.repo_dir
+    if not context.dry_run:
+        target_branch = context.intent_data.get("target_branch", "main")
+        check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="calibrate")
+
     calibrated_branch = f"{context.execution_branch.rstrip('/_').rstrip('/')}/calibrated"
     report_dict: dict[str, Any] = {}
 

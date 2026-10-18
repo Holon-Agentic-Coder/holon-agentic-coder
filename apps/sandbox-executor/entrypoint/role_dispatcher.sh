@@ -105,6 +105,9 @@ case "$ROLE" in
     executor)
         exec python3 -m sandbox_executor.entrypoint.executor "$@"
         ;;
+    review-loop|pr-review-loop|reviewer)
+        exec python3 -m sandbox_executor.entrypoint.review_loop "$@"
+        ;;
     *)
         # If no role, allow running arbitrary commands (like ls or bash)
         exec "$@"

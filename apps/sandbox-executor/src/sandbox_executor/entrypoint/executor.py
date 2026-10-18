@@ -36,6 +36,7 @@ from sandbox_executor.agent_runner import (
     get_runner,
     get_workspace_dir,
 )
+from sandbox_executor.flow import check_and_resolve_stage_conflicts
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.ledger import (
     ActionRecord,
@@ -1172,6 +1173,9 @@ def main() -> None:
         exec_branch = f"{plan_branch_prefix}/E-{exec_seq}-{safe_agent}-{safe_model}/_"
 
         run_cmd(["git", "checkout", "-b", exec_branch], cwd=repo_dir)
+
+        # Proactively check and resolve any stage conflicts
+        check_and_resolve_stage_conflicts(repo_dir=repo_dir, target_branch="main", stage_name="execute")
 
         # Load plan data from plans.jsonl
         plans_file_path = os.path.join(repo_dir, "holon-knowledge/ledger/plans.jsonl")

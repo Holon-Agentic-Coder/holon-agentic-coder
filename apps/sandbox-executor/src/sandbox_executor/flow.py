@@ -2216,7 +2216,6 @@ def run_review_loop(
     max_iterations: int = 25,
     ensemble_size: int = 3,
     auto_pr: bool = True,
-    fail_fast: bool = True,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Execute autonomous native multi-pass review loop (Bean 0118).
@@ -2231,7 +2230,6 @@ def run_review_loop(
         max_iterations: Maximum iteration budget before forced termination.
         ensemble_size: Review ensemble size / heuristic count.
         auto_pr: Whether to create PR automatically if target is only a branch.
-        fail_fast: If True, halt immediately upon critical finding or failed CI.
         dry_run: If True, evaluate without applying git commits or mutations.
 
     Returns:
@@ -2402,13 +2400,6 @@ def run_review_loop(
         if not is_dirty and not finding_ids and last_ci_status.get("all_passed", False):
             consensus_reached = True
             context.log(f"[Review Loop] Consensus approval reached at iteration {iteration}.")
-            break
-
-        if fail_fast and (is_dirty or severity == "critical"):
-            context.log(
-                f"[Review Loop] Fail-fast triggered at iteration {iteration} "
-                f"(severity={severity}, is_dirty={is_dirty})."
-            )
             break
 
     if not consensus_reached and iteration >= budget:
@@ -2736,7 +2727,6 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
     max_iterations = getattr(args, "max_iterations", 25)
     ensemble_size = getattr(args, "ensemble_size", 3)
     auto_pr = getattr(args, "auto_pr", True)
-    fail_fast = getattr(args, "fail_fast", True)
     dry_run = getattr(args, "dry_run", False)
     json_output = getattr(args, "json", False)
 
@@ -2754,7 +2744,6 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
         max_iterations=max_iterations,
         ensemble_size=ensemble_size,
         auto_pr=auto_pr,
-        fail_fast=fail_fast,
         dry_run=dry_run,
     )
 

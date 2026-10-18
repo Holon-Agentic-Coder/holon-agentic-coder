@@ -1286,27 +1286,6 @@ class TestReviewLoopStage:
         assert res["total_iterations"] == 3
         assert res["consensus"]["status"] == "rejected"
 
-    def test_review_loop_fail_fast_abort(self, tmp_path):
-        """Simulate merge conflicts with fail-fast flag and verify immediate termination."""
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
-            dry_run=True,
-        )
-        with patch(
-            "sandbox_executor.flow.check_pr_mergeability",
-            return_value={"is_dirty": True, "merge_state_status": "DIRTY", "mergeable": "CONFLICTING"},
-        ):
-            res = run_review_loop(
-                ctx,
-                target="I-100-intent/P-200-plan/E-300-exec/_",
-                max_iterations=10,
-                dry_run=True,
-            )
-            assert res["total_iterations"] == 1
-            assert res["consensus"]["approved"] is False
-            assert res["consensus"]["status"] == "conflicted_dirty"
-
     def test_review_loop_appends_executions_ledger(self, tmp_path):
         """Assert executions.jsonl receives structured iteration and summary records with trailers when not dry_run."""
         ledger_dir = tmp_path / "holon-knowledge" / "ledger"
@@ -1624,7 +1603,6 @@ class TestSemanticPRAndConsensusReview:
                 ctx,
                 target="I-100-intent/P-200-plan/E-300-exec/_",
                 max_iterations=3,
-                fail_fast=False,
                 dry_run=False,
             )
             assert res["consensus"]["approved"] is True

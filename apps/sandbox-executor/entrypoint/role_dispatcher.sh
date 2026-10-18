@@ -105,7 +105,7 @@ case "$ROLE" in
     executor)
         exec python3 -m sandbox_executor.entrypoint.executor "$@"
         ;;
-    review-loop|pr-review-loop|reviewer)
+    review-loop)
         exec python3 -m sandbox_executor.entrypoint.review_loop "$@"
         ;;
     *)

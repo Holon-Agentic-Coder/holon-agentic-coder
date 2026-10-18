@@ -29,7 +29,7 @@ The audit evaluated all components across the system:
 
 The platform displays strong core foundational designs: Git branches serve as immutable safety boundaries; the
 human-in-the-loop merge invariant (Bean 0034) is strictly enforced; ledger operations are append-only; and token
-optimization sidecars leverage local CA generation with merged trust stores. However, the system exhibits critical
+optimisation sidecars leverage local CA generation with merged trust stores. However, the system exhibits critical
 architectural coupling, potential security isolation gaps under container host mounts, lack of inter-process file
 locking for ledger writes, and unversioned pipeline state checkpoints.
 
@@ -72,7 +72,7 @@ four core pillars:
 | **BUG-01**  | Non-Atomic Concurrent Ledger Appending Without File Locking        | Reliability  | **High**   | `ledger.py`, `flow.py`                | Bean 0093             |
 | **ARC-01**  | Monorepo Split & Circular Coupling Between `cli.py` and `flow.py`  | Architecture | **Medium** | `cli.py`, `flow.py`                   | Architecture Refactor |
 | **SEC-02**  | Host D-Bus Session Socket Mounted into Container Sandbox           | Security     | **High**   | `cli.py` (`get_agent_session_mounts`) | Bean 0095             |
-| **BUG-02**  | Unversioned Flow Checkpoint Serialization & Migration Hazard       | Reliability  | **Medium** | `flow.py` (`FlowCheckpoint`)          | Bean 0094             |
+| **BUG-02**  | Unversioned Flow Checkpoint Serialisation & Migration Hazard       | Reliability  | **Medium** | `flow.py` (`FlowCheckpoint`)          | Bean 0094             |
 | **SEC-03**  | Long-Lived Root CA Key Longevity Without Auto-Rotation Policy      | Security     | **Medium** | `ca_generator.py`                     | Security Hardening    |
 | **BUG-03**  | Silent Rebase Conflict Abort Masking Execution Divergence          | Bugs         | **Medium** | `flow.py` (`run_execute_stage`)       | Flow Logic Hardening  |
 | **PERF-01** | Synchronous Subprocess Test Runner Blocking Flow Engine            | Performance  | **Low**    | `flow.py` (`run_execute_stage`)       | Async Pipeline        |
@@ -90,7 +90,7 @@ four core pillars:
 - **Location:** `apps/sandbox-executor/src/sandbox_executor/cli.py` and `flow.py`
 - **Description:** `cli.py` imports `FlowContext`, `FlowStage`, `load_checkpoint`, and `run_flow_pipeline` from
   `flow.py`. In turn, `flow.py` requires proxy discovery and configuration functions (`detect_holon_coherence`,
-  `get_token_reduction_mounts_and_envs`) from `cli.py`. Currently, this is avoided at runtime via localized function
+  `get_token_reduction_mounts_and_envs`) from `cli.py`. Currently, this is avoided at runtime via localised function
   imports in `flow.py`.
 - **Impact:** High module coupling makes independent testing of the flow engine difficult, introduces risks of
   import-time circular dependency crashes if imports are moved, and violates clean hexagonal architecture boundaries.
@@ -120,7 +120,7 @@ four core pillars:
   Docker bridge networking (`bridge`). The unprivileged container has unrestricted TCP/UDP access to external networks,
   public APIs, and LAN resources.
 - **Impact:** While Git and repository modifications are contained within the sandbox branch, rogue or prompt-injected
-  LLM outputs could attempt unauthorized network exfiltration of source code or credentials if direct egress is
+  LLM outputs could attempt unauthorised network exfiltration of source code or credentials if direct egress is
   unmonitored.
 - **Remediation:** Tracked in **Bean 0092**. Introduce default egress whitelisting via Docker network iptables rules or
   internal proxy routing when external proxy is offline.
@@ -160,10 +160,10 @@ four core pillars:
 - **Remediation:** Tracked in **Bean 0093**. Implement atomic file locking (`fcntl.flock(fd, fcntl.LOCK_EX)`) with
   timeout and exponential backoff.
 
-#### BUG-02: Unversioned Flow Checkpoint Serialization & Migration Hazard
+#### BUG-02: Unversioned Flow Checkpoint Serialisation & Migration Hazard
 
 - **Location:** `apps/sandbox-executor/src/sandbox_executor/flow.py:203-240`
-- **Description:** `FlowCheckpoint` serializes `FlowContext` to JSON without an explicit schema version (e.g.
+- **Description:** `FlowCheckpoint` serialises `FlowContext` to JSON without an explicit schema version (e.g.
   `schema_version: 1`). Loading older checkpoints with missing fields relies on ad-hoc dict lookups.
 - **Impact:** New stage flags or changes to stage results can crash pipeline resumption (`KeyError` / `TypeError`) when
   upgrading holon versions mid-flight.
@@ -196,7 +196,7 @@ four core pillars:
 #### PERF-02: Container Cold-Start Overhead on Multi-Stage Pipelines
 
 - **Location:** `apps/sandbox-executor/src/sandbox_executor/cli.py` (`run_docker_container`)
-- **Description:** In containerized mode, each lifecycle stage starts a new Docker container instance from scratch.
+- **Description:** In containerised mode, each lifecycle stage starts a new Docker container instance from scratch.
 - **Impact:** Cold-start latency (1-3 seconds per stage) accumulates over multi-iteration PR review loops.
 - **Remediation:** Investigate reusable container sidecars or background worker daemon models for high-frequency
   iteration loops.
@@ -226,4 +226,4 @@ four core pillars:
 The `holon-agentic-coder` architecture provides a robust, safety-first platform for autonomous software engineering. The
 implementation of opportunistic proxy auto-routing (Bean 0089) successfully integrates token reduction while maintaining
 graceful fallback to direct egress. Enacting the proposed remediation beans (Beans 0092–0095) will resolve the remaining
-isolation, concurrency, and serialization debt identified in this audit.
+isolation, concurrency, and serialisation debt identified in this audit.

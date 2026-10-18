@@ -161,6 +161,11 @@ def main():
     # Checkout plan branch
     run_cmd(["git", "checkout", "-b", plan_branch], cwd=repo_dir)
 
+    # Proactively check and resolve any stage conflicts
+    from sandbox_executor.flow import check_and_resolve_stage_conflicts
+
+    check_and_resolve_stage_conflicts(repo_dir=repo_dir, target_branch="main", stage_name="plan")
+
     # Get intent data
     intents_file_path = os.path.join(repo_dir, "holon-knowledge/ledger/intents.jsonl")
     intent_data = None

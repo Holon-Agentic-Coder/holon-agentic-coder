@@ -1,0 +1,194 @@
+"""Unit tests for containerised Holon Review Loop Agent (Bean 0118)."""
+
+import json
+import os
+import sys
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from sandbox_executor.entrypoint.review_loop import main as review_loop_main
+from sandbox_executor.entrypoint.review_loop import run_cmd
+
+
+class TestReviewLoopEntrypoint:
+    """Test suite for entrypoint.review_loop."""
+
+    def test_run_cmd_success(self):
+        proc = run_cmd(["echo", "hello"], check=True)
+        assert proc.returncode == 0
+        assert "hello" in proc.stdout
+
+    def test_run_cmd_failure_exits(self):
+        with pytest.raises(SystemExit):
+            run_cmd(["false"], check=True)
+
+    def test_review_loop_main_consensus_approval_bean_0034(self, tmp_path: Path):
+        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
+        ledger_dir.mkdir(parents=True, exist_ok=True)
+        (tmp_path / ".git").mkdir()
+
+        # Seed intent and plan ledger
+        intents_file = ledger_dir / "intents.jsonl"
+        intents_file.write_text(
+            json.dumps({"branch": "I-100-test", "slug": "test", "description": "test intent"}) + "\n"
+        )
+        plans_file = ledger_dir / "plans.jsonl"
+        plans_file.write_text(json.dumps({"plan_id": "P-200-test", "plan_branch": "I-100-test/P-200-test/_"}) + "\n")
+
+        test_args = [
+            "review_loop",
+            "I-100-test/P-200-test/E-300-exec/_",
+            "antigravity-agent",
+            "gemini-3.8-flash-medium",
+            "--max-iterations=5",
+            f"--repo-dir={tmp_path}",
+            "--dry-run",
+        ]
+
+        with (
+            patch.object(sys, "argv", test_args),
+            patch("sandbox_executor.entrypoint.review_loop.check_and_resolve_stage_conflicts") as mock_conflicts,
+            patch("sandbox_executor.entrypoint.review_loop.run_review_loop") as mock_loop,
+        ):
+            mock_loop.return_value = {
+                "target": "I-100-test/P-200-test/E-300-exec/_",
+                "consensus": {
+                    "approved": True,
+                    "score": 1.0,
+                    "iterations": 1,
+                    "status": "approved",
+                },
+                "halted_for_human": True,
+                "human_approval_command": "holon review approve I-100-test/P-200-test/E-300-exec/_",
+                "ci_checks": {"total": 1, "passed": 1, "failed": 0, "pending": 0, "source": "local_tests"},
+                "max_iterations": 5,
+            }
+
+            with pytest.raises(SystemExit) as exc_info:
+                review_loop_main()
+
+            assert exc_info.value.code == 0
+            mock_conflicts.assert_called_once_with(repo_dir=str(tmp_path), target_branch="main", stage_name="review")
+            mock_loop.assert_called_once()
+            ctx = mock_loop.call_args[1]["context"]
+            assert ctx.execution_branch == "I-100-test/P-200-test/E-300-exec/_"
+            assert ctx.agent == "antigravity-agent"
+            assert ctx.model == "gemini-3.8-flash-medium"
+            assert ctx.dry_run is True
+
+    def test_review_loop_main_consensus_failure_exits_one(self, tmp_path: Path):
+        (tmp_path / ".git").mkdir()
+        test_args = [
+            "review_loop",
+            "I-100-test/P-200-test/E-300-exec/_",
+            "--agent=claude-agent",
+            "--model=claude-3-5-sonnet",
+            f"--repo-dir={tmp_path}",
+            "--dry-run",
+        ]
+
+        with (
+            patch.object(sys, "argv", test_args),
+            patch("sandbox_executor.entrypoint.review_loop.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.entrypoint.review_loop.run_review_loop") as mock_loop,
+        ):
+            mock_loop.return_value = {
+                "target": "I-100-test/P-200-test/E-300-exec/_",
+                "consensus": {
+                    "approved": False,
+                    "score": 0.0,
+                    "iterations": 3,
+                    "status": "failed",
+                },
+                "halted_for_human": False,
+                "ci_checks": {"total": 1, "passed": 0, "failed": 1, "pending": 0, "source": "local_tests"},
+                "max_iterations": 25,
+            }
+
+            with pytest.raises(SystemExit) as exc_info:
+                review_loop_main()
+
+            assert exc_info.value.code == 1
+
+    def test_review_loop_main_json_output(self, tmp_path: Path, capsys):
+        (tmp_path / ".git").mkdir()
+        test_args = [
+            "review_loop",
+            "I-100-test",
+            f"--repo-dir={tmp_path}",
+            "--json",
+            "--dry-run",
+        ]
+
+        with (
+            patch.object(sys, "argv", test_args),
+            patch("sandbox_executor.entrypoint.review_loop.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.entrypoint.review_loop.run_review_loop") as mock_loop,
+        ):
+            mock_loop.return_value = {
+                "target": "I-100-test",
+                "consensus": {"approved": True, "iterations": 1},
+                "max_iterations": 25,
+            }
+
+            with pytest.raises(SystemExit) as exc_info:
+                review_loop_main()
+
+            assert exc_info.value.code == 0
+            captured = capsys.readouterr()
+            data = json.loads(captured.out)
+            assert data["consensus"]["approved"] is True
+
+
+class TestCLIDispatchReviewLoop:
+    """Test CLI dispatch of review-loop (Bean 0118)."""
+
+    def test_cli_dispatches_docker_container_by_default(self):
+        from sandbox_executor.cli import main as cli_main
+
+        test_args = [
+            "holon",
+            "review-loop",
+            "I-100/P-200/E-300/_",
+            "--agent=antigravity-agent",
+            "--model=gemini-3.8-flash-medium",
+        ]
+
+        with (
+            patch.object(sys, "argv", test_args),
+            patch.dict(os.environ, {}, clear=True),
+            patch("sandbox_executor.cli.run_docker_container") as mock_docker,
+            patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
+        ):
+            mock_docker.return_value = 0
+            with pytest.raises(SystemExit) as exc_info:
+                cli_main()
+
+            assert exc_info.value.code == 0
+            mock_docker.assert_called_once()
+            role, image, container_args = mock_docker.call_args[0]
+            assert role == "review-loop"
+            assert "holon/agent-antigravity" in image
+            assert "I-100/P-200/E-300/_" in container_args
+
+    def test_cli_local_flag_dispatches_local_runner(self):
+        from sandbox_executor.cli import main as cli_main
+
+        test_args = [
+            "holon",
+            "review-loop",
+            "I-100/P-200/E-300/_",
+            "--local",
+        ]
+
+        with (
+            patch.object(sys, "argv", test_args),
+            patch("sandbox_executor.flow.run_review_loop_cli", return_value=0) as mock_local,
+            patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                cli_main()
+
+            assert exc_info.value.code == 0
+            mock_local.assert_called_once()

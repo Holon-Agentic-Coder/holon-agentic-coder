@@ -82,6 +82,14 @@ BLOCKED_METADATA_HOSTS: list[str] = [
     "instance-data",
 ]
 SINKHOLE_IP: str = "127.0.0.1"
+AGENT_IMAGE_MAPPING: dict[str, str] = {
+    "antigravity": "holon/agent-antigravity",
+    "claude": "holon/agent-claude",
+    "pi": "holon/agent-pi",
+    "codex": "holon/agent-codex",
+    "gemini": "holon/agent-gemini",
+    "opencode": "holon/agent-opencode",
+}
 
 
 def build_network_isolation_args(
@@ -1356,11 +1364,6 @@ def main() -> None:
         help="Automatically create PR if only a branch exists (default: True).",
     )
     review_parser.add_argument(
-        "--fail-fast",
-        action="store_true",
-        help="Halt immediately upon first unrecoverable review or test failure.",
-    )
-    review_parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Run review evaluation without applying changes or git commits.",
@@ -1379,6 +1382,34 @@ def main() -> None:
         "--token-reduce",
         action="store_true",
         help=_TOKEN_REDUCE_HELP,
+    )
+    review_parser.add_argument(
+        "--agent",
+        default="antigravity-agent",
+        help="Agent runner to execute (default: antigravity-agent).",
+    )
+    review_parser.add_argument(
+        "--model",
+        default="gemini-3.8-flash-medium",
+        help="Model name to pass to agent (default: gemini-3.8-flash-medium).",
+    )
+    review_parser.add_argument(
+        "--local",
+        action="store_true",
+        help="Run review loop directly on host rather than inside Docker container.",
+    )
+    review_parser.add_argument(
+        "--skip-push",
+        action="store_true",
+        help="Skip pushing git commits or branches to remote.",
+    )
+    review_parser.add_argument(
+        "--mitm-web",
+        action="store_true",
+        help=(
+            "Launch mitmweb dashboard on port 8081 (or HOLON_MITM_WEB_PORT) for real-time traffic inspection. "
+            "For shared staging environments, pass HOLON_MITM_WEB_PASSWORD to restrict access."
+        ),
     )
 
     # Subcommand: ledger
@@ -1819,11 +1850,53 @@ def main() -> None:
                 sys.exit(1)
                 return
 
-            effective_token_reduce = detect_holon_coherence(bool(getattr(args, "token_reduce", False)))
-            from sandbox_executor.flow import run_review_loop_cli
+            effective_token_reduce = detect_holon_coherence(
+                bool(getattr(args, "token_reduce", False) or getattr(args, "mitm_web", False))
+            )
 
-            exit_code = run_review_loop_cli(args, token_reduce=effective_token_reduce)
-            sys.exit(exit_code)
+            is_local = (
+                getattr(args, "local", False)
+                or getattr(args, "dry_run", False)
+                or getattr(args, "json", False)
+                or getattr(args, "agent", None) is None
+                or bool(os.getenv("HOLON_ROLE"))
+                or bool(os.getenv("HOLON_IN_SANDBOX"))
+            )
+
+            if is_local:
+                from sandbox_executor.flow import run_review_loop_cli
+
+                exit_code = run_review_loop_cli(args, token_reduce=effective_token_reduce)
+                sys.exit(exit_code)
+            else:
+                agent_id = (
+                    args.agent.replace("-agent", "").replace("agent-", "")
+                    if getattr(args, "agent", None)
+                    else "antigravity"
+                )
+                image_name = AGENT_IMAGE_MAPPING.get(agent_id, f"holon/agent-{agent_id}")
+                container_args = [
+                    args.target,
+                    args.agent,
+                    args.model,
+                    f"--max-iterations={args.max_iterations}",
+                    f"--ensemble-size={args.ensemble_size}",
+                ]
+                if not getattr(args, "auto_pr", True):
+                    container_args.append("--no-auto-pr")
+                if getattr(args, "skip_push", False):
+                    container_args.append("--skip-push")
+                if getattr(args, "json", False):
+                    container_args.append("--json")
+                kwargs = {
+                    "agent_id": agent_id,
+                    "token_reduce": effective_token_reduce,
+                }
+                if getattr(args, "mitm_web", False):
+                    kwargs["mitm_web"] = True
+                if getattr(args, "repo_dir", None):
+                    kwargs["repo_dir"] = args.repo_dir
+                sys.exit(run_docker_container("review-loop", image_name, container_args, **kwargs))
         except Exception as e:
             print(f"Error during review-loop execution: {e}", file=sys.stderr)
             sys.exit(1)
@@ -1997,14 +2070,7 @@ def main() -> None:
         sys.exit(0)
 
     agent_id = args.agent.replace("-agent", "").replace("agent-", "") if getattr(args, "agent", None) else "antigravity"
-    agent_image_mapping = {
-        "antigravity": "holon/agent-antigravity",
-        "claude": "holon/agent-claude",
-        "pi": "holon/agent-pi",
-        "codex": "holon/agent-codex",
-        "gemini": "holon/agent-gemini",
-        "opencode": "holon/agent-opencode",
-    }
+    agent_image_mapping = AGENT_IMAGE_MAPPING
 
     if args.command == "intent":
         image_name = "holon/orchestrator"

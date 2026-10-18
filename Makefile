@@ -53,7 +53,7 @@ TARGET_DIR ?=
 DIR ?=
 LINT_TARGET = $(if $(TARGET_DIR),$(TARGET_DIR),$(if $(DIR),$(DIR),.))
 
-.PHONY: help build-images build-image check-prerequisites prerequisites check-docker install-docker install-homebrew tools lint lint-json lint-yaml lint-shell lint-md
+.PHONY: help build-images build-image check-prerequisites prerequisites check-docker install-docker install-homebrew tools lint lint-json lint-yaml lint-shell lint-md pre-commit-check
 
 help:
 	@echo "Usage: make [target]"
@@ -71,6 +71,7 @@ help:
 	@printf "  %-22s %s\n" "lint-yaml" "Validate all YAML files with Prettier."
 	@printf "  %-22s %s\n" "lint-shell" "Validate shell scripts with shellcheck."
 	@printf "  %-22s %s\n" "lint-md" "Check markdown formatting with Prettier."
+	@printf "  %-22s %s\n" "pre-commit-check" "Run pre-commit secret and scratch file detection."
 	@printf "  %-22s %s\n" "help" "Show this help message."
 	@echo ""
 
@@ -488,4 +489,12 @@ lint: lint-json lint-yaml lint-shell lint-md
 	echo "$(COLOR_BOLD)Running Python linting...$(COLOR_RESET)"; \
 	uv run task lint || { echo "$(COLOR_RED)❌ Python linting failed$(COLOR_RESET)"; exit 1; }; \
 	echo "$(COLOR_GREEN)✅ All lint checks passed successfully!$(COLOR_RESET)"
+
+# Run pre-commit checks for secrets and scratch files (Bean 0110)
+pre-commit-check:
+	@if [ -n "$(DRY_RUN)" ]; then exit 0; fi; \
+	echo "$(COLOR_BOLD)Running pre-commit check for secrets and scratch files...$(COLOR_RESET)"; \
+	python3 scripts/pre_commit_check.py --staged || { echo "$(COLOR_RED)❌ Pre-commit check failed$(COLOR_RESET)"; exit 1; }; \
+	echo "$(COLOR_GREEN)✅ Pre-commit check passed.$(COLOR_RESET)"
+
 

@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""Pre-commit security guard and scratch file detector (Bean 0110).
+
+Validates git staged files or explicit file paths to prevent accidental commits of:
+1. Hardcoded API keys, tokens, private keys, and sensitive credentials.
+2. Temporary scratch files, unmerged diffs, or stray artifacts in forbidden directories.
+
+Strictly preserves leading directory dots (e.g. .index/, .agents/) by using
+`.removeprefix('./')` instead of `.lstrip('./')`.
+"""
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+from collections.abc import Sequence
+
+# Regex patterns for detecting API keys, tokens, and private keys
+CREDENTIAL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("OpenAI API Key", re.compile(r"sk-[a-zA-Z0-9_\-]{20,}")),
+    ("Anthropic API Key", re.compile(r"sk-ant-[a-zA-Z0-9_\-]{20,}")),
+    ("Google AI Studio / Gemini Key", re.compile(r"AIza[0-9A-Za-z_\-]{35}")),
+    ("AWS Access Key", re.compile(r"AKIA[0-9A-Z]{16}")),
+    ("GitHub Personal Access Token", re.compile(r"(?:ghp|gho|ghu|ghs|ghr)_[0-9a-zA-Z]{36}")),
+    ("GitHub Fine-Grained PAT", re.compile(r"github_pat_[0-9a-zA-Z_]{22,}")),
+    ("Slack Token", re.compile(r"xox[baprs]-[0-9a-zA-Z]{10,}")),
+    ("Private Key Header", re.compile(r"-----BEGIN (?:[A-Z0-9_\s]+ )?PRIVATE KEY-----")),
+    (
+        "Generic Secret Assignment",
+        re.compile(
+            r"(?i)(?:api[_-]?key|secret|password|passwd|auth[_-]?token)\s*[:=]\s*['\"]([0-9a-zA-Z_\-]{16,})['\"]"
+        ),
+    ),
+]
+
+# Patterns representing non-production test / mock placeholders that should not trigger false positives
+FALSE_POSITIVE_INDICATORS = [
+    "REDACTED",
+    "placeholder",
+    "dummy",
+    "example",
+    "test_secret",
+    "fake_key",
+    "fake_token",
+    "your_key_here",
+    "my_secret_token",
+    "mock_token",
+    "env_token",
+]
+
+# Forbidden scratch file patterns (relative to repo root)
+SCRATCH_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("Temporary directory file", re.compile(r"^tmp/.*")),
+    ("Scratch directory file", re.compile(r"^scratch/.*")),
+    ("Temporary test file", re.compile(r".*\.test_tmp\.py$")),
+    ("Temporary file extension", re.compile(r".*\.(?:tmp|bak|orig|swp)$")),
+]
+
+# Whitelist patterns for files exempt from scratch rules
+TEST_FILE_WHITELIST: list[re.Pattern[str]] = [
+    re.compile(r"^tests/test_.*\.py$"),
+    re.compile(r"^apps/sandbox-executor/tests/test_.*\.py$"),
+    re.compile(r"^apps/sandbox-executor/tests/.*\.py$"),
+]
+
+
+def normalise_path(path: str) -> str:
+    """Normalise path preserving leading dots in directory names.
+
+    Uses `.removeprefix('./')` instead of `.lstrip('./')` to avoid stripping
+    leading dots from hidden directories like `.index/` or `.agents/`.
+
+    Args:
+        path: File path string.
+
+    Returns:
+        Normalised relative path.
+    """
+    clean = path.strip()
+    clean = clean.removeprefix("./")
+    clean = clean.replace("\\", "/")
+    return clean
+
+
+def is_scratch_file(path: str) -> tuple[bool, str]:
+    """Check if file matches any forbidden scratch pattern unless whitelisted.
+
+    Args:
+        path: Normalised file path.
+
+    Returns:
+        Tuple of (is_scratch: bool, reason: str).
+    """
+    normalised = normalise_path(path)
+
+    # Check whitelist first
+    for whitelist_pat in TEST_FILE_WHITELIST:
+        if whitelist_pat.match(normalised):
+            return False, ""
+
+    # Check forbidden scratch patterns
+    for name, pattern in SCRATCH_PATTERNS:
+        if pattern.match(normalised):
+            return True, f"Matches forbidden pattern: {name} ('{pattern.pattern}')"
+
+    return False, ""
+
+
+def check_file_credentials(file_path: str) -> list[str]:
+    """Scan file content for embedded credentials and API keys.
+
+    Args:
+        file_path: Path to target file on disk.
+
+    Returns:
+        List of detected violation descriptions.
+    """
+    violations: list[str] = []
+    norm = normalise_path(file_path)
+    if any(pat.match(norm) for pat in TEST_FILE_WHITELIST) or norm.startswith("docs/"):
+        return violations
+
+    if not os.path.isfile(file_path):
+        return violations
+
+    # Skip files larger than 2MB or binary files
+    try:
+        if os.path.getsize(file_path) > 2 * 1024 * 1024:
+            return violations
+    except OSError:
+        return violations
+
+    try:
+        with open(file_path, encoding="utf-8", errors="ignore") as f:
+            for line_no, line in enumerate(f, start=1):
+                # Ignore comment-only lines or test assertions mentioning secret patterns
+                for name, pat in CREDENTIAL_PATTERNS:
+                    match = pat.search(line)
+                    if match:
+                        matched_val = match.group(0)
+                        # Check false-positive indicators
+                        if any(
+                            fp.lower() in matched_val.lower() or fp.lower() in line.lower()
+                            for fp in FALSE_POSITIVE_INDICATORS
+                        ):
+                            continue
+                        # Mask matched value for secure logging
+                        masked = matched_val[:4] + "***" + matched_val[-4:] if len(matched_val) > 8 else "***"
+                        violations.append(f"Potential {name} detected at line {line_no} (match: '{masked}')")
+    except Exception as exc:
+        violations.append(f"Unable to read file for scanning: {exc}")
+
+    return violations
+
+
+def get_git_files(mode: str) -> list[str]:
+    """Retrieve list of files to check from git.
+
+    Args:
+        mode: Either 'staged' or 'all'.
+
+    Returns:
+        List of relative file paths.
+    """
+    cmd = ["git", "diff", "--cached", "--name-only", "--diff-filter=ACM"] if mode == "staged" else ["git", "ls-files"]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if res.returncode == 0:
+            return [line.strip() for line in res.stdout.splitlines() if line.strip()]
+    except Exception:
+        pass
+    return []
+
+
+def run_checks(files: Sequence[str]) -> int:
+    """Run scratch and credential checks on the given list of files.
+
+    Args:
+        files: Sequence of file path strings.
+
+    Returns:
+        int: 0 if all clean, 1 if violations found.
+    """
+    total_violations = 0
+
+    for raw_path in files:
+        path = normalise_path(raw_path)
+        if not path:
+            continue
+
+        # 1. Scratch file check
+        scratch, reason = is_scratch_file(path)
+        if scratch:
+            print(f"❌ [SCRATCH FILE] {path}: {reason}", file=sys.stderr)
+            total_violations += 1
+            continue
+
+        # 2. Credential content check
+        if os.path.exists(path):
+            cred_violations = check_file_credentials(path)
+            for v in cred_violations:
+                print(f"❌ [CREDENTIAL] {path}: {v}", file=sys.stderr)
+                total_violations += 1
+
+    if total_violations > 0:
+        print(
+            f"\nPre-commit check failed with {total_violations} violation(s). "
+            "Please remove credentials and scratch files before committing.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"✅ Pre-commit check passed for {len(files)} file(s).")
+    return 0
+
+
+def main() -> None:
+    """CLI entrypoint."""
+    parser = argparse.ArgumentParser(description="Holon Pre-Commit Security Guard and Scratch File Detector.")
+    parser.add_argument(
+        "files",
+        nargs="*",
+        help="Explicit file paths to scan.",
+    )
+    parser.add_argument(
+        "--staged",
+        action="store_true",
+        default=True,
+        help="Check only git staged files (default).",
+    )
+    parser.add_argument(
+        "--all",
+        "--all-files",
+        dest="all",
+        action="store_true",
+        help="Check all tracked files in git repository.",
+    )
+
+    args = parser.parse_args()
+
+    target_files: list[str] = []
+    if args.files:
+        target_files = args.files
+    elif args.all:
+        target_files = get_git_files("all")
+    else:
+        target_files = get_git_files("staged")
+
+    sys.exit(run_checks(target_files))
+
+
+if __name__ == "__main__":
+    main()

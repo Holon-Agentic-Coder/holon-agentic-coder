@@ -1173,6 +1173,11 @@ def main() -> None:
 
         run_cmd(["git", "checkout", "-b", exec_branch], cwd=repo_dir)
 
+        # Proactively check and resolve any stage conflicts
+        from sandbox_executor.flow import check_and_resolve_stage_conflicts
+
+        check_and_resolve_stage_conflicts(repo_dir=repo_dir, target_branch="main", stage_name="execute")
+
         # Load plan data from plans.jsonl
         plans_file_path = os.path.join(repo_dir, "holon-knowledge/ledger/plans.jsonl")
         plan_data = None

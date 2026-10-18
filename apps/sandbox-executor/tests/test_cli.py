@@ -800,7 +800,6 @@ class TestHolonFlowCLI(unittest.TestCase):
                 "15",
                 "--ensemble-size",
                 "2",
-                "--fail-fast",
                 "--dry-run",
             ]
             with patch("sys.argv", args):
@@ -811,7 +810,6 @@ class TestHolonFlowCLI(unittest.TestCase):
             self.assertEqual(call_args.target, "my-exec-branch")
             self.assertEqual(call_args.max_iterations, 15)
             self.assertEqual(call_args.ensemble_size, 2)
-            self.assertTrue(call_args.fail_fast)
             self.assertTrue(call_args.dry_run)
             mock_exit.assert_called_with(0)
 
@@ -821,7 +819,7 @@ class TestHolonFlowCLI(unittest.TestCase):
                 patch("sandbox_executor.flow.run_review_loop_cli", return_value=0) as mock_runner,
                 patch("sys.exit") as mock_exit,
             ):
-                with patch("sys.argv", ["holon", alias, "branch-123"]):
+                with patch("sys.argv", ["holon", alias, "branch-123", "--local"]):
                     main()
                 mock_runner.assert_called_once()
                 call_args = mock_runner.call_args[0][0]

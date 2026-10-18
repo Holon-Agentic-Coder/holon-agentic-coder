@@ -2216,7 +2216,7 @@ def run_review_loop(
     max_iterations: int = 25,
     ensemble_size: int = 3,
     auto_pr: bool = True,
-    fail_fast: bool = False,
+    fail_fast: bool = True,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Execute autonomous native multi-pass review loop (Bean 0118).
@@ -2404,8 +2404,11 @@ def run_review_loop(
             context.log(f"[Review Loop] Consensus approval reached at iteration {iteration}.")
             break
 
-        if fail_fast:
-            context.log(f"[Review Loop] Fail-fast triggered at iteration {iteration} (severity={severity}).")
+        if fail_fast and (is_dirty or severity == "critical"):
+            context.log(
+                f"[Review Loop] Fail-fast triggered at iteration {iteration} "
+                f"(severity={severity}, is_dirty={is_dirty})."
+            )
             break
 
     if not consensus_reached and iteration >= budget:
@@ -2733,7 +2736,7 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
     max_iterations = getattr(args, "max_iterations", 25)
     ensemble_size = getattr(args, "ensemble_size", 3)
     auto_pr = getattr(args, "auto_pr", True)
-    fail_fast = getattr(args, "fail_fast", False)
+    fail_fast = getattr(args, "fail_fast", True)
     dry_run = getattr(args, "dry_run", False)
     json_output = getattr(args, "json", False)
 

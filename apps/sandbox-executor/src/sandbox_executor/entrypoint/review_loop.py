@@ -81,12 +81,6 @@ def main() -> None:
         help="Automatically create PR if only a branch exists (default: True).",
     )
     parser.add_argument(
-        "--fail-fast",
-        action="store_true",
-        default=False,
-        help="Halt immediately upon critical finding or failed CI.",
-    )
-    parser.add_argument(
         "--skip-push",
         action="store_true",
         default=False,
@@ -212,7 +206,6 @@ def main() -> None:
         max_iterations=args.max_iterations,
         ensemble_size=args.ensemble_size,
         auto_pr=args.auto_pr,
-        fail_fast=args.fail_fast,
         dry_run=args.dry_run,
     )
 

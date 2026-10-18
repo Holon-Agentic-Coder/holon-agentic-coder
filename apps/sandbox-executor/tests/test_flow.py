@@ -1301,7 +1301,6 @@ class TestReviewLoopStage:
                 ctx,
                 target="I-100-intent/P-200-plan/E-300-exec/_",
                 max_iterations=10,
-                fail_fast=True,
                 dry_run=True,
             )
             assert res["total_iterations"] == 1
@@ -1355,7 +1354,6 @@ class TestReviewLoopStage:
             max_iterations=2,
             ensemble_size=3,
             no_auto_pr=False,
-            fail_fast=False,
             dry_run=True,
             json=False,
             token_reduce=False,
@@ -1622,7 +1620,13 @@ class TestSemanticPRAndConsensusReview:
                 "official_review": {"success": True},
             }
 
-            res = run_review_loop(ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=3, dry_run=False)
+            res = run_review_loop(
+                ctx,
+                target="I-100-intent/P-200-plan/E-300-exec/_",
+                max_iterations=3,
+                fail_fast=False,
+                dry_run=False,
+            )
             assert res["consensus"]["approved"] is True
 
         exec_file = ledger_dir / "executions.jsonl"

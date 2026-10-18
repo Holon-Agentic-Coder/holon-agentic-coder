@@ -35,6 +35,7 @@ class TestHolonInit(unittest.TestCase):
             "holon-config/metrics/system_entropy_config.json",
             "holon-config/prompts/planner.template.md",
             "holon-config/prompts/executor.template.md",
+            "holon-config/prompts/review_loop.template.md",
         ]
         for rel_path in expected_config_files:
             full_path = os.path.join(self.target_dir, rel_path)

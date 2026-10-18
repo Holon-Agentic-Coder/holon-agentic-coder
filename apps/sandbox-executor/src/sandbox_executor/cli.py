@@ -1364,11 +1364,6 @@ def main() -> None:
         help="Automatically create PR if only a branch exists (default: True).",
     )
     review_parser.add_argument(
-        "--fail-fast",
-        action="store_true",
-        help="Halt immediately upon first unrecoverable review or test failure.",
-    )
-    review_parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Run review evaluation without applying changes or git commits.",
@@ -1889,8 +1884,6 @@ def main() -> None:
                 ]
                 if not getattr(args, "auto_pr", True):
                     container_args.append("--no-auto-pr")
-                if getattr(args, "fail_fast", False):
-                    container_args.append("--fail-fast")
                 if getattr(args, "skip_push", False):
                     container_args.append("--skip-push")
                 if getattr(args, "json", False):

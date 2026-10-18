@@ -800,7 +800,6 @@ class TestHolonFlowCLI(unittest.TestCase):
                 "15",
                 "--ensemble-size",
                 "2",
-                "--fail-fast",
                 "--dry-run",
             ]
             with patch("sys.argv", args):
@@ -811,7 +810,6 @@ class TestHolonFlowCLI(unittest.TestCase):
             self.assertEqual(call_args.target, "my-exec-branch")
             self.assertEqual(call_args.max_iterations, 15)
             self.assertEqual(call_args.ensemble_size, 2)
-            self.assertTrue(call_args.fail_fast)
             self.assertTrue(call_args.dry_run)
             mock_exit.assert_called_with(0)
 

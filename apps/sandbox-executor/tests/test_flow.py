@@ -8,12 +8,14 @@ from unittest.mock import MagicMock, mock_open, patch
 import pytest
 from sandbox_executor.cli import main as cli_main
 from sandbox_executor.flow import (
+    ConflictResolutionError,
     FlowCheckpoint,
     FlowContext,
     FlowStage,
     PipelineEngine,
     StageResult,
     StageStatus,
+    check_and_resolve_stage_conflicts,
     check_pr_mergeability,
     create_or_update_pr,
     extract_valid_ledger_rows,
@@ -23,6 +25,7 @@ from sandbox_executor.flow import (
     migrate_checkpoint_data,
     post_pr_review_consensus,
     probe_ci_checks,
+    reconcile_jsonl_ledger_conflict,
     reconcile_ledger_content,
     reconcile_ledger_file,
     reconcile_ledger_rows,
@@ -1651,3 +1654,213 @@ class TestSemanticPRAndConsensusReview:
         assert len(post_records) == 1
         assert post_records[0]["outcome"] == "success"
         assert "dual-post" in post_records[0]["labels"]
+
+
+class TestProactiveConflictResolution:
+    """Test suite for Bean 0121 proactive conflict detection and deterministic ledger union reconciliation."""
+
+    def test_reconcile_jsonl_ledger_conflict_union(self, tmp_path: pathlib.Path) -> None:
+        """Verify deterministic append-only union resolution preserving upstream order and appending unique local."""
+        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
+        ledger_dir.mkdir(parents=True)
+        plans_file = ledger_dir / "plans.jsonl"
+
+        conflict_content = (
+            '{"plan_id": "P-ancestor-1", "ev": 10.0, "created_at": "2026-10-18T00:00:00Z"}\n'
+            '<<<<<<< HEAD\n'
+            '{"plan_id": "P-local-1", "ev": 20.0, "created_at": "2026-10-18T01:00:00Z"}\n'
+            '{"plan_id": "P-ancestor-1", "ev": 10.0, "created_at": "2026-10-18T00:00:00Z"}\n'
+            '=======\n'
+            '{"plan_id": "P-upstream-1", "ev": 30.0, "created_at": "2026-10-18T02:00:00Z"}\n'
+            '{"plan_id": "P-upstream-2", "ev": 40.0, "created_at": "2026-10-18T03:00:00Z"}\n'
+            '>>>>>>> origin/main\n'
+        )
+        plans_file.write_text(conflict_content, encoding="utf-8")
+
+        with patch("sandbox_executor.flow.run_git") as mock_git:
+            mock_git.return_value = MagicMock(returncode=0)
+            success = reconcile_jsonl_ledger_conflict(str(plans_file), repo_dir=str(tmp_path))
+            assert success is True
+
+            # Verify git add was called
+            mock_git.assert_called_once()
+            args = mock_git.call_args[0][0]
+            assert args[0] == "add"
+
+        # Verify reconciled content: upstream sequence preserved, local unique appended, duplicates removed
+        lines = [json.loads(line) for line in plans_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+        assert len(lines) == 4
+        ids = [row["plan_id"] for row in lines]
+        assert ids == ["P-ancestor-1", "P-upstream-1", "P-upstream-2", "P-local-1"]
+
+    def test_check_and_resolve_stage_conflicts_up_to_date(self) -> None:
+        """Verify check_and_resolve_stage_conflicts returns up_to_date when branch matches upstream merge-base."""
+        ctx = FlowContext(repo_dir="/tmp/repo", dry_run=False)
+
+        with patch("sandbox_executor.flow.run_git") as mock_git:
+            # 1. inside work tree -> returncode 0
+            # 2. fetch -> returncode 0
+            # 3. rev-parse verify origin/main -> returncode 0
+            # 4. merge-base HEAD origin/main -> commit-123
+            # 5. rev-parse origin/main -> commit-123
+            mock_git.side_effect = [
+                MagicMock(returncode=0),
+                MagicMock(returncode=0),
+                MagicMock(returncode=0),
+                MagicMock(returncode=0, stdout="commit-123\n"),
+                MagicMock(returncode=0, stdout="commit-123\n"),
+            ]
+
+            res = check_and_resolve_stage_conflicts(ctx, FlowStage.PLAN, target_branch="main")
+            assert res["status"] == "up_to_date"
+            assert res["diverged"] is False
+            assert res["conflicts"] is False
+
+    def test_check_and_resolve_stage_conflicts_diverged_clean_merge(self) -> None:
+        """Verify check_and_resolve_stage_conflicts executes clean merge when upstream advanced cleanly."""
+        ctx = FlowContext(repo_dir="/tmp/repo", dry_run=False)
+
+        with patch("sandbox_executor.flow.run_git") as mock_git:
+            # 1. inside work tree
+            # 2. fetch
+            # 3. rev-parse verify
+            # 4. merge-base
+            # 5. rev-parse target ref (different commit -> diverged!)
+            # 6. merge --no-commit --no-ff -> 0 (clean!)
+            # 7. commit -> 0
+            mock_git.side_effect = [
+                MagicMock(returncode=0),
+                MagicMock(returncode=0),
+                MagicMock(returncode=0),
+                MagicMock(returncode=0, stdout="commit-base\n"),
+                MagicMock(returncode=0, stdout="commit-upstream-ahead\n"),
+                MagicMock(returncode=0),
+                MagicMock(returncode=0),
+            ]
+
+            res = check_and_resolve_stage_conflicts(ctx, FlowStage.EXECUTE, target_branch="main")
+            assert res["status"] == "resolved"
+            assert res["diverged"] is True
+            assert res["conflicts"] is False
+
+    def test_check_and_resolve_stage_conflicts_non_ledger_abort(self) -> None:
+        """Verify clean abort and ConflictResolutionError when non-ledger source code conflicts occur."""
+        ctx = FlowContext(repo_dir="/tmp/repo", dry_run=False)
+
+        with patch("sandbox_executor.flow.run_git") as mock_git:
+            # 1. inside work tree
+            # 2. fetch
+            # 3. rev-parse verify
+            # 4. merge-base
+            # 5. rev-parse target ref
+            # 6. merge --no-commit --no-ff -> 1 (conflicts!)
+            # 7. diff --name-only --diff-filter=U -> non-ledger files
+            # 8. merge --abort -> 0
+            # 9. rebase --abort -> 0
+            mock_git.side_effect = [
+                MagicMock(returncode=0),
+                MagicMock(returncode=0),
+                MagicMock(returncode=0),
+                MagicMock(returncode=0, stdout="commit-base\n"),
+                MagicMock(returncode=0, stdout="commit-upstream-ahead\n"),
+                MagicMock(returncode=1),
+                MagicMock(returncode=0, stdout="src/app.py\nholon-knowledge/ledger/plans.jsonl\n"),
+                MagicMock(returncode=0),
+                MagicMock(returncode=0),
+            ]
+
+            with pytest.raises(ConflictResolutionError) as exc_info:
+                check_and_resolve_stage_conflicts(ctx, FlowStage.EXECUTE, target_branch="main")
+
+            err = exc_info.value
+            assert "src/app.py" in err.conflicting_files
+            assert err.stage == FlowStage.EXECUTE
+            assert err.target_branch == "main"
+            assert "Unresolvable merge conflict in stage 'execute'" in str(err)
+
+    def test_review_loop_conflicting_pr_resolution(self, tmp_path: pathlib.Path) -> None:
+        """Verify Stage 4 detects CONFLICTING status and triggers automatic conflict resolution."""
+        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
+        ledger_dir.mkdir(parents=True)
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100/P-200/E-300/_",
+            dry_run=False,
+            max_review_iterations=2,
+        )
+        ctx.stage_results["execute"] = StageResult(
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.SUCCESS,
+            payload={"test_pass_rate": 1.0, "exit_code": 0},
+        )
+
+        with (
+            patch("sandbox_executor.flow.check_pr_mergeability") as mock_merge,
+            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts") as mock_resolve,
+            patch("sandbox_executor.flow.probe_ci_checks") as mock_ci,
+            patch("sandbox_executor.flow.post_pr_review_consensus") as mock_post,
+        ):
+            # Iteration 1: CONFLICTING status triggers check_and_resolve_stage_conflicts
+            # After resolution: mergeability becomes CLEAN
+            mock_merge.side_effect = [
+                {"is_dirty": True, "mergeable": "CONFLICTING", "merge_state_status": "DIRTY", "pr_number": 42},
+                {"is_dirty": False, "mergeable": "MERGEABLE", "merge_state_status": "CLEAN"},
+            ]
+            mock_resolve.return_value = {
+                "status": "resolved",
+                "diverged": True,
+                "conflicts": True,
+                "resolved_files": ["holon-knowledge/ledger/plans.jsonl"],
+            }
+            mock_ci.return_value = {"all_passed": True, "passed": 1, "total": 1, "source": "github_cli"}
+            mock_post.return_value = {"target": "I-100/P-200/E-300/_", "dual_posted": True}
+
+            res = run_review_loop(ctx, target="I-100/P-200/E-300/_", max_iterations=2, dry_run=False)
+            assert res["consensus"]["approved"] is True
+            mock_resolve.assert_called_once()
+            args, kwargs = mock_resolve.call_args
+            assert args[1] == FlowStage.REVIEW
+            assert kwargs.get("pr_number") == 42
+
+    def test_calibration_stage_reconciliation(self, tmp_path: pathlib.Path) -> None:
+        """Verify Stage 5 ensures /calibrated branch cleanly reconciles with execution PR branch."""
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100/P-200/E-300/_",
+            dry_run=False,
+        )
+
+        with (
+            patch("sandbox_executor.flow.run_git") as mock_git,
+            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts") as mock_conflict,
+            patch("sandbox_executor.flow.run_calibrate") as mock_calibrate,
+        ):
+            mock_conflict.return_value = {"status": "up_to_date"}
+            # Git calls:
+            # 1. rev-parse inside work tree -> 0
+            # 2. rev-parse verify /calibrated -> 0 (branch exists!)
+            # 3. checkout /calibrated -> 0
+            # 4. rebase execution_branch -> 0 (clean rebase!)
+            # 5. checkout execution_branch -> 0
+            mock_git.side_effect = [
+                MagicMock(returncode=0),
+                MagicMock(returncode=0),
+                MagicMock(returncode=0),
+                MagicMock(returncode=0),
+                MagicMock(returncode=0),
+            ]
+
+            mock_report = MagicMock()
+            mock_report.calibrated_branch = "I-100/P-200/E-300/calibrated"
+            mock_report.to_dict.return_value = {"status": "calibrated"}
+            mock_calibrate.return_value = mock_report
+
+            result = run_calibrate_stage(ctx)
+            assert result.status == StageStatus.SUCCESS
+            assert ctx.calibrated_branch == "I-100/P-200/E-300/calibrated"
+
+            # Verify git rebase was invoked for calibrated branch
+            rebase_calls = [c for c in mock_git.call_args_list if c[0][0][0] == "rebase"]
+            assert len(rebase_calls) == 1
+            assert rebase_calls[0][0][0] == ["rebase", "I-100/P-200/E-300/_"]
+

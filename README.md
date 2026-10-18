@@ -733,7 +733,7 @@ flowchart TD
 
 ## Sandbox CLI usage
 
-All containerized Holon roles (`intent`, `plan`, `execute`) are driven by the `holon` CLI. It maps agent names to
+All containerised Holon roles (`intent`, `plan`, `execute`) are driven by the `holon` CLI. It maps agent names to
 images, forwards credentials (`GITHUB_TOKEN`, `HOLON_AGENT_*`), mounts the SSH agent socket, and optionally attaches the
 token-reduction proxy.
 

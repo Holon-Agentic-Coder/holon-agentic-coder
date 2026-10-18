@@ -53,7 +53,7 @@ TARGET_DIR ?=
 DIR ?=
 LINT_TARGET = $(if $(TARGET_DIR),$(TARGET_DIR),$(if $(DIR),$(DIR),.))
 
-.PHONY: help build-images build-image check-prerequisites prerequisites check-docker install-docker install-homebrew tools lint lint-json lint-yaml lint-shell lint-md
+.PHONY: help build-images build-image check-prerequisites prerequisites check-docker install-docker install-homebrew tools lint pre-commit-check lint-json lint-yaml lint-shell lint-md
 
 help:
 	@echo "Usage: make [target]"
@@ -67,6 +67,7 @@ help:
 	@printf "  %-22s %s\n" "install-homebrew" "Install Homebrew (macOS only)."
 	@printf "  %-22s %s\n" "tools" "Print absolute resolved path and version of every required toolbelt tool."
 	@printf "  %-22s %s\n" "lint" "Run all linters (json, yaml, shell, md, python)."
+	@printf "  %-22s %s\n" "pre-commit-check" "Scan staged files for secret leaks and blocked scratch files."
 	@printf "  %-22s %s\n" "lint-json" "Validate all JSON and JSONL files with jq."
 	@printf "  %-22s %s\n" "lint-yaml" "Validate all YAML files with Prettier."
 	@printf "  %-22s %s\n" "lint-shell" "Validate shell scripts with shellcheck."
@@ -482,8 +483,15 @@ lint-md:
 	fi; \
 	echo "$(COLOR_GREEN)✅ Markdown formatting check passed.$(COLOR_RESET)"
 
+# Scan staged files for secret credentials and blocked scratch files
+pre-commit-check:
+	@if [ -n "$(DRY_RUN)" ]; then exit 0; fi; \
+	echo "$(COLOR_BOLD)Running pre-commit security & hygiene checks...$(COLOR_RESET)"; \
+	uv run python3 scripts/pre_commit_check.py || { echo "$(COLOR_RED)❌ Pre-commit check failed$(COLOR_RESET)"; exit 1; }; \
+	echo "$(COLOR_GREEN)✅ Pre-commit check passed.$(COLOR_RESET)"
+
 # Composite linter running JSON, YAML, Shell, Markdown, and Python linters
-lint: lint-json lint-yaml lint-shell lint-md
+lint: pre-commit-check lint-json lint-yaml lint-shell lint-md
 	@if [ -n "$(DRY_RUN)" ]; then exit 0; fi; \
 	echo "$(COLOR_BOLD)Running Python linting...$(COLOR_RESET)"; \
 	uv run task lint || { echo "$(COLOR_RED)❌ Python linting failed$(COLOR_RESET)"; exit 1; }; \

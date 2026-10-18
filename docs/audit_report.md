@@ -29,7 +29,7 @@ The audit evaluated all components across the system:
 
 The platform displays strong core foundational designs: Git branches serve as immutable safety boundaries; the
 human-in-the-loop merge invariant (Bean 0034) is strictly enforced; ledger operations are append-only; and token
-optimization sidecars leverage local CA generation with merged trust stores. However, the system exhibits critical
+optimisation sidecars leverage local CA generation with merged trust stores. However, the system exhibits critical
 architectural coupling, potential security isolation gaps under container host mounts, lack of inter-process file
 locking for ledger writes, and unversioned pipeline state checkpoints.
 
@@ -39,7 +39,7 @@ locking for ledger writes, and unversioned pipeline state checkpoints.
 
 ### 2.1 Scope of Inspection
 
-The audit encompasses all source trees, configuration files, and runtime artifacts:
+The audit encompasses all source trees, configuration files, and runtime artefacts:
 
 1. `apps/sandbox-executor/src/sandbox_executor/` (Core runtime logic)
 2. `apps/sandbox-executor/entrypoint/` (Container role dispatchers)
@@ -72,7 +72,7 @@ four core pillars:
 | **BUG-01**  | Non-Atomic Concurrent Ledger Appending Without File Locking        | Reliability  | **High**   | `ledger.py`, `flow.py`                | Bean 0093             |
 | **ARC-01**  | Monorepo Split & Circular Coupling Between `cli.py` and `flow.py`  | Architecture | **Medium** | `cli.py`, `flow.py`                   | Architecture Refactor |
 | **SEC-02**  | Host D-Bus Session Socket Mounted into Container Sandbox           | Security     | **High**   | `cli.py` (`get_agent_session_mounts`) | Bean 0095             |
-| **BUG-02**  | Unversioned Flow Checkpoint Serialization & Migration Hazard       | Reliability  | **Medium** | `flow.py` (`FlowCheckpoint`)          | Bean 0094             |
+| **BUG-02**  | Unversioned Flow Checkpoint Serialisation & Migration Hazard       | Reliability  | **Medium** | `flow.py` (`FlowCheckpoint`)          | Bean 0094             |
 | **SEC-03**  | Long-Lived Root CA Key Longevity Without Auto-Rotation Policy      | Security     | **Medium** | `ca_generator.py`                     | Security Hardening    |
 | **BUG-03**  | Silent Rebase Conflict Abort Masking Execution Divergence          | Bugs         | **Medium** | `flow.py` (`run_execute_stage`)       | Flow Logic Hardening  |
 | **PERF-01** | Synchronous Subprocess Test Runner Blocking Flow Engine            | Performance  | **Low**    | `flow.py` (`run_execute_stage`)       | Async Pipeline        |

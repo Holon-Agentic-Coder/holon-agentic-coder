@@ -16,7 +16,7 @@ multi-agent system that plans competitively, executes in sandboxes, and improves
 
 #### 1) Git is the universal state machine
 
-- All intents, plans, executions, and outcomes are represented as git artifacts.
+- All intents, plans, executions, and outcomes are represented as git artefacts.
 - Agents never “just do work”; they **propose diffs**.
 
 #### 2) Fractal intent (infinite recursive depth)
@@ -88,7 +88,7 @@ outputs.
 
 ### High-level architecture
 
-The components of the Holon engine are organized around the Orchestrator (Meta-Agent), which coordinates the flow of
+The components of the Holon engine are organised around the Orchestrator (Meta-Agent), which coordinates the flow of
 information between static configurations, dynamic data products, and execution runtimes.
 
 ```mermaid
@@ -276,7 +276,7 @@ Executor:
 - checks out the correct branch
 - enforces git discipline (rebase rules)
 - runs plan steps (may spawn sub-intents where permitted)
-- produces code changes, tests, artifacts, logs
+- produces code changes, tests, artefacts, logs
 
 #### 6) Measurement (post-execution)
 

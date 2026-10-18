@@ -434,6 +434,29 @@ def run_git(
 # ---------------------------------------------------------------------------
 
 
+class ConflictResolutionError(RuntimeError):
+    """Raised when upstream git conflicts cannot be automatically resolved (Bean 0121)."""
+
+    def __init__(
+        self,
+        conflicting_files: list[str],
+        stage: FlowStage | str,
+        target_branch: str = "main",
+        message: str | None = None,
+    ) -> None:
+        self.conflicting_files = conflicting_files
+        self.stage = FlowStage.from_str(stage) if isinstance(stage, (str, FlowStage)) else stage
+        self.target_branch = target_branch
+        file_list = ", ".join(conflicting_files) if conflicting_files else "none"
+        stage_str = self.stage.value if hasattr(self.stage, "value") else str(self.stage)
+        msg = (
+            message
+            or f"Unresolvable merge conflict in stage '{stage_str}' against '{target_branch}'. "
+            f"Conflicting non-ledger files: {file_list}"
+        )
+        super().__init__(msg)
+
+
 def _parse_ledger_timestamp(val: Any) -> datetime:
     """Parse an ISO-8601 timestamp string into a timezone-aware UTC datetime.
 
@@ -658,6 +681,166 @@ def reconcile_ledgers(repo_dir: str) -> list[str]:
     return reconciled_paths
 
 
+def reconcile_jsonl_ledger_conflict(file_path: str, repo_dir: str | None = None) -> bool:
+    """Deterministically resolve merge conflicts in an append-only JSONL ledger file (Bean 0121).
+
+    Preserves all upstream JSONL lines in exact chronological/sequence order,
+    followed by unique local JSONL lines without duplicates. Stages the resolved file via git.
+
+    Args:
+        file_path: Path to the conflicting JSONL ledger file.
+        repo_dir: Path to repository root. If None, inferred from file_path or parent directories.
+
+    Returns:
+        bool: True if reconciliation succeeded and file was staged, False otherwise.
+    """
+    if not os.path.exists(file_path):
+        logger.warning(f"Ledger file does not exist for conflict resolution: {file_path}")
+        return False
+
+    base = os.path.basename(file_path).lower()
+    if "intent" in base:
+        ledger_type = "intents"
+    elif "plan" in base:
+        ledger_type = "plans"
+    elif "exec" in base:
+        ledger_type = "executions"
+    else:
+        ledger_type = "generic"
+
+    def get_pk(row: dict[str, Any]) -> str:
+        if ledger_type == "intents":
+            val = row.get("branch") or row.get("slug")
+            if val:
+                return str(val)
+        elif ledger_type == "plans":
+            val = row.get("plan_id")
+            if val:
+                return str(val)
+        elif ledger_type == "executions":
+            val = row.get("execution_id") or row.get("action_id")
+            if val:
+                return str(val)
+        for cand in ("execution_id", "action_id", "plan_id", "branch", "slug"):
+            if row.get(cand):
+                return str(row[cand])
+        return json.dumps(row, sort_keys=True)
+
+    try:
+        with open(file_path, encoding="utf-8") as f:
+            lines = f.readlines()
+
+        has_markers = any(line.startswith("<<<<<<<") for line in lines)
+        upstream_rows: list[dict[str, Any]] = []
+        local_rows: list[dict[str, Any]] = []
+
+        if has_markers:
+            # Parse conflict sections
+            in_section_1 = False
+            in_section_2 = False
+            sec1_is_local = True
+
+            for raw_line in lines:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                if line.startswith("<<<<<<<"):
+                    in_section_1 = True
+                    in_section_2 = False
+                    marker_header = line.replace("<<<<<<<", "").strip().lower()
+                    if any(kw in marker_header for kw in ("origin", "main", "base", "target", "upstream")):
+                        sec1_is_local = False
+                    else:
+                        sec1_is_local = True
+                    continue
+                elif line.startswith("======="):
+                    in_section_1 = False
+                    in_section_2 = True
+                    continue
+                elif line.startswith(">>>>>>>"):
+                    marker_footer = line.replace(">>>>>>>", "").strip().lower()
+                    if any(kw in marker_footer for kw in ("origin", "main", "base", "target", "upstream")):
+                        sec1_is_local = True
+                    in_section_1 = False
+                    in_section_2 = False
+                    continue
+                elif line.startswith("|||||||"):
+                    continue
+
+                try:
+                    parsed = json.loads(line)
+                    if not isinstance(parsed, dict):
+                        continue
+                except Exception:
+                    continue
+
+                if in_section_1:
+                    if sec1_is_local:
+                        local_rows.append(parsed)
+                    else:
+                        upstream_rows.append(parsed)
+                elif in_section_2:
+                    if sec1_is_local:
+                        upstream_rows.append(parsed)
+                    else:
+                        local_rows.append(parsed)
+                else:
+                    # Common ancestor / shared lines outside conflict blocks
+                    upstream_rows.append(parsed)
+        else:
+            raw_content = "".join(lines)
+            rows = extract_valid_ledger_rows(raw_content)
+            upstream_rows = reconcile_ledger_rows(rows, ledger_type)
+            local_rows = []
+
+        reconciled_rows: list[dict[str, Any]] = []
+        seen_pks: set[str] = set()
+
+        for r in upstream_rows:
+            pk = get_pk(r)
+            if pk not in seen_pks:
+                seen_pks.add(pk)
+                reconciled_rows.append(r)
+
+        for r in local_rows:
+            pk = get_pk(r)
+            if pk not in seen_pks:
+                seen_pks.add(pk)
+                reconciled_rows.append(r)
+
+        out_content = "\n".join(json.dumps(r) for r in reconciled_rows) + ("\n" if reconciled_rows else "")
+
+        dir_name = os.path.dirname(os.path.abspath(file_path))
+        temp_file = os.path.join(dir_name, f".{os.path.basename(file_path)}.reconciled.tmp.{os.getpid()}")
+        try:
+            with open(temp_file, "w", encoding="utf-8") as f:
+                f.write(out_content)
+            os.replace(temp_file, file_path)
+        finally:
+            if os.path.exists(temp_file):
+                with contextlib.suppress(OSError):
+                    os.remove(temp_file)
+
+        # Stage resolved ledger file
+        target_dir = repo_dir
+        if not target_dir:
+            cur = os.path.dirname(os.path.abspath(file_path))
+            while cur and os.path.dirname(cur) != cur:
+                if os.path.exists(os.path.join(cur, ".git")):
+                    target_dir = cur
+                    break
+                cur = os.path.dirname(cur)
+            if not target_dir:
+                target_dir = "."
+
+        rel_path = os.path.relpath(file_path, target_dir)
+        run_git(["add", rel_path], cwd=target_dir, check=False)
+        return True
+    except Exception as exc:
+        logger.error(f"Failed to reconcile JSONL ledger conflict for '{file_path}': {exc}")
+        return False
+
+
 def check_pr_mergeability(
     repo_dir: str,
     branch: str,
@@ -795,6 +978,212 @@ def check_pr_mergeability(
         "source": "git_local",
         "pr_number": None,
         "status_check_rollup": None,
+    }
+
+
+def check_and_resolve_stage_conflicts(
+    context: FlowContext,
+    stage: FlowStage | str,
+    target_branch: str = "main",
+    pr_number: int | None = None,
+) -> dict[str, Any]:
+    """Proactively detect upstream branch divergence and automatically resolve conflicts (Bean 0121).
+
+    Before executing each stage:
+    1. Fetches origin/<target_branch> with graceful fallback if unreachable.
+    2. Detects if origin/<target_branch> has advanced ahead of merge-base.
+    3. If diverged, attempts an automated merge against origin/<target_branch>.
+    4. Deterministically resolves append-only ledger conflicts via union-append.
+    5. Cleanly aborts on source code conflicts, raising ConflictResolutionError.
+
+    Args:
+        context: Active FlowContext.
+        stage: Current FlowStage or stage name string.
+        target_branch: Base target branch (default: "main").
+        pr_number: Optional pull request number for diagnostics.
+
+    Returns:
+        dict[str, Any]: Diagnostics dictionary with keys:
+            - status: str ("up_to_date", "resolved", "dry_run", "skipped")
+            - diverged: bool
+            - conflicts: bool
+            - resolved_files: list[str]
+            - stage: str
+            - target_branch: str
+
+    Raises:
+        ConflictResolutionError: If non-ledger source code conflicts cannot be auto-resolved.
+    """
+    stage_enum = FlowStage.from_str(stage)
+    repo_dir = context.repo_dir
+
+    if context.dry_run:
+        return {
+            "status": "dry_run",
+            "diverged": False,
+            "conflicts": False,
+            "resolved_files": [],
+            "stage": stage_enum.value,
+            "target_branch": target_branch,
+        }
+
+    is_git = run_git(["rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False).returncode == 0
+    if not is_git:
+        return {
+            "status": "skipped",
+            "diverged": False,
+            "conflicts": False,
+            "resolved_files": [],
+            "stage": stage_enum.value,
+            "target_branch": target_branch,
+        }
+
+    # 1. Attempt fetch with graceful fallback
+    run_git(["fetch", "origin", target_branch], cwd=repo_dir, check=False)
+
+    # 2. Determine target ref
+    target_ref = f"origin/{target_branch}"
+    ref_check = run_git(["rev-parse", "--verify", target_ref], cwd=repo_dir, check=False)
+    if ref_check.returncode != 0:
+        target_ref = target_branch
+        ref_check = run_git(["rev-parse", "--verify", target_ref], cwd=repo_dir, check=False)
+        if ref_check.returncode != 0:
+            return {
+                "status": "up_to_date",
+                "diverged": False,
+                "conflicts": False,
+                "resolved_files": [],
+                "stage": stage_enum.value,
+                "target_branch": target_branch,
+            }
+
+    # 3. Compute merge-base between HEAD and target_ref
+    mb_proc = run_git(["merge-base", "HEAD", target_ref], cwd=repo_dir, check=False)
+    if mb_proc.returncode != 0 or not mb_proc.stdout.strip():
+        return {
+            "status": "up_to_date",
+            "diverged": False,
+            "conflicts": False,
+            "resolved_files": [],
+            "stage": stage_enum.value,
+            "target_branch": target_branch,
+        }
+    merge_base = mb_proc.stdout.strip()
+
+    tgt_proc = run_git(["rev-parse", target_ref], cwd=repo_dir, check=False)
+    target_commit = tgt_proc.stdout.strip()
+
+    # If target commit equals merge-base, target hasn't advanced ahead of HEAD
+    if target_commit == merge_base:
+        return {
+            "status": "up_to_date",
+            "diverged": False,
+            "conflicts": False,
+            "resolved_files": [],
+            "stage": stage_enum.value,
+            "target_branch": target_branch,
+        }
+
+    context.log(
+        f"[Conflict Resolver] Divergence detected against {target_ref} in stage '{stage_enum.value}'. "
+        f"Target: {target_commit[:8]}, Merge-Base: {merge_base[:8]}. Attempting automated resolution..."
+    )
+
+    # 4. Attempt automated merge
+    merge_proc = run_git(["merge", "--no-commit", "--no-ff", target_ref], cwd=repo_dir, check=False)
+
+    if merge_proc.returncode == 0:
+        commit_env = os.environ.copy()
+        commit_env.setdefault("GIT_AUTHOR_NAME", "Holon Flow Conflict Resolver")
+        commit_env.setdefault("GIT_AUTHOR_EMAIL", "flow-resolver@holon-agentic-coder.com")
+        commit_env.setdefault("GIT_COMMITTER_NAME", "Holon Flow Conflict Resolver")
+        commit_env.setdefault("GIT_COMMITTER_EMAIL", "flow-resolver@holon-agentic-coder.com")
+        run_git(
+            ["commit", "-m", f"merge: sync with {target_ref} prior to {stage_enum.value} stage"],
+            cwd=repo_dir,
+            env=commit_env,
+            check=True,
+        )
+        context.log(f"[Conflict Resolver] Cleanly synced with {target_ref} in stage '{stage_enum.value}'.")
+        return {
+            "status": "resolved",
+            "diverged": True,
+            "conflicts": False,
+            "resolved_files": [],
+            "stage": stage_enum.value,
+            "target_branch": target_branch,
+        }
+
+    # 5. Conflicts occurred - inspect unmerged files
+    unmerged_proc = run_git(["diff", "--name-only", "--diff-filter=U"], cwd=repo_dir, check=False)
+    unmerged_files = [f.strip() for f in unmerged_proc.stdout.splitlines() if f.strip()]
+    if not unmerged_files:
+        status_proc = run_git(["status", "--porcelain"], cwd=repo_dir, check=False)
+        for line in status_proc.stdout.splitlines():
+            if line[:2] in ("UU", "AA", "UD", "DU"):
+                unmerged_files.append(line[3:].strip())
+
+    def is_ledger_file(path: str) -> bool:
+        norm = path.replace("\\", "/").strip()
+        return "holon-knowledge/ledger/" in norm and norm.endswith(".jsonl")
+
+    non_ledger_conflicts = [f for f in unmerged_files if not is_ledger_file(f)]
+
+    if non_ledger_conflicts:
+        context.log(
+            f"[Conflict Resolver] Non-ledger source conflicts detected in stage '{stage_enum.value}': "
+            f"{non_ledger_conflicts}. Aborting merge."
+        )
+        run_git(["merge", "--abort"], cwd=repo_dir, check=False)
+        run_git(["rebase", "--abort"], cwd=repo_dir, check=False)
+        raise ConflictResolutionError(
+            conflicting_files=non_ledger_conflicts,
+            stage=stage_enum,
+            target_branch=target_branch,
+        )
+
+    # 6. All conflicts are in append-only ledgers: resolve deterministically
+    resolved_files: list[str] = []
+    for rel_file in unmerged_files:
+        full_file = os.path.join(repo_dir, rel_file)
+        if reconcile_jsonl_ledger_conflict(full_file, repo_dir=repo_dir):
+            resolved_files.append(rel_file)
+
+    # Verify no unmerged files remain
+    check_proc = run_git(["diff", "--name-only", "--diff-filter=U"], cwd=repo_dir, check=False)
+    if check_proc.stdout.strip():
+        remaining = [f.strip() for f in check_proc.stdout.splitlines() if f.strip()]
+        run_git(["merge", "--abort"], cwd=repo_dir, check=False)
+        raise ConflictResolutionError(
+            conflicting_files=remaining,
+            stage=stage_enum,
+            target_branch=target_branch,
+            message=f"Failed to resolve ledger conflicts for: {remaining}",
+        )
+
+    # Commit resolved ledger merge
+    commit_env = os.environ.copy()
+    commit_env.setdefault("GIT_AUTHOR_NAME", "Holon Flow Conflict Resolver")
+    commit_env.setdefault("GIT_AUTHOR_EMAIL", "flow-resolver@holon-agentic-coder.com")
+    commit_env.setdefault("GIT_COMMITTER_NAME", "Holon Flow Conflict Resolver")
+    commit_env.setdefault("GIT_COMMITTER_EMAIL", "flow-resolver@holon-agentic-coder.com")
+    run_git(
+        ["commit", "-m", f"merge: auto-reconcile ledger conflicts with {target_ref} in {stage_enum.value} stage"],
+        cwd=repo_dir,
+        env=commit_env,
+        check=True,
+    )
+    context.log(
+        f"[Conflict Resolver] Successfully reconciled ledger conflicts for {resolved_files} "
+        f"in stage '{stage_enum.value}'."
+    )
+    return {
+        "status": "resolved",
+        "diverged": True,
+        "conflicts": True,
+        "resolved_files": resolved_files,
+        "stage": stage_enum.value,
+        "target_branch": target_branch,
     }
 
 
@@ -1546,6 +1935,20 @@ def run_intent_stage(context: FlowContext) -> StageResult:
         repo_dir = context.repo_dir
         is_git = run_git(["rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False).returncode == 0
         if is_git:
+            try:
+                check_and_resolve_stage_conflicts(context, FlowStage.INTENT, target_branch=target_branch)
+            except ConflictResolutionError as exc:
+                context.log(f"Conflict in Intent stage: {exc}")
+                res = StageResult(
+                    stage=FlowStage.INTENT,
+                    status=StageStatus.FAILED,
+                    start_time=start_time,
+                    end_time=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    error=str(exc),
+                )
+                context.stage_results["intent"] = res
+                return res
+
             has_branch = run_git(["rev-parse", "--verify", intent_branch], cwd=repo_dir, check=False).returncode == 0
             if not has_branch:
                 run_git(["checkout", "-B", intent_branch, target_branch], cwd=repo_dir, check=True)
@@ -1675,6 +2078,21 @@ def run_plan_stage(context: FlowContext) -> StageResult:
     if not context.dry_run:
         is_git = run_git(["rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False).returncode == 0
         if is_git:
+            target_branch = context.intent_data.get("target_branch", "main")
+            try:
+                check_and_resolve_stage_conflicts(context, FlowStage.PLAN, target_branch=target_branch)
+            except ConflictResolutionError as exc:
+                context.log(f"Conflict in Plan stage: {exc}")
+                res = StageResult(
+                    stage=FlowStage.PLAN,
+                    status=StageStatus.FAILED,
+                    start_time=start_time,
+                    end_time=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    error=str(exc),
+                )
+                context.stage_results["plan"] = res
+                return res
+
             run_git(["checkout", "-B", plan_branch, context.intent_branch], cwd=repo_dir, check=True)
 
         os.makedirs(os.path.dirname(plan_md_path), exist_ok=True)
@@ -1864,6 +2282,19 @@ def run_execute_stage(context: FlowContext) -> StageResult:
     if not context.dry_run:
         is_git = run_git(["rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False).returncode == 0
         if is_git:
+            target_branch = context.intent_data.get("target_branch", "main")
+            try:
+                check_and_resolve_stage_conflicts(context, FlowStage.EXECUTE, target_branch=target_branch)
+            except ConflictResolutionError as exc:
+                context.log(f"Conflict in Execute stage: {exc}")
+                return StageResult(
+                    stage=FlowStage.EXECUTE,
+                    status=StageStatus.FAILED,
+                    start_time=start_time,
+                    end_time=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    error=str(exc),
+                )
+
             run_git(["checkout", "-B", exec_branch, context.plan_branch], cwd=repo_dir, check=True)
             rebase_res = run_git(["rebase", context.plan_branch], cwd=repo_dir, check=False)
             if rebase_res.returncode != 0:
@@ -2139,6 +2570,47 @@ def run_review_loop(
             repo_dir, review_target, target_branch=target_branch, proxy_env=proxy_env
         )
         is_dirty = bool(last_mergeability.get("is_dirty"))
+        mergeable_status = str(last_mergeability.get("mergeable", "")).upper()
+        merge_state = str(last_mergeability.get("merge_state_status", "")).upper()
+
+        if (is_dirty or mergeable_status == "CONFLICTING" or merge_state == "DIRTY") and not effective_dry_run:
+            context.log(
+                f"[Review Loop] Iteration {iteration}: Branch '{review_target}' is in conflicting state "
+                f"({mergeable_status}/{merge_state}). Attempting automated conflict resolution..."
+            )
+            try:
+                pr_num = last_mergeability.get("pr_number")
+                res_conflict = check_and_resolve_stage_conflicts(
+                    context, FlowStage.REVIEW, target_branch=target_branch, pr_number=pr_num
+                )
+                if res_conflict.get("status") == "resolved":
+                    context.log(
+                        f"[Review Loop] Upstream conflicts automatically resolved for {res_conflict.get('resolved_files')}."
+                    )
+                    conflict_action_record = {
+                        "action_id": generate_action_id("ACT-CONF"),
+                        "execution_id": f"REV-CONF-{iteration}-{int(time.time())}",
+                        "action": f"PR Review Loop iteration {iteration} resolved upstream merge conflicts",
+                        "category": "code",
+                        "target": review_target,
+                        "outcome": "success",
+                        "entry_type": "action",
+                        "action_origin": "pr_review",
+                        "review_iteration": iteration,
+                        "labels": ["review", "conflict-resolution", f"iteration-{iteration}"],
+                        "created_at": datetime.now(UTC).isoformat(),
+                    }
+                    try:
+                        with atomic_ledger_append(exec_file) as f:
+                            f.write(json.dumps(conflict_action_record) + "\n")
+                    except Exception as e:
+                        logger.debug("Non-fatal ledger append during conflict resolution event: %s", e)
+                    last_mergeability = check_pr_mergeability(
+                        repo_dir, review_target, target_branch=target_branch, proxy_env=proxy_env
+                    )
+                    is_dirty = bool(last_mergeability.get("is_dirty"))
+            except ConflictResolutionError as exc:
+                context.log(f"[Review Loop] Automated conflict resolution failed: {exc}")
 
         # 2. CI status inspection
         last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
@@ -2614,6 +3086,32 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
     repo_dir = context.repo_dir
     calibrated_branch = f"{context.execution_branch.rstrip('/_').rstrip('/')}/calibrated"
     report_dict: dict[str, Any] = {}
+
+    target_branch = context.intent_data.get("target_branch", "main")
+    if not context.dry_run:
+        is_git = run_git(["rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False).returncode == 0
+        if is_git:
+            try:
+                check_and_resolve_stage_conflicts(context, FlowStage.CALIBRATE, target_branch=target_branch)
+            except ConflictResolutionError as exc:
+                context.log(f"Conflict in Calibrate stage: {exc}")
+                return StageResult(
+                    stage=FlowStage.CALIBRATE,
+                    status=StageStatus.FAILED,
+                    start_time=start_time,
+                    end_time=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    error=str(exc),
+                )
+            has_calibrated = (
+                run_git(["rev-parse", "--verify", calibrated_branch], cwd=repo_dir, check=False).returncode == 0
+            )
+            if has_calibrated:
+                run_git(["checkout", calibrated_branch], cwd=repo_dir, check=True)
+                rebase_res = run_git(["rebase", context.execution_branch], cwd=repo_dir, check=False)
+                if rebase_res.returncode != 0:
+                    context.log("Warning: rebase of /calibrated encountered conflicts, aborting.")
+                    run_git(["rebase", "--abort"], cwd=repo_dir, check=False)
+                run_git(["checkout", context.execution_branch], cwd=repo_dir, check=True)
 
     try:
         report = run_calibrate(

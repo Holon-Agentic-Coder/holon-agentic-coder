@@ -96,7 +96,7 @@ Where:
 - Lint/format constraints satisfied if required.
 - No sandbox violations occurred.
 - No unresolved Git conflicts remain.
-- Required artifacts are produced.
+- Required artefacts are produced.
 
 **Optional partial success (later phase):**
 
@@ -558,7 +558,7 @@ We measure the accuracy of predicted metrics against actual post-execution outco
   should maintain a Brier Score $BS \le 0.15$.
 - **Entropy Prediction Error (MAE):** We calculate the Mean Absolute Error for Per-Intent Entropy predictions:
   $$MAE_{\Delta S} = \frac{1}{N} \sum_{t=1}^{N} |\Delta S_{intent,pred,t} - \Delta S_{intent,actual,t}|$$ _Target:_
-  $MAE_{\Delta S} \le 1.5$ (on the 0–10 normalized scale).
+  $MAE_{\Delta S} \le 1.5$ (on the 0–10 normalised scale).
 
 If either metric drifts above targets, it indicates estimator degradation, triggering the Curator Agent to recalculate
 weights or suggest new model routing parameters.

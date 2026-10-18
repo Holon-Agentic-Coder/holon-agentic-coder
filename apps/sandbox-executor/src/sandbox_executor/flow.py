@@ -710,7 +710,7 @@ def reconcile_jsonl_ledger_conflict(file_path: str, repo_dir: str | None = None)
 
     def get_pk(row: dict[str, Any]) -> str:
         if ledger_type == "intents":
-            val = row.get("branch") or row.get("slug")
+            val = row.get("intent_id") or row.get("branch") or row.get("slug")
             if val:
                 return str(val)
         elif ledger_type == "plans":
@@ -718,12 +718,20 @@ def reconcile_jsonl_ledger_conflict(file_path: str, repo_dir: str | None = None)
             if val:
                 return str(val)
         elif ledger_type == "executions":
-            val = row.get("execution_id") or row.get("action_id")
+            val = row.get("action_id") or row.get("execution_id")
             if val:
                 return str(val)
-        for cand in ("execution_id", "action_id", "plan_id", "branch", "slug"):
-            if row.get(cand):
-                return str(row[cand])
+        val = (
+            row.get("action_id")
+            or row.get("intent_id")
+            or row.get("plan_id")
+            or row.get("execution_id")
+            or row.get("calibration_id")
+            or row.get("branch")
+            or row.get("slug")
+        )
+        if val:
+            return str(val)
         return json.dumps(row, sort_keys=True)
 
     try:
@@ -765,6 +773,8 @@ def reconcile_jsonl_ledger_conflict(file_path: str, repo_dir: str | None = None)
                     in_section_2 = False
                     continue
                 elif line.startswith("|||||||"):
+                    in_section_1 = False
+                    in_section_2 = False
                     continue
 
                 try:
@@ -1059,6 +1069,16 @@ def check_and_resolve_stage_conflicts(
 
     # 3. Compute merge-base between HEAD and target_ref
     mb_proc = run_git(["merge-base", "HEAD", target_ref], cwd=repo_dir, check=False)
+    tgt_proc = run_git(["rev-parse", target_ref], cwd=repo_dir, check=False)
+    if not isinstance(mb_proc.stdout, str) or not isinstance(tgt_proc.stdout, str):
+        return {
+            "status": "clean",
+            "diverged": False,
+            "conflicts": False,
+            "resolved_files": [],
+            "stage": stage_enum.value,
+            "target_branch": target_branch,
+        }
     if mb_proc.returncode != 0 or not mb_proc.stdout.strip():
         return {
             "status": "up_to_date",
@@ -1069,8 +1089,6 @@ def check_and_resolve_stage_conflicts(
             "target_branch": target_branch,
         }
     merge_base = mb_proc.stdout.strip()
-
-    tgt_proc = run_git(["rev-parse", target_ref], cwd=repo_dir, check=False)
     target_commit = tgt_proc.stdout.strip()
 
     # If target commit equals merge-base, target hasn't advanced ahead of HEAD
@@ -2287,13 +2305,15 @@ def run_execute_stage(context: FlowContext) -> StageResult:
                 check_and_resolve_stage_conflicts(context, FlowStage.EXECUTE, target_branch=target_branch)
             except ConflictResolutionError as exc:
                 context.log(f"Conflict in Execute stage: {exc}")
-                return StageResult(
+                res = StageResult(
                     stage=FlowStage.EXECUTE,
                     status=StageStatus.FAILED,
                     start_time=start_time,
                     end_time=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
                     error=str(exc),
                 )
+                context.stage_results["execute"] = res
+                return res
 
             run_git(["checkout", "-B", exec_branch, context.plan_branch], cwd=repo_dir, check=True)
             rebase_res = run_git(["rebase", context.plan_branch], cwd=repo_dir, check=False)
@@ -2584,9 +2604,8 @@ def run_review_loop(
                     context, FlowStage.REVIEW, target_branch=target_branch, pr_number=pr_num
                 )
                 if res_conflict.get("status") == "resolved":
-                    context.log(
-                        f"[Review Loop] Upstream conflicts automatically resolved for {res_conflict.get('resolved_files')}."
-                    )
+                    resolved_list = res_conflict.get("resolved_files")
+                    context.log(f"[Review Loop] Upstream conflicts automatically resolved for {resolved_list}.")
                     conflict_action_record = {
                         "action_id": generate_action_id("ACT-CONF"),
                         "execution_id": f"REV-CONF-{iteration}-{int(time.time())}",
@@ -3095,13 +3114,15 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
                 check_and_resolve_stage_conflicts(context, FlowStage.CALIBRATE, target_branch=target_branch)
             except ConflictResolutionError as exc:
                 context.log(f"Conflict in Calibrate stage: {exc}")
-                return StageResult(
+                res = StageResult(
                     stage=FlowStage.CALIBRATE,
                     status=StageStatus.FAILED,
                     start_time=start_time,
                     end_time=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
                     error=str(exc),
                 )
+                context.stage_results["calibrate"] = res
+                return res
             has_calibrated = (
                 run_git(["rev-parse", "--verify", calibrated_branch], cwd=repo_dir, check=False).returncode == 0
             )

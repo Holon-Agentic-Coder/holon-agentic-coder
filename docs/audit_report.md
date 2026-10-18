@@ -160,10 +160,10 @@ four core pillars:
 - **Remediation:** Tracked in **Bean 0093**. Implement atomic file locking (`fcntl.flock(fd, fcntl.LOCK_EX)`) with
   timeout and exponential backoff.
 
-#### BUG-02: Unversioned Flow Checkpoint Serialization & Migration Hazard
+#### BUG-02: Unversioned Flow Checkpoint Serialisation & Migration Hazard
 
 - **Location:** `apps/sandbox-executor/src/sandbox_executor/flow.py:203-240`
-- **Description:** `FlowCheckpoint` serializes `FlowContext` to JSON without an explicit schema version (e.g.
+- **Description:** `FlowCheckpoint` serialises `FlowContext` to JSON without an explicit schema version (e.g.
   `schema_version: 1`). Loading older checkpoints with missing fields relies on ad-hoc dict lookups.
 - **Impact:** New stage flags or changes to stage results can crash pipeline resumption (`KeyError` / `TypeError`) when
   upgrading holon versions mid-flight.
@@ -196,7 +196,7 @@ four core pillars:
 #### PERF-02: Container Cold-Start Overhead on Multi-Stage Pipelines
 
 - **Location:** `apps/sandbox-executor/src/sandbox_executor/cli.py` (`run_docker_container`)
-- **Description:** In containerized mode, each lifecycle stage starts a new Docker container instance from scratch.
+- **Description:** In containerised mode, each lifecycle stage starts a new Docker container instance from scratch.
 - **Impact:** Cold-start latency (1-3 seconds per stage) accumulates over multi-iteration PR review loops.
 - **Remediation:** Investigate reusable container sidecars or background worker daemon models for high-frequency
   iteration loops.
@@ -226,4 +226,4 @@ four core pillars:
 The `holon-agentic-coder` architecture provides a robust, safety-first platform for autonomous software engineering. The
 implementation of opportunistic proxy auto-routing (Bean 0089) successfully integrates token reduction while maintaining
 graceful fallback to direct egress. Enacting the proposed remediation beans (Beans 0092–0095) will resolve the remaining
-isolation, concurrency, and serialization debt identified in this audit.
+isolation, concurrency, and serialisation debt identified in this audit.

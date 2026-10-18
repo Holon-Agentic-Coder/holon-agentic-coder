@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import pathlib
+import sys
 from unittest.mock import MagicMock, patch
 
-import pytest
-from scripts.pre_commit_check import (
-    SECRET_PATTERNS,
+_REPO_ROOT = str(pathlib.Path(__file__).resolve().parents[3])
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from scripts.pre_commit_check import (  # noqa: E402
     get_git_files,
     is_binary_file,
     is_scratch_file,

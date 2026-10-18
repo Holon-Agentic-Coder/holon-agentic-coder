@@ -30,7 +30,7 @@ This audit evaluates the resolution of key operational bottlenecks and security 
    now rigorously blocks accidental commits of secret API keys (Google AI, GitHub PATs, OpenAI, Anthropic) and ephemeral
    scratch artefacts (`tmp/*`, `*.tmp`, `*.log`, `.index/*`).
 3. **Australian English Orthography (Bean 0105):** All core documentation prose across `docs/` and repository README has
-   been standardise to Australian English (en-AU), maintaining orthographic consistency without perturbing code symbols
+   been standardised to Australian English (en-AU), maintaining orthographic consistency without perturbing code symbols
    or schema contracts.
 4. **Comprehensive System Auditing (Bean 0106):** Continuous verification, hermetic test isolation, and architectural
    decoupling pathways have been established to sustain system reliability.
@@ -157,7 +157,7 @@ In accordance with Bean 0105, all documentation prose has been standardised to A
 ## 5. Recommendations & Future Roadmap
 
 1. **Asynchronous Review Loop**: Transition the synchronous subprocess runner in Stage 4 to an async event-driven loop
-   to optimize latency during long-running CI checks.
+   to optimise latency during long-running CI checks.
 2. **Dynamic Credential Entropy Scoring**: Augment regex token detection with Shannon entropy scanning to identify
    high-entropy arbitrary secrets that deviate from standard vendor prefixes.
 3. **Automated Orthography Linter**: Add a documentation spellcheck target to `uv run task lint-docs` enforcing en-AU

@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+from pathlib import Path
 from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
@@ -1659,7 +1660,7 @@ class TestSemanticPRAndConsensusReview:
 class TestProactiveConflictResolution:
     """Test suite for Bean 0121 proactive conflict detection and deterministic ledger union reconciliation."""
 
-    def test_reconcile_jsonl_ledger_conflict_union(self, tmp_path: pathlib.Path) -> None:
+    def test_reconcile_jsonl_ledger_conflict_union(self, tmp_path: Path) -> None:
         """Verify deterministic append-only union resolution preserving upstream order and appending unique local."""
         ledger_dir = tmp_path / "holon-knowledge" / "ledger"
         ledger_dir.mkdir(parents=True)
@@ -1667,13 +1668,13 @@ class TestProactiveConflictResolution:
 
         conflict_content = (
             '{"plan_id": "P-ancestor-1", "ev": 10.0, "created_at": "2026-10-18T00:00:00Z"}\n'
-            '<<<<<<< HEAD\n'
+            "<<<<<<< HEAD\n"
             '{"plan_id": "P-local-1", "ev": 20.0, "created_at": "2026-10-18T01:00:00Z"}\n'
             '{"plan_id": "P-ancestor-1", "ev": 10.0, "created_at": "2026-10-18T00:00:00Z"}\n'
-            '=======\n'
+            "=======\n"
             '{"plan_id": "P-upstream-1", "ev": 30.0, "created_at": "2026-10-18T02:00:00Z"}\n'
             '{"plan_id": "P-upstream-2", "ev": 40.0, "created_at": "2026-10-18T03:00:00Z"}\n'
-            '>>>>>>> origin/main\n'
+            ">>>>>>> origin/main\n"
         )
         plans_file.write_text(conflict_content, encoding="utf-8")
 
@@ -1778,7 +1779,7 @@ class TestProactiveConflictResolution:
             assert err.target_branch == "main"
             assert "Unresolvable merge conflict in stage 'execute'" in str(err)
 
-    def test_review_loop_conflicting_pr_resolution(self, tmp_path: pathlib.Path) -> None:
+    def test_review_loop_conflicting_pr_resolution(self, tmp_path: Path) -> None:
         """Verify Stage 4 detects CONFLICTING status and triggers automatic conflict resolution."""
         ledger_dir = tmp_path / "holon-knowledge" / "ledger"
         ledger_dir.mkdir(parents=True)
@@ -1822,7 +1823,7 @@ class TestProactiveConflictResolution:
             assert args[1] == FlowStage.REVIEW
             assert kwargs.get("pr_number") == 42
 
-    def test_calibration_stage_reconciliation(self, tmp_path: pathlib.Path) -> None:
+    def test_calibration_stage_reconciliation(self, tmp_path: Path) -> None:
         """Verify Stage 5 ensures /calibrated branch cleanly reconciles with execution PR branch."""
         ctx = FlowContext(
             repo_dir=str(tmp_path),
@@ -1863,4 +1864,3 @@ class TestProactiveConflictResolution:
             rebase_calls = [c for c in mock_git.call_args_list if c[0][0][0] == "rebase"]
             assert len(rebase_calls) == 1
             assert rebase_calls[0][0][0] == ["rebase", "I-100/P-200/E-300/_"]
-

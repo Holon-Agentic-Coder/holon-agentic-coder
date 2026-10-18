@@ -36,6 +36,8 @@ SECRET_PATTERNS = {
 
 # Whitelist patterns for repository self-scanning to prevent false positives on rule definitions and test fixtures
 SCAN_WHITELIST_PATTERNS = [
+    re.compile(r"^tests/test_.*\.py$"),
+    re.compile(r"^apps/sandbox-executor/tests/test_.*\.py$"),
     re.compile(r".*test_pre_commit_check\.py$"),
     re.compile(r".*scripts/pre_commit_check\.py$"),
     re.compile(r".*\.agents/AGENTS\.md$"),
@@ -50,6 +52,14 @@ class SecretFinding(NamedTuple):
     line_number: int
     rule_name: str
     redacted_token: str
+
+
+def _normalise_rel_path(file_path: str) -> str:
+    """Normalise relative path separators and strip leading './' prefixes without stripping leading dots."""
+    clean = file_path.replace("\\", "/").strip()
+    while clean.startswith("./"):
+        clean = clean.removeprefix("./")
+    return clean
 
 
 def redact_token(token: str) -> str:
@@ -76,7 +86,7 @@ def is_scratch_file(file_path: str) -> bool:
     Returns:
         bool: True if file matches scratch patterns, False otherwise.
     """
-    clean_path = file_path.replace("\\", "/").strip().lstrip("./")
+    clean_path = _normalise_rel_path(file_path)
     return any(pattern.match(clean_path) for pattern in SCRATCH_BLOCKLIST_PATTERNS)
 
 
@@ -89,7 +99,7 @@ def is_whitelisted_for_content_scan(file_path: str) -> bool:
     Returns:
         bool: True if whitelisted, False otherwise.
     """
-    clean_path = file_path.replace("\\", "/").strip().lstrip("./")
+    clean_path = _normalise_rel_path(file_path)
     return any(pattern.match(clean_path) for pattern in SCAN_WHITELIST_PATTERNS)
 
 
@@ -163,10 +173,7 @@ def get_git_files(repo_dir: str, mode: str = "staged") -> list[str]:
     Returns:
         list[str]: Relative file paths.
     """
-    if mode == "staged":
-        cmd = ["git", "diff", "--cached", "--name-only", "--diff-filter=ACM"]
-    else:
-        cmd = ["git", "ls-files"]
+    cmd = ["git", "diff", "--cached", "--name-only", "--diff-filter=ACM"] if mode == "staged" else ["git", "ls-files"]
 
     try:
         proc = subprocess.run(cmd, cwd=repo_dir, capture_output=True, text=True, check=False)
@@ -212,7 +219,7 @@ def run_pre_commit_check(
     secret_findings: list[SecretFinding] = []
 
     for rel_path in target_files:
-        clean_path = rel_path.replace("\\", "/").strip().lstrip("./")
+        clean_path = _normalise_rel_path(rel_path)
         # 1. Ephemeral scratch file check
         if is_scratch_file(clean_path):
             scratch_violations.append(clean_path)

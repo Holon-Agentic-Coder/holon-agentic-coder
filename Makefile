@@ -53,13 +53,14 @@ TARGET_DIR ?=
 DIR ?=
 LINT_TARGET = $(if $(TARGET_DIR),$(TARGET_DIR),$(if $(DIR),$(DIR),.))
 
-.PHONY: help build-images check-prerequisites prerequisites check-docker install-docker install-homebrew tools lint lint-json lint-yaml lint-shell lint-md
+.PHONY: help build-images build-image check-prerequisites prerequisites check-docker install-docker install-homebrew tools lint lint-json lint-yaml lint-shell lint-md
 
 help:
 	@echo "Usage: make [target]"
 	@echo ""
 	@echo "Available targets:"
 	@printf "  %-22s %s\n" "build-images" "Build all sandbox Docker images."
+	@printf "  %-22s %s\n" "build-image" "Alias for build-images: Build all sandbox Docker images."
 	@printf "  %-22s %s\n" "check-prerequisites" "Verify development prerequisites (fatal: uv, gh, openssl which must be OpenSSL not LibreSSL; advisory: GNU Make, npx, gh auth, Docker CLI/Buildx/daemon)."
 	@printf "  %-22s %s\n" "check-docker" "Check Docker installation, Buildx, and daemon running status."
 	@printf "  %-22s %s\n" "install-docker" "Install Docker for the detected operating system."
@@ -75,6 +76,8 @@ help:
 
 build-images:
 	./apps/sandbox-executor/build_all_images.sh
+
+build-image: build-images
 
 ## ==============================================================================
 ## Docker & Prerequisite Installation & Checks

@@ -821,7 +821,7 @@ class TestHolonFlowCLI(unittest.TestCase):
                 patch("sandbox_executor.flow.run_review_loop_cli", return_value=0) as mock_runner,
                 patch("sys.exit") as mock_exit,
             ):
-                with patch("sys.argv", ["holon", alias, "branch-123"]):
+                with patch("sys.argv", ["holon", alias, "branch-123", "--local"]):
                     main()
                 mock_runner.assert_called_once()
                 call_args = mock_runner.call_args[0][0]

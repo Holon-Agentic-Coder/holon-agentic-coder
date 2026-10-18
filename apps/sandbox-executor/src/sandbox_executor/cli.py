@@ -1862,6 +1862,8 @@ def main() -> None:
             is_local = (
                 getattr(args, "local", False)
                 or getattr(args, "dry_run", False)
+                or getattr(args, "json", False)
+                or getattr(args, "agent", None) is None
                 or bool(os.getenv("HOLON_ROLE"))
                 or bool(os.getenv("HOLON_IN_SANDBOX"))
             )

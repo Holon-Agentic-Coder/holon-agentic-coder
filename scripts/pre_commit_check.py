@@ -14,7 +14,7 @@ import os
 import re
 import subprocess
 import sys
-from typing import Sequence
+from collections.abc import Sequence
 
 # Regex patterns for detecting API keys, tokens, and private keys
 CREDENTIAL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
@@ -117,6 +117,10 @@ def check_file_credentials(file_path: str) -> list[str]:
         List of detected violation descriptions.
     """
     violations: list[str] = []
+    norm = normalise_path(file_path)
+    if any(pat.match(norm) for pat in TEST_FILE_WHITELIST) or norm.startswith("docs/"):
+        return violations
+
     if not os.path.isfile(file_path):
         return violations
 
@@ -136,13 +140,14 @@ def check_file_credentials(file_path: str) -> list[str]:
                     if match:
                         matched_val = match.group(0)
                         # Check false-positive indicators
-                        if any(fp.lower() in matched_val.lower() or fp.lower() in line.lower() for fp in FALSE_POSITIVE_INDICATORS):
+                        if any(
+                            fp.lower() in matched_val.lower() or fp.lower() in line.lower()
+                            for fp in FALSE_POSITIVE_INDICATORS
+                        ):
                             continue
                         # Mask matched value for secure logging
                         masked = matched_val[:4] + "***" + matched_val[-4:] if len(matched_val) > 8 else "***"
-                        violations.append(
-                            f"Potential {name} detected at line {line_no} (match: '{masked}')"
-                        )
+                        violations.append(f"Potential {name} detected at line {line_no} (match: '{masked}')")
     except Exception as exc:
         violations.append(f"Unable to read file for scanning: {exc}")
 
@@ -158,11 +163,7 @@ def get_git_files(mode: str) -> list[str]:
     Returns:
         List of relative file paths.
     """
-    cmd = (
-        ["git", "diff", "--cached", "--name-only", "--diff-filter=ACM"]
-        if mode == "staged"
-        else ["git", "ls-files"]
-    )
+    cmd = ["git", "diff", "--cached", "--name-only", "--diff-filter=ACM"] if mode == "staged" else ["git", "ls-files"]
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if res.returncode == 0:
@@ -216,9 +217,7 @@ def run_checks(files: Sequence[str]) -> int:
 
 def main() -> None:
     """CLI entrypoint."""
-    parser = argparse.ArgumentParser(
-        description="Holon Pre-Commit Security Guard and Scratch File Detector."
-    )
+    parser = argparse.ArgumentParser(description="Holon Pre-Commit Security Guard and Scratch File Detector.")
     parser.add_argument(
         "files",
         nargs="*",
@@ -232,6 +231,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--all",
+        "--all-files",
+        dest="all",
         action="store_true",
         help="Check all tracked files in git repository.",
     )

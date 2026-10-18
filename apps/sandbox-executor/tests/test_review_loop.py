@@ -2,10 +2,9 @@
 
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from sandbox_executor.entrypoint.review_loop import main as review_loop_main
@@ -35,9 +34,7 @@ class TestReviewLoopEntrypoint:
             json.dumps({"branch": "I-100-test", "slug": "test", "description": "test intent"}) + "\n"
         )
         plans_file = ledger_dir / "plans.jsonl"
-        plans_file.write_text(
-            json.dumps({"plan_id": "P-200-test", "plan_branch": "I-100-test/P-200-test/_"}) + "\n"
-        )
+        plans_file.write_text(json.dumps({"plan_id": "P-200-test", "plan_branch": "I-100-test/P-200-test/_"}) + "\n")
 
         test_args = [
             "review_loop",
@@ -72,9 +69,7 @@ class TestReviewLoopEntrypoint:
                 review_loop_main()
 
             assert exc_info.value.code == 0
-            mock_conflicts.assert_called_once_with(
-                repo_dir=str(tmp_path), target_branch="main", stage_name="review"
-            )
+            mock_conflicts.assert_called_once_with(repo_dir=str(tmp_path), target_branch="main", stage_name="review")
             mock_loop.assert_called_once()
             ctx = mock_loop.call_args[1]["context"]
             assert ctx.execution_branch == "I-100-test/P-200-test/E-300-exec/_"

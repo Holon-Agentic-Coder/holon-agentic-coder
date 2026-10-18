@@ -36,7 +36,6 @@ from sandbox_executor.agent_runner import (
     get_runner,
     get_workspace_dir,
 )
-from sandbox_executor.flow import check_and_resolve_stage_conflicts
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.ledger import (
     ActionRecord,
@@ -1175,6 +1174,8 @@ def main() -> None:
         run_cmd(["git", "checkout", "-b", exec_branch], cwd=repo_dir)
 
         # Proactively check and resolve any stage conflicts
+        from sandbox_executor.flow import check_and_resolve_stage_conflicts
+
         check_and_resolve_stage_conflicts(repo_dir=repo_dir, target_branch="main", stage_name="execute")
 
         # Load plan data from plans.jsonl

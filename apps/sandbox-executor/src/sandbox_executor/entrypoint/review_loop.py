@@ -31,7 +31,7 @@ def run_cmd(
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     """Execute a system command and return CompletedProcess, exiting on non-zero if check=True."""
-    print(f"Running: {' '.join(args)}")
+    print(f"Running: {' '.join(args)}", file=sys.stderr)
     result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True, check=False)
     if result.returncode != 0 and check:
         print(f"Command failed with code {result.returncode}", file=sys.stderr)
@@ -132,7 +132,7 @@ def main() -> None:
     # Git workspace preparation
     if not os.path.exists(os.path.join(repo_dir, ".git")):
         repo_url = get_repo_url()
-        print(f"Cloning {args.target} into {repo_dir} from {repo_url}...")
+        print(f"Cloning {args.target} into {repo_dir} from {repo_url}...", file=sys.stderr)
         run_cmd(["git", "clone", "--branch", args.target, repo_url, "."], cwd=repo_dir, check=False)
     else:
         run_cmd(["git", "fetch", "origin"], cwd=repo_dir, check=False)

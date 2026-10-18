@@ -6,7 +6,6 @@ import sys
 from datetime import UTC, datetime
 
 from sandbox_executor.agent_runner import cleanup_repo_dir, get_repo_url, get_workspace_dir
-from sandbox_executor.flow import check_and_resolve_stage_conflicts, validate_intent_questions
 from sandbox_executor.ledger import atomic_ledger_append
 
 
@@ -31,6 +30,8 @@ def main():
         intent_data = json.load(f)
 
     # Front-load clarifying questions validation (Bean 0085)
+    from sandbox_executor.flow import validate_intent_questions
+
     valid_questions, unresolved = validate_intent_questions(intent_data)
     if not valid_questions:
         unresolved_list_str = "; ".join(unresolved)
@@ -77,6 +78,8 @@ def main():
     run_cmd(["git", "checkout", "-B", intent_branch, f"origin/{target_branch}"], cwd=repo_dir)
 
     # Proactively check and resolve any stage conflicts
+    from sandbox_executor.flow import check_and_resolve_stage_conflicts
+
     check_and_resolve_stage_conflicts(repo_dir=repo_dir, target_branch=target_branch, stage_name="intent")
 
     # Update intents.jsonl

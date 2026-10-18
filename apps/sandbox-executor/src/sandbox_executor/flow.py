@@ -585,34 +585,12 @@ def reconcile_jsonl_ledger_conflict(content: str, ledger_type: str) -> str:
     clean_type = str(ledger_type).lower().removesuffix(".jsonl").strip()
 
     rows: list[dict[str, Any]] = []
-    in_ours = False
-    in_base = False
-    in_theirs = False
 
     for line in content.splitlines():
         stripped = line.strip()
         if not stripped:
             continue
-        if stripped.startswith("<<<<<<<"):
-            in_ours = True
-            in_base = False
-            in_theirs = False
-            continue
-        elif stripped.startswith("|||||||"):
-            # diff3 ancestor / base marker: reset section flags
-            in_ours = False
-            in_base = True
-            in_theirs = False
-            continue
-        elif stripped.startswith("======="):
-            in_ours = False
-            in_base = False
-            in_theirs = True
-            continue
-        elif stripped.startswith(">>>>>>>"):
-            in_ours = False
-            in_base = False
-            in_theirs = False
+        if any(stripped.startswith(m) for m in ("<<<<<<<", "|||||||", "=======", ">>>>>>>")):
             continue
 
         try:
@@ -805,9 +783,10 @@ def check_and_resolve_stage_conflicts(
             try:
                 with open(full_path, encoding="utf-8") as f:
                     content = f.read()
-                if any(m in content for m in ("<<<<<<<", "|||||||", "=======", ">>>>>>>")):
-                    if rel_path not in conflicting_files:
-                        conflicting_files.append(rel_path)
+                if any(m in content for m in ("<<<<<<<", "|||||||", "=======", ">>>>>>>")) and (
+                    rel_path not in conflicting_files
+                ):
+                    conflicting_files.append(rel_path)
             except Exception:
                 pass
 
@@ -837,7 +816,7 @@ def check_and_resolve_stage_conflicts(
 
     if non_ledger_conflicts:
         err_msg = (
-            f"Unresolvable conflicts detected in stage '{stage_name or 'unknown'}': "
+            f"Unresolvable merge conflicts detected in stage '{stage_name or 'unknown'}': "
             f"{', '.join(non_ledger_conflicts)}"
         )
         raise ConflictResolutionError(err_msg)
@@ -845,6 +824,8 @@ def check_and_resolve_stage_conflicts(
     status_str = "resolved" if resolved_ledgers else "clean"
     return {
         "status": status_str,
+        "conflicts_detected": bool(conflicting_files),
+        "resolved": not bool(non_ledger_conflicts),
         "conflicting_files": conflicting_files,
         "resolved_ledgers": resolved_ledgers,
         "stage": stage_name,
@@ -2261,9 +2242,6 @@ def run_review_loop(
     repo_dir = context.repo_dir
     target_branch = context.intent_data.get("target_branch", "main")
     effective_dry_run = bool(dry_run or context.dry_run)
-
-    if not effective_dry_run:
-        check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="review")
 
     proxy_env: dict[str, str] = {}
     if context.token_reduce:

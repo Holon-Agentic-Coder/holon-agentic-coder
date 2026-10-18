@@ -8,7 +8,6 @@ import time
 from datetime import UTC, datetime
 
 from sandbox_executor.agent_runner import cleanup_repo_dir, get_repo_url, get_runner, get_workspace_dir
-from sandbox_executor.flow import check_and_resolve_stage_conflicts
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.ledger import atomic_ledger_append
 
@@ -163,6 +162,8 @@ def main():
     run_cmd(["git", "checkout", "-b", plan_branch], cwd=repo_dir)
 
     # Proactively check and resolve any stage conflicts
+    from sandbox_executor.flow import check_and_resolve_stage_conflicts
+
     check_and_resolve_stage_conflicts(repo_dir=repo_dir, target_branch="main", stage_name="plan")
 
     # Get intent data

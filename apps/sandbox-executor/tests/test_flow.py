@@ -1704,4 +1704,3 @@ class TestProactiveConflictAndReviewLoop:
 
             with pytest.raises(ConflictResolutionError, match="Unresolvable merge conflict"):
                 check_and_resolve_stage_conflicts(str(tmp_path), target_branch="main", stage_name="test")
-

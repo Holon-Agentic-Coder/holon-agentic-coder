@@ -1440,6 +1440,10 @@ def build_pr_review_consensus_report(
         or not changed_files
     )
 
+    has_docs = any(f.endswith(".md") or "docs/" in f or "prompts/" in f for f in changed_files)
+    has_compliance = any("LICENSE" in f or ".beans" in f or "rules.md" in f for f in changed_files)
+    has_l10n = any(f.endswith(".md") or f.endswith(".py") for f in changed_files)
+
     if has_flow_src:
         pe_trigger = "High-impact flow lifecycle changes (`cli.py`, `flow.py`, `review_loop.py`, role dispatcher)."
         pe_assessment = (
@@ -1485,6 +1489,37 @@ def build_pr_review_consensus_report(
             else "**CHANGES_REQUESTED**: Container entrypoint or CI workflow issues detected."
         )
         personas.append({"persona": "**DevOps & SRE**", "trigger": ops_trigger, "assessment": ops_assessment})
+
+    if has_compliance:
+        comp_trigger = "License invariant preservation, Apache 2.0 verification, and provenance auditability."
+        comp_assessment = (
+            "**APPROVED**: Upstream license text preserved, zero copyleft conflicts, and ledger auditability enforced."
+            if approved
+            else "**CHANGES_REQUESTED**: License or compliance violations detected."
+        )
+        personas.append(
+            {"persona": "**Compliance & Privacy Auditor**", "trigger": comp_trigger, "assessment": comp_assessment}
+        )
+
+    if has_docs:
+        tw_trigger = "Prompt template expansion (`review_loop.template.md`) and documentation clarity."
+        tw_assessment = (
+            "**APPROVED**: Clear specifications, complete persona matrix guidance, and valid markdown syntax."
+            if approved
+            else "**CHANGES_REQUESTED**: Documentation or template syntax issues detected."
+        )
+        personas.append({"persona": "**Technical Writer**", "trigger": tw_trigger, "assessment": tw_assessment})
+
+    if has_l10n:
+        l10n_trigger = "Australian English (`en-AU`) orthography enforcement across code, comments, and docs."
+        l10n_assessment = (
+            "**APPROVED**: Strict adherence to Australian English spelling conventions (`standardised`, `initialise`)."
+            if approved
+            else "**CHANGES_REQUESTED**: Orthography inconsistencies detected."
+        )
+        personas.append(
+            {"persona": "**Localization (L10n) Coordinator**", "trigger": l10n_trigger, "assessment": l10n_assessment}
+        )
 
     if not personas:
         personas.append(

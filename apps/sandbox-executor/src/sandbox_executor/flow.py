@@ -29,6 +29,7 @@ from enum import StrEnum
 from typing import Any, ClassVar
 
 from sandbox_executor.calibration import (
+    is_metadata_path,
     run_calibrate,
 )
 from sandbox_executor.entrypoint.executor import redact_text
@@ -2860,25 +2861,36 @@ def run_review_stage(context: FlowContext) -> StageResult:
         test_pass_rate = float(exec_result.payload.get("test_pass_rate", 1.0))
         exit_code = int(exec_result.payload.get("exit_code", 0))
 
-    diff_summary = {"files_changed": 1, "insertions": 10, "deletions": 0}
+    diff_summary = {"files_changed": 0, "insertions": 0, "deletions": 0}
     if not context.dry_run and context.plan_branch:
         is_git = run_git(["rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False).returncode == 0
         if is_git:
             stat_res = run_git(
-                ["diff", "--shortstat", context.plan_branch, context.execution_branch],
+                ["diff", "--numstat", context.plan_branch, context.execution_branch],
                 cwd=repo_dir,
                 check=False,
             )
-            stat_text = stat_res.stdout.strip()
-            if stat_text:
-                m_f = re.search(r"(\d+)\s+file", stat_text)
-                m_i = re.search(r"(\d+)\s+insertion", stat_text)
-                m_d = re.search(r"(\d+)\s+deletion", stat_text)
-                diff_summary = {
-                    "files_changed": int(m_f.group(1)) if m_f else 0,
-                    "insertions": int(m_i.group(1)) if m_i else 0,
-                    "deletions": int(m_d.group(1)) if m_d else 0,
-                }
+            files_changed = 0
+            insertions = 0
+            deletions = 0
+            for line in stat_res.stdout.splitlines():
+                parts = line.strip().split("	")
+                if len(parts) >= 3:
+                    file_path = parts[2].strip().removeprefix("./")
+                    if " => " in file_path:
+                        file_path = file_path.split(" => ")[-1].strip().rstrip("}").strip()
+                    if is_metadata_path(file_path):
+                        continue
+                    files_changed += 1
+                    if parts[0] != "-":
+                        insertions += int(parts[0])
+                    if parts[1] != "-":
+                        deletions += int(parts[1])
+            diff_summary = {
+                "files_changed": files_changed,
+                "insertions": insertions,
+                "deletions": deletions,
+            }
 
     loop_res = run_review_loop(
         context=context,

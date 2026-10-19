@@ -108,7 +108,8 @@ class TestHolonCLI(unittest.TestCase):
 
     def test_build_network_isolation_args_contains_cap_drop(self):
         args = build_network_isolation_args()
-        self.assertIn("--cap-drop=NET_RAW", args)
+        self.assertIn("--cap-drop=ALL", args)
+        self.assertIn("--security-opt=no-new-privileges", args)
 
     def test_build_network_isolation_args_sinkholes_metadata(self):
         args = build_network_isolation_args()
@@ -119,7 +120,8 @@ class TestHolonCLI(unittest.TestCase):
 
     def test_build_network_isolation_args_token_reduce(self):
         args = build_network_isolation_args(token_reduce=True)
-        self.assertIn("--cap-drop=NET_RAW", args)
+        self.assertIn("--cap-drop=ALL", args)
+        self.assertIn("--security-opt=no-new-privileges", args)
         self.assertIn("--add-host", args)
         self.assertIn("169.254.169.254:127.0.0.1", args)
         self.assertNotIn("--network", args)
@@ -151,7 +153,8 @@ class TestHolonCLI(unittest.TestCase):
             )
             self.assertEqual(code, 0)
             executed_cmd = mock_run.call_args[0][0]
-            self.assertIn("--cap-drop=NET_RAW", executed_cmd)
+            self.assertIn("--cap-drop=ALL", executed_cmd)
+            self.assertIn("--security-opt=no-new-privileges", executed_cmd)
             self.assertIn("169.254.169.254:127.0.0.1", executed_cmd)
 
     @patch("sandbox_executor.cli.resolve_target_repo_url", return_value="git@github.com:test/repo.git")

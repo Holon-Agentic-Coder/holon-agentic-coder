@@ -4,6 +4,7 @@ from pathlib import Path
 
 from scripts.pre_commit_check import (
     check_file_credentials,
+    check_spelling_orthography,
     is_scratch_file,
     normalise_path,
     run_checks,
@@ -72,3 +73,44 @@ class TestPreCommitCheck:
     def test_run_checks_scratch_detected(self):
         code = run_checks(["tmp/doc_improvements.md"])
         assert code == 1
+
+    def test_spelling_orthography_detection(self, tmp_path: Path):
+        bad_file = tmp_path / "bad_spelling.py"
+        bad_file.write_text(
+            "# Please initialize the worker and optimize performance.\n"
+            "def worker():\n"
+            "    # Behavior must be prioritized\n"
+            "    pass\n",
+            encoding="utf-8",
+        )
+        violations = check_spelling_orthography(str(bad_file))
+        assert len(violations) >= 3
+        assert any("initialize" in v for v in violations)
+        assert any("optimize" in v for v in violations)
+        assert any("Behavior" in v for v in violations)
+
+    def test_spelling_orthography_preserves_license_invariants(self, tmp_path: Path):
+        # Bean 0125 invariant: LICENSE files must NEVER be flagged or modified
+        license_file = tmp_path / "LICENSE"
+        license_file.write_text(
+            "Apache License, Version 2.0\n"
+            "You may not use this file except in compliance with the License.\n"
+            'Licensed under the Apache License, Version 2.0 (the "License");\n'
+            "Subject to the terms and conditions of this License, each Contributor hereby grants to You...\n"
+            "including the right to optimize, serialize, or initialize code.\n",
+            encoding="utf-8",
+        )
+        violations = check_spelling_orthography(str(license_file))
+        assert len(violations) == 0
+
+    def test_spelling_orthography_clean_australian_english(self, tmp_path: Path):
+        clean_file = tmp_path / "au_code.py"
+        clean_file.write_text(
+            "# Please initialise the worker and optimise performance.\n"
+            "def worker():\n"
+            "    # Behaviour must be prioritised\n"
+            "    pass\n",
+            encoding="utf-8",
+        )
+        violations = check_spelling_orthography(str(clean_file))
+        assert len(violations) == 0

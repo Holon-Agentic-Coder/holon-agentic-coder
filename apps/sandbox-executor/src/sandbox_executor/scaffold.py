@@ -325,7 +325,7 @@ def init_project(target_dir: str = ".", template: str = "python", force: bool = 
 
         ruleset_content = RULESET_PYTHON if template == "python" else RULESET_GENERIC
 
-        print(f"Initializing Holon project in {_format_rel(target_dir)} (template: {template})...")
+        print(f"Initialising Holon project in {_format_rel(target_dir)} (template: {template})...")
 
         # 1. Scaffolding holon-config/
         config_dir = os.path.join(target_dir, "holon-config")
@@ -393,8 +393,8 @@ def init_project(target_dir: str = ".", template: str = "python", force: bool = 
         _, gitignore_msg = _update_gitignore(target_dir, template)
         print(f"  - {gitignore_msg}")
 
-        print("Holon initialization complete.")
+        print("Holon initialisation complete.")
         return 0
     except OSError as err:
-        print(f"Error: Failed to initialize project in '{target_dir}': {err}", file=sys.stderr)
+        print(f"Error: Failed to initialise project in '{target_dir}': {err}", file=sys.stderr)
         return 1

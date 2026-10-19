@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.formatting import converge_prettier
+from sandbox_executor.git import run_git
 
 logger = logging.getLogger(__name__)
 
@@ -163,16 +164,14 @@ def fetch_remote_ref_if_needed(ref_name: str, repo_dir: str = ".") -> bool:
     if not clean_ref or clean_ref.startswith("-"):
         return False
     fetch_commands = [
-        ["git", "fetch", "origin", f"+{clean_ref}:{clean_ref}"],
-        ["git", "fetch", "origin", f"+{clean_ref}"],
+        ["fetch", "origin", f"+{clean_ref}:{clean_ref}"],
+        ["fetch", "origin", f"+{clean_ref}"],
     ]
     for cmd in fetch_commands:
         try:
-            res = subprocess.run(
+            res = run_git(
                 cmd,
                 cwd=repo_dir,
-                capture_output=True,
-                text=True,
                 check=False,
                 timeout=30,
             )
@@ -203,11 +202,9 @@ def resolve_commit_sha(ref: str, repo_dir: str = ".") -> str:
     if not clean_ref:
         raise RuntimeError("Empty reference provided for commit SHA resolution.")
     try:
-        res = subprocess.run(
-            ["git", "rev-parse", "--verify", f"{clean_ref}^{{commit}}"],
+        res = run_git(
+            ["rev-parse", "--verify", f"{clean_ref}^{{commit}}"],
             cwd=repo_dir,
-            capture_output=True,
-            text=True,
             check=False,
             timeout=15,
         )
@@ -250,11 +247,9 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:
     # 1. Check if clean_ref is a hex commit SHA (7 to 40 hex chars)
     if re.fullmatch(r"[0-9a-fA-F]{7,40}", clean_ref):
         try:
-            res = subprocess.run(
-                ["git", "rev-parse", "--verify", f"{clean_ref}^{{commit}}"],
+            res = run_git(
+                ["rev-parse", "--verify", f"{clean_ref}^{{commit}}"],
                 cwd=repo_dir,
-                capture_output=True,
-                text=True,
                 check=False,
                 timeout=15,
             )
@@ -265,11 +260,9 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:
 
     # 2. Check if clean_ref is a valid local branch
     try:
-        res = subprocess.run(
-            ["git", "rev-parse", "--verify", f"refs/heads/{clean_ref}"],
+        res = run_git(
+            ["rev-parse", "--verify", f"refs/heads/{clean_ref}"],
             cwd=repo_dir,
-            capture_output=True,
-            text=True,
             check=False,
             timeout=30,
         )
@@ -284,11 +277,9 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:
     # Check if clean_ref already starts with origin/ or refs/
     if clean_ref.startswith("origin/") or clean_ref.startswith("refs/"):
         try:
-            res = subprocess.run(
-                ["git", "rev-parse", "--verify", clean_ref],
+            res = run_git(
+                ["rev-parse", "--verify", clean_ref],
                 cwd=repo_dir,
-                capture_output=True,
-                text=True,
                 check=False,
                 timeout=30,
             )
@@ -300,11 +291,9 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:
     # 3. Check if origin/<clean_ref> or refs/remotes/origin/<clean_ref> exists
     for remote_candidate in [f"origin/{clean_ref}", f"refs/remotes/origin/{clean_ref}"]:
         try:
-            res = subprocess.run(
-                ["git", "rev-parse", "--verify", remote_candidate],
+            res = run_git(
+                ["rev-parse", "--verify", remote_candidate],
                 cwd=repo_dir,
-                capture_output=True,
-                text=True,
                 check=False,
                 timeout=30,
             )
@@ -316,21 +305,17 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:
     # 4. Attempt remote fetch if not found locally
     if fetch_remote_ref_if_needed(clean_ref, repo_dir=repo_dir):
         try:
-            res = subprocess.run(
-                ["git", "rev-parse", "--verify", f"refs/heads/{clean_ref}"],
+            res = run_git(
+                ["rev-parse", "--verify", f"refs/heads/{clean_ref}"],
                 cwd=repo_dir,
-                capture_output=True,
-                text=True,
                 check=False,
                 timeout=30,
             )
             if res.returncode == 0:
                 return clean_ref
-            res_remote = subprocess.run(
-                ["git", "rev-parse", "--verify", f"origin/{clean_ref}"],
+            res_remote = run_git(
+                ["rev-parse", "--verify", f"origin/{clean_ref}"],
                 cwd=repo_dir,
-                capture_output=True,
-                text=True,
                 check=False,
                 timeout=30,
             )
@@ -345,11 +330,9 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:
         pr_num = pr_match.group(1)
         pr_target = f"pr-{pr_num}"
         try:
-            res = subprocess.run(
-                ["git", "fetch", "origin", f"+pull/{pr_num}/head:{pr_target}"],
+            res = run_git(
+                ["fetch", "origin", f"+pull/{pr_num}/head:{pr_target}"],
                 cwd=repo_dir,
-                capture_output=True,
-                text=True,
                 check=False,
                 timeout=30,
             )
@@ -374,11 +357,9 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:
 
     # Final direct check with git rev-parse --verify clean_ref
     try:
-        res = subprocess.run(
-            ["git", "rev-parse", "--verify", clean_ref],
+        res = run_git(
+            ["rev-parse", "--verify", clean_ref],
             cwd=repo_dir,
-            capture_output=True,
-            text=True,
             check=False,
             timeout=15,
         )
@@ -405,11 +386,9 @@ def read_git_file(ref: str, rel_path: str, repo_dir: str = ".") -> str | None:
     if not clean_ref:
         return None
     try:
-        res = subprocess.run(
-            ["git", "show", f"{clean_ref}:{rel_path}"],
+        res = run_git(
+            ["show", f"{clean_ref}:{rel_path}"],
             cwd=repo_dir,
-            capture_output=True,
-            text=True,
             check=False,
             timeout=15,
         )
@@ -747,15 +726,13 @@ def parse_actual_metrics(
     # 2. Compute patch size via git diff between plan_branch and execution_branch (fail loudly on non-zero exit)
     base_ref = plan_branch if plan_branch else "HEAD~1"
     if execution_branch and base_ref != target_ref:
-        diff_args = ["git", "diff", "--shortstat", f"{base_ref}...{target_ref}", "--"]
+        diff_args = ["diff", "--shortstat", f"{base_ref}...{target_ref}", "--"]
     else:
-        diff_args = ["git", "diff", "--shortstat", f"{target_ref}~1..{target_ref}", "--"]
+        diff_args = ["diff", "--shortstat", f"{target_ref}~1..{target_ref}", "--"]
 
-    res = subprocess.run(
+    res = run_git(
         diff_args,
         cwd=repo_dir,
-        capture_output=True,
-        text=True,
         check=False,
         timeout=30,
     )
@@ -766,11 +743,9 @@ def parse_actual_metrics(
         )
 
     if execution_branch and base_ref != target_ref:
-        res_base = subprocess.run(
-            ["git", "rev-parse", base_ref],
+        res_base = run_git(
+            ["rev-parse", base_ref],
             cwd=repo_dir,
-            capture_output=True,
-            text=True,
             check=False,
             timeout=30,
         )
@@ -781,11 +756,9 @@ def parse_actual_metrics(
             )
         base_sha = res_base.stdout.strip()
 
-        res_mb = subprocess.run(
-            ["git", "merge-base", base_ref, target_ref],
+        res_mb = run_git(
+            ["merge-base", base_ref, target_ref],
             cwd=repo_dir,
-            capture_output=True,
-            text=True,
             check=False,
             timeout=30,
         )
@@ -797,11 +770,9 @@ def parse_actual_metrics(
             )
         merge_base_sha = res_mb.stdout.strip()
 
-        res_merges = subprocess.run(
-            ["git", "rev-list", "--count", "--merges", f"{base_ref}..{target_ref}"],
+        res_merges = run_git(
+            ["rev-list", "--count", "--merges", f"{base_ref}..{target_ref}"],
             cwd=repo_dir,
-            capture_output=True,
-            text=True,
             check=False,
             timeout=30,
         )
@@ -1271,29 +1242,23 @@ def run_calibrate(
     # 1. Switch or create /calibrated branch (only if not skip_commit)
     if not skip_commit:
         calibrated_branch = report.calibrated_branch
-        local_check = subprocess.run(
-            ["git", "rev-parse", "--verify", f"refs/heads/{calibrated_branch}"],
+        local_check = run_git(
+            ["rev-parse", "--verify", f"refs/heads/{calibrated_branch}"],
             cwd=repo_dir,
-            capture_output=True,
-            text=True,
             check=False,
         )
-        remote_check = subprocess.run(
-            ["git", "rev-parse", "--verify", f"refs/remotes/origin/{calibrated_branch}"],
+        remote_check = run_git(
+            ["rev-parse", "--verify", f"refs/remotes/origin/{calibrated_branch}"],
             cwd=repo_dir,
-            capture_output=True,
-            text=True,
             check=False,
         )
         local_exists = local_check.returncode == 0
         remote_exists = remote_check.returncode == 0
 
         if local_exists:
-            res_co = subprocess.run(
-                ["git", "checkout", calibrated_branch],
+            res_co = run_git(
+                ["checkout", calibrated_branch],
                 cwd=repo_dir,
-                capture_output=True,
-                text=True,
                 check=False,
                 timeout=30,
             )
@@ -1302,22 +1267,18 @@ def run_calibrate(
                     f"Failed to checkout existing calibrated branch '{calibrated_branch}': {res_co.stderr.strip()}"
                 )
             if remote_exists:
-                res_mg = subprocess.run(
-                    ["git", "merge", "--ff-only", f"origin/{calibrated_branch}"],
+                res_mg = run_git(
+                    ["merge", "--ff-only", f"origin/{calibrated_branch}"],
                     cwd=repo_dir,
-                    capture_output=True,
-                    text=True,
                     check=False,
                     timeout=30,
                 )
                 if res_mg.returncode != 0:
                     logger.warning("Could not fast-forward calibrated branch to remote: %s", res_mg.stderr.strip())
         elif remote_exists:
-            res_co = subprocess.run(
-                ["git", "checkout", "-b", calibrated_branch, f"origin/{calibrated_branch}"],
+            res_co = run_git(
+                ["checkout", "-b", calibrated_branch, f"origin/{calibrated_branch}"],
                 cwd=repo_dir,
-                capture_output=True,
-                text=True,
                 check=False,
                 timeout=30,
             )
@@ -1329,11 +1290,9 @@ def run_calibrate(
             start_point = (
                 report.evaluated_commit_sha or resolve_git_ref(execution_branch, repo_dir=repo_dir) or execution_branch
             )
-            res_co = subprocess.run(
-                ["git", "checkout", "-b", calibrated_branch, start_point],
+            res_co = run_git(
+                ["checkout", "-b", calibrated_branch, start_point],
                 cwd=repo_dir,
-                capture_output=True,
-                text=True,
                 check=False,
                 timeout=30,
             )
@@ -1361,7 +1320,7 @@ def run_calibrate(
     # 3. Commit on calibrated branch
     if not skip_commit:
         try:
-            subprocess.run(["git", "add", report_rel], cwd=repo_dir, capture_output=True, check=False)
+            run_git(["add", report_rel], cwd=repo_dir, check=False)
             commit_env = os.environ.copy()
             commit_env.setdefault("GIT_AUTHOR_NAME", "Holon Calibrate Agent")
             commit_env.setdefault("GIT_AUTHOR_EMAIL", "calibrate-agent@holon-agentic-coder.com")
@@ -1369,12 +1328,10 @@ def run_calibrate(
             commit_env.setdefault("GIT_COMMITTER_EMAIL", "calibrate-agent@holon-agentic-coder.com")
 
             commit_msg = f"chore(calibration): add calibration report for {report.plan_id}"
-            commit_res = subprocess.run(
-                ["git", "commit", "-m", commit_msg, "--", report_rel],
+            commit_res = run_git(
+                ["commit", "-m", commit_msg, "--", report_rel],
                 cwd=repo_dir,
                 env=commit_env,
-                capture_output=True,
-                text=True,
                 check=False,
             )
             if commit_res.returncode != 0:

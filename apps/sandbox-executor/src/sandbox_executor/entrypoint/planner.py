@@ -24,7 +24,7 @@ def run_cmd(args, cwd=None, env=None, check=True):
 
 
 def _sanitize_model_name(model_name: str) -> str:
-    """Sanitize a model name so it is safe for use in git branch names and filenames.
+    """Sanitise a model name so it is safe for use in git branch names and filenames.
 
     Steps:
     1. Replace path separators (/) with underscores.

@@ -37,6 +37,7 @@ from sandbox_executor.entrypoint.planner import (
     parse_metrics,
 )
 from sandbox_executor.formatting import converge_prettier
+from sandbox_executor.git import run_git
 from sandbox_executor.knowledge import (
     ActionIndexDatabase,
     ConsultEngine,
@@ -412,21 +413,6 @@ def load_checkpoint(filepath: str) -> FlowCheckpoint:
     with open(filepath, encoding="utf-8") as f:
         data = json.load(f)
     return FlowCheckpoint.from_dict(data)
-
-
-def run_git(
-    args: list[str],
-    cwd: str = ".",
-    check: bool = True,
-    env: dict[str, str] | None = None,
-) -> subprocess.CompletedProcess[str]:
-    """Execute a git command and return CompletedProcess."""
-    res = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True, text=True, check=False)
-    if check and res.returncode != 0:
-        err = redact_text(res.stderr.strip() or res.stdout.strip())
-        cmd_str = redact_text(" ".join(args))
-        raise RuntimeError(f"Git command 'git {cmd_str}' failed ({res.returncode}): {err}")
-    return res
 
 
 # ---------------------------------------------------------------------------
@@ -1153,7 +1139,7 @@ def generate_semantic_pr_metadata(
     if not scope:
         scope = "core"
 
-    # Sanitize scope
+    # Sanitise scope
     scope = re.sub(r"[^a-zA-Z0-9_-]+", "", scope) or "core"
 
     # Title extraction
@@ -1693,7 +1679,7 @@ def run_intent_stage(context: FlowContext) -> StageResult:
 
     description = raw_desc or goal or "No description provided"
 
-    # Sanitize slug
+    # Sanitise slug
     if not raw_slug:
         candidate = (goal or description or "task")[:40]
         raw_slug = re.sub(r"[^a-zA-Z0-9]+", "-", candidate).strip("-").lower()
@@ -1766,6 +1752,8 @@ def run_intent_stage(context: FlowContext) -> StageResult:
             if consulted_ids:
                 msg += f"\nConsulted-Knowledge-IDs: {', '.join(consulted_ids)}\n"
             run_git(["commit", "-m", msg], cwd=repo_dir, env=commit_env, check=True)
+            if not context.skip_push:
+                run_git(["push", "-u", "origin", intent_branch], cwd=repo_dir, check=False)
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log(f"Stage 1 completed: Intent branch '{intent_branch}' established.")
@@ -1953,6 +1941,8 @@ def run_plan_stage(context: FlowContext) -> StageResult:
             if consulted_ids:
                 msg += f"\n\nConsulted-Knowledge-IDs: {', '.join(consulted_ids)}"
             run_git(["commit", "-m", msg], cwd=repo_dir, env=commit_env, check=True)
+            if not context.skip_push:
+                run_git(["push", "-u", "origin", plan_branch], cwd=repo_dir, check=False)
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log(f"Stage 2 completed: Plan branch '{plan_branch}' created with EV={metrics.get('ev', 0.0):.2f}.")
@@ -2161,6 +2151,7 @@ def run_execute_stage(context: FlowContext) -> StageResult:
             except Exception as e:
                 context.log(f"Warning: Prettier formatting failed during execute stage: {e}")
 
+            run_git(["add", "-A"], cwd=repo_dir, check=False)
             run_git(["add", "holon-knowledge/ledger/executions.jsonl"], cwd=repo_dir, check=True)
             if os.path.exists(os.path.join(ledger_dir, "actions.jsonl")):
                 run_git(["add", "holon-knowledge/ledger/actions.jsonl"], cwd=repo_dir, check=False)
@@ -2175,6 +2166,8 @@ def run_execute_stage(context: FlowContext) -> StageResult:
                 cids = plan_res.payload["consulted_knowledge_ids"]
                 msg += f"\n\nConsulted-Knowledge-IDs: {', '.join(cids)}"
             run_git(["commit", "-m", msg], cwd=repo_dir, env=commit_env, check=True)
+            if not context.skip_push:
+                run_git(["push", "-u", "origin", exec_branch], cwd=repo_dir, check=False)
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log(f"Stage 3 completed: Execution branch '{exec_branch}' created (pass_rate={test_pass_rate}).")
@@ -2869,6 +2862,15 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
         logger.debug("Non-fatal knowledge reconciliation during calibrate stage: %s", e)
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if not context.dry_run and context.calibrated_branch:
+        if not context.skip_push:
+            run_git(["push", "-u", "origin", context.calibrated_branch], cwd=repo_dir, check=False)
+        if context.execution_branch:
+            run_git(["checkout", context.execution_branch], cwd=repo_dir, check=False)
+            run_git(["merge", "--ff-only", context.calibrated_branch], cwd=repo_dir, check=False)
+            if not context.skip_push:
+                run_git(["push", "origin", context.execution_branch], cwd=repo_dir, check=False)
+
     if context.calibrated_branch:
         context.log(f"Stage 5 completed: Calibration analysis generated on branch '{context.calibrated_branch}'.")
     else:

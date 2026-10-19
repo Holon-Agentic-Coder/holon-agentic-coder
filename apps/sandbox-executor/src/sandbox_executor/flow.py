@@ -2325,6 +2325,14 @@ def run_review_loop(
             last_ci_status["passed"] = 0
             last_ci_status["failed"] = 1
             last_ci_status["checks"] = [{"name": "local_tests", "bucket": "fail", "state": "FAILURE"}]
+        elif (
+            last_ci_status.get("source") == "github_cli"
+            and last_ci_status.get("pending", 0) > 0
+            and not effective_dry_run
+        ):
+            context.log(f"[Review Loop] Waiting for {last_ci_status['pending']} pending GitHub CI check(s)...")
+            time.sleep(15)
+            last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
 
         # 3. Analyze findings
         finding_ids = []

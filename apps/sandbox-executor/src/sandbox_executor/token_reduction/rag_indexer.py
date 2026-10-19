@@ -25,7 +25,7 @@ class RAGCodebaseIndexer:
 
         for root, dirs, files in os.walk(self.root_dir):
             dirs[:] = [
-                d for d in dirs if d not in (".git", ".venv", "__pycache__", "node_modules", ".beans", "build", ".idea")
+                d for d in dirs if d not in (".git", ".venv", "__pycache__", "node_modules", "build", ".idea")
             ]
 
             for file in files:

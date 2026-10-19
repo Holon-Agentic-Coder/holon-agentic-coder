@@ -1017,8 +1017,8 @@ class TestCalibrationInterleavedActionLedger(unittest.TestCase):
         self.assertTrue(is_metadata_path("plans/P-1792372417-plan.md"))
         self.assertTrue(is_metadata_path("plans/P-1792372417-plan_calibration.md"))
         self.assertTrue(is_metadata_path(".holon/checkpoints/flow.json"))
-        self.assertTrue(is_metadata_path(".beans/0001-task.md"))
-        self.assertTrue(is_metadata_path("todo/scratch.py"))
+        self.assertFalse(is_metadata_path(".beans/0001-task.md"))
+        self.assertFalse(is_metadata_path("todo/scratch.py"))
 
         self.assertFalse(is_metadata_path("src/module.py"))
         self.assertFalse(is_metadata_path("apps/sandbox-executor/src/sandbox_executor/flow.py"))

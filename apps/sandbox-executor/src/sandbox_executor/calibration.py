@@ -27,8 +27,6 @@ METADATA_PATH_PREFIXES = (
     "holon-knowledge/",
     "plans/",
     ".holon/",
-    ".beans/",
-    "todo/",
 )
 
 

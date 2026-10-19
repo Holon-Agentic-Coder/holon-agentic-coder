@@ -59,9 +59,9 @@ _EXPLICIT_OPT_OUT_VALUES = {"0", "false", "no", "off"}
 
 _TOKEN_REDUCE_HELP = (
     "Cut agent token usage by routing sandbox egress through a locally-owned mitmproxy sidecar "
-    "(context deduplication, local caching, and provider prompt cache optimization). "
+    "(context deduplication, local caching, and provider prompt cache optimisation). "
     "Requires 'docker' and 'openssl' and performs LOCAL TLS INTERCEPTION using an auto-generated "
-    "Holon Root CA. All wire transactions and credentials are sanitized prior to logging."
+    "Holon Root CA. All wire transactions and credentials are sanitised prior to logging."
 )
 
 
@@ -110,7 +110,10 @@ def build_network_isolation_args(
     Returns:
         List of Docker CLI argument strings.
     """
-    args = ["--cap-drop=NET_RAW"]
+    args = [
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges",
+    ]
 
     for host in BLOCKED_METADATA_HOSTS:
         args.extend(["--add-host", f"{host}:{SINKHOLE_IP}"])
@@ -252,7 +255,7 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:
                 print(
                     "Error: Missing Antigravity sandbox session directory on macOS.\n"
                     f"The session directory '{dedicated_session}' does not exist.\n\n"
-                    "Please initialize the Antigravity session in an interactive TTY by running:\n\n"
+                    "Please initialise the Antigravity session in an interactive TTY by running:\n\n"
                     f"  mkdir -p {dedicated_session}\n"
                     "  docker run -it "
                     f"-v {dedicated_session}:/home/holon/.gemini/antigravity-cli:rw holon/agent-antigravity agy\n\n"
@@ -1127,7 +1130,7 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # Subcommand: intent
-    intent_parser = subparsers.add_parser("intent", help="Run Intent Creator to initialize a new intent branch.")
+    intent_parser = subparsers.add_parser("intent", help="Run Intent Creator to initialise a new intent branch.")
     intent_parser.add_argument("intent_file", help="Path to local intent JSON/YAML file (e.g. intents/my-task.json)")
     intent_parser.add_argument(
         "--repo-dir",
@@ -1213,7 +1216,7 @@ def main() -> None:
         "target_dir",
         nargs="?",
         default=".",
-        help="Target directory to initialize (default: current directory).",
+        help="Target directory to initialise (default: current directory).",
     )
     init_parser.add_argument(
         "--template",

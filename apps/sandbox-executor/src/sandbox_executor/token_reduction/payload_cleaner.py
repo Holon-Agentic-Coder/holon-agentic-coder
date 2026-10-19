@@ -164,9 +164,9 @@ class JSONContextCleaner:
                                     resource_name,
                                 )
                         elif isinstance(tool_out, list):
-                            serialized = json.dumps(tool_out, sort_keys=True)
-                            if len(serialized) > 100:
-                                content_hash = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+                            serialised = json.dumps(tool_out, sort_keys=True)
+                            if len(serialised) > 100:
+                                content_hash = hashlib.sha256(serialised.encode("utf-8")).hexdigest()
                                 if content_hash in seen_content_hashes and is_older_turn:
                                     prev_turn, prev_res = seen_content_hashes[content_hash]
                                     item_copy["content"] = (

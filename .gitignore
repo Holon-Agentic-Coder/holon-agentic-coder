@@ -11,3 +11,4 @@ todo/cache/
 stress-report.xml
 holon-knowledge/.index/
 tmp/
+.holon/

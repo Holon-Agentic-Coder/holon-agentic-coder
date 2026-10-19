@@ -224,7 +224,7 @@ def redact_args(args: list[str]) -> list[str]:
         args: List of command-line arguments.
 
     Returns:
-        List of sanitized command-line arguments with secrets masked as '*******'.
+        List of sanitised command-line arguments with secrets masked as '*******'.
     """
     redacted = []
     mask_next = False
@@ -550,7 +550,7 @@ def redact_agent_secrets(text: str) -> str:
         text: Input string potentially containing sensitive tokens or credentials.
 
     Returns:
-        Sanitized string with sensitive tokens masked with asterisks.
+        Sanitised string with sensitive tokens masked with asterisks.
     """
     if not text:
         return text
@@ -1408,7 +1408,7 @@ def main() -> None:
                 agent_output_text, agent_output_truncated, _dropped = prepare_agent_output_block(combined, max_bytes)
                 agent_output_bytes = len(agent_output_text.encode("utf-8"))
             except Exception as e:
-                print(f"Warning: Failed to capture/sanitize agent output: {e}", file=sys.stderr)
+                print(f"Warning: Failed to capture/sanitise agent output: {e}", file=sys.stderr)
                 agent_output_text = ""
                 agent_output_truncated = False
                 agent_output_bytes = 0
@@ -1422,7 +1422,7 @@ def main() -> None:
                 if not repaired:
                     recovery_triggered = True
                     print(
-                        "Warning: git repository invalid or missing after agent execution. Re-initializing git repo...",
+                        "Warning: git repository invalid or missing after agent execution. Re-initialising git repo...",
                         file=sys.stderr,
                     )
                     git_dot = os.path.join(repo_dir, ".git")
@@ -1496,7 +1496,7 @@ def main() -> None:
                                     action_id=generate_action_id(),
                                     execution_id=exec_id,
                                     event_type="git_mutation",
-                                    action="Re-initialized git repo due to corrupted repository",
+                                    action="Re-initialised git repo due to corrupted repository",
                                     category="config",
                                     labels=["git", "recovery"],
                                     target=".git",

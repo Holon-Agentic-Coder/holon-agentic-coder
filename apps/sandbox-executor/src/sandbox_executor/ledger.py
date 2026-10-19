@@ -183,6 +183,104 @@ class SummaryRecord:
         return cls(**filtered)
 
 
+class LedgerLock:
+    """Reusable advisory file locking context manager for ledger mutation safety (Bean 0127).
+
+    Guarantees atomic append semantics across concurrent processes and threads
+    using POSIX advisory locking (fcntl.flock with LOCK_EX | LOCK_NB) with bounded
+    exponential backoff, randomised jitter, and configurable timeout.
+
+    Flushes and fsyncs the file descriptor on lock release, ensuring durability.
+    Gracefully falls back on platforms or filesystems without flock support.
+    """
+
+    def __init__(
+        self,
+        filepath: str,
+        timeout: float = 10.0,
+        initial_delay: float = 0.02,
+        max_delay: float = 0.5,
+    ) -> None:
+        self.filepath = filepath
+        self.timeout = timeout
+        self.initial_delay = initial_delay
+        self.max_delay = max_delay
+        self._file: TextIO | None = None
+        self._fd: int | None = None
+        self._locked: bool = False
+
+    def __enter__(self) -> TextIO:
+        dirname = os.path.dirname(os.path.abspath(self.filepath))
+        if dirname:
+            os.makedirs(dirname, exist_ok=True)
+
+        use_posix_lock = sys.platform != "win32" and fcntl is not None and hasattr(fcntl, "flock")
+        self._file = open(self.filepath, "a", encoding="utf-8")
+
+        if not use_posix_lock:
+            logger.warning(
+                "Advisory file locking (fcntl.flock) unavailable on platform %s; "
+                "falling back to uncoordinated append for %s",
+                sys.platform,
+                self.filepath,
+            )
+            return self._file
+
+        try:
+            self._fd = self._file.fileno()
+        except (AttributeError, io.UnsupportedOperation, OSError):
+            self._fd = None
+
+        if not isinstance(self._fd, int):
+            return self._file
+
+        start_time = time.monotonic()
+        delay = self.initial_delay
+        while True:
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self._locked = True
+                break
+            except (BlockingIOError, OSError) as e:
+                if isinstance(e, OSError) and e.errno in (errno.ENOSYS, getattr(errno, "EOPNOTSUPP", 45)):
+                    logger.warning(
+                        "Advisory file locking not supported on filesystem for %s; "
+                        "falling back to uncoordinated append",
+                        self.filepath,
+                    )
+                    break
+                if (
+                    isinstance(e, OSError)
+                    and e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK)
+                    and not isinstance(e, BlockingIOError)
+                ):
+                    self._file.close()
+                    raise
+                if (time.monotonic() - start_time) >= self.timeout:
+                    self._file.close()
+                    raise TimeoutError(f"Timed out waiting for exclusive lock on ledger file: {self.filepath}") from e
+                jitter = random.uniform(0.5, 1.5)
+                sleep_time = min(delay * jitter, self.max_delay)
+                time.sleep(sleep_time)
+                delay = min(delay * 2, self.max_delay)
+
+        return self._file
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        if self._file is not None and not self._file.closed:
+            try:
+                self._file.flush()
+                if self._fd is not None:
+                    with contextlib.suppress(OSError):
+                        os.fsync(self._fd)
+                if self._locked and self._fd is not None:
+                    with contextlib.suppress(OSError):
+                        fcntl.flock(self._fd, fcntl.LOCK_UN)
+                    self._locked = False
+            finally:
+                self._file.close()
+
+
 @contextlib.contextmanager
 def atomic_ledger_append(
     filepath: str,
@@ -190,104 +288,18 @@ def atomic_ledger_append(
     initial_delay: float = 0.02,
     max_delay: float = 0.5,
 ) -> Iterator[TextIO]:
-    """Atomic context manager for appending records to a ledger file with advisory locking.
-
-    Uses non-blocking advisory file locking (fcntl.flock with LOCK_EX | LOCK_NB) with bounded
-    exponential backoff, randomized jitter, and configurable timeout. Flushes and fsyncs content
-    prior to lock release. Falls back gracefully with diagnostic logging on platforms without
-    fcntl support.
-
-    Args:
-        filepath: Path to the target ledger file.
-        timeout: Maximum duration in seconds to wait for exclusive lock acquisition.
-        initial_delay: Initial retry delay in seconds.
-        max_delay: Maximum retry delay in seconds.
-
-    Yields:
-        Open text file handle positioned in append mode.
-
-    Raises:
-        TimeoutError: If the exclusive lock cannot be acquired within the timeout period.
-    """
-    dirname = os.path.dirname(os.path.abspath(filepath))
-    if dirname:
-        os.makedirs(dirname, exist_ok=True)
-
-    use_posix_lock = sys.platform != "win32" and fcntl is not None and hasattr(fcntl, "flock")
-
-    if not use_posix_lock:
-        logger.warning(
-            "Advisory file locking (fcntl.flock) unavailable on platform %s; "
-            "falling back to uncoordinated append for %s",
-            sys.platform,
-            filepath,
-        )
-        with open(filepath, "a", encoding="utf-8") as f:
-            try:
-                yield f
-            finally:
-                f.flush()
-                with contextlib.suppress(Exception):
-                    fd = f.fileno()
-                    if isinstance(fd, int):
-                        os.fsync(fd)
-        return
-
-    with open(filepath, "a", encoding="utf-8") as f:
-        try:
-            fd = f.fileno()
-        except (AttributeError, io.UnsupportedOperation, OSError):
-            fd = None
-
-        if not isinstance(fd, int):
-            yield f
-            f.flush()
-            return
-
-        locked = False
-        try:
-            start_time = time.monotonic()
-            delay = initial_delay
-            while True:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    locked = True
-                    break
-                except (BlockingIOError, OSError) as e:
-                    if isinstance(e, OSError) and e.errno in (errno.ENOSYS, getattr(errno, "EOPNOTSUPP", 45)):
-                        logger.warning(
-                            "Advisory file locking not supported on filesystem for %s; "
-                            "falling back to uncoordinated append",
-                            filepath,
-                        )
-                        break
-                    if (
-                        isinstance(e, OSError)
-                        and e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK)
-                        and not isinstance(e, BlockingIOError)
-                    ):
-                        raise
-                    if (time.monotonic() - start_time) >= timeout:
-                        raise TimeoutError(f"Timed out waiting for exclusive lock on ledger file: {filepath}") from e
-                    jitter = random.uniform(0.5, 1.5)
-                    sleep_time = min(delay * jitter, max_delay)
-                    time.sleep(sleep_time)
-                    delay = min(delay * 2, max_delay)
-
-            yield f
-            f.flush()
-            with contextlib.suppress(OSError):
-                os.fsync(fd)
-        finally:
-            if locked:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-                except OSError as e:
-                    logger.warning("Failed to release lock on %s: %s", filepath, e)
+    """Atomic context manager for appending records to a ledger file with advisory locking."""
+    with LedgerLock(
+        filepath=filepath,
+        timeout=timeout,
+        initial_delay=initial_delay,
+        max_delay=max_delay,
+    ) as f:
+        yield f
 
 
 def append_action_record(ledger_path: str, record: ActionRecord | dict[str, Any]) -> dict[str, Any]:
-    """Append a discrete action record to the execution ledger.
+    """Append a discrete action record to the execution ledger under LedgerLock.
 
     Args:
         ledger_path: Path to the executions.jsonl ledger file.
@@ -310,14 +322,14 @@ def append_action_record(ledger_path: str, record: ActionRecord | dict[str, Any]
             copy_rec["labels"] = [lbl.strip() for lbl in copy_rec["labels"].split(",") if lbl.strip()]
         data = ActionRecord.from_dict(copy_rec).to_dict()
 
-    with atomic_ledger_append(ledger_path) as f:
+    with LedgerLock(ledger_path) as f:
         f.write(json.dumps(data) + "\n")
 
     return data
 
 
 def append_summary_record(ledger_path: str, record: SummaryRecord | dict[str, Any]) -> dict[str, Any]:
-    """Append a summary record to the execution ledger.
+    """Append a summary record to the execution ledger under LedgerLock.
 
     Args:
         ledger_path: Path to the executions.jsonl ledger file.
@@ -332,10 +344,15 @@ def append_summary_record(ledger_path: str, record: SummaryRecord | dict[str, An
         data = dict(record)
         data["entry_type"] = "summary"
 
-    with atomic_ledger_append(ledger_path) as f:
+    with LedgerLock(ledger_path) as f:
         f.write(json.dumps(data) + "\n")
 
     return data
+
+
+# Canonical Aliases (Bean 0127)
+append_action_ledger = append_action_record
+append_execution_record = append_summary_record
 
 
 def parse_commit_trailers(commit_message: str) -> dict[str, Any]:

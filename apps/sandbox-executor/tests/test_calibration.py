@@ -1011,7 +1011,6 @@ class TestCalibrationInterleavedActionLedger(unittest.TestCase):
     def test_is_metadata_path(self):
         from sandbox_executor.calibration import is_metadata_path
 
-        self.assertTrue(is_metadata_path("holon-knowledge/ledger/actions.jsonl"))
         self.assertTrue(is_metadata_path("holon-knowledge/ledger/executions.jsonl"))
         self.assertTrue(is_metadata_path("./holon-knowledge/.index/action_index.db"))
         self.assertTrue(is_metadata_path("plans/P-1792372417-plan.md"))
@@ -1036,7 +1035,6 @@ class TestCalibrationInterleavedActionLedger(unittest.TestCase):
         jsonl_content = json.dumps(exec_record) + "\n"
 
         numstat_output = (
-            "5\t0\tholon-knowledge/ledger/actions.jsonl\n"
             "3\t0\tholon-knowledge/ledger/executions.jsonl\n"
             "60\t0\tplans/P-1234567890-test_calibration.md\n"
             "20\t2\tapps/sandbox-executor/src/sandbox_executor/calibration.py\n"

@@ -1609,7 +1609,7 @@ def main() -> None:
     )
     record_parser.add_argument(
         "--ledger-path",
-        default="holon-knowledge/ledger/actions.jsonl",
+        default="holon-knowledge/ledger/executions.jsonl",
         help="Path to actions ledger JSONL file.",
     )
     record_parser.add_argument(
@@ -1646,7 +1646,7 @@ def main() -> None:
     )
     reconcile_parser.add_argument(
         "--ledger-path",
-        default="holon-knowledge/ledger/actions.jsonl",
+        default="holon-knowledge/ledger/executions.jsonl",
         help="Path to actions ledger JSONL file.",
     )
     reconcile_parser.add_argument(

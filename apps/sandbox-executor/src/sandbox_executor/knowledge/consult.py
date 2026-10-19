@@ -15,7 +15,6 @@ from sandbox_executor.knowledge.index import DEFAULT_PROJECT_DB_PATH, ActionInde
 logger = logging.getLogger(__name__)
 
 DEFAULT_LEDGERS = [
-    "holon-knowledge/ledger/actions.jsonl",
     "holon-knowledge/ledger/executions.jsonl",
     "holon-knowledge/ledger/intents.jsonl",
     "holon-knowledge/ledger/plans.jsonl",

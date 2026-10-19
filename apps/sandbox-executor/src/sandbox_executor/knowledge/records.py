@@ -15,7 +15,7 @@ from sandbox_executor.ledger import atomic_ledger_append, generate_action_id
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_ACTIONS_LEDGER = "holon-knowledge/ledger/actions.jsonl"
+DEFAULT_ACTIONS_LEDGER = "holon-knowledge/ledger/executions.jsonl"
 
 
 class Verdict(StrEnum):

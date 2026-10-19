@@ -29,6 +29,7 @@ from enum import StrEnum
 from typing import Any, ClassVar
 
 from sandbox_executor.calibration import (
+    is_metadata_path,
     run_calibrate,
 )
 from sandbox_executor.entrypoint.executor import redact_text
@@ -2354,6 +2355,7 @@ def run_execute_stage(context: FlowContext) -> StageResult:
             "agent_version": "1.1.22",
             "model": context.model,
             "status": "success" if exit_code == 0 else "failed",
+            "entry_type": "summary",
             "summary": f"Execution completed with exit code {exit_code}",
             "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
             "duration": duration_seconds,
@@ -2379,9 +2381,8 @@ def run_execute_stage(context: FlowContext) -> StageResult:
             with atomic_ledger_append(exec_file) as f:
                 f.write(json.dumps(exec_entry) + "\n")
 
-        # Record discrete action event in actions.jsonl (Bean 0052 Goal 3)
+        # Record discrete action event in executions.jsonl (Bean 0052 Goal 3)
         try:
-            actions_file = os.path.join(ledger_dir, "actions.jsonl")
             action_event = {
                 "execution_id": exec_id,
                 "action": f"Executed test suite for plan {context.plan_branch}",
@@ -2389,11 +2390,12 @@ def run_execute_stage(context: FlowContext) -> StageResult:
                 "target": context.plan_branch,
                 "verdict": "success" if exit_code == 0 else "failure",
                 "outcome": "success" if exit_code == 0 else "failure",
+                "entry_type": "action",
                 "context_fingerprint": exec_fp,
                 "labels": ["execute", "test", context.agent],
                 "error_context": None if exit_code == 0 else f"pytest exited with code {exit_code}",
             }
-            append_action_event(action_event, ledger_path=actions_file, db_path=db_path)
+            append_action_event(action_event, ledger_path=exec_file, db_path=db_path)
         except Exception as e:
             logger.debug("Non-fatal append action event in execute stage: %s", e)
 
@@ -2419,8 +2421,6 @@ def run_execute_stage(context: FlowContext) -> StageResult:
 
             run_git(["add", "-A"], cwd=repo_dir, check=False)
             run_git(["add", "holon-knowledge/ledger/executions.jsonl"], cwd=repo_dir, check=True)
-            if os.path.exists(os.path.join(ledger_dir, "actions.jsonl")):
-                run_git(["add", "holon-knowledge/ledger/actions.jsonl"], cwd=repo_dir, check=False)
             commit_env = os.environ.copy()
             commit_env.setdefault("GIT_AUTHOR_NAME", "Holon Executor Agent")
             commit_env.setdefault("GIT_AUTHOR_EMAIL", "executor-agent@holon-agentic-coder.com")
@@ -2767,10 +2767,9 @@ def run_review_loop(
         except Exception as e:
             logger.debug("Non-fatal atomic ledger append during review summary: %s", e)
 
-    # Record action event in actions.jsonl if available
+    # Record action event in executions.jsonl if available
     if not effective_dry_run:
         try:
-            actions_file = os.path.join(ledger_dir, "actions.jsonl")
             append_action_event(
                 {
                     "execution_id": review_exec_id,
@@ -2779,13 +2778,14 @@ def run_review_loop(
                     "target": review_target,
                     "verdict": "success" if consensus_reached else "failure",
                     "outcome": "success" if consensus_reached else "failure",
+                    "entry_type": "action",
                     "context_fingerprint": compute_context_fingerprint(
                         target=review_target, tool=context.agent, command_prefix="review-loop"
                     ),
                     "labels": ["review", "review-loop", context.agent],
                     "error_context": None if consensus_reached else f"Consensus failed: findings={finding_ids}",
                 },
-                ledger_path=actions_file,
+                ledger_path=exec_file,
                 project_db_path=os.path.join(repo_dir, "holon-knowledge", ".index", "action_index.db"),
             )
         except Exception as e:
@@ -2860,25 +2860,36 @@ def run_review_stage(context: FlowContext) -> StageResult:
         test_pass_rate = float(exec_result.payload.get("test_pass_rate", 1.0))
         exit_code = int(exec_result.payload.get("exit_code", 0))
 
-    diff_summary = {"files_changed": 1, "insertions": 10, "deletions": 0}
+    diff_summary = {"files_changed": 0, "insertions": 0, "deletions": 0}
     if not context.dry_run and context.plan_branch:
         is_git = run_git(["rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False).returncode == 0
         if is_git:
             stat_res = run_git(
-                ["diff", "--shortstat", context.plan_branch, context.execution_branch],
+                ["diff", "--numstat", context.plan_branch, context.execution_branch],
                 cwd=repo_dir,
                 check=False,
             )
-            stat_text = stat_res.stdout.strip()
-            if stat_text:
-                m_f = re.search(r"(\d+)\s+file", stat_text)
-                m_i = re.search(r"(\d+)\s+insertion", stat_text)
-                m_d = re.search(r"(\d+)\s+deletion", stat_text)
-                diff_summary = {
-                    "files_changed": int(m_f.group(1)) if m_f else 0,
-                    "insertions": int(m_i.group(1)) if m_i else 0,
-                    "deletions": int(m_d.group(1)) if m_d else 0,
-                }
+            files_changed = 0
+            insertions = 0
+            deletions = 0
+            for line in stat_res.stdout.splitlines():
+                parts = line.strip().split("	")
+                if len(parts) >= 3:
+                    file_path = parts[2].strip().removeprefix("./")
+                    if " => " in file_path:
+                        file_path = file_path.split(" => ")[-1].strip().rstrip("}").strip()
+                    if is_metadata_path(file_path):
+                        continue
+                    files_changed += 1
+                    if parts[0] != "-":
+                        insertions += int(parts[0])
+                    if parts[1] != "-":
+                        deletions += int(parts[1])
+            diff_summary = {
+                "files_changed": files_changed,
+                "insertions": insertions,
+                "deletions": deletions,
+            }
 
     loop_res = run_review_loop(
         context=context,
@@ -3126,13 +3137,13 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
     # Reconcile pending action outcomes and promote knowledge candidates (Bean 0052 Goal 6)
     promoted_candidates: list[dict[str, Any]] = []
     try:
-        actions_file = os.path.join(repo_dir, "holon-knowledge/ledger/actions.jsonl")
+        executions_file = os.path.join(repo_dir, "holon-knowledge/ledger/executions.jsonl")
         db_path = os.path.join(repo_dir, "holon-knowledge/.index/action_index.db")
         exec_status = context.stage_results.get("execute")
         outcome = "success" if exec_status and exec_status.status == StageStatus.SUCCESS else "failure"
-        if os.path.exists(actions_file):
+        if os.path.exists(executions_file):
             reconcile_records(
-                ledger_path=actions_file,
+                ledger_path=executions_file,
                 max_age_days=14,
                 target_action_id=context.execution_branch,
                 verdict=outcome,

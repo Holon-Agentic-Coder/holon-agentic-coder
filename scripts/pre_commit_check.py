@@ -89,8 +89,6 @@ SPELLING_EXEMPT_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"^todo/.*"),
     re.compile(r"^holon-knowledge/.*"),
     re.compile(r"^\.holon/.*"),
-    re.compile(r"^\.agents/.*"),
-    re.compile(r"^\.beans/.*"),
     re.compile(r"^scripts/pre_commit_check\.py$"),
 ]
 

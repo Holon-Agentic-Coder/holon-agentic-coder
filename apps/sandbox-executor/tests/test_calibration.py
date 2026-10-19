@@ -1007,3 +1007,52 @@ class TestCalibrationInterleavedActionLedger(unittest.TestCase):
             self.assertEqual(actual.tokens, 1200)
             self.assertEqual(meta.get("entry_type"), "summary")
             self.assertEqual(meta.get("execution_id"), "E-interleave")
+
+    def test_is_metadata_path(self):
+        from sandbox_executor.calibration import is_metadata_path
+
+        self.assertTrue(is_metadata_path("holon-knowledge/ledger/executions.jsonl"))
+        self.assertTrue(is_metadata_path("./holon-knowledge/.index/action_index.db"))
+        self.assertTrue(is_metadata_path("plans/P-1792372417-plan.md"))
+        self.assertTrue(is_metadata_path("plans/P-1792372417-plan_calibration.md"))
+        self.assertTrue(is_metadata_path(".holon/checkpoints/flow.json"))
+        self.assertFalse(is_metadata_path(".beans/0001-task.md"))
+        self.assertFalse(is_metadata_path("todo/scratch.py"))
+
+        self.assertFalse(is_metadata_path("src/module.py"))
+        self.assertFalse(is_metadata_path("apps/sandbox-executor/src/sandbox_executor/flow.py"))
+        self.assertFalse(is_metadata_path("Makefile"))
+        self.assertFalse(is_metadata_path("README.md"))
+
+    def test_parse_actual_metrics_excludes_metadata_files(self):
+        predicted = PredictedMetrics(p_success=0.90, entropy=2.0, impact=50.0, cost=5.0, learning_value=3.0, ev=35.0)
+        exec_record = {
+            "execution_id": "E-meta-test",
+            "plan_branch": "I-test/P-test/_",
+            "status": "success",
+            "duration": 10.0,
+        }
+        jsonl_content = json.dumps(exec_record) + "\n"
+
+        numstat_output = (
+            "3\t0\tholon-knowledge/ledger/executions.jsonl\n"
+            "60\t0\tplans/P-1234567890-test_calibration.md\n"
+            "20\t2\tapps/sandbox-executor/src/sandbox_executor/calibration.py\n"
+        )
+
+        def mock_subp(cmd, **kwargs):
+            if isinstance(cmd, list) and "diff" in cmd:
+                return MagicMock(returncode=0, stdout=numstat_output)
+            return MagicMock(returncode=1, stdout="", stderr="")
+
+        with (
+            patch("os.path.exists", side_effect=lambda p: "executions.jsonl" in str(p)),
+            patch("builtins.open", unittest.mock.mock_open(read_data=jsonl_content)),
+            patch("subprocess.run", side_effect=mock_subp),
+        ):
+            actual, meta = parse_actual_metrics("E-meta-test", "I-test/P-test/_", predicted)
+            # Only calibration.py should be counted!
+            self.assertEqual(actual.files_changed, 1)
+            self.assertEqual(actual.insertions, 20)
+            self.assertEqual(actual.deletions, 2)
+            self.assertEqual(meta["ssa_obs"], 0.31)

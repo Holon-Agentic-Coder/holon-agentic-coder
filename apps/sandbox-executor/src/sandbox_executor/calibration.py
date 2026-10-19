@@ -23,6 +23,23 @@ from sandbox_executor.git import run_git
 
 logger = logging.getLogger(__name__)
 
+METADATA_PATH_PREFIXES = (
+    "holon-knowledge/",
+    "plans/",
+    ".holon/",
+)
+
+
+def is_metadata_path(path: str) -> bool:
+    """Check if a file path points to metadata, ledger, or planning artifacts rather than project code."""
+    clean = path.strip()
+    if clean.startswith("./"):
+        clean = clean[2:]
+    clean = clean.lstrip("/")
+    if " => " in clean:
+        clean = clean.split(" => ")[-1].strip().rstrip("}").strip()
+    return any(clean.startswith(prefix) for prefix in METADATA_PATH_PREFIXES)
+
 
 @dataclass
 class PredictedMetrics:
@@ -726,9 +743,9 @@ def parse_actual_metrics(
     # 2. Compute patch size via git diff between plan_branch and execution_branch (fail loudly on non-zero exit)
     base_ref = plan_branch if plan_branch else "HEAD~1"
     if execution_branch and base_ref != target_ref:
-        diff_args = ["diff", "--shortstat", f"{base_ref}...{target_ref}", "--"]
+        diff_args = ["diff", "--numstat", f"{base_ref}...{target_ref}"]
     else:
-        diff_args = ["diff", "--shortstat", f"{target_ref}~1..{target_ref}", "--"]
+        diff_args = ["diff", "--numstat", f"{target_ref}~1..{target_ref}"]
 
     res = run_git(
         diff_args,
@@ -791,14 +808,34 @@ def parse_actual_metrics(
         exec_meta["merge_base_sha"] = merge_base_sha
         exec_meta["merged_commit_count"] = merged_commit_count
 
+    actual.files_changed = 0
+    actual.insertions = 0
+    actual.deletions = 0
     if res.stdout.strip():
         text = res.stdout.strip()
-        fc_m = re.search(r"(\d+)\s+file", text)
-        ins_m = re.search(r"(\d+)\s+insertion", text)
-        del_m = re.search(r"(\d+)\s+deletion", text)
-        actual.files_changed = int(fc_m.group(1)) if fc_m else 0
-        actual.insertions = int(ins_m.group(1)) if ins_m else 0
-        actual.deletions = int(del_m.group(1)) if del_m else 0
+        if "\t" in text:
+            # Parse git diff --numstat output, excluding metadata and planning artifacts
+            for line in text.splitlines():
+                parts = line.strip().split("\t")
+                if len(parts) >= 3:
+                    file_path = parts[2].strip().removeprefix("./")
+                    if " => " in file_path:
+                        file_path = file_path.split(" => ")[-1].strip().rstrip("}").strip()
+                    if is_metadata_path(file_path):
+                        continue
+                    actual.files_changed += 1
+                    if parts[0] != "-":
+                        actual.insertions += int(parts[0])
+                    if parts[1] != "-":
+                        actual.deletions += int(parts[1])
+        else:
+            # Fallback for shortstat text (e.g. unit test mocks)
+            fc_m = re.search(r"(\d+)\s+file", text)
+            ins_m = re.search(r"(\d+)\s+insertion", text)
+            del_m = re.search(r"(\d+)\s+deletion", text)
+            actual.files_changed = int(fc_m.group(1)) if fc_m else 0
+            actual.insertions = int(ins_m.group(1)) if ins_m else 0
+            actual.deletions = int(del_m.group(1)) if del_m else 0
 
     # Derive actual impact, cost, learning_value, and entropy
     actual.impact = predicted.impact if actual.p_success > 0.5 else 0.0
@@ -811,7 +848,11 @@ def parse_actual_metrics(
     else:
         actual.cost = round(max(0.5, predicted.cost * (0.85 if actual.p_success == 1.0 else 1.1)), 2)
 
-    ssa_obs = round(min(10.0, max(0.2, actual.files_changed * 0.2 + (actual.insertions + actual.deletions) * 0.005)), 2)
+    if actual.files_changed == 0:
+        ssa_obs = 0.0
+    else:
+        ssa_raw = actual.files_changed * 0.2 + (actual.insertions + actual.deletions) * 0.005
+        ssa_obs = round(min(10.0, max(0.2, ssa_raw)), 2)
     irr_obs = 0.0
     cl_obs = 0.0
     ser_obs = 0.0
@@ -1014,7 +1055,7 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
             "",
             (
                 f"- **State Surface Area (SSA):** Predicted `{ef['ssa']['predicted']:.1f}` vs Observed "
-                f"`{ef['ssa']['observed']:.1f}` ({act.get('files_changed', 1)} files modified)."
+                f"`{ef['ssa']['observed']:.1f}` ({act.get('files_changed', 0)} files modified)."
             ),
             (
                 f"- **Irreversibility (IRR):** Predicted `{ef['irr']['predicted']:.1f}` vs Observed "
@@ -1147,7 +1188,8 @@ def generate_calibration(
 
     lambda_val, mu_val = load_metrics_physics(repo_dir)
 
-    ssa_obs = exec_meta.get("ssa_obs", round(max(0.2, actual.files_changed * 0.1), 1))
+    ssa_fallback = 0.0 if actual.files_changed == 0 else max(0.2, actual.files_changed * 0.1)
+    ssa_obs = exec_meta.get("ssa_obs", round(ssa_fallback, 1))
     ef = EntropyFactors(
         ssa=(0.6, round(ssa_obs, 1)),
         irr=(0.0, 0.0),

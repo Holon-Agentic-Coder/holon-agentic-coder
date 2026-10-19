@@ -437,14 +437,17 @@ class TestFlowStages:
         assert "execution_file" not in res.payload
         assert not (tmp_path / "executions").exists()
 
-        # Verify executions ledger
+        # Verify executions ledger contains both summary and action records
         exec_ledger = ledger_dir / "executions.jsonl"
         assert exec_ledger.exists()
         with open(exec_ledger) as f:
             lines = [json.loads(line) for line in f if line.strip()]
-        assert len(lines) == 1
-        assert lines[0]["execution_id"] == res.payload["execution_id"]
-        assert "execution_file" not in lines[0]
+        assert len(lines) == 2
+        summary = next(line for line in lines if line.get("entry_type") == "summary")
+        action = next(line for line in lines if line.get("entry_type") == "action")
+        assert summary["execution_id"] == res.payload["execution_id"]
+        assert "execution_file" not in summary
+        assert action["category"] == "test"
 
     def test_stage4_review_missing_execution_branch(self):
         ctx = FlowContext(execution_branch=None)

@@ -117,6 +117,24 @@ I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/E-17714
 
 `/_` is the Intent Root (The "What") `/P-.../_` is the Plan (The "How") `/P-.../E-.../_` is the Execution (The "Do")
 
+### 2.7 The 5-Stage Holon Flow Lifecycle
+
+The evolution pipeline traverses five deterministic stages, representing a single continuous provenance lifecycle:
+
+| Stage              | Name                     | CLI Command                            | Artifacts & Outputs                                                                 |
+| :----------------- | :----------------------- | :------------------------------------- | :---------------------------------------------------------------------------------- |
+| **1. Intent**      | Intent Initialisation    | `holon intent <intent.json>`           | Intent branch `I-.../_` + `holon-knowledge/ledger/intents.jsonl`                    |
+| **2. Plan**        | Plan Generation          | `holon plan <intent_branch>`           | Plan branch `I-.../P-.../_` + `plans/P-*.md` + `plans.jsonl`                        |
+| **3. Execute**     | Sandbox Execution        | `holon execute <plan_branch>`          | Execution branch `I-.../P-.../E-.../_` + `executions.jsonl`                         |
+| **4. Review Loop** | PR Review & Resolve Loop | `holon review-loop <execution_branch>` | PR raised + 3-agent ensemble consensus review + micro-actions in `executions.jsonl` |
+| **5. Calibrate**   | Calibration Analysis     | `holon calibrate <execution_branch>`   | `/calibrated` branch + `plans/P-*_calibration.md` (included in PR diff)             |
+
+#### Safety Halt & Merge Boundary (Bean 0034)
+
+Merging to `main` is strictly reserved for the human maintainer. Upon successful consensus approval in Stage 4 and
+calibration report inclusion in Stage 5, the automated flow halts and requests human review and merge. Autonomous
+merging to `main` is strictly forbidden.
+
 ---
 
 ## 3) Mandatory Rebase Discipline

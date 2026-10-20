@@ -83,9 +83,7 @@ class TestContainerImageInspection:
     @pytest.mark.parametrize("target", AGENT_TARGETS)
     def test_image_inspect_configuration_user_and_binary_path(self, target: str):
         """Verify container image configuration specifies non-root user holon and standard binary path."""
-        fake_inspect_output = (
-            f'[{{"Config": {{"User": "holon", "Env": ["PATH=/home/holon/.local/bin:/usr/bin:/bin"]}}}}]'
-        )
+        fake_inspect_output = '[{"Config": {"User": "holon", "Env": ["PATH=/home/holon/.local/bin:/usr/bin:/bin"]}}]'
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout=fake_inspect_output, stderr="")
 
@@ -99,11 +97,20 @@ class TestContainerImageInspection:
 class TestContainerExecutionNonRoot:
     """Container availability tests verifying gh execution under UID 1000 (Bean 0131)."""
 
+    @pytest.mark.integration_test
     @pytest.mark.skipif(not is_docker_available(), reason="Docker daemon unavailable in execution environment")
     @pytest.mark.parametrize("target", AGENT_TARGETS)
     def test_container_gh_execution_as_non_root(self, target: str):
         """Run container as non-root user holon (UID 1000) and verify gh presence and version."""
         image_name = f"holon/{target}:latest"
+        inspect_res = subprocess.run(
+            ["docker", "image", "inspect", image_name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if inspect_res.returncode != 0:
+            pytest.skip(f"Docker image {image_name} not available locally")
+
         cmd = [
             "docker",
             "run",

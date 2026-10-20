@@ -8,7 +8,13 @@
 # --- Base Layer ---
 FROM python:3.13-slim AS holon-base
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends git curl jq build-essential ca-certificates ssh vim shellcheck && \
+    apt-get install -y --no-install-recommends git curl jq build-essential ca-certificates ssh vim shellcheck gpg && \
+    mkdir -p -m 0755 /etc/apt/keyrings && \
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
+    chmod 0644 /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends gh && \
     rm -rf /var/lib/apt/lists/*
 
 # Configure SSH globally inside the container to automatically accept host keys

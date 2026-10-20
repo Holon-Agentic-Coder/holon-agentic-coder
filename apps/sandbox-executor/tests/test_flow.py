@@ -1541,6 +1541,42 @@ class TestSemanticPRAndConsensusReview:
             assert res["official_review"]["self_approval_fallback"] is False
             assert mock_run.call_count == 2
 
+    def test_post_pr_review_consensus_when_gh_missing_returns_diagnostics(self):
+        """Verify post_pr_review_consensus returns clear diagnostics and handles gh absence cleanly."""
+        with patch("shutil.which", return_value=None):
+            consensus_data = {"approved": True, "status": "approved", "iterations": 1}
+            res = post_pr_review_consensus(repo_dir="/tmp", target="42", consensus_data=consensus_data)
+
+            assert res["gh_available"] is False
+            assert res["dual_posted"] is False
+            assert res["discussion_comment"]["attempted"] is False
+            assert res["discussion_comment"]["success"] is False
+            assert "not available in PATH" in res["diagnostics"]
+            assert "not available in PATH" in res["discussion_comment"]["output"]
+            assert res["official_review"]["attempted"] is False
+            assert res["official_review"]["success"] is False
+            assert "not available in PATH" in res["official_review"]["output"]
+
+    def test_post_pr_review_consensus_error_output_surfaces_diagnostic_context(self):
+        """Verify non-zero gh failure captures and surfaces exit code and stderr diagnostics."""
+        with patch("shutil.which", return_value="/usr/bin/gh"), patch("subprocess.run") as mock_run:
+            mock_comment = MagicMock(returncode=2, stdout="", stderr="GraphQL error: Network timeout")
+            mock_review = MagicMock(returncode=2, stdout="", stderr="GraphQL error: Network timeout")
+            mock_run.side_effect = [mock_comment, mock_review]
+
+            consensus_data = {"approved": True}
+            res = post_pr_review_consensus(repo_dir="/tmp", target="42", consensus_data=consensus_data)
+
+            assert res["gh_available"] is True
+            assert res["dual_posted"] is False
+            assert res["discussion_comment"]["success"] is False
+            assert "exit code 2" in res["discussion_comment"]["output"]
+            assert "Network timeout" in res["discussion_comment"]["output"]
+            assert res["official_review"]["success"] is False
+            assert "exit code 2" in res["official_review"]["output"]
+            assert "Network timeout" in res["official_review"]["output"]
+            assert "Review posting partial/failed" in res["diagnostics"]
+
     def test_create_or_update_pr(self):
         """Verify create_or_update_pr handles creation when absent and edit when present."""
         with patch("shutil.which", return_value="/usr/bin/gh"), patch("subprocess.run") as mock_run:

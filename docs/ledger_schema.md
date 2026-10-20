@@ -58,13 +58,42 @@ Ledger entries refer to stable IDs:
 
 ## Storage format
 
-### Recommended format: JSON Lines
+### Canonical 3-Ledger Architecture (JSON Lines)
+
+Holon maintains strictly three append-only ledgers under `holon-knowledge/ledger/`:
+
+1. **`intents.jsonl`**: Intent registration, goals, constraints, entropy budgets, and hierarchy links.
+2. **`plans.jsonl`**: Competing plan variants, predictions ($P(\text{success})$, $\Delta S$, EV), and model routing
+   metadata.
+3. **`executions.jsonl`**: Execution summaries, Stage 4 PR review summaries, Stage 5 calibration summaries, and
+   chronologically interleaved micro-actions.
 
 - Directory: `holon-knowledge/ledger/`
-- Primary File: `holon-knowledge/ledger/events.jsonl`
 - Encoding: UTF-8
-- Each line: one JSON object (one event)
-- Ordering: strictly increasing by `ts` then by `seq`
+- Each line: one valid JSON object (one event or record)
+- Ordering: strictly chronological append-only order under `LedgerLock`
+
+#### Retirement of Auxiliary Ledgers
+
+Auxiliary ledgers such as `actions.jsonl` and `reviews.jsonl` are **strictly retired and prohibited**. Previously,
+discrete action logging or review feedback was occasionally split into separate files. This fragmented the provenance
+trail, complicated atomic multi-process writes, and broke unified downstream query engines. In the canonical
+architecture, all discrete micro-actions (`entry_type: "action"`, such as `ACT-REV`, `ACT-FIND`, `ACT-POST`, tool
+operations) and lifecycle summaries (`entry_type: "summary"`, such as `E-...`, `REV-...`) MUST be interleaved
+chronologically inside `executions.jsonl`.
+
+#### Concurrency & Interleaving Protection: `LedgerLock`
+
+To ensure thread- and process-safe append operations across concurrent agent containers, subagents, and tools, all
+ledger appends are guarded by `LedgerLock` (`sandbox_executor.ledger.LedgerLock`).
+
+- **Mechanism**: POSIX advisory file locking (`fcntl.flock` with `LOCK_EX | LOCK_NB`) on dedicated lock descriptors.
+- **Contention Handling**: Bounded exponential backoff with randomised jitter and a configurable timeout (default:
+  10.0s).
+- **Durability**: Explicit `flush()` and `os.fsync()` calls upon release before closing the file descriptor,
+  guaranteeing on-disk persistence without torn writes or interleaving.
+- **Graceful Fallback**: On platforms or filesystems without flock support, logs a warning and proceeds with
+  uncoordinated appends.
 
 **Why JSONL?**
 
@@ -616,7 +645,7 @@ Appended when a plan execution begins, completes, fails, or decomposes into sub-
 - `summary`: Description of execution outcome (only for terminal states).
 - `execution_file`: _(Deprecated / Omitted for new records)_ Historical relative path to execution markdown file.
 - `agent_output_truncated`: Boolean flag indicating if captured agent logs exceeded byte budget and were truncated.
-- `agent_output_bytes`: Byte length of captured (and potentially truncated/sanitized) agent output payload.
+- `agent_output_bytes`: Byte length of captured (and potentially truncated/sanitised) agent output payload.
 - `ledger_revision`: Integer revision number (defaults to `1` on creation).
 - `sub_intents`: List of sub-intents generated upon decomposition (only for `decomposed` state).
 - `created_at`: Creation timestamp.
@@ -640,7 +669,7 @@ config/env changes, command executions, test runs, git mutations):
 - `action`: Concise description of the operation.
 - `category`: Classification category (`code`, `doc`, `config`, `test`, `build`, `dependency`).
 - `labels`: List of searchable tags/labels (e.g. `["refactor", "ci", "core"]`). Ingestion also supports comma-separated
-  strings (e.g. `"refactor, ci"`), which are automatically normalized to arrays.
+  strings (e.g. `"refactor, ci"`), which are automatically normalised to arrays.
 - `target`: Target path, command name, or artifact.
 - `outcome`: Outcome status (`success`, `failure`, `reverted`, `blocked`).
 - `error_context`: Optional error message or stderr excerpt if the action failed.

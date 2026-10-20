@@ -67,7 +67,10 @@ Consolidates human-authored rules, agent identities, and project "physics".
 
 Consolidates machine-authored history and the intelligence evolved from it.
 
-- `ledger/`: The append-only, forensic event log of every action.
+- `ledger/`: The canonical 3-ledger append-only audit trail (`intents.jsonl`, `plans.jsonl`, `executions.jsonl`)
+  protected by `LedgerLock`. Auxiliary ledgers (`actions.jsonl`, `reviews.jsonl`) are strictly retired. Micro-actions
+  (`entry_type: "action"`, e.g. `ACT-REV`, `ACT-FIND`, `ACT-POST`) are chronologically interleaved alongside lifecycle
+  summaries (`entry_type: "summary"`) in `executions.jsonl`.
 - `kb/`: (Knowledge Base) Project-specific patterns, tactics, and failure modes.
 - `wb/`: (Wisdom Base) Universal invariants and cross-project heuristics.
 
@@ -88,7 +91,7 @@ outputs.
 
 ### High-level architecture
 
-The components of the Holon engine are organized around the Orchestrator (Meta-Agent), which coordinates the flow of
+The components of the Holon engine are organised around the Orchestrator (Meta-Agent), which coordinates the flow of
 information between static configurations, dynamic data products, and execution runtimes.
 
 ```mermaid
@@ -158,9 +161,23 @@ flowchart TD
 - **Executor (Sandbox Runner)**
   - Config-driven: Loads safety rules from `holon-config/rules/`.
   - Knowledge-driven: Adheres to universal safety invariants from `holon-knowledge/wb/`.
+  - Security-hardened: Dispatches containers with `--cap-drop=ALL` (stripping all kernel capabilities),
+    `--security-opt=no-new-privileges` (preventing privilege escalation), and non-root execution (`holon` user, UID
+    10001).
+  - Git abstraction: Routes all repository interactions through `sandbox_executor.git` (`run_git`, `get_diff_numstat`,
+    `resolve_ref`, `get_head_commit`, `branch_exists`) with automatic credential sanitisation and timeout enforcement.
   - Runs a chosen plan variant in an isolated environment.
-- **Evolution Ledger (Write-once log)**
-  - Knowledge-driven: Stores events in `holon-knowledge/ledger/`.
+- **Evolution Ledger (Canonical 3-Ledger Architecture)**
+  - Knowledge-driven: Strictly maintains three append-only ledgers in `holon-knowledge/ledger/`:
+    1. `intents.jsonl`: Intent registrations, goals, constraints, and hierarchy links.
+    2. `plans.jsonl`: Competing plan proposals, predictions, and model routing metadata.
+    3. `executions.jsonl`: Execution summaries, Stage 4 PR review summaries, Stage 5 calibration summaries, and
+       fine-grained micro-actions (`entry_type: "action"`, e.g. `ACT-REV`, `ACT-FIND`, `ACT-POST`).
+  - Retirement of auxiliary ledgers: Auxiliary ledgers such as `actions.jsonl` and `reviews.jsonl` are completely
+    retired and prohibited.
+  - Concurrency & Interleaving Protection: All ledger appends are guarded by `LedgerLock` (POSIX advisory file locking
+    via `fcntl.flock` with exponential backoff and explicit fsync), preventing race conditions or interleaved torn
+    writes.
   - Validates events against `holon-config/schemas/`.
 - **Knowledge Base (Read/write store)**
   - Knowledge-driven: Stores patterns and tactics in `holon-knowledge/kb/`.

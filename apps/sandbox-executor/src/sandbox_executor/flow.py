@@ -1665,6 +1665,28 @@ def post_pr_review_consensus(
     gh_available = bool(shutil.which("gh"))
     gh_env = {**os.environ, **(proxy_env or {})} if proxy_env else None
 
+    if not gh_available:
+        diag_msg = "GitHub CLI ('gh') is not available in PATH; skipping PR review dual-posting."
+        logger.warning(diag_msg)
+        return {
+            "target": clean_target,
+            "gh_available": False,
+            "diagnostics": diag_msg,
+            "discussion_comment": {
+                "attempted": False,
+                "success": False,
+                "output": diag_msg,
+            },
+            "official_review": {
+                "attempted": False,
+                "flag": "--approve" if approved else "--comment",
+                "success": False,
+                "self_approval_fallback": False,
+                "output": diag_msg,
+            },
+            "dual_posted": False,
+        }
+
     # Action 1: Top-Level Discussion Comment
     comment_attempted = gh_available and bool(clean_target)
     comment_success = False
@@ -1681,17 +1703,22 @@ def post_pr_review_consensus(
                 timeout=60,
                 env=gh_env,
             )
-            comment_output = f"{comment_proc.stdout or ''}\n{comment_proc.stderr or ''}".strip()
+            raw_stdout = comment_proc.stdout or ""
+            raw_stderr = comment_proc.stderr or ""
             if comment_proc.returncode == 0:
                 comment_success = True
+                comment_output = raw_stdout.strip() or "Discussion comment posted successfully."
             else:
+                comment_output = (
+                    f"gh pr comment failed (exit code {comment_proc.returncode}): {raw_stderr or raw_stdout}".strip()
+                )
                 logger.warning(
                     "gh pr comment failed with returncode %s: %s",
                     comment_proc.returncode,
                     comment_proc.stderr,
                 )
         except Exception as exc:
-            comment_output = str(exc)
+            comment_output = f"gh pr comment encountered exception: {exc}"
             logger.warning("gh pr comment encountered exception: %s", exc)
 
     # Action 2: Official Review Submission
@@ -1718,7 +1745,7 @@ def post_pr_review_consensus(
 
             if review_proc.returncode == 0:
                 review_success = True
-                review_output = raw_stdout or "Official review submitted."
+                review_output = raw_stdout.strip() or "Official review submitted."
             else:
                 is_self_approval = (
                     "422" in raw_stderr
@@ -1743,19 +1770,31 @@ def post_pr_review_consensus(
                     )
                     if fallback_proc.returncode == 0:
                         review_success = True
-                        review_output = fallback_proc.stdout or "Fallback review comment submitted."
+                        review_output = (fallback_proc.stdout or "").strip() or "Fallback review comment submitted."
                     else:
                         review_success = False
-                        review_output = fallback_proc.stderr or "Fallback review comment failed."
+                        fallback_err = fallback_proc.stderr or fallback_proc.stdout or ""
+                        review_output = (
+                            f"Fallback review comment failed (exit code {fallback_proc.returncode}): {fallback_err}"
+                        ).strip()
                 else:
                     review_success = False
-                    review_output = raw_stderr or "Official review submission failed."
+                    review_output = (
+                        f"Official review submission failed (exit code {review_proc.returncode}): "
+                        f"{raw_stderr or raw_stdout}"
+                    ).strip()
         except Exception as exc:
-            review_output = str(exc)
+            review_output = f"gh pr review encountered exception: {exc}"
             logger.warning("gh pr review encountered exception: %s", exc)
 
     return {
         "target": clean_target,
+        "gh_available": True,
+        "diagnostics": (
+            "Review consensus posted successfully to GitHub."
+            if (comment_success and review_success)
+            else f"Review posting partial/failed: comment={comment_success}, review={review_success}."
+        ),
         "discussion_comment": {
             "attempted": comment_attempted,
             "success": comment_success,

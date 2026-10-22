@@ -4,7 +4,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from sandbox_executor.entrypoint.review_loop import main as review_loop_main
@@ -192,3 +192,66 @@ class TestCLIDispatchReviewLoop:
 
             assert exc_info.value.code == 0
             mock_local.assert_called_once()
+
+
+class TestReviewLoopGitHubCLIDiagnostics:
+    """Test suite verifying GitHub CLI (gh) detection and diagnostics in review loop (Bean 0131)."""
+
+    def test_post_pr_review_consensus_detects_gh_and_executes_commands(self):
+        from sandbox_executor.flow import post_pr_review_consensus
+
+        with patch("shutil.which", return_value="/usr/bin/gh"), patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="Success", stderr="")
+            consensus_data = {
+                "approved": True,
+                "status": "approved",
+                "iterations": 1,
+                "max_review_iterations": 25,
+            }
+            res = post_pr_review_consensus(repo_dir="/tmp", target="123", consensus_data=consensus_data)
+
+            assert res["gh_available"] is True
+            assert res["dual_posted"] is True
+            assert res["discussion_comment"]["success"] is True
+            assert res["official_review"]["success"] is True
+            assert mock_run.call_count == 2
+            comment_call = mock_run.call_args_list[0][0][0]
+            review_call = mock_run.call_args_list[1][0][0]
+            assert comment_call[:4] == ["gh", "pr", "comment", "123"]
+            assert review_call[:5] == ["gh", "pr", "review", "123", "--approve"]
+
+    def test_post_pr_review_consensus_diagnostics_when_gh_missing(self):
+        from sandbox_executor.flow import post_pr_review_consensus
+
+        with patch("shutil.which", return_value=None):
+            consensus_data = {"approved": True, "status": "approved", "iterations": 1}
+            res = post_pr_review_consensus(repo_dir="/tmp", target="123", consensus_data=consensus_data)
+
+            assert res["gh_available"] is False
+            assert res["dual_posted"] is False
+            assert res["discussion_comment"]["attempted"] is False
+            assert "not available in PATH" in res["diagnostics"]
+            assert "not available in PATH" in res["discussion_comment"]["output"]
+            assert res["official_review"]["attempted"] is False
+            assert "not available in PATH" in res["official_review"]["output"]
+
+    def test_post_pr_review_consensus_diagnostics_when_gh_fails_nonzero(self):
+        from sandbox_executor.flow import post_pr_review_consensus
+
+        with patch("shutil.which", return_value="/usr/bin/gh"), patch("subprocess.run") as mock_run:
+            mock_comment = MagicMock(returncode=1, stdout="", stderr="HTTP 502 Bad Gateway")
+            mock_review = MagicMock(returncode=1, stdout="", stderr="HTTP 502 Bad Gateway")
+            mock_run.side_effect = [mock_comment, mock_review]
+
+            consensus_data = {"approved": True}
+            res = post_pr_review_consensus(repo_dir="/tmp", target="123", consensus_data=consensus_data)
+
+            assert res["gh_available"] is True
+            assert res["dual_posted"] is False
+            assert res["discussion_comment"]["success"] is False
+            assert "exit code 1" in res["discussion_comment"]["output"]
+            assert "HTTP 502 Bad Gateway" in res["discussion_comment"]["output"]
+            assert res["official_review"]["success"] is False
+            assert "exit code 1" in res["official_review"]["output"]
+            assert "HTTP 502 Bad Gateway" in res["official_review"]["output"]
+            assert "Review posting partial/failed" in res["diagnostics"]

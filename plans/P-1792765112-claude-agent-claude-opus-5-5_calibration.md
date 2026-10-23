@@ -53,6 +53,30 @@
 
 ## 4. Calibration Assessment
 
-Plan `P-1792765112-claude-agent-claude-opus-5-5` executed with minimal error ($p\_success\_error = 0.10$,
-$cost\_error = 0.30$). The calibration step successfully completed the execution lifecycle and delivered verified
-post-execution analysis.
+Plan `P-1792765112-claude-agent-claude-opus-5-5` executed with minimal error ($p\_success\_error = 0.10$, $cost\_error =
+0.30$). The calibration step successfully completed the execution lifecycle and delivered verified post-execution
+analysis.
+
+---
+
+## 5. Review-Loop Annotation: Known-Wrong Predicted Metrics (Bean 0146)
+
+> Added during the Stage 4 review loop, after `holon calibrate` produced sections 1–4 above (unchanged on the
+> `/calibrated` branch).
+
+The `plans.jsonl` row for `P-1792765112-claude-agent-claude-opus-5-5` was written before this PR's
+`planner.parse_metrics()` fix and records the plan's Step 5 metrics instead of its `## Overall Plan Metrics`.
+Calibration reads that row, so every **Predicted** value and every delta in sections 1–2 is computed against the wrong
+baseline. The plan file's Overall values are:
+
+| Metric         | Overall (plan file) | Recorded row (used above) |
+| :------------- | :------------------ | :------------------------ |
+| p_success_pred | 0.80                | 0.90                      |
+| entropy_pred   | 5.8                 | 0.40                      |
+| impact_pred    | 85.0                | 10.00                     |
+| cost_pred      | 16.0                | 2.00                      |
+| learning_value | 4.0                 | 1.00                      |
+| ev_pred        | 52.26               | 7.38                      |
+
+The ledger row is append-only and is not rewritten. A plans-ledger correction row, and calibration that prefers it, are
+tracked by Bean 0146; recompute this report's deltas once that lands.

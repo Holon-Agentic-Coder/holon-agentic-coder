@@ -255,3 +255,70 @@ class TestReviewLoopGitHubCLIDiagnostics:
             assert "exit code 1" in res["official_review"]["output"]
             assert "HTTP 502 Bad Gateway" in res["official_review"]["output"]
             assert "Review posting partial/failed" in res["diagnostics"]
+
+
+class TestReviewLoopEmptyDiffGuard:
+    """run_review_loop never creates or updates a PR for an execution branch with no effective diff."""
+
+    PLAN = "I-1-guard/P-1-claude-agent-m/_"
+    EXEC = "I-1-guard/P-1-claude-agent-m/E-2-claude-agent-m/_"
+
+    @staticmethod
+    def _repo(tmp_path: Path, change_source: bool) -> Path:
+        import subprocess
+
+        repo = tmp_path / "repo"
+
+        def git(*args: str) -> None:
+            subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+        repo.mkdir()
+        git("init", "-q", "-b", TestReviewLoopEmptyDiffGuard.PLAN)
+        git("config", "user.email", "test@holon.com")
+        git("config", "user.name", "Holon Test")
+        (repo / "holon-knowledge" / "ledger").mkdir(parents=True)
+        (repo / "holon-knowledge" / "ledger" / "executions.jsonl").write_text("", encoding="utf-8")
+        (repo / "app.py").write_text("x = 1\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "plan")
+        git("checkout", "-q", "-b", TestReviewLoopEmptyDiffGuard.EXEC)
+        (repo / "holon-knowledge" / "ledger" / "executions.jsonl").write_text('{"status": "success"}\n')
+        if change_source:
+            (repo / "app.py").write_text("x = 2\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "exec")
+        return repo
+
+    def _run(self, repo: Path):
+        from sandbox_executor.flow import FlowContext, run_review_loop
+
+        ctx = FlowContext(repo_dir=str(repo), execution_branch=self.EXEC, token_reduce=False)
+        with (
+            patch("shutil.which", return_value="/usr/bin/gh"),
+            patch("sandbox_executor.flow.create_or_update_pr", return_value={"success": True}) as mock_pr,
+            patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
+            patch("sandbox_executor.flow.probe_ci_checks", return_value={"all_passed": True, "source": "github_cli"}),
+            patch("sandbox_executor.flow.post_pr_review_consensus", return_value={}),
+        ):
+            res = run_review_loop(ctx, target=self.EXEC, max_iterations=1, dry_run=False)
+        return res, mock_pr
+
+    def test_empty_execution_branch_gets_no_pr(self, tmp_path: Path):
+        res, mock_pr = self._run(self._repo(tmp_path, change_source=False))
+        mock_pr.assert_not_called()
+        assert res["consensus"]["approved"] is False
+        assert res["pr"]["reason"] == "empty_diff"
+        assert "no changes outside holon-knowledge/ledger/ and plans/" in res["error"]
+
+    def test_non_empty_execution_branch_still_gets_pr(self, tmp_path: Path):
+        res, mock_pr = self._run(self._repo(tmp_path, change_source=True))
+        mock_pr.assert_called_once()
+        assert mock_pr.call_args.kwargs["branch"] == self.EXEC
+        assert res["consensus"]["approved"] is True
+
+    def test_unverifiable_diff_skips_pr(self, tmp_path: Path):
+        repo = tmp_path / "not-a-repo"
+        repo.mkdir()
+        res, mock_pr = self._run(repo)
+        mock_pr.assert_not_called()
+        assert res["pr"]["reason"] == "diff_unverified"

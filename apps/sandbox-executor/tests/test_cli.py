@@ -862,3 +862,62 @@ class TestHolonFlowCLI(unittest.TestCase):
             parsed = json.loads(output)
             self.assertEqual(parsed["target"], "my-branch")
             self.assertTrue(parsed["consensus"]["approved"])
+
+
+class TestSharedRoleDispatch(unittest.TestCase):
+    """'holon intent|plan|execute' and 'holon flow' share one dispatch path (dispatch_role_agent)."""
+
+    def test_normalise_agent_id_and_image_resolution(self):
+        from sandbox_executor.cli import normalise_agent_id, resolve_role_image
+
+        self.assertEqual(normalise_agent_id("claude-agent"), "claude")
+        self.assertEqual(normalise_agent_id("agent-codex"), "codex")
+        self.assertEqual(normalise_agent_id(None), "antigravity")
+        self.assertEqual(resolve_role_image("planner", "claude"), "holon/agent-claude")
+        self.assertEqual(resolve_role_image("executor", "newrunner"), "holon/agent-newrunner")
+        self.assertEqual(resolve_role_image("intent-creator", "claude"), "holon/orchestrator")
+
+    @patch("sandbox_executor.cli.dispatch_role_agent", return_value=0)
+    def test_per_stage_commands_route_through_dispatch_role_agent(self, mock_dispatch):
+        cases = [
+            (["holon", "intent", "intents/test.json"], ("intent-creator", None, None, [])),
+            (
+                ["holon", "plan", "I-1-x/_", "--agent", "claude-agent", "--model", "claude-opus-5-5"],
+                ("planner", "claude-agent", "claude-opus-5-5", ["I-1-x/_", "claude-agent", "claude-opus-5-5"]),
+            ),
+            (
+                ["holon", "execute", "I-1-x/P-1/_", "--agent", "claude-agent", "--model", "claude-opus-5-5"],
+                ("executor", "claude-agent", "claude-opus-5-5", ["I-1-x/P-1/_", "claude-agent", "claude-opus-5-5"]),
+            ),
+        ]
+        for argv, expected in cases:
+            mock_dispatch.reset_mock()
+            with patch("sys.argv", argv), self.assertRaises(SystemExit) as cm:
+                main()
+            self.assertEqual(cm.exception.code, 0)
+            mock_dispatch.assert_called_once()
+            self.assertEqual(mock_dispatch.call_args.args, expected)
+
+    @patch("sandbox_executor.cli.run_docker_container", return_value=0)
+    def test_dispatch_role_agent_uses_runner_image(self, mock_run_container):
+        from sandbox_executor.cli import dispatch_role_agent
+
+        rc = dispatch_role_agent(
+            "executor",
+            "claude-agent",
+            "claude-opus-5-5",
+            ["I-1-x/P-1/_", "claude-agent", "claude-opus-5-5"],
+            repo_dir="/repo",
+            token_reduce=True,
+            mitm_web=True,
+        )
+        self.assertEqual(rc, 0)
+        mock_run_container.assert_called_once_with(
+            "executor",
+            "holon/agent-claude",
+            ["I-1-x/P-1/_", "claude-agent", "claude-opus-5-5"],
+            agent_id="claude",
+            token_reduce=True,
+            mitm_web=True,
+            repo_dir="/repo",
+        )

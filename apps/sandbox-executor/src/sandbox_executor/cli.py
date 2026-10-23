@@ -14,6 +14,7 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlparse
 
 from sandbox_executor import local_llm
@@ -1112,6 +1113,85 @@ def run_docker_container(
             pass
 
 
+INTENT_CREATOR_ROLE: str = "intent-creator"
+INTENT_CREATOR_IMAGE: str = "holon/orchestrator"
+# The intent-creator entrypoint never invokes a runner, so its container keeps the historical antigravity
+# mount profile whatever runner the caller resolved.
+INTENT_CREATOR_AGENT_ID: str = "antigravity"
+
+
+def normalise_agent_id(agent: str | None) -> str:
+    """Normalise a runner name such as 'claude-agent' to its short agent id ('claude').
+
+    Args:
+        agent: Runner name as passed on the command line, or None.
+
+    Returns:
+        str: Short agent id used for image and credential selection; 'antigravity' when unset.
+    """
+    return agent.replace("-agent", "").replace("agent-", "") if agent else "antigravity"
+
+
+def resolve_role_image(role: str, agent_id: str) -> str:
+    """Resolve the container image that hosts a role agent.
+
+    Args:
+        role: Role name ('intent-creator', 'planner' or 'executor').
+        agent_id: Normalised agent id (see normalise_agent_id).
+
+    Returns:
+        str: 'holon/orchestrator' for the intent creator, otherwise 'holon/agent-<runner>'.
+    """
+    if role == INTENT_CREATOR_ROLE:
+        return INTENT_CREATOR_IMAGE
+    return AGENT_IMAGE_MAPPING.get(agent_id, f"holon/agent-{agent_id}")
+
+
+def dispatch_role_agent(
+    role: str,
+    runner: str | None,
+    model: str | None,
+    positional_args: list[str],
+    *,
+    repo_dir: str | None = None,
+    intent_file: str | None = None,
+    token_reduce: bool = False,
+    mitm_web: bool = False,
+) -> int:
+    """Launch the containerised role agent shared by 'holon intent|plan|execute' and 'holon flow'.
+
+    This is the single dispatch path for the authoring roles: the per-stage commands and the flow
+    stages both call it, so the two invocations launch the same image with the same arguments.
+
+    Args:
+        role: Role name ('intent-creator', 'planner' or 'executor').
+        runner: Resolved runner name (e.g. 'claude-agent'); selects the 'holon/agent-<runner>' image.
+        model: Resolved model name. Planner and executor receive it through positional_args; the
+            intent creator does not run a model.
+        positional_args: Container arguments (e.g. [plan_branch, runner, model] for the executor).
+        repo_dir: Optional target repository directory used to resolve the origin URL.
+        intent_file: Intent payload path, mandatory for the intent creator.
+        token_reduce: Whether to route container traffic through the token reduction proxy.
+        mitm_web: Whether to start the proxy with the mitmweb interface.
+
+    Returns:
+        int: Container exit code (non-zero on failure).
+    """
+    del model  # Carried in positional_args for the roles that run a model.
+    if role == INTENT_CREATOR_ROLE:
+        kwargs: dict[str, Any] = {"agent_id": INTENT_CREATOR_AGENT_ID, "intent_file": intent_file}
+        if token_reduce:
+            kwargs["token_reduce"] = True
+    else:
+        kwargs = {"agent_id": normalise_agent_id(runner), "token_reduce": token_reduce}
+    if mitm_web:
+        kwargs["mitm_web"] = True
+    if repo_dir:
+        kwargs["repo_dir"] = repo_dir
+    image_name = resolve_role_image(role, kwargs["agent_id"])
+    return run_docker_container(role, image_name, list(positional_args), **kwargs)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="holon",
@@ -1306,7 +1386,10 @@ def main() -> None:
     flow_parser.add_argument(
         "--skip-push",
         action="store_true",
-        help="Skip pushing git branches to remote origin.",
+        help=(
+            "Skip pushing git branches to remote origin. Only valid with --dry-run: the intent, plan and "
+            "execute stages dispatch role agents that fetch from origin, so a non-dry run fails fast."
+        ),
     )
     flow_parser.add_argument(
         "--skip-review",
@@ -1872,11 +1955,7 @@ def main() -> None:
                 exit_code = run_review_loop_cli(args, token_reduce=effective_token_reduce)
                 sys.exit(exit_code)
             else:
-                agent_id = (
-                    args.agent.replace("-agent", "").replace("agent-", "")
-                    if getattr(args, "agent", None)
-                    else "antigravity"
-                )
+                agent_id = normalise_agent_id(getattr(args, "agent", None))
                 image_name = AGENT_IMAGE_MAPPING.get(agent_id, f"holon/agent-{agent_id}")
                 container_args = [
                     args.target,
@@ -2072,51 +2151,43 @@ def main() -> None:
             print(format_stats_dashboard(telemetry_stats))
         sys.exit(0)
 
-    agent_id = args.agent.replace("-agent", "").replace("agent-", "") if getattr(args, "agent", None) else "antigravity"
-    agent_image_mapping = AGENT_IMAGE_MAPPING
+    common_kwargs: dict[str, Any] = {
+        "repo_dir": getattr(args, "repo_dir", None),
+        "token_reduce": bool(getattr(args, "token_reduce", False)),
+        "mitm_web": bool(getattr(args, "mitm_web", False)),
+    }
 
     if args.command == "intent":
-        image_name = "holon/orchestrator"
-        kwargs = {"agent_id": "antigravity", "intent_file": args.intent_file}
-        if getattr(args, "token_reduce", False):
-            kwargs["token_reduce"] = True
-        if getattr(args, "mitm_web", False):
-            kwargs["mitm_web"] = True
-        if getattr(args, "repo_dir", None):
-            kwargs["repo_dir"] = args.repo_dir
-        sys.exit(run_docker_container("intent-creator", image_name, [], **kwargs))
+        sys.exit(
+            dispatch_role_agent(
+                INTENT_CREATOR_ROLE,
+                getattr(args, "agent", None),
+                getattr(args, "model", None),
+                [],
+                intent_file=args.intent_file,
+                **common_kwargs,
+            )
+        )
 
     elif args.command == "plan":
-        image_name = agent_image_mapping.get(agent_id, f"holon/agent-{agent_id}")
-        container_args = [args.intent_branch, args.agent, args.model]
-        kwargs = {"agent_id": agent_id, "token_reduce": getattr(args, "token_reduce", False)}
-        if getattr(args, "mitm_web", False):
-            kwargs["mitm_web"] = True
-        if getattr(args, "repo_dir", None):
-            kwargs["repo_dir"] = args.repo_dir
         sys.exit(
-            run_docker_container(
+            dispatch_role_agent(
                 "planner",
-                image_name,
-                container_args,
-                **kwargs,
+                args.agent,
+                args.model,
+                [args.intent_branch, args.agent, args.model],
+                **common_kwargs,
             )
         )
 
     elif args.command == "execute":
-        image_name = agent_image_mapping.get(agent_id, f"holon/agent-{agent_id}")
-        container_args = [args.plan_branch, args.agent, args.model]
-        kwargs = {"agent_id": agent_id, "token_reduce": getattr(args, "token_reduce", False)}
-        if getattr(args, "mitm_web", False):
-            kwargs["mitm_web"] = True
-        if getattr(args, "repo_dir", None):
-            kwargs["repo_dir"] = args.repo_dir
         sys.exit(
-            run_docker_container(
+            dispatch_role_agent(
                 "executor",
-                image_name,
-                container_args,
-                **kwargs,
+                args.agent,
+                args.model,
+                [args.plan_branch, args.agent, args.model],
+                **common_kwargs,
             )
         )
 

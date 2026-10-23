@@ -1,9 +1,13 @@
 """Holon Flow Orchestration Pipeline Engine.
 
-Automates the complete 5-stage Holon Flow lifecycle:
-1. Stage 1 (Intent Creation): Validate intent payload, initialise branch prefix, append to intents ledger.
-2. Stage 2 (Plan Generation): Create plan branch, generate/validate plan markdown, compute EV, append to plans ledger.
-3. Stage 3 (Plan Execution): Create execution branch, rebase on plan, run agent/tests, append to executions ledger.
+Automates the complete 5-stage Holon Flow lifecycle. Stages 1-3 dispatch the same containerised role
+agents as 'holon intent', 'holon plan' and 'holon execute' (via cli.dispatch_role_agent), so a flow run
+is equivalent to invoking the stages by hand; the flow orchestrates and validates but never authors content:
+1. Stage 1 (Intent Creation): Validate intent payload, dispatch the intent-creator agent, verify its branch.
+2. Stage 2 (Plan Generation): Dispatch the planner agent and adopt the plan branch and plans/P-*.md it pushed;
+   fail (never fabricate a plan) when no planner produced one.
+3. Stage 3 (Plan Execution): Dispatch the executor agent, adopt its execution branch, and fail an execution
+   whose diff against the plan branch is empty outside holon-knowledge/ledger/ and plans/.
 4. Stage 4 (PR Review Loop): Autonomous review loop evaluating diffs and test results, strictly enforcing
    Bean 0034 (Human-Only PR Merging) by halting at consensus approval without merging to main.
 5. Stage 5 (Post-Execution Calibration): Run post-execution calibration engine (Bean 0038) on execution branch,
@@ -32,14 +36,20 @@ from sandbox_executor.calibration import (
     is_metadata_path,
     run_calibrate,
 )
-from sandbox_executor.entrypoint.executor import redact_text
+from sandbox_executor.entrypoint.executor import _sanitize_string, redact_text
 from sandbox_executor.entrypoint.planner import (
     _sanitize_model_name,
     load_metrics_config,
     parse_metrics,
 )
 from sandbox_executor.formatting import converge_prettier
-from sandbox_executor.git import run_git
+from sandbox_executor.git import (
+    EMPTY_DIFF_FAILURE_REASON,
+    EMPTY_DIFF_STATUS,
+    changed_paths,
+    empty_diff_summary,
+    run_git,
+)
 from sandbox_executor.knowledge import (
     ActionIndexDatabase,
     ConsultEngine,
@@ -242,6 +252,8 @@ class FlowContext:
     stage_results: dict[str, StageResult] = field(default_factory=dict)
     logs: list[str] = field(default_factory=list)
     schema_version: int = CURRENT_CONTEXT_SCHEMA_VERSION
+    # Role-agent dispatcher for Stages 1-3; None means cli.dispatch_role_agent. Never checkpointed.
+    dispatcher: Callable[..., int] | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         """Resolve dynamic defaults such as proxy auto-detection."""
@@ -1919,12 +1931,279 @@ def validate_intent_questions(intent_data: dict[str, Any]) -> tuple[bool, list[s
 
 
 # ---------------------------------------------------------------------------
+# Role-agent dispatch shared with 'holon intent', 'holon plan' and 'holon execute'
+# ---------------------------------------------------------------------------
+
+SKIP_PUSH_DISPATCH_ERROR: str = (
+    "holon flow dispatches containerised role agents that fetch from origin; --skip-push is incompatible with dispatch."
+)
+# Role containers stamp branch names with their own clock; tolerate modest skew against the host clock.
+DISCOVERY_CLOCK_SKEW_SECONDS: int = 30
+EXECUTOR_GIT_ENV: dict[str, str] = {
+    "GIT_AUTHOR_NAME": "Holon Executor Agent",
+    "GIT_AUTHOR_EMAIL": "executor-agent@holon-agentic-coder.com",
+    "GIT_COMMITTER_NAME": "Holon Executor Agent",
+    "GIT_COMMITTER_EMAIL": "executor-agent@holon-agentic-coder.com",
+}
+# The executor entrypoint has historically written "failure"; guard rows use "failed". Both mean failure.
+FAILED_EXECUTION_STATUSES: frozenset[str] = frozenset({"failed", "failure"})
+
+
+def _get_dispatcher(context: FlowContext) -> Callable[..., int]:
+    """Return the role-agent dispatcher, defaulting lazily to cli.dispatch_role_agent.
+
+    The import is deferred because cli imports this module at load time.
+    """
+    if context.dispatcher is not None:
+        return context.dispatcher
+    from sandbox_executor.cli import dispatch_role_agent
+
+    return dispatch_role_agent
+
+
+def _dispatch_role(
+    context: FlowContext,
+    role: str,
+    positional_args: list[str],
+    intent_file: str | None = None,
+) -> int:
+    """Dispatch one role agent through the same function the per-stage commands use."""
+    dispatcher = _get_dispatcher(context)
+    context.log(f"Dispatching {role} agent (runner={context.agent}, model={context.model}).")
+    return int(
+        dispatcher(
+            role,
+            context.agent,
+            context.model,
+            positional_args,
+            repo_dir=context.repo_dir,
+            intent_file=intent_file,
+            token_reduce=bool(context.token_reduce),
+            mitm_web=bool(context.mitm_web),
+        )
+    )
+
+
+def _stage_failure(context: FlowContext, stage: FlowStage, start_time: str, error: str, **payload: Any) -> StageResult:
+    """Log and record a FAILED StageResult."""
+    context.log(error)
+    result = StageResult(
+        stage=stage,
+        status=StageStatus.FAILED,
+        start_time=start_time,
+        end_time=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        payload=dict(payload),
+        error=error,
+    )
+    context.stage_results[stage.value] = result
+    return result
+
+
+def _fetch_branch_prefix(repo_dir: str, prefix: str) -> bool:
+    """Fetch every origin branch at or beneath '<prefix>/' into refs/remotes/origin/."""
+    res = run_git(
+        ["fetch", "--no-tags", "origin", f"+refs/heads/{prefix}/*:refs/remotes/origin/{prefix}/*"],
+        cwd=repo_dir,
+        check=False,
+        timeout=300,
+    )
+    return res.returncode == 0
+
+
+def _resolve_branch_ref(repo_dir: str, branch: str, prefer_remote: bool = True) -> str | None:
+    """Return a fully qualified ref for a branch name (origin tracking ref or local head), if it exists."""
+    remote_ref = f"refs/remotes/origin/{branch}"
+    local_ref = f"refs/heads/{branch}"
+    candidates = (remote_ref, local_ref) if prefer_remote else (local_ref, remote_ref)
+    for ref in candidates:
+        res = run_git(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=repo_dir, check=False)
+        if res.returncode == 0:
+            return ref
+    return None
+
+
+def _origin_has_branch(repo_dir: str, branch: str) -> bool:
+    """Return True when the fetched origin tracking ref for a branch exists."""
+    res = run_git(
+        ["rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}^{{commit}}"], cwd=repo_dir, check=False
+    )
+    return res.returncode == 0
+
+
+def _track_local_branch(context: FlowContext, branch: str) -> None:
+    """Point the local branch at the fetched origin branch so later stages can name it directly."""
+    res = run_git(
+        ["branch", "-f", "--no-track", branch, f"refs/remotes/origin/{branch}"],
+        cwd=context.repo_dir,
+        check=False,
+    )
+    if res.returncode != 0:
+        context.log(f"Warning: could not update local branch '{branch}' from origin; using origin/{branch}.")
+
+
+def _discover_child_branch(
+    repo_dir: str,
+    parent_prefix: str,
+    marker: str,
+    not_before: int,
+    preferred_suffix: str,
+) -> tuple[str | None, str | None]:
+    """Find the branch a role container pushed beneath a parent prefix.
+
+    Matches '<parent_prefix>/<marker>-<timestamp>-.../_' on origin, ignores branches stamped before
+    not_before (stale runs), prefers ids ending with preferred_suffix (the runner and model that
+    were dispatched) and picks the newest timestamp.
+
+    Returns:
+        tuple[str | None, str | None]: (branch, None) on success, (None, None) when nothing matches,
+        or (None, message) when the newest candidates are ambiguous.
+    """
+    pattern = re.compile(rf"^{re.escape(parent_prefix)}/({re.escape(marker)}-(\d+)-[^/]+)/_$")
+    res = run_git(
+        ["for-each-ref", "--format=%(refname)", f"refs/remotes/origin/{parent_prefix}/"],
+        cwd=repo_dir,
+        check=False,
+    )
+    stdout = res.stdout if isinstance(res.stdout, str) else ""
+    candidates: dict[str, int] = {}
+    for line in stdout.splitlines():
+        name = line.strip().removeprefix("refs/remotes/origin/")
+        match = pattern.match(name)
+        if match and int(match.group(2)) >= not_before:
+            candidates[name] = int(match.group(2))
+    if not candidates:
+        return None, None
+    preferred = {b: ts for b, ts in candidates.items() if b.removesuffix("/_").endswith(preferred_suffix)}
+    pool = preferred or candidates
+    newest = max(pool.values())
+    newest_branches = sorted(b for b, ts in pool.items() if ts == newest)
+    if len(newest_branches) > 1:
+        return None, f"ambiguous {marker}-branches under {parent_prefix}: {', '.join(newest_branches)}"
+    return newest_branches[0], None
+
+
+def _git_show_text(repo_dir: str, ref: str, path: str) -> str | None:
+    """Return a file's content at a ref, or None when it does not exist there."""
+    res = run_git(["show", f"{ref}:{path}"], cwd=repo_dir, check=False)
+    if res.returncode != 0 or not isinstance(res.stdout, str):
+        return None
+    return res.stdout
+
+
+def _read_ledger_rows(repo_dir: str, ref: str, ledger_name: str) -> list[dict[str, Any]]:
+    """Parse a holon-knowledge/ledger/*.jsonl file at a ref, skipping unparseable lines."""
+    content = _git_show_text(repo_dir, ref, f"holon-knowledge/ledger/{ledger_name}") or ""
+    rows: list[dict[str, Any]] = []
+    for line in content.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _latest_execution_summary(rows: list[dict[str, Any]], execution_id: str) -> dict[str, Any] | None:
+    """Return the authoritative summary row for an execution: highest ledger_revision, then latest written."""
+    best: tuple[int, int] | None = None
+    chosen: dict[str, Any] | None = None
+    for idx, row in enumerate(rows):
+        if row.get("entry_type") != "summary" or row.get("execution_id") != execution_id:
+            continue
+        try:
+            revision = int(row.get("ledger_revision") or 1)
+        except (TypeError, ValueError):
+            revision = 1
+        key = (revision, idx)
+        if best is None or key > best:
+            best, chosen = key, row
+    return chosen
+
+
+def _append_superseding_execution_row(context: FlowContext, exec_branch: str, row: dict[str, Any]) -> str | None:
+    """Append a superseding executions.jsonl row on the execution branch and push it.
+
+    Works in a temporary detached worktree so the operator's checkout is never disturbed. Earlier
+    rows are left untouched (the ledger is append-only).
+
+    Returns:
+        str | None: None on success, otherwise a description of what failed.
+    """
+    repo_dir = context.repo_dir
+    tmp_root = tempfile.mkdtemp(prefix="holon-flow-guard-")
+    worktree = os.path.join(tmp_root, "worktree")
+    try:
+        run_git(["worktree", "add", "--detach", worktree, f"refs/remotes/origin/{exec_branch}"], cwd=repo_dir)
+        ledger_dir = os.path.join(worktree, "holon-knowledge", "ledger")
+        os.makedirs(ledger_dir, exist_ok=True)
+        with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as f:
+            f.write(json.dumps(row) + "\n")
+        run_git(["add", "holon-knowledge/ledger/executions.jsonl"], cwd=worktree)
+        commit_env = os.environ.copy()
+        for key, value in EXECUTOR_GIT_ENV.items():
+            commit_env.setdefault(key, value)
+        run_git(
+            ["commit", "-m", f"execute: record empty-diff failure for {row.get('execution_id')}"],
+            cwd=worktree,
+            env=commit_env,
+        )
+        run_git(["push", "origin", f"HEAD:refs/heads/{exec_branch}"], cwd=worktree, timeout=300)
+        run_git(["update-ref", f"refs/remotes/origin/{exec_branch}", "HEAD"], cwd=worktree)
+        return None
+    except (RuntimeError, TimeoutError, OSError) as exc:
+        return redact_text(str(exc))
+    finally:
+        run_git(["worktree", "remove", "--force", worktree], cwd=repo_dir, check=False)
+        run_git(["worktree", "prune"], cwd=repo_dir, check=False)
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+def _execution_parent_plan_branch(execution_branch: str) -> str | None:
+    """Derive '<intent>/P-.../_' from '<intent>/P-.../E-.../_', or None for non-execution targets."""
+    clean = execution_branch.strip()
+    if "/E-" not in clean:
+        return None
+    return clean.split("/E-", 1)[0] + "/_"
+
+
+def _execution_effective_diff(repo_dir: str, execution_branch: str) -> tuple[bool | None, str]:
+    """Check whether an execution branch changes anything relative to its parent plan branch.
+
+    Returns:
+        tuple[bool | None, str]: (True, detail) when it does or the target is not an execution
+        branch, (False, summary) for an empty execution, and (None, reason) when it cannot be
+        verified (callers must then refuse to open a PR).
+    """
+    plan_branch = _execution_parent_plan_branch(execution_branch)
+    if plan_branch is None:
+        return True, "not an execution branch"
+    plan_ref = _resolve_branch_ref(repo_dir, plan_branch, prefer_remote=False)
+    exec_ref = _resolve_branch_ref(repo_dir, execution_branch, prefer_remote=False)
+    if not plan_ref or not exec_ref:
+        return None, f"cannot resolve '{plan_branch}' and '{execution_branch}' locally or on origin"
+    try:
+        changed = changed_paths(repo_dir, plan_ref, exec_ref)
+    except (RuntimeError, TimeoutError) as exc:
+        return None, f"diff against {plan_branch} failed: {redact_text(str(exc))}"
+    if not changed:
+        return False, empty_diff_summary(plan_branch)
+    return True, f"{len(changed)} changed path(s)"
+
+
+# ---------------------------------------------------------------------------
 # Stage 1: Intent Stage
 # ---------------------------------------------------------------------------
 
 
 def run_intent_stage(context: FlowContext) -> StageResult:
-    """Execute Stage 1: Validate payload, initialise intent branch, and record in ledger."""
+    """Execute Stage 1: validate the intent payload and dispatch the intent-creator agent.
+
+    The intent-creator container (the same one 'holon intent' launches) creates the intent branch,
+    appends intents.jsonl and pushes; the flow then fetches origin and verifies the branch exists.
+    """
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log("Starting Stage 1: Intent Creation")
 
@@ -1953,16 +2232,7 @@ def run_intent_stage(context: FlowContext) -> StageResult:
 
     if not goal and not raw_desc:
         error_msg = "Validation failed: Intent must have at least 'goal' or 'description'."
-        context.log(error_msg)
-        res = StageResult(
-            stage=FlowStage.INTENT,
-            status=StageStatus.FAILED,
-            start_time=start_time,
-            end_time=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            error=error_msg,
-        )
-        context.stage_results["intent"] = res
-        return res
+        return _stage_failure(context, FlowStage.INTENT, start_time, error_msg)
 
     # Front-load clarifying questions validation (Bean 0085)
     valid_questions, unresolved = validate_intent_questions(intent_data)
@@ -1972,16 +2242,7 @@ def run_intent_stage(context: FlowContext) -> StageResult:
             f"Validation failed: Unresolved questions detected in intent payload. "
             f"All clarifying questions must be resolved prior to completing Stage 1. Unresolved: {unresolved_list_str}"
         )
-        context.log(error_msg)
-        res = StageResult(
-            stage=FlowStage.INTENT,
-            status=StageStatus.FAILED,
-            start_time=start_time,
-            end_time=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            error=error_msg,
-        )
-        context.stage_results["intent"] = res
-        return res
+        return _stage_failure(context, FlowStage.INTENT, start_time, error_msg)
 
     description = raw_desc or goal or "No description provided"
 
@@ -1992,74 +2253,56 @@ def run_intent_stage(context: FlowContext) -> StageResult:
     else:
         raw_slug = re.sub(r"[^a-zA-Z0-9]+", "-", raw_slug).strip("-").lower()
 
-    branch = intent_data.get("branch")
-    if not branch:
-        branch = f"I-{int(time.time())}-{raw_slug}"
-        intent_data["branch"] = branch
+    # The intent creator expects the bare branch prefix and appends '/_' itself.
+    branch = str(intent_data.get("branch") or f"I-{int(time.time())}-{raw_slug}").removesuffix("/_")
+    intent_data["branch"] = branch
     intent_data["slug"] = raw_slug
     intent_data["target_branch"] = target_branch
 
-    intent_branch = f"{branch}/_" if not branch.endswith("/_") else branch
+    intent_branch = f"{branch}/_"
     context.intent_branch = intent_branch
     context.intent_data = intent_data
 
-    timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-    intent_data.setdefault("status", "proposed")
-    intent_data.setdefault("created_at", timestamp)
-
-    ledger_entry = None
+    dispatched = False
     if not context.dry_run:
+        if context.skip_push:
+            return _stage_failure(context, FlowStage.INTENT, start_time, SKIP_PUSH_DISPATCH_ERROR)
         repo_dir = context.repo_dir
         check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="intent")
-        is_git = run_git(["rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False).returncode == 0
-        if is_git:
-            has_branch = run_git(["rev-parse", "--verify", intent_branch], cwd=repo_dir, check=False).returncode == 0
-            if not has_branch:
-                run_git(["checkout", "-B", intent_branch, target_branch], cwd=repo_dir, check=True)
-            else:
-                run_git(["checkout", intent_branch], cwd=repo_dir, check=True)
-
-        # Ledger update (append-only)
-        ledger_dir = os.path.join(repo_dir, "holon-knowledge", "ledger")
-        os.makedirs(ledger_dir, exist_ok=True)
-        intents_file = os.path.join(ledger_dir, "intents.jsonl")
-
-        exists = False
-        if os.path.exists(intents_file):
-            with open(intents_file, encoding="utf-8") as f:
-                for line in f:
-                    if line.strip():
-                        try:
-                            item = json.loads(line)
-                            if item.get("branch") == branch or item.get("slug") == raw_slug:
-                                exists = True
-                                break
-                        except Exception:
-                            continue
-        if not exists:
-            with atomic_ledger_append(intents_file) as f:
-                f.write(json.dumps(intent_data) + "\n")
-            ledger_entry = intent_data
-
-        if is_git:
-            run_git(["add", "holon-knowledge/ledger/intents.jsonl"], cwd=repo_dir, check=True)
-            commit_env = os.environ.copy()
-            commit_env.setdefault("GIT_AUTHOR_NAME", "Holon Intent Agent")
-            commit_env.setdefault("GIT_AUTHOR_EMAIL", "intent-agent@holon-agentic-coder.com")
-            commit_env.setdefault("GIT_COMMITTER_NAME", "Holon Intent Agent")
-            commit_env.setdefault("GIT_COMMITTER_EMAIL", "intent-agent@holon-agentic-coder.com")
-            q_summary = ""
-            if intent_data.get("questions") or intent_data.get("answers") or intent_data.get("open_questions"):
-                resolved_content = (
-                    intent_data.get("answers") or intent_data.get("questions") or intent_data.get("open_questions")
+        _fetch_branch_prefix(repo_dir, branch)
+        if _origin_has_branch(repo_dir, intent_branch):
+            context.log(f"Intent branch '{intent_branch}' already exists on origin; reusing it without re-dispatching.")
+        else:
+            tmp_dir = os.path.expanduser("~/.holon/tmp")
+            os.makedirs(tmp_dir, exist_ok=True)
+            fd, intent_file = tempfile.mkstemp(prefix="holon-flow-intent-", suffix=".json", dir=tmp_dir)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(intent_data, f)
+                exit_code = _dispatch_role(context, "intent-creator", [], intent_file=intent_file)
+            finally:
+                with contextlib.suppress(OSError):
+                    os.remove(intent_file)
+            dispatched = True
+            if exit_code != 0:
+                return _stage_failure(
+                    context,
+                    FlowStage.INTENT,
+                    start_time,
+                    f"Intent stage failed: intent-creator agent exited with code {exit_code}.",
+                    intent_branch=intent_branch,
                 )
-                q_summary = f"\n\nResolved Questions:\n{json.dumps(resolved_content, indent=2)}"
-            msg = f"intent: created {intent_branch}\n\nDescription:\n{description}\n\nGoal:\n{goal}{q_summary}\n"
-            if consulted_ids:
-                msg += f"\nConsulted-Knowledge-IDs: {', '.join(consulted_ids)}\n"
-            run_git(["commit", "-m", msg], cwd=repo_dir, env=commit_env, check=True)
-            if not context.skip_push:
-                run_git(["push", "-u", "origin", intent_branch], cwd=repo_dir, check=False)
+            _fetch_branch_prefix(repo_dir, branch)
+            if not _origin_has_branch(repo_dir, intent_branch):
+                return _stage_failure(
+                    context,
+                    FlowStage.INTENT,
+                    start_time,
+                    f"Intent stage failed: the intent-creator agent exited cleanly but '{intent_branch}' "
+                    "was not found on origin.",
+                    intent_branch=intent_branch,
+                )
+        _track_local_branch(context, intent_branch)
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log(f"Stage 1 completed: Intent branch '{intent_branch}' established.")
@@ -2073,7 +2316,8 @@ def run_intent_stage(context: FlowContext) -> StageResult:
             "branch": branch,
             "slug": raw_slug,
             "consulted_knowledge_ids": consulted_ids,
-            "ledger_entry": ledger_entry or intent_data,
+            "dispatched": dispatched,
+            "intent": intent_data,
         },
     )
     context.stage_results["intent"] = result
@@ -2086,9 +2330,11 @@ def run_intent_stage(context: FlowContext) -> StageResult:
 
 
 def run_plan_stage(context: FlowContext) -> StageResult:
-    """Execute Stage 2: Create plan branch off intent branch, generate plan, and record in ledger.
+    """Execute Stage 2: dispatch the planner agent and adopt the plan branch it pushed.
 
-    Downstream stages operate unattended: picks conservative defaults and never stalls on interactive questions.
+    The planner container (the same one 'holon plan' launches) authors plans/P-*.md, appends
+    plans.jsonl and pushes. The flow never writes a plan itself: if no planner produced a plan file,
+    the stage fails. Downstream stages operate unattended and never stall on interactive questions.
     """
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log("Starting Stage 2: Plan Generation")
@@ -2098,20 +2344,12 @@ def run_plan_stage(context: FlowContext) -> StageResult:
         context.log(err)
         return StageResult(stage=FlowStage.PLAN, status=StageStatus.FAILED, start_time=start_time, error=err)
 
-    intent_prefix = context.intent_branch.rstrip("/_").rstrip("/")
-    plan_seq = int(time.time())
+    intent_prefix = context.intent_branch.removesuffix("/_").rstrip("/")
     safe_model = _sanitize_model_name(context.model)
-    plan_id = f"P-{plan_seq}-{context.agent}-{safe_model}"
-    plan_branch = f"{intent_prefix}/{plan_id}/_"
-    context.plan_branch = plan_branch
-
     repo_dir = context.repo_dir
-    plan_md_rel = f"plans/{plan_id}.md"
-    plan_md_path = os.path.join(repo_dir, plan_md_rel)
 
     # Pre-planning wisdom consult (Bean 0052)
     consulted_ids: list[str] = []
-    advisories: list[str] = []
     try:
         db_path = os.path.join(repo_dir, "holon-knowledge/.index/action_index.db")
         consult_engine = ConsultEngine(project_db_path=db_path)
@@ -2120,138 +2358,95 @@ def run_plan_stage(context: FlowContext) -> StageResult:
             intent_labels = [lbl.strip() for lbl in intent_labels.split(",") if lbl.strip()]
         consult_res = consult_engine.consult_records(any_labels=intent_labels, top_k=6, max_tokens=1200)
         consulted_ids = consult_res.consulted_ids
-        for r in consult_res.records:
-            if r.get("verdict") == "success":
-                act = r.get("action", "")
-                advisories.append(f"- Advisory (Proven tactic): Consider evaluating '{act}'")
-            elif r.get("verdict") == "failure":
-                tgt = r.get("target", "")
-                err = r.get("error_context", "")
-                advisories.append(f"- Advisory (Failure mode): Exercise caution regarding {tgt}: {err}")
         if consulted_ids:
             context.log(f"Consulted {len(consulted_ids)} knowledge records for plan: {consulted_ids}")
     except Exception as e:
         logger.debug("Non-fatal consult failure during plan stage: %s", e)
 
-    metrics = {
-        "p_success": 0.90,
-        "entropy": 2.0,
-        "impact": 80.0,
-        "cost": 4.0,
-        "learning_value": 3.0,
-    }
+    if context.dry_run:
+        # Validation only: name the branch the planner would create, without dispatching or writing anything.
+        plan_id = f"P-{int(time.time())}-{context.agent}-{safe_model}"
+        plan_branch = f"{intent_prefix}/{plan_id}/_"
+        context.plan_branch = plan_branch
+        context.log(f"Stage 2 (dry run): planner dispatch skipped; plan branch would be '{plan_branch}'.")
+        result = StageResult(
+            stage=FlowStage.PLAN,
+            status=StageStatus.SUCCESS,
+            start_time=start_time,
+            end_time=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            payload={
+                "plan_id": plan_id,
+                "plan_branch": plan_branch,
+                "plan_file": f"plans/{plan_id}.md",
+                "metrics": {},
+                "consulted_knowledge_ids": consulted_ids,
+                "dry_run": True,
+            },
+        )
+        context.stage_results["plan"] = result
+        return result
 
-    if not context.dry_run:
-        target_branch = context.intent_data.get("target_branch", "main")
-        check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="plan")
-        is_git = run_git(["rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False).returncode == 0
-        if is_git:
-            run_git(["checkout", "-B", plan_branch, context.intent_branch], cwd=repo_dir, check=True)
+    no_plan_error = (
+        f"Plan stage failed: no planner agent produced plans/P-*.md on a plan branch under "
+        f"{context.intent_branch}; refusing to fabricate a plan."
+    )
+    if context.skip_push:
+        return _stage_failure(context, FlowStage.PLAN, start_time, SKIP_PUSH_DISPATCH_ERROR)
 
-        os.makedirs(os.path.dirname(plan_md_path), exist_ok=True)
-        if not os.path.exists(plan_md_path):
-            advisory_section = ""
-            if advisories:
-                advisory_section = "\n## Wisdom Advisories\n\n" + "\n".join(advisories) + "\n"
-            plan_content = f"""# Plan for {intent_prefix}
+    target_branch = context.intent_data.get("target_branch", "main")
+    check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="plan")
 
-- **Plan ID:** {plan_id}
-- **Agent:** {context.agent}
-- **Model:** {context.model}
-- **Created At:** {datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    dispatch_started = int(time.time())
+    exit_code = _dispatch_role(context, "planner", [context.intent_branch, context.agent, context.model])
+    if exit_code != 0:
+        return _stage_failure(
+            context, FlowStage.PLAN, start_time, f"{no_plan_error} (planner agent exited with code {exit_code})"
+        )
 
-## Overall Plan Metrics
+    _fetch_branch_prefix(repo_dir, intent_prefix)
+    plan_branch, ambiguity = _discover_child_branch(
+        repo_dir,
+        intent_prefix,
+        "P",
+        not_before=dispatch_started - DISCOVERY_CLOCK_SKEW_SECONDS,
+        preferred_suffix=f"-{context.agent}-{safe_model}",
+    )
+    if ambiguity:
+        return _stage_failure(context, FlowStage.PLAN, start_time, f"Plan stage failed: {ambiguity}.")
+    if not plan_branch:
+        return _stage_failure(context, FlowStage.PLAN, start_time, no_plan_error)
 
-| metric | value |
-| --- | --- |
-| p_success_pred | {metrics["p_success"]} |
-| entropy_pred | {metrics["entropy"]} |
-| impact_pred | {metrics["impact"]} |
-| cost_pred | {metrics["cost"]} |
-| learning_value_pred | {metrics["learning_value"]} |
-| ev_pred | 0.0 |
-{advisory_section}
-## Proposed Steps
+    plan_id = plan_branch.removesuffix("/_").rsplit("/", 1)[-1]
+    plan_ref = f"refs/remotes/origin/{plan_branch}"
+    plan_rows = [r for r in _read_ledger_rows(repo_dir, plan_ref, "plans.jsonl") if r.get("plan_id") == plan_id]
+    plan_row = plan_rows[-1] if plan_rows else {}
+    plan_md_rel = str(plan_row.get("plan_file") or f"plans/{plan_id}.md")
+    if not re.fullmatch(r"plans/P-[^/]+\.md", plan_md_rel):
+        plan_md_rel = f"plans/{plan_id}.md"
+    plan_content = _git_show_text(repo_dir, plan_ref, plan_md_rel)
+    if plan_content is None:
+        return _stage_failure(context, FlowStage.PLAN, start_time, no_plan_error, plan_branch=plan_branch)
 
-1. Implementation step for {context.intent_data.get("slug", "task")}.
-"""
-            with open(plan_md_path, "w", encoding="utf-8") as f:
-                f.write(plan_content)
-
-        with open(plan_md_path, encoding="utf-8") as f:
-            read_content = f.read()
-        parsed = parse_metrics(read_content)
-        for k, v in parsed.items():
-            metrics[k] = v
-
+    # Metrics are read back for the stage payload only; the planner's plans.jsonl row is authoritative.
+    metrics: dict[str, Any] = dict(parse_metrics(plan_content))
+    for key in ("p_success", "entropy", "impact", "cost", "learning_value", "ev"):
+        if isinstance(plan_row.get(key), int | float):
+            metrics[key] = float(plan_row[key])
+    if "ev" not in metrics and all(k in metrics for k in ("p_success", "impact", "learning_value", "entropy", "cost")):
         ev_cfg = load_metrics_config(repo_dir)
-        ev_lambda = ev_cfg.get("lambda", 0.3)
-        ev_mu = ev_cfg.get("mu", 0.5)
-        ev = (
+        metrics["ev"] = (
             metrics["p_success"] * metrics["impact"]
-            + ev_mu * metrics["learning_value"]
-            - ev_lambda * metrics["entropy"]
+            + ev_cfg.get("mu", 0.5) * metrics["learning_value"]
+            - ev_cfg.get("lambda", 0.3) * metrics["entropy"]
             - metrics["cost"]
         )
-        metrics["ev"] = ev
 
-        ledger_dir = os.path.join(repo_dir, "holon-knowledge", "ledger")
-        os.makedirs(ledger_dir, exist_ok=True)
-        plans_file = os.path.join(ledger_dir, "plans.jsonl")
-
-        plan_entry = {
-            "plan_id": plan_id,
-            "intent_branch": context.intent_branch,
-            "agent": context.agent,
-            "agent_version": "1.1.22",
-            "model": context.model,
-            "p_success": metrics["p_success"],
-            "entropy": metrics["entropy"],
-            "impact": metrics["impact"],
-            "cost": metrics["cost"],
-            "learning_value": metrics["learning_value"],
-            "ev": metrics["ev"],
-            "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
-            "plan_file": plan_md_rel,
-            "status": "proposed",
-            "consulted_knowledge_ids": consulted_ids,
-        }
-
-        plan_exists = False
-        if os.path.exists(plans_file):
-            with open(plans_file, encoding="utf-8") as f:
-                for line in f:
-                    if line.strip():
-                        try:
-                            if json.loads(line).get("plan_id") == plan_id:
-                                plan_exists = True
-                                break
-                        except Exception:
-                            continue
-        if not plan_exists:
-            with atomic_ledger_append(plans_file) as f:
-                f.write(json.dumps(plan_entry) + "\n")
-
-        if is_git:
-            try:
-                converge_prettier([plan_md_rel], repo_dir=repo_dir)
-            except Exception as e:
-                context.log(f"Warning: Prettier formatting failed for {plan_md_rel}: {e}")
-            run_git(["add", plan_md_rel, "holon-knowledge/ledger/plans.jsonl"], cwd=repo_dir, check=True)
-            commit_env = os.environ.copy()
-            commit_env.setdefault("GIT_AUTHOR_NAME", "Holon Planner Agent")
-            commit_env.setdefault("GIT_AUTHOR_EMAIL", "planner-agent@holon-agentic-coder.com")
-            commit_env.setdefault("GIT_COMMITTER_NAME", "Holon Planner Agent")
-            commit_env.setdefault("GIT_COMMITTER_EMAIL", "planner-agent@holon-agentic-coder.com")
-            msg = f"plan: {plan_id} created by {context.agent} ({context.model})"
-            if consulted_ids:
-                msg += f"\n\nConsulted-Knowledge-IDs: {', '.join(consulted_ids)}"
-            run_git(["commit", "-m", msg], cwd=repo_dir, env=commit_env, check=True)
-            if not context.skip_push:
-                run_git(["push", "-u", "origin", plan_branch], cwd=repo_dir, check=False)
+    context.plan_branch = plan_branch
+    _track_local_branch(context, plan_branch)
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    context.log(f"Stage 2 completed: Plan branch '{plan_branch}' created with EV={metrics.get('ev', 0.0):.2f}.")
+    ev_text = f"{metrics['ev']:.2f}" if isinstance(metrics.get("ev"), int | float) else "n/a"
+    context.log(f"Stage 2 completed: planner agent produced '{plan_md_rel}' on '{plan_branch}' (EV={ev_text}).")
     result = StageResult(
         stage=FlowStage.PLAN,
         status=StageStatus.SUCCESS,
@@ -2275,8 +2470,12 @@ def run_plan_stage(context: FlowContext) -> StageResult:
 
 
 def run_execute_stage(context: FlowContext) -> StageResult:
-    """Execute Stage 3: Create execution branch, rebase on plan, run agent/tests, and record execution.
+    """Execute Stage 3: dispatch the executor agent, adopt its execution branch and apply the empty-diff guard.
 
+    The executor container (the same one 'holon execute' launches) implements the plan, appends
+    executions.jsonl and pushes. An execution whose diff against the plan branch is empty outside
+    holon-knowledge/ledger/ and plans/ fails: a superseding 'failed' row is recorded if the container
+    claimed success, and the stage fails so no PR is created or updated.
     Downstream stages operate unattended: picks conservative non-blocking execution options.
     """
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -2287,12 +2486,7 @@ def run_execute_stage(context: FlowContext) -> StageResult:
         context.log(err)
         return StageResult(stage=FlowStage.EXECUTE, status=StageStatus.FAILED, start_time=start_time, error=err)
 
-    plan_prefix = context.plan_branch.rstrip("/_").rstrip("/")
-    exec_seq = int(time.time())
-    safe_model = _sanitize_model_name(context.model)
-    exec_id = f"E-{exec_seq}-{context.agent}-{safe_model}"
-    exec_branch = f"{plan_prefix}/{exec_id}/_"
-    context.execution_branch = exec_branch
+    plan_prefix = context.plan_branch.removesuffix("/_").rstrip("/")
     repo_dir = context.repo_dir
 
     # Deterministic failure veto check (Bean 0052 Goal 4)
@@ -2329,167 +2523,163 @@ def run_execute_stage(context: FlowContext) -> StageResult:
     except Exception as e:
         logger.debug("Non-fatal veto check exception: %s", e)
 
-    test_pass_rate = 1.0
-    exit_code = 0
-    duration_seconds = 1.0
-    proxy_env: dict[str, str] = {}
-
-    if not context.dry_run:
-        target_branch = context.intent_data.get("target_branch", "main")
-        check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="execute")
-        is_git = run_git(["rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False).returncode == 0
-        if is_git:
-            run_git(["checkout", "-B", exec_branch, context.plan_branch], cwd=repo_dir, check=True)
-            rebase_res = run_git(["rebase", context.plan_branch], cwd=repo_dir, check=False)
-            if rebase_res.returncode != 0:
-                context.log("Warning: rebase encounter, aborting rebase.")
-                run_git(["rebase", "--abort"], cwd=repo_dir, check=False)
-
-        t0 = time.time()
-        if context.token_reduce:
-            try:
-                from sandbox_executor.cli import get_host_proxy_envs
-
-                proxy_env = get_host_proxy_envs()
-                if proxy_env:
-                    context.log("Token reduction proxy active for execute stage subprocesses.")
-                else:
-                    context.log("Token reduction proxy unavailable or inactive on host; falling back to direct egress.")
-            except Exception as exc:
-                context.log(
-                    f"Warning: Failed to configure token reduction proxy in execute stage: {exc}. "
-                    "Falling back to direct egress."
-                )
-                logger.warning("Failed to configure token reduction proxy in execute stage: %s", exc)
-                proxy_env = {}
-
-        sub_env = {**os.environ, **proxy_env} if proxy_env else None
-        try:
-            test_run = subprocess.run(
-                ["uv", "run", "pytest", "apps/sandbox-executor/tests/test_cli.py", "-q"],
-                cwd=repo_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=300,
-                env=sub_env,
-            )
-            duration_seconds = max(0.1, round(time.time() - t0, 2))
-            exit_code = test_run.returncode
-        except subprocess.TimeoutExpired:
-            duration_seconds = 300.0
-            exit_code = -1
-            context.log("Error: Test suite timed out after 300 seconds.")
-
-        test_pass_rate = 1.0 if exit_code == 0 else 0.0
-
-        ledger_dir = os.path.join(repo_dir, "holon-knowledge", "ledger")
-        os.makedirs(ledger_dir, exist_ok=True)
-        exec_file = os.path.join(ledger_dir, "executions.jsonl")
-
-        exec_entry = {
-            "execution_id": exec_id,
-            "plan_branch": context.plan_branch,
-            "agent": context.agent,
-            "agent_version": "1.1.22",
-            "model": context.model,
-            "status": "success" if exit_code == 0 else "failed",
-            "entry_type": "summary",
-            "summary": f"Execution completed with exit code {exit_code}",
-            "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
-            "duration": duration_seconds,
-            "duration_seconds": duration_seconds,
-            "test_pass_rate": test_pass_rate,
-            "exit_code": exit_code,
-            "token_reduce": context.token_reduce,
-            "proxy_active": bool(proxy_env),
-        }
-
-        exec_exists = False
-        if os.path.exists(exec_file):
-            with open(exec_file, encoding="utf-8") as f:
-                for line in f:
-                    if line.strip():
-                        try:
-                            if json.loads(line).get("execution_id") == exec_id:
-                                exec_exists = True
-                                break
-                        except Exception:
-                            continue
-        if not exec_exists:
-            with atomic_ledger_append(exec_file) as f:
-                f.write(json.dumps(exec_entry) + "\n")
-
-        # Record discrete action event in executions.jsonl (Bean 0052 Goal 3)
-        try:
-            action_event = {
+    if context.dry_run:
+        # Validation only: name the branch the executor would create, without dispatching or writing anything.
+        exec_id = f"E-{int(time.time())}-{_sanitize_string(context.agent)}-{_sanitize_string(context.model)}"
+        exec_branch = f"{plan_prefix}/{exec_id}/_"
+        context.execution_branch = exec_branch
+        context.log(f"Stage 3 (dry run): executor dispatch skipped; execution branch would be '{exec_branch}'.")
+        result = StageResult(
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.SUCCESS,
+            start_time=start_time,
+            end_time=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            payload={
                 "execution_id": exec_id,
-                "action": f"Executed test suite for plan {context.plan_branch}",
-                "category": "test",
-                "target": context.plan_branch,
-                "verdict": "success" if exit_code == 0 else "failure",
-                "outcome": "success" if exit_code == 0 else "failure",
-                "entry_type": "action",
-                "context_fingerprint": exec_fp,
-                "labels": ["execute", "test", context.agent],
-                "error_context": None if exit_code == 0 else f"pytest exited with code {exit_code}",
-            }
-            append_action_event(action_event, ledger_path=exec_file, db_path=db_path)
-        except Exception as e:
-            logger.debug("Non-fatal append action event in execute stage: %s", e)
+                "execution_branch": exec_branch,
+                "token_reduce": context.token_reduce,
+                "dry_run": True,
+            },
+        )
+        context.stage_results["execute"] = result
+        return result
 
-        if is_git:
-            md_files: list[str] = []
+    if context.skip_push:
+        return _stage_failure(context, FlowStage.EXECUTE, start_time, SKIP_PUSH_DISPATCH_ERROR)
+
+    target_branch = context.intent_data.get("target_branch", "main")
+    check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="execute")
+
+    dispatch_started = int(time.time())
+    exit_code = _dispatch_role(context, "executor", [context.plan_branch, context.agent, context.model])
+    if exit_code != 0:
+        return _stage_failure(
+            context,
+            FlowStage.EXECUTE,
+            start_time,
+            f"Execute stage failed: executor agent exited with code {exit_code}.",
+            exit_code=exit_code,
+        )
+
+    _fetch_branch_prefix(repo_dir, plan_prefix)
+    exec_branch, ambiguity = _discover_child_branch(
+        repo_dir,
+        plan_prefix,
+        "E",
+        not_before=dispatch_started - DISCOVERY_CLOCK_SKEW_SECONDS,
+        preferred_suffix=f"-{_sanitize_string(context.agent)}-{_sanitize_string(context.model)}",
+    )
+    if ambiguity:
+        return _stage_failure(context, FlowStage.EXECUTE, start_time, f"Execute stage failed: {ambiguity}.")
+    if not exec_branch:
+        return _stage_failure(
+            context,
+            FlowStage.EXECUTE,
+            start_time,
+            f"Execute stage failed: no execution branch under {context.plan_branch} was found on origin "
+            "after the executor agent exited.",
+            exit_code=exit_code,
+        )
+
+    exec_id = exec_branch.removesuffix("/_").rsplit("/", 1)[-1]
+    context.execution_branch = exec_branch
+    _track_local_branch(context, exec_branch)
+    exec_ref = f"refs/remotes/origin/{exec_branch}"
+    summary_row = _latest_execution_summary(_read_ledger_rows(repo_dir, exec_ref, "executions.jsonl"), exec_id)
+    container_status = str(summary_row.get("status")) if summary_row else None
+    base_payload: dict[str, Any] = {
+        "execution_id": exec_id,
+        "execution_branch": exec_branch,
+        "status": container_status,
+        "exit_code": exit_code,
+        "token_reduce": context.token_reduce,
+    }
+
+    if container_status == "decomposed":
+        context.log(f"Stage 3: executor decomposed '{context.plan_branch}' into sub-intents; halting for human review.")
+        result = StageResult(
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.HALTED_FOR_HUMAN,
+            start_time=start_time,
+            end_time=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            payload={**base_payload, "sub_intents": summary_row.get("sub_intents", []) if summary_row else []},
+        )
+        context.stage_results["execute"] = result
+        return result
+
+    # Empty-diff guard: shared definition with the executor entrypoint and the review loop.
+    plan_ref = _resolve_branch_ref(repo_dir, context.plan_branch)
+    try:
+        if not plan_ref:
+            raise RuntimeError(f"plan branch '{context.plan_branch}' is not available locally or on origin")
+        changed = changed_paths(repo_dir, plan_ref, exec_ref)
+    except (RuntimeError, TimeoutError) as exc:
+        return _stage_failure(
+            context,
+            FlowStage.EXECUTE,
+            start_time,
+            f"Execute stage failed: could not verify the execution diff, so it is treated as a failure: "
+            f"{redact_text(str(exc))}",
+            **base_payload,
+        )
+
+    if not changed:
+        guard_summary = empty_diff_summary(context.plan_branch)
+        guard_payload = {**base_payload, "status": EMPTY_DIFF_STATUS, "failure_reason": EMPTY_DIFF_FAILURE_REASON}
+        if summary_row and container_status not in FAILED_EXECUTION_STATUSES:
+            superseding = {k: v for k, v in summary_row.items() if k != "test_pass_rate"}
             try:
-                status_res = run_git(["status", "--porcelain"], cwd=repo_dir, check=False)
-                if status_res.returncode == 0:
-                    for line in status_res.stdout.splitlines():
-                        line = line.strip()
-                        if not line or len(line) < 3:
-                            continue
-                        file_part = line[2:].strip()
-                        if " -> " in file_part:
-                            file_part = file_part.split(" -> ")[1].strip()
-                        file_part = file_part.strip("\"'")
-                        if file_part.endswith(".md") and file_part not in md_files:
-                            md_files.append(file_part)
-                if md_files:
-                    converge_prettier(md_files, repo_dir=repo_dir)
-            except Exception as e:
-                context.log(f"Warning: Prettier formatting failed during execute stage: {e}")
+                prior_revision = int(summary_row.get("ledger_revision") or 1)
+            except (TypeError, ValueError):
+                prior_revision = 1
+            superseding.update(
+                {
+                    "status": EMPTY_DIFF_STATUS,
+                    "failure_reason": EMPTY_DIFF_FAILURE_REASON,
+                    "summary": guard_summary,
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "ledger_revision": max(2, prior_revision + 1),
+                }
+            )
+            write_error = _append_superseding_execution_row(context, exec_branch, superseding)
+            if write_error:
+                context.log(f"Warning: could not record the empty-diff failure row on '{exec_branch}': {write_error}")
+            guard_payload["superseding_row_recorded"] = write_error is None
+        return _stage_failure(
+            context,
+            FlowStage.EXECUTE,
+            start_time,
+            f"Execute stage failed: {guard_summary}; recorded status '{EMPTY_DIFF_STATUS}' "
+            f"(failure_reason '{EMPTY_DIFF_FAILURE_REASON}') and no PR will be created or updated.",
+            **guard_payload,
+        )
 
-            run_git(["add", "-A"], cwd=repo_dir, check=False)
-            run_git(["add", "holon-knowledge/ledger/executions.jsonl"], cwd=repo_dir, check=True)
-            commit_env = os.environ.copy()
-            commit_env.setdefault("GIT_AUTHOR_NAME", "Holon Executor Agent")
-            commit_env.setdefault("GIT_AUTHOR_EMAIL", "executor-agent@holon-agentic-coder.com")
-            commit_env.setdefault("GIT_COMMITTER_NAME", "Holon Executor Agent")
-            commit_env.setdefault("GIT_COMMITTER_EMAIL", "executor-agent@holon-agentic-coder.com")
-            msg = f"execute: {exec_id} completed for plan {context.plan_branch}"
-            plan_res = context.stage_results.get("plan")
-            if plan_res and plan_res.payload.get("consulted_knowledge_ids"):
-                cids = plan_res.payload["consulted_knowledge_ids"]
-                msg += f"\n\nConsulted-Knowledge-IDs: {', '.join(cids)}"
-            run_git(["commit", "-m", msg], cwd=repo_dir, env=commit_env, check=True)
-            if not context.skip_push:
-                run_git(["push", "-u", "origin", exec_branch], cwd=repo_dir, check=False)
+    if summary_row is None:
+        return _stage_failure(
+            context,
+            FlowStage.EXECUTE,
+            start_time,
+            f"Execute stage failed: '{exec_branch}' carries no executions.jsonl summary row for {exec_id}.",
+            **base_payload,
+        )
+    if container_status != "success":
+        detail = summary_row.get("summary") or "no summary"
+        return _stage_failure(
+            context,
+            FlowStage.EXECUTE,
+            start_time,
+            f"Execute stage failed: executor agent recorded status '{container_status}': {detail}",
+            **base_payload,
+        )
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    context.log(f"Stage 3 completed: Execution branch '{exec_branch}' created (pass_rate={test_pass_rate}).")
+    context.log(f"Stage 3 completed: Execution branch '{exec_branch}' changes {len(changed)} path(s).")
     result = StageResult(
         stage=FlowStage.EXECUTE,
-        status=StageStatus.SUCCESS if exit_code == 0 else StageStatus.FAILED,
+        status=StageStatus.SUCCESS,
         start_time=start_time,
         end_time=end_time,
-        payload={
-            "execution_id": exec_id,
-            "execution_branch": exec_branch,
-            "test_pass_rate": test_pass_rate,
-            "exit_code": exit_code,
-            "duration_seconds": duration_seconds,
-            "token_reduce": context.token_reduce,
-            "proxy_active": bool(proxy_env),
-        },
+        payload={**base_payload, "changed_files": len(changed)},
     )
     context.stage_results["execute"] = result
     return result
@@ -2574,7 +2764,40 @@ def run_review_loop(
 
     # Automate semantic PR generation if auto_pr is requested (Bean 0109)
     pr_res: dict[str, Any] = {}
+    pr_allowed = True
     if auto_pr and not effective_dry_run and shutil.which("gh"):
+        # Empty-diff guard: an execution that changes nothing outside the ledgers and plans never gets a PR.
+        has_diff, diff_detail = _execution_effective_diff(repo_dir, review_target)
+        if has_diff is False:
+            err_msg = f"Refusing to create or update a PR for '{review_target}': {diff_detail}."
+            context.log(f"[Review Loop] {err_msg}")
+            return {
+                "target": review_target,
+                "consensus": {
+                    "approved": False,
+                    "score": 0.0,
+                    "iterations": 0,
+                    "max_review_iterations": budget,
+                    "status": "rejected",
+                },
+                "halted_for_human": False,
+                "bean_0034_enforced": False,
+                "mergeability": {},
+                "ci_checks": {},
+                "trailers": "",
+                "total_iterations": 0,
+                "max_iterations": budget,
+                "findings": [],
+                "severity": "critical",
+                "posting": {},
+                "pr": {"success": False, "skipped": True, "reason": EMPTY_DIFF_FAILURE_REASON},
+                "error": err_msg,
+            }
+        if has_diff is None:
+            context.log(f"[Review Loop] Skipping PR creation: could not verify the execution diff ({diff_detail}).")
+            pr_res = {"success": False, "skipped": True, "reason": "diff_unverified"}
+            pr_allowed = False
+    if pr_allowed and auto_pr and not effective_dry_run and shutil.which("gh"):
         try:
             plan_res = context.stage_results.get("plan")
             plan_meta = plan_res.payload if plan_res and isinstance(plan_res.payload, dict) else None

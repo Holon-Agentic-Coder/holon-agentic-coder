@@ -129,6 +129,26 @@ The evolution pipeline traverses five deterministic stages, representing a singl
 | **4. Review Loop** | PR Review & Resolve Loop | `holon review-loop <execution_branch>` | PR raised + 3-agent ensemble consensus review + micro-actions in `executions.jsonl` |
 | **5. Calibrate**   | Calibration Analysis     | `holon calibrate <execution_branch>`   | `/calibrated` branch + `plans/P-*_calibration.md` (included in PR diff)             |
 
+#### Flow Equivalence Guarantee
+
+`holon flow <intent.json>` is equivalent to running the five commands above by hand, in order. Stages 1-3 call the same
+dispatch function as `holon intent`, `holon plan` and `holon execute` (`dispatch_role_agent` in `cli.py`), so they
+launch the same containers with the resolved runner and model: `holon/agent-<runner>` for the planner and executor, and
+`holon/orchestrator` for the intent creator (which does not run a model). Those containers author every branch, plan
+file and ledger row; the flow only fetches `origin`, adopts the branch each container pushed and validates it. Stages 4
+and 5 run the same review loop and calibration code as `holon review-loop` and `holon calibrate`.
+
+The guarantee has three deliberate limits:
+
+- **No fabricated plans.** If no planner agent produced `plans/P-*.md` on a plan branch under the intent branch, Stage 2
+  fails; the flow never writes a plan from a template.
+- **Empty executions fail.** An execution branch with no changes outside `holon-knowledge/ledger/` and `plans/` relative
+  to its plan branch (content merged in from the target branch does not count) is recorded as `status: "failed"`
+  (`failure_reason: "empty_diff"`, no `test_pass_rate`), Stage 3 fails and no PR is created or updated. The same guard
+  runs inside `holon execute` and before `holon review-loop` opens a PR.
+- **Dispatch needs `origin`.** `--dry-run` validates the payload and names the branches without dispatching anything.
+  `--skip-push` is rejected outside `--dry-run`, because the role containers clone from and push to `origin`.
+
 #### Safety Halt & Merge Boundary (Bean 0034)
 
 Merging to `main` is strictly reserved for the human maintainer. Upon successful consensus approval in Stage 4 and

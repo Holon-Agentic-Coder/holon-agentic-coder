@@ -641,8 +641,12 @@ Appended when a plan execution begins, completes, fails, or decomposes into sub-
 - `agent`: The active agent name.
 - `agent_version`: The resolved version string of the agent CLI.
 - `model`: The model used for execution.
-- `status`: Execution status (e.g. `success`, `failure`, `decomposed`).
+- `status`: Execution status (e.g. `success`, `failure`, `failed`, `decomposed`). Readers treat `failure` and `failed`
+  as the same outcome; rows written by the empty-diff guard use `failed`.
 - `summary`: Description of execution outcome (only for terminal states).
+- `failure_reason`: _(Optional)_ Machine-readable cause of a guard failure: `empty_diff` when the execution changed
+  nothing outside `holon-knowledge/ledger/` and `plans/` relative to its plan branch, or `diff_unverified` when that
+  diff could not be computed (the guard fails closed).
 - `execution_file`: _(Deprecated / Omitted for new records)_ Historical relative path to execution markdown file.
 - `agent_output_truncated`: Boolean flag indicating if captured agent logs exceeded byte budget and were truncated.
 - `agent_output_bytes`: Byte length of captured (and potentially truncated/sanitised) agent output payload.
@@ -654,6 +658,13 @@ Appended when a plan execution begins, completes, fails, or decomposes into sub-
 post-execution verification or git recovery failures), the superseding row must repeat all authoritative fields that
 readers should rely on (including `agent_output_truncated` and `agent_output_bytes`). Readers must select the row with
 the highest `ledger_revision` for a given `execution_id` without needing to merge fields backwards.
+
+**Empty-diff guard rows:** An execution whose branch has no changes outside `holon-knowledge/ledger/` and `plans/`
+relative to its plan branch is never recorded as `success` and never carries `test_pass_rate`. The executor entrypoint
+(`holon execute`) writes such a run directly as `status: "failed"` with `failure_reason: "empty_diff"`. If `holon flow`
+finds an empty execution whose newest row still claims success, it appends a superseding row (same `execution_id`,
+higher `ledger_revision`, every authoritative field repeated, `test_pass_rate` dropped) instead of editing the original
+row.
 
 ##### 2. Discrete Action Records (`"entry_type": "action"`)
 

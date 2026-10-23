@@ -3,13 +3,19 @@
 import argparse
 import json
 import os
+import subprocess
+import time
 from pathlib import Path
-from unittest.mock import MagicMock, mock_open, patch
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 from sandbox_executor.cli import main as cli_main
+from sandbox_executor.entrypoint.executor import _sanitize_string
+from sandbox_executor.entrypoint.planner import _sanitize_model_name
 from sandbox_executor.flow import (
     REVIEW_GIT_ENV,
+    SKIP_PUSH_DISPATCH_ERROR,
     ConflictResolutionError,
     FlowCheckpoint,
     FlowContext,
@@ -268,33 +274,6 @@ class TestFlowStages:
         assert res.status == StageStatus.FAILED
         assert "Validation failed" in (res.error or "")
 
-    def test_stage1_intent_success(self, tmp_path):
-        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
-        ledger_dir.mkdir(parents=True)
-
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            intent_data={"slug": "stage1-test", "goal": "Build stage 1"},
-            dry_run=False,
-        )
-
-        with patch("sandbox_executor.flow.run_git") as mock_git:
-            mock_git.return_value = MagicMock(returncode=0)
-            res = run_intent_stage(ctx)
-
-        assert res.status == StageStatus.SUCCESS
-        assert ctx.intent_branch is not None
-        assert "stage1-test" in ctx.intent_branch
-        assert res.payload["slug"] == "stage1-test"
-
-        # Verify ledger file written
-        ledger_file = ledger_dir / "intents.jsonl"
-        assert ledger_file.exists()
-        with open(ledger_file) as f:
-            lines = [json.loads(line) for line in f if line.strip()]
-        assert len(lines) == 1
-        assert lines[0]["slug"] == "stage1-test"
-
     def test_intent_stage_fails_fast_on_unresolved_open_questions(self):
         ctx = FlowContext(
             intent_data={
@@ -308,34 +287,6 @@ class TestFlowStages:
         assert res.status == StageStatus.FAILED
         assert "Unresolved questions detected" in (res.error or "")
         assert "What authentication protocol should we use?" in (res.error or "")
-
-    def test_intent_stage_persists_resolved_questions_to_ledger(self, tmp_path):
-        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
-        ledger_dir.mkdir(parents=True)
-
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            intent_data={
-                "slug": "resolved-q",
-                "goal": "Build stage 1",
-                "questions": ["What protocol?"],
-                "answers": {"What protocol?": "OAuth2"},
-            },
-            dry_run=False,
-        )
-
-        with patch("sandbox_executor.flow.run_git") as mock_git:
-            mock_git.return_value = MagicMock(returncode=0)
-            res = run_intent_stage(ctx)
-
-        assert res.status == StageStatus.SUCCESS
-        ledger_file = ledger_dir / "intents.jsonl"
-        assert ledger_file.exists()
-        with open(ledger_file) as f:
-            lines = [json.loads(line) for line in f if line.strip()]
-        assert len(lines) == 1
-        assert lines[0]["questions"] == ["What protocol?"]
-        assert lines[0]["answers"] == {"What protocol?": "OAuth2"}
 
     def test_downstream_stages_run_unattended(self, tmp_path):
         ctx = FlowContext(
@@ -363,91 +314,11 @@ class TestFlowStages:
         assert res.status == StageStatus.FAILED
         assert "without an active intent_branch" in (res.error or "")
 
-    def test_stage2_plan_generation_and_ev(self, tmp_path):
-        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
-        ledger_dir.mkdir(parents=True)
-        plans_dir = tmp_path / "plans"
-        plans_dir.mkdir(parents=True)
-
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            intent_branch="I-12345-my-intent/_",
-            intent_data={"slug": "my-intent", "goal": "Generate plan"},
-            agent="antigravity-agent",
-            model="gemini-3.8-flash-medium",
-            dry_run=False,
-        )
-
-        with patch("sandbox_executor.flow.run_git") as mock_git:
-            mock_git.return_value = MagicMock(returncode=0)
-            res = run_plan_stage(ctx)
-
-        assert res.status == StageStatus.SUCCESS
-        assert ctx.plan_branch is not None
-        assert "P-" in ctx.plan_branch
-        assert "antigravity-agent" in ctx.plan_branch
-
-        # Verify plan markdown file generated
-        plan_file = tmp_path / res.payload["plan_file"]
-        assert plan_file.exists()
-        content = plan_file.read_text()
-        assert "# Plan for" in content
-        assert "| metric" in content
-
-        # Verify EV in metrics payload
-        metrics = res.payload["metrics"]
-        assert "ev" in metrics
-        assert isinstance(metrics["ev"], float)
-
-        # Verify plans.jsonl ledger entry
-        plans_ledger = ledger_dir / "plans.jsonl"
-        assert plans_ledger.exists()
-        with open(plans_ledger) as f:
-            lines = [json.loads(line) for line in f if line.strip()]
-        assert len(lines) == 1
-        assert lines[0]["plan_id"] == res.payload["plan_id"]
-
     def test_stage3_execute_missing_plan_branch(self):
         ctx = FlowContext(plan_branch=None)
         res = run_execute_stage(ctx)
         assert res.status == StageStatus.FAILED
         assert "without an active plan_branch" in (res.error or "")
-
-    def test_stage3_execute_success(self, tmp_path):
-        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
-        ledger_dir.mkdir(parents=True)
-
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            plan_branch="I-123-intent/P-456-plan/_",
-            agent="antigravity-agent",
-            model="gemini-3.8-flash-medium",
-            dry_run=False,
-        )
-
-        with patch("sandbox_executor.flow.run_git") as mock_git, patch("subprocess.run") as mock_sub:
-            mock_git.return_value = MagicMock(returncode=0)
-            mock_sub.return_value = MagicMock(returncode=0, stdout="test pass", stderr="")
-            res = run_execute_stage(ctx)
-
-        assert res.status == StageStatus.SUCCESS
-        assert ctx.execution_branch is not None
-        assert "E-" in ctx.execution_branch
-        assert res.payload["test_pass_rate"] == 1.0
-        assert "execution_file" not in res.payload
-        assert not (tmp_path / "executions").exists()
-
-        # Verify executions ledger contains both summary and action records
-        exec_ledger = ledger_dir / "executions.jsonl"
-        assert exec_ledger.exists()
-        with open(exec_ledger) as f:
-            lines = [json.loads(line) for line in f if line.strip()]
-        assert len(lines) == 2
-        summary = next(line for line in lines if line.get("entry_type") == "summary")
-        action = next(line for line in lines if line.get("entry_type") == "action")
-        assert summary["execution_id"] == res.payload["execution_id"]
-        assert "execution_file" not in summary
-        assert action["category"] == "test"
 
     def test_stage4_review_missing_execution_branch(self):
         ctx = FlowContext(execution_branch=None)
@@ -488,22 +359,6 @@ class TestFlowStages:
         assert res.payload["bean_0034_enforced"] is True
         assert res.payload["consensus"]["approved"] is True
         assert "holon review approve" in res.payload["human_approval_command"]
-
-    def test_stage3_execute_failure(self, tmp_path):
-        """Test Stage 3 correctly transitions to FAILED status on test suite failure."""
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            plan_branch="I-100-intent/P-200-plan/_",
-            dry_run=False,
-        )
-        with patch("sandbox_executor.flow.run_git") as mock_git, patch("subprocess.run") as mock_sub:
-            mock_git.return_value = MagicMock(returncode=0)
-            mock_sub.return_value = MagicMock(returncode=1, stdout="FAILED", stderr="Error")
-            res = run_execute_stage(ctx)
-
-        assert res.status == StageStatus.FAILED
-        assert res.payload["test_pass_rate"] == 0.0
-        assert res.payload["exit_code"] == 1
 
     def test_stage4_review_rejection_on_test_failure(self, tmp_path):
         """Test Stage 4 fails consensus and returns FAILED when previous stage failed."""
@@ -553,72 +408,6 @@ class TestFlowStages:
         assert res.status == StageStatus.SUCCESS
         assert res.payload["calibration_report"]["accuracy_score"] == 0.95
         assert ctx.calibrated_branch == "I-100-intent/P-200-plan/E-300-exec/calibrated"
-
-    def test_stage2_plan_invokes_converge_prettier(self, tmp_path):
-        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
-        ledger_dir.mkdir(parents=True)
-        plans_dir = tmp_path / "plans"
-        plans_dir.mkdir(parents=True)
-
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            intent_branch="I-12345-my-intent/_",
-            intent_data={"slug": "my-intent", "goal": "Generate plan"},
-            agent="antigravity-agent",
-            model="gemini-3.8-flash-medium",
-            dry_run=False,
-        )
-
-        with (
-            patch("sandbox_executor.flow.run_git") as mock_git,
-            patch("sandbox_executor.flow.converge_prettier") as mock_converge,
-        ):
-            mock_git.return_value = MagicMock(returncode=0)
-            res = run_plan_stage(ctx)
-
-        assert res.status == StageStatus.SUCCESS
-        mock_converge.assert_called_once()
-        call_files = mock_converge.call_args[0][0]
-        assert len(call_files) == 1
-        assert call_files[0].startswith("plans/P-") and call_files[0].endswith(".md")
-        assert mock_converge.call_args[1].get("repo_dir") == str(tmp_path)
-
-    def test_stage3_execute_invokes_converge_prettier(self, tmp_path):
-        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
-        ledger_dir.mkdir(parents=True)
-
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            plan_branch="I-123-intent/P-456-plan/_",
-            agent="antigravity-agent",
-            model="gemini-3.8-flash-medium",
-            dry_run=False,
-        )
-
-        with (
-            patch("sandbox_executor.flow.run_git") as mock_git,
-            patch("subprocess.run") as mock_sub,
-            patch("sandbox_executor.flow.converge_prettier") as mock_converge,
-        ):
-            mock_git_res = MagicMock()
-            mock_git_res.returncode = 0
-            mock_git_res.stdout = " M docs/readme.md\n"
-
-            def mock_git_side_effect(args, **kwargs):
-                if "status" in args and "--porcelain" in args:
-                    return mock_git_res
-                return MagicMock(returncode=0)
-
-            mock_git.side_effect = mock_git_side_effect
-            mock_sub.return_value = MagicMock(returncode=0, stdout="test pass", stderr="")
-            res = run_execute_stage(ctx)
-
-        assert res.status == StageStatus.SUCCESS
-        mock_converge.assert_called_once()
-        call_files = mock_converge.call_args[0][0]
-        assert "docs/readme.md" in call_files
-        assert not any(f.startswith("executions/") for f in call_files)
-        assert mock_converge.call_args[1].get("repo_dir") == str(tmp_path)
 
     def test_stage5_calibrate_fallback_invokes_converge_prettier(self, tmp_path):
         ctx = FlowContext(
@@ -1090,7 +879,7 @@ class TestReviewMergeabilityGuards:
         assert ctx_explicit_false.token_reduce is False
 
     def test_flow_stage_environment_propagation(self, monkeypatch, tmp_path):
-        """Verify subprocess environments in execute and review stages contain proxy env vars when token_reduce=True."""
+        """Verify proxy settings reach the execute-stage dispatcher and the review stage subprocess environment."""
         host_proxy_envs = {
             "HTTP_PROXY": "http://127.0.0.1:8080",
             "HTTPS_PROXY": "http://127.0.0.1:8080",
@@ -1102,28 +891,19 @@ class TestReviewMergeabilityGuards:
             lambda: host_proxy_envs,
         )
 
-        # 1. Execute stage propagation
-        ctx = FlowContext(token_reduce=True, plan_branch="I-test/P-1/_", dry_run=False)
-        with (
-            patch("sandbox_executor.flow.run_git") as mock_git,
-            patch("subprocess.run") as mock_subproc,
-            patch("os.path.exists", return_value=True),
-            patch("builtins.open", mock_open(read_data="")),
-        ):
+        # 1. Execute stage: proxy settings reach the role-agent dispatcher, which mounts them into the container
+        dispatcher = MagicMock(return_value=0)
+        ctx = FlowContext(
+            token_reduce=True, mitm_web=True, plan_branch="I-test/P-1/_", dry_run=False, dispatcher=dispatcher
+        )
+        with patch("sandbox_executor.flow.run_git") as mock_git:
             mock_git.return_value = MagicMock(returncode=0, stdout="")
-            mock_subproc.return_value = MagicMock(returncode=0, stdout="", stderr="")
             res = run_execute_stage(ctx)
-            assert res.status == StageStatus.SUCCESS
-            assert mock_subproc.call_count >= 1
-            call_kwargs = mock_subproc.call_args.kwargs
-            env = call_kwargs.get("env")
-            assert env is not None
-            assert env.get("HTTP_PROXY") == "http://127.0.0.1:8080"
-            assert env.get("HTTPS_PROXY") == "http://127.0.0.1:8080"
-            assert env.get("NODE_EXTRA_CA_CERTS") == "/tmp/mitmproxy-ca-cert.pem"
-            assert env.get("SSL_CERT_FILE") == "/tmp/mitmproxy-ca-cert.pem"
-            assert res.payload.get("token_reduce") is True
-            assert res.payload.get("proxy_active") is True
+        dispatcher.assert_called_once()
+        assert dispatcher.call_args.kwargs["token_reduce"] is True
+        assert dispatcher.call_args.kwargs["mitm_web"] is True
+        assert res.status == StageStatus.FAILED  # No execution branch was pushed by the mocked dispatcher.
+        assert "no execution branch" in (res.error or "")
 
         # 2. Review stage propagation
         ctx_rev = FlowContext(
@@ -1725,3 +1505,459 @@ class TestProactiveConflictAndReviewLoop:
 
             with pytest.raises(ConflictResolutionError, match="Unresolvable merge conflict"):
                 check_and_resolve_stage_conflicts(str(tmp_path), target_branch="main", stage_name="test")
+
+
+# ---------------------------------------------------------------------------
+# Role-agent harness: a local bare origin plus a stub dispatcher that behaves like the containers
+# ---------------------------------------------------------------------------
+
+
+def _git(cwd: Path, *args: str) -> str:
+    res = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True)
+    return res.stdout.strip()
+
+
+def _configure_identity(repo: Path) -> None:
+    _git(repo, "config", "user.email", "test@holon.com")
+    _git(repo, "config", "user.name", "Holon Test")
+    _git(repo, "config", "commit.gpgsign", "false")
+
+
+def _append_jsonl(path: Path, row: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row) + "\n")
+
+
+def _ledger_rows(repo: Path, ref: str, name: str) -> list[dict[str, Any]]:
+    content = _git(repo, "show", f"{ref}:holon-knowledge/ledger/{name}")
+    return [json.loads(line) for line in content.splitlines() if line.strip()]
+
+
+PLAN_MARKDOWN = """# Plan for {intent}
+
+- **Plan ID:** {plan_id}
+
+## Overall Plan Metrics
+
+| metric              | value |
+| ------------------- | ----- |
+| p_success_pred      | 0.8   |
+| entropy_pred        | 2.0   |
+| impact_pred         | 50.0  |
+| cost_pred           | 5.0   |
+| learning_value_pred | 2.0   |
+| ev_pred             | 35.4  |
+
+## Step 1: Change the application
+
+Edit src/app.py.
+"""
+
+
+class FakeRoleAgents:
+    """Recording dispatcher that simulates the intent-creator, planner and executor containers.
+
+    Each call clones origin into a fresh directory (as the containers clone HOLON_REPO_URL), creates
+    the branch the real entrypoint would create, commits and pushes. Behaviour switches let tests
+    model a silent planner or an executor that produces no effective diff.
+    """
+
+    def __init__(self, root: Path, origin: Path, planner_writes_plan: bool = True, executor_mode: str = "change"):
+        self.root = root
+        self.origin = origin
+        self.planner_writes_plan = planner_writes_plan
+        self.executor_mode = executor_mode
+        self.calls: list[dict[str, Any]] = []
+        self.intent_payloads: list[dict[str, Any]] = []
+
+    def __call__(self, role: str, runner: str, model: str, positional_args: list[str], **kwargs: Any) -> int:
+        self.calls.append({"role": role, "runner": runner, "model": model, "args": list(positional_args), **kwargs})
+        work = self.root / f"agent-{len(self.calls)}-{role}"
+        subprocess.run(["git", "clone", "-q", str(self.origin), str(work)], check=True, capture_output=True)
+        _configure_identity(work)
+        handler = {"intent-creator": self._intent, "planner": self._plan, "executor": self._execute}[role]
+        return handler(work, positional_args, kwargs)
+
+    def _push(self, work: Path, branch: str, message: str) -> None:
+        _git(work, "add", "-A")
+        _git(work, "commit", "-q", "-m", message)
+        _git(work, "push", "-q", "origin", f"HEAD:refs/heads/{branch}")
+
+    def _intent(self, work: Path, _args: list[str], kwargs: dict[str, Any]) -> int:
+        with open(kwargs["intent_file"], encoding="utf-8") as f:
+            payload = json.load(f)
+        self.intent_payloads.append(payload)
+        intent_branch = f"{payload['branch']}/_"
+        _git(work, "checkout", "-q", "-B", intent_branch, f"origin/{payload.get('target_branch', 'main')}")
+        _append_jsonl(work / "holon-knowledge/ledger/intents.jsonl", {**payload, "status": "proposed"})
+        self._push(work, intent_branch, f"intent: created {intent_branch}")
+        return 0
+
+    def _plan(self, work: Path, args: list[str], _kwargs: dict[str, Any]) -> int:
+        intent_branch, agent, model = args
+        if not self.planner_writes_plan:
+            return 0
+        plan_id = f"P-{int(time.time())}-{agent}-{_sanitize_model_name(model)}"
+        plan_branch = f"{intent_branch.removesuffix('/_')}/{plan_id}/_"
+        _git(work, "fetch", "-q", "origin", intent_branch)
+        _git(work, "checkout", "-q", "-B", plan_branch, "FETCH_HEAD")
+        plan_rel = f"plans/{plan_id}.md"
+        (work / "plans").mkdir(exist_ok=True)
+        (work / plan_rel).write_text(PLAN_MARKDOWN.format(intent=intent_branch, plan_id=plan_id), encoding="utf-8")
+        _append_jsonl(
+            work / "holon-knowledge/ledger/plans.jsonl",
+            {
+                "plan_id": plan_id,
+                "intent_branch": intent_branch,
+                "agent": agent,
+                "model": model,
+                "p_success": 0.8,
+                "entropy": 2.0,
+                "impact": 50.0,
+                "cost": 5.0,
+                "learning_value": 2.0,
+                "ev": 35.4,
+                "plan_file": plan_rel,
+                "status": "proposed",
+            },
+        )
+        self._push(work, plan_branch, f"plan: {plan_id} created by {agent} ({model})")
+        return 0
+
+    def _execute(self, work: Path, args: list[str], _kwargs: dict[str, Any]) -> int:
+        plan_branch, agent, model = args
+        exec_id = f"E-{int(time.time())}-{_sanitize_string(agent)}-{_sanitize_string(model)}"
+        exec_branch = f"{plan_branch.removesuffix('/_')}/{exec_id}/_"
+        _git(work, "fetch", "-q", "origin", plan_branch)
+        _git(work, "checkout", "-q", "-B", exec_branch, "FETCH_HEAD")
+        if self.executor_mode in ("change", "change_failure"):
+            (work / "src" / "app.py").write_text("print('implemented')\n", encoding="utf-8")
+        status = "failure" if self.executor_mode in ("agent_failure", "change_failure") else "success"
+        row = {
+            "entry_type": "summary",
+            "execution_id": exec_id,
+            "plan_branch": plan_branch,
+            "agent": agent,
+            "model": model,
+            "status": status,
+            "summary": "Plan executed successfully" if status == "success" else "Plan execution failed",
+            "agent_output_truncated": False,
+            "agent_output_bytes": 12,
+            "ledger_revision": 1,
+        }
+        if self.executor_mode == "empty":
+            # Model a container that claims success with perfect tests while changing nothing.
+            row["test_pass_rate"] = 1.0
+        _append_jsonl(work / "holon-knowledge/ledger/executions.jsonl", row)
+        self._push(work, exec_branch, f"execute: {exec_id} completed for plan {plan_branch}")
+        return 0
+
+    def roles(self) -> list[str]:
+        return [c["role"] for c in self.calls]
+
+
+@pytest.fixture
+def flow_repos(tmp_path, monkeypatch):
+    """Bare origin with a seeded main branch, plus a host clone the flow runs in."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True, capture_output=True)
+    seed = tmp_path / "seed"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True, capture_output=True)
+    _configure_identity(seed)
+    for name in ("intents.jsonl", "plans.jsonl", "executions.jsonl"):
+        (seed / "holon-knowledge" / "ledger").mkdir(parents=True, exist_ok=True)
+        (seed / "holon-knowledge" / "ledger" / name).write_text("", encoding="utf-8")
+    (seed / "src").mkdir()
+    (seed / "src" / "app.py").write_text("print('hi')\n", encoding="utf-8")
+    _git(seed, "add", "-A")
+    _git(seed, "commit", "-q", "-m", "seed")
+    _git(seed, "remote", "add", "origin", str(origin))
+    _git(seed, "push", "-q", "origin", "main")
+    host = tmp_path / "host"
+    subprocess.run(["git", "clone", "-q", str(origin), str(host)], check=True, capture_output=True)
+    _configure_identity(host)
+    return host, origin
+
+
+def _dispatch_context(host: Path, agents: FakeRoleAgents, **overrides: Any) -> FlowContext:
+    params: dict[str, Any] = {
+        "repo_dir": str(host),
+        "intent_data": {"slug": "dispatch-test", "goal": "Change the application", "labels": ["flow"]},
+        "agent": "claude-agent",
+        "model": "claude-opus-5-5",
+        "dry_run": False,
+        "token_reduce": False,
+        "skip_review": True,
+        "skip_calibrate": True,
+        "auto_calibrate": False,
+        "dispatcher": agents,
+    }
+    params.update(overrides)
+    return FlowContext(**params)
+
+
+class TestFlowRoleDispatch:
+    """Stages 1-3 dispatch the same role agents as the per-stage commands and never author content."""
+
+    def test_pipeline_dispatches_intent_plan_execute_with_resolved_runner(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin)
+        ctx = _dispatch_context(host, agents)
+
+        results = PipelineEngine(ctx).run()
+
+        assert agents.roles() == ["intent-creator", "planner", "executor"]
+        for call in agents.calls:
+            assert call["runner"] == "claude-agent"
+            assert call["model"] == "claude-opus-5-5"
+            assert call["repo_dir"] == str(host)
+        assert agents.calls[1]["args"] == [ctx.intent_branch, "claude-agent", "claude-opus-5-5"]
+        assert agents.calls[2]["args"] == [ctx.plan_branch, "claude-agent", "claude-opus-5-5"]
+        assert results["intent"].status == StageStatus.SUCCESS
+        assert results["plan"].status == StageStatus.SUCCESS
+        assert results["execute"].status == StageStatus.SUCCESS
+        assert ctx.plan_branch.startswith(ctx.intent_branch.removesuffix("/_") + "/P-")
+        assert ctx.execution_branch.startswith(ctx.plan_branch.removesuffix("/_") + "/E-")
+        assert results["execute"].payload["changed_files"] == 1
+
+        # The flow authored nothing: every ledger row on origin came from a (simulated) container.
+        exec_rows = _ledger_rows(host, f"origin/{ctx.execution_branch}", "executions.jsonl")
+        assert len(exec_rows) == 1
+        assert len(_ledger_rows(host, f"origin/{ctx.execution_branch}", "plans.jsonl")) == 1
+        assert len(_ledger_rows(host, f"origin/{ctx.execution_branch}", "intents.jsonl")) == 1
+        assert _git(host, "status", "--porcelain", "--untracked-files=no") == ""
+
+    def test_stage1_intent_dispatch_carries_resolved_payload(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin)
+        ctx = _dispatch_context(
+            host,
+            agents,
+            intent_data={
+                "slug": "Resolved Q",
+                "goal": "Build stage 1",
+                "questions": ["What protocol?"],
+                "answers": {"What protocol?": "OAuth2"},
+            },
+        )
+
+        res = run_intent_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        assert agents.roles() == ["intent-creator"]
+        payload = agents.intent_payloads[0]
+        assert payload["slug"] == "resolved-q"
+        assert payload["branch"] == ctx.intent_branch.removesuffix("/_")
+        assert payload["answers"] == {"What protocol?": "OAuth2"}
+        rows = _ledger_rows(host, f"origin/{ctx.intent_branch}", "intents.jsonl")
+        assert [r["slug"] for r in rows] == ["resolved-q"]
+        # No local ledger write, and the temporary payload file is removed.
+        assert (host / "holon-knowledge/ledger/intents.jsonl").read_text(encoding="utf-8") == ""
+        assert not any((tmp_path / "home" / ".holon" / "tmp").iterdir())
+
+    def test_stage1_reuses_existing_intent_branch_without_redispatch(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin)
+        ctx = _dispatch_context(host, agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+
+        again = _dispatch_context(host, agents, intent_data=dict(ctx.intent_data))
+        assert run_intent_stage(again).status == StageStatus.SUCCESS
+        assert agents.roles() == ["intent-creator"]
+
+    def test_silent_planner_fails_plan_stage_without_fabricating(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin, planner_writes_plan=False)
+        ctx = _dispatch_context(host, agents)
+
+        results = PipelineEngine(ctx).run()
+
+        assert results["plan"].status == StageStatus.FAILED
+        assert "refusing to fabricate a plan" in (results["plan"].error or "")
+        assert ctx.intent_branch in (results["plan"].error or "")
+        assert "execute" not in results
+        assert agents.roles() == ["intent-creator", "planner"]
+        assert ctx.plan_branch is None
+        remote_branches = _git(host, "branch", "-r")
+        assert "/P-" not in remote_branches
+        assert not list(host.glob("plans/P-*.md"))
+        assert (host / "holon-knowledge/ledger/plans.jsonl").read_text(encoding="utf-8") == ""
+
+    def test_stage2_adopts_planner_branch_and_metrics(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin)
+        ctx = _dispatch_context(host, agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+
+        with patch("sandbox_executor.flow.converge_prettier") as mock_converge:
+            res = run_plan_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        mock_converge.assert_not_called()  # The planner container owns formatting.
+        assert res.payload["plan_file"] == f"plans/{res.payload['plan_id']}.md"
+        assert res.payload["plan_id"].endswith("-claude-agent-claude-opus-5-5")
+        assert res.payload["metrics"]["ev"] == pytest.approx(35.4)
+        assert "Implementation step for" not in _git(host, "show", f"{ctx.plan_branch}:{res.payload['plan_file']}")
+        assert len(_ledger_rows(host, ctx.plan_branch, "plans.jsonl")) == 1
+
+    def test_stage2_ignores_stale_plan_branches(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin, planner_writes_plan=False)
+        ctx = _dispatch_context(host, agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        # A plan branch from a much earlier run must not be adopted as this run's plan.
+        stale = tmp_path / "stale"
+        subprocess.run(["git", "clone", "-q", str(origin), str(stale)], check=True, capture_output=True)
+        _configure_identity(stale)
+        stale_branch = f"{ctx.intent_branch.removesuffix('/_')}/P-1000-claude-agent-claude-opus-5-5/_"
+        _git(stale, "checkout", "-q", "-b", stale_branch, f"origin/{ctx.intent_branch}")
+        (stale / "plans").mkdir()
+        (stale / "plans" / "P-1000-claude-agent-claude-opus-5-5.md").write_text("# Plan\n", encoding="utf-8")
+        _git(stale, "add", "-A")
+        _git(stale, "commit", "-q", "-m", "stale plan")
+        _git(stale, "push", "-q", "origin", stale_branch)
+
+        res = run_plan_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        assert "refusing to fabricate a plan" in (res.error or "")
+
+    def test_empty_execution_fails_records_failed_and_never_opens_pr(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin, executor_mode="empty")
+        ctx = _dispatch_context(host, agents, skip_review=False)
+        real_run = subprocess.run
+        gh_calls: list[list[str]] = []
+
+        def fake_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and cmd and cmd[0] == "gh":
+                gh_calls.append(list(cmd))
+                return MagicMock(returncode=1, stdout="", stderr="gh disabled in tests")
+            return real_run(cmd, *args, **kwargs)
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/gh"),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("sandbox_executor.flow.create_or_update_pr") as mock_pr,
+        ):
+            results = PipelineEngine(ctx).run()
+
+        assert results["execute"].status == StageStatus.FAILED
+        assert "no changes outside holon-knowledge/ledger/ and plans/" in (results["execute"].error or "")
+        assert results["execute"].payload["status"] == "failed"
+        assert results["execute"].payload["superseding_row_recorded"] is True
+        assert "review" not in results
+        mock_pr.assert_not_called()
+        assert not any(call[:3] == ["gh", "pr", "create"] for call in gh_calls)
+
+        rows = _ledger_rows(host, f"origin/{ctx.execution_branch}", "executions.jsonl")
+        exec_id = results["execute"].payload["execution_id"]
+        exec_rows = [r for r in rows if r.get("execution_id") == exec_id]
+        assert [r["status"] for r in exec_rows] == ["success", "failed"]
+        latest = exec_rows[-1]
+        assert latest["ledger_revision"] == 2
+        assert latest["failure_reason"] == "empty_diff"
+        assert "test_pass_rate" not in latest
+        assert latest["agent_output_bytes"] == 12  # Authoritative fields are repeated, not merged backwards.
+        # Append-only: the container's original row is untouched.
+        assert exec_rows[0]["test_pass_rate"] == 1.0
+        assert _git(host, "status", "--porcelain", "--untracked-files=no") == ""
+        assert _git(host, "worktree", "list").count("\n") == 0
+
+    def test_empty_execution_already_failed_is_not_duplicated(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin, executor_mode="empty")
+        ctx = _dispatch_context(host, agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+        agents.executor_mode = "agent_failure"
+
+        res = run_execute_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        rows = _ledger_rows(host, f"origin/{ctx.execution_branch}", "executions.jsonl")
+        assert [r["status"] for r in rows] == ["failure"]
+
+    def test_stage3_agent_failure_status_fails_stage(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        # The failed agent still edited a file, so the failure comes from the container's own status.
+        agents = FakeRoleAgents(tmp_path, origin, executor_mode="change_failure")
+        ctx = _dispatch_context(host, agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+
+        res = run_execute_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        assert "recorded status 'failure'" in (res.error or "")
+        rows = _ledger_rows(host, f"origin/{ctx.execution_branch}", "executions.jsonl")
+        assert [r["status"] for r in rows] == ["failure"]
+
+    def test_stage3_nonzero_container_exit_fails_stage(self, flow_repos):
+        host, _origin = flow_repos
+        ctx = _dispatch_context(host, MagicMock(return_value=3), plan_branch="I-1-x/P-1-claude-agent-m/_")
+
+        res = run_execute_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        assert "exited with code 3" in (res.error or "")
+        assert res.payload["exit_code"] == 3
+
+    def test_skip_push_is_rejected_before_dispatch(self, flow_repos):
+        host, _origin = flow_repos
+        dispatcher = MagicMock(return_value=0)
+        ctx = _dispatch_context(host, dispatcher, skip_push=True)
+
+        results = PipelineEngine(ctx).run()
+
+        assert results["intent"].status == StageStatus.FAILED
+        assert results["intent"].error == SKIP_PUSH_DISPATCH_ERROR
+        dispatcher.assert_not_called()
+
+        for stage_fn, extra in (
+            (run_plan_stage, {"intent_branch": "I-1-x/_"}),
+            (run_execute_stage, {"plan_branch": "I-1-x/P-1-a-b/_"}),
+        ):
+            stage_ctx = _dispatch_context(host, dispatcher, skip_push=True, **extra)
+            res = stage_fn(stage_ctx)
+            assert res.status == StageStatus.FAILED
+            assert res.error == SKIP_PUSH_DISPATCH_ERROR
+        dispatcher.assert_not_called()
+
+    def test_dry_run_never_dispatches(self, tmp_path):
+        dispatcher = MagicMock(return_value=0)
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_data={"slug": "dry", "goal": "Dry run"},
+            dry_run=True,
+            skip_push=True,
+            dispatcher=dispatcher,
+        )
+        results = PipelineEngine(ctx).run()
+        assert results["execute"].status == StageStatus.SUCCESS
+        dispatcher.assert_not_called()
+
+    def test_default_dispatcher_is_cli_dispatch_role_agent(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin)
+        ctx = _dispatch_context(host, None)
+        with patch("sandbox_executor.cli.dispatch_role_agent", side_effect=agents) as mock_dispatch:
+            res = run_intent_stage(ctx)
+        assert res.status == StageStatus.SUCCESS
+        mock_dispatch.assert_called_once()
+        assert mock_dispatch.call_args.args[:3] == ("intent-creator", "claude-agent", "claude-opus-5-5")
+
+    def test_checkpoint_does_not_serialise_dispatcher(self, tmp_path):
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_data={"slug": "cp-dispatch", "goal": "Checkpoint"},
+            dispatcher=MagicMock(return_value=0),
+            token_reduce=False,
+        )
+        assert "dispatcher" not in ctx.to_dict()
+        saved = save_checkpoint(ctx, str(tmp_path / "checkpoint.json"))
+        with open(saved, encoding="utf-8") as f:
+            assert "dispatcher" not in f.read()
+        assert load_checkpoint(saved).context.dispatcher is None

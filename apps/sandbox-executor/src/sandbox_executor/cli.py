@@ -14,6 +14,7 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass
+from typing import TextIO
 from urllib.parse import urlparse
 
 from sandbox_executor import local_llm
@@ -1112,6 +1113,64 @@ def run_docker_container(
             pass
 
 
+def run_doctor(fetch: local_llm.Fetcher | None = None, out: TextIO | None = None) -> int:
+    """``holon doctor``: print the effective budgets and the local-LLM model envelope, and probe the local gateway.
+
+    Prints ``model=<id> context=<n> max_tokens=<n> source=host|synthesised`` and
+    ``reasoning=<mode> source=env|host|default`` per model, then ``prefill_cache=off|cold|warm`` with memory figures
+    per host-local endpoint, warning when an emitted ``maxTokens`` exceeds the server's
+    ``effective_defaults.max_output_tokens``. Nothing is written; only loopback or allow-listed endpoints are probed.
+    """
+    from sandbox_executor.budgets import load_budgets
+
+    env = os.environ
+    out = out or sys.stdout
+    budgets = load_budgets(env)
+    stage_minutes = " ".join(
+        f"{name}={budgets.stage_seconds(name) / 60.0:g}min"
+        for name in ("intent", "plan", "execute", "review_iteration", "calibration")
+    )
+    print(
+        f"budgets turn={budgets.turn.turn_seconds:g}s stall={budgets.turn.stall_seconds:g}s {stage_minutes}",
+        file=out,
+    )
+
+    if env.get(local_llm.ENV_LOCAL_MODE, "").strip().lower() not in ("1", "true", "yes", "on"):
+        print(f"local_llm=disabled (set {local_llm.ENV_LOCAL_MODE}=1 to inspect the model envelope)", file=out)
+        return 0
+
+    allow_list = local_llm.host_local_allow_list()
+    host_config = local_llm.host_models_json()
+    try:
+        _config, envelopes = local_llm.build_envelope_config(host_config, allow_list, env)
+    except local_llm.LocalLLMConfigError as exc:
+        print(f"Error: {exc}", file=out)
+        return 1
+
+    for envelope in envelopes:
+        print(envelope.envelope_line(), file=out)
+        print(envelope.reasoning_line(), file=out)
+
+    probed = False
+    for base_url in local_llm.host_base_urls(host_config, env):
+        health = local_llm.probe_gateway_health(base_url, fetch=fetch, allow_list=allow_list)
+        if health is None:
+            continue
+        probed = True
+        print(f"gateway={health.url} {health.cache_line()}", file=out)
+        if health.max_output_tokens is not None:
+            for envelope in envelopes:
+                if envelope.max_tokens > health.max_output_tokens:
+                    print(
+                        f"WARNING: model={envelope.model_id} max_tokens={envelope.max_tokens} exceeds the server's "
+                        f"effective_defaults.max_output_tokens={health.max_output_tokens}",
+                        file=out,
+                    )
+    if not probed:
+        print("prefill_cache=unknown (no loopback or allow-listed endpoint to probe)", file=out)
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="holon",
@@ -1741,7 +1800,15 @@ def main() -> None:
         help="Repository root directory.",
     )
 
+    subparsers.add_parser(
+        "doctor",
+        help="Show effective budgets and the local-LLM model envelope, and probe the local gateway (Bean 0140).",
+    )
+
     args = parser.parse_args()
+
+    if args.command == "doctor":
+        sys.exit(run_doctor())
 
     if args.command == "flow":
         try:
@@ -1823,8 +1890,8 @@ def main() -> None:
                 stage_order = ["intent", "plan", "execute", "review", "calibrate"]
                 for st in stage_order:
                     res = context.stage_results.get(st)
-                    status_str = res.status.value.upper() if res else "NOT_RUN"
-                    print(f"  Stage {st.upper():<10}: {status_str}")
+                    # Elapsed against budget, e.g. "plan: ok (4.1 min / 35 min)" (Bean 0139).
+                    print(f"  {res.summary_line()}" if res else f"  {st}: not run")
                     if res and res.status.value == "failed" and res.error:
                         print(f"    -> Error: {res.error}")
                 print("========================================================\n")

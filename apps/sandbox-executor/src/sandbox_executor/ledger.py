@@ -24,12 +24,15 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-VALID_CATEGORIES: set[str] = {"code", "doc", "config", "test", "build", "dependency"}
+VALID_CATEGORIES: set[str] = {"code", "doc", "config", "test", "build", "dependency", "budget"}
 VALID_OUTCOMES: set[str] = {"success", "failure", "reverted", "blocked"}
 VALID_ORIGINS: set[str] = {"initial_implementation", "pr_review", "ci_fix", "calibration", "operator"}
 VALID_SEVERITIES: set[str] = {"critical", "important", "nit"}
 VALID_DISPOSITIONS: set[str] = {"applied", "rejected"}
 VALID_ENTRY_TYPES: set[str] = {"action", "summary"}
+# Optional ActionRecord fields that are omitted from the serialised record when unset, so records that do not use them
+# (everything except ACT-BUDGET actions, Bean 0139) keep their existing shape.
+OPTIONAL_OMITTED_FIELDS: tuple[str, ...] = ("stage", "budget_name", "budget_seconds", "elapsed_seconds")
 
 
 def generate_action_id(prefix: str = "ACT") -> str:
@@ -63,6 +66,11 @@ class ActionRecord:
     rejection_reason: str | None = None
     introduced_by_action_id: str | None = None
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    # Budget breach details (ACT-BUDGET records only): the stage, which budget fired, its limit and the elapsed time.
+    stage: str | None = None
+    budget_name: str | None = None
+    budget_seconds: float | None = None
+    elapsed_seconds: float | None = None
 
     def validate(self) -> None:
         """Validate constraints and enum values for action record."""
@@ -86,6 +94,8 @@ class ActionRecord:
             raise ValueError(
                 f"Invalid review_disposition '{self.review_disposition}'. Must be one of: {sorted(VALID_DISPOSITIONS)}"
             )
+        if self.category == "budget" and not (self.stage and self.budget_name):
+            raise ValueError("budget actions must name the stage and the budget that fired")
         if self.review_iteration is not None and self.review_iteration < 1:
             raise ValueError(f"review_iteration must be a positive integer >= 1, got {self.review_iteration}")
 
@@ -94,6 +104,9 @@ class ActionRecord:
         self.validate()
         data = asdict(self)
         data["entry_type"] = "action"
+        for name in OPTIONAL_OMITTED_FIELDS:
+            if data.get(name) is None:
+                data.pop(name, None)
         return data
 
     @classmethod
@@ -120,6 +133,7 @@ class ActionRecord:
             "rejection_reason",
             "introduced_by_action_id",
             "created_at",
+            *OPTIONAL_OMITTED_FIELDS,
         }
         filtered = {k: v for k, v in data.items() if k in known_keys}
         if "entry_type" in filtered and filtered["entry_type"] != "action":

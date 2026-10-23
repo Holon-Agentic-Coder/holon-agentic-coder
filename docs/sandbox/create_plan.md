@@ -180,12 +180,38 @@ During execution, the container performs the following operations:
 2. Creates an ephemeral plan branch: `I-{timestamp}-{slug}/P-{plan_timestamp}-{agent_name}-{model_name}/_`.
 3. Compiles a detailed prompt using the template in `holon-config/prompts/planner.template.md` combined with the intent
    data from the ledger.
-4. Invokes the AI planning agent (and fails fast, exiting with a non-zero exit code if the agent invocation fails or
-   returns empty).
-5. Parses metrics (`p_success`, `entropy`, `impact`, `cost`, `learning_value`, `ev`) directly from the markdown plan
-   file.
+4. Invokes the AI planning agent under the turn, stall and stage budgets (see [Turn and Stage Budgets](../budgets.md)).
+   The agent writes the plan file itself, incrementally (see below).
+5. Validates the plan file and parses its overall metrics (`p_success`, `entropy`, `impact`, `cost`, `learning_value`,
+   `ev`). It fails, before anything is appended or committed, when the metrics are missing or non-numeric; metrics are
+   never back-filled with defaults.
 6. Appends a structured plan entry to `holon-knowledge/ledger/plans.jsonl`.
-7. Commits the changes and pushes the plan branch to origin.
+7. Commits the changes, pushes the plan branch to origin and prints `plan: ok (elapsed min / 35 min)`.
+
+### Incremental plan artefact (Bean 0138)
+
+The plan used to arrive in one final stdout message, so a final message cut off by the output-token limit lost the whole
+plan. The file on disk is now the source of truth:
+
+- **Write protocol.** `holon-config/prompts/planner.template.md` and the closing prompt instruction require the agent to
+  create `plans/P-{timestamp}-{agent}-{safe_model}.md` with its file-write tool immediately, write the header and the
+  `## Overall Plan Metrics` table first, append each `## Step` section as it is finished, then the strategy rationale,
+  justification and safety sections, and keep its final chat message to one line.
+- **Validation.** A plan file is _usable_ when it exists, is at least 800 bytes and its first `| metric | value |` table
+  (the overall table) has numeric values for all six metrics. It is _complete_ when it also has a `# Plan for` title, an
+  `## Overall Plan Metrics` heading, at least one `## Step` section and a `### Strategy Rationale` (or justification)
+  section. Headings match case-insensitively.
+- **Truncation tolerance.** When the plan file is usable, a non-zero exit code or a `stopReason: length` final message
+  is logged as informational and the plan is committed.
+- **Targeted re-prompt.** When the file exists but is incomplete, exactly one follow-up turn is issued that lists only
+  the missing sections (and any missing metric rows) and asks the agent to append them.
+- **Stdout fallback.** Only when the agent wrote no file at all is the plan taken from captured stdout (a fenced
+  `markdown` block if present). This logs
+  `WARNING: agent did not write plans/P-...; falling back to the plan text captured from stdout`, and the result is
+  validated like any other plan.
+- **Budget failure.** If a turn breaches a budget and the single resume turn does not produce a usable plan, an
+  `ACT-BUDGET` action is recorded and committed together with the salvaged partial plan, and the planner exits non-zero
+  (see [Turn and Stage Budgets](../budgets.md#salvage-resume-and-the-act-budget-record)).
 
 ---
 

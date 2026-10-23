@@ -201,3 +201,44 @@ Because a local endpoint needs no provider credential, `validate()` accepts loca
 receives the generated configuration, so a bypass for them would only convert a clear credential error into a confusing
 mid-run failure. The opt-in alone is not sufficient either: an actual endpoint (`PI_CODING_AGENT_DIR` or
 `HOLON_LOCAL_BASE_URL`) must be present, so a stray flag cannot mask a missing cloud key.
+
+#### Model Envelope (Bean 0140)
+
+Long authoring turns on local models used to stop at whatever output limit the agent assumed, because the generated
+`models.json` carried only bare model ids. `prepare_agent_dir()` now gives every model entry an explicit envelope after
+the rewrite above (the loopback and allow-list rewrite, `NO_PROXY` scoping and `PI_CODING_AGENT_DIR` are unchanged):
+
+| Variable                       | Default | Purpose                                                                                 |
+| ------------------------------ | ------- | --------------------------------------------------------------------------------------- |
+| `HOLON_LOCAL_CONTEXT_WINDOW`   | (none)  | Context window for model entries that declare no `contextWindow` (synthesised configs). |
+| `HOLON_CONTEXT_RESERVE_TOKENS` | `4096`  | Tokens kept free for the prompt: `maxTokens` may not exceed `contextWindow` minus this. |
+| `HOLON_REASONING_MODE`         | `off`   | Reasoning mode for the generated entries: `off`, `minimal`, `low`, `medium` or `high`.  |
+
+- **`maxTokens`.** When a model entry has no `maxTokens`, it is synthesised as `min(16384, contextWindow // 4)` and the
+  model id, value and reason are logged. A host value is kept unless it is a bool, not an integer, zero, negative or
+  larger than `contextWindow - HOLON_CONTEXT_RESERVE_TOKENS`, in which case the run aborts with `LocalLLMConfigError`
+  naming the model and the field. A model with no `contextWindow` uses `HOLON_LOCAL_CONTEXT_WINDOW`; without either the
+  run aborts rather than guessing a window, so configs synthesised from `HOLON_LOCAL_MODELS` need
+  `HOLON_LOCAL_CONTEXT_WINDOW`.
+- **Reasoning mode.** Resolved from `HOLON_REASONING_MODE`, then the host model entry, then `off` (the least-thinking
+  mode, used by default for authoring stages). A host entry with `reasoning: false` resolves to `off`; a host string
+  mode must be one of the allowed values. pi's `reasoning` field is a boolean capability flag, so the generated entry
+  carries `reasoning: true` unless the mode is `off`, and the agent directory's `settings.json` sets
+  `defaultThinkingLevel` to the least-thinking mode among the models. The mode and its source are logged.
+
+##### `holon doctor`
+
+`holon doctor` runs on the host and writes nothing. It prints the effective budgets (see
+[Turn and Stage Budgets](../budgets.md)) and, when `HOLON_LOCAL_LLM` is enabled, for every model:
+
+```text
+model=<id> context=<n> max_tokens=<n> source=host|synthesised
+reasoning=<mode> source=env|host|default
+```
+
+It then probes `<scheme>://<host>:<port>/health` for each host-side (pre-rewrite) endpoint, with a 2 s timeout and no
+proxy, and prints `gateway=<url> prefill_cache=off|cold|warm` followed by any memory figures the server reports. The
+cache is `off` when the server reports it disabled, `cold` when it is enabled with zero cached entries or tokens, and
+`warm` otherwise; an unreachable server or an unrecognised response prints `prefill_cache=unknown` and never fails the
+command. A `WARNING` line is printed when an emitted `maxTokens` exceeds the server's
+`effective_defaults.max_output_tokens`. Only loopback or `HOLON_HOST_LOCAL_HOSTS` authorities are ever probed.

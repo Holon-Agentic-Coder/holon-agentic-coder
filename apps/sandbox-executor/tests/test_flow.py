@@ -3,6 +3,8 @@
 import argparse
 import json
 import os
+import re
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, mock_open, patch
 
@@ -1725,3 +1727,98 @@ class TestProactiveConflictAndReviewLoop:
 
             with pytest.raises(ConflictResolutionError, match="Unresolvable merge conflict"):
                 check_and_resolve_stage_conflicts(str(tmp_path), target_branch="main", stage_name="test")
+
+
+class SteppingClock:
+    """Fake monotonic clock that advances by ``step`` seconds on every reading."""
+
+    def __init__(self, step):
+        self.step = step
+        self.now = 0.0
+
+    def __call__(self):
+        self.now += self.step
+        return self.now
+
+
+class TestStageBudgets:
+    """Bean 0139: stage ceilings, elapsed-versus-budget summary lines and the verification timeout."""
+
+    def test_summary_line_format(self):
+        res = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS, elapsed_seconds=246, budget_seconds=2100)
+        assert res.summary_line() == "plan: ok (4.1 min / 35 min)"
+        assert StageResult(stage=FlowStage.EXECUTE, status=StageStatus.FAILED).summary_line() == "execute: failed"
+        restored = StageResult.from_dict(res.to_dict())
+        assert (restored.elapsed_seconds, restored.budget_seconds) == (246, 2100)
+
+    def test_every_stage_reports_elapsed_against_budget(self, tmp_path):
+        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+        ctx = FlowContext(
+            repo_dir=str(tmp_path), intent_data={"slug": "budget", "goal": "Budgets"}, auto_calibrate=True, dry_run=True
+        )
+        results = PipelineEngine(ctx).run()
+        expected_budgets = {"intent": 600, "plan": 2100, "execute": 2700, "review": 900, "calibrate": 600}
+        for stage, budget in expected_budgets.items():
+            assert results[stage].budget_seconds == budget, stage
+            assert results[stage].elapsed_seconds is not None, stage
+        logs = "\n".join(ctx.logs)
+        assert re.search(r"intent: ok \(\d+\.\d min / 10 min\)", logs)
+        assert re.search(r"plan: ok \(\d+\.\d min / 35 min\)", logs)
+        assert re.search(r"execute: ok \(\d+\.\d min / 45 min\)", logs)
+        assert re.search(r"review: halted \(\d+\.\d min / 15 min\)", logs)
+
+    def test_stage_breach_under_fake_clock_fails_the_stage(self, tmp_path):
+        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+        ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "slow", "goal": "Slow"}, dry_run=True)
+        results = PipelineEngine(ctx, clock=SteppingClock(step=3000)).run()
+        assert results["intent"].status == StageStatus.FAILED
+        assert "exceeded its stage budget" in results["intent"].error
+        assert results["intent"].payload["budget_breach"]["budget_name"] == "stage"
+        assert "plan" not in results
+        assert not (tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl").exists()
+
+    def _run_execute(self, tmp_path, env, side_effect=None):
+        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+        ctx = FlowContext(repo_dir=str(tmp_path), plan_branch="I-1-x/P-2-y/_", dry_run=False)
+        with (
+            patch.dict(os.environ, env),
+            patch("sandbox_executor.flow.run_git") as mock_git,
+            patch("subprocess.run") as mock_sub,
+        ):
+            mock_git.return_value = MagicMock(returncode=0)
+            mock_sub.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            if side_effect:
+                mock_sub.side_effect = side_effect
+            res = run_execute_stage(ctx)
+        return ctx, res, mock_sub
+
+    def test_verification_timeout_uses_the_execute_budget(self, tmp_path):
+        _, _, mock_sub = self._run_execute(tmp_path, {"HOLON_STAGE_BUDGET_EXECUTE_MINUTES": "20"})
+        timeout = mock_sub.call_args.kwargs["timeout"]
+        assert timeout != 300
+        assert 1190 < timeout <= 1200
+
+    def test_verification_timeout_has_a_floor(self, tmp_path):
+        _, _, mock_sub = self._run_execute(tmp_path, {"HOLON_STAGE_BUDGET_EXECUTE_MINUTES": "0.1"})
+        assert mock_sub.call_args.kwargs["timeout"] == 30
+
+    def test_verification_timeout_message_names_the_budget(self, tmp_path):
+        def timeout(*args, **kwargs):
+            raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+        ctx, res, _ = self._run_execute(tmp_path, {"HOLON_STAGE_BUDGET_EXECUTE_MINUTES": "20"}, side_effect=timeout)
+        assert res.status == StageStatus.FAILED
+        assert any("timed out after 1200 seconds (execute stage budget)" in line for line in ctx.logs)
+        assert not any("300 seconds" in line for line in ctx.logs)
+
+    def test_review_iteration_ceiling_stops_the_loop(self, tmp_path):
+        ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1-x/P-2-y/E-3-z/_", dry_run=True)
+        ctx.stage_results["execute"] = StageResult(
+            stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"test_pass_rate": 0.0, "exit_code": 1}
+        )
+        with patch("sandbox_executor.flow.run_git") as mock_git:
+            mock_git.return_value = MagicMock(returncode=0, stdout="")
+            res = run_review_loop(ctx, target="I-1-x/P-2-y/E-3-z/_", max_iterations=5, clock=SteppingClock(1000))
+        assert res["total_iterations"] == 1
+        assert res["budget_breach"]["budget_name"] == "review_iteration"
+        assert res["iteration_summaries"] == ["iteration 1 review: failed (16.7 min / 15 min)"]

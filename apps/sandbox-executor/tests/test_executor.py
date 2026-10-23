@@ -8,14 +8,36 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pytest
 from sandbox_executor.agent_runner import (
     _check_forbidden_root,
     _clear_dir_contents,
     _handle_remove_readonly,
     cleanup_repo_dir,
 )
+from sandbox_executor.budgets import BudgetBreach
 from sandbox_executor.entrypoint import executor
 from sandbox_executor.entrypoint.executor import sync_and_reconcile_pre_push
+from sandbox_executor.turns import TurnResult
+
+
+def _turn_via_run_cmd(cmd, **kwargs):
+    """Route a supervised agent turn through ``executor.run_cmd`` so tests that fake run_cmd keep faking the agent.
+
+    The real turn supervisor spawns processes; its own behaviour is covered in test_turn_supervisor.py.
+    """
+    res = executor.run_cmd(cmd, cwd=kwargs.get("cwd"), check=False)
+    stdout = res.stdout if isinstance(getattr(res, "stdout", None), str) else ""
+    stderr = res.stderr if isinstance(getattr(res, "stderr", None), str) else ""
+    returncode = res.returncode if isinstance(getattr(res, "returncode", None), int) else 0
+    return TurnResult(returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+@pytest.fixture(autouse=True)
+def _agent_turns_use_run_cmd():
+    with patch("sandbox_executor.entrypoint.executor.run_turn", side_effect=_turn_via_run_cmd) as fake:
+        yield fake
+
 
 # Provider credentials are exercised as *shapes*, never as real keys. The filler is spliced in right
 # after the vendor prefix, so no contiguous vendor-format secret ever exists in this file (GitHub
@@ -3222,3 +3244,151 @@ class TestExecutorPrePushSync(unittest.TestCase):
             summary = summary_entries[0]
             self.assertEqual(summary["entry_type"], "summary")
             self.assertEqual(summary["status"], "success")
+
+
+VALID_NOTES = """# Execution Record: E-test
+
+## Summary
+
+Implemented the plan. {filler}
+
+## Actual Metrics
+
+| metric                | value |
+| --------------------- | ----- |
+| success_actual        | 1     |
+| entropy_actual        | 1.0   |
+| impact_actual         | 8.0   |
+| cost_actual           | 2.0   |
+| learning_value_actual | 2.0   |
+
+## Steps Executed
+
+- Step 1 completed.
+
+## Tests Run
+
+- `uv run pytest` passed.
+""".format(filler="Details of the change. " * 10)
+
+
+class TestExecutorIncrementalNotes(unittest.TestCase):
+    """Bean 0138/0139: execution notes written by the agent, truncation tolerance, re-prompt and budget failure."""
+
+    def run_executor(self, turns, env=None):
+        scripted = list(turns)
+        prompts = []
+        git_cmds = []
+
+        def fake_run_cmd(args, cwd=None, **kwargs):
+            git_cmds.append(list(args))
+            if "clone" in args:
+                ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
+                os.makedirs(ledger_dir, exist_ok=True)
+                with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
+                    f.write(json.dumps({"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 2.0}) + "\n")
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            result.stderr = ""
+            return result
+
+        def fake_run_turn(cmd, **kwargs):
+            prompts.append(cmd[-1])
+            self.assertTrue(scripted, "executor ran more agent turns than scripted")
+            return scripted.pop(0)(kwargs["watch_path"])
+
+        runner = MagicMock()
+        runner.get_version.return_value = "1.0.0"
+        runner.build_cmd.side_effect = lambda model, pf, inf, prompt: ["agy", prompt]
+        tmp = tempfile.TemporaryDirectory(prefix="sandbox_executor_test_")
+        self.addCleanup(tmp.cleanup)
+        exit_code = 0
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp.name, "HOLON_SKIP_PUSH": "1", **(env or {})}),
+            patch.object(executor, "run_cmd", side_effect=fake_run_cmd),
+            patch.object(executor, "run_turn", side_effect=fake_run_turn),
+            patch.object(executor, "get_runner", return_value=runner),
+            patch.object(executor, "get_repo_url", return_value="/mock/repo"),
+            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
+            patch("sys.stdout", stdout),
+            patch("sys.stderr", stderr),
+        ):
+            try:
+                executor.main()
+            except SystemExit as exc:
+                exit_code = exc.code
+        with open(os.path.join(tmp.name, "holon-knowledge/ledger/executions.jsonl")) as f:
+            entries = [json.loads(line) for line in f if line.strip()]
+        return {
+            "exit_code": exit_code,
+            "entries": entries,
+            "prompts": prompts,
+            "git_cmds": git_cmds,
+            "stdout": stdout.getvalue(),
+            "stderr": stderr.getvalue(),
+        }
+
+    @staticmethod
+    def write_notes(content, returncode=0, stop_reason=None, breach=None):
+        def turn(path):
+            if content is not None:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(content)
+            return TurnResult(returncode=returncode, stop_reason=stop_reason, breach=breach)
+
+        return turn
+
+    def summary(self, run):
+        return next(e for e in run["entries"] if e.get("entry_type") == "summary")
+
+    def test_prompt_carries_the_notes_write_protocol(self):
+        run = self.run_executor([self.write_notes(VALID_NOTES)])
+        self.assertIn("WRITE PROTOCOL", run["prompts"][0])
+        self.assertIn("executions/E-", run["prompts"][0])
+
+    def test_valid_notes_after_truncated_final_message_count_as_success(self):
+        run = self.run_executor([self.write_notes(VALID_NOTES, returncode=1, stop_reason="length")])
+        summary = self.summary(run)
+        self.assertEqual(summary["status"], "success")
+        self.assertTrue(summary["execution_notes_valid"])
+        self.assertIn("treating the exit status as informational", run["stdout"])
+        self.assertTrue(any(c[:3] == ["git", "add", "-A"] for c in run["git_cmds"]))
+        self.assertRegex(run["stdout"], r"execute: ok \(\d+\.\d min / 45 min\)")
+
+    def test_missing_notes_logs_warning_without_failing(self):
+        run = self.run_executor([self.write_notes(None)])
+        summary = self.summary(run)
+        self.assertEqual(summary["status"], "success")
+        self.assertFalse(summary["execution_notes_valid"])
+        self.assertIn("WARNING: agent did not write executions/E-", run["stderr"])
+        self.assertEqual(len(run["prompts"]), 1)
+
+    def test_partial_notes_trigger_one_targeted_reprompt(self):
+        partial = VALID_NOTES.split("## Tests Run")[0]
+        run = self.run_executor([self.write_notes(partial), self.write_notes("## Tests Run\n\n- passed\n")])
+        self.assertEqual(len(run["prompts"]), 2)
+        reprompt = run["prompts"][1]
+        self.assertIn("`## Tests Run`", reprompt)
+        self.assertNotIn("`## Summary`", reprompt.split("missing required content")[-1])
+        self.assertIn("Do not modify any code", reprompt)
+        self.assertTrue(self.summary(run)["execution_notes_valid"])
+
+    def test_budget_failure_records_one_act_budget_and_exits_non_zero(self):
+        stall = BudgetBreach("execute", "stall", 90, 92)
+        run = self.run_executor(
+            [self.write_notes("# Execution Record: E-1\n", breach=stall), self.write_notes(None, breach=stall)]
+        )
+        self.assertEqual(run["exit_code"], 1)
+        budget = [e for e in run["entries"] if str(e.get("action_id", "")).startswith("ACT-BUDGET-")]
+        self.assertEqual(len(budget), 1)
+        self.assertEqual(budget[0]["stage"], "execute")
+        self.assertEqual(budget[0]["budget_name"], "stall")
+        self.assertEqual(budget[0]["outcome"], "failure")
+        self.assertEqual(self.summary(run)["status"], "failure")
+        # The partial notes are salvaged into the commit; code changes are not staged on failure.
+        add_cmds = [c for c in run["git_cmds"] if c[:2] == ["git", "add"]]
+        self.assertTrue(any(any(arg.startswith("executions/E-") for arg in c) for c in add_cmds))
+        self.assertFalse(any(c[:3] == ["git", "add", "-A"] for c in add_cmds))

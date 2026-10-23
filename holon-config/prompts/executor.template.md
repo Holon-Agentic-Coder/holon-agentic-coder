@@ -14,6 +14,16 @@ codebase files.
    arithmetic expressions, and metric notations (e.g., `EV = 0.90 * 95.0`) to avoid CommonMark emphasis parsing
    oscillations and maintain immediate single-pass prettier compatibility.
 
+**Write Protocol (incremental execution notes):**
+
+1. Before changing any code, create `{notes_path}` with your file-write tool. Start it with a
+   `# Execution Record: {exec_id}` title, a `## Summary` section and an `## Actual Metrics` table (`| metric | value |`
+   with numeric `success_actual`, `entropy_actual`, `impact_actual`, `cost_actual` and `learning_value_actual` rows).
+2. Append to a `## Steps Executed` section as each plan step completes.
+3. Finish with a `## Tests Run` section listing the verification commands and their results, and update the metric
+   values.
+4. Keep your final chat message to one short confirmation line; the notes file is the record.
+
 **Plan Content:** {plan_content}
 
 **Intent Metadata:**

@@ -1,0 +1,306 @@
+"""Turn supervisor tests. Every process, clock, sleep and signal is faked: no real process is spawned or signalled."""
+
+import io
+import json
+import os
+import signal
+import tempfile
+import unittest
+
+from sandbox_executor.artefacts import PLAN_SPEC
+from sandbox_executor.budgets import BudgetBreach, StageTimer, TurnBudgets
+from sandbox_executor.turns import (
+    TurnResult,
+    parse_stop_reason,
+    record_budget_failure,
+    run_turn,
+    supervise_authoring_turn,
+)
+
+CHILD_PID = 4242
+OWN_PGID = 1
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+class FakeProc:
+    """A child that exits at ``exit_at`` fake seconds, or when signalled (unless it ignores SIGTERM)."""
+
+    def __init__(self, clock, exit_at=None, returncode=0, stdout=b"", stderr=b"", ignores_sigterm=False):
+        self.clock = clock
+        self.exit_at = exit_at
+        self.final_returncode = returncode
+        self.pid = CHILD_PID
+        self.stdout = io.BytesIO(stdout)
+        self.stderr = io.BytesIO(stderr)
+        self.ignores_sigterm = ignores_sigterm
+        self.returncode = None
+        self.popen_kwargs = {}
+
+    def poll(self):
+        if self.returncode is None and self.exit_at is not None and self.clock() >= self.exit_at:
+            self.returncode = self.final_returncode
+        return self.returncode
+
+    def signal(self, sig):
+        if sig == signal.SIGTERM and self.ignores_sigterm:
+            return
+        self.returncode = -sig
+
+    def send_signal(self, sig):
+        self.signal(sig)
+
+    def wait(self, timeout=None):
+        return self.poll()
+
+
+class Harness:
+    def __init__(self, **proc_kwargs):
+        self.clock = FakeClock()
+        self.proc = FakeProc(self.clock, **proc_kwargs)
+        self.signals = []
+        self.sleeps = 0
+        self.on_tick = None
+
+    def popen(self, cmd, **kwargs):
+        self.proc.popen_kwargs = kwargs
+        return self.proc
+
+    def sleeper(self, seconds):
+        self.sleeps += 1
+        self.clock.now += seconds
+        if self.on_tick:
+            self.on_tick(self.clock.now)
+
+    def killpg(self, pgid, sig):
+        self.signals.append((pgid, sig))
+        if pgid == CHILD_PID:
+            self.proc.signal(sig)
+
+    def getpgid(self, pid):
+        return CHILD_PID if pid == CHILD_PID else OWN_PGID
+
+    def run(self, turn=300, stall=90, stage_timer=None, watch_path=None, getpgid=None):
+        return run_turn(
+            ["agent", "-p", "prompt"],
+            turn_budgets=TurnBudgets(turn_seconds=turn, stall_seconds=stall),
+            stage_timer=stage_timer,
+            stage="plan",
+            watch_path=watch_path,
+            clock=self.clock,
+            sleeper=self.sleeper,
+            popen_factory=self.popen,
+            killpg=self.killpg,
+            getpgid=getpgid or self.getpgid,
+        )
+
+
+class TestRunTurn(unittest.TestCase):
+    def test_clean_turn_captures_output_and_starts_new_session(self):
+        h = Harness(exit_at=5, stdout=b"hello\n", stderr=b"warn\n")
+        result = h.run()
+        self.assertIsNone(result.breach)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "hello\n")
+        self.assertEqual(result.stderr, "warn\n")
+        self.assertTrue(h.proc.popen_kwargs["start_new_session"])
+        self.assertEqual(h.signals, [])
+
+    def test_turn_timeout_breach_terminates_the_process_group(self):
+        h = Harness(exit_at=None)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "plan.md")
+
+        # Keep the turn alive through artefact growth so only the turn budget can fire.
+        def grow(now):
+            with open(path, "a") as f:
+                f.write("x")
+
+        h.on_tick = grow
+        result = h.run(turn=300, stall=90, watch_path=path)
+        self.assertIsNotNone(result.breach)
+        self.assertEqual(result.breach.budget_name, "turn")
+        self.assertEqual(result.breach.budget_seconds, 300)
+        self.assertGreaterEqual(result.breach.elapsed_seconds, 300)
+        self.assertEqual(h.signals, [(CHILD_PID, signal.SIGTERM)])
+        self.assertEqual(result.returncode, -signal.SIGTERM)
+
+    def test_stall_breach_without_output_or_file_growth(self):
+        h = Harness(exit_at=None)
+        result = h.run(turn=300, stall=90)
+        self.assertEqual(result.breach.budget_name, "stall")
+        self.assertGreaterEqual(result.breach.elapsed_seconds, 90)
+        self.assertLess(h.clock.now, 300)
+
+    def test_stall_averted_by_artefact_growth(self):
+        h = Harness(exit_at=200)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "plan.md")
+
+        def grow(now):
+            if int(now) % 60 == 0:
+                with open(path, "a") as f:
+                    f.write("section\n")
+
+        h.on_tick = grow
+        result = h.run(turn=300, stall=90, watch_path=path)
+        self.assertIsNone(result.breach)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(h.signals, [])
+
+    def test_zero_stall_disables_stall_detection(self):
+        h = Harness(exit_at=200)
+        result = h.run(turn=300, stall=0)
+        self.assertIsNone(result.breach)
+
+    def test_stage_ceiling_breach(self):
+        h = Harness(exit_at=None)
+        timer = StageTimer("plan", 30, clock=h.clock)
+        result = h.run(turn=300, stall=0, stage_timer=timer)
+        self.assertEqual(result.breach.budget_name, "stage")
+        self.assertEqual(result.breach.budget_seconds, 30)
+
+    def test_sigkill_after_grace_when_sigterm_is_ignored(self):
+        h = Harness(exit_at=None, ignores_sigterm=True)
+        result = h.run(turn=300, stall=10)
+        self.assertEqual(h.signals, [(CHILD_PID, signal.SIGTERM), (CHILD_PID, signal.SIGKILL)])
+        self.assertEqual(result.returncode, -signal.SIGKILL)
+
+    def test_never_signals_its_own_process_group(self):
+        h = Harness(exit_at=None)
+        result = h.run(turn=300, stall=10, getpgid=lambda pid: OWN_PGID)
+        self.assertEqual(h.signals, [])
+        self.assertEqual(result.returncode, -signal.SIGTERM)
+
+    def test_start_failure_is_reported_not_raised(self):
+        h = Harness()
+
+        def failing_popen(cmd, **kwargs):
+            raise FileNotFoundError("agent")
+
+        result = run_turn(["agent"], popen_factory=failing_popen, clock=h.clock, sleeper=h.sleeper)
+        self.assertEqual(result.returncode, 127)
+
+    def test_stop_reason_parsing(self):
+        self.assertEqual(parse_stop_reason('{"stopReason":"length"}'), "length")
+        self.assertEqual(parse_stop_reason("stop_reason=max_tokens"), "max_tokens")
+        self.assertIsNone(parse_stop_reason("all good"))
+        self.assertTrue(TurnResult(returncode=1, stop_reason="length").truncated)
+
+
+VALID_PLAN = (
+    "# Plan for I-1\n\n## Overall Plan Metrics\n\n| metric | value |\n| --- | --- |\n| p_success_pred | 0.8 |\n"
+    "| entropy_pred | 2 |\n| impact_pred | 10 |\n| cost_pred | 1 |\n| learning_value_pred | 1 |\n| ev_pred | 6 |\n\n"
+    "## Step 1: Work\n\n" + "Detail. " * 120 + "\n\n### Strategy Rationale\n\nBecause.\n"
+)
+
+
+class TestSuperviseAuthoringTurn(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+        self.path = os.path.join(tmp.name, "plan.md")
+        self.ledger = os.path.join(tmp.name, "holon-knowledge", "ledger", "executions.jsonl")
+        self.clock = FakeClock()
+        self.timer = StageTimer("plan", 2100, clock=self.clock)
+        self.prompts = []
+
+    def supervise(self, turns):
+        scripted = list(turns)
+
+        def run(cmd, **kwargs):
+            self.prompts.append(cmd[-1])
+            return scripted.pop(0)()
+
+        return supervise_authoring_turn(
+            lambda text: ["agent", text],
+            "ORIGINAL",
+            artefact_path=self.path,
+            artefact_rel="plans/P-1.md",
+            spec=PLAN_SPEC,
+            stage="plan",
+            turn_budgets=TurnBudgets(),
+            stage_timer=self.timer,
+            run=run,
+            context="CONTEXT",
+        )
+
+    def write(self, content, breach=None):
+        def turn():
+            if content is not None:
+                with open(self.path, "a", encoding="utf-8") as f:
+                    f.write(content)
+            return TurnResult(returncode=-15 if breach else 0, breach=breach)
+
+        return turn
+
+    def test_salvage_plus_successful_resume_records_nothing(self):
+        stall = BudgetBreach("plan", "stall", 90, 95)
+        half = VALID_PLAN.split("## Step 1")[0]
+        outcome = self.supervise(
+            [self.write(half, breach=stall), self.write("## Step 1" + VALID_PLAN.split("## Step 1")[1])]
+        )
+        self.assertEqual(outcome.follow_up, "resume")
+        self.assertIsNone(outcome.budget_failure)
+        self.assertTrue(outcome.report.complete)
+        self.assertTrue(self.prompts[1].startswith("CONTEXT"))
+        self.assertIn("partial", self.prompts[1])
+        self.assertFalse(os.path.exists(self.ledger))
+
+    def test_salvage_plus_failed_resume_writes_exactly_one_budget_record(self):
+        turn_breach = BudgetBreach("plan", "turn", 300, 301)
+        outcome = self.supervise(
+            [self.write("# Plan for I-1\n", breach=turn_breach), self.write(None, breach=turn_breach)]
+        )
+        self.assertEqual(len(outcome.turns), 2)
+        self.assertIs(outcome.budget_failure, turn_breach)
+        # Salvage: the partial file is left on disk untouched.
+        with open(self.path) as f:
+            self.assertEqual(f.read(), "# Plan for I-1\n")
+
+        record_budget_failure(self.ledger, outcome.budget_failure, record_id="P-1", target="plans/P-1.md")
+        with open(self.ledger) as f:
+            lines = [json.loads(line) for line in f if line.strip()]
+        self.assertEqual(len(lines), 1)
+        record = lines[0]
+        self.assertRegex(record["action_id"], r"^ACT-BUDGET-\d+-[0-9a-f]{8}$")
+        self.assertEqual(record["entry_type"], "action")
+        self.assertEqual(record["outcome"], "failure")
+        self.assertEqual(record["category"], "budget")
+        self.assertEqual(record["stage"], "plan")
+        self.assertEqual(record["budget_name"], "turn")
+        self.assertEqual(record["budget_seconds"], 300)
+        self.assertEqual(record["elapsed_seconds"], 301)
+        self.assertEqual(record["execution_id"], "P-1")
+
+    def test_no_resume_when_stage_has_no_time_left(self):
+        stage_breach = BudgetBreach("plan", "stage", 2100, 2100)
+        self.clock.now = 2100
+        outcome = self.supervise([self.write("# Plan for I-1\n", breach=stage_breach)])
+        self.assertEqual(len(outcome.turns), 1)
+        self.assertIs(outcome.budget_failure, stage_breach)
+
+    def test_breach_with_usable_artefact_is_not_a_failure(self):
+        stall = BudgetBreach("plan", "stall", 90, 95)
+        outcome = self.supervise([self.write(VALID_PLAN, breach=stall)])
+        self.assertEqual(len(outcome.turns), 1)
+        self.assertIsNone(outcome.budget_failure)
+
+    def test_clean_turn_with_complete_file_runs_once(self):
+        outcome = self.supervise([self.write(VALID_PLAN)])
+        self.assertEqual(len(outcome.turns), 1)
+        self.assertIsNone(outcome.follow_up)
+
+    def test_clean_turn_without_file_does_not_reprompt(self):
+        outcome = self.supervise([self.write(None)])
+        self.assertEqual(len(outcome.turns), 1)
+        self.assertFalse(outcome.report.exists)

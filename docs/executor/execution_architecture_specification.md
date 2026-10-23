@@ -122,14 +122,20 @@ Before invoking the agent, the executor verifies whether the plan needs to be br
 
 ### 6. Agent Invocation
 
-A prompt payload file and an intent JSON file are generated in `/tmp`. The agent's CLI wrapper is executed, forwarding
-the full prompt. The executor intercepts the exit code to determine the outcome.
+A prompt payload file and an intent JSON file are generated in `/tmp`. The agent's CLI wrapper is executed under the
+turn supervisor (turn, stall and execute-stage budgets; see [Turn and Stage Budgets](../budgets.md)), forwarding the
+full prompt, which ends with the incremental execution-notes write protocol (Bean 0138). The executor uses the exit code
+to determine the outcome, treating exit code 1 or a `stopReason: length` final message as informational when the agent's
+execution notes are valid.
 
 ### 7. Result Recording & Ledger Updates
 
 Execution state and verdicts are recorded exclusively in `holon-knowledge/ledger/executions.jsonl`, which serves as the
-single authoritative append-only source of truth for execution telemetry. Execution markdown files under `executions/`
-are deprecated and omitted.
+single authoritative append-only source of truth for execution telemetry. The executor itself never generates markdown
+files under `executions/`. The execution agent is asked to keep incremental notes at `executions/{execution_id}.md`
+(Bean 0138); they are validated report-only, committed with the agent's other changes, and their validity is recorded in
+the ledger summary row (`execution_notes_valid`). See
+[Running Execution via Docker](../sandbox/execute_plan.md#incremental-execution-notes-bean-0138).
 
 ### 8. Git Commit & Push
 

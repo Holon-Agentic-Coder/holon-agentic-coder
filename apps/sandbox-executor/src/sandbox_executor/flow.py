@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, ClassVar
 
+from sandbox_executor.budgets import Budgets, StageTimer, format_stage_summary, load_budgets
 from sandbox_executor.calibration import (
     is_metadata_path,
     run_calibrate,
@@ -111,6 +112,9 @@ class StageResult:
     end_time: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
+    # Wall-clock time the stage took and the ceiling it ran against (Bean 0139); None for stages not yet timed.
+    elapsed_seconds: float | None = None
+    budget_seconds: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert StageResult to a JSON-serialisable dictionary."""
@@ -121,7 +125,16 @@ class StageResult:
             "end_time": self.end_time,
             "payload": self.payload,
             "error": self.error,
+            "elapsed_seconds": self.elapsed_seconds,
+            "budget_seconds": self.budget_seconds,
         }
+
+    def summary_line(self) -> str:
+        """``stage: status (elapsed min / budget min)``, or a bare ``stage: status`` when the stage was not timed."""
+        word = _SUMMARY_STATUS_WORDS.get(self.status, self.status.value)
+        if self.elapsed_seconds is None or self.budget_seconds is None:
+            return f"{self.stage.value}: {word}"
+        return format_stage_summary(self.stage.value, word, self.elapsed_seconds, self.budget_seconds)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> StageResult:
@@ -133,7 +146,19 @@ class StageResult:
             end_time=data.get("end_time"),
             payload=data.get("payload", {}),
             error=data.get("error"),
+            elapsed_seconds=data.get("elapsed_seconds"),
+            budget_seconds=data.get("budget_seconds"),
         )
+
+
+_SUMMARY_STATUS_WORDS: dict[StageStatus, str] = {
+    StageStatus.SUCCESS: "ok",
+    StageStatus.FAILED: "failed",
+    StageStatus.HALTED_FOR_HUMAN: "halted",
+    StageStatus.SKIPPED: "skipped",
+    StageStatus.PENDING: "pending",
+    StageStatus.RUNNING: "running",
+}
 
 
 CURRENT_CHECKPOINT_SCHEMA_VERSION: int = 1
@@ -2274,6 +2299,10 @@ def run_plan_stage(context: FlowContext) -> StageResult:
 # ---------------------------------------------------------------------------
 
 
+# Lower bound for the verification test run timeout when little of the execute stage budget remains.
+VERIFY_TIMEOUT_FLOOR_SECONDS = 30.0
+
+
 def run_execute_stage(context: FlowContext) -> StageResult:
     """Execute Stage 3: Create execution branch, rebase on plan, run agent/tests, and record execution.
 
@@ -2281,6 +2310,7 @@ def run_execute_stage(context: FlowContext) -> StageResult:
     """
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log("Starting Stage 3: Plan Execution")
+    stage_timer = StageTimer("execute", load_budgets(os.environ).stage_seconds("execute"))
 
     if not context.plan_branch:
         err = "Cannot run Execute stage without an active plan_branch in FlowContext."
@@ -2364,6 +2394,8 @@ def run_execute_stage(context: FlowContext) -> StageResult:
                 proxy_env = {}
 
         sub_env = {**os.environ, **proxy_env} if proxy_env else None
+        # The verification run may use whatever is left of the execute stage ceiling, never less than the floor.
+        verify_timeout = max(VERIFY_TIMEOUT_FLOOR_SECONDS, stage_timer.remaining())
         try:
             test_run = subprocess.run(
                 ["uv", "run", "pytest", "apps/sandbox-executor/tests/test_cli.py", "-q"],
@@ -2371,15 +2403,15 @@ def run_execute_stage(context: FlowContext) -> StageResult:
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=300,
+                timeout=verify_timeout,
                 env=sub_env,
             )
             duration_seconds = max(0.1, round(time.time() - t0, 2))
             exit_code = test_run.returncode
         except subprocess.TimeoutExpired:
-            duration_seconds = 300.0
+            duration_seconds = round(verify_timeout, 2)
             exit_code = -1
-            context.log("Error: Test suite timed out after 300 seconds.")
+            context.log(f"Error: Test suite timed out after {verify_timeout:.0f} seconds (execute stage budget).")
 
         test_pass_rate = 1.0 if exit_code == 0 else 0.0
 
@@ -2515,6 +2547,7 @@ def run_review_loop(
     ensemble_size: int = 3,
     auto_pr: bool = True,
     dry_run: bool = False,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """Execute autonomous native multi-pass review loop (Bean 0118).
 
@@ -2529,6 +2562,7 @@ def run_review_loop(
         ensemble_size: Review ensemble size / heuristic count.
         auto_pr: Whether to create PR automatically if target is only a branch.
         dry_run: If True, evaluate without applying git commits or mutations.
+        clock: Monotonic clock used for the per-iteration budget (Bean 0139); injectable for tests.
 
     Returns:
         dict[str, Any]: Review loop outcome dictionary.
@@ -2592,9 +2626,14 @@ def run_review_loop(
         except Exception as exc:
             logger.debug("Non-fatal PR create/update in review loop: %s", exc)
 
+    iteration_budget_seconds = load_budgets(os.environ).stage_seconds("review_iteration")
+    iteration_summaries: list[str] = []
+    budget_breach: dict[str, Any] | None = None
+
     while iteration < budget:
         iteration += 1
         context.log(f"[Review Loop] Starting review iteration {iteration}/{budget} for target '{review_target}'.")
+        iteration_timer = StageTimer("review", iteration_budget_seconds, clock=clock)
 
         # Discrete Action 3: Resolver Iteration Events (Bean 0113)
         if iteration > 1 and not effective_dry_run:
@@ -2702,10 +2741,28 @@ def run_review_loop(
             except Exception as e:
                 logger.debug("Non-fatal atomic ledger append during finding detection: %s", e)
 
+        iteration_timer.stop()
+        iteration_breached = iteration_timer.breached()
+        iteration_line = f"iteration {iteration} " + iteration_timer.summary("failed" if iteration_breached else "ok")
+        iteration_summaries.append(iteration_line)
+        context.log(f"[Review Loop] {iteration_line}")
+
         # 7. Check termination criteria
         if not is_dirty and not finding_ids and last_ci_status.get("all_passed", False):
             consensus_reached = True
             context.log(f"[Review Loop] Consensus approval reached at iteration {iteration}.")
+            break
+
+        if iteration_breached:
+            breach = iteration_timer.breach()
+            budget_breach = {
+                "stage": "review",
+                "budget_name": "review_iteration",
+                "budget_seconds": breach.budget_seconds,
+                "elapsed_seconds": round(breach.elapsed_seconds, 3),
+                "iteration": iteration,
+            }
+            context.log(f"[Review Loop] Stopping: iteration {iteration} exceeded its {breach.describe()}.")
             break
 
     if not consensus_reached and iteration >= budget:
@@ -2851,6 +2908,8 @@ def run_review_loop(
         "severity": severity,
         "posting": posting_res,
         "pr": pr_res,
+        "iteration_summaries": iteration_summaries,
+        "budget_breach": budget_breach,
     }
 
 
@@ -2999,6 +3058,12 @@ def run_review_stage(context: FlowContext) -> StageResult:
 
     if not consensus_reached:
         err_msg = "Autonomous review consensus failed: test suite reported failures."
+        loop_breach = loop_res.get("budget_breach")
+        if loop_breach:
+            err_msg = (
+                f"Autonomous review stopped: iteration {loop_breach.get('iteration')} exceeded the review iteration "
+                f"budget of {loop_breach.get('budget_seconds', 0) / 60.0:.0f} min."
+            )
         context.log(f"Stage 4 failed: {err_msg}")
         result = StageResult(
             stage=FlowStage.REVIEW,
@@ -3253,10 +3318,57 @@ class PipelineEngine:
         context: FlowContext,
         from_stage: FlowStage | str | None = None,
         checkpoint_path: str | None = None,
+        budgets: Budgets | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.context = context
         self.from_stage = FlowStage.from_str(from_stage) if from_stage else None
         self.checkpoint_path = checkpoint_path
+        self.budgets = budgets or load_budgets(os.environ)
+        self.clock = clock
+
+    def stage_budget_seconds(self, stage: FlowStage, result: StageResult | None = None) -> float:
+        """Ceiling for ``stage``; the review stage gets one review-iteration budget per iteration it ran."""
+        if stage == FlowStage.REVIEW:
+            iterations = 1
+            if result is not None:
+                consensus = result.payload.get("consensus") if isinstance(result.payload, dict) else None
+                if isinstance(consensus, dict):
+                    try:
+                        iterations = max(1, int(consensus.get("iterations") or 1))
+                    except (TypeError, ValueError):
+                        iterations = 1
+            return self.budgets.stages.review_iteration * iterations
+        return self.budgets.stage_seconds(stage.value)
+
+    def timed_execute_stage(self, stage: FlowStage) -> StageResult:
+        """Run a stage under its wall-clock ceiling and attach elapsed and budget to the result.
+
+        Stages run in-process, so the ceiling is enforced when the stage returns: a stage that ran past its budget is
+        marked failed with the budget that fired. The ACT-BUDGET ledger action is written only by the in-container
+        turn supervisor, never here, so a failure is not recorded twice.
+        """
+        timer = StageTimer(stage.value, self.stage_budget_seconds(stage), clock=self.clock)
+        try:
+            result = self.execute_stage(stage)
+        except Exception as e:
+            result = self.handle_stage_failure(stage, e)
+        elapsed = timer.stop()
+        budget_seconds = self.stage_budget_seconds(stage, result)
+        result.elapsed_seconds = round(elapsed, 3)
+        result.budget_seconds = budget_seconds
+        if elapsed > budget_seconds and result.status not in (StageStatus.FAILED, StageStatus.SKIPPED):
+            result.status = StageStatus.FAILED
+            result.error = (
+                f"Stage '{stage.value}' exceeded its stage budget: {elapsed / 60.0:.1f} min elapsed against "
+                f"{budget_seconds / 60.0:.0f} min."
+            )
+            result.payload = {
+                **result.payload,
+                "budget_breach": {"budget_name": "stage", "budget_seconds": budget_seconds},
+            }
+            self.context.log(result.error)
+        return result
 
     def before_stage(self, stage: FlowStage) -> None:
         """Lifecycle hook invoked before executing a stage."""
@@ -3295,8 +3407,13 @@ class PipelineEngine:
 
     def after_stage(self, stage: FlowStage, result: StageResult) -> None:
         """Lifecycle hook invoked after executing a stage."""
+        if result.budget_seconds is None:
+            result.budget_seconds = self.stage_budget_seconds(stage, result)
+        if result.elapsed_seconds is None and result.status == StageStatus.SKIPPED:
+            result.elapsed_seconds = 0.0
         self.context.stage_results[stage.value] = result
         self.context.log(f"<-- [Flow Engine] Exited stage: {stage.value.upper()} (status={result.status.value})")
+        self.context.log(result.summary_line())
 
     def handle_stage_failure(self, stage: FlowStage, error: Exception) -> StageResult:
         """Handle unexpected exceptions during stage execution."""
@@ -3355,10 +3472,7 @@ class PipelineEngine:
                 continue
 
             self.before_stage(stage)
-            try:
-                result = self.execute_stage(stage)
-            except Exception as e:
-                result = self.handle_stage_failure(stage, e)
+            result = self.timed_execute_stage(stage)
 
             self.after_stage(stage, result)
             self.save_checkpoint()
@@ -3372,10 +3486,7 @@ class PipelineEngine:
                     if self.context.auto_calibrate and not self.context.skip_calibrate:
                         cal_stage = FlowStage.CALIBRATE
                         self.before_stage(cal_stage)
-                        try:
-                            cal_result = self.execute_stage(cal_stage)
-                        except Exception as e:
-                            cal_result = self.handle_stage_failure(cal_stage, e)
+                        cal_result = self.timed_execute_stage(cal_stage)
                         self.after_stage(cal_stage, cal_result)
                         self.save_checkpoint()
                     elif self.context.skip_calibrate:

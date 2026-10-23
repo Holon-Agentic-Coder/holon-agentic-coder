@@ -263,7 +263,11 @@ class TestPrepareAgentDir(unittest.TestCase):
     def test_writes_rewritten_models_json_with_safe_container_permissions(self):
         old_umask = os.umask(0o077)
         try:
-            host_config = {"providers": {"vmlx": {"baseUrl": "http://localhost:8081/v1", "models": [{"id": "m"}]}}}
+            host_config = {
+                "providers": {
+                    "vmlx": {"baseUrl": "http://localhost:8081/v1", "models": [{"id": "m", "contextWindow": 32768}]}
+                }
+            }
             with tempfile.TemporaryDirectory() as tmp:
                 dest = os.path.join(tmp, "agent")
                 config = local_llm.prepare_agent_dir(dest, host_config=host_config)
@@ -325,7 +329,13 @@ class TestPrepareAgentDir(unittest.TestCase):
 
 class TestLauncherIntegration(unittest.TestCase):
     def _run(self, env, mounts=None, tr_envs=None, mkdtemp_dir=None, agent_id="pi", token_reduce=False):
-        merged_env = {"GITHUB_TOKEN": "mock-token", "HOLON_REPO_URL": "git@github.com:dummy/repo.git", **env}
+        # Synthesised model entries declare no contextWindow; the envelope needs one (Bean 0140).
+        merged_env = {
+            "GITHUB_TOKEN": "mock-token",
+            "HOLON_REPO_URL": "git@github.com:dummy/repo.git",
+            "HOLON_LOCAL_CONTEXT_WINDOW": "32768",
+            **env,
+        }
         with (
             patch("shutil.which", side_effect=lambda name: "/usr/bin/docker" if name == "docker" else None),
             patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run,
@@ -648,3 +658,178 @@ class TestRunnerValidation(unittest.TestCase):
         self.assertEqual(local_llm.normalize_agent_id("agent-pi"), "pi")
         self.assertEqual(local_llm.normalize_agent_id("Pi"), "pi")
         self.assertEqual(local_llm.normalize_agent_id("claude-agent"), "claude")
+
+
+def _config(*models, base_url="http://localhost:8081/v1"):
+    return {"providers": {"vmlx": {"baseUrl": base_url, "apiKey": "holon-local", "models": list(models)}}}
+
+
+class TestModelEnvelope(unittest.TestCase):
+    """Bean 0140: explicit maxTokens and reasoning mode on every generated model entry."""
+
+    def apply(self, config, env=None):
+        return local_llm.apply_model_envelope(config, env or {})
+
+    def test_synthesises_quarter_of_context_window(self):
+        config = _config({"id": "small", "contextWindow": 32768})
+        with self.assertLogs("sandbox_executor.local_llm", level="INFO") as logs:
+            (envelope,) = self.apply(config)
+        entry = config["providers"]["vmlx"]["models"][0]
+        self.assertEqual(entry["maxTokens"], 8192)
+        self.assertEqual((envelope.max_tokens, envelope.max_tokens_source), (8192, "synthesised"))
+        self.assertTrue(
+            any("'small'" in line and "8192" in line and "absent in host config" in line for line in logs.output)
+        )
+
+    def test_synthesis_is_capped(self):
+        config = _config({"id": "big", "contextWindow": 999424})
+        (envelope,) = self.apply(config)
+        self.assertEqual(envelope.max_tokens, 16384)
+        self.assertEqual(config["providers"]["vmlx"]["models"][0]["maxTokens"], 16384)
+
+    def test_valid_host_value_passes_through(self):
+        config = _config({"id": "m", "contextWindow": 32768, "maxTokens": 4000})
+        (envelope,) = self.apply(config)
+        self.assertEqual(config["providers"]["vmlx"]["models"][0]["maxTokens"], 4000)
+        self.assertEqual(envelope.envelope_line(), "model=m context=32768 max_tokens=4000 source=host")
+
+    def test_rejects_invalid_max_tokens(self):
+        for bad in (0, -1, 1.5, 4096.0, "4096", True, None, 32768 - 4096 + 1):
+            with self.subTest(bad=bad), self.assertRaises(local_llm.LocalLLMConfigError) as ctx:
+                self.apply(_config({"id": "m", "contextWindow": 32768, "maxTokens": bad}))
+            self.assertIn("'m'", str(ctx.exception))
+
+    def test_reserve_is_configurable(self):
+        config = _config({"id": "m", "contextWindow": 32768, "maxTokens": 30000})
+        (envelope,) = self.apply(config, {"HOLON_CONTEXT_RESERVE_TOKENS": "1024"})
+        self.assertEqual(envelope.max_tokens, 30000)
+
+    def test_missing_context_window_uses_env_or_fails(self):
+        config = _config({"id": "m"})
+        (envelope,) = self.apply(config, {"HOLON_LOCAL_CONTEXT_WINDOW": "65536"})
+        self.assertEqual((envelope.context_window, envelope.max_tokens), (65536, 16384))
+        self.assertEqual(config["providers"]["vmlx"]["models"][0]["contextWindow"], 65536)
+        with self.assertRaises(local_llm.LocalLLMConfigError) as ctx:
+            self.apply(_config({"id": "m"}))
+        self.assertIn("HOLON_LOCAL_CONTEXT_WINDOW", str(ctx.exception))
+
+    def test_invalid_context_window(self):
+        for bad in (0, -5, "32768", 3.5, False):
+            with self.subTest(bad=bad), self.assertRaises(local_llm.LocalLLMConfigError):
+                self.apply(_config({"id": "m", "contextWindow": bad}))
+
+    def test_reasoning_mode_from_env_host_and_default(self):
+        cases = [
+            ({"HOLON_REASONING_MODE": "LOW"}, {"reasoning": True}, ("low", "env"), True),
+            ({}, {"reasoning": "medium"}, ("medium", "host"), True),
+            ({}, {"reasoning": False}, ("off", "host"), False),
+            ({}, {"reasoning": True}, ("off", "default"), False),
+            ({}, {}, ("off", "default"), False),
+        ]
+        for env, extra, expected, flag in cases:
+            with self.subTest(env=env, extra=extra):
+                config = _config({"id": "m", "contextWindow": 32768, **extra})
+                (envelope,) = self.apply(config, env)
+                self.assertEqual((envelope.reasoning, envelope.reasoning_source), expected)
+                self.assertIs(config["providers"]["vmlx"]["models"][0]["reasoning"], flag)
+                self.assertEqual(envelope.reasoning_line(), f"reasoning={expected[0]} source={expected[1]}")
+
+    def test_invalid_reasoning_mode_raises(self):
+        with self.assertRaises(local_llm.LocalLLMConfigError):
+            self.apply(_config({"id": "m", "contextWindow": 32768}), {"HOLON_REASONING_MODE": "turbo"})
+        with self.assertRaises(local_llm.LocalLLMConfigError):
+            self.apply(_config({"id": "m", "contextWindow": 32768, "reasoning": "max"}))
+
+    def test_prepare_agent_dir_writes_envelope_and_thinking_level(self):
+        host_config = _config({"id": "m", "contextWindow": 32768})
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.dict(os.environ, {"HOLON_REASONING_MODE": "minimal"}, clear=True),
+        ):
+            dest = os.path.join(tmp, "agent")
+            config = local_llm.prepare_agent_dir(dest, host_config=host_config)
+            with open(os.path.join(dest, "models.json")) as f:
+                on_disk = json.load(f)
+            with open(os.path.join(dest, "settings.json")) as f:
+                settings = json.load(f)
+            # Rewrite behaviour is unchanged; the envelope is added on top.
+            self.assertEqual(on_disk["providers"]["vmlx"]["baseUrl"], "http://host.docker.internal:8081/v1")
+            self.assertEqual(on_disk, config)
+            entry = on_disk["providers"]["vmlx"]["models"][0]
+            self.assertIsInstance(entry["maxTokens"], int)
+            self.assertIs(entry["reasoning"], True)
+            self.assertEqual(settings, {"defaultThinkingLevel": "minimal"})
+            self.assertEqual(stat.S_IMODE(os.stat(os.path.join(dest, "settings.json")).st_mode), 0o644)
+            self.assertEqual(local_llm.container_env(dest), {"PI_CODING_AGENT_DIR": local_llm.CONTAINER_AGENT_DIR})
+
+
+# Frozen health fixtures: shapes for parser coverage only, not performance claims.
+HEALTH_OFF = {"status": "ok", "prefill_cache": {"enabled": False}, "effective_defaults": {"max_output_tokens": 8192}}
+HEALTH_COLD = {
+    "status": "ok",
+    "prefill_cache": {"enabled": True, "entries": 0, "cached_tokens": 0, "memory_bytes": 0},
+    "memory": {"used_bytes": 1048576, "limit_bytes": 8589934592},
+    "effective_defaults": {"max_output_tokens": 8192},
+}
+HEALTH_WARM = {
+    "status": "ok",
+    "prefill_cache": {"enabled": True, "entries": 3, "cached_tokens": 41234, "memory_bytes": 536870912},
+    "memory": {"used_bytes": 2147483648, "limit_bytes": 8589934592},
+    "effective_defaults": {"max_output_tokens": 4096},
+}
+HEALTH_MALFORMED = "<html>not json</html>"
+
+
+def _fetcher(payload, calls=None):
+    def fetch(url, timeout):
+        if calls is not None:
+            calls.append((url, timeout))
+        return payload if isinstance(payload, str) else json.dumps(payload).encode()
+
+    return fetch
+
+
+class TestGatewayHealth(unittest.TestCase):
+    def test_off_cold_warm_classification(self):
+        for payload, expected in ((HEALTH_OFF, "off"), (HEALTH_COLD, "cold"), (HEALTH_WARM, "warm")):
+            with self.subTest(expected=expected):
+                health = local_llm.probe_gateway_health("http://localhost:8081/v1", fetch=_fetcher(payload))
+                self.assertEqual(health.prefill_cache, expected)
+                self.assertTrue(health.cache_line().startswith(f"prefill_cache={expected}"))
+
+    def test_memory_figures_and_output_default(self):
+        health = local_llm.probe_gateway_health("http://localhost:8081/v1", fetch=_fetcher(HEALTH_WARM))
+        self.assertEqual(health.max_output_tokens, 4096)
+        self.assertEqual(health.memory["memory_used_bytes"], 2147483648)
+        self.assertEqual(health.memory["cache_memory_bytes"], 536870912)
+        self.assertIn("memory_limit_bytes=8589934592", health.cache_line())
+
+    def test_malformed_response_is_unknown(self):
+        health = local_llm.probe_gateway_health("http://localhost:8081/v1", fetch=_fetcher(HEALTH_MALFORMED))
+        self.assertEqual(health.prefill_cache, "unknown")
+        self.assertEqual(local_llm.parse_gateway_health("u", ["list"]).prefill_cache, "unknown")
+        self.assertEqual(local_llm.parse_gateway_health("u", {"status": "ok"}).prefill_cache, "unknown")
+
+    def test_network_failure_is_unknown(self):
+        def failing(url, timeout):
+            raise OSError("connection refused")
+
+        health = local_llm.probe_gateway_health("http://127.0.0.1:8081/v1", fetch=failing)
+        self.assertEqual(health.prefill_cache, "unknown")
+        self.assertIn("connection refused", health.cache_line())
+
+    def test_probe_targets_health_path_with_short_timeout(self):
+        calls = []
+        local_llm.probe_gateway_health("http://localhost:8081/v1", fetch=_fetcher(HEALTH_OFF, calls))
+        self.assertEqual(calls, [("http://localhost:8081/health", 2.0)])
+
+    def test_never_probes_remote_or_gateway_hosts(self):
+        calls = []
+        for url in ("https://api.example.com/v1", "http://192.168.1.20:8081/v1", "http://host.docker.internal:8081/v1"):
+            with self.subTest(url=url):
+                self.assertIsNone(local_llm.probe_gateway_health(url, fetch=_fetcher(HEALTH_OFF, calls)))
+        self.assertEqual(calls, [])
+        allowed = local_llm.probe_gateway_health(
+            "http://192.168.1.20:8081/v1", fetch=_fetcher(HEALTH_OFF, calls), allow_list={"192.168.1.20"}
+        )
+        self.assertEqual(allowed.prefill_cache, "off")

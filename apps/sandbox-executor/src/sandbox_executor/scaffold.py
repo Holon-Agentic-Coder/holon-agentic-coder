@@ -189,6 +189,10 @@ Based on the following intent:
 
 and the current state of the project give a detailed plan. Enclose all arithmetic formulas and derivations in
 backtick code spans to maintain single-pass prettier convergence.
+
+**Write Protocol:** create `plans/P-{timestamp}-{agent}-{safe_model}.md` with your file-write tool immediately, write
+the header and the `## Overall Plan Metrics` table first, append each step as it is finished, and keep your final chat
+message to one short confirmation line.
 """
 
 EXECUTOR_TEMPLATE = """You are an autonomous execution agent operating directly inside the repository workspace at
@@ -205,6 +209,9 @@ creating, and deleting codebase files.
 5. All generated or updated markdown documentation and execution records must use code spans (backticks) for formulas,
    arithmetic expressions, and metric notations (e.g., `EV = 0.90 * 95.0`) to avoid CommonMark emphasis parsing
    oscillations and maintain immediate single-pass prettier compatibility.
+6. Create `{notes_path}` with your file-write tool before changing code, starting with a `## Summary` section and an
+   `## Actual Metrics` table, append to `## Steps Executed` as each step completes, finish with `## Tests Run`, and keep
+   your final chat message to one short confirmation line.
 
 **Plan Content:** {plan_content}
 

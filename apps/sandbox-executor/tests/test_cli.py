@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
+from sandbox_executor import cli, local_llm
 from sandbox_executor.cli import (
     _run_docker,
     build_network_isolation_args,
@@ -18,6 +19,8 @@ from sandbox_executor.cli import (
     resolve_target_repo_url,
     run_docker_container,
 )
+
+from tests.test_local_llm import HEALTH_COLD, HEALTH_OFF, HEALTH_WARM, _config, _fetcher
 
 
 class TestHolonCLI(unittest.TestCase):
@@ -862,3 +865,49 @@ class TestHolonFlowCLI(unittest.TestCase):
             parsed = json.loads(output)
             self.assertEqual(parsed["target"], "my-branch")
             self.assertTrue(parsed["consensus"]["approved"])
+
+
+class TestDoctor(unittest.TestCase):
+    def run_doctor(self, env, fetch, host_config=None):
+        out = io.StringIO()
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.object(local_llm, "host_models_json", return_value=host_config),
+        ):
+            code = cli.run_doctor(fetch=fetch, out=out)
+        return code, out.getvalue()
+
+    def test_doctor_prints_envelope_and_cache_state(self):
+        host_config = _config({"id": "qwen3", "contextWindow": 65536, "maxTokens": 8000})
+        code, output = self.run_doctor({"HOLON_LOCAL_LLM": "1"}, _fetcher(HEALTH_WARM), host_config)
+        self.assertEqual(code, 0)
+        self.assertIn("model=qwen3 context=65536 max_tokens=8000 source=host", output)
+        self.assertIn("reasoning=off source=default", output)
+        self.assertIn("prefill_cache=warm", output)
+        self.assertIn("WARNING: model=qwen3 max_tokens=8000 exceeds", output)
+        self.assertIn("budgets turn=300s stall=90s", output)
+
+    def test_doctor_without_mismatch_has_no_warning(self):
+        env = {
+            "HOLON_LOCAL_LLM": "1",
+            "HOLON_LOCAL_BASE_URL": "http://localhost:11434/v1",
+            "HOLON_LOCAL_MODELS": "llama",
+            "HOLON_LOCAL_CONTEXT_WINDOW": "16384",
+            "HOLON_REASONING_MODE": "high",
+        }
+        code, output = self.run_doctor(env, _fetcher(HEALTH_COLD))
+        self.assertEqual(code, 0)
+        self.assertIn("model=llama context=16384 max_tokens=4096 source=synthesised", output)
+        self.assertIn("reasoning=high source=env", output)
+        self.assertIn("prefill_cache=cold", output)
+        self.assertNotIn("WARNING", output)
+
+    def test_doctor_reports_config_errors(self):
+        code, output = self.run_doctor({"HOLON_LOCAL_LLM": "1"}, _fetcher(HEALTH_OFF), _config({"id": "m"}))
+        self.assertEqual(code, 1)
+        self.assertIn("HOLON_LOCAL_CONTEXT_WINDOW", output)
+
+    def test_doctor_with_local_mode_disabled(self):
+        code, output = self.run_doctor({}, _fetcher(HEALTH_OFF))
+        self.assertEqual(code, 0)
+        self.assertIn("local_llm=disabled", output)

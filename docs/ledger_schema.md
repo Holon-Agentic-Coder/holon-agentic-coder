@@ -667,7 +667,7 @@ config/env changes, command executions, test runs, git mutations):
 - `event_type`: Type of event (e.g. `code_modification`, `doc_update`, `config_change`, `command_execution`, `test_run`,
   `git_mutation`).
 - `action`: Concise description of the operation.
-- `category`: Classification category (`code`, `doc`, `config`, `test`, `build`, `dependency`).
+- `category`: Classification category (`code`, `doc`, `config`, `test`, `build`, `dependency`, `budget`).
 - `labels`: List of searchable tags/labels (e.g. `["refactor", "ci", "core"]`). Ingestion also supports comma-separated
   strings (e.g. `"refactor, ci"`), which are automatically normalised to arrays.
 - `target`: Target path, command name, or artifact.
@@ -677,6 +677,40 @@ config/env changes, command executions, test runs, git mutations):
 - `action_origin`: Provenance origin (`initial_implementation`, `pr_review`, `ci_fix`, `calibration`, `operator`).
   Defaults to `initial_implementation`.
 - `created_at`: Creation timestamp (ISO 8601 UTC).
+
+###### Budget Breach Actions (`ACT-BUDGET`)
+
+When a runner turn breaches its turn, stall or stage budget and the single resume turn does not recover the artefact,
+exactly one action is appended (Bean 0139, see [Turn and Stage Budgets](budgets.md)):
+
+- `action_id`: `ACT-BUDGET-{timestamp}-{suffix}`; `event_type`: `budget_breach`; `category`: `budget`; `outcome`:
+  `failure`.
+- `stage`: Stage that was running (`plan`, `execute`).
+- `budget_name`: Budget that fired (`turn`, `stall`, `stage`).
+- `budget_seconds`: Limit of that budget, in seconds.
+- `elapsed_seconds`: Seconds elapsed against that budget when it fired.
+
+These four fields are present only on budget actions; other action records keep their existing shape. Example (standard
+fields such as `action_origin` and `created_at` omitted):
+
+```json
+{
+  "entry_type": "action",
+  "action_id": "ACT-BUDGET-1792790000-1a2b3c4d",
+  "execution_id": "P-1792790000-pi-agent-qwen3",
+  "event_type": "budget_breach",
+  "action": "plan stage stopped: turn budget exceeded and resume did not recover",
+  "category": "budget",
+  "target": "plans/P-1792790000-pi-agent-qwen3.md",
+  "outcome": "failure",
+  "labels": ["budget", "plan", "turn"],
+  "error_context": "plan turn budget of 300 s exceeded after 300.4 s; stage elapsed 612.0 s",
+  "stage": "plan",
+  "budget_name": "turn",
+  "budget_seconds": 300.0,
+  "elapsed_seconds": 300.4
+}
+```
 
 ###### PR Review Provenance & Review Criticality
 

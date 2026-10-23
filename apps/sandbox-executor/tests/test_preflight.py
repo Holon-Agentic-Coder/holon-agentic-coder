@@ -459,16 +459,36 @@ def _write_checkpoint(repo, stage: str) -> str:
     return str(path)
 
 
+_CHECKPOINT_SOURCE = "(source: checkpoint, recorded in "
+
+
 @pytest.mark.parametrize(
-    ("extra", "expected"),
+    ("extra", "expected", "agent_source", "model_source"),
     [
-        (["--agent", "claude-agent"], ("claude-agent", "claude-opus-5-5")),
-        (["--agent", "claude-agent", "--model", "m-x"], ("claude-agent", "m-x")),
-        (["--agent", "antigravity"], ("antigravity-agent", "gemini-3.8-flash-medium")),
-        ([], ("antigravity-agent", "gemini-3.8-flash-medium")),
+        (
+            ["--agent", "claude-agent"],
+            ("claude-agent", "claude-opus-5-5"),
+            "(source: flag, --agent)",
+            "(source: table, default model for claude-agent)",
+        ),
+        (
+            ["--agent", "claude-agent", "--model", "m-x"],
+            ("claude-agent", "m-x"),
+            "(source: flag, --agent)",
+            "(source: flag, --model)",
+        ),
+        (
+            ["--agent", "antigravity"],
+            ("antigravity-agent", "gemini-3.8-flash-medium"),
+            "(source: flag, --agent)",
+            _CHECKPOINT_SOURCE,
+        ),
+        ([], ("antigravity-agent", "gemini-3.8-flash-medium"), _CHECKPOINT_SOURCE, _CHECKPOINT_SOURCE),
     ],
 )
-def test_resume_with_new_runner_resolves_its_default_model(flow_repo, monkeypatch, extra, expected):
+def test_resume_with_new_runner_resolves_its_default_model(
+    flow_repo, monkeypatch, capsys, cli_logging, extra, expected, agent_source, model_source
+):
     repo, _ = flow_repo
     monkeypatch.delenv("HOLON_MODEL", raising=False)
     checkpoint = _write_checkpoint(repo, "plan")
@@ -481,6 +501,14 @@ def test_resume_with_new_runner_resolves_its_default_model(flow_repo, monkeypatc
     assert probe.call_args[0][:2] == expected
     ctx = pipeline.call_args[1]["context"]
     assert (ctx.agent, ctx.model) == expected
+    # Each decision is logged exactly once, with the source that actually supplied it.
+    err = capsys.readouterr().err
+    agent_lines = [line for line in err.splitlines() if line.startswith("Agent runner resolved to ")]
+    model_lines = [line for line in err.splitlines() if line.startswith("Model resolved to ")]
+    assert agent_lines == [line for line in agent_lines if f"to {expected[0]} {agent_source}" in line]
+    assert model_lines == [line for line in model_lines if f"to {expected[1]} {model_source}" in line]
+    assert (len(agent_lines), len(model_lines)) == (1, 1)
+    assert "checkpoint or flag" not in err
 
 
 @pytest.mark.parametrize(

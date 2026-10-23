@@ -861,23 +861,23 @@ flowchart TD
 
 ##### Command Options Reference
 
-| Option                    | Type       | Default  | Description                                                                                              |
-| ------------------------- | ---------- | -------- | -------------------------------------------------------------------------------------------------------- |
-| `intent_file`             | Positional | `None`   | Path to intent JSON file (e.g., `intents/my-task.json`).                                                 |
-| `--from-stage`            | Choice     | `None`   | Resume from stage: `intent`, `plan`, `execute`, `review`, `calibrate`.                                   |
-| `--checkpoint`            | Path       | `None`   | Path to pipeline checkpoint `.json` file for state resumption.                                           |
-| `--agent`                 | String     | Resolved | Agent runner: `HOLON_AGENT`, then the detected harness agent, then `antigravity-agent`.                  |
-| `--model`                 | String     | Resolved | LLM model: `HOLON_MODEL`, then the runner's default (`gemini-3.8-flash-medium` for antigravity).         |
-| `--skip-preflight`        | Flag       | `False`  | Skip the readiness probe run before Stage 1 (also `HOLON_SKIP_PREFLIGHT=1`; see `holon doctor`).         |
-| `--dry-run`               | Flag       | `False`  | Dry run mode without executing agent containers or committing.                                           |
-| `--json`                  | Flag       | `False`  | Output pipeline status and stage results in structured JSON format.                                      |
-| `--repo-dir`              | Path       | `.`      | Repository directory path.                                                                               |
-| `--skip-push`             | Flag       | `False`  | Skip pushing git branches to remote origin.                                                              |
-| `--skip-review`           | Flag       | `False`  | Skip Stage 4 (PR review loop) and proceed to calibration.                                                |
-| `--skip-calibrate`        | Flag       | `False`  | Skip Stage 5 (post-execution calibration report generation).                                             |
-| `--max-review-iterations` | Integer    | `25`     | Maximum autonomous review loop iterations in Stage 4 (must be `>= 1`, default: `25`).                    |
-| `--token-reduce`          | Flag       | `False`  | Route through mitmproxy sidecar for token compression and prompt caching.                                |
-| `--mitm-web`              | Flag       | `False`  | Launch mitmweb web UI on port 8081 (configurable via `HOLON_MITM_WEB_PORT`) for live traffic inspection. |
+| Option                    | Type       | Default  | Description                                                                                                                                                                                 |
+| ------------------------- | ---------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `intent_file`             | Positional | `None`   | Path to intent JSON file (e.g., `intents/my-task.json`).                                                                                                                                    |
+| `--from-stage`            | Choice     | `None`   | Resume from stage: `intent`, `plan`, `execute`, `review`, `calibrate`.                                                                                                                      |
+| `--checkpoint`            | Path       | `None`   | Path to pipeline checkpoint `.json` file for state resumption.                                                                                                                              |
+| `--agent`                 | String     | Resolved | Agent runner: `HOLON_AGENT`, then the detected harness agent, then `antigravity-agent`; a `--checkpoint` resume keeps the checkpoint's runner.                                              |
+| `--model`                 | String     | Resolved | LLM model: `HOLON_MODEL`, then the runner's default (`gemini-3.8-flash-medium` for antigravity); a `--checkpoint` resume keeps the checkpoint's model unless `--agent` switches the runner. |
+| `--skip-preflight`        | Flag       | `False`  | Skip the readiness probe run before Stage 1 (also `HOLON_SKIP_PREFLIGHT=1`; see `holon doctor`).                                                                                            |
+| `--dry-run`               | Flag       | `False`  | Dry run mode without executing agent containers or committing.                                                                                                                              |
+| `--json`                  | Flag       | `False`  | Output pipeline status and stage results in structured JSON format.                                                                                                                         |
+| `--repo-dir`              | Path       | `.`      | Repository directory path.                                                                                                                                                                  |
+| `--skip-push`             | Flag       | `False`  | Skip pushing git branches to remote origin.                                                                                                                                                 |
+| `--skip-review`           | Flag       | `False`  | Skip Stage 4 (PR review loop) and proceed to calibration.                                                                                                                                   |
+| `--skip-calibrate`        | Flag       | `False`  | Skip Stage 5 (post-execution calibration report generation).                                                                                                                                |
+| `--max-review-iterations` | Integer    | `25`     | Maximum autonomous review loop iterations in Stage 4 (must be `>= 1`, default: `25`).                                                                                                       |
+| `--token-reduce`          | Flag       | `False`  | Route through mitmproxy sidecar for token compression and prompt caching.                                                                                                                   |
+| `--mitm-web`              | Flag       | `False`  | Launch mitmweb web UI on port 8081 (configurable via `HOLON_MITM_WEB_PORT`) for live traffic inspection.                                                                                    |
 
 ##### Common Usage Examples
 

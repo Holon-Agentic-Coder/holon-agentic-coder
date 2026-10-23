@@ -1430,8 +1430,14 @@ def main() -> None:
         default=None,
         help="Optional path to a flow checkpoint file.",
     )
-    flow_parser.add_argument("--agent", default=None, help=_AGENT_HELP)
-    flow_parser.add_argument("--model", default=None, help=_MODEL_HELP)
+    flow_parser.add_argument(
+        "--agent", default=None, help=f"{_AGENT_HELP} A --checkpoint resume keeps the checkpoint's runner by default."
+    )
+    flow_parser.add_argument(
+        "--model",
+        default=None,
+        help=f"{_MODEL_HELP} A --checkpoint resume keeps the checkpoint's model unless --agent switches the runner.",
+    )
     flow_parser.add_argument("--skip-preflight", action="store_true", help=_SKIP_PREFLIGHT_HELP)
     flow_parser.add_argument(
         "--dry-run",
@@ -1926,15 +1932,21 @@ def main() -> None:
             else:
                 # A resumed checkpoint keeps its recorded attribution; only explicit flags override it. Switching the
                 # runner with --agent alone resolves that runner's model (HOLON_MODEL, then its default), because the
-                # checkpoint's model belongs to the old runner.
-                flow_agent = resolve_agent_runner(args.agent).value if args.agent is not None else context.agent
-                if args.model is not None:
-                    flow_model = args.model
-                elif args.agent is not None and normalise_agent_id(flow_agent) != normalise_agent_id(context.agent):
-                    flow_model = resolve_model(flow_agent, None).value
+                # checkpoint's model belongs to the old runner. The resolvers log the values they decide; only the
+                # values kept from the checkpoint are logged here, so each decision is reported once with its source.
+                from_checkpoint = f"recorded in {args.checkpoint}"
+                if args.agent is not None:
+                    flow_agent = resolve_agent_runner(args.agent).value
+                else:
+                    flow_agent = context.agent
+                    logger.info(Resolution(flow_agent, "checkpoint", from_checkpoint).describe("Agent runner"))
+                if args.model is not None or (
+                    args.agent is not None and normalise_agent_id(flow_agent) != normalise_agent_id(context.agent)
+                ):
+                    flow_model = resolve_model(flow_agent, args.model).value
                 else:
                     flow_model = context.model
-                print(f"Agent runner {flow_agent}, model {flow_model} (source: checkpoint or flag)", file=sys.stderr)
+                    logger.info(Resolution(flow_model, "checkpoint", from_checkpoint).describe("Model"))
 
             # Readiness probe before Stage 1: nothing has been branched, pushed, checkpointed or recorded yet.
             if args.dry_run or (context is not None and context.dry_run):

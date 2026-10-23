@@ -547,11 +547,12 @@ class TestFlowStages:
         mock_report.calibrated_branch = "I-100-intent/P-200-plan/E-300-exec/calibrated"
         mock_report.to_dict.return_value = {"calibrated_branch": mock_report.calibrated_branch, "accuracy_score": 0.95}
 
-        with patch("sandbox_executor.flow.run_calibrate", return_value=mock_report):
+        with patch("sandbox_executor.flow.run_calibrate", return_value=mock_report) as mock_run:
             res = run_calibrate_stage(ctx)
 
         assert res.status == StageStatus.SUCCESS
         assert res.payload["calibration_report"]["accuracy_score"] == 0.95
+        assert mock_run.call_args.kwargs["log_fn"] == ctx.log
         assert ctx.calibrated_branch == "I-100-intent/P-200-plan/E-300-exec/calibrated"
 
     def test_stage2_plan_invokes_converge_prettier(self, tmp_path):

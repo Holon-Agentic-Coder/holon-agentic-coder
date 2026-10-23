@@ -3189,6 +3189,7 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
             repo_dir=repo_dir,
             json_output=False,
             skip_commit=context.dry_run,
+            log_fn=context.log,
         )
         context.calibrated_branch = report.calibrated_branch
         report_dict = report.to_dict()

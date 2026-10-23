@@ -1221,6 +1221,21 @@ def test_run_calibrate_ledger_failure_warns_and_still_commits_report(calibration
     assert committed == ["plans/P-2_calibration.md"]
 
 
+def test_run_calibrate_ledger_failure_reaches_operator_log_fn(calibration_repo):
+    repo, git = calibration_repo
+    logs: list[str] = []
+    with (
+        patch("sandbox_executor.calibration.converge_prettier"),
+        patch("sandbox_executor.ledger.LedgerLock.__enter__", side_effect=PermissionError("ledger denied")),
+    ):
+        run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False, log_fn=logs.append)
+
+    ledger_path = os.path.join(str(repo), "holon-knowledge", "ledger", "executions.jsonl")
+    assert any("ACT-CAL" in msg and ledger_path in msg and "ledger denied" in msg for msg in logs)
+    committed = git("show", "--name-only", "--pretty=format:", "HEAD").split()
+    assert committed == ["plans/P-2_calibration.md"]
+
+
 def test_record_calibration_action_accepts_fallback_dict(tmp_path, guard_real_ledger):
     logs: list[str] = []
     row = record_calibration_action(

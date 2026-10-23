@@ -1322,6 +1322,7 @@ def run_calibrate(
     repo_dir: str = ".",
     json_output: bool = False,
     skip_commit: bool = False,
+    log_fn: Callable[[str], None] | None = None,
 ) -> CalibrationReport:
     """Execute holon calibrate workflow: checkout calibrated branch, generate & commit report.
 
@@ -1330,6 +1331,9 @@ def run_calibrate(
         repo_dir: Path to the target repository directory.
         json_output: Whether to print report JSON to stdout.
         skip_commit: If True, writes report to working tree without creating a branch or commit.
+        log_fn: Optional operator-facing log callable (for example ``FlowContext.log``) that
+            receives a failed ACT-CAL ledger append warning. When None, the warning goes to the
+            module logger only.
 
     Returns:
         CalibrationReport: Generated calibration report.
@@ -1424,7 +1428,7 @@ def run_calibrate(
     commit_paths = [report_rel]
     if skip_commit:
         logger.info("Skipping ACT-CAL ledger record for %s: calibration is not being committed", report.plan_id)
-    elif record_calibration_action(report, repo_dir, report_rel) is not None:
+    elif record_calibration_action(report, repo_dir, report_rel, log_fn=log_fn) is not None:
         commit_paths.append(LEDGER_EXECUTIONS_REL)
 
     if not skip_commit:

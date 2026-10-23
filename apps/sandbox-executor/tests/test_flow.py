@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -1563,11 +1564,23 @@ class FakeRoleAgents:
     model a silent planner or an executor that produces no effective diff.
     """
 
-    def __init__(self, root: Path, origin: Path, planner_writes_plan: bool = True, executor_mode: str = "change"):
+    def __init__(
+        self,
+        root: Path,
+        origin: Path,
+        planner_writes_plan: bool = True,
+        executor_mode: str = "change",
+        clock_offset: int = 0,
+        during_dispatch: Callable[[str, list[str]], None] | None = None,
+    ):
         self.root = root
         self.origin = origin
         self.planner_writes_plan = planner_writes_plan
         self.executor_mode = executor_mode
+        # Seconds added to the container clock that stamps branch names (models host/container skew).
+        self.clock_offset = clock_offset
+        # Called with (role, positional_args) while the container runs, e.g. to push a concurrent sibling.
+        self.during_dispatch = during_dispatch
         self.calls: list[dict[str, Any]] = []
         self.intent_payloads: list[dict[str, Any]] = []
 
@@ -1577,7 +1590,13 @@ class FakeRoleAgents:
         subprocess.run(["git", "clone", "-q", str(self.origin), str(work)], check=True, capture_output=True)
         _configure_identity(work)
         handler = {"intent-creator": self._intent, "planner": self._plan, "executor": self._execute}[role]
-        return handler(work, positional_args, kwargs)
+        exit_code = handler(work, positional_args, kwargs)
+        if self.during_dispatch is not None:
+            self.during_dispatch(role, list(positional_args))
+        return exit_code
+
+    def now(self) -> int:
+        return int(time.time()) + self.clock_offset
 
     def _push(self, work: Path, branch: str, message: str) -> None:
         _git(work, "add", "-A")
@@ -1598,7 +1617,7 @@ class FakeRoleAgents:
         intent_branch, agent, model = args
         if not self.planner_writes_plan:
             return 0
-        plan_id = f"P-{int(time.time())}-{agent}-{_sanitize_model_name(model)}"
+        plan_id = f"P-{self.now()}-{agent}-{_sanitize_model_name(model)}"
         plan_branch = f"{intent_branch.removesuffix('/_')}/{plan_id}/_"
         _git(work, "fetch", "-q", "origin", intent_branch)
         _git(work, "checkout", "-q", "-B", plan_branch, "FETCH_HEAD")
@@ -1627,7 +1646,7 @@ class FakeRoleAgents:
 
     def _execute(self, work: Path, args: list[str], _kwargs: dict[str, Any]) -> int:
         plan_branch, agent, model = args
-        exec_id = f"E-{int(time.time())}-{_sanitize_string(agent)}-{_sanitize_string(model)}"
+        exec_id = f"E-{self.now()}-{_sanitize_string(agent)}-{_sanitize_string(model)}"
         exec_branch = f"{plan_branch.removesuffix('/_')}/{exec_id}/_"
         _git(work, "fetch", "-q", "origin", plan_branch)
         _git(work, "checkout", "-q", "-B", exec_branch, "FETCH_HEAD")
@@ -1696,6 +1715,22 @@ def _dispatch_context(host: Path, agents: FakeRoleAgents, **overrides: Any) -> F
     }
     params.update(overrides)
     return FlowContext(**params)
+
+
+def _push_child_branch(tmp_path: Path, origin: Path, parent_branch: str, child_id: str) -> str:
+    """Push '<parent>/<child_id>/_' to origin from a separate clone, as another (stale or concurrent) run would."""
+    child_branch = f"{parent_branch.removesuffix('/_')}/{child_id}/_"
+    work = tmp_path / f"other-{child_id}"
+    subprocess.run(["git", "clone", "-q", str(origin), str(work)], check=True, capture_output=True)
+    _configure_identity(work)
+    _git(work, "checkout", "-q", "-b", child_branch, f"origin/{parent_branch}")
+    folder = "plans" if child_id.startswith("P-") else "src"
+    (work / folder).mkdir(exist_ok=True)
+    (work / folder / f"{child_id}.md").write_text("# Other run\n", encoding="utf-8")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", f"other run {child_id}")
+    _git(work, "push", "-q", "origin", child_branch)
+    return child_branch
 
 
 class TestFlowRoleDispatch:
@@ -1807,22 +1842,126 @@ class TestFlowRoleDispatch:
         agents = FakeRoleAgents(tmp_path, origin, planner_writes_plan=False)
         ctx = _dispatch_context(host, agents)
         assert run_intent_stage(ctx).status == StageStatus.SUCCESS
-        # A plan branch from a much earlier run must not be adopted as this run's plan.
-        stale = tmp_path / "stale"
-        subprocess.run(["git", "clone", "-q", str(origin), str(stale)], check=True, capture_output=True)
-        _configure_identity(stale)
-        stale_branch = f"{ctx.intent_branch.removesuffix('/_')}/P-1000-claude-agent-claude-opus-5-5/_"
-        _git(stale, "checkout", "-q", "-b", stale_branch, f"origin/{ctx.intent_branch}")
-        (stale / "plans").mkdir()
-        (stale / "plans" / "P-1000-claude-agent-claude-opus-5-5.md").write_text("# Plan\n", encoding="utf-8")
-        _git(stale, "add", "-A")
-        _git(stale, "commit", "-q", "-m", "stale plan")
-        _git(stale, "push", "-q", "origin", stale_branch)
+        # Plan branches pushed before dispatch (an old run, and one stamped "now") are not this run's plan.
+        _push_child_branch(tmp_path, origin, ctx.intent_branch, "P-1000-claude-agent-claude-opus-5-5")
+        _push_child_branch(tmp_path, origin, ctx.intent_branch, f"P-{int(time.time())}-claude-agent-claude-opus-5-5")
+
+        res = run_plan_stage(ctx)
+
+        assert res.status == StageStatus.FAILED  # Zero new branches appeared during dispatch.
+        assert "refusing to fabricate a plan" in (res.error or "")
+        assert ctx.plan_branch is None
+
+    def test_stage2_adopts_plan_from_clock_skewed_container(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin, clock_offset=-3600)  # Container clock an hour behind the host.
+        ctx = _dispatch_context(host, agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+
+        res = run_plan_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        assert int(res.payload["plan_id"].split("-")[1]) < int(time.time()) - 3000
+        assert ctx.plan_branch == f"{ctx.intent_branch.removesuffix('/_')}/{res.payload['plan_id']}/_"
+
+    def test_stage2_ignores_newer_sibling_present_before_dispatch(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin)
+        ctx = _dispatch_context(host, agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        # A concurrent run with the same runner/model whose branch name carries a later timestamp.
+        sibling = _push_child_branch(
+            tmp_path, origin, ctx.intent_branch, f"P-{int(time.time()) + 600}-claude-agent-claude-opus-5-5"
+        )
+
+        res = run_plan_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        assert ctx.plan_branch != sibling
+        assert ctx.plan_branch.endswith(f"/{res.payload['plan_id']}/_")
+        assert int(res.payload["plan_id"].split("-")[1]) <= int(time.time())
+
+    def test_stage2_fails_when_several_new_plan_branches_appear(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+
+        def concurrent_planner(role: str, args: list[str]) -> None:
+            if role == "planner":
+                _push_child_branch(tmp_path, origin, args[0], "P-1-claude-agent-claude-opus-5-5")
+
+        agents = FakeRoleAgents(tmp_path, origin, during_dispatch=concurrent_planner)
+        ctx = _dispatch_context(host, agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
 
         res = run_plan_stage(ctx)
 
         assert res.status == StageStatus.FAILED
-        assert "refusing to fabricate a plan" in (res.error or "")
+        assert "ambiguous P-branches" in (res.error or "")
+        assert "refusing to guess" in (res.error or "")
+        assert ctx.plan_branch is None
+
+    def test_stage2_rejects_new_branch_from_another_runner(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+
+        def other_runner(role: str, args: list[str]) -> None:
+            if role == "planner":
+                _push_child_branch(tmp_path, origin, args[0], f"P-{int(time.time())}-codex-agent-gpt-6")
+
+        agents = FakeRoleAgents(tmp_path, origin, planner_writes_plan=False, during_dispatch=other_runner)
+        ctx = _dispatch_context(host, agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+
+        res = run_plan_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        assert "do not match the dispatched runner/model" in (res.error or "")
+        assert ctx.plan_branch is None
+
+    def test_stage3_fails_when_several_new_execution_branches_appear(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+
+        def concurrent_executor(role: str, args: list[str]) -> None:
+            if role == "executor":
+                _push_child_branch(tmp_path, origin, args[0], "E-1-claude-agent-claude-opus-5-5")
+
+        agents = FakeRoleAgents(tmp_path, origin, during_dispatch=concurrent_executor)
+        ctx = _dispatch_context(host, agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+
+        res = run_execute_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        assert "ambiguous E-branches" in (res.error or "")
+        assert ctx.execution_branch is None
+
+    def test_stage3_adopts_execution_despite_preexisting_sibling(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin, clock_offset=-120)
+        ctx = _dispatch_context(host, agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+        sibling = _push_child_branch(
+            tmp_path, origin, ctx.plan_branch, f"E-{int(time.time()) + 600}-claude-agent-claude-opus-5-5"
+        )
+
+        res = run_execute_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        assert ctx.execution_branch != sibling
+        assert ctx.execution_branch.endswith(f"/{res.payload['execution_id']}/_")
+
+    def test_stage2_fails_closed_when_origin_cannot_be_snapshotted(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin)
+        ctx = _dispatch_context(host, agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+
+        with patch("sandbox_executor.flow._fetch_branch_prefix", return_value=False):
+            res = run_plan_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        assert "before dispatching the planner" in (res.error or "")
+        assert agents.roles() == ["intent-creator"]
 
     def test_empty_execution_fails_records_failed_and_never_opens_pr(self, flow_repos, tmp_path):
         host, origin = flow_repos
@@ -1845,7 +1984,7 @@ class TestFlowRoleDispatch:
             results = PipelineEngine(ctx).run()
 
         assert results["execute"].status == StageStatus.FAILED
-        assert "no changes outside holon-knowledge/ledger/ and plans/" in (results["execute"].error or "")
+        assert "no changes outside holon-knowledge/ledger/, plans/ and executions/" in (results["execute"].error or "")
         assert results["execute"].payload["status"] == "failed"
         assert results["execute"].payload["superseding_row_recorded"] is True
         assert "review" not in results

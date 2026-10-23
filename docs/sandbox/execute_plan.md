@@ -153,8 +153,8 @@ compacted before they are tokenized.
 ## Empty-Diff Guard
 
 After the agent exits, the executor compares the working tree with the plan branch tip. If nothing changed outside
-`holon-knowledge/ledger/` and `plans/`, the run is recorded in `executions.jsonl` as `status: "failed"` with
-`failure_reason: "empty_diff"` (never `success`, never `test_pass_rate`), and only that ledger row is committed and
+`holon-knowledge/ledger/`, `plans/` and `executions/`, the run is recorded in `executions.jsonl` as `status: "failed"`
+with `failure_reason: "empty_diff"` (never `success`, never `test_pass_rate`), and only that ledger row is committed and
 pushed. If the comparison itself fails, the run is recorded as failed with `failure_reason: "diff_unverified"`. The same
 guard stops `holon flow` before Stage 4 and stops `holon review-loop` from creating or updating a PR for an empty
 execution branch.

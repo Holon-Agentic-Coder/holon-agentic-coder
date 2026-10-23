@@ -7,7 +7,7 @@ is equivalent to invoking the stages by hand; the flow orchestrates and validate
 2. Stage 2 (Plan Generation): Dispatch the planner agent and adopt the plan branch and plans/P-*.md it pushed;
    fail (never fabricate a plan) when no planner produced one.
 3. Stage 3 (Plan Execution): Dispatch the executor agent, adopt its execution branch, and fail an execution
-   whose diff against the plan branch is empty outside holon-knowledge/ledger/ and plans/.
+   whose diff against the plan branch is empty outside holon-knowledge/ledger/, plans/ and executions/.
 4. Stage 4 (PR Review Loop): Autonomous review loop evaluating diffs and test results, strictly enforcing
    Bean 0034 (Human-Only PR Merging) by halting at consensus approval without merging to main.
 5. Stage 5 (Post-Execution Calibration): Run post-execution calibration engine (Bean 0038) on execution branch,
@@ -1937,8 +1937,6 @@ def validate_intent_questions(intent_data: dict[str, Any]) -> tuple[bool, list[s
 SKIP_PUSH_DISPATCH_ERROR: str = (
     "holon flow dispatches containerised role agents that fetch from origin; --skip-push is incompatible with dispatch."
 )
-# Role containers stamp branch names with their own clock; tolerate modest skew against the host clock.
-DISCOVERY_CLOCK_SKEW_SECONDS: int = 30
 EXECUTOR_GIT_ENV: dict[str, str] = {
     "GIT_AUTHOR_NAME": "Holon Executor Agent",
     "GIT_AUTHOR_EMAIL": "executor-agent@holon-agentic-coder.com",
@@ -2041,45 +2039,64 @@ def _track_local_branch(context: FlowContext, branch: str) -> None:
         context.log(f"Warning: could not update local branch '{branch}' from origin; using origin/{branch}.")
 
 
-def _discover_child_branch(
-    repo_dir: str,
-    parent_prefix: str,
-    marker: str,
-    not_before: int,
-    preferred_suffix: str,
-) -> tuple[str | None, str | None]:
-    """Find the branch a role container pushed beneath a parent prefix.
-
-    Matches '<parent_prefix>/<marker>-<timestamp>-.../_' on origin, ignores branches stamped before
-    not_before (stale runs), prefers ids ending with preferred_suffix (the runner and model that
-    were dispatched) and picks the newest timestamp.
-
-    Returns:
-        tuple[str | None, str | None]: (branch, None) on success, (None, None) when nothing matches,
-        or (None, message) when the newest candidates are ambiguous.
-    """
-    pattern = re.compile(rf"^{re.escape(parent_prefix)}/({re.escape(marker)}-(\d+)-[^/]+)/_$")
+def _list_child_branches(repo_dir: str, parent_prefix: str, marker: str) -> set[str]:
+    """Return fetched origin branches named '<parent_prefix>/<marker>-<timestamp>-.../_'."""
+    pattern = re.compile(rf"^{re.escape(parent_prefix)}/{re.escape(marker)}-\d+-[^/]+/_$")
     res = run_git(
         ["for-each-ref", "--format=%(refname)", f"refs/remotes/origin/{parent_prefix}/"],
         cwd=repo_dir,
         check=False,
     )
     stdout = res.stdout if isinstance(res.stdout, str) else ""
-    candidates: dict[str, int] = {}
-    for line in stdout.splitlines():
-        name = line.strip().removeprefix("refs/remotes/origin/")
-        match = pattern.match(name)
-        if match and int(match.group(2)) >= not_before:
-            candidates[name] = int(match.group(2))
-    if not candidates:
+    names = (line.strip().removeprefix("refs/remotes/origin/") for line in stdout.splitlines())
+    return {name for name in names if pattern.match(name)}
+
+
+def _snapshot_child_branches(repo_dir: str, parent_prefix: str, marker: str) -> set[str] | None:
+    """Fetch origin beneath a parent prefix and return the child branches that exist before dispatch.
+
+    Returns:
+        set[str] | None: Branch names present on origin, or None when origin could not be fetched (the
+        snapshot would then miss branches that already exist remotely, so callers must not dispatch).
+    """
+    if not _fetch_branch_prefix(repo_dir, parent_prefix):
+        return None
+    return _list_child_branches(repo_dir, parent_prefix, marker)
+
+
+def _discover_child_branch(
+    repo_dir: str,
+    parent_prefix: str,
+    marker: str,
+    before: set[str],
+    preferred_suffix: str,
+) -> tuple[str | None, str | None]:
+    """Find the branch a role container pushed beneath a parent prefix during dispatch.
+
+    Only branches absent from the pre-dispatch snapshot ('before') are candidates, so the result does
+    not depend on the container clock and never adopts a stale run or a sibling that already existed.
+    A candidate must end with preferred_suffix (the runner and model that were dispatched). Exactly one
+    candidate is adopted; anything else is reported instead of guessed.
+
+    Returns:
+        tuple[str | None, str | None]: (branch, None) on success, (None, None) when no new branch
+        appeared, or (None, message) when the new branches cannot be attributed to this dispatch.
+    """
+    new = sorted(_list_child_branches(repo_dir, parent_prefix, marker) - before)
+    if not new:
         return None, None
-    preferred = {b: ts for b, ts in candidates.items() if b.removesuffix("/_").endswith(preferred_suffix)}
-    pool = preferred or candidates
-    newest = max(pool.values())
-    newest_branches = sorted(b for b, ts in pool.items() if ts == newest)
-    if len(newest_branches) > 1:
-        return None, f"ambiguous {marker}-branches under {parent_prefix}: {', '.join(newest_branches)}"
-    return newest_branches[0], None
+    matching = [b for b in new if b.removesuffix("/_").endswith(preferred_suffix)]
+    if not matching:
+        return None, (
+            f"new {marker}-branches under {parent_prefix} do not match the dispatched runner/model "
+            f"('{preferred_suffix.lstrip('-')}'): {', '.join(new)}; refusing to adopt another run's branch"
+        )
+    if len(matching) > 1:
+        return None, (
+            f"ambiguous {marker}-branches under {parent_prefix}: {len(matching)} appeared during dispatch "
+            f"({', '.join(matching)}); refusing to guess which one this run produced"
+        )
+    return matching[0], None
 
 
 def _git_show_text(repo_dir: str, ref: str, path: str) -> str | None:
@@ -2396,7 +2413,14 @@ def run_plan_stage(context: FlowContext) -> StageResult:
     target_branch = context.intent_data.get("target_branch", "main")
     check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="plan")
 
-    dispatch_started = int(time.time())
+    existing_plans = _snapshot_child_branches(repo_dir, intent_prefix, "P")
+    if existing_plans is None:
+        return _stage_failure(
+            context,
+            FlowStage.PLAN,
+            start_time,
+            f"Plan stage failed: could not fetch origin branches under {intent_prefix} before dispatching the planner.",
+        )
     exit_code = _dispatch_role(context, "planner", [context.intent_branch, context.agent, context.model])
     if exit_code != 0:
         return _stage_failure(
@@ -2408,7 +2432,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:
         repo_dir,
         intent_prefix,
         "P",
-        not_before=dispatch_started - DISCOVERY_CLOCK_SKEW_SECONDS,
+        before=existing_plans,
         preferred_suffix=f"-{context.agent}-{safe_model}",
     )
     if ambiguity:
@@ -2474,7 +2498,7 @@ def run_execute_stage(context: FlowContext) -> StageResult:
 
     The executor container (the same one 'holon execute' launches) implements the plan, appends
     executions.jsonl and pushes. An execution whose diff against the plan branch is empty outside
-    holon-knowledge/ledger/ and plans/ fails: a superseding 'failed' row is recorded if the container
+    holon-knowledge/ledger/, plans/ and executions/ fails: a superseding 'failed' row is recorded if the container
     claimed success, and the stage fails so no PR is created or updated.
     Downstream stages operate unattended: picks conservative non-blocking execution options.
     """
@@ -2550,7 +2574,15 @@ def run_execute_stage(context: FlowContext) -> StageResult:
     target_branch = context.intent_data.get("target_branch", "main")
     check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="execute")
 
-    dispatch_started = int(time.time())
+    existing_executions = _snapshot_child_branches(repo_dir, plan_prefix, "E")
+    if existing_executions is None:
+        return _stage_failure(
+            context,
+            FlowStage.EXECUTE,
+            start_time,
+            f"Execute stage failed: could not fetch origin branches under {plan_prefix} "
+            "before dispatching the executor.",
+        )
     exit_code = _dispatch_role(context, "executor", [context.plan_branch, context.agent, context.model])
     if exit_code != 0:
         return _stage_failure(
@@ -2566,7 +2598,7 @@ def run_execute_stage(context: FlowContext) -> StageResult:
         repo_dir,
         plan_prefix,
         "E",
-        not_before=dispatch_started - DISCOVERY_CLOCK_SKEW_SECONDS,
+        before=existing_executions,
         preferred_suffix=f"-{_sanitize_string(context.agent)}-{_sanitize_string(context.model)}",
     )
     if ambiguity:

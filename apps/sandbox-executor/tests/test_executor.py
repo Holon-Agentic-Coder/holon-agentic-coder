@@ -486,7 +486,7 @@ class TestExecutor(unittest.TestCase):
         self.assertEqual(len(summaries), 1)
         self.assertEqual(summaries[0]["status"], "failed")
         self.assertEqual(summaries[0]["failure_reason"], "empty_diff")
-        self.assertIn("no changes outside holon-knowledge/ledger/ and plans/", summaries[0]["summary"])
+        self.assertIn("no changes outside holon-knowledge/ledger/, plans/ and executions/", summaries[0]["summary"])
         self.assertNotIn("test_pass_rate", summaries[0])
         self.assertFalse(any(cmd[:3] == ["git", "add", "-A"] for cmd in argv))
         diff_calls = [cmd for cmd in argv if "diff" in cmd and "--name-only" in cmd]

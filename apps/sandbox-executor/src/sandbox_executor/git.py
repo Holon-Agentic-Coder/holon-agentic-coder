@@ -7,7 +7,7 @@ Provides typed, robust Git interaction utilities:
 - get_head_commit: Retrieve current HEAD commit SHA.
 - branch_exists: Check existence of local and remote tracking branches.
 - changed_paths / has_effective_diff: Shared definition of an "empty execution" (no changes outside
-  holon-knowledge/ledger/ and plans/), used by the executor entrypoint, flow Stage 3 and the review loop.
+  holon-knowledge/ledger/, plans/ and executions/), used by the executor entrypoint, flow Stage 3 and the review loop.
 """
 
 from __future__ import annotations
@@ -180,8 +180,9 @@ def branch_exists(repo_dir: str, branch_name: str, check_remote: bool = True) ->
     return False
 
 
-# Paths that every role writes as bookkeeping. A diff that only touches these carries no implementation work.
-EMPTY_DIFF_EXCLUDES: tuple[str, ...] = ("holon-knowledge/ledger/", "plans/")
+# Paths that every role writes as bookkeeping (ledgers, plan files, execution notes). A diff that only touches
+# these carries no implementation work.
+EMPTY_DIFF_EXCLUDES: tuple[str, ...] = ("holon-knowledge/ledger/", "plans/", "executions/")
 # Ledger vocabulary for an execution rejected by the empty-diff guard.
 EMPTY_DIFF_STATUS: str = "failed"
 EMPTY_DIFF_FAILURE_REASON: str = "empty_diff"
@@ -196,7 +197,8 @@ def empty_diff_summary(base: str) -> str:
     Returns:
         str: Human-readable summary for the executions.jsonl row.
     """
-    excluded = " and ".join(EMPTY_DIFF_EXCLUDES)
+    *head, last = EMPTY_DIFF_EXCLUDES
+    excluded = f"{', '.join(head)} and {last}" if head else last
     return f"Execution produced no changes outside {excluded} relative to {base}"
 
 
@@ -231,7 +233,7 @@ def changed_paths(
         repo_dir: Path to Git repository.
         base: Base revision (e.g. the plan branch or its tip SHA).
         head: Head revision to compare, or None to compare the working tree.
-        exclude: Repository-relative path prefixes to ignore (default: ledgers and plans).
+        exclude: Repository-relative path prefixes to ignore (default: ledgers, plans and execution notes).
         git_runner: Optional callable that runs a Git command (arguments excluding 'git') in repo_dir and
             returns its stdout, raising on failure. Defaults to run_git; the executor entrypoint passes
             its own runner so the sandbox's safe.directory and environment handling apply.
@@ -271,7 +273,7 @@ def has_effective_diff(
         repo_dir: Path to Git repository.
         base: Base revision (e.g. the plan branch or its tip SHA).
         head: Head revision to compare, or None to compare the working tree.
-        exclude: Repository-relative path prefixes to ignore (default: ledgers and plans).
+        exclude: Repository-relative path prefixes to ignore (default: ledgers, plans and execution notes).
         git_runner: Optional Git command runner (see changed_paths).
 
     Returns:

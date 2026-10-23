@@ -90,8 +90,8 @@ run is equivalent to invoking `holon intent`, `holon plan`, `holon execute`, `ho
 by hand: Stages 1-3 launch the same role containers with the resolved `--agent` and `--model`, then fetch `origin` to
 adopt the branch each container pushed. The flow fails Stage 2 rather than fabricate a plan when no planner produced
 `plans/P-*.md`, and fails Stage 3 (recording `status: "failed"`, opening no PR) when the execution changes nothing
-outside `holon-knowledge/ledger/` and `plans/`. `--skip-push` is only accepted with `--dry-run`, which validates without
-dispatching. See [the flow equivalence guarantee](../../docs/git_flow.md#flow-equivalence-guarantee).
+outside `holon-knowledge/ledger/`, `plans/` and `executions/`. `--skip-push` is only accepted with `--dry-run`, which
+validates without dispatching. See [the flow equivalence guarantee](../../docs/git_flow.md#flow-equivalence-guarantee).
 
 ```bash
 # Run complete lifecycle

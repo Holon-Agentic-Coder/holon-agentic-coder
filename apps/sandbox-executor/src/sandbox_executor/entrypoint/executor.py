@@ -1522,7 +1522,7 @@ def main() -> None:
                             )
 
             # Empty-diff guard (shared with holon flow and the review loop): an agent run that changes nothing
-            # outside holon-knowledge/ledger/ and plans/ is never recorded as success, and only the ledger
+            # outside holon-knowledge/ledger/, plans/ and executions/ is never recorded as success, and only the ledger
             # row is committed. Fail closed when the diff cannot be computed.
             failure_reason: str | None = None
             if exec_status == "success":

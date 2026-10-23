@@ -308,7 +308,7 @@ class TestReviewLoopEmptyDiffGuard:
         mock_pr.assert_not_called()
         assert res["consensus"]["approved"] is False
         assert res["pr"]["reason"] == "empty_diff"
-        assert "no changes outside holon-knowledge/ledger/ and plans/" in res["error"]
+        assert "no changes outside holon-knowledge/ledger/, plans/ and executions/" in res["error"]
 
     def test_non_empty_execution_branch_still_gets_pr(self, tmp_path: Path):
         res, mock_pr = self._run(self._repo(tmp_path, change_source=True))

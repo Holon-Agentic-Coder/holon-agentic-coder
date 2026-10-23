@@ -8,6 +8,7 @@ import pytest
 from sandbox_executor.git import (
     branch_exists,
     changed_paths,
+    empty_diff_summary,
     get_diff_numstat,
     get_head_commit,
     has_effective_diff,
@@ -135,6 +136,25 @@ def test_has_effective_diff_plans_only_is_empty(plan_repo: Path) -> None:
     _write(plan_repo, "plans/P-1_calibration.md", "# Calibration\n")
     _commit_all(plan_repo)
     assert has_effective_diff(str(plan_repo), "plan", "exec") is False
+
+
+def test_has_effective_diff_execution_notes_only_is_empty(plan_repo: Path) -> None:
+    """An execution whose only output is its executions/E-*.md notes file is still empty."""
+    _write(plan_repo, "executions/E-1-claude-agent-claude-opus-5-5.md", "# Execution notes\n")
+    _write(plan_repo, "holon-knowledge/ledger/executions.jsonl", '{"status": "success"}\n')
+    _commit_all(plan_repo)
+    assert changed_paths(str(plan_repo), "plan", "exec") == []
+    assert has_effective_diff(str(plan_repo), "plan", "exec") is False
+
+    _write(plan_repo, "executions/E-2-claude-agent-claude-opus-5-5.md", "# Untracked notes\n")
+    assert has_effective_diff(str(plan_repo), "plan") is False
+
+
+def test_empty_diff_summary_names_every_exclusion() -> None:
+    """The ledger summary lists all excluded bookkeeping prefixes."""
+    assert empty_diff_summary("I-1/P-1/_") == (
+        "Execution produced no changes outside holon-knowledge/ledger/, plans/ and executions/ relative to I-1/P-1/_"
+    )
 
 
 def test_has_effective_diff_mixed_changes(plan_repo: Path) -> None:

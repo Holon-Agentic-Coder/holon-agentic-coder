@@ -1261,6 +1261,20 @@ def generate_calibration(
     )
 
 
+def calibration_commit_env() -> dict[str, str]:
+    """Return the git environment used for Stage 5 calibration commits.
+
+    Defaults the author and committer identity to the Holon Calibrate Agent unless the
+    caller's environment already sets them.
+    """
+    commit_env = os.environ.copy()
+    commit_env.setdefault("GIT_AUTHOR_NAME", "Holon Calibrate Agent")
+    commit_env.setdefault("GIT_AUTHOR_EMAIL", "calibrate-agent@holon-agentic-coder.com")
+    commit_env.setdefault("GIT_COMMITTER_NAME", "Holon Calibrate Agent")
+    commit_env.setdefault("GIT_COMMITTER_EMAIL", "calibrate-agent@holon-agentic-coder.com")
+    return commit_env
+
+
 def record_calibration_action(
     report: CalibrationReport | dict[str, Any],
     repo_dir: str,
@@ -1294,7 +1308,11 @@ def record_calibration_action(
     record: dict[str, Any] = {
         "action_id": generate_action_id("ACT-CAL"),
         "execution_id": f"CAL-{plan_id}-{int(time.time())}",
-        "action": f"Calibration report generated for plan {plan_id}",
+        "action": (
+            f"Calibration report generated for plan {plan_id}"
+            if outcome == "success"
+            else f"Calibration failed for plan {plan_id}; fallback report written"
+        ),
         "category": "doc",
         "target": data.get("calibrated_branch") or execution_branch or plan_id,
         "outcome": outcome,
@@ -1434,11 +1452,7 @@ def run_calibrate(
     if not skip_commit:
         try:
             run_git(["add", *commit_paths], cwd=repo_dir, check=False)
-            commit_env = os.environ.copy()
-            commit_env.setdefault("GIT_AUTHOR_NAME", "Holon Calibrate Agent")
-            commit_env.setdefault("GIT_AUTHOR_EMAIL", "calibrate-agent@holon-agentic-coder.com")
-            commit_env.setdefault("GIT_COMMITTER_NAME", "Holon Calibrate Agent")
-            commit_env.setdefault("GIT_COMMITTER_EMAIL", "calibrate-agent@holon-agentic-coder.com")
+            commit_env = calibration_commit_env()
 
             commit_msg = f"chore(calibration): add calibration report for {report.plan_id}"
             commit_res = run_git(

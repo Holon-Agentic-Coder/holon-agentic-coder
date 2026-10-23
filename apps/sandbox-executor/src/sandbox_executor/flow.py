@@ -29,6 +29,8 @@ from enum import StrEnum
 from typing import Any, ClassVar
 
 from sandbox_executor.calibration import (
+    LEDGER_EXECUTIONS_REL,
+    calibration_commit_env,
     is_metadata_path,
     record_calibration_action,
     run_calibrate,
@@ -3160,6 +3162,45 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _commit_stage5_reconciliation(context: FlowContext, repo_dir: str) -> None:
+    """Commit the Stage 5 reconciliation rows onto the /calibrated branch.
+
+    ``reconcile_records`` appends after ``run_calibrate`` has committed the calibration report,
+    so the rows are committed in a follow-up commit on the same /calibrated branch, before it is
+    pushed and fast-forwarded into the execution branch. When HEAD is not the /calibrated branch
+    (the fallback path, where ``run_calibrate`` raised), nothing is committed and the rows stay in
+    the working tree with the fallback report. Never raises.
+    """
+    branch = context.calibrated_branch
+    if not branch:
+        return
+    try:
+        head = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_dir, check=False)
+        if head.returncode != 0 or head.stdout.strip() != branch:
+            context.log(
+                f"Stage 5 reconciliation rows left uncommitted in {LEDGER_EXECUTIONS_REL}: "
+                f"HEAD is not the calibrated branch '{branch}'."
+            )
+            return
+        run_git(["add", LEDGER_EXECUTIONS_REL], cwd=repo_dir, check=False)
+        commit_res = run_git(
+            ["commit", "-m", "chore(calibration): record stage 5 reconciliation", "--", LEDGER_EXECUTIONS_REL],
+            cwd=repo_dir,
+            env=calibration_commit_env(),
+            check=False,
+        )
+        if commit_res.returncode != 0:
+            combined_output = (commit_res.stdout + " " + commit_res.stderr).lower()
+            if "nothing to commit" not in combined_output:
+                msg = f"Warning: committing Stage 5 reconciliation rows failed: {commit_res.stderr.strip()}"
+                logger.warning(msg)
+                context.log(msg)
+    except Exception as e:
+        msg = f"Warning: committing Stage 5 reconciliation rows failed: {e}"
+        logger.warning(msg)
+        context.log(msg)
+
+
 def run_calibrate_stage(context: FlowContext) -> StageResult:
     """Execute Stage 5: Post-Execution Calibration (Bean 0038).
 
@@ -3236,7 +3277,8 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
         db_path = os.path.join(repo_dir, "holon-knowledge/.index/action_index.db")
         exec_status = context.stage_results.get("execute")
         outcome = "success" if exec_status and exec_status.status == StageStatus.SUCCESS else "failure"
-        if os.path.exists(executions_file):
+        # Dry runs append nothing, so the reconciliation events are only written on a real run.
+        if os.path.exists(executions_file) and not context.dry_run:
             reconcile_records(
                 ledger_path=executions_file,
                 max_age_days=14,
@@ -3245,6 +3287,7 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
                 reason=f"Stage 5 calibration reconciled execution outcome to {outcome}",
                 db_path=db_path,
             )
+            _commit_stage5_reconciliation(context, repo_dir)
         if os.path.exists(db_path):
             index_db = ActionIndexDatabase(db_path=db_path)
             promoted_candidates = promote_pending_candidates(

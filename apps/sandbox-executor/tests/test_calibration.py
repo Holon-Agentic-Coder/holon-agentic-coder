@@ -1165,6 +1165,7 @@ def test_run_calibrate_appends_and_commits_act_cal(calibration_repo):
     assert row["entry_type"] == "action"
     assert row["action_origin"] == "calibration"
     assert row["outcome"] == "success"
+    assert row["action"] == "Calibration report generated for plan P-2"
     assert row["execution_id"].startswith("CAL-P-2-")
     assert row["plan_branch"] == "I-1-cal/P-2/_"
     assert row["execution_branch"] == _EXEC_BRANCH
@@ -1249,7 +1250,68 @@ def test_record_calibration_action_accepts_fallback_dict(tmp_path, guard_real_le
     assert row is not None
     assert row["action_id"].startswith("ACT-CAL-")
     assert row["outcome"] == "failure"
+    assert row["action"] == "Calibration failed for plan P-9; fallback report written"
     assert row["predicted_metrics"] is None
     written = (tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl").read_text(encoding="utf-8")
     assert json.loads(written) == row
     assert logs == []
+
+
+def _stage5_context(repo: Path, *, dry_run: bool):
+    from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
+
+    ctx = FlowContext(
+        repo_dir=str(repo),
+        execution_branch=_EXEC_BRANCH,
+        plan_branch="I-1-cal/P-2/_",
+        dry_run=dry_run,
+        skip_push=True,
+    )
+    ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
+    return ctx
+
+
+def test_stage5_dry_run_leaves_executions_ledger_unchanged(calibration_repo):
+    """A dry-run Stage 5 appends nothing, including no reconciliation event."""
+    from sandbox_executor.flow import StageStatus, run_calibrate_stage
+
+    repo, _ = calibration_repo
+    ledger = repo / "holon-knowledge" / "ledger" / "executions.jsonl"
+    before = ledger.read_bytes()
+    with patch("sandbox_executor.calibration.converge_prettier"):
+        res = run_calibrate_stage(_stage5_context(repo, dry_run=True))
+    assert res.status == StageStatus.SUCCESS
+    assert ledger.read_bytes() == before
+
+
+def test_stage5_commits_reconciliation_row_on_calibrated_branch(calibration_repo):
+    """The Stage 5 reconciliation row is committed on /calibrated and reaches the execution branch."""
+    from sandbox_executor.flow import StageStatus, run_calibrate_stage
+
+    repo, git = calibration_repo
+    ledger_rel = "holon-knowledge/ledger/executions.jsonl"
+    ctx = _stage5_context(repo, dry_run=False)
+    with (
+        patch("sandbox_executor.calibration.converge_prettier"),
+        patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+    ):
+        res = run_calibrate_stage(ctx)
+    assert res.status == StageStatus.SUCCESS
+
+    calibrated = "I-1-cal/P-2/E-3/calibrated"
+    assert ctx.calibrated_branch == calibrated
+    # The ledger has no uncommitted rows left behind.
+    assert ledger_rel not in git("status", "--porcelain")
+    for ref in (calibrated, _EXEC_BRANCH):
+        rows = [json.loads(line) for line in git("show", f"{ref}:{ledger_rel}").splitlines() if line.strip()]
+        recon = [r for r in rows if r.get("event_type") == "reconciliation"]
+        assert len(recon) == 1
+        assert recon[0]["parent_action_id"] == _EXEC_BRANCH
+        assert recon[0]["verdict"] == "success"
+        assert len(_cal_rows(git("show", f"{ref}:{ledger_rel}"))) == 1
+    subjects = git("log", "--format=%s", "-2", calibrated).splitlines()
+    assert subjects == [
+        "chore(calibration): record stage 5 reconciliation",
+        "chore(calibration): add calibration report for P-2",
+    ]
+    assert git("show", "--name-only", "--pretty=format:", calibrated).split() == [ledger_rel]

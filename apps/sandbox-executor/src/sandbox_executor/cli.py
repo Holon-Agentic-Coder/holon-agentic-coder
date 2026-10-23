@@ -180,18 +180,21 @@ def normalize_repo_remote(remote_url: str) -> tuple[str, str]:
 
 
 def strip_url_credentials(url: str) -> tuple[str, str | None]:
-    """Remove the userinfo (`user:password@`) from a `scheme://` URL.
+    """Remove the userinfo (`user:password@`) from an `http(s)://` URL.
+
+    Only HTTP(S) userinfo is a credential. SSH remotes, both `ssh://git@host/org/repo.git` and the
+    SCP-style `git@host:org/repo.git`, carry the SSH login user (conventionally `git`), not a token,
+    and are returned unchanged: stripping it would make ssh log in as the local user and fail.
 
     Args:
-        url: A remote URL. SCP-style SSH remotes (`git@host:org/repo.git`) have no scheme and are
-            returned unchanged.
+        url: A remote URL.
 
     Returns:
         The URL without userinfo, and the credential it carried: the password, or the user name
         when no password is present (GitHub accepts a token as a bare user name). The credential is
-        None when the URL carried no userinfo.
+        None when the URL carried no userinfo or is not an HTTP(S) URL.
     """
-    if "://" not in url:
+    if not url.lower().startswith(("https://", "http://")):
         return url, None
     parts = urlsplit(url)
     userinfo, sep, hostport = parts.netloc.rpartition("@")

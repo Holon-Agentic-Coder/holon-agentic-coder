@@ -289,6 +289,8 @@ def test_setup_proxy_spawn_failure_redacts_dashboard_credentials(host_paths, mon
     login_token = make_fake_secret("logintoken")
     monkeypatch.setenv("HOLON_MITM_WEB_PASSWORD", password)
     monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    # Hermetic: the real host port 8081 may already be bound, which would fail before docker runs.
+    monkeypatch.setattr(cli.socket.socket, "connect_ex", lambda *args, **kwargs: 1)
     stderr = (
         f"Web server listening at http://127.0.0.1:8081/?token={login_token}\n"
         f"error: invalid option web_password={password}\nbad value {password}"

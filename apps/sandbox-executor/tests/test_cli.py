@@ -1076,6 +1076,23 @@ def test_override_url_credential_is_stripped_and_forwarded_through_the_env_file(
     assert "GIT_CONFIG_KEY_1=credential.https://github.com.helper" in docker.argv
 
 
+@pytest.mark.parametrize("override", ["ssh://git@github.com/myorg/myrepo.git", "git@github.com:myorg/myrepo.git"])
+def test_ssh_override_url_keeps_its_user_and_synthesises_no_token(leak_env, monkeypatch, capsys, override):
+    """The SSH login user (`git`) is not a credential: it stays in the URL and never becomes GITHUB_TOKEN."""
+    monkeypatch.delenv("GITHUB_TOKEN")
+    monkeypatch.setenv("HOLON_REPO_URL", override)
+    docker = _RecordingDocker()
+    monkeypatch.setattr(cli.subprocess, "run", docker)
+
+    assert _run_planner(leak_env["repo"]) == 0
+
+    assert "embedded credentials" not in capsys.readouterr().err
+    assert f"HOLON_REPO_URL={override}" in docker.argv
+    assert "GITHUB_TOKEN" not in docker.env_file_contents
+    assert not any(arg.startswith("GITHUB_TOKEN=") for arg in docker.argv)
+    assert not any(arg.startswith("GIT_CONFIG_") for arg in docker.argv)
+
+
 def test_no_credential_helper_for_an_override_url_that_never_carried_the_token(leak_env, monkeypatch):
     monkeypatch.setenv("HOLON_REPO_URL", "https://git.example.org/myorg/myrepo.git")
     docker = _RecordingDocker()
@@ -1084,6 +1101,21 @@ def test_no_credential_helper_for_an_override_url_that_never_carried_the_token(l
     assert _run_planner(leak_env["repo"]) == 0
 
     assert not any(arg.startswith("GIT_CONFIG_") for arg in docker.argv)
+
+
+def test_agent_settings_carrying_an_api_key_travel_in_the_env_file(leak_env, monkeypatch, capsys):
+    api_key = "sk-" + "ant-" + make_fake_secret("anthropic")
+    settings = '{"apiKey":"' + api_key + '"}'
+    monkeypatch.setenv("HOLON_AGENT_SETTINGS", settings)
+    docker = _RecordingDocker()
+    monkeypatch.setattr(cli.subprocess, "run", docker)
+
+    assert _run_planner(leak_env["repo"]) == 0
+
+    captured = capsys.readouterr()
+    for text in (captured.out, captured.err, " ".join(docker.argv)):
+        assert_no_token_fragment(text, api_key)
+    assert docker.env_file_contents["HOLON_AGENT_SETTINGS"] == settings
 
 
 def test_line_break_in_a_secret_aborts_before_docker_runs(leak_env, monkeypatch, capsys):
@@ -1133,6 +1165,9 @@ def test_env_file_dir_is_tightened_to_owner_only(tmp_path, monkeypatch):
         ("https://github.com/o/r.git", ("https://github.com/o/r.git", None)),
         ("https://u:SECRET@ghe.example:8443/o/r.git", ("https://ghe.example:8443/o/r.git", "SECRET")),
         ("git@github.com:o/r.git", ("git@github.com:o/r.git", None)),
+        ("ssh://git@github.com/o/r.git", ("ssh://git@github.com/o/r.git", None)),
+        ("ssh://git@ghe.example:2222/o/r.git", ("ssh://git@ghe.example:2222/o/r.git", None)),
+        ("git+ssh://git@github.com/o/r.git", ("git+ssh://git@github.com/o/r.git", None)),
     ],
 )
 def test_strip_url_credentials(url, expected):

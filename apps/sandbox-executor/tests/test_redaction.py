@@ -47,8 +47,56 @@ def test_executor_reexports_the_shared_redactors(name: str) -> None:
 def test_git_and_flow_use_the_shared_redactor() -> None:
     from sandbox_executor import flow, git
 
-    assert git.redact_text is redaction.redact_text
+    assert git.redact_command is redaction.redact_command
+    assert git.redact_agent_secrets is redaction.redact_agent_secrets
     assert flow.redact_text is redaction.redact_text
+
+
+def test_executor_run_cmd_echo_masks_a_bare_token_and_env_literal(
+    fake_token: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`run_cmd` echoes through the canonical command redactor, not `redact_args` alone."""
+    password = make_fake_secret("mitmweb")
+    monkeypatch.setenv("HOLON_MITM_WEB_PASSWORD", password)
+    leaky = f"{fake_token} {password}"
+
+    def fake_run(*args, **kwargs):
+        return executor.subprocess.CompletedProcess(args[0], 1, stdout=f"out {fake_token}", stderr=f"err {fake_token}")
+
+    monkeypatch.setattr(executor.subprocess, "run", fake_run)
+    with pytest.raises(executor.subprocess.CalledProcessError) as excinfo:
+        executor.run_cmd(["gh", "api", "-H", f"x: {fake_token}", "--set", password, "--branch", BRANCH])
+
+    captured = capsys.readouterr()
+    for text in (captured.out, captured.err, " ".join(excinfo.value.cmd)):
+        for secret in leaky.split():
+            assert_no_token_fragment(text, secret)
+    assert f"--branch {BRANCH}" in captured.out
+
+
+def test_run_git_failure_masks_a_bare_token(fake_token: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    from sandbox_executor import git
+
+    def fake_run(cmd, **kwargs):
+        return git.subprocess.CompletedProcess(cmd, 128, stdout="", stderr=f"fatal: bad credential {fake_token}")
+
+    monkeypatch.setattr(git.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError) as excinfo:
+        git.run_git(["-c", f"http.extraHeader=x: {fake_token}", "fetch"], check=True)
+
+    assert_no_token_fragment(str(excinfo.value), fake_token)
+    assert "fetch" in str(excinfo.value)
+
+
+def test_redact_command_masks_anthropic_keys_in_inline_agent_settings() -> None:
+    api_key = "sk-" + "ant-" + make_fake_secret("anthropic")
+    settings = '{"apiKey":"' + api_key + '"}'
+    for line in (
+        redact_command(["claude", "--settings", settings]),
+        redact_command(["docker", "run", "-e", f"HOLON_AGENT_SETTINGS={settings}"]),
+        redact_command(["echo", f"bare {api_key}"]),
+    ):
+        assert_no_token_fragment(line, api_key)
 
 
 def test_agent_secret_redaction_matches_golden_output(monkeypatch: pytest.MonkeyPatch) -> None:

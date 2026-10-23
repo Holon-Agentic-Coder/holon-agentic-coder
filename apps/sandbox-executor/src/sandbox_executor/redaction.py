@@ -25,6 +25,7 @@ _PROVIDER_TOKEN_RE = re.compile(
     r"(?:sk|pk)_(?:live|test)_[A-Za-z0-9_-]{8,}"
     r"|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_-]{8,}"
     r"|github_pat_[A-Za-z0-9_-]{8,}"
+    r"|sk-ant-[A-Za-z0-9_-]{8,}"
     r"|glpat-[A-Za-z0-9_-]{8,}"
     r"|xox[baprs]-[A-Za-z0-9_-]{8,}"
     r"|AIza[0-9A-Za-z_-]{30,}"
@@ -54,7 +55,7 @@ COMMAND_ECHO_ENV_NAMES: tuple[str, ...] = (*DEFAULT_ENV_LITERAL_NAMES, "HOLON_MI
 def redact_text(text: str) -> str:
     """Mask credentials and sensitive tokens in text with asterisks.
 
-    Recognises standard secret keys (token, secret, password, pwd, passwd, api_key,
+    Recognises standard secret keys (token, secret, password, pwd, passwd, api_key, apiKey,
     credentials, client_secret, db_password, bare key), provider token prefixes,
     HTTP authorization headers, and URL query parameters while preserving non-secret
     diagnostic keys (such as sort_key and cache_key). Enforces line scoping on
@@ -96,7 +97,7 @@ def redact_text(text: str) -> str:
         r'(["\']?)('
         r"(?<![a-zA-Z0-9_-])key\b"
         r"|\b[a-zA-Z0-9_-]*(?:api|secret|private|public|signing|encryption|auth|access|session|consumer|client|master|token)[_-]key\b"
-        r"|\b[a-zA-Z0-9_-]*(?:token|access_token|secret|password|passwd|pwd|client_secret|db_password|credential|credentials|auth|bearer|_pat|-pat|\bpat|auth_token|auth_code)\b"
+        r"|\b[a-zA-Z0-9_-]*(?:token|access_token|secret|password|passwd|pwd|client_secret|db_password|credential|credentials|auth|bearer|_pat|-pat|\bpat|auth_token|auth_code|apikey)\b"
         r")\1"
         r"(?:"
         r"([ \t]*(:[ \t]*|=)[ \t]*)"
@@ -229,6 +230,24 @@ def redact_agent_secrets(text: str) -> str:
     return redact_env_literals(s)
 
 
+def redact_command_args(argv: Sequence[str]) -> list[str]:
+    """Redact a command per argument with the same rules as `redact_command`.
+
+    For callers that need the argument boundaries kept, for example to clamp each argument's
+    display length after redaction, or to hand a redacted argv to `CalledProcessError`.
+
+    Args:
+        argv: The command and its arguments, exactly as handed to `subprocess`.
+
+    Returns:
+        A new list, one redacted entry per argument. The input is not modified.
+    """
+    return [
+        redact_env_literals(_PROVIDER_TOKEN_RE.sub(REDACTION_MARKER, arg), names=COMMAND_ECHO_ENV_NAMES)
+        for arg in redact_args([str(arg) for arg in argv])
+    ]
+
+
 def redact_command(argv: Sequence[str]) -> str:
     """Render a command line for display with every credential masked.
 
@@ -243,7 +262,8 @@ def redact_command(argv: Sequence[str]) -> str:
     Returns:
         A single space-joined line that is safe to print or log. The input is not modified.
     """
-    s = " ".join(redact_args([str(arg) for arg in argv]))
+    s = " ".join(redact_command_args(argv))
+    # Swept again over the joined line, so a literal value that spans an argument boundary is caught.
     s = _PROVIDER_TOKEN_RE.sub(REDACTION_MARKER, s)
     return redact_env_literals(s, names=COMMAND_ECHO_ENV_NAMES)
 

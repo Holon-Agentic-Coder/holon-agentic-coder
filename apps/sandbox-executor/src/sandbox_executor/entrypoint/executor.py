@@ -54,6 +54,7 @@ from sandbox_executor.redaction import SECRET_FLAGS as SECRET_FLAGS
 from sandbox_executor.redaction import _is_secret_flag as _is_secret_flag
 from sandbox_executor.redaction import redact_agent_secrets as redact_agent_secrets
 from sandbox_executor.redaction import redact_args as redact_args
+from sandbox_executor.redaction import redact_command_args
 from sandbox_executor.redaction import redact_env_literals as redact_env_literals
 from sandbox_executor.redaction import redact_text as redact_text
 
@@ -394,7 +395,7 @@ def run_cmd(
     NOTE: The returned CompletedProcess contains raw, unredacted stdout/stderr.
     Callers must apply `redact_text` before printing or logging these fields.
     """
-    redacted_args = redact_args(args)
+    redacted_args = redact_command_args(args)
     print_args = [arg[:250] + "..." if len(arg) > 250 else arg for arg in redacted_args]
     cmd_str = " ".join(print_args)
     if len(cmd_str) > _MAX_PRINT_LEN:
@@ -423,8 +424,8 @@ def run_cmd(
     if result.returncode != 0 and check:
         print(f"Command failed with code {result.returncode}", file=sys.stderr)
         print(f"Command args: {cmd_str}", file=sys.stderr)
-        full_out = redact_text(result.stdout)
-        full_err = redact_text(result.stderr)
+        full_out = redact_agent_secrets(result.stdout)
+        full_err = redact_agent_secrets(result.stderr)
         out = full_out
         err = full_err
         if len(out) > _MAX_PRINT_LEN:

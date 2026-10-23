@@ -2,11 +2,15 @@ import importlib.metadata
 import io
 import json
 import os
+import stat
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pytest
+from sandbox_executor import cli
 from sandbox_executor.cli import (
     _run_docker,
     build_network_isolation_args,
@@ -17,7 +21,20 @@ from sandbox_executor.cli import (
     normalize_repo_remote,
     resolve_target_repo_url,
     run_docker_container,
+    strip_url_credentials,
 )
+
+from tests.leak_assertions import assert_no_token_fragment, make_fake_github_token, make_fake_secret
+
+# Captured at import, before the suite-wide `isolated_env_file_dir` fixture (conftest.py) replaces it.
+_REAL_ENV_FILE_DIR = cli.env_file_dir
+
+
+def _read_env_file(docker_argv: list[str]) -> dict[str, str]:
+    """Parse the --env-file a recorded docker argv points at (only valid while the run is in progress)."""
+    path = docker_argv[docker_argv.index("--env-file") + 1]
+    with open(path, encoding="utf-8") as fh:
+        return dict(line.rstrip("\n").split("=", 1) for line in fh)
 
 
 class TestHolonCLI(unittest.TestCase):
@@ -162,7 +179,8 @@ class TestHolonCLI(unittest.TestCase):
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
     def test_run_docker_container(self, mock_which, mock_run, mock_mounts, mock_resolve_repo):
-        mock_run.return_value = MagicMock(returncode=0)
+        env_files: list[dict[str, str]] = []
+        mock_run.side_effect = lambda cmd, *a, **k: env_files.append(_read_env_file(cmd)) or MagicMock(returncode=0)
         with patch.dict(os.environ, {"GITHUB_TOKEN": "secret_token"}, clear=True):
             code = run_docker_container(
                 "planner",
@@ -174,7 +192,9 @@ class TestHolonCLI(unittest.TestCase):
             mock_run.assert_called_once()
             args = mock_run.call_args[0][0]
             self.assertIn("docker", args)
-            self.assertIn("GITHUB_TOKEN=secret_token", args)
+            # The token travels in the 0600 env-file, never on the docker command line.
+            self.assertFalse(any("secret_token" in arg for arg in args))
+            self.assertEqual(env_files, [{"GITHUB_TOKEN": "secret_token"}])
             self.assertIn("HOLON_REPO_URL=git@github.com:test/repo.git", args)
 
     @patch("sandbox_executor.cli.resolve_target_repo_url", return_value="git@github.com:test/repo.git")
@@ -182,7 +202,8 @@ class TestHolonCLI(unittest.TestCase):
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
     def test_run_docker_container_forward_env_vars(self, mock_which, mock_run, mock_mounts, mock_resolve_repo):
-        mock_run.return_value = MagicMock(returncode=0)
+        env_files: list[dict[str, str]] = []
+        mock_run.side_effect = lambda cmd, *a, **k: env_files.append(_read_env_file(cmd)) or MagicMock(returncode=0)
         env = {
             "GITHUB_TOKEN": "my-github-token",
             "HOLON_ROLE": "host-role-should-be-overridden",
@@ -202,8 +223,9 @@ class TestHolonCLI(unittest.TestCase):
             mock_run.assert_called_once()
             args = mock_run.call_args[0][0]
             self.assertIn("docker", args)
-            self.assertIn("GITHUB_TOKEN=my-github-token", args)
-            self.assertIn("HOLON_AGENT_KEY=my-agent-key", args)
+            # Credentials are forwarded through the env-file, not the docker command line.
+            self.assertEqual(env_files, [{"GITHUB_TOKEN": "my-github-token", "HOLON_AGENT_KEY": "my-agent-key"}])
+            self.assertFalse(any("my-github-token" in arg or "my-agent-key" in arg for arg in args))
             self.assertIn("HOLON_AGENT_EFFORT=high", args)
             self.assertIn("HOLON_AGENT_PROVIDER=anthropic", args)
             # Ensure programmatic role takes strict precedence over host environment
@@ -429,10 +451,8 @@ class TestRepoUrlResolution(unittest.TestCase):
             )
             with patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_mock_token_123"}, clear=True):
                 resolved = resolve_target_repo_url(repo_dir=tmp_dir)
-                self.assertEqual(
-                    resolved,
-                    "https://x-access-token:ghp_mock_token_123@github.com/myorg/myrepo.git",
-                )
+                # Credential-free: the token reaches git through a runtime credential helper instead.
+                self.assertEqual(resolved, "https://github.com/myorg/myrepo.git")
 
     def test_resolve_target_repo_url_ssh_without_token(self):
         """Test SSH remote without token returns raw remote URL for SSH agent forwarding."""
@@ -458,10 +478,7 @@ class TestRepoUrlResolution(unittest.TestCase):
             )
             with patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_mock_token_456"}, clear=True):
                 resolved = resolve_target_repo_url(repo_dir=tmp_dir)
-                self.assertEqual(
-                    resolved,
-                    "https://x-access-token:ghp_mock_token_456@github.com/myorg/myrepo.git",
-                )
+                self.assertEqual(resolved, "https://github.com/myorg/myrepo.git")
 
     def test_resolve_target_repo_url_worktree(self):
         """Test worktree inherits origin from main repository."""
@@ -516,8 +533,9 @@ class TestRepoUrlResolution(unittest.TestCase):
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
     def test_sanitized_cmd_masks_tokenized_repo_url(self, mock_which, mock_run, mock_mounts):
-        """Test that run_docker_container masks tokenized HOLON_REPO_URL in sanitized_cmd log."""
-        mock_run.return_value = MagicMock(returncode=0)
+        """Test that a tokenised HOLON_REPO_URL is stripped of its credential before it is forwarded or echoed."""
+        env_files: list[dict[str, str]] = []
+        mock_run.side_effect = lambda cmd, *a, **k: env_files.append(_read_env_file(cmd)) or MagicMock(returncode=0)
         token = "ghp_super_secret_pat_999"
         token_url = f"https://x-access-token:{token}@github.com/myorg/myrepo.git"
         with (
@@ -532,8 +550,11 @@ class TestRepoUrlResolution(unittest.TestCase):
             )
             self.assertEqual(code, 0)
             output = mock_stdout.getvalue()
-            self.assertIn("HOLON_REPO_URL=https://x-access-token:***REDACTED***@github.com/myorg/myrepo.git", output)
+            self.assertIn("HOLON_REPO_URL=https://github.com/myorg/myrepo.git", output)
             self.assertNotIn(token, output)
+            self.assertNotIn(token, " ".join(mock_run.call_args[0][0]))
+            # With no other token source, the credential stripped from the URL becomes the forwarded token.
+            self.assertEqual(env_files, [{"GITHUB_TOKEN": token}])
 
     @patch("shutil.which", return_value="/usr/bin/docker")
     def test_run_docker_container_fails_fast_on_missing_origin(self, mock_which):
@@ -862,3 +883,271 @@ class TestHolonFlowCLI(unittest.TestCase):
             parsed = json.loads(output)
             self.assertEqual(parsed["target"], "my-branch")
             self.assertTrue(parsed["consensus"]["approved"])
+
+
+# --------------------------------------------------------------------------------------
+# Credential leaks: the echoed docker command, the docker argv and the env-file lifecycle
+# --------------------------------------------------------------------------------------
+
+_BRANCH = "I-1792762862-x/_"
+
+
+@pytest.fixture
+def leak_env(tmp_path, monkeypatch):
+    """A clean environment with a runtime-built fake token, a dashboard password and an agent key."""
+    secrets = {
+        "GITHUB_TOKEN": make_fake_github_token(),
+        "HOLON_MITM_WEB_PASSWORD": make_fake_secret("mitmweb"),
+        "HOLON_AGENT_KEY": make_fake_secret("agentkey"),
+    }
+    for key in list(os.environ):
+        if key.startswith(("HOLON_", "GIT_")) or key in ("GITHUB_TOKEN", "GH_TOKEN"):
+            monkeypatch.delenv(key, raising=False)
+    for key, value in secrets.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", "git@github.com:myorg/myrepo.git"], check=True)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
+    monkeypatch.setattr(cli, "get_agent_session_mounts", lambda agent_id: [])
+    monkeypatch.setattr(cli, "get_ssh_auth_mounts", lambda: ([], {}))
+    # A proxy URL carrying its own credential, as an external HOLON_PROXY_URL can.
+    proxy_password = make_fake_secret("proxypw")
+    monkeypatch.setattr(
+        cli,
+        "get_token_reduction_mounts_and_envs",
+        lambda **kwargs: ([], {"HTTPS_PROXY": f"http://proxyuser:{proxy_password}@proxy.internal:3128"}),
+    )
+    secrets["HTTPS_PROXY"] = proxy_password
+    return {"secrets": secrets, "repo": str(repo)}
+
+
+class _RecordingDocker:
+    """Delegates git to the real subprocess.run and records each docker run with its env-file state."""
+
+    def __init__(self, outcome=None):
+        self.outcome = outcome if outcome is not None else MagicMock(returncode=0)
+        self.argv: list[str] = []
+        self.env_file: str | None = None
+        self.env_file_mode: int | None = None
+        self.env_dir_mode: int | None = None
+        self.env_file_contents: dict[str, str] = {}
+        self._real_run = subprocess.run
+
+    def __call__(self, cmd, *args, **kwargs):
+        if cmd[0] != "docker":
+            return self._real_run(cmd, *args, **kwargs)
+        self.argv = list(cmd)
+        if "--env-file" in cmd:
+            self.env_file = cmd[cmd.index("--env-file") + 1]
+            self.env_file_mode = stat.S_IMODE(os.stat(self.env_file).st_mode)
+            self.env_dir_mode = stat.S_IMODE(os.stat(os.path.dirname(self.env_file)).st_mode)
+            self.env_file_contents = _read_env_file(cmd)
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return self.outcome
+
+
+def _run_planner(repo_dir: str) -> int:
+    return run_docker_container(
+        "planner", "holon/agent-claude", [_BRANCH, "claude-agent", "opus"], agent_id="claude", repo_dir=repo_dir
+    )
+
+
+def test_docker_echo_and_argv_carry_no_secret_fragment(leak_env, monkeypatch, capsys):
+    docker = _RecordingDocker()
+    monkeypatch.setattr(cli.subprocess, "run", docker)
+
+    assert _run_planner(leak_env["repo"]) == 0
+
+    echo = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("Executing: docker run"))
+    argv_text = " ".join(docker.argv)
+    for secret in leak_env["secrets"].values():
+        assert_no_token_fragment(echo, secret)  # goal 4a: the printed docker run command
+        assert_no_token_fragment(argv_text, secret)  # goal 4c: the docker argv list
+    # The repository, role and branch stay readable.
+    for readable in ("HOLON_REPO_URL=https://github.com/myorg/myrepo.git", "HOLON_ROLE=planner", _BRANCH):
+        assert readable in echo
+        assert readable in docker.argv
+    assert "--env-file" in echo
+
+
+def test_secrets_travel_in_an_owner_only_env_file_that_is_removed(leak_env, monkeypatch):
+    docker = _RecordingDocker()
+    monkeypatch.setattr(cli.subprocess, "run", docker)
+
+    assert _run_planner(leak_env["repo"]) == 0
+
+    secrets = leak_env["secrets"]
+    assert docker.env_file_mode == 0o600
+    assert docker.env_dir_mode == 0o700
+    assert docker.env_file_contents["GITHUB_TOKEN"] == secrets["GITHUB_TOKEN"]
+    assert docker.env_file_contents["HOLON_MITM_WEB_PASSWORD"] == secrets["HOLON_MITM_WEB_PASSWORD"]
+    assert docker.env_file_contents["HOLON_AGENT_KEY"] == secrets["HOLON_AGENT_KEY"]
+    assert secrets["HTTPS_PROXY"] in docker.env_file_contents["HTTPS_PROXY"]
+    assert not os.path.exists(docker.env_file)
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [MagicMock(returncode=3), KeyboardInterrupt(), RuntimeError("docker exploded")],
+    ids=["non-zero-exit", "keyboard-interrupt", "exception"],
+)
+def test_env_file_is_removed_however_the_run_ends(leak_env, monkeypatch, outcome):
+    docker = _RecordingDocker(outcome=outcome)
+    monkeypatch.setattr(cli.subprocess, "run", docker)
+
+    if isinstance(outcome, BaseException):
+        with pytest.raises(type(outcome)):
+            _run_planner(leak_env["repo"])
+    else:
+        assert _run_planner(leak_env["repo"]) == 3
+
+    assert docker.env_file_mode == 0o600
+    assert not os.path.exists(docker.env_file)
+
+
+def test_git_credential_helper_is_injected_by_reference_only(leak_env, monkeypatch):
+    docker = _RecordingDocker()
+    monkeypatch.setattr(cli.subprocess, "run", docker)
+
+    assert _run_planner(leak_env["repo"]) == 0
+
+    assert "GIT_CONFIG_COUNT=2" in docker.argv
+    assert "GIT_CONFIG_KEY_0=credential.https://github.com.helper" in docker.argv
+    assert "GIT_CONFIG_VALUE_0=" in docker.argv
+    assert "GIT_CONFIG_KEY_1=credential.https://github.com.helper" in docker.argv
+    helper = next(arg for arg in docker.argv if arg.startswith("GIT_CONFIG_VALUE_1="))
+    assert '"$GITHUB_TOKEN"' in helper
+    assert_no_token_fragment(helper, leak_env["secrets"]["GITHUB_TOKEN"])
+
+
+def test_credential_helper_answers_from_the_environment(leak_env):
+    """The helper, run by real git, yields the token from the environment and nothing is read from a file."""
+    token = leak_env["secrets"]["GITHUB_TOKEN"]
+    env = {
+        "PATH": os.environ["PATH"],
+        "HOME": os.environ["HOME"],
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GITHUB_TOKEN": token,
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "credential.https://github.com.helper",
+        "GIT_CONFIG_VALUE_0": "",
+        "GIT_CONFIG_KEY_1": "credential.https://github.com.helper",
+        "GIT_CONFIG_VALUE_1": cli.GIT_CREDENTIAL_HELPER,
+    }
+    origin = subprocess.run(
+        ["git", "config", "--show-scope", "--get-all", "credential.https://github.com.helper"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert [line.split("\t", 1)[0] for line in origin.stdout.splitlines()] == ["command", "command"]
+    filled = subprocess.run(
+        ["git", "credential", "fill"],
+        input="protocol=https\nhost=github.com\npath=myorg/myrepo.git\n\n",
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "username=x-access-token" in filled.stdout.splitlines()
+    assert f"password={token}" in filled.stdout.splitlines()
+
+
+def test_override_url_credential_is_stripped_and_forwarded_through_the_env_file(leak_env, monkeypatch, capsys):
+    token = leak_env["secrets"]["GITHUB_TOKEN"]
+    monkeypatch.delenv("GITHUB_TOKEN")
+    monkeypatch.setenv("HOLON_REPO_URL", f"https://x-access-token:{token}@github.com/myorg/myrepo.git")
+    docker = _RecordingDocker()
+    monkeypatch.setattr(cli.subprocess, "run", docker)
+
+    assert _run_planner(leak_env["repo"]) == 0
+
+    captured = capsys.readouterr()
+    assert "HOLON_REPO_URL contains embedded credentials" in captured.err
+    for text in (captured.out, captured.err, " ".join(docker.argv)):
+        assert_no_token_fragment(text, token)
+    assert "HOLON_REPO_URL=https://github.com/myorg/myrepo.git" in docker.argv
+    assert docker.env_file_contents["GITHUB_TOKEN"] == token
+    assert "GIT_CONFIG_KEY_1=credential.https://github.com.helper" in docker.argv
+
+
+def test_no_credential_helper_for_an_override_url_that_never_carried_the_token(leak_env, monkeypatch):
+    monkeypatch.setenv("HOLON_REPO_URL", "https://git.example.org/myorg/myrepo.git")
+    docker = _RecordingDocker()
+    monkeypatch.setattr(cli.subprocess, "run", docker)
+
+    assert _run_planner(leak_env["repo"]) == 0
+
+    assert not any(arg.startswith("GIT_CONFIG_") for arg in docker.argv)
+
+
+def test_line_break_in_a_secret_aborts_before_docker_runs(leak_env, monkeypatch, capsys):
+    monkeypatch.setenv("HOLON_AGENT_KEY", "first-line\nINJECTED=1")
+    monkeypatch.setattr(cli.subprocess, "run", _RecordingDocker(outcome=AssertionError("docker must not run")))
+
+    assert _run_planner(leak_env["repo"]) == 1
+
+    err = capsys.readouterr().err
+    assert "HOLON_AGENT_KEY" in err
+    assert "first-line" not in err
+    assert os.listdir(cli.env_file_dir()) == []
+
+
+def test_stale_env_files_are_swept(isolated_env_file_dir):
+    stale = isolated_env_file_dir / "holon-env-stale"
+    fresh = isolated_env_file_dir / "holon-env-fresh"
+    unrelated = isolated_env_file_dir / "keep-me"
+    for path in (stale, fresh, unrelated):
+        path.write_text("X=1\n")
+    old = time.time() - 2 * 24 * 60 * 60
+    os.utime(stale, (old, old))
+    os.utime(unrelated, (old, old))
+
+    cli.sweep_stale_env_files(str(isolated_env_file_dir))
+
+    assert not stale.exists()
+    assert fresh.exists()
+    assert unrelated.exists()
+
+
+def test_env_file_dir_is_tightened_to_owner_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    loose = tmp_path / ".holon" / "tmp" / "env-files"
+    loose.mkdir(parents=True, mode=0o755)
+    os.chmod(loose, 0o755)
+
+    assert _REAL_ENV_FILE_DIR() == str(loose)
+    assert stat.S_IMODE(os.stat(loose).st_mode) == 0o700
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://x-access-token:SECRET@github.com/o/r.git", ("https://github.com/o/r.git", "SECRET")),
+        ("https://SECRET@github.com/o/r.git", ("https://github.com/o/r.git", "SECRET")),
+        ("https://github.com/o/r.git", ("https://github.com/o/r.git", None)),
+        ("https://u:SECRET@ghe.example:8443/o/r.git", ("https://ghe.example:8443/o/r.git", "SECRET")),
+        ("git@github.com:o/r.git", ("git@github.com:o/r.git", None)),
+    ],
+)
+def test_strip_url_credentials(url, expected):
+    assert strip_url_credentials(url) == expected
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://github.com/o/r.git", "github.com"),
+        ("https://GHE.example:8443/o/r.git", "ghe.example:8443"),
+        ("http://github.com/o/r.git", None),
+        ("git@github.com:o/r.git", None),
+        ("ssh://git@github.com/o/r.git", None),
+    ],
+)
+def test_credential_host(url, expected):
+    assert cli.credential_host(url) == expected

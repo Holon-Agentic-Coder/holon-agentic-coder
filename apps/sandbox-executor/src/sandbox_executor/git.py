@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import subprocess
 
-from sandbox_executor.entrypoint.executor import redact_text
+from sandbox_executor.redaction import redact_text
 
 logger = logging.getLogger(__name__)
 

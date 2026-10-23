@@ -2,6 +2,7 @@
 """Host wrapper CLI for running Holon Docker sandbox roles (intent, plan, execute)."""
 
 import argparse
+import contextlib
 import importlib.metadata
 import logging
 import os
@@ -14,7 +15,7 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 from sandbox_executor import local_llm
 from sandbox_executor.calibration import run_calibrate
@@ -32,6 +33,13 @@ from sandbox_executor.knowledge import (
 from sandbox_executor.knowledge.consult import format_consult_results_table
 from sandbox_executor.knowledge.stats import format_stats_dashboard
 from sandbox_executor.ledger import format_query_results_table, query_ledger
+from sandbox_executor.redaction import (
+    COMMAND_ECHO_ENV_NAMES,
+    is_secret_env_name,
+    redact_agent_secrets,
+    redact_command,
+    redact_env_literals,
+)
 from sandbox_executor.scaffold import init_project
 from sandbox_executor.token_reduction import generate_root_ca
 
@@ -171,19 +179,69 @@ def normalize_repo_remote(remote_url: str) -> tuple[str, str]:
     return host, path_with_git
 
 
-def resolve_target_repo_url(repo_dir: str | None = None) -> str:
-    """Resolve target git repository URL dynamically.
+def strip_url_credentials(url: str) -> tuple[str, str | None]:
+    """Remove the userinfo (`user:password@`) from a `scheme://` URL.
 
-    Checks HOLON_REPO_URL environment variable first. If unset, queries
-    git remote.origin.url in repo_dir (or cwd). If a GitHub token is found,
-    constructs an authenticated HTTPS URL. Otherwise, returns the raw remote URL.
+    Args:
+        url: A remote URL. SCP-style SSH remotes (`git@host:org/repo.git`) have no scheme and are
+            returned unchanged.
+
+    Returns:
+        The URL without userinfo, and the credential it carried: the password, or the user name
+        when no password is present (GitHub accepts a token as a bare user name). The credential is
+        None when the URL carried no userinfo.
+    """
+    if "://" not in url:
+        return url, None
+    parts = urlsplit(url)
+    userinfo, sep, hostport = parts.netloc.rpartition("@")
+    if not sep:
+        return url, None
+    user, _, password = userinfo.partition(":")
+    return urlunsplit(parts._replace(netloc=hostport)), (password or user or None)
+
+
+def credential_host(repo_url: str) -> str | None:
+    """Return the `host[:port]` a git credential helper should be scoped to, or None.
+
+    Only HTTPS remotes carry a token through a credential helper; SSH remotes authenticate through
+    the forwarded agent socket and plain HTTP must never be sent a credential.
+
+    Args:
+        repo_url: A credential-free remote URL.
+
+    Returns:
+        The lower-cased host, with its port when one is present, for an HTTPS URL; otherwise None.
+    """
+    if not repo_url.lower().startswith("https://"):
+        return None
+    hostport = urlsplit(repo_url).netloc.rpartition("@")[2].lower()
+    return hostport or None
+
+
+def resolve_target_repo_url(repo_dir: str | None = None) -> str:
+    """Resolve the target git repository URL, always without embedded credentials.
+
+    Checks the HOLON_REPO_URL environment variable first; any userinfo in it is stripped, with a
+    warning that names the variable but never the value. If unset, queries git remote.origin.url in
+    repo_dir (or cwd). When a GitHub token is found, the remote is normalised to a plain HTTPS URL,
+    and the token reaches git inside the container through a runtime credential helper instead (see
+    `run_docker_container`). Otherwise the raw remote URL is returned unchanged, for SSH agent
+    forwarding.
 
     Raises:
         RuntimeError: If remote.origin.url cannot be resolved or is empty.
     """
     override = os.getenv("HOLON_REPO_URL")
     if override and override.strip():
-        return override.strip()
+        clean_url, embedded = strip_url_credentials(override.strip())
+        if embedded:
+            print(
+                "Warning: HOLON_REPO_URL contains embedded credentials; they are stripped from the URL and the "
+                "token is supplied to git inside the container through a credential helper instead.",
+                file=sys.stderr,
+            )
+        return clean_url
 
     target_dir = os.path.abspath(repo_dir) if repo_dir else os.getcwd()
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
@@ -205,7 +263,7 @@ def resolve_target_repo_url(repo_dir: str | None = None) -> str:
     token = find_github_token()
     if token:
         host, repo_path = normalize_repo_remote(raw_url)
-        return f"https://x-access-token:{token}@{host}/{repo_path}"
+        return f"https://{host}/{repo_path}"
 
     return raw_url
 
@@ -713,7 +771,11 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
     )
     proxy_spawn = subprocess.run(docker_run_proxy, capture_output=True, text=True, check=False)
     if proxy_spawn.returncode != 0:
-        stderr = (proxy_spawn.stderr or "").strip() or (proxy_spawn.stdout or "").strip()
+        # The sidecar's output can echo the mitmweb `?token=` login URL or the `web_password=` setting.
+        stderr = redact_env_literals(
+            redact_agent_secrets((proxy_spawn.stderr or "").strip() or (proxy_spawn.stdout or "").strip()),
+            names=COMMAND_ECHO_ENV_NAMES,
+        )
         teardown_token_reduction_proxy()
         raise RuntimeError(
             f"mitmproxy sidecar '{container_name}' failed to start: {stderr or 'unknown docker error'}. "
@@ -923,6 +985,86 @@ def get_host_proxy_envs() -> dict[str, str]:
     return envs
 
 
+# Credential env-files live in an owner-only directory, apart from ~/.holon/tmp itself, which also
+# holds directories that are bind-mounted into the container.
+ENV_FILE_PREFIX = "holon-env-"
+_ENV_FILE_STALE_SECONDS = 24 * 60 * 60
+
+# A git credential helper that answers `get` from the container's own environment. It holds only the
+# `$GITHUB_TOKEN` reference, never the value, so it can travel on the docker command line.
+GIT_CREDENTIAL_HELPER = (
+    '!f() { if [ "$1" = get ]; then printf "username=x-access-token\\npassword=%s\\n" "$GITHUB_TOKEN"; fi; }; f'
+)
+
+
+def env_file_dir() -> str:
+    """Return the directory for temporary credential env-files, creating it owner-only (0700).
+
+    Returns:
+        The absolute path of `~/.holon/tmp/env-files`. Looser permission bits on an existing
+        directory are tightened back to 0700.
+    """
+    path = os.path.expanduser(os.path.join("~", ".holon", "tmp", "env-files"))
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    if os.stat(path).st_mode & 0o077:
+        os.chmod(path, 0o700)
+    return path
+
+
+def sweep_stale_env_files(directory: str, max_age_seconds: float = _ENV_FILE_STALE_SECONDS) -> None:
+    """Best-effort removal of credential env-files left behind by a killed run.
+
+    Args:
+        directory: The env-file directory to sweep.
+        max_age_seconds: Files whose modification time is older than this are removed.
+    """
+    cutoff = time.time() - max_age_seconds
+    try:
+        entries = os.listdir(directory)
+    except OSError:
+        return
+    for name in entries:
+        if not name.startswith(ENV_FILE_PREFIX):
+            continue
+        path = os.path.join(directory, name)
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.remove(path)
+                logger.debug("Removed stale credential env-file %s", path)
+        except OSError as exc:
+            logger.debug("Could not sweep env-file %s: %s", path, exc)
+
+
+def write_env_file(env: dict[str, str]) -> str:
+    """Write credential variables to a new 0600 docker `--env-file`, one `KEY=VALUE` line each.
+
+    Docker reads the file on the client side and applies no quoting, so a value containing a line
+    break would be cut short or smuggle in a second variable; such values are rejected.
+
+    Args:
+        env: The variables to write, which are emitted in sorted key order.
+
+    Returns:
+        The path of the new file. The caller owns it and must remove it.
+
+    Raises:
+        ValueError: If a value contains a line break. The message names the key, never the value.
+    """
+    for key, value in env.items():
+        if "\n" in value or "\r" in value:
+            raise ValueError(f"the value of {key} contains a line break and cannot be passed to the container")
+    fd, path = tempfile.mkstemp(prefix=ENV_FILE_PREFIX, dir=env_file_dir())
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.writelines(f"{key}={value}\n" for key, value in sorted(env.items()))
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(path)
+        raise
+    return path
+
+
 def run_docker_container(
     role: str,
     image_name: str,
@@ -947,9 +1089,22 @@ def run_docker_container(
     tty_flag = ["-it"] if sys.stdin.isatty() else ["-i"]
     docker_cmd = ["docker", "run", "--rm", *tty_flag]
 
+    # Credentials never go on the docker command line, where `ps` and /proc/<pid>/cmdline can read
+    # them: they are collected here and handed over in a 0600 --env-file just before the run.
+    secret_env: dict[str, str] = {}
+
+    def add_env(key: str, value: str) -> None:
+        item = f"{key}={value}"
+        if is_secret_env_name(key) or redact_command([item]) != item:
+            secret_env[key] = value
+        else:
+            docker_cmd.extend(["-e", item])
+
     # Forward all host environment variables prefixed with HOLON_ and GITHUB_TOKEN
     env_to_forward = {}
-    gh_token = find_github_token()
+    override_url = (os.getenv("HOLON_REPO_URL") or "").strip()
+    override_token = strip_url_credentials(override_url)[1] if override_url else None
+    gh_token = find_github_token() or override_token
     if gh_token:
         env_to_forward["GITHUB_TOKEN"] = gh_token
 
@@ -971,13 +1126,35 @@ def run_docker_container(
             env_to_forward["HOLON_AGENT_PROVIDER"] = local_provider
 
     for key, value in sorted(env_to_forward.items()):
-        docker_cmd.extend(["-e", f"{key}={value}"])
+        add_env(key, value)
+
+    # The token reaches in-container git through runtime-only config (GIT_CONFIG_COUNT, git 2.31+),
+    # never through the URL or a file. It is scoped to the one host the token used to be embedded
+    # for: a remote built from origin, or an override URL that carried it. Entry 0 resets any
+    # inherited helpers for that host.
+    helper_host = credential_host(resolved_repo_url)
+    if gh_token and helper_host and (not override_url or override_token):
+        helper_key = f"credential.https://{helper_host}.helper"
+        docker_cmd.extend(
+            [
+                "-e",
+                "GIT_CONFIG_COUNT=2",
+                "-e",
+                f"GIT_CONFIG_KEY_0={helper_key}",
+                "-e",
+                "GIT_CONFIG_VALUE_0=",
+                "-e",
+                f"GIT_CONFIG_KEY_1={helper_key}",
+                "-e",
+                f"GIT_CONFIG_VALUE_1={GIT_CREDENTIAL_HELPER}",
+            ]
+        )
 
     # SSH Agent Socket Mounts
     ssh_mounts, ssh_envs = get_ssh_auth_mounts()
     docker_cmd.extend(ssh_mounts)
     for k, v in ssh_envs.items():
-        docker_cmd.extend(["-e", f"{k}={v}"])
+        add_env(k, v)
 
     # Containers reach the host only through the gateway name; make it resolvable on Linux as it already is on
     # Docker Desktop, so agent base URLs rewritten to host.docker.internal work on every platform.
@@ -987,6 +1164,7 @@ def run_docker_container(
     # so every remaining exit path — early returns included — must run teardown, not just the final
     # subprocess.run.
     local_agent_dir: str | None = None
+    env_file: str | None = None
     tr_mounts, tr_envs = get_token_reduction_mounts_and_envs(token_reduce=token_reduce, mitm_web=mitm_web)
     try:
         docker_cmd.extend(tr_mounts)
@@ -1021,13 +1199,13 @@ def run_docker_container(
                             f"Multiple host-local providers found ({', '.join(sorted(providers))}). "
                             "Please set HOLON_AGENT_PROVIDER or HOLON_LOCAL_PROVIDER to select one."
                         )
-                    docker_cmd.extend(["-e", f"HOLON_AGENT_PROVIDER={chosen}"])
+                    add_env("HOLON_AGENT_PROVIDER", chosen)
             except local_llm.LocalLLMConfigError as exc:
                 print(f"Error: {exc}", file=sys.stderr)
                 return 1
             docker_cmd.extend(local_llm.container_mount_args(local_agent_dir))
             for key, value in local_llm.container_env(local_agent_dir).items():
-                docker_cmd.extend(["-e", f"{key}={value}"])
+                add_env(key, value)
             # That endpoint now points at the gateway, so it would otherwise be intercepted by the sidecar.
             local_hosts = local_llm.rewritten_local_hosts(local_config)
             if local_hosts and tr_envs.get("NO_PROXY"):
@@ -1051,7 +1229,7 @@ def run_docker_container(
                 )
 
         for k, v in tr_envs.items():
-            docker_cmd.extend(["-e", f"{k}={v}"])
+            add_env(k, v)
 
         # Intent file mount for intent-creator role
         if role == "intent-creator":
@@ -1076,29 +1254,24 @@ def run_docker_container(
         docker_cmd.append(image_name)
         docker_cmd.extend(container_args)
 
-        sensitive_keys = [
-            "GITHUB_TOKEN",
-            "HOLON_AGENT_KEY",
-        ]
-        sanitized_cmd = []
-        for item in docker_cmd:
-            if any(item.startswith(f"{key}=") for key in sensitive_keys):
-                k, _ = item.split("=", 1)
-                sanitized_cmd.append(f"{k}=***REDACTED***")
-            elif item.startswith("HOLON_REPO_URL="):
-                if "://" in item and "@" in item:
-                    masked = re.sub(r"://([^:]+):([^@]+)@", r"://\1:***REDACTED***@", item)
-                    if masked == item:
-                        masked = re.sub(r"://([^@]+)@", r"://***REDACTED***@", item)
-                    sanitized_cmd.append(masked)
-                else:
-                    sanitized_cmd.append(item)
-            else:
-                sanitized_cmd.append(item)
-        print(f"Executing: {' '.join(sanitized_cmd)}")
+        if secret_env:
+            sweep_stale_env_files(env_file_dir())
+            try:
+                env_file = write_env_file(secret_env)
+            except ValueError as exc:
+                print(f"Error: {exc}.", file=sys.stderr)
+                return 1
+            # Right after `docker run`. Docker reads --env-file on the client side, so the host path
+            # needs no bind mount.
+            docker_cmd[2:2] = ["--env-file", env_file]
+
+        print(f"Executing: {redact_command(docker_cmd)}")
         result = subprocess.run(docker_cmd)
         return result.returncode
     finally:
+        if env_file:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(env_file)
         teardown_token_reduction_proxy()
         if local_agent_dir:
             shutil.rmtree(local_agent_dir, ignore_errors=True)

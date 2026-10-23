@@ -10,6 +10,8 @@ import pytest
 from sandbox_executor.entrypoint.review_loop import main as review_loop_main
 from sandbox_executor.entrypoint.review_loop import run_cmd
 
+from tests.leak_assertions import assert_no_token_fragment, make_fake_github_token
+
 
 class TestReviewLoopEntrypoint:
     """Test suite for entrypoint.review_loop."""
@@ -255,3 +257,36 @@ class TestReviewLoopGitHubCLIDiagnostics:
             assert "exit code 1" in res["official_review"]["output"]
             assert "HTTP 502 Bad Gateway" in res["official_review"]["output"]
             assert "Review posting partial/failed" in res["diagnostics"]
+
+
+# --------------------------------------------------------------------------------------
+# Credential leaks in the echoed clone command and its failure diagnostics
+# --------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def clone_leak_env(monkeypatch):
+    token = make_fake_github_token()
+    for name in ("GH_TOKEN", "HOLON_AGENT_KEY", "HOLON_MITM_WEB_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", token)
+    url = f"https://x-access-token:{token}@github.com/myorg/myrepo.git"
+    argv = ["git", "clone", "--branch", "I-1792762862-x/_", "--single-branch", "--depth", "1", url, "."]
+    failed = MagicMock(
+        returncode=128,
+        stdout=f"Cloning into '.' from {url}",
+        stderr=f"fatal: unable to access '{url}/': The requested URL returned error: 403",
+    )
+    return token, argv, failed
+
+
+def test_run_cmd_clone_echo_and_failure_carry_no_token_fragment(clone_leak_env, capsys):
+    token, argv, failed = clone_leak_env
+    with patch("subprocess.run", return_value=failed), pytest.raises(SystemExit):
+        run_cmd(argv, check=True)
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert_no_token_fragment(output, token)
+    assert "Running: git clone --branch I-1792762862-x/_ --single-branch" in output
+    assert "github.com/myorg/myrepo.git" in output
+    assert "returned error: 403" in output

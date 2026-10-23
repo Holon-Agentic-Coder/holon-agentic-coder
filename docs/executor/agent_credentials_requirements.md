@@ -66,15 +66,57 @@ overwriting `/etc/shadow` or `/usr/bin/`).
     external API keys.
   - `HOLON_AGENT_PROVIDER`: Specifies the target model provider (e.g., `openai`, `anthropic`, `google`).
   - `HOLON_AGENT_SETTINGS`: Custom JSON or file-path configurations passed directly to the agent.
-  - `HOLON_REPO_URL`: (Optional override). The target git repository URL. The `./holon` host CLI automatically resolves
-    the active repository remote (`remote.origin.url`) and combines it with `find_github_token()` to forward an
-    authenticated HTTPS URL (`https://x-access-token:<token>@<host>/<org>/<repo>.git`). If no token is detected, the raw
+  - `HOLON_REPO_URL`: (Optional override). The target git repository URL, which never carries credentials. The `./holon`
+    host CLI resolves the active repository remote (`remote.origin.url`). When `find_github_token()` finds a token, the
+    remote is normalised to a plain HTTPS URL (`https://<host>/<org>/<repo>.git`). If no token is detected, the raw
     remote URL is forwarded unchanged to allow SSH agent forwarding. Setting `HOLON_REPO_URL` on the host serves as an
-    explicit override.
+    explicit override. If the override embeds credentials (`https://x-access-token:<token>@...`), the CLI strips them
+    with a warning, and uses the stripped token when no other token source exists.
   - `GITHUB_TOKEN` / `GH_TOKEN`: Authenticates git fetch and push operations. The `./holon` host CLI automatically
     retrieves this token using `find_github_token()`, falling back to the local `gh` CLI credentials if not set in the
-    environment. When present, it is combined with the discovered remote origin to construct an authenticated
-    `HOLON_REPO_URL`.
+    environment. It reaches the container as described in
+    [How the GitHub token reaches the container](#how-the-github-token-reaches-the-container).
+
+#### How the GitHub token reaches the container
+
+The token is kept out of every process's arguments, where `ps` and `/proc/<pid>/cmdline` could read it, and out of every
+file inside the workspace:
+
+1. **`0600` env-file.** `run_docker_container` splits the variables it forwards. Credential variables go into a
+   temporary docker `--env-file`. These are `GITHUB_TOKEN`, `HOLON_AGENT_KEY`, `HOLON_MITM_WEB_PASSWORD`, any name the
+   shared key regex recognises (for example `*_TOKEN`, `*_SECRET` and `*_API_KEY`), and any value that carries a
+   credential, such as a proxy URL with userinfo. The file is created with mode `0600` in the owner-only (`0700`)
+   directory `~/.holon/tmp/env-files`. It is removed when the run ends, whether through success, failure, an exception
+   or an interrupt. Files left behind by a killed run are swept after 24 hours. Docker reads the file on the client
+   side, so no bind mount is needed. A value containing a line break is rejected, because the env-file format has no
+   quoting.
+2. **Runtime credential helper.** For an HTTPS remote, the CLI also passes `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>` and
+   `GIT_CONFIG_VALUE_<n>` (git 2.31 or later). These configure a `credential.https://<host>.helper` that answers with
+   `username=x-access-token` and the value of `$GITHUB_TOKEN` from the container environment. They hold only that
+   variable reference, so they are safe on the command line. The configuration exists only in the process environment,
+   never in `.git/config` or any tracked file. The helper is scoped to the one host the token was previously embedded
+   for. An override URL that never carried a credential gets no helper.
+
+A preserved workspace (`HOLON_KEEP_WORKSPACE=1`) cloned under the old scheme keeps the tokenised URL as its `origin`.
+That URL no longer matches, so the workspace is re-cloned, which also removes the persisted token.
+
+#### Redaction of command and environment echoes
+
+Every echoed command goes through one shared pattern set in `sandbox_executor.redaction`. This covers the host
+`Executing: docker run ...` line, the in-sandbox `Running: git clone ...` lines and their failure diagnostics, and the
+mitmproxy sidecar's failure output. The same pattern set redacts ledger records and agent output. Credentials are
+replaced with the fixed marker `*******`, while the repository, branch and command shape stay readable (for example
+`https://*******@github.com/<org>/<repo>.git`). Never add a second, divergent pattern set; extend that module instead.
+
+The repository-wide test in `tests/test_pre_commit_check.py` fails if any tracked file contains a GitHub token shape or
+an `x-access-token:` URL credential.
+
+#### Follow-up: mitmweb dashboard password
+
+`HOLON_MITM_WEB_PASSWORD` is kept out of the agent container's arguments and masked in every echo. However, it is still
+passed to the mitmproxy sidecar as `--set web_password=<password>` on that container's command line. A proposed
+follow-up intent would mount a `0600` mitmproxy `config.yaml` into the sidecar instead. The dashboard is bound to
+loopback, so the exposure is limited to local process listings.
 
 ---
 

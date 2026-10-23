@@ -32,7 +32,6 @@ from sandbox_executor.calibration import (
     is_metadata_path,
     run_calibrate,
 )
-from sandbox_executor.entrypoint.executor import redact_text
 from sandbox_executor.entrypoint.planner import (
     _sanitize_model_name,
     load_metrics_config,
@@ -53,6 +52,7 @@ from sandbox_executor.ledger import (
     generate_action_id,
     parse_commit_trailers,
 )
+from sandbox_executor.redaction import redact_text
 
 logger = logging.getLogger(__name__)
 

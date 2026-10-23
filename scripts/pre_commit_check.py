@@ -24,6 +24,9 @@ CREDENTIAL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("AWS Access Key", re.compile(r"AKIA[0-9A-Z]{16}")),
     ("GitHub Personal Access Token", re.compile(r"(?:ghp|gho|ghu|ghs|ghr)_[0-9a-zA-Z]{36}")),
     ("GitHub Fine-Grained PAT", re.compile(r"github_pat_[0-9a-zA-Z_]{22,}")),
+    # A token embedded in a clone URL's userinfo. Masked forms (`*******`, `***REDACTED***`) and
+    # `${GITHUB_TOKEN}` references fall outside the character class, so they never match.
+    ("URL-embedded GitHub credential", re.compile(r"x-access-token:[A-Za-z0-9_\-]{20,}@")),
     ("Slack Token", re.compile(r"xox[baprs]-[0-9a-zA-Z]{10,}")),
     ("Private Key Header", re.compile(r"-----BEGIN (?:[A-Z0-9_\s]+ )?PRIVATE KEY-----")),
     (
@@ -33,6 +36,13 @@ CREDENTIAL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         ),
     ),
 ]
+
+# The GitHub credential shapes that `find_github_credentials` enforces across every tracked file.
+GITHUB_CREDENTIAL_PATTERN_NAMES: tuple[str, ...] = (
+    "GitHub Personal Access Token",
+    "GitHub Fine-Grained PAT",
+    "URL-embedded GitHub credential",
+)
 
 # Patterns representing non-production test / mock placeholders that should not trigger false positives
 FALSE_POSITIVE_INDICATORS = [
@@ -180,6 +190,35 @@ def check_file_credentials(file_path: str) -> list[str]:
         violations.append(f"Unable to read file for scanning: {exc}")
 
     return violations
+
+
+def find_github_credentials(files: Sequence[str]) -> list[tuple[str, int, str]]:
+    """Scan files for GitHub token shapes, with no path or placeholder exemptions.
+
+    Unlike `check_file_credentials`, this applies to tests, docs and the append-only ledger too: a
+    GitHub token or a tokenised clone URL has no legitimate reason to be in any tracked file, and
+    test fixtures build fake tokens at runtime instead. Missing, binary-unreadable and oversized
+    (over 2 MB) files are skipped.
+
+    Args:
+        files: Paths of the files to scan.
+
+    Returns:
+        One `(path, line_number, pattern_name)` entry per match. The matched value is deliberately
+        never returned, so a caller cannot print the credential it found.
+    """
+    patterns = [(name, pat) for name, pat in CREDENTIAL_PATTERNS if name in GITHUB_CREDENTIAL_PATTERN_NAMES]
+    findings: list[tuple[str, int, str]] = []
+    for file_path in files:
+        try:
+            if not os.path.isfile(file_path) or os.path.getsize(file_path) > 2 * 1024 * 1024:
+                continue
+            with open(file_path, encoding="utf-8", errors="ignore") as f:
+                for line_no, line in enumerate(f, start=1):
+                    findings.extend((file_path, line_no, name) for name, pat in patterns if pat.search(line))
+        except OSError:
+            continue
+    return findings
 
 
 def check_spelling_orthography(file_path: str) -> list[str]:

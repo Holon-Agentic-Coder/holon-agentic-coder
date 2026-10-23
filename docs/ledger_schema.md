@@ -97,8 +97,9 @@ ledger appends are guarded by `LedgerLock` (`sandbox_executor.ledger.LedgerLock`
 
 #### Flow Stage Record Matrix
 
-Every `holon flow` stage writes to the target repository's own `holon-knowledge/ledger/`. The table lists exactly which
-rows each stage appends.
+Every `holon flow` stage writes to the target repository's own `holon-knowledge/ledger/`. The table lists the rows each
+stage function in `sandbox_executor/flow.py` appends. In Stage 3 the in-sandbox executor entrypoint
+(`sandbox_executor/entrypoint/executor.py`) appends further rows of its own, listed below the table.
 
 | Stage             | Ledger file        | Rows appended                                                                                                                                                                                                                                                                       |
 | ----------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -107,6 +108,17 @@ rows each stage appends.
 | 3. Execute        | `executions.jsonl` | One execution summary (`entry_type: "summary"`, `execution_id` `E-...`) and one test-run action event (`entry_type: "action"`).                                                                                                                                                     |
 | 4. PR review loop | `executions.jsonl` | Per iteration: `ACT-REV` (evaluation), `ACT-FIND` (when findings exist) and `ACT-RES` (resolver, iterations 2 and later). Once per loop: `ACT-POST` (consensus posting, even when posting fails), a `REV-...` summary and an action event.                                          |
 | 5. Calibration    | `executions.jsonl` | One `ACT-CAL` action (`action_origin: "calibration"`), committed with `plans/{plan_id}_calibration.md` on the `/calibrated` branch. When calibration fails, an `ACT-CAL` row with `outcome: "failure"` is appended but left uncommitted (see Known gap). No summary row is written. |
+
+Stage 3 executor entrypoint rows (all in `executions.jsonl`, under the same `E-...` `execution_id`):
+
+- Its own execution summary (`entry_type: "summary"`), plus a superseding failure summary when the branch integrity
+  check or the pre-push sync fails.
+- When action logging is enabled (`is_action_logging_enabled()`): a `command_execution` action for the agent run
+  ("Executed agent ...") and a `git_mutation` action for the commit ("Committed execution changes: ..."), plus a
+  `doc_update` action when markdown files are formatted and a `git_mutation` action when a corrupted repository is
+  re-initialised.
+- When the plan is decomposed instead of executed: sub-intent rows in `intents.jsonl`, a summary and, with action
+  logging enabled, a `plan_decomposition` action.
 
 Stage 4 and Stage 5 action rows keep their historical field order and identifier formats:
 
@@ -125,8 +137,11 @@ Write rules for every stage:
   `sandbox_executor.flow.record_review_action()` rather than writing to the file directly; integrations without a
   `FlowContext` call the context-free `sandbox_executor.ledger.try_append_action_record(..., preserve_shape=True)`,
   which applies the same validation, LedgerLock and fail-loud reporting.
-- **Fail loud, never abort**: a failed append is logged at `WARNING` with the ledger path and exception, and mirrored
-  into the flow context log shown to the operator. The stage carries on, and no fallback ledger file is ever written.
+- **Fail loud**: when a row a `flow.py` stage function appends fails, the failure is logged at `WARNING` with the ledger
+  path and exception, and mirrored into the flow context log shown to the operator. No fallback ledger file is ever
+  written. A failed Stage 1 intent row, Stage 2 plan row or Stage 3 execution summary then fails the stage, which halts
+  the pipeline. The other rows in the table (action rows, the Stage 4 `REV-...` summary and the Stage 5 `ACT-CAL` row)
+  never abort their stage.
 - **Suppression**: dry runs append nothing (the review loop logs how many rows it suppressed). `holon calibrate` with
   `skip_commit` appends no `ACT-CAL` row.
 - **No backfill**: only new executions gain these rows. Historical records are never synthesised.

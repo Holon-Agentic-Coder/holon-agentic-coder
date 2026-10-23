@@ -680,6 +680,100 @@ class TestFlowStages:
         assert "holon-knowledge/ledger/executions.jsonl" in status
         assert "plans/P-200-plan_calibration.md" in status
 
+    def test_stage5_calibrate_fallback_records_original_error_when_prettier_fails(self, tmp_path):
+        """A Prettier failure inside the fallback must not mask the original calibration error."""
+        ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
+        ledger.parent.mkdir(parents=True)
+        ledger.write_text("", encoding="utf-8")
+
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            plan_branch="I-100-intent/P-200-plan/_",
+            dry_run=False,
+            skip_push=True,
+        )
+        with (
+            patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError("calibration failed")),
+            patch("sandbox_executor.flow.converge_prettier", side_effect=OSError("prettier missing")),
+        ):
+            res = run_calibrate_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        cal_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-CAL"]
+        assert len(cal_rows) == 1
+        assert cal_rows[0]["outcome"] == "failure"
+        assert cal_rows[0]["error_context"] == "Calibration run failed: calibration failed"
+
+    def test_stage1_intent_fails_fast_when_ledger_append_fails(self, tmp_path):
+        """A failed Stage 1 intent append raises so the engine halts the pipeline."""
+        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_data={"slug": "stage1-append-fail", "goal": "Fail fast"},
+            dry_run=False,
+        )
+        with (
+            patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=0)),
+            patch("sandbox_executor.flow.try_append_ledger_line", return_value=False),
+            pytest.raises(RuntimeError, match="Stage 1 intent record"),
+        ):
+            run_intent_stage(ctx)
+
+    def test_stage2_plan_fails_fast_when_ledger_append_fails(self, tmp_path):
+        """A failed Stage 2 plan append raises so the engine halts the pipeline."""
+        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+        (tmp_path / "plans").mkdir(parents=True)
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_branch="I-12345-my-intent/_",
+            intent_data={"slug": "my-intent", "goal": "Generate plan"},
+            agent="antigravity-agent",
+            model="gemini-3.8-flash-medium",
+            dry_run=False,
+        )
+        with (
+            patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=0)),
+            patch("sandbox_executor.flow.try_append_ledger_line", return_value=False),
+            pytest.raises(RuntimeError, match="Stage 2 plan record"),
+        ):
+            run_plan_stage(ctx)
+
+    def test_stage3_execute_fails_fast_when_ledger_append_fails(self, tmp_path):
+        """A failed Stage 3 execution summary append raises so the engine halts the pipeline."""
+        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            plan_branch="I-123-intent/P-456-plan/_",
+            agent="antigravity-agent",
+            model="gemini-3.8-flash-medium",
+            dry_run=False,
+        )
+        with (
+            patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=0)),
+            patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="test pass", stderr="")),
+            patch("sandbox_executor.flow.try_append_ledger_line", return_value=False),
+            pytest.raises(RuntimeError, match="Stage 3 execution summary"),
+        ):
+            run_execute_stage(ctx)
+
+    def test_engine_halts_when_stage1_ledger_append_fails(self, tmp_path):
+        """The engine converts a failed Stage 1 append into a FAILED stage and stops."""
+        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_data={"slug": "engine-append-fail", "goal": "Fail fast"},
+            dry_run=False,
+        )
+        with (
+            patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=0)),
+            patch("sandbox_executor.flow.try_append_ledger_line", return_value=False),
+        ):
+            results = PipelineEngine(ctx).run()
+
+        assert results["intent"].status == StageStatus.FAILED
+        assert "plan" not in results
+
 
 class TestFlowResumptionAndErrorHandling:
     """Test engine orchestration, resumption from stages, and error handling."""

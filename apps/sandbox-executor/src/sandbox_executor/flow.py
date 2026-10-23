@@ -2039,9 +2039,9 @@ def run_intent_stage(context: FlowContext) -> StageResult:
                                 break
                         except Exception:
                             continue
-        if not exists and try_append_ledger_line(
-            intents_file, intent_data, label="Stage 1 intent record", log_fn=context.log
-        ):
+        if not exists:
+            if not try_append_ledger_line(intents_file, intent_data, label="Stage 1 intent record", log_fn=context.log):
+                raise RuntimeError(f"Stage 1 intent record could not be appended to {intents_file}")
             ledger_entry = intent_data
 
         if is_git:
@@ -2231,8 +2231,10 @@ def run_plan_stage(context: FlowContext) -> StageResult:
                                 break
                         except Exception:
                             continue
-        if not plan_exists:
-            try_append_ledger_line(plans_file, plan_entry, label="Stage 2 plan record", log_fn=context.log)
+        if not plan_exists and not try_append_ledger_line(
+            plans_file, plan_entry, label="Stage 2 plan record", log_fn=context.log
+        ):
+            raise RuntimeError(f"Stage 2 plan record could not be appended to {plans_file}")
 
         if is_git:
             try:
@@ -2418,8 +2420,10 @@ def run_execute_stage(context: FlowContext) -> StageResult:
                                 break
                         except Exception:
                             continue
-        if not exec_exists:
-            try_append_ledger_line(exec_file, exec_entry, label="Stage 3 execution summary", log_fn=context.log)
+        if not exec_exists and not try_append_ledger_line(
+            exec_file, exec_entry, label="Stage 3 execution summary", log_fn=context.log
+        ):
+            raise RuntimeError(f"Stage 3 execution summary could not be appended to {exec_file}")
 
         # Record discrete action event in executions.jsonl (Bean 0052 Goal 3)
         try:
@@ -3206,8 +3210,8 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
                 f.write(f"# Calibration Report for {plan_id}\n\nFallback calibration generated.\n")
         try:
             converge_prettier([report_rel], repo_dir=repo_dir)
-        except Exception as e:
-            context.log(f"Warning: Prettier formatting failed for fallback {report_rel}: {e}")
+        except Exception as fmt_exc:
+            context.log(f"Warning: Prettier formatting failed for fallback {report_rel}: {fmt_exc}")
         report_dict = {
             "plan_id": plan_id,
             "calibrated_branch": calibrated_branch,

@@ -15,7 +15,7 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass
-from urllib.parse import urlparse, urlsplit, urlunsplit
+from urllib.parse import unquote, urlparse, urlsplit, urlunsplit
 
 from sandbox_executor import local_llm
 from sandbox_executor.calibration import run_calibrate
@@ -179,6 +179,14 @@ def normalize_repo_remote(remote_url: str) -> tuple[str, str]:
     return host, path_with_git
 
 
+# A GitHub token used as the bare user name of an HTTPS URL (`https://<token>@host/...`). Any other
+# bare user name is a login name, not a credential.
+_GITHUB_TOKEN_USER_RE = re.compile(r"(?:gh[opsu]_|github_pat_)[A-Za-z0-9_-]{8,}")
+
+# The fixed password GitHub documents for the `https://<token>:x-oauth-basic@host/...` form.
+_OAUTH_BASIC_PASSWORD = "x-oauth-basic"
+
+
 def strip_url_credentials(url: str) -> tuple[str, str | None]:
     """Remove the userinfo (`user:password@`) from an `http(s)://` URL.
 
@@ -190,9 +198,11 @@ def strip_url_credentials(url: str) -> tuple[str, str | None]:
         url: A remote URL.
 
     Returns:
-        The URL without userinfo, and the credential it carried: the password, or the user name
-        when no password is present (GitHub accepts a token as a bare user name). The credential is
-        None when the URL carried no userinfo or is not an HTTP(S) URL.
+        The URL without userinfo, and the credential it carried, percent-decoded: the password; the
+        user name for the `<token>:x-oauth-basic` form; or a bare user name only when it is shaped
+        like a GitHub token (GitHub accepts a token as a bare user name). A plain bare user name is a
+        login name, not a credential: it is stripped and the credential is None. The credential is
+        also None when the URL carried no userinfo or is not an HTTP(S) URL.
     """
     if not url.lower().startswith(("https://", "http://")):
         return url, None
@@ -200,8 +210,16 @@ def strip_url_credentials(url: str) -> tuple[str, str | None]:
     userinfo, sep, hostport = parts.netloc.rpartition("@")
     if not sep:
         return url, None
-    user, _, password = userinfo.partition(":")
-    return urlunsplit(parts._replace(netloc=hostport)), (password or user or None)
+    user, _, password = (unquote(part) for part in userinfo.partition(":"))
+    if password.lower() == _OAUTH_BASIC_PASSWORD and user:
+        credential: str | None = user
+    elif password:
+        credential = password
+    elif _GITHUB_TOKEN_USER_RE.fullmatch(user):
+        credential = user
+    else:
+        credential = None
+    return urlunsplit(parts._replace(netloc=hostport)), credential
 
 
 def credential_host(repo_url: str) -> str | None:
@@ -266,8 +284,9 @@ def resolve_target_repo(repo_dir: str | None = None) -> tuple[str, str | None]:
     """Resolve the target git repository URL without credentials, and the credential it carried.
 
     Checks the HOLON_REPO_URL environment variable first. If unset, queries git remote.origin.url in
-    repo_dir (or cwd). Any HTTP(S) userinfo in either source is stripped, with a warning that names
-    the source but never the value; `run_docker_container` hands that credential to git inside the
+    repo_dir (or cwd). Any HTTP(S) userinfo in either source is stripped. When it carries a
+    credential (see `strip_url_credentials`; a plain user name does not), a warning names the source
+    but never the value, and `run_docker_container` hands that credential to git inside the
     container through a runtime credential helper, in preference to an ambient host token. When a
     GitHub token is found, an origin remote is normalised to a plain HTTPS URL the same way.
     Otherwise the remote URL is returned as is, for SSH agent forwarding. A credential stripped from

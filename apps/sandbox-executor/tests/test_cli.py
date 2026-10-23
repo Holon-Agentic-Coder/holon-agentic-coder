@@ -1125,6 +1125,70 @@ def test_embedded_url_credential_wins_over_the_ambient_host_token(leak_env, monk
     assert "GIT_CONFIG_KEY_1=credential.https://git.example.org.helper" in docker.argv
 
 
+def _set_repo_url(leak_env, monkeypatch, source: str, url: str) -> None:
+    if source == "override":
+        monkeypatch.setenv("HOLON_REPO_URL", url)
+    else:
+        subprocess.run(["git", "-C", leak_env["repo"], "remote", "set-url", "origin", url], check=True)
+
+
+@pytest.mark.parametrize("source", ["override", "origin"])
+def test_plain_user_name_in_the_url_is_not_a_credential(leak_env, monkeypatch, capsys, source):
+    """`https://<user>@host/...` names a login, not a token: it is stripped silently and the host token applies."""
+    _set_repo_url(leak_env, monkeypatch, source, "https://someuser@git.example.org/myorg/myrepo.git")
+    docker = _RecordingDocker()
+    monkeypatch.setattr(cli.subprocess, "run", docker)
+
+    assert _run_planner(leak_env["repo"]) == 0
+
+    assert "embedded credentials" not in capsys.readouterr().err
+    assert "HOLON_REPO_URL=https://git.example.org/myorg/myrepo.git" in docker.argv
+    assert docker.env_file_contents["GITHUB_TOKEN"] == leak_env["secrets"]["GITHUB_TOKEN"]
+    # An origin remote gets the host-scoped helper for the host token; a credential-free override gets none.
+    has_helper = "GIT_CONFIG_KEY_1=credential.https://git.example.org.helper" in docker.argv
+    assert has_helper is (source == "origin")
+
+
+def _token_user_url() -> tuple[str, str]:
+    token = "gh" + "o_" + make_fake_secret("tokenuser").replace("-", "")
+    return f"https://{token}@git.example.org/myorg/myrepo.git", token
+
+
+def _password_url() -> tuple[str, str]:
+    password = make_fake_secret("userpass")
+    return f"https://someuser:{password}@git.example.org/myorg/myrepo.git", password
+
+
+def _access_token_url() -> tuple[str, str]:
+    token = make_fake_secret("accesstoken")
+    return f"https://x-access-token:{token}@git.example.org/myorg/myrepo.git", token
+
+
+@pytest.mark.parametrize("source", ["override", "origin"])
+@pytest.mark.parametrize(
+    "make_url",
+    [_token_user_url, _password_url, _access_token_url],
+    ids=["token-as-user", "user-password", "x-access-token"],
+)
+def test_url_credential_forms_supply_the_env_file_token(leak_env, monkeypatch, capsys, source, make_url):
+    """Each userinfo form that carries a credential is stripped, warned about, and wins over the host token."""
+    url, credential = make_url()
+    _set_repo_url(leak_env, monkeypatch, source, url)
+    docker = _RecordingDocker()
+    monkeypatch.setattr(cli.subprocess, "run", docker)
+
+    assert _run_planner(leak_env["repo"]) == 0
+
+    captured = capsys.readouterr()
+    expected_source = "HOLON_REPO_URL" if source == "override" else "remote.origin.url"
+    assert f"{expected_source} contains embedded credentials" in captured.err
+    for text in (captured.out, captured.err, " ".join(docker.argv)):
+        assert_no_token_fragment(text, credential)
+    assert "HOLON_REPO_URL=https://git.example.org/myorg/myrepo.git" in docker.argv
+    assert docker.env_file_contents["GITHUB_TOKEN"] == credential
+    assert "GIT_CONFIG_KEY_1=credential.https://git.example.org.helper" in docker.argv
+
+
 @pytest.mark.parametrize("override", ["ssh://git@github.com/myorg/myrepo.git", "git@github.com:myorg/myrepo.git"])
 def test_ssh_override_url_keeps_its_user_and_synthesises_no_token(leak_env, monkeypatch, capsys, override):
     """The SSH login user (`git`) is not a credential: it stays in the URL and never becomes GITHUB_TOKEN."""
@@ -1251,7 +1315,19 @@ def test_env_file_dir_is_tightened_to_owner_only(tmp_path, monkeypatch):
     ("url", "expected"),
     [
         ("https://x-access-token:SECRET@github.com/o/r.git", ("https://github.com/o/r.git", "SECRET")),
-        ("https://SECRET@github.com/o/r.git", ("https://github.com/o/r.git", "SECRET")),
+        # A plain bare user name is a login name, not a credential.
+        ("https://someuser@github.com/o/r.git", ("https://github.com/o/r.git", None)),
+        ("https://someuser:@github.com/o/r.git", ("https://github.com/o/r.git", None)),
+        # A token-shaped bare user name is the credential (GitHub accepts a token as the user name).
+        (
+            f"https://{make_fake_github_token()}@github.com/o/r.git",
+            ("https://github.com/o/r.git", make_fake_github_token()),
+        ),
+        ("https://someuser:SECRET@github.com/o/r.git", ("https://github.com/o/r.git", "SECRET")),
+        # The `<token>:x-oauth-basic` form carries the token as the user name.
+        ("https://SECRET:x-oauth-basic@github.com/o/r.git", ("https://github.com/o/r.git", "SECRET")),
+        # Userinfo is percent-decoded, as git decodes it.
+        ("https://someuser:SE%40CRET@github.com/o/r.git", ("https://github.com/o/r.git", "SE@CRET")),
         ("https://github.com/o/r.git", ("https://github.com/o/r.git", None)),
         ("https://u:SECRET@ghe.example:8443/o/r.git", ("https://ghe.example:8443/o/r.git", "SECRET")),
         ("git@github.com:o/r.git", ("git@github.com:o/r.git", None)),

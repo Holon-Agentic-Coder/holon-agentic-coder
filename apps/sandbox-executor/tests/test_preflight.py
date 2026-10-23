@@ -278,6 +278,21 @@ def test_cli_prints_harness_and_skipped_preflight_info_on_stderr(probe_env, monk
     assert "Pre-flight" not in captured.out
 
 
+@pytest.mark.parametrize("as_json", [False, True])
+def test_doctor_reports_each_decision_once(probe_env, monkeypatch, capsys, cli_logging, as_json):
+    monkeypatch.setenv("CLAUDECODE", "1")
+    argv = ["holon", "doctor", "--json"] if as_json else ["holon", "doctor"]
+    with patch("sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.OK)):
+        assert _run_main(argv) == 0
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    expected = 0 if as_json else 1
+    assert combined.count("Agent runner resolved to claude-agent") == expected
+    assert combined.count("Model resolved to claude-opus-5-5") == expected
+    if as_json:
+        assert json.loads(captured.out)["agent"]["value"] == "claude-agent"
+
+
 def test_configure_cli_logging_is_idempotent_and_scoped(cli_logging):
     configure_cli_logging()
     configure_cli_logging()

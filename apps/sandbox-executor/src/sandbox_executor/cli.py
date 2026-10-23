@@ -1244,8 +1244,9 @@ def run_doctor(args: argparse.Namespace) -> int:
     import json
 
     try:
-        agent_res = resolve_agent_runner(args.agent)
-        model_res = resolve_model(agent_res.value, args.model)
+        # The text report prints both decisions on stdout, so the resolvers' INFO log would show them twice.
+        agent_res = resolve_agent_runner(args.agent, log=False)
+        model_res = resolve_model(agent_res.value, args.model, log=False)
     except UnmappedAgentRunnerError as exc:
         if args.json:
             print(json.dumps({"error": str(exc)}, indent=2))

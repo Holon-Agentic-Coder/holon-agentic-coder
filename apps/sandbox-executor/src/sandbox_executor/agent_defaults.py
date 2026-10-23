@@ -195,12 +195,15 @@ def _require_mapped(name: str, origin: str) -> None:
         )
 
 
-def resolve_agent_runner(explicit: str | None, environ: Mapping[str, str] | None = None) -> Resolution:
+def resolve_agent_runner(
+    explicit: str | None, environ: Mapping[str, str] | None = None, *, log: bool = True
+) -> Resolution:
     """Resolve the agent runner: explicit flag, then ``HOLON_AGENT``, then harness detection, then the fallback.
 
     Args:
         explicit: Value of ``--agent`` (None or empty when not given).
         environ: Environment mapping to inspect (defaults to ``os.environ``).
+        log: False when the caller reports the decision itself (``holon doctor``), so it is not also logged.
 
     Returns:
         A :class:`Resolution` whose value is the canonical ``{id}-agent`` name.
@@ -210,7 +213,7 @@ def resolve_agent_runner(explicit: str | None, environ: Mapping[str, str] | None
             the supported runners and names the flag or variable that supplied the value.
 
     Side effects:
-        Logs the decision at INFO level.
+        Logs the decision at INFO level unless ``log`` is False.
     """
     env = _env(environ)
     if explicit and explicit.strip():
@@ -228,7 +231,8 @@ def resolve_agent_runner(explicit: str | None, environ: Mapping[str, str] | None
         if harness_detection_disabled(env):
             reason += "; harness detection is off inside the sandbox"
         resolution = Resolution(FALLBACK_AGENT, "fallback", reason)
-    logger.info(resolution.describe("Agent runner"))
+    if log:
+        logger.info(resolution.describe("Agent runner"))
     return resolution
 
 
@@ -237,19 +241,22 @@ def default_model_for(agent: str) -> str:
     return DEFAULT_MODELS.get(normalise_agent_id(agent), DEFAULT_MODELS[normalise_agent_id(FALLBACK_AGENT)])
 
 
-def resolve_model(agent: str, explicit: str | None, environ: Mapping[str, str] | None = None) -> Resolution:
+def resolve_model(
+    agent: str, explicit: str | None, environ: Mapping[str, str] | None = None, *, log: bool = True
+) -> Resolution:
     """Resolve the model: explicit flag, then ``HOLON_MODEL``, then the :data:`DEFAULT_MODELS` entry for ``agent``.
 
     Args:
         agent: Resolved runner name (any form accepted by :func:`normalise_agent_id`).
         explicit: Value of ``--model`` (None or empty when not given).
         environ: Environment mapping to inspect (defaults to ``os.environ``).
+        log: False when the caller reports the decision itself (``holon doctor``), so it is not also logged.
 
     Returns:
         A :class:`Resolution` holding the model name.
 
     Side effects:
-        Logs the decision at INFO level.
+        Logs the decision at INFO level unless ``log`` is False.
     """
     env = _env(environ)
     if explicit and explicit.strip():
@@ -258,7 +265,8 @@ def resolve_model(agent: str, explicit: str | None, environ: Mapping[str, str] |
         resolution = Resolution(env["HOLON_MODEL"].strip(), "env", "HOLON_MODEL")
     else:
         resolution = Resolution(default_model_for(agent), "table", f"default model for {canonical_agent_name(agent)}")
-    logger.info(resolution.describe("Model"))
+    if log:
+        logger.info(resolution.describe("Model"))
     return resolution
 
 

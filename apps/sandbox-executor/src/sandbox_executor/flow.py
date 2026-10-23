@@ -2517,8 +2517,13 @@ REVIEW_GIT_ENV: dict[str, str] = {
 
 
 def _warn_ledger_failure(context: FlowContext, label: str, ledger_path: str, exc: BaseException) -> None:
-    """Report a non-fatal ledger failure at WARNING level and in the operator-facing context log."""
-    message = f"Ledger append failed ({label}) for {ledger_path}: {type(exc).__name__}: {exc}"
+    """Report a non-fatal ledger failure at WARNING level and in the operator-facing context log.
+
+    The exception text is passed through the canonical ``CredentialRedactor`` first, so a
+    secret carried in the failure detail never reaches either log.
+    """
+    detail = CredentialRedactor.redact_text(str(exc))
+    message = f"Ledger append failed ({label}) for {ledger_path}: {type(exc).__name__}: {detail}"
     logger.warning(message)
     context.log(f"Warning: {message}")
 
@@ -3226,11 +3231,12 @@ def _commit_stage5_reconciliation(context: FlowContext, repo_dir: str) -> None:
         if commit_res.returncode != 0:
             combined_output = (commit_res.stdout + " " + commit_res.stderr).lower()
             if "nothing to commit" not in combined_output:
-                msg = f"Warning: committing Stage 5 reconciliation rows failed: {commit_res.stderr.strip()}"
+                detail = CredentialRedactor.redact_text(commit_res.stderr.strip())
+                msg = f"Warning: committing Stage 5 reconciliation rows failed: {detail}"
                 logger.warning(msg)
                 context.log(msg)
     except Exception as e:
-        msg = f"Warning: committing Stage 5 reconciliation rows failed: {e}"
+        msg = f"Warning: committing Stage 5 reconciliation rows failed: {CredentialRedactor.redact_text(str(e))}"
         logger.warning(msg)
         context.log(msg)
 
@@ -3287,7 +3293,8 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
         try:
             converge_prettier([report_rel], repo_dir=repo_dir)
         except Exception as fmt_exc:
-            context.log(f"Warning: Prettier formatting failed for fallback {report_rel}: {fmt_exc}")
+            fmt_detail = CredentialRedactor.redact_text(str(fmt_exc))
+            context.log(f"Warning: Prettier formatting failed for fallback {report_rel}: {fmt_detail}")
         report_dict = {
             "plan_id": plan_id,
             "calibrated_branch": calibrated_branch,

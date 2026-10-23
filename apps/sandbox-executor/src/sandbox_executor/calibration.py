@@ -22,6 +22,7 @@ from typing import Any
 
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.git import run_git
+from sandbox_executor.knowledge.records import CredentialRedactor
 from sandbox_executor.ledger import generate_action_id, try_append_action_record
 
 logger = logging.getLogger(__name__)
@@ -1469,7 +1470,9 @@ def run_calibrate(
                 else:
                     logger.warning("Git commit output: %s", commit_res.stderr.strip())
         except Exception as e:
-            logger.warning("Git commit of calibration report %s failed: %s", report_rel, e)
+            logger.warning(
+                "Git commit of calibration report %s failed: %s", report_rel, CredentialRedactor.redact_text(str(e))
+            )
 
     if json_output:
         print(json.dumps(report.to_dict(), indent=2))

@@ -731,6 +731,70 @@ class TestFlowStages:
         assert cal_rows[0]["error_context"] == "Calibration run failed: fetch failed [REDACTED_SECRET]"
         assert sample_value not in ledger.read_text(encoding="utf-8")
 
+    def test_stage5_fallback_prettier_warning_redacts_credentials(self, tmp_path):
+        """The fallback Prettier failure warning must not echo credentials from the exception text."""
+        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+        sample_value = "ghp_" + "P" * 36
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            plan_branch="I-100-intent/P-200-plan/_",
+            dry_run=True,
+            skip_push=True,
+        )
+        with (
+            patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError("calibration failed")),
+            patch("sandbox_executor.flow.converge_prettier", side_effect=OSError(f"npx auth {sample_value}")),
+        ):
+            run_calibrate_stage(ctx)
+
+        assert any("Prettier formatting failed" in line and "[REDACTED_SECRET]" in line for line in ctx.logs)
+        assert all(sample_value not in line for line in ctx.logs)
+
+    def test_warn_ledger_failure_redacts_credentials(self, tmp_path, caplog):
+        """Non-fatal ledger failure warnings redact the exception text in both logs."""
+        from sandbox_executor.flow import _warn_ledger_failure
+
+        caplog.set_level("WARNING", logger="sandbox_executor.flow")
+        sample_value = "ghp_" + "W" * 36
+        ctx = FlowContext(repo_dir=str(tmp_path))
+        _warn_ledger_failure(ctx, "Stage 4 review action event", "ledger.jsonl", OSError(f"denied {sample_value}"))
+
+        assert len(ctx.logs) == 1
+        assert ctx.logs[0].endswith(
+            "Warning: Ledger append failed (Stage 4 review action event) for ledger.jsonl: "
+            "OSError: denied [REDACTED_SECRET]"
+        )
+        assert any("[REDACTED_SECRET]" in rec.getMessage() for rec in caplog.records)
+        assert all(sample_value not in rec.getMessage() for rec in caplog.records)
+
+    @pytest.mark.parametrize("failure_mode", ["stderr", "raises"])
+    def test_stage5_reconciliation_commit_warning_redacts_credentials(self, tmp_path, caplog, failure_mode):
+        """A failed Stage 5 reconciliation commit warns without echoing credentials."""
+        from sandbox_executor.flow import _commit_stage5_reconciliation
+
+        caplog.set_level("WARNING", logger="sandbox_executor.flow")
+        sample_value = "ghp_" + "R" * 36
+        branch = "I-1/P-2/E-3/calibrated"
+        ctx = FlowContext(repo_dir=str(tmp_path))
+        ctx.calibrated_branch = branch
+
+        def fake_run_git(args, **_kwargs):
+            if args[0] == "rev-parse":
+                return MagicMock(returncode=0, stdout=f"{branch}\n", stderr="")
+            if args[0] == "commit":
+                if failure_mode == "raises":
+                    raise RuntimeError(f"hook failed {sample_value}")
+                return MagicMock(returncode=1, stdout="", stderr=f"remote rejected {sample_value}")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sandbox_executor.flow.run_git", side_effect=fake_run_git):
+            _commit_stage5_reconciliation(ctx, str(tmp_path))
+
+        assert any("[REDACTED_SECRET]" in line for line in ctx.logs)
+        assert all(sample_value not in line for line in ctx.logs)
+        assert all(sample_value not in rec.getMessage() for rec in caplog.records)
+
     def test_stage1_intent_fails_fast_when_ledger_append_fails(self, tmp_path):
         """A failed Stage 1 intent append raises so the engine halts the pipeline."""
         (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)

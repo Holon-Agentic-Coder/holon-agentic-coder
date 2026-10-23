@@ -1133,6 +1133,25 @@ def _cal_rows(ledger_text: str) -> list[dict]:
     return [r for r in rows if str(r.get("action_id", "")).startswith("ACT-CAL-")]
 
 
+def test_run_calibrate_commit_failure_warning_redacts_credentials(calibration_repo, caplog):
+    """A failed calibration commit warns without echoing credentials from the exception text."""
+    repo, _ = calibration_repo
+    caplog.set_level("WARNING", logger="sandbox_executor.calibration")
+    sample_value = "ghp_" + "C" * 36
+    with (
+        patch("sandbox_executor.calibration.converge_prettier"),
+        patch(
+            "sandbox_executor.calibration.calibration_commit_env",
+            side_effect=RuntimeError(f"credential helper {sample_value}"),
+        ),
+    ):
+        run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
+
+    messages = [rec.getMessage() for rec in caplog.records]
+    assert any("Git commit of calibration report" in m and "[REDACTED_SECRET]" in m for m in messages)
+    assert all(sample_value not in m for m in messages)
+
+
 def test_run_calibrate_appends_and_commits_act_cal(calibration_repo):
     repo, git = calibration_repo
     with patch("sandbox_executor.calibration.converge_prettier"):

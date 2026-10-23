@@ -54,6 +54,38 @@ from sandbox_executor.token_reduction import generate_root_ca
 
 logger = logging.getLogger(__name__)
 
+# Root of Holon's own logger hierarchy; the CLI routes its INFO records to stderr (see configure_cli_logging).
+PACKAGE_LOGGER_NAME = "sandbox_executor"
+
+
+class _CurrentStderrHandler(logging.StreamHandler):
+    """Stream handler that always writes to the current ``sys.stderr`` rather than the one bound at creation."""
+
+    @property
+    def stream(self):  # type: ignore[override]
+        return sys.stderr
+
+    @stream.setter
+    def stream(self, _value) -> None:
+        pass
+
+
+def configure_cli_logging() -> None:
+    """Send Holon's own INFO-and-above log records to stderr as plain messages.
+
+    Only the ``sandbox_executor`` logger hierarchy is configured, so third-party libraries keep their own levels and
+    stdout stays untouched. Idempotent: a second call adds no further handler.
+    """
+    package_logger = logging.getLogger(PACKAGE_LOGGER_NAME)
+    if any(isinstance(handler, _CurrentStderrHandler) for handler in package_logger.handlers):
+        return
+    handler = _CurrentStderrHandler()
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    package_logger.addHandler(handler)
+    if package_logger.level == logging.NOTSET:
+        package_logger.setLevel(logging.INFO)
+
+
 # Directory the Root CA certificate is mounted into inside the sandbox. The sandbox image runs as
 # the unprivileged `holon` user, so update-ca-certificates can never run there; the entrypoint
 # instead concatenates this mount with the image's system bundle into CONTAINER_CA_BUNDLE_PATH.
@@ -1132,7 +1164,9 @@ def run_docker_container(
 
 
 def resolve_runner_and_model(agent: str | None, model: str | None) -> tuple[Resolution, Resolution]:
-    """Resolve the agent runner and model for a command and report the decision on stderr.
+    """Resolve the agent runner and model for a command.
+
+    The resolvers log each decision at INFO, which :func:`configure_cli_logging` routes to stderr.
 
     Args:
         agent: Raw ``--agent`` value (None when omitted).
@@ -1146,8 +1180,6 @@ def resolve_runner_and_model(agent: str | None, model: str | None) -> tuple[Reso
     """
     agent_res = resolve_agent_runner(agent)
     model_res = resolve_model(agent_res.value, model)
-    print(agent_res.describe("Agent runner"), file=sys.stderr)
-    print(model_res.describe("Model"), file=sys.stderr)
     return agent_res, model_res
 
 
@@ -1237,6 +1269,7 @@ def run_doctor(args: argparse.Namespace) -> int:
 
 
 def main() -> None:
+    configure_cli_logging()
     parser = argparse.ArgumentParser(
         prog="holon",
         description="Holon CLI: Host wrapper for running containerized Holon AI agent roles.",

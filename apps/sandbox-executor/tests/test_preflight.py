@@ -1,6 +1,7 @@
 """Tests for the pre-flight readiness probe, `holon doctor` and the gating of plan, execute and flow."""
 
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -8,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from sandbox_executor import preflight
-from sandbox_executor.cli import main
+from sandbox_executor.cli import PACKAGE_LOGGER_NAME, _CurrentStderrHandler, configure_cli_logging, main
 from sandbox_executor.flow import get_default_checkpoint_path
 from sandbox_executor.preflight import (
     PROBE_PROMPT,
@@ -246,6 +247,43 @@ def test_skip_preflight_bypasses_probe(probe_env, monkeypatch, bypass):
         assert _run_main(argv) == 0
     probe.assert_not_called()
     docker.assert_called_once()
+
+
+@pytest.fixture
+def cli_logging():
+    """Restore the package logger's level and handlers after a test that runs the CLI logging setup."""
+    package_logger = logging.getLogger(PACKAGE_LOGGER_NAME)
+    saved_level, saved_handlers = package_logger.level, list(package_logger.handlers)
+    package_logger.handlers = [h for h in saved_handlers if not isinstance(h, _CurrentStderrHandler)]
+    package_logger.setLevel(logging.NOTSET)
+    yield package_logger
+    package_logger.handlers = saved_handlers
+    package_logger.setLevel(saved_level)
+
+
+def test_cli_prints_harness_and_skipped_preflight_info_on_stderr(probe_env, monkeypatch, capsys, cli_logging):
+    monkeypatch.setenv("PI_CODING_AGENT", "1")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    with (
+        patch("sandbox_executor.cli.run_preflight_probe") as probe,
+        patch("sandbox_executor.cli.run_docker_container", return_value=0),
+    ):
+        assert _run_main(["holon", "plan", "I-1/_", "--skip-preflight"]) == 0
+    probe.assert_not_called()
+    captured = capsys.readouterr()
+    assert "Several agent harnesses detected; using pi from PI_CODING_AGENT and ignoring" in captured.err
+    assert "CLAUDECODE (claude)" in captured.err
+    assert "Pre-flight probe skipped" in captured.err
+    assert captured.err.count("Agent runner resolved to pi-agent") == 1
+    assert "Pre-flight" not in captured.out
+
+
+def test_configure_cli_logging_is_idempotent_and_scoped(cli_logging):
+    configure_cli_logging()
+    configure_cli_logging()
+    assert sum(isinstance(h, _CurrentStderrHandler) for h in cli_logging.handlers) == 1
+    assert cli_logging.level == logging.INFO
+    assert not any(isinstance(h, _CurrentStderrHandler) for h in logging.getLogger().handlers)
 
 
 def test_plan_uses_harness_runner_and_its_default_model(probe_env, monkeypatch):

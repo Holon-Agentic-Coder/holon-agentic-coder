@@ -451,8 +451,8 @@ The result is normalised to the canonical `{id}-agent` form (for example `antigr
 which is what ledger rows and plan ids record. A runner without a container image fails straight away with the list of
 supported runners and the name of the flag or variable that supplied the bad value.
 
-Every decision is logged with its source, for example
-`Agent runner resolved to claude-agent (source: harness, harness detection, marker CLAUDECODE)`.
+Every decision is printed to stderr with its source (the CLI routes Holon's own INFO log messages there, leaving stdout
+untouched), for example `Agent runner resolved to claude-agent (source: harness, harness detection, marker CLAUDECODE)`.
 
 ### Harness detection
 

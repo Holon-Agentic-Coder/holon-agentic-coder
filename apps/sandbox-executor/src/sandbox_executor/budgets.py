@@ -7,7 +7,8 @@ the single source of truth for the limits and their configuration:
   interval between artefact-progress events of a runner process (see :mod:`sandbox_executor.turns`), never the
   lifetime of the runner process itself;
 - a *stall* budget (``HOLON_TURN_STALL_SECONDS``, default 90 s; ``0`` disables it) bounds silence, meaning no streamed
-  output and no growth of the artefact being written;
+  output and no growth of the artefact being written, within a response that has streamed output; a non-streaming
+  runner, which cannot signal liveness mid-response, is allowed ``max(stall, turn)`` of silence instead;
 - a *stage* budget bounds a whole stage (intent 10 min, plan 35, execute 45, each review iteration 15, calibration 10),
   and is the only wall-clock limit on a runner process as a whole.
 

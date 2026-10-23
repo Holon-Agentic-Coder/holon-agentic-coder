@@ -15,16 +15,16 @@ record). The incremental artefact protocol these budgets rely on is described in
 The defaults are the real measurements recorded in Beans 0138 to 0140. They are not derived from synthetic throughput
 data, and the tests that exercise them use injected clocks only to drive control flow.
 
-| Budget                | Default | Variable                                      | Bounds                                               |
-| --------------------- | ------- | --------------------------------------------- | ---------------------------------------------------- |
-| Turn                  | 300 s   | `HOLON_TURN_TIMEOUT_SECONDS`                  | One assistant response (see below), not a process.   |
-| Stall                 | 90 s    | `HOLON_TURN_STALL_SECONDS`                    | Silence within a turn; `0` disables stall detection. |
-| Intent stage          | 10 min  | `HOLON_STAGE_BUDGET_INTENT_MINUTES`           | The intent stage.                                    |
-| Plan stage            | 35 min  | `HOLON_STAGE_BUDGET_PLAN_MINUTES`             | The plan stage, including the resume turn.           |
-| Execute stage         | 45 min  | `HOLON_STAGE_BUDGET_EXECUTE_MINUTES`          | The execute stage, including verification tests.     |
-| Review iteration      | 15 min  | `HOLON_STAGE_BUDGET_REVIEW_ITERATION_MINUTES` | Each review-loop iteration.                          |
-| Calibration stage     | 10 min  | `HOLON_STAGE_BUDGET_CALIBRATION_MINUTES`      | The calibration stage.                               |
-| Stage ceiling (exact) | (unset) | `HOLON_STAGE_BUDGET_SECONDS`                  | Replaces every per-stage value above, in seconds.    |
+| Budget                | Default | Variable                                      | Bounds                                             |
+| --------------------- | ------- | --------------------------------------------- | -------------------------------------------------- |
+| Turn                  | 300 s   | `HOLON_TURN_TIMEOUT_SECONDS`                  | One assistant response (see below), not a process. |
+| Stall                 | 90 s    | `HOLON_TURN_STALL_SECONDS`                    | Silence within a streaming turn; `0` disables it.  |
+| Intent stage          | 10 min  | `HOLON_STAGE_BUDGET_INTENT_MINUTES`           | The intent stage.                                  |
+| Plan stage            | 35 min  | `HOLON_STAGE_BUDGET_PLAN_MINUTES`             | The plan stage, including the resume turn.         |
+| Execute stage         | 45 min  | `HOLON_STAGE_BUDGET_EXECUTE_MINUTES`          | The execute stage, including verification tests.   |
+| Review iteration      | 15 min  | `HOLON_STAGE_BUDGET_REVIEW_ITERATION_MINUTES` | Each review-loop iteration.                        |
+| Calibration stage     | 10 min  | `HOLON_STAGE_BUDGET_CALIBRATION_MINUTES`      | The calibration stage.                             |
+| Stage ceiling (exact) | (unset) | `HOLON_STAGE_BUDGET_SECONDS`                  | Replaces every per-stage value above, in seconds.  |
 
 `HOLON_STAGE_BUDGET_SECONDS` is meant for handing one exact ceiling to a single sandbox role; set it only for that
 container, because wherever it is set it applies to every stage. Non-numeric, non-finite, zero or negative values are
@@ -52,13 +52,30 @@ The runners print nothing per response, so a single response is observed through
 artefact (or, for executor turns, of the working tree) closes the current response. The three budgets are checked as
 follows:
 
-- **Stall** fires when nothing at all (no output, no artefact or tree change) has happened for
-  `HOLON_TURN_STALL_SECONDS`.
 - **Turn** fires when no artefact or tree change has happened for `HOLON_TURN_TIMEOUT_SECONDS`. Streamed output keeps a
   turn out of the stall window but does not end a response, so a model streaming one degenerate response without writing
   anything is still stopped. Without a watched artefact or tree no response boundary is observable and the turn budget
   is not applied.
+- **Stall** fires when nothing at all (no output, no artefact or tree change) has happened for the stall window. The
+  window is `HOLON_TURN_STALL_SECONDS` only once the runner has streamed stdout or stderr output in the current response
+  (since the last artefact or tree change); otherwise it is `max(HOLON_TURN_STALL_SECONDS, HOLON_TURN_TIMEOUT_SECONDS)`.
 - **Stage** fires when the stage ceiling is reached, however much progress the process is making.
+
+The stall window only means something for a runner that can signal liveness mid-response. The default runners
+(`claude -p` and `pi -p` in text mode) print nothing until they exit, so for them the stall clock and the turn clock are
+the same clock; applying the 90 s stall window would make it the real per-response limit and kill a legitimate
+local-model response (Bean 0139 sizes the turn budget for one full 16,384-token response at 82 tok/s, about 5 min). The
+effective limits are therefore:
+
+| Runner behaviour in the current response  | Watched artefact or tree | Silence limit                       |
+| ----------------------------------------- | ------------------------ | ----------------------------------- |
+| Silent (non-streaming runner, or prefill) | Yes (plan, execute)      | Turn budget, 300 s (`turn` fires)   |
+| Silent                                    | No                       | `max(stall, turn)`, 300 s (`stall`) |
+| Has streamed output                       | Either                   | Stall window, 90 s (`stall`)        |
+| Streams output but never writes           | Yes                      | Turn budget, 300 s (`turn` fires)   |
+
+Any stdout or stderr output marks the current response as streaming, including a one-off warning a non-streaming runner
+prints at start-up; that response is then held to the 90 s stall window until its first artefact or tree change.
 
 When a budget fires, the supervisor sends `SIGTERM` to the agent's process group, waits a 10 s grace period, then sends
 `SIGKILL`. It asserts first that the agent's process group differs from its own; if they were ever equal it signals only

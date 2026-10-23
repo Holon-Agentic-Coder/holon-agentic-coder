@@ -14,6 +14,12 @@ stdout/stderr keeps a turn out of the stall window but does not close a response
 degenerate response for longer than the turn budget without writing anything is still stopped. Without a watched
 artefact or tree, no response boundary is observable and the turn budget is not applied.
 
+The stall window bounds silence *within* a response, so it is only stricter than the turn budget once the runner has
+shown that it streams: after stdout/stderr output in the current response (since the last artefact progress event).
+Non-streaming runners (``claude -p`` / ``pi -p`` in text mode print nothing until they exit) cannot emit a stall
+signal, so for them the silence window is ``max(stall_seconds, turn_seconds)`` and a single response gets the full
+turn budget; with an observable response boundary the turn budget is the one that fires.
+
 :func:`supervise_authoring_turn` adds the authoring policy on top: validate the artefact after the turn, attempt exactly
 one follow-up turn (a resume after a breach, or a targeted re-prompt for missing sections), and report a budget failure
 only when the artefact is still unusable. :func:`record_budget_failure` is the single place that writes the ACT-BUDGET
@@ -44,6 +50,8 @@ POLL_INTERVAL_SECONDS = 1.0
 # Minimum seconds between working-tree scans when a whole tree is watched for liveness (executor turns edit many
 # files, not just their notes). Scans skip VCS metadata and dependency directories.
 TREE_SCAN_INTERVAL_SECONDS = 15.0
+# Real seconds to wait for the pipe readers after the agent exits before treating a descendant as holding them open.
+READER_JOIN_TIMEOUT_SECONDS = 5.0
 _TREE_SKIP_DIRS = frozenset({".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", ".ruff_cache"})
 
 # Agent CLIs report why generation stopped in structured JSON events ({"stopReason": "length"}). Only the quoted JSON
@@ -221,10 +229,12 @@ def run_turn(
     Returns:
         A :class:`TurnResult`; ``breach`` is set when a budget fired and the turn was stopped.
 
-    Budgets: ``stall`` fires after ``stall_seconds`` with no output and no artefact progress; ``turn`` fires when no
-    artefact progress (a response boundary) has been seen for ``turn_seconds`` (only when ``watch_path`` or
-    ``watch_tree`` is given); ``stage`` fires when ``stage_timer`` reaches its ceiling. The process elapsed time on its
-    own is never compared with the turn budget.
+    Budgets: ``turn`` fires when no artefact progress (a response boundary) has been seen for ``turn_seconds`` (only
+    when ``watch_path`` or ``watch_tree`` is given); ``stall`` fires after ``stall_seconds`` with no output and no
+    artefact progress once the runner has streamed output in the current response, and otherwise (a non-streaming
+    runner, which cannot signal liveness mid-response) after ``max(stall_seconds, turn_seconds)``; ``stage`` fires
+    when ``stage_timer`` reaches its ceiling. The process elapsed time on its own is never compared with the turn
+    budget.
     """
     budgets = turn_budgets or TurnBudgets()
     start = clock()
@@ -248,6 +258,10 @@ def run_turn(
     # Start of the current observable response: reset by artefact or tree progress, never by streamed output.
     last_progress = start
     turn_observable = bool(watch_path or watch_tree)
+    # True once the runner has streamed stdout/stderr in the current response; only then is the (shorter) stall window
+    # a meaningful liveness check. Reset by every artefact or tree progress event (a response boundary).
+    streaming = False
+    silent_stall_seconds = max(budgets.stall_seconds, budgets.turn_seconds)
     seen_counts = [0, 0]
     seen_file = _file_state(watch_path)
     seen_tree = _tree_mtime(watch_tree)
@@ -272,21 +286,25 @@ def run_turn(
             if counts != seen_counts:
                 seen_counts = counts
                 last_activity = now
+                streaming = True
             file_state = _file_state(watch_path)
             if file_state is not None and file_state != seen_file:
                 seen_file = file_state
                 last_activity = last_progress = now
+                streaming = False
             if watch_tree and now - last_tree_scan >= TREE_SCAN_INTERVAL_SECONDS:
                 last_tree_scan = now
                 tree_state = _tree_mtime(watch_tree)
                 if tree_state is not None and tree_state != seen_tree:
                     seen_tree = tree_state
                     last_activity = last_progress = now
+                    streaming = False
 
-            if budgets.stall_seconds > 0 and now - last_activity >= budgets.stall_seconds:
-                breach = BudgetBreach(stage, "stall", budgets.stall_seconds, now - last_activity)
-            elif turn_observable and now - last_progress >= budgets.turn_seconds:
+            stall_window = budgets.stall_seconds if streaming else silent_stall_seconds
+            if turn_observable and now - last_progress >= budgets.turn_seconds:
                 breach = BudgetBreach(stage, "turn", budgets.turn_seconds, now - last_progress)
+            elif budgets.stall_seconds > 0 and now - last_activity >= stall_window:
+                breach = BudgetBreach(stage, "stall", stall_window, now - last_activity)
             elif stage_timer is not None and stage_timer.breached():
                 breach = stage_timer.breach()
             if breach is not None:
@@ -302,7 +320,7 @@ def run_turn(
         raise
 
     for reader in readers:
-        reader.join(timeout=5.0)
+        reader.join(timeout=READER_JOIN_TIMEOUT_SECONDS)
     if any(reader.is_alive() for reader in readers):
         # A grandchild still holds stdout/stderr open after the agent exited: stop the rest of its group.
         logger.warning("Agent pipes still open after exit; terminating the remaining process group")

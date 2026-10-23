@@ -7,7 +7,9 @@ import queue
 import signal
 import tempfile
 import unittest
+from unittest import mock
 
+from sandbox_executor import turns
 from sandbox_executor.artefacts import PLAN_SPEC
 from sandbox_executor.budgets import BudgetBreach, StageTimer, TurnBudgets
 from sandbox_executor.turns import (
@@ -210,7 +212,9 @@ class TestRunTurn(unittest.TestCase):
         self.assertIsNone(result.breach)
         self.assertEqual(result.returncode, 0)
 
-    def test_long_process_that_stops_progressing_is_stalled(self):
+    def test_silent_process_that_stops_progressing_is_stopped_by_the_turn_budget(self):
+        # A non-streaming runner cannot signal liveness mid-response, so after its last write it gets the full turn
+        # budget (not the 90 s stall window) before it is stopped.
         h = Harness(exit_at=None)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -223,9 +227,88 @@ class TestRunTurn(unittest.TestCase):
 
         h.on_tick = grow
         result = h.run(turn=300, stall=90, watch_path=path, stage_timer=StageTimer("execute", 2700, clock=h.clock))
+        self.assertEqual(result.breach.budget_name, "turn")
+        self.assertEqual(result.breach.budget_seconds, 300)
+        self.assertGreaterEqual(h.clock.now, 10 * MINUTE + 300)
+        self.assertLess(h.clock.now, 10 * MINUTE + 330)
+        self.assertEqual(h.signals, [(CHILD_PID, signal.SIGTERM)])
+
+    def test_silent_runner_with_slow_responses_gets_the_full_turn_budget(self):
+        # I2: a non-streaming runner (claude -p / pi -p print nothing until exit) whose responses each take 200 s
+        # before their write lands is inside the 300 s turn budget and must not be cut off by the 90 s stall window.
+        h = Harness(exit_at=20 * MINUTE)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "plan.md")
+
+        def grow(now):
+            if int(now) % 200 == 0:
+                with open(path, "a") as f:
+                    f.write(f"section at {now}\n")
+
+        h.on_tick = grow
+        timer = StageTimer("plan", 35 * MINUTE, clock=h.clock)
+        result = run_turn(
+            ["agent", "-p", "prompt"],
+            turn_budgets=TurnBudgets(),
+            stage_timer=timer,
+            stage="plan",
+            watch_path=path,
+            clock=h.clock,
+            sleeper=h.sleeper,
+            popen_factory=h.popen,
+            killpg=h.killpg,
+            getpgid=h.getpgid,
+        )
+        self.assertIsNone(result.breach)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(h.signals, [])
+
+    def test_silent_runner_without_progress_is_stopped_by_the_turn_budget(self):
+        h = Harness(exit_at=None)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        result = h.run(turn=300, stall=90, watch_path=os.path.join(tmp.name, "plan.md"))
+        self.assertEqual(result.breach.budget_name, "turn")
+        self.assertGreaterEqual(result.breach.elapsed_seconds, 300)
+        self.assertLess(h.clock.now, 330)
+
+    def test_streaming_runner_that_goes_silent_is_stalled(self):
+        # A runner that streams tokens has shown it can signal liveness, so silence within its response is bounded by
+        # the stall window rather than the turn budget.
+        stream = TickStream()
+        h = Harness(exit_at=None, stdout=stream)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        h.on_tick = lambda now: stream.feed(b"tok ") if now <= 60 else None
+        result = h.run(turn=300, stall=90, watch_path=os.path.join(tmp.name, "plan.md"))
         self.assertEqual(result.breach.budget_name, "stall")
-        self.assertGreaterEqual(h.clock.now, 10 * MINUTE + 90)
-        self.assertLess(h.clock.now, 10 * MINUTE + 120)
+        self.assertEqual(result.breach.budget_seconds, 90)
+        self.assertGreaterEqual(h.clock.now, 60 + 90)
+        self.assertLess(h.clock.now, 60 + 120)
+        self.assertEqual(h.signals, [(CHILD_PID, signal.SIGTERM)])
+
+    def test_artefact_progress_resets_the_streaming_stall_window(self):
+        # Output marks only the current response as streaming: after a write, a silent next response (prefill before
+        # its first token) gets the turn budget again rather than the stall window.
+        stream = TickStream()
+        h = Harness(exit_at=None, stdout=stream)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "plan.md")
+
+        def tick(now):
+            if now <= 30:
+                stream.feed(b"tok ")
+            elif now == 40:
+                with open(path, "a") as f:
+                    f.write("section\n")
+
+        h.on_tick = tick
+        result = h.run(turn=300, stall=90, watch_path=path)
+        self.assertEqual(result.breach.budget_name, "turn")
+        self.assertGreaterEqual(h.clock.now, 40 + 300)
+        self.assertLess(h.clock.now, 40 + 330)
 
     def test_stage_ceiling_bounds_a_progressing_process(self):
         h = Harness(exit_at=None)
@@ -264,12 +347,59 @@ class TestRunTurn(unittest.TestCase):
         self.assertEqual(h.signals, [(CHILD_PID, signal.SIGTERM)])
         self.assertIsNotNone(h.proc.returncode)
 
-    def test_stall_breach_without_output_or_file_growth(self):
+    def test_silent_stall_window_is_never_stricter_than_the_turn_budget(self):
+        # No output, no watched artefact: nothing could have signalled liveness, so silence is bounded by
+        # max(stall, turn) and reported as a stall.
         h = Harness(exit_at=None)
         result = h.run(turn=300, stall=90)
         self.assertEqual(result.breach.budget_name, "stall")
-        self.assertGreaterEqual(result.breach.elapsed_seconds, 90)
-        self.assertLess(h.clock.now, 300)
+        self.assertEqual(result.breach.budget_seconds, 300)
+        self.assertGreaterEqual(result.breach.elapsed_seconds, 300)
+        self.assertLess(h.clock.now, 330)
+
+    def test_lingering_pipe_holder_group_is_terminated_after_exit(self):
+        # N5: the agent exits but a descendant keeps stdout open, so the reader never sees EOF; the rest of the
+        # agent's process group (pgid == agent pid) gets SIGTERM, and the agent's own exit status is kept.
+        stream = TickStream()
+        h = Harness(exit_at=5, stdout=stream)
+        self.addCleanup(setattr, stream, "closed", True)
+        signals = []
+
+        def killpg(pgid, sig):
+            signals.append((pgid, sig))
+            stream.closed = True
+
+        with mock.patch.object(turns, "READER_JOIN_TIMEOUT_SECONDS", 0.05):
+            result = run_turn(
+                ["agent", "-p", "prompt"],
+                turn_budgets=TurnBudgets(turn_seconds=300, stall_seconds=90),
+                clock=h.clock,
+                sleeper=h.sleeper,
+                popen_factory=h.popen,
+                killpg=killpg,
+                getpgid=h.getpgid,
+            )
+        self.assertEqual(signals, [(CHILD_PID, signal.SIGTERM)])
+        self.assertIsNone(result.breach)
+        self.assertEqual(result.returncode, 0)
+
+    def test_lingering_pipe_holder_never_signals_its_own_process_group(self):
+        stream = TickStream()
+        h = Harness(exit_at=5, stdout=stream)
+        self.addCleanup(setattr, stream, "closed", True)
+        signals = []
+        with mock.patch.object(turns, "READER_JOIN_TIMEOUT_SECONDS", 0.05):
+            result = run_turn(
+                ["agent", "-p", "prompt"],
+                turn_budgets=TurnBudgets(turn_seconds=300, stall_seconds=90),
+                clock=h.clock,
+                sleeper=h.sleeper,
+                popen_factory=h.popen,
+                killpg=lambda pgid, sig: signals.append((pgid, sig)),
+                getpgid=lambda pid: CHILD_PID,
+            )
+        self.assertEqual(signals, [])
+        self.assertEqual(result.returncode, 0)
 
     def test_stall_averted_by_artefact_growth(self):
         h = Harness(exit_at=200)

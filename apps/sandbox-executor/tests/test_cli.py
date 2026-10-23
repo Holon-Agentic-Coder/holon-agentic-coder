@@ -153,7 +153,7 @@ class TestHolonCLI(unittest.TestCase):
         self.assertIn(":rw", err_msg)
         self.assertNotIn(":ro", err_msg)
 
-    @patch("sandbox_executor.cli.resolve_target_repo_url", return_value="git@github.com:test/repo.git")
+    @patch("sandbox_executor.cli.resolve_target_repo", return_value=("git@github.com:test/repo.git", None))
     @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock:ro"])
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
@@ -174,7 +174,7 @@ class TestHolonCLI(unittest.TestCase):
             self.assertIn("--security-opt=no-new-privileges", executed_cmd)
             self.assertIn("169.254.169.254:127.0.0.1", executed_cmd)
 
-    @patch("sandbox_executor.cli.resolve_target_repo_url", return_value="git@github.com:test/repo.git")
+    @patch("sandbox_executor.cli.resolve_target_repo", return_value=("git@github.com:test/repo.git", None))
     @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"])
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
@@ -197,7 +197,7 @@ class TestHolonCLI(unittest.TestCase):
             self.assertEqual(env_files, [{"GITHUB_TOKEN": "secret_token"}])
             self.assertIn("HOLON_REPO_URL=git@github.com:test/repo.git", args)
 
-    @patch("sandbox_executor.cli.resolve_target_repo_url", return_value="git@github.com:test/repo.git")
+    @patch("sandbox_executor.cli.resolve_target_repo", return_value=("git@github.com:test/repo.git", None))
     @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"])
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
@@ -240,7 +240,7 @@ class TestHolonCLI(unittest.TestCase):
         with self.assertRaises(TypeError):
             run_docker_container("planner", "holon/agent-antigravity", ["branch"])  # type: ignore[call-arg]
 
-    @patch("sandbox_executor.cli.resolve_target_repo_url", return_value="git@github.com:test/repo.git")
+    @patch("sandbox_executor.cli.resolve_target_repo", return_value=("git@github.com:test/repo.git", None))
     @patch("shutil.which", return_value="/usr/bin/docker")
     def test_run_docker_container_intent_creator_requires_intent_file(self, mock_which, mock_resolve_repo):
         with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
@@ -1074,6 +1074,55 @@ def test_override_url_credential_is_stripped_and_forwarded_through_the_env_file(
     assert "HOLON_REPO_URL=https://github.com/myorg/myrepo.git" in docker.argv
     assert docker.env_file_contents["GITHUB_TOKEN"] == token
     assert "GIT_CONFIG_KEY_1=credential.https://github.com.helper" in docker.argv
+
+
+def test_origin_url_credential_is_stripped_and_forwarded_through_the_env_file(leak_env, monkeypatch, capsys):
+    """An origin remote that embeds a credential never reaches the container URL; the credential is a helper token."""
+    embedded = make_fake_secret("origincred")
+    monkeypatch.delenv("GITHUB_TOKEN")
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            leak_env["repo"],
+            "remote",
+            "set-url",
+            "origin",
+            f"https://x-access-token:{embedded}@git.example.org/myorg/myrepo.git",
+        ],
+        check=True,
+    )
+    docker = _RecordingDocker()
+    monkeypatch.setattr(cli.subprocess, "run", docker)
+
+    assert _run_planner(leak_env["repo"]) == 0
+
+    captured = capsys.readouterr()
+    assert "remote.origin.url contains embedded credentials" in captured.err
+    for text in (captured.out, captured.err, " ".join(docker.argv)):
+        assert_no_token_fragment(text, embedded)
+    assert "HOLON_REPO_URL=https://git.example.org/myorg/myrepo.git" in docker.argv
+    assert docker.env_file_contents["GITHUB_TOKEN"] == embedded
+    assert "GIT_CONFIG_KEY_1=credential.https://git.example.org.helper" in docker.argv
+
+
+@pytest.mark.parametrize("source", ["override", "origin"])
+def test_embedded_url_credential_wins_over_the_ambient_host_token(leak_env, monkeypatch, source):
+    """A credential embedded in the repository URL names its remote, so it beats a host token for another host."""
+    embedded = make_fake_secret("enterprisecred")
+    url = f"https://x-access-token:{embedded}@git.example.org/myorg/myrepo.git"
+    if source == "override":
+        monkeypatch.setenv("HOLON_REPO_URL", url)
+    else:
+        subprocess.run(["git", "-C", leak_env["repo"], "remote", "set-url", "origin", url], check=True)
+    docker = _RecordingDocker()
+    monkeypatch.setattr(cli.subprocess, "run", docker)
+
+    assert _run_planner(leak_env["repo"]) == 0
+
+    assert docker.env_file_contents["GITHUB_TOKEN"] == embedded
+    assert "HOLON_REPO_URL=https://git.example.org/myorg/myrepo.git" in docker.argv
+    assert "GIT_CONFIG_KEY_1=credential.https://git.example.org.helper" in docker.argv
 
 
 @pytest.mark.parametrize("override", ["ssh://git@github.com/myorg/myrepo.git", "git@github.com:myorg/myrepo.git"])

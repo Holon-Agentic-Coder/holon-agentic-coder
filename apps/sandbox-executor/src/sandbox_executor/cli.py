@@ -222,15 +222,12 @@ def credential_host(repo_url: str) -> str | None:
     return hostport or None
 
 
-def resolve_target_repo_url(repo_dir: str | None = None) -> str:
-    """Resolve the target git repository URL, always without embedded credentials.
+def _resolve_target_repo(repo_dir: str | None = None) -> tuple[str, str | None, str | None]:
+    """Resolve the credential-free target repository URL and any credential its source embedded.
 
-    Checks the HOLON_REPO_URL environment variable first; any userinfo in it is stripped, with a
-    warning that names the variable but never the value. If unset, queries git remote.origin.url in
-    repo_dir (or cwd). When a GitHub token is found, the remote is normalised to a plain HTTPS URL,
-    and the token reaches git inside the container through a runtime credential helper instead (see
-    `run_docker_container`). Otherwise the raw remote URL is returned unchanged, for SSH agent
-    forwarding.
+    Returns:
+        The credential-free URL, the credential stripped from it (or None), and the name of the
+        source that carried the credential (`HOLON_REPO_URL` or `remote.origin.url`), or None.
 
     Raises:
         RuntimeError: If remote.origin.url cannot be resolved or is empty.
@@ -238,13 +235,7 @@ def resolve_target_repo_url(repo_dir: str | None = None) -> str:
     override = os.getenv("HOLON_REPO_URL")
     if override and override.strip():
         clean_url, embedded = strip_url_credentials(override.strip())
-        if embedded:
-            print(
-                "Warning: HOLON_REPO_URL contains embedded credentials; they are stripped from the URL and the "
-                "token is supplied to git inside the container through a credential helper instead.",
-                file=sys.stderr,
-            )
-        return clean_url
+        return clean_url, embedded, "HOLON_REPO_URL" if embedded else None
 
     target_dir = os.path.abspath(repo_dir) if repo_dir else os.getcwd()
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
@@ -262,13 +253,50 @@ def resolve_target_repo_url(repo_dir: str | None = None) -> str:
             "or set HOLON_REPO_URL explicitly."
         )
 
-    raw_url = proc.stdout.strip()
-    token = find_github_token()
-    if token:
+    raw_url, embedded = strip_url_credentials(proc.stdout.strip())
+    source = "remote.origin.url" if embedded else None
+    if find_github_token():
         host, repo_path = normalize_repo_remote(raw_url)
-        return f"https://{host}/{repo_path}"
+        return f"https://{host}/{repo_path}", embedded, source
 
-    return raw_url
+    return raw_url, embedded, source
+
+
+def resolve_target_repo(repo_dir: str | None = None) -> tuple[str, str | None]:
+    """Resolve the target git repository URL without credentials, and the credential it carried.
+
+    Checks the HOLON_REPO_URL environment variable first. If unset, queries git remote.origin.url in
+    repo_dir (or cwd). Any HTTP(S) userinfo in either source is stripped, with a warning that names
+    the source but never the value; `run_docker_container` hands that credential to git inside the
+    container through a runtime credential helper, in preference to an ambient host token. When a
+    GitHub token is found, an origin remote is normalised to a plain HTTPS URL the same way.
+    Otherwise the remote URL is returned as is, for SSH agent forwarding.
+
+    Returns:
+        The credential-free URL, and the credential stripped from it (None when there was none).
+
+    Raises:
+        RuntimeError: If remote.origin.url cannot be resolved or is empty.
+    """
+    clean_url, embedded, source = _resolve_target_repo(repo_dir)
+    if source:
+        print(
+            f"Warning: {source} contains embedded credentials; they are stripped from the URL and the "
+            "token is supplied to git inside the container through a credential helper instead.",
+            file=sys.stderr,
+        )
+    return clean_url, embedded
+
+
+def resolve_target_repo_url(repo_dir: str | None = None) -> str:
+    """Resolve the target git repository URL, always without embedded credentials.
+
+    See `resolve_target_repo`, which also returns the credential the URL carried.
+
+    Raises:
+        RuntimeError: If remote.origin.url cannot be resolved or is empty.
+    """
+    return resolve_target_repo(repo_dir)[0]
 
 
 def get_ssh_auth_mounts() -> tuple[list[str], dict[str, str]]:
@@ -1084,7 +1112,7 @@ def run_docker_container(
         return 1
 
     try:
-        resolved_repo_url = resolve_target_repo_url(repo_dir)
+        resolved_repo_url, embedded_token = resolve_target_repo(repo_dir)
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -1106,14 +1134,17 @@ def run_docker_container(
     # Forward all host environment variables prefixed with HOLON_ and GITHUB_TOKEN
     env_to_forward = {}
     override_url = (os.getenv("HOLON_REPO_URL") or "").strip()
-    override_token = strip_url_credentials(override_url)[1] if override_url else None
-    gh_token = find_github_token() or override_token
-    if gh_token:
-        env_to_forward["GITHUB_TOKEN"] = gh_token
+    # A credential embedded in the repository URL (explicit override or origin) is scoped to that
+    # remote and wins over an ambient host token, which may belong to a different host.
+    gh_token = embedded_token or find_github_token()
 
     for key, value in os.environ.items():
         if key.startswith("HOLON_") or key == "GITHUB_TOKEN":
             env_to_forward[key] = value
+
+    # Set after the host forwarding loop so a host GITHUB_TOKEN cannot displace the chosen token.
+    if gh_token:
+        env_to_forward["GITHUB_TOKEN"] = gh_token
 
     env_to_forward["HOLON_REPO_URL"] = resolved_repo_url
 
@@ -1136,7 +1167,7 @@ def run_docker_container(
     # for: a remote built from origin, or an override URL that carried it. Entry 0 resets any
     # inherited helpers for that host.
     helper_host = credential_host(resolved_repo_url)
-    if gh_token and helper_host and (not override_url or override_token):
+    if gh_token and helper_host and (not override_url or embedded_token):
         helper_key = f"credential.https://{helper_host}.helper"
         docker_cmd.extend(
             [

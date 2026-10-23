@@ -68,10 +68,11 @@ overwriting `/etc/shadow` or `/usr/bin/`).
   - `HOLON_AGENT_SETTINGS`: Custom JSON or file-path configurations passed directly to the agent.
   - `HOLON_REPO_URL`: (Optional override). The target git repository URL, which never carries credentials. The `./holon`
     host CLI resolves the active repository remote (`remote.origin.url`). When `find_github_token()` finds a token, the
-    remote is normalised to a plain HTTPS URL (`https://<host>/<org>/<repo>.git`). If no token is detected, the raw
-    remote URL is forwarded unchanged to allow SSH agent forwarding. Setting `HOLON_REPO_URL` on the host serves as an
-    explicit override. If the override embeds credentials (`https://x-access-token:<token>@...`), the CLI strips them
-    with a warning, and uses the stripped token when no other token source exists.
+    remote is normalised to a plain HTTPS URL (`https://<host>/<org>/<repo>.git`). If no token is detected, the remote
+    URL is forwarded as is to allow SSH agent forwarding. Setting `HOLON_REPO_URL` on the host serves as an explicit
+    override. If the override or an HTTP(S) origin embeds credentials (`https://x-access-token:<token>@...`), the CLI
+    strips them with a warning that names the source but never the value. The stripped credential is then used in
+    preference to the ambient `find_github_token()` token, because it is scoped to that remote's host.
   - `GITHUB_TOKEN` / `GH_TOKEN`: Authenticates git fetch and push operations. The `./holon` host CLI automatically
     retrieves this token using `find_github_token()`, falling back to the local `gh` CLI credentials if not set in the
     environment. It reaches the container as described in
@@ -108,8 +109,8 @@ mitmproxy sidecar's failure output. The same pattern set redacts ledger records 
 replaced with the fixed marker `*******`, while the repository, branch and command shape stay readable (for example
 `https://*******@github.com/<org>/<repo>.git`). Never add a second, divergent pattern set; extend that module instead.
 
-The repository-wide test in `tests/test_pre_commit_check.py` fails if any tracked file contains a GitHub token shape or
-an `x-access-token:` URL credential.
+The repository-wide test in `apps/sandbox-executor/tests/test_pre_commit_check.py` fails if any tracked file contains a
+GitHub token shape or an `x-access-token:` URL credential.
 
 #### Follow-up: mitmweb dashboard password
 

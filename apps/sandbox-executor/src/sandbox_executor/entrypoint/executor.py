@@ -1298,7 +1298,7 @@ def main() -> None:
                         )
                         print(f"Error: {summary}", file=sys.stderr)
                         if fetch_err:
-                            print(f"Fetch diagnostic error: {fetch_err}", file=sys.stderr)
+                            print(f"Fetch diagnostic error: {redact_agent_secrets(fetch_err)}", file=sys.stderr)
 
                     if is_action_logging_enabled(intent_data):
                         with contextlib.suppress(Exception):

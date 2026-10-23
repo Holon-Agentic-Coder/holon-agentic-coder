@@ -636,6 +636,50 @@ class TestFlowStages:
         assert res.status == StageStatus.SUCCESS
         mock_converge.assert_called_once_with(["plans/P-200-plan_calibration.md"], repo_dir=str(tmp_path))
 
+    def test_stage5_calibrate_fallback_appends_uncommitted_failure_act_cal(self, tmp_path):
+        """A failed calibration run appends an ACT-CAL failure row that stays uncommitted, as documented."""
+        import subprocess
+
+        def git(*args: str) -> str:
+            return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True).stdout
+
+        git("init", "-q", "-b", "main")
+        git("config", "user.email", "test@example.com")
+        git("config", "user.name", "Test")
+        ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
+        ledger.parent.mkdir(parents=True)
+        ledger.write_text("", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "initial")
+        head_before = git("rev-parse", "HEAD").strip()
+
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            plan_branch="I-100-intent/P-200-plan/_",
+            dry_run=False,
+            skip_push=True,
+        )
+        with (
+            patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError("calibration failed")),
+            patch("sandbox_executor.flow.converge_prettier"),
+        ):
+            res = run_calibrate_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        cal_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-CAL"]
+        assert len(cal_rows) == 1
+        assert cal_rows[0]["outcome"] == "failure"
+        assert "calibration failed" in cal_rows[0]["error_context"]
+        assert cal_rows[0]["calibration_report_path"] == "plans/P-200-plan_calibration.md"
+
+        # Nothing is committed on the fallback path: the row and report remain working-tree changes.
+        assert git("rev-parse", "HEAD").strip() == head_before
+        assert git("branch", "--list", "*calibrated").strip() == ""
+        status = git("status", "--porcelain", "--untracked-files=all")
+        assert "holon-knowledge/ledger/executions.jsonl" in status
+        assert "plans/P-200-plan_calibration.md" in status
+
 
 class TestFlowResumptionAndErrorHandling:
     """Test engine orchestration, resumption from stages, and error handling."""
@@ -1873,6 +1917,10 @@ class TestStage4LedgerProvenance:
         post_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-POST"]
         assert len(post_rows) == 1
         assert post_rows[0]["outcome"] == "failure"
+        assert post_rows[0]["error_context"] == "gh exploded"
+        assert "dual-posted" not in post_rows[0]["action"]
+        assert "posting to GitHub failed" in post_rows[0]["action"]
+        assert list(post_rows[0].keys()) == [*HISTORICAL_RESOLVER_KEYS[:-1], "error_context", "created_at"]
         assert result["posting"] == {"error": "gh exploded"}
         assert any("gh exploded" in rec.getMessage() for rec in caplog.records if rec.levelname == "WARNING")
         assert any("gh exploded" in line for line in ctx.logs)

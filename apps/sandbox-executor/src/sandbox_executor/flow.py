@@ -2793,23 +2793,29 @@ def run_review_loop(
             posting_res = {"error": str(exc)}
 
         # Discrete Action 4: PR Review Posting Event (Bean 0113), recorded whether or not posting succeeded
-        posting_action_record = {
+        posted = bool(posting_res.get("dual_posted") or (posting_res.get("official_review") or {}).get("success"))
+        posting_action_record: dict[str, Any] = {
             "action_id": generate_action_id("ACT-POST"),
             "execution_id": f"REV-POST-{int(time.time())}",
-            "action": f"PR Review consensus dual-posted to GitHub for {review_target}",
+            "action": (
+                f"PR Review consensus dual-posted to GitHub for {review_target}"
+                if posted
+                else f"PR Review consensus posting to GitHub failed for {review_target}"
+            ),
             "category": "code",
             "target": review_target,
-            "outcome": (
-                "success"
-                if (posting_res.get("dual_posted") or (posting_res.get("official_review") or {}).get("success"))
-                else "failure"
-            ),
+            "outcome": "success" if posted else "failure",
             "entry_type": "action",
             "action_origin": "pr_review",
             "review_iteration": iteration,
             "labels": ["review", "github", "dual-post"],
-            "created_at": datetime.now(UTC).isoformat(),
         }
+        if not posted:
+            # Successful rows keep their historical shape; failures carry the posting error.
+            posting_action_record["error_context"] = str(
+                posting_res.get("error") or "Consensus posting did not report success"
+            )
+        posting_action_record["created_at"] = datetime.now(UTC).isoformat()
         record_review_action(context, exec_file, posting_action_record)
 
     # Record overall summary in executions.jsonl

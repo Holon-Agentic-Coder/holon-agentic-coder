@@ -44,6 +44,25 @@ def _sanitize_model_name(model_name: str) -> str:
     return s or "unknown-model"
 
 
+def render_placeholders(template: str, replacements: dict[str, str]) -> str:
+    """Substitute ``{name}`` prompt placeholders, tolerating an unmatched opening brace for every placeholder.
+
+    ``replacements`` is keyed by the well-formed placeholder (``"{plan_id}"``). Each placeholder also matches its
+    unmatched form, where the closing brace is missing (``{plan_id`` followed by anything other than an identifier
+    character or ``}``). Substitution is a single regex pass in which the well-formed form consumes its own closing
+    brace, so it can never leave a stray ``}`` behind (``plans/{plan_id}.md`` must not render as ``plans/P-...}.md``)
+    regardless of the order of ``replacements``. Longer names are tried first so a placeholder whose name is a prefix
+    of another cannot claim it, unknown placeholders (``{plan_idx}``) are left untouched, and substituted values are
+    inserted literally and never re-expanded.
+    """
+    values = {key[1:-1]: value for key, value in replacements.items() if key.startswith("{") and key.endswith("}")}
+    if not values:
+        return template
+    names = "|".join(re.escape(name) for name in sorted(values, key=len, reverse=True))
+    pattern = re.compile(r"\{(" + names + r")(?:\}|(?![\w}]))")
+    return pattern.sub(lambda m: values[m.group(1)], template)
+
+
 def get_file_structure(root_dir, max_depth=3):
     lines = []
     root_dir = os.path.abspath(root_dir)
@@ -215,15 +234,13 @@ Include metrics in this format:
         "{intent_id}": intent_data.get("intent_id", intent_data.get("branch", intent_branch_prefix)),
         "{parent_intent_id}": intent_data.get("parent_intent_id", "NONE"),
         "{description}": intent_data.get("description", ""),
-        "{plan_id": plan_id,  # cover partial braces
         "{plan_id}": plan_id,
         "{date}": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
         "{intent_json}": json.dumps(intent_data, indent=2),
         "{safe_model}": safe_model,
         "{budget_from_intent}": str(intent_data.get("entropy_budget", "15.0")),
     }
-    for k, v in replacements.items():
-        template = template.replace(k, v)
+    template = render_placeholders(template, replacements)
 
     prompt_file = f"/tmp/plan_prompt-{plan_seq}.md"
     with open(prompt_file, "w") as f:

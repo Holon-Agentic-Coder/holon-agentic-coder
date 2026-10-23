@@ -27,6 +27,59 @@ class TestPlanner(unittest.TestCase):
             self.assertNotIn(".git", structure)
             self.assertNotIn(".hidden", structure)
 
+    def test_render_placeholders_well_formed_leaves_no_stray_brace(self):
+        """A well-formed placeholder consumes its own closing brace, so no trailing '}' is ever left behind."""
+        rendered = planner.render_placeholders(
+            "write the plan to `plans/{plan_id}.md`; Plan ID: {plan_id}; model {safe_model}",
+            {"{plan_id}": "P-1-claude-agent-opus", "{safe_model}": "opus"},
+        )
+        self.assertEqual(
+            rendered, "write the plan to `plans/P-1-claude-agent-opus.md`; Plan ID: P-1-claude-agent-opus; model opus"
+        )
+        self.assertNotIn("}", rendered)
+
+    def test_render_placeholders_unmatched_open_brace_for_any_placeholder(self):
+        """An unmatched '{' (closing brace missing) is tolerated for every placeholder, wherever it appears."""
+        replacements = {"{plan_id}": "P-1", "{agent}": "claude-agent", "{timestamp}": "1792765112"}
+        cases = {
+            # At the end of the template
+            "Plan ID: {plan_id": "Plan ID: P-1",
+            # Followed by whitespace
+            "Agent: {agent and more": "Agent: claude-agent and more",
+            # Followed by punctuation, as in a filename
+            "plans/P-{timestamp-{agent.md": "plans/P-1792765112-claude-agent.md",
+            # Followed by a newline
+            "{timestamp\nnext line": "1792765112\nnext line",
+            # Mixed with well-formed occurrences in the same template
+            "plans/{plan_id}.md by {agent and {agent} at {timestamp": (
+                "plans/P-1.md by claude-agent and claude-agent at 1792765112"
+            ),
+        }
+        for template, expected in cases.items():
+            with self.subTest(template=template):
+                self.assertEqual(planner.render_placeholders(template, replacements), expected)
+
+    def test_render_placeholders_is_independent_of_replacement_order(self):
+        """Rendering must not depend on dict order, including names that are prefixes of other names."""
+        forward = {"{model}": "opus", "{model_family}": "claude", "{plan_id}": "P-1"}
+        reverse = dict(reversed(list(forward.items())))
+        template = "{model} {model_family} {model {model_family {plan_id}"
+        expected = "opus claude opus claude P-1"
+        self.assertEqual(planner.render_placeholders(template, forward), expected)
+        self.assertEqual(planner.render_placeholders(template, reverse), expected)
+
+    def test_render_placeholders_leaves_unknown_placeholders_untouched(self):
+        """Unknown names -- including ones that merely share a known prefix -- are left exactly as written."""
+        rendered = planner.render_placeholders("{plan_idx} {plan_id_suffix} {unknown} {unknown {", {"{plan_id}": "P-1"})
+        self.assertEqual(rendered, "{plan_idx} {plan_id_suffix} {unknown} {unknown {")
+
+    def test_render_placeholders_values_are_literal_and_not_re_expanded(self):
+        """Values are inserted literally: no regex backreferences, and placeholders inside a value stay as text."""
+        rendered = planner.render_placeholders(
+            "{plan_id {description}", {"{plan_id}": r"P-\1-\g<0>", "{description}": "mentions {plan_id} literally"}
+        )
+        self.assertEqual(rendered, r"P-\1-\g<0> mentions {plan_id} literally")
+
     def test_parse_metrics(self):
         content = """
 # Plan

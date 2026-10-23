@@ -35,7 +35,16 @@ class TestAgentRunner(unittest.TestCase):
 
         expected_commands = {
             "pi": ["pi", "-p", "--model", "gemini-3.5-flash", "compiled prompt text"],
-            "claude": ["claude", "--model", "gemini-3.5-flash", "-p", "compiled prompt text"],
+            "claude": [
+                "claude",
+                "--allow-dangerously-skip-permissions",
+                "--permission-mode",
+                "bypassPermissions",
+                "--model",
+                "gemini-3.5-flash",
+                "-p",
+                "compiled prompt text",
+            ],
             "gemini": ["gemini", "--model", "gemini-3.5-flash", "-p", "compiled prompt text"],
             "opencode": ["opencode", "run", "--model", "gemini-3.5-flash", "compiled prompt text"],
             "codex": ["codex", "exec", "-m", "gemini-3.5-flash", "compiled prompt text"],
@@ -123,6 +132,33 @@ class TestAgentRunner(unittest.TestCase):
             cmd = runner.build_cmd("gemini-3.5-flash", "/tmp/p", "/tmp/i", "prompt")
             self.assertIn("--dangerously-skip-permissions", cmd)
             self.assertIn("--effort", cmd)
+
+    def test_claude_skip_permissions(self):
+        """Test that the Claude runner passes the permission bypass as CLI parameters, defaulting to enabled."""
+        import os
+        from unittest.mock import patch
+
+        # Unset defaults to enabled, matching the Antigravity runner
+        with patch.dict(os.environ, {"HOLON_AGENT_KEY": "dummy"}, clear=True):
+            cmd = get_runner("claude-agent").build_cmd("claude-opus-5-5", "/tmp/p", "/tmp/i", "prompt")
+            self.assertIn("--allow-dangerously-skip-permissions", cmd)
+            mode_idx = cmd.index("--permission-mode")
+            self.assertEqual(cmd[mode_idx + 1], "bypassPermissions")
+            # Flags precede the model and the prompt stays last
+            self.assertLess(mode_idx, cmd.index("--model"))
+            self.assertEqual(cmd[-1], "prompt")
+
+        # Explicit opt-out drops both parameters
+        with patch.dict(os.environ, {"HOLON_AGENT_SKIP_PERMISSIONS": "false", "HOLON_AGENT_KEY": "dummy"}, clear=True):
+            cmd = get_runner("claude").build_cmd("claude-opus-5-5", "/tmp/p", "/tmp/i", "prompt")
+            self.assertNotIn("--allow-dangerously-skip-permissions", cmd)
+            self.assertNotIn("--permission-mode", cmd)
+
+        # The bypass is never routed through the --settings JSON
+        with patch.dict(os.environ, {"HOLON_AGENT_SETTINGS": '{"env":{}}', "HOLON_AGENT_KEY": "dummy"}, clear=True):
+            cmd = get_runner("claude").build_cmd("claude-opus-5-5", "/tmp/p", "/tmp/i", "prompt")
+            self.assertEqual(cmd[cmd.index("--settings") + 1], '{"env":{}}')
+            self.assertIn("--allow-dangerously-skip-permissions", cmd)
 
     def test_three_tier_fallback_contract(self):
         """Test that Tier 1 (HOLON_AGENT_KEY) passes validation for all runners."""

@@ -473,6 +473,38 @@ class AntigravityAgentRunner(StandardAgentRunner):
         return cmd
 
 
+class ClaudeAgentRunner(StandardAgentRunner):
+    """Runner for the Claude Code agent.
+
+    In print mode (``-p``) Claude Code refuses every file write unless permission checks are bypassed, so a sandboxed
+    planner or executor could author nothing. ``HOLON_AGENT_SKIP_PERMISSIONS`` (default ``true``, as for Antigravity) is
+    resolved at call time and adds the bypass as explicit command-line parameters rather than through the
+    ``--settings`` JSON, so the bypass stays visible in the composed command. ``--allow-dangerously-skip-permissions``
+    only makes the bypass available; ``--permission-mode bypassPermissions`` is what enables it for the session.
+    """
+
+    def build_cmd(self, model_name: str, prompt_file: str, intent_file: str, full_prompt: str) -> list[str]:
+        prefix = list(self.prefix)
+        if os.getenv("HOLON_AGENT_SKIP_PERMISSIONS", "true").lower() in ("1", "true", "yes", "on"):
+            prefix.extend(["--allow-dangerously-skip-permissions", "--permission-mode", "bypassPermissions"])
+
+        self.validate()
+        cmd = [self.binary_name, *prefix, self.model_flag, model_name, *self.suffix]
+
+        for mapping in self.env_mappings:
+            val = os.getenv(mapping.env_var)
+            if not val:
+                continue
+            if mapping.is_boolean:
+                if val.lower() in ("true", "1", "yes", "on"):
+                    cmd.append(mapping.flag)
+            else:
+                cmd.extend([mapping.flag, val])
+
+        cmd.append(full_prompt)
+        return cmd
+
+
 # Runner registry: maps agent_id -> StandardAgentRunner instance.
 #
 # Architectural assumption: one agent per sandbox container execution.
@@ -494,7 +526,7 @@ runners = {
         ],
         required_keys=["HOLON_AGENT_KEY"],
     ),
-    "claude": StandardAgentRunner(
+    "claude": ClaudeAgentRunner(
         "claude",
         "claude",
         "--model",

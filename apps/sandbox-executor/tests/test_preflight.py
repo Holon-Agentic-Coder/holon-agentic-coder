@@ -61,6 +61,17 @@ def _result(status: PreflightStatus, agent: str = "antigravity-agent") -> Prefli
         (1, "invalid model selection (--model 'x' --effort 'medium')", PreflightStatus.UNKNOWN),
         (None, "", PreflightStatus.UNKNOWN),
         (125, "docker: Error response from daemon: pull access denied", PreflightStatus.UNKNOWN),
+        # An exit-0 probe that answered is ok, whatever incidental output the runner logged around the reply.
+        (0, "OK\nwarning: cached session token expired, refreshed", PreflightStatus.OK),
+        (0, "OK\n...token expired...", PreflightStatus.OK),
+        (0, "[debug] HTTP 401 retry succeeded\nOK.", PreflightStatus.OK),
+        (0, "OK\nrate limit headroom: 12 requests", PreflightStatus.OK),
+        # Bare status codes and a bare "expired" are not failure signals on their own.
+        (1, "request id req-429-abc failed", PreflightStatus.UNKNOWN),
+        (1, "cache expired; aborting", PreflightStatus.UNKNOWN),
+        (1, "HTTP 401", PreflightStatus.EXPIRED_KEY),
+        (1, "status code: 429", PreflightStatus.QUOTA_EXHAUSTED),
+        (1, "OK", PreflightStatus.UNKNOWN),
     ],
 )
 def test_classifier_truth_table(exit_code, output, expected):
@@ -378,6 +389,64 @@ def test_flow_explicit_runner_provenance_is_unchanged(flow_repo):
     assert probe.call_args[0][:2] == ("antigravity-agent", "gemini-3.8-flash-medium")
     ctx = pipeline.call_args[1]["context"]
     assert (ctx.agent, ctx.model) == ("antigravity-agent", "gemini-3.8-flash-medium")
+
+
+def _write_checkpoint(repo, stage: str) -> str:
+    from sandbox_executor.flow import FlowCheckpoint, FlowContext, FlowStage
+
+    ctx = FlowContext(
+        repo_dir=str(repo),
+        intent_data={"slug": "resume"},
+        agent="antigravity-agent",
+        model="gemini-3.8-flash-medium",
+    )
+    path = repo / "resume_checkpoint.json"
+    checkpoint = FlowCheckpoint(intent_slug="resume", current_stage=FlowStage(stage), context=ctx)
+    path.write_text(json.dumps(checkpoint.to_dict()), encoding="utf-8")
+    return str(path)
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        (["--agent", "claude-agent"], ("claude-agent", "claude-opus-5-5")),
+        (["--agent", "claude-agent", "--model", "m-x"], ("claude-agent", "m-x")),
+        (["--agent", "antigravity"], ("antigravity-agent", "gemini-3.8-flash-medium")),
+        ([], ("antigravity-agent", "gemini-3.8-flash-medium")),
+    ],
+)
+def test_resume_with_new_runner_resolves_its_default_model(flow_repo, monkeypatch, extra, expected):
+    repo, _ = flow_repo
+    monkeypatch.delenv("HOLON_MODEL", raising=False)
+    checkpoint = _write_checkpoint(repo, "plan")
+    with (
+        patch("sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.OK)) as probe,
+        patch("sandbox_executor.cli.run_flow_pipeline", return_value={}) as pipeline,
+        patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
+    ):
+        assert _run_main(["holon", "flow", "--checkpoint", checkpoint, "--repo-dir", str(repo), *extra]) == 0
+    assert probe.call_args[0][:2] == expected
+    ctx = pipeline.call_args[1]["context"]
+    assert (ctx.agent, ctx.model) == expected
+
+
+@pytest.mark.parametrize(
+    ("stage", "probed"), [("plan", True), ("execute", True), ("review", False), ("calibrate", False)]
+)
+def test_resume_probes_only_when_an_agent_stage_remains(flow_repo, stage, probed):
+    repo, _ = flow_repo
+    checkpoint = _write_checkpoint(repo, stage)
+    with (
+        patch(
+            "sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.QUOTA_EXHAUSTED)
+        ) as probe,
+        patch("sandbox_executor.cli.run_flow_pipeline", return_value={}) as pipeline,
+        patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
+    ):
+        code = _run_main(["holon", "flow", "--checkpoint", checkpoint, "--repo-dir", str(repo)])
+    assert probe.called is probed
+    assert code == (1 if probed else 0)
+    assert pipeline.called is not probed
 
 
 def test_checkpoint_without_attribution_resumes_with_legacy_default():

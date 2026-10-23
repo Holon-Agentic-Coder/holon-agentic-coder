@@ -24,6 +24,8 @@ from sandbox_executor import local_llm
 from sandbox_executor.agent_defaults import AGENT_IMAGE_MAPPING, normalise_agent_id
 
 PROBE_PROMPT = "Reply with the single word OK."
+# The expected answer to PROBE_PROMPT, on a line of its own (optionally followed by punctuation).
+_EXPECTED_REPLY_RE = re.compile(r"^\s*OK[.!]?\s*$", re.MULTILINE | re.IGNORECASE)
 DEFAULT_TIMEOUT_SECONDS = 60.0
 TIMEOUT_ENV_VAR = "HOLON_PREFLIGHT_TIMEOUT"
 SKIP_ENV_VAR = "HOLON_SKIP_PREFLIGHT"
@@ -95,12 +97,15 @@ class PreflightResult:
         return "\n".join(lines)
 
 
-# Ordered classification table: the first matching status wins.
+# Ordered classification table: the first matching status wins. Bare status codes and the bare word "expired" are
+# matched only in an error context, so incidental output (a request id containing 429, "cache expired") does not match.
+# A probe that exits 0 with the expected reply is ok before this table is consulted.
 _PATTERNS: tuple[tuple[PreflightStatus, re.Pattern[str]], ...] = (
     (
         PreflightStatus.QUOTA_EXHAUSTED,
         re.compile(
-            r"\b429\b|RESOURCE_EXHAUSTED|quota\s+(?:exceeded|exhausted)|exceeded\s+(?:your|the)\s+(?:current\s+)?quota"
+            r"(?:HTTP|status|code|error)[\s:=]*429\b|\b429\b\W*(?:too\s+many|quota|rate|resource)|RESOURCE_EXHAUSTED"
+            r"|quota\s+(?:exceeded|exhausted)|exceeded\s+(?:your|the)\s+(?:current\s+)?quota"
             r"|rate[\s_-]?limit(?:ed)?|too\s+many\s+requests|usage\s+limit",
             re.IGNORECASE,
         ),
@@ -118,7 +123,9 @@ _PATTERNS: tuple[tuple[PreflightStatus, re.Pattern[str]], ...] = (
     (
         PreflightStatus.EXPIRED_KEY,
         re.compile(
-            r"expired|invalid[\s_-]+(?:api[\s_-]+)?(?:key|token|x-api-key|credentials)|\b401\b|UNAUTHENTICATED"
+            r"(?:key|token|credential|session|login)s?\s+(?:has\s+|have\s+|is\s+)?expired"
+            r"|invalid[\s_-]+(?:api[\s_-]+)?(?:key|token|x-api-key|credentials)"
+            r"|(?:HTTP|status|code|error)[\s:=]*401\b|\b401\s+Unauthori[sz]ed|UNAUTHENTICATED"
             r"|unauthori[sz]ed|authentication[\s_]+(?:failed|error)",
             re.IGNORECASE,
         ),
@@ -155,10 +162,14 @@ def classify_probe_output(exit_code: int | None, output: str) -> PreflightStatus
         output: Combined stdout and stderr.
 
     Returns:
-        The first matching failure status in table order; ``ok`` for exit code 0 with non-empty output and no failure
-        pattern; ``unknown`` otherwise.
+        ``ok`` for exit code 0 when the output carries the expected ``OK`` reply, whatever else the runner logged.
+        Otherwise the first matching failure status in table order (runners such as agy report quota errors with exit
+        code 0, so the table also applies to a successful exit that lacks the reply); ``ok`` for exit code 0 with
+        non-empty output and no failure pattern; ``unknown`` otherwise.
     """
     text = output or ""
+    if exit_code == 0 and _EXPECTED_REPLY_RE.search(text):
+        return PreflightStatus.OK
     for status, pattern in _PATTERNS:
         if pattern.search(text):
             return status

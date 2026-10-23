@@ -31,7 +31,7 @@ docker run --rm \
   -e HOLON_ROLE=planner \
   -e PI_API_KEY="your-gemini-key" \
   holon/agent-pi \
-  "I-intent-branch/_" "pi-agent" "gemini-3.8-flash-medium"
+  "I-intent-branch/_" "pi-agent" "gemini-3.8-flash"
 ```
 
 ### Claude Agent (`claude-agent`)

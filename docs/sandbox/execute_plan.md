@@ -27,7 +27,7 @@ If installed globally via `uv tool install ./apps/sandbox-executor` (from reposi
 (can pin `@main`, release `@<tag>`, or immutable `@<commit-sha>`):
 
 ```bash
-holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.8-flash-medium
+holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.8-flash-medium/_" --agent antigravity-agent --model gemini-3.8-flash-medium
 ```
 
 ### Option B: Ephemeral Execution (`uvx`)
@@ -41,10 +41,10 @@ Run on-demand without prior installation:
 
 ```bash
 # Run from local repository clone (must be run from repository root)
-uvx --from ./apps/sandbox-executor holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.8-flash-medium
+uvx --from ./apps/sandbox-executor holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.8-flash-medium/_" --agent antigravity-agent --model gemini-3.8-flash-medium
 
 # Or directly from remote Git repository (can pin @main, release @<tag>, or immutable @<commit-sha>)
-uvx --from "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@main#subdirectory=apps/sandbox-executor" holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.8-flash-medium
+uvx --from "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@main#subdirectory=apps/sandbox-executor" holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.8-flash-medium/_" --agent antigravity-agent --model gemini-3.8-flash-medium
 ```
 
 ### Option C: Repository Convenience Script (`./holon`)
@@ -52,7 +52,7 @@ uvx --from "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@m
 Run from the repository root using the [`./holon`](../../holon) host wrapper:
 
 ```bash
-./holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.8-flash-medium
+./holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.8-flash-medium/_" --agent antigravity-agent --model gemini-3.8-flash-medium
 ```
 
 The Holon CLI automatically handles setting up the container and environment, mapping directly into the
@@ -89,7 +89,7 @@ sandbox:
 ### 4. Optional Token Reduction Proxy (`--token-reduce`)
 
 ```bash
-./holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" \
+./holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.8-flash-medium/_" \
   --agent antigravity-agent --model gemini-3.8-flash-medium --token-reduce
 ```
 

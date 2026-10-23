@@ -748,9 +748,9 @@ entrypoint directly:
 
 ```bash
 ./holon intent intents/my-task.json                                  # Intent Creator
-./holon plan "I-1784983150-build-execution/_" --agent pi-agent --model gemini-3.8-flash-medium
-./holon execute "I-1784983150-build-execution/P-1784988130-pi-agent-gemini-3.5-flash/_" \
-  --agent pi-agent --model gemini-3.8-flash-medium --token-reduce
+./holon plan "I-1784983150-build-execution/_" --agent pi-agent --model gemini-3.8-flash
+./holon execute "I-1784983150-build-execution/P-1784988130-pi-agent-gemini-3.8-flash/_" \
+  --agent pi-agent --model gemini-3.8-flash --token-reduce
 ```
 
 #### 2. Ephemeral Execution (`uvx`)
@@ -765,8 +765,8 @@ Run the CLI on-demand in an isolated ephemeral environment without installing it
 ```bash
 # Run from local repository clone (must be run from repository root)
 uvx --from ./apps/sandbox-executor holon intent intents/my-task.json
-uvx --from ./apps/sandbox-executor holon plan "I-1784983150-build-execution/_" --agent pi-agent --model gemini-3.8-flash-medium
-uvx --from ./apps/sandbox-executor holon execute "I-1784983150-build-execution/P-1784988130-pi-agent-gemini-3.5-flash/_" --agent pi-agent --model gemini-3.8-flash-medium
+uvx --from ./apps/sandbox-executor holon plan "I-1784983150-build-execution/_" --agent pi-agent --model gemini-3.8-flash
+uvx --from ./apps/sandbox-executor holon execute "I-1784983150-build-execution/P-1784988130-pi-agent-gemini-3.8-flash/_" --agent pi-agent --model gemini-3.8-flash
 
 # Run directly from remote Git repository (can pin @main, release @<tag>, or immutable @<commit-sha>)
 uvx --from "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@main#subdirectory=apps/sandbox-executor" holon --help
@@ -788,8 +788,8 @@ Once installed, invoke `holon` directly anywhere:
 
 ```bash
 holon intent intents/my-task.json
-holon plan "I-1784983150-build-execution/_" --agent pi-agent --model gemini-3.8-flash-medium
-holon execute "I-1784983150-build-execution/P-1784988130-pi-agent-gemini-3.5-flash/_" --agent pi-agent --model gemini-3.8-flash-medium
+holon plan "I-1784983150-build-execution/_" --agent pi-agent --model gemini-3.8-flash
+holon execute "I-1784983150-build-execution/P-1784988130-pi-agent-gemini-3.8-flash/_" --agent pi-agent --model gemini-3.8-flash
 ```
 
 To upgrade a globally installed version:

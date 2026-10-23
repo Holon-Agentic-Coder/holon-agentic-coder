@@ -1151,6 +1151,26 @@ def resolve_runner_and_model(agent: str | None, model: str | None) -> tuple[Reso
     return agent_res, model_res
 
 
+# Resumption points from which a flow still reaches the plan and execute stages, the ones that need the agent runner.
+# Review (the native review loop) and calibration run only git, gh and local checks, so a flow resumed at either of
+# them has nothing for the probe to protect.
+_AGENT_FLOW_STAGES = ("intent", "plan", "execute")
+
+
+def flow_dispatches_agent(from_stage: str | None) -> bool:
+    """Return True when a flow starting at ``from_stage`` still reaches a stage that dispatches the agent runner.
+
+    Args:
+        from_stage: Resumption stage name, or None for a run from the start.
+
+    Returns:
+        False only when the flow resumes at a stage after the last agent-dispatching stage.
+    """
+    if not from_stage:
+        return True
+    return str(from_stage).strip().lower() in _AGENT_FLOW_STAGES
+
+
 def preflight_gate(agent: str, model: str, skip: bool = False) -> PreflightResult | None:
     """Run the readiness probe unless skipped and print the diagnosis when it fails.
 
@@ -1870,14 +1890,26 @@ def main() -> None:
                 agent_res, model_res = resolve_runner_and_model(args.agent, args.model)
                 flow_agent, flow_model = agent_res.value, model_res.value
             else:
-                # A resumed checkpoint keeps its recorded attribution; only explicit flags override it.
+                # A resumed checkpoint keeps its recorded attribution; only explicit flags override it. Switching the
+                # runner with --agent alone resolves that runner's model (HOLON_MODEL, then its default), because the
+                # checkpoint's model belongs to the old runner.
                 flow_agent = resolve_agent_runner(args.agent).value if args.agent is not None else context.agent
-                flow_model = args.model if args.model is not None else context.model
+                if args.model is not None:
+                    flow_model = args.model
+                elif args.agent is not None and normalise_agent_id(flow_agent) != normalise_agent_id(context.agent):
+                    flow_model = resolve_model(flow_agent, None).value
+                else:
+                    flow_model = context.model
                 print(f"Agent runner {flow_agent}, model {flow_model} (source: checkpoint or flag)", file=sys.stderr)
 
             # Readiness probe before Stage 1: nothing has been branched, pushed, checkpointed or recorded yet.
             if args.dry_run or (context is not None and context.dry_run):
                 logger.info("Pre-flight probe skipped for a dry-run flow (no agent is called).")
+            elif not flow_dispatches_agent(args.from_stage):
+                logger.info(
+                    "Pre-flight probe skipped: no remaining stage from '%s' dispatches an agent runner.",
+                    args.from_stage,
+                )
             else:
                 preflight = preflight_gate(flow_agent, flow_model, skip=args.skip_preflight)
                 if preflight is not None and not preflight.ok:

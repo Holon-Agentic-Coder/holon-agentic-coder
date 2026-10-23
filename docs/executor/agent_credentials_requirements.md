@@ -178,7 +178,7 @@ Pre-flight antigravity-agent (gemini-3.8-flash-medium) via holon/agent-antigravi
 
 | Status            | Meaning                                                          | Remediation                                                                       |
 | ----------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `ok`              | The runner answered.                                             | None.                                                                             |
+| `ok`              | Exit 0 with an answer; an `OK` reply wins over any logged noise. | None.                                                                             |
 | `quota_exhausted` | `429`, `RESOURCE_EXHAUSTED`, quota or rate-limit messages.       | Wait for the quota to reset, or choose another runner (`--agent`, `HOLON_AGENT`). |
 | `not_logged_in`   | No `HOLON_AGENT_KEY` and no session to mount, or a login prompt. | Set `HOLON_AGENT_KEY` or initialise and mount the session (Tier 3 above).         |
 | `expired_key`     | Expired or invalid key, `401`, `UNAUTHENTICATED`.                | Renew `HOLON_AGENT_KEY` or re-authorise the mounted session.                      |
@@ -190,9 +190,11 @@ Probe output is redacted before it is printed. A timeout usually means the runne
 
 `holon plan`, `holon execute` and `holon flow` run the same probe straight after resolving the runner and before any
 container run, intent branch, push, checkpoint or ledger row. A status other than `ok` aborts the command with a
-non-zero exit code. `holon flow --dry-run` never calls an agent, so it skips the probe. A resumed flow (`--checkpoint`
-or `--from-stage`) is probed with the checkpoint's recorded runner and model, unless `--agent` or `--model` overrides
-them.
+non-zero exit code. `holon flow --dry-run` never calls an agent, so it skips the probe. A flow resumed from
+`--checkpoint` is probed with the checkpoint's recorded runner and model unless `--agent` or `--model` overrides them;
+`--agent` without `--model` switches to the new runner's model (`HOLON_MODEL`, then its default) rather than keeping the
+checkpoint's. `--from-stage` without a checkpoint resolves the runner as a fresh run does. A flow that resumes at
+`review` or `calibrate` reaches no stage that calls the runner, so it skips the probe.
 
 - `--skip-preflight` skips the probe for one command.
 - `HOLON_SKIP_PREFLIGHT=1` skips it for every command, for example in CI. The host sets it for the containers it

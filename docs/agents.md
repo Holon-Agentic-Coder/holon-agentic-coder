@@ -505,8 +505,10 @@ attribution.
 Historical records are never re-attributed: checkpoints and ledger rows without an agent or model are back-filled with
 the fixed legacy values `antigravity-agent` / `gemini-3.8-flash-medium`, not with the current detection result.
 
-Before any work starts, the selected runner is checked with a readiness probe; see
-[`holon doctor`](executor/agent_credentials_requirements.md#readiness-probe-holon-doctor).
+Before `holon plan`, `holon execute` and `holon flow` start any work, the selected runner is checked with a readiness
+probe; see [`holon doctor`](executor/agent_credentials_requirements.md#readiness-probe-holon-doctor).
+`holon review-loop` is not probed: the review loop runs git, `gh` and local checks only and never calls the runner,
+which it uses for image selection and attribution.
 
 ---
 

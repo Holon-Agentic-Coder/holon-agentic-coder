@@ -15,7 +15,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
@@ -30,8 +29,10 @@ TIMEOUT_ENV_VAR = "HOLON_PREFLIGHT_TIMEOUT"
 SKIP_ENV_VAR = "HOLON_SKIP_PREFLIGHT"
 _EXCERPT_CHARS = 800
 _TRUTHY_ENV_VALUES = ("1", "true", "yes", "on")
-# Values never forwarded into the probe container or echoed back in an excerpt.
-_SENSITIVE_ENV_VARS = ("HOLON_AGENT_KEY", "GITHUB_TOKEN", "GH_TOKEN")
+# Variables whose values are masked in a probe excerpt. HOLON_AGENT_SETTINGS can carry CLAUDE_CODE_OAUTH_TOKEN.
+_SENSITIVE_ENV_VARS = ("HOLON_AGENT_KEY", "HOLON_AGENT_SETTINGS", "GITHUB_TOKEN", "GH_TOKEN")
+# Bare Anthropic API keys and OAuth tokens (sk-ant-...), which the generic sweep does not recognise on their own.
+_ANTHROPIC_TOKEN_RE = re.compile(r"sk-ant-[A-Za-z0-9_\-]+")
 
 
 class PreflightStatus(enum.StrEnum):
@@ -193,6 +194,7 @@ def redact_output(text: str) -> str:
         value = os.getenv(var)
         if value and len(value) >= 4:
             redacted = redacted.replace(value, "***REDACTED***")
+    redacted = _ANTHROPIC_TOKEN_RE.sub("***REDACTED***", redacted)
     return redact_text(redacted)
 
 
@@ -365,8 +367,3 @@ def _decode(value: Any) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return str(value)
-
-
-def print_report(result: PreflightResult, stream: Any = None) -> None:
-    """Print the diagnosis to ``stream`` (stderr by default)."""
-    print(result.format_report(), file=stream or sys.stderr)

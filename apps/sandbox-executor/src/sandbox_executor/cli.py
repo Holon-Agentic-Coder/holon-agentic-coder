@@ -1505,11 +1505,6 @@ def main() -> None:
     )
     doctor_parser.add_argument("--agent", default=None, help=_AGENT_HELP)
     doctor_parser.add_argument("--model", default=None, help=_MODEL_HELP)
-    doctor_parser.add_argument(
-        "--repo-dir",
-        default=".",
-        help="Target repository directory path (default: current directory). Nothing is written there.",
-    )
     doctor_parser.add_argument("--json", action="store_true", help="Output the resolution and probe result as JSON.")
     doctor_parser.add_argument(
         "--timeout",

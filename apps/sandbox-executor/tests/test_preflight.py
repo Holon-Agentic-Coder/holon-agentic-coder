@@ -104,6 +104,19 @@ def test_probe_runs_runner_in_its_container_and_redacts(probe_env):
     assert tail[-1] == PROBE_PROMPT
 
 
+def test_redact_output_masks_agent_settings_and_bare_anthropic_tokens(probe_env, monkeypatch):
+    settings = '{"env":{"CLAUDE_CODE_OAUTH_TOKEN":"fake-settings-oauth-value"}}'
+    monkeypatch.setenv("HOLON_AGENT_SETTINGS", settings)
+    text = f"settings {settings} rejected; token sk-ant-oat01-fakeFAKE_value-123 expired"
+
+    redacted = preflight.redact_output(text)
+
+    assert settings not in redacted
+    assert "fake-settings-oauth-value" not in redacted
+    assert "sk-ant-" not in redacted
+    assert "expired" in redacted
+
+
 def test_probe_ok(probe_env):
     runner_fn = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="OK\n", stderr=""))
     res = run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=runner_fn)

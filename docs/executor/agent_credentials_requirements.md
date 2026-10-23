@@ -72,7 +72,8 @@ overwriting `/etc/shadow` or `/usr/bin/`).
     URL is forwarded as is to allow SSH agent forwarding. Setting `HOLON_REPO_URL` on the host serves as an explicit
     override. If the override or an HTTP(S) origin embeds credentials (`https://x-access-token:<token>@...`), the CLI
     strips them with a warning that names the source but never the value. The stripped credential is then used in
-    preference to the ambient `find_github_token()` token, because it is scoped to that remote's host.
+    preference to the ambient `find_github_token()` token, because it is scoped to that remote's host. A remote that
+    stays plain `http://` is never sent a credential, so its stripped credential is discarded with a warning instead.
   - `GITHUB_TOKEN` / `GH_TOKEN`: Authenticates git fetch and push operations. The `./holon` host CLI automatically
     retrieves this token using `find_github_token()`, falling back to the local `gh` CLI credentials if not set in the
     environment. It reaches the container as described in

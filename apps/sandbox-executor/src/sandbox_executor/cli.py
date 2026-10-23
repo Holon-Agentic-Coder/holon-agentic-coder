@@ -270,15 +270,26 @@ def resolve_target_repo(repo_dir: str | None = None) -> tuple[str, str | None]:
     the source but never the value; `run_docker_container` hands that credential to git inside the
     container through a runtime credential helper, in preference to an ambient host token. When a
     GitHub token is found, an origin remote is normalised to a plain HTTPS URL the same way.
-    Otherwise the remote URL is returned as is, for SSH agent forwarding.
+    Otherwise the remote URL is returned as is, for SSH agent forwarding. A credential stripped from
+    a URL that stays plain HTTP is discarded, since no credential helper is configured for it.
 
     Returns:
-        The credential-free URL, and the credential stripped from it (None when there was none).
+        The credential-free URL, and the credential stripped from it (None when there was none or
+        it was discarded).
 
     Raises:
         RuntimeError: If remote.origin.url cannot be resolved or is empty.
     """
     clean_url, embedded, source = _resolve_target_repo(repo_dir)
+    if source and credential_host(clean_url) is None:
+        # Plain HTTP is never sent a credential, so no helper will use it: discard it rather than
+        # forward an unused secret into the container.
+        print(
+            f"Warning: {source} contains embedded credentials; they are stripped from the URL and "
+            "discarded, because plain HTTP is never sent a credential. Use an HTTPS or SSH remote.",
+            file=sys.stderr,
+        )
+        return clean_url, None
     if source:
         print(
             f"Warning: {source} contains embedded credentials; they are stripped from the URL and the "

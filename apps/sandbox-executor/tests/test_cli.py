@@ -1142,6 +1142,47 @@ def test_ssh_override_url_keeps_its_user_and_synthesises_no_token(leak_env, monk
     assert not any(arg.startswith("GIT_CONFIG_") for arg in docker.argv)
 
 
+@pytest.mark.parametrize("source", ["override", "origin"])
+def test_plain_http_url_credential_is_discarded_not_forwarded(leak_env, monkeypatch, capsys, source):
+    """Plain HTTP is never sent a credential: it is dropped with an accurate warning, not forwarded unused."""
+    embedded = make_fake_secret("plainhttpcred")
+    url = f"http://x-access-token:{embedded}@git.example.org/myorg/myrepo.git"
+    monkeypatch.delenv("GITHUB_TOKEN")
+    if source == "override":
+        monkeypatch.setenv("HOLON_REPO_URL", url)
+    else:
+        subprocess.run(["git", "-C", leak_env["repo"], "remote", "set-url", "origin", url], check=True)
+    docker = _RecordingDocker()
+    monkeypatch.setattr(cli.subprocess, "run", docker)
+
+    assert _run_planner(leak_env["repo"]) == 0
+
+    captured = capsys.readouterr()
+    assert "contains embedded credentials" in captured.err
+    assert "discarded" in captured.err
+    assert "credential helper" not in captured.err
+    for text in (captured.out, captured.err, " ".join(docker.argv), *docker.env_file_contents.values()):
+        assert_no_token_fragment(text, embedded)
+    assert "HOLON_REPO_URL=http://git.example.org/myorg/myrepo.git" in docker.argv
+    assert "GITHUB_TOKEN" not in docker.env_file_contents
+    assert not any(arg.startswith("GIT_CONFIG_") for arg in docker.argv)
+
+
+def test_plain_http_override_falls_back_to_the_host_token(leak_env, monkeypatch):
+    """Discarding a plain-HTTP credential leaves the ambient host token as the forwarded GITHUB_TOKEN."""
+    embedded = make_fake_secret("plainhttpcred")
+    monkeypatch.setenv("HOLON_REPO_URL", f"http://x-access-token:{embedded}@git.example.org/myorg/myrepo.git")
+    docker = _RecordingDocker()
+    monkeypatch.setattr(cli.subprocess, "run", docker)
+
+    assert _run_planner(leak_env["repo"]) == 0
+
+    assert docker.env_file_contents["GITHUB_TOKEN"] == leak_env["secrets"]["GITHUB_TOKEN"]
+    for value in docker.env_file_contents.values():
+        assert_no_token_fragment(value, embedded)
+    assert not any(arg.startswith("GIT_CONFIG_") for arg in docker.argv)
+
+
 def test_no_credential_helper_for_an_override_url_that_never_carried_the_token(leak_env, monkeypatch):
     monkeypatch.setenv("HOLON_REPO_URL", "https://git.example.org/myorg/myrepo.git")
     docker = _RecordingDocker()

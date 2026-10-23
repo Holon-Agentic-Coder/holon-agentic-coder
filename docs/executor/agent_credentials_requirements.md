@@ -241,4 +241,7 @@ proxy, and prints `gateway=<url> prefill_cache=off|cold|warm` followed by any me
 cache is `off` when the server reports it disabled, `cold` when it is enabled with zero cached entries or tokens, and
 `warm` otherwise; an unreachable server or an unrecognised response prints `prefill_cache=unknown` and never fails the
 command. A `WARNING` line is printed when an emitted `maxTokens` exceeds the server's
-`effective_defaults.max_output_tokens`. Only loopback or `HOLON_HOST_LOCAL_HOSTS` authorities are ever probed.
+`effective_defaults.max_output_tokens`, or when a model's `contextWindow` exceeds the server's `max_prompt_tokens` (read
+from `effective_defaults` or the top level of the response). Only loopback or `HOLON_HOST_LOCAL_HOSTS` authorities are
+ever probed: redirects are refused, and the probe URL is rebuilt from host and port only, so userinfo in a `baseUrl` is
+never sent or printed.

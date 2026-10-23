@@ -3,10 +3,13 @@
 A single agent turn on a local model could previously run unbounded, and a stage had no ceiling at all. This module is
 the single source of truth for the limits and their configuration:
 
-- a *turn* budget (``HOLON_TURN_TIMEOUT_SECONDS``, default 300 s) bounds one runner invocation;
+- a *turn* budget (``HOLON_TURN_TIMEOUT_SECONDS``, default 300 s) bounds a single assistant response, observed as the
+  interval between artefact-progress events of a runner process (see :mod:`sandbox_executor.turns`), never the
+  lifetime of the runner process itself;
 - a *stall* budget (``HOLON_TURN_STALL_SECONDS``, default 90 s; ``0`` disables it) bounds silence, meaning no streamed
   output and no growth of the artefact being written;
-- a *stage* budget bounds a whole stage (intent 10 min, plan 35, execute 45, each review iteration 15, calibration 10).
+- a *stage* budget bounds a whole stage (intent 10 min, plan 35, execute 45, each review iteration 15, calibration 10),
+  and is the only wall-clock limit on a runner process as a whole.
 
 The defaults are the real measurements recorded in Beans 0138 to 0140; they are deliberately not re-derived here.
 Clocks are injected so control flow can be tested without sleeping; tests never make performance claims.

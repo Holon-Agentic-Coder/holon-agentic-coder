@@ -17,7 +17,7 @@ data, and the tests that exercise them use injected clocks only to drive control
 
 | Budget                | Default | Variable                                      | Bounds                                               |
 | --------------------- | ------- | --------------------------------------------- | ---------------------------------------------------- |
-| Turn                  | 300 s   | `HOLON_TURN_TIMEOUT_SECONDS`                  | One runner invocation (one agent CLI process).       |
+| Turn                  | 300 s   | `HOLON_TURN_TIMEOUT_SECONDS`                  | One assistant response (see below), not a process.   |
 | Stall                 | 90 s    | `HOLON_TURN_STALL_SECONDS`                    | Silence within a turn; `0` disables stall detection. |
 | Intent stage          | 10 min  | `HOLON_STAGE_BUDGET_INTENT_MINUTES`           | The intent stage.                                    |
 | Plan stage            | 35 min  | `HOLON_STAGE_BUDGET_PLAN_MINUTES`             | The plan stage, including the resume turn.           |
@@ -32,8 +32,10 @@ ignored with a warning and the default is kept (except that `HOLON_TURN_STALL_SE
 detection). All of these variables start with `HOLON_`, so the host CLI forwards them into the sandbox container
 automatically. `holon doctor` prints the effective values.
 
-> [!NOTE] The turn budget applies to every runner invocation, including executor turns that implement a whole plan in
-> one agent session. Raise `HOLON_TURN_TIMEOUT_SECONDS` for plans whose single agent turn legitimately runs longer.
+> [!NOTE] A turn is a single assistant response (Bean 0139), not a runner process. One `claude -p` or `pi -p` invocation
+> performs a whole plan or execution as many responses and legitimately runs for tens of minutes (31.4 min for a real
+> planner run), so the runner process as a whole is bounded only by its stage ceiling and the stall window. The
+> process's own elapsed time is never compared with the turn budget.
 
 ## Turn supervision
 
@@ -46,9 +48,23 @@ change:
 - for executor turns, the newest file modification time in the working tree (scanned at most every 15 s, skipping
   `.git`, `.venv` and `node_modules`), because an executor edits many files besides its notes.
 
+The runners print nothing per response, so a single response is observed through its side effects: each change of the
+artefact (or, for executor turns, of the working tree) closes the current response. The three budgets are checked as
+follows:
+
+- **Stall** fires when nothing at all (no output, no artefact or tree change) has happened for
+  `HOLON_TURN_STALL_SECONDS`.
+- **Turn** fires when no artefact or tree change has happened for `HOLON_TURN_TIMEOUT_SECONDS`. Streamed output keeps a
+  turn out of the stall window but does not end a response, so a model streaming one degenerate response without writing
+  anything is still stopped. Without a watched artefact or tree no response boundary is observable and the turn budget
+  is not applied.
+- **Stage** fires when the stage ceiling is reached, however much progress the process is making.
+
 When a budget fires, the supervisor sends `SIGTERM` to the agent's process group, waits a 10 s grace period, then sends
 `SIGKILL`. It asserts first that the agent's process group differs from its own; if they were ever equal it signals only
-the agent process, so the entrypoint and its salvage path always survive.
+the agent process, so the entrypoint and its salvage path always survive. The process group is also stopped when
+supervision itself fails or is interrupted, and when the agent has exited but a descendant still holds its output pipes
+open.
 
 ## Salvage, resume and the ACT-BUDGET record
 
@@ -56,8 +72,10 @@ the agent process, so the entrypoint and its salvage path always survive.
 2. Exactly one resume turn is attempted. Its prompt repeats the task context, states that the file is partial, and lists
    only the missing sections. It is bounded by both the turn budget and what is left of the stage budget; if the stage
    has no time left, no resume is attempted.
-3. If the artefact is usable after the resume (it exists, exceeds the size floor and its metrics table parses), the
-   stage carries on normally and nothing is recorded.
+3. If the artefact is usable after the resume (it exists, exceeds the size floor and its metrics table parses), the plan
+   stage carries on normally and nothing is recorded. The executor is different: its resume may only touch the execution
+   notes, so it can never finish code that was cut off. Any executor breach is therefore a failure, even when the notes
+   are usable, and continues with step 4.
 4. Otherwise one action record is appended to `holon-knowledge/ledger/executions.jsonl` through `append_action_record()`
    (which takes `LedgerLock`), and the entrypoint exits non-zero. No other ledger file is written and no new ledger is
    created.
@@ -81,7 +99,8 @@ The record has these fields in addition to the standard action fields (see [Ledg
 
 The record is written in one place only, once per stage failure. The planner commits it together with the salvaged
 partial plan on the plan branch (no `plans.jsonl` entry is made for an unusable plan); the executor commits it with the
-failed execution summary and stages the partial notes, but not the code changes.
+failed execution summary (`status: failure`) and stages the partial notes, but not the code changes, in a commit titled
+`execute: E-... failed for plan ...` rather than `completed`.
 
 Host-side stage ceilings in `holon flow` (below) never write an ACT-BUDGET record, so a failure is not recorded twice.
 

@@ -5,6 +5,15 @@ whole process group can be stopped without signalling the entrypoint itself; std
 threads, so a chatty agent can never block on a full pipe. Liveness is "new output *or* growth of the artefact being
 written", which keeps agents that buffer their chat output but write the file incrementally (Bean 0138) alive.
 
+Bean 0139 defines a *turn* as a single assistant response, not a runner process: one ``claude -p`` / ``pi -p``
+invocation performs a whole plan or execution as many responses. The process as a whole is therefore bounded only by the
+stage ceiling (and the stall window). The per-turn budget is applied to what is observable about a single response from
+outside a non-streaming CLI: the interval between *artefact progress* events (growth of the watched artefact, or a
+change in the watched working tree), which are the side effects of the response boundaries (tool calls). Streamed
+stdout/stderr keeps a turn out of the stall window but does not close a response, so a model that streams one
+degenerate response for longer than the turn budget without writing anything is still stopped. Without a watched
+artefact or tree, no response boundary is observable and the turn budget is not applied.
+
 :func:`supervise_authoring_turn` adds the authoring policy on top: validate the artefact after the turn, attempt exactly
 one follow-up turn (a resume after a breach, or a targeted re-prompt for missing sections), and report a budget failure
 only when the artefact is still unusable. :func:`record_budget_failure` is the single place that writes the ACT-BUDGET
@@ -37,8 +46,10 @@ POLL_INTERVAL_SECONDS = 1.0
 TREE_SCAN_INTERVAL_SECONDS = 15.0
 _TREE_SKIP_DIRS = frozenset({".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", ".ruff_cache"})
 
-# Agent CLIs report why generation stopped in JSON events or summaries ("stopReason": "length", stop_reason=max_tokens).
-_STOP_REASON = re.compile(r"""["']?stop_?reason["']?\s*[:=]\s*["']?([A-Za-z_]+)""", re.IGNORECASE)
+# Agent CLIs report why generation stopped in structured JSON events ({"stopReason": "length"}). Only the quoted JSON
+# key/value form is accepted, so prose the agent merely printed (e.g. "stop_reason=max_tokens") is never mistaken for a
+# runner-reported truncation.
+_STOP_REASON = re.compile(r'"stop_?reason"\s*:\s*"([A-Za-z_]+)"', re.IGNORECASE)
 _TRUNCATION_REASONS = frozenset({"length", "max_tokens", "maxtokens"})
 
 
@@ -60,7 +71,7 @@ class TurnResult:
 
 
 def parse_stop_reason(*texts: str) -> str | None:
-    """Last stop reason mentioned in the runner output, if any."""
+    """Last stop reason reported as a structured JSON field in the runner output, if any."""
     found = None
     for text in texts:
         for match in _STOP_REASON.finditer(text or ""):
@@ -194,11 +205,13 @@ def run_turn(
     Args:
         cmd: Runner command line.
         turn_budgets: Turn and stall limits; defaults to :class:`TurnBudgets` defaults.
-        stage_timer: Running stage timer; the turn is also stopped when the stage has no time left.
+        stage_timer: Running stage timer; it bounds the whole runner process, which is stopped when the stage has no
+            time left.
         stage: Stage name recorded on a breach.
-        watch_path: Artefact the agent is writing; growth counts as liveness.
-        watch_tree: Optional working tree whose newest file mtime also counts as liveness (scanned at most every
-            ``TREE_SCAN_INTERVAL_SECONDS``).
+        watch_path: Artefact the agent is writing; growth counts as liveness and closes the current response for the
+            turn budget.
+        watch_tree: Optional working tree whose newest file mtime also counts as liveness and response progress
+            (scanned at most every ``TREE_SCAN_INTERVAL_SECONDS``).
         cwd: Working directory for the agent.
         env: Environment for the agent (``None`` inherits).
         clock, sleeper, popen_factory, killpg, getpgid: Injection seams for tests.
@@ -207,6 +220,11 @@ def run_turn(
 
     Returns:
         A :class:`TurnResult`; ``breach`` is set when a budget fired and the turn was stopped.
+
+    Budgets: ``stall`` fires after ``stall_seconds`` with no output and no artefact progress; ``turn`` fires when no
+    artefact progress (a response boundary) has been seen for ``turn_seconds`` (only when ``watch_path`` or
+    ``watch_tree`` is given); ``stage`` fires when ``stage_timer`` reaches its ceiling. The process elapsed time on its
+    own is never compared with the turn budget.
     """
     budgets = turn_budgets or TurnBudgets()
     start = clock()
@@ -227,52 +245,71 @@ def run_turn(
         reader.start()
 
     last_activity = start
+    # Start of the current observable response: reset by artefact or tree progress, never by streamed output.
+    last_progress = start
+    turn_observable = bool(watch_path or watch_tree)
     seen_counts = [0, 0]
     seen_file = _file_state(watch_path)
     seen_tree = _tree_mtime(watch_tree)
     last_tree_scan = start
     breach: BudgetBreach | None = None
 
-    while proc.poll() is None:
-        now = clock()
-        counts = [reader.count for reader in readers]
-        if counts != seen_counts:
-            seen_counts = counts
-            last_activity = now
-        file_state = _file_state(watch_path)
-        if file_state is not None and file_state != seen_file:
-            seen_file = file_state
-            last_activity = now
-        if watch_tree and now - last_tree_scan >= TREE_SCAN_INTERVAL_SECONDS:
-            last_tree_scan = now
-            tree_state = _tree_mtime(watch_tree)
-            if tree_state is not None and tree_state != seen_tree:
-                seen_tree = tree_state
-                last_activity = now
+    def stop_group() -> None:
+        _terminate_group(
+            proc,
+            sleeper=sleeper,
+            clock=clock,
+            killpg=killpg,
+            getpgid=getpgid,
+            grace_seconds=grace_seconds,
+            poll_interval=poll_interval,
+        )
 
-        elapsed = now - start
-        if elapsed >= budgets.turn_seconds:
-            breach = BudgetBreach(stage, "turn", budgets.turn_seconds, elapsed)
-        elif budgets.stall_seconds > 0 and now - last_activity >= budgets.stall_seconds:
-            breach = BudgetBreach(stage, "stall", budgets.stall_seconds, now - last_activity)
-        elif stage_timer is not None and stage_timer.breached():
-            breach = stage_timer.breach()
-        if breach is not None:
-            logger.warning("Stopping agent turn: %s", breach.describe())
-            _terminate_group(
-                proc,
-                sleeper=sleeper,
-                clock=clock,
-                killpg=killpg,
-                getpgid=getpgid,
-                grace_seconds=grace_seconds,
-                poll_interval=poll_interval,
-            )
-            break
-        sleeper(poll_interval)
+    try:
+        while proc.poll() is None:
+            now = clock()
+            counts = [reader.count for reader in readers]
+            if counts != seen_counts:
+                seen_counts = counts
+                last_activity = now
+            file_state = _file_state(watch_path)
+            if file_state is not None and file_state != seen_file:
+                seen_file = file_state
+                last_activity = last_progress = now
+            if watch_tree and now - last_tree_scan >= TREE_SCAN_INTERVAL_SECONDS:
+                last_tree_scan = now
+                tree_state = _tree_mtime(watch_tree)
+                if tree_state is not None and tree_state != seen_tree:
+                    seen_tree = tree_state
+                    last_activity = last_progress = now
+
+            if budgets.stall_seconds > 0 and now - last_activity >= budgets.stall_seconds:
+                breach = BudgetBreach(stage, "stall", budgets.stall_seconds, now - last_activity)
+            elif turn_observable and now - last_progress >= budgets.turn_seconds:
+                breach = BudgetBreach(stage, "turn", budgets.turn_seconds, now - last_progress)
+            elif stage_timer is not None and stage_timer.breached():
+                breach = stage_timer.breach()
+            if breach is not None:
+                logger.warning("Stopping agent turn: %s", breach.describe())
+                stop_group()
+                break
+            sleeper(poll_interval)
+    except BaseException:
+        # Never leave the agent's process group running when supervision itself fails or is interrupted.
+        with contextlib.suppress(Exception):
+            if proc.poll() is None:
+                stop_group()
+        raise
 
     for reader in readers:
         reader.join(timeout=5.0)
+    if any(reader.is_alive() for reader in readers):
+        # A grandchild still holds stdout/stderr open after the agent exited: stop the rest of its group.
+        logger.warning("Agent pipes still open after exit; terminating the remaining process group")
+        # start_new_session=True makes the agent's pid its process group id, which outlives the reaped agent.
+        with contextlib.suppress(OSError):
+            if proc.pid != getpgid(0):
+                killpg(proc.pid, signal.SIGTERM)
     stdout, stderr = readers[0].text(), readers[1].text()
     returncode = proc.returncode if proc.returncode is not None else -1
     return TurnResult(
@@ -298,6 +335,17 @@ class AuthoringOutcome:
     def last(self) -> TurnResult:
         """The most recent turn."""
         return self.turns[-1]
+
+    @property
+    def first(self) -> TurnResult:
+        """The original turn (the one that did the stage's work; follow-ups only repair the artefact)."""
+        return self.turns[0]
+
+    @property
+    def breach(self) -> BudgetBreach | None:
+        """The last budget that fired in any turn, recovered or not."""
+        breaches = [result.breach for result in self.turns if result.breach is not None]
+        return breaches[-1] if breaches else None
 
 
 TurnRunner = Callable[..., TurnResult]
@@ -325,10 +373,12 @@ def supervise_authoring_turn(
     Policy:
 
     - after a breached turn, whatever is on disk is kept (salvage) and exactly one resume turn is attempted, naming the
-      partial file and listing what is missing; it is bounded by the turn budget and the stage remainder;
+      partial file and listing what is missing; it runs under the same stall, turn and stage budgets;
     - after a clean turn that left the file with missing sections or metric rows, exactly one targeted re-prompt is
       issued;
-    - a budget failure is reported only when a turn breached and the artefact is still not usable afterwards.
+    - a budget failure is reported only when a turn breached and the artefact is still not usable afterwards. Callers
+      whose follow-up cannot finish the stage's real work (the executor's resume only touches its notes) must treat
+      :attr:`AuthoringOutcome.breach` as a failure regardless (see the executor entrypoint).
 
     Runner CLIs start every invocation as a fresh session, so ``context`` (the task description without the original
     write protocol) is prepended to the follow-up instruction. The caller records the failure (see
@@ -386,6 +436,7 @@ def record_budget_failure(
     record_id: str,
     target: str,
     clock_elapsed: float | None = None,
+    reason: str = "resume did not recover",
 ) -> dict[str, Any]:
     """Append the single ACT-BUDGET action for an unrecovered budget failure via ``append_action_record``.
 
@@ -395,6 +446,7 @@ def record_budget_failure(
         record_id: Plan or execution id the failure belongs to.
         target: Artefact (or other object) the stage was producing.
         clock_elapsed: Stage elapsed seconds, recorded in the error context for diagnosis.
+        reason: Why the breach was not recovered, appended to the action text.
     """
     context = breach.describe()
     if clock_elapsed is not None:
@@ -402,7 +454,7 @@ def record_budget_failure(
     record = ActionRecord(
         action_id=generate_action_id("ACT-BUDGET"),
         execution_id=record_id,
-        action=f"{breach.stage} stage stopped: {breach.budget_name} budget exceeded and resume did not recover",
+        action=f"{breach.stage} stage stopped: {breach.budget_name} budget exceeded and {reason}",
         category="budget",
         target=target,
         outcome="failure",

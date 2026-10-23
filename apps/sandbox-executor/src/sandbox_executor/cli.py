@@ -1166,6 +1166,14 @@ def run_doctor(fetch: local_llm.Fetcher | None = None, out: TextIO | None = None
                         f"effective_defaults.max_output_tokens={health.max_output_tokens}",
                         file=out,
                     )
+        if health.max_prompt_tokens is not None:
+            for envelope in envelopes:
+                if envelope.context_window > health.max_prompt_tokens:
+                    print(
+                        f"WARNING: model={envelope.model_id} context={envelope.context_window} exceeds the server's "
+                        f"max_prompt_tokens={health.max_prompt_tokens}",
+                        file=out,
+                    )
     if not probed:
         print("prefill_cache=unknown (no loopback or allow-listed endpoint to probe)", file=out)
     return 0

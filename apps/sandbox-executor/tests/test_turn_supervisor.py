@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import queue
 import signal
 import tempfile
 import unittest
@@ -19,6 +20,30 @@ from sandbox_executor.turns import (
 
 CHILD_PID = 4242
 OWN_PGID = 1
+MINUTE = 60
+
+
+class TickStream:
+    """A pipe the test feeds one chunk at a time, to model a runner that streams tokens of one long response."""
+
+    def __init__(self):
+        self.chunks = queue.Queue()
+        self.closed = False
+
+    def feed(self, data):
+        self.chunks.put(data)
+        self.chunks.join()  # wait until the reader thread has taken it
+
+    def read1(self, size):
+        while True:
+            try:
+                data = self.chunks.get(timeout=0.01)
+            except queue.Empty:
+                if self.closed:
+                    return b""
+                continue
+            self.chunks.task_done()
+            return data
 
 
 class FakeClock:
@@ -37,7 +62,7 @@ class FakeProc:
         self.exit_at = exit_at
         self.final_returncode = returncode
         self.pid = CHILD_PID
-        self.stdout = io.BytesIO(stdout)
+        self.stdout = stdout if isinstance(stdout, TickStream) else io.BytesIO(stdout)
         self.stderr = io.BytesIO(stderr)
         self.ignores_sigterm = ignores_sigterm
         self.returncode = None
@@ -52,6 +77,8 @@ class FakeProc:
         if sig == signal.SIGTERM and self.ignores_sigterm:
             return
         self.returncode = -sig
+        if isinstance(self.stdout, TickStream):
+            self.stdout.closed = True
 
     def send_signal(self, sig):
         self.signal(sig)
@@ -86,13 +113,14 @@ class Harness:
     def getpgid(self, pid):
         return CHILD_PID if pid == CHILD_PID else OWN_PGID
 
-    def run(self, turn=300, stall=90, stage_timer=None, watch_path=None, getpgid=None):
+    def run(self, turn=300, stall=90, stage_timer=None, watch_path=None, getpgid=None, watch_tree=None):
         return run_turn(
             ["agent", "-p", "prompt"],
             turn_budgets=TurnBudgets(turn_seconds=turn, stall_seconds=stall),
             stage_timer=stage_timer,
             stage="plan",
             watch_path=watch_path,
+            watch_tree=watch_tree,
             clock=self.clock,
             sleeper=self.sleeper,
             popen_factory=self.popen,
@@ -113,24 +141,128 @@ class TestRunTurn(unittest.TestCase):
         self.assertEqual(h.signals, [])
 
     def test_turn_timeout_breach_terminates_the_process_group(self):
-        h = Harness(exit_at=None)
+        # One degenerate response: tokens keep streaming (so the stall window never fires) but no tool call ever
+        # lands on disk, so the response never ends and the per-turn budget fires.
+        stream = TickStream()
+        h = Harness(exit_at=None, stdout=stream)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         path = os.path.join(tmp.name, "plan.md")
-
-        # Keep the turn alive through artefact growth so only the turn budget can fire.
-        def grow(now):
-            with open(path, "a") as f:
-                f.write("x")
-
-        h.on_tick = grow
+        h.on_tick = lambda now: stream.feed(b"tok ")
         result = h.run(turn=300, stall=90, watch_path=path)
         self.assertIsNotNone(result.breach)
         self.assertEqual(result.breach.budget_name, "turn")
         self.assertEqual(result.breach.budget_seconds, 300)
         self.assertGreaterEqual(result.breach.elapsed_seconds, 300)
+        self.assertLess(h.clock.now, 400)
         self.assertEqual(h.signals, [(CHILD_PID, signal.SIGTERM)])
         self.assertEqual(result.returncode, -signal.SIGTERM)
+        self.assertTrue(result.stdout.startswith("tok "))
+
+    def test_long_process_with_steady_artefact_progress_is_not_killed(self):
+        # C1: a 30-minute runner process (many responses) inside a 45-minute stage, writing its artefact every minute,
+        # runs to completion under the default turn and stall budgets.
+        h = Harness(exit_at=30 * MINUTE)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "notes.md")
+
+        def grow(now):
+            if int(now) % MINUTE == 0:
+                with open(path, "a") as f:
+                    f.write(f"section at {now}\n")
+
+        h.on_tick = grow
+        timer = StageTimer("execute", 45 * MINUTE, clock=h.clock)
+        result = run_turn(
+            ["agent", "-p", "prompt"],
+            turn_budgets=TurnBudgets(),
+            stage_timer=timer,
+            stage="execute",
+            watch_path=path,
+            clock=h.clock,
+            sleeper=h.sleeper,
+            popen_factory=h.popen,
+            killpg=h.killpg,
+            getpgid=h.getpgid,
+        )
+        self.assertIsNone(result.breach)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(h.signals, [])
+        self.assertGreaterEqual(result.elapsed_seconds, 30 * MINUTE)
+
+    def test_long_process_with_working_tree_progress_only_is_not_killed(self):
+        # Executor shape: the notes are written once, then only the working tree changes (every 75 s, inside the stall
+        # window, observed by the 15 s tree scan).
+        h = Harness(exit_at=30 * MINUTE)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        source = os.path.join(tmp.name, "module.py")
+
+        def edit(now):
+            if int(now) % 75 == 0:
+                with open(source, "a") as f:
+                    f.write("# edit\n")
+                os.utime(source, ns=(int(now * 1e9) + 1, int(now * 1e9) + 1))
+
+        h.on_tick = edit
+        result = h.run(turn=300, stall=90, watch_tree=tmp.name, stage_timer=StageTimer("execute", 2700, clock=h.clock))
+        self.assertIsNone(result.breach)
+        self.assertEqual(result.returncode, 0)
+
+    def test_long_process_that_stops_progressing_is_stalled(self):
+        h = Harness(exit_at=None)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "notes.md")
+
+        def grow(now):
+            if now <= 10 * MINUTE and int(now) % MINUTE == 0:
+                with open(path, "a") as f:
+                    f.write("section\n")
+
+        h.on_tick = grow
+        result = h.run(turn=300, stall=90, watch_path=path, stage_timer=StageTimer("execute", 2700, clock=h.clock))
+        self.assertEqual(result.breach.budget_name, "stall")
+        self.assertGreaterEqual(h.clock.now, 10 * MINUTE + 90)
+        self.assertLess(h.clock.now, 10 * MINUTE + 120)
+
+    def test_stage_ceiling_bounds_a_progressing_process(self):
+        h = Harness(exit_at=None)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "plan.md")
+
+        def grow(now):
+            if int(now) % MINUTE == 0:
+                with open(path, "a") as f:
+                    f.write("section\n")
+
+        h.on_tick = grow
+        timer = StageTimer("plan", 35 * MINUTE, clock=h.clock)
+        result = h.run(turn=300, stall=90, watch_path=path, stage_timer=timer)
+        self.assertEqual(result.breach.budget_name, "stage")
+        self.assertEqual(result.breach.budget_seconds, 35 * MINUTE)
+        self.assertGreaterEqual(h.clock.now, 35 * MINUTE)
+        self.assertEqual(h.signals, [(CHILD_PID, signal.SIGTERM)])
+
+    def test_turn_budget_is_not_applied_without_an_observable_response_boundary(self):
+        h = Harness(exit_at=20 * MINUTE)
+        result = h.run(turn=300, stall=0)
+        self.assertIsNone(result.breach)
+
+    def test_supervisor_failure_terminates_the_process_group(self):
+        h = Harness(exit_at=None)
+
+        def explode(now):
+            if now >= 5:
+                raise KeyboardInterrupt
+
+        h.on_tick = explode
+        with self.assertRaises(KeyboardInterrupt):
+            h.run(turn=300, stall=0)
+        self.assertEqual(h.signals, [(CHILD_PID, signal.SIGTERM)])
+        self.assertIsNotNone(h.proc.returncode)
 
     def test_stall_breach_without_output_or_file_growth(self):
         h = Harness(exit_at=None)
@@ -191,7 +323,9 @@ class TestRunTurn(unittest.TestCase):
 
     def test_stop_reason_parsing(self):
         self.assertEqual(parse_stop_reason('{"stopReason":"length"}'), "length")
-        self.assertEqual(parse_stop_reason("stop_reason=max_tokens"), "max_tokens")
+        self.assertEqual(parse_stop_reason('{"stop_reason": "max_tokens"}'), "max_tokens")
+        # Prose the agent merely printed is not a runner-reported truncation.
+        self.assertIsNone(parse_stop_reason("stop_reason=max_tokens"))
         self.assertIsNone(parse_stop_reason("all good"))
         self.assertTrue(TurnResult(returncode=1, stop_reason="length").truncated)
 

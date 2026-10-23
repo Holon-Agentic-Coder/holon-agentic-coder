@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -502,6 +503,7 @@ class GatewayHealth:
     memory: dict[str, Any]
     max_output_tokens: int | None
     error: str | None = None
+    max_prompt_tokens: int | None = None
 
     def cache_line(self) -> str:
         """``prefill_cache=<state>`` followed by any memory figures the server reported."""
@@ -510,10 +512,18 @@ class GatewayHealth:
         return f"prefill_cache={self.prefill_cache}{' ' + figures if figures else ''}{suffix}"
 
 
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Fail on any redirect: the probe may only reach the loopback or allow-listed authority it was given."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, "redirect refused by health probe", headers, fp)
+
+
 def _default_fetch(url: str, timeout: float) -> bytes:
     # Proxies are bypassed explicitly: the target is the operator's own machine, and an HTTP(S)_PROXY from the
-    # environment would otherwise receive the request.
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    # environment would otherwise receive the request. Redirects are refused so a loopback responder cannot send the
+    # probe to a host that health_url() would not have allowed.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _RefuseRedirects())
     with opener.open(url, timeout=timeout) as response:
         return response.read()
 
@@ -530,7 +540,12 @@ def health_url(base_url: str, allow_list: Iterable[str] = ()) -> str | None:
     if authority[0] == GATEWAY_HOST or rewrite_authority(base_url, allow_list) == base_url:
         return None
     parsed = urlsplit(base_url)
-    return urlunsplit((parsed.scheme, parsed.netloc, HEALTH_PATH, "", ""))
+    # Rebuilt from host and port only, so userinfo (user:token@) never reaches the probe URL or the doctor output.
+    host, port = authority
+    netloc = f"[{host}]" if ":" in host else host
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    return urlunsplit((parsed.scheme, netloc, HEALTH_PATH, "", ""))
 
 
 def _numeric_figures(section: Any, prefix: str = "") -> dict[str, Any]:
@@ -567,8 +582,11 @@ def parse_gateway_health(url: str, payload: Any) -> GatewayHealth:
         elif enabled is True or counts:
             state = "warm" if any(count > 0 for count in counts) else "cold"
     defaults = payload.get("effective_defaults")
-    max_output = defaults.get("max_output_tokens") if isinstance(defaults, dict) else None
-    return GatewayHealth(url, state, memory, _strict_int(max_output))
+    defaults = defaults if isinstance(defaults, dict) else {}
+    max_output = defaults.get("max_output_tokens")
+    # Servers report the prompt ceiling inside effective_defaults or at the top level.
+    max_prompt = defaults.get("max_prompt_tokens", payload.get("max_prompt_tokens"))
+    return GatewayHealth(url, state, memory, _strict_int(max_output), max_prompt_tokens=_strict_int(max_prompt))
 
 
 def probe_gateway_health(

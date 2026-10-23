@@ -777,6 +777,11 @@ HEALTH_WARM = {
     "memory": {"used_bytes": 2147483648, "limit_bytes": 8589934592},
     "effective_defaults": {"max_output_tokens": 4096},
 }
+HEALTH_SMALL_PROMPT = {
+    "status": "ok",
+    "prefill_cache": {"enabled": True, "entries": 0},
+    "effective_defaults": {"max_output_tokens": 16384, "max_prompt_tokens": 32768},
+}
 HEALTH_MALFORMED = "<html>not json</html>"
 
 
@@ -833,3 +838,40 @@ class TestGatewayHealth(unittest.TestCase):
             "http://192.168.1.20:8081/v1", fetch=_fetcher(HEALTH_OFF, calls), allow_list={"192.168.1.20"}
         )
         self.assertEqual(allowed.prefill_cache, "off")
+
+    def test_probe_url_drops_userinfo(self):
+        calls = []
+        url = "http://user:s3cret@localhost:8081/v1"
+        health = local_llm.probe_gateway_health(url, fetch=_fetcher(HEALTH_OFF, calls))
+        self.assertEqual(calls, [("http://localhost:8081/health", 2.0)])
+        self.assertNotIn("s3cret", health.url)
+        self.assertEqual(local_llm.health_url("http://[::1]:8081/v1"), "http://[::1]:8081/health")
+
+    def test_default_fetch_refuses_redirects(self):
+        import http.server
+        import threading
+
+        class Redirector(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", "http://198.51.100.7/health")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Redirector)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        health = local_llm.probe_gateway_health(f"http://127.0.0.1:{server.server_port}/v1")
+        self.assertEqual(health.prefill_cache, "unknown")
+        self.assertIn("redirect refused", health.error)
+
+    def test_max_prompt_tokens_parsed_from_defaults_or_top_level(self):
+        nested = {"effective_defaults": {"max_output_tokens": 16384, "max_prompt_tokens": 262144}}
+        self.assertEqual(local_llm.parse_gateway_health("u", nested).max_prompt_tokens, 262144)
+        top = {"effective_defaults": {"max_output_tokens": 16384}, "max_prompt_tokens": 32768}
+        self.assertEqual(local_llm.parse_gateway_health("u", top).max_prompt_tokens, 32768)
+        self.assertIsNone(local_llm.parse_gateway_health("u", HEALTH_OFF).max_prompt_tokens)

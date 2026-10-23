@@ -20,7 +20,7 @@ from sandbox_executor.cli import (
     run_docker_container,
 )
 
-from tests.test_local_llm import HEALTH_COLD, HEALTH_OFF, HEALTH_WARM, _config, _fetcher
+from tests.test_local_llm import HEALTH_COLD, HEALTH_OFF, HEALTH_SMALL_PROMPT, HEALTH_WARM, _config, _fetcher
 
 
 class TestHolonCLI(unittest.TestCase):
@@ -901,6 +901,13 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("reasoning=high source=env", output)
         self.assertIn("prefill_cache=cold", output)
         self.assertNotIn("WARNING", output)
+
+    def test_doctor_warns_when_context_window_exceeds_max_prompt_tokens(self):
+        host_config = _config({"id": "qwen3", "contextWindow": 65536, "maxTokens": 8000})
+        code, output = self.run_doctor({"HOLON_LOCAL_LLM": "1"}, _fetcher(HEALTH_SMALL_PROMPT), host_config)
+        self.assertEqual(code, 0)
+        self.assertIn("WARNING: model=qwen3 context=65536 exceeds the server's max_prompt_tokens=32768", output)
+        self.assertNotIn("max_output_tokens=16384", output)
 
     def test_doctor_reports_config_errors(self):
         code, output = self.run_doctor({"HOLON_LOCAL_LLM": "1"}, _fetcher(HEALTH_OFF), _config({"id": "m"}))

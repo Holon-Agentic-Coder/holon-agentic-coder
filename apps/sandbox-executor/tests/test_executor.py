@@ -3392,3 +3392,50 @@ class TestExecutorIncrementalNotes(unittest.TestCase):
         add_cmds = [c for c in run["git_cmds"] if c[:2] == ["git", "add"]]
         self.assertTrue(any(any(arg.startswith("executions/E-") for arg in c) for c in add_cmds))
         self.assertFalse(any(c[:3] == ["git", "add", "-A"] for c in add_cmds))
+
+    def test_breach_then_notes_only_resume_is_not_success(self):
+        # I1: the notes are usable from the start by design, the implementation turn breaches, and the notes-only
+        # resume exits 0. The execution must still be a recorded failure and the partial code must not be committed.
+        turn_breach = BudgetBreach("execute", "turn", 300, 301)
+        head = VALID_NOTES.split("## Steps Executed")[0]
+        tail = "## Steps Executed" + VALID_NOTES.split("## Steps Executed")[1]
+        run = self.run_executor(
+            [self.write_notes(head, returncode=-15, breach=turn_breach), self.write_notes(tail, returncode=0)]
+        )
+        self.assertEqual(len(run["prompts"]), 2)
+        self.assertIn("Do not modify any code", run["prompts"][1])
+        summary = self.summary(run)
+        self.assertEqual(summary["status"], "failure")
+        self.assertIn("turn budget", summary["summary"])
+        budget = [e for e in run["entries"] if str(e.get("action_id", "")).startswith("ACT-BUDGET-")]
+        self.assertEqual(len(budget), 1)
+        self.assertEqual(budget[0]["budget_name"], "turn")
+        self.assertIn("implementation turn did not finish", budget[0]["action"])
+        self.assertEqual(run["exit_code"], 1)
+        add_cmds = [c for c in run["git_cmds"] if c[:2] == ["git", "add"]]
+        self.assertFalse(any(c[:3] == ["git", "add", "-A"] for c in add_cmds))
+        commits = [c for c in run["git_cmds"] if c[:2] == ["git", "commit"]]
+        self.assertTrue(all("completed for plan" not in " ".join(c) for c in commits))
+
+    def test_breach_with_complete_notes_is_not_success(self):
+        stage = BudgetBreach("execute", "stage", 2700, 2700)
+        run = self.run_executor([self.write_notes(VALID_NOTES, returncode=-15, breach=stage)])
+        self.assertEqual(len(run["prompts"]), 1)
+        self.assertEqual(self.summary(run)["status"], "failure")
+        self.assertEqual(run["exit_code"], 1)
+        self.assertRegex(run["stdout"], r"execute: failed \(\d+\.\d min / 45 min\)")
+
+    def test_generic_exit_one_with_usable_notes_is_failure(self):
+        # Exit 1 without a structured truncation report is an agent error (auth/API), not a cut-off final message.
+        run = self.run_executor([self.write_notes(VALID_NOTES, returncode=1)])
+        summary = self.summary(run)
+        self.assertEqual(summary["status"], "failure")
+        self.assertNotIn("treating the exit status as informational", run["stdout"])
+        self.assertFalse(any(c[:3] == ["git", "add", "-A"] for c in run["git_cmds"]))
+
+    def test_truncation_with_incomplete_notes_is_failure(self):
+        partial = VALID_NOTES.split("## Tests Run")[0]
+        run = self.run_executor(
+            [self.write_notes(partial, returncode=1, stop_reason="length"), self.write_notes(None, returncode=0)]
+        )
+        self.assertEqual(self.summary(run)["status"], "failure")

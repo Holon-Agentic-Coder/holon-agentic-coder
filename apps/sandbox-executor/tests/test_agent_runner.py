@@ -54,6 +54,10 @@ class TestAgentRunner(unittest.TestCase):
             "HOLON_AGENT_KEY": "dummy",
         }
         with patch.dict(os.environ, dummy_env):
+            # Hermetic against the ambient sandbox/host env: these add --settings/--effort flags to the commands.
+            # patch.dict restores the removed values on exit.
+            for var in ("CLAUDE_CODE_OAUTH_TOKEN", "HOLON_AGENT_SETTINGS", "HOLON_AGENT_EFFORT"):
+                os.environ.pop(var, None)
             for agent_name, expected_cmd in expected_commands.items():
                 with self.subTest(agent=agent_name):
                     runner = get_runner(agent_name)

@@ -47,7 +47,7 @@ from sandbox_executor.ledger import (
     format_commit_trailers,
     generate_action_id,
 )
-from sandbox_executor.turns import record_budget_failure, run_turn, supervise_authoring_turn
+from sandbox_executor.turns import AuthoringOutcome, record_budget_failure, run_turn, supervise_authoring_turn
 
 _MAX_REDACT_INPUT_LEN: int = 100_000
 _MAX_PRINT_LEN: int = 5000
@@ -1106,6 +1106,38 @@ def build_execution_prompt(
     return template.replace("{plan_content}", plan_content)
 
 
+def classify_execution_outcome(outcome: AuthoringOutcome) -> tuple[str, str, BudgetBreach | None, str]:
+    """Execution status, summary, the budget breach to record (if any) and its reason for an authoring outcome.
+
+    The *first* turn implements the plan; executor follow-ups (resume after a breach, re-prompt for missing sections)
+    may only touch the execution notes. Therefore:
+
+    - any breach is a non-success, even when a notes-only resume made the notes usable: the code changes were cut off
+      mid-implementation, so the breach is recorded and the partial code is not committed;
+    - a non-zero first-turn exit counts as success only when the runner reported a structured truncation of its final
+      message (``stopReason: length``) and the notes are complete (Bean 0138); a generic exit 1 (auth or API errors)
+      never does.
+    """
+    first = outcome.first
+    report = outcome.report
+    breach = outcome.budget_failure or outcome.breach
+    if breach is not None:
+        if outcome.budget_failure is None:
+            reason = "the implementation turn did not finish (partial execution notes salvaged; code not committed)"
+        else:
+            reason = "resume did not recover"
+        return "failure", f"Plan execution stopped: {breach.describe()}; {reason}", breach, reason
+    if first.returncode == 0:
+        return "success", "Plan executed successfully", None, ""
+    if first.truncated and report is not None and report.complete:
+        print(
+            f"Info: agent exited with code {first.returncode} (stop reason: {first.stop_reason}) after writing "
+            "complete execution notes; treating the exit status as informational."
+        )
+        return "success", "Plan executed successfully", None, ""
+    return "failure", f"Plan execution failed with exit code {first.returncode}", None, ""
+
+
 def finalise_execution_notes(notes_path: str, report: ArtefactReport | None) -> bool:
     """Validate the execution notes the agent wrote and return True when they are usable.
 
@@ -1395,26 +1427,9 @@ def main() -> None:
                     watch_tree=repo_dir,
                     cwd=repo_dir,
                 )
+                exec_status, summary, budget_breach, budget_reason = classify_execution_outcome(outcome)
                 res = outcome.last
                 notes_report = outcome.report
-                budget_breach = outcome.budget_failure
-                if budget_breach is not None:
-                    exec_status = "failure"
-                    summary = f"Plan execution stopped: {budget_breach.describe()}; the resume turn did not recover"
-                elif res.returncode == 0:
-                    exec_status = "success"
-                    summary = "Plan executed successfully"
-                elif notes_report is not None and notes_report.usable and (res.truncated or res.returncode == 1):
-                    # Valid notes were written before the final message was cut off (Bean 0138).
-                    print(
-                        f"Info: agent exited with code {res.returncode} (stop reason: {res.stop_reason or 'unknown'}) "
-                        f"after writing valid execution notes; treating the exit status as informational."
-                    )
-                    exec_status = "success"
-                    summary = "Plan executed successfully"
-                else:
-                    exec_status = "failure"
-                    summary = f"Plan execution failed with exit code {res.returncode}"
             finally:
                 for tf in (prompt_file, intent_file):
                     if os.path.exists(tf):
@@ -1432,6 +1447,7 @@ def main() -> None:
                         record_id=exec_id,
                         target=notes_rel,
                         clock_elapsed=stage_timer.elapsed(),
+                        reason=budget_reason,
                     )
                 except Exception as e:
                     print(f"Warning: Failed to record budget failure: {e}", file=sys.stderr)
@@ -1486,7 +1502,7 @@ def main() -> None:
                             category="code",
                             labels=["agent", agent_name, "execution"],
                             target=f"{agent_name}:{model_name}",
-                            outcome="success" if res.returncode == 0 else "failure",
+                            outcome="success" if exec_status == "success" else "failure",
                             error_context=(
                                 redact_text(res.stderr[:500]) if res.returncode != 0 and res.stderr else None
                             ),
@@ -1675,7 +1691,11 @@ def main() -> None:
             except Exception as e:
                 print(f"Warning: Prettier formatting failed: {e}", file=sys.stderr)
 
-            commit_msg = f"execute: {exec_id} completed for plan {plan_branch}"
+            if exec_status == "success":
+                commit_msg = f"execute: {exec_id} completed for plan {plan_branch}"
+            else:
+                # Salvage commits (ledger + partial notes, never code) must not read as a completed execution.
+                commit_msg = f"execute: {exec_id} failed for plan {plan_branch}"
             trailers = format_commit_trailers(
                 action_origin=action_origin,
                 review_severity=review_severity,

@@ -680,7 +680,8 @@ config/env changes, command executions, test runs, git mutations):
 
 ###### Budget Breach Actions (`ACT-BUDGET`)
 
-When a runner turn breaches its turn, stall or stage budget and the single resume turn does not recover the artefact,
+When a runner turn breaches its turn, stall or stage budget and the single resume turn does not recover the artefact
+(for the executor: whenever the implementation turn breached, since its notes-only resume cannot finish the code),
 exactly one action is appended (Bean 0139, see [Turn and Stage Budgets](budgets.md)):
 
 - `action_id`: `ACT-BUDGET-{timestamp}-{suffix}`; `event_type`: `budget_breach`; `category`: `budget`; `outcome`:

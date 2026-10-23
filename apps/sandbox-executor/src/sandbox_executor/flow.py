@@ -1646,6 +1646,10 @@ def build_pr_review_consensus_report(
         else:
             eval_summary_lines.append(f"1. **Status `{verdict}`**:")
             eval_summary_lines.append("   - Consensus criteria not met during review evaluation.")
+        mergeability_note = str(consensus_data.get("mergeability_note") or "").strip()
+        if mergeability_note:
+            eval_summary_lines.append("")
+            eval_summary_lines.append(f"> ⚠️ **Mergeability**: {mergeability_note}")
 
     # 5. Ensemble Review Breakdown
     ci_passed = ci_status.get("passed", 0)

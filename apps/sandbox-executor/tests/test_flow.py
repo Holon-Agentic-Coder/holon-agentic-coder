@@ -18,6 +18,7 @@ from sandbox_executor.flow import (
     PipelineEngine,
     StageResult,
     StageStatus,
+    build_pr_review_consensus_report,
     check_and_resolve_stage_conflicts,
     check_pr_mergeability,
     create_or_update_pr,
@@ -1851,9 +1852,27 @@ class TestMergeabilityRefResolution:
         assert any("cannot evaluate mergeability for ref does-not-exist" in line for line in ctx.logs)
         assert not any("CI SIGNAL SUPPRESSED" in line for line in ctx.logs)
 
-        # The new finding id must survive the trailer round trip used by downstream ledger consumers.
-        trailers = parse_commit_trailers(format_review_git_trailers("pr_review", 1, ["FIND-REF-001"], "important"))
-        assert "FIND-REF-001" in str(trailers)
+        # The loop's own trailers must carry the new finding id through the round trip used by ledger consumers.
+        assert res["severity"] == "important"
+        trailers = parse_commit_trailers(res["trailers"])
+        assert trailers["review_finding_ids"] == ["FIND-REF-001"]
+        assert trailers["review_severity"] == "important"
+        assert trailers["review_iteration"] == 1
+
+    def test_consensus_report_renders_mergeability_note(self):
+        note = "cannot evaluate mergeability for ref does-not-exist against main: ref could not be resolved."
+        consensus = {
+            "approved": False,
+            "status": "rejected",
+            "findings": ["FIND-REF-001"],
+            "mergeability_note": note,
+        }
+        body = build_pr_review_consensus_report(".", "does-not-exist", consensus)
+        assert "**Finding `FIND-REF-001`**" in body
+        assert note in body
+
+        without_note = build_pr_review_consensus_report(".", "does-not-exist", {**consensus, "mergeability_note": None})
+        assert "cannot evaluate mergeability" not in without_note
 
     def test_review_stage_reports_missing_ref_instead_of_ci_signal_suppressed(self):
         context = FlowContext(

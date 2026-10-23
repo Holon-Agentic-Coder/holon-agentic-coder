@@ -1997,15 +1997,27 @@ def _stage_failure(context: FlowContext, stage: FlowStage, start_time: str, erro
     return result
 
 
-def _fetch_branch_prefix(repo_dir: str, prefix: str) -> bool:
-    """Fetch every origin branch at or beneath '<prefix>/' into refs/remotes/origin/."""
+def _fetch_branch_prefix_error(repo_dir: str, prefix: str) -> str | None:
+    """Fetch every origin branch at or beneath '<prefix>/' into refs/remotes/origin/.
+
+    Returns:
+        str | None: None on success, otherwise a secret-redacted description of the fetch failure.
+    """
     res = run_git(
         ["fetch", "--no-tags", "origin", f"+refs/heads/{prefix}/*:refs/remotes/origin/{prefix}/*"],
         cwd=repo_dir,
         check=False,
         timeout=300,
     )
-    return res.returncode == 0
+    if res.returncode == 0:
+        return None
+    stderr = res.stderr.strip() if isinstance(res.stderr, str) else ""
+    return redact_text(stderr) if stderr else f"git fetch exited with code {res.returncode}"
+
+
+def _fetch_branch_prefix(repo_dir: str, prefix: str) -> bool:
+    """Fetch every origin branch at or beneath '<prefix>/' into refs/remotes/origin/; True on success."""
+    return _fetch_branch_prefix_error(repo_dir, prefix) is None
 
 
 def _resolve_branch_ref(repo_dir: str, branch: str, prefer_remote: bool = True) -> str | None:
@@ -2427,7 +2439,15 @@ def run_plan_stage(context: FlowContext) -> StageResult:
             context, FlowStage.PLAN, start_time, f"{no_plan_error} (planner agent exited with code {exit_code})"
         )
 
-    _fetch_branch_prefix(repo_dir, intent_prefix)
+    fetch_error = _fetch_branch_prefix_error(repo_dir, intent_prefix)
+    if fetch_error is not None:
+        return _stage_failure(
+            context,
+            FlowStage.PLAN,
+            start_time,
+            f"Plan stage failed: the planner agent exited 0 but origin branches under {intent_prefix} "
+            f"could not be fetched to adopt its plan branch: {fetch_error}",
+        )
     plan_branch, ambiguity = _discover_child_branch(
         repo_dir,
         intent_prefix,
@@ -2593,7 +2613,16 @@ def run_execute_stage(context: FlowContext) -> StageResult:
             exit_code=exit_code,
         )
 
-    _fetch_branch_prefix(repo_dir, plan_prefix)
+    fetch_error = _fetch_branch_prefix_error(repo_dir, plan_prefix)
+    if fetch_error is not None:
+        return _stage_failure(
+            context,
+            FlowStage.EXECUTE,
+            start_time,
+            f"Execute stage failed: the executor agent exited 0 but origin branches under {plan_prefix} "
+            f"could not be fetched to adopt its execution branch: {fetch_error}",
+            exit_code=exit_code,
+        )
     exec_branch, ambiguity = _discover_child_branch(
         repo_dir,
         plan_prefix,

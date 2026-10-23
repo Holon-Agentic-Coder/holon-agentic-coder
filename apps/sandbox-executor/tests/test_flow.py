@@ -1963,6 +1963,55 @@ class TestFlowRoleDispatch:
         assert "before dispatching the planner" in (res.error or "")
         assert agents.roles() == ["intent-creator"]
 
+    @staticmethod
+    def _fail_fetch_after(agents: "FakeRoleAgents", role: str) -> Callable[..., subprocess.CompletedProcess[str]]:
+        """Return a run_git stand-in whose fetches fail (with a secret in stderr) once ``role`` was dispatched."""
+        from sandbox_executor import flow as flow_module
+
+        real_run_git = flow_module.run_git
+
+        def fake_run_git(args, *a, **kw):
+            if args and args[0] == "fetch" and role in agents.roles():
+                return subprocess.CompletedProcess(
+                    ["git", *args], 128, "", "fatal: unable to access origin: token=ghp_supersecret123 expired"
+                )
+            return real_run_git(args, *a, **kw)
+
+        return fake_run_git
+
+    def test_stage2_reports_post_dispatch_fetch_failure(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin)
+        ctx = _dispatch_context(host, agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+
+        with patch("sandbox_executor.flow.run_git", side_effect=self._fail_fetch_after(agents, "planner")):
+            res = run_plan_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        assert "planner agent exited 0" in (res.error or "")
+        assert "could not be fetched" in (res.error or "")
+        assert "no planner agent produced" not in (res.error or "")
+        assert "ghp_supersecret123" not in (res.error or "")
+        assert ctx.plan_branch is None
+
+    def test_stage3_reports_post_dispatch_fetch_failure(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin)
+        ctx = _dispatch_context(host, agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+
+        with patch("sandbox_executor.flow.run_git", side_effect=self._fail_fetch_after(agents, "executor")):
+            res = run_execute_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        assert "executor agent exited 0" in (res.error or "")
+        assert "could not be fetched" in (res.error or "")
+        assert "no execution branch" not in (res.error or "")
+        assert "ghp_supersecret123" not in (res.error or "")
+        assert ctx.execution_branch is None
+
     def test_empty_execution_fails_records_failed_and_never_opens_pr(self, flow_repos, tmp_path):
         host, origin = flow_repos
         agents = FakeRoleAgents(tmp_path, origin, executor_mode="empty")

@@ -748,9 +748,9 @@ entrypoint directly:
 
 ```bash
 ./holon intent intents/my-task.json                                  # Intent Creator
-./holon plan "I-1784983150-build-execution/_" --agent pi-agent --model gemini-3.5-flash
+./holon plan "I-1784983150-build-execution/_" --agent pi-agent --model gemini-3.8-flash-medium
 ./holon execute "I-1784983150-build-execution/P-1784988130-pi-agent-gemini-3.5-flash/_" \
-  --agent pi-agent --model gemini-3.5-flash --token-reduce
+  --agent pi-agent --model gemini-3.8-flash-medium --token-reduce
 ```
 
 #### 2. Ephemeral Execution (`uvx`)
@@ -765,8 +765,8 @@ Run the CLI on-demand in an isolated ephemeral environment without installing it
 ```bash
 # Run from local repository clone (must be run from repository root)
 uvx --from ./apps/sandbox-executor holon intent intents/my-task.json
-uvx --from ./apps/sandbox-executor holon plan "I-1784983150-build-execution/_" --agent pi-agent --model gemini-3.5-flash
-uvx --from ./apps/sandbox-executor holon execute "I-1784983150-build-execution/P-1784988130-pi-agent-gemini-3.5-flash/_" --agent pi-agent --model gemini-3.5-flash
+uvx --from ./apps/sandbox-executor holon plan "I-1784983150-build-execution/_" --agent pi-agent --model gemini-3.8-flash-medium
+uvx --from ./apps/sandbox-executor holon execute "I-1784983150-build-execution/P-1784988130-pi-agent-gemini-3.5-flash/_" --agent pi-agent --model gemini-3.8-flash-medium
 
 # Run directly from remote Git repository (can pin @main, release @<tag>, or immutable @<commit-sha>)
 uvx --from "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@main#subdirectory=apps/sandbox-executor" holon --help
@@ -788,8 +788,8 @@ Once installed, invoke `holon` directly anywhere:
 
 ```bash
 holon intent intents/my-task.json
-holon plan "I-1784983150-build-execution/_" --agent pi-agent --model gemini-3.5-flash
-holon execute "I-1784983150-build-execution/P-1784988130-pi-agent-gemini-3.5-flash/_" --agent pi-agent --model gemini-3.5-flash
+holon plan "I-1784983150-build-execution/_" --agent pi-agent --model gemini-3.8-flash-medium
+holon execute "I-1784983150-build-execution/P-1784988130-pi-agent-gemini-3.5-flash/_" --agent pi-agent --model gemini-3.8-flash-medium
 ```
 
 To upgrade a globally installed version:
@@ -861,22 +861,23 @@ flowchart TD
 
 ##### Command Options Reference
 
-| Option                    | Type       | Default                   | Description                                                                                              |
-| ------------------------- | ---------- | ------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `intent_file`             | Positional | `None`                    | Path to intent JSON file (e.g., `intents/my-task.json`).                                                 |
-| `--from-stage`            | Choice     | `None`                    | Resume from stage: `intent`, `plan`, `execute`, `review`, `calibrate`.                                   |
-| `--checkpoint`            | Path       | `None`                    | Path to pipeline checkpoint `.json` file for state resumption.                                           |
-| `--agent`                 | String     | `antigravity-agent`       | Agent runner identifier.                                                                                 |
-| `--model`                 | String     | `gemini-3.8-flash-medium` | LLM model identifier.                                                                                    |
-| `--dry-run`               | Flag       | `False`                   | Dry run mode without executing agent containers or committing.                                           |
-| `--json`                  | Flag       | `False`                   | Output pipeline status and stage results in structured JSON format.                                      |
-| `--repo-dir`              | Path       | `.`                       | Repository directory path.                                                                               |
-| `--skip-push`             | Flag       | `False`                   | Skip pushing git branches to remote origin.                                                              |
-| `--skip-review`           | Flag       | `False`                   | Skip Stage 4 (PR review loop) and proceed to calibration.                                                |
-| `--skip-calibrate`        | Flag       | `False`                   | Skip Stage 5 (post-execution calibration report generation).                                             |
-| `--max-review-iterations` | Integer    | `25`                      | Maximum autonomous review loop iterations in Stage 4 (must be `>= 1`, default: `25`).                    |
-| `--token-reduce`          | Flag       | `False`                   | Route through mitmproxy sidecar for token compression and prompt caching.                                |
-| `--mitm-web`              | Flag       | `False`                   | Launch mitmweb web UI on port 8081 (configurable via `HOLON_MITM_WEB_PORT`) for live traffic inspection. |
+| Option                    | Type       | Default  | Description                                                                                              |
+| ------------------------- | ---------- | -------- | -------------------------------------------------------------------------------------------------------- |
+| `intent_file`             | Positional | `None`   | Path to intent JSON file (e.g., `intents/my-task.json`).                                                 |
+| `--from-stage`            | Choice     | `None`   | Resume from stage: `intent`, `plan`, `execute`, `review`, `calibrate`.                                   |
+| `--checkpoint`            | Path       | `None`   | Path to pipeline checkpoint `.json` file for state resumption.                                           |
+| `--agent`                 | String     | Resolved | Agent runner: `HOLON_AGENT`, then the detected harness agent, then `antigravity-agent`.                  |
+| `--model`                 | String     | Resolved | LLM model: `HOLON_MODEL`, then the runner's default (`gemini-3.8-flash-medium` for antigravity).         |
+| `--skip-preflight`        | Flag       | `False`  | Skip the readiness probe run before Stage 1 (also `HOLON_SKIP_PREFLIGHT=1`; see `holon doctor`).         |
+| `--dry-run`               | Flag       | `False`  | Dry run mode without executing agent containers or committing.                                           |
+| `--json`                  | Flag       | `False`  | Output pipeline status and stage results in structured JSON format.                                      |
+| `--repo-dir`              | Path       | `.`      | Repository directory path.                                                                               |
+| `--skip-push`             | Flag       | `False`  | Skip pushing git branches to remote origin.                                                              |
+| `--skip-review`           | Flag       | `False`  | Skip Stage 4 (PR review loop) and proceed to calibration.                                                |
+| `--skip-calibrate`        | Flag       | `False`  | Skip Stage 5 (post-execution calibration report generation).                                             |
+| `--max-review-iterations` | Integer    | `25`     | Maximum autonomous review loop iterations in Stage 4 (must be `>= 1`, default: `25`).                    |
+| `--token-reduce`          | Flag       | `False`  | Route through mitmproxy sidecar for token compression and prompt caching.                                |
+| `--mitm-web`              | Flag       | `False`  | Launch mitmweb web UI on port 8081 (configurable via `HOLON_MITM_WEB_PORT`) for live traffic inspection. |
 
 ##### Common Usage Examples
 

@@ -27,7 +27,7 @@ If installed globally via `uv tool install ./apps/sandbox-executor` (from reposi
 (can pin `@main`, release `@<tag>`, or immutable `@<commit-sha>`):
 
 ```bash
-holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.5-flash
+holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.8-flash-medium
 ```
 
 ### Option B: Ephemeral Execution (`uvx`)
@@ -41,10 +41,10 @@ Run on-demand without prior installation:
 
 ```bash
 # Run from local repository clone (must be run from repository root)
-uvx --from ./apps/sandbox-executor holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.5-flash
+uvx --from ./apps/sandbox-executor holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.8-flash-medium
 
 # Or directly from remote Git repository (can pin @main, release @<tag>, or immutable @<commit-sha>)
-uvx --from "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@main#subdirectory=apps/sandbox-executor" holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.5-flash
+uvx --from "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@main#subdirectory=apps/sandbox-executor" holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.8-flash-medium
 ```
 
 ### Option C: Repository Convenience Script (`./holon`)
@@ -52,7 +52,7 @@ uvx --from "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@m
 Run from the repository root using the [`./holon`](../../holon) host wrapper:
 
 ```bash
-./holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.5-flash
+./holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" --agent antigravity-agent --model gemini-3.8-flash-medium
 ```
 
 The Holon CLI automatically handles setting up the container and environment, mapping directly into the
@@ -90,7 +90,7 @@ sandbox:
 
 ```bash
 ./holon execute "I-1782654790-bootstrap-holon-cli-intent/P-1784988130-antigravity-agent-gemini-3.5-flash/_" \
-  --agent antigravity-agent --model gemini-3.5-flash --token-reduce
+  --agent antigravity-agent --model gemini-3.8-flash-medium --token-reduce
 ```
 
 `--token-reduce` routes the sandbox's HTTP(S) egress through a locally-owned mitmproxy sidecar so agent responses can be
@@ -142,8 +142,12 @@ compacted before they are tokenized.
 ## Command Breakdown
 
 - **`plan_branch`** (positional, required): The target plan branch to execute.
-- **`--agent`** (optional, default: `antigravity-agent`): Agent runner to execute.
-- **`--model`** (optional, default: `gemini-3.5-flash`): Target LLM model name.
+- **`--agent`** (optional): Agent runner to execute. Default: `HOLON_AGENT`, then the detected harness agent, then
+  `antigravity-agent` (see [Runner and model resolution](../agents.md#runner-and-model-resolution)).
+- **`--model`** (optional): Target LLM model name. Default: `HOLON_MODEL`, then the runner's default model
+  (`gemini-3.8-flash-medium` for `antigravity-agent`).
+- **`--skip-preflight`** (optional, flag): Skip the readiness probe that runs before the container starts (see
+  [`holon doctor`](../executor/agent_credentials_requirements.md#readiness-probe-holon-doctor)).
 - **`--token-reduce`** (optional, flag): **experimental / not yet functional** — route sandbox egress through the local
   token-reduction proxy (requires `docker` + `openssl`; performs local TLS interception, see
   [Optional Token Reduction Proxy](#4-optional-token-reduction-proxy---token-reduce)).

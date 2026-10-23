@@ -28,6 +28,13 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, ClassVar
 
+from sandbox_executor.agent_defaults import (
+    DEFAULT_MODELS,
+    FALLBACK_AGENT,
+    LEGACY_DEFAULT_AGENT,
+    LEGACY_DEFAULT_MODEL,
+    normalise_agent_id,
+)
 from sandbox_executor.calibration import (
     is_metadata_path,
     run_calibrate,
@@ -161,8 +168,9 @@ def _migrate_v0_to_v1(data: dict[str, Any]) -> dict[str, Any]:
     context.setdefault("plan_branch", None)
     context.setdefault("execution_branch", None)
     context.setdefault("calibrated_branch", None)
-    context.setdefault("agent", "antigravity-agent")
-    context.setdefault("model", "gemini-3.8-flash-medium")
+    # A checkpoint without attribution was produced under the legacy default and must resume with it.
+    context.setdefault("agent", LEGACY_DEFAULT_AGENT)
+    context.setdefault("model", LEGACY_DEFAULT_MODEL)
     context.setdefault("dry_run", False)
     context.setdefault("auto_calibrate", True)
     context.setdefault("token_reduce", False)
@@ -229,8 +237,9 @@ class FlowContext:
     plan_branch: str | None = None
     execution_branch: str | None = None
     calibrated_branch: str | None = None
-    agent: str = "antigravity-agent"
-    model: str = "gemini-3.8-flash-medium"
+    # The CLI always passes resolved values (see agent_defaults); these only apply to direct construction.
+    agent: str = FALLBACK_AGENT
+    model: str = DEFAULT_MODELS[normalise_agent_id(FALLBACK_AGENT)]
     dry_run: bool = False
     auto_calibrate: bool = True
     token_reduce: bool | None = None
@@ -302,8 +311,8 @@ class FlowContext:
             plan_branch=data.get("plan_branch"),
             execution_branch=data.get("execution_branch"),
             calibrated_branch=data.get("calibrated_branch"),
-            agent=data.get("agent", "antigravity-agent"),
-            model=data.get("model", "gemini-3.8-flash-medium"),
+            agent=data.get("agent", LEGACY_DEFAULT_AGENT),
+            model=data.get("model", LEGACY_DEFAULT_MODEL),
             dry_run=data.get("dry_run", False),
             auto_calibrate=data.get("auto_calibrate", True),
             token_reduce=data.get("token_reduce", False),
@@ -1357,7 +1366,8 @@ def build_pr_review_consensus_report(
     iterations = consensus_data.get("iterations", 1)
     ci_status = consensus_data.get("ci_checks") or {}
     base_branch = str(consensus_data.get("base_branch") or "main").strip()
-    agent = str(consensus_data.get("agent") or "antigravity-agent").strip()
+    # Consensus payloads can come from historical data without attribution.
+    agent = str(consensus_data.get("agent") or LEGACY_DEFAULT_AGENT).strip()
     model = str(consensus_data.get("model") or "inherit").strip()
     ensemble_size = int(consensus_data.get("ensemble_size") or 3)
 
@@ -2732,7 +2742,7 @@ def run_review_loop(
         "trailers": last_trailers_str,
         "findings": finding_ids,
         "severity": severity,
-        "agent": context.agent or "antigravity-agent",
+        "agent": context.agent or FALLBACK_AGENT,
         "model": context.model or "inherit",
         "ensemble_size": ensemble_size,
         "base_branch": target_branch,
@@ -3065,12 +3075,19 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
     dry_run = getattr(args, "dry_run", False)
     json_output = getattr(args, "json", False)
 
+    context_kwargs: dict[str, Any] = {}
+    # main() resolves --agent/--model before dispatch; keep the FlowContext defaults for other callers.
+    if getattr(args, "agent", None):
+        context_kwargs["agent"] = args.agent
+    if getattr(args, "model", None):
+        context_kwargs["model"] = args.model
     context = FlowContext(
         repo_dir=repo_dir,
         execution_branch=target,
         dry_run=dry_run,
         max_review_iterations=max_iterations,
         token_reduce=token_reduce,
+        **context_kwargs,
     )
 
     loop_res = run_review_loop(

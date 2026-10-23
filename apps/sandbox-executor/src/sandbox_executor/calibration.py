@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from sandbox_executor.agent_defaults import LEGACY_DEFAULT_AGENT, LEGACY_DEFAULT_MODEL
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.git import run_git
 
@@ -1181,9 +1182,9 @@ def generate_calibration(
 
     deltas, ratings, biases = compute_calibration_deltas(predicted, actual)
 
-    agent_id = exec_meta.get("agent") or plan_meta.get("agent") or "antigravity-agent"
+    agent_id = exec_meta.get("agent") or plan_meta.get("agent") or LEGACY_DEFAULT_AGENT
     agent_version = exec_meta.get("agent_version") or plan_meta.get("agent_version") or "1.1.22"
-    model_name = exec_meta.get("model") or plan_meta.get("model") or "gemini-3.8-flash-medium"
+    model_name = exec_meta.get("model") or plan_meta.get("model") or LEGACY_DEFAULT_MODEL
     timestamp_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
     lambda_val, mu_val = load_metrics_physics(repo_dir)

@@ -150,6 +150,61 @@ Each agent has specific command-line structures and validation routines:
 
 ---
 
+## Readiness Probe (`holon doctor`)
+
+`holon doctor` resolves the runner and model (see
+[Runner and model resolution](../agents.md#runner-and-model-resolution)) and sends **one minimal real prompt** ("Reply
+with the single word OK.") through that runner inside its normal container. The container gets the same session mounts,
+gateway host entries and network isolation as a real run, and the same `HOLON_AGENT_KEY` mapping by the container
+dispatcher. The probe never runs git and writes nothing to the repository or the ledgers.
+
+```bash
+holon doctor                                   # resolved runner and model
+holon doctor --agent claude-agent --json       # structured output
+holon doctor --timeout 120                     # default: HOLON_PREFLIGHT_TIMEOUT, then 60 seconds
+```
+
+Example output:
+
+```text
+Agent runner resolved to antigravity-agent (source: fallback, no --agent, HOLON_AGENT or harness marker)
+Model resolved to gemini-3.8-flash-medium (source: table, default model for antigravity-agent)
+Pre-flight antigravity-agent (gemini-3.8-flash-medium) via holon/agent-antigravity: QUOTA_EXHAUSTED
+  exit code: 1
+  hint: The provider reports exhausted quota or a rate limit. Wait for the quota to reset, or choose another runner with --agent or HOLON_AGENT.
+```
+
+`holon doctor` exits `0` only when the status is `ok`.
+
+| Status            | Meaning                                                          | Remediation                                                                       |
+| ----------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `ok`              | The runner answered.                                             | None.                                                                             |
+| `quota_exhausted` | `429`, `RESOURCE_EXHAUSTED`, quota or rate-limit messages.       | Wait for the quota to reset, or choose another runner (`--agent`, `HOLON_AGENT`). |
+| `not_logged_in`   | No `HOLON_AGENT_KEY` and no session to mount, or a login prompt. | Set `HOLON_AGENT_KEY` or initialise and mount the session (Tier 3 above).         |
+| `expired_key`     | Expired or invalid key, `401`, `UNAUTHENTICATED`.                | Renew `HOLON_AGENT_KEY` or re-authorise the mounted session.                      |
+| `unknown`         | Anything else, including a timeout or a rejected model name.     | Read the redacted output; check `--model` / `HOLON_MODEL` and the image.          |
+
+Probe output is redacted before it is printed. A timeout usually means the runner is waiting for an interactive login.
+
+### Gating of `plan`, `execute` and `flow`
+
+`holon plan`, `holon execute` and `holon flow` run the same probe straight after resolving the runner and before any
+container run, intent branch, push, checkpoint or ledger row. A status other than `ok` aborts the command with a
+non-zero exit code. `holon flow --dry-run` never calls an agent, so it skips the probe. A resumed flow (`--checkpoint`
+or `--from-stage`) is probed with the checkpoint's recorded runner and model, unless `--agent` or `--model` overrides
+them.
+
+- `--skip-preflight` skips the probe for one command.
+- `HOLON_SKIP_PREFLIGHT=1` skips it for every command, for example in CI. The host sets it for the containers it
+  launches, so nested invocations never probe again.
+
+Notes:
+
+- Each probe costs one minimal real model call.
+- With `--token-reduce`, the probe still goes straight to the provider; it does not start the proxy sidecar.
+- In host-local model mode for `pi-agent` there is no provider quota or login to check, so the probe is skipped and
+  reported as `ok`.
+
 ## Host-Local Model Endpoints
 
 An inference server running on the host (vMLX, Ollama, LM Studio, vLLM, llama.cpp, SGLang) is unreachable from the

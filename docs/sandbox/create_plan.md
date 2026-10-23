@@ -37,7 +37,7 @@ If installed globally via `uv tool install ./apps/sandbox-executor` (from reposi
 (can pin `@main`, release `@<tag>`, or immutable `@<commit-sha>`):
 
 ```bash
-holon plan "I-1782654790-bootstrap-holon-cli-intent/_" --agent pi-agent --model gemini-3.5-flash
+holon plan "I-1782654790-bootstrap-holon-cli-intent/_" --agent pi-agent --model gemini-3.8-flash-medium
 ```
 
 ### Option B: Ephemeral Execution (`uvx`)
@@ -51,10 +51,10 @@ Run on-demand without prior installation:
 
 ```bash
 # Run from local repository clone (must be run from repository root)
-uvx --from ./apps/sandbox-executor holon plan "I-1782654790-bootstrap-holon-cli-intent/_" --agent pi-agent --model gemini-3.5-flash
+uvx --from ./apps/sandbox-executor holon plan "I-1782654790-bootstrap-holon-cli-intent/_" --agent pi-agent --model gemini-3.8-flash-medium
 
 # Or directly from remote Git repository (can pin @main, release @<tag>, or immutable @<commit-sha>)
-uvx --from "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@main#subdirectory=apps/sandbox-executor" holon plan "I-1782654790-bootstrap-holon-cli-intent/_" --agent pi-agent --model gemini-3.5-flash
+uvx --from "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@main#subdirectory=apps/sandbox-executor" holon plan "I-1782654790-bootstrap-holon-cli-intent/_" --agent pi-agent --model gemini-3.8-flash-medium
 ```
 
 ### Option C: Repository Convenience Script (`./holon`)
@@ -62,7 +62,7 @@ uvx --from "git+https://github.com/Holon-Agentic-Coder/holon-agentic-coder.git@m
 Run from the repository root using the [`./holon`](../../holon) host wrapper:
 
 ```bash
-./holon plan "I-1782654790-bootstrap-holon-cli-intent/_" --agent pi-agent --model gemini-3.5-flash
+./holon plan "I-1782654790-bootstrap-holon-cli-intent/_" --agent pi-agent --model gemini-3.8-flash-medium
 ```
 
 ---
@@ -73,7 +73,7 @@ Pass `--token-reduce` to route the planner sandbox's HTTP(S) egress through a lo
 responses can be compacted before the agent spends tokens on them.
 
 ```bash
-./holon plan "I-1782654790-bootstrap-holon-cli-intent/_" --agent pi-agent --model gemini-3.5-flash --token-reduce
+./holon plan "I-1782654790-bootstrap-holon-cli-intent/_" --agent pi-agent --model gemini-3.8-flash-medium --token-reduce
 ```
 
 > [!WARNING] **`--token-reduce` is experimental and not yet functional.** The Phase 2 mitmproxy addon (`mitm_addon.py`)
@@ -135,7 +135,7 @@ docker run --rm \
   holon/agent-pi \
   "I-1782654790-bootstrap-holon-cli-intent/_" \
   "pi-agent" \
-  "gemini-3.5-flash"
+  "gemini-3.8-flash-medium"
 ```
 
 ### For Linux
@@ -152,7 +152,7 @@ docker run --rm \
   holon/agent-pi \
   "I-1782654790-bootstrap-holon-cli-intent/_" \
   "pi-agent" \
-  "gemini-3.5-flash"
+  "gemini-3.8-flash-medium"
 ```
 
 ### Argument Breakdown:
@@ -168,7 +168,7 @@ docker run --rm \
 - **Container Arguments:**
   1. **`intent_branch`** (e.g., `"I-1771890389-refactor-metrics/_"`): The target intent branch to branch off from.
   2. **`agent_name`** (e.g., `"pi-agent"`): The name of the planning agent.
-  3. **`model_name`** (e.g., `"gemini-3.5-flash"`): The model used for planning.
+  3. **`model_name`** (e.g., `"gemini-3.8-flash-medium"`): The model used for planning.
 
 ---
 

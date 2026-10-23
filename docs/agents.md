@@ -435,6 +435,81 @@ Specialisation emerges naturally through:
 
 ---
 
+## Runner and model resolution
+
+`holon plan`, `holon execute`, `holon review-loop`, `holon flow` and `holon doctor` choose the agent runner and the
+model through one shared resolver (`sandbox_executor/agent_defaults.py`). The first match wins:
+
+| Tier | Agent runner                     | Model                                 |
+| ---- | -------------------------------- | ------------------------------------- |
+| 1    | `--agent`                        | `--model`                             |
+| 2    | `HOLON_AGENT`                    | `HOLON_MODEL`                         |
+| 3    | Detected harness agent (below)   | Default model for the resolved runner |
+| 4    | `antigravity-agent` (a fallback) | —                                     |
+
+The result is normalised to the canonical `{id}-agent` form (for example `antigravity` becomes `antigravity-agent`),
+which is what ledger rows and plan ids record. A runner without a container image fails straight away with the list of
+supported runners and the name of the flag or variable that supplied the bad value.
+
+Every decision is logged with its source, for example
+`Agent runner resolved to claude-agent (source: harness, harness detection, marker CLAUDECODE)`.
+
+### Harness detection
+
+When Holon is started from inside an agent harness, it uses that harness's runner. Markers are checked in this order,
+and the first match wins when several are present (the others are logged as ignored):
+
+| Order | Runner              | Markers                                 |
+| ----- | ------------------- | --------------------------------------- |
+| 1     | `pi-agent`          | `PI_CODING_AGENT`                       |
+| 2     | `claude-agent`      | `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`  |
+| 3     | `codex-agent`       | any `CODEX_*` variable                  |
+| 4     | `opencode-agent`    | `OPENCODE`, any `OPENCODE_*` variable   |
+| 5     | `antigravity-agent` | any `AGY_*` or `ANTIGRAVITY_*` variable |
+
+Credential and configuration variables never count as markers: `AGY_USER_TOKEN`, `GOOGLE_API_KEY`, `CODEX_API_KEY`,
+`CODEX_HOME`, `OPENCODE_API_KEY`, `OPENCODE_CONFIG`, `OPENCODE_CONFIG_DIR`, and any variable ending in `_KEY`, `_TOKEN`,
+`_SECRET` or `_PASSWORD`. A marker set to an empty value, `0`, `false`, `no` or `off` is ignored.
+
+Detection is switched off inside a Holon sandbox (`HOLON_ROLE` or `HOLON_IN_SANDBOX` set). There it would pick up the
+container's own agent rather than the operator's choice, so container entrypoints always receive the runner the host
+resolved.
+
+### Default models
+
+| Runner              | Default model               | Notes                                                                                   |
+| ------------------- | --------------------------- | --------------------------------------------------------------------------------------- |
+| `antigravity-agent` | `gemini-3.8-flash-medium`   | Accepted by agy together with `--effort`; the label on every successful agy ledger row. |
+| `claude-agent`      | `claude-opus-5-5`           |                                                                                         |
+| `pi-agent`          | `claude-opus-5-5`           | Depends on the configured pi provider; override with `--model` or `HOLON_MODEL`.        |
+| `codex-agent`       | `gpt-5-codex`               | Not verified against the live CLI; `holon doctor` reports a rejected model.             |
+| `gemini-agent`      | `gemini-3.8-flash`          | Not verified against the live CLI; `holon doctor` reports a rejected model.             |
+| `opencode-agent`    | `anthropic/claude-opus-5-5` | opencode expects `provider/model`; not verified against the live CLI.                   |
+
+The previous `gemini-3.5-flash` default has been removed: current agy no longer lists it and rejects it together with
+`--effort`.
+
+### Restoring the previous behaviour
+
+Running inside Claude Code, pi or another harness now selects that harness's runner. To go back to the old fixed
+default, set:
+
+```bash
+export HOLON_AGENT=antigravity-agent
+```
+
+`holon review-loop` decides between running locally and in a container exactly as before (`--local`, `--dry-run`,
+`--json` or a sandbox environment), whatever runner is resolved. The resolved runner only selects the image and the
+attribution.
+
+Historical records are never re-attributed: checkpoints and ledger rows without an agent or model are back-filled with
+the fixed legacy values `antigravity-agent` / `gemini-3.8-flash-medium`, not with the current detection result.
+
+Before any work starts, the selected runner is checked with a readiness probe; see
+[`holon doctor`](executor/agent_credentials_requirements.md#readiness-probe-holon-doctor).
+
+---
+
 ## Related documents
 
 - [`safety.md`](safety.md) — trust levels, sandboxing, entropy budgets

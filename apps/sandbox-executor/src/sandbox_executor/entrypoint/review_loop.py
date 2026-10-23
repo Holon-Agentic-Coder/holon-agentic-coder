@@ -132,7 +132,7 @@ def main() -> None:
     # Git workspace preparation
     if not os.path.exists(os.path.join(repo_dir, ".git")):
         repo_url = get_repo_url()
-        print(f"Cloning {args.target} into {repo_dir} from {repo_url}...", file=sys.stderr)
+        print(f"Cloning {args.target} into {repo_dir} from {redact_command([repo_url])}...", file=sys.stderr)
         run_cmd(["git", "clone", "--branch", args.target, repo_url, "."], cwd=repo_dir, check=False)
     else:
         run_cmd(["git", "fetch", "origin"], cwd=repo_dir, check=False)

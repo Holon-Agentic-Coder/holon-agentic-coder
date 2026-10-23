@@ -290,3 +290,25 @@ def test_run_cmd_clone_echo_and_failure_carry_no_token_fragment(clone_leak_env, 
     assert "Running: git clone --branch I-1792762862-x/_ --single-branch" in output
     assert "github.com/myorg/myrepo.git" in output
     assert "returned error: 403" in output
+
+
+def test_main_clone_banner_carries_no_token_fragment(clone_leak_env, monkeypatch, tmp_path, capsys):
+    token, argv, _ = clone_leak_env
+    monkeypatch.setenv("HOLON_REPO_URL", argv[7])
+    test_args = ["review_loop", "I-100-test", f"--repo-dir={tmp_path}", "--json", "--dry-run"]
+    with (
+        patch.object(sys, "argv", test_args),
+        patch("sandbox_executor.entrypoint.review_loop.run_cmd"),
+        patch("sandbox_executor.entrypoint.review_loop.check_and_resolve_stage_conflicts"),
+        patch(
+            "sandbox_executor.entrypoint.review_loop.run_review_loop",
+            return_value={"target": "I-100-test", "consensus": {"approved": True, "iterations": 1}},
+        ),
+        pytest.raises(SystemExit),
+    ):
+        review_loop_main()
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "Cloning I-100-test into" in output
+    assert "github.com/myorg/myrepo.git" in output
+    assert_no_token_fragment(output, token)

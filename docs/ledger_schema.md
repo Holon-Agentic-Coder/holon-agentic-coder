@@ -65,8 +65,8 @@ Holon maintains strictly three append-only ledgers under `holon-knowledge/ledger
 1. **`intents.jsonl`**: Intent registration, goals, constraints, entropy budgets, and hierarchy links.
 2. **`plans.jsonl`**: Competing plan variants, predictions ($P(\text{success})$, $\Delta S$, EV), and model routing
    metadata.
-3. **`executions.jsonl`**: Execution summaries, Stage 4 PR review summaries, Stage 5 calibration summaries, and
-   chronologically interleaved micro-actions.
+3. **`executions.jsonl`**: Execution summaries, Stage 4 PR review summaries and actions, Stage 5 calibration actions,
+   and chronologically interleaved micro-actions (see the flow stage record matrix below).
 
 - Directory: `holon-knowledge/ledger/`
 - Encoding: UTF-8
@@ -94,6 +94,43 @@ ledger appends are guarded by `LedgerLock` (`sandbox_executor.ledger.LedgerLock`
   guaranteeing on-disk persistence without torn writes or interleaving.
 - **Graceful Fallback**: On platforms or filesystems without flock support, logs a warning and proceeds with
   uncoordinated appends.
+
+#### Flow Stage Record Matrix
+
+Every `holon flow` stage writes to the target repository's own `holon-knowledge/ledger/`. The table lists exactly which
+rows each stage appends.
+
+| Stage             | Ledger file        | Rows appended                                                                                                                                                                                                                              |
+| ----------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1. Intent         | `intents.jsonl`    | One intent row (skipped when the branch or slug is already recorded).                                                                                                                                                                      |
+| 2. Plan           | `plans.jsonl`      | One plan row (skipped when the `plan_id` is already recorded).                                                                                                                                                                             |
+| 3. Execute        | `executions.jsonl` | One execution summary (`entry_type: "summary"`, `execution_id` `E-...`) and one test-run action event (`entry_type: "action"`).                                                                                                            |
+| 4. PR review loop | `executions.jsonl` | Per iteration: `ACT-REV` (evaluation), `ACT-FIND` (when findings exist) and `ACT-RES` (resolver, iterations 2 and later). Once per loop: `ACT-POST` (consensus posting, even when posting fails), a `REV-...` summary and an action event. |
+| 5. Calibration    | `executions.jsonl` | One `ACT-CAL` action (`action_origin: "calibration"`), committed with `plans/{plan_id}_calibration.md` on the `/calibrated` branch. No summary row is written.                                                                             |
+
+Stage 4 and Stage 5 action rows keep their historical field order and identifier formats:
+
+- `ACT-REV`, `ACT-FIND`, `ACT-RES` and `ACT-POST` use `execution_id` values `REV-ITR-{iteration}-{ts}`,
+  `REV-FIND-{iteration}-{ts}`, `REV-RES-{iteration}-{ts}` and `REV-POST-{ts}`, with `action_origin: "pr_review"`.
+- `ACT-CAL` uses `execution_id` `CAL-{plan_id}-{ts}`, `category: "doc"` and labels
+  `["calibration", "stage-5", plan_id]`. Beyond the common action fields it carries `plan_branch`, `execution_branch`,
+  `evaluated_commit_sha`, `predicted_metrics`, `actual_metrics`, `calibration_deltas` and `calibration_report_path`.
+  Each committed calibration run is a new calibration event, so re-running calibration appends a new `ACT-CAL` row.
+
+Write rules for every stage:
+
+- **Serialised and validated**: all rows are appended under `LedgerLock`. Action rows go through
+  `sandbox_executor.ledger.append_action_record(..., preserve_shape=True)`, which validates them against `ActionRecord`
+  and then writes them verbatim. Invalid rows are rejected before anything is written. Stage 4 integrations should call
+  `sandbox_executor.flow.record_review_action()` rather than writing to the file directly.
+- **Fail loud, never abort**: a failed append is logged at `WARNING` with the ledger path and exception, and mirrored
+  into the flow context log shown to the operator. The stage carries on, and no fallback ledger file is ever written.
+- **Suppression**: dry runs append nothing (the review loop logs how many rows it suppressed). `holon calibrate` with
+  `skip_commit` appends no `ACT-CAL` row.
+- **No backfill**: only new executions gain these rows. Historical records are never synthesised.
+- **Known gap**: the review loop does not commit `executions.jsonl`. Stage 4 rows only reach git when a later commit
+  includes the ledger, for example the Stage 5 calibration commit in `holon flow`. A review run in a throwaway container
+  clone leaves them uncommitted.
 
 **Why JSONL?**
 

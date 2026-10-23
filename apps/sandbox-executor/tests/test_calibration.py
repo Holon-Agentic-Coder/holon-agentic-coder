@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import subprocess
 import sys
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from sandbox_executor.calibration import (
     ActualMetrics,
     CalibrationDeltas,
@@ -23,6 +28,7 @@ from sandbox_executor.calibration import (
     parse_evaluated_commit_sha,
     parse_predicted_metrics,
     read_git_file,
+    record_calibration_action,
     resolve_commit_sha,
     resolve_git_ref,
     run_calibrate,
@@ -1056,3 +1062,179 @@ class TestCalibrationInterleavedActionLedger(unittest.TestCase):
             self.assertEqual(actual.insertions, 20)
             self.assertEqual(actual.deletions, 2)
             self.assertEqual(meta["ssa_obs"], 0.31)
+
+
+# ---------------------------------------------------------------------------
+# Stage 5 ACT-CAL ledger provenance regression tests (pytest style)
+# ---------------------------------------------------------------------------
+
+_REAL_EXECUTIONS_LEDGER = Path(__file__).resolve().parents[3] / "holon-knowledge" / "ledger" / "executions.jsonl"
+_EXEC_BRANCH = "I-1-cal/P-2/E-3/_"
+_GIT_IDENTITY = {
+    "GIT_AUTHOR_NAME": "Calibration Test",
+    "GIT_AUTHOR_EMAIL": "calibration-test@example.invalid",
+    "GIT_COMMITTER_NAME": "Calibration Test",
+    "GIT_COMMITTER_EMAIL": "calibration-test@example.invalid",
+}
+
+
+def _fingerprint(path: Path) -> tuple[int, str]:
+    if not path.exists():
+        return (-1, "")
+    data = path.read_bytes()
+    return (data.count(b"\n"), hashlib.sha256(data).hexdigest())
+
+
+@pytest.fixture
+def guard_real_ledger():
+    """Fail if a test modifies the repository's own canonical execution ledger."""
+    before = _fingerprint(_REAL_EXECUTIONS_LEDGER)
+    yield
+    assert _fingerprint(_REAL_EXECUTIONS_LEDGER) == before, "Real executions.jsonl was modified"
+
+
+@pytest.fixture
+def calibration_repo(tmp_path, monkeypatch, guard_real_ledger):
+    """Create a throwaway git repository with plan and execution branches."""
+    for key, value in _GIT_IDENTITY.items():
+        monkeypatch.setenv(key, value)
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True, text=True).stdout
+
+    git("init", "-q", "-b", "main")
+    ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
+    ledger.parent.mkdir(parents=True)
+    summary = {
+        "execution_id": "E-3",
+        "plan_branch": "I-1-cal/P-2/_",
+        "agent": "test-agent",
+        "model": "test-model",
+        "status": "success",
+        "entry_type": "summary",
+        "created_at": "2026-01-01T00:00:00.000Z",
+        "duration": 12.0,
+        "exit_code": 0,
+    }
+    ledger.write_text(json.dumps(summary) + "\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-q", "-m", "base")
+    git("checkout", "-q", "-b", "I-1-cal/P-2/_")
+    git("checkout", "-q", "-b", _EXEC_BRANCH)
+    (tmp_path / "feature.py").write_text("print('hello')\n", encoding="utf-8")
+    git("add", "feature.py")
+    git("commit", "-q", "-m", "feature")
+    (tmp_path / "untracked_scratch.txt").write_text("not for commit\n", encoding="utf-8")
+    return tmp_path, git
+
+
+def _cal_rows(ledger_text: str) -> list[dict]:
+    rows = [json.loads(line) for line in ledger_text.splitlines() if line.strip()]
+    return [r for r in rows if str(r.get("action_id", "")).startswith("ACT-CAL-")]
+
+
+def test_run_calibrate_appends_and_commits_act_cal(calibration_repo):
+    repo, git = calibration_repo
+    with patch("sandbox_executor.calibration.converge_prettier"):
+        report = run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
+
+    ledger_rel = "holon-knowledge/ledger/executions.jsonl"
+    rows = _cal_rows((repo / ledger_rel).read_text(encoding="utf-8"))
+    assert len(rows) == 1
+    row = rows[0]
+    assert list(row.keys()) == [
+        "action_id",
+        "execution_id",
+        "action",
+        "category",
+        "target",
+        "outcome",
+        "entry_type",
+        "action_origin",
+        "labels",
+        "error_context",
+        "plan_branch",
+        "execution_branch",
+        "evaluated_commit_sha",
+        "predicted_metrics",
+        "actual_metrics",
+        "calibration_deltas",
+        "calibration_report_path",
+        "created_at",
+    ]
+    assert row["entry_type"] == "action"
+    assert row["action_origin"] == "calibration"
+    assert row["outcome"] == "success"
+    assert row["execution_id"].startswith("CAL-P-2-")
+    assert row["plan_branch"] == "I-1-cal/P-2/_"
+    assert row["execution_branch"] == _EXEC_BRANCH
+    assert row["target"] == report.calibrated_branch
+    assert row["predicted_metrics"] == report.predicted.to_dict()
+    assert row["actual_metrics"] == report.actual.to_dict()
+    assert row["calibration_deltas"] == report.deltas.to_dict()
+    assert row["calibration_report_path"] == "plans/P-2_calibration.md"
+
+    # The ACT-CAL row is committed with the report on the calibrated branch, and nothing else is.
+    assert _cal_rows(git("show", f"HEAD:{ledger_rel}")) == rows
+    committed = sorted(git("show", "--name-only", "--pretty=format:", "HEAD").split())
+    assert committed == [ledger_rel, "plans/P-2_calibration.md"]
+    assert "untracked_scratch.txt" in git("status", "--porcelain")
+    # Exactly one summary row, unchanged: no duplicate summary was written.
+    all_rows = [json.loads(line) for line in git("show", f"HEAD:{ledger_rel}").splitlines() if line.strip()]
+    assert [r for r in all_rows if r.get("entry_type") == "summary"] == [
+        json.loads((repo / ledger_rel).read_text(encoding="utf-8").splitlines()[0])
+    ]
+
+
+def test_run_calibrate_metrics_unaffected_by_act_cal_rows(calibration_repo):
+    repo, _ = calibration_repo
+    with patch("sandbox_executor.calibration.converge_prettier"):
+        first = run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=True)
+        second = run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
+        third = run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=True)
+    assert first.actual.to_dict() == second.actual.to_dict() == third.actual.to_dict()
+    assert first.predicted.to_dict() == third.predicted.to_dict()
+
+
+def test_run_calibrate_skip_commit_appends_nothing(calibration_repo):
+    repo, _ = calibration_repo
+    ledger = repo / "holon-knowledge" / "ledger" / "executions.jsonl"
+    before = ledger.read_bytes()
+    with patch("sandbox_executor.calibration.converge_prettier"):
+        run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=True)
+    assert ledger.read_bytes() == before
+
+
+def test_run_calibrate_ledger_failure_warns_and_still_commits_report(calibration_repo, caplog):
+    repo, git = calibration_repo
+    caplog.set_level("WARNING")
+    with (
+        patch("sandbox_executor.calibration.converge_prettier"),
+        patch("sandbox_executor.ledger.LedgerLock.__enter__", side_effect=PermissionError("ledger denied")),
+    ):
+        run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
+
+    ledger_path = os.path.join(str(repo), "holon-knowledge", "ledger", "executions.jsonl")
+    warnings = [rec.getMessage() for rec in caplog.records if rec.levelname == "WARNING"]
+    assert any("ACT-CAL" in msg and ledger_path in msg and "ledger denied" in msg for msg in warnings)
+    committed = git("show", "--name-only", "--pretty=format:", "HEAD").split()
+    assert committed == ["plans/P-2_calibration.md"]
+
+
+def test_record_calibration_action_accepts_fallback_dict(tmp_path, guard_real_ledger):
+    logs: list[str] = []
+    row = record_calibration_action(
+        {"plan_id": "P-9", "calibrated_branch": "I-1/P-9/E-1/calibrated", "execution_branch": "I-1/P-9/E-1/_"},
+        str(tmp_path),
+        "plans/P-9_calibration.md",
+        outcome="failure",
+        error_context="Calibration run failed: boom",
+        log_fn=logs.append,
+    )
+    assert row is not None
+    assert row["action_id"].startswith("ACT-CAL-")
+    assert row["outcome"] == "failure"
+    assert row["predicted_metrics"] is None
+    written = (tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl").read_text(encoding="utf-8")
+    assert json.loads(written) == row
+    assert logs == []

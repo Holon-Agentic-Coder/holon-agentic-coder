@@ -1257,6 +1257,22 @@ def test_record_calibration_action_accepts_fallback_dict(tmp_path, guard_real_le
     assert logs == []
 
 
+def test_record_calibration_action_redacts_error_context(tmp_path, guard_real_ledger):
+    sample_value = "ghp_" + "R" * 36
+    row = record_calibration_action(
+        {"plan_id": "P-9", "calibrated_branch": "I-1/P-9/E-1/calibrated", "execution_branch": "I-1/P-9/E-1/_"},
+        str(tmp_path),
+        "plans/P-9_calibration.md",
+        outcome="failure",
+        error_context=f"Calibration run failed: remote rejected {sample_value}",
+    )
+    assert row is not None
+    assert row["error_context"] == "Calibration run failed: remote rejected [REDACTED_SECRET]"
+    written = (tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl").read_text(encoding="utf-8")
+    assert sample_value not in written
+    assert json.loads(written) == row
+
+
 def _stage5_context(repo: Path, *, dry_run: bool):
     from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
 

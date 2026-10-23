@@ -272,6 +272,43 @@ def test_try_append_action_record_warns_on_failure(tmp_path: Path, caplog: pytes
     assert sorted(p.name for p in tmp_path.iterdir()) == ["not-a-directory"]
 
 
+def test_try_append_action_record_redacts_credentials(tmp_path: Path) -> None:
+    """Credentials in any string field are redacted before the row is written; key order is kept."""
+    ledger_file = tmp_path / "executions.jsonl"
+    sample_value = "ghp_" + "W" * 36
+    record = {**_review_record(1, 0), "outcome": "failure", "error_context": f"push rejected for {sample_value}"}
+
+    written = try_append_action_record(str(ledger_file), record, label="unit test")
+
+    assert written is not None
+    assert written["error_context"] == "push rejected for [REDACTED_SECRET]"
+    assert list(written) == list(record)
+    assert sample_value not in ledger_file.read_text(encoding="utf-8")
+
+
+def test_try_append_action_record_redacts_credentials_in_failure_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The WARNING emitted for a failed append never echoes a credential from the exception text."""
+    caplog.set_level("WARNING", logger="sandbox_executor.ledger")
+    sample_value = "ghp_" + "V" * 36
+
+    def _fail(*_args: object, **_kwargs: object) -> None:
+        raise OSError(f"remote said {sample_value}")
+
+    monkeypatch.setattr("sandbox_executor.ledger.append_action_record", _fail)
+    mirrored: list[str] = []
+
+    result = try_append_action_record(
+        str(tmp_path / "executions.jsonl"), _review_record(1, 0), label="unit test", log_fn=mirrored.append
+    )
+
+    assert result is None
+    messages = [rec.getMessage() for rec in caplog.records]
+    assert any("[REDACTED_SECRET]" in msg for msg in messages)
+    assert all(sample_value not in msg for msg in [*messages, *mirrored])
+
+
 @pytest.mark.skipif("fork" not in multiprocessing.get_all_start_methods(), reason="fork start method unavailable")
 def test_concurrent_process_appends_do_not_interleave(tmp_path: Path) -> None:
     """Eight processes appending ~8 KiB records via LedgerLock produce 400 intact lines."""

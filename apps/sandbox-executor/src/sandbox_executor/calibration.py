@@ -1286,7 +1286,8 @@ def record_calibration_action(
 ) -> dict[str, Any] | None:
     """Append the Stage 5 ACT-CAL action record to the target repository's executions.jsonl.
 
-    The record is validated and written verbatim under LedgerLock. It carries the plan and
+    The record is credential-redacted (including ``error_context``), validated and written
+    verbatim under LedgerLock. It carries the plan and
     execution branches, the predicted and actual metrics, the calibration deltas and the
     calibration report path. A failed append is logged at WARNING level (and mirrored to
     ``log_fn``) and never raises.

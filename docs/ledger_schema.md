@@ -131,10 +131,14 @@ Stage 4 and Stage 5 action rows keep their historical field order and identifier
 
 Write rules for every stage:
 
-- **Serialised and validated**: all rows are appended under `LedgerLock`. Action rows go through
-  `sandbox_executor.ledger.append_action_record(..., preserve_shape=True)`, which validates them against `ActionRecord`
-  and then writes them verbatim. Invalid rows are rejected before anything is written. Stage 4 integrations should call
-  `sandbox_executor.flow.record_review_action()` rather than writing to the file directly; integrations without a
+- **Serialised and validated**: all rows are appended under `LedgerLock`. The Stage 4 `ACT-REV`, `ACT-FIND`, `ACT-RES`
+  and `ACT-POST` rows and the Stage 5 `ACT-CAL` row go through
+  `sandbox_executor.ledger.try_append_action_record(..., preserve_shape=True)`, which passes every string in the row
+  (including `error_context`) through the canonical `CredentialRedactor`, validates the row against `ActionRecord` and
+  then writes it verbatim. Invalid rows are rejected before anything is written. Other action-shaped rows -- the Stage 3
+  and Stage 4 action events written by `append_action_event` and the reconciliation events written by
+  `reconcile_records` -- use their own writers and are not validated against `ActionRecord`. Stage 4 integrations should
+  call `sandbox_executor.flow.record_review_action()` rather than writing to the file directly; integrations without a
   `FlowContext` call the context-free `sandbox_executor.ledger.try_append_action_record(..., preserve_shape=True)`,
   which applies the same validation, LedgerLock and fail-loud reporting.
 - **Fail loud**: when a row a `flow.py` stage function appends fails, the failure is logged at `WARNING` with the ledger

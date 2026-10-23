@@ -379,8 +379,15 @@ def _report_ledger_failure(
     exc: BaseException,
     log_fn: Callable[[str], None] | None,
 ) -> None:
-    """Log a ledger append failure at WARNING level and mirror it to an operator log."""
-    message = f"Ledger append failed ({label}, record {record_id}) for {ledger_path}: {type(exc).__name__}: {exc}"
+    """Log a ledger append failure at WARNING level and mirror it to an operator log.
+
+    The exception text is passed through the canonical credential redactor first, so a
+    secret carried in the failure detail never reaches the log.
+    """
+    from sandbox_executor.knowledge.records import CredentialRedactor
+
+    detail = CredentialRedactor.redact_text(str(exc))
+    message = f"Ledger append failed ({label}, record {record_id}) for {ledger_path}: {type(exc).__name__}: {detail}"
     logger.warning(message)
     if log_fn is not None:
         with contextlib.suppress(Exception):
@@ -397,6 +404,10 @@ def try_append_action_record(
 ) -> dict[str, Any] | None:
     """Append an action record under LedgerLock, reporting rather than raising on failure.
 
+    Every string in the record (including ``error_context``) is passed through the canonical
+    ``CredentialRedactor`` before validation and serialisation, so credentials carried in
+    failure detail never reach ``executions.jsonl``. Key order is preserved.
+
     A failed append is never silent: it is logged at WARNING level with the label, record
     identifier, ledger path and exception detail, and mirrored to ``log_fn`` when supplied.
     No alternative ledger file is ever written.
@@ -412,10 +423,17 @@ def try_append_action_record(
     Returns:
         The written record dictionary, or None if the append failed.
     """
+    # Imported lazily: knowledge.records imports this module at load time.
+    from sandbox_executor.knowledge.records import CredentialRedactor
+
+    record_id = record.action_id if isinstance(record, ActionRecord) else str(record.get("action_id") or "?")
     try:
+        if isinstance(record, ActionRecord):
+            record = ActionRecord.from_dict(CredentialRedactor.redact_structure(record.to_dict()))
+        else:
+            record = CredentialRedactor.redact_structure(dict(record))
         return append_action_record(ledger_path, record, preserve_shape=preserve_shape)
     except Exception as exc:
-        record_id = record.action_id if isinstance(record, ActionRecord) else str(record.get("action_id") or "?")
         _report_ledger_failure(ledger_path, label, record_id, exc, log_fn)
         return None
 

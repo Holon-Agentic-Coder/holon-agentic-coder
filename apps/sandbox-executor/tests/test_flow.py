@@ -706,6 +706,31 @@ class TestFlowStages:
         assert cal_rows[0]["outcome"] == "failure"
         assert cal_rows[0]["error_context"] == "Calibration run failed: calibration failed"
 
+    def test_stage5_calibrate_fallback_redacts_credentials_in_act_cal(self, tmp_path):
+        """The fallback ACT-CAL error_context must not carry credentials from the exception text."""
+        ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
+        ledger.parent.mkdir(parents=True)
+        ledger.write_text("", encoding="utf-8")
+        sample_value = "ghp_" + "M" * 36
+
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            plan_branch="I-100-intent/P-200-plan/_",
+            dry_run=False,
+            skip_push=True,
+        )
+        with (
+            patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError(f"fetch failed {sample_value}")),
+            patch("sandbox_executor.flow.converge_prettier"),
+        ):
+            run_calibrate_stage(ctx)
+
+        cal_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-CAL"]
+        assert len(cal_rows) == 1
+        assert cal_rows[0]["error_context"] == "Calibration run failed: fetch failed [REDACTED_SECRET]"
+        assert sample_value not in ledger.read_text(encoding="utf-8")
+
     def test_stage1_intent_fails_fast_when_ledger_append_fails(self, tmp_path):
         """A failed Stage 1 intent append raises so the engine halts the pipeline."""
         (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
@@ -1944,18 +1969,19 @@ class TestStage4LedgerProvenance:
         yield
         assert _ledger_fingerprint(REAL_EXECUTIONS_LEDGER) == before, "Real executions.jsonl was modified"
 
-    def _run_two_iteration_loop(self, tmp_path, posting_side_effect=None):
+    def _run_two_iteration_loop(self, tmp_path, posting_side_effect=None, posting_return=None):
         ctx = FlowContext(
             repo_dir=str(tmp_path),
             execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
             dry_run=False,
         )
         mergeability = iter([{"is_dirty": True}, {"is_dirty": False}])
-        posting = (
-            {"side_effect": posting_side_effect}
-            if posting_side_effect
-            else {"return_value": {"dual_posted": True, "official_review": {"success": True}}}
-        )
+        if posting_side_effect:
+            posting: dict = {"side_effect": posting_side_effect}
+        elif posting_return is not None:
+            posting = {"return_value": posting_return}
+        else:
+            posting = {"return_value": {"dual_posted": True, "official_review": {"success": True}}}
         with (
             patch("sandbox_executor.flow.shutil.which", return_value=None),
             patch("sandbox_executor.flow.check_pr_mergeability", side_effect=lambda *a, **k: next(mergeability)),
@@ -2019,6 +2045,61 @@ class TestStage4LedgerProvenance:
         assert result["posting"] == {"error": "gh exploded"}
         assert any("gh exploded" in rec.getMessage() for rec in caplog.records if rec.levelname == "WARNING")
         assert any("gh exploded" in line for line in ctx.logs)
+
+    def test_act_post_redacts_credentials_when_posting_raises(self, tmp_path, caplog):
+        caplog.set_level("WARNING", logger="sandbox_executor.flow")
+        sample_value = "ghp_" + "Q" * 36
+        ctx, result, ledger = self._run_two_iteration_loop(
+            tmp_path, posting_side_effect=RuntimeError(f"gh exploded using {sample_value}")
+        )
+
+        post_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-POST"]
+        assert len(post_rows) == 1
+        assert post_rows[0]["error_context"] == "gh exploded using [REDACTED_SECRET]"
+        assert sample_value not in ledger.read_text(encoding="utf-8")
+        assert sample_value not in str(result["posting"])
+        assert all(sample_value not in rec.getMessage() for rec in caplog.records)
+        assert all(sample_value not in line for line in ctx.logs)
+
+    def test_act_post_records_returned_failure_diagnostics(self, tmp_path):
+        sample_value = "ghp_" + "Z" * 36
+        returned_failure = {
+            "dual_posted": False,
+            "diagnostics": "Review posting partial/failed: comment=True, review=False.",
+            "discussion_comment": {"attempted": True, "success": True, "output": "posted"},
+            "official_review": {
+                "attempted": True,
+                "success": False,
+                "output": f"Official review submission failed (exit code 1): bad credentials {sample_value}",
+            },
+        }
+        _, _, ledger = self._run_two_iteration_loop(tmp_path, posting_return=returned_failure)
+
+        post_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-POST"]
+        assert len(post_rows) == 1
+        error_context = post_rows[0]["error_context"]
+        assert post_rows[0]["outcome"] == "failure"
+        assert "Review posting partial/failed: comment=True, review=False." in error_context
+        assert "official_review: Official review submission failed (exit code 1)" in error_context
+        assert "[REDACTED_SECRET]" in error_context
+        assert "discussion_comment" not in error_context
+        assert sample_value not in ledger.read_text(encoding="utf-8")
+
+    def test_act_post_error_context_redacts_before_truncating(self, tmp_path):
+        from sandbox_executor.flow import POSTING_ERROR_CONTEXT_MAX_CHARS
+
+        sample_value = "ghp_" + "K" * 36
+        padding = "x" * (POSTING_ERROR_CONTEXT_MAX_CHARS - 40)
+        returned_failure = {
+            "dual_posted": False,
+            "official_review": {"success": False, "output": f"{padding} {sample_value} trailing detail"},
+        }
+        _, _, ledger = self._run_two_iteration_loop(tmp_path, posting_return=returned_failure)
+
+        error_context = next(r for r in _read_rows(ledger) if _prefix(r) == "ACT-POST")["error_context"]
+        assert len(error_context) <= POSTING_ERROR_CONTEXT_MAX_CHARS
+        assert "ghp_" not in error_context
+        assert "ghp_" not in ledger.read_text(encoding="utf-8")
 
     def test_dry_run_suppresses_appends_visibly(self, tmp_path):
         ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1/P-2/E-3/_", dry_run=True)

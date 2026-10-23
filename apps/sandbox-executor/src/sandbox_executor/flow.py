@@ -46,6 +46,7 @@ from sandbox_executor.git import run_git
 from sandbox_executor.knowledge import (
     ActionIndexDatabase,
     ConsultEngine,
+    CredentialRedactor,
     append_action_event,
     compute_context_fingerprint,
     promote_pending_candidates,
@@ -2522,6 +2523,40 @@ def _warn_ledger_failure(context: FlowContext, label: str, ledger_path: str, exc
     context.log(f"Warning: {message}")
 
 
+POSTING_ERROR_CONTEXT_MAX_CHARS = 2000
+
+
+def _posting_failure_context(posting_res: dict[str, Any]) -> str:
+    """Build the redacted ``error_context`` for a failed ACT-POST row.
+
+    ``post_pr_review_consensus()`` reports failures through its return value rather than by
+    raising, so the detail is collected from ``error``, ``diagnostics`` and the ``output`` of
+    each unsuccessful posting step. The text is redacted with the canonical
+    ``CredentialRedactor`` before it is truncated, so a partially cut secret cannot slip past
+    the redaction patterns.
+
+    Args:
+        posting_res: Return value of ``post_pr_review_consensus()``, or ``{"error": ...}``.
+
+    Returns:
+        The redacted, length-bounded failure detail.
+    """
+    parts: list[str] = []
+    for value in (posting_res.get("error"), posting_res.get("diagnostics")):
+        if value:
+            parts.append(str(value))
+    for step in ("discussion_comment", "official_review"):
+        step_res = posting_res.get(step)
+        if isinstance(step_res, dict) and not step_res.get("success") and step_res.get("output"):
+            parts.append(f"{step}: {step_res['output']}")
+    unique_parts = list(dict.fromkeys(part.strip() for part in parts if part.strip()))
+    detail = "; ".join(unique_parts) or "Consensus posting did not report success"
+    detail = CredentialRedactor.redact_text(detail)
+    if len(detail) > POSTING_ERROR_CONTEXT_MAX_CHARS:
+        detail = detail[: POSTING_ERROR_CONTEXT_MAX_CHARS - 3] + "..."
+    return detail
+
+
 def record_review_action(
     context: FlowContext,
     ledger_path: str,
@@ -2530,9 +2565,9 @@ def record_review_action(
     """Append a Stage 4 review action record to ``executions.jsonl``.
 
     This is the canonical writer for review provenance (ACT-REV, ACT-FIND, ACT-RES and
-    ACT-POST rows), whichever integration point drives the review. The record is validated
-    against ``ActionRecord``, written verbatim (key order and fields unchanged) under
-    LedgerLock, and any failure is logged at WARNING level and mirrored to ``context.log``
+    ACT-POST rows), whichever integration point drives the review. The record is
+    credential-redacted, validated against ``ActionRecord``, written verbatim (key order
+    unchanged) under LedgerLock, and any failure is logged at WARNING level and mirrored to ``context.log``
     without raising.
 
     Args:
@@ -2794,9 +2829,10 @@ def run_review_loop(
                 proxy_env=proxy_env,
             )
         except Exception as exc:
-            logger.warning("Posting review consensus for %s failed: %s", review_target, exc)
-            context.log(f"Warning: Posting review consensus for '{review_target}' failed: {exc}")
-            posting_res = {"error": str(exc)}
+            safe_error = CredentialRedactor.redact_text(str(exc))
+            logger.warning("Posting review consensus for %s failed: %s", review_target, safe_error)
+            context.log(f"Warning: Posting review consensus for '{review_target}' failed: {safe_error}")
+            posting_res = {"error": safe_error}
 
         # Discrete Action 4: PR Review Posting Event (Bean 0113), recorded whether or not posting succeeded
         posted = bool(posting_res.get("dual_posted") or (posting_res.get("official_review") or {}).get("success"))
@@ -2818,9 +2854,7 @@ def run_review_loop(
         }
         if not posted:
             # Successful rows keep their historical shape; failures carry the posting error.
-            posting_action_record["error_context"] = str(
-                posting_res.get("error") or "Consensus posting did not report success"
-            )
+            posting_action_record["error_context"] = _posting_failure_context(posting_res)
         posting_action_record["created_at"] = datetime.now(UTC).isoformat()
         record_review_action(context, exec_file, posting_action_record)
 

@@ -97,7 +97,8 @@ class Resolution:
 
     Attributes:
         value: The resolved value (canonical ``{id}-agent`` for runners, the model name for models).
-        source: Which tier supplied it: ``flag``, ``env``, ``harness``, ``fallback`` or ``table``.
+        source: Which tier supplied it: ``flag``, ``env``, ``harness``, ``fallback`` or ``table``; ``holon flow``
+            also uses ``checkpoint`` for a value kept from a resumed checkpoint.
         reason: Human-readable explanation suitable for logs, for example the matching marker.
     """
 

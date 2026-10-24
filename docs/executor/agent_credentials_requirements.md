@@ -74,8 +74,9 @@ overwriting `/etc/shadow` or `/usr/bin/`).
     strips them with a warning that names the source but never the value. The stripped credential is then used in
     preference to the ambient `find_github_token()` token, because it is scoped to that remote's host. A remote that
     stays plain `http://` is never sent a credential, so its stripped credential is discarded with a warning instead.
-    Only the password, or a bare user name shaped like a GitHub token (`https://<token>@...`), counts as a credential. A
-    plain user name (`https://<user>@...`) is a login name: it is stripped silently and the ambient token applies.
+    The credential is the password, except in the `https://<token>:x-oauth-basic@...` form, where it is the user name. A
+    bare user name counts as a credential only when it is shaped like a GitHub token (`https://<token>@...`). A plain
+    user name (`https://<user>@...`) is a login name: it is stripped silently and the ambient token applies.
   - `GITHUB_TOKEN` / `GH_TOKEN`: Authenticates git fetch and push operations. The `./holon` host CLI automatically
     retrieves this token using `find_github_token()`, falling back to the local `gh` CLI credentials if not set in the
     environment. It reaches the container as described in

@@ -154,7 +154,9 @@ The guarantee has four deliberate limits:
 - **Empty executions fail.** An execution branch with no changes outside `holon-knowledge/ledger/`, `plans/` and
   `executions/` relative to its plan branch (content merged in from the target branch does not count) is recorded as
   `status: "failed"` (`failure_reason: "empty_diff"`, no `test_pass_rate`), Stage 3 fails and no PR is created or
-  updated. The same guard runs inside `holon execute` and before `holon review-loop` opens a PR.
+  updated. The same guard runs inside `holon execute` and before `holon review-loop` opens a PR; there it first fetches
+  the execution and plan branches and compares the origin copies the PR is opened from, so stale or unpushed local
+  branches never decide it (a failed fetch skips the PR as `diff_unverified`).
 - **Dispatch needs `origin`.** `--dry-run` validates the payload and names the branches without dispatching anything.
   `--skip-push` is rejected outside `--dry-run`, because the role containers clone from and push to `origin`.
 - **Token reduction is auto-detected.** `holon flow` (like `holon review-loop`) resolves token reduction with

@@ -2107,12 +2107,16 @@ def _fetch_branch_prefix_error(repo_dir: str, prefix: str) -> str | None:
     Returns:
         str | None: None on success, otherwise a secret-redacted description of the fetch failure.
     """
-    res = run_git(
-        ["fetch", "--no-tags", "origin", f"+refs/heads/{prefix}/*:refs/remotes/origin/{prefix}/*"],
-        cwd=repo_dir,
-        check=False,
-        timeout=300,
-    )
+    return _fetch_refspecs_error(repo_dir, [f"+refs/heads/{prefix}/*:refs/remotes/origin/{prefix}/*"])
+
+
+def _fetch_refspecs_error(repo_dir: str, refspecs: list[str]) -> str | None:
+    """Fetch the given refspecs from origin in one command.
+
+    Returns:
+        str | None: None on success, otherwise a secret-redacted description of the fetch failure.
+    """
+    res = run_git(["fetch", "--no-tags", "origin", *refspecs], cwd=repo_dir, check=False, timeout=300)
     if res.returncode == 0:
         return None
     stderr = res.stderr.strip() if isinstance(res.stderr, str) else ""
@@ -2395,8 +2399,19 @@ def _execution_parent_plan_branch(execution_branch: str) -> str | None:
     return clean.split("/E-", 1)[0] + "/_"
 
 
+def _has_origin_remote(repo_dir: str) -> bool:
+    """Return True when the repository has an 'origin' remote configured."""
+    return run_git(["remote", "get-url", "origin"], cwd=repo_dir, check=False).returncode == 0
+
+
 def _execution_effective_diff(repo_dir: str, execution_branch: str) -> tuple[bool | None, str]:
     """Check whether an execution branch changes anything relative to its parent plan branch.
+
+    The PR is opened from origin, so with an 'origin' remote both branches are fetched first and the
+    freshly fetched origin tracking refs are compared (as ``_resolve_review_commit`` does): stale or
+    unpushed local branches never decide the outcome, and a failed fetch (including a branch that was
+    never pushed) is reported as unverifiable. Only a repository without an 'origin' remote falls back
+    to its local branches, and the returned detail says so.
 
     Returns:
         tuple[bool | None, str]: (True, detail) when it does or the target is not an execution
@@ -2406,17 +2421,29 @@ def _execution_effective_diff(repo_dir: str, execution_branch: str) -> tuple[boo
     plan_branch = _execution_parent_plan_branch(execution_branch)
     if plan_branch is None:
         return True, "not an execution branch"
-    plan_ref = _resolve_branch_ref(repo_dir, plan_branch, prefer_remote=False)
-    exec_ref = _resolve_branch_ref(repo_dir, execution_branch, prefer_remote=False)
-    if not plan_ref or not exec_ref:
-        return None, f"cannot resolve '{plan_branch}' and '{execution_branch}' locally or on origin"
+    if _has_origin_remote(repo_dir):
+        fetch_error = _fetch_refspecs_error(
+            repo_dir,
+            [f"+refs/heads/{branch}:refs/remotes/origin/{branch}" for branch in (plan_branch, execution_branch)],
+        )
+        if fetch_error:
+            return None, f"fetching '{plan_branch}' and '{execution_branch}' from origin failed: {fetch_error}"
+        plan_ref = f"refs/remotes/origin/{plan_branch}"
+        exec_ref = f"refs/remotes/origin/{execution_branch}"
+        source = "origin"
+    else:
+        plan_ref = _resolve_branch_ref(repo_dir, plan_branch, prefer_remote=False)
+        exec_ref = _resolve_branch_ref(repo_dir, execution_branch, prefer_remote=False)
+        if not plan_ref or not exec_ref:
+            return None, f"no 'origin' remote and cannot resolve '{plan_branch}' and '{execution_branch}' locally"
+        source = "local branches (no 'origin' remote)"
     try:
         changed = changed_paths(repo_dir, plan_ref, exec_ref)
     except (RuntimeError, TimeoutError) as exc:
         return None, f"diff against {plan_branch} failed: {redact_text(str(exc))}"
     if not changed:
-        return False, empty_diff_summary(plan_branch)
-    return True, f"{len(changed)} changed path(s)"
+        return False, f"{empty_diff_summary(plan_branch)} (compared on {source})"
+    return True, f"{len(changed)} changed path(s) on {source}"
 
 
 # ---------------------------------------------------------------------------
@@ -3080,6 +3107,8 @@ def run_review_loop(
     if auto_pr and not effective_dry_run and shutil.which("gh"):
         # Empty-diff guard: an execution that changes nothing outside the ledgers and plans never gets a PR.
         has_diff, diff_detail = _execution_effective_diff(repo_dir, review_target)
+        if has_diff:
+            context.log(f"[Review Loop] Empty-diff guard passed for '{review_target}': {diff_detail}.")
         if has_diff is False:
             err_msg = f"Refusing to create or update a PR for '{review_target}': {diff_detail}."
             context.log(f"[Review Loop] {err_msg}")

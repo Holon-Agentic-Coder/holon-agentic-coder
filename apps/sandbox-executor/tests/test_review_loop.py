@@ -322,3 +322,119 @@ class TestReviewLoopEmptyDiffGuard:
         res, mock_pr = self._run(repo)
         mock_pr.assert_not_called()
         assert res["pr"]["reason"] == "diff_unverified"
+
+
+class TestReviewLoopEmptyDiffGuardOrigin:
+    """The review-loop guard judges the branches on origin, which is what the PR is opened from (C8-I1)."""
+
+    PLAN = TestReviewLoopEmptyDiffGuard.PLAN
+    EXEC = TestReviewLoopEmptyDiffGuard.EXEC
+
+    @staticmethod
+    def _git(cwd: Path, *args: str) -> str:
+        import subprocess
+
+        return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+    def _commit(self, repo: Path, path: str, content: str, message: str) -> None:
+        target = repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        self._git(repo, "add", "-A")
+        self._git(repo, "commit", "-q", "-m", message)
+
+    def _setup(self, tmp_path: Path) -> tuple[Path, Path, Path]:
+        """Bare origin, a 'container' clone that pushes the plan branch, and an unfetched host clone."""
+        origin = tmp_path / "origin.git"
+        self._git(tmp_path, "init", "-q", "--bare", str(origin))
+        container = tmp_path / "container"
+        container.mkdir()
+        self._git(container, "init", "-q", "-b", self.PLAN)
+        self._git(container, "config", "user.email", "test@holon.com")
+        self._git(container, "config", "user.name", "Holon Test")
+        self._git(container, "remote", "add", "origin", str(origin))
+        self._commit(container, "holon-knowledge/ledger/executions.jsonl", "", "plan base")
+        self._commit(container, "app.py", "x = 1\n", "plan app")
+        self._git(container, "push", "-q", "origin", self.PLAN)
+        self._git(container, "checkout", "-q", "-b", self.EXEC)
+        host = tmp_path / "host"
+        host.mkdir()
+        self._git(host, "init", "-q", "-b", "main")
+        self._git(host, "config", "user.email", "test@holon.com")
+        self._git(host, "config", "user.name", "Holon Test")
+        self._git(host, "remote", "add", "origin", str(origin))
+        return origin, container, host
+
+    def _run(self, host: Path):
+        from sandbox_executor.flow import FlowContext, run_review_loop
+
+        ctx = FlowContext(repo_dir=str(host), execution_branch=self.EXEC, token_reduce=False)
+        with (
+            patch("shutil.which", return_value="/usr/bin/gh"),
+            patch("sandbox_executor.flow.create_or_update_pr", return_value={"success": True}) as mock_pr,
+            patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
+            patch("sandbox_executor.flow.probe_ci_checks", return_value={"all_passed": True, "source": "github_cli"}),
+            patch("sandbox_executor.flow.post_pr_review_consensus", return_value={}),
+        ):
+            res = run_review_loop(ctx, target=self.EXEC, max_iterations=1, dry_run=False)
+        return res, mock_pr
+
+    def test_unfetched_host_with_non_empty_origin_branch_gets_pr(self, tmp_path: Path):
+        _origin, container, host = self._setup(tmp_path)
+        self._commit(container, "app.py", "x = 2\n", "implement")
+        self._git(container, "push", "-q", "origin", self.EXEC)
+        res, mock_pr = self._run(host)
+        mock_pr.assert_called_once()
+        assert mock_pr.call_args.kwargs["branch"] == self.EXEC
+        assert res["pr"] == {"success": True}
+
+    def test_stale_empty_local_branch_follows_non_empty_origin(self, tmp_path: Path):
+        _origin, container, host = self._setup(tmp_path)
+        self._commit(container, "holon-knowledge/ledger/executions.jsonl", '{"status": "running"}\n', "ledger")
+        self._git(container, "push", "-q", "origin", self.EXEC)
+        self._git(host, "fetch", "-q", "origin", f"+refs/heads/{self.EXEC}:refs/heads/{self.EXEC}")
+        self._commit(container, "app.py", "x = 2\n", "implement")
+        self._git(container, "push", "-q", "origin", self.EXEC)
+        res, mock_pr = self._run(host)
+        mock_pr.assert_called_once()
+        assert res["pr"] == {"success": True}
+
+    def test_empty_origin_branch_is_refused_despite_unpushed_local_commit(self, tmp_path: Path):
+        _origin, container, host = self._setup(tmp_path)
+        self._commit(container, "holon-knowledge/ledger/executions.jsonl", '{"status": "success"}\n', "ledger")
+        self._git(container, "push", "-q", "origin", self.EXEC)
+        self._git(host, "fetch", "-q", "origin", f"+refs/heads/{self.EXEC}:refs/heads/{self.EXEC}")
+        self._git(host, "fetch", "-q", "origin", self.PLAN)
+        self._git(host, "checkout", "-q", self.EXEC)
+        self._commit(host, "app.py", "x = 3\n", "unpushed local change")
+        res, mock_pr = self._run(host)
+        mock_pr.assert_not_called()
+        assert res["pr"]["reason"] == "empty_diff"
+        assert res["consensus"]["approved"] is False
+
+    def test_missing_origin_branch_skips_pr_with_fetch_error(self, tmp_path: Path):
+        _origin, _container, host = self._setup(tmp_path)
+        self._git(host, "fetch", "-q", "origin", f"+refs/heads/{self.PLAN}:refs/heads/{self.EXEC}")
+        self._git(host, "checkout", "-q", self.EXEC)
+        self._commit(host, "app.py", "x = 4\n", "never pushed")
+        res, mock_pr = self._run(host)
+        mock_pr.assert_not_called()
+        assert res["pr"]["reason"] == "diff_unverified"
+
+    def test_fetch_error_is_redacted(self, tmp_path: Path):
+        from sandbox_executor.flow import _execution_effective_diff
+
+        host = tmp_path / "host"
+        host.mkdir()
+        self._git(host, "init", "-q")
+        self._git(
+            host,
+            "remote",
+            "add",
+            "origin",
+            "https://x-access-token:ghp_abcdefghijklmnopqrstuvwxyz0123456789@127.0.0.1:9/r.git",
+        )
+        has_diff, detail = _execution_effective_diff(str(host), self.EXEC)
+        assert has_diff is None
+        assert "from origin failed" in detail
+        assert "ghp_abcdefghijklmnopqrstuvwxyz0123456789" not in detail

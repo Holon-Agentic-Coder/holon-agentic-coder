@@ -157,7 +157,9 @@ After the agent exits, the executor compares the working tree with the plan bran
 with `failure_reason: "empty_diff"` (never `success`, never `test_pass_rate`), and only that ledger row is committed and
 pushed. If the comparison itself fails, the run is recorded as failed with `failure_reason: "diff_unverified"`. The same
 guard stops `holon flow` before Stage 4 and stops `holon review-loop` from creating or updating a PR for an empty
-execution branch.
+execution branch. `holon review-loop` fetches the execution and plan branches first and judges their origin copies,
+which are what the PR is opened from; a fetch failure (for example a branch that was never pushed) skips the PR as
+`diff_unverified`, and only a repository without an `origin` remote compares its local branches.
 
 `holon flow` dispatches this same executor container for Stage 3 (via `dispatch_role_agent`), so the guard and the
 ledger rows are identical whichever way the execution is launched.

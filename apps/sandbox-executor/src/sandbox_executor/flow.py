@@ -820,6 +820,32 @@ def check_and_resolve_stage_conflicts(
     }
 
 
+def _resolve_commit_ref(repo_dir: str, ref: str) -> tuple[str | None, str]:
+    """Resolve a revision to the commit it names, peeling annotated tags.
+
+    Args:
+        repo_dir: Path to git repository.
+        ref: Branch name, remote-tracking ref, tag or SHA to resolve.
+
+    Returns:
+        tuple[str | None, str]: The commit SHA (or None when the ref does not resolve to a commit) and the
+            stripped stderr from 'git rev-parse'. If git reports success with empty stdout, the ref name itself
+            is returned so callers can still pass it on to later git commands.
+
+    Raises:
+        TimeoutError: Propagated from run_git if the subprocess times out.
+
+    Side effects:
+        Runs 'git rev-parse --verify <ref>^{commit}' in repo_dir (read-only).
+    """
+    proc = run_git(["rev-parse", "--verify", f"{ref}^{{commit}}"], cwd=repo_dir, check=False)
+    stderr = proc.stderr.strip() if isinstance(proc.stderr, str) else ""
+    if proc.returncode != 0:
+        return None, stderr
+    stdout = proc.stdout.strip() if isinstance(proc.stdout, str) else ""
+    return (stdout or ref), stderr
+
+
 def check_pr_mergeability(
     repo_dir: str,
     branch: str,
@@ -831,6 +857,15 @@ def check_pr_mergeability(
     Detects DIRTY or CONFLICTING states using GitHub CLI (gh) when available,
     falling back to local git merge-tree analysis in offline or sandbox environments.
 
+    The local fallback first chooses candidate refs: the target is 'origin/<target>' if it exists, otherwise
+    '<target>'; the branch is 'HEAD' when empty, otherwise '<branch>', or 'origin/<branch>' when the local name
+    does not exist. Both chosen refs (branch first, then target) must then resolve with
+    'git rev-parse --verify <ref>^{commit}'. If either fails, merge-tree is never run and the result is
+    MISSING_REF, because an unresolvable ref says nothing about conflicts (when repo_dir is not a git
+    repository at all, the result is UNKNOWN instead). Once both refs resolve,
+    'git merge-tree --write-tree' exit 0 maps to MERGEABLE/CLEAN, exit 1 maps to CONFLICTING/DIRTY, and any
+    other exit code maps to UNKNOWN/UNKNOWN with the exit code and stderr recorded in diagnostics.
+
     Args:
         repo_dir: Path to git repository.
         branch: Name of branch or PR branch to evaluate.
@@ -840,11 +875,15 @@ def check_pr_mergeability(
     Returns:
         dict[str, Any]: Mergeability diagnostics dictionary with keys:
             - mergeable: str ("MERGEABLE", "CONFLICTING", "UNKNOWN")
-            - merge_state_status: str ("CLEAN", "DIRTY", "BLOCKED", "BEHIND", "UNKNOWN")
-            - is_dirty: bool
+            - merge_state_status: str ("CLEAN", "DIRTY", "BLOCKED", "BEHIND", "UNKNOWN", "MISSING_REF")
+            - is_dirty: bool (True only for a genuine conflict)
             - source: str ("github_cli" or "git_local")
             - pr_number: int | None
             - status_check_rollup: list | None
+            - diagnostics: dict, empty when there is nothing to report. For MISSING_REF it holds
+              missing_ref, ref_role ("branch" or "target"), candidates_tried, stderr and message
+              ("cannot evaluate mergeability for ref <X>"). For an unexpected merge-tree exit it holds
+              merge_tree_exit_code and stderr. For an exception it holds error.
 
     Raises:
         None: Gracefully falls back to git_local or UNKNOWN on exceptions.
@@ -891,6 +930,7 @@ def check_pr_mergeability(
                         "source": "github_cli",
                         "pr_number": data.get("number"),
                         "status_check_rollup": data.get("statusCheckRollup"),
+                        "diagnostics": {},
                     }
             except Exception as e:
                 logger.debug(f"gh pr view check failed: {e}")
@@ -898,28 +938,78 @@ def check_pr_mergeability(
 
     # 2. Fallback to local git inspection
     is_dirty = False
-    mergeable = "MERGEABLE"
-    merge_state_status = "CLEAN"
+    mergeable = "UNKNOWN"
+    merge_state_status = "UNKNOWN"
+    diagnostics: dict[str, Any] = {}
 
     try:
-        target_ref = f"origin/{target_branch}"
+        target_candidates = [f"origin/{target_branch}"]
+        target_ref = target_candidates[0]
         ref_check = run_git(["rev-parse", "--verify", target_ref], cwd=repo_dir, check=False)
         if ref_check.returncode != 0:
             target_ref = target_branch
+            target_candidates.append(target_ref)
 
         branch_ref = clean_branch or "HEAD"
+        branch_candidates = [branch_ref]
         if clean_branch:
             b_check = run_git(["rev-parse", "--verify", clean_branch], cwd=repo_dir, check=False)
             if b_check.returncode != 0:
                 remote_b_ref = f"origin/{clean_branch}"
+                branch_candidates.append(remote_b_ref)
                 rb_check = run_git(["rev-parse", "--verify", remote_b_ref], cwd=repo_dir, check=False)
                 if rb_check.returncode == 0:
                     branch_ref = remote_b_ref
 
-        # Try git merge-tree --write-tree
-        mt_proc = run_git(["merge-tree", "--write-tree", branch_ref, target_ref], cwd=repo_dir, check=False)
+        # Gate: both refs must resolve to commits before a merge is simulated. merge-tree exits 1 for an
+        # unresolvable ref as well as for a real conflict, so passing it through would report a false DIRTY.
+        resolved: dict[str, str] = {}
+        for role, ref, candidates in (
+            ("branch", branch_ref, branch_candidates),
+            ("target", target_ref, target_candidates),
+        ):
+            sha, rp_stderr = _resolve_commit_ref(repo_dir, ref)
+            if sha is None:
+                # Outside a repository every ref fails to resolve; that is UNKNOWN, not a missing ref.
+                git_dir = run_git(["rev-parse", "--git-dir"], cwd=repo_dir, check=False)
+                if git_dir.returncode != 0:
+                    return {
+                        "mergeable": "UNKNOWN",
+                        "merge_state_status": "UNKNOWN",
+                        "is_dirty": False,
+                        "source": "git_local",
+                        "pr_number": None,
+                        "status_check_rollup": None,
+                        "diagnostics": {"error": f"not a git repository: {repo_dir}", "stderr": rp_stderr},
+                    }
+                # Report the name that was actually checked; candidates_tried lists every substitution.
+                missing_ref = ref
+                logger.info(
+                    "Cannot evaluate mergeability for ref %s (%s): ref could not be resolved to a commit.",
+                    missing_ref,
+                    role,
+                )
+                return {
+                    "mergeable": "UNKNOWN",
+                    "merge_state_status": "MISSING_REF",
+                    "is_dirty": False,
+                    "source": "git_local",
+                    "pr_number": None,
+                    "status_check_rollup": None,
+                    "diagnostics": {
+                        "missing_ref": missing_ref,
+                        "ref_role": role,
+                        "candidates_tried": candidates,
+                        "stderr": rp_stderr,
+                        "message": f"cannot evaluate mergeability for ref {missing_ref}",
+                    },
+                }
+            resolved[role] = sha
+
+        mt_proc = run_git(
+            ["merge-tree", "--write-tree", resolved["branch"], resolved["target"]], cwd=repo_dir, check=False
+        )
         if mt_proc.returncode == 0:
-            is_dirty = False
             mergeable = "MERGEABLE"
             merge_state_status = "CLEAN"
         elif mt_proc.returncode == 1:
@@ -927,28 +1017,17 @@ def check_pr_mergeability(
             mergeable = "CONFLICTING"
             merge_state_status = "DIRTY"
         else:
-            # Fallback to 3-way trivial merge check via merge-base
-            mb_proc = run_git(["merge-base", branch_ref, target_ref], cwd=repo_dir, check=False)
-            if mb_proc.returncode == 0 and mb_proc.stdout.strip():
-                base_commit = mb_proc.stdout.strip()
-                legacy_mt = run_git(["merge-tree", base_commit, branch_ref, target_ref], cwd=repo_dir, check=False)
-                if "+<<<<<<<" in legacy_mt.stdout or "CONFLICT" in legacy_mt.stdout:
-                    is_dirty = True
-                    mergeable = "CONFLICTING"
-                    merge_state_status = "DIRTY"
-                else:
-                    is_dirty = False
-                    mergeable = "MERGEABLE"
-                    merge_state_status = "CLEAN"
-            else:
-                is_dirty = False
-                mergeable = "UNKNOWN"
-                merge_state_status = "UNKNOWN"
+            # Unrelated histories, a git too old for --write-tree, or any other failure: an honest UNKNOWN.
+            diagnostics = {
+                "merge_tree_exit_code": mt_proc.returncode,
+                "stderr": mt_proc.stderr.strip() if isinstance(mt_proc.stderr, str) else "",
+            }
     except Exception as exc:
         logger.debug(f"Local git mergeability check encountered error: {exc}")
         is_dirty = False
         mergeable = "UNKNOWN"
         merge_state_status = "UNKNOWN"
+        diagnostics = {"error": str(exc)}
 
     return {
         "mergeable": mergeable,
@@ -957,6 +1036,7 @@ def check_pr_mergeability(
         "source": "git_local",
         "pr_number": None,
         "status_check_rollup": None,
+        "diagnostics": diagnostics,
     }
 
 
@@ -1566,6 +1646,10 @@ def build_pr_review_consensus_report(
         else:
             eval_summary_lines.append(f"1. **Status `{verdict}`**:")
             eval_summary_lines.append("   - Consensus criteria not met during review evaluation.")
+        mergeability_note = str(consensus_data.get("mergeability_note") or "").strip()
+        if mergeability_note:
+            eval_summary_lines.append("")
+            eval_summary_lines.append(f"> ⚠️ **Mergeability**: {mergeability_note}")
 
     # 5. Ensemble Review Breakdown
     ci_passed = ci_status.get("passed", 0)
@@ -2565,6 +2649,8 @@ def run_review_loop(
     last_trailers_dict: dict[str, Any] = {}
     last_mergeability: dict[str, Any] = {}
     is_dirty = False
+    missing_ref = False
+    mergeability_note: str | None = None
     finding_ids: list[str] = []
     severity = "clean"
 
@@ -2622,6 +2708,16 @@ def run_review_loop(
             repo_dir, review_target, target_branch=target_branch, proxy_env=proxy_env
         )
         is_dirty = bool(last_mergeability.get("is_dirty"))
+        # MISSING_REF means mergeability cannot be evaluated: neither clean nor a conflict.
+        missing_ref = last_mergeability.get("merge_state_status") == "MISSING_REF"
+        mergeability_note = None
+        if missing_ref:
+            unresolved_ref = (last_mergeability.get("diagnostics") or {}).get("missing_ref") or review_target
+            mergeability_note = (
+                f"cannot evaluate mergeability for ref {unresolved_ref} against {target_branch}: "
+                "ref could not be resolved to a commit."
+            )
+            context.log(f"[Review Loop] {mergeability_note}")
 
         # 2. CI status inspection
         last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
@@ -2645,6 +2741,10 @@ def run_review_loop(
         if is_dirty:
             finding_ids.append(f"FIND-DIRTY-{iteration:03d}")
             severity = "critical"
+        if missing_ref:
+            finding_ids.append(f"FIND-REF-{iteration:03d}")
+            if severity != "critical":
+                severity = "important"
         if not last_ci_status.get("all_passed", False) or exit_code != 0 or test_pass_rate < 1.0:
             finding_ids.append(f"FIND-CI-{iteration:03d}")
             if severity != "critical":
@@ -2653,6 +2753,10 @@ def run_review_loop(
         # 4. Git trailer generation
         last_trailers_str = format_review_git_trailers("pr_review", iteration, finding_ids, severity)
         last_trailers_dict = parse_commit_trailers(last_trailers_str)
+
+        findings_context = f"Findings detected: {finding_ids}"
+        if mergeability_note:
+            findings_context += f"; {mergeability_note}"
 
         # 5. Append discrete action record to executions.jsonl if not dry-run (Bean 0113)
         action_record = {
@@ -2668,7 +2772,7 @@ def run_review_loop(
             "review_iteration": iteration,
             "review_finding_ids": finding_ids if finding_ids else None,
             "labels": ["review", "review-loop", f"iteration-{iteration}"],
-            "error_context": f"Findings detected: {finding_ids}" if finding_ids else None,
+            "error_context": findings_context if finding_ids else None,
             "created_at": datetime.now(UTC).isoformat(),
         }
         if not effective_dry_run:
@@ -2693,7 +2797,7 @@ def run_review_loop(
                 "review_iteration": iteration,
                 "review_finding_ids": finding_ids,
                 "labels": ["review", "finding", f"iteration-{iteration}"],
-                "error_context": f"Findings detected: {finding_ids}",
+                "error_context": findings_context,
                 "created_at": datetime.now(UTC).isoformat(),
             }
             try:
@@ -2701,6 +2805,12 @@ def run_review_loop(
                     f.write(json.dumps(finding_record) + "\n")
             except Exception as e:
                 logger.debug("Non-fatal atomic ledger append during finding detection: %s", e)
+
+        # 6. A ref that does not resolve will not resolve on the next pass either: fail closed now
+        # rather than burn the remaining iteration budget.
+        if missing_ref:
+            context.log("[Review Loop] Halting review loop without consensus: mergeability could not be evaluated.")
+            break
 
         # 7. Check termination criteria
         if not is_dirty and not finding_ids and last_ci_status.get("all_passed", False):
@@ -2729,6 +2839,7 @@ def run_review_loop(
         "max_review_iterations": budget,
         "ci_checks": last_ci_status,
         "mergeability": last_mergeability,
+        "mergeability_note": mergeability_note,
         "trailers": last_trailers_str,
         "findings": finding_ids,
         "severity": severity,
@@ -2976,6 +3087,34 @@ def run_review_stage(context: FlowContext) -> StageResult:
             f"(mergeStateStatus={merge_status}, mergeable={mergeable_state}). "
             "GitHub Actions suppresses test workflows on refs/pull/<PR>/merge. "
             "Halting consensus approval."
+        )
+        context.log(err_msg)
+        result = StageResult(
+            stage=FlowStage.REVIEW,
+            status=StageStatus.FAILED,
+            start_time=start_time,
+            end_time=end_time,
+            payload={
+                "review_package": review_package,
+                "consensus": consensus_info,
+                "halted_for_human": False,
+                "bean_0034_enforced": False,
+                "mergeability": mergeability,
+                "posting": loop_res.get("posting"),
+                "pr": loop_res.get("pr"),
+            },
+            error=err_msg,
+        )
+        context.stage_results["review"] = result
+        return result
+
+    if merge_status == "MISSING_REF":
+        target_branch = context.intent_data.get("target_branch", "main")
+        unresolved_ref = (mergeability.get("diagnostics") or {}).get("missing_ref") or context.execution_branch
+        err_msg = (
+            f"Review halted: cannot evaluate mergeability for ref {unresolved_ref} against {target_branch} "
+            f"(mergeable={mergeable_state}, mergeStateStatus={merge_status}). "
+            "Verify that the branch exists locally or on origin."
         )
         context.log(err_msg)
         result = StageResult(

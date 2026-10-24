@@ -72,11 +72,26 @@ def get_file_structure(root_dir, max_depth=3):
 
 
 def parse_metrics(content):
-    import re
+    """Parse the plan-level predicted metrics from a plan markdown document.
 
+    When the document has a ``## Overall Plan Metrics`` section, only the metric rows inside that
+    section (up to the next ``## `` heading) are read, so per-step ``### Metrics`` tables later in
+    the plan cannot overwrite the plan-level values. Documents without that heading fall back to
+    scanning every metric row, where the last matching row wins.
+    """
     metrics = {}
     row_pat = re.compile(r"\|\s*([a-zA-Z_0-9]+)\s*\|\s*([0-9\.\-]+)\s*\|")
-    for line in content.splitlines():
+    lines = content.splitlines()
+    overall_heading = "## Overall Plan Metrics"
+    start = next((i for i, line in enumerate(lines) if line.strip().startswith(overall_heading)), None)
+    if start is not None:
+        section = []
+        for line in lines[start + 1 :]:
+            if line.startswith("## "):
+                break
+            section.append(line)
+        lines = section
+    for line in lines:
         m = row_pat.search(line)
         if m:
             name = m.group(1).strip()

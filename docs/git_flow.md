@@ -157,7 +157,10 @@ The guarantee has five deliberate limits:
   `status: "failed"` (`failure_reason: "empty_diff"`, no `test_pass_rate`), Stage 3 fails and no PR is created or
   updated. The same guard runs inside `holon execute` and before `holon review-loop` opens a PR; there it first fetches
   the execution and plan branches and compares the origin copies the PR is opened from, so stale or unpushed local
-  branches never decide it (a failed fetch skips the PR as `diff_unverified`).
+  branches never decide it (a failed fetch skips the PR as `diff_unverified`). When the guard refuses the PR
+  (`empty_diff` or `diff_unverified`), the loop does not wait for CI and Stage 4 fails with the refusal's own reason
+  (`Autonomous review halted: Refusing to create or update a PR for ...`), never as a test failure or as unmeasured
+  tests.
 - **Dispatch needs `origin`.** `--dry-run` validates the payload and names the branches without dispatching anything.
   `--skip-push` is rejected outside `--dry-run` -- on every run, including a `--from-stage` or `--checkpoint` resume
   from any stage -- before any stage runs, because the role containers clone from and push to `origin`, Stage 4 opens

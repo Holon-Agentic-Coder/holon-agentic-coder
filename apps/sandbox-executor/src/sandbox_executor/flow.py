@@ -3293,6 +3293,8 @@ def run_review_loop(
     # Automate semantic PR generation if auto_pr is requested (Bean 0109)
     pr_res: dict[str, Any] = {}
     pr_allowed = True
+    # Why the empty-diff guard refused the PR; reported as the loop's error instead of a test outcome.
+    pr_refusal_error: str | None = None
     if auto_pr and not effective_dry_run and shutil.which("gh"):
         # Empty-diff guard: an execution that changes nothing outside the ledgers and plans never gets a PR.
         has_diff, diff_detail = _execution_effective_diff(repo_dir, review_target)
@@ -3324,6 +3326,10 @@ def run_review_loop(
                 "error": err_msg,
             }
         if has_diff is None:
+            pr_refusal_error = (
+                f"Refusing to create or update a PR for '{review_target}': "
+                f"could not verify the execution diff ({diff_detail})."
+            )
             context.log(f"[Review Loop] Skipping PR creation: could not verify the execution diff ({diff_detail}).")
             pr_res = {"success": False, "skipped": True, "reason": "diff_unverified"}
             pr_allowed = False
@@ -3347,7 +3353,8 @@ def run_review_loop(
 
     # Without a recorded test result only CI can measure the tests: give checks triggered by the PR time to
     # register before the first iteration, so the wait burns no iteration budget and writes no ledger rows.
-    if test_pass_rate is None and not tests_failed and not effective_dry_run and shutil.which("gh"):
+    # A PR the empty-diff guard refused triggers no CI, so there is nothing to wait for.
+    if pr_allowed and test_pass_rate is None and not tests_failed and not effective_dry_run and shutil.which("gh"):
         _wait_for_ci_registration(
             context,
             repo_dir,
@@ -3591,6 +3598,12 @@ def run_review_loop(
         posting_action_record["created_at"] = datetime.now(UTC).isoformat()
         record_review_action(context, exec_file, posting_action_record)
 
+    halt_reasons: list[str] = []
+    if pr_refusal_error:
+        halt_reasons.append(_bounded_error_context(pr_refusal_error))
+    if tests_not_measured:
+        halt_reasons.append("test results not measured")
+
     # Record overall summary in executions.jsonl
     review_exec_id = f"REV-{int(time.time())}-{context.agent}"
     summary_entry = {
@@ -3606,7 +3619,7 @@ def run_review_loop(
             f"PR Review Loop reached consensus approval after {iteration} iteration(s) (Bean 0034 safety halt)"
             if consensus_reached
             else f"PR Review Loop halted without consensus after {iteration} iteration(s)"
-            + (": test results not measured" if tests_not_measured else "")
+            + (f": {'; '.join(halt_reasons)}" if halt_reasons else "")
         ),
         "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
         "total_iterations": iteration,
@@ -3638,7 +3651,12 @@ def run_review_loop(
                         target=review_target, tool=context.agent, command_prefix="review-loop"
                     ),
                     "labels": ["review", "review-loop", context.agent],
-                    "error_context": None if consensus_reached else f"Consensus failed: findings={finding_ids}",
+                    "error_context": (
+                        None
+                        if consensus_reached
+                        else f"Consensus failed: findings={finding_ids}"
+                        + (f"; {'; '.join(halt_reasons)}" if halt_reasons else "")
+                    ),
                 },
                 ledger_path=exec_file,
                 project_db_path=os.path.join(repo_dir, "holon-knowledge", ".index", "action_index.db"),
@@ -3646,7 +3664,7 @@ def run_review_loop(
         except Exception as e:
             _warn_ledger_failure(context, "Stage 4 review action event", exec_file, e)
 
-    return {
+    loop_result: dict[str, Any] = {
         "target": review_target,
         "consensus": {
             "approved": consensus_reached,
@@ -3668,6 +3686,9 @@ def run_review_loop(
         "posting": posting_res,
         "pr": pr_res,
     }
+    if pr_refusal_error:
+        loop_result["error"] = pr_refusal_error
+    return loop_result
 
 
 def _checkout_execution_branch(context: FlowContext) -> str | None:
@@ -3877,7 +3898,10 @@ def run_review_stage(context: FlowContext) -> StageResult:
 
     if not consensus_reached:
         ci_checks = loop_res.get("ci_checks") or {}
-        if ci_checks.get("measured") is False and not context.dry_run:
+        if loop_res.get("error"):
+            # The empty-diff guard refused the PR (empty_diff / diff_unverified): no tests decided this outcome.
+            err_msg = f"Autonomous review halted: {loop_res['error']}"
+        elif ci_checks.get("measured") is False and not context.dry_run:
             err_msg = TESTS_NOT_MEASURED_ERROR
         else:
             err_msg = "Autonomous review consensus failed: test suite reported failures."

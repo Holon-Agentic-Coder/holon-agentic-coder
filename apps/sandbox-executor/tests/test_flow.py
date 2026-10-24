@@ -3736,6 +3736,57 @@ class TestUnmeasuredTestsStopEarly:
 
         assert res.error == "Autonomous review consensus failed: test suite reported failures."
 
+    @pytest.mark.parametrize(
+        ("has_diff", "detail", "reason", "expected"),
+        [
+            (False, "no changes outside the ledgers", "empty_diff", "no changes outside the ledgers"),
+            (None, "fetch failed: origin unreachable", "diff_unverified", "could not verify the execution diff"),
+        ],
+    )
+    def test_guard_refusal_is_reported_as_its_own_reason_without_a_ci_wait(
+        self, tmp_path, has_diff, detail, reason, expected
+    ):
+        """C13E-N1: a refused PR runs no tests and triggers no CI, so Stage 4 neither waits nor blames the tests."""
+        from sandbox_executor import flow as flow_module
+
+        ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": None})
+        probe = MagicMock(return_value=dict(self.LOCAL))
+        sleep = MagicMock()
+        wait = MagicMock(wraps=flow_module._wait_for_ci_registration)
+        with (
+            patch("sandbox_executor.flow.shutil.which", return_value="/usr/bin/gh"),
+            patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=0, stdout="")),
+            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow._execution_effective_diff", return_value=(has_diff, detail)),
+            patch("sandbox_executor.flow.create_or_update_pr") as mock_pr,
+            patch("sandbox_executor.flow.probe_ci_checks", probe),
+            patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
+            patch("sandbox_executor.flow.post_pr_review_consensus", return_value={"dual_posted": True}),
+            patch("sandbox_executor.flow._resolve_review_commit", return_value="abc123"),
+            patch("sandbox_executor.flow.time.sleep", sleep),
+            patch("sandbox_executor.flow._wait_for_ci_registration", wait),
+        ):
+            res = run_review_stage(ctx)
+
+        mock_pr.assert_not_called()
+        sleep.assert_not_called()
+        wait.assert_not_called()
+        assert res.status == StageStatus.FAILED
+        assert res.error.startswith("Autonomous review halted: Refusing to create or update a PR for ")
+        assert expected in res.error
+        assert "reported failures" not in res.error
+        assert res.error != TESTS_NOT_MEASURED_ERROR
+        assert res.payload["pr"]["reason"] == reason
+        summaries = [r for r in self._ledger_rows(tmp_path) if r.get("entry_type") == "summary"]
+        if reason == "empty_diff":
+            # The guard returns before any review iteration, so it writes no review rows.
+            probe.assert_not_called()
+            assert summaries == []
+        else:
+            assert probe.call_count == 1
+            assert len(summaries) == 1
+            assert "could not verify the execution diff" in summaries[0]["summary"]
+
 
 class TestSkipPushRejectedOnEveryNonDryRun:
     """C10-N2: --skip-push outside --dry-run is rejected for runs and resumes from any stage."""

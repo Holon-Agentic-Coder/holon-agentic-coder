@@ -1507,8 +1507,8 @@ def test_empty_user_oauth_basic_override_forwards_no_placeholder(leak_env, monke
 
 
 def test_oauth_settings_json_travels_in_the_env_file(leak_env, monkeypatch, capsys):
-    oauth_sample = "sk-" + "ant-" + "oat01-" + make_probe("o")
-    settings = '{"env":{"CLAUDE_CODE_OAUTH_TOKEN":"' + oauth_sample + '"}}'
+    settings_probe = "sk-" + "ant-" + "oat01-" + make_probe("o")
+    settings = '{"env":{"CLAUDE_CODE_OAUTH_TOKEN":"' + settings_probe + '"}}'
     monkeypatch.setenv("HOLON_AGENT_SETTINGS", settings)
     docker = _RecordingDocker()
     monkeypatch.setattr(cli.subprocess, "run", docker)
@@ -1516,7 +1516,7 @@ def test_oauth_settings_json_travels_in_the_env_file(leak_env, monkeypatch, caps
     assert _run_planner(leak_env["repo"]) == 0
 
     captured = capsys.readouterr()
-    assert_no_leak(oauth_sample, captured.out, captured.err, docker.argv)
+    assert_no_leak(settings_probe, captured.out, captured.err, docker.argv)
     assert docker.env_file_contents["HOLON_AGENT_SETTINGS"] == settings
 
 

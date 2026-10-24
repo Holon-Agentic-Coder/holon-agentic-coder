@@ -22,7 +22,7 @@ BRANCH = "I-1792762862-x/_"
 
 
 @pytest.fixture
-def fake_token(monkeypatch: pytest.MonkeyPatch) -> str:
+def gh_probe(monkeypatch: pytest.MonkeyPatch) -> str:
     sample = make_gh_probe()
     for name in ("GITHUB_TOKEN", "GH_TOKEN", "HOLON_AGENT_KEY", "HOLON_MITM_WEB_PASSWORD"):
         monkeypatch.delenv(name, raising=False)
@@ -56,20 +56,20 @@ def test_git_and_flow_use_the_shared_redactor() -> None:
 
 
 def test_executor_run_cmd_echo_masks_a_bare_token_and_env_literal(
-    fake_token: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    gh_probe: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """`run_cmd` echoes through the canonical command redactor, not `redact_args` alone."""
     # Neutral name and construction keep CodeQL from tainting `run_cmd`'s masked echo from this test value.
     web_value = "mitmweb-" + uuid4().hex
     monkeypatch.setenv("HOLON_MITM_WEB_PASSWORD", web_value)
-    leaky = f"{fake_token} {web_value}"
+    leaky = f"{gh_probe} {web_value}"
 
     def fake_run(*args, **kwargs):
-        return executor.subprocess.CompletedProcess(args[0], 1, stdout=f"out {fake_token}", stderr=f"err {fake_token}")
+        return executor.subprocess.CompletedProcess(args[0], 1, stdout=f"out {gh_probe}", stderr=f"err {gh_probe}")
 
     monkeypatch.setattr(executor.subprocess, "run", fake_run)
     with pytest.raises(executor.subprocess.CalledProcessError) as excinfo:
-        executor.run_cmd(["gh", "api", "-H", f"x: {fake_token}", "--set", web_value, "--branch", BRANCH])
+        executor.run_cmd(["gh", "api", "-H", f"x: {gh_probe}", "--set", web_value, "--branch", BRANCH])
 
     captured = capsys.readouterr()
     for text in (captured.out, captured.err, " ".join(excinfo.value.cmd)):
@@ -78,17 +78,17 @@ def test_executor_run_cmd_echo_masks_a_bare_token_and_env_literal(
     assert f"--branch {BRANCH}" in captured.out
 
 
-def test_run_git_failure_masks_a_bare_token(fake_token: str, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_git_failure_masks_a_bare_token(gh_probe: str, monkeypatch: pytest.MonkeyPatch) -> None:
     from sandbox_executor import git
 
     def fake_run(cmd, **kwargs):
-        return git.subprocess.CompletedProcess(cmd, 128, stdout="", stderr=f"fatal: bad credential {fake_token}")
+        return git.subprocess.CompletedProcess(cmd, 128, stdout="", stderr=f"fatal: bad credential {gh_probe}")
 
     monkeypatch.setattr(git.subprocess, "run", fake_run)
     with pytest.raises(RuntimeError) as excinfo:
-        git.run_git(["-c", f"http.extraHeader=x: {fake_token}", "fetch"], check=True)
+        git.run_git(["-c", f"http.extraHeader=x: {gh_probe}", "fetch"], check=True)
 
-    assert_no_fragment(str(excinfo.value), fake_token)
+    assert_no_fragment(str(excinfo.value), gh_probe)
     assert "fetch" in str(excinfo.value)
 
 
@@ -152,9 +152,9 @@ def test_redact_env_literals_default_names_are_unchanged(monkeypatch: pytest.Mon
     ],
     ids=["github-token", "gh-token", "repo-url-userinfo", "mitmweb-query-token", "unrecognised-key", "bare"],
 )
-def test_redact_command_masks_every_token_form(fake_token: str, build_arg) -> None:
-    line = redact_command(["docker", "run", "-e", build_arg(fake_token), "--branch", BRANCH])
-    assert_no_fragment(line, fake_token)
+def test_redact_command_masks_every_token_form(gh_probe: str, build_arg) -> None:
+    line = redact_command(["docker", "run", "-e", build_arg(gh_probe), "--branch", BRANCH])
+    assert_no_fragment(line, gh_probe)
     assert REDACTION_MARKER in line
     assert line.startswith("docker run -e ")
     assert line.endswith(f"--branch {BRANCH}")
@@ -167,7 +167,7 @@ def test_redact_command_masks_the_mitmweb_password(monkeypatch: pytest.MonkeyPat
     assert_no_fragment(line, pw_sample)
 
 
-def test_redact_command_keeps_repository_and_branch_readable(fake_token: str) -> None:
+def test_redact_command_keeps_repository_and_branch_readable(gh_probe: str) -> None:
     argv = [
         "git",
         "clone",
@@ -176,7 +176,7 @@ def test_redact_command_keeps_repository_and_branch_readable(fake_token: str) ->
         "--single-branch",
         "--depth",
         "1",
-        f"https://x-access-token:{fake_token}@{REPO}",
+        f"https://x-access-token:{gh_probe}@{REPO}",
         ".",
     ]
     assert redact_command(argv) == (

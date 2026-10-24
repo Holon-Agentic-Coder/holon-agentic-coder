@@ -134,9 +134,10 @@ The evolution pipeline traverses five deterministic stages, representing a singl
 `holon flow <intent.json>` is equivalent to running the five commands above by hand, in order. Stages 1-3 call the same
 dispatch function as `holon intent`, `holon plan` and `holon execute` (`dispatch_role_agent` in `cli.py`), so they
 launch the same containers with the resolved runner and model: `holon/agent-<runner>` for the planner and executor, and
-`holon/orchestrator` for the intent creator (which does not run a model). Those containers author every branch, plan
-file and ledger row; the flow only fetches `origin`, adopts the branch each container pushed and validates it. A branch
-is adopted only if it was not on `origin` before the container was dispatched and its name carries the dispatched runner
+`holon/orchestrator` for the intent creator (which does not run a model). Those containers author every Stage 1-3
+branch, plan file and ledger row; the flow only fetches `origin`, adopts the branch each container pushed and validates
+it, except that it appends a superseding failure row to an empty execution's branch (see the limits below). A branch is
+adopted only if it was not on `origin` before the container was dispatched and its name carries the dispatched runner
 and model; when no such branch or more than one appears, the stage fails instead of guessing, so neither clock skew
 between host and container nor a concurrent run under the same parent branch can redirect the flow. Stages 4 and 5 run
 the same review loop and calibration code as `holon review-loop` and `holon calibrate`. Because Stages 1-3 leave the

@@ -119,16 +119,16 @@ def test_probe_runs_runner_in_its_container_and_redacts(probe_env):
     assert tail[-1] == PROBE_PROMPT
 
 
-def _probe_secrets(monkeypatch):
+def _set_probe_values(monkeypatch):
     """Set fake HOLON_AGENT_KEY, HOLON_AGENT_SETTINGS and credential-bearing HOLON_REPO_URL values."""
-    key_sample = make_probe("key")
-    settings_sample = make_probe("settings")
-    url_sample = make_probe("url")
-    settings = '{"env":{"CLAUDE_CODE_OAUTH_TOKEN":"' + settings_sample + '"}}'
-    monkeypatch.setenv("HOLON_AGENT_KEY", key_sample)
+    agent_probe = make_probe("key")
+    settings_probe = make_probe("settings")
+    url_probe = make_probe("url")
+    settings = '{"env":{"CLAUDE_CODE_OAUTH_TOKEN":"' + settings_probe + '"}}'
+    monkeypatch.setenv("HOLON_AGENT_KEY", agent_probe)
     monkeypatch.setenv("HOLON_AGENT_SETTINGS", settings)
-    monkeypatch.setenv("HOLON_REPO_URL", f"https://x-access-token:{url_sample}@github.com/o/r.git")
-    return key_sample, settings, url_sample
+    monkeypatch.setenv("HOLON_REPO_URL", f"https://x-access-token:{url_probe}@github.com/o/r.git")
+    return agent_probe, settings, url_probe
 
 
 def _env_file_of(cmd):
@@ -136,7 +136,7 @@ def _env_file_of(cmd):
 
 
 def test_probe_keeps_credentials_off_the_docker_argv(probe_env, monkeypatch, isolated_env_file_dir):
-    key_sample, settings, url_sample = _probe_secrets(monkeypatch)
+    agent_probe, settings, url_probe = _set_probe_values(monkeypatch)
     seen = {}
 
     def runner_fn(cmd, **kwargs):
@@ -152,16 +152,16 @@ def test_probe_keeps_credentials_off_the_docker_argv(probe_env, monkeypatch, iso
 
     assert res.ok
     argv = " ".join(seen["cmd"])
-    for sample in (key_sample, settings, url_sample):
+    for sample in (agent_probe, settings, url_probe):
         assert sample not in argv
     assert "HOLON_REPO_URL=https://github.com/o/r.git" in seen["cmd"]
     assert "HOLON_SKIP_PREFLIGHT=1" in seen["cmd"]
     assert seen["cmd"][2] == "--env-file"
     assert os.path.dirname(seen["path"]) == str(isolated_env_file_dir)
     assert seen["mode"] == 0o600
-    assert f"HOLON_AGENT_KEY={key_sample}" in seen["lines"]
+    assert f"HOLON_AGENT_KEY={agent_probe}" in seen["lines"]
     assert f"HOLON_AGENT_SETTINGS={settings}" in seen["lines"]
-    assert not any(url_sample in line for line in seen["lines"])
+    assert not any(url_probe in line for line in seen["lines"])
     # The runner's `--settings` flag reads the variable inside the container instead of carrying the value.
     tail = seen["cmd"][seen["cmd"].index("holon/agent-claude") + 1 :]
     assert tail[:2] == ["sh", "-c"]
@@ -184,7 +184,7 @@ def test_probe_keeps_a_credential_free_multiline_settings_json_on_the_argv(probe
     ids=["timeout", "oserror", "unexpected"],
 )
 def test_probe_env_file_is_removed_when_the_probe_fails(probe_env, monkeypatch, isolated_env_file_dir, failure):
-    _probe_secrets(monkeypatch)
+    _set_probe_values(monkeypatch)
     paths = []
 
     def runner_fn(cmd, **kwargs):
@@ -203,6 +203,22 @@ def test_probe_env_file_is_removed_when_the_probe_fails(probe_env, monkeypatch, 
         )
     assert paths and not os.path.exists(paths[0])
     assert os.listdir(isolated_env_file_dir) == []
+
+
+def test_probe_returns_unknown_when_the_env_file_dir_cannot_be_created(probe_env, monkeypatch):
+    from sandbox_executor import cli
+
+    _set_probe_values(monkeypatch)
+
+    def failing_dir():
+        raise PermissionError("env-file dir not creatable")
+
+    monkeypatch.setattr(cli, "env_file_dir", failing_dir)
+    runner_fn = MagicMock()
+    res = run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=runner_fn)
+    assert res.status is PreflightStatus.UNKNOWN
+    assert "env-file dir not creatable" in res.output_excerpt
+    runner_fn.assert_not_called()
 
 
 def test_probe_rejects_a_multiline_credential_without_running(probe_env, monkeypatch):

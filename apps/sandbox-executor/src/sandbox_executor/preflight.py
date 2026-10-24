@@ -403,8 +403,8 @@ def run_preflight_probe(
 
     env_file: str | None = None
     if secret_env:
-        sweep_stale_env_files(env_file_dir())
         try:
+            sweep_stale_env_files(env_file_dir())
             env_file = write_env_file(secret_env)
         except (ValueError, OSError) as exc:
             return _result(PreflightStatus.UNKNOWN, agent, model, image, output=str(exc))

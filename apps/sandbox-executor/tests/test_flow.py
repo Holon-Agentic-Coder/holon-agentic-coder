@@ -123,19 +123,19 @@ class TestFlowDataModels:
         assert len(reconstructed.logs) == 1
 
     def test_flow_context_log_and_stage_failure_mask_provider_tokens_and_env_literals(self, monkeypatch):
-        oauth_sample = make_gh_probe("gh" + "o_")
-        pat_sample = make_gh_probe()
-        literal_sample = make_probe("ghtoken")
-        monkeypatch.setenv("GITHUB_TOKEN", literal_sample)
+        gho_probe = make_gh_probe("gh" + "o_")
+        ghp_probe = make_gh_probe()
+        env_probe = make_probe("ghtoken")
+        monkeypatch.setenv("GITHUB_TOKEN", env_probe)
         ctx = FlowContext(repo_dir="/tmp/repo", dry_run=True, token_reduce=False)
 
-        ctx.log(f"push failed for {oauth_sample} and {pat_sample} using {literal_sample}")
+        ctx.log(f"push failed for {gho_probe} and {ghp_probe} using {env_probe}")
         res = PipelineEngine(ctx).handle_stage_failure(
-            FlowStage.EXECUTE, RuntimeError(f"auth {oauth_sample} {pat_sample} {literal_sample} rejected")
+            FlowStage.EXECUTE, RuntimeError(f"auth {gho_probe} {ghp_probe} {env_probe} rejected")
         )
 
         for text in (*ctx.logs, res.error):
-            for sample in (oauth_sample, pat_sample, literal_sample):
+            for sample in (gho_probe, ghp_probe, env_probe):
                 assert sample not in text
         assert "push failed" in ctx.logs[0]
         assert "rejected" in res.error

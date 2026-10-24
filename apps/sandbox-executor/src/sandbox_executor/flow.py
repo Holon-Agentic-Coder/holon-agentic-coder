@@ -20,6 +20,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -2056,7 +2057,8 @@ def validate_intent_questions(intent_data: dict[str, Any]) -> tuple[bool, list[s
 # ---------------------------------------------------------------------------
 
 SKIP_PUSH_DISPATCH_ERROR: str = (
-    "holon flow dispatches containerised role agents that fetch from origin; --skip-push is incompatible with dispatch."
+    "holon flow dispatches containerised role agents that fetch from origin, reviews the origin execution branch and "
+    "pushes the calibrated branch to origin; --skip-push is only valid with --dry-run."
 )
 EXECUTOR_GIT_ENV: dict[str, str] = {
     "GIT_AUTHOR_NAME": "Holon Executor Agent",
@@ -2066,6 +2068,28 @@ EXECUTOR_GIT_ENV: dict[str, str] = {
 }
 # The executor entrypoint has historically written "failure"; guard rows use "failed". Both mean failure.
 FAILED_EXECUTION_STATUSES: frozenset[str] = frozenset({"failed", "failure"})
+
+
+def recorded_test_pass_rate(value: Any) -> float | None:
+    """Return a recorded test pass rate in [0, 1], or None when no usable measurement was recorded.
+
+    ``None`` means "not measured": callers must never read it as a pass.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    rate = float(value)
+    if math.isnan(rate) or rate < 0.0 or rate > 1.0:
+        return None
+    return rate
+
+
+def _test_evidence(exec_result: StageResult | None) -> tuple[float | None, int]:
+    """Return the Stage 3 ``(test_pass_rate, exit_code)``; the rate is None when Stage 3 measured no tests."""
+    if not exec_result or not exec_result.payload:
+        return None, 0
+    return recorded_test_pass_rate(exec_result.payload.get("test_pass_rate")), int(
+        exec_result.payload.get("exit_code", 0) or 0
+    )
 
 
 def _get_dispatcher(context: FlowContext) -> Callable[..., int]:
@@ -3033,7 +3057,12 @@ def run_execute_stage(context: FlowContext) -> StageResult:
         status=StageStatus.SUCCESS,
         start_time=start_time,
         end_time=end_time,
-        payload={**base_payload, "changed_files": len(changed)},
+        # The executor container's own test measurement, when its summary row records one; None means not measured.
+        payload={
+            **base_payload,
+            "changed_files": len(changed),
+            "test_pass_rate": recorded_test_pass_rate(summary_row.get("test_pass_rate")),
+        },
     )
     context.stage_results["execute"] = result
     return result
@@ -3185,12 +3214,8 @@ def run_review_loop(
             context.log(f"Warning: Failed to configure token reduction proxy in review loop: {exc}.")
             proxy_env = {}
 
-    exec_result = context.stage_results.get("execute")
-    test_pass_rate = 1.0
-    exit_code = 0
-    if exec_result and exec_result.payload:
-        test_pass_rate = float(exec_result.payload.get("test_pass_rate", 1.0))
-        exit_code = int(exec_result.payload.get("exit_code", 0))
+    test_pass_rate, exit_code = _test_evidence(context.stage_results.get("execute"))
+    tests_failed = exit_code != 0 or (test_pass_rate is not None and test_pass_rate < 1.0)
 
     iteration = 0
     consensus_reached = False
@@ -3305,11 +3330,22 @@ def run_review_loop(
 
         # 2. CI status inspection
         last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
-        if last_ci_status.get("source") == "local_tests" and (exit_code != 0 or test_pass_rate < 1.0):
+        if last_ci_status.get("source") == "local_tests" and tests_failed:
             last_ci_status["all_passed"] = False
             last_ci_status["passed"] = 0
             last_ci_status["failed"] = 1
             last_ci_status["checks"] = [{"name": "local_tests", "bucket": "fail", "state": "FAILURE"}]
+        elif last_ci_status.get("source") == "local_tests" and test_pass_rate is None and effective_dry_run:
+            # A dry run measures nothing and records nothing; its consensus is a simulation, flagged as unmeasured.
+            last_ci_status["measured"] = False
+        elif last_ci_status.get("source") == "local_tests" and test_pass_rate is None:
+            # No CI checks and no recorded test result: the tests were not measured, which is never a pass.
+            last_ci_status["all_passed"] = False
+            last_ci_status["passed"] = 0
+            last_ci_status["failed"] = 0
+            last_ci_status["skipped"] = 1
+            last_ci_status["measured"] = False
+            last_ci_status["checks"] = [{"name": "local_tests", "bucket": "skipping", "state": "NOT_MEASURED"}]
         elif (
             last_ci_status.get("source") == "github_cli"
             and last_ci_status.get("pending", 0) > 0
@@ -3329,7 +3365,7 @@ def run_review_loop(
             finding_ids.append(f"FIND-REF-{iteration:03d}")
             if severity != "critical":
                 severity = "important"
-        if not last_ci_status.get("all_passed", False) or exit_code != 0 or test_pass_rate < 1.0:
+        if not last_ci_status.get("all_passed", False) or tests_failed:
             finding_ids.append(f"FIND-CI-{iteration:03d}")
             if severity != "critical":
                 severity = "important"
@@ -3628,11 +3664,7 @@ def run_review_stage(context: FlowContext) -> StageResult:
     except Exception as e:
         logger.debug("Non-fatal consult in review stage: %s", e)
 
-    test_pass_rate = 1.0
-    exit_code = 0
-    if exec_result and exec_result.payload:
-        test_pass_rate = float(exec_result.payload.get("test_pass_rate", 1.0))
-        exit_code = int(exec_result.payload.get("exit_code", 0))
+    test_pass_rate, exit_code = _test_evidence(exec_result)
 
     diff_summary = {"files_changed": 0, "insertions": 0, "deletions": 0}
     if not context.dry_run and context.plan_branch:
@@ -3688,8 +3720,10 @@ def run_review_stage(context: FlowContext) -> StageResult:
         "diff_summary": diff_summary,
         "test_results": {
             "exit_code": exit_code,
+            # None = not measured: Stage 3 recorded no test result, so the package never claims a pass.
             "pass_rate": test_pass_rate,
-            "passed": exit_code == 0 and test_pass_rate == 1.0,
+            "measured": test_pass_rate is not None,
+            "passed": False if exit_code != 0 else (None if test_pass_rate is None else test_pass_rate == 1.0),
         },
         "mergeability": mergeability,
         "token_reduce": context.token_reduce,
@@ -4183,6 +4217,16 @@ class PipelineEngine:
             f"Pipeline run initiated from stage: {self.STAGE_ORDER[start_idx].value.upper()} "
             f"(dry_run={self.context.dry_run}, auto_calibrate={self.context.auto_calibrate})"
         )
+
+        # --skip-push is only valid with --dry-run, whichever stage the run starts or resumes from. Reject it before
+        # any stage runs or a checkpoint is written, so a non-dry resume never half-runs Stage 4 or Stage 5.
+        if self.context.skip_push and not self.context.dry_run:
+            first_stage = self.STAGE_ORDER[start_idx]
+            _stage_failure(
+                self.context, first_stage, datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"), SKIP_PUSH_DISPATCH_ERROR
+            )
+            self.context.log(f"Pipeline halted due to failure in stage '{first_stage.value}'.")
+            return self.context.stage_results
 
         for i in range(start_idx, len(self.STAGE_ORDER)):
             stage = self.STAGE_ORDER[i]

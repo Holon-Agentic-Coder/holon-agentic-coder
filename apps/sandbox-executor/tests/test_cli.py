@@ -18,6 +18,7 @@ from sandbox_executor.cli import (
     resolve_target_repo_url,
     run_docker_container,
 )
+from sandbox_executor.flow import SKIP_PUSH_DISPATCH_ERROR, FlowContext
 
 
 class TestHolonCLI(unittest.TestCase):
@@ -603,6 +604,53 @@ class TestHolonFlowCLI(unittest.TestCase):
                 mock_pipeline.assert_called_once()
                 ctx = mock_pipeline.call_args[1]["context"]
                 self.assertEqual(ctx.max_review_iterations, 5)
+                mock_exit.assert_called_with(0)
+
+    def test_flow_skip_push_rejected_outside_dry_run_for_any_resume(self):
+        """C10-N2: --skip-push without --dry-run is rejected before the pre-flight probe or the pipeline runs."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intent_file = os.path.join(tmp_dir, "intent.json")
+            with open(intent_file, "w", encoding="utf-8") as f:
+                json.dump({"slug": "test-skip-push", "goal": "g"}, f)
+            checkpoint_file = os.path.join(tmp_dir, "checkpoint.json")
+            ckpt_ctx = FlowContext(repo_dir=tmp_dir, intent_data={"slug": "cp"}, skip_push=True)
+            with open(checkpoint_file, "w", encoding="utf-8") as f:
+                json.dump({"context": ckpt_ctx.to_dict(), "current_stage": "calibrate"}, f)
+
+            argvs = [
+                ["holon", "flow", intent_file, "--skip-push"],
+                ["holon", "flow", intent_file, "--skip-push", "--from-stage", "review"],
+                ["holon", "flow", intent_file, "--skip-push", "--from-stage", "calibrate"],
+                # A checkpoint that recorded --skip-push is rejected on a non-dry resume too.
+                ["holon", "flow", "--checkpoint", checkpoint_file],
+            ]
+            for argv in argvs:
+                with (
+                    self.subTest(argv=argv[2:]),
+                    patch("sandbox_executor.cli.run_flow_pipeline") as mock_pipeline,
+                    patch("sandbox_executor.cli.preflight_gate") as mock_preflight,
+                    patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
+                    self.assertRaises(SystemExit) as cm,
+                    patch("sys.argv", argv),
+                ):
+                    main()
+                self.assertEqual(cm.exception.code, 1)
+                self.assertIn(SKIP_PUSH_DISPATCH_ERROR, mock_stderr.getvalue())
+                mock_pipeline.assert_not_called()
+                mock_preflight.assert_not_called()
+
+    def test_flow_skip_push_accepted_with_dry_run_resume(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intent_file = os.path.join(tmp_dir, "intent.json")
+            with open(intent_file, "w", encoding="utf-8") as f:
+                json.dump({"slug": "test-skip-push-dry", "goal": "g"}, f)
+            with patch("sandbox_executor.cli.run_flow_pipeline") as mock_pipeline, patch("sys.exit") as mock_exit:
+                mock_pipeline.return_value = {"status": "ok"}
+                argv = ["holon", "flow", intent_file, "--dry-run", "--skip-push", "--from-stage", "calibrate"]
+                with patch("sys.argv", argv):
+                    main()
+                mock_pipeline.assert_called_once()
+                self.assertTrue(mock_pipeline.call_args[1]["context"].skip_push)
                 mock_exit.assert_called_with(0)
 
     def test_flow_invalid_max_review_iterations(self):

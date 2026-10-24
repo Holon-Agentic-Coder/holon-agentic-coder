@@ -31,7 +31,13 @@ from sandbox_executor.agent_defaults import (
     resolve_model,
 )
 from sandbox_executor.calibration import run_calibrate
-from sandbox_executor.flow import FlowContext, FlowStage, load_checkpoint, run_flow_pipeline
+from sandbox_executor.flow import (
+    SKIP_PUSH_DISPATCH_ERROR,
+    FlowContext,
+    FlowStage,
+    load_checkpoint,
+    run_flow_pipeline,
+)
 from sandbox_executor.knowledge import (
     ActionIndexDatabase,
     ConsultEngine,
@@ -1531,7 +1537,9 @@ def main() -> None:
         action="store_true",
         help=(
             "Skip pushing git branches to remote origin. Only valid with --dry-run: the intent, plan and "
-            "execute stages dispatch role agents that fetch from origin, so a non-dry run fails fast."
+            "execute stages dispatch role agents that fetch from origin, the review stage reviews the origin "
+            "execution branch and the calibrate stage pushes to origin, so any non-dry run, including a "
+            "--from-stage or --checkpoint resume, is rejected before any stage runs."
         ),
     )
     flow_parser.add_argument(
@@ -2023,8 +2031,16 @@ def main() -> None:
                     flow_model = context.model
                     logger.info(Resolution(flow_model, "checkpoint", from_checkpoint).describe("Model"))
 
+            # --skip-push needs --dry-run on every run, including resumes from any stage; reject it before any side
+            # effect (pre-flight probe, checkpoint, branch or ledger write).
+            effective_dry_run = bool(args.dry_run or (context is not None and context.dry_run))
+            if (args.skip_push or (context is not None and context.skip_push)) and not effective_dry_run:
+                print(f"Error: {SKIP_PUSH_DISPATCH_ERROR}", file=sys.stderr)
+                sys.exit(1)
+                return
+
             # Readiness probe before Stage 1: nothing has been branched, pushed, checkpointed or recorded yet.
-            if args.dry_run or (context is not None and context.dry_run):
+            if effective_dry_run:
                 logger.info("Pre-flight probe skipped for a dry-run flow (no agent is called).")
             elif not flow_dispatches_agent(args.from_stage):
                 logger.info(

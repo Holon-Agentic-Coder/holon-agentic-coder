@@ -10,10 +10,12 @@ The probe never runs git, never writes under the repository and never writes to 
 
 from __future__ import annotations
 
+import contextlib
 import enum
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import uuid
@@ -229,12 +231,15 @@ def _has_host_credential(agent_id: str, session_mounts: list[str]) -> bool:
 
 def build_probe_docker_cmd(
     agent: str, model: str, image: str, container_name: str, session_mounts: list[str]
-) -> list[str]:
-    """Build the ``docker run`` argv for the probe.
+) -> tuple[list[str], dict[str, str]]:
+    """Build the ``docker run`` argv for the probe, with every credential kept off it.
 
     The container keeps its normal entrypoint with no ``HOLON_ROLE``, so the dispatcher maps ``HOLON_AGENT_KEY`` onto
     the vendor variables and then executes the runner binary directly. The mounts, gateway host entries and network
-    isolation come from the same helpers ``run_docker_container`` uses.
+    isolation come from the same helpers ``run_docker_container`` uses, and so does the credential classifier
+    (``cli.is_secret_env_item``): ``HOLON_AGENT_KEY``, a credential-bearing ``HOLON_AGENT_SETTINGS`` and any other
+    credential-bearing value are returned separately for a 0600 ``--env-file``, never as ``-e`` items that ``ps`` and
+    ``/proc/<pid>/cmdline`` can read. ``HOLON_REPO_URL`` is forwarded without its userinfo: the probe runs no git.
 
     Args:
         agent: Runner name.
@@ -244,26 +249,60 @@ def build_probe_docker_cmd(
         session_mounts: Output of ``get_agent_session_mounts`` for this runner.
 
     Returns:
-        The docker argv. Credential values are passed through ``-e`` exactly as for a real run.
+        The docker argv, free of credential values, and the variables the caller must hand over with
+        ``cli.write_env_file`` and ``--env-file`` (empty when there are none).
     """
     from sandbox_executor.agent_runner import runners
-    from sandbox_executor.cli import _gateway_host_args, build_network_isolation_args
+    from sandbox_executor.cli import (
+        _gateway_host_args,
+        build_network_isolation_args,
+        is_secret_env_item,
+        strip_url_credentials,
+    )
 
     agent_id = normalise_agent_id(agent)
     cmd = ["docker", "run", "--rm", "-i", "--name", container_name]
     env: dict[str, str] = {
         key: value for key, value in os.environ.items() if key.startswith("HOLON_") and key != "HOLON_ROLE"
     }
+    if "HOLON_REPO_URL" in env:
+        env["HOLON_REPO_URL"] = strip_url_credentials(env["HOLON_REPO_URL"].strip())[0]
     env["HOLON_AGENT_ID"] = agent_id
     env[SKIP_ENV_VAR] = "1"
+    secret_env: dict[str, str] = {}
     for key, value in sorted(env.items()):
-        cmd.extend(["-e", f"{key}={value}"])
+        if is_secret_env_item(key, value):
+            secret_env[key] = value
+        else:
+            cmd.extend(["-e", f"{key}={value}"])
     cmd.extend(_gateway_host_args())
     cmd.extend(session_mounts)
     cmd.extend(build_network_isolation_args())
     cmd.append(image)
-    cmd.extend(runners[agent_id].compose_cmd(model, PROBE_PROMPT))
-    return cmd
+    cmd.extend(_reference_secret_args(runners[agent_id].compose_cmd(model, PROBE_PROMPT), secret_env))
+    return cmd, secret_env
+
+
+def _reference_secret_args(runner_cmd: list[str], secret_env: Mapping[str, str]) -> list[str]:
+    """Keep env-mapped credential flag values (``claude --settings``) off the host argv.
+
+    The runner argv is composed on the host, so a flag the runner fills from a variable (for example
+    ``--settings`` from ``HOLON_AGENT_SETTINGS``) would carry the credential itself. Each argument equal to a value
+    in ``secret_env`` is replaced by a shell reference to that variable, and the command runs through ``sh -c``,
+    which expands the reference inside the container from the ``--env-file`` copy.
+
+    Args:
+        runner_cmd: The runner argv from ``compose_cmd``.
+        secret_env: The variables handed over through the ``--env-file``.
+
+    Returns:
+        ``runner_cmd`` unchanged when no argument is a secret value, otherwise an equivalent ``sh -c`` argv.
+    """
+    by_value = {value: key for key, value in sorted(secret_env.items()) if value}
+    if not any(arg in by_value for arg in runner_cmd):
+        return runner_cmd
+    script = " ".join(f'"${{{by_value[arg]}}}"' if arg in by_value else shlex.quote(arg) for arg in runner_cmd)
+    return ["sh", "-c", f"exec {script}"]
 
 
 def _result(
@@ -307,8 +346,9 @@ def run_preflight_probe(
         A :class:`PreflightResult`; never raises for probe failures.
 
     Side effects:
-        Runs one ``docker run`` (one real model call). On timeout the probe container is removed with ``docker rm -f``.
-        Nothing is written to the repository or the ledgers.
+        Runs one ``docker run`` (one real model call). Credentials reach the container through a 0600 ``--env-file``
+        under ``~/.holon/tmp/env-files``, removed once the probe returns, times out or fails. On timeout the probe
+        container is removed with ``docker rm -f``. Nothing is written to the repository or the ledgers.
     """
     run = runner_fn or subprocess.run
     agent_id = normalise_agent_id(agent)
@@ -357,8 +397,37 @@ def run_preflight_probe(
         )
 
     container_name = f"holon-preflight-{uuid.uuid4().hex[:12]}"
-    docker_cmd = build_probe_docker_cmd(agent, model, image, container_name, session_mounts)
+    docker_cmd, secret_env = build_probe_docker_cmd(agent, model, image, container_name, session_mounts)
 
+    from sandbox_executor.cli import env_file_dir, sweep_stale_env_files, write_env_file
+
+    env_file: str | None = None
+    if secret_env:
+        sweep_stale_env_files(env_file_dir())
+        try:
+            env_file = write_env_file(secret_env)
+        except (ValueError, OSError) as exc:
+            return _result(PreflightStatus.UNKNOWN, agent, model, image, output=str(exc))
+        # Right after `docker run`, as in run_docker_container; docker reads the file on the client side.
+        docker_cmd[2:2] = ["--env-file", env_file]
+    try:
+        return _run_probe(run, docker_cmd, container_name, limit, agent, model, image)
+    finally:
+        if env_file:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(env_file)
+
+
+def _run_probe(
+    run: Callable[..., subprocess.CompletedProcess[str]],
+    docker_cmd: list[str],
+    container_name: str,
+    limit: float,
+    agent: str,
+    model: str,
+    image: str,
+) -> PreflightResult:
+    """Run the probe container and classify the outcome; on timeout remove the container."""
     try:
         proc = run(docker_cmd, capture_output=True, text=True, timeout=limit, check=False, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired as exc:

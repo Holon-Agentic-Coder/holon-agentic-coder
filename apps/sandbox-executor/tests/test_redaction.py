@@ -52,7 +52,7 @@ def test_git_and_flow_use_the_shared_redactor() -> None:
 
     assert git.redact_command is redaction.redact_command
     assert git.redact_agent_secrets is redaction.redact_agent_secrets
-    assert flow.redact_text is redaction.redact_text
+    assert flow.redact_agent_secrets is redaction.redact_agent_secrets
 
 
 def test_executor_run_cmd_echo_masks_a_bare_token_and_env_literal(

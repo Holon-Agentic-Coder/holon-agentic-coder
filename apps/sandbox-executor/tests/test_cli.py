@@ -1394,6 +1394,16 @@ _GH_USER_PROBE = make_gh_probe()
         ("https://GitHub.com:443/O/R.git?x=1#frag", ("https://GitHub.com:443/O/R.git?x=1#frag", None)),
         ("http://git.example.org/o/r.git", ("http://git.example.org/o/r.git", None)),
         ("file:///srv/git/r.git", ("file:///srv/git/r.git", None)),
+        # A raw `/`, `?` or `#` in the password is still userinfo to git: the whole credential is stripped.
+        ("https://someuser:SE/CRET@github.com/o/r.git", ("https://github.com/o/r.git", "SE/CRET")),
+        ("https://someuser:SE?CRET@github.com/o/r.git", ("https://github.com/o/r.git", "SE?CRET")),
+        ("https://someuser:SE#CRET@github.com/o/r.git", ("https://github.com/o/r.git", "SE#CRET")),
+        ("https://u:S/E?C#RET@ghe.example:8443/o/r.git", ("https://ghe.example:8443/o/r.git", "S/E?C#RET")),
+        ("https://u:SE/CRET@github.com/o/r@v1.git", ("https://github.com/o/r@v1.git", "SE/CRET")),
+        # A port, an IPv6 literal or a bare host before the delimiter is not a password.
+        ("https://ghe.example:8443/o/r@v1.git", ("https://ghe.example:8443/o/r@v1.git", None)),
+        ("https://[::1]:8443/o/r@v1.git", ("https://[::1]:8443/o/r@v1.git", None)),
+        ("https://github.com/o/r.git?ref=a@b#c@d", ("https://github.com/o/r.git?ref=a@b#c@d", None)),
     ],
 )
 def test_strip_url_credentials(url, expected):

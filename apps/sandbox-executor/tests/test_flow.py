@@ -45,6 +45,8 @@ from sandbox_executor.flow import (
 )
 from sandbox_executor.ledger import parse_commit_trailers
 
+from tests.leak_assertions import make_gh_probe, make_probe
+
 
 class TestFlowDataModels:
     """Test data structures, enums, serialisation, and atomic checkpoint persistence."""
@@ -119,6 +121,24 @@ class TestFlowDataModels:
         assert reconstructed.dry_run is True
         assert reconstructed.stage_results["intent"].status == StageStatus.SUCCESS
         assert len(reconstructed.logs) == 1
+
+    def test_flow_context_log_and_stage_failure_mask_provider_tokens_and_env_literals(self, monkeypatch):
+        oauth_sample = make_gh_probe("gh" + "o_")
+        pat_sample = make_gh_probe()
+        literal_sample = make_probe("ghtoken")
+        monkeypatch.setenv("GITHUB_TOKEN", literal_sample)
+        ctx = FlowContext(repo_dir="/tmp/repo", dry_run=True, token_reduce=False)
+
+        ctx.log(f"push failed for {oauth_sample} and {pat_sample} using {literal_sample}")
+        res = PipelineEngine(ctx).handle_stage_failure(
+            FlowStage.EXECUTE, RuntimeError(f"auth {oauth_sample} {pat_sample} {literal_sample} rejected")
+        )
+
+        for text in (*ctx.logs, res.error):
+            for sample in (oauth_sample, pat_sample, literal_sample):
+                assert sample not in text
+        assert "push failed" in ctx.logs[0]
+        assert "rejected" in res.error
 
     def test_flow_context_new_flags_serialization(self):
         ctx = FlowContext(

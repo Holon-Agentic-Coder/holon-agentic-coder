@@ -238,6 +238,46 @@ _GITHUB_TOKEN_USER_RE = re.compile(r"(?:gh[opsu]_|github_pat_)[A-Za-z0-9_-]{8,}"
 _OAUTH_BASIC_PASSWORD = "x-oauth-basic"
 
 
+_URL_DELIMITERS = "/?#"
+
+
+def _first_delimiter(text: str, start: int = 0) -> int:
+    """Return the index of the first `/`, `?` or `#` at or after `start`, or `len(text)`."""
+    hits = [i for i in (text.find(c, start) for c in _URL_DELIMITERS) if i >= 0]
+    return min(hits, default=len(text))
+
+
+def _userinfo_end(rest: str) -> int | None:
+    """Return the index of the `@` that ends the userinfo of `rest` (the URL after `scheme://`).
+
+    A password may hold a raw `/`, `?` or `#`, which ends the authority early for `urlsplit` while
+    the text up to the `@` is still the credential. When the authority as `urlsplit` sees it has no
+    `@` but is shaped like `user:password` (not `host:port`, not an IPv6 literal), the userinfo runs
+    to the first `@` after it, extended to the last `@` before the next delimiter. An `@` only in the
+    path, query or fragment of a credential-free URL is not userinfo.
+
+    Args:
+        rest: The URL with its `scheme://` prefix removed.
+
+    Returns:
+        The index of the userinfo's closing `@`, or None when the URL carries no userinfo.
+    """
+    authority = rest[: _first_delimiter(rest)]
+    if "@" in authority:
+        return authority.rindex("@")
+    _, colon, tail = authority.partition(":")
+    if not colon or not tail or tail.isdigit() or authority.startswith("["):
+        return None
+    at = rest.find("@", len(authority))
+    if at < 0:
+        return None
+    while (nxt := rest.find("@", at + 1, _first_delimiter(rest, at + 1))) >= 0:
+        at = nxt
+    if _first_delimiter(rest, at + 1) == at + 1:
+        return None
+    return at
+
+
 def strip_url_credentials(url: str) -> tuple[str, str | None]:
     """Remove the userinfo (`user:password@`) from an `http(s)://` URL.
 
@@ -261,14 +301,17 @@ def strip_url_credentials(url: str) -> tuple[str, str | None]:
 
         A plain bare user name is a login name, not a credential: it is stripped and the credential
         is None. The credential is also None when the URL carried no userinfo or is not an HTTP(S)
-        URL.
+        URL. A password holding a raw `/`, `?` or `#` is stripped whole (see `_userinfo_end`).
     """
     if not url.lower().startswith(("https://", "http://")):
         return url, None
-    parts = urlsplit(url)
-    userinfo, sep, hostport = parts.netloc.rpartition("@")
-    if not sep:
+    scheme_end = url.index("://") + 3
+    rest = url[scheme_end:]
+    at = _userinfo_end(rest)
+    if at is None:
         return url, None
+    userinfo = rest[:at]
+    clean_url = urlunsplit(urlsplit(url[:scheme_end] + rest[at + 1 :]))
     user, _, password = (unquote(part) for part in userinfo.partition(":"))
     if password.lower() == _OAUTH_BASIC_PASSWORD:
         # The placeholder password is never the credential: the user name is, and an empty user name
@@ -280,7 +323,7 @@ def strip_url_credentials(url: str) -> tuple[str, str | None]:
         credential = user
     else:
         credential = None
-    return urlunsplit(parts._replace(netloc=hostport)), credential
+    return clean_url, credential
 
 
 def credential_host(repo_url: str) -> str | None:
@@ -1190,6 +1233,21 @@ def write_env_file(env: dict[str, str]) -> str:
     return path
 
 
+def is_secret_env_item(key: str, value: str) -> bool:
+    """Decide whether a container variable must travel in the 0600 `--env-file`, not on the argv.
+
+    Args:
+        key: The variable name.
+        value: The variable value.
+
+    Returns:
+        True for a credential-bearing name, a `KEY=VALUE` item the command redactor would mask, or a
+        value with a URL password (a proxy URL in any scheme, or none), whatever its name.
+    """
+    item = f"{key}={value}"
+    return is_secret_env_name(key) or redact_command([item]) != item or carries_url_password(value)
+
+
 def run_docker_container(
     role: str,
     image_name: str,
@@ -1220,11 +1278,10 @@ def run_docker_container(
     secret_env: dict[str, str] = {}
 
     def add_env(key: str, value: str) -> None:
-        item = f"{key}={value}"
-        if is_secret_env_name(key) or redact_command([item]) != item or carries_url_password(value):
+        if is_secret_env_item(key, value):
             secret_env[key] = value
         else:
-            docker_cmd.extend(["-e", item])
+            docker_cmd.extend(["-e", f"{key}={value}"])
 
     # Forward all host environment variables prefixed with HOLON_ and GITHUB_TOKEN
     env_to_forward = {}

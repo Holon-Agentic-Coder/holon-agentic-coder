@@ -85,6 +85,10 @@ URL forwarded to the container, and therefore the workspace `.git/config`, never
 - **Only HTTP(S) userinfo is a credential.** SSH remotes (`ssh://git@host/org/repo.git`, `git+ssh://...` and the
   SCP-style `git@host:org/repo.git`) are returned unchanged: the `git` user is the SSH login, not a token, and they keep
   using SSH agent forwarding.
+- **A raw `/`, `?` or `#` in the password is still stripped.** Such a character ends the authority for a generic URL
+  parser, so the userinfo is cut by hand first: when the text before the first delimiter is shaped like `user:password`
+  (not `host:port` and not an IPv6 literal), everything up to the following `@` (the last one before the next delimiter)
+  is the userinfo. An `@` only in the path, query or fragment of a credential-free URL is left alone.
 - **Which userinfo counts as the credential.** Userinfo is percent-decoded, as git decodes it, and classified in this
   order:
   1. the user name in the GitHub `https://<token>:x-oauth-basic@...` form (password compared case-insensitively). The
@@ -119,7 +123,13 @@ file inside the workspace:
    directory `~/.holon/tmp/env-files`. It is removed when the run ends, whether through success, failure, an early
    error, an exception or an interrupt. Files left behind by a killed run are swept after 24 hours. Docker reads the
    file on the client side, so no bind mount is needed. A value containing a line break is rejected with an error that
-   names the variable but never the value, because the env-file format has no quoting.
+   names the variable but never the value, because the env-file format has no quoting. The
+   [readiness probe](#readiness-probe-holon-doctor) builds its container environment with the same classifier
+   (`is_secret_env_item`) and `write_env_file`: `HOLON_AGENT_KEY` and a credential-bearing `HOLON_AGENT_SETTINGS` travel
+   in a `0600` env-file that is removed once the probe returns, times out or fails, and `HOLON_REPO_URL` is forwarded
+   with its userinfo stripped. A runner flag filled from such a variable (`claude --settings`) is passed as a
+   `"${HOLON_AGENT_SETTINGS}"` reference through `sh -c` and expanded inside the container, so the value never reaches
+   the host `docker run` argv.
 2. **Runtime credential helper.** For an HTTPS remote, the CLI also passes `GIT_CONFIG_COUNT=2` with
    `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>` (git 2.31 or later), scoped to `credential.https://<host[:port]>`.
    Entry 0 resets any inherited helpers for that host. Entry 1 installs an inline helper that answers `get` with
@@ -239,7 +249,9 @@ Each agent has specific command-line structures and validation routines:
 [Runner and model resolution](../agents.md#runner-and-model-resolution)) and sends **one minimal real prompt** ("Reply
 with the single word OK.") through that runner inside its normal container. The container gets the same session mounts,
 gateway host entries and network isolation as a real run, and the same `HOLON_AGENT_KEY` mapping by the container
-dispatcher. The probe never runs git and writes nothing to the repository or the ledgers.
+dispatcher. Credentials reach the probe container the same way as a real run's, through a `0600` `--env-file` (see
+[How the GitHub token reaches the container](#how-the-github-token-reaches-the-container)). The probe never runs git and
+writes nothing to the repository or the ledgers.
 
 ```bash
 holon doctor                                   # resolved runner and model

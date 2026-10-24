@@ -14,14 +14,30 @@ import logging
 import os
 import re
 import subprocess
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.git import run_git
+from sandbox_executor.knowledge.records import CredentialRedactor
+from sandbox_executor.ledger import generate_action_id, try_append_action_record
 
 logger = logging.getLogger(__name__)
+
+LEDGER_EXECUTIONS_REL = "holon-knowledge/ledger/executions.jsonl"
+
+
+class CalibrationCommitError(RuntimeError):
+    """Raised when git rejects the calibration report commit (for example a hook or signing failure).
+
+    The message is credential-redacted. Callers treat it as a calibration failure: the report
+    and the ACT-CAL row stay uncommitted and the ``/calibrated`` branch is neither pushed nor
+    fast-forwarded.
+    """
+
 
 METADATA_PATH_PREFIXES = (
     "holon-knowledge/",
@@ -1256,11 +1272,93 @@ def generate_calibration(
     )
 
 
+def calibration_commit_env() -> dict[str, str]:
+    """Return the git environment used for Stage 5 calibration commits.
+
+    Defaults the author and committer identity to the Holon Calibrate Agent unless the
+    caller's environment already sets them.
+    """
+    commit_env = os.environ.copy()
+    commit_env.setdefault("GIT_AUTHOR_NAME", "Holon Calibrate Agent")
+    commit_env.setdefault("GIT_AUTHOR_EMAIL", "calibrate-agent@holon-agentic-coder.com")
+    commit_env.setdefault("GIT_COMMITTER_NAME", "Holon Calibrate Agent")
+    commit_env.setdefault("GIT_COMMITTER_EMAIL", "calibrate-agent@holon-agentic-coder.com")
+    return commit_env
+
+
+def record_calibration_action(
+    report: CalibrationReport | dict[str, Any],
+    repo_dir: str,
+    report_rel: str,
+    *,
+    outcome: str = "success",
+    error_context: str | None = None,
+    fallback_report_written: bool = True,
+    log_fn: Callable[[str], None] | None = None,
+) -> dict[str, Any] | None:
+    """Append the Stage 5 ACT-CAL action record to the target repository's executions.jsonl.
+
+    The record is credential-redacted (including ``error_context``), validated and written
+    verbatim under LedgerLock. It carries the plan and
+    execution branches, the predicted and actual metrics, the calibration deltas and the
+    calibration report path. A failed append is logged at WARNING level (and mirrored to
+    ``log_fn``) and never raises.
+
+    Args:
+        report: Calibration report, or a dictionary in ``CalibrationReport.to_dict()`` form.
+        repo_dir: Target repository directory.
+        report_rel: Repository-relative path of the calibration report.
+        outcome: Action outcome, ``"success"`` or ``"failure"``.
+        error_context: Optional failure detail.
+        fallback_report_written: For a failure row, whether Stage 5 wrote a fallback report
+            (True) or kept an existing report that, with the ledger rows, stays uncommitted
+            (False). Selects the ``action`` wording; ignored for success rows.
+        log_fn: Optional operator-facing log callable (for example ``FlowContext.log``).
+
+    Returns:
+        The written record, or None if the append failed.
+    """
+    data = report.to_dict() if isinstance(report, CalibrationReport) else dict(report)
+    plan_id = str(data.get("plan_id") or "P-unknown")
+    execution_branch = data.get("execution_branch")
+    if outcome == "success":
+        action = f"Calibration report generated for plan {plan_id}"
+    elif fallback_report_written:
+        action = f"Calibration failed for plan {plan_id}; fallback report written"
+    else:
+        action = f"Calibration failed for plan {plan_id}; existing report and ledger rows left uncommitted"
+    record: dict[str, Any] = {
+        "action_id": generate_action_id("ACT-CAL"),
+        "execution_id": f"CAL-{plan_id}-{int(time.time())}",
+        "action": action,
+        "category": "doc",
+        "target": data.get("calibrated_branch") or execution_branch or plan_id,
+        "outcome": outcome,
+        "entry_type": "action",
+        "action_origin": "calibration",
+        "labels": ["calibration", "stage-5", plan_id],
+        "error_context": error_context,
+        "plan_branch": data.get("plan_branch"),
+        "execution_branch": execution_branch,
+        "evaluated_commit_sha": data.get("evaluated_commit_sha"),
+        "predicted_metrics": data.get("predicted"),
+        "actual_metrics": data.get("actual"),
+        "calibration_deltas": data.get("deltas"),
+        "calibration_report_path": report_rel,
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    ledger_path = os.path.join(repo_dir, LEDGER_EXECUTIONS_REL)
+    return try_append_action_record(
+        ledger_path, record, label="Stage 5 calibration action ACT-CAL", preserve_shape=True, log_fn=log_fn
+    )
+
+
 def run_calibrate(
     execution_branch: str,
     repo_dir: str = ".",
     json_output: bool = False,
     skip_commit: bool = False,
+    log_fn: Callable[[str], None] | None = None,
 ) -> CalibrationReport:
     """Execute holon calibrate workflow: checkout calibrated branch, generate & commit report.
 
@@ -1269,12 +1367,18 @@ def run_calibrate(
         repo_dir: Path to the target repository directory.
         json_output: Whether to print report JSON to stdout.
         skip_commit: If True, writes report to working tree without creating a branch or commit.
+        log_fn: Optional operator-facing log callable (for example ``FlowContext.log``) that
+            receives a failed ACT-CAL ledger append warning. When None, the warning goes to the
+            module logger only.
 
     Returns:
         CalibrationReport: Generated calibration report.
 
     Raises:
         RuntimeError: If git branch checkout or diff operations fail.
+        CalibrationCommitError: If git rejects the calibration report commit (hook, signing or
+            other non-"nothing to commit" failure). The report and the ACT-CAL row are left
+            uncommitted in the working tree.
     """
     report = generate_calibration(execution_branch, repo_dir=repo_dir)
     report.committed = not skip_commit
@@ -1359,31 +1463,39 @@ def run_calibrate(
     except Exception as e:
         logger.warning("Failed to converge prettier on %s: %s", report_rel, e)
 
-    # 3. Commit on calibrated branch
+    # 3. Record the Stage 5 ACT-CAL action and commit it with the report on the calibrated branch
+    commit_paths = [report_rel]
+    if skip_commit:
+        logger.info("Skipping ACT-CAL ledger record for %s: calibration is not being committed", report.plan_id)
+    elif record_calibration_action(report, repo_dir, report_rel, log_fn=log_fn) is not None:
+        commit_paths.append(LEDGER_EXECUTIONS_REL)
+
     if not skip_commit:
         try:
-            run_git(["add", report_rel], cwd=repo_dir, check=False)
-            commit_env = os.environ.copy()
-            commit_env.setdefault("GIT_AUTHOR_NAME", "Holon Calibrate Agent")
-            commit_env.setdefault("GIT_AUTHOR_EMAIL", "calibrate-agent@holon-agentic-coder.com")
-            commit_env.setdefault("GIT_COMMITTER_NAME", "Holon Calibrate Agent")
-            commit_env.setdefault("GIT_COMMITTER_EMAIL", "calibrate-agent@holon-agentic-coder.com")
+            run_git(["add", *commit_paths], cwd=repo_dir, check=False)
+            commit_env = calibration_commit_env()
 
             commit_msg = f"chore(calibration): add calibration report for {report.plan_id}"
             commit_res = run_git(
-                ["commit", "-m", commit_msg, "--", report_rel],
+                ["commit", "-m", commit_msg, "--", *commit_paths],
                 cwd=repo_dir,
                 env=commit_env,
                 check=False,
             )
-            if commit_res.returncode != 0:
-                combined_output = (commit_res.stdout + " " + commit_res.stderr).lower()
-                if "nothing to commit" in combined_output:
-                    logger.info("Nothing to commit for calibration report on %s", report.calibrated_branch)
-                else:
-                    logger.warning("Git commit output: %s", commit_res.stderr.strip())
         except Exception as e:
-            logger.debug("Git commit error: %s", e)
+            detail = CredentialRedactor.redact_text(str(e))
+            logger.warning("Git commit of calibration report %s failed: %s", report_rel, detail)
+            raise CalibrationCommitError(f"Git commit of calibration report {report_rel} failed: {detail}") from e
+        if commit_res.returncode != 0:
+            combined_output = (commit_res.stdout + " " + commit_res.stderr).lower()
+            if "nothing to commit" in combined_output:
+                logger.info("Nothing to commit for calibration report on %s", report.calibrated_branch)
+            else:
+                detail = CredentialRedactor.redact_text(commit_res.stderr.strip() or commit_res.stdout.strip())
+                logger.warning("Git commit of calibration report %s failed: %s", report_rel, detail)
+                raise CalibrationCommitError(
+                    f"Git commit of calibration report {report_rel} failed (exit {commit_res.returncode}): {detail}"
+                )
 
     if json_output:
         print(json.dumps(report.to_dict(), indent=2))

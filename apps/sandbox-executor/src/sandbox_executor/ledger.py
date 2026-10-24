@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal, TextIO
@@ -312,18 +312,61 @@ def atomic_ledger_append(
         yield f
 
 
-def append_action_record(ledger_path: str, record: ActionRecord | dict[str, Any]) -> dict[str, Any]:
+def _prepare_shape_preserving_action(record: dict[str, Any]) -> dict[str, Any]:
+    """Validate an action dictionary while keeping its key order and any extra keys.
+
+    Only the minimum normalisation is applied: ``entry_type`` is forced to ``"action"``
+    (keeping its existing position when present), and ``action_id`` / ``action_origin``
+    are filled in only when absent. Unknown keys are retained verbatim.
+
+    Args:
+        record: Action record dictionary to validate.
+
+    Returns:
+        A shallow copy of the record, ready to serialise.
+
+    Raises:
+        ValueError: If the record is missing required fields or carries invalid enum values.
+    """
+    copy_rec = dict(record)
+    copy_rec["entry_type"] = "action"
+    if not copy_rec.get("action_id"):
+        copy_rec["action_id"] = generate_action_id()
+    if "action_origin" not in copy_rec:
+        copy_rec["action_origin"] = "initial_implementation"
+    try:
+        ActionRecord.from_dict(copy_rec).validate()
+    except TypeError as exc:
+        raise ValueError(f"Malformed action record: {exc}") from exc
+    return copy_rec
+
+
+def append_action_record(
+    ledger_path: str,
+    record: ActionRecord | dict[str, Any],
+    *,
+    preserve_shape: bool = False,
+) -> dict[str, Any]:
     """Append a discrete action record to the execution ledger under LedgerLock.
 
     Args:
         ledger_path: Path to the executions.jsonl ledger file.
         record: ActionRecord or dictionary with action fields.
+        preserve_shape: When True and ``record`` is a dictionary, validate it against
+            ``ActionRecord`` but serialise it verbatim, keeping key order and extra keys
+            (for example calibration metrics). Defaults to False, which normalises the
+            record through ``ActionRecord.to_dict()``.
 
     Returns:
         The written action record dictionary.
+
+    Raises:
+        ValueError: If the record fails validation. Nothing is written in that case.
     """
     if isinstance(record, ActionRecord):
         data = record.to_dict()
+    elif preserve_shape:
+        data = _prepare_shape_preserving_action(record)
     else:
         copy_rec = dict(record)
         if "action_id" not in copy_rec:
@@ -336,10 +379,109 @@ def append_action_record(ledger_path: str, record: ActionRecord | dict[str, Any]
             copy_rec["labels"] = [lbl.strip() for lbl in copy_rec["labels"].split(",") if lbl.strip()]
         data = ActionRecord.from_dict(copy_rec).to_dict()
 
+    line = json.dumps(data) + "\n"
     with LedgerLock(ledger_path) as f:
-        f.write(json.dumps(data) + "\n")
+        f.write(line)
 
     return data
+
+
+def _report_ledger_failure(
+    ledger_path: str,
+    label: str,
+    record_id: str,
+    exc: BaseException,
+    log_fn: Callable[[str], None] | None,
+) -> None:
+    """Log a ledger append failure at WARNING level and mirror it to an operator log.
+
+    The exception text is passed through the canonical credential redactor first, so a
+    secret carried in the failure detail never reaches the log.
+    """
+    from sandbox_executor.knowledge.records import CredentialRedactor
+
+    detail = CredentialRedactor.redact_text(str(exc))
+    message = f"Ledger append failed ({label}, record {record_id}) for {ledger_path}: {type(exc).__name__}: {detail}"
+    logger.warning(message)
+    if log_fn is not None:
+        with contextlib.suppress(Exception):
+            log_fn(f"Warning: {message}")
+
+
+def try_append_action_record(
+    ledger_path: str,
+    record: ActionRecord | dict[str, Any],
+    *,
+    label: str,
+    preserve_shape: bool = True,
+    log_fn: Callable[[str], None] | None = None,
+) -> dict[str, Any] | None:
+    """Append an action record under LedgerLock, reporting rather than raising on failure.
+
+    Every string in the record (including ``error_context``) is passed through the canonical
+    ``CredentialRedactor`` before validation and serialisation, so credentials carried in
+    failure detail never reach ``executions.jsonl``. Key order is preserved.
+
+    A failed append is never silent: it is logged at WARNING level with the label, record
+    identifier, ledger path and exception detail, and mirrored to ``log_fn`` when supplied.
+    No alternative ledger file is ever written.
+
+    Args:
+        ledger_path: Path to the executions.jsonl ledger file.
+        record: ActionRecord or dictionary with action fields.
+        label: Short description of the writer, used in the warning message.
+        preserve_shape: Passed through to ``append_action_record``. Defaults to True so
+            existing record shapes stay byte-compatible.
+        log_fn: Optional callable (for example ``FlowContext.log``) that receives the warning.
+
+    Returns:
+        The written record dictionary, or None if the append failed.
+    """
+    # Imported lazily: knowledge.records imports this module at load time.
+    from sandbox_executor.knowledge.records import CredentialRedactor
+
+    record_id = record.action_id if isinstance(record, ActionRecord) else str(record.get("action_id") or "?")
+    try:
+        if isinstance(record, ActionRecord):
+            record = ActionRecord.from_dict(CredentialRedactor.redact_structure(record.to_dict()))
+        else:
+            record = CredentialRedactor.redact_structure(dict(record))
+        return append_action_record(ledger_path, record, preserve_shape=preserve_shape)
+    except Exception as exc:
+        _report_ledger_failure(ledger_path, label, record_id, exc, log_fn)
+        return None
+
+
+def try_append_ledger_line(
+    ledger_path: str,
+    record: dict[str, Any],
+    *,
+    label: str,
+    log_fn: Callable[[str], None] | None = None,
+) -> bool:
+    """Append an arbitrary JSON ledger row verbatim under LedgerLock, reporting failures.
+
+    Intended for summary, intent and plan rows whose shape must stay unchanged. Follows the
+    same fail-loud contract as ``try_append_action_record``.
+
+    Args:
+        ledger_path: Path to the JSONL ledger file.
+        record: Row to serialise with ``json.dumps``.
+        label: Short description of the writer, used in the warning message.
+        log_fn: Optional callable (for example ``FlowContext.log``) that receives the warning.
+
+    Returns:
+        True if the row was written, False otherwise.
+    """
+    try:
+        line = json.dumps(record) + "\n"
+        with atomic_ledger_append(ledger_path) as f:
+            f.write(line)
+        return True
+    except Exception as exc:
+        record_id = str(record.get("action_id") or record.get("execution_id") or record.get("plan_id") or "?")
+        _report_ledger_failure(ledger_path, label, record_id, exc, log_fn)
+        return False
 
 
 def append_summary_record(ledger_path: str, record: SummaryRecord | dict[str, Any]) -> dict[str, Any]:

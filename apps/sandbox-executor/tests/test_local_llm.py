@@ -895,6 +895,7 @@ class TestGatewayHealth(unittest.TestCase):
 
     def test_redact_url_drops_userinfo_with_unencoded_delimiters(self):
         # C9-N1: urlsplit ends the authority at the first "/", "?" or "#", so such a password must not leak.
+        # C11-N1: the host after such a segment cannot be trusted, so it is withheld rather than shown.
         sample = "pw-" + "x" * 8
         head = "hd-" + "q" * 5
         for sep in ("/", "?", "#"):
@@ -902,11 +903,14 @@ class TestGatewayHealth(unittest.TestCase):
                 url = f"{prefix}someone:{head}{sep}{sample}@gpu.example.com:8000/v1?key={sample}#{sample}"
                 with self.subTest(sep=sep, prefix=prefix):
                     redacted = local_llm.redact_url(url)
-                    self.assertEqual(redacted, f"{prefix}***@gpu.example.com:8000/v1")
-                    for fragment in (sample, head, "someone"):
+                    self.assertEqual(redacted, f"{prefix}***")
+                    for fragment in (sample, head, "someone", "gpu.example.com"):
                         self.assertNotIn(fragment, redacted)
         bracketed = f"http://someone:{head}/{sample}@[::1]:8081/v1"
-        self.assertEqual(local_llm.redact_url(bracketed), "http://***@[::1]:8081/v1")
+        self.assertEqual(local_llm.redact_url(bracketed), "http://***")
+        # The same password without an unencoded delimiter still shows the real host.
+        plain = f"http://someone:{head}{sample}@[::1]:8081/v1"
+        self.assertEqual(local_llm.redact_url(plain), "http://***@[::1]:8081/v1")
 
     def test_redact_url_keeps_credential_free_urls_readable(self):
         for url in (
@@ -921,10 +925,20 @@ class TestGatewayHealth(unittest.TestCase):
         # A URL without any "@" is byte-identical (even its scheme case); only a query or fragment is dropped.
         self.assertEqual(local_llm.redact_url("HTTP://Host.Example:80/a/b"), "HTTP://Host.Example:80/a/b")
         self.assertEqual(local_llm.redact_url("http://localhost:8000/v1?key=k#f"), "http://localhost:8000/v1")
-        # Any "@" fails closed: an "@" in the path or query of a credential-free URL is over-redacted, but the marker
-        # shows the authority was rewritten instead of silently printing a different host.
-        self.assertEqual(local_llm.redact_url("http://localhost:8000/v1/@scope/models"), "http://***@scope/models")
-        self.assertEqual(local_llm.redact_url("http://localhost:8000/v1?owner=a@"), "http://***@")
+        # C11-N1: an "@" in the path, query or fragment of a credential-free URL is over-redacted, and the text after
+        # it is never presented as the host: the host is withheld instead of showing a believable wrong one.
+        other = "other" + ".example.net"
+        for url in (
+            "http://localhost:8000/v1/@scope/models",
+            "http://localhost:8000/v1?owner=a@",
+            f"http://gpu.lan:8000/v1?owner=ops@{other}",
+            f"http://gpu.lan:8000/v1#ops@{other}",
+            f"http://gpu.lan:8000/v1/ops@{other}/x",
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(local_llm.redact_url(url), "http://***")
+        self.assertEqual(local_llm.redact_url(f"//gpu.lan/v1?owner=ops@{other}"), "//***")
+        self.assertEqual(local_llm.redact_url(f"gpu.lan:8000/v1?owner=ops@{other}"), "***")
 
     def test_redact_url_never_leaks_userinfo_over_probe_matrix(self):
         # C10-N1: the strip up to the last "@" is unconditional, so no host shape can gate it. Built at runtime.
@@ -949,7 +963,9 @@ class TestGatewayHealth(unittest.TestCase):
                         url = f"{prefix}{userinfo}@{host}?key={sample}#{sample}"
                         with self.subTest(url=url):
                             redacted = local_llm.redact_url(url)
-                            self.assertEqual(redacted, f"{prefix}***@{host}")
+                            ambiguous = any(c in userinfo for c in "/?#")
+                            expected = f"{prefix}***" if ambiguous else f"{prefix}***@{host}"
+                            self.assertEqual(redacted, expected)
                             for fragment in (head, sample, name):
                                 self.assertNotIn(fragment, redacted)
 

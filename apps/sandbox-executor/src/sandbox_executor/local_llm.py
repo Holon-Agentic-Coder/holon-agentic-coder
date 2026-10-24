@@ -111,26 +111,36 @@ def _is_local_host(host: str) -> bool:
 
 # "scheme://" or "//" kept in front of the userinfo marker; everything else before the last "@" is removed.
 _USERINFO_MARKER = "***@"
+_WITHHELD_HOST = "***"
 _AUTHORITY_PREFIX = re.compile(r"^(?:[A-Za-z][A-Za-z0-9+.-]*:)?//")
 
 
 def redact_url(url: str) -> str:
-    """``url`` safe to print or log: userinfo (``user:token@``) becomes ``***@``; query and fragment are dropped.
+    """``url`` safe to print or log: secrets are never shown, and a URL whose host is ambiguous shows no host.
 
     Base URLs come from operator configuration and may embed credentials, so every message or log line that echoes
-    one goes through here. Scheme, host, port and path are kept for diagnosis; a URL without any ``@`` is returned
-    byte-for-byte up to its query or fragment.
+    one goes through here. Display contract:
 
-    A token may contain an unencoded ``/``, ``?``, ``#`` or ``@``, and the host after it may be malformed (bad port,
-    non-ASCII name, unclosed ``[``), so no parser decides where the credential ends. Everything between ``scheme://``
-    (or the start of the string) and the **last** ``@`` is unconditionally replaced by ``***@`` before anything else
-    is looked at; only the remainder is trimmed for display. This fails closed: an ``@`` in a credential-free path or
-    query is over-redacted (``http://***@scope/models``), and the marker shows that the authority was rewritten.
+    - A URL without any ``@`` is returned byte-for-byte up to its query or fragment (both dropped; they may carry
+      ``?key=``).
+    - Otherwise everything between ``scheme://`` (or the start of the string) and the **last** ``@`` is unconditionally
+      removed before anything else is looked at. No parser decides where a credential ends: a token may contain an
+      unencoded ``/``, ``?``, ``#`` or ``@``, and the host after it may be malformed (bad port, non-ASCII name,
+      unclosed ``[``).
+    - When the removed segment holds no ``/``, ``?`` or ``#``, it was userinfo and the rest is the real authority:
+      ``scheme://***@host[:port]/path``.
+    - When it does hold one of them, the text after the last ``@`` may be part of a path, query or fragment
+      (``http://gpu.lan:8000/v1?owner=ops@other.example.net``) and cannot be trusted as the host, so no host is
+      shown: ``scheme://***`` (``//***`` or ``***`` without a scheme). This fails closed in both directions: nothing
+      before the last ``@`` leaks, and no believable wrong host is printed.
     """
     if "@" in url:
         prefix = _AUTHORITY_PREFIX.match(url)
         lead = prefix.group(0) if prefix else ""
-        url = lead + _USERINFO_MARKER + url.rpartition("@")[2]
+        stripped, _, rest = url[len(lead) :].rpartition("@")
+        if re.search(r"[/?#]", stripped):
+            return lead + _WITHHELD_HOST
+        url = lead + _USERINFO_MARKER + rest
     # The remainder holds no "@"; dropping a query or fragment (they may carry ``?key=``) needs no URL parsing.
     return re.split(r"[?#]", url, maxsplit=1)[0]
 

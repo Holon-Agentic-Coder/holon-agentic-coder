@@ -1006,7 +1006,8 @@ class TestDoctor(unittest.TestCase):
         hosts = ("gpu.example.com:8000/v1", "gpu.example.com:abc/v1", "h\u00f4st.example/v1")
         for sep, host in ((sep, host) for sep in ("", "/", "?", "#", "@") for host in hosts):
             secret = f"{head}{sep}{sample}" if sep else sample
-            shown = f"http://***@{host}"
+            # C11-N1: a "/", "?" or "#" before the last "@" makes the host untrustworthy, so it is withheld.
+            shown = "http://***" if sep in ("/", "?", "#") else f"http://***@{host}"
             env = {
                 "HOLON_LOCAL_LLM": "1",
                 "HOLON_LOCAL_BASE_URL": f"http://{name}:{secret}@{host}?key={sample}",
@@ -1016,6 +1017,8 @@ class TestDoctor(unittest.TestCase):
                 code, output = self.run_doctor(env, _fetcher(HEALTH_OFF))
                 self.assertEqual(code, 1)
                 self.assertIn(shown, output)
+                if sep in ("/", "?", "#"):
+                    self.assertNotIn(f"***@{host}", output)
                 for fragment in (sample, head, name):
                     self.assertNotIn(fragment, output)
             for as_json in (False, True):

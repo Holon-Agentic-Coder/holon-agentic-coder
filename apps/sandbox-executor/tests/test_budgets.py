@@ -10,6 +10,7 @@ from sandbox_executor.budgets import (
     StageTimer,
     active_stage_timer,
     current_stage_timer,
+    format_minutes,
     format_stage_summary,
     load_budgets,
     stage_budget_handdown_env,
@@ -85,6 +86,12 @@ class TestBudgets(unittest.TestCase):
     def test_summary_format_matches_the_bean_example(self):
         self.assertEqual(format_stage_summary("plan", "ok", 246, 2100), "plan: ok (4.1 min / 35 min)")
         self.assertEqual(format_stage_summary("review", "failed", 0, 450), "review: failed (0.0 min / 7.5 min)")
+
+    def test_format_minutes_never_rounds_a_sub_minute_budget_to_zero(self):
+        # C7-N2: a 20 s ceiling must not print as "0 min".
+        self.assertEqual(format_minutes(2100), "35")
+        self.assertEqual(format_minutes(450), "7.5")
+        self.assertEqual(format_minutes(20), "0.3")
 
     def test_stage_timer_arithmetic(self):
         clock = FakeClock()

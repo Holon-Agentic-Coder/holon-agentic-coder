@@ -200,7 +200,12 @@ class StageTimer:
         return format_stage_summary(self.stage, status, self.elapsed(), self.budget_seconds)
 
 
-def _format_minutes(seconds: float) -> str:
+def format_minutes(seconds: float) -> str:
+    """Format a duration in seconds as minutes: whole minutes as integers, otherwise one decimal.
+
+    For example ``2100`` -> ``"35"``, ``90`` -> ``"1.5"`` and ``20`` -> ``"0.3"``, so a sub-minute budget never prints
+    as ``0``.
+    """
     minutes = seconds / 60.0
     if abs(minutes - round(minutes)) < 1e-9:
         return str(round(minutes))
@@ -212,7 +217,7 @@ def format_stage_summary(stage: str, status: str, elapsed_s: float, budget_s: fl
 
     Elapsed minutes always carry one decimal; whole-minute budgets are printed as integers.
     """
-    return f"{stage}: {status} ({elapsed_s / 60.0:.1f} min / {_format_minutes(budget_s)} min)"
+    return f"{stage}: {status} ({elapsed_s / 60.0:.1f} min / {format_minutes(budget_s)} min)"
 
 
 class BudgetBreach(Exception):

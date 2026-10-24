@@ -716,6 +716,15 @@ Appended when a plan execution begins, completes, fails, or decomposes into sub-
 - `agent_output_truncated`: Boolean flag indicating if captured agent logs exceeded byte budget and were truncated.
 - `agent_output_bytes`: Byte length of captured (and potentially truncated/sanitised) agent output payload.
 - `ledger_revision`: Integer revision number (defaults to `1` on creation).
+- `execution_notes`: Relative path of the execution notes artefact the agent was asked to write
+  (`executions/{execution_id}.md`). Execution notes are flow metadata, so calibration and the review stage never count
+  them as changed code.
+- `execution_notes_valid`: Boolean; `true` when the notes exist and are usable. Validation is report-only: `false` never
+  discards the code changes, and when the agent wrote no notes only the output size (`agent_output_bytes`) is recorded.
+- `elapsed_seconds`: Wall-clock seconds the execute stage had used when the summary was written (one decimal).
+- `budget_seconds`: The execute stage's wall-clock ceiling in force for the executor, in seconds (the handed-down
+  remaining stage time when the host set `HOLON_STAGE_BUDGET_SECONDS`; Bean 0139, see
+  [Turn and Stage Budgets](budgets.md)).
 - `sub_intents`: List of sub-intents generated upon decomposition (only for `decomposed` state).
 - `created_at`: Creation timestamp.
 
@@ -760,8 +769,11 @@ exactly one action is appended (Bean 0139, see [Turn and Stage Budgets](budgets.
 - `budget_seconds`: Limit of that budget, in seconds.
 - `elapsed_seconds`: Seconds elapsed against that budget when it fired.
 
-These four fields are present only on budget actions; other action records keep their existing shape. Example (standard
-fields such as `action_origin` and `created_at` omitted):
+These four fields are present only on budget actions; other action records keep their existing shape. On an `ACT-BUDGET`
+action `elapsed_seconds` and `budget_seconds` describe the budget that **fired** (`budget_name`, which may be a turn or
+stall budget), whereas the same-named fields on an execution summary row always describe the execute **stage** budget
+and the time used against it, whether or not anything fired. Example (standard fields such as `action_origin` and
+`created_at` omitted):
 
 ```json
 {

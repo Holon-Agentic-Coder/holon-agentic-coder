@@ -1023,6 +1023,9 @@ class TestCalibrationInterleavedActionLedger(unittest.TestCase):
         self.assertTrue(is_metadata_path("plans/P-1792372417-plan.md"))
         self.assertTrue(is_metadata_path("plans/P-1792372417-plan_calibration.md"))
         self.assertTrue(is_metadata_path(".holon/checkpoints/flow.json"))
+        # C7-I1: execution notes are committed by every execution and are flow metadata, not code.
+        self.assertTrue(is_metadata_path("executions/E-1792372417-claude-agent-claude-opus-5-5.md"))
+        self.assertFalse(is_metadata_path("src/executions/runner.py"))
         self.assertFalse(is_metadata_path(".beans/0001-task.md"))
         self.assertFalse(is_metadata_path("todo/scratch.py"))
 
@@ -1044,6 +1047,7 @@ class TestCalibrationInterleavedActionLedger(unittest.TestCase):
         numstat_output = (
             "3\t0\tholon-knowledge/ledger/executions.jsonl\n"
             "60\t0\tplans/P-1234567890-test_calibration.md\n"
+            "42\t0\texecutions/E-meta-test.md\n"
             "20\t2\tapps/sandbox-executor/src/sandbox_executor/calibration.py\n"
         )
 

@@ -33,6 +33,7 @@ from sandbox_executor.budgets import (
     StageTimer,
     active_stage_timer,
     current_stage_timer,
+    format_minutes,
     format_stage_summary,
     load_budgets,
 )
@@ -3313,7 +3314,7 @@ def run_review_stage(context: FlowContext) -> StageResult:
         if loop_breach:
             err_msg = (
                 f"Autonomous review stopped: iteration {loop_breach.get('iteration')} exceeded the review iteration "
-                f"budget of {loop_breach.get('budget_seconds', 0) / 60.0:.0f} min."
+                f"budget of {format_minutes(loop_breach.get('budget_seconds', 0))} min."
             )
         context.log(f"Stage 4 failed: {err_msg}")
         result = StageResult(
@@ -3710,13 +3711,13 @@ class PipelineEngine:
                 }
                 self.context.log(
                     f"WARNING: Stage '{stage.value}' ran {elapsed / 60.0:.1f} min against its "
-                    f"{budget_seconds / 60.0:.0f} min budget; keeping its '{result.status.value}' result."
+                    f"{format_minutes(budget_seconds)} min budget; keeping its '{result.status.value}' result."
                 )
                 return result
             result.status = StageStatus.FAILED
             result.error = (
                 f"Stage '{stage.value}' exceeded its stage budget: {elapsed / 60.0:.1f} min elapsed against "
-                f"{budget_seconds / 60.0:.0f} min."
+                f"{format_minutes(budget_seconds)} min."
             )
             result.payload = {
                 **result.payload,

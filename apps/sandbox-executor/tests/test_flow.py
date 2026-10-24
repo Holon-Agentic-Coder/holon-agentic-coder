@@ -493,6 +493,34 @@ class TestFlowStages:
         assert res.payload["consensus"]["approved"] is True
         assert "holon review approve" in res.payload["human_approval_command"]
 
+    def test_stage4_review_diff_summary_excludes_execution_notes(self, tmp_path):
+        """C7-I1: executions/E-*.md notes are metadata, so they never count as changed code in the review package."""
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            plan_branch="I-100-intent/P-200-plan/_",
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            dry_run=False,
+        )
+        numstat = (
+            "40\t0\texecutions/E-300-exec.md\n"
+            "3\t0\tholon-knowledge/ledger/executions.jsonl\n"
+            "12\t4\tplans/P-200-plan.md\n"
+            "7\t2\tsrc/app.py\n"
+        )
+
+        def fake_git(args, **kwargs):
+            if args[:2] == ["diff", "--numstat"]:
+                return MagicMock(returncode=0, stdout=numstat)
+            return MagicMock(returncode=0, stdout="")
+
+        loop_res = {"consensus": {"approved": True}, "mergeability": {}}
+        with (
+            patch("sandbox_executor.flow.run_git", side_effect=fake_git),
+            patch("sandbox_executor.flow.run_review_loop", return_value=loop_res),
+        ):
+            res = run_review_stage(ctx)
+        assert res.payload["review_package"]["diff_summary"] == {"files_changed": 1, "insertions": 7, "deletions": 2}
+
     def test_stage3_execute_failure(self, tmp_path):
         """Test Stage 3 correctly transitions to FAILED status on test suite failure."""
         ctx = FlowContext(
@@ -2102,6 +2130,18 @@ class TestStageBudgets:
         assert results["intent"].payload["budget_breach"]["budget_name"] == "stage"
         assert "plan" not in results
         assert not (tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl").exists()
+
+    def test_sub_minute_stage_ceiling_is_not_reported_as_zero_minutes(self, tmp_path):
+        # C7-N2: budget messages use the shared minutes formatter, so a 20 s ceiling reads "0.3 min", not "0 min".
+        from sandbox_executor.budgets import Budgets
+
+        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+        ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "fast", "goal": "Fast"}, dry_run=True)
+        engine = PipelineEngine(ctx, budgets=Budgets(stage_override_seconds=20), clock=SteppingClock(step=30))
+        results = engine.run()
+        assert results["intent"].status == StageStatus.FAILED
+        assert results["intent"].error.endswith("against 0.3 min.")
+        assert "against 0 min" not in results["intent"].error
 
     def test_review_overrun_after_consensus_keeps_approval_and_runs_calibration(self, tmp_path):
         # C3-I3: two review iterations each within budget plus PR/posting overhead exceed 2 x 15 min in total; the

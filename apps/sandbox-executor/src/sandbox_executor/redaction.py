@@ -46,9 +46,21 @@ _URL_AUTHORITY_START_RE = re.compile(r"(?<![A-Za-z0-9+.-])(?:([A-Za-z][A-Za-z0-9
 # without a scheme reaches an echo or a docker `-e` item) is recognisable as a URL.
 _URL_VAR_PREFIX_RE = re.compile(r"\b(?:[A-Za-z0-9_]*_)?(?:URL|URI|PROXY)[ \t]*=[ \t]*[\"']?", re.IGNORECASE)
 
-# A URL token ends at whitespace or a quote. Its scan is length-bounded because a match can start at
-# every `//` or `<NAME>_URL=` in the text (an unbounded scan there is quadratic).
-_URL_TOKEN_RE = re.compile(r"[^\s'\"]{0,2048}")
+# A URL token in free text ends at whitespace. Its scan is length-bounded because a match can start
+# at every `//` or `<NAME>_URL=` in the text (an unbounded scan there is quadratic). A quote does not
+# end it: `'` is an RFC 3986 sub-delim and may appear raw in a password. Only a URL opened by a quote
+# (`'http://...'`, `"url": "http://..."`, `NAME_URL="..."`) is cut at the matching closing quote (see
+# `_url_token`), which keeps quoted URLs in compact JSON, Python reprs and shell lines from running on
+# into the next field.
+_URL_TOKEN_RE = re.compile(r"\S{0,2048}")
+
+_QUOTES = "'\""
+
+# `<NAME>=<value>`: one whole argument that is an environment assignment (a docker `-e` item).
+_ASSIGNMENT_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", re.DOTALL)
+
+# A URL- or proxy-valued variable name, the same rule `_URL_VAR_PREFIX_RE` applies in free text.
+_URL_VAR_NAME_RE = re.compile(r"(?:^|_)(?:URL|URI|PROXY)$", re.IGNORECASE)
 
 
 def starts_with_url_authority(value: str) -> bool:
@@ -105,6 +117,71 @@ def url_userinfo_end(rest: str) -> int | None:
     if _first_delimiter(rest, at + 1) == at + 1:
         return None
     return at
+
+
+def _is_credential_userinfo(scheme: str | None, userinfo: str) -> bool:
+    """Decide whether a URL userinfo is a credential: any `http(s)://` userinfo, else a `user:password`."""
+    return (scheme or "").lower() in ("http", "https") or ":" in userinfo
+
+
+def url_value_userinfo(value: str) -> tuple[int, int] | None:
+    """Return the `(start, end)` span of the credential userinfo of a whole URL value, or None.
+
+    Decides on the whole value with the shared last-`@` rule (`url_userinfo_end`), exactly as
+    `cli.strip_url_credentials` does, never with a free-text token scan, so no RFC 3986 sub-delim
+    (`! $ & ' ( ) * + , ; =`) or other character in the password can hide the userinfo. A value that
+    does not start with `scheme://` or `//` is read as a `//` authority, as a proxy URL is. Surrounding
+    whitespace is ignored. The userinfo counts when it is a credential by the echo redactor's rule
+    (all of an `http(s)://` userinfo, a password-bearing one for any other scheme or none, so
+    `ssh://git@host` and a bare `user@host` do not) and holds no whitespace (a userinfo never does).
+
+    Args:
+        value: The value exactly as configured, for example the value of `HOLON_PROXY_URL`.
+
+    Returns:
+        The span in `value` of the userinfo before its closing `@`, or None when it carries none.
+    """
+    stripped = value.strip()
+    lead = len(value) - len(value.lstrip())
+    url = stripped if starts_with_url_authority(stripped) else f"//{stripped}"
+    m = _URL_AUTHORITY_START_RE.match(url)
+    rest = url[m.end() :]
+    at = url_userinfo_end(rest)
+    if at is None:
+        return None
+    userinfo = rest[:at]
+    if any(c.isspace() for c in userinfo) or not _is_credential_userinfo(m.group(1), userinfo):
+        return None
+    start = lead + m.end() - (len(url) - len(stripped))
+    return start, start + at
+
+
+def _mask_assignment_url(arg: str) -> str:
+    """Mask the URL userinfo of a whole `NAME=value` argument, deciding on the whole value.
+
+    Applies to a value that starts with `scheme://` or `//` (any name), or to any value of a URL- or
+    proxy-valued name (`*_URL`, `*_URI`, `*_PROXY`), optionally wrapped in one pair of matching quotes.
+    Other names are left to the free-text scan, so an image reference such as `name:tag@sha256:...`
+    under an unrelated name stays readable.
+    """
+    m = _ASSIGNMENT_RE.fullmatch(arg)
+    if m is None:
+        return arg
+    name, value = m.groups()
+    quote = value[:1] if len(value) > 1 and value[:1] in _QUOTES and value.endswith(value[:1]) else ""
+    inner = value[1:-1] if quote else value
+    if not (starts_with_url_authority(inner.strip()) or _URL_VAR_NAME_RE.search(name)):
+        return arg
+    span = url_value_userinfo(inner)
+    if span is None:
+        return arg
+    return f"{name}={quote}{inner[: span[0]]}{REDACTION_MARKER}{inner[span[1] :]}{quote}"
+
+
+def _url_token(text: str, start: int, opener: str) -> str:
+    """Return the URL token at `start`: up to whitespace, or the closing quote when `opener` is one."""
+    token = _URL_TOKEN_RE.match(text, start).group(0)
+    return token.partition(opener)[0] if opener and opener in _QUOTES else token
 
 
 # A DNS host name (labels of letters, digits and inner hyphens) or a dotted IPv4 literal.
@@ -183,14 +260,15 @@ def _mask_url_userinfo(text: str) -> str:
         for m in start_re.finditer(text):
             if m.start() < pos:
                 continue
-            token = _URL_TOKEN_RE.match(text, m.end()).group(0)
-            if start_re is _URL_VAR_PREFIX_RE and starts_with_url_authority(token):
+            is_authority = start_re is _URL_AUTHORITY_START_RE
+            opener = (text[m.start() - 1] if m.start() else "") if is_authority else m.group(0)[-1:]
+            token = _url_token(text, m.end(), opener)
+            if not is_authority and starts_with_url_authority(token):
                 continue  # An authority: already handled by the first scan.
             at = url_userinfo_end(token)
             if at is None:
                 continue
-            is_http = start_re is _URL_AUTHORITY_START_RE and (m.group(1) or "").lower() in ("http", "https")
-            if not is_http and ":" not in token[:at]:
+            if not _is_credential_userinfo(m.group(1) if is_authority else None, token[:at]):
                 continue
             out.extend((text[pos : m.end()], REDACTION_MARKER))
             pos = m.end() + at
@@ -340,7 +418,7 @@ def redact_args(args: list[str]) -> list[str]:
                 redacted.append(s_arg)
                 mask_next = True  # If trailing (no next arg), the dangling flag is safe — no secret to miss.
         else:
-            masked = redact_text(s_arg)
+            masked = redact_text(_mask_assignment_url(s_arg))
             redacted.append(masked)
 
     return redacted
@@ -417,13 +495,17 @@ def redact_url_value(value: str) -> str:
 def carries_url_password(value: str) -> bool:
     """Decide whether a value holds a URL authority with a password, with or without a scheme.
 
+    Decides on the whole value with `url_value_userinfo` (the shared last-`@` rule, so a quote or any
+    other sub-delim in the password cannot hide it), and also when `redact_url_value` would mask part of
+    it (a URL embedded in a longer value).
+
     Args:
         value: An environment variable value.
 
     Returns:
-        True if `redact_url_value` would mask part of it, so it must stay off process arguments.
+        True if the value carries a URL credential, so it must stay off process arguments.
     """
-    return redact_url_value(value) != value
+    return url_value_userinfo(value) is not None or redact_url_value(value) != value
 
 
 def redact_command_args(argv: Sequence[str]) -> list[str]:

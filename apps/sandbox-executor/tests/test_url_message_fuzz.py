@@ -238,3 +238,105 @@ def test_ambiguous_or_invalid_host_is_withheld(form):
     from sandbox_executor.redaction import trusted_url_authority
 
     assert trusted_url_authority(form.format(c=_letters(), d=_digit_head(4))) is None
+
+
+# Every RFC 3986 gen-delim and sub-delim, plus `"` (not RFC-valid raw, but seen in real values). A
+# password holding any of them, raw, must still be recognised on the whole value: kept off the docker
+# argv of the main run and of the pre-flight probe, routed to the env-file, and masked in the echo.
+# A raw `@` stays an accepted residual only where it is ambiguous with a path `@` (see
+# `redaction.url_userinfo_end`); placed before the host, as here, it is unambiguous.
+URL_DELIMITERS = "!$&'()*+,;=:/?#[]@\""
+DELIMITER_FORMS = {
+    "schemeless": "alice:{c}@proxy.local:8080",
+    "scheme-relative": "//alice:{c}@proxy.local:8080",
+    "http": "http://alice:{c}@proxy.local:8080",
+    "https-token": "https://{c}@proxy.local:3128/v1",
+    "socks5": "socks5://alice:{c}@proxy.local:1080",
+}
+
+
+def _delimiter_cases() -> Iterator[tuple[str, str, list[str]]]:
+    """Yield `(case_id, value, parts)`: each delimiter between two runtime-built password parts."""
+    for f_id, form in DELIMITER_FORMS.items():
+        for delim in URL_DELIMITERS:
+            if "alice:" not in form and delim in "/?#":
+                # A bare user with a raw `/`, `?` or `#` reads as host + path (`https://host/p@x`).
+                continue
+            parts = [_letters(), _letters()]
+            yield f"{f_id}/{delim!r}", form.format(c=delim.join(parts)), parts
+
+
+class _DockerRecorder:
+    def __init__(self) -> None:
+        self.argv: list[str] = []
+        self.env_file: dict[str, str] = {}
+
+    def __call__(self, cmd, *_args, **_kwargs):
+        self.argv = list(cmd)
+        if "--env-file" in cmd:
+            with open(cmd[cmd.index("--env-file") + 1], encoding="utf-8") as fh:
+                self.env_file = dict(line.rstrip("\n").split("=", 1) for line in fh)
+        from unittest.mock import MagicMock
+
+        return MagicMock(returncode=0)
+
+
+def test_every_delimiter_in_a_password_stays_off_argv_and_echo(monkeypatch):
+    """Main-run argv, probe argv and the `Executing:` echo hold no password part; the env-file does."""
+    from sandbox_executor import preflight
+    from sandbox_executor.redaction import redact_command, redact_text
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
+    monkeypatch.setattr(cli, "get_agent_session_mounts", lambda agent_id: [])
+    monkeypatch.setattr(cli, "get_ssh_auth_mounts", lambda: ([], {}))
+    monkeypatch.setattr(cli, "get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {}))
+    failures: list[str] = []
+    for case_id, value, parts in _delimiter_cases():
+        docker = _DockerRecorder()
+        env = {"HOLON_REPO_URL": "https://github.com/myorg/myrepo.git", "HOLON_PROXY_URL": value}
+        stdout = io.StringIO()
+        with (
+            patch.dict(os.environ, env),
+            patch.object(cli.subprocess, "run", docker),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            rc = cli.run_docker_container("executor", "img", [], agent_id="claude-agent")
+            probe_argv, probe_secret = preflight.build_probe_docker_cmd(
+                "claude-agent", "m", "img", "probe", session_mounts=[]
+            )
+        echo = [line for line in stdout.getvalue().splitlines() if line.startswith("Executing:")]
+        texts = {
+            "main-argv": [" ".join(docker.argv)],
+            "probe-argv": [" ".join(probe_argv)],
+            "echo": echo,
+            "env-item-echo": [redact_command(["-e", f"HOLON_PROXY_URL={value}"])],
+            # Free text marks a schemeless value as a URL only by its `<NAME>_URL=` assignment.
+            "free-text": [
+                redact_text(f"proxy {'HOLON_PROXY_URL=' if case_id.startswith('schemeless') else ''}{value} x")
+            ],
+        }
+        leaked = [where for where, text in texts.items() if any(_leaks(text, part) for part in parts)]
+        if rc != 0 or not echo:
+            leaked.append("no-run")
+        if docker.env_file.get("HOLON_PROXY_URL") != value or probe_secret.get("HOLON_PROXY_URL") != value:
+            leaked.append("not-env-file")
+        failures.extend(f"{case_id}:{where}" for where in leaked)
+    assert not failures, f"{len(failures)} delimiter cases failed, e.g. {failures[:40]}"
+
+
+@pytest.mark.parametrize(
+    ("text", "kept"),
+    [
+        ('{"url":"http://proxy.corp:8080","owner":"ops@corp.example"}', '"owner":"ops@corp.example"'),
+        ("('http://proxy.corp:8080', 'ops@corp.example')", "'ops@corp.example'"),
+        ("it's at http://proxy.corp:8080/ and ops@corp.example", "ops@corp.example"),
+    ],
+    ids=["compact-json", "python-repr", "prose-apostrophe"],
+)
+def test_quoted_url_ends_at_its_closing_quote(text, kept):
+    """A quote no longer ends a URL token, except the one that closes a quote-opened URL."""
+    from sandbox_executor.redaction import redact_text
+
+    assert redact_text(text) == text
+    assert kept in redact_text(text)

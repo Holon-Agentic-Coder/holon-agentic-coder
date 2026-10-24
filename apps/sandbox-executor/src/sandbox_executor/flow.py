@@ -2191,15 +2191,45 @@ def _origin_has_branch(repo_dir: str, branch: str) -> bool:
     return res.returncode == 0
 
 
+def _fast_forward_local_branch(context: FlowContext, branch: str, target_sha: str) -> bool:
+    """Create or fast-forward the local branch to target_sha; never move it off unpushed local commits.
+
+    A local branch whose tip is not an ancestor of target_sha (ahead of or diverged from origin) is
+    left untouched and reported. Returns True when the local branch now points at target_sha.
+    """
+    repo_dir = context.repo_dir
+    local = run_git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=repo_dir, check=False)
+    local_sha = local.stdout.strip() if local.returncode == 0 and isinstance(local.stdout, str) else ""
+    if local_sha:
+        ancestor = run_git(["merge-base", "--is-ancestor", local_sha, target_sha], cwd=repo_dir, check=False)
+        if ancestor.returncode != 0:
+            context.log(
+                f"Warning: local branch '{branch}' has diverged from origin; it was not fast-forwarded "
+                f"to {target_sha[:12]}."
+            )
+            return False
+    res = run_git(["branch", "-f", "--no-track", branch, target_sha], cwd=repo_dir, check=False)
+    if res.returncode != 0:
+        context.log(f"Warning: could not fast-forward local branch '{branch}' to {target_sha[:12]}.")
+        return False
+    return True
+
+
 def _track_local_branch(context: FlowContext, branch: str) -> None:
-    """Point the local branch at the fetched origin branch so later stages can name it directly."""
-    res = run_git(
-        ["branch", "-f", "--no-track", branch, f"refs/remotes/origin/{branch}"],
+    """Fast-forward the local branch to the fetched origin branch so later stages can name it directly.
+
+    A local branch carrying commits origin does not have is left alone (with a warning) rather than reset.
+    """
+    remote = run_git(
+        ["rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}^{{commit}}"],
         cwd=context.repo_dir,
         check=False,
     )
-    if res.returncode != 0:
+    remote_sha = remote.stdout.strip() if remote.returncode == 0 and isinstance(remote.stdout, str) else ""
+    if not remote_sha:
         context.log(f"Warning: could not update local branch '{branch}' from origin; using origin/{branch}.")
+        return
+    _fast_forward_local_branch(context, branch, remote_sha)
 
 
 def _list_child_branches(repo_dir: str, parent_prefix: str, marker: str) -> set[str]:
@@ -2354,22 +2384,7 @@ def _sync_local_execution_refs(context: FlowContext, exec_branch: str, pushed_sh
     remote_ref = f"refs/remotes/origin/{exec_branch}"
     if run_git(["update-ref", remote_ref, pushed_sha], cwd=repo_dir, check=False).returncode != 0:
         context.log(f"Warning: could not update '{remote_ref}' to the pushed commit {pushed_sha[:12]}.")
-    local_ref = f"refs/heads/{exec_branch}"
-    local = run_git(["rev-parse", "--verify", "--quiet", local_ref], cwd=repo_dir, check=False)
-    local_sha = local.stdout.strip() if local.returncode == 0 and isinstance(local.stdout, str) else ""
-    if local_sha:
-        ancestor = run_git(["merge-base", "--is-ancestor", local_sha, pushed_sha], cwd=repo_dir, check=False)
-        if ancestor.returncode != 0:
-            context.log(
-                f"Warning: local branch '{exec_branch}' has diverged from origin; it was not fast-forwarded "
-                f"to the pushed commit {pushed_sha[:12]}."
-            )
-            return
-    res = run_git(["branch", "-f", "--no-track", exec_branch, pushed_sha], cwd=repo_dir, check=False)
-    if res.returncode != 0:
-        context.log(
-            f"Warning: could not fast-forward local branch '{exec_branch}' to the pushed commit {pushed_sha[:12]}."
-        )
+    _fast_forward_local_branch(context, exec_branch, pushed_sha)
 
 
 def _execution_parent_plan_branch(execution_branch: str) -> str | None:

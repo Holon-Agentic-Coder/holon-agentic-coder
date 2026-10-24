@@ -2210,6 +2210,64 @@ class TestFlowRoleDispatch:
         rows = _ledger_rows(host, f"origin/{ctx.execution_branch}", "executions.jsonl")
         assert [r["status"] for r in rows] == ["success", "failed"]
 
+    def test_track_local_branch_keeps_unpushed_local_commits(self, flow_repos):
+        host, _origin = flow_repos
+        from sandbox_executor import flow as flow_module
+
+        branch = "I-1-reused/_"
+        _git(host, "branch", branch, "main")
+        _git(host, "push", "-q", "origin", branch)
+        _git(host, "fetch", "-q", "origin")
+        tree = _git(host, "rev-parse", f"{branch}^{{tree}}")
+        local_commit = _git(host, "commit-tree", tree, "-p", branch, "-m", "unpushed local commit")
+        _git(host, "update-ref", f"refs/heads/{branch}", local_commit)
+        ctx = FlowContext(repo_dir=str(host), token_reduce=False)
+
+        flow_module._track_local_branch(ctx, branch)
+
+        assert _git(host, "rev-parse", f"refs/heads/{branch}") == local_commit
+        assert any("has diverged from origin" in line for line in ctx.logs)
+
+    def test_track_local_branch_fast_forwards_a_behind_local_branch(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        from sandbox_executor import flow as flow_module
+
+        branch = "I-1-reused/_"
+        _git(host, "branch", branch, "main")
+        _git(host, "push", "-q", "origin", branch)
+        other = tmp_path / "other-ff"
+        subprocess.run(["git", "clone", "-q", "-b", branch, str(origin), str(other)], check=True, capture_output=True)
+        _configure_identity(other)
+        _git(other, "commit", "-q", "--allow-empty", "-m", "pushed by the container")
+        _git(other, "push", "-q", "origin", branch)
+        _git(host, "fetch", "-q", "origin")
+        ctx = FlowContext(repo_dir=str(host), token_reduce=False)
+
+        flow_module._track_local_branch(ctx, branch)
+
+        assert _git(host, "rev-parse", f"refs/heads/{branch}") == _git(host, "rev-parse", f"origin/{branch}")
+        assert not any("Warning" in line for line in ctx.logs)
+
+    def test_flow_auto_detects_token_reduction_but_manual_commands_require_opt_in(self, monkeypatch):
+        """Documented limit of the equivalence guarantee: only 'holon flow' auto-detects holon-coherence."""
+        from sandbox_executor import flow as flow_module
+
+        monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
+        monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
+        with patch("sandbox_executor.cli.detect_holon_coherence", return_value=True):
+            dispatcher = MagicMock(return_value=0)
+            ctx = FlowContext(repo_dir=".", dispatcher=dispatcher)
+            flow_module._dispatch_role(ctx, "planner", ["I-1-x/_"])
+            assert dispatcher.call_args.kwargs["token_reduce"] is True
+
+            with (
+                patch("sandbox_executor.cli.dispatch_role_agent", return_value=0) as mock_dispatch,
+                patch("sys.argv", ["holon", "plan", "I-1-x/_"]),
+                pytest.raises(SystemExit),
+            ):
+                cli_main()
+            assert mock_dispatch.call_args.kwargs["token_reduce"] is False
+
     def test_stage3_agent_failure_status_fails_stage(self, flow_repos, tmp_path):
         host, origin = flow_repos
         # The failed agent still edited a file, so the failure comes from the container's own status.

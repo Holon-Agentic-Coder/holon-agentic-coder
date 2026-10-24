@@ -147,7 +147,7 @@ resume that enters at Stage 5. The conflict probes of Stages 2-5 name the branch
 yet), and the review records the execution branch's tip, freshly fetched from `origin`, as the reviewed commit, never
 the operator's `HEAD`.
 
-The guarantee has three deliberate limits:
+The guarantee has four deliberate limits:
 
 - **No fabricated plans.** If no planner agent produced `plans/P-*.md` on a plan branch under the intent branch, Stage 2
   fails; the flow never writes a plan from a template.
@@ -157,6 +157,14 @@ The guarantee has three deliberate limits:
   updated. The same guard runs inside `holon execute` and before `holon review-loop` opens a PR.
 - **Dispatch needs `origin`.** `--dry-run` validates the payload and names the branches without dispatching anything.
   `--skip-push` is rejected outside `--dry-run`, because the role containers clone from and push to `origin`.
+- **Token reduction is auto-detected.** `holon flow` (like `holon review-loop`) resolves token reduction with
+  `detect_holon_coherence`: unless `HOLON_TOKEN_REDUCE` opts out (`0`, `false`, `no`, `off`), it is enabled by
+  `--token-reduce`, `--mitm-web`, a truthy `HOLON_TOKEN_REDUCE` or `HOLON_PASSIVE_MONITORING`, a reachable proxy port, a
+  local holon-coherence or mitmproxy image, or a `holon-coherence` binary on `PATH`, and the result is passed to the
+  Stage 1-3 containers. `holon intent`, `holon plan` and `holon execute` enable it only on the explicit opt-ins
+  (`--token-reduce`, `--mitm-web`, `HOLON_TOKEN_REDUCE`, `HOLON_PASSIVE_MONITORING`), so on a host where detection
+  succeeds the flow routes the role containers through the proxy and the manual commands do not. To launch identical
+  containers either way, pass `--token-reduce` to the manual commands or set `HOLON_TOKEN_REDUCE=0` for both.
 
 #### Safety Halt & Merge Boundary (Bean 0034)
 

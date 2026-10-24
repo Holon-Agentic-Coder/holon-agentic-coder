@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import subprocess
 import sys
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from sandbox_executor.calibration import (
     ActualMetrics,
+    CalibrationCommitError,
     CalibrationDeltas,
     CalibrationReport,
     EntropyFactors,
@@ -23,6 +29,7 @@ from sandbox_executor.calibration import (
     parse_evaluated_commit_sha,
     parse_predicted_metrics,
     read_git_file,
+    record_calibration_action,
     resolve_commit_sha,
     resolve_git_ref,
     run_calibrate,
@@ -1056,3 +1063,399 @@ class TestCalibrationInterleavedActionLedger(unittest.TestCase):
             self.assertEqual(actual.insertions, 20)
             self.assertEqual(actual.deletions, 2)
             self.assertEqual(meta["ssa_obs"], 0.31)
+
+
+# ---------------------------------------------------------------------------
+# Stage 5 ACT-CAL ledger provenance regression tests (pytest style)
+# ---------------------------------------------------------------------------
+
+_REAL_EXECUTIONS_LEDGER = Path(__file__).resolve().parents[3] / "holon-knowledge" / "ledger" / "executions.jsonl"
+_EXEC_BRANCH = "I-1-cal/P-2/E-3/_"
+_GIT_IDENTITY = {
+    "GIT_AUTHOR_NAME": "Calibration Test",
+    "GIT_AUTHOR_EMAIL": "calibration-test@example.invalid",
+    "GIT_COMMITTER_NAME": "Calibration Test",
+    "GIT_COMMITTER_EMAIL": "calibration-test@example.invalid",
+}
+
+
+def _fingerprint(path: Path) -> tuple[int, str]:
+    if not path.exists():
+        return (-1, "")
+    data = path.read_bytes()
+    return (data.count(b"\n"), hashlib.sha256(data).hexdigest())
+
+
+@pytest.fixture
+def guard_real_ledger():
+    """Fail if a test modifies the repository's own canonical execution ledger."""
+    before = _fingerprint(_REAL_EXECUTIONS_LEDGER)
+    yield
+    assert _fingerprint(_REAL_EXECUTIONS_LEDGER) == before, "Real executions.jsonl was modified"
+
+
+@pytest.fixture
+def calibration_repo(tmp_path, monkeypatch, guard_real_ledger):
+    """Create a throwaway git repository with plan and execution branches."""
+    for key, value in _GIT_IDENTITY.items():
+        monkeypatch.setenv(key, value)
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True, text=True).stdout
+
+    git("init", "-q", "-b", "main")
+    ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
+    ledger.parent.mkdir(parents=True)
+    summary = {
+        "execution_id": "E-3",
+        "plan_branch": "I-1-cal/P-2/_",
+        "agent": "test-agent",
+        "model": "test-model",
+        "status": "success",
+        "entry_type": "summary",
+        "created_at": "2026-01-01T00:00:00.000Z",
+        "duration": 12.0,
+        "exit_code": 0,
+    }
+    ledger.write_text(json.dumps(summary) + "\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-q", "-m", "base")
+    git("checkout", "-q", "-b", "I-1-cal/P-2/_")
+    git("checkout", "-q", "-b", _EXEC_BRANCH)
+    (tmp_path / "feature.py").write_text("print('hello')\n", encoding="utf-8")
+    git("add", "feature.py")
+    git("commit", "-q", "-m", "feature")
+    (tmp_path / "untracked_scratch.txt").write_text("not for commit\n", encoding="utf-8")
+    return tmp_path, git
+
+
+def _cal_rows(ledger_text: str) -> list[dict]:
+    rows = [json.loads(line) for line in ledger_text.splitlines() if line.strip()]
+    return [r for r in rows if str(r.get("action_id", "")).startswith("ACT-CAL-")]
+
+
+def test_run_calibrate_commit_failure_warning_redacts_credentials(calibration_repo, caplog):
+    """A failed calibration commit warns without echoing credentials from the exception text."""
+    repo, _ = calibration_repo
+    caplog.set_level("WARNING", logger="sandbox_executor.calibration")
+    sample_value = "ghp_" + "C" * 36
+    with (
+        patch("sandbox_executor.calibration.converge_prettier"),
+        patch(
+            "sandbox_executor.calibration.calibration_commit_env",
+            side_effect=RuntimeError(f"credential helper {sample_value}"),
+        ),
+        pytest.raises(CalibrationCommitError) as excinfo,
+    ):
+        run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
+
+    messages = [rec.getMessage() for rec in caplog.records]
+    assert any("Git commit of calibration report" in m and "[REDACTED_SECRET]" in m for m in messages)
+    assert all(sample_value not in m for m in messages)
+    assert "[REDACTED_SECRET]" in str(excinfo.value)
+    assert sample_value not in str(excinfo.value)
+
+
+_HOOK_SECRET = "ghp_" + "H" * 36
+
+
+def _install_rejecting_pre_commit_hook(repo: Path, git) -> None:
+    """Install a repository-local pre-commit hook that rejects every commit (C9-N1)."""
+    hooks_dir = repo / ".git" / "test-hooks"
+    hooks_dir.mkdir()
+    hook = hooks_dir / "pre-commit"
+    hook.write_text(f"#!/bin/sh\necho 'pre-commit rejected with {_HOOK_SECRET}' >&2\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    git("config", "core.hooksPath", str(hooks_dir))
+
+
+def test_run_calibrate_rejected_report_commit_raises(calibration_repo, capsys):
+    """A pre-commit hook that rejects the report commit makes run_calibrate fail, redacted (C9-N1)."""
+    repo, git = calibration_repo
+    _install_rejecting_pre_commit_hook(repo, git)
+    ledger_rel = "holon-knowledge/ledger/executions.jsonl"
+    with (
+        patch("sandbox_executor.calibration.converge_prettier"),
+        pytest.raises(CalibrationCommitError) as excinfo,
+    ):
+        run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
+
+    message = str(excinfo.value)
+    assert "plans/P-2_calibration.md" in message
+    assert "pre-commit rejected" in message
+    assert _HOOK_SECRET not in message
+    assert "committed" not in capsys.readouterr().out
+    # Nothing reached git: the report is absent from HEAD and HEAD still carries no ACT-CAL row.
+    head_has_report = subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "-e", "HEAD:plans/P-2_calibration.md"], capture_output=True
+    )
+    assert head_has_report.returncode != 0
+    assert _cal_rows(git("show", f"HEAD:{ledger_rel}")) == []
+    assert git("log", "--format=%s", "-1").strip() == "feature"
+
+
+def test_cli_calibrate_rejected_report_commit_exits_non_zero(calibration_repo, capsys):
+    """`holon calibrate` exits 1 with a redacted error when the report commit is rejected (C9-N1)."""
+    repo, git = calibration_repo
+    _install_rejecting_pre_commit_hook(repo, git)
+    test_args = ["holon", "calibrate", _EXEC_BRANCH, "--repo-dir", str(repo)]
+    with (
+        patch("sandbox_executor.calibration.converge_prettier"),
+        patch.object(sys, "argv", test_args),
+        pytest.raises(SystemExit) as excinfo,
+    ):
+        cli_main()
+
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert "Error during calibration: Git commit of calibration report plans/P-2_calibration.md failed" in captured.err
+    assert _HOOK_SECRET not in captured.err
+    assert "committed" not in captured.out
+
+
+def test_run_calibrate_appends_and_commits_act_cal(calibration_repo):
+    repo, git = calibration_repo
+    with patch("sandbox_executor.calibration.converge_prettier"):
+        report = run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
+
+    ledger_rel = "holon-knowledge/ledger/executions.jsonl"
+    rows = _cal_rows((repo / ledger_rel).read_text(encoding="utf-8"))
+    assert len(rows) == 1
+    row = rows[0]
+    assert list(row.keys()) == [
+        "action_id",
+        "execution_id",
+        "action",
+        "category",
+        "target",
+        "outcome",
+        "entry_type",
+        "action_origin",
+        "labels",
+        "error_context",
+        "plan_branch",
+        "execution_branch",
+        "evaluated_commit_sha",
+        "predicted_metrics",
+        "actual_metrics",
+        "calibration_deltas",
+        "calibration_report_path",
+        "created_at",
+    ]
+    assert row["entry_type"] == "action"
+    assert row["action_origin"] == "calibration"
+    assert row["outcome"] == "success"
+    assert row["action"] == "Calibration report generated for plan P-2"
+    assert row["execution_id"].startswith("CAL-P-2-")
+    assert row["plan_branch"] == "I-1-cal/P-2/_"
+    assert row["execution_branch"] == _EXEC_BRANCH
+    assert row["target"] == report.calibrated_branch
+    assert row["predicted_metrics"] == report.predicted.to_dict()
+    assert row["actual_metrics"] == report.actual.to_dict()
+    assert row["calibration_deltas"] == report.deltas.to_dict()
+    assert row["calibration_report_path"] == "plans/P-2_calibration.md"
+
+    # The ACT-CAL row is committed with the report on the calibrated branch, and nothing else is.
+    assert _cal_rows(git("show", f"HEAD:{ledger_rel}")) == rows
+    committed = sorted(git("show", "--name-only", "--pretty=format:", "HEAD").split())
+    assert committed == [ledger_rel, "plans/P-2_calibration.md"]
+    assert "untracked_scratch.txt" in git("status", "--porcelain")
+    # Exactly one summary row, unchanged: no duplicate summary was written.
+    all_rows = [json.loads(line) for line in git("show", f"HEAD:{ledger_rel}").splitlines() if line.strip()]
+    assert [r for r in all_rows if r.get("entry_type") == "summary"] == [
+        json.loads((repo / ledger_rel).read_text(encoding="utf-8").splitlines()[0])
+    ]
+
+
+def test_run_calibrate_metrics_unaffected_by_act_cal_rows(calibration_repo):
+    repo, _ = calibration_repo
+    with patch("sandbox_executor.calibration.converge_prettier"):
+        first = run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=True)
+        second = run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
+        third = run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=True)
+    assert first.actual.to_dict() == second.actual.to_dict() == third.actual.to_dict()
+    assert first.predicted.to_dict() == third.predicted.to_dict()
+
+
+def test_run_calibrate_skip_commit_appends_nothing(calibration_repo):
+    repo, _ = calibration_repo
+    ledger = repo / "holon-knowledge" / "ledger" / "executions.jsonl"
+    before = ledger.read_bytes()
+    with patch("sandbox_executor.calibration.converge_prettier"):
+        run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=True)
+    assert ledger.read_bytes() == before
+
+
+def test_run_calibrate_ledger_failure_warns_and_still_commits_report(calibration_repo, caplog):
+    repo, git = calibration_repo
+    caplog.set_level("WARNING")
+    with (
+        patch("sandbox_executor.calibration.converge_prettier"),
+        patch("sandbox_executor.ledger.LedgerLock.__enter__", side_effect=PermissionError("ledger denied")),
+    ):
+        run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
+
+    ledger_path = os.path.join(str(repo), "holon-knowledge", "ledger", "executions.jsonl")
+    warnings = [rec.getMessage() for rec in caplog.records if rec.levelname == "WARNING"]
+    assert any("ACT-CAL" in msg and ledger_path in msg and "ledger denied" in msg for msg in warnings)
+    committed = git("show", "--name-only", "--pretty=format:", "HEAD").split()
+    assert committed == ["plans/P-2_calibration.md"]
+
+
+def test_run_calibrate_ledger_failure_reaches_operator_log_fn(calibration_repo):
+    repo, git = calibration_repo
+    logs: list[str] = []
+    with (
+        patch("sandbox_executor.calibration.converge_prettier"),
+        patch("sandbox_executor.ledger.LedgerLock.__enter__", side_effect=PermissionError("ledger denied")),
+    ):
+        run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False, log_fn=logs.append)
+
+    ledger_path = os.path.join(str(repo), "holon-knowledge", "ledger", "executions.jsonl")
+    assert any("ACT-CAL" in msg and ledger_path in msg and "ledger denied" in msg for msg in logs)
+    committed = git("show", "--name-only", "--pretty=format:", "HEAD").split()
+    assert committed == ["plans/P-2_calibration.md"]
+
+
+def test_record_calibration_action_accepts_fallback_dict(tmp_path, guard_real_ledger):
+    logs: list[str] = []
+    row = record_calibration_action(
+        {"plan_id": "P-9", "calibrated_branch": "I-1/P-9/E-1/calibrated", "execution_branch": "I-1/P-9/E-1/_"},
+        str(tmp_path),
+        "plans/P-9_calibration.md",
+        outcome="failure",
+        error_context="Calibration run failed: boom",
+        log_fn=logs.append,
+    )
+    assert row is not None
+    assert row["action_id"].startswith("ACT-CAL-")
+    assert row["outcome"] == "failure"
+    assert row["action"] == "Calibration failed for plan P-9; fallback report written"
+    assert row["predicted_metrics"] is None
+    written = (tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl").read_text(encoding="utf-8")
+    assert json.loads(written) == row
+    assert logs == []
+
+
+def test_record_calibration_action_redacts_error_context(tmp_path, guard_real_ledger):
+    sample_value = "ghp_" + "R" * 36
+    row = record_calibration_action(
+        {"plan_id": "P-9", "calibrated_branch": "I-1/P-9/E-1/calibrated", "execution_branch": "I-1/P-9/E-1/_"},
+        str(tmp_path),
+        "plans/P-9_calibration.md",
+        outcome="failure",
+        error_context=f"Calibration run failed: remote rejected {sample_value}",
+    )
+    assert row is not None
+    assert row["error_context"] == "Calibration run failed: remote rejected [REDACTED_SECRET]"
+    written = (tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl").read_text(encoding="utf-8")
+    assert sample_value not in written
+    assert json.loads(written) == row
+
+
+def _stage5_context(repo: Path, *, dry_run: bool):
+    from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
+
+    ctx = FlowContext(
+        repo_dir=str(repo),
+        execution_branch=_EXEC_BRANCH,
+        plan_branch="I-1-cal/P-2/_",
+        dry_run=dry_run,
+        skip_push=True,
+    )
+    ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
+    return ctx
+
+
+def test_stage5_dry_run_leaves_executions_ledger_unchanged(calibration_repo):
+    """A dry-run Stage 5 appends nothing, including no reconciliation event."""
+    from sandbox_executor.flow import StageStatus, run_calibrate_stage
+
+    repo, _ = calibration_repo
+    ledger = repo / "holon-knowledge" / "ledger" / "executions.jsonl"
+    before = ledger.read_bytes()
+    with patch("sandbox_executor.calibration.converge_prettier"):
+        res = run_calibrate_stage(_stage5_context(repo, dry_run=True))
+    assert res.status == StageStatus.SUCCESS
+    assert ledger.read_bytes() == before
+
+
+def test_stage5_rejected_report_commit_takes_failure_path(calibration_repo):
+    """A rejected report commit leaves every Stage 5 row uncommitted and skips push / ff (C9-N1)."""
+    from sandbox_executor.flow import run_calibrate_stage
+    from sandbox_executor.git import run_git as real_run_git
+
+    repo, git = calibration_repo
+    _install_rejecting_pre_commit_hook(repo, git)
+    ledger_rel = "holon-knowledge/ledger/executions.jsonl"
+    calibrated = "I-1-cal/P-2/E-3/calibrated"
+    exec_head_before = git("rev-parse", _EXEC_BRANCH).strip()
+    ctx = _stage5_context(repo, dry_run=False)
+    ctx.skip_push = False
+    git_calls: list[list[str]] = []
+
+    def recording_run_git(args, *a, **kw):
+        git_calls.append(list(args))
+        return real_run_git(args, *a, **kw)
+
+    with (
+        patch("sandbox_executor.calibration.converge_prettier"),
+        patch("sandbox_executor.flow.converge_prettier"),
+        patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.run_git", side_effect=recording_run_git),
+    ):
+        run_calibrate_stage(ctx)
+
+    # No push, no fast-forward, no reconciliation commit.
+    assert not [c for c in git_calls if c[:1] in (["push"], ["merge"]) or c[:1] == ["commit"]]
+    assert git("rev-parse", _EXEC_BRANCH).strip() == exec_head_before
+    assert git("rev-parse", calibrated).strip() == exec_head_before
+    for ref in (calibrated, _EXEC_BRANCH):
+        assert _cal_rows(git("show", f"{ref}:{ledger_rel}")) == []
+    # The ACT-CAL rows stay in the working tree: the rejected success row, then the failure row.
+    working = (repo / ledger_rel).read_text(encoding="utf-8")
+    assert [r["outcome"] for r in _cal_rows(working)] == ["success", "failure"]
+    failure = _cal_rows(working)[-1]
+    assert "Git commit of calibration report plans/P-2_calibration.md failed" in failure["error_context"]
+    assert failure["action"] == "Calibration failed for plan P-2; existing report and ledger rows left uncommitted"
+    assert _HOOK_SECRET not in working
+    recon = [json.loads(line) for line in working.splitlines() if line.strip()]
+    assert [r for r in recon if r.get("event_type") == "reconciliation"]
+    assert ledger_rel in git("status", "--porcelain")
+    joined = "\n".join(ctx.logs)
+    assert _HOOK_SECRET not in joined
+    assert "left uncommitted" in joined
+    assert "Stage 5 completed with a calibration failure" in joined
+
+
+def test_stage5_commits_reconciliation_row_on_calibrated_branch(calibration_repo):
+    """The Stage 5 reconciliation row is committed on /calibrated and reaches the execution branch."""
+    from sandbox_executor.flow import StageStatus, run_calibrate_stage
+
+    repo, git = calibration_repo
+    ledger_rel = "holon-knowledge/ledger/executions.jsonl"
+    ctx = _stage5_context(repo, dry_run=False)
+    with (
+        patch("sandbox_executor.calibration.converge_prettier"),
+        patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+    ):
+        res = run_calibrate_stage(ctx)
+    assert res.status == StageStatus.SUCCESS
+
+    calibrated = "I-1-cal/P-2/E-3/calibrated"
+    assert ctx.calibrated_branch == calibrated
+    # The ledger has no uncommitted rows left behind.
+    assert ledger_rel not in git("status", "--porcelain")
+    for ref in (calibrated, _EXEC_BRANCH):
+        rows = [json.loads(line) for line in git("show", f"{ref}:{ledger_rel}").splitlines() if line.strip()]
+        recon = [r for r in rows if r.get("event_type") == "reconciliation"]
+        assert len(recon) == 1
+        assert recon[0]["parent_action_id"] == _EXEC_BRANCH
+        assert recon[0]["verdict"] == "success"
+        assert len(_cal_rows(git("show", f"{ref}:{ledger_rel}"))) == 1
+    subjects = git("log", "--format=%s", "-2", calibrated).splitlines()
+    assert subjects == [
+        "chore(calibration): record stage 5 reconciliation",
+        "chore(calibration): add calibration report for P-2",
+    ]
+    assert git("show", "--name-only", "--pretty=format:", calibrated).split() == [ledger_rel]

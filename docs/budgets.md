@@ -49,8 +49,11 @@ change:
 - for executor turns, the newest file modification time in the working tree (scanned at most every 15 s, skipping
   `.git`, `.venv` and `node_modules`), because an executor edits many files besides its notes;
 - _tool progress_: at least 0.5 s of CPU time consumed between two samples (taken every 10 s, so 5 % of one core) by the
-  runner's descendant processes, excluding the runner itself. Descendants are every process below the runner in the
-  parent tree plus anything left in its process group.
+  runner's descendant processes, excluding the runner's own CPU. Descendants are every process below the runner in the
+  parent tree plus anything left in its process group. On Linux each sampled process also carries the CPU of the
+  children it has already reaped (`cutime` and `cstime` in `/proc/<pid>/stat`, for the runner and every descendant), so
+  a tool made of many short processes (a shell loop of quick commands, `make`, pre-commit hooks) counts through its
+  still-running parent. The process table is still read once per sample.
 
 The runners print nothing per response, so a single response is observed through its side effects: each change of the
 artefact (or, for executor turns, of the working tree) closes the current response. A tool call is not an assistant
@@ -92,7 +95,11 @@ degenerate runner still breaches the turn budget. Limits of the signal:
 - a busy tool is bounded only by the stage ceiling, so a tool that never finishes is stopped by the stage budget, not
   the turn budget;
 - descendants are sampled from `/proc` in Linux containers and from `ps -A -o pid=,ppid=,pgid=,time=` on macOS; when
-  neither is available, sampling is skipped and only artefact and tree progress count. No dependency is added.
+  neither is available, sampling is skipped and only artefact and tree progress count. No dependency is added;
+- `ps` on macOS reports no CPU of reaped children, so there a descendant that starts and exits between two 10 s samples
+  is not seen, and a tool made of many sub-second processes may still breach the turn budget;
+- on Linux, when a sampled descendant exits and its parent reaps it, the CPU it had already used is counted once more
+  through the parent, so a finished tool can register progress one extra time; an idle runner is not affected.
 
 Any stdout or stderr output marks the current response as streaming, including a one-off warning a non-streaming runner
 prints at start-up; that response is then held to the 90 s stall window until its first artefact or tree change.

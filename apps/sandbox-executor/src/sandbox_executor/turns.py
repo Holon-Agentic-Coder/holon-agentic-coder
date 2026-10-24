@@ -125,8 +125,9 @@ def _tree_mtime(root: str | None) -> int | None:
     return newest
 
 
-# A process table row: (ppid, pgid, cumulative user+system CPU seconds).
-ProcessTable = dict[int, tuple[int, int, float]]
+# A process table row: (ppid, pgid, own user+system CPU seconds, CPU seconds of its reaped children). The last field
+# comes from ``cutime``+``cstime`` in Linux ``/proc``; ``ps`` cannot report it, so it is 0.0 on macOS.
+ProcessTable = dict[int, tuple[int, int, float, float]]
 ToolSampler = Callable[[int], dict[int, float] | None]
 
 
@@ -154,7 +155,10 @@ def _proc_table(proc_root: str = "/proc") -> ProcessTable | None:
         # The command name (field 2) is parenthesised and may contain spaces or ')'; fields resume after the last ')'.
         fields = stat[stat.rfind(")") + 2 :].split()
         try:
-            table[int(entry)] = (int(fields[1]), int(fields[2]), (int(fields[11]) + int(fields[12])) / ticks)
+            # Fields 14-17 of stat(5): utime, stime, cutime, cstime (CPU of children the process has waited for).
+            own = (int(fields[11]) + int(fields[12])) / ticks
+            reaped = (int(fields[13]) + int(fields[14])) / ticks
+            table[int(entry)] = (int(fields[1]), int(fields[2]), own, reaped)
         except (IndexError, ValueError):
             continue
     return table or None
@@ -179,7 +183,7 @@ def _parse_ps_table(output: str) -> ProcessTable:
         if len(parts) != 4:
             continue
         try:
-            table[int(parts[0])] = (int(parts[1]), int(parts[2]), _parse_cpu_time(parts[3]))
+            table[int(parts[0])] = (int(parts[1]), int(parts[2]), _parse_cpu_time(parts[3]), 0.0)
         except ValueError:
             continue
     return table
@@ -203,7 +207,10 @@ def _ps_table() -> ProcessTable | None:
 
 
 def process_table() -> ProcessTable | None:
-    """Every visible process with its parent, process group and CPU seconds, from ``/proc`` or ``ps``."""
+    """Every visible process with its parent, process group and CPU seconds, from ``/proc`` or ``ps``.
+
+    Only ``/proc`` reports the CPU of reaped children; rows read from ``ps`` carry 0.0 for it.
+    """
     table = _proc_table()
     return table if table is not None else _ps_table()
 
@@ -211,18 +218,22 @@ def process_table() -> ProcessTable | None:
 def descendant_cpu_seconds(
     root_pid: int, table_source: Callable[[], ProcessTable | None] = process_table
 ) -> dict[int, float] | None:
-    """CPU seconds of every process descended from ``root_pid`` or in its process group, excluding ``root_pid``.
+    """CPU seconds of every process descended from ``root_pid`` or in its process group, excluding ``root_pid``'s own.
 
     The runner was started in its own session, so its pid is also its process group id; group members that were
-    re-parented after their parent exited are still included. Returns None when no process table is available.
+    re-parented after their parent exited are still included. Each descendant's value is its own CPU plus that of the
+    children it has reaped, so a tool made of many short processes (a shell loop, ``make``) shows up through its
+    still-running parent. ``root_pid`` itself appears only with the CPU of its reaped children, never its own, and
+    only when that is non-zero. Reaped-children CPU is only reported by ``/proc`` (Linux). Returns None when no
+    process table is available.
     """
     table = table_source()
     if table is None:
         return None
     children: dict[int, list[int]] = {}
-    for pid, (ppid, _pgid, _cpu) in table.items():
+    for pid, (ppid, _pgid, _cpu, _reaped) in table.items():
         children.setdefault(ppid, []).append(pid)
-    members = {root_pid} | {pid for pid, (_ppid, pgid, _cpu) in table.items() if pgid == root_pid}
+    members = {root_pid} | {pid for pid, (_ppid, pgid, _cpu, _reaped) in table.items() if pgid == root_pid}
     stack = list(members)
     while stack:
         for child in children.get(stack.pop(), ()):
@@ -230,7 +241,11 @@ def descendant_cpu_seconds(
                 members.add(child)
                 stack.append(child)
     members.discard(root_pid)
-    return {pid: table[pid][2] for pid in members if pid in table}
+    sample = {pid: table[pid][2] + table[pid][3] for pid in members if pid in table}
+    runner_reaped = table[root_pid][3] if root_pid in table else 0.0
+    if runner_reaped > 0:
+        sample[root_pid] = runner_reaped
+    return sample
 
 
 def tool_cpu_used(previous: Mapping[int, float], current: Mapping[int, float]) -> float:

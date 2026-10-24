@@ -723,14 +723,24 @@ class TestSuperviseAuthoringTurn(unittest.TestCase):
 class TestProcessSampler(unittest.TestCase):
     def test_descendants_include_the_tree_and_the_group_but_not_the_runner(self):
         table = {
-            100: (1, 100, 50.0),  # the runner
-            101: (100, 100, 2.0),  # a tool
-            102: (101, 102, 3.0),  # its child in a new session
-            103: (1, 100, 4.0),  # re-parented, still in the runner's group
-            200: (1, 200, 9.0),  # unrelated
+            100: (1, 100, 50.0, 0.0),  # the runner
+            101: (100, 100, 2.0, 0.0),  # a tool
+            102: (101, 102, 3.0, 0.0),  # its child in a new session
+            103: (1, 100, 4.0, 0.0),  # re-parented, still in the runner's group
+            200: (1, 200, 9.0, 0.0),  # unrelated
         }
         self.assertEqual(turns.descendant_cpu_seconds(100, lambda: table), {101: 2.0, 102: 3.0, 103: 4.0})
         self.assertIsNone(turns.descendant_cpu_seconds(100, lambda: None))
+
+    def test_reaped_children_cpu_counts_but_the_runners_own_cpu_does_not(self):
+        table = {
+            100: (1, 100, 50.0, 7.0),  # the runner: own CPU excluded, its reaped tools' CPU kept
+            101: (100, 100, 0.5, 30.0),  # a shell that reaped many short commands
+            200: (1, 200, 9.0, 9.0),  # unrelated
+        }
+        self.assertEqual(turns.descendant_cpu_seconds(100, lambda: table), {100: 7.0, 101: 30.5})
+        table[100] = (1, 100, 50.0, 0.0)
+        self.assertEqual(turns.descendant_cpu_seconds(100, lambda: table), {101: 30.5})
 
     def test_tool_cpu_used_counts_new_processes_in_full_and_ignores_exits(self):
         self.assertEqual(turns.tool_cpu_used({1: 1.0, 2: 5.0}, {1: 1.5, 3: 0.25}), 0.75)
@@ -742,20 +752,79 @@ class TestProcessSampler(unittest.TestCase):
         self.assertEqual(turns._parse_cpu_time("2-00:00:01"), 2 * 86400 + 1.0)
         self.assertEqual(
             turns._parse_ps_table("  1     0     1 197:36.23\n 42 1 42 0:00.50\nbogus\n"),
-            {1: (0, 1, 197 * 60 + 36.23), 42: (1, 42, 0.5)},
+            {1: (0, 1, 197 * 60 + 36.23, 0.0), 42: (1, 42, 0.5, 0.0)},
         )
 
     def test_proc_table_parses_linux_stat_files(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        stat = "77 (py thon) (x) S 42 77 77 0 -1 0 0 0 0 0 250 50 0 0 20 0 1 0 0 0 0\n"
+        stat = "77 (py thon) (x) S 42 77 77 0 -1 0 0 0 0 0 250 50 120 30 20 0 1 0 0 0 0\n"
         os.makedirs(os.path.join(tmp.name, "77"))
         with open(os.path.join(tmp.name, "77", "stat"), "w") as f:
             f.write(stat)
         os.makedirs(os.path.join(tmp.name, "self"))
         with mock.patch.object(turns.os, "sysconf", return_value=100):
-            self.assertEqual(turns._proc_table(tmp.name), {77: (42, 77, 3.0)})
+            self.assertEqual(turns._proc_table(tmp.name), {77: (42, 77, 3.0, 1.5)})
         self.assertIsNone(turns._proc_table(os.path.join(tmp.name, "missing")))
+
+
+class FakeProcFs:
+    """A fake Linux ``/proc`` (100 ticks per second) whose stat files a test rewrites as fake time passes."""
+
+    def __init__(self, test):
+        self._tmp = tempfile.TemporaryDirectory()
+        test.addCleanup(self._tmp.cleanup)
+        patcher = mock.patch.object(turns.os, "sysconf", return_value=100)
+        patcher.start()
+        test.addCleanup(patcher.stop)
+
+    def write(self, pid, ppid, pgid, own_seconds, reaped_seconds):
+        os.makedirs(os.path.join(self._tmp.name, str(pid)), exist_ok=True)
+        own, reaped = int(own_seconds * 100), int(reaped_seconds * 100)
+        with open(os.path.join(self._tmp.name, str(pid), "stat"), "w") as f:
+            f.write(f"{pid} (sh) S {ppid} {pgid} {pgid} 0 -1 0 0 0 0 0 {own} 0 {reaped} 0 20 0 1 0 0 0 0\n")
+
+    def sampler(self, pid):
+        return turns.descendant_cpu_seconds(pid, lambda: turns._proc_table(self._tmp.name))
+
+
+class TestReapedChildrenProgress(unittest.TestCase):
+    """C5-N1: CPU of descendants that finished between two samples counts through ``cutime``/``cstime`` on Linux."""
+
+    SHELL_PID = CHILD_PID + 1
+
+    def run_with(self, runner_cpu, shell_reaped):
+        h = Harness(exit_at=10 * MINUTE)
+        proc_fs = FakeProcFs(self)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+
+        def tick(now):
+            proc_fs.write(CHILD_PID, 1, CHILD_PID, runner_cpu(now), 0.0)
+            # The tool's shell stays alive; each short command it runs exits before any sample sees it.
+            proc_fs.write(self.SHELL_PID, CHILD_PID, CHILD_PID, 0.01, shell_reaped(now))
+
+        tick(0)
+        h.on_tick = tick
+        h.tool_sampler = proc_fs.sampler
+        return h.run(turn=300, stall=90, watch_path=os.path.join(tmp.name, "notes.md"))
+
+    def test_loop_of_short_processes_counts_as_progress(self):
+        # About one core spent in 0.3 s commands for the whole 10 min: no turn breach.
+        result = self.run_with(runner_cpu=lambda now: 1.0, shell_reaped=lambda now: 0.3 * int(now / 0.3))
+        self.assertIsNone(result.breach)
+        self.assertEqual(result.returncode, 0)
+
+    def test_idle_runner_still_breaches(self):
+        result = self.run_with(runner_cpu=lambda now: 1.0, shell_reaped=lambda now: 2.0)
+        self.assertEqual(result.breach.budget_name, "turn")
+        self.assertGreaterEqual(result.breach.elapsed_seconds, 300)
+
+    def test_runners_own_cpu_is_not_progress(self):
+        # The runner itself burning a core (a degenerate response) is not tool progress.
+        result = self.run_with(runner_cpu=lambda now: now, shell_reaped=lambda now: 2.0)
+        self.assertEqual(result.breach.budget_name, "turn")
+        self.assertGreaterEqual(result.breach.elapsed_seconds, 300)
 
 
 class TestProcessSamplerOnThisHost(unittest.TestCase):

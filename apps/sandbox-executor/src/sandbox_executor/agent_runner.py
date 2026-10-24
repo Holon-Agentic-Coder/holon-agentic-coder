@@ -193,6 +193,10 @@ class AgentRunner:
     def build_cmd(self, model_name: str, prompt_file: str, intent_file: str, full_prompt: str) -> list[str]:
         raise NotImplementedError
 
+    def compose_cmd(self, model_name: str, full_prompt: str) -> list[str]:
+        """Assemble the agent argv without validating credentials (see :class:`StandardAgentRunner`)."""
+        raise NotImplementedError
+
     def get_version(self) -> str:
         """Return agent version string, returning 'unknown' fallback if resolution fails."""
         raise NotImplementedError
@@ -368,9 +372,30 @@ class StandardAgentRunner(AgentRunner):
                 )
                 sys.exit(1)
 
+    def compose_cmd(self, model_name: str, full_prompt: str) -> list[str]:
+        """Assemble the agent argv without validating credentials or changing the environment.
+
+        Used by :meth:`build_cmd` and by the host-side pre-flight probe, which runs the command inside the runner's
+        container where the binary and credentials actually live.
+        """
+        cmd = [self.binary_name, *self.prefix, self.model_flag, model_name, *self.suffix]
+        self._append_env_mappings(cmd)
+        cmd.append(full_prompt)
+        return cmd
+
+    def _append_env_mappings(self, cmd: list[str]) -> None:
+        for mapping in self.env_mappings:
+            val = os.getenv(mapping.env_var)
+            if not val:
+                continue
+            if mapping.is_boolean:
+                if val.lower() in ("true", "1", "yes", "on"):
+                    cmd.append(mapping.flag)
+            else:
+                cmd.extend([mapping.flag, val])
+
     def build_cmd(self, model_name: str, prompt_file: str, intent_file: str, full_prompt: str) -> list[str]:
         self.validate()
-        cmd = [self.binary_name, *self.prefix, self.model_flag, model_name, *self.suffix]
 
         # Coherence with host-local model provider: default HOLON_AGENT_PROVIDER from HOLON_LOCAL_PROVIDER or "local"
         if (
@@ -396,18 +421,7 @@ class StandardAgentRunner(AgentRunner):
             if local_prov:
                 os.environ["HOLON_AGENT_PROVIDER"] = local_prov
 
-        for mapping in self.env_mappings:
-            val = os.getenv(mapping.env_var)
-            if not val:
-                continue
-            if mapping.is_boolean:
-                if val.lower() in ("true", "1", "yes", "on"):
-                    cmd.append(mapping.flag)
-            else:
-                cmd.extend([mapping.flag, val])
-
-        cmd.append(full_prompt)
-        return cmd
+        return self.compose_cmd(model_name, full_prompt)
 
     def get_version(self) -> str:
         """Return agent version string, returning 'unknown' fallback if resolution fails."""
@@ -448,7 +462,7 @@ class AntigravityAgentRunner(StandardAgentRunner):
     are always respected instead of being frozen at module import time.
     """
 
-    def build_cmd(self, model_name: str, prompt_file: str, intent_file: str, full_prompt: str) -> list[str]:
+    def compose_cmd(self, model_name: str, full_prompt: str) -> list[str]:
         # Resolve HOLON_AGENT_EFFORT and optional permissions bypass at call time
         prefix = list(self.prefix)
         suffix = list(self.suffix)
@@ -456,21 +470,14 @@ class AntigravityAgentRunner(StandardAgentRunner):
             prefix.append("--dangerously-skip-permissions")
         suffix.extend(["--effort", os.getenv("HOLON_AGENT_EFFORT", "medium"), "-p"])
 
-        self.validate()
         cmd = [self.binary_name, *prefix, self.model_flag, model_name, *suffix]
-
-        for mapping in self.env_mappings:
-            val = os.getenv(mapping.env_var)
-            if not val:
-                continue
-            if mapping.is_boolean:
-                if val.lower() in ("true", "1", "yes", "on"):
-                    cmd.append(mapping.flag)
-            else:
-                cmd.extend([mapping.flag, val])
-
+        self._append_env_mappings(cmd)
         cmd.append(full_prompt)
         return cmd
+
+    def build_cmd(self, model_name: str, prompt_file: str, intent_file: str, full_prompt: str) -> list[str]:
+        self.validate()
+        return self.compose_cmd(model_name, full_prompt)
 
 
 # Runner registry: maps agent_id -> StandardAgentRunner instance.

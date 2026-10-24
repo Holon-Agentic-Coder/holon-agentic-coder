@@ -31,7 +31,7 @@ docker run --rm \
   -e HOLON_ROLE=planner \
   -e PI_API_KEY="your-gemini-key" \
   holon/agent-pi \
-  "I-intent-branch/_" "pi-agent" "gemini-3.5-flash"
+  "I-intent-branch/_" "pi-agent" "gemini-3.8-flash"
 ```
 
 ### Claude Agent (`claude-agent`)
@@ -58,5 +58,17 @@ sessions, it initiates an OAuth browser flow. For headless executions within the
      -e HOLON_ROLE=planner \
      -v "$HOME/.config/gcloud:/home/holon/.config/gcloud:ro" \
      holon/agent-antigravity \
-     "I-intent-branch/_" "antigravity-agent" "gemini-3.5-flash"
+     "I-intent-branch/_" "antigravity-agent" "gemini-3.8-flash-medium"
    ```
+
+## 3. Readiness Check (`holon doctor`)
+
+`holon plan` checks the selected runner with a one-prompt readiness probe before it starts the planner container, and
+aborts with one of `quota_exhausted`, `not_logged_in`, `expired_key` or `unknown` instead of failing part-way through.
+Run `holon doctor` to check a runner on its own, `--skip-preflight` (or `HOLON_SKIP_PREFLIGHT=1`) to bypass the probe,
+and see [Readiness Probe](../executor/agent_credentials_requirements.md#readiness-probe-holon-doctor) for the statuses
+and their remediation.
+
+When `--agent` and `--model` are omitted, the runner and model come from `HOLON_AGENT` / `HOLON_MODEL`, the detected
+harness agent, and the per-runner defaults described in
+[Runner and model resolution](../agents.md#runner-and-model-resolution).

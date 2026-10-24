@@ -18,6 +18,17 @@ from dataclasses import dataclass
 from urllib.parse import unquote, urlparse, urlsplit, urlunsplit
 
 from sandbox_executor import local_llm
+from sandbox_executor.agent_defaults import (
+    AGENT_IMAGE_MAPPING as AGENT_IMAGE_MAPPING,  # re-exported: the mapping moved to agent_defaults
+)
+from sandbox_executor.agent_defaults import (
+    Resolution,
+    UnmappedAgentRunnerError,
+    image_for_agent,
+    normalise_agent_id,
+    resolve_agent_runner,
+    resolve_model,
+)
 from sandbox_executor.calibration import run_calibrate
 from sandbox_executor.flow import FlowContext, FlowStage, load_checkpoint, run_flow_pipeline
 from sandbox_executor.knowledge import (
@@ -33,6 +44,12 @@ from sandbox_executor.knowledge import (
 from sandbox_executor.knowledge.consult import format_consult_results_table
 from sandbox_executor.knowledge.stats import format_stats_dashboard
 from sandbox_executor.ledger import format_query_results_table, query_ledger
+from sandbox_executor.preflight import (
+    PreflightResult,
+    preflight_skipped_by_env,
+    resolve_timeout,
+    run_preflight_probe,
+)
 from sandbox_executor.redaction import (
     COMMAND_ECHO_ENV_NAMES,
     carries_url_password,
@@ -46,6 +63,38 @@ from sandbox_executor.scaffold import init_project
 from sandbox_executor.token_reduction import generate_root_ca
 
 logger = logging.getLogger(__name__)
+
+# Root of Holon's own logger hierarchy; the CLI routes its INFO records to stderr (see configure_cli_logging).
+PACKAGE_LOGGER_NAME = "sandbox_executor"
+
+
+class _CurrentStderrHandler(logging.StreamHandler):
+    """Stream handler that always writes to the current ``sys.stderr`` rather than the one bound at creation."""
+
+    @property
+    def stream(self):  # type: ignore[override]
+        return sys.stderr
+
+    @stream.setter
+    def stream(self, _value) -> None:
+        pass
+
+
+def configure_cli_logging() -> None:
+    """Send Holon's own INFO-and-above log records to stderr as plain messages.
+
+    Only the ``sandbox_executor`` logger hierarchy is configured, so third-party libraries keep their own levels and
+    stdout stays untouched. Idempotent: a second call adds no further handler.
+    """
+    package_logger = logging.getLogger(PACKAGE_LOGGER_NAME)
+    if any(isinstance(handler, _CurrentStderrHandler) for handler in package_logger.handlers):
+        return
+    handler = _CurrentStderrHandler()
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    package_logger.addHandler(handler)
+    if package_logger.level == logging.NOTSET:
+        package_logger.setLevel(logging.INFO)
+
 
 # Directory the Root CA certificate is mounted into inside the sandbox. The sandbox image runs as
 # the unprivileged `holon` user, so update-ca-certificates can never run there; the entrypoint
@@ -92,14 +141,14 @@ BLOCKED_METADATA_HOSTS: list[str] = [
     "instance-data",
 ]
 SINKHOLE_IP: str = "127.0.0.1"
-AGENT_IMAGE_MAPPING: dict[str, str] = {
-    "antigravity": "holon/agent-antigravity",
-    "claude": "holon/agent-claude",
-    "pi": "holon/agent-pi",
-    "codex": "holon/agent-codex",
-    "gemini": "holon/agent-gemini",
-    "opencode": "holon/agent-opencode",
-}
+_AGENT_HELP = (
+    "Agent runner to execute (e.g. antigravity-agent, pi-agent, claude-agent, codex-agent). "
+    "Default: HOLON_AGENT, then the detected harness agent, then antigravity-agent."
+)
+_MODEL_HELP = "Model name to pass to agent. Default: HOLON_MODEL, then the runner's default model."
+_SKIP_PREFLIGHT_HELP = (
+    "Skip the pre-flight readiness probe (one minimal real model call). HOLON_SKIP_PREFLIGHT=1 does the same."
+)
 
 
 def build_network_isolation_args(
@@ -1198,6 +1247,8 @@ def run_docker_container(
 
     # Ensure explicit role parameter takes strict precedence over host environment
     env_to_forward["HOLON_ROLE"] = role
+    # The host already ran the readiness probe; nested invocations inside the container must not repeat it.
+    env_to_forward["HOLON_SKIP_PREFLIGHT"] = "1"
 
     # Coherence for local mode: default HOLON_AGENT_PROVIDER from HOLON_LOCAL_PROVIDER if unset (pi runner only)
     if local_llm.local_llm_requested() and norm_agent_id == "pi":
@@ -1358,7 +1409,114 @@ def run_docker_container(
             pass
 
 
+def resolve_runner_and_model(agent: str | None, model: str | None) -> tuple[Resolution, Resolution]:
+    """Resolve the agent runner and model for a command.
+
+    The resolvers log each decision at INFO, which :func:`configure_cli_logging` routes to stderr.
+
+    Args:
+        agent: Raw ``--agent`` value (None when omitted).
+        model: Raw ``--model`` value (None when omitted).
+
+    Returns:
+        ``(agent resolution, model resolution)``.
+
+    Raises:
+        UnmappedAgentRunnerError: If the selected runner has no container image.
+    """
+    agent_res = resolve_agent_runner(agent)
+    model_res = resolve_model(agent_res.value, model)
+    return agent_res, model_res
+
+
+# Resumption points from which a flow still reaches the plan and execute stages, the ones that need the agent runner.
+# Review (the native review loop) and calibration run only git, gh and local checks, so a flow resumed at either of
+# them has nothing for the probe to protect.
+_AGENT_FLOW_STAGES = ("intent", "plan", "execute")
+
+
+def flow_dispatches_agent(from_stage: str | None) -> bool:
+    """Return True when a flow starting at ``from_stage`` still reaches a stage that dispatches the agent runner.
+
+    Args:
+        from_stage: Resumption stage name, or None for a run from the start.
+
+    Returns:
+        False only when the flow resumes at a stage after the last agent-dispatching stage.
+    """
+    if not from_stage:
+        return True
+    return str(from_stage).strip().lower() in _AGENT_FLOW_STAGES
+
+
+def preflight_gate(agent: str, model: str, skip: bool = False) -> PreflightResult | None:
+    """Run the readiness probe unless skipped and print the diagnosis when it fails.
+
+    Must be called before any branch, checkpoint or ledger write.
+
+    Args:
+        agent: Resolved runner name.
+        model: Resolved model name.
+        skip: True when ``--skip-preflight`` was given.
+
+    Returns:
+        The probe result, or None when the probe was skipped by flag or ``HOLON_SKIP_PREFLIGHT``.
+    """
+    if skip or preflight_skipped_by_env():
+        logger.info("Pre-flight probe skipped (--skip-preflight or HOLON_SKIP_PREFLIGHT).")
+        return None
+    result = run_preflight_probe(agent, model, timeout=resolve_timeout())
+    if not result.ok:
+        print(result.format_report(), file=sys.stderr)
+        print(
+            "Aborting before any branch, checkpoint or ledger write. Use --skip-preflight to bypass this check.",
+            file=sys.stderr,
+        )
+    return result
+
+
+def run_doctor(args: argparse.Namespace) -> int:
+    """Implement ``holon doctor``: resolve the runner and model, probe them and report.
+
+    Args:
+        args: Parsed namespace with ``agent``, ``model``, ``json`` and ``timeout``.
+
+    Returns:
+        0 when the probe reports ``ok``, otherwise 1.
+
+    Side effects:
+        One ``docker run`` with a minimal prompt. Writes only to stdout/stderr; never to the repository or ledgers.
+    """
+    import json
+
+    try:
+        # The text report prints both decisions on stdout, so the resolvers' INFO log would show them twice.
+        agent_res = resolve_agent_runner(args.agent, log=False)
+        model_res = resolve_model(agent_res.value, args.model, log=False)
+    except UnmappedAgentRunnerError as exc:
+        if args.json:
+            print(json.dumps({"error": str(exc)}, indent=2))
+        else:
+            print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    result = run_preflight_probe(agent_res.value, model_res.value, timeout=resolve_timeout(args.timeout))
+    if args.json:
+        payload = {
+            "agent": {"value": agent_res.value, "source": agent_res.source, "reason": agent_res.reason},
+            "model": {"value": model_res.value, "source": model_res.source, "reason": model_res.reason},
+            "preflight": result.to_dict(),
+        }
+        print(json.dumps(payload, indent=2))
+    else:
+        print(agent_res.describe("Agent runner"))
+        print(model_res.describe("Model"))
+        print(result.format_report())
+    return 0 if result.ok else 1
+
+
 def main() -> None:
+    configure_cli_logging()
     parser = argparse.ArgumentParser(
         prog="holon",
         description="Holon CLI: Host wrapper for running containerized Holon AI agent roles.",
@@ -1400,16 +1558,9 @@ def main() -> None:
     # Subcommand: plan
     plan_parser = subparsers.add_parser("plan", help="Run Plan Generator to create a detailed markdown plan branch.")
     plan_parser.add_argument("intent_branch", help="Target intent branch name (e.g. I-1784983150-build-execution/_)")
-    plan_parser.add_argument(
-        "--agent",
-        default="antigravity-agent",
-        help="Agent runner to execute (e.g. antigravity-agent, pi-agent, claude-agent, codex-agent)",
-    )
-    plan_parser.add_argument(
-        "--model",
-        default="gemini-3.5-flash",
-        help="Model name to pass to agent (e.g. gemini-3.5-flash, claude-3-5-sonnet)",
-    )
+    plan_parser.add_argument("--agent", default=None, help=_AGENT_HELP)
+    plan_parser.add_argument("--model", default=None, help=_MODEL_HELP)
+    plan_parser.add_argument("--skip-preflight", action="store_true", help=_SKIP_PREFLIGHT_HELP)
     plan_parser.add_argument(
         "--token-reduce",
         action="store_true",
@@ -1432,8 +1583,9 @@ def main() -> None:
     # Subcommand: execute
     exec_parser = subparsers.add_parser("execute", help="Run Sandbox Executor to execute code changes for a plan.")
     exec_parser.add_argument("plan_branch", help="Target plan branch name")
-    exec_parser.add_argument("--agent", default="antigravity-agent", help="Agent runner to execute")
-    exec_parser.add_argument("--model", default="gemini-3.5-flash", help="Model name to pass to agent")
+    exec_parser.add_argument("--agent", default=None, help=_AGENT_HELP)
+    exec_parser.add_argument("--model", default=None, help=_MODEL_HELP)
+    exec_parser.add_argument("--skip-preflight", action="store_true", help=_SKIP_PREFLIGHT_HELP)
     exec_parser.add_argument(
         "--token-reduce",
         action="store_true",
@@ -1525,15 +1677,14 @@ def main() -> None:
         help="Optional path to a flow checkpoint file.",
     )
     flow_parser.add_argument(
-        "--agent",
-        default=None,
-        help="Agent runner to execute (default: antigravity-agent)",
+        "--agent", default=None, help=f"{_AGENT_HELP} A --checkpoint resume keeps the checkpoint's runner by default."
     )
     flow_parser.add_argument(
         "--model",
         default=None,
-        help="Model name to pass to agent (default: gemini-3.8-flash-medium)",
+        help=f"{_MODEL_HELP} A --checkpoint resume keeps the checkpoint's model unless --agent switches the runner.",
     )
+    flow_parser.add_argument("--skip-preflight", action="store_true", help=_SKIP_PREFLIGHT_HELP)
     flow_parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -1632,16 +1783,8 @@ def main() -> None:
         action="store_true",
         help=_TOKEN_REDUCE_HELP,
     )
-    review_parser.add_argument(
-        "--agent",
-        default="antigravity-agent",
-        help="Agent runner to execute (default: antigravity-agent).",
-    )
-    review_parser.add_argument(
-        "--model",
-        default="gemini-3.8-flash-medium",
-        help="Model name to pass to agent (default: gemini-3.8-flash-medium).",
-    )
+    review_parser.add_argument("--agent", default=None, help=_AGENT_HELP)
+    review_parser.add_argument("--model", default=None, help=_MODEL_HELP)
     review_parser.add_argument(
         "--local",
         action="store_true",
@@ -1659,6 +1802,21 @@ def main() -> None:
             "Launch mitmweb dashboard on port 8081 (or HOLON_MITM_WEB_PORT) for real-time traffic inspection. "
             "For shared staging environments, pass HOLON_MITM_WEB_PASSWORD to restrict access."
         ),
+    )
+
+    # Subcommand: doctor
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Check that the selected agent runner is ready (one minimal real model call in its container).",
+    )
+    doctor_parser.add_argument("--agent", default=None, help=_AGENT_HELP)
+    doctor_parser.add_argument("--model", default=None, help=_MODEL_HELP)
+    doctor_parser.add_argument("--json", action="store_true", help="Output the resolution and probe result as JSON.")
+    doctor_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Probe timeout in seconds (default: HOLON_PREFLIGHT_TIMEOUT, then 60).",
     )
 
     # Subcommand: ledger
@@ -2015,13 +2173,48 @@ def main() -> None:
                         import json
 
                         intent_data = json.load(f)
+                agent_res, model_res = resolve_runner_and_model(args.agent, args.model)
+                flow_agent, flow_model = agent_res.value, model_res.value
+            else:
+                # A resumed checkpoint keeps its recorded attribution; only explicit flags override it. Switching the
+                # runner with --agent alone resolves that runner's model (HOLON_MODEL, then its default), because the
+                # checkpoint's model belongs to the old runner. The resolvers log the values they decide; only the
+                # values kept from the checkpoint are logged here, so each decision is reported once with its source.
+                from_checkpoint = f"recorded in {args.checkpoint}"
+                if args.agent is not None:
+                    flow_agent = resolve_agent_runner(args.agent).value
+                else:
+                    flow_agent = context.agent
+                    logger.info(Resolution(flow_agent, "checkpoint", from_checkpoint).describe("Agent runner"))
+                if args.model is not None or (
+                    args.agent is not None and normalise_agent_id(flow_agent) != normalise_agent_id(context.agent)
+                ):
+                    flow_model = resolve_model(flow_agent, args.model).value
+                else:
+                    flow_model = context.model
+                    logger.info(Resolution(flow_model, "checkpoint", from_checkpoint).describe("Model"))
+
+            # Readiness probe before Stage 1: nothing has been branched, pushed, checkpointed or recorded yet.
+            if args.dry_run or (context is not None and context.dry_run):
+                logger.info("Pre-flight probe skipped for a dry-run flow (no agent is called).")
+            elif not flow_dispatches_agent(args.from_stage):
+                logger.info(
+                    "Pre-flight probe skipped: no remaining stage from '%s' dispatches an agent runner.",
+                    args.from_stage,
+                )
+            else:
+                preflight = preflight_gate(flow_agent, flow_model, skip=args.skip_preflight)
+                if preflight is not None and not preflight.ok:
+                    sys.exit(1)
+                    return
+
             effective_token_reduce = detect_holon_coherence(bool(args.token_reduce or args.mitm_web))
             if context is None:
                 context = FlowContext(
                     repo_dir=args.repo_dir,
                     intent_data=intent_data,
-                    agent=args.agent or "antigravity-agent",
-                    model=args.model or "gemini-3.8-flash-medium",
+                    agent=flow_agent,
+                    model=flow_model,
                     dry_run=args.dry_run,
                     skip_push=args.skip_push,
                     skip_review=args.skip_review,
@@ -2034,10 +2227,8 @@ def main() -> None:
             else:
                 if args.repo_dir and args.repo_dir != ".":
                     context.repo_dir = args.repo_dir
-                if args.agent is not None:
-                    context.agent = args.agent
-                if args.model is not None:
-                    context.model = args.model
+                context.agent = flow_agent
+                context.model = flow_model
                 if args.dry_run:
                     context.dry_run = True
                 if args.skip_push:
@@ -2103,14 +2294,18 @@ def main() -> None:
                 bool(getattr(args, "token_reduce", False) or getattr(args, "mitm_web", False))
             )
 
+            # Routing deliberately ignores the resolved runner: --agent used to default to a literal, so a bare
+            # `holon review-loop` always went to a container, and resolving first must not change that.
             is_local = (
                 getattr(args, "local", False)
                 or getattr(args, "dry_run", False)
                 or getattr(args, "json", False)
-                or getattr(args, "agent", None) is None
                 or bool(os.getenv("HOLON_ROLE"))
                 or bool(os.getenv("HOLON_IN_SANDBOX"))
             )
+            # Resolution is for attribution and image selection only.
+            agent_res, model_res = resolve_runner_and_model(getattr(args, "agent", None), getattr(args, "model", None))
+            args.agent, args.model = agent_res.value, model_res.value
 
             if is_local:
                 from sandbox_executor.flow import run_review_loop_cli
@@ -2118,12 +2313,8 @@ def main() -> None:
                 exit_code = run_review_loop_cli(args, token_reduce=effective_token_reduce)
                 sys.exit(exit_code)
             else:
-                agent_id = (
-                    args.agent.replace("-agent", "").replace("agent-", "")
-                    if getattr(args, "agent", None)
-                    else "antigravity"
-                )
-                image_name = AGENT_IMAGE_MAPPING.get(agent_id, f"holon/agent-{agent_id}")
+                agent_id = normalise_agent_id(args.agent)
+                image_name = image_for_agent(args.agent)
                 container_args = [
                     args.target,
                     args.agent,
@@ -2318,8 +2509,22 @@ def main() -> None:
             print(format_stats_dashboard(telemetry_stats))
         sys.exit(0)
 
-    agent_id = args.agent.replace("-agent", "").replace("agent-", "") if getattr(args, "agent", None) else "antigravity"
-    agent_image_mapping = AGENT_IMAGE_MAPPING
+    if args.command == "doctor":
+        sys.exit(run_doctor(args))
+
+    if args.command in ("plan", "execute"):
+        try:
+            agent_res, model_res = resolve_runner_and_model(args.agent, args.model)
+        except UnmappedAgentRunnerError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+            return
+        args.agent, args.model = agent_res.value, model_res.value
+        preflight = preflight_gate(args.agent, args.model, skip=args.skip_preflight)
+        if preflight is not None and not preflight.ok:
+            sys.exit(1)
+            return
+        agent_id = normalise_agent_id(args.agent)
 
     if args.command == "intent":
         image_name = "holon/orchestrator"
@@ -2333,7 +2538,7 @@ def main() -> None:
         sys.exit(run_docker_container("intent-creator", image_name, [], **kwargs))
 
     elif args.command == "plan":
-        image_name = agent_image_mapping.get(agent_id, f"holon/agent-{agent_id}")
+        image_name = image_for_agent(args.agent)
         container_args = [args.intent_branch, args.agent, args.model]
         kwargs = {"agent_id": agent_id, "token_reduce": getattr(args, "token_reduce", False)}
         if getattr(args, "mitm_web", False):
@@ -2350,7 +2555,7 @@ def main() -> None:
         )
 
     elif args.command == "execute":
-        image_name = agent_image_mapping.get(agent_id, f"holon/agent-{agent_id}")
+        image_name = image_for_agent(args.agent)
         container_args = [args.plan_branch, args.agent, args.model]
         kwargs = {"agent_id": agent_id, "token_reduce": getattr(args, "token_reduce", False)}
         if getattr(args, "mitm_web", False):

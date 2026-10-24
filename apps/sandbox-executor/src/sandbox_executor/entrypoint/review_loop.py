@@ -18,6 +18,7 @@ import subprocess
 import sys
 from typing import Any
 
+from sandbox_executor.agent_defaults import FALLBACK_AGENT, default_model_for
 from sandbox_executor.agent_runner import get_repo_url, get_workspace_dir
 from sandbox_executor.flow import FlowContext, check_and_resolve_stage_conflicts, run_review_loop
 from sandbox_executor.redaction import redact_agent_secrets, redact_command
@@ -61,12 +62,12 @@ def main() -> None:
     parser.add_argument(
         "--agent",
         default=None,
-        help="Agent runner to execute (default: antigravity-agent).",
+        help="Agent runner to execute (default: the fallback runner, antigravity-agent).",
     )
     parser.add_argument(
         "--model",
         default=None,
-        help="Model name to pass to agent (default: gemini-3.8-flash-medium).",
+        help="Model name to pass to agent (default: the runner's default model).",
     )
     parser.add_argument(
         "--max-iterations",
@@ -124,8 +125,9 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    agent_name = args.agent or args.pos_agent or "antigravity-agent"
-    model_name = args.model or args.pos_model or "gemini-3.8-flash-medium"
+    # The host CLI always passes resolved values; no harness detection inside the container.
+    agent_name = args.agent or args.pos_agent or FALLBACK_AGENT
+    model_name = args.model or args.pos_model or default_model_for(agent_name)
     repo_dir = args.repo_dir or get_workspace_dir()
     os.makedirs(repo_dir, exist_ok=True)
 

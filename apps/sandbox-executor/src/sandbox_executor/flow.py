@@ -28,8 +28,18 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, ClassVar
 
+from sandbox_executor.agent_defaults import (
+    DEFAULT_MODELS,
+    FALLBACK_AGENT,
+    LEGACY_DEFAULT_AGENT,
+    LEGACY_DEFAULT_MODEL,
+    normalise_agent_id,
+)
 from sandbox_executor.calibration import (
+    LEDGER_EXECUTIONS_REL,
+    calibration_commit_env,
     is_metadata_path,
+    record_calibration_action,
     run_calibrate,
 )
 from sandbox_executor.entrypoint.planner import (
@@ -42,15 +52,18 @@ from sandbox_executor.git import run_git
 from sandbox_executor.knowledge import (
     ActionIndexDatabase,
     ConsultEngine,
+    CredentialRedactor,
     append_action_event,
     compute_context_fingerprint,
     promote_pending_candidates,
     reconcile_records,
 )
 from sandbox_executor.ledger import (
-    atomic_ledger_append,
+    ActionRecord,
     generate_action_id,
     parse_commit_trailers,
+    try_append_action_record,
+    try_append_ledger_line,
 )
 from sandbox_executor.redaction import redact_text
 
@@ -161,8 +174,9 @@ def _migrate_v0_to_v1(data: dict[str, Any]) -> dict[str, Any]:
     context.setdefault("plan_branch", None)
     context.setdefault("execution_branch", None)
     context.setdefault("calibrated_branch", None)
-    context.setdefault("agent", "antigravity-agent")
-    context.setdefault("model", "gemini-3.8-flash-medium")
+    # A checkpoint without attribution was produced under the legacy default and must resume with it.
+    context.setdefault("agent", LEGACY_DEFAULT_AGENT)
+    context.setdefault("model", LEGACY_DEFAULT_MODEL)
     context.setdefault("dry_run", False)
     context.setdefault("auto_calibrate", True)
     context.setdefault("token_reduce", False)
@@ -229,8 +243,9 @@ class FlowContext:
     plan_branch: str | None = None
     execution_branch: str | None = None
     calibrated_branch: str | None = None
-    agent: str = "antigravity-agent"
-    model: str = "gemini-3.8-flash-medium"
+    # The CLI always passes resolved values (see agent_defaults); these only apply to direct construction.
+    agent: str = FALLBACK_AGENT
+    model: str = DEFAULT_MODELS[normalise_agent_id(FALLBACK_AGENT)]
     dry_run: bool = False
     auto_calibrate: bool = True
     token_reduce: bool | None = None
@@ -302,8 +317,8 @@ class FlowContext:
             plan_branch=data.get("plan_branch"),
             execution_branch=data.get("execution_branch"),
             calibrated_branch=data.get("calibrated_branch"),
-            agent=data.get("agent", "antigravity-agent"),
-            model=data.get("model", "gemini-3.8-flash-medium"),
+            agent=data.get("agent", LEGACY_DEFAULT_AGENT),
+            model=data.get("model", LEGACY_DEFAULT_MODEL),
             dry_run=data.get("dry_run", False),
             auto_calibrate=data.get("auto_calibrate", True),
             token_reduce=data.get("token_reduce", False),
@@ -1437,7 +1452,8 @@ def build_pr_review_consensus_report(
     iterations = consensus_data.get("iterations", 1)
     ci_status = consensus_data.get("ci_checks") or {}
     base_branch = str(consensus_data.get("base_branch") or "main").strip()
-    agent = str(consensus_data.get("agent") or "antigravity-agent").strip()
+    # Consensus payloads can come from historical data without attribution.
+    agent = str(consensus_data.get("agent") or LEGACY_DEFAULT_AGENT).strip()
     model = str(consensus_data.get("model") or "inherit").strip()
     ensemble_size = int(consensus_data.get("ensemble_size") or 3)
 
@@ -2121,8 +2137,8 @@ def run_intent_stage(context: FlowContext) -> StageResult:
                         except Exception:
                             continue
         if not exists:
-            with atomic_ledger_append(intents_file) as f:
-                f.write(json.dumps(intent_data) + "\n")
+            if not try_append_ledger_line(intents_file, intent_data, label="Stage 1 intent record", log_fn=context.log):
+                raise RuntimeError(f"Stage 1 intent record could not be appended to {intents_file}")
             ledger_entry = intent_data
 
         if is_git:
@@ -2312,9 +2328,10 @@ def run_plan_stage(context: FlowContext) -> StageResult:
                                 break
                         except Exception:
                             continue
-        if not plan_exists:
-            with atomic_ledger_append(plans_file) as f:
-                f.write(json.dumps(plan_entry) + "\n")
+        if not plan_exists and not try_append_ledger_line(
+            plans_file, plan_entry, label="Stage 2 plan record", log_fn=context.log
+        ):
+            raise RuntimeError(f"Stage 2 plan record could not be appended to {plans_file}")
 
         if is_git:
             try:
@@ -2500,9 +2517,10 @@ def run_execute_stage(context: FlowContext) -> StageResult:
                                 break
                         except Exception:
                             continue
-        if not exec_exists:
-            with atomic_ledger_append(exec_file) as f:
-                f.write(json.dumps(exec_entry) + "\n")
+        if not exec_exists and not try_append_ledger_line(
+            exec_file, exec_entry, label="Stage 3 execution summary", log_fn=context.log
+        ):
+            raise RuntimeError(f"Stage 3 execution summary could not be appended to {exec_file}")
 
         # Record discrete action event in executions.jsonl (Bean 0052 Goal 3)
         try:
@@ -2520,7 +2538,7 @@ def run_execute_stage(context: FlowContext) -> StageResult:
             }
             append_action_event(action_event, ledger_path=exec_file, db_path=db_path)
         except Exception as e:
-            logger.debug("Non-fatal append action event in execute stage: %s", e)
+            _warn_ledger_failure(context, "Stage 3 execution action event", exec_file, e)
 
         if is_git:
             md_files: list[str] = []
@@ -2592,6 +2610,96 @@ REVIEW_GIT_ENV: dict[str, str] = {
 }
 
 
+def _warn_ledger_failure(context: FlowContext, label: str, ledger_path: str, exc: BaseException) -> None:
+    """Report a non-fatal ledger failure at WARNING level and in the operator-facing context log.
+
+    The exception text is passed through the canonical ``CredentialRedactor`` first, so a
+    secret carried in the failure detail never reaches either log.
+    """
+    detail = CredentialRedactor.redact_text(str(exc))
+    message = f"Ledger append failed ({label}) for {ledger_path}: {type(exc).__name__}: {detail}"
+    logger.warning(message)
+    context.log(f"Warning: {message}")
+
+
+POSTING_ERROR_CONTEXT_MAX_CHARS = 2000
+
+
+def _bounded_error_context(detail: str) -> str:
+    """Redact ``detail`` with the canonical ``CredentialRedactor``, then cap its length.
+
+    Redaction runs before truncation so a secret cut at the boundary cannot slip past the
+    redaction patterns. Used for every Stage 4 / Stage 5 ``error_context`` that can carry
+    unbounded external output (posting failures, calibration hook output).
+
+    Args:
+        detail: Raw failure detail.
+
+    Returns:
+        The redacted detail, at most ``POSTING_ERROR_CONTEXT_MAX_CHARS`` characters long.
+    """
+    detail = CredentialRedactor.redact_text(detail)
+    if len(detail) > POSTING_ERROR_CONTEXT_MAX_CHARS:
+        detail = detail[: POSTING_ERROR_CONTEXT_MAX_CHARS - 3] + "..."
+    return detail
+
+
+def _posting_failure_context(posting_res: dict[str, Any]) -> str:
+    """Build the redacted ``error_context`` for a failed ACT-POST row.
+
+    ``post_pr_review_consensus()`` reports failures through its return value rather than by
+    raising, so the detail is collected from ``error``, ``diagnostics`` and the ``output`` of
+    each unsuccessful posting step. The text is redacted with the canonical
+    ``CredentialRedactor`` before it is truncated, so a partially cut secret cannot slip past
+    the redaction patterns.
+
+    Args:
+        posting_res: Return value of ``post_pr_review_consensus()``, or ``{"error": ...}``.
+
+    Returns:
+        The redacted, length-bounded failure detail.
+    """
+    parts: list[str] = []
+    for value in (posting_res.get("error"), posting_res.get("diagnostics")):
+        if value:
+            parts.append(str(value))
+    for step in ("discussion_comment", "official_review"):
+        step_res = posting_res.get(step)
+        if isinstance(step_res, dict) and not step_res.get("success") and step_res.get("output"):
+            parts.append(f"{step}: {step_res['output']}")
+    unique_parts = list(dict.fromkeys(part.strip() for part in parts if part.strip()))
+    detail = "; ".join(unique_parts) or "Consensus posting did not report success"
+    return _bounded_error_context(detail)
+
+
+def record_review_action(
+    context: FlowContext,
+    ledger_path: str,
+    record: ActionRecord | dict[str, Any],
+) -> dict[str, Any] | None:
+    """Append a Stage 4 review action record to ``executions.jsonl``.
+
+    This is the canonical writer for review provenance (ACT-REV, ACT-FIND, ACT-RES and
+    ACT-POST rows), whichever integration point drives the review. The record is
+    credential-redacted, validated against ``ActionRecord``, written verbatim (key order
+    unchanged) under LedgerLock, and any failure is logged at WARNING level and mirrored to ``context.log``
+    without raising.
+
+    Args:
+        context: Active FlowContext, used for operator-facing warnings.
+        ledger_path: Path to the target repository's ``holon-knowledge/ledger/executions.jsonl``.
+        record: Action record to append.
+
+    Returns:
+        The written record, or None if the append failed.
+    """
+    if isinstance(record, ActionRecord):
+        label = f"Stage 4 review action {record.action_id}"
+    else:
+        label = f"Stage 4 review action {str(record.get('action_id') or '?').rsplit('-', 2)[0]}"
+    return try_append_action_record(ledger_path, record, label=label, preserve_shape=True, log_fn=context.log)
+
+
 def run_review_loop(
     context: FlowContext,
     target: str | None = None,
@@ -2655,8 +2763,9 @@ def run_review_loop(
     severity = "clean"
 
     ledger_dir = os.path.join(repo_dir, "holon-knowledge", "ledger")
-    os.makedirs(ledger_dir, exist_ok=True)
     exec_file = os.path.join(ledger_dir, "executions.jsonl")
+    # Ledger rows that a dry run would otherwise have written; reported once at the end.
+    suppressed_ledger_records = 0
 
     # Automate semantic PR generation if auto_pr is requested (Bean 0109)
     pr_res: dict[str, Any] = {}
@@ -2683,7 +2792,9 @@ def run_review_loop(
         context.log(f"[Review Loop] Starting review iteration {iteration}/{budget} for target '{review_target}'.")
 
         # Discrete Action 3: Resolver Iteration Events (Bean 0113)
-        if iteration > 1 and not effective_dry_run:
+        if iteration > 1 and effective_dry_run:
+            suppressed_ledger_records += 1
+        elif iteration > 1:
             resolver_record = {
                 "action_id": generate_action_id("ACT-RES"),
                 "execution_id": f"REV-RES-{iteration}-{int(time.time())}",
@@ -2697,11 +2808,7 @@ def run_review_loop(
                 "labels": ["review", "resolver", f"iteration-{iteration}"],
                 "created_at": datetime.now(UTC).isoformat(),
             }
-            try:
-                with atomic_ledger_append(exec_file) as f:
-                    f.write(json.dumps(resolver_record) + "\n")
-            except Exception as e:
-                logger.debug("Non-fatal atomic ledger append during resolver event: %s", e)
+            record_review_action(context, exec_file, resolver_record)
 
         # 1. Mergeability inspection
         last_mergeability = check_pr_mergeability(
@@ -2775,15 +2882,15 @@ def run_review_loop(
             "error_context": findings_context if finding_ids else None,
             "created_at": datetime.now(UTC).isoformat(),
         }
-        if not effective_dry_run:
-            try:
-                with atomic_ledger_append(exec_file) as f:
-                    f.write(json.dumps(action_record) + "\n")
-            except Exception as e:
-                logger.debug("Non-fatal atomic ledger append during review iteration: %s", e)
+        if effective_dry_run:
+            suppressed_ledger_records += 1
+        else:
+            record_review_action(context, exec_file, action_record)
 
         # Discrete Action 2: Finding Detection Events (Bean 0113)
-        if finding_ids and not effective_dry_run:
+        if finding_ids and effective_dry_run:
+            suppressed_ledger_records += 1
+        elif finding_ids:
             finding_record = {
                 "action_id": generate_action_id("ACT-FIND"),
                 "execution_id": f"REV-FIND-{iteration}-{int(time.time())}",
@@ -2800,11 +2907,7 @@ def run_review_loop(
                 "error_context": findings_context,
                 "created_at": datetime.now(UTC).isoformat(),
             }
-            try:
-                with atomic_ledger_append(exec_file) as f:
-                    f.write(json.dumps(finding_record) + "\n")
-            except Exception as e:
-                logger.debug("Non-fatal atomic ledger append during finding detection: %s", e)
+            record_review_action(context, exec_file, finding_record)
 
         # 6. A ref that does not resolve will not resolve on the next pass either: fail closed now
         # rather than burn the remaining iteration budget.
@@ -2843,7 +2946,7 @@ def run_review_loop(
         "trailers": last_trailers_str,
         "findings": finding_ids,
         "severity": severity,
-        "agent": context.agent or "antigravity-agent",
+        "agent": context.agent or FALLBACK_AGENT,
         "model": context.model or "inherit",
         "ensemble_size": ensemble_size,
         "base_branch": target_branch,
@@ -2857,7 +2960,9 @@ def run_review_loop(
 
     # Dual-post review consensus to GitHub and handle self-approval restriction (Bean 0119)
     posting_res: dict[str, Any] = {}
-    if not effective_dry_run:
+    if effective_dry_run:
+        suppressed_ledger_records += 1
+    else:
         try:
             posting_res = post_pr_review_consensus(
                 repo_dir=repo_dir,
@@ -2865,28 +2970,35 @@ def run_review_loop(
                 consensus_data=consensus_data,
                 proxy_env=proxy_env,
             )
-            # Discrete Action 4: PR Review Posting Event (Bean 0113)
-            posting_action_record = {
-                "action_id": generate_action_id("ACT-POST"),
-                "execution_id": f"REV-POST-{int(time.time())}",
-                "action": f"PR Review consensus dual-posted to GitHub for {review_target}",
-                "category": "code",
-                "target": review_target,
-                "outcome": (
-                    "success"
-                    if (posting_res.get("dual_posted") or posting_res.get("official_review", {}).get("success"))
-                    else "failure"
-                ),
-                "entry_type": "action",
-                "action_origin": "pr_review",
-                "review_iteration": iteration,
-                "labels": ["review", "github", "dual-post"],
-                "created_at": datetime.now(UTC).isoformat(),
-            }
-            with atomic_ledger_append(exec_file) as f:
-                f.write(json.dumps(posting_action_record) + "\n")
         except Exception as exc:
-            logger.debug("Non-fatal posting consensus or ledger write: %s", exc)
+            safe_error = CredentialRedactor.redact_text(str(exc))
+            logger.warning("Posting review consensus for %s failed: %s", review_target, safe_error)
+            context.log(f"Warning: Posting review consensus for '{review_target}' failed: {safe_error}")
+            posting_res = {"error": safe_error}
+
+        # Discrete Action 4: PR Review Posting Event (Bean 0113), recorded whether or not posting succeeded
+        posted = bool(posting_res.get("dual_posted") or (posting_res.get("official_review") or {}).get("success"))
+        posting_action_record: dict[str, Any] = {
+            "action_id": generate_action_id("ACT-POST"),
+            "execution_id": f"REV-POST-{int(time.time())}",
+            "action": (
+                f"PR Review consensus dual-posted to GitHub for {review_target}"
+                if posted
+                else f"PR Review consensus posting to GitHub failed for {review_target}"
+            ),
+            "category": "code",
+            "target": review_target,
+            "outcome": "success" if posted else "failure",
+            "entry_type": "action",
+            "action_origin": "pr_review",
+            "review_iteration": iteration,
+            "labels": ["review", "github", "dual-post"],
+        }
+        if not posted:
+            # Successful rows keep their historical shape; failures carry the posting error.
+            posting_action_record["error_context"] = _posting_failure_context(posting_res)
+        posting_action_record["created_at"] = datetime.now(UTC).isoformat()
+        record_review_action(context, exec_file, posting_action_record)
 
     # Record overall summary in executions.jsonl
     review_exec_id = f"REV-{int(time.time())}-{context.agent}"
@@ -2910,15 +3022,16 @@ def run_review_loop(
         "ci_checks_summary": last_ci_status,
         "trailers": last_trailers_dict,
     }
-    if not effective_dry_run:
-        try:
-            with atomic_ledger_append(exec_file) as f:
-                f.write(json.dumps(summary_entry) + "\n")
-        except Exception as e:
-            logger.debug("Non-fatal atomic ledger append during review summary: %s", e)
+    if effective_dry_run:
+        suppressed_ledger_records += 1
+    else:
+        try_append_ledger_line(exec_file, summary_entry, label="Stage 4 review summary", log_fn=context.log)
 
     # Record action event in executions.jsonl if available
-    if not effective_dry_run:
+    if effective_dry_run:
+        suppressed_ledger_records += 1
+        context.log(f"[Review Loop] Dry run: {suppressed_ledger_records} ledger record(s) not appended to {exec_file}.")
+    else:
         try:
             append_action_event(
                 {
@@ -2939,7 +3052,7 @@ def run_review_loop(
                 project_db_path=os.path.join(repo_dir, "holon-knowledge", ".index", "action_index.db"),
             )
         except Exception as e:
-            logger.debug("Non-fatal append action event in review loop: %s", e)
+            _warn_ledger_failure(context, "Stage 4 review action event", exec_file, e)
 
     return {
         "target": review_target,
@@ -3204,12 +3317,19 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
     dry_run = getattr(args, "dry_run", False)
     json_output = getattr(args, "json", False)
 
+    context_kwargs: dict[str, Any] = {}
+    # main() resolves --agent/--model before dispatch; keep the FlowContext defaults for other callers.
+    if getattr(args, "agent", None):
+        context_kwargs["agent"] = args.agent
+    if getattr(args, "model", None):
+        context_kwargs["model"] = args.model
     context = FlowContext(
         repo_dir=repo_dir,
         execution_branch=target,
         dry_run=dry_run,
         max_review_iterations=max_iterations,
         token_reduce=token_reduce,
+        **context_kwargs,
     )
 
     loop_res = run_review_loop(
@@ -3253,6 +3373,48 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _commit_stage5_reconciliation(context: FlowContext, repo_dir: str) -> None:
+    """Commit the Stage 5 reconciliation rows onto the /calibrated branch.
+
+    ``reconcile_records`` appends after ``run_calibrate`` has committed the calibration report,
+    so the rows are committed in a follow-up commit on the same /calibrated branch, before it is
+    pushed and fast-forwarded into the execution branch. Call it only after ``run_calibrate``
+    returned: on the fallback path (``run_calibrate`` raised) the caller skips it, even when HEAD
+    already sits on the /calibrated branch, so the rows stay uncommitted in the working tree with
+    the fallback report. As a further guard, nothing is committed when HEAD is not the /calibrated
+    branch. Never raises.
+    """
+    branch = context.calibrated_branch
+    if not branch:
+        return
+    try:
+        head = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_dir, check=False)
+        if head.returncode != 0 or head.stdout.strip() != branch:
+            context.log(
+                f"Stage 5 reconciliation rows left uncommitted in {LEDGER_EXECUTIONS_REL}: "
+                f"HEAD is not the calibrated branch '{branch}'."
+            )
+            return
+        run_git(["add", LEDGER_EXECUTIONS_REL], cwd=repo_dir, check=False)
+        commit_res = run_git(
+            ["commit", "-m", "chore(calibration): record stage 5 reconciliation", "--", LEDGER_EXECUTIONS_REL],
+            cwd=repo_dir,
+            env=calibration_commit_env(),
+            check=False,
+        )
+        if commit_res.returncode != 0:
+            combined_output = (commit_res.stdout + " " + commit_res.stderr).lower()
+            if "nothing to commit" not in combined_output:
+                detail = CredentialRedactor.redact_text(commit_res.stderr.strip())
+                msg = f"Warning: committing Stage 5 reconciliation rows failed: {detail}"
+                logger.warning(msg)
+                context.log(msg)
+    except Exception as e:
+        msg = f"Warning: committing Stage 5 reconciliation rows failed: {CredentialRedactor.redact_text(str(e))}"
+        logger.warning(msg)
+        context.log(msg)
+
+
 def run_calibrate_stage(context: FlowContext) -> StageResult:
     """Execute Stage 5: Post-Execution Calibration (Bean 0038).
 
@@ -3275,6 +3437,7 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
 
     calibrated_branch = f"{context.execution_branch.rstrip('/_').rstrip('/')}/calibrated"
     report_dict: dict[str, Any] = {}
+    calibration_succeeded = False
 
     try:
         report = run_calibrate(
@@ -3282,11 +3445,16 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
             repo_dir=repo_dir,
             json_output=False,
             skip_commit=context.dry_run,
+            log_fn=context.log,
         )
         context.calibrated_branch = report.calibrated_branch
         report_dict = report.to_dict()
+        calibration_succeeded = True
     except Exception as e:
-        context.log(f"Calibration run encountered exception: {e}. Generating fallback report.")
+        context.log(
+            f"Calibration run encountered exception: {CredentialRedactor.redact_text(str(e))}. "
+            "Generating fallback report."
+        )
         clean = context.execution_branch.strip().rstrip("/_").rstrip("/")
         parts = clean.split("/")
         plan_id = "P-unknown"
@@ -3298,19 +3466,31 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
         os.makedirs(plans_dir, exist_ok=True)
         report_rel = f"plans/{plan_id}_calibration.md"
         report_path = os.path.join(repo_dir, report_rel)
-        if not os.path.exists(report_path):
+        fallback_report_written = not os.path.exists(report_path)
+        if fallback_report_written:
             with open(report_path, "w", encoding="utf-8") as f:
                 f.write(f"# Calibration Report for {plan_id}\n\nFallback calibration generated.\n")
         try:
             converge_prettier([report_rel], repo_dir=repo_dir)
-        except Exception as e:
-            context.log(f"Warning: Prettier formatting failed for fallback {report_rel}: {e}")
+        except Exception as fmt_exc:
+            fmt_detail = CredentialRedactor.redact_text(str(fmt_exc))
+            context.log(f"Warning: Prettier formatting failed for fallback {report_rel}: {fmt_detail}")
         report_dict = {
             "plan_id": plan_id,
             "calibrated_branch": calibrated_branch,
             "markdown_content": f"# Calibration Report for {plan_id}",
         }
         context.calibrated_branch = calibrated_branch
+        if not context.dry_run:
+            record_calibration_action(
+                {**report_dict, "execution_branch": context.execution_branch, "plan_branch": context.plan_branch},
+                repo_dir,
+                report_rel,
+                outcome="failure",
+                error_context=_bounded_error_context(f"Calibration run failed: {e}"),
+                fallback_report_written=fallback_report_written,
+                log_fn=context.log,
+            )
 
     # Reconcile pending action outcomes and promote knowledge candidates (Bean 0052 Goal 6)
     promoted_candidates: list[dict[str, Any]] = []
@@ -3319,7 +3499,8 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
         db_path = os.path.join(repo_dir, "holon-knowledge/.index/action_index.db")
         exec_status = context.stage_results.get("execute")
         outcome = "success" if exec_status and exec_status.status == StageStatus.SUCCESS else "failure"
-        if os.path.exists(executions_file):
+        # Dry runs append nothing, so the reconciliation events are only written on a real run.
+        if os.path.exists(executions_file) and not context.dry_run:
             reconcile_records(
                 ledger_path=executions_file,
                 max_age_days=14,
@@ -3328,6 +3509,13 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
                 reason=f"Stage 5 calibration reconciled execution outcome to {outcome}",
                 db_path=db_path,
             )
+            if calibration_succeeded:
+                _commit_stage5_reconciliation(context, repo_dir)
+            else:
+                context.log(
+                    f"Stage 5 failure ACT-CAL and reconciliation rows left uncommitted in "
+                    f"{LEDGER_EXECUTIONS_REL}: calibration failed."
+                )
         if os.path.exists(db_path):
             index_db = ActionIndexDatabase(db_path=db_path)
             promoted_candidates = promote_pending_candidates(
@@ -3340,10 +3528,11 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
             if promoted_candidates:
                 context.log(f"Stage 5 promoted {len(promoted_candidates)} knowledge/wisdom candidate(s).")
     except Exception as e:
-        logger.debug("Non-fatal knowledge reconciliation during calibrate stage: %s", e)
+        _warn_ledger_failure(context, "Stage 5 ledger reconciliation", executions_file, e)
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    if not context.dry_run and context.calibrated_branch:
+    # A failed calibration commits nothing, so it neither pushes nor fast-forwards the /calibrated branch.
+    if not context.dry_run and calibration_succeeded and context.calibrated_branch:
         if not context.skip_push:
             run_git(["push", "-u", "origin", context.calibrated_branch], cwd=repo_dir, check=False)
         if context.execution_branch:
@@ -3352,7 +3541,12 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
             if not context.skip_push:
                 run_git(["push", "origin", context.execution_branch], cwd=repo_dir, check=False)
 
-    if context.calibrated_branch:
+    if not context.dry_run and not calibration_succeeded:
+        context.log(
+            "Stage 5 completed with a calibration failure: nothing was committed, pushed or fast-forwarded "
+            f"for '{context.calibrated_branch}'."
+        )
+    elif context.calibrated_branch:
         context.log(f"Stage 5 completed: Calibration analysis generated on branch '{context.calibrated_branch}'.")
     else:
         context.log("Stage 5 completed: Calibration analysis generated in working tree (uncommitted).")

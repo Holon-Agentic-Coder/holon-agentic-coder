@@ -1,9 +1,10 @@
-"""Suite-wide fixtures."""
+"""Suite-wide fixtures: no ambient credentials, no operator agent-harness markers, no real pre-flight probes."""
 
 import os
 
 import pytest
 from sandbox_executor import cli
+from sandbox_executor.agent_defaults import detected_harness_markers
 
 # Ambient variables that can carry a live credential or change which code path a test exercises.
 _AMBIENT_CREDENTIAL_NAMES = ("GITHUB_TOKEN", "GH_TOKEN")
@@ -52,3 +53,19 @@ def isolated_env_file_dir(tmp_path_factory, monkeypatch):
     os.chmod(env_dir, 0o700)
     monkeypatch.setattr(cli, "env_file_dir", lambda: str(env_dir))
     return env_dir
+
+
+@pytest.fixture(autouse=True)
+def _isolate_agent_defaults(no_ambient_credentials, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clear harness markers and runner overrides, and disable the real readiness probe.
+
+    The suite runs inside Claude Code, pi and other harnesses whose markers would otherwise change the resolved default
+    runner. The pre-flight probe makes a real model call through docker, so tests opt back in explicitly by deleting
+    HOLON_SKIP_PREFLIGHT and mocking the probe. Depends on `no_ambient_credentials` so it always runs after that
+    fixture's `HOLON_*` sweep, which would otherwise delete HOLON_SKIP_PREFLIGHT again.
+    """
+    for _runner_id, name in detected_harness_markers():
+        monkeypatch.delenv(name, raising=False)
+    for name in ("HOLON_AGENT", "HOLON_MODEL", "HOLON_PREFLIGHT_TIMEOUT"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HOLON_SKIP_PREFLIGHT", "1")

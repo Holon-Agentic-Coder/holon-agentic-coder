@@ -171,8 +171,9 @@ flowchart TD
   - Knowledge-driven: Strictly maintains three append-only ledgers in `holon-knowledge/ledger/`:
     1. `intents.jsonl`: Intent registrations, goals, constraints, and hierarchy links.
     2. `plans.jsonl`: Competing plan proposals, predictions, and model routing metadata.
-    3. `executions.jsonl`: Execution summaries, Stage 4 PR review summaries, Stage 5 calibration summaries, and
-       fine-grained micro-actions (`entry_type: "action"`, e.g. `ACT-REV`, `ACT-FIND`, `ACT-POST`).
+    3. `executions.jsonl`: Execution summaries, Stage 4 PR review summaries, and fine-grained micro-actions
+       (`entry_type: "action"`, e.g. `ACT-REV`, `ACT-FIND`, `ACT-RES`, `ACT-POST` and the Stage 5 `ACT-CAL`). See the
+       flow stage record matrix in `docs/ledger_schema.md`.
   - Retirement of auxiliary ledgers: Auxiliary ledgers such as `actions.jsonl` and `reviews.jsonl` are completely
     retired and prohibited.
   - Concurrency & Interleaving Protection: All ledger appends are guarded by `LedgerLock` (POSIX advisory file locking

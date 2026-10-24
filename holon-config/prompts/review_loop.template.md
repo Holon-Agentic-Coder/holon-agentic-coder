@@ -38,7 +38,10 @@ the ensemble consensus model, the `pr-review-loop` architecture, and the multi-r
 9. **Runtime Attrition Absorption**: Single-pass failures or timeouts must never abort the entire loop. Relaunch or
    salvage partial reports where possible.
 10. **State Persistence**: Maintain `.subagent/<repo>_pr<N>_state.json` and append discrete action records to
-    `holon-knowledge/ledger/executions.jsonl`.
+    `holon-knowledge/ledger/executions.jsonl` through `sandbox_executor.flow.record_review_action()` (or the native
+    `holon review-loop`; callers without a `FlowContext` use the context-free
+    `sandbox_executor.ledger.try_append_action_record(..., preserve_shape=True)`), never by writing to the file
+    directly.
 
 ---
 
@@ -168,7 +171,9 @@ Review-Severity: {severity}
 ```
 
 All evaluations, finding detections, and resolver events must be appended to the executions ledger
-(`holon-knowledge/ledger/executions.jsonl`).
+(`holon-knowledge/ledger/executions.jsonl`) via `sandbox_executor.flow.record_review_action()` (or, without a
+`FlowContext`, the context-free `sandbox_executor.ledger.try_append_action_record(..., preserve_shape=True)`), both of
+which validate each record and serialise the append under `LedgerLock`.
 
 ---
 

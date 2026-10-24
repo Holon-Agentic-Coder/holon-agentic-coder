@@ -407,12 +407,13 @@ class TestFlowStages:
 
         with (
             patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
-            patch("sandbox_executor.flow.run_calibrate", return_value=mock_report),
+            patch("sandbox_executor.flow.run_calibrate", return_value=mock_report) as mock_run,
         ):
             res = run_calibrate_stage(ctx)
 
         assert res.status == StageStatus.SUCCESS
         assert res.payload["calibration_report"]["accuracy_score"] == 0.95
+        assert mock_run.call_args.kwargs["log_fn"] == ctx.log
         assert ctx.calibrated_branch == "I-100-intent/P-200-plan/E-300-exec/calibrated"
 
     def test_stage5_calibrate_fallback_invokes_converge_prettier(self, tmp_path):
@@ -431,6 +432,324 @@ class TestFlowStages:
 
         assert res.status == StageStatus.SUCCESS
         mock_converge.assert_called_once_with(["plans/P-200-plan_calibration.md"], repo_dir=str(tmp_path))
+
+    def test_stage5_calibrate_fallback_appends_uncommitted_failure_act_cal(self, tmp_path):
+        """A failed calibration run appends an ACT-CAL failure row that stays uncommitted, as documented."""
+        import subprocess
+
+        def git(*args: str) -> str:
+            return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True).stdout
+
+        git("init", "-q", "-b", "main")
+        git("config", "user.email", "test@example.com")
+        git("config", "user.name", "Test")
+        ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
+        ledger.parent.mkdir(parents=True)
+        ledger.write_text("", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "initial")
+        head_before = git("rev-parse", "HEAD").strip()
+
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            plan_branch="I-100-intent/P-200-plan/_",
+            dry_run=False,
+            skip_push=True,
+        )
+        with (
+            patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError("calibration failed")),
+            patch("sandbox_executor.flow.converge_prettier"),
+        ):
+            res = run_calibrate_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        cal_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-CAL"]
+        assert len(cal_rows) == 1
+        assert cal_rows[0]["outcome"] == "failure"
+        assert "calibration failed" in cal_rows[0]["error_context"]
+        assert cal_rows[0]["action"] == "Calibration failed for plan P-200-plan; fallback report written"
+        assert cal_rows[0]["calibration_report_path"] == "plans/P-200-plan_calibration.md"
+
+        # Nothing is committed on the fallback path: the row and report remain working-tree changes.
+        assert git("rev-parse", "HEAD").strip() == head_before
+        assert git("branch", "--list", "*calibrated").strip() == ""
+        status = git("status", "--porcelain", "--untracked-files=all")
+        assert "holon-knowledge/ledger/executions.jsonl" in status
+        assert "plans/P-200-plan_calibration.md" in status
+
+    @pytest.mark.parametrize("scenario", ["raises_after_checkout", "rerun_on_calibrated"])
+    def test_stage5_calibrate_failure_on_calibrated_branch_commits_nothing(self, tmp_path, scenario):
+        """A failed calibration leaves its rows uncommitted even when HEAD sits on the /calibrated branch."""
+        import subprocess
+
+        def git(*args: str) -> str:
+            return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True).stdout
+
+        execution_branch = "I-100-intent/P-200-plan/E-300-exec/_"
+        calibrated_branch = "I-100-intent/P-200-plan/E-300-exec/calibrated"
+        git("init", "-q", "-b", "main")
+        git("config", "user.email", "test@example.com")
+        git("config", "user.name", "Test")
+        ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
+        ledger.parent.mkdir(parents=True)
+        ledger.write_text("", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "initial")
+        git("checkout", "-q", "-b", execution_branch)
+        if scenario == "rerun_on_calibrated":
+            git("checkout", "-q", "-b", calibrated_branch)
+        execution_tip = git("rev-parse", execution_branch).strip()
+
+        def failing_run_calibrate(**_kwargs):
+            if scenario == "raises_after_checkout":
+                git("checkout", "-q", "-b", calibrated_branch)
+                raise OSError("report write failed")
+            raise RuntimeError("generate_calibration failed")
+
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch=execution_branch,
+            plan_branch="I-100-intent/P-200-plan/_",
+            dry_run=False,
+            skip_push=True,
+        )
+        with (
+            patch("sandbox_executor.flow.run_calibrate", side_effect=failing_run_calibrate),
+            patch("sandbox_executor.flow.converge_prettier"),
+        ):
+            res = run_calibrate_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        cal_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-CAL"]
+        assert len(cal_rows) == 1
+        assert cal_rows[0]["outcome"] == "failure"
+
+        # Neither branch gains a commit, so no ff/push can carry the failure rows into the PR.
+        assert git("rev-parse", calibrated_branch).strip() == execution_tip
+        assert git("rev-parse", execution_branch).strip() == execution_tip
+        assert git("show", f"{calibrated_branch}:holon-knowledge/ledger/executions.jsonl") == ""
+        status = git("status", "--porcelain", "--untracked-files=all")
+        assert "holon-knowledge/ledger/executions.jsonl" in status
+        assert "plans/P-200-plan_calibration.md" in status
+        assert any("left uncommitted" in line and "calibration failed" in line for line in ctx.logs)
+
+    def test_stage5_calibrate_fallback_records_original_error_when_prettier_fails(self, tmp_path):
+        """A Prettier failure inside the fallback must not mask the original calibration error."""
+        ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
+        ledger.parent.mkdir(parents=True)
+        ledger.write_text("", encoding="utf-8")
+
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            plan_branch="I-100-intent/P-200-plan/_",
+            dry_run=False,
+            skip_push=True,
+        )
+        with (
+            patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError("calibration failed")),
+            patch("sandbox_executor.flow.converge_prettier", side_effect=OSError("prettier missing")),
+        ):
+            res = run_calibrate_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        cal_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-CAL"]
+        assert len(cal_rows) == 1
+        assert cal_rows[0]["outcome"] == "failure"
+        assert cal_rows[0]["error_context"] == "Calibration run failed: calibration failed"
+
+    def test_stage5_calibrate_fallback_redacts_credentials_in_act_cal(self, tmp_path):
+        """The fallback ACT-CAL error_context must not carry credentials from the exception text."""
+        ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
+        ledger.parent.mkdir(parents=True)
+        ledger.write_text("", encoding="utf-8")
+        sample_value = "ghp_" + "M" * 36
+
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            plan_branch="I-100-intent/P-200-plan/_",
+            dry_run=False,
+            skip_push=True,
+        )
+        with (
+            patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError(f"fetch failed {sample_value}")),
+            patch("sandbox_executor.flow.converge_prettier"),
+        ):
+            run_calibrate_stage(ctx)
+
+        cal_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-CAL"]
+        assert len(cal_rows) == 1
+        assert cal_rows[0]["error_context"] == "Calibration run failed: fetch failed [REDACTED_SECRET]"
+        assert sample_value not in ledger.read_text(encoding="utf-8")
+
+    def test_stage5_calibrate_fallback_bounds_act_cal_error_context(self, tmp_path):
+        """A long fallback error_context is redacted before it is truncated (C10-N2)."""
+        from sandbox_executor.flow import POSTING_ERROR_CONTEXT_MAX_CHARS
+
+        ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
+        ledger.parent.mkdir(parents=True)
+        ledger.write_text("", encoding="utf-8")
+        sample_value = "ghp_" + "Q" * 36
+        prefix_len = len("Calibration run failed: ")
+        # The sample value starts 20 characters before the cap, so it straddles the boundary.
+        padding = "x" * (POSTING_ERROR_CONTEXT_MAX_CHARS - prefix_len - 21)
+        hook_output = f"{padding} {sample_value} trailing hook output"
+
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            plan_branch="I-100-intent/P-200-plan/_",
+            dry_run=False,
+            skip_push=True,
+        )
+        with (
+            patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError(hook_output)),
+            patch("sandbox_executor.flow.converge_prettier"),
+        ):
+            run_calibrate_stage(ctx)
+
+        cal_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-CAL"]
+        assert len(cal_rows) == 1
+        error_context = cal_rows[0]["error_context"]
+        assert len(error_context) <= POSTING_ERROR_CONTEXT_MAX_CHARS
+        assert error_context.startswith("Calibration run failed: xxx")
+        assert "ghp_" not in error_context
+        assert "ghp_" not in ledger.read_text(encoding="utf-8")
+
+    def test_stage5_fallback_prettier_warning_redacts_credentials(self, tmp_path):
+        """The fallback Prettier failure warning must not echo credentials from the exception text."""
+        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+        sample_value = "ghp_" + "P" * 36
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            plan_branch="I-100-intent/P-200-plan/_",
+            dry_run=True,
+            skip_push=True,
+        )
+        with (
+            patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError("calibration failed")),
+            patch("sandbox_executor.flow.converge_prettier", side_effect=OSError(f"npx auth {sample_value}")),
+        ):
+            run_calibrate_stage(ctx)
+
+        assert any("Prettier formatting failed" in line and "[REDACTED_SECRET]" in line for line in ctx.logs)
+        assert all(sample_value not in line for line in ctx.logs)
+
+    def test_warn_ledger_failure_redacts_credentials(self, tmp_path, caplog):
+        """Non-fatal ledger failure warnings redact the exception text in both logs."""
+        from sandbox_executor.flow import _warn_ledger_failure
+
+        caplog.set_level("WARNING", logger="sandbox_executor.flow")
+        sample_value = "ghp_" + "W" * 36
+        ctx = FlowContext(repo_dir=str(tmp_path))
+        _warn_ledger_failure(ctx, "Stage 4 review action event", "ledger.jsonl", OSError(f"denied {sample_value}"))
+
+        assert len(ctx.logs) == 1
+        assert ctx.logs[0].endswith(
+            "Warning: Ledger append failed (Stage 4 review action event) for ledger.jsonl: "
+            "OSError: denied [REDACTED_SECRET]"
+        )
+        assert any("[REDACTED_SECRET]" in rec.getMessage() for rec in caplog.records)
+        assert all(sample_value not in rec.getMessage() for rec in caplog.records)
+
+    @pytest.mark.parametrize("failure_mode", ["stderr", "raises"])
+    def test_stage5_reconciliation_commit_warning_redacts_credentials(self, tmp_path, caplog, failure_mode):
+        """A failed Stage 5 reconciliation commit warns without echoing credentials."""
+        from sandbox_executor.flow import _commit_stage5_reconciliation
+
+        caplog.set_level("WARNING", logger="sandbox_executor.flow")
+        sample_value = "ghp_" + "R" * 36
+        branch = "I-1/P-2/E-3/calibrated"
+        ctx = FlowContext(repo_dir=str(tmp_path))
+        ctx.calibrated_branch = branch
+
+        def fake_run_git(args, **_kwargs):
+            if args[0] == "rev-parse":
+                return MagicMock(returncode=0, stdout=f"{branch}\n", stderr="")
+            if args[0] == "commit":
+                if failure_mode == "raises":
+                    raise RuntimeError(f"hook failed {sample_value}")
+                return MagicMock(returncode=1, stdout="", stderr=f"remote rejected {sample_value}")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("sandbox_executor.flow.run_git", side_effect=fake_run_git):
+            _commit_stage5_reconciliation(ctx, str(tmp_path))
+
+        assert any("[REDACTED_SECRET]" in line for line in ctx.logs)
+        assert all(sample_value not in line for line in ctx.logs)
+        assert all(sample_value not in rec.getMessage() for rec in caplog.records)
+
+    def test_stage1_intent_fails_fast_when_ledger_append_fails(self, tmp_path):
+        """A failed Stage 1 intent append raises so the engine halts the pipeline."""
+        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_data={"slug": "stage1-append-fail", "goal": "Fail fast"},
+            dry_run=False,
+        )
+        with (
+            patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=0)),
+            patch("sandbox_executor.flow.try_append_ledger_line", return_value=False),
+            pytest.raises(RuntimeError, match="Stage 1 intent record"),
+        ):
+            run_intent_stage(ctx)
+
+    def test_stage2_plan_fails_fast_when_ledger_append_fails(self, tmp_path):
+        """A failed Stage 2 plan append raises so the engine halts the pipeline."""
+        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+        (tmp_path / "plans").mkdir(parents=True)
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_branch="I-12345-my-intent/_",
+            intent_data={"slug": "my-intent", "goal": "Generate plan"},
+            agent="antigravity-agent",
+            model="gemini-3.8-flash-medium",
+            dry_run=False,
+        )
+        with (
+            patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=0)),
+            patch("sandbox_executor.flow.try_append_ledger_line", return_value=False),
+            pytest.raises(RuntimeError, match="Stage 2 plan record"),
+        ):
+            run_plan_stage(ctx)
+
+    def test_stage3_execute_fails_fast_when_ledger_append_fails(self, tmp_path):
+        """A failed Stage 3 execution summary append raises so the engine halts the pipeline."""
+        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            plan_branch="I-123-intent/P-456-plan/_",
+            agent="antigravity-agent",
+            model="gemini-3.8-flash-medium",
+            dry_run=False,
+        )
+        with (
+            patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=0)),
+            patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="test pass", stderr="")),
+            patch("sandbox_executor.flow.try_append_ledger_line", return_value=False),
+            pytest.raises(RuntimeError, match="Stage 3 execution summary"),
+        ):
+            run_execute_stage(ctx)
+
+    def test_engine_halts_when_stage1_ledger_append_fails(self, tmp_path):
+        """The engine converts a failed Stage 1 append into a FAILED stage and stops."""
+        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_data={"slug": "engine-append-fail", "goal": "Fail fast"},
+            dry_run=False,
+        )
+        with (
+            patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=0)),
+            patch("sandbox_executor.flow.try_append_ledger_line", return_value=False),
+        ):
+            results = PipelineEngine(ctx).run()
+
+        assert results["intent"].status == StageStatus.FAILED
+        assert "plan" not in results
 
 
 class TestFlowResumptionAndErrorHandling:
@@ -2349,6 +2668,301 @@ class TestFlowRoleDispatch:
         with open(saved, encoding="utf-8") as f:
             assert "dispatcher" not in f.read()
         assert load_checkpoint(saved).context.dispatcher is None
+
+
+# ---------------------------------------------------------------------------
+# Stage 4 ledger provenance regression tests
+# ---------------------------------------------------------------------------
+
+REAL_EXECUTIONS_LEDGER = Path(__file__).resolve().parents[3] / "holon-knowledge" / "ledger" / "executions.jsonl"
+
+# Historical row shapes for each Stage 4 record type, as found in the canonical ledger.
+HISTORICAL_REVIEW_KEYS = [
+    "action_id",
+    "execution_id",
+    "action",
+    "category",
+    "target",
+    "outcome",
+    "entry_type",
+    "action_origin",
+    "review_severity",
+    "review_iteration",
+    "review_finding_ids",
+    "labels",
+    "error_context",
+    "created_at",
+]
+HISTORICAL_RESOLVER_KEYS = [
+    "action_id",
+    "execution_id",
+    "action",
+    "category",
+    "target",
+    "outcome",
+    "entry_type",
+    "action_origin",
+    "review_iteration",
+    "labels",
+    "created_at",
+]
+HISTORICAL_KEYS_BY_PREFIX = {
+    "ACT-REV": HISTORICAL_REVIEW_KEYS,
+    "ACT-FIND": HISTORICAL_REVIEW_KEYS,
+    "ACT-RES": HISTORICAL_RESOLVER_KEYS,
+    "ACT-POST": HISTORICAL_RESOLVER_KEYS,
+}
+EXECUTION_ID_PATTERNS = {
+    "ACT-REV": r"^REV-ITR-\d+-\d+$",
+    "ACT-FIND": r"^REV-FIND-\d+-\d+$",
+    "ACT-RES": r"^REV-RES-\d+-\d+$",
+    "ACT-POST": r"^REV-POST-\d+$",
+}
+
+
+def _ledger_fingerprint(path: Path) -> tuple[int, str]:
+    """Return the line count and SHA-256 digest of a ledger file (or a sentinel if absent)."""
+    import hashlib
+
+    if not path.exists():
+        return (-1, "")
+    data = path.read_bytes()
+    return (data.count(b"\n"), hashlib.sha256(data).hexdigest())
+
+
+def _read_rows(ledger: Path) -> list[dict]:
+    return [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _prefix(row: dict) -> str:
+    return str(row.get("action_id", "")).rsplit("-", 2)[0]
+
+
+class TestStage4LedgerProvenance:
+    """Stage 4 review loop must append validated, byte-compatible ACT-* rows to executions.jsonl."""
+
+    @pytest.fixture(autouse=True)
+    def _guard_real_ledger(self):
+        """Fail if any test touches the repository's own canonical execution ledger."""
+        before = _ledger_fingerprint(REAL_EXECUTIONS_LEDGER)
+        yield
+        assert _ledger_fingerprint(REAL_EXECUTIONS_LEDGER) == before, "Real executions.jsonl was modified"
+
+    def _run_two_iteration_loop(self, tmp_path, posting_side_effect=None, posting_return=None):
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            dry_run=False,
+        )
+        mergeability = iter([{"is_dirty": True}, {"is_dirty": False}])
+        if posting_side_effect:
+            posting: dict = {"side_effect": posting_side_effect}
+        elif posting_return is not None:
+            posting = {"return_value": posting_return}
+        else:
+            posting = {"return_value": {"dual_posted": True, "official_review": {"success": True}}}
+        with (
+            patch("sandbox_executor.flow.shutil.which", return_value=None),
+            patch("sandbox_executor.flow.check_pr_mergeability", side_effect=lambda *a, **k: next(mergeability)),
+            patch(
+                "sandbox_executor.flow.probe_ci_checks",
+                return_value={"all_passed": True, "source": "local_tests"},
+            ),
+            patch("sandbox_executor.flow.post_pr_review_consensus", **posting),
+        ):
+            result = run_review_loop(ctx, auto_pr=False)
+        return ctx, result, tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
+
+    def test_review_loop_appends_act_rows_to_target_repository(self, tmp_path):
+        _, result, ledger = self._run_two_iteration_loop(tmp_path)
+
+        assert result["consensus"]["approved"] is True
+        action_rows = [r for r in _read_rows(ledger) if _prefix(r) in HISTORICAL_KEYS_BY_PREFIX]
+        assert [_prefix(r) for r in action_rows] == ["ACT-REV", "ACT-FIND", "ACT-RES", "ACT-REV", "ACT-POST"]
+        for row in action_rows:
+            assert row["entry_type"] == "action"
+            assert row["action_origin"] == "pr_review"
+        timestamps = [r["created_at"] for r in action_rows]
+        assert timestamps == sorted(timestamps)
+        assert action_rows[-1]["outcome"] == "success"
+
+        ledger_dir = ledger.parent
+        assert sorted(p.name for p in ledger_dir.iterdir() if p.suffix == ".jsonl") == ["executions.jsonl"]
+        assert not (ledger_dir / "actions.jsonl").exists()
+        assert not (ledger_dir / "reviews.jsonl").exists()
+
+    def test_review_rows_are_byte_compatible_with_historical_shapes(self, tmp_path):
+        import re
+
+        _, _, ledger = self._run_two_iteration_loop(tmp_path)
+
+        raw_lines = [line for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+        seen: set[str] = set()
+        for raw in raw_lines:
+            row = json.loads(raw)
+            prefix = _prefix(row)
+            if prefix not in HISTORICAL_KEYS_BY_PREFIX:
+                continue
+            seen.add(prefix)
+            assert list(row.keys()) == HISTORICAL_KEYS_BY_PREFIX[prefix], prefix
+            assert re.match(EXECUTION_ID_PATTERNS[prefix], row["execution_id"]), row["execution_id"]
+            # Serialised exactly as json.dumps would have written the literal.
+            assert raw == json.dumps(row)
+        assert seen == set(HISTORICAL_KEYS_BY_PREFIX)
+
+    def test_act_post_recorded_when_posting_raises(self, tmp_path, caplog):
+        caplog.set_level("WARNING", logger="sandbox_executor.flow")
+        ctx, result, ledger = self._run_two_iteration_loop(tmp_path, posting_side_effect=RuntimeError("gh exploded"))
+
+        post_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-POST"]
+        assert len(post_rows) == 1
+        assert post_rows[0]["outcome"] == "failure"
+        assert post_rows[0]["error_context"] == "gh exploded"
+        assert "dual-posted" not in post_rows[0]["action"]
+        assert "posting to GitHub failed" in post_rows[0]["action"]
+        assert list(post_rows[0].keys()) == [*HISTORICAL_RESOLVER_KEYS[:-1], "error_context", "created_at"]
+        assert result["posting"] == {"error": "gh exploded"}
+        assert any("gh exploded" in rec.getMessage() for rec in caplog.records if rec.levelname == "WARNING")
+        assert any("gh exploded" in line for line in ctx.logs)
+
+    def test_act_post_redacts_credentials_when_posting_raises(self, tmp_path, caplog):
+        caplog.set_level("WARNING", logger="sandbox_executor.flow")
+        sample_value = "ghp_" + "Q" * 36
+        ctx, result, ledger = self._run_two_iteration_loop(
+            tmp_path, posting_side_effect=RuntimeError(f"gh exploded using {sample_value}")
+        )
+
+        post_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-POST"]
+        assert len(post_rows) == 1
+        assert post_rows[0]["error_context"] == "gh exploded using [REDACTED_SECRET]"
+        assert sample_value not in ledger.read_text(encoding="utf-8")
+        assert sample_value not in str(result["posting"])
+        assert all(sample_value not in rec.getMessage() for rec in caplog.records)
+        assert all(sample_value not in line for line in ctx.logs)
+
+    def test_act_post_records_returned_failure_diagnostics(self, tmp_path):
+        sample_value = "ghp_" + "Z" * 36
+        returned_failure = {
+            "dual_posted": False,
+            "diagnostics": "Review posting partial/failed: comment=True, review=False.",
+            "discussion_comment": {"attempted": True, "success": True, "output": "posted"},
+            "official_review": {
+                "attempted": True,
+                "success": False,
+                "output": f"Official review submission failed (exit code 1): bad credentials {sample_value}",
+            },
+        }
+        _, _, ledger = self._run_two_iteration_loop(tmp_path, posting_return=returned_failure)
+
+        post_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-POST"]
+        assert len(post_rows) == 1
+        error_context = post_rows[0]["error_context"]
+        assert post_rows[0]["outcome"] == "failure"
+        assert "Review posting partial/failed: comment=True, review=False." in error_context
+        assert "official_review: Official review submission failed (exit code 1)" in error_context
+        assert "[REDACTED_SECRET]" in error_context
+        assert "discussion_comment" not in error_context
+        assert sample_value not in ledger.read_text(encoding="utf-8")
+
+    def test_act_post_error_context_redacts_before_truncating(self, tmp_path):
+        from sandbox_executor.flow import POSTING_ERROR_CONTEXT_MAX_CHARS
+
+        sample_value = "ghp_" + "K" * 36
+        padding = "x" * (POSTING_ERROR_CONTEXT_MAX_CHARS - 40)
+        returned_failure = {
+            "dual_posted": False,
+            "official_review": {"success": False, "output": f"{padding} {sample_value} trailing detail"},
+        }
+        _, _, ledger = self._run_two_iteration_loop(tmp_path, posting_return=returned_failure)
+
+        error_context = next(r for r in _read_rows(ledger) if _prefix(r) == "ACT-POST")["error_context"]
+        assert len(error_context) <= POSTING_ERROR_CONTEXT_MAX_CHARS
+        assert "ghp_" not in error_context
+        assert "ghp_" not in ledger.read_text(encoding="utf-8")
+
+    def test_dry_run_suppresses_appends_visibly(self, tmp_path):
+        ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1/P-2/E-3/_", dry_run=True)
+        with (
+            patch("sandbox_executor.flow.shutil.which", return_value=None),
+            patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
+            patch(
+                "sandbox_executor.flow.probe_ci_checks",
+                return_value={"all_passed": True, "source": "local_tests"},
+            ),
+        ):
+            run_review_loop(ctx, auto_pr=False)
+
+        assert not (tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl").exists()
+        assert any("Dry run" in line and "ledger record(s) not appended" in line for line in ctx.logs)
+
+    def test_unwritable_ledger_warns_and_does_not_raise(self, tmp_path, caplog):
+        caplog.set_level("WARNING")
+        ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1/P-2/E-3/_", dry_run=False)
+        ledger_path = str(tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl")
+        with (
+            patch("sandbox_executor.flow.shutil.which", return_value=None),
+            patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
+            patch(
+                "sandbox_executor.flow.probe_ci_checks",
+                return_value={"all_passed": True, "source": "local_tests"},
+            ),
+            patch("sandbox_executor.flow.post_pr_review_consensus", return_value={"dual_posted": True}),
+            patch("sandbox_executor.ledger.LedgerLock.__enter__", side_effect=PermissionError("ledger denied")),
+            patch("sandbox_executor.knowledge.records.atomic_ledger_append", side_effect=PermissionError("denied")),
+        ):
+            result = run_review_loop(ctx, auto_pr=False)
+
+        assert result["consensus"]["approved"] is True
+        warnings = [rec.getMessage() for rec in caplog.records if rec.levelname == "WARNING"]
+        assert any(ledger_path in msg and "ledger denied" in msg and "ACT-REV" in msg for msg in warnings)
+        assert any(ledger_path in msg and "ACT-POST" in msg for msg in warnings)
+        assert any("review summary" in msg for msg in warnings)
+        assert any(ledger_path in line and "ledger denied" in line for line in ctx.logs)
+        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
+        assert not ledger_dir.exists() or not any(ledger_dir.iterdir())
+
+    @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores file permissions")
+    def test_read_only_ledger_directory_warns_and_does_not_raise(self, tmp_path, caplog):
+        caplog.set_level("WARNING")
+        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
+        ledger_dir.mkdir(parents=True)
+        ledger_dir.chmod(0o555)
+        ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1/P-2/E-3/_", dry_run=False)
+        try:
+            with (
+                patch("sandbox_executor.flow.shutil.which", return_value=None),
+                patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
+                patch(
+                    "sandbox_executor.flow.probe_ci_checks",
+                    return_value={"all_passed": True, "source": "local_tests"},
+                ),
+                patch("sandbox_executor.flow.post_pr_review_consensus", return_value={"dual_posted": True}),
+            ):
+                run_review_loop(ctx, auto_pr=False)
+        finally:
+            ledger_dir.chmod(0o755)
+
+        warnings = [rec.getMessage() for rec in caplog.records if rec.levelname == "WARNING"]
+        assert any(str(ledger_dir / "executions.jsonl") in msg for msg in warnings)
+        assert list(ledger_dir.iterdir()) == []
+
+    def test_record_review_action_rejects_invalid_record_without_writing(self, tmp_path, caplog):
+        from sandbox_executor.flow import record_review_action
+
+        caplog.set_level("WARNING")
+        ctx = FlowContext(repo_dir=str(tmp_path))
+        ledger = tmp_path / "executions.jsonl"
+        bad = {
+            "action_id": "ACT-REV-1-deadbeef",
+            "execution_id": "REV-ITR-1-1",
+            "action": "x",
+            "category": "not-a-category",
+            "target": "t",
+            "outcome": "success",
+        }
+        assert record_review_action(ctx, str(ledger), bad) is None
+        assert not ledger.exists()
+        assert any("not-a-category" in rec.getMessage() for rec in caplog.records if rec.levelname == "WARNING")
 
 
 # Identity and signing overrides so fixture commits never depend on the host's global git configuration.

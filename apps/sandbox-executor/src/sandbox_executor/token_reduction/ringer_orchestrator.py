@@ -3,6 +3,8 @@
 import logging
 from typing import Any
 
+from sandbox_executor.agent_defaults import DEFAULT_MODELS
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,7 +38,7 @@ class RingerOrchestrator:
     def __init__(
         self,
         architect_model: str = "claude-3-5-sonnet",
-        executor_model: str = "gemini-3.5-flash",
+        executor_model: str = DEFAULT_MODELS["antigravity"],
     ):
         self.architect_model = architect_model
         self.executor_model = executor_model

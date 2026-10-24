@@ -999,30 +999,34 @@ class TestDoctor(unittest.TestCase):
     def test_doctor_never_prints_base_url_userinfo(self):
         # C8-N1 / C9-N1: a credential embedded in HOLON_LOCAL_BASE_URL must reach neither the text nor the --json
         # report, including passwords with an unencoded "/", "?" or "#". Built at runtime, not literals.
+        # C10-N1 adds hosts that do not parse (bad port, non-ASCII name), the case the "invalid port" warning is for.
         sample = "pw-" + "z" * 8
         head = "hd-" + "q" * 5
-        for sep in ("", "/", "?", "#"):
+        name = "some" + "one"
+        hosts = ("gpu.example.com:8000/v1", "gpu.example.com:abc/v1", "h\u00f4st.example/v1")
+        for sep, host in ((sep, host) for sep in ("", "/", "?", "#", "@") for host in hosts):
             secret = f"{head}{sep}{sample}" if sep else sample
+            shown = f"http://***@{host}"
             env = {
                 "HOLON_LOCAL_LLM": "1",
-                "HOLON_LOCAL_BASE_URL": f"http://someone:{secret}@gpu.example.com:8000/v1?key={sample}",
+                "HOLON_LOCAL_BASE_URL": f"http://{name}:{secret}@{host}?key={sample}",
                 "HOLON_LOCAL_MODELS": "m",
             }
-            with self.subTest(sep=sep):
+            with self.subTest(sep=sep, host=host):
                 code, output = self.run_doctor(env, _fetcher(HEALTH_OFF))
                 self.assertEqual(code, 1)
-                self.assertIn("http://***@gpu.example.com:8000/v1", output)
-                for fragment in (sample, head, "someone"):
+                self.assertIn(shown, output)
+                for fragment in (sample, head, name):
                     self.assertNotIn(fragment, output)
             for as_json in (False, True):
-                with self.subTest(sep=sep, as_json=as_json):
+                with self.subTest(sep=sep, host=host, as_json=as_json):
                     code, output = self.run_unified_doctor(env, _fetcher(HEALTH_OFF), as_json=as_json)
                     self.assertEqual(code, 1)
-                    for fragment in (sample, head, "someone"):
+                    for fragment in (sample, head, name):
                         self.assertNotIn(fragment, output)
                     if as_json:
                         lines = json.loads(output)["environment"]["lines"]
-                        self.assertTrue(any("http://***@gpu.example.com:8000/v1" in line for line in lines))
+                        self.assertTrue(any(shown in line for line in lines))
 
     def test_unified_doctor_fails_when_probe_fails(self):
         from sandbox_executor.preflight import PreflightStatus

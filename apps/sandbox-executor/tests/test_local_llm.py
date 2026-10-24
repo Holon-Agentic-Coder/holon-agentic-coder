@@ -921,10 +921,37 @@ class TestGatewayHealth(unittest.TestCase):
         # A URL without any "@" is byte-identical (even its scheme case); only a query or fragment is dropped.
         self.assertEqual(local_llm.redact_url("HTTP://Host.Example:80/a/b"), "HTTP://Host.Example:80/a/b")
         self.assertEqual(local_llm.redact_url("http://localhost:8000/v1?key=k#f"), "http://localhost:8000/v1")
-        # An "@" in the path of a credential-free URL is over-redacted, but the marker shows the authority was
-        # rewritten instead of silently printing a different host; an "@" in a dropped query is not userinfo.
+        # Any "@" fails closed: an "@" in the path or query of a credential-free URL is over-redacted, but the marker
+        # shows the authority was rewritten instead of silently printing a different host.
         self.assertEqual(local_llm.redact_url("http://localhost:8000/v1/@scope/models"), "http://***@scope/models")
-        self.assertEqual(local_llm.redact_url("http://localhost:8000/v1?owner=a@"), "http://localhost:8000/v1")
+        self.assertEqual(local_llm.redact_url("http://localhost:8000/v1?owner=a@"), "http://***@")
+
+    def test_redact_url_never_leaks_userinfo_over_probe_matrix(self):
+        # C10-N1: the strip up to the last "@" is unconditional, so no host shape can gate it. Built at runtime.
+        head = "hd-" + "q" * 5
+        sample = "pw-" + "x" * 8
+        name = "some" + "one"
+        hosts = (
+            "gpu.example.com:8000/v1",
+            "[::1]:8081/v1",
+            "127.0.0.1:59999/v1",
+            "gpu.example.com:abc/v1",
+            "h\u00f4st.example/v1",
+            "[::1/v1",
+            "/v1",
+            "",
+            "gpu example.com/v1",
+        )
+        for sep in ("", "/", "?", "#", "@", ":", "%", "%2F"):
+            for userinfo in (f"{name}:{head}{sep}{sample}", f"{head}{sep}{sample}"):
+                for host in hosts:
+                    for prefix in ("http://", "//", ""):
+                        url = f"{prefix}{userinfo}@{host}?key={sample}#{sample}"
+                        with self.subTest(url=url):
+                            redacted = local_llm.redact_url(url)
+                            self.assertEqual(redacted, f"{prefix}***@{host}")
+                            for fragment in (head, sample, name):
+                                self.assertNotIn(fragment, redacted)
 
     def test_config_error_and_logs_never_echo_userinfo(self):
         sample = "pw-" + "y" * 8

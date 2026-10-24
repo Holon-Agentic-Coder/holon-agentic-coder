@@ -675,6 +675,7 @@ class TestFlowStages:
         assert len(cal_rows) == 1
         assert cal_rows[0]["outcome"] == "failure"
         assert "calibration failed" in cal_rows[0]["error_context"]
+        assert cal_rows[0]["action"] == "Calibration failed for plan P-200-plan; fallback report written"
         assert cal_rows[0]["calibration_report_path"] == "plans/P-200-plan_calibration.md"
 
         # Nothing is committed on the fallback path: the row and report remain working-tree changes.
@@ -789,6 +790,40 @@ class TestFlowStages:
         assert len(cal_rows) == 1
         assert cal_rows[0]["error_context"] == "Calibration run failed: fetch failed [REDACTED_SECRET]"
         assert sample_value not in ledger.read_text(encoding="utf-8")
+
+    def test_stage5_calibrate_fallback_bounds_act_cal_error_context(self, tmp_path):
+        """A long fallback error_context is redacted before it is truncated (C10-N2)."""
+        from sandbox_executor.flow import POSTING_ERROR_CONTEXT_MAX_CHARS
+
+        ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
+        ledger.parent.mkdir(parents=True)
+        ledger.write_text("", encoding="utf-8")
+        sample_value = "ghp_" + "Q" * 36
+        prefix_len = len("Calibration run failed: ")
+        # The sample value starts 20 characters before the cap, so it straddles the boundary.
+        padding = "x" * (POSTING_ERROR_CONTEXT_MAX_CHARS - prefix_len - 21)
+        hook_output = f"{padding} {sample_value} trailing hook output"
+
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            plan_branch="I-100-intent/P-200-plan/_",
+            dry_run=False,
+            skip_push=True,
+        )
+        with (
+            patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError(hook_output)),
+            patch("sandbox_executor.flow.converge_prettier"),
+        ):
+            run_calibrate_stage(ctx)
+
+        cal_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-CAL"]
+        assert len(cal_rows) == 1
+        error_context = cal_rows[0]["error_context"]
+        assert len(error_context) <= POSTING_ERROR_CONTEXT_MAX_CHARS
+        assert error_context.startswith("Calibration run failed: xxx")
+        assert "ghp_" not in error_context
+        assert "ghp_" not in ledger.read_text(encoding="utf-8")
 
     def test_stage5_fallback_prettier_warning_redacts_credentials(self, tmp_path):
         """The fallback Prettier failure warning must not echo credentials from the exception text."""

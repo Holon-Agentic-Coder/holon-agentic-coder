@@ -127,7 +127,11 @@ Stage 4 and Stage 5 action rows keep their historical field order and identifier
 - `ACT-CAL` uses `execution_id` `CAL-{plan_id}-{ts}`, `category: "doc"` and labels
   `["calibration", "stage-5", plan_id]`. Beyond the common action fields it carries `plan_branch`, `execution_branch`,
   `evaluated_commit_sha`, `predicted_metrics`, `actual_metrics`, `calibration_deltas` and `calibration_report_path`.
-  Each committed calibration run is a new calibration event, so re-running calibration appends a new `ACT-CAL` row.
+  Each committed calibration run is a new calibration event, so re-running calibration appends a new `ACT-CAL` row. A
+  failed Stage 5 run appends an uncommitted `failure` row whose `action` states whether a fallback report was written or
+  the existing report and ledger rows were left uncommitted.
+- Failure `error_context` values that can carry external output (the `ACT-POST` posting error and the fallback `ACT-CAL`
+  calibration error) are redacted, then truncated to 2000 characters.
 
 Write rules for every stage:
 

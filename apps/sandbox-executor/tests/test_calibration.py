@@ -1417,6 +1417,7 @@ def test_stage5_rejected_report_commit_takes_failure_path(calibration_repo):
     assert [r["outcome"] for r in _cal_rows(working)] == ["success", "failure"]
     failure = _cal_rows(working)[-1]
     assert "Git commit of calibration report plans/P-2_calibration.md failed" in failure["error_context"]
+    assert failure["action"] == "Calibration failed for plan P-2; existing report and ledger rows left uncommitted"
     assert _HOOK_SECRET not in working
     recon = [json.loads(line) for line in working.splitlines() if line.strip()]
     assert [r for r in recon if r.get("event_type") == "reconciliation"]

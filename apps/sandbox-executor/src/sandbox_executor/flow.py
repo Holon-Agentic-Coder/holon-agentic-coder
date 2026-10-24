@@ -2615,6 +2615,25 @@ def _warn_ledger_failure(context: FlowContext, label: str, ledger_path: str, exc
 POSTING_ERROR_CONTEXT_MAX_CHARS = 2000
 
 
+def _bounded_error_context(detail: str) -> str:
+    """Redact ``detail`` with the canonical ``CredentialRedactor``, then cap its length.
+
+    Redaction runs before truncation so a secret cut at the boundary cannot slip past the
+    redaction patterns. Used for every Stage 4 / Stage 5 ``error_context`` that can carry
+    unbounded external output (posting failures, calibration hook output).
+
+    Args:
+        detail: Raw failure detail.
+
+    Returns:
+        The redacted detail, at most ``POSTING_ERROR_CONTEXT_MAX_CHARS`` characters long.
+    """
+    detail = CredentialRedactor.redact_text(detail)
+    if len(detail) > POSTING_ERROR_CONTEXT_MAX_CHARS:
+        detail = detail[: POSTING_ERROR_CONTEXT_MAX_CHARS - 3] + "..."
+    return detail
+
+
 def _posting_failure_context(posting_res: dict[str, Any]) -> str:
     """Build the redacted ``error_context`` for a failed ACT-POST row.
 
@@ -2640,10 +2659,7 @@ def _posting_failure_context(posting_res: dict[str, Any]) -> str:
             parts.append(f"{step}: {step_res['output']}")
     unique_parts = list(dict.fromkeys(part.strip() for part in parts if part.strip()))
     detail = "; ".join(unique_parts) or "Consensus posting did not report success"
-    detail = CredentialRedactor.redact_text(detail)
-    if len(detail) > POSTING_ERROR_CONTEXT_MAX_CHARS:
-        detail = detail[: POSTING_ERROR_CONTEXT_MAX_CHARS - 3] + "..."
-    return detail
+    return _bounded_error_context(detail)
 
 
 def record_review_action(
@@ -3433,7 +3449,8 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
         os.makedirs(plans_dir, exist_ok=True)
         report_rel = f"plans/{plan_id}_calibration.md"
         report_path = os.path.join(repo_dir, report_rel)
-        if not os.path.exists(report_path):
+        fallback_report_written = not os.path.exists(report_path)
+        if fallback_report_written:
             with open(report_path, "w", encoding="utf-8") as f:
                 f.write(f"# Calibration Report for {plan_id}\n\nFallback calibration generated.\n")
         try:
@@ -3453,7 +3470,8 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
                 repo_dir,
                 report_rel,
                 outcome="failure",
-                error_context=f"Calibration run failed: {e}",
+                error_context=_bounded_error_context(f"Calibration run failed: {e}"),
+                fallback_report_written=fallback_report_written,
                 log_fn=context.log,
             )
 

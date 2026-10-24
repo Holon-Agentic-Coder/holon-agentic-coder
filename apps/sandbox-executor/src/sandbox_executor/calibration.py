@@ -1293,6 +1293,7 @@ def record_calibration_action(
     *,
     outcome: str = "success",
     error_context: str | None = None,
+    fallback_report_written: bool = True,
     log_fn: Callable[[str], None] | None = None,
 ) -> dict[str, Any] | None:
     """Append the Stage 5 ACT-CAL action record to the target repository's executions.jsonl.
@@ -1309,6 +1310,9 @@ def record_calibration_action(
         report_rel: Repository-relative path of the calibration report.
         outcome: Action outcome, ``"success"`` or ``"failure"``.
         error_context: Optional failure detail.
+        fallback_report_written: For a failure row, whether Stage 5 wrote a fallback report
+            (True) or kept an existing report that, with the ledger rows, stays uncommitted
+            (False). Selects the ``action`` wording; ignored for success rows.
         log_fn: Optional operator-facing log callable (for example ``FlowContext.log``).
 
     Returns:
@@ -1317,14 +1321,16 @@ def record_calibration_action(
     data = report.to_dict() if isinstance(report, CalibrationReport) else dict(report)
     plan_id = str(data.get("plan_id") or "P-unknown")
     execution_branch = data.get("execution_branch")
+    if outcome == "success":
+        action = f"Calibration report generated for plan {plan_id}"
+    elif fallback_report_written:
+        action = f"Calibration failed for plan {plan_id}; fallback report written"
+    else:
+        action = f"Calibration failed for plan {plan_id}; existing report and ledger rows left uncommitted"
     record: dict[str, Any] = {
         "action_id": generate_action_id("ACT-CAL"),
         "execution_id": f"CAL-{plan_id}-{int(time.time())}",
-        "action": (
-            f"Calibration report generated for plan {plan_id}"
-            if outcome == "success"
-            else f"Calibration failed for plan {plan_id}; fallback report written"
-        ),
+        "action": action,
         "category": "doc",
         "target": data.get("calibrated_branch") or execution_branch or plan_id,
         "outcome": outcome,

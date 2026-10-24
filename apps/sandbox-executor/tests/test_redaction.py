@@ -12,6 +12,7 @@ from sandbox_executor.redaction import (
     redact_agent_secrets,
     redact_command,
     redact_env_literals,
+    redact_url_value,
 )
 
 from tests.leak_assertions import assert_no_fragment, make_gh_probe, make_probe
@@ -239,8 +240,9 @@ def test_high_entropy_blob_without_a_provider_prefix_is_not_masked() -> None:
     assert redact_command(["echo", blob]) == f"echo {blob}"
 
 
-# Outputs captured from `redact_text` on main before the move (506b4fb). Only `sk-ant-` and `apikey`
-# were added to the pattern set, so text without them must redact byte for byte as it did there.
+# Outputs captured from `redact_text` on main before the move (506b4fb). Only `sk-ant-`, `apikey` and
+# password-bearing userinfo outside `http(s)://` were added to the pattern set, so text without them
+# must redact byte for byte as it did there.
 _MAIN_REDACT_TEXT_GOLDEN = [
     ("token: abc123def", "token: *******"),
     ('api_key: "abc123"', 'api_key: "*******"'),
@@ -279,3 +281,67 @@ def test_executor_run_cmd_redacts_before_the_250_character_clamp(
     for text in (captured.out, captured.err, " ".join(excinfo.value.cmd)):
         assert_no_fragment(text, probe)
     assert f"--branch {BRANCH}" in captured.out
+
+
+# Proxy URL forms whose userinfo password must be masked, beyond `http(s)://` (review finding N2).
+_PROXY_URL_FORMS = [
+    pytest.param("alice:{v}@proxy.corp:8080", id="schemeless"),
+    pytest.param("alice:{v}@", id="schemeless-no-host"),
+    pytest.param("socks5://alice:{v}@proxy:1080", id="socks5"),
+    pytest.param("socks5h://alice:{v}@", id="socks5-no-host"),
+    pytest.param("http://alice:{v}@proxy:3128", id="http"),
+    pytest.param("https://alice:{v}@proxy:3128", id="https"),
+]
+
+
+@pytest.mark.parametrize("form", _PROXY_URL_FORMS)
+def test_redact_url_value_masks_a_proxy_password_in_any_form(form: str) -> None:
+    sample = make_probe()
+    shown = redact_url_value(form.format(v=sample))
+    assert_no_fragment(shown, sample)
+    assert REDACTION_MARKER in shown
+
+
+@pytest.mark.parametrize("form", _PROXY_URL_FORMS)
+@pytest.mark.parametrize("name", ["HOLON_PROXY_URL", "HTTP_PROXY", "https_proxy", "ALL_PROXY"])
+def test_redact_command_masks_a_proxy_password_assigned_to_a_url_variable(name: str, form: str) -> None:
+    sample = make_probe()
+    shown = redact_command(["docker", "run", "-e", f"{name}={form.format(v=sample)}", "img"])
+    assert_no_fragment(shown, sample)
+    assert f"{name}=" in shown
+
+
+def test_redact_command_keeps_proxy_host_and_port_readable() -> None:
+    sample = make_probe()
+    assert redact_command([f"HTTP_PROXY=alice:{sample}@proxy.corp:8080"]) == "HTTP_PROXY=*******@proxy.corp:8080"
+    assert redact_command([f"socks5://alice:{sample}@proxy:1080"]) == "socks5://*******@proxy:1080"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "ssh://git@github.com/myorg/myrepo.git",
+        "git@github.com:myorg/myrepo.git",
+        "contact alice@example.com for access",
+        "pulled python:3.13@sha256:0123abcd",
+        "HOLON_PROXY_URL=proxy.corp:8080",
+        "HTTP_PROXY=http://proxy.corp:8080",
+    ],
+)
+def test_userinfo_without_a_password_is_not_masked(line: str) -> None:
+    assert redaction.redact_text(line) == line
+    assert redact_command([line]) == line
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("proxy.corp:8080", False),
+        ("http://proxy.corp:8080", False),
+        ("ssh://git@github.com/myorg/myrepo.git", False),
+        ("alice:{v}@proxy.corp:8080", True),
+        ("socks5://alice:{v}@proxy:1080", True),
+    ],
+)
+def test_carries_url_password(value: str, expected: bool) -> None:
+    assert redaction.carries_url_password(value.format(v=make_probe())) is expected

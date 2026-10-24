@@ -474,6 +474,20 @@ def test_invalid_proxy_url_warning_masks_userinfo(host_paths, monkeypatch, caplo
     assert_no_fragment(caplog.text, sample)
 
 
+@pytest.mark.parametrize("form", ["alice:{v}@", "socks5://alice:{v}@", "socks5h://alice:{v}@:notaport"])
+def test_invalid_proxy_url_warning_masks_userinfo_in_any_scheme(host_paths, monkeypatch, caplog, form):
+    """A schemeless or non-http HOLON_PROXY_URL is echoed with its userinfo password masked."""
+    sample = make_probe()
+    monkeypatch.setenv("HOLON_PROXY_URL", form.format(v=sample))
+    monkeypatch.setattr(cli, "generate_root_ca", lambda: pytest.fail("must not generate a CA"))
+
+    with caplog.at_level(logging.WARNING, logger="sandbox_executor.cli"):
+        assert cli._attach_external_proxy() == ([], {})
+
+    assert "not a valid proxy URL" in caplog.text
+    assert_no_fragment(caplog.text, sample)
+
+
 def test_flag_opt_in_sidecar_failure_degrades_to_direct_egress(host_paths, monkeypatch, caplog):
     monkeypatch.setattr(cli.os.path, "isfile", lambda path: False)
 

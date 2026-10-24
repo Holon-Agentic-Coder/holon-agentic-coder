@@ -35,10 +35,12 @@ from sandbox_executor.knowledge.stats import format_stats_dashboard
 from sandbox_executor.ledger import format_query_results_table, query_ledger
 from sandbox_executor.redaction import (
     COMMAND_ECHO_ENV_NAMES,
+    carries_url_password,
     is_secret_env_name,
     redact_agent_secrets,
     redact_command,
     redact_env_literals,
+    redact_url_value,
 )
 from sandbox_executor.scaffold import init_project
 from sandbox_executor.token_reduction import generate_root_ca
@@ -911,7 +913,8 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
     proxy_url = os.getenv("HOLON_PROXY_URL") or _proxy_gateway_url()
     host_port = _proxy_host_port(proxy_url)
     if host_port is None:
-        shown_url = redact_command([proxy_url])
+        # Parsed as a `//` authority when it has no scheme, so a schemeless password is masked too.
+        shown_url = redact_url_value(proxy_url)
         logger.warning(
             "holon-coherence proxy probe failed: HOLON_PROXY_URL='%s' is not a valid proxy URL. "
             "Proceeding with DIRECT egress fallback.",
@@ -1163,12 +1166,13 @@ def run_docker_container(
     docker_cmd = ["docker", "run", "--rm", *tty_flag]
 
     # Credentials never go on the docker command line, where `ps` and /proc/<pid>/cmdline can read
-    # them: they are collected here and handed over in a 0600 --env-file just before the run.
+    # them: they are collected here and handed over in a 0600 --env-file just before the run. That
+    # includes any value with a URL password (a proxy URL in any scheme, or none), whatever its name.
     secret_env: dict[str, str] = {}
 
     def add_env(key: str, value: str) -> None:
         item = f"{key}={value}"
-        if is_secret_env_name(key) or redact_command([item]) != item:
+        if is_secret_env_name(key) or redact_command([item]) != item or carries_url_password(value):
             secret_env[key] = value
         else:
             docker_cmd.extend(["-e", item])

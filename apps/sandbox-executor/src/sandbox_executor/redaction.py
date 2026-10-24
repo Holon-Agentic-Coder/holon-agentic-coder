@@ -33,6 +33,20 @@ _PROVIDER_TOKEN_RE = re.compile(
     r")"
 )
 
+# `//user:pass@`: the password-bearing userinfo of any URL authority, with or without a scheme. The
+# scheme itself is left out of the match (it is kept verbatim), and neither part may cross `/`,
+# whitespace or a quote, which keeps the scan linear and on one token.
+_URL_PASSWORD_RE = re.compile(r"//[^@/\s:'\"]*:[^@/\s'\"]*@")
+
+# `<NAME>_URL=user:pass@host`, `<NAME>_PROXY='user:pass@'`: a schemeless authority assigned to a
+# URL- or proxy-valued variable, which is how an `HOLON_PROXY_URL` or `HTTP_PROXY` value without a
+# scheme reaches an echo or a docker `-e` item. The userinfo parts are length-bounded because a
+# match can start at every `<NAME>_URL=` in the text (an unbounded scan there is quadratic).
+_URL_VAR_PASSWORD_RE = re.compile(
+    r"(\b(?:[A-Za-z0-9_]*_)?(?:URL|URI|PROXY)[ \t]*=[ \t]*[\"']?)[^@/\s:'\"=]{0,256}:[^@/\s'\"]{0,1024}@",
+    re.IGNORECASE,
+)
+
 # Explicit list of flags whose next argument must be masked.
 # Note: Suffixes like "-token", "_token", "-secret", "_secret", "-key", and "_key"
 # are checked dynamically in _is_secret_flag.
@@ -86,6 +100,12 @@ def redact_text(text: str) -> str:
         )
         text = head + "\n... (truncated) ...\n" + tail
     s = re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
+    # Any other scheme (`socks5://`, `ftp://`) and a scheme-relative `//` authority: masked only when
+    # the userinfo carries a password, so `ssh://git@host` keeps its readable user name.
+    s = _URL_PASSWORD_RE.sub(r"//*******@", s)
+    # A schemeless `user:pass@host` value is only recognisable by the variable it is assigned to; a
+    # bare `user@host` email or a `name:tag@sha256:...` image reference in prose is left alone.
+    s = _URL_VAR_PASSWORD_RE.sub(r"\1*******@", s)
     # Redact sensitive URL query parameters including auth_code and code
     s = re.sub(
         r"([?&](?:token|api_key|access_token|secret|password|auth|bearer|auth_code|code|client_secret|db_password|credential|credentials|key(?=[=_-])|pwd|passwd)[^=\s&]*=)[^\s&]+",
@@ -230,6 +250,35 @@ def redact_agent_secrets(text: str) -> str:
     return redact_env_literals(s)
 
 
+def redact_url_value(value: str) -> str:
+    """Redact a bare URL value, treating a schemeless `user:pass@host` as a `//` authority.
+
+    Mirrors how a proxy URL is parsed (`//` is prefixed when the value has none), so the password of
+    a schemeless value is masked even though nothing in the text marks it as a URL.
+
+    Args:
+        value: The URL exactly as configured, for example the value of `HOLON_PROXY_URL`.
+
+    Returns:
+        The value, rendered as `redact_command` would, with any userinfo password masked.
+    """
+    if "//" in value:
+        return redact_command([value])
+    return redact_command([f"//{value}"])[2:]
+
+
+def carries_url_password(value: str) -> bool:
+    """Decide whether a value holds a URL authority with a password, with or without a scheme.
+
+    Args:
+        value: An environment variable value.
+
+    Returns:
+        True if `redact_url_value` would mask part of it, so it must stay off process arguments.
+    """
+    return redact_url_value(value) != value
+
+
 def redact_command_args(argv: Sequence[str]) -> list[str]:
     """Redact a command per argument with the same rules as `redact_command`.
 
@@ -254,8 +303,9 @@ def redact_command(argv: Sequence[str]) -> str:
     Applies `redact_command_args` per argument (secret flags, key-anchored values, URL userinfo,
     provider tokens and the literal values of `COMMAND_ECHO_ENV_NAMES`), then sweeps the joined line
     again with `redact_text`, the provider token sweep and the literal values. The URL
-    rule only rewrites `scheme://<userinfo>@`, so the repository host, path and branch, and the
-    overall command shape, stay readable.
+    rules only rewrite the `<userinfo>@` of an authority (all of it for `http(s)://`, a
+    password-bearing one for any other scheme, `//` or a URL-valued variable), so the repository
+    host, path and branch, and the overall command shape, stay readable.
 
     Args:
         argv: The command and its arguments, exactly as handed to `subprocess`.

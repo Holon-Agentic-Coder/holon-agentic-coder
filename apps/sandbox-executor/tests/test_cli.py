@@ -1004,6 +1004,36 @@ def test_secrets_travel_in_an_owner_only_env_file_that_is_removed(leak_env, monk
 
 
 @pytest.mark.parametrize(
+    "form",
+    ["alice:{v}@proxy.corp:8080", "socks5://alice:{v}@proxy:1080", "https://alice:{v}@proxy:3128"],
+    ids=["schemeless", "socks5", "https"],
+)
+def test_proxy_url_password_travels_only_in_the_env_file(leak_env, monkeypatch, capsys, form):
+    """A forwarded HOLON_PROXY_URL and the derived proxy variables keep their password off docker argv."""
+    sample = make_probe()
+    proxy_value = form.format(v=sample)
+    monkeypatch.setenv("HOLON_PROXY_URL", proxy_value)
+    monkeypatch.setattr(
+        cli,
+        "get_token_reduction_mounts_and_envs",
+        lambda **kwargs: ([], {"HTTP_PROXY": proxy_value, "https_proxy": proxy_value, "NO_PROXY": "localhost"}),
+    )
+    docker = _RecordingDocker()
+    monkeypatch.setattr(cli.subprocess, "run", docker)
+
+    assert _run_planner(leak_env["repo"]) == 0
+
+    echo = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("Executing: docker run"))
+    assert_no_leak(sample, echo, docker.argv)
+    assert docker.env_file_mode == 0o600
+    for name in ("HOLON_PROXY_URL", "HTTP_PROXY", "https_proxy"):
+        assert docker.env_file_contents[name] == proxy_value
+        assert name not in docker.argv_env
+    # A value without a password stays on the command line, readable.
+    assert docker.argv_env["NO_PROXY"] == "localhost"
+
+
+@pytest.mark.parametrize(
     "outcome",
     [MagicMock(returncode=3), KeyboardInterrupt(), RuntimeError("docker exploded")],
     ids=["non-zero-exit", "keyboard-interrupt", "exception"],

@@ -5,7 +5,8 @@ import json
 import os
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
@@ -54,6 +55,32 @@ from sandbox_executor.flow import (
     save_checkpoint,
 )
 from sandbox_executor.ledger import parse_commit_trailers
+
+
+@contextmanager
+def _review_loop_gh_stubs() -> Iterator[None]:
+    """Stub every review-loop helper that shells out to ``gh``, so an approving loop issues no real gh call."""
+    clean_merge = {"is_dirty": False, "merge_state_status": "CLEAN", "mergeable": "MERGEABLE", "source": "github_cli"}
+    local_ci = {
+        "source": "local_tests",
+        "total": 1,
+        "passed": 1,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "all_passed": True,
+        "checks": [{"name": "local_tests", "bucket": "pass", "state": "SUCCESS"}],
+    }
+    with (
+        patch("sandbox_executor.flow.check_pr_mergeability", side_effect=lambda *a, **k: dict(clean_merge)),
+        patch("sandbox_executor.flow.probe_ci_checks", side_effect=lambda *a, **k: json.loads(json.dumps(local_ci))),
+        patch(
+            "sandbox_executor.flow.post_pr_review_consensus",
+            return_value={"dual_posted": True, "official_review": {"success": True}},
+        ) as mock_post,
+    ):
+        yield
+    mock_post.assert_called_once()
 
 
 class TestFlowDataModels:
@@ -357,6 +384,7 @@ class TestFlowStages:
             patch("sandbox_executor.flow.run_git") as mock_git,
             patch("sandbox_executor.flow._execution_effective_diff", return_value=(True, "1 file changed")),
             patch("sandbox_executor.flow.create_or_update_pr", return_value={"success": True}),
+            _review_loop_gh_stubs(),
         ):
             mock_git.return_value = MagicMock(returncode=0, stdout=" 1 file changed, 5 insertions(+)\n")
             res = run_review_stage(ctx)
@@ -1354,6 +1382,7 @@ class TestReviewLoopStage:
             patch("sandbox_executor.flow.run_git") as mock_git,
             patch("sandbox_executor.flow._execution_effective_diff", return_value=(True, "1 file changed")),
             patch("sandbox_executor.flow.create_or_update_pr", return_value={"success": True}),
+            _review_loop_gh_stubs(),
         ):
             mock_git.return_value = MagicMock(returncode=0, stdout=" 1 file changed, 10 insertions(+)\n")
             res = run_review_loop(ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=5)

@@ -1006,10 +1006,11 @@ class TestGatewayHealth(unittest.TestCase):
             "https://gpu.example.com:8443/api/v1/",
             "http://[::1]:8081/v1",
             "host.docker.internal:8000/v1",
-            "http://[::1/v1",
         ):
             with self.subTest(url=url):
                 self.assertEqual(local_llm.redact_url(url), url)
+        # #96 message rule: an unparseable authority is withheld even without any "@".
+        self.assertEqual(local_llm.redact_url("http://[::1/v1"), "http://***")
         # A URL without any "@" is byte-identical (even its scheme case); only a query or fragment is dropped.
         self.assertEqual(local_llm.redact_url("HTTP://Host.Example:80/a/b"), "HTTP://Host.Example:80/a/b")
         self.assertEqual(local_llm.redact_url("http://localhost:8000/v1?key=k#f"), "http://localhost:8000/v1")
@@ -1044,6 +1045,7 @@ class TestGatewayHealth(unittest.TestCase):
             "",
             "gpu example.com/v1",
         )
+        validated = {"gpu.example.com:8000/v1", "[::1]:8081/v1", "127.0.0.1:59999/v1"}
         for sep in ("", "/", "?", "#", "@", ":", "%", "%2F"):
             for userinfo in (f"{name}:{head}{sep}{sample}", f"{head}{sep}{sample}"):
                 for host in hosts:
@@ -1052,7 +1054,9 @@ class TestGatewayHealth(unittest.TestCase):
                         with self.subTest(url=url):
                             redacted = local_llm.redact_url(url)
                             ambiguous = any(c in userinfo for c in "/?#")
-                            expected = f"{prefix}***" if ambiguous else f"{prefix}***@{host}"
+                            # #96 message rule: a host that does not validate is withheld, never shown.
+                            withheld = ambiguous or host not in validated
+                            expected = f"{prefix}***" if withheld else f"{prefix}***@{host}"
                             self.assertEqual(redacted, expected)
                             for fragment in (head, sample, name):
                                 self.assertNotIn(fragment, redacted)

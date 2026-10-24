@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from sandbox_executor.redaction import trusted_url_authority
+from sandbox_executor.redaction import starts_with_url_authority, trusted_url_authority, url_userinfo_end
 
 logger = logging.getLogger(__name__)
 
@@ -111,40 +111,60 @@ def _is_local_host(host: str) -> bool:
     return address.is_loopback or address.is_unspecified
 
 
-# "scheme://" or "//" kept in front of the userinfo marker; everything else before the last "@" is removed.
+# "scheme://" or "//" kept in front of the userinfo marker; nothing before the userinfo boundary is ever shown.
 _USERINFO_MARKER = "***@"
 _WITHHELD_HOST = "***"
-_AUTHORITY_PREFIX = re.compile(r"^(?:[A-Za-z][A-Za-z0-9+.-]*:)?//")
+_URL_DELIMITERS_RE = re.compile(r"[/?#]")
+
+
+def shown_authority(url: str) -> str | None:
+    """The ``host[:port]`` a message may show for a configured base URL, or None when it must be withheld.
+
+    The #96 message rule (:func:`sandbox_executor.redaction.trusted_url_authority`: the userinfo is removed with the
+    shared last-``@`` rule and the remaining authority is validated) plus the #94 C11-N1 guard: when the removed
+    userinfo itself holds a raw ``/``, ``?`` or ``#``, the text after it may be a path or query rather than the host,
+    so no host is shown at all. Every local-LLM message about a base URL goes through here or :func:`redact_url`.
+    """
+    shown = trusted_url_authority(url)
+    if shown is None:
+        return None
+    stripped = url.strip()
+    rest = stripped[len(_lead(stripped)) :]
+    at = url_userinfo_end(rest)
+    if at is not None and _URL_DELIMITERS_RE.search(rest[:at]):
+        return None
+    return shown
+
+
+def _lead(url: str) -> str:
+    """The ``scheme://`` or ``//`` prefix of ``url`` (empty when schemeless), as the redaction module reads it."""
+    if not starts_with_url_authority(url):
+        return ""
+    return url[: url.index("//") + 2]
 
 
 def redact_url(url: str) -> str:
-    """``url`` safe to print or log: secrets are never shown, and a URL whose host is ambiguous shows no host.
+    """``url`` safe to print or log: no part of a credential, and a host only when it was validated.
 
-    Base URLs come from operator configuration and may embed credentials, so every message or log line that echoes
-    one goes through here. Display contract:
+    Built on the shared redaction helpers so there is one userinfo rule (``redaction.url_userinfo_end``, the last
+    ``@`` before the next delimiter) and one host-trust rule (:func:`shown_authority`). Display contract:
 
-    - A URL without any ``@`` is returned byte-for-byte up to its query or fragment (both dropped; they may carry
-      ``?key=``).
-    - Otherwise everything between ``scheme://`` (or the start of the string) and the **last** ``@`` is unconditionally
-      removed before anything else is looked at. No parser decides where a credential ends: a token may contain an
-      unencoded ``/``, ``?``, ``#`` or ``@``, and the host after it may be malformed (bad port, non-ASCII name,
-      unclosed ``[``).
-    - When the removed segment holds no ``/``, ``?`` or ``#``, it was userinfo and the rest is the real authority:
-      ``scheme://***@host[:port]/path``.
-    - When it does hold one of them, the text after the last ``@`` may be part of a path, query or fragment
-      (``http://gpu.lan:8000/v1?owner=ops@other.example.net``) and cannot be trusted as the host, so no host is
-      shown: ``scheme://***`` (``//***`` or ``***`` without a scheme). This fails closed in both directions: nothing
-      before the last ``@`` leaks, and no believable wrong host is printed.
+    - When the host may be shown: ``scheme://[***@]host[:port]/path``. Everything up to the userinfo boundary is
+      replaced by ``***@``; the path after the validated authority is kept; a query or fragment (``?key=``) is
+      dropped. A credential-free URL keeps its original spelling up to the query.
+    - Otherwise (unparseable value, an ``@`` left after the userinfo, a raw ``/``, ``?`` or ``#`` inside the userinfo,
+      a bad port or a non-host authority): ``scheme://***`` (``//***`` or ``***`` without a scheme). Nothing from the
+      value but its scheme is shown, and no believable wrong host is printed.
     """
-    if "@" in url:
-        prefix = _AUTHORITY_PREFIX.match(url)
-        lead = prefix.group(0) if prefix else ""
-        stripped, _, rest = url[len(lead) :].rpartition("@")
-        if re.search(r"[/?#]", stripped):
-            return lead + _WITHHELD_HOST
-        url = lead + _USERINFO_MARKER + rest
-    # The remainder holds no "@"; dropping a query or fragment (they may carry ``?key=``) needs no URL parsing.
-    return re.split(r"[?#]", url, maxsplit=1)[0]
+    stripped = url.strip()
+    lead = _lead(stripped)
+    if shown_authority(stripped) is None:
+        return lead + _WITHHELD_HOST
+    rest = stripped[len(lead) :]
+    at = url_userinfo_end(rest)
+    marker, tail = (_USERINFO_MARKER, rest[at + 1 :]) if at is not None else ("", rest)
+    # The tail holds no "@" (shown_authority guarantees it); a query or fragment may still carry "?key=".
+    return lead + marker + re.split(r"[?#]", tail, maxsplit=1)[0]
 
 
 def _authority(url: str) -> tuple[str, int | None] | None:
@@ -243,7 +263,7 @@ def _synthesized_config(allow_list: Iterable[str]) -> dict:
         raise LocalLLMConfigError(f"The configured {ENV_LOCAL_BASE_URL} is not a valid URL; ignoring it.")
     if auth[0] != GATEWAY_HOST:
         # Show only a host validated after the userinfo is removed; an ambiguous value is named, not echoed.
-        shown = trusted_url_authority(base_url)
+        shown = shown_authority(base_url)
         target = f"host {shown}" if shown else "host withheld: no unambiguous userinfo boundary"
         raise LocalLLMConfigError(
             f"The configured {ENV_LOCAL_BASE_URL} ({target}) is neither a loopback address nor in "
@@ -293,8 +313,8 @@ def build_container_config(host_config: dict | None, allow_list: Iterable[str] =
             logger.info(
                 "Rewrote provider %r baseUrl host for sandbox reachability: %s -> %s",
                 name,
-                trusted_url_authority(base_url) or "<withheld>",
-                trusted_url_authority(rewritten) or "<withheld>",
+                shown_authority(base_url) or "<withheld>",
+                shown_authority(rewritten) or "<withheld>",
             )
         provider["baseUrl"] = rewritten
         if not provider.get("apiKey"):
@@ -605,7 +625,9 @@ def health_url(base_url: str, allow_list: Iterable[str] = ()) -> str | None:
     if urlsplit(base_url).scheme.lower() not in HEALTH_SCHEMES:
         return None
     authority = _authority(base_url)
-    if authority is None:
+    # The probe URL (and so the doctor's ``gateway=`` line) is shown, so only a validated authority is probed: an
+    # ambiguous userinfo boundary could make urlsplit read part of a credential as the host or port.
+    if authority is None or shown_authority(base_url) is None:
         return None
     if authority[0] == GATEWAY_HOST or rewrite_authority(base_url, allow_list) == base_url:
         return None

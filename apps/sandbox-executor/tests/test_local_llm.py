@@ -6,6 +6,7 @@ the keyless validation path for local providers.
 
 import json
 import os
+import secrets
 import stat
 import tempfile
 import unittest
@@ -287,7 +288,23 @@ class TestBaseUrlEchoRedaction(unittest.TestCase):
         text = "\n".join(logs.output)
         self.assertIn("invalid port or host", text)
         self.assertIn("unparseable base URL", text)
+        self.assertIn("value withheld", text)
         assert_no_fragment(text, probe)
+
+    def test_unparseable_endpoint_error_withholds_value(self):
+        head = str(secrets.randbelow(900000) + 100000)
+        value = f"http://alice:{head}?{make_probe()}@localhost:8081/v1"
+        env = {"HOLON_LOCAL_BASE_URL": value, "HOLON_LOCAL_MODELS": "m1"}
+        with (
+            patch.dict(os.environ, env, clear=True),
+            self.assertLogs(local_llm.logger, level="WARNING") as logs,
+            self.assertRaises(local_llm.LocalLLMConfigError) as ctx,
+        ):
+            local_llm.build_container_config(None)
+        text = "\n".join(logs.output) + "\n" + str(ctx.exception)
+        self.assertIn("HOLON_LOCAL_BASE_URL is not a valid URL", text)
+        self.assertNotIn(head, text)
+        assert_no_fragment(text, value)
 
     def test_unrewritable_endpoint_error_masks_userinfo(self):
         probe = make_probe()

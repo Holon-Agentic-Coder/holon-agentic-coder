@@ -2,6 +2,7 @@ import importlib.metadata
 import io
 import json
 import os
+import secrets
 import stat
 import subprocess
 import tempfile
@@ -409,6 +410,15 @@ class TestHolonCLI(unittest.TestCase):
 
 
 class TestRepoUrlResolution(unittest.TestCase):
+    def test_normalize_repo_remote_parse_error_withholds_value(self):
+        head = str(secrets.randbelow(900000) + 100000)
+        value = f"{head}?{make_probe()}@nohost"
+        with self.assertRaises(ValueError) as ctx:
+            normalize_repo_remote(value)
+        self.assertIn("Unable to parse the remote URL", str(ctx.exception))
+        self.assertNotIn(head, str(ctx.exception))
+        assert_no_fragment(str(ctx.exception), value)
+
     def test_normalize_repo_remote_ssh_scp(self):
         """Test SSH SCP format normalization."""
         host, path = normalize_repo_remote("git@github.com:org/repo.git")

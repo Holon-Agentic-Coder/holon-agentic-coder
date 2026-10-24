@@ -57,7 +57,6 @@ from sandbox_executor.redaction import (
     redact_agent_secrets,
     redact_command,
     redact_env_literals,
-    redact_url_value,
     starts_with_url_authority,
     url_userinfo_end,
 )
@@ -222,7 +221,7 @@ def normalize_repo_remote(remote_url: str) -> tuple[str, str]:
     else:
         m = re.match(r"^(?:(?P<user>[^@]+)@)?(?P<host>[^:]+):(?P<path>.+)$", clean_url)
         if not m:
-            raise ValueError(f"Unable to parse remote URL: {redact_command([remote_url])}")
+            raise ValueError("Unable to parse the remote URL; its value is withheld because it may hold a credential.")
         host = m.group("host")
         path = m.group("path").lstrip("/")
 
@@ -604,7 +603,7 @@ def _proxy_host_port(proxy_url: str) -> tuple[str, int] | None:
     The userinfo is removed first with the shared `redaction.url_userinfo_end` rule, so a password
     holding a raw `/`, `?` or `#` is never read as the host or port. A port that is not a valid
     integer makes the URL unparseable (None) rather than raising, because `urlparse`'s `ValueError`
-    quotes the offending text, which the callers' masked "not a valid proxy URL" path never would.
+    quotes the offending text, while the callers' "not a valid proxy URL" messages never echo the value.
     """
     url = proxy_url if starts_with_url_authority(proxy_url) else f"//{proxy_url}"
     head, sep, rest = url.partition("//")
@@ -702,10 +701,8 @@ def detect_holon_coherence(token_reduce: bool = False) -> bool:
     if proxy_url:
         host_port = _proxy_host_port(proxy_url)
         if host_port is None:
-            logger.warning(
-                "HOLON_PROXY_URL='%s' is not a valid proxy URL; skipping the proxy port probe.",
-                redact_url_value(proxy_url),
-            )
+            # Never echo the value: an unparseable URL has no reliable userinfo boundary to mask.
+            logger.warning("HOLON_PROXY_URL is not a valid proxy URL; skipping the proxy port probe.")
     else:
         try:
             port = int(os.getenv("HOLON_PROXY_PORT", str(PROXY_LISTEN_PORT)))
@@ -1035,17 +1032,14 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
     proxy_url = os.getenv("HOLON_PROXY_URL") or _proxy_gateway_url()
     host_port = _proxy_host_port(proxy_url)
     if host_port is None:
-        # Parsed as a `//` authority when it has no scheme, so a schemeless password is masked too.
-        shown_url = redact_url_value(proxy_url)
+        # Never echo the value: an unparseable URL has no reliable userinfo boundary to mask.
         logger.warning(
-            "holon-coherence proxy probe failed: HOLON_PROXY_URL='%s' is not a valid proxy URL. "
-            "Proceeding with DIRECT egress fallback.",
-            shown_url,
+            "holon-coherence proxy probe failed: HOLON_PROXY_URL is not a valid proxy URL; ignoring it. "
+            "Proceeding with DIRECT egress fallback."
         )
         logger.error(
-            "HOLON_TOKEN_REDUCE is enabled but HOLON_PROXY_URL='%s' is not a valid proxy URL. "
-            "This run continues with DIRECT egress (no token reduction).",
-            shown_url,
+            "HOLON_TOKEN_REDUCE is enabled but HOLON_PROXY_URL is not a valid proxy URL; ignoring it. "
+            "This run continues with DIRECT egress (no token reduction)."
         )
         return [], {}
 

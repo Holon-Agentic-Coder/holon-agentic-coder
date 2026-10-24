@@ -106,7 +106,7 @@ def _authority(url: str) -> tuple[str, int | None] | None:
             return None
         return host, parsed.port
     except ValueError:
-        logger.warning("Ignoring base URL with an invalid port or host: %r", redact_text(url))
+        logger.warning("Ignoring a base URL with an invalid port or host (value withheld).")
         return None
 
 
@@ -119,7 +119,7 @@ def rewrite_authority(url: str, allow_list: Iterable[str] = ()) -> str:
     allowed = {entry.lower() for entry in allow_list}
     authority = _authority(url)
     if authority is None:
-        logger.warning("Ignoring unparseable base URL %r during host-local rewrite", redact_text(url))
+        logger.warning("Ignoring an unparseable base URL during host-local rewrite (value withheld).")
         return url
 
     host, port = authority
@@ -184,7 +184,10 @@ def _synthesized_config(allow_list: Iterable[str]) -> dict:
     provider = os.getenv(ENV_LOCAL_PROVIDER, "").strip() or os.getenv("HOLON_AGENT_PROVIDER", "").strip() or "local"
     rewritten = rewrite_authority(base_url, allow_list)
     auth = _authority(rewritten)
-    if auth is None or auth[0] != GATEWAY_HOST:
+    if auth is None:
+        # Never echo an unparseable value: it has no reliable userinfo boundary to mask.
+        raise LocalLLMConfigError(f"The configured {ENV_LOCAL_BASE_URL} is not a valid URL; ignoring it.")
+    if auth[0] != GATEWAY_HOST:
         raise LocalLLMConfigError(
             f"The configured {ENV_LOCAL_BASE_URL} ({redact_text(base_url)}) is neither a loopback address nor in "
             f"{ENV_HOST_LOCAL_HOSTS}."

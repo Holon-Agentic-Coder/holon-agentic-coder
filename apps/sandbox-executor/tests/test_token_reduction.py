@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import secrets
 import stat
 import subprocess
 from types import SimpleNamespace
@@ -3627,6 +3628,86 @@ def test_detect_holon_coherence_unparseable_proxy_url_warns_masked(monkeypatch, 
     captured = capsys.readouterr()
     for text in (caplog.text, captured.out, captured.err):
         assert_no_fragment(text, first)
+
+
+def _digit_head(digits: int) -> str:
+    """A runtime all-digit password head above 65535, so `alice:<head>` reads as a bad `host:port`."""
+    return str(secrets.randbelow(9 * 10 ** (digits - 1)) + 10 ** (digits - 1))
+
+
+_DIGIT_HEAD_PROXY_FORMS = [
+    f"{prefix}alice:{{head}}{delim}{{rest}}@127.0.0.1:3128"
+    for prefix in ("", "//", "http://", "socks5://")
+    for delim in ("/", "?", "#")
+] + ["alice:{head}//{rest}@127.0.0.1:3128"]
+
+
+def _assert_value_withheld(text: str, head: str, value: str) -> None:
+    assert head not in text
+    assert_no_fragment(text, value)
+
+
+@pytest.mark.parametrize("digits", [6, 12])
+@pytest.mark.parametrize("form", _DIGIT_HEAD_PROXY_FORMS)
+def test_detect_holon_coherence_digit_head_password_warning_withholds_value(monkeypatch, caplog, capsys, form, digits):
+    """An all-digit password head before a raw delimiter is never echoed by the Tier 3 warning (R15-N1)."""
+    head = _digit_head(digits)
+    proxy_url = form.format(head=head, rest=make_probe("r"))
+    monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
+    monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
+    monkeypatch.setenv("HOLON_PROXY_URL", proxy_url)
+    monkeypatch.setattr(cli.socket, "create_connection", lambda *args, **kwargs: pytest.fail("must not probe"))
+    monkeypatch.setattr(cli.shutil, "which", lambda cmd: None)
+
+    with caplog.at_level(logging.DEBUG, logger="sandbox_executor"):
+        assert cli.detect_holon_coherence(token_reduce=False) is False
+
+    assert "HOLON_PROXY_URL is not a valid proxy URL" in caplog.text
+    captured = capsys.readouterr()
+    for text in (caplog.text, captured.out, captured.err):
+        _assert_value_withheld(text, head, proxy_url)
+
+
+@pytest.mark.parametrize("digits", [6, 12])
+@pytest.mark.parametrize("form", _DIGIT_HEAD_PROXY_FORMS)
+def test_attach_external_proxy_digit_head_password_messages_withhold_value(
+    host_paths, monkeypatch, caplog, capsys, form, digits
+):
+    """The token-reduce warning and error for an unparseable proxy URL never echo the value (R15-N1)."""
+    head = _digit_head(digits)
+    proxy_url = form.format(head=head, rest=make_probe("r"))
+    monkeypatch.setenv("HOLON_PROXY_URL", proxy_url)
+    monkeypatch.setattr(cli, "generate_root_ca", lambda: pytest.fail("must not generate a CA"))
+    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: pytest.fail("must not probe"))
+
+    with caplog.at_level(logging.DEBUG, logger="sandbox_executor"):
+        assert cli._attach_external_proxy() == ([], {})
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert any("HOLON_PROXY_URL is not a valid proxy URL" in m for m in warnings)
+    assert any("HOLON_PROXY_URL is not a valid proxy URL" in m for m in errors)
+    captured = capsys.readouterr()
+    for text in (caplog.text, captured.out, captured.err):
+        _assert_value_withheld(text, head, proxy_url)
+
+
+@pytest.mark.parametrize(
+    "form", ["http://127.0.0.1:3128", "http://alice:{a}@127.0.0.1:3128", "alice:{a}@127.0.0.1:3128"]
+)
+def test_valid_proxy_url_is_probed_without_an_invalid_url_warning(monkeypatch, caplog, form):
+    """A valid HOLON_PROXY_URL still probes its real host and port and logs no invalid-URL warning."""
+    monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
+    monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
+    monkeypatch.setenv("HOLON_PROXY_URL", form.format(a=make_probe("a")))
+    probed: list[tuple[str, int]] = []
+    monkeypatch.setattr(cli.socket, "create_connection", lambda host_port, **kwargs: probed.append(host_port) or True)
+
+    with caplog.at_level(logging.WARNING, logger="sandbox_executor.cli"):
+        assert cli.detect_holon_coherence(token_reduce=False) is True
+
+    assert probed == [("127.0.0.1", 3128)]
+    assert "not a valid proxy URL" not in caplog.text
 
 
 def test_proxy_unreachable_fallback_direct_egress(host_paths, monkeypatch, caplog):

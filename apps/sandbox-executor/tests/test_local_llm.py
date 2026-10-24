@@ -893,6 +893,36 @@ class TestGatewayHealth(unittest.TestCase):
             local_llm._default_fetch(f"file://someone:{sample}@localhost/etc", 1.0)
         self.assertNotIn(sample, str(caught.exception))
 
+    def test_redact_url_drops_userinfo_with_unencoded_delimiters(self):
+        # C9-N1: urlsplit ends the authority at the first "/", "?" or "#", so such a password must not leak.
+        sample = "pw-" + "x" * 8
+        head = "hd-" + "q" * 5
+        for sep in ("/", "?", "#"):
+            for prefix in ("http://", "//", ""):
+                url = f"{prefix}someone:{head}{sep}{sample}@gpu.example.com:8000/v1?key={sample}#{sample}"
+                with self.subTest(sep=sep, prefix=prefix):
+                    redacted = local_llm.redact_url(url)
+                    self.assertEqual(redacted, f"{prefix}gpu.example.com:8000/v1")
+                    for fragment in (sample, head, "someone"):
+                        self.assertNotIn(fragment, redacted)
+        bracketed = f"http://someone:{head}/{sample}@[::1]:8081/v1"
+        self.assertEqual(local_llm.redact_url(bracketed), "http://[::1]:8081/v1")
+
+    def test_redact_url_keeps_credential_free_urls_readable(self):
+        for url in (
+            "http://localhost:11434/v1",
+            "https://gpu.example.com:8443/api/v1/",
+            "http://[::1]:8081/v1",
+            "host.docker.internal:8000/v1",
+            "http://[::1/v1",
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(local_llm.redact_url(url), url)
+        # An "@" in the path of a credential-free URL is over-redacted to what follows it: scheme and the path tail
+        # survive, nothing raises, and an "@" in a dropped query is not treated as userinfo.
+        self.assertEqual(local_llm.redact_url("http://localhost:8000/v1/@scope/models"), "http://scope/models")
+        self.assertEqual(local_llm.redact_url("http://localhost:8000/v1?owner=a@"), "http://localhost:8000/v1")
+
     def test_config_error_and_logs_never_echo_userinfo(self):
         sample = "pw-" + "y" * 8
         env = {

@@ -109,12 +109,26 @@ def _is_local_host(host: str) -> bool:
     return address.is_loopback or address.is_unspecified
 
 
+# Greedy ".*@" backtracks to the last "@" whose suffix looks like an authority (bracketed IP literal or non-empty
+# reg-name, optional port) followed by a path, query, fragment or the end; group 1 keeps "scheme://" or "//".
+_USERINFO_PREFIX = re.compile(
+    r"^((?:[A-Za-z][A-Za-z0-9+.-]*:)?//)?.*@(?=(?:\[[^\]/?#@]*\]|[A-Za-z0-9._~%!$&'()*+,;=-]+)(?::\d*)?(?:[/?#]|$))",
+    re.DOTALL,
+)
+
+
 def redact_url(url: str) -> str:
     """``url`` safe to print or log: userinfo (``user:token@``), query and fragment are dropped.
 
     Base URLs come from operator configuration and may embed credentials, so every message or log line that echoes
     one goes through here. Scheme, host, port and path are kept for diagnosis.
+
+    ``urlsplit`` ends the authority at the first ``/``, ``?`` or ``#``, so a token containing one of those unencoded
+    would land in the path or query. Everything between ``//`` (or the start) and the last ``@`` that is followed by a
+    plausible ``host[:port]`` is therefore removed before parsing. A credential-free URL with an ``@`` in its path or
+    query is over-redacted to the part after that ``@``, which is harmless for a diagnostic string.
     """
+    url = _USERINFO_PREFIX.sub(lambda m: m.group(1) or "", url, count=1)
     try:
         parsed = urlsplit(url)
         netloc = parsed.netloc.rpartition("@")[2]

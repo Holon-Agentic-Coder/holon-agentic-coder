@@ -383,6 +383,50 @@ class TestRunTurn(unittest.TestCase):
         self.assertIsNone(result.breach)
         self.assertEqual(result.returncode, 0)
 
+    def test_lingering_pipe_holder_ignoring_sigterm_gets_sigkill(self):
+        # C3-N2: a descendant that ignores SIGTERM keeps the pipe open; after a bounded reader wait the group gets
+        # SIGKILL, and the readers are joined again before the output is read.
+        stream = TickStream()
+        h = Harness(exit_at=5, stdout=stream)
+        self.addCleanup(setattr, stream, "closed", True)
+        signals = []
+
+        def killpg(pgid, sig):
+            signals.append((pgid, sig))
+            if sig == signal.SIGKILL:
+                stream.closed = True
+
+        with mock.patch.object(turns, "READER_JOIN_TIMEOUT_SECONDS", 0.05):
+            result = run_turn(
+                ["agent", "-p", "prompt"],
+                turn_budgets=TurnBudgets(turn_seconds=300, stall_seconds=90),
+                clock=h.clock,
+                sleeper=h.sleeper,
+                popen_factory=h.popen,
+                killpg=killpg,
+                getpgid=h.getpgid,
+            )
+        self.assertEqual(signals, [(CHILD_PID, signal.SIGTERM), (CHILD_PID, signal.SIGKILL)])
+        self.assertEqual(result.returncode, 0)
+
+    def test_lingering_pipe_holder_that_survives_sigkill_does_not_hang(self):
+        stream = TickStream()
+        h = Harness(exit_at=5, stdout=stream)
+        self.addCleanup(setattr, stream, "closed", True)
+        signals = []
+        with mock.patch.object(turns, "READER_JOIN_TIMEOUT_SECONDS", 0.05):
+            result = run_turn(
+                ["agent", "-p", "prompt"],
+                turn_budgets=TurnBudgets(turn_seconds=300, stall_seconds=90),
+                clock=h.clock,
+                sleeper=h.sleeper,
+                popen_factory=h.popen,
+                killpg=lambda pgid, sig: signals.append((pgid, sig)),
+                getpgid=h.getpgid,
+            )
+        self.assertEqual(signals, [(CHILD_PID, signal.SIGTERM), (CHILD_PID, signal.SIGKILL)])
+        self.assertEqual(result.returncode, 0)
+
     def test_lingering_pipe_holder_never_signals_its_own_process_group(self):
         stream = TickStream()
         h = Harness(exit_at=5, stdout=stream)
@@ -552,6 +596,20 @@ class TestSuperviseAuthoringTurn(unittest.TestCase):
         outcome = self.supervise([self.write("# Plan for I-1\n", breach=stage_breach)])
         self.assertEqual(len(outcome.turns), 1)
         self.assertIs(outcome.budget_failure, stage_breach)
+
+    def test_no_reprompt_when_stage_has_no_time_left(self):
+        # C3-I1: a clean first turn that finishes at the stage ceiling must not launch a re-prompt that would breach
+        # the stage budget on its first poll.
+        def finish_at_ceiling():
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write("# Plan for I-1\n")
+            self.clock.now = 2100
+            return TurnResult(returncode=0)
+
+        outcome = self.supervise([finish_at_ceiling])
+        self.assertEqual(len(outcome.turns), 1)
+        self.assertIsNone(outcome.follow_up)
+        self.assertIsNone(outcome.budget_failure)
 
     def test_breach_with_usable_artefact_is_not_a_failure(self):
         stall = BudgetBreach("plan", "stall", 90, 95)

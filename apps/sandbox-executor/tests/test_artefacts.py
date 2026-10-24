@@ -90,9 +90,16 @@ class TestArtefacts(unittest.TestCase):
         self.assertFalse(report.usable)
 
     def test_non_numeric_metric_is_missing(self):
+        content = PLAN.format(filler="z" * 900).replace("| cost_pred           | 0.5   |", "| cost_pred | TBD |")
+        report = validate_artefact(self.write(content), PLAN_SPEC)
+        self.assertEqual(report.missing_metrics, ["cost"])
+
+    def test_ev_row_is_optional(self):
+        # The planner recomputes EV from the five inputs, so a non-numeric or absent ev_pred row is not missing.
         content = PLAN.format(filler="z" * 900).replace("| ev_pred             | 6.0   |", "| ev_pred | TBD |")
         report = validate_artefact(self.write(content), PLAN_SPEC)
-        self.assertEqual(report.missing_metrics, ["ev"])
+        self.assertEqual(report.missing_metrics, [])
+        self.assertTrue(report.metrics_ok)
 
     def test_size_floor(self):
         report = validate_artefact(self.write(PLAN.format(filler="short")), PLAN_SPEC)

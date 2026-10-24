@@ -308,12 +308,24 @@ class TestPlannerMain(unittest.TestCase):
         self.assertEqual(h.ledger_lines("plans.jsonl"), [])
 
     def test_missing_overall_metric_is_not_back_filled(self):
-        without_ev = VALID_PLAN.replace("| ev_pred             | 6.0   |\n", "")
-        h = self.harness([write_file(without_ev), append_file("")])
+        without_cost = VALID_PLAN.replace("| cost_pred           | 0.5   |\n", "")
+        self.assertNotEqual(without_cost, VALID_PLAN)
+        h = self.harness([write_file(without_cost), append_file("")])
         self.assertEqual(h.exit_code, 1)
         self.assertIn("metrics validation failed", h.stderr)
-        self.assertIn("ev", h.stderr.split("metrics validation failed")[1])
+        self.assertIn("cost", h.stderr.split("metrics validation failed")[1])
         self.assertEqual(h.ledger_lines("plans.jsonl"), [])
+
+    def test_missing_ev_row_is_recomputed_not_failed(self):
+        # C3-N3: EV is recomputed from the five inputs, so a plan without an ev_pred row is valid.
+        without_ev = VALID_PLAN.replace("| ev_pred             | 6.0   |\n", "")
+        self.assertNotEqual(without_ev, VALID_PLAN)
+        h = self.harness([write_file(without_ev)])
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        self.assertEqual(len(h.turn_prompts), 1)
+        rows = h.ledger_lines("plans.jsonl")
+        self.assertEqual(len(rows), 1)
+        self.assertIsInstance(rows[0]["ev"], float)
 
     def test_partial_plan_triggers_one_targeted_reprompt(self):
         rest = "\n### Strategy Rationale\n\nAppended by the follow-up turn.\n"
@@ -395,3 +407,17 @@ class TestPlannerMain(unittest.TestCase):
         self.assertTrue(any(any(arg.startswith("plans/P-") for arg in c) for c in add_cmds))
         self.assertTrue(h.committed())
         self.assertIn("plan: failed", h.stdout)
+        self.assertIn("resume did not recover", record["action"])
+
+    def test_breach_without_stage_time_for_resume_names_no_resume(self):
+        stage_breach = BudgetBreach("plan", "stage", 2100, 2100)
+        partial = "# Plan for I-12345\n\n## Step 1: Partial\n\nCut off before the metrics table.\n"
+        h = self.harness(
+            [write_file(partial, returncode=-15, breach=stage_breach)],
+            env={"HOLON_STAGE_BUDGET_SECONDS": "0.000001"},
+        )
+        self.assertEqual(h.exit_code, 1)
+        records = h.ledger_lines("executions.jsonl")
+        self.assertEqual(len(records), 1)
+        self.assertIn("no stage time was left to resume", records[0]["action"])
+        self.assertNotIn("resume did not recover", h.stderr)

@@ -1110,23 +1110,32 @@ def classify_execution_outcome(outcome: AuthoringOutcome) -> tuple[str, str, Bud
     """Execution status, summary, the budget breach to record (if any) and its reason for an authoring outcome.
 
     The *first* turn implements the plan; executor follow-ups (resume after a breach, re-prompt for missing sections)
-    may only touch the execution notes. Therefore:
+    may only touch the execution notes. Therefore the outcome is decided from the first turn:
 
-    - any breach is a non-success, even when a notes-only resume made the notes usable: the code changes were cut off
-      mid-implementation, so the breach is recorded and the partial code is not committed;
+    - a breach of the implementation turn is a non-success, even when a notes-only resume made the notes usable: the
+      code changes were cut off mid-implementation, so the breach is recorded and the partial code is not committed;
+    - a breach confined to the notes-only re-prompt after a clean implementation turn never fails the execution: the
+      code is complete, the breach is only logged and ``execution_notes_valid`` reports the notes as they are;
     - a non-zero first-turn exit counts as success only when the runner reported a structured truncation of its final
       message (``stopReason: length``) and the notes are complete (Bean 0138); a generic exit 1 (auth or API errors)
       never does.
     """
     first = outcome.first
     report = outcome.report
-    breach = outcome.budget_failure or outcome.breach
-    if breach is not None:
-        if outcome.budget_failure is None:
-            reason = "the implementation turn did not finish (partial execution notes salvaged; code not committed)"
-        else:
+    if first.breach is not None:
+        # The resume (if any) breached too only when budget_failure is set; record the budget that fired last.
+        breach = outcome.budget_failure or first.breach
+        if outcome.follow_up == "resume" and outcome.budget_failure is not None:
             reason = "resume did not recover"
+        else:
+            reason = "the implementation turn did not finish (partial execution notes salvaged; code not committed)"
         return "failure", f"Plan execution stopped: {breach.describe()}; {reason}", breach, reason
+    if outcome.breach is not None:
+        print(
+            f"WARNING: the notes-only follow-up turn stopped ({outcome.breach.describe()}); the implementation turn "
+            "finished, so the code changes are kept and the notes are reported as they are.",
+            file=sys.stderr,
+        )
     if first.returncode == 0:
         return "success", "Plan executed successfully", None, ""
     if first.truncated and report is not None and report.complete:
@@ -1142,17 +1151,18 @@ def finalise_execution_notes(notes_path: str, report: ArtefactReport | None) -> 
     """Validate the execution notes the agent wrote and return True when they are usable.
 
     Validation is report-only for the executor: missing sections are logged and recorded in the ledger summary, but
-    never discard the code changes the agent made. When the agent wrote no notes, the fallback is the agent output
-    already captured into the ledger summary; the executor deliberately does not synthesise an ``executions/`` file
-    itself, because the ledger remains the authoritative execution record.
+    never discard the code changes the agent made. When the agent wrote no notes, the ledger summary records
+    ``execution_notes_valid: false`` with the size of the implementation turn's output (``agent_output_bytes`` and
+    ``agent_output_truncated``), not the output text; the executor deliberately does not synthesise an ``executions/``
+    file itself, because the ledger summary remains the authoritative execution record.
     """
     if report is not None and report.exists:
         if not report.usable or report.missing_sections:
             print(f"WARNING: {report.describe()}", file=sys.stderr)
         return report.usable
     print(
-        f"WARNING: agent did not write executions/{os.path.basename(notes_path)}; falling back to the agent output "
-        "captured in the execution ledger.",
+        f"WARNING: agent did not write executions/{os.path.basename(notes_path)}; the execution ledger summary "
+        "records execution_notes_valid=false and only the size of the agent output (agent_output_bytes), not its text.",
         file=sys.stderr,
     )
     return False
@@ -1428,7 +1438,9 @@ def main() -> None:
                     cwd=repo_dir,
                 )
                 exec_status, summary, budget_breach, budget_reason = classify_execution_outcome(outcome)
-                res = outcome.last
+                # The implementation turn is the one classify_execution_outcome judges; follow-ups only touch the
+                # notes, so output size and error context describe the implementation turn.
+                res = outcome.first
                 notes_report = outcome.report
             finally:
                 for tf in (prompt_file, intent_file):

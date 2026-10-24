@@ -327,7 +327,16 @@ def run_turn(
         # start_new_session=True makes the agent's pid its process group id, which outlives the reaped agent.
         with contextlib.suppress(OSError):
             if proc.pid != getpgid(0):
-                killpg(proc.pid, signal.SIGTERM)
+                # SIGTERM, a bounded wait for the readers, then SIGKILL for a holder that ignores SIGTERM (mirrors
+                # _terminate_group); a final bounded wait lets the readers drain what the holder left in the pipes.
+                for sig in (signal.SIGTERM, signal.SIGKILL):
+                    killpg(proc.pid, sig)
+                    for reader in readers:
+                        reader.join(timeout=READER_JOIN_TIMEOUT_SECONDS)
+                    if not any(reader.is_alive() for reader in readers):
+                        break
+        if any(reader.is_alive() for reader in readers):
+            logger.warning("Agent pipes still open after SIGKILL; returning the output read so far")
     stdout, stderr = readers[0].text(), readers[1].text()
     returncode = proc.returncode if proc.returncode is not None else -1
     return TurnResult(
@@ -393,10 +402,11 @@ def supervise_authoring_turn(
     - after a breached turn, whatever is on disk is kept (salvage) and exactly one resume turn is attempted, naming the
       partial file and listing what is missing; it runs under the same stall, turn and stage budgets;
     - after a clean turn that left the file with missing sections or metric rows, exactly one targeted re-prompt is
-      issued;
+      issued, provided the stage still has time left (like the resume);
     - a budget failure is reported only when a turn breached and the artefact is still not usable afterwards. Callers
-      whose follow-up cannot finish the stage's real work (the executor's resume only touches its notes) must treat
-      :attr:`AuthoringOutcome.breach` as a failure regardless (see the executor entrypoint).
+      whose follow-up cannot finish the stage's real work (the executor's resume only touches its notes) must treat a
+      breach of :attr:`AuthoringOutcome.first` as a failure regardless, and a breach confined to a follow-up of a clean
+      first turn as a notes-only problem (see the executor entrypoint).
 
     Runner CLIs start every invocation as a fresh session, so ``context`` (the task description without the original
     write protocol) is prepended to the follow-up instruction. The caller records the failure (see
@@ -434,7 +444,7 @@ def supervise_authoring_turn(
             outcome.follow_up = "resume"
             run_follow_up(build_reprompt(report.missing_labels(), artefact_rel, partial=True, modify_code=modify_code))
             report = validate_artefact(artefact_path, spec)
-    elif report.exists and not report.complete:
+    elif report.exists and not report.complete and stage_timer.remaining() > 0:
         outcome.follow_up = "reprompt"
         logger.info("Re-prompting once for missing content: %s", report.describe())
         run_follow_up(build_reprompt(report.missing_labels(), artefact_rel, modify_code=modify_code))

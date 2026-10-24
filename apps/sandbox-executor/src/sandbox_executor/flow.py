@@ -3312,6 +3312,9 @@ class PipelineEngine:
         FlowStage.REVIEW,
         FlowStage.CALIBRATE,
     ]
+    # Stages whose finished result a post-hoc stage-budget overrun only records, never downgrades (see
+    # timed_execute_stage).
+    POST_HOC_BUDGET_EXEMPT: ClassVar[frozenset[FlowStage]] = frozenset({FlowStage.REVIEW, FlowStage.CALIBRATE})
 
     def __init__(
         self,
@@ -3338,15 +3341,20 @@ class PipelineEngine:
                         iterations = max(1, int(consensus.get("iterations") or 1))
                     except (TypeError, ValueError):
                         iterations = 1
-            return self.budgets.stages.review_iteration * iterations
+            # Same source as run_review_loop's per-iteration timer, so HOLON_STAGE_BUDGET_SECONDS applies to both.
+            return self.budgets.stage_seconds("review_iteration") * iterations
         return self.budgets.stage_seconds(stage.value)
 
     def timed_execute_stage(self, stage: FlowStage) -> StageResult:
         """Run a stage under its wall-clock ceiling and attach elapsed and budget to the result.
 
         Stages run in-process, so the ceiling is enforced when the stage returns: a stage that ran past its budget is
-        marked failed with the budget that fired. The ACT-BUDGET ledger action is written only by the in-container
-        turn supervisor, never here, so a failure is not recorded twice.
+        marked failed with the budget that fired, which stops the pipeline before the next stage. The review and
+        calibration stages are exempt from that downgrade: the review loop already enforces the per-iteration budget
+        itself and a review that reached consensus has posted its approval (failing it afterwards would skip the
+        pre-merge calibration), and calibration is the last stage, whose calibrated branch is already pushed. For
+        those an overrun is only logged and recorded as ``budget_overrun`` in the payload. The ACT-BUDGET ledger action
+        is written only by the in-container turn supervisor, never here, so a failure is not recorded twice.
         """
         timer = StageTimer(stage.value, self.stage_budget_seconds(stage), clock=self.clock)
         try:
@@ -3358,6 +3366,20 @@ class PipelineEngine:
         result.elapsed_seconds = round(elapsed, 3)
         result.budget_seconds = budget_seconds
         if elapsed > budget_seconds and result.status not in (StageStatus.FAILED, StageStatus.SKIPPED):
+            if stage in self.POST_HOC_BUDGET_EXEMPT:
+                result.payload = {
+                    **result.payload,
+                    "budget_overrun": {
+                        "budget_name": "stage",
+                        "budget_seconds": budget_seconds,
+                        "elapsed_seconds": round(elapsed, 3),
+                    },
+                }
+                self.context.log(
+                    f"WARNING: Stage '{stage.value}' ran {elapsed / 60.0:.1f} min against its "
+                    f"{budget_seconds / 60.0:.0f} min budget; keeping its '{result.status.value}' result."
+                )
+                return result
             result.status = StageStatus.FAILED
             result.error = (
                 f"Stage '{stage.value}' exceeded its stage budget: {elapsed / 60.0:.1f} min elapsed against "

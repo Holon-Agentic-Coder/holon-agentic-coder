@@ -187,6 +187,8 @@ def build_reprompt(missing: list[str], path: str, *, partial: bool = False, modi
 
 
 PLAN_METRICS = ("p_success", "entropy", "impact", "cost", "learning_value", "ev")
+# The planner recomputes EV from the five inputs with the config-driven formula, so an ``ev_pred`` row is optional.
+PLAN_REQUIRED_METRICS = tuple(name for name in PLAN_METRICS if name != "ev")
 
 PLAN_SPEC = ArtefactSpec(
     name="plan",
@@ -200,7 +202,7 @@ PLAN_SPEC = ArtefactSpec(
         ),
     ),
     size_floor=800,
-    required_metrics=PLAN_METRICS,
+    required_metrics=PLAN_REQUIRED_METRICS,
 )
 
 EXECUTION_METRICS = ("success", "entropy", "impact", "cost", "learning_value")

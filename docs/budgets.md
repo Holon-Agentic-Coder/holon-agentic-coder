@@ -81,7 +81,8 @@ When a budget fires, the supervisor sends `SIGTERM` to the agent's process group
 `SIGKILL`. It asserts first that the agent's process group differs from its own; if they were ever equal it signals only
 the agent process, so the entrypoint and its salvage path always survive. The process group is also stopped when
 supervision itself fails or is interrupted, and when the agent has exited but a descendant still holds its output pipes
-open.
+open; in that case the group gets `SIGTERM`, then `SIGKILL` if the pipes are still held after a bounded wait, and the
+output read so far is returned after a second bounded wait.
 
 ## Salvage, resume and the ACT-BUDGET record
 
@@ -91,8 +92,9 @@ open.
    has no time left, no resume is attempted.
 3. If the artefact is usable after the resume (it exists, exceeds the size floor and its metrics table parses), the plan
    stage carries on normally and nothing is recorded. The executor is different: its resume may only touch the execution
-   notes, so it can never finish code that was cut off. Any executor breach is therefore a failure, even when the notes
-   are usable, and continues with step 4.
+   notes, so it can never finish code that was cut off. Any breach of the executor's implementation turn is therefore a
+   failure, even when the notes are usable, and continues with step 4. A breach confined to the executor's notes-only
+   re-prompt after a clean implementation turn is only logged: the code is complete and is committed.
 4. Otherwise one action record is appended to `holon-knowledge/ledger/executions.jsonl` through `append_action_record()`
    (which takes `LedgerLock`), and the entrypoint exits non-zero. No other ledger file is written and no new ledger is
    created.
@@ -129,8 +131,13 @@ Every stage reports elapsed time against its budget in the form `stage: status (
 - The planner and executor entrypoints print the line when they finish (`plan: ok ...`, `execute: failed ...`).
 - `holon flow` logs it for every stage and prints it in the flow summary. The review stage's budget is one review
   iteration budget per iteration it ran; each iteration also logs `iteration N review: ok (... / 15 min)`.
-- A `holon flow` stage that returns after its ceiling is marked failed with an error naming the budget, and a review
-  iteration that overruns stops the review loop without consensus.
+- A `holon flow` intent, plan or execute stage that returns after its ceiling is marked failed with an error naming the
+  budget, which stops the pipeline. A review iteration that overruns stops the review loop without consensus (an
+  iteration that reaches consensus is kept). The review and calibration stages are never downgraded after the fact: a
+  review that reached consensus has already posted its approval and must still be calibrated before the merge, and
+  calibration is the last stage. Their overrun is logged as a `WARNING` and recorded as `budget_overrun` in the stage
+  payload. Both review checks use the same source, so `HOLON_STAGE_BUDGET_SECONDS` replaces the per-iteration budget in
+  the loop and in the stage ceiling (that value times the iterations run).
 
 The verification test run in the flow execute stage uses the remaining execute-stage budget as its timeout (never less
 than 30 s), replacing the former hard-coded 300 s.

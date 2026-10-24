@@ -14,6 +14,7 @@ silently redirected onto the host machine.
 """
 
 import copy
+import http.client
 import ipaddress
 import json
 import logging
@@ -608,7 +609,8 @@ def probe_gateway_health(
         raw = fetcher(url, timeout)
         text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
         payload = json.loads(text)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, http.client.HTTPException) as exc:
+        # HTTPException covers malformed responses (BadStatusLine, IncompleteRead), which are not OSErrors.
         return GatewayHealth(url, "unknown", {}, None, f"health probe failed: {exc}")
     return parse_gateway_health(url, payload)
 

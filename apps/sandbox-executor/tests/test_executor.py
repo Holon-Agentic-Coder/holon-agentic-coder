@@ -3331,13 +3331,15 @@ class TestExecutorIncrementalNotes(unittest.TestCase):
         }
 
     @staticmethod
-    def write_notes(content, returncode=0, stop_reason=None, breach=None):
+    def write_notes(content, returncode=0, stop_reason=None, breach=None, stdout="", stderr=""):
         def turn(path):
             if content is not None:
                 os.makedirs(os.path.dirname(path), exist_ok=True)
                 with open(path, "a", encoding="utf-8") as f:
                     f.write(content)
-            return TurnResult(returncode=returncode, stop_reason=stop_reason, breach=breach)
+            return TurnResult(
+                returncode=returncode, stop_reason=stop_reason, breach=breach, stdout=stdout, stderr=stderr
+            )
 
         return turn
 
@@ -3416,6 +3418,66 @@ class TestExecutorIncrementalNotes(unittest.TestCase):
         self.assertFalse(any(c[:3] == ["git", "add", "-A"] for c in add_cmds))
         commits = [c for c in run["git_cmds"] if c[:2] == ["git", "commit"]]
         self.assertTrue(all("completed for plan" not in " ".join(c) for c in commits))
+
+    def test_breached_notes_only_reprompt_after_clean_implementation_turn_is_success(self):
+        # C3-I1: the implementation turn finished cleanly; only the notes-only re-prompt breached. The code is complete,
+        # so the execution is a success, the code is staged and no ACT-BUDGET is recorded.
+        partial = VALID_NOTES.split("## Tests Run")[0]
+        stall = BudgetBreach("execute", "stall", 90, 91)
+        run = self.run_executor([self.write_notes(partial), self.write_notes(None, returncode=-15, breach=stall)])
+        self.assertEqual(len(run["prompts"]), 2)
+        summary = self.summary(run)
+        self.assertEqual(summary["status"], "success")
+        self.assertTrue(summary["execution_notes_valid"])
+        self.assertEqual(run["exit_code"], 0)
+        self.assertFalse([e for e in run["entries"] if str(e.get("action_id", "")).startswith("ACT-BUDGET-")])
+        self.assertTrue(any(c[:3] == ["git", "add", "-A"] for c in run["git_cmds"]))
+        self.assertIn("notes-only follow-up turn stopped", run["stderr"])
+
+    def test_breached_reprompt_with_unusable_notes_after_clean_implementation_turn_is_success(self):
+        stall = BudgetBreach("execute", "stall", 90, 91)
+        run = self.run_executor(
+            [self.write_notes("# Execution Record: E-1\n"), self.write_notes(None, returncode=-15, breach=stall)]
+        )
+        summary = self.summary(run)
+        self.assertEqual(summary["status"], "success")
+        self.assertFalse(summary["execution_notes_valid"])
+        self.assertEqual(run["exit_code"], 0)
+        self.assertFalse([e for e in run["entries"] if str(e.get("action_id", "")).startswith("ACT-BUDGET-")])
+
+    def test_breach_without_stage_time_for_resume_does_not_claim_a_resume(self):
+        stage = BudgetBreach("execute", "stage", 2700, 2700)
+        run = self.run_executor(
+            [self.write_notes("# Execution Record: E-1\n", returncode=-15, breach=stage)],
+            env={"HOLON_STAGE_BUDGET_SECONDS": "0.000001"},
+        )
+        self.assertEqual(len(run["prompts"]), 1)
+        budget = [e for e in run["entries"] if str(e.get("action_id", "")).startswith("ACT-BUDGET-")]
+        self.assertEqual(len(budget), 1)
+        self.assertNotIn("resume did not recover", budget[0]["action"])
+        self.assertEqual(run["exit_code"], 1)
+
+    def test_ledger_output_and_error_context_describe_the_implementation_turn(self):
+        # C3-I2: after a re-prompt, agent_output_bytes and the command action describe the implementation turn.
+        partial = VALID_NOTES.split("## Tests Run")[0]
+        impl_out = "implementation output line\n" * 20
+        run = self.run_executor(
+            [
+                self.write_notes(partial, returncode=1, stop_reason="length", stdout=impl_out, stderr="impl err"),
+                self.write_notes("## Tests Run\n\n- passed\n", returncode=0, stdout="ok\n"),
+            ],
+            env={"HOLON_ACTION_LOGGING": "1"},
+        )
+        summary = self.summary(run)
+        self.assertEqual(summary["agent_output_bytes"], len((impl_out + "impl err").encode("utf-8")))
+        actions = [e for e in run["entries"] if e.get("event_type") == "command_execution"]
+        self.assertEqual(len(actions), 1)
+        self.assertIn("impl err", actions[0]["error_context"])
+
+    def test_missing_notes_warning_does_not_claim_output_is_in_the_ledger(self):
+        run = self.run_executor([self.write_notes(None)])
+        self.assertNotIn("agent output captured in the execution ledger", run["stderr"])
+        self.assertIn("agent_output_bytes", run["stderr"])
 
     def test_breach_with_complete_notes_is_not_success(self):
         stage = BudgetBreach("execute", "stage", 2700, 2700)

@@ -1777,6 +1777,53 @@ class TestStageBudgets:
         assert "plan" not in results
         assert not (tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl").exists()
 
+    def test_review_overrun_after_consensus_keeps_approval_and_runs_calibration(self, tmp_path):
+        # C3-I3: two review iterations each within budget plus PR/posting overhead exceed 2 x 15 min in total; the
+        # approved review is not downgraded and calibration still runs.
+        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+        ctx = FlowContext(
+            repo_dir=str(tmp_path), intent_data={"slug": "rev", "goal": "Rev"}, auto_calibrate=True, dry_run=True
+        )
+        review = StageResult(
+            stage=FlowStage.REVIEW,
+            status=StageStatus.HALTED_FOR_HUMAN,
+            payload={"consensus": {"approved": True, "iterations": 2}},
+        )
+        calibrate = StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS)
+
+        def fake_review(context):
+            context.stage_results["review"] = review
+            return review
+
+        with (
+            patch("sandbox_executor.flow.run_review_stage", side_effect=fake_review),
+            patch("sandbox_executor.flow.run_calibrate_stage", return_value=calibrate) as mock_cal,
+        ):
+            engine = PipelineEngine(ctx, from_stage="review", clock=SteppingClock(step=30.5 * 60))
+            engine.run()
+        assert review.status == StageStatus.HALTED_FOR_HUMAN
+        assert review.budget_seconds == 2 * 900
+        assert review.payload["budget_overrun"]["budget_name"] == "stage"
+        assert "budget_breach" not in review.payload
+        mock_cal.assert_called_once()
+
+    def test_calibration_overrun_keeps_success(self, tmp_path):
+        ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "cal", "goal": "Cal"}, dry_run=True)
+        calibrate = StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS)
+        with patch("sandbox_executor.flow.run_calibrate_stage", return_value=calibrate):
+            result = PipelineEngine(ctx, clock=SteppingClock(step=3000)).timed_execute_stage(FlowStage.CALIBRATE)
+        assert result.status == StageStatus.SUCCESS
+        assert result.payload["budget_overrun"]["budget_seconds"] == 600
+
+    def test_review_stage_budget_honours_the_exact_stage_override(self, tmp_path):
+        ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "o", "goal": "O"}, dry_run=True)
+        with patch.dict(os.environ, {"HOLON_STAGE_BUDGET_SECONDS": "120"}):
+            engine = PipelineEngine(ctx)
+        review = StageResult(
+            stage=FlowStage.REVIEW, status=StageStatus.SUCCESS, payload={"consensus": {"iterations": 3}}
+        )
+        assert engine.stage_budget_seconds(FlowStage.REVIEW, review) == 360
+
     def _run_execute(self, tmp_path, env, side_effect=None):
         (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
         ctx = FlowContext(repo_dir=str(tmp_path), plan_branch="I-1-x/P-2-y/_", dry_run=False)

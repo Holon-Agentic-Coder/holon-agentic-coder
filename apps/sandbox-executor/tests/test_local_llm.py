@@ -823,6 +823,19 @@ class TestGatewayHealth(unittest.TestCase):
         self.assertEqual(health.prefill_cache, "unknown")
         self.assertIn("connection refused", health.cache_line())
 
+    def test_malformed_http_response_is_unknown(self):
+        import http.client
+
+        for exc in (http.client.BadStatusLine("garbage"), http.client.IncompleteRead(b"{")):
+            with self.subTest(exc=type(exc).__name__):
+
+                def failing(url, timeout, exc=exc):
+                    raise exc
+
+                health = local_llm.probe_gateway_health("http://127.0.0.1:8081/v1", fetch=failing)
+                self.assertEqual(health.prefill_cache, "unknown")
+                self.assertIn("health probe failed", health.cache_line())
+
     def test_probe_targets_health_path_with_short_timeout(self):
         calls = []
         local_llm.probe_gateway_health("http://localhost:8081/v1", fetch=_fetcher(HEALTH_OFF, calls))

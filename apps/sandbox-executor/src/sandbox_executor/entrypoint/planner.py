@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 
 from sandbox_executor import artefacts
 from sandbox_executor.agent_runner import cleanup_repo_dir, get_repo_url, get_runner, get_workspace_dir
-from sandbox_executor.artefacts import PLAN_METRICS, PLAN_SPEC, plan_write_protocol, validate_artefact
+from sandbox_executor.artefacts import PLAN_REQUIRED_METRICS, PLAN_SPEC, plan_write_protocol, validate_artefact
 from sandbox_executor.budgets import BudgetBreach, StageTimer, load_budgets
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.ledger import atomic_ledger_append
@@ -126,6 +126,7 @@ def _record_plan_budget_failure(
     agent_name: str,
     model_name: str,
     stage_timer: StageTimer,
+    reason: str = "resume did not recover",
 ) -> None:
     """Record the single ACT-BUDGET action, then commit and push it together with the salvaged partial plan.
 
@@ -139,6 +140,7 @@ def _record_plan_budget_failure(
         record_id=plan_id,
         target=plan_md_rel,
         clock_elapsed=stage_timer.elapsed(),
+        reason=reason,
     )
     add_targets = [ledger_rel]
     if os.path.exists(os.path.join(repo_dir, plan_md_rel)):
@@ -313,10 +315,24 @@ Include metrics in this format:
         sys.exit(1)
 
     if outcome.budget_failure is not None:
+        # Name the follow-up that actually ran: a resume after a breach, the re-prompt of a clean turn, or none at all
+        # (no stage time was left).
+        reason = {
+            "resume": "resume did not recover",
+            "reprompt": "the re-prompt for missing content did not finish",
+        }.get(outcome.follow_up or "", "no stage time was left to resume")
         _record_plan_budget_failure(
-            outcome.budget_failure, repo_dir, plan_id, plan_md_rel, plan_branch, agent_name, model_name, stage_timer
+            outcome.budget_failure,
+            repo_dir,
+            plan_id,
+            plan_md_rel,
+            plan_branch,
+            agent_name,
+            model_name,
+            stage_timer,
+            reason=reason,
         )
-        print(f"Error: {outcome.budget_failure.describe()}; the resume turn did not recover the plan.", file=sys.stderr)
+        print(f"Error: {outcome.budget_failure.describe()}; {reason}; the plan is not usable.", file=sys.stderr)
         print(stage_timer.summary("failed"))
         sys.exit(1)
 
@@ -350,7 +366,7 @@ Include metrics in this format:
 
     # Validate before any ledger append or commit. Missing metrics are a failure, never back-filled with defaults.
     if report is None or not report.metrics_ok:
-        missing = ", ".join(report.missing_metrics) if report is not None else ", ".join(PLAN_METRICS)
+        missing = ", ".join(report.missing_metrics) if report is not None else ", ".join(PLAN_REQUIRED_METRICS)
         print(
             f"Error: metrics validation failed for {plan_md_rel}: missing or non-numeric overall metrics: {missing}.",
             file=sys.stderr,

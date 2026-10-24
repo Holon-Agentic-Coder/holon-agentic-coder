@@ -1,3 +1,4 @@
+import argparse
 import importlib.metadata
 import io
 import json
@@ -900,7 +901,7 @@ class TestDoctor(unittest.TestCase):
             patch.dict(os.environ, env, clear=True),
             patch.object(local_llm, "host_models_json", return_value=host_config),
         ):
-            code = cli.run_doctor(fetch=fetch, out=out)
+            code = cli.report_budgets_and_envelope(fetch=fetch, out=out)
         return code, out.getvalue()
 
     def test_doctor_prints_envelope_and_cache_state(self):
@@ -944,3 +945,60 @@ class TestDoctor(unittest.TestCase):
         code, output = self.run_doctor({}, _fetcher(HEALTH_OFF))
         self.assertEqual(code, 0)
         self.assertIn("local_llm=disabled", output)
+
+    def run_unified_doctor(self, env, fetch, host_config=None, as_json=False, status=None):
+        """Run the single ``holon doctor`` command: runner/model resolution and pre-flight, then the environment."""
+        from sandbox_executor.preflight import PreflightResult, PreflightStatus
+
+        status = status or PreflightStatus.OK
+        probe = PreflightResult(
+            status=status,
+            agent="antigravity-agent",
+            model="m",
+            image="holon/agent-antigravity",
+            exit_code=0 if status is PreflightStatus.OK else 1,
+            output_excerpt="",
+            hint="",
+        )
+        args = argparse.Namespace(agent=None, model=None, json=as_json, timeout=None)
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.object(local_llm, "host_models_json", return_value=host_config),
+            patch("sandbox_executor.cli.run_preflight_probe", return_value=probe),
+            patch("sys.stdout", new_callable=io.StringIO) as mock_stdout,
+        ):
+            code = cli.run_doctor(args, fetch=fetch)
+        return code, mock_stdout.getvalue()
+
+    def test_unified_doctor_reports_resolution_probe_and_envelope(self):
+        host_config = _config({"id": "qwen3", "contextWindow": 65536, "maxTokens": 8000})
+        code, output = self.run_unified_doctor({"HOLON_LOCAL_LLM": "1"}, _fetcher(HEALTH_WARM), host_config)
+        self.assertEqual(code, 0)
+        self.assertIn("Agent runner", output)
+        self.assertIn("Model", output)
+        self.assertIn("budgets turn=300s stall=90s", output)
+        self.assertIn("model=qwen3 context=65536 max_tokens=8000 source=host", output)
+        self.assertIn("prefill_cache=warm", output)
+
+    def test_unified_doctor_json_carries_environment_section(self):
+        code, output = self.run_unified_doctor({}, _fetcher(HEALTH_OFF), as_json=True)
+        self.assertEqual(code, 0)
+        payload = json.loads(output)
+        self.assertEqual(payload["preflight"]["status"], "ok")
+        self.assertTrue(payload["environment"]["ok"])
+        self.assertTrue(any(line.startswith("budgets turn=") for line in payload["environment"]["lines"]))
+        self.assertIn(
+            "local_llm=disabled (set HOLON_LOCAL_LLM=1 to inspect the model envelope)", payload["environment"]["lines"]
+        )
+
+    def test_unified_doctor_fails_on_envelope_config_error_even_when_probe_passes(self):
+        code, output = self.run_unified_doctor({"HOLON_LOCAL_LLM": "1"}, _fetcher(HEALTH_OFF), _config({"id": "m"}))
+        self.assertEqual(code, 1)
+        self.assertIn("HOLON_LOCAL_CONTEXT_WINDOW", output)
+
+    def test_unified_doctor_fails_when_probe_fails(self):
+        from sandbox_executor.preflight import PreflightStatus
+
+        code, output = self.run_unified_doctor({}, _fetcher(HEALTH_OFF), status=PreflightStatus.EXPIRED_KEY)
+        self.assertEqual(code, 1)
+        self.assertIn("budgets turn=", output)

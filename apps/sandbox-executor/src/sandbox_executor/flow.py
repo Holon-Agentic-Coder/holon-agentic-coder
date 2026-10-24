@@ -701,12 +701,15 @@ def check_and_resolve_stage_conflicts(
     repo_dir: str,
     target_branch: str = "main",
     stage_name: str = "",
+    branch: str | None = "HEAD",
 ) -> dict[str, Any]:
     """Inspect and resolve stage merge conflicts proactively before stage execution.
 
     - Runs git status --porcelain to detect conflicting files, with isinstance(..., str) guards
       on stdout for test mock safety.
-    - Inspects upstream mergeability against target_branch.
+    - Inspects upstream mergeability of 'branch' against target_branch. The flow no longer checks its
+      branches out, so each stage names the branch it works from; None skips this probe (Stage 1, whose
+      branch does not exist yet).
     - If conflicts exist in holon-knowledge/ledger/*.jsonl, applies reconcile_jsonl_ledger_conflict
       to resolve them automatically and stages them.
     - If non-ledger code conflicts exist and cannot be cleanly resolved, raises ConflictResolutionError.
@@ -715,6 +718,7 @@ def check_and_resolve_stage_conflicts(
         repo_dir: Path to git repository.
         target_branch: Target base branch name (defaults to 'main').
         stage_name: Optional pipeline stage name for telemetry.
+        branch: Branch or ref whose mergeability is probed (defaults to the checkout's 'HEAD').
 
     Returns:
         dict[str, Any]: Conflict check outcome with keys:
@@ -748,16 +752,23 @@ def check_and_resolve_stage_conflicts(
                 conflicting_files.append(file_path)
 
     # 2. Check mergeability against target_branch if clean so far
-    if not conflicting_files:
+    probe_branch = (branch or "").strip()
+    probed_files: list[str] = []
+    if not conflicting_files and probe_branch:
         try:
-            merge_diag = check_pr_mergeability(repo_dir, branch="HEAD", target_branch=target_branch)
+            merge_diag = check_pr_mergeability(repo_dir, branch=probe_branch, target_branch=target_branch)
             if merge_diag.get("is_dirty") or merge_diag.get("mergeable") == "CONFLICTING":
                 target_ref = f"origin/{target_branch}"
                 ref_chk = run_git(["rev-parse", "--verify", target_ref], cwd=repo_dir, check=False)
                 if ref_chk.returncode != 0:
                     target_ref = target_branch
 
-                mt_proc = run_git(["merge-tree", "HEAD", target_ref], cwd=repo_dir, check=False)
+                branch_ref = (
+                    probe_branch
+                    if probe_branch == "HEAD"
+                    else (_resolve_branch_ref(repo_dir, probe_branch, prefer_remote=False) or probe_branch)
+                )
+                mt_proc = run_git(["merge-tree", branch_ref, target_ref], cwd=repo_dir, check=False)
                 mt_raw = getattr(mt_proc, "stdout", "")
                 mt_out = mt_raw if isinstance(mt_raw, str) else ""
                 if mt_out:
@@ -768,6 +779,7 @@ def check_and_resolve_stage_conflicts(
                                 p_clean = p.strip(",:\"'")
                                 if (os.sep in p_clean or "." in p_clean) and p_clean not in conflicting_files:
                                     conflicting_files.append(p_clean)
+                                    probed_files.append(p_clean)
         except Exception as exc:
             logger.debug("Non-fatal upstream mergeability probe in check_and_resolve_stage_conflicts: %s", exc)
 
@@ -796,6 +808,10 @@ def check_and_resolve_stage_conflicts(
         norm_f = f.replace("\\", "/")
         if "holon-knowledge/ledger" in norm_f and norm_f.endswith(".jsonl"):
             full_path = os.path.join(repo_dir, norm_f)
+            if probe_branch != "HEAD" and f in probed_files:
+                # The probed branch is not checked out, so the working-tree copy is not its ledger; append-only
+                # ledgers reconcile at merge time and must not be rewritten in the operator's checkout here.
+                continue
             if os.path.exists(full_path):
                 try:
                     with open(full_path, encoding="utf-8") as lf:
@@ -1508,12 +1524,16 @@ def build_pr_review_consensus_report(
     # 3. Changed Files Inspection & Dynamic Persona Matrix
     changed_files: list[str] = list(consensus_data.get("changed_files") or [])
     if not changed_files and has_git:
+        # Diff the reviewed commit, not whatever the operator's checkout happens to be on.
+        diff_head = target_commit or "HEAD"
         try:
-            diff_proc = run_git(["diff", "--name-only", f"origin/{base_branch}...HEAD"], cwd=repo_dir, check=False)
+            diff_proc = run_git(
+                ["diff", "--name-only", f"origin/{base_branch}...{diff_head}"], cwd=repo_dir, check=False
+            )
             if diff_proc.returncode == 0 and diff_proc.stdout.strip():
                 changed_files = [f.strip() for f in diff_proc.stdout.splitlines() if f.strip()]
             if not changed_files:
-                diff_local = run_git(["diff", "--name-only", "HEAD~1..HEAD"], cwd=repo_dir, check=False)
+                diff_local = run_git(["diff", "--name-only", f"{diff_head}~1..{diff_head}"], cwd=repo_dir, check=False)
                 if diff_local.returncode == 0 and diff_local.stdout.strip():
                     changed_files = [f.strip() for f in diff_local.stdout.splitlines() if f.strip()]
         except Exception:
@@ -2116,6 +2136,53 @@ def _resolve_branch_ref(repo_dir: str, branch: str, prefer_remote: bool = True) 
     return None
 
 
+def _resolve_review_commit(repo_dir: str, review_target: str, fetch: bool = True) -> str:
+    """Return the short SHA of the commit a review loop evaluates.
+
+    The flow no longer leaves the operator's checkout on the execution branch, so the commit comes from
+    the review target, never from an unrelated 'HEAD': a branch is fetched from origin and its tip used
+    (the local branch only when origin cannot be read), and a PR number or URL resolves to the PR head
+    through gh. Only a 'HEAD' target, or a PR whose head gh cannot report, reads the checkout. With
+    fetch=False (dry runs) the already-fetched origin tracking ref is used without contacting origin.
+
+    Returns:
+        str: The short commit SHA, or the target name itself when a branch target does not resolve.
+    """
+    clean = review_target.strip()
+    rev = "HEAD"
+    if clean and clean != "HEAD":
+        if clean.isdigit() or clean.startswith(("http://", "https://")):
+            if shutil.which("gh"):
+                try:
+                    gh_proc = subprocess.run(
+                        ["gh", "pr", "view", clean, "--json", "headRefOid", "--jq", ".headRefOid"],
+                        cwd=repo_dir,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        timeout=60,
+                    )
+                    if gh_proc.returncode == 0 and gh_proc.stdout.strip():
+                        rev = gh_proc.stdout.strip()
+                except (OSError, subprocess.SubprocessError) as exc:
+                    logger.debug("gh pr view headRefOid failed for %s: %s", clean, exc)
+        else:
+            if fetch:
+                run_git(
+                    ["fetch", "--no-tags", "origin", f"+refs/heads/{clean}:refs/remotes/origin/{clean}"],
+                    cwd=repo_dir,
+                    check=False,
+                    timeout=300,
+                )
+            ref = _resolve_branch_ref(repo_dir, clean, prefer_remote=True)
+            if ref is None:
+                return clean
+            rev = ref
+    proc = run_git(["rev-parse", "--short", "--verify", f"{rev}^{{commit}}"], cwd=repo_dir, check=False)
+    out = proc.stdout.strip() if proc.returncode == 0 and isinstance(proc.stdout, str) else ""
+    return out or (clean if clean and clean != "HEAD" else "HEAD")
+
+
 def _origin_has_branch(repo_dir: str, branch: str) -> bool:
     """Return True when the fetched origin tracking ref for a branch exists."""
     res = run_git(
@@ -2381,7 +2448,7 @@ def run_intent_stage(context: FlowContext) -> StageResult:
         if context.skip_push:
             return _stage_failure(context, FlowStage.INTENT, start_time, SKIP_PUSH_DISPATCH_ERROR)
         repo_dir = context.repo_dir
-        check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="intent")
+        check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="intent", branch=None)
         fetch_error = _fetch_branch_prefix_error(repo_dir, branch)
         if fetch_error is not None:
             return _stage_failure(
@@ -2399,6 +2466,9 @@ def run_intent_stage(context: FlowContext) -> StageResult:
             os.makedirs(tmp_dir, exist_ok=True)
             fd, intent_file = tempfile.mkstemp(prefix="holon-flow-intent-", suffix=".json", dir=tmp_dir)
             try:
+                # mkstemp creates 0600, but the container's 'holon' user (uid 1000) reads the bind mount, as it
+                # reads the 0644 file 'holon intent <file>' mounts. The payload is the intent JSON, not a secret.
+                os.fchmod(fd, 0o644)
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     json.dump(intent_data, f)
                 exit_code = _dispatch_role(context, "intent-creator", [], intent_file=intent_file)
@@ -2525,7 +2595,9 @@ def run_plan_stage(context: FlowContext) -> StageResult:
         return _stage_failure(context, FlowStage.PLAN, start_time, SKIP_PUSH_DISPATCH_ERROR)
 
     target_branch = context.intent_data.get("target_branch", "main")
-    check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="plan")
+    check_and_resolve_stage_conflicts(
+        repo_dir, target_branch=target_branch, stage_name="plan", branch=context.intent_branch
+    )
 
     existing_plans = _snapshot_child_branches(repo_dir, intent_prefix, "P")
     if existing_plans is None:
@@ -2694,7 +2766,9 @@ def run_execute_stage(context: FlowContext) -> StageResult:
         return _stage_failure(context, FlowStage.EXECUTE, start_time, SKIP_PUSH_DISPATCH_ERROR)
 
     target_branch = context.intent_data.get("target_branch", "main")
-    check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="execute")
+    check_and_resolve_stage_conflicts(
+        repo_dir, target_branch=target_branch, stage_name="execute", branch=context.plan_branch
+    )
 
     existing_executions = _snapshot_child_branches(repo_dir, plan_prefix, "E")
     if existing_executions is None:
@@ -3128,11 +3202,9 @@ def run_review_loop(
 
     current_commit_sha = "HEAD"
     try:
-        c_proc = run_git(["rev-parse", "--short", "HEAD"], cwd=repo_dir, check=False)
-        if c_proc.returncode == 0 and c_proc.stdout.strip():
-            current_commit_sha = c_proc.stdout.strip()
-    except Exception:
-        pass
+        current_commit_sha = _resolve_review_commit(repo_dir, review_target, fetch=not effective_dry_run)
+    except Exception as exc:
+        logger.debug("Could not resolve the reviewed commit for %s: %s", review_target, exc)
 
     consensus_data = {
         "approved": consensus_reached,
@@ -3284,8 +3356,26 @@ def run_review_stage(context: FlowContext) -> StageResult:
 
     repo_dir = context.repo_dir
     if not context.dry_run:
+        # Stages 1-3 only fetch and track the branches their containers push, so the operator's checkout is
+        # still wherever 'holon flow' started. The review loop appends its ledger rows to the checkout and
+        # Stage 5 calibrates from it, as 'holon review-loop' and 'holon calibrate' do when run on the branch.
+        current = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_dir, check=False)
+        current_branch = current.stdout.strip() if current.returncode == 0 and isinstance(current.stdout, str) else ""
+        if current_branch != context.execution_branch:
+            co_res = run_git(["checkout", context.execution_branch], cwd=repo_dir, check=False)
+            if co_res.returncode != 0:
+                stderr = co_res.stderr.strip() if isinstance(co_res.stderr, str) else ""
+                return _stage_failure(
+                    context,
+                    FlowStage.REVIEW,
+                    start_time,
+                    f"Review stage failed: could not check out execution branch '{context.execution_branch}' "
+                    f"before the review loop: {redact_text(stderr) or f'exit code {co_res.returncode}'}",
+                )
         target_branch = context.intent_data.get("target_branch", "main")
-        check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="review")
+        check_and_resolve_stage_conflicts(
+            repo_dir, target_branch=target_branch, stage_name="review", branch=context.execution_branch
+        )
 
     exec_result = context.stage_results.get("execute")
 
@@ -3573,7 +3663,9 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
     repo_dir = context.repo_dir
     if not context.dry_run:
         target_branch = context.intent_data.get("target_branch", "main")
-        check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="calibrate")
+        check_and_resolve_stage_conflicts(
+            repo_dir, target_branch=target_branch, stage_name="calibrate", branch=context.execution_branch
+        )
 
     calibrated_branch = f"{context.execution_branch.rstrip('/_').rstrip('/')}/calibrated"
     report_dict: dict[str, Any] = {}

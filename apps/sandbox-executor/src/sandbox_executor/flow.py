@@ -3095,6 +3095,56 @@ def _warn_ledger_failure(context: FlowContext, label: str, ledger_path: str, exc
 
 POSTING_ERROR_CONTEXT_MAX_CHARS = 2000
 
+# How long the review loop waits for GitHub CI checks to register on a PR when Stage 3 recorded no test result.
+CI_REGISTRATION_TIMEOUT_SECONDS = 180.0
+CI_REGISTRATION_TIMEOUT_ENV_VAR = "HOLON_CI_REGISTRATION_TIMEOUT"
+CI_REGISTRATION_POLL_SECONDS = 15.0
+TESTS_NOT_MEASURED_ERROR = (
+    "Autonomous review consensus failed: test results not measured: no recorded Stage 3 test result and no CI checks."
+)
+
+
+def resolve_ci_registration_timeout(explicit: float | None = None, environ: Any = None) -> float:
+    """Return the CI registration wait: explicit value, then ``HOLON_CI_REGISTRATION_TIMEOUT``, then 180 seconds.
+
+    ``0`` disables the wait; negative or unparseable values fall back to the default.
+    """
+    if explicit is not None and explicit >= 0:
+        return float(explicit)
+    env = os.environ if environ is None else environ
+    try:
+        value = float(env.get(CI_REGISTRATION_TIMEOUT_ENV_VAR, ""))
+    except ValueError:
+        return CI_REGISTRATION_TIMEOUT_SECONDS
+    return value if value >= 0 else CI_REGISTRATION_TIMEOUT_SECONDS
+
+
+def _wait_for_ci_registration(
+    context: FlowContext,
+    repo_dir: str,
+    review_target: str,
+    proxy_env: dict[str, str],
+    timeout: float,
+    poll_interval: float,
+) -> None:
+    """Poll until GitHub CI checks register on ``review_target`` or ``timeout`` elapses.
+
+    The wait precedes the review iterations, so it consumes no iteration budget and writes no ledger rows.
+    """
+    if timeout <= 0:
+        return
+    deadline = time.monotonic() + timeout
+    context.log(f"[Review Loop] No recorded test result: waiting up to {timeout:g}s for CI checks to register.")
+    while True:
+        if probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env).get("source") == "github_cli":
+            context.log("[Review Loop] CI checks registered.")
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            context.log(f"[Review Loop] No CI checks registered within {timeout:g}s.")
+            return
+        time.sleep(max(0.0, min(poll_interval, remaining)))
+
 
 def _bounded_error_context(detail: str) -> str:
     """Redact ``detail`` with the canonical ``CredentialRedactor``, then cap its length.
@@ -3178,6 +3228,8 @@ def run_review_loop(
     ensemble_size: int = 3,
     auto_pr: bool = True,
     dry_run: bool = False,
+    ci_registration_timeout: float | None = None,
+    ci_poll_interval: float = CI_REGISTRATION_POLL_SECONDS,
 ) -> dict[str, Any]:
     """Execute autonomous native multi-pass review loop (Bean 0118).
 
@@ -3192,6 +3244,9 @@ def run_review_loop(
         ensemble_size: Review ensemble size / heuristic count.
         auto_pr: Whether to create PR automatically if target is only a branch.
         dry_run: If True, evaluate without applying git commits or mutations.
+        ci_registration_timeout: Seconds to wait for CI checks to register when Stage 3 recorded no test
+            result (default: ``HOLON_CI_REGISTRATION_TIMEOUT``, then 180; ``0`` disables the wait).
+        ci_poll_interval: Seconds between CI registration probes.
 
     Returns:
         dict[str, Any]: Review loop outcome dictionary.
@@ -3225,6 +3280,7 @@ def run_review_loop(
     last_mergeability: dict[str, Any] = {}
     is_dirty = False
     missing_ref = False
+    tests_not_measured = False
     mergeability_note: str | None = None
     finding_ids: list[str] = []
     severity = "clean"
@@ -3289,6 +3345,18 @@ def run_review_loop(
         except Exception as exc:
             logger.debug("Non-fatal PR create/update in review loop: %s", exc)
 
+    # Without a recorded test result only CI can measure the tests: give checks triggered by the PR time to
+    # register before the first iteration, so the wait burns no iteration budget and writes no ledger rows.
+    if test_pass_rate is None and not tests_failed and not effective_dry_run and shutil.which("gh"):
+        _wait_for_ci_registration(
+            context,
+            repo_dir,
+            review_target,
+            proxy_env,
+            resolve_ci_registration_timeout(ci_registration_timeout),
+            ci_poll_interval,
+        )
+
     while iteration < budget:
         iteration += 1
         context.log(f"[Review Loop] Starting review iteration {iteration}/{budget} for target '{review_target}'.")
@@ -3346,6 +3414,7 @@ def run_review_loop(
             last_ci_status["skipped"] = 1
             last_ci_status["measured"] = False
             last_ci_status["checks"] = [{"name": "local_tests", "bucket": "skipping", "state": "NOT_MEASURED"}]
+            tests_not_measured = True
         elif (
             last_ci_status.get("source") == "github_cli"
             and last_ci_status.get("pending", 0) > 0
@@ -3427,6 +3496,10 @@ def run_review_loop(
         if missing_ref:
             context.log("[Review Loop] Halting review loop without consensus: mergeability could not be evaluated.")
             break
+        # Unmeasured tests stay unmeasured on the next pass too (CI had its registration window): stop now.
+        if tests_not_measured:
+            context.log("[Review Loop] Halting review loop without consensus: test results not measured.")
+            break
 
         # 7. Check termination criteria
         if not is_dirty and not finding_ids and last_ci_status.get("all_passed", False):
@@ -3437,7 +3510,14 @@ def run_review_loop(
     if not consensus_reached and iteration >= budget:
         context.log(f"[Review Loop] Iteration budget ({budget}) exhausted without consensus.")
 
-    consensus_status = "approved" if consensus_reached else ("conflicted_dirty" if is_dirty else "rejected")
+    if consensus_reached:
+        consensus_status = "approved"
+    elif is_dirty:
+        consensus_status = "conflicted_dirty"
+    elif tests_not_measured:
+        consensus_status = "not_measured"
+    else:
+        consensus_status = "rejected"
     approval_score = 1.0 if consensus_reached else 0.0
 
     current_commit_sha = "HEAD"
@@ -3526,6 +3606,7 @@ def run_review_loop(
             f"PR Review Loop reached consensus approval after {iteration} iteration(s) (Bean 0034 safety halt)"
             if consensus_reached
             else f"PR Review Loop halted without consensus after {iteration} iteration(s)"
+            + (": test results not measured" if tests_not_measured else "")
         ),
         "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
         "total_iterations": iteration,
@@ -3795,7 +3876,11 @@ def run_review_stage(context: FlowContext) -> StageResult:
         return result
 
     if not consensus_reached:
-        err_msg = "Autonomous review consensus failed: test suite reported failures."
+        ci_checks = loop_res.get("ci_checks") or {}
+        if ci_checks.get("measured") is False and not context.dry_run:
+            err_msg = TESTS_NOT_MEASURED_ERROR
+        else:
+            err_msg = "Autonomous review consensus failed: test suite reported failures."
         context.log(f"Stage 4 failed: {err_msg}")
         result = StageResult(
             stage=FlowStage.REVIEW,

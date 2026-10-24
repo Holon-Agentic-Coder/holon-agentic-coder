@@ -165,7 +165,13 @@ The guarantee has five deliberate limits:
 - **Unmeasured tests are never a pass.** Stage 3 carries the executor container's recorded `test_pass_rate` from its
   `executions.jsonl` summary row; when the row records none, it is `null` ("not measured"). Stage 4 then reports
   `test_results` with `pass_rate: null`, `measured: false`, `passed: null`, and when no CI checks exist the review
-  loop's `local_tests` fallback reports `NOT_MEASURED` and withholds consensus instead of passing.
+  loop's `local_tests` fallback reports `NOT_MEASURED` and withholds consensus instead of passing. Before its first
+  iteration the loop waits for CI checks to register on the PR (when `gh` is available; up to
+  `HOLON_CI_REGISTRATION_TIMEOUT` seconds, default 180, `0` disables the wait), without consuming review iterations or
+  writing ledger rows. If none register, the loop stops after that single iteration with consensus status `not_measured`
+  (one iteration's review rows and one summary row, not rows for every iteration), Stage 4 fails with
+  `test results not measured: no recorded Stage 3 test result and no CI checks`, and the pipeline halts before Stage 5
+  calibration runs. `--dry-run` keeps its simulated consensus and does not wait.
 - **Token reduction is auto-detected.** `holon flow` (like `holon review-loop`) resolves token reduction with
   `detect_holon_coherence`: unless `HOLON_TOKEN_REDUCE` opts out (`0`, `false`, `no`, `off`), it is enabled by
   `--token-reduce`, `--mitm-web`, a truthy `HOLON_TOKEN_REDUCE` or `HOLON_PASSIVE_MONITORING`, a reachable proxy port, a

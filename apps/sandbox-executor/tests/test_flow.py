@@ -7,7 +7,7 @@ import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,8 +15,11 @@ from sandbox_executor.cli import main as cli_main
 from sandbox_executor.entrypoint.executor import _sanitize_string
 from sandbox_executor.entrypoint.planner import _sanitize_model_name
 from sandbox_executor.flow import (
+    CI_REGISTRATION_TIMEOUT_ENV_VAR,
+    CI_REGISTRATION_TIMEOUT_SECONDS,
     REVIEW_GIT_ENV,
     SKIP_PUSH_DISPATCH_ERROR,
+    TESTS_NOT_MEASURED_ERROR,
     ConflictResolutionError,
     FlowCheckpoint,
     FlowContext,
@@ -40,6 +43,7 @@ from sandbox_executor.flow import (
     reconcile_ledger_file,
     reconcile_ledger_rows,
     reconcile_ledgers,
+    resolve_ci_registration_timeout,
     run_calibrate_stage,
     run_execute_stage,
     run_intent_stage,
@@ -3552,6 +3556,185 @@ class TestStage4TestEvidence:
             res = run_review_stage(ctx)
 
         assert res.payload["review_package"]["test_results"] == expected
+
+
+class TestUnmeasuredTestsStopEarly:
+    """C11-N1/C11-N2: unmeasured tests wait boundedly for CI to register, then stop once with NOT_MEASURED."""
+
+    LOCAL: ClassVar[dict[str, Any]] = {
+        "source": "local_tests",
+        "total": 1,
+        "passed": 1,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "all_passed": True,
+        "checks": [{"name": "local_tests", "bucket": "pass", "state": "SUCCESS"}],
+    }
+    GITHUB_PASS: ClassVar[dict[str, Any]] = {
+        "source": "github_cli",
+        "total": 1,
+        "passed": 1,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "all_passed": True,
+        "checks": [{"name": "test", "bucket": "pass", "state": "SUCCESS"}],
+    }
+
+    @staticmethod
+    def _ctx(tmp_path: Path, payload: dict[str, Any] | None, *, dry_run: bool = False) -> FlowContext:
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            plan_branch="I-1-x/P-2-a-b/_",
+            execution_branch="I-1-x/P-2-a-b/E-3-a-b/_",
+            dry_run=dry_run,
+        )
+        if payload is not None:
+            ctx.stage_results["execute"] = StageResult(
+                stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload=payload
+            )
+        return ctx
+
+    @staticmethod
+    def _ledger_rows(tmp_path: Path) -> list[dict[str, Any]]:
+        ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
+        if not ledger.exists():
+            return []
+        return [json.loads(line) for line in ledger.read_text().splitlines() if line.strip()]
+
+    def _loop(
+        self,
+        ctx: FlowContext,
+        probe_side_effect: Any,
+        *,
+        gh: str | None = "/usr/bin/gh",
+        **kwargs: Any,
+    ) -> tuple[dict[str, Any], MagicMock, MagicMock]:
+        probe = MagicMock(side_effect=probe_side_effect)
+        sleep = MagicMock()
+        with (
+            patch("sandbox_executor.flow.shutil.which", return_value=gh),
+            patch("sandbox_executor.flow.probe_ci_checks", probe),
+            patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
+            patch("sandbox_executor.flow.post_pr_review_consensus", return_value={"dual_posted": True}),
+            patch("sandbox_executor.flow._resolve_review_commit", return_value="abc123"),
+            patch("sandbox_executor.flow.time.sleep", sleep),
+        ):
+            res = run_review_loop(ctx, auto_pr=False, max_iterations=25, **kwargs)
+        return res, probe, sleep
+
+    def test_checks_registering_after_a_delay_burn_no_review_iterations(self, tmp_path):
+        ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": None})
+        probes = [dict(self.LOCAL), dict(self.LOCAL), dict(self.GITHUB_PASS), dict(self.GITHUB_PASS)]
+
+        res, probe, sleep = self._loop(ctx, probes, ci_registration_timeout=600.0, ci_poll_interval=5.0)
+
+        assert res["consensus"]["approved"] is True
+        assert res["total_iterations"] == 1
+        assert res["ci_checks"]["source"] == "github_cli"
+        assert probe.call_count == 4
+        assert [c.args[0] for c in sleep.call_args_list] == [5.0, 5.0]
+        rows = self._ledger_rows(tmp_path)
+        assert not [r for r in rows if str(r.get("action_id", "")).startswith("ACT-RES")]
+        assert len([r for r in rows if str(r.get("action_id", "")).startswith("ACT-REV")]) == 1
+
+    def test_checks_never_registering_stop_once_with_not_measured(self, tmp_path):
+        ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": None})
+        clock = iter(float(t) for t in range(0, 1000, 5))
+
+        with patch("sandbox_executor.flow.time.monotonic", side_effect=lambda: next(clock)):
+            res, _probe, sleep = self._loop(
+                ctx, lambda *a, **k: dict(self.LOCAL), ci_registration_timeout=20.0, ci_poll_interval=5.0
+            )
+
+        assert res["consensus"]["approved"] is False
+        assert res["consensus"]["status"] == "not_measured"
+        assert res["total_iterations"] == 1
+        assert res["ci_checks"]["measured"] is False
+        assert res["findings"] == ["FIND-CI-001"]
+        assert 1 <= sleep.call_count <= 4
+        rows = self._ledger_rows(tmp_path)
+        assert not [r for r in rows if str(r.get("action_id", "")).startswith("ACT-RES")]
+        assert len([r for r in rows if str(r.get("action_id", "")).startswith("ACT-REV")]) == 1
+        assert len([r for r in rows if r.get("entry_type") == "summary"]) == 1
+        assert len(rows) <= 6
+
+    def test_recorded_result_skips_the_registration_wait(self, tmp_path):
+        ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": 1.0})
+
+        res, probe, sleep = self._loop(ctx, lambda *a, **k: dict(self.LOCAL), ci_registration_timeout=600.0)
+
+        assert res["consensus"]["approved"] is True
+        assert probe.call_count == 1
+        sleep.assert_not_called()
+
+    def test_without_gh_unmeasured_tests_stop_after_one_iteration_without_waiting(self, tmp_path):
+        ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": None})
+
+        res, _probe, sleep = self._loop(ctx, lambda *a, **k: dict(self.LOCAL), gh=None)
+
+        assert res["consensus"]["status"] == "not_measured"
+        assert res["total_iterations"] == 1
+        sleep.assert_not_called()
+
+    def test_dry_run_keeps_its_simulated_consensus_without_waiting(self, tmp_path):
+        ctx = self._ctx(tmp_path, {"exit_code": 0}, dry_run=True)
+
+        res, _probe, sleep = self._loop(ctx, lambda *a, **k: dict(self.LOCAL), ci_registration_timeout=600.0)
+
+        assert res["consensus"]["approved"] is True
+        assert res["ci_checks"]["measured"] is False
+        sleep.assert_not_called()
+        assert self._ledger_rows(tmp_path) == []
+
+    @pytest.mark.parametrize(
+        ("explicit", "env", "expected"),
+        [
+            (None, {}, CI_REGISTRATION_TIMEOUT_SECONDS),
+            (30.0, {CI_REGISTRATION_TIMEOUT_ENV_VAR: "90"}, 30.0),
+            (None, {CI_REGISTRATION_TIMEOUT_ENV_VAR: "90"}, 90.0),
+            (None, {CI_REGISTRATION_TIMEOUT_ENV_VAR: "0"}, 0.0),
+            (None, {CI_REGISTRATION_TIMEOUT_ENV_VAR: "bogus"}, CI_REGISTRATION_TIMEOUT_SECONDS),
+            (None, {CI_REGISTRATION_TIMEOUT_ENV_VAR: "-5"}, CI_REGISTRATION_TIMEOUT_SECONDS),
+        ],
+    )
+    def test_registration_timeout_resolution(self, explicit, env, expected):
+        assert resolve_ci_registration_timeout(explicit, environ=env) == expected
+
+    def test_stage4_reports_unmeasured_tests_distinctly_from_failures(self, tmp_path):
+        ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": None})
+        loop_res = {
+            "consensus": {"approved": False, "status": "not_measured"},
+            "mergeability": {"is_dirty": False},
+            "ci_checks": {"source": "local_tests", "measured": False, "all_passed": False},
+        }
+        with (
+            patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=0, stdout="")),
+            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.run_review_loop", return_value=loop_res),
+        ):
+            res = run_review_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        assert res.error == TESTS_NOT_MEASURED_ERROR
+        assert "reported failures" not in res.error
+
+    def test_stage4_keeps_the_failure_message_for_measured_failures(self, tmp_path):
+        ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": 0.5})
+        loop_res = {
+            "consensus": {"approved": False, "status": "rejected"},
+            "mergeability": {"is_dirty": False},
+            "ci_checks": {"source": "local_tests", "all_passed": False},
+        }
+        with (
+            patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=0, stdout="")),
+            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.run_review_loop", return_value=loop_res),
+        ):
+            res = run_review_stage(ctx)
+
+        assert res.error == "Autonomous review consensus failed: test suite reported failures."
 
 
 class TestSkipPushRejectedOnEveryNonDryRun:

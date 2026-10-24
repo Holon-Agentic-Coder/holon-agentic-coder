@@ -161,6 +161,23 @@ def test_probe_timeout_removes_container(probe_env):
     assert calls[1] == ["docker", "rm", "-f", name]
 
 
+def test_probe_timeout_cleanup_is_bounded_and_its_timeout_is_swallowed(probe_env, caplog):
+    calls = []
+
+    def runner_fn(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    with caplog.at_level(logging.WARNING, logger="sandbox_executor.preflight"):
+        res = run_preflight_probe("antigravity-agent", "m", timeout=1, runner_fn=runner_fn)
+    assert res.status is PreflightStatus.UNKNOWN
+    assert "interactive login" in res.hint
+    cleanup_cmd, cleanup_kwargs = calls[1]
+    assert cleanup_cmd[:3] == ["docker", "rm", "-f"]
+    assert cleanup_kwargs["timeout"] == preflight.CLEANUP_TIMEOUT_SECONDS
+    assert "Could not remove pre-flight container" in caplog.text
+
+
 def test_probe_without_docker(probe_env):
     with patch("sandbox_executor.preflight.shutil.which", return_value=None):
         res = run_preflight_probe("antigravity-agent", "m")

@@ -11,6 +11,7 @@ The probe never runs git, never writes under the repository and never writes to 
 from __future__ import annotations
 
 import enum
+import logging
 import os
 import re
 import shutil
@@ -23,11 +24,15 @@ from typing import Any
 from sandbox_executor import local_llm
 from sandbox_executor.agent_defaults import AGENT_IMAGE_MAPPING, normalise_agent_id
 
+logger = logging.getLogger(__name__)
+
 PROBE_PROMPT = "Reply with the single word OK."
 # The expected answer to PROBE_PROMPT, on a line of its own (optionally followed by punctuation).
 _EXPECTED_REPLY_RE = re.compile(r"^\s*OK[.!]?\s*$", re.MULTILINE | re.IGNORECASE)
 DEFAULT_TIMEOUT_SECONDS = 60.0
 TIMEOUT_ENV_VAR = "HOLON_PREFLIGHT_TIMEOUT"
+# Bound on the `docker rm -f` cleanup after a probe timeout, so a hung daemon cannot stall the probe indefinitely.
+CLEANUP_TIMEOUT_SECONDS = 10.0
 SKIP_ENV_VAR = "HOLON_SKIP_PREFLIGHT"
 _EXCERPT_CHARS = 800
 _TRUTHY_ENV_VALUES = ("1", "true", "yes", "on")
@@ -351,7 +356,16 @@ def run_preflight_probe(
     try:
         proc = run(docker_cmd, capture_output=True, text=True, timeout=limit, check=False, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired as exc:
-        run(["docker", "rm", "-f", container_name], capture_output=True, text=True, check=False)
+        try:
+            run(
+                ["docker", "rm", "-f", container_name],
+                capture_output=True,
+                text=True,
+                timeout=CLEANUP_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError) as cleanup_exc:
+            logger.warning("Could not remove pre-flight container %s: %s", container_name, cleanup_exc)
         partial = _decode(exc.stdout) + _decode(exc.stderr)
         return _result(
             PreflightStatus.UNKNOWN,

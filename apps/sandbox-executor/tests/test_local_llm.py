@@ -881,6 +881,35 @@ class TestGatewayHealth(unittest.TestCase):
         self.assertNotIn("s3cret", health.url)
         self.assertEqual(local_llm.health_url("http://[::1]:8081/v1"), "http://[::1]:8081/health")
 
+    def test_redact_url_drops_userinfo_query_and_fragment(self):
+        # C8-N1: base URLs echoed into errors or logs must never carry credentials. Built at runtime, not literals.
+        sample = "pw-" + "x" * 8
+        url = f"http://someone:{sample}@gpu.example.com:8000/v1?key={sample}#{sample}"
+        self.assertEqual(local_llm.redact_url(url), "http://gpu.example.com:8000/v1")
+        self.assertEqual(local_llm.redact_url("http://localhost:11434/v1"), "http://localhost:11434/v1")
+        unparseable = f"http://someone:{sample}@[::1/v1?key={sample}"
+        self.assertNotIn(sample, local_llm.redact_url(unparseable))
+        with self.assertRaises(ValueError) as caught:
+            local_llm._default_fetch(f"file://someone:{sample}@localhost/etc", 1.0)
+        self.assertNotIn(sample, str(caught.exception))
+
+    def test_config_error_and_logs_never_echo_userinfo(self):
+        sample = "pw-" + "y" * 8
+        env = {
+            "HOLON_LOCAL_BASE_URL": f"http://someone:{sample}@gpu.example.com:8000/v1?key={sample}",
+            "HOLON_LOCAL_MODELS": "m",
+        }
+        with patch.dict(os.environ, env, clear=True), self.assertRaises(local_llm.LocalLLMConfigError) as caught:
+            local_llm.build_container_config(None)
+        self.assertNotIn(sample, str(caught.exception))
+        self.assertIn("http://gpu.example.com:8000/v1", str(caught.exception))
+        host_config = {"providers": {"p": {"baseUrl": f"http://someone:{sample}@localhost:8081/v1", "models": []}}}
+        with self.assertLogs(local_llm.logger, level="INFO") as logs:
+            local_llm.build_container_config(host_config)
+            local_llm.rewrite_authority(f"http://someone:{sample}@localhost:bad/v1")
+        self.assertTrue(logs.output)
+        self.assertFalse(any(sample in line for line in logs.output))
+
     def test_only_http_and_https_are_probed(self):
         # C4-N1: a loopback file:// or ftp:// base URL must never make the doctor open a file or an FTP session.
         calls = []

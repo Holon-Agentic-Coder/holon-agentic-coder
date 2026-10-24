@@ -109,6 +109,22 @@ def _is_local_host(host: str) -> bool:
     return address.is_loopback or address.is_unspecified
 
 
+def redact_url(url: str) -> str:
+    """``url`` safe to print or log: userinfo (``user:token@``), query and fragment are dropped.
+
+    Base URLs come from operator configuration and may embed credentials, so every message or log line that echoes
+    one goes through here. Scheme, host, port and path are kept for diagnosis.
+    """
+    try:
+        parsed = urlsplit(url)
+        netloc = parsed.netloc.rpartition("@")[2]
+        return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+    except ValueError:
+        # Unparseable (e.g. a malformed IPv6 literal): strip anything up to the last "@" and any query or fragment.
+        stripped = re.sub(r"^([^/]*//)?[^/?#]*@", lambda m: m.group(1) or "", url)
+        return re.split(r"[?#]", stripped, maxsplit=1)[0]
+
+
 def _authority(url: str) -> tuple[str, int | None] | None:
     """Return ``(host, port)`` or None when the URL is unusable.
 
@@ -122,7 +138,7 @@ def _authority(url: str) -> tuple[str, int | None] | None:
             return None
         return host, parsed.port
     except ValueError:
-        logger.warning("Ignoring base URL with an invalid port or host: %r", url)
+        logger.warning("Ignoring base URL with an invalid port or host: %r", redact_url(url))
         return None
 
 
@@ -135,7 +151,7 @@ def rewrite_authority(url: str, allow_list: Iterable[str] = ()) -> str:
     allowed = {entry.lower() for entry in allow_list}
     authority = _authority(url)
     if authority is None:
-        logger.warning("Ignoring unparseable base URL %r during host-local rewrite", url)
+        logger.warning("Ignoring unparseable base URL %r during host-local rewrite", redact_url(url))
         return url
 
     host, port = authority
@@ -202,7 +218,7 @@ def _synthesized_config(allow_list: Iterable[str]) -> dict:
     auth = _authority(rewritten)
     if auth is None or auth[0] != GATEWAY_HOST:
         raise LocalLLMConfigError(
-            f"The configured {ENV_LOCAL_BASE_URL} ({base_url}) is neither a loopback address nor in "
+            f"The configured {ENV_LOCAL_BASE_URL} ({redact_url(base_url)}) is neither a loopback address nor in "
             f"{ENV_HOST_LOCAL_HOSTS}."
         )
     return {
@@ -246,7 +262,12 @@ def build_container_config(host_config: dict | None, allow_list: Iterable[str] =
             dropped.append(name)
             continue
         if rewritten != base_url:
-            logger.info("Rewrote provider %r baseUrl for sandbox reachability: %s -> %s", name, base_url, rewritten)
+            logger.info(
+                "Rewrote provider %r baseUrl for sandbox reachability: %s -> %s",
+                name,
+                redact_url(base_url),
+                redact_url(rewritten),
+            )
         provider["baseUrl"] = rewritten
         if not provider.get("apiKey"):
             provider["apiKey"] = "holon-local"
@@ -538,7 +559,7 @@ def _default_fetch(url: str, timeout: float) -> bytes:
     # probe to a host that health_url() would not have allowed. The opener still carries urllib's file:// and ftp://
     # handlers, so the scheme is checked here as well as in health_url(), and the read is capped.
     if urlsplit(url).scheme.lower() not in HEALTH_SCHEMES:
-        raise ValueError(f"health probe only supports http and https, not {url!r}")
+        raise ValueError(f"health probe only supports http and https, not {redact_url(url)!r}")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _RefuseRedirects())
     with opener.open(url, timeout=timeout) as response:
         body = response.read(HEALTH_MAX_BYTES + 1)

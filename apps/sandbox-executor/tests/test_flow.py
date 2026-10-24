@@ -352,7 +352,12 @@ class TestFlowStages:
             payload={"test_pass_rate": 1.0, "exit_code": 0},
         )
 
-        with patch("sandbox_executor.flow.run_git") as mock_git:
+        # The empty-diff guard allows the PR: only an allowed diff can reach consensus (C15-N1).
+        with (
+            patch("sandbox_executor.flow.run_git") as mock_git,
+            patch("sandbox_executor.flow._execution_effective_diff", return_value=(True, "1 file changed")),
+            patch("sandbox_executor.flow.create_or_update_pr", return_value={"success": True}),
+        ):
             mock_git.return_value = MagicMock(returncode=0, stdout=" 1 file changed, 5 insertions(+)\n")
             res = run_review_stage(ctx)
 
@@ -1345,7 +1350,11 @@ class TestReviewLoopStage:
             status=StageStatus.SUCCESS,
             payload={"test_pass_rate": 1.0, "exit_code": 0},
         )
-        with patch("sandbox_executor.flow.run_git") as mock_git:
+        with (
+            patch("sandbox_executor.flow.run_git") as mock_git,
+            patch("sandbox_executor.flow._execution_effective_diff", return_value=(True, "1 file changed")),
+            patch("sandbox_executor.flow.create_or_update_pr", return_value={"success": True}),
+        ):
             mock_git.return_value = MagicMock(returncode=0, stdout=" 1 file changed, 10 insertions(+)\n")
             res = run_review_loop(ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=5)
 
@@ -1394,6 +1403,8 @@ class TestReviewLoopStage:
         with (
             patch("sandbox_executor.flow.run_git") as mock_git,
             patch("sandbox_executor.flow.post_pr_review_consensus") as mock_post,
+            patch("sandbox_executor.flow._execution_effective_diff", return_value=(True, "1 file changed")),
+            patch("sandbox_executor.flow.create_or_update_pr", return_value={"success": True}),
         ):
             mock_git.return_value = MagicMock(returncode=0, stdout=" 1 file changed, 10 insertions(+)\n")
             mock_post.return_value = {"dual_posted": True, "official_review": {"success": True}}
@@ -1711,6 +1722,8 @@ class TestSemanticPRAndConsensusReview:
             patch("sandbox_executor.flow.check_pr_mergeability") as mock_merge,
             patch("sandbox_executor.flow.probe_ci_checks") as mock_ci,
             patch("sandbox_executor.flow.post_pr_review_consensus") as mock_post,
+            patch("sandbox_executor.flow._execution_effective_diff", return_value=(True, "1 file changed")),
+            patch("sandbox_executor.flow.create_or_update_pr", return_value={"success": True}),
         ):
             # Iteration 1: finding detected (dirty conflict)
             # Iteration 2: clean and passes (resolver pass)
@@ -3783,9 +3796,70 @@ class TestUnmeasuredTestsStopEarly:
             probe.assert_not_called()
             assert summaries == []
         else:
-            assert probe.call_count == 1
+            # C15-N1: fail closed, the refused PR is never reviewed, so only the halted summary row is written.
+            probe.assert_not_called()
             assert len(summaries) == 1
+            assert summaries[0]["status"] == "failed"
             assert "could not verify the execution diff" in summaries[0]["summary"]
+
+    GREEN_EVIDENCE: ClassVar[list[Any]] = [
+        pytest.param({"exit_code": 0, "test_pass_rate": 1.0}, None, id="stage3-pass-rate-1.0"),
+        pytest.param(
+            {"exit_code": 0, "test_pass_rate": None},
+            {"source": "github_cli", "all_passed": True, "total": 1, "passed": 1, "pending": 0},
+            id="green-ci-on-existing-pr",
+        ),
+    ]
+
+    def _refused_with_green_evidence(self, tmp_path, payload, ci, call):
+        ctx = self._ctx(tmp_path, payload)
+        probe = MagicMock(return_value=dict(ci or self.LOCAL))
+        post = MagicMock(return_value={"dual_posted": True})
+        with (
+            patch("sandbox_executor.flow.shutil.which", return_value="/usr/bin/gh"),
+            patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=0, stdout="")),
+            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow._execution_effective_diff", return_value=(None, "fetch failed")),
+            patch("sandbox_executor.flow.create_or_update_pr") as mock_pr,
+            patch("sandbox_executor.flow.probe_ci_checks", probe),
+            patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
+            patch("sandbox_executor.flow.post_pr_review_consensus", post),
+            patch("sandbox_executor.flow._resolve_review_commit", return_value="abc123"),
+            patch("sandbox_executor.flow.time.sleep"),
+            patch("sandbox_executor.flow._wait_for_ci_registration"),
+        ):
+            res = call(ctx)
+        mock_pr.assert_not_called()
+        post.assert_not_called()
+        rows = self._ledger_rows(tmp_path)
+        assert not [r for r in rows if str(r.get("action_id", "")).startswith(("ACT-REV", "ACT-POST"))]
+        summaries = [r for r in rows if r.get("entry_type") == "summary"]
+        assert len(summaries) == 1
+        assert summaries[0]["status"] == "failed"
+        assert "halted without consensus" in summaries[0]["summary"]
+        assert "could not verify the execution diff" in summaries[0]["summary"]
+        return res
+
+    @pytest.mark.parametrize(("payload", "ci"), GREEN_EVIDENCE)
+    def test_unverified_diff_never_approves_despite_green_evidence(self, tmp_path, payload, ci):
+        """C15-N1: the loop fails closed on diff_unverified instead of returning approved plus the refusal."""
+        res = self._refused_with_green_evidence(
+            tmp_path, payload, ci, lambda ctx: run_review_loop(ctx, max_iterations=2, dry_run=False)
+        )
+        assert res["consensus"]["approved"] is False
+        assert res["consensus"]["status"] == "rejected"
+        assert res["halted_for_human"] is False
+        assert res["pr"]["reason"] == "diff_unverified"
+        assert "could not verify the execution diff (fetch failed)" in res["error"]
+
+    @pytest.mark.parametrize(("payload", "ci"), GREEN_EVIDENCE)
+    def test_stage4_fails_on_unverified_diff_despite_green_evidence(self, tmp_path, payload, ci):
+        """C15-N1: Stage 4 fails with the refusal's reason, so Stage 5 never calibrates a refused PR."""
+        res = self._refused_with_green_evidence(tmp_path, payload, ci, run_review_stage)
+        assert res.status == StageStatus.FAILED
+        assert res.payload["halted_for_human"] is False
+        assert res.error.startswith("Autonomous review halted: Refusing to create or update a PR for ")
+        assert "could not verify the execution diff (fetch failed)" in res.error
 
 
 class TestSkipPushRejectedOnEveryNonDryRun:

@@ -3364,7 +3364,11 @@ def run_review_loop(
             ci_poll_interval,
         )
 
-    while iteration < budget:
+    if pr_refusal_error:
+        # Fail closed: a PR the guard refused is never reviewed, so no evidence can turn the refusal into approval.
+        context.log("[Review Loop] Halting review loop without consensus: the empty-diff guard refused the PR.")
+
+    while pr_refusal_error is None and iteration < budget:
         iteration += 1
         context.log(f"[Review Loop] Starting review iteration {iteration}/{budget} for target '{review_target}'.")
 
@@ -3514,7 +3518,7 @@ def run_review_loop(
             context.log(f"[Review Loop] Consensus approval reached at iteration {iteration}.")
             break
 
-    if not consensus_reached and iteration >= budget:
+    if not consensus_reached and pr_refusal_error is None and iteration >= budget:
         context.log(f"[Review Loop] Iteration budget ({budget}) exhausted without consensus.")
 
     if consensus_reached:
@@ -3560,6 +3564,9 @@ def run_review_loop(
     posting_res: dict[str, Any] = {}
     if effective_dry_run:
         suppressed_ledger_records += 1
+    elif pr_refusal_error:
+        # No PR was created or updated for a refused diff, so there is no consensus to post and no ACT-POST row.
+        context.log(f"[Review Loop] Not posting a review consensus for '{review_target}': the PR was refused.")
     else:
         try:
             posting_res = post_pr_review_consensus(

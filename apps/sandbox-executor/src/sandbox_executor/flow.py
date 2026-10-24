@@ -3418,7 +3418,10 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
         report_dict = report.to_dict()
         calibration_succeeded = True
     except Exception as e:
-        context.log(f"Calibration run encountered exception: {e}. Generating fallback report.")
+        context.log(
+            f"Calibration run encountered exception: {CredentialRedactor.redact_text(str(e))}. "
+            "Generating fallback report."
+        )
         clean = context.execution_branch.strip().rstrip("/_").rstrip("/")
         parts = clean.split("/")
         plan_id = "P-unknown"
@@ -3503,7 +3506,12 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
             if not context.skip_push:
                 run_git(["push", "origin", context.execution_branch], cwd=repo_dir, check=False)
 
-    if context.calibrated_branch:
+    if not context.dry_run and not calibration_succeeded:
+        context.log(
+            "Stage 5 completed with a calibration failure: nothing was committed, pushed or fast-forwarded "
+            f"for '{context.calibrated_branch}'."
+        )
+    elif context.calibrated_branch:
         context.log(f"Stage 5 completed: Calibration analysis generated on branch '{context.calibrated_branch}'.")
     else:
         context.log("Stage 5 completed: Calibration analysis generated in working tree (uncommitted).")

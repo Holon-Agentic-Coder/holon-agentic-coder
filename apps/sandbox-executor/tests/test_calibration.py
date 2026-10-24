@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from sandbox_executor.calibration import (
     ActualMetrics,
+    CalibrationCommitError,
     CalibrationDeltas,
     CalibrationReport,
     EntropyFactors,
@@ -1144,12 +1145,72 @@ def test_run_calibrate_commit_failure_warning_redacts_credentials(calibration_re
             "sandbox_executor.calibration.calibration_commit_env",
             side_effect=RuntimeError(f"credential helper {sample_value}"),
         ),
+        pytest.raises(CalibrationCommitError) as excinfo,
     ):
         run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
 
     messages = [rec.getMessage() for rec in caplog.records]
     assert any("Git commit of calibration report" in m and "[REDACTED_SECRET]" in m for m in messages)
     assert all(sample_value not in m for m in messages)
+    assert "[REDACTED_SECRET]" in str(excinfo.value)
+    assert sample_value not in str(excinfo.value)
+
+
+_HOOK_SECRET = "ghp_" + "H" * 36
+
+
+def _install_rejecting_pre_commit_hook(repo: Path, git) -> None:
+    """Install a repository-local pre-commit hook that rejects every commit (C9-N1)."""
+    hooks_dir = repo / ".git" / "test-hooks"
+    hooks_dir.mkdir()
+    hook = hooks_dir / "pre-commit"
+    hook.write_text(f"#!/bin/sh\necho 'pre-commit rejected with {_HOOK_SECRET}' >&2\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    git("config", "core.hooksPath", str(hooks_dir))
+
+
+def test_run_calibrate_rejected_report_commit_raises(calibration_repo, capsys):
+    """A pre-commit hook that rejects the report commit makes run_calibrate fail, redacted (C9-N1)."""
+    repo, git = calibration_repo
+    _install_rejecting_pre_commit_hook(repo, git)
+    ledger_rel = "holon-knowledge/ledger/executions.jsonl"
+    with (
+        patch("sandbox_executor.calibration.converge_prettier"),
+        pytest.raises(CalibrationCommitError) as excinfo,
+    ):
+        run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
+
+    message = str(excinfo.value)
+    assert "plans/P-2_calibration.md" in message
+    assert "pre-commit rejected" in message
+    assert _HOOK_SECRET not in message
+    assert "committed" not in capsys.readouterr().out
+    # Nothing reached git: the report is absent from HEAD and HEAD still carries no ACT-CAL row.
+    head_has_report = subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "-e", "HEAD:plans/P-2_calibration.md"], capture_output=True
+    )
+    assert head_has_report.returncode != 0
+    assert _cal_rows(git("show", f"HEAD:{ledger_rel}")) == []
+    assert git("log", "--format=%s", "-1").strip() == "feature"
+
+
+def test_cli_calibrate_rejected_report_commit_exits_non_zero(calibration_repo, capsys):
+    """`holon calibrate` exits 1 with a redacted error when the report commit is rejected (C9-N1)."""
+    repo, git = calibration_repo
+    _install_rejecting_pre_commit_hook(repo, git)
+    test_args = ["holon", "calibrate", _EXEC_BRANCH, "--repo-dir", str(repo)]
+    with (
+        patch("sandbox_executor.calibration.converge_prettier"),
+        patch.object(sys, "argv", test_args),
+        pytest.raises(SystemExit) as excinfo,
+    ):
+        cli_main()
+
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert "Error during calibration: Git commit of calibration report plans/P-2_calibration.md failed" in captured.err
+    assert _HOOK_SECRET not in captured.err
+    assert "committed" not in captured.out
 
 
 def test_run_calibrate_appends_and_commits_act_cal(calibration_repo):
@@ -1317,6 +1378,53 @@ def test_stage5_dry_run_leaves_executions_ledger_unchanged(calibration_repo):
         res = run_calibrate_stage(_stage5_context(repo, dry_run=True))
     assert res.status == StageStatus.SUCCESS
     assert ledger.read_bytes() == before
+
+
+def test_stage5_rejected_report_commit_takes_failure_path(calibration_repo):
+    """A rejected report commit leaves every Stage 5 row uncommitted and skips push / ff (C9-N1)."""
+    from sandbox_executor.flow import run_calibrate_stage
+    from sandbox_executor.git import run_git as real_run_git
+
+    repo, git = calibration_repo
+    _install_rejecting_pre_commit_hook(repo, git)
+    ledger_rel = "holon-knowledge/ledger/executions.jsonl"
+    calibrated = "I-1-cal/P-2/E-3/calibrated"
+    exec_head_before = git("rev-parse", _EXEC_BRANCH).strip()
+    ctx = _stage5_context(repo, dry_run=False)
+    ctx.skip_push = False
+    git_calls: list[list[str]] = []
+
+    def recording_run_git(args, *a, **kw):
+        git_calls.append(list(args))
+        return real_run_git(args, *a, **kw)
+
+    with (
+        patch("sandbox_executor.calibration.converge_prettier"),
+        patch("sandbox_executor.flow.converge_prettier"),
+        patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.run_git", side_effect=recording_run_git),
+    ):
+        run_calibrate_stage(ctx)
+
+    # No push, no fast-forward, no reconciliation commit.
+    assert not [c for c in git_calls if c[:1] in (["push"], ["merge"]) or c[:1] == ["commit"]]
+    assert git("rev-parse", _EXEC_BRANCH).strip() == exec_head_before
+    assert git("rev-parse", calibrated).strip() == exec_head_before
+    for ref in (calibrated, _EXEC_BRANCH):
+        assert _cal_rows(git("show", f"{ref}:{ledger_rel}")) == []
+    # The ACT-CAL rows stay in the working tree: the rejected success row, then the failure row.
+    working = (repo / ledger_rel).read_text(encoding="utf-8")
+    assert [r["outcome"] for r in _cal_rows(working)] == ["success", "failure"]
+    failure = _cal_rows(working)[-1]
+    assert "Git commit of calibration report plans/P-2_calibration.md failed" in failure["error_context"]
+    assert _HOOK_SECRET not in working
+    recon = [json.loads(line) for line in working.splitlines() if line.strip()]
+    assert [r for r in recon if r.get("event_type") == "reconciliation"]
+    assert ledger_rel in git("status", "--porcelain")
+    joined = "\n".join(ctx.logs)
+    assert _HOOK_SECRET not in joined
+    assert "left uncommitted" in joined
+    assert "Stage 5 completed with a calibration failure" in joined
 
 
 def test_stage5_commits_reconciliation_row_on_calibrated_branch(calibration_repo):

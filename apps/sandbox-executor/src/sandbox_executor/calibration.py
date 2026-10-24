@@ -29,6 +29,16 @@ logger = logging.getLogger(__name__)
 
 LEDGER_EXECUTIONS_REL = "holon-knowledge/ledger/executions.jsonl"
 
+
+class CalibrationCommitError(RuntimeError):
+    """Raised when git rejects the calibration report commit (for example a hook or signing failure).
+
+    The message is credential-redacted. Callers treat it as a calibration failure: the report
+    and the ACT-CAL row stay uncommitted and the ``/calibrated`` branch is neither pushed nor
+    fast-forwarded.
+    """
+
+
 METADATA_PATH_PREFIXES = (
     "holon-knowledge/",
     "plans/",
@@ -1360,6 +1370,9 @@ def run_calibrate(
 
     Raises:
         RuntimeError: If git branch checkout or diff operations fail.
+        CalibrationCommitError: If git rejects the calibration report commit (hook, signing or
+            other non-"nothing to commit" failure). The report and the ACT-CAL row are left
+            uncommitted in the working tree.
     """
     report = generate_calibration(execution_branch, repo_dir=repo_dir)
     report.committed = not skip_commit
@@ -1463,16 +1476,20 @@ def run_calibrate(
                 env=commit_env,
                 check=False,
             )
-            if commit_res.returncode != 0:
-                combined_output = (commit_res.stdout + " " + commit_res.stderr).lower()
-                if "nothing to commit" in combined_output:
-                    logger.info("Nothing to commit for calibration report on %s", report.calibrated_branch)
-                else:
-                    logger.warning("Git commit output: %s", commit_res.stderr.strip())
         except Exception as e:
-            logger.warning(
-                "Git commit of calibration report %s failed: %s", report_rel, CredentialRedactor.redact_text(str(e))
-            )
+            detail = CredentialRedactor.redact_text(str(e))
+            logger.warning("Git commit of calibration report %s failed: %s", report_rel, detail)
+            raise CalibrationCommitError(f"Git commit of calibration report {report_rel} failed: {detail}") from e
+        if commit_res.returncode != 0:
+            combined_output = (commit_res.stdout + " " + commit_res.stderr).lower()
+            if "nothing to commit" in combined_output:
+                logger.info("Nothing to commit for calibration report on %s", report.calibrated_branch)
+            else:
+                detail = CredentialRedactor.redact_text(commit_res.stderr.strip() or commit_res.stdout.strip())
+                logger.warning("Git commit of calibration report %s failed: %s", report_rel, detail)
+                raise CalibrationCommitError(
+                    f"Git commit of calibration report {report_rel} failed (exit {commit_res.returncode}): {detail}"
+                )
 
     if json_output:
         print(json.dumps(report.to_dict(), indent=2))

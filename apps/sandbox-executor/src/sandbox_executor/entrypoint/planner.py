@@ -13,16 +13,36 @@ from sandbox_executor.artefacts import PLAN_REQUIRED_METRICS, PLAN_SPEC, plan_wr
 from sandbox_executor.budgets import BudgetBreach, StageTimer, load_budgets
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.ledger import atomic_ledger_append
+from sandbox_executor.redaction import redact_agent_secrets, redact_command, redact_command_args
 from sandbox_executor.turns import record_budget_failure, run_turn, supervise_authoring_turn
 
 
-def run_cmd(args, cwd=None, env=None, check=True):
-    print(f"Running: {' '.join(args)}")
+def run_cmd(
+    args: list[str],
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    """Run a command, echoing it with credentials masked, and exit on failure when `check` is set.
+
+    The echo and the failure diagnostics go through the shared redactors, because the clone URL and
+    git's own error messages can carry the GitHub token.
+
+    Args:
+        args: The command and its arguments.
+        cwd: Working directory for the command.
+        env: Environment for the command; inherits the current environment when None.
+        check: Exit the process with the command's return code if it fails.
+
+    Returns:
+        The CompletedProcess, whose stdout and stderr are raw and unredacted.
+    """
+    print(f"Running: {redact_command(args)}")
     result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True)
     if result.returncode != 0 and check:
         print(f"Command failed with code {result.returncode}")
-        print(f"Stdout:\n{result.stdout}")
-        print(f"Stderr:\n{result.stderr}")
+        print(f"Stdout:\n{redact_agent_secrets(result.stdout)}")
+        print(f"Stderr:\n{redact_agent_secrets(result.stderr)}")
         sys.exit(result.returncode)
     return result
 
@@ -165,6 +185,30 @@ def _record_plan_budget_failure(
         run_cmd(["git", "push", "-u", "origin", plan_branch], cwd=repo_dir, check=False)
 
 
+_AGENT_ARG_DISPLAY_LEN = 100
+
+
+def format_agent_cmd_for_display(cmd: list[str]) -> str:
+    """Render the agent command line for the console with credentials masked and long args clamped.
+
+    Redaction runs per argument before the clamp, so truncating a long argument (for example a
+    `--settings` JSON blob carrying an OAuth token) can never split a credential and leak its prefix.
+
+    Args:
+        cmd: The agent argv exactly as handed to `subprocess`.
+
+    Returns:
+        A single space-joined line that is safe to print.
+    """
+    print_cmd = []
+    for arg in redact_command_args(cmd):
+        if len(arg) > _AGENT_ARG_DISPLAY_LEN:
+            print_cmd.append(arg[:_AGENT_ARG_DISPLAY_LEN] + "...")
+        else:
+            print_cmd.append(arg)
+    return " ".join(print_cmd)
+
+
 def main():
     if len(sys.argv) < 4:
         print("Usage: planner.py <intent_branch> <agent_name> <model_name>")
@@ -288,9 +332,8 @@ Include metrics in this format:
 
     def build_agent_cmd(prompt_text: str) -> list[str]:
         cmd = runner.build_cmd(model_name, prompt_file, intent_file, prompt_text)
-        # Show a truncated print command if the prompt argument is very large
-        print_cmd = [arg[:100] + "..." if len(arg) > 100 else arg for arg in cmd]
-        print(f"Running command: {' '.join(print_cmd)}")
+        # Credentials are masked per argument before long arguments are clamped.
+        print(f"Running command: {format_agent_cmd_for_display(cmd)}")
         return cmd
 
     budgets = load_budgets(os.environ)
@@ -311,7 +354,7 @@ Include metrics in this format:
             cwd=repo_dir,
         )
     except Exception as e:
-        print(f"Error: Exception running agent: {e}", file=sys.stderr)
+        print(f"Error: Exception running agent: {redact_agent_secrets(str(e))}", file=sys.stderr)
     finally:
         # Credentials and temp files are removed even when a turn breached its budget.
         runner.cleanup_ephemeral_credentials()
@@ -369,8 +412,8 @@ Include metrics in this format:
             report = validate_artefact(plan_md_path, PLAN_SPEC)
         else:
             print(f"Error: agent command failed or returned empty. code={result.returncode}", file=sys.stderr)
-            print(f"Stdout:\n{result.stdout}", file=sys.stderr)
-            print(f"Stderr:\n{result.stderr}", file=sys.stderr)
+            print(f"Stdout:\n{redact_agent_secrets(result.stdout)}", file=sys.stderr)
+            print(f"Stderr:\n{redact_agent_secrets(result.stderr)}", file=sys.stderr)
 
     # Validate before any ledger append or commit. Missing metrics are a failure, never back-filled with defaults.
     if report is None or not report.metrics_ok:

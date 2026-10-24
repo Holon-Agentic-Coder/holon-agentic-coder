@@ -7,15 +7,35 @@ from datetime import UTC, datetime
 
 from sandbox_executor.agent_runner import cleanup_repo_dir, get_repo_url, get_workspace_dir
 from sandbox_executor.ledger import atomic_ledger_append
+from sandbox_executor.redaction import redact_agent_secrets, redact_command
 
 
-def run_cmd(args, cwd=None, env=None, check=True):
-    print(f"Running: {' '.join(args)}")
+def run_cmd(
+    args: list[str],
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    """Run a command, echoing it with credentials masked, and exit on failure when `check` is set.
+
+    The echo and the failure diagnostics go through the shared redactors, because the clone URL and
+    git's own error messages can carry the GitHub token.
+
+    Args:
+        args: The command and its arguments.
+        cwd: Working directory for the command.
+        env: Environment for the command; inherits the current environment when None.
+        check: Exit the process with the command's return code if it fails.
+
+    Returns:
+        The CompletedProcess, whose stdout and stderr are raw and unredacted.
+    """
+    print(f"Running: {redact_command(args)}")
     result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True)
     if result.returncode != 0 and check:
         print(f"Command failed with code {result.returncode}")
-        print(f"Stdout:\n{result.stdout}")
-        print(f"Stderr:\n{result.stderr}")
+        print(f"Stdout:\n{redact_agent_secrets(result.stdout)}")
+        print(f"Stderr:\n{redact_agent_secrets(result.stderr)}")
         sys.exit(result.returncode)
     return result
 

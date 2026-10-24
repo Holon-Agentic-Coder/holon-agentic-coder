@@ -4,12 +4,16 @@ import os
 import pathlib
 import tempfile
 import unittest
+import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import MagicMock, patch
 
+import pytest
 from sandbox_executor.budgets import BudgetBreach
 from sandbox_executor.entrypoint import planner
 from sandbox_executor.turns import TurnResult
+
+from tests.leak_assertions import assert_no_fragment, make_gh_probe
 
 
 @patch.dict("os.environ", {"HOLON_AGENT_KEY": "dummy", "HOLON_REPO_URL": "git@github.com:example/repo.git"})
@@ -210,8 +214,9 @@ class _PlannerHarness:
     ``agent_turns`` is a list of callables ``(cmd, watch_path) -> TurnResult``; each supervised turn pops the next one.
     """
 
-    def __init__(self, testcase, agent_turns, model="gemini", env=None):
+    def __init__(self, testcase, agent_turns, model="gemini", env=None, build_cmd=None):
         self.testcase = testcase
+        self.build_cmd = build_cmd or (lambda model, pf, inf, prompt: ["pi", "-p", "--model", model, prompt])
         self.agent_turns = list(agent_turns)
         self.model = model
         self.env = env or {}
@@ -244,7 +249,7 @@ class _PlannerHarness:
     def run(self):
         runner = MagicMock()
         runner.get_version.return_value = "1.0.0"
-        runner.build_cmd.side_effect = lambda model, pf, inf, prompt: ["pi", "-p", "--model", model, prompt]
+        runner.build_cmd.side_effect = self.build_cmd
         self.tmp = tempfile.TemporaryDirectory()
         self.repo_dir = self.tmp.name
         out, err = io.StringIO(), io.StringIO()
@@ -502,3 +507,93 @@ class TestPlannerMain(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertIn("no stage time was left to resume", records[0]["action"])
         self.assertNotIn("resume did not recover", h.stderr)
+
+
+# --------------------------------------------------------------------------------------
+# Credential leaks in the echoed clone command and its failure diagnostics
+# --------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def clone_leak_env(monkeypatch):
+    sample = make_gh_probe()
+    for name in ("GH_TOKEN", "HOLON_AGENT_KEY", "HOLON_MITM_WEB_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", sample)
+    url = f"https://x-access-token:{sample}@github.com/myorg/myrepo.git"
+    argv = ["git", "clone", "--branch", "I-1792762862-x/_", "--single-branch", "--depth", "1", url, "."]
+    failed = MagicMock(
+        returncode=128,
+        stdout=f"Cloning into '.' from {url}",
+        stderr=f"fatal: unable to access '{url}/': The requested URL returned error: 403",
+    )
+    return sample, argv, failed
+
+
+def test_run_cmd_clone_echo_and_failure_carry_no_token_fragment(clone_leak_env, capsys):
+    sample, argv, failed = clone_leak_env
+    with patch("subprocess.run", return_value=failed), pytest.raises(SystemExit):
+        planner.run_cmd(argv, check=True)
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert_no_fragment(output, sample)
+    assert "Running: git clone --branch I-1792762862-x/_ --single-branch" in output
+    assert "github.com/myorg/myrepo.git" in output
+    assert "returned error: 403" in output
+
+
+# --------------------------------------------------------------------------------------
+# Credential leaks in the echoed agent command
+# --------------------------------------------------------------------------------------
+
+
+def _fake_provider_value() -> str:
+    # Assembled at runtime so no provider-shaped literal is committed.
+    return "sk" + "-ant-" + "oat01-" + uuid.uuid4().hex + uuid.uuid4().hex
+
+
+def test_agent_cmd_echo_masks_settings_json_before_truncation():
+    value = _fake_provider_value()
+    settings_blob = json.dumps({"env": {"CLAUDE_CODE_OAUTH_TOKEN": value}})
+    argv = ["claude", "--model", "claude-opus-5-5", "--settings", settings_blob, "-p", "x" * 500]
+    shown = planner.format_agent_cmd_for_display(argv)
+    assert_no_fragment(shown, value)
+    assert shown.startswith("claude --model claude-opus-5-5 --settings ")
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in shown
+    assert shown.endswith("x" * 100 + "...")
+
+
+def test_agent_cmd_echo_masks_bare_provider_value_in_long_arg():
+    value = _fake_provider_value()
+    # The value straddles the 100-character clamp, the case a truncate-then-redact order leaks.
+    argv = ["pi", "-p", "a" * 90 + value]
+    shown = planner.format_agent_cmd_for_display(argv)
+    assert_no_fragment(shown, value)
+    assert shown.startswith("pi -p " + "a" * 90)
+
+
+@pytest.mark.parametrize("agent_fails", [False, True], ids=["agent_ok", "agent_fails_echoing_value"])
+def test_planner_main_agent_echo_carries_no_settings_value(monkeypatch, agent_fails):
+    monkeypatch.setenv("HOLON_REPO_URL", "https://github.com/myorg/myrepo.git")
+    value = _fake_provider_value()
+    settings_blob = json.dumps({"env": {"CLAUDE_CODE_OAUTH_TOKEN": value}})
+    # A failing agent writes no plan file and no stdout, which routes main() to the stdout/stderr dump.
+    turn = (
+        (lambda cmd, watch_path: TurnResult(returncode=1, stdout="", stderr=f"auth rejected for {value}"))
+        if agent_fails
+        else write_file(VALID_PLAN)
+    )
+    h = _PlannerHarness(
+        unittest.TestCase(),
+        [turn],
+        model="claude-opus-5-5",
+        build_cmd=lambda model, pf, inf, prompt: ["claude", "--settings", settings_blob, "-p", prompt],
+    ).run()
+    try:
+        combined = h.stdout + h.stderr
+        assert "Running command: claude --settings " in combined
+        if agent_fails:
+            assert "Error: agent command failed or returned empty. code=1" in combined
+        assert_no_fragment(combined, value)
+    finally:
+        h.cleanup()

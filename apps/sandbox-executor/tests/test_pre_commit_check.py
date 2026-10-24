@@ -1,14 +1,22 @@
 """Unit tests for pre-commit credential and scratch file detection (Bean 0110)."""
 
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from scripts.pre_commit_check import (
     check_file_credentials,
     check_spelling_orthography,
+    find_github_credentials,
     is_scratch_file,
     normalise_path,
     run_checks,
 )
+from tests.leak_assertions import make_gh_probe
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class TestPreCommitCheck:
@@ -114,3 +122,52 @@ class TestPreCommitCheck:
         )
         violations = check_spelling_orthography(str(clean_file))
         assert len(violations) == 0
+
+
+class TestGitHubCredentialHygiene:
+    """The URL-embedded credential pattern and the tracked-file scan for GitHub token shapes."""
+
+    def test_url_embedded_credential_is_detected(self, tmp_path: Path):
+        leaked = tmp_path / "clone.sh"
+        body = make_gh_probe()[4:]  # token-shaped, but not a provider prefix
+        leaked.write_text(f"git clone https://x-access-token:{body}@github.com/myorg/myrepo.git\n")
+
+        violations = check_file_credentials(str(leaked))
+        assert any("URL-embedded GitHub credential" in v for v in violations)
+        assert find_github_credentials([str(leaked)]) == [(str(leaked), 1, "URL-embedded GitHub credential")]
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "git clone https://x-access-token:*******@github.com/myorg/myrepo.git",
+            "git clone https://x-access-token:***REDACTED***@github.com/myorg/myrepo.git",
+            "git clone https://x-access-token:${GITHUB_TOKEN}@github.com/myorg/myrepo.git",
+            "git clone https://github.com/myorg/myrepo.git",
+        ],
+        ids=["masked", "legacy-marker", "variable-reference", "credential-free"],
+    )
+    def test_masked_and_referenced_forms_are_not_flagged(self, tmp_path: Path, line: str):
+        doc = tmp_path / "notes.md"
+        doc.write_text(line + "\n")
+        assert find_github_credentials([str(doc)]) == []
+        assert not any("URL-embedded" in v for v in check_file_credentials(str(doc)))
+
+    def test_bare_github_token_is_detected_without_path_exemptions(self, tmp_path: Path):
+        # Test-directory and placeholder exemptions apply to the per-commit guard, not to this scan.
+        fixture = tmp_path / "tests" / "test_example.py"
+        fixture.parent.mkdir()
+        fixture.write_text(f'EXAMPLE_TOKEN = "{make_gh_probe()}"\n')
+        assert find_github_credentials([str(fixture)]) == [(str(fixture), 1, "GitHub Personal Access Token")]
+
+    def test_tracked_files_contain_no_github_credentials(self, monkeypatch: pytest.MonkeyPatch):
+        if shutil.which("git") is None or not (REPO_ROOT / ".git").exists():
+            pytest.skip("the working tree is not a git checkout, so there is no tracked-file list to scan")
+        listed = subprocess.run(["git", "ls-files"], cwd=REPO_ROOT, capture_output=True, text=True, check=True)
+        monkeypatch.chdir(REPO_ROOT)
+
+        findings = find_github_credentials(listed.stdout.splitlines())
+
+        # Path, line and pattern name only: the matched value is never reported.
+        assert findings == [], "GitHub credential shapes in tracked files: " + ", ".join(
+            f"{path}:{line_no} ({name})" for path, line_no, name in findings
+        )

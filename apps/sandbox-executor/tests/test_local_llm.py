@@ -6,6 +6,7 @@ the keyless validation path for local providers.
 
 import json
 import os
+import secrets
 import stat
 import tempfile
 import unittest
@@ -13,6 +14,8 @@ from unittest.mock import MagicMock, patch
 
 from sandbox_executor import cli, local_llm
 from sandbox_executor.agent_runner import get_runner
+
+from tests.leak_assertions import assert_no_fragment, make_probe
 
 
 class TestRewriteAuthority(unittest.TestCase):
@@ -257,6 +260,62 @@ class TestBuildContainerConfig(unittest.TestCase):
         ):
             local_llm.build_container_config(None)
         self.assertIn("HOLON_HOST_LOCAL_HOSTS", str(ctx.exception))
+
+
+class TestBaseUrlEchoRedaction(unittest.TestCase):
+    """A credential in a provider baseUrl's userinfo never reaches a log line or an error message."""
+
+    def _url(self, probe: str, authority: str) -> str:
+        return f"http://alice:{probe}@{authority}/v1"
+
+    def test_rewrite_log_masks_userinfo(self):
+        probe = make_probe()
+        host_config = {"providers": {"vmlx": {"baseUrl": self._url(probe, "localhost:8081"), "models": [{"id": "m"}]}}}
+        with self.assertLogs(local_llm.logger, level="INFO") as logs:
+            local_llm.build_container_config(host_config)
+        text = "\n".join(logs.output)
+        self.assertIn("Rewrote provider", text)
+        self.assertIn("localhost:8081", text)
+        assert_no_fragment(text, probe)
+
+    def test_unparseable_url_warnings_mask_userinfo(self):
+        probe = make_probe()
+        with self.assertLogs(local_llm.logger, level="WARNING") as logs:
+            self.assertEqual(
+                local_llm.rewrite_authority(self._url(probe, "localhost:notaport")),
+                self._url(probe, "localhost:notaport"),
+            )
+        text = "\n".join(logs.output)
+        self.assertIn("invalid port or host", text)
+        self.assertIn("unparseable base URL", text)
+        self.assertIn("value withheld", text)
+        assert_no_fragment(text, probe)
+
+    def test_unparseable_endpoint_error_withholds_value(self):
+        head = str(secrets.randbelow(900000) + 100000)
+        value = f"http://alice:{head}?{make_probe()}@localhost:8081/v1"
+        env = {"HOLON_LOCAL_BASE_URL": value, "HOLON_LOCAL_MODELS": "m1"}
+        with (
+            patch.dict(os.environ, env, clear=True),
+            self.assertLogs(local_llm.logger, level="WARNING") as logs,
+            self.assertRaises(local_llm.LocalLLMConfigError) as ctx,
+        ):
+            local_llm.build_container_config(None)
+        text = "\n".join(logs.output) + "\n" + str(ctx.exception)
+        self.assertIn("HOLON_LOCAL_BASE_URL is not a valid URL", text)
+        self.assertNotIn(head, text)
+        assert_no_fragment(text, value)
+
+    def test_unrewritable_endpoint_error_masks_userinfo(self):
+        probe = make_probe()
+        env = {"HOLON_LOCAL_BASE_URL": self._url(probe, "192.168.2.13:8081"), "HOLON_LOCAL_MODELS": "m1"}
+        with (
+            patch.dict(os.environ, env, clear=True),
+            self.assertRaises(local_llm.LocalLLMConfigError) as ctx,
+        ):
+            local_llm.build_container_config(None)
+        self.assertIn("192.168.2.13:8081", str(ctx.exception))
+        assert_no_fragment(str(ctx.exception), probe)
 
 
 class TestPrepareAgentDir(unittest.TestCase):
@@ -1007,7 +1066,7 @@ class TestGatewayHealth(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True), self.assertRaises(local_llm.LocalLLMConfigError) as caught:
             local_llm.build_container_config(None)
         self.assertNotIn(sample, str(caught.exception))
-        self.assertIn("http://***@gpu.example.com:8000/v1", str(caught.exception))
+        self.assertIn("(host gpu.example.com:8000)", str(caught.exception))
         host_config = {"providers": {"p": {"baseUrl": f"http://someone:{sample}@localhost:8081/v1", "models": []}}}
         with self.assertLogs(local_llm.logger, level="INFO") as logs:
             local_llm.build_container_config(host_config)

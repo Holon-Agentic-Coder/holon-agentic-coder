@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import secrets
 import stat
 import subprocess
 from types import SimpleNamespace
@@ -24,6 +25,8 @@ from sandbox_executor.cli import (
 )
 from sandbox_executor.token_reduction import ca_generator
 from sandbox_executor.token_reduction.ca_generator import generate_root_ca
+
+from tests.leak_assertions import assert_no_fragment, make_probe
 
 _THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60
 
@@ -282,6 +285,29 @@ def test_setup_proxy_spawn_failure_raises_and_injects_no_dead_proxy(host_paths, 
     assert "docker network rm" in fake.joined()
 
 
+def test_setup_proxy_spawn_failure_redacts_dashboard_credentials(host_paths, monkeypatch):
+    pw_sample = make_probe("mitmweb")
+    login_sample = make_probe("logintoken")
+    monkeypatch.setenv("HOLON_MITM_WEB_PASSWORD", pw_sample)
+    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    # Hermetic: the real host port 8081 may already be bound, which would fail before docker runs.
+    monkeypatch.setattr(cli.socket.socket, "connect_ex", lambda *args, **kwargs: 1)
+    stderr = (
+        f"Web server listening at http://127.0.0.1:8081/?token={login_sample}\n"
+        f"error: invalid option web_password={pw_sample}\nbad value {pw_sample}"
+    )
+    fake = FakeDocker(spawn=_completed(returncode=1, stderr=stderr))
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        setup_token_reduction_proxy(mitm_web=True)
+
+    message = str(excinfo.value)
+    assert_no_fragment(message, pw_sample)
+    assert_no_fragment(message, login_sample)
+    assert "http://127.0.0.1:8081/?token=" in message
+
+
 def test_setup_proxy_readiness_failure_raises_without_proxy_envs(host_paths, monkeypatch):
     monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
     monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: False)
@@ -436,6 +462,33 @@ def test_attach_external_proxy_probes_before_generating_a_ca(host_paths, monkeyp
     assert events == ["probe"]
 
 
+def test_invalid_proxy_url_warning_masks_userinfo(host_paths, monkeypatch, caplog):
+    """An unparseable HOLON_PROXY_URL is echoed with its userinfo credential masked."""
+    sample = make_probe()
+    monkeypatch.setenv("HOLON_PROXY_URL", f"http://alice:{sample}@")
+    monkeypatch.setattr(cli, "generate_root_ca", lambda: pytest.fail("must not generate a CA"))
+
+    with caplog.at_level(logging.WARNING, logger="sandbox_executor.cli"):
+        assert cli._attach_external_proxy() == ([], {})
+
+    assert "not a valid proxy URL" in caplog.text
+    assert_no_fragment(caplog.text, sample)
+
+
+@pytest.mark.parametrize("form", ["alice:{v}@", "socks5://alice:{v}@", "socks5h://alice:{v}@:notaport"])
+def test_invalid_proxy_url_warning_masks_userinfo_in_any_scheme(host_paths, monkeypatch, caplog, form):
+    """A schemeless or non-http HOLON_PROXY_URL is echoed with its userinfo password masked."""
+    sample = make_probe()
+    monkeypatch.setenv("HOLON_PROXY_URL", form.format(v=sample))
+    monkeypatch.setattr(cli, "generate_root_ca", lambda: pytest.fail("must not generate a CA"))
+
+    with caplog.at_level(logging.WARNING, logger="sandbox_executor.cli"):
+        assert cli._attach_external_proxy() == ([], {})
+
+    assert "not a valid proxy URL" in caplog.text
+    assert_no_fragment(caplog.text, sample)
+
+
 def test_flag_opt_in_sidecar_failure_degrades_to_direct_egress(host_paths, monkeypatch, caplog):
     monkeypatch.setattr(cli.os.path, "isfile", lambda path: False)
 
@@ -514,7 +567,7 @@ def _stub_run_preconditions(monkeypatch, teardowns: list[bool]) -> None:
         cli, "shutil", SimpleNamespace(which=lambda name: "/usr/bin/docker" if name == "docker" else None)
     )
     monkeypatch.setattr(cli, "find_github_token", lambda: None)
-    monkeypatch.setattr(cli, "resolve_target_repo_url", lambda repo_dir=None: "git@github.com:example/repo.git")
+    monkeypatch.setattr(cli, "resolve_target_repo", lambda repo_dir=None: ("git@github.com:example/repo.git", None))
     monkeypatch.setattr(
         cli,
         "get_token_reduction_mounts_and_envs",
@@ -2276,9 +2329,9 @@ def test_secret_scrubbing():
         "sk-admin-abcdefghijklmnopqrstuvwxyz0123456789",
         "sk-svcacct-abcdefghijklmnopqrstuvwxyz0123456789",
         "AIzaSyDabcdefghijklmnopqrstuvwxyz012345",
-        "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
-        "gho_abcdefghijklmnopqrstuvwxyz0123456789",
-        "github_pat_11AAAAAAA0123456789abcdefghijklmnopqrstuvwxyz",
+        "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789",
+        "gho_" + "abcdefghijklmnopqrstuvwxyz0123456789",
+        "github_pat_" + "11AAAAAAA0123456789abcdefghijklmnopqrstuvwxyz",
         "AKIAIOSFODNN7EXAMPLE",
         "ASIAIOSFODNN7EXAMPLE",
         "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
@@ -2330,7 +2383,7 @@ def test_secret_scrubbing():
                 "content": "Secret is sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345 and key=secret123",
             }
         ],
-        "metadata": {"token": "ghp_abcdefghijklmnopqrstuvwxyz0123456789"},
+        "metadata": {"token": "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"},
         "credentials": {
             "password": "super-secret-password",
             "api_key": "custom-unmatched-secret-value",
@@ -3515,6 +3568,146 @@ def test_detect_holon_coherence_all_negative(monkeypatch):
     monkeypatch.setattr(cli.socket, "create_connection", MagicMock(side_effect=OSError("connection refused")))
     monkeypatch.setattr(cli.shutil, "which", lambda cmd: None)
     assert cli.detect_holon_coherence(token_reduce=False) is False
+
+
+_RAW_DELIMITER_PROXY_FORMS = [
+    f"{prefix}alice:{{a}}{delim}{{b}}@127.0.0.1:3128"
+    for prefix in ("", "//", "http://", "socks5://")
+    for delim in ("/", "?", "#")
+] + ["alice:{a}//{b}@127.0.0.1:3128"]
+
+
+@pytest.mark.parametrize("form", _RAW_DELIMITER_PROXY_FORMS)
+def test_proxy_host_port_skips_a_password_with_raw_delimiters(form):
+    """A raw `/`, `?` or `#` in the password is userinfo, never read as the host or port (R13-N1)."""
+    proxy_url = form.format(a=make_probe("a"), b=make_probe("b"))
+
+    assert cli._proxy_host_port(proxy_url) == ("127.0.0.1", 3128)
+
+
+@pytest.mark.parametrize("proxy_url", ["http://proxy.example:notaport", "//proxy.example:99999", "alice@:x"])
+def test_proxy_host_port_returns_none_for_an_unparseable_port(proxy_url):
+    """An invalid port makes the URL unparseable instead of raising urlparse's quoting ValueError."""
+    assert cli._proxy_host_port(proxy_url) is None
+
+
+@pytest.mark.parametrize("form", _RAW_DELIMITER_PROXY_FORMS)
+def test_detect_holon_coherence_raw_delimiter_password_never_raises_or_leaks(monkeypatch, caplog, capsys, form):
+    """`holon flow` / `review-loop` Tier 3 probes the real host and prints no part of the password."""
+    first, second = make_probe("a"), make_probe("b")
+    monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
+    monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
+    monkeypatch.setenv("HOLON_PROXY_URL", form.format(a=first, b=second))
+    probed: list[tuple[str, int]] = []
+    monkeypatch.setattr(cli.socket, "create_connection", lambda host_port, **kwargs: probed.append(host_port) or True)
+
+    with caplog.at_level(logging.DEBUG, logger="sandbox_executor"):
+        assert cli.detect_holon_coherence(token_reduce=False) is True
+
+    assert probed == [("127.0.0.1", 3128)]
+    captured = capsys.readouterr()
+    for text in (caplog.text, captured.out, captured.err):
+        assert_no_fragment(text, first)
+        assert_no_fragment(text, second)
+
+
+@pytest.mark.parametrize("form", ["http://alice:{a}@proxy.example:{b}", "alice:{a}@proxy.example:{b}"])
+def test_detect_holon_coherence_unparseable_proxy_url_warns_masked(monkeypatch, caplog, capsys, form):
+    """An unparseable HOLON_PROXY_URL skips the port probe with a masked warning instead of raising."""
+    first, second = make_probe("a"), make_probe("b")
+    monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
+    monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
+    monkeypatch.setenv("HOLON_PROXY_URL", form.format(a=first, b=second))
+    monkeypatch.setattr(cli.socket, "create_connection", lambda *args, **kwargs: pytest.fail("must not probe"))
+    monkeypatch.setattr(cli.shutil, "which", lambda cmd: None)
+
+    with caplog.at_level(logging.WARNING, logger="sandbox_executor.cli"):
+        assert cli.detect_holon_coherence(token_reduce=False) is False
+
+    assert "not a valid proxy URL" in caplog.text
+    captured = capsys.readouterr()
+    for text in (caplog.text, captured.out, captured.err):
+        assert_no_fragment(text, first)
+
+
+def _digit_head(digits: int) -> str:
+    """A runtime all-digit password head above 65535, so `alice:<head>` reads as a bad `host:port`."""
+    return str(secrets.randbelow(9 * 10 ** (digits - 1)) + 10 ** (digits - 1))
+
+
+_DIGIT_HEAD_PROXY_FORMS = [
+    f"{prefix}alice:{{head}}{delim}{{rest}}@127.0.0.1:3128"
+    for prefix in ("", "//", "http://", "socks5://")
+    for delim in ("/", "?", "#")
+] + ["alice:{head}//{rest}@127.0.0.1:3128"]
+
+
+def _assert_value_withheld(text: str, head: str, value: str) -> None:
+    assert head not in text
+    assert_no_fragment(text, value)
+
+
+@pytest.mark.parametrize("digits", [6, 12])
+@pytest.mark.parametrize("form", _DIGIT_HEAD_PROXY_FORMS)
+def test_detect_holon_coherence_digit_head_password_warning_withholds_value(monkeypatch, caplog, capsys, form, digits):
+    """An all-digit password head before a raw delimiter is never echoed by the Tier 3 warning (R15-N1)."""
+    head = _digit_head(digits)
+    proxy_url = form.format(head=head, rest=make_probe("r"))
+    monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
+    monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
+    monkeypatch.setenv("HOLON_PROXY_URL", proxy_url)
+    monkeypatch.setattr(cli.socket, "create_connection", lambda *args, **kwargs: pytest.fail("must not probe"))
+    monkeypatch.setattr(cli.shutil, "which", lambda cmd: None)
+
+    with caplog.at_level(logging.DEBUG, logger="sandbox_executor"):
+        assert cli.detect_holon_coherence(token_reduce=False) is False
+
+    assert "HOLON_PROXY_URL is not a valid proxy URL" in caplog.text
+    captured = capsys.readouterr()
+    for text in (caplog.text, captured.out, captured.err):
+        _assert_value_withheld(text, head, proxy_url)
+
+
+@pytest.mark.parametrize("digits", [6, 12])
+@pytest.mark.parametrize("form", _DIGIT_HEAD_PROXY_FORMS)
+def test_attach_external_proxy_digit_head_password_messages_withhold_value(
+    host_paths, monkeypatch, caplog, capsys, form, digits
+):
+    """The token-reduce warning and error for an unparseable proxy URL never echo the value (R15-N1)."""
+    head = _digit_head(digits)
+    proxy_url = form.format(head=head, rest=make_probe("r"))
+    monkeypatch.setenv("HOLON_PROXY_URL", proxy_url)
+    monkeypatch.setattr(cli, "generate_root_ca", lambda: pytest.fail("must not generate a CA"))
+    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: pytest.fail("must not probe"))
+
+    with caplog.at_level(logging.DEBUG, logger="sandbox_executor"):
+        assert cli._attach_external_proxy() == ([], {})
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert any("HOLON_PROXY_URL is not a valid proxy URL" in m for m in warnings)
+    assert any("HOLON_PROXY_URL is not a valid proxy URL" in m for m in errors)
+    captured = capsys.readouterr()
+    for text in (caplog.text, captured.out, captured.err):
+        _assert_value_withheld(text, head, proxy_url)
+
+
+@pytest.mark.parametrize(
+    "form", ["http://127.0.0.1:3128", "http://alice:{a}@127.0.0.1:3128", "alice:{a}@127.0.0.1:3128"]
+)
+def test_valid_proxy_url_is_probed_without_an_invalid_url_warning(monkeypatch, caplog, form):
+    """A valid HOLON_PROXY_URL still probes its real host and port and logs no invalid-URL warning."""
+    monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
+    monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
+    monkeypatch.setenv("HOLON_PROXY_URL", form.format(a=make_probe("a")))
+    probed: list[tuple[str, int]] = []
+    monkeypatch.setattr(cli.socket, "create_connection", lambda host_port, **kwargs: probed.append(host_port) or True)
+
+    with caplog.at_level(logging.WARNING, logger="sandbox_executor.cli"):
+        assert cli.detect_holon_coherence(token_reduce=False) is True
+
+    assert probed == [("127.0.0.1", 3128)]
+    assert "not a valid proxy URL" not in caplog.text
 
 
 def test_proxy_unreachable_fallback_direct_egress(host_paths, monkeypatch, caplog):

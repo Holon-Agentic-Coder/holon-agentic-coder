@@ -4,7 +4,10 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pytest
 from sandbox_executor.entrypoint import intent_creator
+
+from tests.leak_assertions import assert_no_fragment, make_gh_probe
 
 
 class TestIntentCreator(unittest.TestCase):
@@ -309,3 +312,36 @@ class TestIntentCreator(unittest.TestCase):
         commit_msg = commit_calls[0][commit_calls[0].index("-m") + 1]
         self.assertIn("Resolved Questions", commit_msg)
         self.assertIn("Postgres", commit_msg)
+
+
+# --------------------------------------------------------------------------------------
+# Credential leaks in the echoed clone command and its failure diagnostics
+# --------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def clone_leak_env(monkeypatch):
+    sample = make_gh_probe()
+    for name in ("GH_TOKEN", "HOLON_AGENT_KEY", "HOLON_MITM_WEB_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", sample)
+    url = f"https://x-access-token:{sample}@github.com/myorg/myrepo.git"
+    argv = ["git", "clone", "--branch", "I-1792762862-x/_", "--single-branch", "--depth", "1", url, "."]
+    failed = MagicMock(
+        returncode=128,
+        stdout=f"Cloning into '.' from {url}",
+        stderr=f"fatal: unable to access '{url}/': The requested URL returned error: 403",
+    )
+    return sample, argv, failed
+
+
+def test_run_cmd_clone_echo_and_failure_carry_no_token_fragment(clone_leak_env, capsys):
+    sample, argv, failed = clone_leak_env
+    with patch("subprocess.run", return_value=failed), pytest.raises(SystemExit):
+        intent_creator.run_cmd(argv, check=True)
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert_no_fragment(output, sample)
+    assert "Running: git clone --branch I-1792762862-x/_ --single-branch" in output
+    assert "github.com/myorg/myrepo.git" in output
+    assert "returned error: 403" in output

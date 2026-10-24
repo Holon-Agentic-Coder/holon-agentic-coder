@@ -42,7 +42,6 @@ from sandbox_executor.calibration import (
     record_calibration_action,
     run_calibrate,
 )
-from sandbox_executor.entrypoint.executor import redact_text
 from sandbox_executor.entrypoint.planner import (
     _sanitize_model_name,
     load_metrics_config,
@@ -66,6 +65,7 @@ from sandbox_executor.ledger import (
     try_append_action_record,
     try_append_ledger_line,
 )
+from sandbox_executor.redaction import redact_agent_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -268,7 +268,7 @@ class FlowContext:
     def log(self, message: str) -> None:
         """Append a timestamped, secret-redacted message to context logs."""
         timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        sanitized = redact_text(str(message))
+        sanitized = redact_agent_secrets(str(message))
         formatted = f"[{timestamp}] {sanitized}"
         self.logs.append(formatted)
         logger.info(formatted)
@@ -3633,7 +3633,7 @@ class PipelineEngine:
 
     def handle_stage_failure(self, stage: FlowStage, error: Exception) -> StageResult:
         """Handle unexpected exceptions during stage execution."""
-        err_msg = redact_text(f"Unhandled exception in stage '{stage.value}': {error}")
+        err_msg = redact_agent_secrets(f"Unhandled exception in stage '{stage.value}': {error}")
         self.context.log(err_msg)
         res = StageResult(
             stage=stage,

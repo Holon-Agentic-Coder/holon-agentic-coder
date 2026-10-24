@@ -283,7 +283,8 @@ def test_credential_redaction() -> None:
         "Logs with OpenAI sk-1234567890abcdef12345678 and "
         "Anthropic sk-ant-api03-abcdef12345678901234 and "
         "Google AIzaSyAbcdef1234567890123456789012345 and "
-        "GitHub ghp_123456789012345678901234567890abcdef and "
+        "GitHub ghp_"
+        "123456789012345678901234567890abcdef and "
         "Bearer secret_bearer_token_123456789"
     )
     redacted = CredentialRedactor.redact_text(raw_text)

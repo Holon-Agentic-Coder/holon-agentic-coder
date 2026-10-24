@@ -2,6 +2,7 @@
 """Host wrapper CLI for running Holon Docker sandbox roles (intent, plan, execute)."""
 
 import argparse
+import contextlib
 import importlib.metadata
 import logging
 import os
@@ -14,7 +15,7 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse, urlsplit, urlunsplit
 
 from sandbox_executor import local_llm
 from sandbox_executor.agent_defaults import (
@@ -48,6 +49,17 @@ from sandbox_executor.preflight import (
     preflight_skipped_by_env,
     resolve_timeout,
     run_preflight_probe,
+)
+from sandbox_executor.redaction import (
+    COMMAND_ECHO_ENV_NAMES,
+    carries_url_password,
+    is_secret_env_name,
+    redact_agent_secrets,
+    redact_command,
+    redact_env_literals,
+    starts_with_url_authority,
+    trusted_url_authority,
+    url_userinfo_end,
 )
 from sandbox_executor.scaffold import init_project
 from sandbox_executor.token_reduction import generate_root_ca
@@ -204,13 +216,20 @@ def normalize_repo_remote(remote_url: str) -> tuple[str, str]:
     if "://" in clean_url:
         parsed = urlparse(clean_url)
         host = parsed.hostname or parsed.netloc.split("@")[-1].split(":")[0]
-        if parsed.port and parsed.port not in (22, 443):
-            host = f"{host}:{parsed.port}"
+        try:
+            port = parsed.port
+        except ValueError:
+            # urlparse's message quotes the bad port, which may be part of a password.
+            raise ValueError(
+                "Unable to parse the remote URL; its value is withheld because it may hold a credential."
+            ) from None
+        if port and port not in (22, 443):
+            host = f"{host}:{port}"
         path = parsed.path.lstrip("/")
     else:
         m = re.match(r"^(?:(?P<user>[^@]+)@)?(?P<host>[^:]+):(?P<path>.+)$", clean_url)
         if not m:
-            raise ValueError(f"Unable to parse remote URL: {remote_url}")
+            raise ValueError("Unable to parse the remote URL; its value is withheld because it may hold a credential.")
         host = m.group("host")
         path = m.group("path").lstrip("/")
 
@@ -220,19 +239,95 @@ def normalize_repo_remote(remote_url: str) -> tuple[str, str]:
     return host, path_with_git
 
 
-def resolve_target_repo_url(repo_dir: str | None = None) -> str:
-    """Resolve target git repository URL dynamically.
+# A GitHub token used as the bare user name of an HTTPS URL (`https://<token>@host/...`). Any other
+# bare user name is a login name, not a credential.
+_GITHUB_TOKEN_USER_RE = re.compile(r"(?:gh[opsu]_|github_pat_)[A-Za-z0-9_-]{8,}")
 
-    Checks HOLON_REPO_URL environment variable first. If unset, queries
-    git remote.origin.url in repo_dir (or cwd). If a GitHub token is found,
-    constructs an authenticated HTTPS URL. Otherwise, returns the raw remote URL.
+# The fixed password GitHub documents for the `https://<token>:x-oauth-basic@host/...` form.
+_OAUTH_BASIC_PASSWORD = "x-oauth-basic"
+
+
+def strip_url_credentials(url: str) -> tuple[str, str | None]:
+    """Remove the userinfo (`user:password@`) from an `http(s)://` URL.
+
+    Only HTTP(S) userinfo is a credential. SSH remotes, both `ssh://git@host/org/repo.git` and the
+    SCP-style `git@host:org/repo.git`, carry the SSH login user (conventionally `git`), not a token,
+    and are returned unchanged: stripping it would make ssh log in as the local user and fail.
+
+    Args:
+        url: A remote URL.
+
+    Returns:
+        The URL without userinfo, and the credential it carried, percent-decoded (as git decodes
+        it), decided in this order:
+
+        1. the user name in the GitHub `<token>:x-oauth-basic` form (password compared
+           case-insensitively); the literal `x-oauth-basic` is never the credential, so with an
+           empty user name (`:x-oauth-basic@`) there is none;
+        2. otherwise any non-empty password (`x-access-token:<token>@`, `user:password@`);
+        3. otherwise a bare user name only when it is shaped like a GitHub token (GitHub accepts a
+           token as a bare user name).
+
+        A plain bare user name is a login name, not a credential: it is stripped and the credential
+        is None. The credential is also None when the URL carried no userinfo or is not an HTTP(S)
+        URL. A password holding a raw `/`, `?` or `#` is stripped whole (see
+        `redaction.url_userinfo_end`, the rule the echo redactor and env-file routing share).
+    """
+    if not url.lower().startswith(("https://", "http://")):
+        return url, None
+    scheme_end = url.index("://") + 3
+    rest = url[scheme_end:]
+    at = url_userinfo_end(rest)
+    if at is None:
+        return url, None
+    userinfo = rest[:at]
+    clean_url = urlunsplit(urlsplit(url[:scheme_end] + rest[at + 1 :]))
+    user, _, password = (unquote(part) for part in userinfo.partition(":"))
+    if password.lower() == _OAUTH_BASIC_PASSWORD:
+        # The placeholder password is never the credential: the user name is, and an empty user name
+        # leaves no credential at all.
+        credential: str | None = user or None
+    elif password:
+        credential = password
+    elif _GITHUB_TOKEN_USER_RE.fullmatch(user):
+        credential = user
+    else:
+        credential = None
+    return clean_url, credential
+
+
+def credential_host(repo_url: str) -> str | None:
+    """Return the `host[:port]` a git credential helper should be scoped to, or None.
+
+    Only HTTPS remotes carry a token through a credential helper; SSH remotes authenticate through
+    the forwarded agent socket and plain HTTP must never be sent a credential.
+
+    Args:
+        repo_url: A credential-free remote URL.
+
+    Returns:
+        The lower-cased host, with its port when one is present, for an HTTPS URL; otherwise None.
+    """
+    if not repo_url.lower().startswith("https://"):
+        return None
+    hostport = urlsplit(repo_url).netloc.rpartition("@")[2].lower()
+    return hostport or None
+
+
+def _resolve_target_repo(repo_dir: str | None = None) -> tuple[str, str | None, str | None]:
+    """Resolve the credential-free target repository URL and any credential its source embedded.
+
+    Returns:
+        The credential-free URL, the credential stripped from it (or None), and the name of the
+        source that carried the credential (`HOLON_REPO_URL` or `remote.origin.url`), or None.
 
     Raises:
         RuntimeError: If remote.origin.url cannot be resolved or is empty.
     """
     override = os.getenv("HOLON_REPO_URL")
     if override and override.strip():
-        return override.strip()
+        clean_url, embedded = strip_url_credentials(override.strip())
+        return clean_url, embedded, "HOLON_REPO_URL" if embedded else None
 
     target_dir = os.path.abspath(repo_dir) if repo_dir else os.getcwd()
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
@@ -250,13 +345,62 @@ def resolve_target_repo_url(repo_dir: str | None = None) -> str:
             "or set HOLON_REPO_URL explicitly."
         )
 
-    raw_url = proc.stdout.strip()
-    token = find_github_token()
-    if token:
+    raw_url, embedded = strip_url_credentials(proc.stdout.strip())
+    source = "remote.origin.url" if embedded else None
+    if find_github_token():
         host, repo_path = normalize_repo_remote(raw_url)
-        return f"https://x-access-token:{token}@{host}/{repo_path}"
+        return f"https://{host}/{repo_path}", embedded, source
 
-    return raw_url
+    return raw_url, embedded, source
+
+
+def resolve_target_repo(repo_dir: str | None = None) -> tuple[str, str | None]:
+    """Resolve the target git repository URL without credentials, and the credential it carried.
+
+    Checks the HOLON_REPO_URL environment variable first. If unset, queries git remote.origin.url in
+    repo_dir (or cwd). Any HTTP(S) userinfo in either source is stripped. When it carries a
+    credential (see `strip_url_credentials`; a plain user name does not), a warning names the source
+    but never the value, and `run_docker_container` hands that credential to git inside the
+    container through a runtime credential helper, in preference to an ambient host token. When a
+    GitHub token is found, an origin remote is normalised to a plain HTTPS URL the same way.
+    Otherwise the remote URL is returned as is, for SSH agent forwarding. A credential stripped from
+    a URL that stays plain HTTP is discarded, since no credential helper is configured for it.
+
+    Returns:
+        The credential-free URL, and the credential stripped from it (None when there was none or
+        it was discarded).
+
+    Raises:
+        RuntimeError: If remote.origin.url cannot be resolved or is empty.
+    """
+    clean_url, embedded, source = _resolve_target_repo(repo_dir)
+    if source and credential_host(clean_url) is None:
+        # Plain HTTP is never sent a credential, so no helper will use it: discard it rather than
+        # forward an unused secret into the container.
+        print(
+            f"Warning: {source} contains embedded credentials; they are stripped from the URL and "
+            "discarded, because plain HTTP is never sent a credential. Use an HTTPS or SSH remote.",
+            file=sys.stderr,
+        )
+        return clean_url, None
+    if source:
+        print(
+            f"Warning: {source} contains embedded credentials; they are stripped from the URL and the "
+            "token is supplied to git inside the container through a credential helper instead.",
+            file=sys.stderr,
+        )
+    return clean_url, embedded
+
+
+def resolve_target_repo_url(repo_dir: str | None = None) -> str:
+    """Resolve the target git repository URL, always without embedded credentials.
+
+    See `resolve_target_repo`, which also returns the credential the URL carried.
+
+    Raises:
+        RuntimeError: If remote.origin.url cannot be resolved or is empty.
+    """
+    return resolve_target_repo(repo_dir)[0]
 
 
 def get_ssh_auth_mounts() -> tuple[list[str], dict[str, str]]:
@@ -462,11 +606,73 @@ def _gateway_host_args() -> list[str]:
 
 
 def _proxy_host_port(proxy_url: str) -> tuple[str, int] | None:
-    """Split a proxy URL into ``(host, port)``; None when it cannot be parsed."""
-    parsed = urlparse(proxy_url if "//" in proxy_url else f"//{proxy_url}")
+    """Split a proxy URL into ``(host, port)``; None when it cannot be parsed.
+
+    The userinfo is removed first with the shared `redaction.url_userinfo_end` rule, so a password
+    holding a raw `/`, `?` or `#` is never read as the host or port. A port that is not a valid
+    integer makes the URL unparseable (None) rather than raising, because `urlparse`'s `ValueError`
+    quotes the offending text, while the callers' "not a valid proxy URL" messages never echo the value.
+    """
+    url = proxy_url if starts_with_url_authority(proxy_url) else f"//{proxy_url}"
+    head, sep, rest = url.partition("//")
+    at = url_userinfo_end(rest)
+    parsed = urlparse(head + sep + (rest[at + 1 :] if at is not None else rest))
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
     if not parsed.hostname:
         return None
-    return parsed.hostname, parsed.port or PROXY_LISTEN_PORT
+    return parsed.hostname, port or PROXY_LISTEN_PORT
+
+
+_URL_ENV_NAME_RE = re.compile(r"(?:URL|URI|PROXY)$", re.IGNORECASE)
+_URL_DELIMITER_SPLIT_RE = re.compile(r"[/?#]")
+
+
+def _url_env_credential_parts() -> set[str]:
+    """Return the userinfo credential of every URL-valued environment variable, whole and in pieces.
+
+    A parse error can quote only the part of a password before its first raw `/`, `?` or `#`, which
+    no shape-based redactor recognises, so each delimiter-separated piece of at least 4 characters
+    is returned alongside the whole credential.
+    """
+    parts: set[str] = set()
+    for name, value in os.environ.items():
+        if not value or not _URL_ENV_NAME_RE.search(name):
+            continue
+        url = value if starts_with_url_authority(value) else f"//{value}"
+        rest = url.partition("//")[2]
+        at = url_userinfo_end(rest)
+        if at is None:
+            continue
+        userinfo = rest[:at]
+        user, colon, password = userinfo.partition(":")
+        credential = password if colon else user
+        for piece in (userinfo, credential, *_URL_DELIMITER_SPLIT_RE.split(credential)):
+            if len(piece) >= 4:
+                parts.add(piece)
+    return parts
+
+
+def redact_cli_error(message: object) -> str:
+    """Redact an exception message before a top-level CLI handler prints or logs it.
+
+    Applies `redact_agent_secrets`, then masks the userinfo credential of every URL-valued
+    environment variable (and each piece of it between raw URL delimiters), so a parse error that
+    quotes part of a configured password, such as `urlparse`'s "Port could not be cast" message,
+    cannot echo it.
+
+    Args:
+        message: The exception (or any object) whose string form is printed.
+
+    Returns:
+        The redacted message.
+    """
+    text = redact_agent_secrets(str(message))
+    for part in sorted(_url_env_credential_parts(), key=len, reverse=True):
+        text = text.replace(part, "*******")
+    return text
 
 
 def detect_holon_coherence(token_reduce: bool = False) -> bool:
@@ -502,6 +708,9 @@ def detect_holon_coherence(token_reduce: bool = False) -> bool:
     proxy_url = os.getenv("HOLON_PROXY_URL")
     if proxy_url:
         host_port = _proxy_host_port(proxy_url)
+        if host_port is None:
+            # Never echo the value: an unparseable URL has no reliable userinfo boundary to mask.
+            logger.warning("HOLON_PROXY_URL is not a valid proxy URL; skipping the proxy port probe.")
     else:
         try:
             port = int(os.getenv("HOLON_PROXY_PORT", str(PROXY_LISTEN_PORT)))
@@ -762,7 +971,11 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
     )
     proxy_spawn = subprocess.run(docker_run_proxy, capture_output=True, text=True, check=False)
     if proxy_spawn.returncode != 0:
-        stderr = (proxy_spawn.stderr or "").strip() or (proxy_spawn.stdout or "").strip()
+        # The sidecar's output can echo the mitmweb `?token=` login URL or the `web_password=` setting.
+        stderr = redact_env_literals(
+            redact_agent_secrets((proxy_spawn.stderr or "").strip() or (proxy_spawn.stdout or "").strip()),
+            names=COMMAND_ECHO_ENV_NAMES,
+        )
         teardown_token_reduction_proxy()
         raise RuntimeError(
             f"mitmproxy sidecar '{container_name}' failed to start: {stderr or 'unknown docker error'}. "
@@ -827,15 +1040,14 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
     proxy_url = os.getenv("HOLON_PROXY_URL") or _proxy_gateway_url()
     host_port = _proxy_host_port(proxy_url)
     if host_port is None:
+        # Never echo the value: an unparseable URL has no reliable userinfo boundary to mask.
         logger.warning(
-            "holon-coherence proxy probe failed: HOLON_PROXY_URL='%s' is not a valid proxy URL. "
-            "Proceeding with DIRECT egress fallback.",
-            proxy_url,
+            "holon-coherence proxy probe failed: HOLON_PROXY_URL is not a valid proxy URL; ignoring it. "
+            "Proceeding with DIRECT egress fallback."
         )
         logger.error(
-            "HOLON_TOKEN_REDUCE is enabled but HOLON_PROXY_URL='%s' is not a valid proxy URL. "
-            "This run continues with DIRECT egress (no token reduction).",
-            proxy_url,
+            "HOLON_TOKEN_REDUCE is enabled but HOLON_PROXY_URL is not a valid proxy URL; ignoring it. "
+            "This run continues with DIRECT egress (no token reduction)."
         )
         return [], {}
 
@@ -843,35 +1055,36 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
     # is about to run with direct egress.
     ready = False
     probe_host = "127.0.0.1" if host_port[0] in ("host.docker.internal", "172.17.0.1", "localhost") else host_port[0]
+    # Messages show the target only when its host was validated after the userinfo was removed;
+    # otherwise the parsed host and port may be part of a credential, so only the variable is named.
+    trusted = trusted_url_authority(proxy_url) is not None
+    probe_target = f"{probe_host}:{host_port[1]}" if trusted else "the HOLON_PROXY_URL target"
+    proxy_target = f"{host_port[0]}:{host_port[1]}" if trusted else "the HOLON_PROXY_URL target"
     try:
         ready = _wait_for_proxy(probe_host, host_port[1], timeout=PROXY_ATTACH_TIMEOUT_SECONDS)
     except (OSError, TimeoutError) as exc:
         logger.warning(
-            "holon-coherence proxy probe failed at %s:%s. Proceeding with DIRECT egress fallback.",
-            probe_host,
-            host_port[1],
+            "holon-coherence proxy probe failed at %s. Proceeding with DIRECT egress fallback.",
+            probe_target,
         )
         logger.error(
-            "HOLON_TOKEN_REDUCE is enabled but proxy probe failed at %s:%s (%s: %s). "
+            "HOLON_TOKEN_REDUCE is enabled but proxy probe failed at %s (%s: %s). "
             "This run continues with DIRECT egress (no token reduction).",
-            probe_host,
-            host_port[1],
+            probe_target,
             type(exc).__name__,
-            exc,
+            redact_cli_error(exc),
         )
         return [], {}
 
     if not ready:
         logger.warning(
-            "holon-coherence proxy probe failed at %s:%s. Proceeding with DIRECT egress fallback.",
-            host_port[0],
-            host_port[1],
+            "holon-coherence proxy probe failed at %s. Proceeding with DIRECT egress fallback.",
+            proxy_target,
         )
         logger.error(
-            "HOLON_TOKEN_REDUCE is enabled but no proxy accepted a TCP connection at %s:%s. Start the proxy or "
+            "HOLON_TOKEN_REDUCE is enabled but no proxy accepted a TCP connection at %s. Start the proxy or "
             "point HOLON_PROXY_URL at it; this run continues with DIRECT egress (no token reduction).",
-            host_port[0],
-            host_port[1],
+            proxy_target,
         )
         return [], {}
 
@@ -907,13 +1120,13 @@ def get_token_reduction_mounts_and_envs(
         logger.warning(
             "holon-coherence proxy configuration failed (%s: %s). Proceeding with DIRECT egress fallback.",
             type(exc).__name__,
-            exc,
+            redact_cli_error(exc),
         )
         logger.error(
             "Token reduction is enabled but could not be configured (%s: %s). This run continues with DIRECT "
             "egress (no TLS interception, no token reduction).",
             type(exc).__name__,
-            exc,
+            redact_cli_error(exc),
         )
         return [], {}
 
@@ -972,6 +1185,102 @@ def get_host_proxy_envs() -> dict[str, str]:
     return envs
 
 
+# Credential env-files live in an owner-only directory, apart from ~/.holon/tmp itself, which also
+# holds directories that are bind-mounted into the container.
+ENV_FILE_PREFIX = "holon-env-"
+_ENV_FILE_STALE_SECONDS = 24 * 60 * 60
+
+# A git credential helper that answers `get` from the container's own environment. It holds only the
+# `$GITHUB_TOKEN` reference, never the value; docker passes --env-file values verbatim (no quote or
+# `$` processing), so the reference is expanded by the helper's shell at call time.
+GIT_CREDENTIAL_HELPER = (
+    '!f() { if [ "$1" = get ]; then printf "username=x-access-token\\npassword=%s\\n" "$GITHUB_TOKEN"; fi; }; f'
+)
+
+
+def env_file_dir() -> str:
+    """Return the directory for temporary credential env-files, creating it owner-only (0700).
+
+    Returns:
+        The absolute path of `~/.holon/tmp/env-files`. Looser permission bits on an existing
+        directory are tightened back to 0700.
+    """
+    path = os.path.expanduser(os.path.join("~", ".holon", "tmp", "env-files"))
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    if os.stat(path).st_mode & 0o077:
+        os.chmod(path, 0o700)
+    return path
+
+
+def sweep_stale_env_files(directory: str, max_age_seconds: float = _ENV_FILE_STALE_SECONDS) -> None:
+    """Best-effort removal of credential env-files left behind by a killed run.
+
+    Args:
+        directory: The env-file directory to sweep.
+        max_age_seconds: Files whose modification time is older than this are removed.
+    """
+    cutoff = time.time() - max_age_seconds
+    try:
+        entries = os.listdir(directory)
+    except OSError:
+        return
+    for name in entries:
+        if not name.startswith(ENV_FILE_PREFIX):
+            continue
+        path = os.path.join(directory, name)
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.remove(path)
+                logger.debug("Removed stale credential env-file %s", path)
+        except OSError as exc:
+            logger.debug("Could not sweep env-file %s: %s", path, exc)
+
+
+def write_env_file(env: dict[str, str]) -> str:
+    """Write credential variables to a new 0600 docker `--env-file`, one `KEY=VALUE` line each.
+
+    Docker reads the file on the client side and applies no quoting, so a value containing a line
+    break would be cut short or smuggle in a second variable; such values are rejected.
+
+    Args:
+        env: The variables to write, which are emitted in sorted key order.
+
+    Returns:
+        The path of the new file. The caller owns it and must remove it.
+
+    Raises:
+        ValueError: If a value contains a line break. The message names the key, never the value.
+    """
+    for key, value in env.items():
+        if "\n" in value or "\r" in value:
+            raise ValueError(f"the value of {key} contains a line break and cannot be passed to the container")
+    fd, path = tempfile.mkstemp(prefix=ENV_FILE_PREFIX, dir=env_file_dir())
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.writelines(f"{key}={value}\n" for key, value in sorted(env.items()))
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(path)
+        raise
+    return path
+
+
+def is_secret_env_item(key: str, value: str) -> bool:
+    """Decide whether a container variable must travel in the 0600 `--env-file`, not on the argv.
+
+    Args:
+        key: The variable name.
+        value: The variable value.
+
+    Returns:
+        True for a credential-bearing name, a `KEY=VALUE` item the command redactor would mask, or a
+        value with a URL password (a proxy URL in any scheme, or none), whatever its name.
+    """
+    item = f"{key}={value}"
+    return is_secret_env_name(key) or redact_command([item]) != item or carries_url_password(value)
+
+
 def run_docker_container(
     role: str,
     image_name: str,
@@ -988,23 +1297,39 @@ def run_docker_container(
         return 1
 
     try:
-        resolved_repo_url = resolve_target_repo_url(repo_dir)
+        resolved_repo_url, embedded_token = resolve_target_repo(repo_dir)
     except RuntimeError as exc:
-        print(str(exc), file=sys.stderr)
+        print(redact_cli_error(exc), file=sys.stderr)
         return 1
 
     tty_flag = ["-it"] if sys.stdin.isatty() else ["-i"]
     docker_cmd = ["docker", "run", "--rm", *tty_flag]
 
+    # Credentials never go on the docker command line, where `ps` and /proc/<pid>/cmdline can read
+    # them: they are collected here and handed over in a 0600 --env-file just before the run. That
+    # includes any value with a URL password (a proxy URL in any scheme, or none), whatever its name.
+    secret_env: dict[str, str] = {}
+
+    def add_env(key: str, value: str) -> None:
+        if is_secret_env_item(key, value):
+            secret_env[key] = value
+        else:
+            docker_cmd.extend(["-e", f"{key}={value}"])
+
     # Forward all host environment variables prefixed with HOLON_ and GITHUB_TOKEN
     env_to_forward = {}
-    gh_token = find_github_token()
-    if gh_token:
-        env_to_forward["GITHUB_TOKEN"] = gh_token
+    override_url = (os.getenv("HOLON_REPO_URL") or "").strip()
+    # A credential embedded in the repository URL (explicit override or origin) is scoped to that
+    # remote and wins over an ambient host token, which may belong to a different host.
+    gh_token = embedded_token or find_github_token()
 
     for key, value in os.environ.items():
         if key.startswith("HOLON_") or key == "GITHUB_TOKEN":
             env_to_forward[key] = value
+
+    # Set after the host forwarding loop so a host GITHUB_TOKEN cannot displace the chosen token.
+    if gh_token:
+        env_to_forward["GITHUB_TOKEN"] = gh_token
 
     env_to_forward["HOLON_REPO_URL"] = resolved_repo_url
 
@@ -1022,13 +1347,28 @@ def run_docker_container(
             env_to_forward["HOLON_AGENT_PROVIDER"] = local_provider
 
     for key, value in sorted(env_to_forward.items()):
-        docker_cmd.extend(["-e", f"{key}={value}"])
+        add_env(key, value)
+
+    # The token reaches in-container git through runtime-only config (GIT_CONFIG_COUNT, git 2.31+),
+    # never through the URL or a file. It is scoped to the one host the token used to be embedded
+    # for: a remote built from origin, or an override URL that carried it. Entry 0 resets any
+    # inherited helpers for that host. The entries go through the same classifier as every other
+    # variable: the helper's literal `password=` text sends it to the env-file, although it holds only
+    # the `$GITHUB_TOKEN` reference.
+    helper_host = credential_host(resolved_repo_url)
+    if gh_token and helper_host and (not override_url or embedded_token):
+        helper_key = f"credential.https://{helper_host}.helper"
+        add_env("GIT_CONFIG_COUNT", "2")
+        add_env("GIT_CONFIG_KEY_0", helper_key)
+        add_env("GIT_CONFIG_VALUE_0", "")
+        add_env("GIT_CONFIG_KEY_1", helper_key)
+        add_env("GIT_CONFIG_VALUE_1", GIT_CREDENTIAL_HELPER)
 
     # SSH Agent Socket Mounts
     ssh_mounts, ssh_envs = get_ssh_auth_mounts()
     docker_cmd.extend(ssh_mounts)
     for k, v in ssh_envs.items():
-        docker_cmd.extend(["-e", f"{k}={v}"])
+        add_env(k, v)
 
     # Containers reach the host only through the gateway name; make it resolvable on Linux as it already is on
     # Docker Desktop, so agent base URLs rewritten to host.docker.internal work on every platform.
@@ -1038,6 +1378,7 @@ def run_docker_container(
     # so every remaining exit path — early returns included — must run teardown, not just the final
     # subprocess.run.
     local_agent_dir: str | None = None
+    env_file: str | None = None
     tr_mounts, tr_envs = get_token_reduction_mounts_and_envs(token_reduce=token_reduce, mitm_web=mitm_web)
     try:
         docker_cmd.extend(tr_mounts)
@@ -1072,13 +1413,13 @@ def run_docker_container(
                             f"Multiple host-local providers found ({', '.join(sorted(providers))}). "
                             "Please set HOLON_AGENT_PROVIDER or HOLON_LOCAL_PROVIDER to select one."
                         )
-                    docker_cmd.extend(["-e", f"HOLON_AGENT_PROVIDER={chosen}"])
+                    add_env("HOLON_AGENT_PROVIDER", chosen)
             except local_llm.LocalLLMConfigError as exc:
-                print(f"Error: {exc}", file=sys.stderr)
+                print(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
                 return 1
             docker_cmd.extend(local_llm.container_mount_args(local_agent_dir))
             for key, value in local_llm.container_env(local_agent_dir).items():
-                docker_cmd.extend(["-e", f"{key}={value}"])
+                add_env(key, value)
             # That endpoint now points at the gateway, so it would otherwise be intercepted by the sidecar.
             local_hosts = local_llm.rewritten_local_hosts(local_config)
             if local_hosts and tr_envs.get("NO_PROXY"):
@@ -1102,7 +1443,7 @@ def run_docker_container(
                 )
 
         for k, v in tr_envs.items():
-            docker_cmd.extend(["-e", f"{k}={v}"])
+            add_env(k, v)
 
         # Intent file mount for intent-creator role
         if role == "intent-creator":
@@ -1127,29 +1468,29 @@ def run_docker_container(
         docker_cmd.append(image_name)
         docker_cmd.extend(container_args)
 
-        sensitive_keys = [
-            "GITHUB_TOKEN",
-            "HOLON_AGENT_KEY",
-        ]
-        sanitized_cmd = []
-        for item in docker_cmd:
-            if any(item.startswith(f"{key}=") for key in sensitive_keys):
-                k, _ = item.split("=", 1)
-                sanitized_cmd.append(f"{k}=***REDACTED***")
-            elif item.startswith("HOLON_REPO_URL="):
-                if "://" in item and "@" in item:
-                    masked = re.sub(r"://([^:]+):([^@]+)@", r"://\1:***REDACTED***@", item)
-                    if masked == item:
-                        masked = re.sub(r"://([^@]+)@", r"://***REDACTED***@", item)
-                    sanitized_cmd.append(masked)
-                else:
-                    sanitized_cmd.append(item)
-            else:
-                sanitized_cmd.append(item)
-        print(f"Executing: {' '.join(sanitized_cmd)}")
+        if secret_env:
+            try:
+                sweep_stale_env_files(env_file_dir())
+                env_file = write_env_file(secret_env)
+            except ValueError as exc:
+                print(f"Error: {redact_cli_error(exc)}.", file=sys.stderr)
+                return 1
+            except OSError as exc:
+                # An unwritable or unreadable ~/.holon/tmp/env-files: fail closed with a clear message
+                # rather than a traceback, and never fall back to passing the credentials on the argv.
+                print(f"Error: could not write the credential env-file: {redact_cli_error(exc)}.", file=sys.stderr)
+                return 1
+            # Right after `docker run`. Docker reads --env-file on the client side, so the host path
+            # needs no bind mount.
+            docker_cmd[2:2] = ["--env-file", env_file]
+
+        print(f"Executing: {redact_command(docker_cmd)}")
         result = subprocess.run(docker_cmd)
         return result.returncode
     finally:
+        if env_file:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(env_file)
         teardown_token_reduction_proxy()
         if local_agent_dir:
             shutil.rmtree(local_agent_dir, ignore_errors=True)
@@ -1249,9 +1590,9 @@ def run_doctor(args: argparse.Namespace) -> int:
         model_res = resolve_model(agent_res.value, args.model, log=False)
     except UnmappedAgentRunnerError as exc:
         if args.json:
-            print(json.dumps({"error": str(exc)}, indent=2))
+            print(json.dumps({"error": redact_cli_error(exc)}, indent=2))
         else:
-            print(f"Error: {exc}", file=sys.stderr)
+            print(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
         return 1
 
     result = run_preflight_probe(agent_res.value, model_res.value, timeout=resolve_timeout(args.timeout))
@@ -2017,7 +2358,7 @@ def main() -> None:
                     status_str = res.status.value.upper() if res else "NOT_RUN"
                     print(f"  Stage {st.upper():<10}: {status_str}")
                     if res and res.status.value == "failed" and res.error:
-                        print(f"    -> Error: {res.error}")
+                        print(f"    -> Error: {redact_cli_error(res.error)}")
                 print("========================================================\n")
                 review_res = context.stage_results.get("review")
                 if review_res and review_res.payload.get("halted_for_human"):
@@ -2030,7 +2371,7 @@ def main() -> None:
             has_failure = any(res.status.value == "failed" for res in context.stage_results.values())
             sys.exit(1 if has_failure else 0)
         except Exception as e:
-            print(f"Error during flow execution: {e}", file=sys.stderr)
+            print(f"Error during flow execution: {redact_cli_error(e)}", file=sys.stderr)
             sys.exit(1)
 
     if args.command in ("review-loop", "review", "pr-review-loop"):
@@ -2092,7 +2433,7 @@ def main() -> None:
                     kwargs["repo_dir"] = args.repo_dir
                 sys.exit(run_docker_container("review-loop", image_name, container_args, **kwargs))
         except Exception as e:
-            print(f"Error during review-loop execution: {e}", file=sys.stderr)
+            print(f"Error during review-loop execution: {redact_cli_error(e)}", file=sys.stderr)
             sys.exit(1)
 
     if args.command == "calibrate":
@@ -2105,7 +2446,7 @@ def main() -> None:
             )
             sys.exit(0)
         except Exception as e:
-            print(f"Error during calibration: {e}", file=sys.stderr)
+            print(f"Error during calibration: {redact_cli_error(e)}", file=sys.stderr)
             sys.exit(1)
 
     if args.command == "init":
@@ -2270,7 +2611,7 @@ def main() -> None:
         try:
             agent_res, model_res = resolve_runner_and_model(args.agent, args.model)
         except UnmappedAgentRunnerError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+            print(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
             sys.exit(1)
             return
         args.agent, args.model = agent_res.value, model_res.value

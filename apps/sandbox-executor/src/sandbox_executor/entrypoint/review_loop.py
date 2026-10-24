@@ -20,6 +20,7 @@ from typing import Any
 
 from sandbox_executor.agent_runner import get_repo_url, get_workspace_dir
 from sandbox_executor.flow import FlowContext, check_and_resolve_stage_conflicts, run_review_loop
+from sandbox_executor.redaction import redact_agent_secrets, redact_command
 
 logger = logging.getLogger("holon.entrypoint.review_loop")
 
@@ -30,15 +31,20 @@ def run_cmd(
     env: dict[str, str] | None = None,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    """Execute a system command and return CompletedProcess, exiting on non-zero if check=True."""
-    print(f"Running: {' '.join(args)}", file=sys.stderr)
+    """Execute a system command and return CompletedProcess, exiting on non-zero if check=True.
+
+    The echo and the failure diagnostics are routed through the shared redactors, because the clone
+    URL and git's own error messages can carry the GitHub token. The returned stdout and stderr are
+    raw and unredacted.
+    """
+    print(f"Running: {redact_command(args)}", file=sys.stderr)
     result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True, check=False)
     if result.returncode != 0 and check:
         print(f"Command failed with code {result.returncode}", file=sys.stderr)
         if result.stdout:
-            print(f"Stdout:\n{result.stdout}", file=sys.stderr)
+            print(f"Stdout:\n{redact_agent_secrets(result.stdout)}", file=sys.stderr)
         if result.stderr:
-            print(f"Stderr:\n{result.stderr}", file=sys.stderr)
+            print(f"Stderr:\n{redact_agent_secrets(result.stderr)}", file=sys.stderr)
         sys.exit(result.returncode)
     return result
 
@@ -126,7 +132,7 @@ def main() -> None:
     # Git workspace preparation
     if not os.path.exists(os.path.join(repo_dir, ".git")):
         repo_url = get_repo_url()
-        print(f"Cloning {args.target} into {repo_dir} from {repo_url}...", file=sys.stderr)
+        print(f"Cloning {args.target} into {repo_dir} from {redact_command([repo_url])}...", file=sys.stderr)
         run_cmd(["git", "clone", "--branch", args.target, repo_url, "."], cwd=repo_dir, check=False)
     else:
         run_cmd(["git", "fetch", "origin"], cwd=repo_dir, check=False)

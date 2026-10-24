@@ -25,6 +25,8 @@ from sandbox_executor.cli import (
 from sandbox_executor.token_reduction import ca_generator
 from sandbox_executor.token_reduction.ca_generator import generate_root_ca
 
+from tests.leak_assertions import assert_no_fragment, make_probe
+
 _THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60
 
 
@@ -282,6 +284,29 @@ def test_setup_proxy_spawn_failure_raises_and_injects_no_dead_proxy(host_paths, 
     assert "docker network rm" in fake.joined()
 
 
+def test_setup_proxy_spawn_failure_redacts_dashboard_credentials(host_paths, monkeypatch):
+    pw_sample = make_probe("mitmweb")
+    login_sample = make_probe("logintoken")
+    monkeypatch.setenv("HOLON_MITM_WEB_PASSWORD", pw_sample)
+    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    # Hermetic: the real host port 8081 may already be bound, which would fail before docker runs.
+    monkeypatch.setattr(cli.socket.socket, "connect_ex", lambda *args, **kwargs: 1)
+    stderr = (
+        f"Web server listening at http://127.0.0.1:8081/?token={login_sample}\n"
+        f"error: invalid option web_password={pw_sample}\nbad value {pw_sample}"
+    )
+    fake = FakeDocker(spawn=_completed(returncode=1, stderr=stderr))
+    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        setup_token_reduction_proxy(mitm_web=True)
+
+    message = str(excinfo.value)
+    assert_no_fragment(message, pw_sample)
+    assert_no_fragment(message, login_sample)
+    assert "http://127.0.0.1:8081/?token=" in message
+
+
 def test_setup_proxy_readiness_failure_raises_without_proxy_envs(host_paths, monkeypatch):
     monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
     monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: False)
@@ -514,7 +539,7 @@ def _stub_run_preconditions(monkeypatch, teardowns: list[bool]) -> None:
         cli, "shutil", SimpleNamespace(which=lambda name: "/usr/bin/docker" if name == "docker" else None)
     )
     monkeypatch.setattr(cli, "find_github_token", lambda: None)
-    monkeypatch.setattr(cli, "resolve_target_repo_url", lambda repo_dir=None: "git@github.com:example/repo.git")
+    monkeypatch.setattr(cli, "resolve_target_repo", lambda repo_dir=None: ("git@github.com:example/repo.git", None))
     monkeypatch.setattr(
         cli,
         "get_token_reduction_mounts_and_envs",
@@ -2276,9 +2301,9 @@ def test_secret_scrubbing():
         "sk-admin-abcdefghijklmnopqrstuvwxyz0123456789",
         "sk-svcacct-abcdefghijklmnopqrstuvwxyz0123456789",
         "AIzaSyDabcdefghijklmnopqrstuvwxyz012345",
-        "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
-        "gho_abcdefghijklmnopqrstuvwxyz0123456789",
-        "github_pat_11AAAAAAA0123456789abcdefghijklmnopqrstuvwxyz",
+        "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789",
+        "gho_" + "abcdefghijklmnopqrstuvwxyz0123456789",
+        "github_pat_" + "11AAAAAAA0123456789abcdefghijklmnopqrstuvwxyz",
         "AKIAIOSFODNN7EXAMPLE",
         "ASIAIOSFODNN7EXAMPLE",
         "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
@@ -2330,7 +2355,7 @@ def test_secret_scrubbing():
                 "content": "Secret is sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345 and key=secret123",
             }
         ],
-        "metadata": {"token": "ghp_abcdefghijklmnopqrstuvwxyz0123456789"},
+        "metadata": {"token": "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"},
         "credentials": {
             "password": "super-secret-password",
             "api_key": "custom-unmatched-secret-value",

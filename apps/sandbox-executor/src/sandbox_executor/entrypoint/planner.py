@@ -10,15 +10,35 @@ from datetime import UTC, datetime
 from sandbox_executor.agent_runner import cleanup_repo_dir, get_repo_url, get_runner, get_workspace_dir
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.ledger import atomic_ledger_append
+from sandbox_executor.redaction import redact_agent_secrets, redact_command, redact_command_args
 
 
-def run_cmd(args, cwd=None, env=None, check=True):
-    print(f"Running: {' '.join(args)}")
+def run_cmd(
+    args: list[str],
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    """Run a command, echoing it with credentials masked, and exit on failure when `check` is set.
+
+    The echo and the failure diagnostics go through the shared redactors, because the clone URL and
+    git's own error messages can carry the GitHub token.
+
+    Args:
+        args: The command and its arguments.
+        cwd: Working directory for the command.
+        env: Environment for the command; inherits the current environment when None.
+        check: Exit the process with the command's return code if it fails.
+
+    Returns:
+        The CompletedProcess, whose stdout and stderr are raw and unredacted.
+    """
+    print(f"Running: {redact_command(args)}")
     result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True)
     if result.returncode != 0 and check:
         print(f"Command failed with code {result.returncode}")
-        print(f"Stdout:\n{result.stdout}")
-        print(f"Stderr:\n{result.stderr}")
+        print(f"Stdout:\n{redact_agent_secrets(result.stdout)}")
+        print(f"Stderr:\n{redact_agent_secrets(result.stderr)}")
         sys.exit(result.returncode)
     return result
 
@@ -141,6 +161,30 @@ def load_metrics_config(repo_dir: str) -> dict:
         except Exception as e:
             print(f"Warning: Failed to load {ev_config_path}: {e}. Using defaults.", file=sys.stderr)
     return config
+
+
+_AGENT_ARG_DISPLAY_LEN = 100
+
+
+def format_agent_cmd_for_display(cmd: list[str]) -> str:
+    """Render the agent command line for the console with credentials masked and long args clamped.
+
+    Redaction runs per argument before the clamp, so truncating a long argument (for example a
+    `--settings` JSON blob carrying an OAuth token) can never split a credential and leak its prefix.
+
+    Args:
+        cmd: The agent argv exactly as handed to `subprocess`.
+
+    Returns:
+        A single space-joined line that is safe to print.
+    """
+    print_cmd = []
+    for arg in redact_command_args(cmd):
+        if len(arg) > _AGENT_ARG_DISPLAY_LEN:
+            print_cmd.append(arg[:_AGENT_ARG_DISPLAY_LEN] + "...")
+        else:
+            print_cmd.append(arg)
+    return " ".join(print_cmd)
 
 
 def main():
@@ -270,14 +314,7 @@ Include metrics in this format:
     runner = get_runner(agent_name)
     cmd = runner.build_cmd(model_name, prompt_file, intent_file, full_prompt)
 
-    # Show a truncated print command if the prompt argument is very large
-    print_cmd = []
-    for arg in cmd:
-        if len(arg) > 100:
-            print_cmd.append(arg[:100] + "...")
-        else:
-            print_cmd.append(arg)
-    print(f"Running command: {' '.join(print_cmd)}")
+    print(f"Running command: {format_agent_cmd_for_display(cmd)}")
     agent_failed = False
     exit_code = 0
     try:
@@ -301,12 +338,12 @@ Include metrics in this format:
                     f.write(stdout_text)
             else:
                 print(f"Error: agent command failed or returned empty. code={result.returncode}", file=sys.stderr)
-                print(f"Stdout:\n{result.stdout}", file=sys.stderr)
-                print(f"Stderr:\n{result.stderr}", file=sys.stderr)
+                print(f"Stdout:\n{redact_agent_secrets(result.stdout)}", file=sys.stderr)
+                print(f"Stderr:\n{redact_agent_secrets(result.stderr)}", file=sys.stderr)
                 agent_failed = True
                 exit_code = result.returncode if result.returncode != 0 else 1
     except Exception as e:
-        print(f"Error: Exception running agent: {e}", file=sys.stderr)
+        print(f"Error: Exception running agent: {redact_agent_secrets(str(e))}", file=sys.stderr)
         agent_failed = True
         exit_code = 1
 

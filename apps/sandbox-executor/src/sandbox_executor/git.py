@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import subprocess
 
-from sandbox_executor.entrypoint.executor import redact_text
+from sandbox_executor.redaction import redact_agent_secrets, redact_command
 
 logger = logging.getLogger(__name__)
 
@@ -53,13 +53,13 @@ def run_git(
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
-        cmd_str = redact_text(" ".join(args))
+        cmd_str = redact_command(args)
         logger.error(f"Git command timed out after {timeout}s: git {cmd_str}")
         raise TimeoutError(f"Git command timed out after {timeout}s: git {cmd_str}") from exc
 
     if check and res.returncode != 0:
-        err = redact_text(res.stderr.strip() or res.stdout.strip())
-        cmd_str = redact_text(" ".join(args))
+        err = redact_agent_secrets(res.stderr.strip() or res.stdout.strip())
+        cmd_str = redact_command(args)
         raise RuntimeError(f"Git command failed with exit code {res.returncode}: git {cmd_str}\n{err}")
 
     return res

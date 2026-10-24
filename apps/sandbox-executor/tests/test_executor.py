@@ -8,14 +8,36 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pytest
 from sandbox_executor.agent_runner import (
     _check_forbidden_root,
     _clear_dir_contents,
     _handle_remove_readonly,
     cleanup_repo_dir,
 )
+from sandbox_executor.budgets import BudgetBreach
 from sandbox_executor.entrypoint import executor
 from sandbox_executor.entrypoint.executor import sync_and_reconcile_pre_push
+from sandbox_executor.turns import TurnResult
+
+
+def _turn_via_run_cmd(cmd, **kwargs):
+    """Route a supervised agent turn through ``executor.run_cmd`` so tests that fake run_cmd keep faking the agent.
+
+    The real turn supervisor spawns processes; its own behaviour is covered in test_turn_supervisor.py.
+    """
+    res = executor.run_cmd(cmd, cwd=kwargs.get("cwd"), check=False)
+    stdout = res.stdout if isinstance(getattr(res, "stdout", None), str) else ""
+    stderr = res.stderr if isinstance(getattr(res, "stderr", None), str) else ""
+    returncode = res.returncode if isinstance(getattr(res, "returncode", None), int) else 0
+    return TurnResult(returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+@pytest.fixture(autouse=True)
+def _agent_turns_use_run_cmd():
+    with patch("sandbox_executor.entrypoint.executor.run_turn", side_effect=_turn_via_run_cmd) as fake:
+        yield fake
+
 
 # Provider credentials are exercised as *shapes*, never as real keys. The filler is spliced in right
 # after the vendor prefix, so no contiguous vendor-format secret ever exists in this file (GitHub
@@ -93,6 +115,16 @@ def _boundary_cut_offsets(cred: str, secret: str) -> list[int]:
         offsets.add(secret_start + len(secret) // 2)
         offsets.add(secret_start + len(secret))
     return sorted(o for o in offsets if 0 <= o < len(cred))
+
+
+def _assert_supersedes(testcase, rev1, rev2):
+    """Reader contract (docs/ledger_schema.md): a superseding row repeats every authoritative field it replaces."""
+    for key in ("execution_notes", "execution_notes_valid", "elapsed_seconds", "budget_seconds"):
+        testcase.assertIn(key, rev1)
+    changed = {"status", "summary", "created_at", "ledger_revision"}
+    testcase.assertEqual(
+        {k: v for k, v in rev1.items() if k not in changed}, {k: v for k, v in rev2.items() if k not in changed}
+    )
 
 
 class TestExecutor(unittest.TestCase):
@@ -2554,6 +2586,9 @@ class TestExecutor(unittest.TestCase):
             self.assertEqual(rev2["agent_output_truncated"], rev1["agent_output_truncated"])
             self.assertEqual(rev2["agent_output_bytes"], rev1["agent_output_bytes"])
             self.assertGreater(rev2["agent_output_bytes"], 0)
+            # C4-I2: the superseding row repeats every authoritative field of revision 1, including the Bean 0138/0139
+            # notes and budget fields; only status, summary, created_at and ledger_revision may differ.
+            _assert_supersedes(self, rev1, rev2)
 
     @patch("sandbox_executor.entrypoint.executor.sync_and_reconcile_pre_push")
     @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
@@ -2630,6 +2665,66 @@ class TestExecutor(unittest.TestCase):
             self.assertEqual(rev2["agent_output_truncated"], rev1["agent_output_truncated"])
             self.assertEqual(rev2["agent_output_bytes"], rev1["agent_output_bytes"])
             self.assertGreater(rev2["agent_output_bytes"], 0)
+            # C4-I2: the superseding row repeats every authoritative field of revision 1, including the Bean 0138/0139
+            # notes and budget fields; only status, summary, created_at and ledger_revision may differ.
+            _assert_supersedes(self, rev1, rev2)
+
+    @patch("sandbox_executor.entrypoint.executor.sync_and_reconcile_pre_push")
+    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    def test_pre_push_sync_failure_after_decomposition_supersedes_the_decomposed_row(
+        self, mock_get_repo_url, mock_get_runner, mock_cleanup, mock_sync
+    ):
+        """C4-I2: the decompose path has no agent-output accounting; its superseding row is built from its own row."""
+        mock_get_repo_url.return_value = "/mock/repo"
+        mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.0.0"
+        mock_get_runner.return_value = mock_runner
+        mock_sync.return_value = (False, "unresolvable conflicts")
+
+        def side_effect(args, cwd=None, **kwargs):
+            mock_res = MagicMock()
+            mock_res.returncode = 0
+            mock_res.stdout = ""
+            mock_res.stderr = ""
+            if "clone" in args:
+                ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
+                os.makedirs(ledger_dir, exist_ok=True)
+                with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
+                    f.write(
+                        json.dumps(
+                            {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 8.0, "entropy_budget": 5.0}
+                        )
+                        + "\n"
+                    )
+            elif "diff" in args and "--cached" in args and "--quiet" in args:
+                mock_res.returncode = 1
+            return mock_res
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect),
+            patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
+            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
+        ):
+            executor.main()
+
+            ledger_file = os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")
+            with open(ledger_file) as lf:
+                summaries = [
+                    row
+                    for row in (json.loads(line) for line in lf if line.strip())
+                    if row.get("entry_type") == "summary"
+                ]
+
+        self.assertEqual([row["status"] for row in summaries], ["decomposed", "failure"])
+        decomposed, failure = summaries
+        self.assertEqual(failure["ledger_revision"], 2)
+        self.assertIn("Pre-push sync failure", failure["summary"])
+        self.assertEqual(failure["sub_intents"], decomposed["sub_intents"])
+        self.assertEqual(failure["execution_id"], decomposed["execution_id"])
 
     def _clone_workspace(self, base_dir: str, bare_dir: str, plan_branch: str) -> str:
         workspace_dir = os.path.join(base_dir, "workspace")
@@ -3222,3 +3317,260 @@ class TestExecutorPrePushSync(unittest.TestCase):
             summary = summary_entries[0]
             self.assertEqual(summary["entry_type"], "summary")
             self.assertEqual(summary["status"], "success")
+
+
+VALID_NOTES = """# Execution Record: E-test
+
+## Summary
+
+Implemented the plan. {filler}
+
+## Actual Metrics
+
+| metric                | value |
+| --------------------- | ----- |
+| success_actual        | 1     |
+| entropy_actual        | 1.0   |
+| impact_actual         | 8.0   |
+| cost_actual           | 2.0   |
+| learning_value_actual | 2.0   |
+
+## Steps Executed
+
+- Step 1 completed.
+
+## Tests Run
+
+- `uv run pytest` passed.
+""".format(filler="Details of the change. " * 10)
+
+
+class TestExecutorIncrementalNotes(unittest.TestCase):
+    """Bean 0138/0139: execution notes written by the agent, truncation tolerance, re-prompt and budget failure."""
+
+    def run_executor(self, turns, env=None):
+        scripted = list(turns)
+        prompts = []
+        git_cmds = []
+
+        def fake_run_cmd(args, cwd=None, **kwargs):
+            git_cmds.append(list(args))
+            if "clone" in args:
+                ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
+                os.makedirs(ledger_dir, exist_ok=True)
+                with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
+                    f.write(json.dumps({"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 2.0}) + "\n")
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            result.stderr = ""
+            return result
+
+        def fake_run_turn(cmd, **kwargs):
+            prompts.append(cmd[-1])
+            self.assertTrue(scripted, "executor ran more agent turns than scripted")
+            return scripted.pop(0)(kwargs["watch_path"])
+
+        runner = MagicMock()
+        runner.get_version.return_value = "1.0.0"
+        runner.build_cmd.side_effect = lambda model, pf, inf, prompt: ["agy", prompt]
+        tmp = tempfile.TemporaryDirectory(prefix="sandbox_executor_test_")
+        self.addCleanup(tmp.cleanup)
+        exit_code = 0
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp.name, "HOLON_SKIP_PUSH": "1", **(env or {})}),
+            patch.object(executor, "run_cmd", side_effect=fake_run_cmd),
+            patch.object(executor, "run_turn", side_effect=fake_run_turn),
+            patch.object(executor, "get_runner", return_value=runner),
+            patch.object(executor, "get_repo_url", return_value="/mock/repo"),
+            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
+            patch("sys.stdout", stdout),
+            patch("sys.stderr", stderr),
+        ):
+            try:
+                executor.main()
+            except SystemExit as exc:
+                exit_code = exc.code
+        with open(os.path.join(tmp.name, "holon-knowledge/ledger/executions.jsonl")) as f:
+            entries = [json.loads(line) for line in f if line.strip()]
+        return {
+            "exit_code": exit_code,
+            "entries": entries,
+            "prompts": prompts,
+            "git_cmds": git_cmds,
+            "stdout": stdout.getvalue(),
+            "stderr": stderr.getvalue(),
+        }
+
+    @staticmethod
+    def write_notes(content, returncode=0, stop_reason=None, breach=None, stdout="", stderr=""):
+        def turn(path):
+            if content is not None:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(content)
+            return TurnResult(
+                returncode=returncode, stop_reason=stop_reason, breach=breach, stdout=stdout, stderr=stderr
+            )
+
+        return turn
+
+    def summary(self, run):
+        return next(e for e in run["entries"] if e.get("entry_type") == "summary")
+
+    def test_prompt_carries_the_notes_write_protocol(self):
+        run = self.run_executor([self.write_notes(VALID_NOTES)])
+        self.assertIn("WRITE PROTOCOL", run["prompts"][0])
+        self.assertIn("executions/E-", run["prompts"][0])
+
+    def test_valid_notes_after_truncated_final_message_count_as_success(self):
+        run = self.run_executor([self.write_notes(VALID_NOTES, returncode=1, stop_reason="length")])
+        summary = self.summary(run)
+        self.assertEqual(summary["status"], "success")
+        self.assertTrue(summary["execution_notes_valid"])
+        self.assertIn("treating the exit status as informational", run["stdout"])
+        self.assertTrue(any(c[:3] == ["git", "add", "-A"] for c in run["git_cmds"]))
+        self.assertRegex(run["stdout"], r"execute: ok \(\d+\.\d min / 45 min\)")
+
+    def test_missing_notes_logs_warning_without_failing(self):
+        run = self.run_executor([self.write_notes(None)])
+        summary = self.summary(run)
+        self.assertEqual(summary["status"], "success")
+        self.assertFalse(summary["execution_notes_valid"])
+        self.assertIn("WARNING: agent did not write executions/E-", run["stderr"])
+        self.assertEqual(len(run["prompts"]), 1)
+
+    def test_partial_notes_trigger_one_targeted_reprompt(self):
+        partial = VALID_NOTES.split("## Tests Run")[0]
+        run = self.run_executor([self.write_notes(partial), self.write_notes("## Tests Run\n\n- passed\n")])
+        self.assertEqual(len(run["prompts"]), 2)
+        reprompt = run["prompts"][1]
+        self.assertIn("`## Tests Run`", reprompt)
+        self.assertNotIn("`## Summary`", reprompt.split("missing required content")[-1])
+        self.assertIn("Do not modify any code", reprompt)
+        self.assertTrue(self.summary(run)["execution_notes_valid"])
+
+    def test_budget_failure_records_one_act_budget_and_exits_non_zero(self):
+        stall = BudgetBreach("execute", "stall", 90, 92)
+        run = self.run_executor(
+            [self.write_notes("# Execution Record: E-1\n", breach=stall), self.write_notes(None, breach=stall)]
+        )
+        self.assertEqual(run["exit_code"], 1)
+        budget = [e for e in run["entries"] if str(e.get("action_id", "")).startswith("ACT-BUDGET-")]
+        self.assertEqual(len(budget), 1)
+        self.assertEqual(budget[0]["stage"], "execute")
+        self.assertEqual(budget[0]["budget_name"], "stall")
+        self.assertEqual(budget[0]["outcome"], "failure")
+        self.assertEqual(self.summary(run)["status"], "failure")
+        # The partial notes are salvaged into the commit; code changes are not staged on failure.
+        add_cmds = [c for c in run["git_cmds"] if c[:2] == ["git", "add"]]
+        self.assertTrue(any(any(arg.startswith("executions/E-") for arg in c) for c in add_cmds))
+        self.assertFalse(any(c[:3] == ["git", "add", "-A"] for c in add_cmds))
+
+    def test_breach_then_notes_only_resume_is_not_success(self):
+        # I1: the notes are usable from the start by design, the implementation turn breaches, and the notes-only
+        # resume exits 0. The execution must still be a recorded failure and the partial code must not be committed.
+        turn_breach = BudgetBreach("execute", "turn", 300, 301)
+        head = VALID_NOTES.split("## Steps Executed")[0]
+        tail = "## Steps Executed" + VALID_NOTES.split("## Steps Executed")[1]
+        run = self.run_executor(
+            [self.write_notes(head, returncode=-15, breach=turn_breach), self.write_notes(tail, returncode=0)]
+        )
+        self.assertEqual(len(run["prompts"]), 2)
+        self.assertIn("Do not modify any code", run["prompts"][1])
+        summary = self.summary(run)
+        self.assertEqual(summary["status"], "failure")
+        self.assertIn("turn budget", summary["summary"])
+        budget = [e for e in run["entries"] if str(e.get("action_id", "")).startswith("ACT-BUDGET-")]
+        self.assertEqual(len(budget), 1)
+        self.assertEqual(budget[0]["budget_name"], "turn")
+        self.assertIn("implementation turn did not finish", budget[0]["action"])
+        self.assertEqual(run["exit_code"], 1)
+        add_cmds = [c for c in run["git_cmds"] if c[:2] == ["git", "add"]]
+        self.assertFalse(any(c[:3] == ["git", "add", "-A"] for c in add_cmds))
+        commits = [c for c in run["git_cmds"] if c[:2] == ["git", "commit"]]
+        self.assertTrue(all("completed for plan" not in " ".join(c) for c in commits))
+
+    def test_breached_notes_only_reprompt_after_clean_implementation_turn_is_success(self):
+        # C3-I1: the implementation turn finished cleanly; only the notes-only re-prompt breached. The code is complete,
+        # so the execution is a success, the code is staged and no ACT-BUDGET is recorded.
+        partial = VALID_NOTES.split("## Tests Run")[0]
+        stall = BudgetBreach("execute", "stall", 90, 91)
+        run = self.run_executor([self.write_notes(partial), self.write_notes(None, returncode=-15, breach=stall)])
+        self.assertEqual(len(run["prompts"]), 2)
+        summary = self.summary(run)
+        self.assertEqual(summary["status"], "success")
+        self.assertTrue(summary["execution_notes_valid"])
+        self.assertEqual(run["exit_code"], 0)
+        self.assertFalse([e for e in run["entries"] if str(e.get("action_id", "")).startswith("ACT-BUDGET-")])
+        self.assertTrue(any(c[:3] == ["git", "add", "-A"] for c in run["git_cmds"]))
+        self.assertIn("notes-only follow-up turn stopped", run["stderr"])
+
+    def test_breached_reprompt_with_unusable_notes_after_clean_implementation_turn_is_success(self):
+        stall = BudgetBreach("execute", "stall", 90, 91)
+        run = self.run_executor(
+            [self.write_notes("# Execution Record: E-1\n"), self.write_notes(None, returncode=-15, breach=stall)]
+        )
+        summary = self.summary(run)
+        self.assertEqual(summary["status"], "success")
+        self.assertFalse(summary["execution_notes_valid"])
+        self.assertEqual(run["exit_code"], 0)
+        self.assertFalse([e for e in run["entries"] if str(e.get("action_id", "")).startswith("ACT-BUDGET-")])
+
+    def test_breach_without_stage_time_for_resume_does_not_claim_a_resume(self):
+        stage = BudgetBreach("execute", "stage", 2700, 2700)
+        run = self.run_executor(
+            [self.write_notes("# Execution Record: E-1\n", returncode=-15, breach=stage)],
+            env={"HOLON_STAGE_BUDGET_SECONDS": "0.000001"},
+        )
+        self.assertEqual(len(run["prompts"]), 1)
+        budget = [e for e in run["entries"] if str(e.get("action_id", "")).startswith("ACT-BUDGET-")]
+        self.assertEqual(len(budget), 1)
+        self.assertNotIn("resume did not recover", budget[0]["action"])
+        self.assertEqual(run["exit_code"], 1)
+
+    def test_ledger_output_and_error_context_describe_the_implementation_turn(self):
+        # C3-I2: after a re-prompt, agent_output_bytes and the command action describe the implementation turn.
+        partial = VALID_NOTES.split("## Tests Run")[0]
+        impl_out = "implementation output line\n" * 20
+        run = self.run_executor(
+            [
+                self.write_notes(partial, returncode=1, stop_reason="length", stdout=impl_out, stderr="impl err"),
+                self.write_notes("## Tests Run\n\n- passed\n", returncode=0, stdout="ok\n"),
+            ],
+            env={"HOLON_ACTION_LOGGING": "1"},
+        )
+        summary = self.summary(run)
+        self.assertEqual(summary["agent_output_bytes"], len((impl_out + "impl err").encode("utf-8")))
+        actions = [e for e in run["entries"] if e.get("event_type") == "command_execution"]
+        self.assertEqual(len(actions), 1)
+        self.assertIn("impl err", actions[0]["error_context"])
+
+    def test_missing_notes_warning_does_not_claim_output_is_in_the_ledger(self):
+        run = self.run_executor([self.write_notes(None)])
+        self.assertNotIn("agent output captured in the execution ledger", run["stderr"])
+        self.assertIn("agent_output_bytes", run["stderr"])
+
+    def test_breach_with_complete_notes_is_not_success(self):
+        stage = BudgetBreach("execute", "stage", 2700, 2700)
+        run = self.run_executor([self.write_notes(VALID_NOTES, returncode=-15, breach=stage)])
+        self.assertEqual(len(run["prompts"]), 1)
+        self.assertEqual(self.summary(run)["status"], "failure")
+        self.assertEqual(run["exit_code"], 1)
+        self.assertRegex(run["stdout"], r"execute: failed \(\d+\.\d min / 45 min\)")
+
+    def test_generic_exit_one_with_usable_notes_is_failure(self):
+        # Exit 1 without a structured truncation report is an agent error (auth/API), not a cut-off final message.
+        run = self.run_executor([self.write_notes(VALID_NOTES, returncode=1)])
+        summary = self.summary(run)
+        self.assertEqual(summary["status"], "failure")
+        self.assertNotIn("treating the exit status as informational", run["stdout"])
+        self.assertFalse(any(c[:3] == ["git", "add", "-A"] for c in run["git_cmds"]))
+
+    def test_truncation_with_incomplete_notes_is_failure(self):
+        partial = VALID_NOTES.split("## Tests Run")[0]
+        run = self.run_executor(
+            [self.write_notes(partial, returncode=1, stop_reason="length"), self.write_notes(None, returncode=0)]
+        )
+        self.assertEqual(self.summary(run)["status"], "failure")

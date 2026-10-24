@@ -7,9 +7,13 @@ import sys
 import time
 from datetime import UTC, datetime
 
+from sandbox_executor import artefacts
 from sandbox_executor.agent_runner import cleanup_repo_dir, get_repo_url, get_runner, get_workspace_dir
+from sandbox_executor.artefacts import PLAN_REQUIRED_METRICS, PLAN_SPEC, plan_write_protocol, validate_artefact
+from sandbox_executor.budgets import BudgetBreach, StageTimer, load_budgets
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.ledger import atomic_ledger_append
+from sandbox_executor.turns import record_budget_failure, run_turn, supervise_authoring_turn
 
 
 def run_cmd(args, cwd=None, env=None, check=True):
@@ -75,35 +79,13 @@ def parse_metrics(content):
     """Parse the plan-level predicted metrics from a plan markdown document.
 
     When the document has a ``## Overall Plan Metrics`` section, only the metric rows inside that
-    section (up to the next ``## `` heading) are read, so per-step ``### Metrics`` tables later in
-    the plan cannot overwrite the plan-level values. Documents without that heading fall back to
-    scanning every metric row, where the last matching row wins.
+    section (up to the next ``## `` heading) are read, so per-step ``### Metrics`` tables before or
+    after it cannot overwrite the plan-level values. Documents without that heading fall back to
+    scanning every metric row, where the last matching row wins. This delegates to
+    :func:`artefacts.plan_metrics`, the same parser the plan validator gates on, so the planner's
+    ``plans.jsonl`` row and ``holon flow`` can never read different numbers from one plan.
     """
-    metrics = {}
-    row_pat = re.compile(r"\|\s*([a-zA-Z_0-9]+)\s*\|\s*([0-9\.\-]+)\s*\|")
-    lines = content.splitlines()
-    overall_heading = "## Overall Plan Metrics"
-    start = next((i for i, line in enumerate(lines) if line.strip().startswith(overall_heading)), None)
-    if start is not None:
-        section = []
-        for line in lines[start + 1 :]:
-            if line.startswith("## "):
-                break
-            section.append(line)
-        lines = section
-    for line in lines:
-        m = row_pat.search(line)
-        if m:
-            name = m.group(1).strip()
-            try:
-                val = float(m.group(2).strip())
-                # Normalize standard metric names
-                name_clean = name.replace("_pred", "").strip()
-                metrics[name_clean] = val
-            except ValueError:
-                # Ignore malformed numeric values and continue parsing other metric rows.
-                continue
-    return metrics
+    return artefacts.plan_metrics(content)
 
 
 def load_metrics_config(repo_dir: str) -> dict:
@@ -141,6 +123,46 @@ def load_metrics_config(repo_dir: str) -> dict:
         except Exception as e:
             print(f"Warning: Failed to load {ev_config_path}: {e}. Using defaults.", file=sys.stderr)
     return config
+
+
+def _record_plan_budget_failure(
+    breach: BudgetBreach,
+    repo_dir: str,
+    plan_id: str,
+    plan_md_rel: str,
+    plan_branch: str,
+    agent_name: str,
+    model_name: str,
+    stage_timer: StageTimer,
+    reason: str = "resume did not recover",
+) -> None:
+    """Record the single ACT-BUDGET action, then commit and push it together with the salvaged partial plan.
+
+    The ledger record would vanish with the container workspace if it were not committed, so the plan branch carries
+    it (plus whatever plan text was salvaged) even though no ``plans.jsonl`` entry is made for an unusable plan.
+    """
+    ledger_rel = "holon-knowledge/ledger/executions.jsonl"
+    record_budget_failure(
+        os.path.join(repo_dir, ledger_rel),
+        breach,
+        record_id=plan_id,
+        target=plan_md_rel,
+        clock_elapsed=stage_timer.elapsed(),
+        reason=reason,
+    )
+    add_targets = [ledger_rel]
+    if os.path.exists(os.path.join(repo_dir, plan_md_rel)):
+        add_targets.append(plan_md_rel)
+    run_cmd(["git", "add", *add_targets], cwd=repo_dir, check=False)
+    run_cmd(["git", "config", "--local", "user.email", "planner-agent@holon-agentic-coder.com"], cwd=repo_dir)
+    run_cmd(["git", "config", "--local", "user.name", "Holon Planner Agent"], cwd=repo_dir)
+    commit = run_cmd(
+        ["git", "commit", "-m", f"plan: {plan_id} stopped by {breach.budget_name} budget ({agent_name}, {model_name})"],
+        cwd=repo_dir,
+        check=False,
+    )
+    if commit.returncode == 0:
+        run_cmd(["git", "push", "-u", "origin", plan_branch], cwd=repo_dir, check=False)
 
 
 def main():
@@ -260,95 +282,115 @@ Include metrics in this format:
         prompt_content = f.read()
     with open(intent_file) as f:
         intent_content = f.read()
-    full_prompt = (
-        f"{prompt_content}\n\n"
-        f"Intent metadata:\n{intent_content}\n\n"
-        "IMPORTANT INSTRUCTION: Output the complete markdown plan directly adhering to the template format. "
-        "Include the full '# Plan for ...' document with the overall metrics table '| metric | value |'."
-    )
+    full_prompt = f"{prompt_content}\n\nIntent metadata:\n{intent_content}\n\n{plan_write_protocol(plan_md_rel)}"
 
     runner = get_runner(agent_name)
-    cmd = runner.build_cmd(model_name, prompt_file, intent_file, full_prompt)
 
-    # Show a truncated print command if the prompt argument is very large
-    print_cmd = []
-    for arg in cmd:
-        if len(arg) > 100:
-            print_cmd.append(arg[:100] + "...")
-        else:
-            print_cmd.append(arg)
-    print(f"Running command: {' '.join(print_cmd)}")
-    agent_failed = False
-    exit_code = 0
+    def build_agent_cmd(prompt_text: str) -> list[str]:
+        cmd = runner.build_cmd(model_name, prompt_file, intent_file, prompt_text)
+        # Show a truncated print command if the prompt argument is very large
+        print_cmd = [arg[:100] + "..." if len(arg) > 100 else arg for arg in cmd]
+        print(f"Running command: {' '.join(print_cmd)}")
+        return cmd
+
+    budgets = load_budgets(os.environ)
+    stage_timer = StageTimer("plan", budgets.stage_seconds("plan"))
+    outcome = None
     try:
-        # Run agent and capture output
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        wrote_file_directly = False
-        if os.path.exists(plan_md_path) and os.path.getsize(plan_md_path) > 0:
-            with open(plan_md_path) as f:
-                direct_content = f.read().strip()
-            if len(direct_content) >= 50 and ("# Plan" in direct_content or "| metric |" in direct_content):
-                wrote_file_directly = True
-
-        if not wrote_file_directly:
-            if result.returncode == 0 and result.stdout.strip():
-                stdout_text = result.stdout.strip()
-                # Extract markdown block if output is wrapped in ```markdown ... ``` or ```md ... ```
-                match = re.search(r"```(?:markdown|md)?\s*\n(.*?)\n```", stdout_text, re.DOTALL)
-                if match:
-                    stdout_text = match.group(1).strip()
-                with open(plan_md_path, "w") as f:
-                    f.write(stdout_text)
-            else:
-                print(f"Error: agent command failed or returned empty. code={result.returncode}", file=sys.stderr)
-                print(f"Stdout:\n{result.stdout}", file=sys.stderr)
-                print(f"Stderr:\n{result.stderr}", file=sys.stderr)
-                agent_failed = True
-                exit_code = result.returncode if result.returncode != 0 else 1
+        outcome = supervise_authoring_turn(
+            build_agent_cmd,
+            full_prompt,
+            artefact_path=plan_md_path,
+            artefact_rel=plan_md_rel,
+            spec=PLAN_SPEC,
+            stage="plan",
+            turn_budgets=budgets.turn,
+            stage_timer=stage_timer,
+            run=run_turn,
+            context=f"{prompt_content}\n\nIntent metadata:\n{intent_content}",
+            cwd=repo_dir,
+        )
     except Exception as e:
         print(f"Error: Exception running agent: {e}", file=sys.stderr)
-        agent_failed = True
-        exit_code = 1
+    finally:
+        # Credentials and temp files are removed even when a turn breached its budget.
+        runner.cleanup_ephemeral_credentials()
+        for temp_f in [prompt_file, intent_file]:
+            if os.path.exists(temp_f):
+                os.remove(temp_f)
 
-    # Clean up temp files
-    runner.cleanup_ephemeral_credentials()
-    for temp_f in [prompt_file, intent_file]:
-        if os.path.exists(temp_f):
-            os.remove(temp_f)
-
-    if agent_failed:
-        sys.exit(exit_code)
-
-    if not os.path.exists(plan_md_path) or os.path.getsize(plan_md_path) < 50:
-        print("Error: Plan generation produced an empty or invalid plan file.", file=sys.stderr)
+    if outcome is None:
         sys.exit(1)
 
-    # Parse metrics
-    with open(plan_md_path) as f:
-        plan_content = f.read()
+    if outcome.budget_failure is not None:
+        # Name the follow-up that actually ran: a resume after a breach, the re-prompt of a clean turn, or none at all
+        # (no stage time was left).
+        reason = {
+            "resume": "resume did not recover",
+            "reprompt": "the re-prompt for missing content did not finish",
+        }.get(outcome.follow_up or "", "no stage time was left to resume")
+        _record_plan_budget_failure(
+            outcome.budget_failure,
+            repo_dir,
+            plan_id,
+            plan_md_rel,
+            plan_branch,
+            agent_name,
+            model_name,
+            stage_timer,
+            reason=reason,
+        )
+        print(f"Error: {outcome.budget_failure.describe()}; {reason}; the plan is not usable.", file=sys.stderr)
+        print(stage_timer.summary("failed"))
+        sys.exit(1)
 
-    # Validate that the generated plan contains structure and not just conversational chatter
-    has_plan_structure = (
-        "# Plan" in plan_content
-        or "## Overall Plan" in plan_content
-        or "## Metrics" in plan_content
-        or "## Proposed Steps" in plan_content
-        or "| metric |" in plan_content
-    )
-    if not has_plan_structure:
+    result = outcome.last
+    report = outcome.report
+    if report is not None and report.usable:
+        if result.returncode != 0 or result.truncated:
+            # The plan on disk is complete enough to commit; a cut-off final chat message does not matter (Bean 0138).
+            print(
+                f"Info: agent exited with code {result.returncode} (stop reason: {result.stop_reason or 'unknown'}) "
+                f"after writing a valid plan file; treating the exit status as informational."
+            )
+    elif report is None or not report.exists:
+        stdout_text = (result.stdout or "").strip()
+        if stdout_text:
+            print(
+                f"WARNING: agent did not write {plan_md_rel}; falling back to the plan text captured from stdout.",
+                file=sys.stderr,
+            )
+            # Extract markdown block if output is wrapped in ```markdown ... ``` or ```md ... ```
+            match = re.search(r"```(?:markdown|md)?\s*\n(.*?)\n```", stdout_text, re.DOTALL)
+            if match:
+                stdout_text = match.group(1).strip()
+            with open(plan_md_path, "w") as f:
+                f.write(stdout_text)
+            report = validate_artefact(plan_md_path, PLAN_SPEC)
+        else:
+            print(f"Error: agent command failed or returned empty. code={result.returncode}", file=sys.stderr)
+            print(f"Stdout:\n{result.stdout}", file=sys.stderr)
+            print(f"Stderr:\n{result.stderr}", file=sys.stderr)
+
+    # Validate before any ledger append or commit. Missing metrics are a failure, never back-filled with defaults.
+    if report is None or not report.metrics_ok:
+        missing = ", ".join(report.missing_metrics) if report is not None else ", ".join(PLAN_REQUIRED_METRICS)
         print(
-            f"Error: Generated plan does not contain standard plan structure or headers.\nContent:\n{plan_content}",
+            f"Error: metrics validation failed for {plan_md_rel}: missing or non-numeric overall metrics: {missing}.",
             file=sys.stderr,
         )
         sys.exit(1)
+    if not report.size_ok:
+        print(
+            f"Error: Plan generation produced an empty or invalid plan file ({report.size} bytes, at least "
+            f"{PLAN_SPEC.size_floor} expected).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if report.missing_sections:
+        print(f"WARNING: {report.describe()}", file=sys.stderr)
 
-    metrics = parse_metrics(plan_content)
-
-    # Ensure required metrics exist with default heuristics if parsing fails
-    defaults = {"p_success": 0.7, "entropy": 3.0, "impact": 1.0, "cost": 0.5, "learning_value": 0.0}
-    for k, default_val in defaults.items():
-        if k not in metrics:
-            metrics[k] = default_val
+    metrics = dict(report.metrics)
 
     # Recalculate EV based on config-driven formula: EV = P(success)*Impact + mu*LV - lambda*Entropy - Cost
     ev_config = load_metrics_config(repo_dir)
@@ -402,6 +444,7 @@ Include metrics in this format:
     run_cmd(["git", "push", "-u", "origin", plan_branch], cwd=repo_dir)
 
     print(f"Plan branch '{plan_branch}' successfully created, committed, and pushed.")
+    print(stage_timer.summary("ok"))
 
 
 if __name__ == "__main__":

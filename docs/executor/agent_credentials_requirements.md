@@ -174,7 +174,11 @@ Pre-flight antigravity-agent (gemini-3.8-flash-medium) via holon/agent-antigravi
   hint: The provider reports exhausted quota or a rate limit. Wait for the quota to reset, or choose another runner with --agent or HOLON_AGENT.
 ```
 
-`holon doctor` exits `0` only when the status is `ok`.
+After the probe report, `holon doctor` prints its environment section: the effective turn and stage budgets and, in
+local-LLM mode, the model envelope and gateway probe (see
+[`holon doctor` environment section](#holon-doctor-environment-section) below). With `--json` that section is carried as
+`"environment": {"ok": <bool>, "lines": [...]}` next to `agent`, `model` and `preflight`. `holon doctor` exits `0` only
+when the probe status is `ok` and the environment section found no local-LLM configuration error.
 
 | Status            | Meaning                                                          | Remediation                                                                       |
 | ----------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------- |
@@ -258,3 +262,52 @@ Because a local endpoint needs no provider credential, `validate()` accepts loca
 receives the generated configuration, so a bypass for them would only convert a clear credential error into a confusing
 mid-run failure. The opt-in alone is not sufficient either: an actual endpoint (`PI_CODING_AGENT_DIR` or
 `HOLON_LOCAL_BASE_URL`) must be present, so a stray flag cannot mask a missing cloud key.
+
+#### Model Envelope (Bean 0140)
+
+Long authoring turns on local models used to stop at whatever output limit the agent assumed, because the generated
+`models.json` carried only bare model ids. `prepare_agent_dir()` now gives every model entry an explicit envelope after
+the rewrite above (the loopback and allow-list rewrite, `NO_PROXY` scoping and `PI_CODING_AGENT_DIR` are unchanged):
+
+| Variable                       | Default | Purpose                                                                                 |
+| ------------------------------ | ------- | --------------------------------------------------------------------------------------- |
+| `HOLON_LOCAL_CONTEXT_WINDOW`   | (none)  | Context window for model entries that declare no `contextWindow` (synthesised configs). |
+| `HOLON_CONTEXT_RESERVE_TOKENS` | `4096`  | Tokens kept free for the prompt: `maxTokens` may not exceed `contextWindow` minus this. |
+| `HOLON_REASONING_MODE`         | `off`   | Reasoning mode for the generated entries: `off`, `minimal`, `low`, `medium` or `high`.  |
+
+- **`maxTokens`.** When a model entry has no `maxTokens`, it is synthesised as `min(16384, contextWindow // 4)` and the
+  model id, value and reason are logged. A host value is kept unless it is a bool, not an integer, zero, negative or
+  larger than `contextWindow - HOLON_CONTEXT_RESERVE_TOKENS`, in which case the run aborts with `LocalLLMConfigError`
+  naming the model and the field. A model with no `contextWindow` uses `HOLON_LOCAL_CONTEXT_WINDOW`; without either the
+  run aborts rather than guessing a window, so configs synthesised from `HOLON_LOCAL_MODELS` need
+  `HOLON_LOCAL_CONTEXT_WINDOW`.
+- **Reasoning mode.** Resolved from `HOLON_REASONING_MODE`, then the host model entry, then `off` (the least-thinking
+  mode, used by default for authoring stages). A host entry with `reasoning: false` always resolves to `off`, even when
+  `HOLON_REASONING_MODE` asks for more (a warning is logged), because the model is declared unable to reason; a host
+  string mode must be one of the allowed values. pi's `reasoning` field is a boolean capability flag, so the generated
+  entry carries `reasoning: true` unless the mode is `off`, and the agent directory's `settings.json` sets
+  `defaultThinkingLevel` to the least-thinking mode among the models. The mode and its source are logged.
+
+##### `holon doctor` environment section
+
+This is the environment section of the single `holon doctor` command, printed after the
+[readiness probe](#readiness-probe-holon-doctor) report. It runs on the host and writes nothing. It prints the effective
+budgets (see [Turn and Stage Budgets](../budgets.md)) and, when `HOLON_LOCAL_LLM` is enabled, for every model:
+
+```text
+model=<id> context=<n> max_tokens=<n> source=host|synthesised
+reasoning=<mode> source=env|host|default
+```
+
+It then probes `<scheme>://<host>:<port>/health` once for each distinct host-side (pre-rewrite) server, with a 2 s
+timeout and no proxy (providers that share a host and port, such as `/v1` and `/anthropic` on one server, share one
+probe and one line), and prints `gateway=<url> prefill_cache=off|cold|warm` followed by any memory figures the server
+reports. The cache is `off` when the server reports it disabled, `cold` when it is enabled with zero cached entries or
+tokens, and `warm` otherwise; an unreachable server or an unrecognised response prints `prefill_cache=unknown` and never
+fails the command. A `WARNING` line is printed when an emitted `maxTokens` exceeds the
+`effective_defaults.max_output_tokens` of the server that serves that model, or when a model's `contextWindow` exceeds
+that server's `max_prompt_tokens` (read from `effective_defaults` or the top level of the response); a model is never
+compared with another server's limits. Only loopback or `HOLON_HOST_LOCAL_HOSTS` authorities are ever probed, and only
+over `http` or `https` (a `file://` or `ftp://` `baseUrl` is skipped): redirects are refused, at most 1 MiB of the
+response is read (a larger one prints `prefill_cache=unknown`), and the probe URL is rebuilt from host and port only, so
+userinfo in a `baseUrl` is never sent or printed.

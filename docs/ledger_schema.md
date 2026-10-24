@@ -98,8 +98,9 @@ ledger appends are guarded by `LedgerLock` (`sandbox_executor.ledger.LedgerLock`
 #### Flow Stage Record Matrix
 
 Every `holon flow` stage writes to the target repository's own `holon-knowledge/ledger/`. The table lists the rows each
-stage function in `sandbox_executor/flow.py` appends. In Stage 3 the in-sandbox executor entrypoint
-(`sandbox_executor/entrypoint/executor.py`) appends further rows of its own, listed below the table.
+stage function in `sandbox_executor/flow.py` appends. In Stages 2 and 3 the in-sandbox planner and executor entrypoints
+(`sandbox_executor/entrypoint/planner.py`, `sandbox_executor/entrypoint/executor.py`) append further rows of their own,
+listed below the table.
 
 | Stage             | Ledger file        | Rows appended                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | ----------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -108,6 +109,13 @@ stage function in `sandbox_executor/flow.py` appends. In Stage 3 the in-sandbox 
 | 3. Execute        | `executions.jsonl` | One execution summary (`entry_type: "summary"`, `execution_id` `E-...`) and one test-run action event (`entry_type: "action"`).                                                                                                                                                                                                                                                                                                                                                                                                      |
 | 4. PR review loop | `executions.jsonl` | Per iteration: `ACT-REV` (evaluation), `ACT-FIND` (when findings exist) and `ACT-RES` (resolver, iterations 2 and later). Once per loop: `ACT-POST` (consensus posting, even when posting fails), a `REV-...` summary and an action event.                                                                                                                                                                                                                                                                                           |
 | 5. Calibration    | `executions.jsonl` | One `ACT-CAL` action (`action_origin: "calibration"`), committed with `plans/{plan_id}_calibration.md` on the `/calibrated` branch. Then reconciliation events (`event_type: "reconciliation"` for the execution branch, plus `ttl_expiration` events for stale `unknown` actions), committed in a follow-up commit on the same `/calibrated` branch. When calibration fails, an `ACT-CAL` row with `outcome: "failure"` and the reconciliation events are appended but left uncommitted (see Known gap). No summary row is written. |
+
+Stage 2 planner entrypoint rows: when a plan turn breached its turn, stall or stage budget and the plan was not
+recovered (the resume or re-prompt did not finish, or no stage time was left for one), one `ACT-BUDGET` action
+(`category: "budget"`, `stage: "plan"`) in `executions.jsonl` under the `P-...` `plan_id` as its `execution_id`, written
+by `record_budget_failure` (`sandbox_executor/turns.py`) and committed to the plan branch together with any salvaged
+partial plan; no `plans.jsonl` row is written for that plan (see
+[Budget Breach Actions](#budget-breach-actions-act-budget)).
 
 Stage 3 executor entrypoint rows (all in `executions.jsonl`, under the same `E-...` `execution_id`):
 
@@ -119,6 +127,9 @@ Stage 3 executor entrypoint rows (all in `executions.jsonl`, under the same `E-.
   re-initialised.
 - When the plan is decomposed instead of executed: sub-intent rows in `intents.jsonl`, a summary and, with action
   logging enabled, a `plan_decomposition` action.
+- When the implementation turn breached its turn, stall or stage budget: one `ACT-BUDGET` action (`category: "budget"`,
+  `stage: "execute"`), written unconditionally (not gated on action logging) by `record_budget_failure` (see
+  [Budget Breach Actions](#budget-breach-actions-act-budget)).
 
 Stage 4 and Stage 5 action rows keep their historical field order and identifier formats:
 
@@ -716,6 +727,15 @@ Appended when a plan execution begins, completes, fails, or decomposes into sub-
 - `agent_output_truncated`: Boolean flag indicating if captured agent logs exceeded byte budget and were truncated.
 - `agent_output_bytes`: Byte length of captured (and potentially truncated/sanitised) agent output payload.
 - `ledger_revision`: Integer revision number (defaults to `1` on creation).
+- `execution_notes`: Relative path of the execution notes artefact the agent was asked to write
+  (`executions/{execution_id}.md`). Execution notes are flow metadata, so calibration and the review stage never count
+  them as changed code.
+- `execution_notes_valid`: Boolean; `true` when the notes exist and are usable. Validation is report-only: `false` never
+  discards the code changes, and when the agent wrote no notes only the output size (`agent_output_bytes`) is recorded.
+- `elapsed_seconds`: Wall-clock seconds the execute stage had used when the summary was written (one decimal).
+- `budget_seconds`: The execute stage's wall-clock ceiling in force for the executor, in seconds (the handed-down
+  remaining stage time when the host set `HOLON_STAGE_BUDGET_SECONDS`; Bean 0139, see
+  [Turn and Stage Budgets](budgets.md)).
 - `sub_intents`: List of sub-intents generated upon decomposition (only for `decomposed` state).
 - `created_at`: Creation timestamp.
 
@@ -736,7 +756,7 @@ config/env changes, command executions, test runs, git mutations):
 - `event_type`: Type of event (e.g. `code_modification`, `doc_update`, `config_change`, `command_execution`, `test_run`,
   `git_mutation`).
 - `action`: Concise description of the operation.
-- `category`: Classification category (`code`, `doc`, `config`, `test`, `build`, `dependency`).
+- `category`: Classification category (`code`, `doc`, `config`, `test`, `build`, `dependency`, `budget`).
 - `labels`: List of searchable tags/labels (e.g. `["refactor", "ci", "core"]`). Ingestion also supports comma-separated
   strings (e.g. `"refactor, ci"`), which are automatically normalised to arrays.
 - `target`: Target path, command name, or artifact.
@@ -746,6 +766,44 @@ config/env changes, command executions, test runs, git mutations):
 - `action_origin`: Provenance origin (`initial_implementation`, `pr_review`, `ci_fix`, `calibration`, `operator`).
   Defaults to `initial_implementation`.
 - `created_at`: Creation timestamp (ISO 8601 UTC).
+
+###### Budget Breach Actions (`ACT-BUDGET`)
+
+When a runner turn breaches its turn, stall or stage budget and the single resume turn does not recover the artefact
+(for the executor: whenever the implementation turn breached, since its notes-only resume cannot finish the code),
+exactly one action is appended (Bean 0139, see [Turn and Stage Budgets](budgets.md)):
+
+- `action_id`: `ACT-BUDGET-{timestamp}-{suffix}`; `event_type`: `budget_breach`; `category`: `budget`; `outcome`:
+  `failure`.
+- `stage`: Stage that was running (`plan`, `execute`).
+- `budget_name`: Budget that fired (`turn`, `stall`, `stage`).
+- `budget_seconds`: Limit of that budget, in seconds.
+- `elapsed_seconds`: Seconds elapsed against that budget when it fired.
+
+These four fields are present only on budget actions; other action records keep their existing shape. On an `ACT-BUDGET`
+action `elapsed_seconds` and `budget_seconds` describe the budget that **fired** (`budget_name`, which may be a turn or
+stall budget), whereas the same-named fields on an execution summary row always describe the execute **stage** budget
+and the time used against it, whether or not anything fired. Example (standard fields such as `action_origin` and
+`created_at` omitted):
+
+```json
+{
+  "entry_type": "action",
+  "action_id": "ACT-BUDGET-1792790000-1a2b3c4d",
+  "execution_id": "P-1792790000-pi-agent-qwen3",
+  "event_type": "budget_breach",
+  "action": "plan stage stopped: turn budget exceeded and resume did not recover",
+  "category": "budget",
+  "target": "plans/P-1792790000-pi-agent-qwen3.md",
+  "outcome": "failure",
+  "labels": ["budget", "plan", "turn"],
+  "error_context": "plan turn budget of 300 s exceeded after 300.4 s; stage elapsed 612.0 s",
+  "stage": "plan",
+  "budget_name": "turn",
+  "budget_seconds": 300.0,
+  "elapsed_seconds": 300.4
+}
+```
 
 ###### PR Review Provenance & Review Criticality
 

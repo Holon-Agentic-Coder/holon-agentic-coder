@@ -40,9 +40,13 @@ class CalibrationCommitError(RuntimeError):
     """
 
 
+# Paths that hold flow metadata (ledgers, plan and execution notes, checkpoints) rather than project code. This is
+# the single shared list: calibration's actual metrics and the review stage's diff summary both classify through
+# is_metadata_path(), so execution notes (executions/E-*.md, committed by every execution) never count as code.
 METADATA_PATH_PREFIXES = (
     "holon-knowledge/",
     "plans/",
+    "executions/",
     ".holon/",
 )
 

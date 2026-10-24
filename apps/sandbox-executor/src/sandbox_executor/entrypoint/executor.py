@@ -37,6 +37,8 @@ from sandbox_executor.agent_runner import (
     get_runner,
     get_workspace_dir,
 )
+from sandbox_executor.artefacts import EXECUTION_SPEC, ArtefactReport, execution_write_protocol
+from sandbox_executor.budgets import BudgetBreach, StageTimer, load_budgets
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.ledger import (
     ActionRecord,
@@ -46,6 +48,7 @@ from sandbox_executor.ledger import (
     format_commit_trailers,
     generate_action_id,
 )
+from sandbox_executor.turns import AuthoringOutcome, record_budget_failure, run_turn, supervise_authoring_turn
 
 _MAX_REDACT_INPUT_LEN: int = 100_000
 _MAX_PRINT_LEN: int = 5000
@@ -1065,6 +1068,124 @@ def sync_and_reconcile_pre_push(repo_dir: str, target_branch: str = "main") -> t
         return False, f"Exception during ledger reconciliation merge: {exc}"
 
 
+def build_execution_prompt(
+    repo_dir: str,
+    plan_branch: str,
+    plan_data: dict[str, Any],
+    plan_content: str,
+    intent_data: dict[str, Any],
+    exec_id: str,
+) -> str:
+    """Render ``holon-config/prompts/executor.template.md`` when present, else the built-in execution prompt.
+
+    The write protocol for the execution notes is appended by the caller, so it is always present whichever prompt is
+    used.
+    """
+    intent_json = json.dumps(intent_data, indent=2)
+    template_path = os.path.join(repo_dir, "holon-config/prompts/executor.template.md")
+    template = None
+    if os.path.isfile(template_path):
+        try:
+            with open(template_path, encoding="utf-8") as f:
+                template = f.read()
+        except OSError as e:
+            print(f"Warning: Failed to read {template_path}: {e}; using the built-in prompt.", file=sys.stderr)
+    if not template:
+        return f"Execute plan {plan_branch}.\n\nPlan content:\n{plan_content}\n\nIntent data:\n{intent_json}"
+    replacements = {
+        "{repo_dir}": repo_dir,
+        "{plan_id}": str(plan_data.get("plan_id", plan_branch)),
+        "{plan_branch}": plan_branch,
+        "{intent_id}": str(intent_data.get("intent_id") or intent_data.get("branch") or "unknown"),
+        "{exec_id}": exec_id,
+        "{notes_path}": f"executions/{exec_id}.md",
+        "{intent_json}": intent_json,
+    }
+    for key, value in replacements.items():
+        template = template.replace(key, value)
+    # Substituted last so placeholder-like text inside the plan itself is never expanded.
+    return template.replace("{plan_content}", plan_content)
+
+
+def classify_execution_outcome(outcome: AuthoringOutcome) -> tuple[str, str, BudgetBreach | None, str]:
+    """Execution status, summary, the budget breach to record (if any) and its reason for an authoring outcome.
+
+    The *first* turn implements the plan; executor follow-ups (resume after a breach, re-prompt for missing sections)
+    may only touch the execution notes. Therefore the outcome is decided from the first turn:
+
+    - a breach of the implementation turn is a non-success, even when a notes-only resume made the notes usable: the
+      code changes were cut off mid-implementation, so the breach is recorded and the partial code is not committed;
+    - a breach confined to the notes-only re-prompt after a clean implementation turn never fails the execution: the
+      code is complete, the breach is only logged and ``execution_notes_valid`` reports the notes as they are;
+    - a non-zero first-turn exit counts as success only when the runner reported a structured truncation of its final
+      message (``stopReason: length``) and the notes are complete (Bean 0138); a generic exit 1 (auth or API errors)
+      never does.
+    """
+    first = outcome.first
+    report = outcome.report
+    if first.breach is not None:
+        # The resume (if any) breached too only when budget_failure is set; record the budget that fired last.
+        breach = outcome.budget_failure or first.breach
+        if outcome.follow_up == "resume" and outcome.budget_failure is not None:
+            reason = "resume did not recover"
+        else:
+            reason = "the implementation turn did not finish (partial execution notes salvaged; code not committed)"
+        return "failure", f"Plan execution stopped: {breach.describe()}; {reason}", breach, reason
+    if outcome.breach is not None:
+        print(
+            f"WARNING: the notes-only follow-up turn stopped ({outcome.breach.describe()}); the implementation turn "
+            "finished, so the code changes are kept and the notes are reported as they are.",
+            file=sys.stderr,
+        )
+    if first.returncode == 0:
+        return "success", "Plan executed successfully", None, ""
+    if first.truncated and report is not None and report.complete:
+        print(
+            f"Info: agent exited with code {first.returncode} (stop reason: {first.stop_reason}) after writing "
+            "complete execution notes; treating the exit status as informational."
+        )
+        return "success", "Plan executed successfully", None, ""
+    return "failure", f"Plan execution failed with exit code {first.returncode}", None, ""
+
+
+def finalise_execution_notes(notes_path: str, report: ArtefactReport | None) -> bool:
+    """Validate the execution notes the agent wrote and return True when they are usable.
+
+    Validation is report-only for the executor: missing sections are logged and recorded in the ledger summary, but
+    never discard the code changes the agent made. When the agent wrote no notes, the ledger summary records
+    ``execution_notes_valid: false`` with the size of the implementation turn's output (``agent_output_bytes`` and
+    ``agent_output_truncated``), not the output text; the executor deliberately does not synthesise an ``executions/``
+    file itself, because the ledger summary remains the authoritative execution record.
+    """
+    if report is not None and report.exists:
+        if not report.usable or report.missing_sections:
+            print(f"WARNING: {report.describe()}", file=sys.stderr)
+        return report.usable
+    print(
+        f"WARNING: agent did not write executions/{os.path.basename(notes_path)}; the execution ledger summary "
+        "records execution_notes_valid=false and only the size of the agent output (agent_output_bytes), not its text.",
+        file=sys.stderr,
+    )
+    return False
+
+
+def superseding_failure_row(base_row: dict[str, Any], summary: str) -> dict[str, Any]:
+    """Failure summary row that supersedes ``base_row`` in the append-only ``executions.jsonl``.
+
+    Readers select the row with the highest ``ledger_revision`` and never merge fields backwards
+    (docs/ledger_schema.md, "Reader Contract for Superseding Rows"), so the new row repeats every
+    authoritative field of the row it replaces (agent output accounting, execution notes, elapsed and
+    budget seconds, sub-intents) and changes only the status, summary, timestamp and revision.
+    """
+    return {
+        **base_row,
+        "status": "failure",
+        "summary": summary,
+        "created_at": datetime.now(UTC).isoformat(),
+        "ledger_revision": int(base_row.get("ledger_revision", 1)) + 1,
+    }
+
+
 def main() -> None:
     is_default_repo = False
     repo_dir = None
@@ -1305,31 +1426,62 @@ def main() -> None:
             print(f"Executing plan {plan_branch} using agent {agent_name}...")
             prompt_file = os.path.join(tempfile.gettempdir(), f"exec_prompt-{exec_seq}.md")
             intent_file = os.path.join(tempfile.gettempdir(), f"exec_intent-{exec_seq}.json")
-            full_prompt = (
-                f"Execute plan {plan_branch}.\n\n"
-                f"Plan content:\n{plan_content}\n\n"
-                f"Intent data:\n{json.dumps(intent_data, indent=2)}"
-            )
+            notes_rel = f"executions/{exec_id}.md"
+            notes_path = os.path.join(repo_dir, notes_rel)
+            base_prompt = build_execution_prompt(repo_dir, plan_branch, plan_data, plan_content, intent_data, exec_id)
+            full_prompt = f"{base_prompt}\n\n{execution_write_protocol(notes_rel)}"
 
+            budgets = load_budgets(os.environ)
+            stage_timer = StageTimer("execute", budgets.stage_seconds("execute"))
+            budget_breach: BudgetBreach | None = None
+            notes_report: ArtefactReport | None = None
             try:
                 with open(prompt_file, "w") as f:
                     f.write(full_prompt)
                 with open(intent_file, "w") as f:
                     json.dump(intent_data, f)
 
-                agent_cmd = runner.build_cmd(model_name, prompt_file, intent_file, full_prompt)
-                res = run_cmd(agent_cmd, cwd=repo_dir, check=False)
-                if res.returncode == 0:
-                    exec_status = "success"
-                    summary = "Plan executed successfully"
-                else:
-                    exec_status = "failure"
-                    summary = f"Plan execution failed with exit code {res.returncode}"
+                outcome = supervise_authoring_turn(
+                    lambda text: runner.build_cmd(model_name, prompt_file, intent_file, text),
+                    full_prompt,
+                    artefact_path=notes_path,
+                    artefact_rel=notes_rel,
+                    spec=EXECUTION_SPEC,
+                    stage="execute",
+                    turn_budgets=budgets.turn,
+                    stage_timer=stage_timer,
+                    run=run_turn,
+                    modify_code=False,
+                    context=base_prompt,
+                    watch_tree=repo_dir,
+                    cwd=repo_dir,
+                )
+                exec_status, summary, budget_breach, budget_reason = classify_execution_outcome(outcome)
+                # The implementation turn is the one classify_execution_outcome judges; follow-ups only touch the
+                # notes, so output size and error context describe the implementation turn.
+                res = outcome.first
+                notes_report = outcome.report
             finally:
                 for tf in (prompt_file, intent_file):
                     if os.path.exists(tf):
                         with contextlib.suppress(Exception):
                             os.remove(tf)
+
+            if budget_breach is not None:
+                # Written unconditionally (not gated on action logging): an unrecovered budget failure must always be
+                # auditable, and this is the only write site, so there is exactly one record per stage failure.
+                try:
+                    os.makedirs(ledger_dir, exist_ok=True)
+                    record_budget_failure(
+                        os.path.join(ledger_dir, "executions.jsonl"),
+                        budget_breach,
+                        record_id=exec_id,
+                        target=notes_rel,
+                        clock_elapsed=stage_timer.elapsed(),
+                        reason=budget_reason,
+                    )
+                except Exception as e:
+                    print(f"Warning: Failed to record budget failure: {e}", file=sys.stderr)
 
             action_origin = (
                 os.getenv("HOLON_ACTION_ORIGIN")
@@ -1381,7 +1533,7 @@ def main() -> None:
                             category="code",
                             labels=["agent", agent_name, "execution"],
                             target=f"{agent_name}:{model_name}",
-                            outcome="success" if res.returncode == 0 else "failure",
+                            outcome="success" if exec_status == "success" else "failure",
                             error_context=(
                                 redact_text(res.stderr[:500]) if res.returncode != 0 and res.stderr else None
                             ),
@@ -1414,6 +1566,8 @@ def main() -> None:
                 agent_output_text = ""
                 agent_output_truncated = False
                 agent_output_bytes = 0
+
+            notes_valid = finalise_execution_notes(notes_path, notes_report)
 
             recovery_triggered = False
             base_tip = None
@@ -1520,6 +1674,10 @@ def main() -> None:
                 "agent_output_truncated": agent_output_truncated,
                 "agent_output_bytes": agent_output_bytes,
                 "ledger_revision": 1,
+                "execution_notes": notes_rel,
+                "execution_notes_valid": notes_valid,
+                "elapsed_seconds": round(stage_timer.elapsed(), 1),
+                "budget_seconds": stage_timer.budget_seconds,
             }
             try:
                 os.makedirs(ledger_dir, exist_ok=True)
@@ -1564,7 +1722,11 @@ def main() -> None:
             except Exception as e:
                 print(f"Warning: Prettier formatting failed: {e}", file=sys.stderr)
 
-            commit_msg = f"execute: {exec_id} completed for plan {plan_branch}"
+            if exec_status == "success":
+                commit_msg = f"execute: {exec_id} completed for plan {plan_branch}"
+            else:
+                # Salvage commits (ledger + partial notes, never code) must not read as a completed execution.
+                commit_msg = f"execute: {exec_id} failed for plan {plan_branch}"
             trailers = format_commit_trailers(
                 action_origin=action_origin,
                 review_severity=review_severity,
@@ -1597,6 +1759,9 @@ def main() -> None:
             add_targets = [
                 f for f in ("holon-knowledge/ledger/executions.jsonl",) if os.path.exists(os.path.join(repo_dir, f))
             ]
+            if exec_status != "success" and os.path.exists(notes_path):
+                # Salvage: the notes (partial or not) explain the failure even when code changes are not staged.
+                add_targets.append(notes_rel)
             if add_targets:
                 run_cmd(["git", "add", *add_targets], cwd=repo_dir, check=False)
             if exec_status == "success":
@@ -1653,24 +1818,7 @@ def main() -> None:
                             f"Git recovery failure: {err_reason}. "
                             f"Corrupted repo backed up at {backup_path or 'unknown'}. Remote push aborted."
                         )
-                        # The ledger is append-only; a superseding row (e.g. ledger_revision >= 2) must
-                        # repeat every authoritative field that readers should rely on, including
-                        # agent_output_truncated and agent_output_bytes, so readers do not have to
-                        # merge fields backwards.
-                        fail_ledger_entry = {
-                            "entry_type": "summary",
-                            "execution_id": exec_id,
-                            "plan_branch": plan_branch,
-                            "agent": agent_name,
-                            "agent_version": runner.get_version(),
-                            "model": model_name,
-                            "status": "failure",
-                            "summary": summary,
-                            "created_at": datetime.now(UTC).isoformat(),
-                            "agent_output_truncated": agent_output_truncated,
-                            "agent_output_bytes": agent_output_bytes,
-                            "ledger_revision": 2,
-                        }
+                        fail_ledger_entry = superseding_failure_row(exec_entry, summary)
                         with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as ef:
                             ef.write(json.dumps(fail_ledger_entry) + "\n")
 
@@ -1701,20 +1849,8 @@ def main() -> None:
                     can_push = False
                     print(f"Error: Pre-push sync failed: {sync_msg}", file=sys.stderr)
                     sync_summary = f"Pre-push sync failure: {sync_msg}. Remote push aborted."
-                    fail_ledger_entry = {
-                        "entry_type": "summary",
-                        "execution_id": exec_id,
-                        "plan_branch": plan_branch,
-                        "agent": agent_name,
-                        "agent_version": runner.get_version(),
-                        "model": model_name,
-                        "status": "failure",
-                        "summary": sync_summary,
-                        "created_at": datetime.now(UTC).isoformat(),
-                        "agent_output_truncated": agent_output_truncated,
-                        "agent_output_bytes": agent_output_bytes,
-                        "ledger_revision": 2,
-                    }
+                    # Also reachable from the decompose branch, whose exec_entry is the decomposed summary row.
+                    fail_ledger_entry = superseding_failure_row(exec_entry, sync_summary)
                     with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as ef:
                         ef.write(json.dumps(fail_ledger_entry) + "\n")
                     run_cmd(
@@ -1743,6 +1879,11 @@ def main() -> None:
                     print(f"Execution branch '{exec_branch}' successfully committed locally.")
         else:
             print("No staged changes to commit.")
+
+        if not decompose_needed:
+            print(stage_timer.summary("ok" if exec_status == "success" else "failed"))
+            if budget_breach is not None:
+                sys.exit(1)
 
     except Exception as e:
         print(f"Execution failed: {e}", file=sys.stderr)

@@ -3206,9 +3206,11 @@ def _commit_stage5_reconciliation(context: FlowContext, repo_dir: str) -> None:
 
     ``reconcile_records`` appends after ``run_calibrate`` has committed the calibration report,
     so the rows are committed in a follow-up commit on the same /calibrated branch, before it is
-    pushed and fast-forwarded into the execution branch. When HEAD is not the /calibrated branch
-    (the fallback path, where ``run_calibrate`` raised), nothing is committed and the rows stay in
-    the working tree with the fallback report. Never raises.
+    pushed and fast-forwarded into the execution branch. Call it only after ``run_calibrate``
+    returned: on the fallback path (``run_calibrate`` raised) the caller skips it, even when HEAD
+    already sits on the /calibrated branch, so the rows stay uncommitted in the working tree with
+    the fallback report. As a further guard, nothing is committed when HEAD is not the /calibrated
+    branch. Never raises.
     """
     branch = context.calibrated_branch
     if not branch:
@@ -3263,6 +3265,7 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
 
     calibrated_branch = f"{context.execution_branch.rstrip('/_').rstrip('/')}/calibrated"
     report_dict: dict[str, Any] = {}
+    calibration_succeeded = False
 
     try:
         report = run_calibrate(
@@ -3274,6 +3277,7 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
         )
         context.calibrated_branch = report.calibrated_branch
         report_dict = report.to_dict()
+        calibration_succeeded = True
     except Exception as e:
         context.log(f"Calibration run encountered exception: {e}. Generating fallback report.")
         clean = context.execution_branch.strip().rstrip("/_").rstrip("/")
@@ -3328,7 +3332,13 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
                 reason=f"Stage 5 calibration reconciled execution outcome to {outcome}",
                 db_path=db_path,
             )
-            _commit_stage5_reconciliation(context, repo_dir)
+            if calibration_succeeded:
+                _commit_stage5_reconciliation(context, repo_dir)
+            else:
+                context.log(
+                    f"Stage 5 failure ACT-CAL and reconciliation rows left uncommitted in "
+                    f"{LEDGER_EXECUTIONS_REL}: calibration failed."
+                )
         if os.path.exists(db_path):
             index_db = ActionIndexDatabase(db_path=db_path)
             promoted_candidates = promote_pending_candidates(
@@ -3344,7 +3354,8 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
         _warn_ledger_failure(context, "Stage 5 ledger reconciliation", executions_file, e)
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    if not context.dry_run and context.calibrated_branch:
+    # A failed calibration commits nothing, so it neither pushes nor fast-forwards the /calibrated branch.
+    if not context.dry_run and calibration_succeeded and context.calibrated_branch:
         if not context.skip_push:
             run_git(["push", "-u", "origin", context.calibrated_branch], cwd=repo_dir, check=False)
         if context.execution_branch:

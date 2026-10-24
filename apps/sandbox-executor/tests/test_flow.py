@@ -681,6 +681,62 @@ class TestFlowStages:
         assert "holon-knowledge/ledger/executions.jsonl" in status
         assert "plans/P-200-plan_calibration.md" in status
 
+    @pytest.mark.parametrize("scenario", ["raises_after_checkout", "rerun_on_calibrated"])
+    def test_stage5_calibrate_failure_on_calibrated_branch_commits_nothing(self, tmp_path, scenario):
+        """A failed calibration leaves its rows uncommitted even when HEAD sits on the /calibrated branch."""
+        import subprocess
+
+        def git(*args: str) -> str:
+            return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True).stdout
+
+        execution_branch = "I-100-intent/P-200-plan/E-300-exec/_"
+        calibrated_branch = "I-100-intent/P-200-plan/E-300-exec/calibrated"
+        git("init", "-q", "-b", "main")
+        git("config", "user.email", "test@example.com")
+        git("config", "user.name", "Test")
+        ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
+        ledger.parent.mkdir(parents=True)
+        ledger.write_text("", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "initial")
+        git("checkout", "-q", "-b", execution_branch)
+        if scenario == "rerun_on_calibrated":
+            git("checkout", "-q", "-b", calibrated_branch)
+        execution_tip = git("rev-parse", execution_branch).strip()
+
+        def failing_run_calibrate(**_kwargs):
+            if scenario == "raises_after_checkout":
+                git("checkout", "-q", "-b", calibrated_branch)
+                raise OSError("report write failed")
+            raise RuntimeError("generate_calibration failed")
+
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch=execution_branch,
+            plan_branch="I-100-intent/P-200-plan/_",
+            dry_run=False,
+            skip_push=True,
+        )
+        with (
+            patch("sandbox_executor.flow.run_calibrate", side_effect=failing_run_calibrate),
+            patch("sandbox_executor.flow.converge_prettier"),
+        ):
+            res = run_calibrate_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        cal_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-CAL"]
+        assert len(cal_rows) == 1
+        assert cal_rows[0]["outcome"] == "failure"
+
+        # Neither branch gains a commit, so no ff/push can carry the failure rows into the PR.
+        assert git("rev-parse", calibrated_branch).strip() == execution_tip
+        assert git("rev-parse", execution_branch).strip() == execution_tip
+        assert git("show", f"{calibrated_branch}:holon-knowledge/ledger/executions.jsonl") == ""
+        status = git("status", "--porcelain", "--untracked-files=all")
+        assert "holon-knowledge/ledger/executions.jsonl" in status
+        assert "plans/P-200-plan_calibration.md" in status
+        assert any("left uncommitted" in line and "calibration failed" in line for line in ctx.logs)
+
     def test_stage5_calibrate_fallback_records_original_error_when_prettier_fails(self, tmp_path):
         """A Prettier failure inside the fallback must not mask the original calibration error."""
         ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"

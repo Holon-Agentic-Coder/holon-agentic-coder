@@ -153,8 +153,9 @@ Write rules for every stage:
   includes the ledger, for example the Stage 5 calibration commit in `holon flow`. A review run in a throwaway container
   clone leaves them uncommitted. Likewise, when `run_calibrate()` raises, Stage 5 writes a fallback
   `plans/{plan_id}_calibration.md` and appends an `ACT-CAL` row with `outcome: "failure"` and the reconciliation events
-  to the working-tree `executions.jsonl`, but commits none of them, because `calibrate` is the last stage and the
-  `/calibrated` branch may not exist. The operator must commit or discard them.
+  to the working-tree `executions.jsonl`, but commits none of them, even when HEAD already sits on the `/calibrated`
+  branch, and neither pushes nor fast-forwards that branch, because `calibrate` is the last stage and the `/calibrated`
+  branch may not exist. The operator must commit or discard them.
 
 **Why JSONL?**
 

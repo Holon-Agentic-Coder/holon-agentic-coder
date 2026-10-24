@@ -3339,6 +3339,31 @@ def run_review_loop(
     }
 
 
+def _checkout_execution_branch(context: FlowContext) -> str | None:
+    """Check out the execution branch in the host checkout before a stage that writes to the working tree.
+
+    Stages 1-3 only fetch and track the branches their containers push, so the operator's checkout is still
+    wherever 'holon flow' started. Stage 4 appends its review ledger rows to the checkout and Stage 5 writes the
+    calibration report and reconciles 'executions.jsonl' in it, as 'holon review-loop' and 'holon calibrate' do
+    when run on the branch. Both stages call this so that a '--skip-review' run, or a resume entering at Stage 5,
+    never writes into the operator's branch. A plain 'git checkout' carries non-conflicting local changes over
+    and refuses conflicting ones, so nothing is ever discarded.
+
+    Returns:
+        None when HEAD is (now) on the execution branch, otherwise the redacted reason the checkout failed.
+    """
+    repo_dir = context.repo_dir
+    current = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_dir, check=False)
+    current_branch = current.stdout.strip() if current.returncode == 0 and isinstance(current.stdout, str) else ""
+    if current_branch == context.execution_branch:
+        return None
+    co_res = run_git(["checkout", context.execution_branch], cwd=repo_dir, check=False)
+    if co_res.returncode == 0:
+        return None
+    stderr = co_res.stderr.strip() if isinstance(co_res.stderr, str) else ""
+    return redact_text(stderr) or f"exit code {co_res.returncode}"
+
+
 def run_review_stage(context: FlowContext) -> StageResult:
     """Execute Stage 4: PR Review Loop.
 
@@ -3356,22 +3381,15 @@ def run_review_stage(context: FlowContext) -> StageResult:
 
     repo_dir = context.repo_dir
     if not context.dry_run:
-        # Stages 1-3 only fetch and track the branches their containers push, so the operator's checkout is
-        # still wherever 'holon flow' started. The review loop appends its ledger rows to the checkout and
-        # Stage 5 calibrates from it, as 'holon review-loop' and 'holon calibrate' do when run on the branch.
-        current = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_dir, check=False)
-        current_branch = current.stdout.strip() if current.returncode == 0 and isinstance(current.stdout, str) else ""
-        if current_branch != context.execution_branch:
-            co_res = run_git(["checkout", context.execution_branch], cwd=repo_dir, check=False)
-            if co_res.returncode != 0:
-                stderr = co_res.stderr.strip() if isinstance(co_res.stderr, str) else ""
-                return _stage_failure(
-                    context,
-                    FlowStage.REVIEW,
-                    start_time,
-                    f"Review stage failed: could not check out execution branch '{context.execution_branch}' "
-                    f"before the review loop: {redact_text(stderr) or f'exit code {co_res.returncode}'}",
-                )
+        checkout_err = _checkout_execution_branch(context)
+        if checkout_err:
+            return _stage_failure(
+                context,
+                FlowStage.REVIEW,
+                start_time,
+                f"Review stage failed: could not check out execution branch '{context.execution_branch}' "
+                f"before the review loop: {checkout_err}",
+            )
         target_branch = context.intent_data.get("target_branch", "main")
         check_and_resolve_stage_conflicts(
             repo_dir, target_branch=target_branch, stage_name="review", branch=context.execution_branch
@@ -3662,6 +3680,15 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
 
     repo_dir = context.repo_dir
     if not context.dry_run:
+        checkout_err = _checkout_execution_branch(context)
+        if checkout_err:
+            return _stage_failure(
+                context,
+                FlowStage.CALIBRATE,
+                start_time,
+                f"Calibrate stage failed: could not check out execution branch '{context.execution_branch}' "
+                f"before calibration: {checkout_err}",
+            )
         target_branch = context.intent_data.get("target_branch", "main")
         check_and_resolve_stage_conflicts(
             repo_dir, target_branch=target_branch, stage_name="calibrate", branch=context.execution_branch

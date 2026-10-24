@@ -140,10 +140,12 @@ is adopted only if it was not on `origin` before the container was dispatched an
 and model; when no such branch or more than one appears, the stage fails instead of guessing, so neither clock skew
 between host and container nor a concurrent run under the same parent branch can redirect the flow. Stages 4 and 5 run
 the same review loop and calibration code as `holon review-loop` and `holon calibrate`. Because Stages 1-3 leave the
-host checkout where `holon flow` started, Stage 4 first checks out the adopted execution branch (and fails if it
-cannot), so the review loop's ledger rows and the Stage 5 calibration land on that branch. The conflict probes of Stages
-2-5 name the branch each stage works from (Stage 1 has none yet), and the review records the execution branch's tip,
-freshly fetched from `origin`, as the reviewed commit, never the operator's `HEAD`.
+host checkout where `holon flow` started, Stages 4 and 5 each first check out the adopted execution branch (and fail if
+it cannot, for example because local changes would be overwritten; nothing is discarded), so the review loop's ledger
+rows and the Stage 5 calibration report and ledger reconciliation land on that branch even under `--skip-review` or a
+resume that enters at Stage 5. The conflict probes of Stages 2-5 name the branch each stage works from (Stage 1 has none
+yet), and the review records the execution branch's tip, freshly fetched from `origin`, as the reviewed commit, never
+the operator's `HEAD`.
 
 The guarantee has three deliberate limits:
 

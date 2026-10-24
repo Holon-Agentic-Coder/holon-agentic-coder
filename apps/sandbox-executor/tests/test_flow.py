@@ -405,7 +405,10 @@ class TestFlowStages:
         mock_report.calibrated_branch = "I-100-intent/P-200-plan/E-300-exec/calibrated"
         mock_report.to_dict.return_value = {"calibrated_branch": mock_report.calibrated_branch, "accuracy_score": 0.95}
 
-        with patch("sandbox_executor.flow.run_calibrate", return_value=mock_report):
+        with (
+            patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
+            patch("sandbox_executor.flow.run_calibrate", return_value=mock_report),
+        ):
             res = run_calibrate_stage(ctx)
 
         assert res.status == StageStatus.SUCCESS
@@ -420,6 +423,7 @@ class TestFlowStages:
         )
 
         with (
+            patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
             patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError("calibration failed")),
             patch("sandbox_executor.flow.converge_prettier") as mock_converge,
         ):
@@ -2514,6 +2518,44 @@ class TestStageTargetsIgnoreOperatorHead:
         assert "could not check out" in (res.error or "")
         mock_loop.assert_not_called()
         assert _git(host, "rev-parse", "--abbrev-ref", "HEAD") == "main"
+
+    def test_calibrate_stage_alone_checks_out_execution_branch_from_main(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        ctx = self._run_stages_1_to_3(host, origin, tmp_path)
+        ctx.skip_push = True
+        main_tip = _git(host, "rev-parse", "main")
+
+        # '--skip-review' or a resume entering at Stage 5: the operator is still on 'main' and calibration throws,
+        # so the fallback report must still be written into the execution branch's tree, never 'main'.
+        heads: list[str] = []
+
+        def _boom(**_kwargs: Any) -> None:
+            heads.append(_git(host, "rev-parse", "--abbrev-ref", "HEAD"))
+            raise RuntimeError("boom")
+
+        with patch("sandbox_executor.flow.run_calibrate", side_effect=_boom):
+            res = run_calibrate_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        assert heads == [ctx.execution_branch]
+        assert _git(host, "rev-parse", "--abbrev-ref", "HEAD") == ctx.execution_branch
+        assert list((host / "plans").glob("P-*_calibration.md")), "fallback report missing from the execution tree"
+        assert _git(host, "log", "-1", "--format=%H", "main") == main_tip
+
+    def test_calibrate_stage_fails_cleanly_when_execution_branch_cannot_be_checked_out(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        ctx = self._run_stages_1_to_3(host, origin, tmp_path)
+        ctx.execution_branch = ctx.execution_branch.replace("/E-", "/E-missing-")
+        status_before = _git(host, "status", "--porcelain")
+
+        with patch("sandbox_executor.flow.run_calibrate") as mock_calibrate:
+            res = run_calibrate_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        assert "could not check out" in (res.error or "")
+        mock_calibrate.assert_not_called()
+        assert _git(host, "rev-parse", "--abbrev-ref", "HEAD") == "main"
+        assert _git(host, "status", "--porcelain") == status_before
 
     def test_conflict_probe_inspects_named_branch_not_head(self, tmp_path):
         repo = _init_mergeability_repo(tmp_path / "repo")

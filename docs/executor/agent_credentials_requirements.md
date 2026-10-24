@@ -116,14 +116,18 @@ file inside the workspace:
    `--env-file`, inserted right after `docker run`, when its name is classified as secret or when its `KEY=VALUE` text
    would be altered by the shared command redactor. Secret names are `GITHUB_TOKEN`, `GH_TOKEN`, `HOLON_AGENT_KEY`,
    `HOLON_MITM_WEB_PASSWORD` and any name the shared key regex recognises (for example `*_TOKEN`, `*_SECRET`,
-   `*_PASSWORD` and `*_API_KEY`). Credential-shaped values include a proxy URL with userinfo. `HOLON_AGENT_SETTINGS` is
-   classified by pattern, not by name: it goes into the env-file only when its value carries a credential shape (an
+   `*_PASSWORD` and `*_API_KEY`). Credential-shaped values include any value carrying URL userinfo with a password (a
+   proxy or base URL in any scheme, or none, under any `HOLON_*` name), decided by the same last-`@` userinfo rule
+   `strip_url_credentials` uses, so a password holding a raw `/`, `?` or `#` is recognised whole. `HOLON_AGENT_SETTINGS`
+   is classified by pattern, not by name: it goes into the env-file only when its value carries a credential shape (an
    `apiKey`, an `sk-ant-` key or an OAuth token key), so a credential-free settings JSON that spans several lines still
    works. Everything else stays on `-e`. The file is created with `mkstemp` and mode `0600` in the owner-only (`0700`)
    directory `~/.holon/tmp/env-files`. It is removed when the run ends, whether through success, failure, an early
    error, an exception or an interrupt. Files left behind by a killed run are swept after 24 hours. Docker reads the
    file on the client side, so no bind mount is needed. A value containing a line break is rejected with an error that
-   names the variable but never the value, because the env-file format has no quoting. The
+   names the variable but never the value, because the env-file format has no quoting. If the env-file directory or file
+   cannot be created (an `OSError`, for example a read-only or foreign-owned `~/.holon`), the run stops with a clear
+   error and a non-zero exit before `docker run`; the credentials never fall back to the argv. The
    [readiness probe](#readiness-probe-holon-doctor) builds its container environment with the same classifier
    (`is_secret_env_item`) and `write_env_file`: `HOLON_AGENT_KEY` and a credential-bearing `HOLON_AGENT_SETTINGS` travel
    in a `0600` env-file that is removed once the probe returns, times out or fails, and `HOLON_REPO_URL` is forwarded
@@ -168,6 +172,17 @@ spawn-failure diagnostics. However, it is still passed to the mitmproxy sidecar 
 that container's `docker run` command line, so it is visible in the host process list while the sidecar starts. Moving
 it off the command line (for example by mounting a `0600` mitmproxy `config.yaml` into the sidecar) is a tracked
 follow-up. The dashboard is bound to loopback, so the exposure is limited to local process listings.
+
+#### Known gap: `claude --settings` inside the container
+
+The env-file keeps `HOLON_AGENT_SETTINGS` off the host `docker run` argv, but inside the container the value becomes an
+argument of the `claude` process: the readiness probe's `sh -c` expands the `"${HOLON_AGENT_SETTINGS}"` reference, and
+in the main run the in-container runner maps the variable to `--settings <value>` (`EnvMapping`). On a Linux host,
+container processes appear in the host's process table, so a host `ps` or `/proc/<pid>/cmdline` can read a
+credential-bearing settings value (an `apiKey` or an OAuth token) while that process runs. On Docker Desktop the
+container runs inside a VM and the host process list does not show it. The risk is shared by the probe and the main run
+and is pre-existing; the env-file routing did not introduce it. Passing the settings to `claude` as a file path instead
+of inline JSON is the follow-up that removes it.
 
 ---
 

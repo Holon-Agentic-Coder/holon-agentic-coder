@@ -33,19 +33,97 @@ _PROVIDER_TOKEN_RE = re.compile(
     r")"
 )
 
-# `//user:pass@`: the password-bearing userinfo of any URL authority, with or without a scheme. The
-# scheme itself is left out of the match (it is kept verbatim), and neither part may cross `/`,
-# whitespace or a quote, which keeps the scan linear and on one token.
-_URL_PASSWORD_RE = re.compile(r"//[^@/\s:'\"]*:[^@/\s'\"]*@")
+# The characters that end a URL authority. A password may still hold them raw (see `url_userinfo_end`).
+_URL_DELIMITERS = "/?#"
 
-# `<NAME>_URL=user:pass@host`, `<NAME>_PROXY='user:pass@'`: a schemeless authority assigned to a
-# URL- or proxy-valued variable, which is how an `HOLON_PROXY_URL` or `HTTP_PROXY` value without a
-# scheme reaches an echo or a docker `-e` item. The userinfo parts are length-bounded because a
-# match can start at every `<NAME>_URL=` in the text (an unbounded scan there is quadratic).
-_URL_VAR_PASSWORD_RE = re.compile(
-    r"(\b(?:[A-Za-z0-9_]*_)?(?:URL|URI|PROXY)[ \t]*=[ \t]*[\"']?)[^@/\s:'\"=]{0,256}:[^@/\s'\"]{0,1024}@",
-    re.IGNORECASE,
-)
+# The start of a URL authority: `scheme://` (the scheme is kept verbatim) or a scheme-relative `//`.
+_URL_AUTHORITY_START_RE = re.compile(r"(?<![A-Za-z0-9+.-])(?:([A-Za-z][A-Za-z0-9+.-]*):)?//")
+
+# `<NAME>_URL=`, `<NAME>_PROXY='`: the assignment prefix of a URL- or proxy-valued variable, which is
+# the only way a schemeless `user:pass@host` value (how an `HOLON_PROXY_URL` or `HTTP_PROXY` value
+# without a scheme reaches an echo or a docker `-e` item) is recognisable as a URL.
+_URL_VAR_PREFIX_RE = re.compile(r"\b(?:[A-Za-z0-9_]*_)?(?:URL|URI|PROXY)[ \t]*=[ \t]*[\"']?", re.IGNORECASE)
+
+# A URL token ends at whitespace or a quote. Its scan is length-bounded because a match can start at
+# every `//` or `<NAME>_URL=` in the text (an unbounded scan there is quadratic).
+_URL_TOKEN_RE = re.compile(r"[^\s'\"]{0,2048}")
+
+
+def _first_delimiter(text: str, start: int = 0) -> int:
+    """Return the index of the first `/`, `?` or `#` at or after `start`, or `len(text)`."""
+    hits = [i for i in (text.find(c, start) for c in _URL_DELIMITERS) if i >= 0]
+    return min(hits, default=len(text))
+
+
+def url_userinfo_end(rest: str) -> int | None:
+    """Return the index of the `@` that ends the userinfo of `rest` (the URL after `scheme://`).
+
+    The one userinfo rule shared by credential stripping (`cli.strip_url_credentials`), the echo
+    redactor and env-file routing, so a URL whose credential is stripped is also masked and kept off
+    process arguments. A password may hold a raw `/`, `?` or `#`, which ends the authority early for
+    `urlsplit` while the text up to the `@` is still the credential. When the authority as `urlsplit`
+    sees it has no `@` but is shaped like `user:password` (not `host:port`, not an IPv6 literal), the
+    userinfo runs to the first `@` after it, extended to the last `@` before the next delimiter. An
+    `@` only in the path, query or fragment of a credential-free URL is not userinfo.
+
+    Args:
+        rest: The URL with its `scheme://` (or `//`) prefix removed.
+
+    Returns:
+        The index of the userinfo's closing `@`, or None when the URL carries no userinfo.
+    """
+    authority = rest[: _first_delimiter(rest)]
+    if "@" in authority:
+        return authority.rindex("@")
+    _, colon, tail = authority.partition(":")
+    if not colon or not tail or tail.isdigit() or authority.startswith("["):
+        return None
+    at = rest.find("@", len(authority))
+    if at < 0:
+        return None
+    while (nxt := rest.find("@", at + 1, _first_delimiter(rest, at + 1))) >= 0:
+        at = nxt
+    if _first_delimiter(rest, at + 1) == at + 1:
+        return None
+    return at
+
+
+def _mask_url_userinfo(text: str) -> str:
+    """Mask URL userinfo in free text with the shared `url_userinfo_end` rule.
+
+    All userinfo of an `http(s)://` authority is masked (a bare user name there may be a token).
+    For any other scheme, a scheme-relative `//` authority, or a schemeless value assigned to a
+    URL-valued variable, only a password-bearing userinfo is masked, so `ssh://git@host` keeps its
+    readable user name and a bare `user@host` email or `name:tag@sha256:...` image reference in prose
+    is left alone. The host, path and the rest of the token stay readable.
+
+    Args:
+        text: The text to sanitise.
+
+    Returns:
+        The text with each matched userinfo replaced by `REDACTION_MARKER`.
+    """
+    for start_re in (_URL_AUTHORITY_START_RE, _URL_VAR_PREFIX_RE):
+        out: list[str] = []
+        pos = 0
+        for m in start_re.finditer(text):
+            if m.start() < pos:
+                continue
+            token = _URL_TOKEN_RE.match(text, m.end()).group(0)
+            if start_re is _URL_VAR_PREFIX_RE and "//" in token:
+                continue  # An authority: already handled by the first scan.
+            at = url_userinfo_end(token)
+            if at is None:
+                continue
+            is_http = start_re is _URL_AUTHORITY_START_RE and (m.group(1) or "").lower() in ("http", "https")
+            if not is_http and ":" not in token[:at]:
+                continue
+            out.extend((text[pos : m.end()], REDACTION_MARKER))
+            pos = m.end() + at
+        out.append(text[pos:])
+        text = "".join(out)
+    return text
+
 
 # Explicit list of flags whose next argument must be masked.
 # Note: Suffixes like "-token", "_token", "-secret", "_secret", "-key", and "_key"
@@ -99,13 +177,7 @@ def redact_text(text: str) -> str:
             else text[tail_start + 1 :]
         )
         text = head + "\n... (truncated) ...\n" + tail
-    s = re.sub(r"(https?://)[^@/]+@", r"\1*******@", text)
-    # Any other scheme (`socks5://`, `ftp://`) and a scheme-relative `//` authority: masked only when
-    # the userinfo carries a password, so `ssh://git@host` keeps its readable user name.
-    s = _URL_PASSWORD_RE.sub(r"//*******@", s)
-    # A schemeless `user:pass@host` value is only recognisable by the variable it is assigned to; a
-    # bare `user@host` email or a `name:tag@sha256:...` image reference in prose is left alone.
-    s = _URL_VAR_PASSWORD_RE.sub(r"\1*******@", s)
+    s = _mask_url_userinfo(text)
     # Redact sensitive URL query parameters including auth_code and code
     s = re.sub(
         r"([?&](?:token|api_key|access_token|secret|password|auth|bearer|auth_code|code|client_secret|db_password|credential|credentials|key(?=[=_-])|pwd|passwd)[^=\s&]*=)[^\s&]+",

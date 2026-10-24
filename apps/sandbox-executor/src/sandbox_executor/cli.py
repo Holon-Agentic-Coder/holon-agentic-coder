@@ -58,6 +58,7 @@ from sandbox_executor.redaction import (
     redact_command,
     redact_env_literals,
     redact_url_value,
+    url_userinfo_end,
 )
 from sandbox_executor.scaffold import init_project
 from sandbox_executor.token_reduction import generate_root_ca
@@ -238,46 +239,6 @@ _GITHUB_TOKEN_USER_RE = re.compile(r"(?:gh[opsu]_|github_pat_)[A-Za-z0-9_-]{8,}"
 _OAUTH_BASIC_PASSWORD = "x-oauth-basic"
 
 
-_URL_DELIMITERS = "/?#"
-
-
-def _first_delimiter(text: str, start: int = 0) -> int:
-    """Return the index of the first `/`, `?` or `#` at or after `start`, or `len(text)`."""
-    hits = [i for i in (text.find(c, start) for c in _URL_DELIMITERS) if i >= 0]
-    return min(hits, default=len(text))
-
-
-def _userinfo_end(rest: str) -> int | None:
-    """Return the index of the `@` that ends the userinfo of `rest` (the URL after `scheme://`).
-
-    A password may hold a raw `/`, `?` or `#`, which ends the authority early for `urlsplit` while
-    the text up to the `@` is still the credential. When the authority as `urlsplit` sees it has no
-    `@` but is shaped like `user:password` (not `host:port`, not an IPv6 literal), the userinfo runs
-    to the first `@` after it, extended to the last `@` before the next delimiter. An `@` only in the
-    path, query or fragment of a credential-free URL is not userinfo.
-
-    Args:
-        rest: The URL with its `scheme://` prefix removed.
-
-    Returns:
-        The index of the userinfo's closing `@`, or None when the URL carries no userinfo.
-    """
-    authority = rest[: _first_delimiter(rest)]
-    if "@" in authority:
-        return authority.rindex("@")
-    _, colon, tail = authority.partition(":")
-    if not colon or not tail or tail.isdigit() or authority.startswith("["):
-        return None
-    at = rest.find("@", len(authority))
-    if at < 0:
-        return None
-    while (nxt := rest.find("@", at + 1, _first_delimiter(rest, at + 1))) >= 0:
-        at = nxt
-    if _first_delimiter(rest, at + 1) == at + 1:
-        return None
-    return at
-
-
 def strip_url_credentials(url: str) -> tuple[str, str | None]:
     """Remove the userinfo (`user:password@`) from an `http(s)://` URL.
 
@@ -301,13 +262,14 @@ def strip_url_credentials(url: str) -> tuple[str, str | None]:
 
         A plain bare user name is a login name, not a credential: it is stripped and the credential
         is None. The credential is also None when the URL carried no userinfo or is not an HTTP(S)
-        URL. A password holding a raw `/`, `?` or `#` is stripped whole (see `_userinfo_end`).
+        URL. A password holding a raw `/`, `?` or `#` is stripped whole (see
+        `redaction.url_userinfo_end`, the rule the echo redactor and env-file routing share).
     """
     if not url.lower().startswith(("https://", "http://")):
         return url, None
     scheme_end = url.index("://") + 3
     rest = url[scheme_end:]
-    at = _userinfo_end(rest)
+    at = url_userinfo_end(rest)
     if at is None:
         return url, None
     userinfo = rest[:at]
@@ -1436,11 +1398,16 @@ def run_docker_container(
         docker_cmd.extend(container_args)
 
         if secret_env:
-            sweep_stale_env_files(env_file_dir())
             try:
+                sweep_stale_env_files(env_file_dir())
                 env_file = write_env_file(secret_env)
             except ValueError as exc:
                 print(f"Error: {exc}.", file=sys.stderr)
+                return 1
+            except OSError as exc:
+                # An unwritable or unreadable ~/.holon/tmp/env-files: fail closed with a clear message
+                # rather than a traceback, and never fall back to passing the credentials on the argv.
+                print(f"Error: could not write the credential env-file: {exc}.", file=sys.stderr)
                 return 1
             # Right after `docker run`. Docker reads --env-file on the client side, so the host path
             # needs no bind mount.

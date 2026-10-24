@@ -345,3 +345,59 @@ def test_userinfo_without_a_password_is_not_masked(line: str) -> None:
 )
 def test_carries_url_password(value: str, expected: bool) -> None:
     assert redaction.carries_url_password(value.format(v=make_probe())) is expected
+
+
+def _delimited_probe() -> str:
+    """A runtime-built password holding a raw `/`, `?` and `#`, the characters that end an authority."""
+    return make_probe("a") + "/" + make_probe("b") + "?" + make_probe("c") + "#" + make_probe("d")
+
+
+_DELIMITED_URL_FORMS = [
+    pytest.param("http://alice:{v}@proxy:3128", id="http"),
+    pytest.param("https://alice:{v}@proxy:3128/path", id="https-with-path"),
+    pytest.param("socks5://alice:{v}@proxy:1080", id="socks5"),
+    pytest.param("//alice:{v}@proxy:1080", id="scheme-relative"),
+    pytest.param("alice:{v}@proxy.corp:8080", id="schemeless"),
+]
+
+
+@pytest.mark.parametrize("form", _DELIMITED_URL_FORMS)
+@pytest.mark.parametrize("name", ["HOLON_PROXY_URL", "HOLON_LOCAL_BASE_URL", "HTTP_PROXY"])
+def test_password_with_raw_delimiters_is_masked_and_carried(name: str, form: str) -> None:
+    """A raw `/`, `?` or `#` in the password no longer ends the userinfo early (shared last-`@` rule)."""
+    sample = _delimited_probe()
+    value = form.format(v=sample)
+    shown = redact_command(["docker", "run", "-e", f"{name}={value}", "img"])
+    for part in sample.replace("?", "/").replace("#", "/").split("/"):
+        assert_no_fragment(shown, part)
+    assert "@proxy" in shown
+    assert redaction.carries_url_password(value) is True
+    for part in sample.replace("?", "/").replace("#", "/").split("/"):
+        assert_no_fragment(redact_url_value(value), part)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "https://github.com/myorg/myrepo/blob/main/a@b.md",
+        "https://proxy.corp:8080/path@segment",
+        "ssh://git@github.com/myorg/myrepo.git",
+        "HOLON_PROXY_URL=proxy.corp:8080/x@y",
+    ],
+)
+def test_at_sign_outside_the_userinfo_is_not_masked(line: str) -> None:
+    assert redaction.redact_text(line) == line
+    assert redaction.carries_url_password(line.split("=", 1)[-1]) is False
+
+
+def test_strip_url_credentials_shares_the_redactor_userinfo_rule() -> None:
+    """One userinfo rule: credential stripping and the echo redactor must not drift apart."""
+    from sandbox_executor import cli
+
+    assert cli.url_userinfo_end is redaction.url_userinfo_end
+    sample = _delimited_probe()
+    url = f"https://alice:{sample}@{REPO}"
+    clean, credential = cli.strip_url_credentials(url)
+    assert credential == sample
+    assert redaction.redact_text(url) == f"https://{REDACTION_MARKER}@{REPO}"
+    assert clean == f"https://{REPO}"

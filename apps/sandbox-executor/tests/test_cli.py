@@ -1034,6 +1034,49 @@ def test_proxy_url_password_travels_only_in_the_env_file(leak_env, monkeypatch, 
 
 
 @pytest.mark.parametrize(
+    "form",
+    ["alice:{v}@proxy.corp:8080", "socks5://alice:{v}@proxy:1080", "http://alice:{v}@proxy:3128"],
+    ids=["schemeless", "socks5", "http"],
+)
+@pytest.mark.parametrize("name", ["HOLON_PROXY_URL", "HOLON_LOCAL_BASE_URL", "HOLON_MIRROR_ENDPOINT"])
+def test_url_password_with_raw_delimiters_travels_only_in_the_env_file(leak_env, monkeypatch, capsys, name, form):
+    """A raw `/`, `?` or `#` in the password of any forwarded HOLON_* URL keeps it off the docker argv."""
+    parts = [make_probe(label) for label in "abcd"]
+    sample = parts[0] + "/" + parts[1] + "?" + parts[2] + "#" + parts[3]
+    value = form.format(v=sample)
+    monkeypatch.setenv(name, value)
+    docker = _RecordingDocker()
+    monkeypatch.setattr(cli.subprocess, "run", docker)
+
+    assert _run_planner(leak_env["repo"]) == 0
+
+    echo = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("Executing: docker run"))
+    for part in parts:
+        assert_no_leak(part, echo, docker.argv)
+    assert docker.env_file_contents[name] == value
+    assert name not in docker.argv_env
+
+
+@pytest.mark.parametrize("failure", ["write", "directory"])
+def test_unwritable_env_file_fails_closed_with_a_clear_error(leak_env, monkeypatch, capsys, failure):
+    """An OSError writing the env-file exits non-zero with a message, no traceback, and docker never runs."""
+    monkeypatch.setattr(cli.subprocess, "run", _RecordingDocker(outcome=AssertionError("docker must not run")))
+
+    def refuse(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(cli, "write_env_file" if failure == "write" else "env_file_dir", refuse)
+
+    assert _run_planner(leak_env["repo"]) == 1
+
+    err = capsys.readouterr().err
+    assert "could not write the credential env-file" in err
+    assert "Permission denied" in err
+    for value in leak_env["probes"].values():
+        assert_no_fragment(err, value)
+
+
+@pytest.mark.parametrize(
     "outcome",
     [MagicMock(returncode=3), KeyboardInterrupt(), RuntimeError("docker exploded")],
     ids=["non-zero-exit", "keyboard-interrupt", "exception"],

@@ -885,7 +885,7 @@ class TestGatewayHealth(unittest.TestCase):
         # C8-N1: base URLs echoed into errors or logs must never carry credentials. Built at runtime, not literals.
         sample = "pw-" + "x" * 8
         url = f"http://someone:{sample}@gpu.example.com:8000/v1?key={sample}#{sample}"
-        self.assertEqual(local_llm.redact_url(url), "http://gpu.example.com:8000/v1")
+        self.assertEqual(local_llm.redact_url(url), "http://***@gpu.example.com:8000/v1")
         self.assertEqual(local_llm.redact_url("http://localhost:11434/v1"), "http://localhost:11434/v1")
         unparseable = f"http://someone:{sample}@[::1/v1?key={sample}"
         self.assertNotIn(sample, local_llm.redact_url(unparseable))
@@ -902,11 +902,11 @@ class TestGatewayHealth(unittest.TestCase):
                 url = f"{prefix}someone:{head}{sep}{sample}@gpu.example.com:8000/v1?key={sample}#{sample}"
                 with self.subTest(sep=sep, prefix=prefix):
                     redacted = local_llm.redact_url(url)
-                    self.assertEqual(redacted, f"{prefix}gpu.example.com:8000/v1")
+                    self.assertEqual(redacted, f"{prefix}***@gpu.example.com:8000/v1")
                     for fragment in (sample, head, "someone"):
                         self.assertNotIn(fragment, redacted)
         bracketed = f"http://someone:{head}/{sample}@[::1]:8081/v1"
-        self.assertEqual(local_llm.redact_url(bracketed), "http://[::1]:8081/v1")
+        self.assertEqual(local_llm.redact_url(bracketed), "http://***@[::1]:8081/v1")
 
     def test_redact_url_keeps_credential_free_urls_readable(self):
         for url in (
@@ -918,9 +918,12 @@ class TestGatewayHealth(unittest.TestCase):
         ):
             with self.subTest(url=url):
                 self.assertEqual(local_llm.redact_url(url), url)
-        # An "@" in the path of a credential-free URL is over-redacted to what follows it: scheme and the path tail
-        # survive, nothing raises, and an "@" in a dropped query is not treated as userinfo.
-        self.assertEqual(local_llm.redact_url("http://localhost:8000/v1/@scope/models"), "http://scope/models")
+        # A URL without any "@" is byte-identical (even its scheme case); only a query or fragment is dropped.
+        self.assertEqual(local_llm.redact_url("HTTP://Host.Example:80/a/b"), "HTTP://Host.Example:80/a/b")
+        self.assertEqual(local_llm.redact_url("http://localhost:8000/v1?key=k#f"), "http://localhost:8000/v1")
+        # An "@" in the path of a credential-free URL is over-redacted, but the marker shows the authority was
+        # rewritten instead of silently printing a different host; an "@" in a dropped query is not userinfo.
+        self.assertEqual(local_llm.redact_url("http://localhost:8000/v1/@scope/models"), "http://***@scope/models")
         self.assertEqual(local_llm.redact_url("http://localhost:8000/v1?owner=a@"), "http://localhost:8000/v1")
 
     def test_config_error_and_logs_never_echo_userinfo(self):
@@ -932,7 +935,7 @@ class TestGatewayHealth(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True), self.assertRaises(local_llm.LocalLLMConfigError) as caught:
             local_llm.build_container_config(None)
         self.assertNotIn(sample, str(caught.exception))
-        self.assertIn("http://gpu.example.com:8000/v1", str(caught.exception))
+        self.assertIn("http://***@gpu.example.com:8000/v1", str(caught.exception))
         host_config = {"providers": {"p": {"baseUrl": f"http://someone:{sample}@localhost:8081/v1", "models": []}}}
         with self.assertLogs(local_llm.logger, level="INFO") as logs:
             local_llm.build_container_config(host_config)

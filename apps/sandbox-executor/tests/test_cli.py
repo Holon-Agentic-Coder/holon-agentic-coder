@@ -1011,7 +1011,7 @@ class TestDoctor(unittest.TestCase):
             with self.subTest(sep=sep):
                 code, output = self.run_doctor(env, _fetcher(HEALTH_OFF))
                 self.assertEqual(code, 1)
-                self.assertIn("http://gpu.example.com:8000/v1", output)
+                self.assertIn("http://***@gpu.example.com:8000/v1", output)
                 for fragment in (sample, head, "someone"):
                     self.assertNotIn(fragment, output)
             for as_json in (False, True):
@@ -1022,7 +1022,7 @@ class TestDoctor(unittest.TestCase):
                         self.assertNotIn(fragment, output)
                     if as_json:
                         lines = json.loads(output)["environment"]["lines"]
-                        self.assertTrue(any("http://gpu.example.com:8000/v1" in line for line in lines))
+                        self.assertTrue(any("http://***@gpu.example.com:8000/v1" in line for line in lines))
 
     def test_unified_doctor_fails_when_probe_fails(self):
         from sandbox_executor.preflight import PreflightStatus

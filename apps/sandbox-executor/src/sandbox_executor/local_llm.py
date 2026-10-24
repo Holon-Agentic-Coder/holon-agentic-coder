@@ -111,6 +111,7 @@ def _is_local_host(host: str) -> bool:
 
 # Greedy ".*@" backtracks to the last "@" whose suffix looks like an authority (bracketed IP literal or non-empty
 # reg-name, optional port) followed by a path, query, fragment or the end; group 1 keeps "scheme://" or "//".
+_USERINFO_MARKER = "***@"
 _USERINFO_PREFIX = re.compile(
     r"^((?:[A-Za-z][A-Za-z0-9+.-]*:)?//)?.*@(?=(?:\[[^\]/?#@]*\]|[A-Za-z0-9._~%!$&'()*+,;=-]+)(?::\d*)?(?:[/?#]|$))",
     re.DOTALL,
@@ -118,25 +119,32 @@ _USERINFO_PREFIX = re.compile(
 
 
 def redact_url(url: str) -> str:
-    """``url`` safe to print or log: userinfo (``user:token@``), query and fragment are dropped.
+    """``url`` safe to print or log: userinfo (``user:token@``) becomes ``***@``; query and fragment are dropped.
 
     Base URLs come from operator configuration and may embed credentials, so every message or log line that echoes
-    one goes through here. Scheme, host, port and path are kept for diagnosis.
+    one goes through here. Scheme, host, port and path are kept for diagnosis; a URL without any ``@`` is returned
+    byte-for-byte up to its query or fragment.
 
     ``urlsplit`` ends the authority at the first ``/``, ``?`` or ``#``, so a token containing one of those unencoded
     would land in the path or query. Everything between ``//`` (or the start) and the last ``@`` that is followed by a
-    plausible ``host[:port]`` is therefore removed before parsing. A credential-free URL with an ``@`` in its path or
-    query is over-redacted to the part after that ``@``, which is harmless for a diagnostic string.
+    plausible ``host[:port]`` is therefore replaced by the ``***@`` marker before parsing. A credential-free URL with
+    an ``@`` in its path is over-redacted (``http://***@scope/models``), but the marker shows that the authority was
+    rewritten rather than silently printing a different host.
     """
-    url = _USERINFO_PREFIX.sub(lambda m: m.group(1) or "", url, count=1)
+    if "@" not in url:
+        # No userinfo possible: return the URL byte-for-byte, minus a query or fragment (they may carry ``?key=``).
+        return re.split(r"[?#]", url, maxsplit=1)[0]
+    url = _USERINFO_PREFIX.sub(lambda m: (m.group(1) or "") + _USERINFO_MARKER, url, count=1)
     try:
         parsed = urlsplit(url)
-        netloc = parsed.netloc.rpartition("@")[2]
+        netloc = parsed.netloc
+        if "@" in netloc:
+            netloc = _USERINFO_MARKER + netloc.rpartition("@")[2]
         return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
     except ValueError:
-        # Unparseable (e.g. a malformed IPv6 literal): strip anything up to the last "@" and any query or fragment.
-        stripped = re.sub(r"^([^/]*//)?[^/?#]*@", lambda m: m.group(1) or "", url)
-        return re.split(r"[?#]", stripped, maxsplit=1)[0]
+        # Unparseable (e.g. a malformed IPv6 literal): replace anything up to the last "@" and drop query or fragment.
+        url = re.sub(r"^([^/]*//)?[^/?#]*@", lambda m: (m.group(1) or "") + _USERINFO_MARKER, url)
+        return re.split(r"[?#]", url, maxsplit=1)[0]
 
 
 def _authority(url: str) -> tuple[str, int | None] | None:

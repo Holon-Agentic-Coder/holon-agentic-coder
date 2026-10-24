@@ -20,6 +20,8 @@ from sandbox_executor.preflight import (
     run_preflight_probe,
 )
 
+from tests.leak_assertions import CREDENTIAL_FREE_URLS, assert_no_leak, make_probe, make_url_probe, url_userinfo_cases
+
 
 @pytest.fixture
 def probe_env(monkeypatch, tmp_path):
@@ -103,7 +105,8 @@ def test_probe_runs_runner_in_its_container_and_redacts(probe_env):
     assert "sk-test-very-secret-value" not in json.dumps(res.to_dict())
 
     cmd = runner_fn.call_args[0][0]
-    assert cmd[:3] == ["docker", "run", "--rm"]
+    assert cmd[:2] == ["docker", "run"] and "--rm" in cmd
+    assert "sk-test-very-secret-value" not in " ".join(cmd)
     assert runner_fn.call_args[1]["timeout"] == 7
     assert "holon/agent-antigravity" in cmd
     assert "--cap-drop=ALL" in cmd
@@ -114,6 +117,158 @@ def test_probe_runs_runner_in_its_container_and_redacts(probe_env):
     assert tail[tail.index("--model") : tail.index("--model") + 2] == ["--model", "gemini-3.8-flash-medium"]
     assert "--effort" in tail
     assert tail[-1] == PROBE_PROMPT
+
+
+def _set_probe_values(monkeypatch):
+    """Set fake HOLON_AGENT_KEY, HOLON_AGENT_SETTINGS and credential-bearing HOLON_REPO_URL values."""
+    agent_probe = make_probe("key")
+    settings_probe = make_probe("settings")
+    url_probe = make_probe("url")
+    settings = '{"env":{"CLAUDE_CODE_OAUTH_TOKEN":"' + settings_probe + '"}}'
+    monkeypatch.setenv("HOLON_AGENT_KEY", agent_probe)
+    monkeypatch.setenv("HOLON_AGENT_SETTINGS", settings)
+    monkeypatch.setenv("HOLON_REPO_URL", f"https://x-access-token:{url_probe}@github.com/o/r.git")
+    return agent_probe, settings, url_probe
+
+
+def _env_file_of(cmd):
+    return cmd[cmd.index("--env-file") + 1]
+
+
+def test_probe_keeps_credentials_off_the_docker_argv(probe_env, monkeypatch, isolated_env_file_dir):
+    agent_probe, settings, url_probe = _set_probe_values(monkeypatch)
+    seen = {}
+
+    def runner_fn(cmd, **kwargs):
+        path = _env_file_of(cmd)
+        seen["path"] = path
+        seen["mode"] = os.stat(path).st_mode & 0o777
+        with open(path, encoding="utf-8") as fh:
+            seen["lines"] = fh.read().splitlines()
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="OK\n", stderr="")
+
+    res = run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=runner_fn)
+
+    assert res.ok
+    argv = " ".join(seen["cmd"])
+    for sample in (agent_probe, settings, url_probe):
+        assert sample not in argv
+    assert "HOLON_REPO_URL=https://github.com/o/r.git" in seen["cmd"]
+    assert "HOLON_SKIP_PREFLIGHT=1" in seen["cmd"]
+    assert seen["cmd"][2] == "--env-file"
+    assert os.path.dirname(seen["path"]) == str(isolated_env_file_dir)
+    assert seen["mode"] == 0o600
+    assert f"HOLON_AGENT_KEY={agent_probe}" in seen["lines"]
+    assert f"HOLON_AGENT_SETTINGS={settings}" in seen["lines"]
+    assert not any(url_probe in line for line in seen["lines"])
+    # The runner's `--settings` flag reads the variable inside the container instead of carrying the value.
+    tail = seen["cmd"][seen["cmd"].index("holon/agent-claude") + 1 :]
+    assert tail[:2] == ["sh", "-c"]
+    assert '--settings "${HOLON_AGENT_SETTINGS}"' in tail[2]
+    assert not os.path.exists(seen["path"])
+
+
+def _record_probe(seen):
+    def runner_fn(cmd, **kwargs):
+        seen["cmd"] = cmd
+        if "--env-file" in cmd:
+            with open(_env_file_of(cmd), encoding="utf-8") as fh:
+                seen["lines"] = fh.read().splitlines()
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="OK\n", stderr="")
+
+    return runner_fn
+
+
+@pytest.mark.parametrize(
+    ("form", "separators"), [pytest.param(form, seps, id=case_id) for case_id, form, seps in url_userinfo_cases()]
+)
+@pytest.mark.parametrize("name", ["HOLON_PROXY_URL", "HOLON_LOCAL_BASE_URL", "HOLON_MIRROR_ENDPOINT"])
+def test_probe_keeps_url_userinfo_off_the_argv_in_every_shape(
+    probe_env, monkeypatch, isolated_env_file_dir, name, form, separators
+):
+    """The pre-flight probe shares the main run's classifier: every userinfo shape goes to the env-file."""
+    value, parts = make_url_probe(form, separators)
+    monkeypatch.setenv(name, value)
+    seen = {}
+
+    assert run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=_record_probe(seen)).ok
+
+    for part in parts:
+        assert_no_leak(part, seen["cmd"])
+    assert f"{name}={value}" in seen["lines"]
+
+
+@pytest.mark.parametrize("value", CREDENTIAL_FREE_URLS)
+def test_probe_keeps_a_credential_free_url_readable_on_the_argv(probe_env, monkeypatch, isolated_env_file_dir, value):
+    monkeypatch.setenv("HOLON_PROXY_URL", value)
+    seen = {}
+
+    assert run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=_record_probe(seen)).ok
+
+    assert f"HOLON_PROXY_URL={value}" in seen["cmd"]
+    assert not any(line.startswith("HOLON_PROXY_URL=") for line in seen.get("lines", []))
+
+
+def test_probe_keeps_a_credential_free_multiline_settings_json_on_the_argv(probe_env, monkeypatch):
+    settings = '{\n  "model": "' + make_probe("model") + '"\n}'
+    monkeypatch.setenv("HOLON_AGENT_SETTINGS", settings)
+    runner_fn = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="OK\n", stderr=""))
+    assert run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=runner_fn).ok
+    cmd = runner_fn.call_args[0][0]
+    assert f"HOLON_AGENT_SETTINGS={settings}" in cmd
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [subprocess.TimeoutExpired(["docker"], 1), OSError("docker vanished"), RuntimeError("unexpected")],
+    ids=["timeout", "oserror", "unexpected"],
+)
+def test_probe_env_file_is_removed_when_the_probe_fails(probe_env, monkeypatch, isolated_env_file_dir, failure):
+    _set_probe_values(monkeypatch)
+    paths = []
+
+    def runner_fn(cmd, **kwargs):
+        if cmd[:2] == ["docker", "run"]:
+            paths.append(_env_file_of(cmd))
+            assert os.path.exists(paths[-1])
+            raise failure
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    if isinstance(failure, RuntimeError):
+        with pytest.raises(RuntimeError):
+            run_preflight_probe("antigravity-agent", "m", timeout=1, runner_fn=runner_fn)
+    else:
+        assert run_preflight_probe("antigravity-agent", "m", timeout=1, runner_fn=runner_fn).status is (
+            PreflightStatus.UNKNOWN
+        )
+    assert paths and not os.path.exists(paths[0])
+    assert os.listdir(isolated_env_file_dir) == []
+
+
+def test_probe_returns_unknown_when_the_env_file_dir_cannot_be_created(probe_env, monkeypatch):
+    from sandbox_executor import cli
+
+    _set_probe_values(monkeypatch)
+
+    def failing_dir():
+        raise PermissionError("env-file dir not creatable")
+
+    monkeypatch.setattr(cli, "env_file_dir", failing_dir)
+    runner_fn = MagicMock()
+    res = run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=runner_fn)
+    assert res.status is PreflightStatus.UNKNOWN
+    assert "env-file dir not creatable" in res.output_excerpt
+    runner_fn.assert_not_called()
+
+
+def test_probe_rejects_a_multiline_credential_without_running(probe_env, monkeypatch):
+    monkeypatch.setenv("HOLON_AGENT_KEY", make_probe("line") + "\n" + make_probe("break"))
+    runner_fn = MagicMock()
+    res = run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=runner_fn)
+    assert res.status is PreflightStatus.UNKNOWN
+    assert "HOLON_AGENT_KEY" in res.output_excerpt
+    runner_fn.assert_not_called()
 
 
 def test_redact_output_masks_agent_settings_and_bare_anthropic_tokens(probe_env, monkeypatch):
@@ -127,6 +282,13 @@ def test_redact_output_masks_agent_settings_and_bare_anthropic_tokens(probe_env,
     assert "fake-settings-oauth-value" not in redacted
     assert "sk-ant-" not in redacted
     assert "expired" in redacted
+
+
+def test_redact_output_routes_through_canonical_provider_token_sweep(probe_env):
+    fake = "gh" + "p_" + "fakeProbeValue" * 3
+    redacted = preflight.redact_output(f"probe said: {fake} rejected")
+    assert fake not in redacted
+    assert "rejected" in redacted
 
 
 def test_probe_ok(probe_env):
@@ -345,7 +507,7 @@ def test_execute_with_unmapped_env_runner_fails_before_docker(probe_env, monkeyp
 def test_run_docker_container_disables_nested_preflight(probe_env):
     with (
         patch("sandbox_executor.cli.shutil.which", return_value="/usr/bin/docker"),
-        patch("sandbox_executor.cli.resolve_target_repo_url", return_value="https://example.invalid/r.git"),
+        patch("sandbox_executor.cli.resolve_target_repo", return_value=("https://example.invalid/r.git", None)),
         patch("sandbox_executor.cli.find_github_token", return_value=None),
         patch("sandbox_executor.cli.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as run,
     ):

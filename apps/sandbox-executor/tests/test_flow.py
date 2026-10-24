@@ -56,6 +56,8 @@ from sandbox_executor.flow import (
 )
 from sandbox_executor.ledger import parse_commit_trailers
 
+from tests.leak_assertions import make_gh_probe, make_probe
+
 
 @contextmanager
 def _review_loop_gh_stubs() -> Iterator[None]:
@@ -156,6 +158,24 @@ class TestFlowDataModels:
         assert reconstructed.dry_run is True
         assert reconstructed.stage_results["intent"].status == StageStatus.SUCCESS
         assert len(reconstructed.logs) == 1
+
+    def test_flow_context_log_and_stage_failure_mask_provider_tokens_and_env_literals(self, monkeypatch):
+        gho_probe = make_gh_probe("gh" + "o_")
+        ghp_probe = make_gh_probe()
+        env_probe = make_probe("ghtoken")
+        monkeypatch.setenv("GITHUB_TOKEN", env_probe)
+        ctx = FlowContext(repo_dir="/tmp/repo", dry_run=True, token_reduce=False)
+
+        ctx.log(f"push failed for {gho_probe} and {ghp_probe} using {env_probe}")
+        res = PipelineEngine(ctx).handle_stage_failure(
+            FlowStage.EXECUTE, RuntimeError(f"auth {gho_probe} {ghp_probe} {env_probe} rejected")
+        )
+
+        for text in (*ctx.logs, res.error):
+            for sample in (gho_probe, ghp_probe, env_probe):
+                assert sample not in text
+        assert "push failed" in ctx.logs[0]
+        assert "rejected" in res.error
 
     def test_flow_context_new_flags_serialization(self):
         ctx = FlowContext(

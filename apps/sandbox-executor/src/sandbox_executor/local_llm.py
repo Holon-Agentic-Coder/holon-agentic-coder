@@ -22,6 +22,8 @@ import re
 from collections.abc import Iterable
 from urllib.parse import urlsplit, urlunsplit
 
+from sandbox_executor.redaction import trusted_url_authority
+
 logger = logging.getLogger(__name__)
 
 # Opt-in switch. Never inferred from the presence of a base URL in a config file.
@@ -104,7 +106,7 @@ def _authority(url: str) -> tuple[str, int | None] | None:
             return None
         return host, parsed.port
     except ValueError:
-        logger.warning("Ignoring base URL with an invalid port or host: %r", url)
+        logger.warning("Ignoring a base URL with an invalid port or host (value withheld).")
         return None
 
 
@@ -117,7 +119,7 @@ def rewrite_authority(url: str, allow_list: Iterable[str] = ()) -> str:
     allowed = {entry.lower() for entry in allow_list}
     authority = _authority(url)
     if authority is None:
-        logger.warning("Ignoring unparseable base URL %r during host-local rewrite", url)
+        logger.warning("Ignoring an unparseable base URL during host-local rewrite (value withheld).")
         return url
 
     host, port = authority
@@ -182,9 +184,15 @@ def _synthesized_config(allow_list: Iterable[str]) -> dict:
     provider = os.getenv(ENV_LOCAL_PROVIDER, "").strip() or os.getenv("HOLON_AGENT_PROVIDER", "").strip() or "local"
     rewritten = rewrite_authority(base_url, allow_list)
     auth = _authority(rewritten)
-    if auth is None or auth[0] != GATEWAY_HOST:
+    if auth is None:
+        # Never echo an unparseable value: it has no reliable userinfo boundary to mask.
+        raise LocalLLMConfigError(f"The configured {ENV_LOCAL_BASE_URL} is not a valid URL; ignoring it.")
+    if auth[0] != GATEWAY_HOST:
+        # Show only a host validated after the userinfo is removed; an ambiguous value is named, not echoed.
+        shown = trusted_url_authority(base_url)
+        target = f"host {shown}" if shown else "host withheld: no unambiguous userinfo boundary"
         raise LocalLLMConfigError(
-            f"The configured {ENV_LOCAL_BASE_URL} ({base_url}) is neither a loopback address nor in "
+            f"The configured {ENV_LOCAL_BASE_URL} ({target}) is neither a loopback address nor in "
             f"{ENV_HOST_LOCAL_HOSTS}."
         )
     return {
@@ -228,7 +236,12 @@ def build_container_config(host_config: dict | None, allow_list: Iterable[str] =
             dropped.append(name)
             continue
         if rewritten != base_url:
-            logger.info("Rewrote provider %r baseUrl for sandbox reachability: %s -> %s", name, base_url, rewritten)
+            logger.info(
+                "Rewrote provider %r baseUrl host for sandbox reachability: %s -> %s",
+                name,
+                trusted_url_authority(base_url) or "<withheld>",
+                trusted_url_authority(rewritten) or "<withheld>",
+            )
         provider["baseUrl"] = rewritten
         if not provider.get("apiKey"):
             provider["apiKey"] = "holon-local"

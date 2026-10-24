@@ -1,12 +1,17 @@
+import contextlib
 import json
 import os
 import pathlib
 import sys
 import tempfile
 import unittest
+import uuid
 from unittest.mock import MagicMock, patch
 
+import pytest
 from sandbox_executor.entrypoint import planner
+
+from tests.leak_assertions import assert_no_fragment, make_gh_probe
 
 
 @patch.dict("os.environ", {"HOLON_AGENT_KEY": "dummy", "HOLON_REPO_URL": "git@github.com:example/repo.git"})
@@ -561,3 +566,120 @@ Subsections of the overall section are still in scope.
                     self.assertEqual(mock_converge.call_args[1].get("repo_dir"), tmp_dir)
             finally:
                 sys.argv = old_argv
+
+
+# --------------------------------------------------------------------------------------
+# Credential leaks in the echoed clone command and its failure diagnostics
+# --------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def clone_leak_env(monkeypatch):
+    sample = make_gh_probe()
+    for name in ("GH_TOKEN", "HOLON_AGENT_KEY", "HOLON_MITM_WEB_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", sample)
+    url = f"https://x-access-token:{sample}@github.com/myorg/myrepo.git"
+    argv = ["git", "clone", "--branch", "I-1792762862-x/_", "--single-branch", "--depth", "1", url, "."]
+    failed = MagicMock(
+        returncode=128,
+        stdout=f"Cloning into '.' from {url}",
+        stderr=f"fatal: unable to access '{url}/': The requested URL returned error: 403",
+    )
+    return sample, argv, failed
+
+
+def test_run_cmd_clone_echo_and_failure_carry_no_token_fragment(clone_leak_env, capsys):
+    sample, argv, failed = clone_leak_env
+    with patch("subprocess.run", return_value=failed), pytest.raises(SystemExit):
+        planner.run_cmd(argv, check=True)
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert_no_fragment(output, sample)
+    assert "Running: git clone --branch I-1792762862-x/_ --single-branch" in output
+    assert "github.com/myorg/myrepo.git" in output
+    assert "returned error: 403" in output
+
+
+# --------------------------------------------------------------------------------------
+# Credential leaks in the echoed agent command
+# --------------------------------------------------------------------------------------
+
+
+def _fake_provider_value() -> str:
+    # Assembled at runtime so no provider-shaped literal is committed.
+    return "sk" + "-ant-" + "oat01-" + uuid.uuid4().hex + uuid.uuid4().hex
+
+
+def test_agent_cmd_echo_masks_settings_json_before_truncation():
+    value = _fake_provider_value()
+    settings_blob = json.dumps({"env": {"CLAUDE_CODE_OAUTH_TOKEN": value}})
+    argv = ["claude", "--model", "claude-opus-5-5", "--settings", settings_blob, "-p", "x" * 500]
+    shown = planner.format_agent_cmd_for_display(argv)
+    assert_no_fragment(shown, value)
+    assert shown.startswith("claude --model claude-opus-5-5 --settings ")
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in shown
+    assert shown.endswith("x" * 100 + "...")
+
+
+def test_agent_cmd_echo_masks_bare_provider_value_in_long_arg():
+    value = _fake_provider_value()
+    # The value straddles the 100-character clamp, the case a truncate-then-redact order leaks.
+    argv = ["pi", "-p", "a" * 90 + value]
+    shown = planner.format_agent_cmd_for_display(argv)
+    assert_no_fragment(shown, value)
+    assert shown.startswith("pi -p " + "a" * 90)
+
+
+@pytest.mark.parametrize("agent_fails", [False, True], ids=["agent_ok", "agent_fails_echoing_value"])
+def test_planner_main_agent_echo_carries_no_settings_value(monkeypatch, capsys, tmp_path, agent_fails):
+    value = _fake_provider_value()
+    settings_blob = json.dumps({"env": {"CLAUDE_CODE_OAUTH_TOKEN": value}})
+    runner = MagicMock()
+    runner.get_version.return_value = "1.0.0"
+    runner.build_cmd.return_value = ["claude", "--settings", settings_blob, "-p", "prompt"]
+
+    intent_row = json.dumps({"branch": "I-12345", "intent_id": "I-12345", "goal": "g", "entropy_budget": "15.0"})
+    plan_md = "# Plan\n\n| metric | value |\n| p_success_pred | 0.8 |\n| entropy_pred | 2.5 |\n"
+
+    def fake_open(file, mode="r", *args, **kwargs):
+        handle = MagicMock()
+        handle.__enter__.return_value = handle
+        name = str(file)
+        if "intents.jsonl" in name:
+            handle.__iter__.return_value = [intent_row + "\n"]
+        elif "planner.template.md" in name:
+            handle.read.return_value = "Template {intent_json} {plan_id} {safe_model}"
+        elif "plans/P-" in name and "r" in mode:
+            handle.read.return_value = plan_md
+        return handle
+
+    # A failing agent leaves no plan file behind, which routes main() to the stdout/stderr dump.
+    existing = ("intents.jsonl", "planner.template.md") + (() if agent_fails else ("plans/P-",))
+    ok = MagicMock(returncode=0, stdout="agent output", stderr="")
+    failed_agent = MagicMock(returncode=1, stdout=f"settings loaded: {value}", stderr=f"auth rejected for {value}")
+
+    def fake_run(argv, *args, **kwargs):
+        return failed_agent if agent_fails and argv and argv[0] == "claude" else ok
+
+    monkeypatch.setattr(sys, "argv", ["planner.py", "I-12345/_", "claude-agent", "claude-opus-5-5"])
+    monkeypatch.setenv("HOLON_REPO_DIR", str(tmp_path))
+    monkeypatch.setenv("HOLON_REPO_URL", "https://github.com/myorg/myrepo.git")
+    with (
+        patch("sandbox_executor.entrypoint.planner.get_runner", return_value=runner),
+        patch("sandbox_executor.entrypoint.planner.get_workspace_dir", return_value=str(tmp_path)),
+        patch("sandbox_executor.entrypoint.planner.cleanup_repo_dir"),
+        patch("os.makedirs"),
+        patch("os.path.getsize", return_value=100),
+        patch("os.path.exists", side_effect=lambda p: any(k in str(p) for k in existing)),
+        patch("builtins.open", side_effect=fake_open),
+        patch("subprocess.run", side_effect=fake_run),
+        contextlib.suppress(SystemExit),
+    ):
+        planner.main()
+    output = capsys.readouterr()
+    combined = output.out + output.err
+    assert "Running command: claude --settings " in combined
+    if agent_fails:
+        assert "Error: agent command failed or returned empty. code=1" in combined
+    assert_no_fragment(combined, value)

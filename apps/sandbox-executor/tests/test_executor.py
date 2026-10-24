@@ -1,3 +1,4 @@
+import contextlib
 import io
 import json
 import os
@@ -16,6 +17,8 @@ from sandbox_executor.agent_runner import (
 )
 from sandbox_executor.entrypoint import executor
 from sandbox_executor.entrypoint.executor import sync_and_reconcile_pre_push
+
+from tests.leak_assertions import make_gh_probe
 
 # Provider credentials are exercised as *shapes*, never as real keys. The filler is spliced in right
 # after the vendor prefix, so no contiguous vendor-format secret ever exists in this file (GitHub
@@ -1418,17 +1421,17 @@ class TestExecutor(unittest.TestCase):
         budget = 1024
         # The budget is shared with the truncation marker, so the byte cut happens this far in.
         tail_budget = budget - executor._TRUNCATION_MARKER_RESERVE
-        secret = "ghp_StraddleS3cr3tXYzWq7Q4tR9LMNop"
+        straddle_value = make_gh_probe()
         straddle = 5
-        # boundary = len(output) - tail_budget must land `straddle` bytes into the secret, which
-        # starts after the "GH_TOKEN=" anchor: suffix_len = tail_budget + straddle - len(secret) - 1.
+        # boundary = len(output) - tail_budget must land `straddle` bytes into the value, which
+        # starts after the "GH_TOKEN=" anchor: suffix_len = tail_budget + straddle - len(straddle_value) - 1.
         prefix = "noise line\n" * 400
-        suffix = "y" * (tail_budget + straddle - len(secret) - 1)
-        agent_stdout = f"{prefix}GH_TOKEN={secret}\n{suffix}"
+        suffix = "y" * (tail_budget + straddle - len(straddle_value) - 1)
+        agent_stdout = f"{prefix}GH_TOKEN={straddle_value}\n{suffix}"
         self.assertEqual(
             len(agent_stdout) - tail_budget,
             len(prefix) + len("GH_TOKEN=") + straddle,
-            "Test geometry must put the truncation boundary inside the secret.",
+            "Test geometry must put the truncation boundary inside the value.",
         )
 
         def side_effect(args, cwd=None, **kwargs):
@@ -1468,9 +1471,9 @@ class TestExecutor(unittest.TestCase):
                     "HOLON_REPO_DIR": tmp_dir,
                     "HOLON_SKIP_PUSH": "1",
                     "HOLON_AGENT_LOG_BYTES": str(budget),
-                    "GITHUB_TOKEN": secret,
-                    "GH_TOKEN": secret,
-                    "HOLON_AGENT_KEY": secret,
+                    "GITHUB_TOKEN": straddle_value,
+                    "GH_TOKEN": straddle_value,
+                    "HOLON_AGENT_KEY": straddle_value,
                 },
             ),
             patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
@@ -1483,9 +1486,9 @@ class TestExecutor(unittest.TestCase):
             with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
                 ledger_content = lf.read()
 
-            self.assertNotIn(secret, ledger_content)
-            for start in range(len(secret) - 7):
-                window = secret[start : start + 8]
+            self.assertNotIn(straddle_value, ledger_content)
+            for start in range(len(straddle_value) - 7):
+                window = straddle_value[start : start + 8]
                 self.assertNotIn(window, ledger_content, f"Secret fragment {window!r} leaked into the ledger row.")
 
     def test_agent_output_byte_bound_never_strands_secret_fragment(self):
@@ -1497,15 +1500,15 @@ class TestExecutor(unittest.TestCase):
         from sandbox_executor.entrypoint.executor import redact_agent_secrets, sanitize_agent_output
 
         budget = 256
-        secret = "ghp_StraddleS3cr3tXYzWq7Q4tR9LMNop"
-        windows = [secret[start : start + 8] for start in range(len(secret) - 7)]
+        straddle_value = make_gh_probe()
+        windows = [straddle_value[start : start + 8] for start in range(len(straddle_value) - 7)]
 
         truncated_cases = 0
         severed_offsets = []
-        with patch.dict(os.environ, {"GITHUB_TOKEN": secret, "GH_TOKEN": secret}):
-            for offset in range(1, len(secret) - 1):
-                suffix = "y" * (budget + offset - len(secret) - 1)
-                stream = f"GH_TOKEN={secret}\n{suffix}"
+        with patch.dict(os.environ, {"GITHUB_TOKEN": straddle_value, "GH_TOKEN": straddle_value}):
+            for offset in range(1, len(straddle_value) - 1):
+                suffix = "y" * (budget + offset - len(straddle_value) - 1)
+                stream = f"GH_TOKEN={straddle_value}\n{suffix}"
                 self.assertGreater(len(stream), budget, "the byte budget must be exceeded for this case")
 
                 # Shipped order: redact the whole stream, then bound, then sweep again.
@@ -2439,7 +2442,7 @@ class TestExecutor(unittest.TestCase):
         }
         with patch.dict(os.environ, env):
             sample = (
-                "Call: https://x-access-token:ghp_alpha123@github.com/repo.git\n"
+                "Call: https://x-access-token:" + "gh" + "p_alpha123@github.com/repo.git\n"
                 "Literal: ghp_alpha123 and gho_beta456 and ak_gamma789\n"
                 "Header: Bearer custom_secret_bearer_token\n"
             )
@@ -2998,6 +3001,46 @@ class TestExecutor(unittest.TestCase):
             failure_entry = [entry for entry in lines if entry.get("status") == "failure"][-1]
             self.assertIn("Git recovery failure", failure_entry.get("summary", ""))
             self.assertIn(backup_dirs[0], failure_entry.get("summary", ""))
+
+    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    def test_recovery_fetch_diagnostic_is_redacted(self, mock_get_runner, mock_cleanup):
+        """The printed `git fetch` diagnostic goes through the shared redactor, not raw stderr."""
+        with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
+            plan_branch = "I-456/P-123/_"
+            bare_dir, _ = self._create_bare_remote_with_plan(base_dir, plan_branch)
+            workspace_dir = os.path.join(base_dir, "workspace")
+            subprocess.run(
+                ["git", "clone", "--branch", plan_branch, bare_dir, workspace_dir],
+                check=True,
+                capture_output=True,
+            )
+            # Fake, runtime-built value: git echoes the unreachable remote path in its fetch error.
+            fake_value = "ghp_" + "Z" * 36
+            unreachable_remote = os.path.join(base_dir, f"missing-{fake_value}.git")
+
+            mock_runner = MagicMock()
+            mock_runner.get_version.return_value = "1.0.0"
+            mock_runner.build_cmd.return_value = ["python3", "-c", "import shutil; shutil.rmtree('.git/objects')"]
+            mock_runner.validate.return_value = None
+            mock_get_runner.return_value = mock_runner
+
+            captured = io.StringIO()
+            with (
+                patch.dict(os.environ, {"HOLON_REPO_DIR": workspace_dir, "HOLON_GIT_FETCH_RETRIES": "1"}),
+                patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=workspace_dir),
+                patch(
+                    "sandbox_executor.entrypoint.executor.get_repo_url",
+                    side_effect=[bare_dir, unreachable_remote],
+                ),
+                patch("sys.argv", ["executor.py", plan_branch, "antigravity-agent", "gemini-3.5-flash"]),
+                contextlib.redirect_stderr(captured),
+            ):
+                executor.main()
+
+            output = captured.getvalue()
+            self.assertIn("Fetch diagnostic error:", output)
+            self.assertNotIn(fake_value, output)
 
 
 class TestExecutorPrePushSync(unittest.TestCase):

@@ -10,6 +10,8 @@ import pytest
 from sandbox_executor.entrypoint.review_loop import main as review_loop_main
 from sandbox_executor.entrypoint.review_loop import run_cmd
 
+from tests.leak_assertions import assert_no_fragment, make_gh_probe
+
 
 class TestReviewLoopEntrypoint:
     """Test suite for entrypoint.review_loop."""
@@ -442,3 +444,58 @@ class TestReviewLoopEmptyDiffGuardOrigin:
         assert has_diff is None
         assert "from origin failed" in detail
         assert "ghp_abcdefghijklmnopqrstuvwxyz0123456789" not in detail
+
+
+# --------------------------------------------------------------------------------------
+# Credential leaks in the echoed clone command and its failure diagnostics
+# --------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def clone_leak_env(monkeypatch):
+    sample = make_gh_probe()
+    for name in ("GH_TOKEN", "HOLON_AGENT_KEY", "HOLON_MITM_WEB_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", sample)
+    url = f"https://x-access-token:{sample}@github.com/myorg/myrepo.git"
+    argv = ["git", "clone", "--branch", "I-1792762862-x/_", "--single-branch", "--depth", "1", url, "."]
+    failed = MagicMock(
+        returncode=128,
+        stdout=f"Cloning into '.' from {url}",
+        stderr=f"fatal: unable to access '{url}/': The requested URL returned error: 403",
+    )
+    return sample, argv, failed
+
+
+def test_run_cmd_clone_echo_and_failure_carry_no_token_fragment(clone_leak_env, capsys):
+    sample, argv, failed = clone_leak_env
+    with patch("subprocess.run", return_value=failed), pytest.raises(SystemExit):
+        run_cmd(argv, check=True)
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert_no_fragment(output, sample)
+    assert "Running: git clone --branch I-1792762862-x/_ --single-branch" in output
+    assert "github.com/myorg/myrepo.git" in output
+    assert "returned error: 403" in output
+
+
+def test_main_clone_banner_carries_no_token_fragment(clone_leak_env, monkeypatch, tmp_path, capsys):
+    sample, argv, _ = clone_leak_env
+    monkeypatch.setenv("HOLON_REPO_URL", argv[7])
+    test_args = ["review_loop", "I-100-test", f"--repo-dir={tmp_path}", "--json", "--dry-run"]
+    with (
+        patch.object(sys, "argv", test_args),
+        patch("sandbox_executor.entrypoint.review_loop.run_cmd"),
+        patch("sandbox_executor.entrypoint.review_loop.check_and_resolve_stage_conflicts"),
+        patch(
+            "sandbox_executor.entrypoint.review_loop.run_review_loop",
+            return_value={"target": "I-100-test", "consensus": {"approved": True, "iterations": 1}},
+        ),
+        pytest.raises(SystemExit),
+    ):
+        review_loop_main()
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "Cloning I-100-test into" in output
+    assert "github.com/myorg/myrepo.git" in output
+    assert_no_fragment(output, sample)

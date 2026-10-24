@@ -76,6 +76,18 @@ enforcement:
   GID `10001`) with isolated user directories and sandboxed workspace access.
 - **Network Containment**: Agent outbound traffic is routed through the local MITM proxy sidecar, stripping
   authentication credentials and enforcing strict egress filtering.
+- **Credentials Off the Command Line**: The GitHub token and other credential variables reach the container through a
+  temporary `0600` docker `--env-file` (in the `0700` directory `~/.holon/tmp/env-files`) that is removed after the run;
+  the pre-flight readiness probe (`holon doctor`, and before `holon plan` / `execute` / `flow`) uses the same env-file
+  and classifier for `HOLON_AGENT_KEY` and a credential-bearing `HOLON_AGENT_SETTINGS`, and forwards `HOLON_REPO_URL`
+  without userinfo. `HOLON_REPO_URL` never embeds credentials: HTTP(S) userinfo is stripped from both the override and
+  `remote.origin.url`, while SSH remotes are left untouched. A stripped credential (the password, the user name in the
+  `<token>:x-oauth-basic` form, or a token-shaped bare user name) wins over the ambient host token, except that a
+  plain-HTTP credential is discarded with a warning. In-container git authenticates through a host-scoped credential
+  helper configured only in the environment (`GIT_CONFIG_*`), so the token is never written to `.git/config`. Every
+  echoed command is masked through the shared `sandbox_executor.redaction` patterns, always before any length clamp.
+  Known gap: the mitmweb dashboard password is still on the sidecar's command line. See
+  [Agent Credentials](../../docs/executor/agent_credentials_requirements.md#repository-url-credentials).
 
 ---
 

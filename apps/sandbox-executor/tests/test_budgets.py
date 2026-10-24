@@ -62,6 +62,16 @@ class TestBudgets(unittest.TestCase):
             load_budgets({ENV_TURN_TIMEOUT: "soon"})
         self.assertIn(ENV_TURN_TIMEOUT, logs.output[0])
 
+    def test_invalid_stage_override_warning_names_the_real_fallback(self):
+        # C4-N2: an invalid HOLON_STAGE_BUDGET_SECONDS leaves the per-stage budgets in force; no fake -1.0 default.
+        for raw in ("abc", "0", "-3", "inf"):
+            with self.subTest(raw=raw), self.assertLogs("sandbox_executor.budgets", level="WARNING") as logs:
+                budgets = load_budgets({ENV_STAGE_BUDGET_SECONDS: raw})
+            self.assertIsNone(budgets.stage_override_seconds)
+            self.assertEqual(budgets.stage_seconds("execute"), 2700)
+            self.assertNotIn("-1.0", logs.output[0])
+            self.assertIn("per-stage budgets apply", logs.output[0])
+
     def test_zero_stall_disables_stall_detection(self):
         self.assertEqual(load_budgets({ENV_TURN_STALL: "0"}).turn.stall_seconds, 0)
 

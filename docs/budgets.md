@@ -29,8 +29,9 @@ data, and the tests that exercise them use injected clocks only to drive control
 `HOLON_STAGE_BUDGET_SECONDS` is meant for handing one exact ceiling to a single sandbox role; set it only for that
 container, because wherever it is set it applies to every stage. Non-numeric, non-finite, zero or negative values are
 ignored with a warning and the default is kept (except that `HOLON_TURN_STALL_SECONDS=0` is accepted and disables stall
-detection). All of these variables start with `HOLON_`, so the host CLI forwards them into the sandbox container
-automatically. `holon doctor` prints the effective values.
+detection); an invalid `HOLON_STAGE_BUDGET_SECONDS` is ignored, so the per-stage budgets apply. All of these variables
+start with `HOLON_`, so the host CLI forwards them into the sandbox container automatically. `holon doctor` prints the
+effective values.
 
 > [!NOTE] A turn is a single assistant response (Bean 0139), not a runner process. One `claude -p` or `pi -p` invocation
 > performs a whole plan or execution as many responses and legitimately runs for tens of minutes (31.4 min for a real
@@ -46,19 +47,26 @@ change:
 - streamed stdout or stderr output (partial lines count);
 - the size or modification time of the artefact being written (`plans/P-*.md` or `executions/E-*.md`);
 - for executor turns, the newest file modification time in the working tree (scanned at most every 15 s, skipping
-  `.git`, `.venv` and `node_modules`), because an executor edits many files besides its notes.
+  `.git`, `.venv` and `node_modules`), because an executor edits many files besides its notes;
+- _tool progress_: at least 0.5 s of CPU time consumed between two samples (taken every 10 s, so 5 % of one core) by the
+  runner's descendant processes, excluding the runner itself. Descendants are every process below the runner in the
+  parent tree plus anything left in its process group.
 
 The runners print nothing per response, so a single response is observed through its side effects: each change of the
-artefact (or, for executor turns, of the working tree) closes the current response. The three budgets are checked as
-follows:
+artefact (or, for executor turns, of the working tree) closes the current response. A tool call is not an assistant
+response either: while the runner waits on a tool (`uv run pytest`, `uv sync`), nothing is written and a non-streaming
+runner prints nothing, yet the tool's runtime must not be charged to the turn. Tool progress is therefore treated
+exactly like an artefact change: it resets the turn clock and the stall clock and closes the current response. The three
+budgets are checked as follows:
 
-- **Turn** fires when no artefact or tree change has happened for `HOLON_TURN_TIMEOUT_SECONDS`. Streamed output keeps a
-  turn out of the stall window but does not end a response, so a model streaming one degenerate response without writing
-  anything is still stopped. Without a watched artefact or tree no response boundary is observable and the turn budget
-  is not applied.
-- **Stall** fires when nothing at all (no output, no artefact or tree change) has happened for the stall window. The
-  window is `HOLON_TURN_STALL_SECONDS` only once the runner has streamed stdout or stderr output in the current response
-  (since the last artefact or tree change); otherwise it is `max(HOLON_TURN_STALL_SECONDS, HOLON_TURN_TIMEOUT_SECONDS)`.
+- **Turn** fires when no artefact or tree change and no tool progress has happened for `HOLON_TURN_TIMEOUT_SECONDS`.
+  Streamed output keeps a turn out of the stall window but does not end a response, so a model streaming one degenerate
+  response without writing anything is still stopped. Without a watched artefact or tree no response boundary is
+  observable and the turn budget is not applied.
+- **Stall** fires when nothing at all (no output, no artefact or tree change, no tool progress) has happened for the
+  stall window. The window is `HOLON_TURN_STALL_SECONDS` only once the runner has streamed stdout or stderr output in
+  the current response (since the last artefact or tree change); otherwise it is
+  `max(HOLON_TURN_STALL_SECONDS, HOLON_TURN_TIMEOUT_SECONDS)`.
 - **Stage** fires when the stage ceiling is reached, however much progress the process is making.
 
 The stall window only means something for a runner that can signal liveness mid-response. The default runners
@@ -73,6 +81,18 @@ effective limits are therefore:
 | Silent                                    | No                       | `max(stall, turn)`, 300 s (`stall`) |
 | Has streamed output                       | Either                   | Stall window, 90 s (`stall`)        |
 | Streams output but never writes           | Yes                      | Turn budget, 300 s (`turn` fires)   |
+
+A tool call that is still busy when the response clock would otherwise run out is the normal executor path: the prompt
+asks the agent to run the verification suite before its final `## Tests Run` write, and this repository's suite takes
+about 190 s on a developer host and longer in a container. With tool progress, a 190 s test run inside a turn is not a
+breach, while a runner whose descendants are idle (or that has none) is judged exactly as above, so a genuinely idle or
+degenerate runner still breaches the turn budget. Limits of the signal:
+
+- a tool that is blocked without using CPU (a `sleep`, a network wait) does not count as progress;
+- a busy tool is bounded only by the stage ceiling, so a tool that never finishes is stopped by the stage budget, not
+  the turn budget;
+- descendants are sampled from `/proc` in Linux containers and from `ps -A -o pid=,ppid=,pgid=,time=` on macOS; when
+  neither is available, sampling is skipped and only artefact and tree progress count. No dependency is added.
 
 Any stdout or stderr output marks the current response as streaming, including a one-off warning a non-streaming runner
 prints at start-up; that response is then held to the 90 s stall window until its first artefact or tree change.

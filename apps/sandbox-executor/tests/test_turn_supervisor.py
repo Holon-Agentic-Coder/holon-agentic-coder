@@ -1,4 +1,8 @@
-"""Turn supervisor tests. Every process, clock, sleep and signal is faked: no real process is spawned or signalled."""
+"""Turn supervisor tests. Every process, clock, sleep and signal is faked: no real process is spawned or signalled.
+
+The only exception is :class:`TestProcessSamplerOnThisHost`, which checks that the descendant-CPU sampler works on the
+host it runs on (``/proc`` on Linux, ``ps`` on macOS) with one short-lived busy child.
+"""
 
 import io
 import json
@@ -96,6 +100,12 @@ class Harness:
         self.signals = []
         self.sleeps = 0
         self.on_tick = None
+        # Fake descendant CPU seconds by pid; None models a host without /proc or ps.
+        self.tool_cpu = {}
+
+    def tool_sampler(self, pid):
+        self.sampled_pid = pid
+        return None if self.tool_cpu is None else dict(self.tool_cpu)
 
     def popen(self, cmd, **kwargs):
         self.proc.popen_kwargs = kwargs
@@ -128,6 +138,7 @@ class Harness:
             popen_factory=self.popen,
             killpg=self.killpg,
             getpgid=getpgid or self.getpgid,
+            tool_sampler=self.tool_sampler,
         )
 
 
@@ -185,6 +196,7 @@ class TestRunTurn(unittest.TestCase):
             clock=h.clock,
             sleeper=h.sleeper,
             popen_factory=h.popen,
+            tool_sampler=h.tool_sampler,
             killpg=h.killpg,
             getpgid=h.getpgid,
         )
@@ -257,6 +269,7 @@ class TestRunTurn(unittest.TestCase):
             clock=h.clock,
             sleeper=h.sleeper,
             popen_factory=h.popen,
+            tool_sampler=h.tool_sampler,
             killpg=h.killpg,
             getpgid=h.getpgid,
         )
@@ -272,6 +285,81 @@ class TestRunTurn(unittest.TestCase):
         self.assertEqual(result.breach.budget_name, "turn")
         self.assertGreaterEqual(result.breach.elapsed_seconds, 300)
         self.assertLess(h.clock.now, 330)
+
+    def test_long_tool_call_within_a_turn_is_not_a_breach(self):
+        # C4-I3: the model thinks for 150 s, then runs the test suite for 190 s (a busy descendant of the runner),
+        # then writes its notes at 400 s and exits. Without tool progress the 300 s turn clock would fire at 300 s.
+        h = Harness(exit_at=420)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "notes.md")
+
+        def tick(now):
+            if 150 < now <= 340:
+                h.tool_cpu[5001] = h.tool_cpu.get(5001, 0.0) + 0.9  # pytest: ~90 % of one core
+            elif now == 400:
+                with open(path, "a") as f:
+                    f.write("## Tests Run\n")
+
+        h.on_tick = tick
+        result = h.run(turn=300, stall=90, watch_path=path, stage_timer=StageTimer("execute", 2700, clock=h.clock))
+        self.assertIsNone(result.breach)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(h.signals, [])
+        self.assertEqual(h.sampled_pid, CHILD_PID)
+
+    def test_long_tool_call_is_not_judged_by_the_streaming_stall_window(self):
+        # A runner that streamed before starting the tool is silent while the tool runs; that silence is not a stall.
+        stream = TickStream()
+        h = Harness(exit_at=300, stdout=stream)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+
+        def tick(now):
+            if now <= 20:
+                stream.feed(b"tok ")
+            elif now <= 210:
+                h.tool_cpu[5001] = h.tool_cpu.get(5001, 0.0) + 1.0
+
+        h.on_tick = tick
+        result = h.run(turn=300, stall=90, watch_path=os.path.join(tmp.name, "notes.md"))
+        self.assertIsNone(result.breach)
+
+    def test_idle_runner_with_idle_descendants_still_breaches_the_turn_budget(self):
+        # A long-lived helper that only wakes up occasionally (below the CPU threshold) is not tool progress.
+        h = Harness(exit_at=None)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        h.tool_cpu = {5002: 3.0}
+
+        def tick(now):
+            h.tool_cpu[5002] += 0.001
+
+        h.on_tick = tick
+        result = h.run(turn=300, stall=90, watch_path=os.path.join(tmp.name, "notes.md"))
+        self.assertEqual(result.breach.budget_name, "turn")
+        self.assertLess(h.clock.now, 330)
+
+    def test_busy_tool_that_never_ends_is_bounded_by_the_stage_ceiling(self):
+        h = Harness(exit_at=None)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+
+        def tick(now):
+            h.tool_cpu[5003] = h.tool_cpu.get(5003, 0.0) + 1.0
+
+        h.on_tick = tick
+        timer = StageTimer("execute", 20 * MINUTE, clock=h.clock)
+        result = h.run(turn=300, stall=90, watch_path=os.path.join(tmp.name, "notes.md"), stage_timer=timer)
+        self.assertEqual(result.breach.budget_name, "stage")
+
+    def test_unavailable_process_table_keeps_artefact_only_progress(self):
+        h = Harness(exit_at=None)
+        h.tool_cpu = None
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        result = h.run(turn=300, stall=90, watch_path=os.path.join(tmp.name, "notes.md"))
+        self.assertEqual(result.breach.budget_name, "turn")
 
     def test_streaming_runner_that_goes_silent_is_stalled(self):
         # A runner that streams tokens has shown it can signal liveness, so silence within its response is bounded by
@@ -376,6 +464,7 @@ class TestRunTurn(unittest.TestCase):
                 clock=h.clock,
                 sleeper=h.sleeper,
                 popen_factory=h.popen,
+                tool_sampler=h.tool_sampler,
                 killpg=killpg,
                 getpgid=h.getpgid,
             )
@@ -403,6 +492,7 @@ class TestRunTurn(unittest.TestCase):
                 clock=h.clock,
                 sleeper=h.sleeper,
                 popen_factory=h.popen,
+                tool_sampler=h.tool_sampler,
                 killpg=killpg,
                 getpgid=h.getpgid,
             )
@@ -421,6 +511,7 @@ class TestRunTurn(unittest.TestCase):
                 clock=h.clock,
                 sleeper=h.sleeper,
                 popen_factory=h.popen,
+                tool_sampler=h.tool_sampler,
                 killpg=lambda pgid, sig: signals.append((pgid, sig)),
                 getpgid=h.getpgid,
             )
@@ -439,6 +530,7 @@ class TestRunTurn(unittest.TestCase):
                 clock=h.clock,
                 sleeper=h.sleeper,
                 popen_factory=h.popen,
+                tool_sampler=h.tool_sampler,
                 killpg=lambda pgid, sig: signals.append((pgid, sig)),
                 getpgid=lambda pid: CHILD_PID,
             )
@@ -626,3 +718,62 @@ class TestSuperviseAuthoringTurn(unittest.TestCase):
         outcome = self.supervise([self.write(None)])
         self.assertEqual(len(outcome.turns), 1)
         self.assertFalse(outcome.report.exists)
+
+
+class TestProcessSampler(unittest.TestCase):
+    def test_descendants_include_the_tree_and_the_group_but_not_the_runner(self):
+        table = {
+            100: (1, 100, 50.0),  # the runner
+            101: (100, 100, 2.0),  # a tool
+            102: (101, 102, 3.0),  # its child in a new session
+            103: (1, 100, 4.0),  # re-parented, still in the runner's group
+            200: (1, 200, 9.0),  # unrelated
+        }
+        self.assertEqual(turns.descendant_cpu_seconds(100, lambda: table), {101: 2.0, 102: 3.0, 103: 4.0})
+        self.assertIsNone(turns.descendant_cpu_seconds(100, lambda: None))
+
+    def test_tool_cpu_used_counts_new_processes_in_full_and_ignores_exits(self):
+        self.assertEqual(turns.tool_cpu_used({1: 1.0, 2: 5.0}, {1: 1.5, 3: 0.25}), 0.75)
+
+    def test_ps_time_formats(self):
+        self.assertEqual(turns._parse_cpu_time("0:01.14"), 1.14)
+        self.assertEqual(turns._parse_cpu_time("197:36.23"), 197 * 60 + 36.23)
+        self.assertEqual(turns._parse_cpu_time("01:02:03"), 3723.0)
+        self.assertEqual(turns._parse_cpu_time("2-00:00:01"), 2 * 86400 + 1.0)
+        self.assertEqual(
+            turns._parse_ps_table("  1     0     1 197:36.23\n 42 1 42 0:00.50\nbogus\n"),
+            {1: (0, 1, 197 * 60 + 36.23), 42: (1, 42, 0.5)},
+        )
+
+    def test_proc_table_parses_linux_stat_files(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        stat = "77 (py thon) (x) S 42 77 77 0 -1 0 0 0 0 0 250 50 0 0 20 0 1 0 0 0 0\n"
+        os.makedirs(os.path.join(tmp.name, "77"))
+        with open(os.path.join(tmp.name, "77", "stat"), "w") as f:
+            f.write(stat)
+        os.makedirs(os.path.join(tmp.name, "self"))
+        with mock.patch.object(turns.os, "sysconf", return_value=100):
+            self.assertEqual(turns._proc_table(tmp.name), {77: (42, 77, 3.0)})
+        self.assertIsNone(turns._proc_table(os.path.join(tmp.name, "missing")))
+
+
+class TestProcessSamplerOnThisHost(unittest.TestCase):
+    def test_busy_grandchild_is_sampled_on_this_host(self):
+        # Portability check for the real sampler (/proc on Linux, ps on macOS): a shell runner with a busy child.
+        import subprocess
+        import sys
+        import time
+
+        busy = "import time\nend = time.time() + 1.5\nwhile time.time() < end: pass\n"
+        proc = subprocess.Popen(
+            ["/bin/sh", "-c", f'"{sys.executable}" -c "$0"; sleep 0.5', busy], start_new_session=True
+        )
+        self.addCleanup(proc.wait)
+        time.sleep(1.2)
+        sample = turns.descendant_cpu_seconds(proc.pid)
+        if sample is None:
+            self.skipTest("no /proc and no ps on this host")
+        self.assertNotIn(proc.pid, sample)
+        self.assertTrue(sample, "the busy child was not found")
+        self.assertGreater(max(sample.values()), 0.3)

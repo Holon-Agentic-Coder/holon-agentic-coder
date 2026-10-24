@@ -1168,6 +1168,23 @@ def finalise_execution_notes(notes_path: str, report: ArtefactReport | None) -> 
     return False
 
 
+def superseding_failure_row(base_row: dict[str, Any], summary: str) -> dict[str, Any]:
+    """Failure summary row that supersedes ``base_row`` in the append-only ``executions.jsonl``.
+
+    Readers select the row with the highest ``ledger_revision`` and never merge fields backwards
+    (docs/ledger_schema.md, "Reader Contract for Superseding Rows"), so the new row repeats every
+    authoritative field of the row it replaces (agent output accounting, execution notes, elapsed and
+    budget seconds, sub-intents) and changes only the status, summary, timestamp and revision.
+    """
+    return {
+        **base_row,
+        "status": "failure",
+        "summary": summary,
+        "created_at": datetime.now(UTC).isoformat(),
+        "ledger_revision": int(base_row.get("ledger_revision", 1)) + 1,
+    }
+
+
 def main() -> None:
     is_default_repo = False
     repo_dir = None
@@ -1799,24 +1816,7 @@ def main() -> None:
                             f"Git recovery failure: {err_reason}. "
                             f"Corrupted repo backed up at {backup_path or 'unknown'}. Remote push aborted."
                         )
-                        # The ledger is append-only; a superseding row (e.g. ledger_revision >= 2) must
-                        # repeat every authoritative field that readers should rely on, including
-                        # agent_output_truncated and agent_output_bytes, so readers do not have to
-                        # merge fields backwards.
-                        fail_ledger_entry = {
-                            "entry_type": "summary",
-                            "execution_id": exec_id,
-                            "plan_branch": plan_branch,
-                            "agent": agent_name,
-                            "agent_version": runner.get_version(),
-                            "model": model_name,
-                            "status": "failure",
-                            "summary": summary,
-                            "created_at": datetime.now(UTC).isoformat(),
-                            "agent_output_truncated": agent_output_truncated,
-                            "agent_output_bytes": agent_output_bytes,
-                            "ledger_revision": 2,
-                        }
+                        fail_ledger_entry = superseding_failure_row(exec_entry, summary)
                         with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as ef:
                             ef.write(json.dumps(fail_ledger_entry) + "\n")
 
@@ -1847,20 +1847,8 @@ def main() -> None:
                     can_push = False
                     print(f"Error: Pre-push sync failed: {sync_msg}", file=sys.stderr)
                     sync_summary = f"Pre-push sync failure: {sync_msg}. Remote push aborted."
-                    fail_ledger_entry = {
-                        "entry_type": "summary",
-                        "execution_id": exec_id,
-                        "plan_branch": plan_branch,
-                        "agent": agent_name,
-                        "agent_version": runner.get_version(),
-                        "model": model_name,
-                        "status": "failure",
-                        "summary": sync_summary,
-                        "created_at": datetime.now(UTC).isoformat(),
-                        "agent_output_truncated": agent_output_truncated,
-                        "agent_output_bytes": agent_output_bytes,
-                        "ledger_revision": 2,
-                    }
+                    # Also reachable from the decompose branch, whose exec_entry is the decomposed summary row.
+                    fail_ledger_entry = superseding_failure_row(exec_entry, sync_summary)
                     with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as ef:
                         ef.write(json.dumps(fail_ledger_entry) + "\n")
                     run_cmd(

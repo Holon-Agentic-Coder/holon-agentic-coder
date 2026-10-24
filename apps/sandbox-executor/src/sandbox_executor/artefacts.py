@@ -16,8 +16,16 @@ from dataclasses import dataclass, field
 
 # A metrics row is ``| name | number |``; anything non-numeric in the value cell is skipped.
 _METRIC_ROW = re.compile(r"\|\s*([a-zA-Z_0-9]+)\s*\|\s*([0-9\.\-]+)\s*\|")
-# Header row of a metrics table, e.g. ``| metric | value |``.
-_METRIC_HEADER = re.compile(r"^\s*\|\s*metric\s*\|", re.IGNORECASE)
+
+
+def _find_heading(lines: list[str], pattern: str) -> int | None:
+    """Index of the first line whose stripped text matches ``pattern`` case-insensitively, or None.
+
+    Shared by the section check and :func:`parse_section_metrics`, so a heading the validator accepts is always the
+    heading the metrics are read from.
+    """
+    regex = re.compile(pattern, re.IGNORECASE)
+    return next((index for index, line in enumerate(lines) if regex.match(line.strip())), None)
 
 
 @dataclass(frozen=True)
@@ -28,8 +36,8 @@ class ArtefactSection:
     pattern: str
 
     def present_in(self, content: str) -> bool:
-        """True when a heading matching :attr:`pattern` appears at the start of any line (case-insensitive)."""
-        return re.search(self.pattern, content, re.MULTILINE | re.IGNORECASE) is not None
+        """True when a heading matching :attr:`pattern` starts any line (case-insensitive, leading spaces ignored)."""
+        return _find_heading(content.splitlines(), self.pattern) is not None
 
 
 @dataclass(frozen=True)
@@ -42,6 +50,8 @@ class ArtefactSpec:
     required_metrics: tuple[str, ...] = ()
     # Suffixes stripped from metric names before matching, so ``p_success_pred`` satisfies ``p_success``.
     metric_suffixes: tuple[str, ...] = ("_pred",)
+    # Heading of the section whose rows are the artefact's metrics (see :func:`parse_section_metrics`).
+    metrics_section: str | None = None
 
 
 @dataclass
@@ -63,7 +73,7 @@ class ArtefactReport:
 
     @property
     def metrics_ok(self) -> bool:
-        """True when every required metric parsed as a number from the first metrics table."""
+        """True when every required metric parsed as a number from the spec's metrics section."""
         return self.exists and not self.missing_metrics
 
     @property
@@ -98,8 +108,8 @@ class ArtefactReport:
 def parse_metrics(content: str, suffixes: tuple[str, ...] = ("_pred",)) -> dict[str, float]:
     """Parse every ``| name | number |`` row in ``content``, stripping the given suffixes from names.
 
-    Later rows overwrite earlier ones with the same name; use :func:`parse_first_metrics_table` when only the overall
-    table should count.
+    Later rows overwrite earlier ones with the same name; use :func:`parse_section_metrics` when only one section (such
+    as a plan's overall table) should count.
     """
     metrics: dict[str, float] = {}
     for line in content.splitlines():
@@ -120,22 +130,34 @@ def parse_metrics(content: str, suffixes: tuple[str, ...] = ("_pred",)) -> dict[
     return metrics
 
 
-def parse_first_metrics_table(content: str, suffixes: tuple[str, ...] = ("_pred",)) -> dict[str, float]:
-    """Parse only the first ``| metric | value |`` table, which in a plan is the overall table.
+def parse_section_metrics(
+    content: str, heading: str | None, suffixes: tuple[str, ...] = ("_pred",)
+) -> dict[str, float]:
+    """Parse the metric rows of the section headed by ``heading`` (a regex matched case-insensitively per line).
 
-    Step tables later in the document use the same metric names, so parsing the whole file would let a step's values
-    silently stand in for a missing overall row.
+    This is the single metrics parser for authored artefacts: :func:`validate_artefact` uses it to gate a file and the
+    planner (and ``holon flow``, through ``planner.parse_metrics``) uses the same result for the ``plans.jsonl`` row, so
+    the gate and the ledger can never read different numbers from one document. When the heading is present, only the
+    rows up to the next ``## `` heading count, wherever the section sits, so per-step tables before or after it cannot
+    stand in for the overall values (PR #91). When it is absent (or ``heading`` is None), every row in the document
+    counts and the last matching row wins, which is PR #91's fallback.
     """
     lines = content.splitlines()
-    start = next((index for index, line in enumerate(lines) if _METRIC_HEADER.match(line)), None)
-    if start is None:
-        return {}
-    table: list[str] = []
-    for line in lines[start + 1 :]:
-        if not line.strip().startswith("|"):
-            break
-        table.append(line)
-    return parse_metrics("\n".join(table), suffixes)
+    if heading is not None:
+        start = _find_heading(lines, heading)
+        if start is not None:
+            section: list[str] = []
+            for line in lines[start + 1 :]:
+                if line.startswith("## "):
+                    break
+                section.append(line)
+            lines = section
+    return parse_metrics("\n".join(lines), suffixes)
+
+
+def plan_metrics(content: str) -> dict[str, float]:
+    """Plan-level predicted metrics: the ``## Overall Plan Metrics`` rows, parsed exactly as :data:`PLAN_SPEC` does."""
+    return parse_section_metrics(content, PLAN_SPEC.metrics_section, PLAN_SPEC.metric_suffixes)
 
 
 def validate_artefact(path: str, spec: ArtefactSpec) -> ArtefactReport:
@@ -155,7 +177,7 @@ def validate_artefact(path: str, spec: ArtefactSpec) -> ArtefactReport:
     report.exists = True
     report.size = len(content.encode("utf-8"))
     report.missing_sections = [section.label for section in spec.sections if not section.present_in(content)]
-    report.metrics = parse_first_metrics_table(content, spec.metric_suffixes)
+    report.metrics = parse_section_metrics(content, spec.metrics_section, spec.metric_suffixes)
     report.missing_metrics = [name for name in spec.required_metrics if name not in report.metrics]
     return report
 
@@ -190,11 +212,14 @@ PLAN_METRICS = ("p_success", "entropy", "impact", "cost", "learning_value", "ev"
 # The planner recomputes EV from the five inputs with the config-driven formula, so an ``ev_pred`` row is optional.
 PLAN_REQUIRED_METRICS = tuple(name for name in PLAN_METRICS if name != "ev")
 
+PLAN_METRICS_HEADING = r"^##\s+Overall Plan Metrics\b"
+EXECUTION_METRICS_HEADING = r"^##\s+Actual Metrics\b"
+
 PLAN_SPEC = ArtefactSpec(
     name="plan",
     sections=(
         ArtefactSection("`# Plan for ...` title", r"^#\s+Plan\b"),
-        ArtefactSection("`## Overall Plan Metrics` table", r"^##\s+Overall Plan Metrics\b"),
+        ArtefactSection("`## Overall Plan Metrics` table", PLAN_METRICS_HEADING),
         ArtefactSection("at least one `## Step ...` section", r"^##\s+Step\b"),
         ArtefactSection(
             "`### Strategy Rationale` (or a justification section)",
@@ -203,6 +228,7 @@ PLAN_SPEC = ArtefactSpec(
     ),
     size_floor=800,
     required_metrics=PLAN_REQUIRED_METRICS,
+    metrics_section=PLAN_METRICS_HEADING,
 )
 
 EXECUTION_METRICS = ("success", "entropy", "impact", "cost", "learning_value")
@@ -214,11 +240,12 @@ EXECUTION_SPEC = ArtefactSpec(
         ArtefactSection("`## Summary`", r"^##\s+Summary\b"),
         ArtefactSection("`## Steps Executed`", r"^##\s+Steps?\b"),
         ArtefactSection("`## Tests Run`", r"^##\s+(Tests|Verification)\b"),
-        ArtefactSection("`## Actual Metrics` table", r"^##\s+Actual Metrics\b"),
+        ArtefactSection("`## Actual Metrics` table", EXECUTION_METRICS_HEADING),
     ),
     size_floor=400,
     required_metrics=EXECUTION_METRICS,
     metric_suffixes=("_actual", "_pred"),
+    metrics_section=EXECUTION_METRICS_HEADING,
 )
 
 

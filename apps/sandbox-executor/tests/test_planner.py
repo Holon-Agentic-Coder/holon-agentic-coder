@@ -368,6 +368,26 @@ class TestPlannerMain(unittest.TestCase):
         self.assertIn("metrics validation failed", h.stderr)
         self.assertEqual(h.ledger_lines("plans.jsonl"), [])
 
+    def test_step_table_before_overall_section_does_not_reach_the_ledger(self):
+        # C4-I1 (Bean 0146 / PR #91): the gate and the plans.jsonl row both read `## Overall Plan Metrics`.
+        step_first = VALID_PLAN.replace(
+            "## Overall Plan Metrics",
+            "## Step 0: Survey\n\n| metric | value |\n| --- | --- |\n| p_success_pred | 0.1 |\n"
+            "| entropy_pred | 9.0 |\n| impact_pred | 1.0 |\n| cost_pred | 7.0 |\n| learning_value_pred | 0.2 |\n\n"
+            "## Overall Plan Metrics",
+            1,
+        )
+        self.assertNotEqual(step_first, VALID_PLAN)
+        h = self.harness([write_file(step_first)])
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        rows = h.ledger_lines("plans.jsonl")
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(
+            (row["p_success"], row["entropy"], row["impact"], row["cost"], row["learning_value"]),
+            (0.8, 2.5, 10.0, 0.5, 0.5),
+        )
+
     def test_missing_overall_metric_is_not_back_filled(self):
         without_cost = VALID_PLAN.replace("| cost_pred           | 0.5   |\n", "")
         self.assertNotEqual(without_cost, VALID_PLAN)

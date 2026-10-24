@@ -860,6 +860,45 @@ class TestGatewayHealth(unittest.TestCase):
         self.assertNotIn("s3cret", health.url)
         self.assertEqual(local_llm.health_url("http://[::1]:8081/v1"), "http://[::1]:8081/health")
 
+    def test_only_http_and_https_are_probed(self):
+        # C4-N1: a loopback file:// or ftp:// base URL must never make the doctor open a file or an FTP session.
+        calls = []
+        for url in ("file://localhost/etc", "ftp://127.0.0.1:21/x", "gopher://localhost:70/x"):
+            with self.subTest(url=url):
+                self.assertIsNone(local_llm.health_url(url))
+                self.assertIsNone(local_llm.probe_gateway_health(url, fetch=_fetcher(HEALTH_OFF, calls)))
+        self.assertEqual(calls, [])
+        self.assertEqual(local_llm.health_url("HTTPS://localhost:8443/v1"), "https://localhost:8443/health")
+        with self.assertRaises(ValueError):
+            local_llm._default_fetch("file:///etc/hosts", 1.0)
+
+    def test_default_fetch_caps_the_response_read(self):
+        import http.server
+        import threading
+
+        size = local_llm.HEALTH_MAX_BYTES * 3
+
+        class Flood(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", str(size))
+                self.end_headers()
+                self.wfile.write(b"x" * size)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Flood)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        with self.assertRaises(ValueError):
+            local_llm._default_fetch(f"http://127.0.0.1:{server.server_port}/health", 2.0)
+        health = local_llm.probe_gateway_health(f"http://127.0.0.1:{server.server_port}/v1")
+        self.assertEqual(health.prefill_cache, "unknown")
+        self.assertIn("exceeds", health.error)
+
     def test_default_fetch_refuses_redirects(self):
         import http.server
         import threading

@@ -9,7 +9,8 @@ from sandbox_executor.artefacts import (
     PLAN_SPEC,
     build_reprompt,
     execution_write_protocol,
-    parse_first_metrics_table,
+    parse_section_metrics,
+    plan_metrics,
     plan_write_protocol,
     validate_artefact,
 )
@@ -84,10 +85,67 @@ class TestArtefacts(unittest.TestCase):
     def test_only_the_first_metrics_table_counts(self):
         # A step table must never stand in for the overall table.
         content = PLAN.format(filler="x").replace("| p_success_pred      | 0.8   |\n", "")
-        self.assertNotIn("p_success", parse_first_metrics_table(content))
+        self.assertNotIn("p_success", plan_metrics(content))
         report = validate_artefact(self.write(content + "y" * 900), PLAN_SPEC)
         self.assertEqual(report.missing_metrics, ["p_success"])
         self.assertFalse(report.usable)
+
+    def test_step_table_before_the_overall_section_never_stands_in_for_it(self):
+        # C4-I1: the gate and the ledger row read the `## Overall Plan Metrics` section, wherever it sits (PR #91).
+        step_first = (
+            "# Plan for I-1\n\n## Step 1: Warm up\n\n| metric | value |\n| --- | --- |\n"
+            "| p_success_pred | 0.1 |\n| entropy_pred | 9.0 |\n| impact_pred | 1.0 |\n| cost_pred | 7.0 |\n"
+            "| learning_value_pred | 0.2 |\n\n"
+        )
+        content = step_first + PLAN.format(filler="z" * 900).split("\n", 1)[1]
+        report = validate_artefact(self.write(content), PLAN_SPEC)
+        self.assertTrue(report.complete, report.describe())
+        self.assertEqual(
+            report.metrics,
+            {"p_success": 0.8, "entropy": 2.5, "impact": 10.0, "cost": 0.5, "learning_value": 0.5, "ev": 6.0},
+        )
+
+    def test_overall_table_with_a_non_metric_header_is_still_the_source(self):
+        # R1 repro: the overall table's header is `| name | value |`, a later step table's is `| metric | value |`.
+        content = PLAN.format(filler="z" * 900).replace("| metric              | value |", "| name | value |", 1)
+        report = validate_artefact(self.write(content), PLAN_SPEC)
+        self.assertEqual(report.metrics["p_success"], 0.8)
+        self.assertEqual(report.missing_metrics, [])
+
+    def test_without_the_overall_heading_every_row_counts_and_the_last_wins(self):
+        # Same fallback as PR #91's planner.parse_metrics: no heading -> scan every row, later rows overwrite.
+        content = (
+            "| metric | value |\n| --- | --- |\n| impact_pred | 3.0 |\n\n| metric | value |\n| impact_pred | 4.0 |\n"
+        )
+        self.assertEqual(plan_metrics(content), {"impact": 4.0})
+
+    def test_planner_and_flow_share_the_validator_parser(self):
+        from sandbox_executor import flow
+        from sandbox_executor.entrypoint import planner
+
+        step_first = "## Step 0\n\n| metric | value |\n| impact_pred | 3.0 |\n\n"
+        content = step_first + PLAN.format(filler="z")
+        self.assertEqual(planner.parse_metrics(content), plan_metrics(content))
+        self.assertIs(flow.parse_metrics, planner.parse_metrics)
+        self.assertEqual(plan_metrics(content)["impact"], 10.0)
+
+    def test_execution_notes_metrics_come_from_the_actual_metrics_section(self):
+        earlier = "| metric | value |\n| --- | --- |\n| success_actual | 0 |\n| cost_actual | 99 |\n\n"
+        content = NOTES.format(filler=earlier + "Did the work. " * 20)
+        report = validate_artefact(self.write(content), EXECUTION_SPEC)
+        self.assertEqual(report.metrics["success"], 1.0)
+        self.assertEqual(report.metrics["cost"], 2.0)
+        self.assertEqual(parse_section_metrics(content, None, ("_actual",))["cost"], 2.0)
+
+    def test_section_check_and_metrics_parser_find_the_same_heading(self):
+        # Sweep: an indented heading is either both present and the metrics source, or neither.
+        step_first = "## Step 0\n\n| metric | value |\n| p_success_pred | 0.1 |\n\n"
+        content = step_first + PLAN.format(filler="z" * 900).replace(
+            "## Overall Plan Metrics", "  ## Overall Plan Metrics"
+        )
+        report = validate_artefact(self.write(content), PLAN_SPEC)
+        self.assertEqual(report.missing_sections, [])
+        self.assertEqual(report.metrics["p_success"], 0.8)
 
     def test_non_numeric_metric_is_missing(self):
         content = PLAN.format(filler="z" * 900).replace("| cost_pred           | 0.5   |", "| cost_pred | TBD |")

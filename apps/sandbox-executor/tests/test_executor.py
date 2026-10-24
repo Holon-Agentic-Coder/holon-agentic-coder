@@ -117,6 +117,16 @@ def _boundary_cut_offsets(cred: str, secret: str) -> list[int]:
     return sorted(o for o in offsets if 0 <= o < len(cred))
 
 
+def _assert_supersedes(testcase, rev1, rev2):
+    """Reader contract (docs/ledger_schema.md): a superseding row repeats every authoritative field it replaces."""
+    for key in ("execution_notes", "execution_notes_valid", "elapsed_seconds", "budget_seconds"):
+        testcase.assertIn(key, rev1)
+    changed = {"status", "summary", "created_at", "ledger_revision"}
+    testcase.assertEqual(
+        {k: v for k, v in rev1.items() if k not in changed}, {k: v for k, v in rev2.items() if k not in changed}
+    )
+
+
 class TestExecutor(unittest.TestCase):
     def test_redact_args(self):
         from sandbox_executor.entrypoint.executor import redact_args
@@ -2576,6 +2586,9 @@ class TestExecutor(unittest.TestCase):
             self.assertEqual(rev2["agent_output_truncated"], rev1["agent_output_truncated"])
             self.assertEqual(rev2["agent_output_bytes"], rev1["agent_output_bytes"])
             self.assertGreater(rev2["agent_output_bytes"], 0)
+            # C4-I2: the superseding row repeats every authoritative field of revision 1, including the Bean 0138/0139
+            # notes and budget fields; only status, summary, created_at and ledger_revision may differ.
+            _assert_supersedes(self, rev1, rev2)
 
     @patch("sandbox_executor.entrypoint.executor.sync_and_reconcile_pre_push")
     @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
@@ -2652,6 +2665,66 @@ class TestExecutor(unittest.TestCase):
             self.assertEqual(rev2["agent_output_truncated"], rev1["agent_output_truncated"])
             self.assertEqual(rev2["agent_output_bytes"], rev1["agent_output_bytes"])
             self.assertGreater(rev2["agent_output_bytes"], 0)
+            # C4-I2: the superseding row repeats every authoritative field of revision 1, including the Bean 0138/0139
+            # notes and budget fields; only status, summary, created_at and ledger_revision may differ.
+            _assert_supersedes(self, rev1, rev2)
+
+    @patch("sandbox_executor.entrypoint.executor.sync_and_reconcile_pre_push")
+    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
+    @patch("sandbox_executor.entrypoint.executor.get_runner")
+    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    def test_pre_push_sync_failure_after_decomposition_supersedes_the_decomposed_row(
+        self, mock_get_repo_url, mock_get_runner, mock_cleanup, mock_sync
+    ):
+        """C4-I2: the decompose path has no agent-output accounting; its superseding row is built from its own row."""
+        mock_get_repo_url.return_value = "/mock/repo"
+        mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.0.0"
+        mock_get_runner.return_value = mock_runner
+        mock_sync.return_value = (False, "unresolvable conflicts")
+
+        def side_effect(args, cwd=None, **kwargs):
+            mock_res = MagicMock()
+            mock_res.returncode = 0
+            mock_res.stdout = ""
+            mock_res.stderr = ""
+            if "clone" in args:
+                ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
+                os.makedirs(ledger_dir, exist_ok=True)
+                with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
+                    f.write(
+                        json.dumps(
+                            {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 8.0, "entropy_budget": 5.0}
+                        )
+                        + "\n"
+                    )
+            elif "diff" in args and "--cached" in args and "--quiet" in args:
+                mock_res.returncode = 1
+            return mock_res
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect),
+            patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
+            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
+        ):
+            executor.main()
+
+            ledger_file = os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")
+            with open(ledger_file) as lf:
+                summaries = [
+                    row
+                    for row in (json.loads(line) for line in lf if line.strip())
+                    if row.get("entry_type") == "summary"
+                ]
+
+        self.assertEqual([row["status"] for row in summaries], ["decomposed", "failure"])
+        decomposed, failure = summaries
+        self.assertEqual(failure["ledger_revision"], 2)
+        self.assertIn("Pre-push sync failure", failure["summary"])
+        self.assertEqual(failure["sub_intents"], decomposed["sub_intents"])
+        self.assertEqual(failure["execution_id"], decomposed["execution_id"])
 
     def _clone_workspace(self, base_dir: str, bare_dir: str, plan_branch: str) -> str:
         workspace_dir = os.path.join(base_dir, "workspace")

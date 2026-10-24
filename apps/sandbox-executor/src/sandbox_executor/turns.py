@@ -14,6 +14,14 @@ stdout/stderr keeps a turn out of the stall window but does not close a response
 degenerate response for longer than the turn budget without writing anything is still stopped. Without a watched
 artefact or tree, no response boundary is observable and the turn budget is not applied.
 
+A tool call is not an assistant response either. While the runner waits on a tool (a test suite, ``uv sync``) nothing
+is written and a non-streaming runner prints nothing, so the runner's descendant processes are sampled as well: CPU
+time consumed by any process descended from the runner (or left in its process group), excluding the runner itself, is
+*tool progress* and counts like an artefact change (a response boundary). A runner whose descendants are idle, or that
+has none, is judged exactly as before, so a genuinely idle or degenerate runner still breaches. Sampling reads
+``/proc`` (Linux containers) or ``ps`` (macOS); where neither is available it is skipped and only artefact progress
+counts.
+
 The stall window bounds silence *within* a response, so it is only stricter than the turn budget once the runner has
 shown that it streams: after stdout/stderr output in the current response (since the last artefact progress event).
 Non-streaming runners (``claude -p`` / ``pi -p`` in text mode print nothing until they exit) cannot emit a stall
@@ -50,6 +58,11 @@ POLL_INTERVAL_SECONDS = 1.0
 # Minimum seconds between working-tree scans when a whole tree is watched for liveness (executor turns edit many
 # files, not just their notes). Scans skip VCS metadata and dependency directories.
 TREE_SCAN_INTERVAL_SECONDS = 15.0
+# Seconds between samples of the runner's descendant processes, and the CPU seconds they must consume between two
+# samples (5 % of one core) to count as tool progress. The threshold ignores idle helpers that wake up now and then.
+TOOL_SCAN_INTERVAL_SECONDS = 10.0
+TOOL_CPU_PROGRESS_SECONDS = 0.5
+PS_TIMEOUT_SECONDS = 5.0
 # Real seconds to wait for the pipe readers after the agent exits before treating a descendant as holding them open.
 READER_JOIN_TIMEOUT_SECONDS = 5.0
 _TREE_SKIP_DIRS = frozenset({".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", ".ruff_cache"})
@@ -110,6 +123,119 @@ def _tree_mtime(root: str | None) -> int | None:
             except OSError:
                 continue
     return newest
+
+
+# A process table row: (ppid, pgid, cumulative user+system CPU seconds).
+ProcessTable = dict[int, tuple[int, int, float]]
+ToolSampler = Callable[[int], dict[int, float] | None]
+
+
+def _proc_table(proc_root: str = "/proc") -> ProcessTable | None:
+    """Process table from a Linux ``/proc``; None when it is not available."""
+    if not os.path.isdir(proc_root):
+        return None
+    try:
+        ticks = float(os.sysconf("SC_CLK_TCK"))
+    except (AttributeError, ValueError, OSError):
+        ticks = 100.0
+    table: ProcessTable = {}
+    try:
+        entries = os.listdir(proc_root)
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            with open(os.path.join(proc_root, entry, "stat"), encoding="utf-8", errors="replace") as handle:
+                stat = handle.read()
+        except OSError:
+            continue  # the process exited between listdir and open
+        # The command name (field 2) is parenthesised and may contain spaces or ')'; fields resume after the last ')'.
+        fields = stat[stat.rfind(")") + 2 :].split()
+        try:
+            table[int(entry)] = (int(fields[1]), int(fields[2]), (int(fields[11]) + int(fields[12])) / ticks)
+        except (IndexError, ValueError):
+            continue
+    return table or None
+
+
+def _parse_cpu_time(text: str) -> float:
+    """Seconds from a ``ps -o time`` value: ``M:SS.ss`` (macOS), ``[DD-]HH:MM:SS`` (procps) or similar."""
+    days = 0.0
+    if "-" in text:
+        day_text, text = text.split("-", 1)
+        days = float(day_text)
+    seconds = 0.0
+    for part in text.split(":"):
+        seconds = seconds * 60 + float(part)
+    return days * 86400 + seconds
+
+
+def _parse_ps_table(output: str) -> ProcessTable:
+    table: ProcessTable = {}
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) != 4:
+            continue
+        try:
+            table[int(parts[0])] = (int(parts[1]), int(parts[2]), _parse_cpu_time(parts[3]))
+        except ValueError:
+            continue
+    return table
+
+
+def _ps_table() -> ProcessTable | None:
+    """Process table from POSIX ``ps`` (macOS has no ``/proc``); None when ``ps`` is missing or fails."""
+    try:
+        result = subprocess.run(
+            ["ps", "-A", "-o", "pid=,ppid=,pgid=,time="],
+            capture_output=True,
+            text=True,
+            timeout=PS_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return _parse_ps_table(result.stdout) or None
+
+
+def process_table() -> ProcessTable | None:
+    """Every visible process with its parent, process group and CPU seconds, from ``/proc`` or ``ps``."""
+    table = _proc_table()
+    return table if table is not None else _ps_table()
+
+
+def descendant_cpu_seconds(
+    root_pid: int, table_source: Callable[[], ProcessTable | None] = process_table
+) -> dict[int, float] | None:
+    """CPU seconds of every process descended from ``root_pid`` or in its process group, excluding ``root_pid``.
+
+    The runner was started in its own session, so its pid is also its process group id; group members that were
+    re-parented after their parent exited are still included. Returns None when no process table is available.
+    """
+    table = table_source()
+    if table is None:
+        return None
+    children: dict[int, list[int]] = {}
+    for pid, (ppid, _pgid, _cpu) in table.items():
+        children.setdefault(ppid, []).append(pid)
+    members = {root_pid} | {pid for pid, (_ppid, pgid, _cpu) in table.items() if pgid == root_pid}
+    stack = list(members)
+    while stack:
+        for child in children.get(stack.pop(), ()):
+            if child not in members:
+                members.add(child)
+                stack.append(child)
+    members.discard(root_pid)
+    return {pid: table[pid][2] for pid in members if pid in table}
+
+
+def tool_cpu_used(previous: Mapping[int, float], current: Mapping[int, float]) -> float:
+    """CPU seconds the descendants consumed between two samples; a process new in ``current`` counts in full."""
+    return sum(max(0.0, cpu - previous.get(pid, 0.0)) for pid, cpu in current.items())
 
 
 class _StreamReader(threading.Thread):
@@ -207,6 +333,7 @@ def run_turn(
     getpgid: Callable[[int], int] = os.getpgid,
     poll_interval: float = POLL_INTERVAL_SECONDS,
     grace_seconds: float = TERMINATION_GRACE_SECONDS,
+    tool_sampler: ToolSampler | None = descendant_cpu_seconds,
 ) -> TurnResult:
     """Run one agent turn under the turn, stall and stage budgets.
 
@@ -225,13 +352,17 @@ def run_turn(
         clock, sleeper, popen_factory, killpg, getpgid: Injection seams for tests.
         poll_interval: Seconds between supervision checks.
         grace_seconds: Seconds between SIGTERM and SIGKILL.
+        tool_sampler: Returns ``{pid: cpu_seconds}`` for the runner's descendants (None when unavailable); sampled
+            every ``TOOL_SCAN_INTERVAL_SECONDS``. ``None`` disables tool progress.
 
     Returns:
         A :class:`TurnResult`; ``breach`` is set when a budget fired and the turn was stopped.
 
-    Budgets: ``turn`` fires when no artefact progress (a response boundary) has been seen for ``turn_seconds`` (only
-    when ``watch_path`` or ``watch_tree`` is given); ``stall`` fires after ``stall_seconds`` with no output and no
-    artefact progress once the runner has streamed output in the current response, and otherwise (a non-streaming
+    Budgets: ``turn`` fires when no artefact or tool progress (a response boundary) has been seen for ``turn_seconds``
+    (only when ``watch_path`` or ``watch_tree`` is given); tool progress is at least ``TOOL_CPU_PROGRESS_SECONDS`` of
+    CPU consumed by the runner's descendants between two samples, and also counts as activity for the stall window;
+    ``stall`` fires after ``stall_seconds`` with no output and no artefact or tool progress once the runner has
+    streamed output in the current response, and otherwise (a non-streaming
     runner, which cannot signal liveness mid-response) after ``max(stall_seconds, turn_seconds)``; ``stage`` fires
     when ``stage_timer`` reaches its ceiling. The process elapsed time on its own is never compared with the turn
     budget.
@@ -266,6 +397,8 @@ def run_turn(
     seen_file = _file_state(watch_path)
     seen_tree = _tree_mtime(watch_tree)
     last_tree_scan = start
+    seen_tools: dict[int, float] | None = None
+    last_tool_scan: float | None = None
     breach: BudgetBreach | None = None
 
     def stop_group() -> None:
@@ -299,6 +432,17 @@ def run_turn(
                     seen_tree = tree_state
                     last_activity = last_progress = now
                     streaming = False
+            if tool_sampler is not None and (
+                last_tool_scan is None or now - last_tool_scan >= TOOL_SCAN_INTERVAL_SECONDS
+            ):
+                last_tool_scan = now
+                sample = tool_sampler(proc.pid)
+                if sample is not None:
+                    # A tool call is a response boundary: its CPU time is progress, not part of a response.
+                    if seen_tools is not None and tool_cpu_used(seen_tools, sample) >= TOOL_CPU_PROGRESS_SECONDS:
+                        last_activity = last_progress = now
+                        streaming = False
+                    seen_tools = sample
 
             stall_window = budgets.stall_seconds if streaming else silent_stall_seconds
             if turn_observable and now - last_progress >= budgets.turn_seconds:

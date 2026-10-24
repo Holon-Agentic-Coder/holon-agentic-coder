@@ -243,5 +243,6 @@ cache is `off` when the server reports it disabled, `cold` when it is enabled wi
 command. A `WARNING` line is printed when an emitted `maxTokens` exceeds the server's
 `effective_defaults.max_output_tokens`, or when a model's `contextWindow` exceeds the server's `max_prompt_tokens` (read
 from `effective_defaults` or the top level of the response). Only loopback or `HOLON_HOST_LOCAL_HOSTS` authorities are
-ever probed: redirects are refused, and the probe URL is rebuilt from host and port only, so userinfo in a `baseUrl` is
-never sent or printed.
+ever probed, and only over `http` or `https` (a `file://` or `ftp://` `baseUrl` is skipped): redirects are refused, at
+most 1 MiB of the response is read (a larger one prints `prefill_cache=unknown`), and the probe URL is rebuilt from host
+and port only, so userinfo in a `baseUrl` is never sent or printed.

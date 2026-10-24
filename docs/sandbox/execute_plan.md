@@ -148,7 +148,8 @@ The executor agent keeps its own notes incrementally instead of reporting everyt
   with a `# Execution Record:` title, a `## Summary` section and an `## Actual Metrics` table (`success_actual`,
   `entropy_actual`, `impact_actual`, `cost_actual`, `learning_value_actual`), then append to `## Steps Executed` as each
   step completes and finish with `## Tests Run`.
-- **Validation.** Notes are _usable_ when they are at least 400 bytes and the actual-metrics table is numeric, and
+- **Validation.** Notes are _usable_ when they are at least 400 bytes and the metric rows of the `## Actual Metrics`
+  section are numeric (read with the same section-scoped parser as plans, so an earlier table cannot stand in), and
   _complete_ when every section above is present. When they exist but are incomplete and the execute stage still has
   time left, exactly one follow-up turn asks the agent to append only the missing sections and explicitly not to modify
   code.
@@ -157,10 +158,11 @@ The executor agent keeps its own notes incrementally instead of reporting everyt
   bare exit code of 1 (the agent CLIs' generic error exit) is a failure. Success is judged from the implementation turn;
   a notes-only follow-up turn never turns a failed implementation turn into a success.
 - **Report-only.** Validation never discards code changes: the summary row in `executions.jsonl` records
-  `execution_notes`, `execution_notes_valid`, `elapsed_seconds` and `budget_seconds`, and incomplete notes are logged as
-  a `WARNING`. When the agent wrote no notes, the summary row records `execution_notes_valid: false` and only the size
-  of the implementation turn's output (`agent_output_bytes`, `agent_output_truncated`), not its text; a `WARNING` says
-  so. The executor itself never writes an `executions/` file (the ledger summary remains the authoritative execution
+  `execution_notes`, `execution_notes_valid`, `elapsed_seconds` and `budget_seconds` (repeated, with every other field
+  of the first row, in any `ledger_revision: 2` failure row that supersedes it), and incomplete notes are logged as a
+  `WARNING`. When the agent wrote no notes, the summary row records `execution_notes_valid: false` and only the size of
+  the implementation turn's output (`agent_output_bytes`, `agent_output_truncated`), not its text; a `WARNING` says so.
+  The executor itself never writes an `executions/` file (the ledger summary remains the authoritative execution
   record). Output size, exit code and error context always describe the implementation turn, not a follow-up.
 - **Budgets.** Executor turns run under the turn, stall and execute-stage budgets. Any breach of the implementation turn
   records one `ACT-BUDGET` action, marks the execution failed, stages the partial notes (but not the code changes) and

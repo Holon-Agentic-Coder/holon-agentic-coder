@@ -488,6 +488,9 @@ def container_env(dest_dir: str) -> dict[str, str]:
 # Gateway health probe (Bean 0140). Runs on the host only, against loopback or allow-listed authorities.
 HEALTH_PATH = "/health"
 HEALTH_TIMEOUT_SECONDS = 2.0
+# Only these schemes are probed, and at most this many bytes of the response are read.
+HEALTH_SCHEMES = ("http", "https")
+HEALTH_MAX_BYTES = 1 << 20
 # Key spellings accepted for the cache section and its counters; servers differ in naming.
 _CACHE_SECTION_KEYS = ("prefill_cache", "prefix_cache", "prompt_cache", "cache")
 _CACHE_COUNT_KEYS = ("entries", "num_entries", "cached_entries", "cached_tokens", "tokens", "size")
@@ -523,10 +526,16 @@ class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
 def _default_fetch(url: str, timeout: float) -> bytes:
     # Proxies are bypassed explicitly: the target is the operator's own machine, and an HTTP(S)_PROXY from the
     # environment would otherwise receive the request. Redirects are refused so a loopback responder cannot send the
-    # probe to a host that health_url() would not have allowed.
+    # probe to a host that health_url() would not have allowed. The opener still carries urllib's file:// and ftp://
+    # handlers, so the scheme is checked here as well as in health_url(), and the read is capped.
+    if urlsplit(url).scheme.lower() not in HEALTH_SCHEMES:
+        raise ValueError(f"health probe only supports http and https, not {url!r}")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _RefuseRedirects())
     with opener.open(url, timeout=timeout) as response:
-        return response.read()
+        body = response.read(HEALTH_MAX_BYTES + 1)
+    if len(body) > HEALTH_MAX_BYTES:
+        raise ValueError(f"health response exceeds {HEALTH_MAX_BYTES} bytes")
+    return body
 
 
 def health_url(base_url: str, allow_list: Iterable[str] = ()) -> str | None:
@@ -535,6 +544,8 @@ def health_url(base_url: str, allow_list: Iterable[str] = ()) -> str | None:
     Only authorities :func:`rewrite_authority` would rewrite (loopback or explicitly allow-listed) are probed, so the
     doctor never reaches out to a remote host. The gateway name itself is container-side and not probed.
     """
+    if urlsplit(base_url).scheme.lower() not in HEALTH_SCHEMES:
+        return None
     authority = _authority(base_url)
     if authority is None:
         return None
@@ -546,7 +557,7 @@ def health_url(base_url: str, allow_list: Iterable[str] = ()) -> str | None:
     netloc = f"[{host}]" if ":" in host else host
     if port is not None:
         netloc = f"{netloc}:{port}"
-    return urlunsplit((parsed.scheme, netloc, HEALTH_PATH, "", ""))
+    return urlunsplit((parsed.scheme.lower(), netloc, HEALTH_PATH, "", ""))
 
 
 def _numeric_figures(section: Any, prefix: str = "") -> dict[str, Any]:

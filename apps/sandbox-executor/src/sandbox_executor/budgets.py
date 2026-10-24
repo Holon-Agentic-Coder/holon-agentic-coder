@@ -20,6 +20,7 @@ import logging
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from typing import overload
 
 logger = logging.getLogger(__name__)
 
@@ -84,20 +85,44 @@ class Budgets:
         return self.stages.for_stage(stage)
 
 
-def _read_positive(env: Mapping[str, str], name: str, default: float, *, allow_zero: bool = False) -> float:
+@overload
+def _read_positive(
+    env: Mapping[str, str], name: str, default: float, *, allow_zero: bool = False, fallback: str | None = None
+) -> float: ...
+
+
+@overload
+def _read_positive(
+    env: Mapping[str, str], name: str, default: None, *, allow_zero: bool = False, fallback: str | None = None
+) -> float | None: ...
+
+
+def _read_positive(
+    env: Mapping[str, str],
+    name: str,
+    default: float | None,
+    *,
+    allow_zero: bool = False,
+    fallback: str | None = None,
+) -> float | None:
+    """Positive finite float from ``env[name]``; ``default`` when unset or invalid (invalid values log a warning).
+
+    ``fallback`` describes what happens instead in the warning; it defaults to "keeping the default of <default>".
+    """
     raw = env.get(name)
     if raw is None or not str(raw).strip():
         return default
+    instead = fallback or f"keeping the default of {default}"
     try:
         value = float(str(raw).strip())
     except ValueError:
-        logger.warning("Ignoring %s=%r: not a number; keeping the default of %s", name, raw, default)
+        logger.warning("Ignoring %s=%r: not a number; %s", name, raw, instead)
         return default
     if value != value or value in (float("inf"), float("-inf")):
-        logger.warning("Ignoring %s=%r: not a finite number; keeping the default of %s", name, raw, default)
+        logger.warning("Ignoring %s=%r: not a finite number; %s", name, raw, instead)
         return default
     if value < 0 or (value == 0 and not allow_zero):
-        logger.warning("Ignoring %s=%r: must be positive; keeping the default of %s", name, raw, default)
+        logger.warning("Ignoring %s=%r: must be positive; %s", name, raw, instead)
         return default
     return value
 
@@ -113,11 +138,9 @@ def load_budgets(env: Mapping[str, str]) -> Budgets:
         name: _read_positive(env, var, getattr(defaults, name) / 60.0) * 60.0
         for name, var in ENV_STAGE_BUDGET_MINUTES.items()
     }
-    override = None
-    if env.get(ENV_STAGE_BUDGET_SECONDS, "").strip():
-        override = _read_positive(env, ENV_STAGE_BUDGET_SECONDS, -1.0)
-        if override <= 0:
-            override = None
+    override = _read_positive(
+        env, ENV_STAGE_BUDGET_SECONDS, None, fallback="no override is set and the per-stage budgets apply"
+    )
     return Budgets(turn=turn, stages=StageBudgets(**stage_values), stage_override_seconds=override)
 
 

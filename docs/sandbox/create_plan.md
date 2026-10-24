@@ -197,11 +197,14 @@ plan. The file on disk is now the source of truth:
   create `plans/P-{timestamp}-{agent}-{safe_model}.md` with its file-write tool immediately, write the header and the
   `## Overall Plan Metrics` table first, append each `## Step` section as it is finished, then the strategy rationale,
   justification and safety sections, and keep its final chat message to one line.
-- **Validation.** A plan file is _usable_ when it exists, is at least 800 bytes and its first `| metric | value |` table
-  (the overall table) has numeric values for the five input metrics (`p_success`, `entropy`, `impact`, `cost`,
-  `learning_value`); an `ev_pred` row is optional because the planner recomputes EV from them. It is _complete_ when it
-  also has a `# Plan for` title, an `## Overall Plan Metrics` heading, at least one `## Step` section and a
-  `### Strategy Rationale` (or justification) section. Headings match case-insensitively.
+- **Validation.** A plan file is _usable_ when it exists, is at least 800 bytes and the metric rows of its
+  `## Overall Plan Metrics` section (up to the next `## ` heading, wherever the section sits) have numeric values for
+  the five input metrics (`p_success`, `entropy`, `impact`, `cost`, `learning_value`); an `ev_pred` row is optional
+  because the planner recomputes EV from them. Without that heading every metric row in the file counts and the last one
+  wins. The values the validator accepts are exactly the ones written to `plans.jsonl`: the validator, the planner and
+  `holon flow` share one parser (`artefacts.plan_metrics`), so a step table can never stand in for the overall values.
+  It is _complete_ when it also has a `# Plan for` title, an `## Overall Plan Metrics` heading, at least one `## Step`
+  section and a `### Strategy Rationale` (or justification) section. Headings match case-insensitively.
 - **Truncation tolerance.** When the plan file is usable, a non-zero exit code or a `stopReason: length` final message
   is logged as informational and the plan is committed.
 - **Targeted re-prompt.** When the file exists but is incomplete and the plan stage still has time left, exactly one

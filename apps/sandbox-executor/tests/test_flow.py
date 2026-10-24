@@ -1979,6 +1979,44 @@ class TestFlowRoleDispatch:
 
         return fake_run_git
 
+    def test_stage1_fails_closed_when_pre_dispatch_fetch_fails(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin)
+        ctx = _dispatch_context(host, agents)
+        from sandbox_executor import flow as flow_module
+
+        real_run_git = flow_module.run_git
+
+        def fake_run_git(args, *a, **kw):
+            if args and args[0] == "fetch" and str(args[-1]).startswith("+refs/heads/I-"):
+                return subprocess.CompletedProcess(
+                    ["git", *args], 128, "", "fatal: unable to access origin: token=ghp_supersecret123 expired"
+                )
+            return real_run_git(args, *a, **kw)
+
+        with patch("sandbox_executor.flow.run_git", side_effect=fake_run_git):
+            res = run_intent_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        assert "before dispatching the intent creator" in (res.error or "")
+        assert "ghp_supersecret123" not in (res.error or "")
+        assert agents.roles() == []
+
+    def test_stage1_reports_post_dispatch_fetch_failure(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin)
+        ctx = _dispatch_context(host, agents)
+
+        with patch("sandbox_executor.flow.run_git", side_effect=self._fail_fetch_after(agents, "intent-creator")):
+            res = run_intent_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        assert "intent-creator agent exited 0" in (res.error or "")
+        assert "could not be fetched" in (res.error or "")
+        assert "was not found on origin" not in (res.error or "")
+        assert "ghp_supersecret123" not in (res.error or "")
+        assert agents.roles() == ["intent-creator"]
+
     def test_stage2_reports_post_dispatch_fetch_failure(self, flow_repos, tmp_path):
         host, origin = flow_repos
         agents = FakeRoleAgents(tmp_path, origin)

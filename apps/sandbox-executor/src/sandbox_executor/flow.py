@@ -2298,7 +2298,16 @@ def run_intent_stage(context: FlowContext) -> StageResult:
             return _stage_failure(context, FlowStage.INTENT, start_time, SKIP_PUSH_DISPATCH_ERROR)
         repo_dir = context.repo_dir
         check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="intent")
-        _fetch_branch_prefix(repo_dir, branch)
+        fetch_error = _fetch_branch_prefix_error(repo_dir, branch)
+        if fetch_error is not None:
+            return _stage_failure(
+                context,
+                FlowStage.INTENT,
+                start_time,
+                f"Intent stage failed: could not fetch origin branches under {branch} before dispatching the "
+                f"intent creator: {fetch_error}",
+                intent_branch=intent_branch,
+            )
         if _origin_has_branch(repo_dir, intent_branch):
             context.log(f"Intent branch '{intent_branch}' already exists on origin; reusing it without re-dispatching.")
         else:
@@ -2321,7 +2330,16 @@ def run_intent_stage(context: FlowContext) -> StageResult:
                     f"Intent stage failed: intent-creator agent exited with code {exit_code}.",
                     intent_branch=intent_branch,
                 )
-            _fetch_branch_prefix(repo_dir, branch)
+            fetch_error = _fetch_branch_prefix_error(repo_dir, branch)
+            if fetch_error is not None:
+                return _stage_failure(
+                    context,
+                    FlowStage.INTENT,
+                    start_time,
+                    f"Intent stage failed: the intent-creator agent exited 0 but origin branches under {branch} "
+                    f"could not be fetched to verify '{intent_branch}': {fetch_error}",
+                    intent_branch=intent_branch,
+                )
             if not _origin_has_branch(repo_dir, intent_branch):
                 return _stage_failure(
                     context,

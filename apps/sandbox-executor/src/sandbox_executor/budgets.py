@@ -16,9 +16,12 @@ The defaults are the real measurements recorded in Beans 0138 to 0140; they are 
 Clocks are injected so control flow can be tested without sleeping; tests never make performance claims.
 """
 
+import contextlib
+import contextvars
 import logging
+import math
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import overload
 
@@ -27,7 +30,9 @@ logger = logging.getLogger(__name__)
 ENV_TURN_TIMEOUT = "HOLON_TURN_TIMEOUT_SECONDS"
 ENV_TURN_STALL = "HOLON_TURN_STALL_SECONDS"
 # Absolute ceiling, in seconds, for the stage an in-container entrypoint is running. Takes precedence over the
-# per-stage minute variables below so a host orchestrator can hand down the remainder it has left.
+# per-stage minute variables below. The host sets it per container: while a host stage timer is active (see
+# active_stage_timer), run_docker_container exports the stage's remaining time minus a safety margin here
+# (stage_budget_handdown_env), so the container's own ceiling fires before the host's.
 ENV_STAGE_BUDGET_SECONDS = "HOLON_STAGE_BUDGET_SECONDS"
 ENV_STAGE_BUDGET_MINUTES = {
     "intent": "HOLON_STAGE_BUDGET_INTENT_MINUTES",
@@ -226,3 +231,46 @@ class BudgetBreach(Exception):
             f"{self.stage} {self.budget_name} budget of {self.budget_seconds:.0f} s exceeded "
             f"after {self.elapsed_seconds:.1f} s"
         )
+
+
+# Seconds the host keeps back from the remaining stage time it hands to a role container: container start-up and
+# teardown, the push after the agent stops, and (for the execute stage) the host-side verification run, whose own floor
+# is VERIFY_TIMEOUT_FLOOR_SECONDS (30 s) in flow.py.
+HANDDOWN_SAFETY_MARGIN_SECONDS = 60.0
+
+_ACTIVE_STAGE_TIMER: contextvars.ContextVar[StageTimer | None] = contextvars.ContextVar(
+    "holon_active_stage_timer", default=None
+)
+
+
+@contextlib.contextmanager
+def active_stage_timer(timer: StageTimer) -> Iterator[StageTimer]:
+    """Make ``timer`` the host stage timer for the enclosed block (restored on exit; nests)."""
+    token = _ACTIVE_STAGE_TIMER.set(timer)
+    try:
+        yield timer
+    finally:
+        _ACTIVE_STAGE_TIMER.reset(token)
+
+
+def current_stage_timer() -> StageTimer | None:
+    """The host stage timer set by :func:`active_stage_timer`, or None outside a timed stage."""
+    return _ACTIVE_STAGE_TIMER.get()
+
+
+def stage_budget_handdown_env(
+    timer: StageTimer | None = None, margin_seconds: float = HANDDOWN_SAFETY_MARGIN_SECONDS
+) -> dict[str, str]:
+    """``{HOLON_STAGE_BUDGET_SECONDS: <remaining - margin, floored>}`` for a role container, or ``{}`` with no timer.
+
+    ``timer`` defaults to :func:`current_stage_timer`. The margin is ``margin_seconds`` capped at a tenth of the stage
+    budget, so a deliberately short budget is not consumed by it. The value is at least 1 second, because zero or a
+    negative value would be ignored inside the container (falling back to the full per-stage budget); a container
+    started with no time left therefore stops at once instead of outliving the host ceiling.
+    """
+    timer = timer if timer is not None else current_stage_timer()
+    if timer is None:
+        return {}
+    margin = min(margin_seconds, timer.budget_seconds / 10.0)
+    seconds = max(1, math.floor(timer.remaining() - margin))
+    return {ENV_STAGE_BUDGET_SECONDS: str(seconds)}

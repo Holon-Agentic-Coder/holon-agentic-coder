@@ -27,11 +27,19 @@ data, and the tests that exercise them use injected clocks only to drive control
 | Stage ceiling (exact) | (unset) | `HOLON_STAGE_BUDGET_SECONDS`                  | Replaces every per-stage value above, in seconds.  |
 
 `HOLON_STAGE_BUDGET_SECONDS` is meant for handing one exact ceiling to a single sandbox role; set it only for that
-container, because wherever it is set it applies to every stage. Non-numeric, non-finite, zero or negative values are
-ignored with a warning and the default is kept (except that `HOLON_TURN_STALL_SECONDS=0` is accepted and disables stall
-detection); an invalid `HOLON_STAGE_BUDGET_SECONDS` is ignored, so the per-stage budgets apply. All of these variables
-start with `HOLON_`, so the host CLI forwards them into the sandbox container automatically. `holon doctor` prints the
-effective values.
+container, because wherever it is set it applies to every stage. The host does this itself: while `holon flow` runs a
+timed stage (intent, plan, execute or calibration; `PipelineEngine.timed_execute_stage`), that stage's timer is the
+active host stage timer (`budgets.active_stage_timer`), and every role container started through
+`cli.run_docker_container` during the stage receives `HOLON_STAGE_BUDGET_SECONDS` set to the stage's remaining time
+minus a safety margin of 60 s (at most a tenth of the stage budget) for container start-up, the push and, in the execute
+stage, the host-side verification run, floored to whole seconds and never less than 1 s. The container's own stage
+ceiling therefore fires before the host's, and the host ceiling stays the stage budget itself. The handed-down value
+replaces a forwarded host value; outside a timed stage (a standalone `holon plan` or `holon execute`) nothing is added.
+The review stage is excluded because its ceiling is one review-iteration budget per iteration, and the review loop
+starts no role container. Non-numeric, non-finite, zero or negative values are ignored with a warning and the default is
+kept (except that `HOLON_TURN_STALL_SECONDS=0` is accepted and disables stall detection); an invalid
+`HOLON_STAGE_BUDGET_SECONDS` is ignored, so the per-stage budgets apply. All of these variables start with `HOLON_`, so
+the host CLI forwards them into the sandbox container automatically. `holon doctor` prints the effective values.
 
 > [!NOTE] A turn is a single assistant response (Bean 0139), not a runner process. One `claude -p` or `pi -p` invocation
 > performs a whole plan or execution as many responses and legitimately runs for tens of minutes (31.4 min for a real
@@ -49,11 +57,15 @@ change:
 - for executor turns, the newest file modification time in the working tree (scanned at most every 15 s, skipping
   `.git`, `.venv` and `node_modules`), because an executor edits many files besides its notes;
 - _tool progress_: at least 0.5 s of CPU time consumed between two samples (taken every 10 s, so 5 % of one core) by the
-  runner's descendant processes, excluding the runner's own CPU. Descendants are every process below the runner in the
-  parent tree plus anything left in its process group. On Linux each sampled process also carries the CPU of the
-  children it has already reaped (`cutime` and `cstime` in `/proc/<pid>/stat`, for the runner and every descendant), so
-  a tool made of many short processes (a shell loop of quick commands, `make`, pre-commit hooks) counts through its
-  still-running parent. The process table is still read once per sample.
+  runner's descendant processes, excluding the agent's own CPU: that of the runner and, for wrapper CLIs, of the agent
+  binary the wrapper spawns as its direct child. In `holon/agent-codex`, `codex` is a Node script that spawns the native
+  `codex` binary, which runs the model loop and parents every tool, so a direct child named `codex` is treated like the
+  runner (only the CPU of the tools it has reaped counts); the list of such names is `WRAPPED_AGENT_PROCESS_NAMES` in
+  `turns.py`. Descendants are every process below the runner in the parent tree plus anything left in its process group.
+  On Linux each sampled process also carries the CPU of the children it has already reaped (`cutime` and `cstime` in
+  `/proc/<pid>/stat`, for the runner and every descendant), so a tool made of many short processes (a shell loop of
+  quick commands, `make`, pre-commit hooks) counts through its still-running parent. The process table is still read
+  once per sample.
 
 The runners print nothing per response, so a single response is observed through its side effects: each change of the
 artefact (or, for executor turns, of the working tree) closes the current response. A tool call is not an assistant

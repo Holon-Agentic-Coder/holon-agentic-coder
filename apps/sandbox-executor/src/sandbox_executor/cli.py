@@ -18,6 +18,7 @@ from typing import TextIO
 from urllib.parse import urlparse
 
 from sandbox_executor import local_llm
+from sandbox_executor.budgets import stage_budget_handdown_env
 from sandbox_executor.calibration import run_calibrate
 from sandbox_executor.flow import FlowContext, FlowStage, load_checkpoint, run_flow_pipeline
 from sandbox_executor.knowledge import (
@@ -957,6 +958,11 @@ def run_docker_container(
     for key, value in os.environ.items():
         if key.startswith("HOLON_") or key == "GITHUB_TOKEN":
             env_to_forward[key] = value
+
+    # Inside a timed host stage (holon flow), hand the container the time this stage has left so its own ceiling fires
+    # first (Bean 0139); this replaces any forwarded host HOLON_STAGE_BUDGET_SECONDS. Every role-container dispatch goes
+    # through here, so no caller has to pass it.
+    env_to_forward.update(stage_budget_handdown_env())
 
     env_to_forward["HOLON_REPO_URL"] = resolved_repo_url
 

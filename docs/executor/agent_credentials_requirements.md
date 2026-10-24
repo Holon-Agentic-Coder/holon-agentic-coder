@@ -221,9 +221,10 @@ the rewrite above (the loopback and allow-list rewrite, `NO_PROXY` scoping and `
   run aborts rather than guessing a window, so configs synthesised from `HOLON_LOCAL_MODELS` need
   `HOLON_LOCAL_CONTEXT_WINDOW`.
 - **Reasoning mode.** Resolved from `HOLON_REASONING_MODE`, then the host model entry, then `off` (the least-thinking
-  mode, used by default for authoring stages). A host entry with `reasoning: false` resolves to `off`; a host string
-  mode must be one of the allowed values. pi's `reasoning` field is a boolean capability flag, so the generated entry
-  carries `reasoning: true` unless the mode is `off`, and the agent directory's `settings.json` sets
+  mode, used by default for authoring stages). A host entry with `reasoning: false` always resolves to `off`, even when
+  `HOLON_REASONING_MODE` asks for more (a warning is logged), because the model is declared unable to reason; a host
+  string mode must be one of the allowed values. pi's `reasoning` field is a boolean capability flag, so the generated
+  entry carries `reasoning: true` unless the mode is `off`, and the agent directory's `settings.json` sets
   `defaultThinkingLevel` to the least-thinking mode among the models. The mode and its source are logged.
 
 ##### `holon doctor`

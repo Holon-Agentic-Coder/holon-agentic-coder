@@ -734,6 +734,27 @@ class TestModelEnvelope(unittest.TestCase):
                 self.assertIs(config["providers"]["vmlx"]["models"][0]["reasoning"], flag)
                 self.assertEqual(envelope.reasoning_line(), f"reasoning={expected[0]} source={expected[1]}")
 
+    def test_env_reasoning_mode_never_overrides_host_reasoning_false(self):
+        # C6-N3: a model declared unable to reason keeps reasoning off; the env mode is ignored with a warning.
+        config = _config(
+            {"id": "plain", "contextWindow": 32768, "reasoning": False},
+            {"id": "thinker", "contextWindow": 32768, "reasoning": True},
+        )
+        with self.assertLogs("sandbox_executor.local_llm", level="WARNING") as logs:
+            plain, thinker = self.apply(config, {"HOLON_REASONING_MODE": "high"})
+        self.assertEqual((plain.reasoning, plain.reasoning_source), ("off", "host"))
+        self.assertEqual((thinker.reasoning, thinker.reasoning_source), ("high", "env"))
+        models = config["providers"]["vmlx"]["models"]
+        self.assertIs(models[0]["reasoning"], False)
+        self.assertIs(models[1]["reasoning"], True)
+        self.assertTrue(any("'plain'" in line and "reasoning: false" in line for line in logs.output))
+        # An explicit "off" agrees with the host entry, so nothing is warned about.
+        with self.assertNoLogs("sandbox_executor.local_llm", level="WARNING"):
+            (envelope,) = self.apply(
+                _config({"id": "m", "contextWindow": 32768, "reasoning": False}), {"HOLON_REASONING_MODE": "off"}
+            )
+        self.assertEqual((envelope.reasoning, envelope.reasoning_source), ("off", "host"))
+
     def test_invalid_reasoning_mode_raises(self):
         with self.assertRaises(local_llm.LocalLLMConfigError):
             self.apply(_config({"id": "m", "contextWindow": 32768}), {"HOLON_REASONING_MODE": "turbo"})

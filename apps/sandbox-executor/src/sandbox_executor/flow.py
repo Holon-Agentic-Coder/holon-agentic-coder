@@ -28,7 +28,14 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, ClassVar
 
-from sandbox_executor.budgets import Budgets, StageTimer, format_stage_summary, load_budgets
+from sandbox_executor.budgets import (
+    Budgets,
+    StageTimer,
+    active_stage_timer,
+    current_stage_timer,
+    format_stage_summary,
+    load_budgets,
+)
 from sandbox_executor.calibration import (
     is_metadata_path,
     run_calibrate,
@@ -2394,7 +2401,9 @@ def run_execute_stage(context: FlowContext) -> StageResult:
     """
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log("Starting Stage 3: Plan Execution")
-    stage_timer = StageTimer("execute", load_budgets(os.environ).stage_seconds("execute"))
+    # The host stage timer when run under PipelineEngine.timed_execute_stage, so the verification timeout and the
+    # container hand-down read the same clock; a standalone call times itself.
+    stage_timer = current_stage_timer() or StageTimer("execute", load_budgets(os.environ).stage_seconds("execute"))
 
     if not context.plan_branch:
         err = "Cannot run Execute stage without an active plan_branch in FlowContext."
@@ -3494,10 +3503,18 @@ class PipelineEngine:
         pre-merge calibration), and calibration is the last stage, whose calibrated branch is already pushed. For
         those an overrun is only logged and recorded as ``budget_overrun`` in the payload. The ACT-BUDGET ledger action
         is written only by the in-container turn supervisor, never here, so a failure is not recorded twice.
+
+        While the stage runs, its timer is the active host stage timer (:func:`budgets.active_stage_timer`), so every
+        role container started through ``cli.run_docker_container`` during the stage receives the remaining time minus
+        a safety margin as ``HOLON_STAGE_BUDGET_SECONDS`` and stops before this ceiling. The review stage is excluded:
+        its ceiling is one review-iteration budget per iteration, which is only known afterwards, so a stage-wide
+        remainder would be wrong from the second iteration on (the review loop dispatches no role container).
         """
         timer = StageTimer(stage.value, self.stage_budget_seconds(stage), clock=self.clock)
+        scope = active_stage_timer(timer) if stage != FlowStage.REVIEW else contextlib.nullcontext(timer)
         try:
-            result = self.execute_stage(stage)
+            with scope:
+                result = self.execute_stage(stage)
         except Exception as e:
             result = self.handle_stage_failure(stage, e)
         elapsed = timer.stop()

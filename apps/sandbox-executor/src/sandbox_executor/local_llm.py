@@ -311,17 +311,25 @@ def _env_int(env: Mapping[str, str], name: str) -> int | None:
 
 def _resolve_reasoning(env: Mapping[str, str], entry: dict) -> tuple[str, str]:
     raw_env = env.get(ENV_REASONING_MODE, "").strip().lower()
-    if raw_env:
-        if raw_env not in REASONING_MODES:
-            raise LocalLLMConfigError(
-                f"{ENV_REASONING_MODE}={raw_env!r} is not a supported reasoning mode; use one of "
-                f"{', '.join(REASONING_MODES)}."
-            )
-        return raw_env, "env"
+    if raw_env and raw_env not in REASONING_MODES:
+        raise LocalLLMConfigError(
+            f"{ENV_REASONING_MODE}={raw_env!r} is not a supported reasoning mode; use one of "
+            f"{', '.join(REASONING_MODES)}."
+        )
     host = entry.get("reasoning")
-    # pi models.json uses a boolean "reasoning" capability flag; a host value of false means the model never thinks.
+    # pi models.json uses a boolean "reasoning" capability flag; a host value of false means the model never thinks, so
+    # no environment-wide mode may give it a thinking level.
     if host is False:
+        if raw_env and raw_env != "off":
+            logger.warning(
+                "Ignoring %s=%s for model %r: its host entry declares reasoning: false; keeping reasoning off.",
+                ENV_REASONING_MODE,
+                raw_env,
+                entry.get("id"),
+            )
         return "off", "host"
+    if raw_env:
+        return raw_env, "env"
     if isinstance(host, str) and host.strip():
         mode = host.strip().lower()
         if mode not in REASONING_MODES:
@@ -341,7 +349,8 @@ def apply_model_envelope(config: dict, env: Mapping[str, str] | None = None) -> 
       ``contextWindow - reserve`` (``HOLON_CONTEXT_RESERVE_TOKENS``, default 4096).
     - ``contextWindow`` absent: taken from ``HOLON_LOCAL_CONTEXT_WINDOW``; without it the config is rejected rather
       than guessed.
-    - Reasoning mode: ``HOLON_REASONING_MODE``, else the host entry, else ``off``. pi's ``reasoning`` field is a
+    - Reasoning mode: ``HOLON_REASONING_MODE``, else the host entry, else ``off``; a host ``reasoning: false`` always
+      wins (with a warning when the variable asks for more). pi's ``reasoning`` field is a
       boolean capability flag, so the entry carries ``reasoning: mode != "off"`` and the mode itself is written as the
       agent directory's default thinking level by :func:`prepare_agent_dir`.
 

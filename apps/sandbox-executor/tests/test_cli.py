@@ -217,6 +217,32 @@ class TestHolonCLI(unittest.TestCase):
             self.assertFalse(any("SOME_OTHER_VAR" in arg for arg in args))
             self.assertIn("HOLON_REPO_URL=git@github.com:test/repo.git", args)
 
+    @patch("sandbox_executor.cli.resolve_target_repo_url", return_value="git@github.com:test/repo.git")
+    @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"])
+    @patch("subprocess.run")
+    @patch("shutil.which", return_value="/usr/bin/docker")
+    def test_run_docker_container_hands_down_the_active_stage_remainder(
+        self, mock_which, mock_run, mock_mounts, mock_resolve_repo
+    ):
+        # C6-I1: inside a timed host stage the container gets the remaining time; outside one nothing is added.
+        from sandbox_executor.budgets import StageTimer, active_stage_timer
+
+        mock_run.return_value = MagicMock(returncode=0)
+        now = [1000.0]
+        timer = StageTimer("execute", 2700, clock=lambda: now[0])
+        now[0] += 700
+        with patch.dict(os.environ, {"HOLON_STAGE_BUDGET_SECONDS": "9999"}, clear=True):
+            with active_stage_timer(timer):
+                run_docker_container("executor", "holon/agent-pi", ["branch"], agent_id="pi")
+            budget_args = [a for a in mock_run.call_args[0][0] if a.startswith("HOLON_STAGE_BUDGET_SECONDS=")]
+            self.assertEqual(budget_args, ["HOLON_STAGE_BUDGET_SECONDS=1940"])
+        mock_run.reset_mock()
+        with patch.dict(os.environ, {}, clear=True):
+            run_docker_container("executor", "holon/agent-pi", ["branch"], agent_id="pi")
+            self.assertFalse(
+                any(a.startswith("HOLON_STAGE_BUDGET_SECONDS=") for a in mock_run.call_args[0][0]),
+            )
+
     def test_run_docker_container_requires_agent_id(self):
         with self.assertRaises(TypeError):
             run_docker_container("planner", "holon/agent-antigravity", ["branch"])  # type: ignore[call-arg]

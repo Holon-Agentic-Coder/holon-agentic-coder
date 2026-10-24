@@ -8,8 +8,11 @@ from sandbox_executor.budgets import (
     BudgetBreach,
     StageBudgets,
     StageTimer,
+    active_stage_timer,
+    current_stage_timer,
     format_stage_summary,
     load_budgets,
+    stage_budget_handdown_env,
 )
 
 
@@ -100,3 +103,35 @@ class TestBudgets(unittest.TestCase):
         clock.now += 100
         self.assertEqual(timer.elapsed(), 65)
         self.assertEqual(timer.summary("failed"), "execute: failed (1.1 min / 1 min)")
+
+
+class TestStageBudgetHanddown(unittest.TestCase):
+    """C6-I1: the host hands the container the remaining stage time as HOLON_STAGE_BUDGET_SECONDS."""
+
+    def test_no_active_timer_hands_down_nothing(self):
+        self.assertIsNone(current_stage_timer())
+        self.assertEqual(stage_budget_handdown_env(), {})
+
+    def test_active_timer_hands_down_remaining_minus_margin_floored(self):
+        clock = FakeClock()
+        timer = StageTimer("execute", 2700, clock=clock)
+        with active_stage_timer(timer):
+            self.assertIs(current_stage_timer(), timer)
+            clock.now += 600.4
+            self.assertEqual(stage_budget_handdown_env(), {ENV_STAGE_BUDGET_SECONDS: "2039"})
+            inner = StageTimer("plan", 100, clock=clock)
+            with active_stage_timer(inner):
+                # Short budgets keep at most a tenth of themselves back.
+                self.assertEqual(stage_budget_handdown_env(), {ENV_STAGE_BUDGET_SECONDS: "90"})
+            self.assertIs(current_stage_timer(), timer)
+            clock.now += 5000
+            # Never 0, which the container would ignore in favour of the full per-stage budget.
+            self.assertEqual(stage_budget_handdown_env(), {ENV_STAGE_BUDGET_SECONDS: "1"})
+        self.assertIsNone(current_stage_timer())
+
+    def test_handed_down_value_is_the_container_ceiling(self):
+        clock = FakeClock()
+        timer = StageTimer("plan", 2100, clock=clock)
+        clock.now += 100
+        env = stage_budget_handdown_env(timer)
+        self.assertEqual(load_budgets(env).stage_seconds("plan"), 1940)

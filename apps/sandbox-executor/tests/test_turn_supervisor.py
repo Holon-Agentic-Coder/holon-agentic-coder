@@ -742,6 +742,38 @@ class TestProcessSampler(unittest.TestCase):
         table[100] = (1, 100, 50.0, 0.0)
         self.assertEqual(turns.descendant_cpu_seconds(100, lambda: table), {101: 30.5})
 
+    def test_wrapper_spawned_agent_binary_is_not_tool_progress(self):
+        # C6-N2: the codex Node wrapper (100) spawns the native codex binary (101), which parents the tools.
+        table = {
+            100: (1, 100, 1.0, 0.0),  # node wrapper ("MainThread")
+            101: (100, 100, 80.0, 6.0),  # the real agent: own CPU excluded, its reaped tools' CPU kept
+            102: (101, 100, 4.0, 0.0),  # a tool the agent runs
+            103: (100, 100, 2.0, 0.0),  # a direct child of the wrapper that is not the agent
+        }
+        names = {100: "MainThread", 101: "codex", 102: "bash", 103: "git"}
+        self.assertEqual(
+            turns.descendant_cpu_seconds(100, lambda: table, name_of=names.get), {101: 6.0, 102: 4.0, 103: 2.0}
+        )
+        # A "codex" process deeper in the tree is a tool, not the agent.
+        table[104] = (102, 100, 9.0, 0.0)
+        names[104] = "codex"
+        self.assertEqual(turns.descendant_cpu_seconds(100, lambda: table, name_of=names.get)[104], 9.0)
+        # Without the wrapper exclusion the agent's own CPU would count.
+        self.assertEqual(
+            turns.descendant_cpu_seconds(100, lambda: table, name_of=names.get, agent_names=frozenset())[101], 86.0
+        )
+        table[101] = (100, 100, 80.0, 0.0)
+        self.assertNotIn(101, turns.descendant_cpu_seconds(100, lambda: table, name_of=names.get))
+
+    def test_process_name_reads_proc_comm(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        os.makedirs(os.path.join(tmp.name, "77"))
+        with open(os.path.join(tmp.name, "77", "comm"), "w") as f:
+            f.write("codex\n")
+        self.assertEqual(turns.process_name(77, proc_root=tmp.name), "codex")
+        self.assertIsNone(turns.process_name(78, proc_root=tmp.name))
+
     def test_tool_cpu_used_counts_new_processes_in_full_and_ignores_exits(self):
         self.assertEqual(turns.tool_cpu_used({1: 1.0, 2: 5.0}, {1: 1.5, 3: 0.25}), 0.75)
 

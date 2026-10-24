@@ -124,9 +124,11 @@ Before invoking the agent, the executor verifies whether the plan needs to be br
 
 A prompt payload file and an intent JSON file are generated in `/tmp`. The agent's CLI wrapper is executed under the
 turn supervisor (turn, stall and execute-stage budgets; see [Turn and Stage Budgets](../budgets.md)), forwarding the
-full prompt, which ends with the incremental execution-notes write protocol (Bean 0138). The executor uses the exit code
-to determine the outcome, treating exit code 1 or a `stopReason: length` final message as informational when the agent's
-execution notes are valid.
+full prompt, which ends with the incremental execution-notes write protocol (Bean 0138). The outcome is decided from the
+first (implementation) turn: exit code 0 is success; a non-zero exit is treated as informational only when the runner
+reported a structured truncation of its final message (`stopReason: length`) and the execution notes are complete, so a
+generic exit 1 (auth or API errors) is always a failure. A budget breach of the implementation turn is a failure even if
+a notes-only resume made the notes usable, while a breach confined to the notes-only follow-up keeps the code changes.
 
 ### 7. Result Recording & Ledger Updates
 

@@ -1822,6 +1822,33 @@ class TestStageBudgets:
         assert result.status == StageStatus.SUCCESS
         assert result.payload["budget_overrun"]["budget_seconds"] == 600
 
+    def test_timed_stage_is_the_active_host_timer_except_review(self, tmp_path):
+        # C6-I1: role containers dispatched during a stage read this timer (cli.run_docker_container hand-down).
+        from sandbox_executor.budgets import current_stage_timer, stage_budget_handdown_env
+
+        ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "h", "goal": "H"}, dry_run=True)
+        seen = {}
+
+        def fake_stage(name):
+            def run(context):
+                seen[name] = (current_stage_timer(), stage_budget_handdown_env())
+                return StageResult(stage=FlowStage(name), status=StageStatus.SUCCESS)
+
+            return run
+
+        engine = PipelineEngine(ctx, clock=lambda: 0.0)
+        with (
+            patch("sandbox_executor.flow.run_plan_stage", side_effect=fake_stage("plan")),
+            patch("sandbox_executor.flow.run_review_stage", side_effect=fake_stage("review")),
+        ):
+            engine.timed_execute_stage(FlowStage.PLAN)
+            engine.timed_execute_stage(FlowStage.REVIEW)
+        plan_timer, plan_env = seen["plan"]
+        assert plan_timer is not None and plan_timer.budget_seconds == 2100
+        assert plan_env == {"HOLON_STAGE_BUDGET_SECONDS": "2040"}
+        assert seen["review"] == (None, {})
+        assert current_stage_timer() is None
+
     def test_review_stage_budget_honours_the_exact_stage_override(self, tmp_path):
         ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "o", "goal": "O"}, dry_run=True)
         with patch.dict(os.environ, {"HOLON_STAGE_BUDGET_SECONDS": "120"}):

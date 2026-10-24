@@ -16,10 +16,11 @@ artefact or tree, no response boundary is observable and the turn budget is not 
 
 A tool call is not an assistant response either. While the runner waits on a tool (a test suite, ``uv sync``) nothing
 is written and a non-streaming runner prints nothing, so the runner's descendant processes are sampled as well: CPU
-time consumed by any process descended from the runner (or left in its process group), excluding the runner itself, is
-*tool progress* and counts like an artefact change (a response boundary). A runner whose descendants are idle, or that
-has none, is judged exactly as before, so a genuinely idle or degenerate runner still breaches. Sampling reads
-``/proc`` (Linux containers) or ``ps`` (macOS); where neither is available it is skipped and only artefact progress
+time consumed by any process descended from the runner (or left in its process group), excluding the agent's own
+processes (the runner and, for wrapper CLIs such as ``codex``, the agent binary it spawns), is *tool progress* and
+counts like an artefact change (a response boundary). A runner whose descendants are idle, or that has none, is
+judged exactly as before, so a genuinely idle or degenerate runner still breaches. Sampling reads ``/proc`` (Linux
+containers) or ``ps`` (macOS); where neither is available it is skipped and only artefact progress
 counts.
 
 The stall window bounds silence *within* a response, so it is only stricter than the turn budget once the runner has
@@ -215,17 +216,53 @@ def process_table() -> ProcessTable | None:
     return table if table is not None else _ps_table()
 
 
+# Executable names of agents whose CLI is a wrapper that spawns the real agent binary as its direct child. Verified in
+# the ``holon/agent-codex`` image: ``codex`` is a Node script (``@openai/codex/bin/codex.js``, process name
+# ``MainThread``) that spawns the native ``vendor/<triple>/bin/codex`` binary (process name ``codex``), which runs the
+# model loop and is the parent of every tool. That child is the agent itself, so it is treated like the runner: its own
+# CPU never counts as tool progress, only the CPU of the tool processes it has reaped. Names are matched against the
+# kernel process name (``/proc/<pid>/comm``, at most 15 characters) of direct children of the runner only.
+WRAPPED_AGENT_PROCESS_NAMES = frozenset({"codex"})
+
+
+def process_name(pid: int, proc_root: str = "/proc") -> str | None:
+    """Kernel process name of ``pid`` (``/proc/<pid>/comm``, else the basename of ``ps -o comm=``); None if gone."""
+    try:
+        with open(os.path.join(proc_root, str(pid), "comm"), encoding="utf-8", errors="replace") as handle:
+            return handle.read().strip() or None
+    except OSError:
+        pass
+    if os.path.isdir(proc_root):
+        return None  # /proc exists, so the process has exited
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "comm=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=PS_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    name = result.stdout.strip() if result.returncode == 0 else ""
+    return os.path.basename(name)[:15] or None
+
+
 def descendant_cpu_seconds(
-    root_pid: int, table_source: Callable[[], ProcessTable | None] = process_table
+    root_pid: int,
+    table_source: Callable[[], ProcessTable | None] = process_table,
+    name_of: Callable[[int], str | None] = process_name,
+    agent_names: frozenset[str] = WRAPPED_AGENT_PROCESS_NAMES,
 ) -> dict[int, float] | None:
-    """CPU seconds of every process descended from ``root_pid`` or in its process group, excluding ``root_pid``'s own.
+    """CPU seconds of every process descended from ``root_pid`` or in its process group, excluding the agent's own.
 
     The runner was started in its own session, so its pid is also its process group id; group members that were
     re-parented after their parent exited are still included. Each descendant's value is its own CPU plus that of the
     children it has reaped, so a tool made of many short processes (a shell loop, ``make``) shows up through its
-    still-running parent. ``root_pid`` itself appears only with the CPU of its reaped children, never its own, and
-    only when that is non-zero. Reaped-children CPU is only reported by ``/proc`` (Linux). Returns None when no
-    process table is available.
+    still-running parent. The agent's own processes are ``root_pid`` and, for wrapper CLIs, a direct child of it whose
+    process name (``name_of``) is in ``agent_names`` (see :data:`WRAPPED_AGENT_PROCESS_NAMES`); each appears only with
+    the CPU of its reaped children, never its own, and only when that is non-zero. Reaped-children CPU is only reported
+    by ``/proc`` (Linux). Returns None when no process table is available.
     """
     table = table_source()
     if table is None:
@@ -240,11 +277,14 @@ def descendant_cpu_seconds(
             if child not in members:
                 members.add(child)
                 stack.append(child)
-    members.discard(root_pid)
-    sample = {pid: table[pid][2] + table[pid][3] for pid in members if pid in table}
-    runner_reaped = table[root_pid][3] if root_pid in table else 0.0
-    if runner_reaped > 0:
-        sample[root_pid] = runner_reaped
+    agent_pids = {root_pid}
+    if agent_names:
+        agent_pids |= {pid for pid in children.get(root_pid, ()) if name_of(pid) in agent_names}
+    sample = {pid: table[pid][2] + table[pid][3] for pid in members - agent_pids if pid in table}
+    for pid in agent_pids:
+        reaped = table[pid][3] if pid in table else 0.0
+        if reaped > 0:
+            sample[pid] = reaped
     return sample
 
 

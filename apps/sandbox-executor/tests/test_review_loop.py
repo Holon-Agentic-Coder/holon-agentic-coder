@@ -430,20 +430,15 @@ class TestReviewLoopEmptyDiffGuardOrigin:
     def test_fetch_error_is_redacted(self, tmp_path: Path):
         from sandbox_executor.flow import _execution_effective_diff
 
+        token = make_gh_probe()
         host = tmp_path / "host"
         host.mkdir()
         self._git(host, "init", "-q")
-        self._git(
-            host,
-            "remote",
-            "add",
-            "origin",
-            "https://x-access-token:ghp_abcdefghijklmnopqrstuvwxyz0123456789@127.0.0.1:9/r.git",
-        )
+        self._git(host, "remote", "add", "origin", f"https://x-access-token:{token}@127.0.0.1:9/r.git")
         has_diff, detail = _execution_effective_diff(str(host), self.EXEC)
         assert has_diff is None
         assert "from origin failed" in detail
-        assert "ghp_abcdefghijklmnopqrstuvwxyz0123456789" not in detail
+        assert_no_fragment(detail, token)
 
 
 # --------------------------------------------------------------------------------------

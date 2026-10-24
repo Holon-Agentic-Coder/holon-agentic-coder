@@ -47,7 +47,7 @@ from sandbox_executor.calibration import (
     record_calibration_action,
     run_calibrate,
 )
-from sandbox_executor.entrypoint.executor import _sanitize_string, redact_text
+from sandbox_executor.entrypoint.executor import _sanitize_string
 from sandbox_executor.entrypoint.planner import (
     _sanitize_model_name,
     load_metrics_config,
@@ -2162,7 +2162,7 @@ def _fetch_refspecs_error(repo_dir: str, refspecs: list[str]) -> str | None:
     if res.returncode == 0:
         return None
     stderr = res.stderr.strip() if isinstance(res.stderr, str) else ""
-    return redact_text(stderr) if stderr else f"git fetch exited with code {res.returncode}"
+    return redact_agent_secrets(stderr) if stderr else f"git fetch exited with code {res.returncode}"
 
 
 def _fetch_branch_prefix(repo_dir: str, prefix: str) -> bool:
@@ -2410,7 +2410,7 @@ def _append_superseding_execution_row(context: FlowContext, exec_branch: str, ro
         pushed_sha = run_git(["rev-parse", "HEAD"], cwd=worktree).stdout.strip()
         run_git(["push", "origin", f"HEAD:refs/heads/{exec_branch}"], cwd=worktree, timeout=300)
     except (RuntimeError, TimeoutError, OSError) as exc:
-        return redact_text(str(exc))
+        return redact_agent_secrets(str(exc))
     finally:
         run_git(["worktree", "remove", "--force", worktree], cwd=repo_dir, check=False)
         run_git(["worktree", "prune"], cwd=repo_dir, check=False)
@@ -2482,7 +2482,7 @@ def _execution_effective_diff(repo_dir: str, execution_branch: str) -> tuple[boo
     try:
         changed = changed_paths(repo_dir, plan_ref, exec_ref)
     except (RuntimeError, TimeoutError) as exc:
-        return None, f"diff against {plan_branch} failed: {redact_text(str(exc))}"
+        return None, f"diff against {plan_branch} failed: {redact_agent_secrets(str(exc))}"
     if not changed:
         return False, f"{empty_diff_summary(plan_branch)} (compared on {source})"
     return True, f"{len(changed)} changed path(s) on {source}"
@@ -2971,7 +2971,7 @@ def run_execute_stage(context: FlowContext) -> StageResult:
             FlowStage.EXECUTE,
             start_time,
             f"Execute stage failed: could not verify the execution diff, so it is treated as a failure: "
-            f"{redact_text(str(exc))}",
+            f"{redact_agent_secrets(str(exc))}",
             **base_payload,
         )
 
@@ -3721,7 +3721,7 @@ def _checkout_execution_branch(context: FlowContext) -> str | None:
     if co_res.returncode == 0:
         return None
     stderr = co_res.stderr.strip() if isinstance(co_res.stderr, str) else ""
-    return redact_text(stderr) or f"exit code {co_res.returncode}"
+    return redact_agent_secrets(stderr) or f"exit code {co_res.returncode}"
 
 
 def run_review_stage(context: FlowContext) -> StageResult:

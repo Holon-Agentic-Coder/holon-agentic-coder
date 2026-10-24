@@ -58,6 +58,7 @@ from sandbox_executor.redaction import (
     redact_command,
     redact_env_literals,
     starts_with_url_authority,
+    trusted_url_authority,
     url_userinfo_end,
 )
 from sandbox_executor.scaffold import init_project
@@ -215,8 +216,15 @@ def normalize_repo_remote(remote_url: str) -> tuple[str, str]:
     if "://" in clean_url:
         parsed = urlparse(clean_url)
         host = parsed.hostname or parsed.netloc.split("@")[-1].split(":")[0]
-        if parsed.port and parsed.port not in (22, 443):
-            host = f"{host}:{parsed.port}"
+        try:
+            port = parsed.port
+        except ValueError:
+            # urlparse's message quotes the bad port, which may be part of a password.
+            raise ValueError(
+                "Unable to parse the remote URL; its value is withheld because it may hold a credential."
+            ) from None
+        if port and port not in (22, 443):
+            host = f"{host}:{port}"
         path = parsed.path.lstrip("/")
     else:
         m = re.match(r"^(?:(?P<user>[^@]+)@)?(?P<host>[^:]+):(?P<path>.+)$", clean_url)
@@ -1047,19 +1055,22 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
     # is about to run with direct egress.
     ready = False
     probe_host = "127.0.0.1" if host_port[0] in ("host.docker.internal", "172.17.0.1", "localhost") else host_port[0]
+    # Messages show the target only when its host was validated after the userinfo was removed;
+    # otherwise the parsed host and port may be part of a credential, so only the variable is named.
+    trusted = trusted_url_authority(proxy_url) is not None
+    probe_target = f"{probe_host}:{host_port[1]}" if trusted else "the HOLON_PROXY_URL target"
+    proxy_target = f"{host_port[0]}:{host_port[1]}" if trusted else "the HOLON_PROXY_URL target"
     try:
         ready = _wait_for_proxy(probe_host, host_port[1], timeout=PROXY_ATTACH_TIMEOUT_SECONDS)
     except (OSError, TimeoutError) as exc:
         logger.warning(
-            "holon-coherence proxy probe failed at %s:%s. Proceeding with DIRECT egress fallback.",
-            probe_host,
-            host_port[1],
+            "holon-coherence proxy probe failed at %s. Proceeding with DIRECT egress fallback.",
+            probe_target,
         )
         logger.error(
-            "HOLON_TOKEN_REDUCE is enabled but proxy probe failed at %s:%s (%s: %s). "
+            "HOLON_TOKEN_REDUCE is enabled but proxy probe failed at %s (%s: %s). "
             "This run continues with DIRECT egress (no token reduction).",
-            probe_host,
-            host_port[1],
+            probe_target,
             type(exc).__name__,
             redact_cli_error(exc),
         )
@@ -1067,15 +1078,13 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
 
     if not ready:
         logger.warning(
-            "holon-coherence proxy probe failed at %s:%s. Proceeding with DIRECT egress fallback.",
-            host_port[0],
-            host_port[1],
+            "holon-coherence proxy probe failed at %s. Proceeding with DIRECT egress fallback.",
+            proxy_target,
         )
         logger.error(
-            "HOLON_TOKEN_REDUCE is enabled but no proxy accepted a TCP connection at %s:%s. Start the proxy or "
+            "HOLON_TOKEN_REDUCE is enabled but no proxy accepted a TCP connection at %s. Start the proxy or "
             "point HOLON_PROXY_URL at it; this run continues with DIRECT egress (no token reduction).",
-            host_port[0],
-            host_port[1],
+            proxy_target,
         )
         return [], {}
 

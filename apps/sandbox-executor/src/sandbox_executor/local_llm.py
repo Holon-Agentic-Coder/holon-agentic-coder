@@ -22,7 +22,7 @@ import re
 from collections.abc import Iterable
 from urllib.parse import urlsplit, urlunsplit
 
-from sandbox_executor.redaction import redact_text
+from sandbox_executor.redaction import trusted_url_authority
 
 logger = logging.getLogger(__name__)
 
@@ -188,8 +188,11 @@ def _synthesized_config(allow_list: Iterable[str]) -> dict:
         # Never echo an unparseable value: it has no reliable userinfo boundary to mask.
         raise LocalLLMConfigError(f"The configured {ENV_LOCAL_BASE_URL} is not a valid URL; ignoring it.")
     if auth[0] != GATEWAY_HOST:
+        # Show only a host validated after the userinfo is removed; an ambiguous value is named, not echoed.
+        shown = trusted_url_authority(base_url)
+        target = f"host {shown}" if shown else "host withheld: no unambiguous userinfo boundary"
         raise LocalLLMConfigError(
-            f"The configured {ENV_LOCAL_BASE_URL} ({redact_text(base_url)}) is neither a loopback address nor in "
+            f"The configured {ENV_LOCAL_BASE_URL} ({target}) is neither a loopback address nor in "
             f"{ENV_HOST_LOCAL_HOSTS}."
         )
     return {
@@ -234,10 +237,10 @@ def build_container_config(host_config: dict | None, allow_list: Iterable[str] =
             continue
         if rewritten != base_url:
             logger.info(
-                "Rewrote provider %r baseUrl for sandbox reachability: %s -> %s",
+                "Rewrote provider %r baseUrl host for sandbox reachability: %s -> %s",
                 name,
-                redact_text(base_url),
-                redact_text(rewritten),
+                trusted_url_authority(base_url) or "<withheld>",
+                trusted_url_authority(rewritten) or "<withheld>",
             )
         provider["baseUrl"] = rewritten
         if not provider.get("apiKey"):

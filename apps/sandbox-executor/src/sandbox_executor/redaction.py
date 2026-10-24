@@ -8,9 +8,11 @@ regression: extend this module instead.
 Every redactor replaces a secret with the same fixed marker, `REDACTION_MARKER`.
 """
 
+import ipaddress
 import os
 import re
 from collections.abc import Sequence
+from urllib.parse import urlsplit
 
 REDACTION_MARKER: str = "*******"
 
@@ -103,6 +105,61 @@ def url_userinfo_end(rest: str) -> int | None:
     if _first_delimiter(rest, at + 1) == at + 1:
         return None
     return at
+
+
+# A DNS host name (labels of letters, digits and inner hyphens) or a dotted IPv4 literal.
+_HOST_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+_HOST_NAME_RE = re.compile(rf"{_HOST_LABEL}(?:\.{_HOST_LABEL})*\.?")
+
+
+def trusted_url_authority(value: str) -> str | None:
+    """Return the `host[:port]` of a configured URL when a message may show it, else None.
+
+    The one rule for messages about URL-valued settings: a warning, error, exception or log line
+    names the variable, and shows from its value only what this returns. The userinfo is removed
+    with the shared `url_userinfo_end` rule, and the remaining authority is trusted only when no
+    `@` is left anywhere in the value (so no credential boundary is ambiguous), the host is a DNS
+    name or an IP literal, any port is 1-65535, and `urlsplit` reads the same host and port both
+    from the stripped value and from the value as configured. A schemeless value is read as a
+    `//` authority, as a proxy URL is.
+
+    Args:
+        value: The URL exactly as configured.
+
+    Returns:
+        The lower-cased `host` or `host:port` (`[v6]:port` for IPv6), or None when the value is
+        unparseable or ambiguous; the caller then names the variable only.
+    """
+    url = value.strip()
+    url = url if starts_with_url_authority(url) else f"//{url}"
+    head, sep, rest = url.partition("//")
+    at = url_userinfo_end(rest)
+    tail = rest[at + 1 :] if at is not None else rest
+    if "@" in tail:
+        return None
+    authority = tail[: _first_delimiter(tail)].lower()
+    if authority.startswith("["):
+        host, bracket, port = authority[1:].partition("]")
+        if not bracket or (port and not port.startswith(":")):
+            return None
+        port = port[1:]
+        try:
+            ipaddress.IPv6Address(host)
+        except ValueError:
+            return None
+    else:
+        host, _, port = authority.partition(":")
+        if not host or len(host) > 253 or not _HOST_NAME_RE.fullmatch(host):
+            return None
+    if port and not (port.isdigit() and 0 < int(port) <= 65535):
+        return None
+    try:
+        readings = {(parts.hostname, parts.port) for parts in (urlsplit(head + sep + tail), urlsplit(url))}
+    except ValueError:
+        return None
+    if readings != {(host, int(port) if port else None)}:
+        return None
+    return authority
 
 
 def _mask_url_userinfo(text: str) -> str:

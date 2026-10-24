@@ -911,15 +911,16 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
     proxy_url = os.getenv("HOLON_PROXY_URL") or _proxy_gateway_url()
     host_port = _proxy_host_port(proxy_url)
     if host_port is None:
+        shown_url = redact_command([proxy_url])
         logger.warning(
             "holon-coherence proxy probe failed: HOLON_PROXY_URL='%s' is not a valid proxy URL. "
             "Proceeding with DIRECT egress fallback.",
-            proxy_url,
+            shown_url,
         )
         logger.error(
             "HOLON_TOKEN_REDUCE is enabled but HOLON_PROXY_URL='%s' is not a valid proxy URL. "
             "This run continues with DIRECT egress (no token reduction).",
-            proxy_url,
+            shown_url,
         )
         return [], {}
 

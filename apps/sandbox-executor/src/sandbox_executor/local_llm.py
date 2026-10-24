@@ -22,6 +22,8 @@ import re
 from collections.abc import Iterable
 from urllib.parse import urlsplit, urlunsplit
 
+from sandbox_executor.redaction import redact_text
+
 logger = logging.getLogger(__name__)
 
 # Opt-in switch. Never inferred from the presence of a base URL in a config file.
@@ -104,7 +106,7 @@ def _authority(url: str) -> tuple[str, int | None] | None:
             return None
         return host, parsed.port
     except ValueError:
-        logger.warning("Ignoring base URL with an invalid port or host: %r", url)
+        logger.warning("Ignoring base URL with an invalid port or host: %r", redact_text(url))
         return None
 
 
@@ -117,7 +119,7 @@ def rewrite_authority(url: str, allow_list: Iterable[str] = ()) -> str:
     allowed = {entry.lower() for entry in allow_list}
     authority = _authority(url)
     if authority is None:
-        logger.warning("Ignoring unparseable base URL %r during host-local rewrite", url)
+        logger.warning("Ignoring unparseable base URL %r during host-local rewrite", redact_text(url))
         return url
 
     host, port = authority
@@ -184,7 +186,7 @@ def _synthesized_config(allow_list: Iterable[str]) -> dict:
     auth = _authority(rewritten)
     if auth is None or auth[0] != GATEWAY_HOST:
         raise LocalLLMConfigError(
-            f"The configured {ENV_LOCAL_BASE_URL} ({base_url}) is neither a loopback address nor in "
+            f"The configured {ENV_LOCAL_BASE_URL} ({redact_text(base_url)}) is neither a loopback address nor in "
             f"{ENV_HOST_LOCAL_HOSTS}."
         )
     return {
@@ -228,7 +230,12 @@ def build_container_config(host_config: dict | None, allow_list: Iterable[str] =
             dropped.append(name)
             continue
         if rewritten != base_url:
-            logger.info("Rewrote provider %r baseUrl for sandbox reachability: %s -> %s", name, base_url, rewritten)
+            logger.info(
+                "Rewrote provider %r baseUrl for sandbox reachability: %s -> %s",
+                name,
+                redact_text(base_url),
+                redact_text(rewritten),
+            )
         provider["baseUrl"] = rewritten
         if not provider.get("apiKey"):
             provider["apiKey"] = "holon-local"

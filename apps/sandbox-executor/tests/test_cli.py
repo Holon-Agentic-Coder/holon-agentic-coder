@@ -1640,3 +1640,75 @@ def test_redact_command_echo_masks_the_helper_reference_only(leak_env, monkeypat
     assert f"--env-file {docker.env_file}" in echo
     assert "GIT_CONFIG_VALUE_1" not in echo
     assert_names_repo(echo, "github.com/myorg/myrepo.git", _BRANCH)
+
+
+def _password_head_error(head: str) -> ValueError:
+    """The `ValueError` `urlparse` raises when a raw delimiter cuts a password into the port."""
+    return ValueError(f"Port could not be cast to integer value as '{head}'")
+
+
+@pytest.mark.parametrize("delim", ["/", "?", "#"])
+def test_review_loop_handler_masks_a_quoted_password_head(monkeypatch, capsys, delim):
+    """The review-loop top-level handler never prints a password piece quoted by an exception."""
+    head, tail = make_probe("a"), make_probe("b")
+    monkeypatch.setenv("HOLON_PROXY_URL", f"http://alice:{head}{delim}{tail}@127.0.0.1:3128")
+    with (
+        patch("sys.argv", ["holon", "review-loop", "1"]),
+        patch("sandbox_executor.cli.detect_holon_coherence", side_effect=_password_head_error(head)),
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        main()
+
+    assert exit_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "Error during review-loop execution" in captured.err
+    for text in (captured.out, captured.err):
+        assert_no_fragment(text, head)
+        assert_no_fragment(text, tail)
+
+
+def test_flow_handler_masks_a_quoted_password_head(monkeypatch, capsys, tmp_path):
+    """The flow top-level handler never prints a password piece quoted by an exception."""
+    head, tail = make_probe("a"), make_probe("b")
+    monkeypatch.setenv("HOLON_PROXY_URL", f"alice:{head}/{tail}@127.0.0.1:3128")
+    checkpoint = tmp_path / "checkpoint.json"
+    checkpoint.write_text("{}", encoding="utf-8")
+    with (
+        patch("sys.argv", ["holon", "flow", "--checkpoint", str(checkpoint)]),
+        patch("sandbox_executor.cli.load_checkpoint", side_effect=_password_head_error(head)),
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        main()
+
+    assert exit_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "Error during flow execution" in captured.err
+    for text in (captured.out, captured.err):
+        assert_no_fragment(text, head)
+
+
+def test_calibrate_handler_masks_a_quoted_password_head(monkeypatch, capsys):
+    """The calibrate top-level handler never prints a password piece quoted by an exception."""
+    head, tail = make_probe("a"), make_probe("b")
+    monkeypatch.setenv("HOLON_LOCAL_BASE_URL", f"socks5://alice:{head}#{tail}@127.0.0.1:3128")
+    with (
+        patch("sys.argv", ["holon", "calibrate", "I-x/P-y/E-z/_"]),
+        patch("sandbox_executor.cli.run_calibrate", side_effect=RuntimeError(f"bad value {head}#{tail}")),
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        main()
+
+    assert exit_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "Error during calibration" in captured.err
+    for text in (captured.out, captured.err):
+        assert_no_fragment(text, head)
+        assert_no_fragment(text, tail)
+
+
+def test_redact_cli_error_keeps_messages_without_url_credentials(monkeypatch):
+    """A message with nothing from a URL credential in it is printed unchanged."""
+    monkeypatch.setenv("HOLON_PROXY_URL", "http://127.0.0.1:3128")
+    message = "Checkpoint file is not valid JSON: Expecting value: line 1 column 1"
+
+    assert cli.redact_cli_error(ValueError(message)) == message

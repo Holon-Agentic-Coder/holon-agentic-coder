@@ -599,11 +599,73 @@ def _gateway_host_args() -> list[str]:
 
 
 def _proxy_host_port(proxy_url: str) -> tuple[str, int] | None:
-    """Split a proxy URL into ``(host, port)``; None when it cannot be parsed."""
-    parsed = urlparse(proxy_url if starts_with_url_authority(proxy_url) else f"//{proxy_url}")
+    """Split a proxy URL into ``(host, port)``; None when it cannot be parsed.
+
+    The userinfo is removed first with the shared `redaction.url_userinfo_end` rule, so a password
+    holding a raw `/`, `?` or `#` is never read as the host or port. A port that is not a valid
+    integer makes the URL unparseable (None) rather than raising, because `urlparse`'s `ValueError`
+    quotes the offending text, which the callers' masked "not a valid proxy URL" path never would.
+    """
+    url = proxy_url if starts_with_url_authority(proxy_url) else f"//{proxy_url}"
+    head, sep, rest = url.partition("//")
+    at = url_userinfo_end(rest)
+    parsed = urlparse(head + sep + (rest[at + 1 :] if at is not None else rest))
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
     if not parsed.hostname:
         return None
-    return parsed.hostname, parsed.port or PROXY_LISTEN_PORT
+    return parsed.hostname, port or PROXY_LISTEN_PORT
+
+
+_URL_ENV_NAME_RE = re.compile(r"(?:URL|URI|PROXY)$", re.IGNORECASE)
+_URL_DELIMITER_SPLIT_RE = re.compile(r"[/?#]")
+
+
+def _url_env_credential_parts() -> set[str]:
+    """Return the userinfo credential of every URL-valued environment variable, whole and in pieces.
+
+    A parse error can quote only the part of a password before its first raw `/`, `?` or `#`, which
+    no shape-based redactor recognises, so each delimiter-separated piece of at least 4 characters
+    is returned alongside the whole credential.
+    """
+    parts: set[str] = set()
+    for name, value in os.environ.items():
+        if not value or not _URL_ENV_NAME_RE.search(name):
+            continue
+        url = value if starts_with_url_authority(value) else f"//{value}"
+        rest = url.partition("//")[2]
+        at = url_userinfo_end(rest)
+        if at is None:
+            continue
+        userinfo = rest[:at]
+        user, colon, password = userinfo.partition(":")
+        credential = password if colon else user
+        for piece in (userinfo, credential, *_URL_DELIMITER_SPLIT_RE.split(credential)):
+            if len(piece) >= 4:
+                parts.add(piece)
+    return parts
+
+
+def redact_cli_error(message: object) -> str:
+    """Redact an exception message before a top-level CLI handler prints or logs it.
+
+    Applies `redact_agent_secrets`, then masks the userinfo credential of every URL-valued
+    environment variable (and each piece of it between raw URL delimiters), so a parse error that
+    quotes part of a configured password, such as `urlparse`'s "Port could not be cast" message,
+    cannot echo it.
+
+    Args:
+        message: The exception (or any object) whose string form is printed.
+
+    Returns:
+        The redacted message.
+    """
+    text = redact_agent_secrets(str(message))
+    for part in sorted(_url_env_credential_parts(), key=len, reverse=True):
+        text = text.replace(part, "*******")
+    return text
 
 
 def detect_holon_coherence(token_reduce: bool = False) -> bool:
@@ -639,6 +701,11 @@ def detect_holon_coherence(token_reduce: bool = False) -> bool:
     proxy_url = os.getenv("HOLON_PROXY_URL")
     if proxy_url:
         host_port = _proxy_host_port(proxy_url)
+        if host_port is None:
+            logger.warning(
+                "HOLON_PROXY_URL='%s' is not a valid proxy URL; skipping the proxy port probe.",
+                redact_url_value(proxy_url),
+            )
     else:
         try:
             port = int(os.getenv("HOLON_PROXY_PORT", str(PROXY_LISTEN_PORT)))
@@ -1000,7 +1067,7 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
             probe_host,
             host_port[1],
             type(exc).__name__,
-            exc,
+            redact_cli_error(exc),
         )
         return [], {}
 
@@ -1050,13 +1117,13 @@ def get_token_reduction_mounts_and_envs(
         logger.warning(
             "holon-coherence proxy configuration failed (%s: %s). Proceeding with DIRECT egress fallback.",
             type(exc).__name__,
-            exc,
+            redact_cli_error(exc),
         )
         logger.error(
             "Token reduction is enabled but could not be configured (%s: %s). This run continues with DIRECT "
             "egress (no TLS interception, no token reduction).",
             type(exc).__name__,
-            exc,
+            redact_cli_error(exc),
         )
         return [], {}
 
@@ -1229,7 +1296,7 @@ def run_docker_container(
     try:
         resolved_repo_url, embedded_token = resolve_target_repo(repo_dir)
     except RuntimeError as exc:
-        print(str(exc), file=sys.stderr)
+        print(redact_cli_error(exc), file=sys.stderr)
         return 1
 
     tty_flag = ["-it"] if sys.stdin.isatty() else ["-i"]
@@ -1345,7 +1412,7 @@ def run_docker_container(
                         )
                     add_env("HOLON_AGENT_PROVIDER", chosen)
             except local_llm.LocalLLMConfigError as exc:
-                print(f"Error: {exc}", file=sys.stderr)
+                print(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
                 return 1
             docker_cmd.extend(local_llm.container_mount_args(local_agent_dir))
             for key, value in local_llm.container_env(local_agent_dir).items():
@@ -1403,12 +1470,12 @@ def run_docker_container(
                 sweep_stale_env_files(env_file_dir())
                 env_file = write_env_file(secret_env)
             except ValueError as exc:
-                print(f"Error: {exc}.", file=sys.stderr)
+                print(f"Error: {redact_cli_error(exc)}.", file=sys.stderr)
                 return 1
             except OSError as exc:
                 # An unwritable or unreadable ~/.holon/tmp/env-files: fail closed with a clear message
                 # rather than a traceback, and never fall back to passing the credentials on the argv.
-                print(f"Error: could not write the credential env-file: {exc}.", file=sys.stderr)
+                print(f"Error: could not write the credential env-file: {redact_cli_error(exc)}.", file=sys.stderr)
                 return 1
             # Right after `docker run`. Docker reads --env-file on the client side, so the host path
             # needs no bind mount.
@@ -1520,9 +1587,9 @@ def run_doctor(args: argparse.Namespace) -> int:
         model_res = resolve_model(agent_res.value, args.model, log=False)
     except UnmappedAgentRunnerError as exc:
         if args.json:
-            print(json.dumps({"error": str(exc)}, indent=2))
+            print(json.dumps({"error": redact_cli_error(exc)}, indent=2))
         else:
-            print(f"Error: {exc}", file=sys.stderr)
+            print(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
         return 1
 
     result = run_preflight_probe(agent_res.value, model_res.value, timeout=resolve_timeout(args.timeout))
@@ -2288,7 +2355,7 @@ def main() -> None:
                     status_str = res.status.value.upper() if res else "NOT_RUN"
                     print(f"  Stage {st.upper():<10}: {status_str}")
                     if res and res.status.value == "failed" and res.error:
-                        print(f"    -> Error: {res.error}")
+                        print(f"    -> Error: {redact_cli_error(res.error)}")
                 print("========================================================\n")
                 review_res = context.stage_results.get("review")
                 if review_res and review_res.payload.get("halted_for_human"):
@@ -2301,7 +2368,7 @@ def main() -> None:
             has_failure = any(res.status.value == "failed" for res in context.stage_results.values())
             sys.exit(1 if has_failure else 0)
         except Exception as e:
-            print(f"Error during flow execution: {redact_agent_secrets(str(e))}", file=sys.stderr)
+            print(f"Error during flow execution: {redact_cli_error(e)}", file=sys.stderr)
             sys.exit(1)
 
     if args.command in ("review-loop", "review", "pr-review-loop"):
@@ -2363,7 +2430,7 @@ def main() -> None:
                     kwargs["repo_dir"] = args.repo_dir
                 sys.exit(run_docker_container("review-loop", image_name, container_args, **kwargs))
         except Exception as e:
-            print(f"Error during review-loop execution: {redact_agent_secrets(str(e))}", file=sys.stderr)
+            print(f"Error during review-loop execution: {redact_cli_error(e)}", file=sys.stderr)
             sys.exit(1)
 
     if args.command == "calibrate":
@@ -2376,7 +2443,7 @@ def main() -> None:
             )
             sys.exit(0)
         except Exception as e:
-            print(f"Error during calibration: {redact_agent_secrets(str(e))}", file=sys.stderr)
+            print(f"Error during calibration: {redact_cli_error(e)}", file=sys.stderr)
             sys.exit(1)
 
     if args.command == "init":
@@ -2541,7 +2608,7 @@ def main() -> None:
         try:
             agent_res, model_res = resolve_runner_and_model(args.agent, args.model)
         except UnmappedAgentRunnerError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+            print(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
             sys.exit(1)
             return
         args.agent, args.model = agent_res.value, model_res.value

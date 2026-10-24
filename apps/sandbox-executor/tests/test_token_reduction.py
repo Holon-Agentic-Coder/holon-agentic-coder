@@ -3569,6 +3569,66 @@ def test_detect_holon_coherence_all_negative(monkeypatch):
     assert cli.detect_holon_coherence(token_reduce=False) is False
 
 
+_RAW_DELIMITER_PROXY_FORMS = [
+    f"{prefix}alice:{{a}}{delim}{{b}}@127.0.0.1:3128"
+    for prefix in ("", "//", "http://", "socks5://")
+    for delim in ("/", "?", "#")
+] + ["alice:{a}//{b}@127.0.0.1:3128"]
+
+
+@pytest.mark.parametrize("form", _RAW_DELIMITER_PROXY_FORMS)
+def test_proxy_host_port_skips_a_password_with_raw_delimiters(form):
+    """A raw `/`, `?` or `#` in the password is userinfo, never read as the host or port (R13-N1)."""
+    proxy_url = form.format(a=make_probe("a"), b=make_probe("b"))
+
+    assert cli._proxy_host_port(proxy_url) == ("127.0.0.1", 3128)
+
+
+@pytest.mark.parametrize("proxy_url", ["http://proxy.example:notaport", "//proxy.example:99999", "alice@:x"])
+def test_proxy_host_port_returns_none_for_an_unparseable_port(proxy_url):
+    """An invalid port makes the URL unparseable instead of raising urlparse's quoting ValueError."""
+    assert cli._proxy_host_port(proxy_url) is None
+
+
+@pytest.mark.parametrize("form", _RAW_DELIMITER_PROXY_FORMS)
+def test_detect_holon_coherence_raw_delimiter_password_never_raises_or_leaks(monkeypatch, caplog, capsys, form):
+    """`holon flow` / `review-loop` Tier 3 probes the real host and prints no part of the password."""
+    first, second = make_probe("a"), make_probe("b")
+    monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
+    monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
+    monkeypatch.setenv("HOLON_PROXY_URL", form.format(a=first, b=second))
+    probed: list[tuple[str, int]] = []
+    monkeypatch.setattr(cli.socket, "create_connection", lambda host_port, **kwargs: probed.append(host_port) or True)
+
+    with caplog.at_level(logging.DEBUG, logger="sandbox_executor"):
+        assert cli.detect_holon_coherence(token_reduce=False) is True
+
+    assert probed == [("127.0.0.1", 3128)]
+    captured = capsys.readouterr()
+    for text in (caplog.text, captured.out, captured.err):
+        assert_no_fragment(text, first)
+        assert_no_fragment(text, second)
+
+
+@pytest.mark.parametrize("form", ["http://alice:{a}@proxy.example:{b}", "alice:{a}@proxy.example:{b}"])
+def test_detect_holon_coherence_unparseable_proxy_url_warns_masked(monkeypatch, caplog, capsys, form):
+    """An unparseable HOLON_PROXY_URL skips the port probe with a masked warning instead of raising."""
+    first, second = make_probe("a"), make_probe("b")
+    monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
+    monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
+    monkeypatch.setenv("HOLON_PROXY_URL", form.format(a=first, b=second))
+    monkeypatch.setattr(cli.socket, "create_connection", lambda *args, **kwargs: pytest.fail("must not probe"))
+    monkeypatch.setattr(cli.shutil, "which", lambda cmd: None)
+
+    with caplog.at_level(logging.WARNING, logger="sandbox_executor.cli"):
+        assert cli.detect_holon_coherence(token_reduce=False) is False
+
+    assert "not a valid proxy URL" in caplog.text
+    captured = capsys.readouterr()
+    for text in (caplog.text, captured.out, captured.err):
+        assert_no_fragment(text, first)
+
+
 def test_proxy_unreachable_fallback_direct_egress(host_paths, monkeypatch, caplog):
     """When proxy TCP probe fails, get_token_reduction_mounts_and_envs returns empty mounts/envs and logs warning."""
     monkeypatch.setenv("HOLON_TOKEN_REDUCE", "1")

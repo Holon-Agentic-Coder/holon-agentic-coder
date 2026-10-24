@@ -50,6 +50,67 @@ class TestPlanner(unittest.TestCase):
         self.assertEqual(metrics.get("cost"), 0.4)
         self.assertEqual(metrics.get("learning_value"), 3.5)
 
+    def test_parse_metrics_prefers_overall_section_over_step_tables(self):
+        content = """
+# Plan
+
+## Overall Plan Metrics
+
+| metric              | value |
+| ------------------- | ----- |
+| p_success_pred      | 0.80  |
+| entropy_pred        | 5.8   |
+| impact_pred         | 85.0  |
+| cost_pred           | 16.0  |
+| learning_value_pred | 4.0   |
+| ev_pred             | 52.26 |
+
+### Strategy Rationale
+
+Subsections of the overall section are still in scope.
+
+## Proposed Steps
+
+### Step 5
+
+#### Metrics
+
+| metric              | value |
+| ------------------- | ----- |
+| p_success_pred      | 0.9   |
+| entropy_pred        | 0.4   |
+| impact_pred         | 10.0  |
+| cost_pred           | 2.0   |
+| learning_value_pred | 1.0   |
+| ev_pred             | 7.38  |
+"""
+        metrics = planner.parse_metrics(content)
+        self.assertEqual(metrics.get("p_success"), 0.80)
+        self.assertEqual(metrics.get("entropy"), 5.8)
+        self.assertEqual(metrics.get("impact"), 85.0)
+        self.assertEqual(metrics.get("cost"), 16.0)
+        self.assertEqual(metrics.get("learning_value"), 4.0)
+        self.assertEqual(metrics.get("ev"), 52.26)
+
+    def test_parse_metrics_overall_section_at_end_of_document(self):
+        content = """
+# Plan
+
+### Step 1 Metrics
+
+| metric         | value |
+| -------------- | ----- |
+| impact_pred    | 3.0   |
+
+## Overall Plan Metrics
+
+| metric         | value |
+| -------------- | ----- |
+| impact_pred    | 42.0  |
+"""
+        metrics = planner.parse_metrics(content)
+        self.assertEqual(metrics, {"impact": 42.0})
+
     def test_load_metrics_config(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             # Case 1: missing config file -> default values (lambda=0.3, mu=0.5)

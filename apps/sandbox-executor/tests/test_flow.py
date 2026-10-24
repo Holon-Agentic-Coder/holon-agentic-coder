@@ -19,6 +19,7 @@ from sandbox_executor.flow import (
     PipelineEngine,
     StageResult,
     StageStatus,
+    build_pr_review_consensus_report,
     check_and_resolve_stage_conflicts,
     check_pr_mergeability,
     create_or_update_pr,
@@ -43,6 +44,7 @@ from sandbox_executor.flow import (
     run_review_stage,
     save_checkpoint,
 )
+from sandbox_executor.ledger import parse_commit_trailers
 
 
 class TestFlowDataModels:
@@ -1056,7 +1058,12 @@ class TestReviewMergeabilityGuards:
             def git_side_effect(args, **kwargs):
                 cmd = args[0]
                 if cmd == "rev-parse":
-                    ref = args[2]
+                    ref = args[-1]
+                    # Commit-peel lookups ('<ref>^{commit}') resolve the chosen refs to SHAs.
+                    if ref == "origin/main^{commit}":
+                        return MagicMock(returncode=0, stdout="a" * 40, stderr="")
+                    if ref == "origin/feature-branch^{commit}":
+                        return MagicMock(returncode=0, stdout="b" * 40, stderr="")
                     if ref == "origin/main":
                         return MagicMock(returncode=0, stdout="origin/main")
                     if ref == "feature-branch":
@@ -1065,9 +1072,9 @@ class TestReviewMergeabilityGuards:
                         return MagicMock(returncode=0, stdout="origin/feature-branch")
                     return MagicMock(returncode=1, stdout="")
                 if cmd == "merge-tree":
-                    # args: ['merge-tree', '--write-tree', branch_ref, target_ref]
-                    assert args[2] == "origin/feature-branch"
-                    assert args[3] == "origin/main"
+                    # args: ['merge-tree', '--write-tree', branch_sha, target_sha]
+                    assert args[2] == "b" * 40
+                    assert args[3] == "a" * 40
                     return MagicMock(returncode=0, stdout="tree-sha")
                 return MagicMock(returncode=0, stdout="")
 
@@ -1869,3 +1876,226 @@ class TestStageBudgets:
         assert res["total_iterations"] == 1
         assert res["budget_breach"]["budget_name"] == "review_iteration"
         assert res["iteration_summaries"] == ["iteration 1 review: failed (16.7 min / 15 min)"]
+
+
+# Identity and signing overrides so fixture commits never depend on the host's global git configuration.
+_TEST_GIT_CONFIG = [
+    "-c",
+    "user.name=Holon Test",
+    "-c",
+    "user.email=test@holon.invalid",
+    "-c",
+    "commit.gpgsign=false",
+    "-c",
+    "tag.gpgsign=false",
+]
+
+
+def _git(repo: Path, *args: str) -> str:
+    """Run a git command in a fixture repository and return its stripped stdout."""
+    proc = subprocess.run(
+        ["git", *_TEST_GIT_CONFIG, *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return proc.stdout.strip()
+
+
+def _init_mergeability_repo(repo: Path) -> Path:
+    """Build a local repository (no origin remote) for real merge-tree checks.
+
+    Layout:
+        main:             shared.txt edited to "main change" after the branches fork.
+        clean-feature:    adds feature.txt only, so it merges cleanly into main.
+        conflict-feature: edits the same line of shared.txt differently, so it conflicts with main.
+
+    The repository is left with main checked out.
+    """
+    repo.mkdir(parents=True, exist_ok=True)
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "shared.txt").write_text("base line\n", encoding="utf-8")
+    _git(repo, "add", "shared.txt")
+    _git(repo, "commit", "-q", "-m", "base")
+
+    _git(repo, "checkout", "-q", "-b", "clean-feature")
+    (repo / "feature.txt").write_text("feature only\n", encoding="utf-8")
+    _git(repo, "add", "feature.txt")
+    _git(repo, "commit", "-q", "-m", "clean feature")
+
+    _git(repo, "checkout", "-q", "main")
+    _git(repo, "checkout", "-q", "-b", "conflict-feature")
+    (repo / "shared.txt").write_text("feature change\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "conflicting feature")
+
+    _git(repo, "checkout", "-q", "main")
+    (repo / "shared.txt").write_text("main change\n", encoding="utf-8")
+    _git(repo, "commit", "-q", "-am", "main change")
+    return repo
+
+
+class TestMergeabilityRefResolution:
+    """Real-repository tests: unresolvable refs are reported as MISSING_REF, never as merge conflicts."""
+
+    @pytest.fixture
+    def repo(self, tmp_path: Path) -> Path:
+        return _init_mergeability_repo(tmp_path / "repo")
+
+    @pytest.fixture(autouse=True)
+    def _no_gh(self):
+        # Force the local git path so no test can reach GitHub over the network.
+        with patch("shutil.which", return_value=None) as which:
+            yield which
+
+    def test_missing_branch_ref_yields_missing_ref(self, repo: Path):
+        res = check_pr_mergeability(str(repo), "does-not-exist", "main")
+        assert res["source"] == "git_local"
+        assert res["merge_state_status"] == "MISSING_REF"
+        assert res["mergeable"] == "UNKNOWN"
+        assert res["is_dirty"] is False
+        assert "does-not-exist" in res["diagnostics"]["missing_ref"]
+        assert res["diagnostics"]["ref_role"] == "branch"
+        assert res["diagnostics"]["candidates_tried"] == ["does-not-exist", "origin/does-not-exist"]
+
+    def test_missing_target_ref_yields_missing_ref(self, repo: Path):
+        res = check_pr_mergeability(str(repo), "clean-feature", "no-such-target")
+        assert res["merge_state_status"] == "MISSING_REF"
+        assert res["mergeable"] == "UNKNOWN"
+        assert res["is_dirty"] is False
+        assert res["diagnostics"]["ref_role"] == "target"
+        assert res["diagnostics"]["missing_ref"] == "no-such-target"
+        assert "cannot evaluate mergeability for ref no-such-target" in res["diagnostics"]["message"]
+
+    def test_genuine_conflict_yields_conflicting_dirty(self, repo: Path):
+        res = check_pr_mergeability(str(repo), "conflict-feature", "main")
+        assert res["mergeable"] == "CONFLICTING"
+        assert res["merge_state_status"] == "DIRTY"
+        assert res["is_dirty"] is True
+
+    def test_clean_branch_yields_mergeable_clean(self, repo: Path):
+        res = check_pr_mergeability(str(repo), "clean-feature", "main")
+        assert res["mergeable"] == "MERGEABLE"
+        assert res["merge_state_status"] == "CLEAN"
+        assert res["is_dirty"] is False
+
+    def test_review_loop_reports_missing_ref_without_find_dirty(self, repo: Path):
+        ctx = FlowContext(repo_dir=str(repo), intent_data={"target_branch": "main"}, dry_run=True, token_reduce=False)
+        ci_passed = {"source": "local_tests", "all_passed": True, "passed": 1, "failed": 0, "pending": 0}
+        with patch("sandbox_executor.flow.probe_ci_checks", return_value=ci_passed):
+            res = run_review_loop(ctx, target="does-not-exist", max_iterations=3, dry_run=True)
+
+        assert not any(fid.startswith("FIND-DIRTY") for fid in res["findings"])
+        assert res["findings"] == ["FIND-REF-001"]
+        assert res["consensus"]["approved"] is False
+        assert res["consensus"]["status"] != "conflicted_dirty"
+        assert res["mergeability"]["merge_state_status"] == "MISSING_REF"
+        # A ref that does not resolve will not resolve on the next pass either, so the loop stops early.
+        assert res["total_iterations"] == 1
+        assert any("cannot evaluate mergeability for ref does-not-exist" in line for line in ctx.logs)
+        assert not any("CI SIGNAL SUPPRESSED" in line for line in ctx.logs)
+
+        # The loop's own trailers must carry the new finding id through the round trip used by ledger consumers.
+        assert res["severity"] == "important"
+        trailers = parse_commit_trailers(res["trailers"])
+        assert trailers["review_finding_ids"] == ["FIND-REF-001"]
+        assert trailers["review_severity"] == "important"
+        assert trailers["review_iteration"] == 1
+
+    def test_consensus_report_renders_mergeability_note(self):
+        note = "cannot evaluate mergeability for ref does-not-exist against main: ref could not be resolved."
+        consensus = {
+            "approved": False,
+            "status": "rejected",
+            "findings": ["FIND-REF-001"],
+            "mergeability_note": note,
+        }
+        body = build_pr_review_consensus_report(".", "does-not-exist", consensus)
+        assert "**Finding `FIND-REF-001`**" in body
+        assert note in body
+
+        without_note = build_pr_review_consensus_report(".", "does-not-exist", {**consensus, "mergeability_note": None})
+        assert "cannot evaluate mergeability" not in without_note
+
+    def test_review_stage_reports_missing_ref_instead_of_ci_signal_suppressed(self):
+        context = FlowContext(
+            repo_dir=".",
+            execution_branch="I-100/P-100/E-100",
+            plan_branch="I-100/P-100",
+            intent_branch="I-100",
+            dry_run=True,
+            token_reduce=False,
+        )
+        context.stage_results["execute"] = StageResult(
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.SUCCESS,
+            payload={"test_pass_rate": 1.0, "exit_code": 0},
+        )
+        missing_ref = {
+            "mergeable": "UNKNOWN",
+            "merge_state_status": "MISSING_REF",
+            "is_dirty": False,
+            "source": "git_local",
+            "pr_number": None,
+            "status_check_rollup": None,
+            "diagnostics": {
+                "missing_ref": "origin/I-100/P-100/E-100",
+                "ref_role": "branch",
+                "candidates_tried": ["I-100/P-100/E-100", "origin/I-100/P-100/E-100"],
+                "stderr": "fatal: Needed a single revision",
+                "message": "cannot evaluate mergeability for ref origin/I-100/P-100/E-100",
+            },
+        }
+        with patch("sandbox_executor.flow.check_pr_mergeability", return_value=missing_ref):
+            result = run_review_stage(context)
+
+        assert result.status == StageStatus.FAILED
+        assert result.payload["consensus"]["approved"] is False
+        assert result.error is not None
+        assert "CI SIGNAL SUPPRESSED" not in result.error
+        assert "cannot evaluate mergeability for ref origin/I-100/P-100/E-100" in result.error
+        assert "MISSING_REF" in result.error
+
+    def test_non_repository_yields_unknown_not_missing_ref(self, tmp_path: Path):
+        # Outside a repository no ref can resolve, so blaming a specific ref would be a misdiagnosis.
+        res = check_pr_mergeability(str(tmp_path), "feature", "main")
+        assert res["mergeable"] == "UNKNOWN"
+        assert res["merge_state_status"] == "UNKNOWN"
+        assert res["is_dirty"] is False
+        assert "not a git repository" in res["diagnostics"]["error"]
+
+    # Exploratory probes (plan Step 4): does "exit 1 means conflict" hold once both refs resolve?
+
+    def test_unrelated_histories_yield_unknown_with_stderr(self, repo: Path):
+        _git(repo, "checkout", "-q", "--orphan", "orphan")
+        _git(repo, "rm", "-rfq", ".")
+        (repo / "orphan.txt").write_text("orphan\n", encoding="utf-8")
+        _git(repo, "add", "orphan.txt")
+        _git(repo, "commit", "-q", "-m", "orphan root")
+        _git(repo, "checkout", "-q", "-f", "main")
+
+        res = check_pr_mergeability(str(repo), "orphan", "main")
+        assert res["mergeable"] == "UNKNOWN"
+        assert res["merge_state_status"] == "UNKNOWN"
+        assert res["is_dirty"] is False
+        assert res["diagnostics"]["merge_tree_exit_code"] not in (0, 1)
+        assert res["diagnostics"]["stderr"]
+
+    def test_annotated_tag_is_peeled_to_commit(self, repo: Path):
+        _git(repo, "tag", "-a", "v-clean", "-m", "annotated tag", "clean-feature")
+        res = check_pr_mergeability(str(repo), "v-clean", "main")
+        assert res["mergeable"] == "MERGEABLE"
+        assert res["merge_state_status"] == "CLEAN"
+
+    def test_tree_object_ref_yields_missing_ref(self, repo: Path):
+        tree_sha = _git(repo, "rev-parse", "main^{tree}")
+        res = check_pr_mergeability(str(repo), tree_sha, "main")
+        assert res["merge_state_status"] == "MISSING_REF"
+        assert res["is_dirty"] is False
+        assert res["diagnostics"]["ref_role"] == "branch"
+
+    def test_empty_branch_resolves_to_head(self, repo: Path):
+        _git(repo, "checkout", "-q", "clean-feature")
+        res = check_pr_mergeability(str(repo), "", "main")
+        assert res["mergeable"] == "MERGEABLE"
+        assert res["merge_state_status"] == "CLEAN"

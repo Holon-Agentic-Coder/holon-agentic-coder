@@ -76,8 +76,25 @@ def get_file_structure(root_dir, max_depth=3):
 
 
 def parse_metrics(content):
-    """Parse every ``| metric | value |`` row, normalising ``*_pred`` names (see :func:`artefacts.parse_metrics`)."""
-    return artefacts.parse_metrics(content)
+    """Parse the plan-level predicted metrics from a plan markdown document.
+
+    When the document has a ``## Overall Plan Metrics`` section, only the metric rows inside that
+    section (up to the next ``## `` heading) are read, so per-step ``### Metrics`` tables later in
+    the plan cannot overwrite the plan-level values. Documents without that heading fall back to
+    scanning every metric row, where the last matching row wins. Row parsing and ``*_pred`` name
+    normalisation are delegated to :func:`artefacts.parse_metrics`.
+    """
+    lines = content.splitlines()
+    overall_heading = "## Overall Plan Metrics"
+    start = next((i for i, line in enumerate(lines) if line.strip().startswith(overall_heading)), None)
+    if start is not None:
+        section = []
+        for line in lines[start + 1 :]:
+            if line.startswith("## "):
+                break
+            section.append(line)
+        lines = section
+    return artefacts.parse_metrics("\n".join(lines))
 
 
 def load_metrics_config(repo_dir: str) -> dict:

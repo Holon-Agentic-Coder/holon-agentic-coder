@@ -1675,7 +1675,12 @@ class FakeRoleAgents:
         if self.executor_mode == "empty":
             # Model a container that claims success with perfect tests while changing nothing.
             row["test_pass_rate"] = 1.0
-        _append_jsonl(work / "holon-knowledge/ledger/executions.jsonl", row)
+        if self.executor_mode == "empty_no_row":
+            # Model a container that pushed only bookkeeping (no ledger summary row, no effective change).
+            (work / "plans").mkdir(exist_ok=True)
+            (work / "plans" / f"{exec_id}_notes.md").write_text("notes\n", encoding="utf-8")
+        else:
+            _append_jsonl(work / "holon-knowledge/ledger/executions.jsonl", row)
         self._push(work, exec_branch, f"execute: {exec_id} completed for plan {plan_branch}")
         return 0
 
@@ -2096,6 +2101,18 @@ class TestFlowRoleDispatch:
         assert latest["agent_output_bytes"] == 12  # Authoritative fields are repeated, not merged backwards.
         # Append-only: the container's original row is untouched.
         assert exec_rows[0]["test_pass_rate"] == 1.0
+        error = results["execute"].error or ""
+        assert "exited with code 0" in error
+        assert "container recorded status 'success'; recorded a superseding status 'failed' row" in error
+        # The local execution branch is fast-forwarded to the pushed superseding row (C6-N1).
+        local_rows = _ledger_rows(host, ctx.execution_branch, "executions.jsonl")
+        assert [r["status"] for r in local_rows if r.get("execution_id") == exec_id] == ["success", "failed"]
+        assert _git(host, "rev-parse", ctx.execution_branch) == _git(
+            host, "rev-parse", f"origin/{ctx.execution_branch}"
+        )
+        assert _git(host, "ls-remote", str(origin), ctx.execution_branch).split()[0] == _git(
+            host, "rev-parse", ctx.execution_branch
+        )
         assert _git(host, "status", "--porcelain", "--untracked-files=no") == ""
         assert _git(host, "worktree", "list").count("\n") == 0
 
@@ -2112,6 +2129,86 @@ class TestFlowRoleDispatch:
         assert res.status == StageStatus.FAILED
         rows = _ledger_rows(host, f"origin/{ctx.execution_branch}", "executions.jsonl")
         assert [r["status"] for r in rows] == ["failure"]
+        error = res.error or ""
+        assert "container already recorded status 'failure': Plan execution failed" in error
+        assert "no superseding row was written" in error
+        assert "recorded a superseding" not in error
+        assert res.payload["container_status"] == "failure"
+        assert res.payload["superseding_row_recorded"] is False
+
+    def test_empty_execution_without_summary_row_reports_missing_row(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin, executor_mode="empty_no_row")
+        ctx = _dispatch_context(host, agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+
+        res = run_execute_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        error = res.error or ""
+        assert "carries no executions.jsonl summary row" in error
+        assert "so no superseding row was recorded" in error
+        assert "recorded a superseding" not in error
+        assert res.payload["container_status"] is None
+        assert res.payload["superseding_row_recorded"] is False
+        assert _ledger_rows(host, f"origin/{ctx.execution_branch}", "executions.jsonl") == []
+
+    def test_empty_execution_reports_failed_superseding_write(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin, executor_mode="empty")
+        ctx = _dispatch_context(host, agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+        from sandbox_executor import flow as flow_module
+
+        real_run_git = flow_module.run_git
+
+        def fake_run_git(args, *a, **kw):
+            if args and args[0] == "push":
+                raise RuntimeError("push rejected: token=ghp_supersecret123 expired")
+            return real_run_git(args, *a, **kw)
+
+        with patch("sandbox_executor.flow.run_git", side_effect=fake_run_git):
+            res = run_execute_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        error = res.error or ""
+        assert "recording the superseding 'failed' row (failure_reason 'empty_diff') failed" in error
+        assert "the ledger still shows 'success'" in error
+        assert "push rejected" in error
+        assert "ghp_supersecret123" not in error
+        assert res.payload["superseding_row_recorded"] is False
+        rows = _ledger_rows(host, f"origin/{ctx.execution_branch}", "executions.jsonl")
+        assert [r["status"] for r in rows] == ["success"]
+        assert _ledger_rows(host, ctx.execution_branch, "executions.jsonl") == rows
+
+    def test_superseding_row_leaves_diverged_local_branch_untouched(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin, executor_mode="empty")
+        ctx = _dispatch_context(host, agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+        from sandbox_executor import flow as flow_module
+
+        real_track = flow_module._track_local_branch
+
+        def diverge_local(context, branch):
+            real_track(context, branch)
+            if "/E-" in branch:
+                tree = _git(host, "rev-parse", f"{branch}^{{tree}}")
+                commit = _git(host, "commit-tree", tree, "-p", branch, "-m", "local operator commit")
+                _git(host, "update-ref", f"refs/heads/{branch}", commit)
+
+        with patch("sandbox_executor.flow._track_local_branch", side_effect=diverge_local):
+            res = run_execute_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        assert res.payload["superseding_row_recorded"] is True
+        assert _git(host, "log", "-1", "--format=%s", ctx.execution_branch) == "local operator commit"
+        assert any("has diverged from origin" in line for line in ctx.logs)
+        rows = _ledger_rows(host, f"origin/{ctx.execution_branch}", "executions.jsonl")
+        assert [r["status"] for r in rows] == ["success", "failed"]
 
     def test_stage3_agent_failure_status_fails_stage(self, flow_repos, tmp_path):
         host, origin = flow_repos

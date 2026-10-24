@@ -2307,7 +2307,8 @@ def _append_superseding_execution_row(context: FlowContext, exec_branch: str, ro
     """Append a superseding executions.jsonl row on the execution branch and push it.
 
     Works in a temporary detached worktree so the operator's checkout is never disturbed. Earlier
-    rows are left untouched (the ledger is append-only).
+    rows are left untouched (the ledger is append-only). After the push, origin/<branch> and the
+    local branch are fast-forwarded to the pushed commit so local readers see the superseding row.
 
     Returns:
         str | None: None on success, otherwise a description of what failed.
@@ -2330,15 +2331,45 @@ def _append_superseding_execution_row(context: FlowContext, exec_branch: str, ro
             cwd=worktree,
             env=commit_env,
         )
+        pushed_sha = run_git(["rev-parse", "HEAD"], cwd=worktree).stdout.strip()
         run_git(["push", "origin", f"HEAD:refs/heads/{exec_branch}"], cwd=worktree, timeout=300)
-        run_git(["update-ref", f"refs/remotes/origin/{exec_branch}", "HEAD"], cwd=worktree)
-        return None
     except (RuntimeError, TimeoutError, OSError) as exc:
         return redact_text(str(exc))
     finally:
         run_git(["worktree", "remove", "--force", worktree], cwd=repo_dir, check=False)
         run_git(["worktree", "prune"], cwd=repo_dir, check=False)
         shutil.rmtree(tmp_root, ignore_errors=True)
+    # The row is on origin now: aligning local refs is best-effort and never reported as a failed write.
+    _sync_local_execution_refs(context, exec_branch, pushed_sha)
+    return None
+
+
+def _sync_local_execution_refs(context: FlowContext, exec_branch: str, pushed_sha: str) -> None:
+    """Fast-forward origin/<branch> and the local branch to a commit just pushed to origin.
+
+    Keeps local readers (``holon calibrate``, ``git log``) on the same ledger state as origin. A local
+    branch that has diverged from the pushed commit is left untouched and reported instead.
+    """
+    repo_dir = context.repo_dir
+    remote_ref = f"refs/remotes/origin/{exec_branch}"
+    if run_git(["update-ref", remote_ref, pushed_sha], cwd=repo_dir, check=False).returncode != 0:
+        context.log(f"Warning: could not update '{remote_ref}' to the pushed commit {pushed_sha[:12]}.")
+    local_ref = f"refs/heads/{exec_branch}"
+    local = run_git(["rev-parse", "--verify", "--quiet", local_ref], cwd=repo_dir, check=False)
+    local_sha = local.stdout.strip() if local.returncode == 0 and isinstance(local.stdout, str) else ""
+    if local_sha:
+        ancestor = run_git(["merge-base", "--is-ancestor", local_sha, pushed_sha], cwd=repo_dir, check=False)
+        if ancestor.returncode != 0:
+            context.log(
+                f"Warning: local branch '{exec_branch}' has diverged from origin; it was not fast-forwarded "
+                f"to the pushed commit {pushed_sha[:12]}."
+            )
+            return
+    res = run_git(["branch", "-f", "--no-track", exec_branch, pushed_sha], cwd=repo_dir, check=False)
+    if res.returncode != 0:
+        context.log(
+            f"Warning: could not fast-forward local branch '{exec_branch}' to the pushed commit {pushed_sha[:12]}."
+        )
 
 
 def _execution_parent_plan_branch(execution_branch: str) -> str | None:
@@ -2862,8 +2893,26 @@ def run_execute_stage(context: FlowContext) -> StageResult:
 
     if not changed:
         guard_summary = empty_diff_summary(context.plan_branch)
-        guard_payload = {**base_payload, "status": EMPTY_DIFF_STATUS, "failure_reason": EMPTY_DIFF_FAILURE_REASON}
-        if summary_row and container_status not in FAILED_EXECUTION_STATUSES:
+        guard_payload = {
+            **base_payload,
+            "status": EMPTY_DIFF_STATUS,
+            "failure_reason": EMPTY_DIFF_FAILURE_REASON,
+            "container_status": container_status,
+            "superseding_row_recorded": False,
+        }
+        agent_exit = f"the executor agent exited with code {exit_code}"
+        if summary_row is None:
+            outcome = (
+                f"{agent_exit} but '{exec_branch}' carries no executions.jsonl summary row for {exec_id}, "
+                "so no superseding row was recorded"
+            )
+        elif container_status in FAILED_EXECUTION_STATUSES:
+            detail = summary_row.get("summary") or "no summary"
+            outcome = (
+                f"{agent_exit} and the container already recorded status '{container_status}': {detail}; "
+                "no superseding row was written"
+            )
+        else:
             superseding = {k: v for k, v in summary_row.items() if k != "test_pass_rate"}
             try:
                 prior_revision = int(summary_row.get("ledger_revision") or 1)
@@ -2879,15 +2928,24 @@ def run_execute_stage(context: FlowContext) -> StageResult:
                 }
             )
             write_error = _append_superseding_execution_row(context, exec_branch, superseding)
+            guard_payload["superseding_row_recorded"] = write_error is None
             if write_error:
                 context.log(f"Warning: could not record the empty-diff failure row on '{exec_branch}': {write_error}")
-            guard_payload["superseding_row_recorded"] = write_error is None
+                outcome = (
+                    f"{agent_exit} and the container recorded status '{container_status}', but recording the "
+                    f"superseding '{EMPTY_DIFF_STATUS}' row (failure_reason '{EMPTY_DIFF_FAILURE_REASON}') failed, "
+                    f"so the ledger still shows '{container_status}': {write_error}"
+                )
+            else:
+                outcome = (
+                    f"{agent_exit} and the container recorded status '{container_status}'; recorded a superseding "
+                    f"status '{EMPTY_DIFF_STATUS}' row (failure_reason '{EMPTY_DIFF_FAILURE_REASON}')"
+                )
         return _stage_failure(
             context,
             FlowStage.EXECUTE,
             start_time,
-            f"Execute stage failed: {guard_summary}; recorded status '{EMPTY_DIFF_STATUS}' "
-            f"(failure_reason '{EMPTY_DIFF_FAILURE_REASON}') and no PR will be created or updated.",
+            f"Execute stage failed: {guard_summary}; {outcome}; no PR will be created or updated.",
             **guard_payload,
         )
 

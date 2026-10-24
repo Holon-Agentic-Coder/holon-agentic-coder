@@ -449,6 +449,8 @@ class TestFlowStages:
         git("add", "-A")
         git("commit", "-q", "-m", "initial")
         head_before = git("rev-parse", "HEAD").strip()
+        # HEAD stays on main: Stage 5 checks the execution branch out itself before calibrating.
+        git("branch", "I-100-intent/P-200-plan/E-300-exec/_")
 
         ctx = FlowContext(
             repo_dir=str(tmp_path),
@@ -472,7 +474,9 @@ class TestFlowStages:
         assert cal_rows[0]["calibration_report_path"] == "plans/P-200-plan_calibration.md"
 
         # Nothing is committed on the fallback path: the row and report remain working-tree changes.
+        assert git("rev-parse", "--abbrev-ref", "HEAD").strip() == "I-100-intent/P-200-plan/E-300-exec/_"
         assert git("rev-parse", "HEAD").strip() == head_before
+        assert git("rev-parse", "main").strip() == head_before
         assert git("branch", "--list", "*calibrated").strip() == ""
         status = git("status", "--porcelain", "--untracked-files=all")
         assert "holon-knowledge/ledger/executions.jsonl" in status
@@ -548,6 +552,7 @@ class TestFlowStages:
             skip_push=True,
         )
         with (
+            patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
             patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError("calibration failed")),
             patch("sandbox_executor.flow.converge_prettier", side_effect=OSError("prettier missing")),
         ):
@@ -574,6 +579,7 @@ class TestFlowStages:
             skip_push=True,
         )
         with (
+            patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
             patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError(f"fetch failed {sample_value}")),
             patch("sandbox_executor.flow.converge_prettier"),
         ):
@@ -605,6 +611,7 @@ class TestFlowStages:
             skip_push=True,
         )
         with (
+            patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
             patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError(hook_output)),
             patch("sandbox_executor.flow.converge_prettier"),
         ):
@@ -682,74 +689,34 @@ class TestFlowStages:
         assert all(sample_value not in line for line in ctx.logs)
         assert all(sample_value not in rec.getMessage() for rec in caplog.records)
 
-    def test_stage1_intent_fails_fast_when_ledger_append_fails(self, tmp_path):
-        """A failed Stage 1 intent append raises so the engine halts the pipeline."""
-        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            intent_data={"slug": "stage1-append-fail", "goal": "Fail fast"},
-            dry_run=False,
-        )
-        with (
-            patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=0)),
-            patch("sandbox_executor.flow.try_append_ledger_line", return_value=False),
-            pytest.raises(RuntimeError, match="Stage 1 intent record"),
-        ):
-            run_intent_stage(ctx)
+    @pytest.mark.parametrize("stage", ["intent", "plan", "execute"])
+    def test_stage_fails_fast_when_role_agent_ledger_append_fails(self, flow_repos, stage):
+        """A role container whose ledger append fails exits non-zero, and the stage fails instead of proceeding.
 
-    def test_stage2_plan_fails_fast_when_ledger_append_fails(self, tmp_path):
-        """A failed Stage 2 plan append raises so the engine halts the pipeline."""
-        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
-        (tmp_path / "plans").mkdir(parents=True)
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            intent_branch="I-12345-my-intent/_",
-            intent_data={"slug": "my-intent", "goal": "Generate plan"},
-            agent="antigravity-agent",
-            model="gemini-3.8-flash-medium",
-            dry_run=False,
-        )
-        with (
-            patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=0)),
-            patch("sandbox_executor.flow.try_append_ledger_line", return_value=False),
-            pytest.raises(RuntimeError, match="Stage 2 plan record"),
-        ):
-            run_plan_stage(ctx)
+        Stages 1-3 no longer append intents/plans/executions rows on the host: the dispatched container does, under
+        LedgerLock, and a failed append surfaces as its non-zero exit code.
+        """
+        host, _origin = flow_repos
+        overrides: dict[str, Any] = {"intent_branch": "I-1-x/_", "plan_branch": "I-1-x/P-1-claude-agent-m/_"}
+        ctx = _dispatch_context(host, MagicMock(return_value=1), **overrides)
+        run_stage = {"intent": run_intent_stage, "plan": run_plan_stage, "execute": run_execute_stage}[stage]
 
-    def test_stage3_execute_fails_fast_when_ledger_append_fails(self, tmp_path):
-        """A failed Stage 3 execution summary append raises so the engine halts the pipeline."""
-        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            plan_branch="I-123-intent/P-456-plan/_",
-            agent="antigravity-agent",
-            model="gemini-3.8-flash-medium",
-            dry_run=False,
-        )
-        with (
-            patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=0)),
-            patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="test pass", stderr="")),
-            patch("sandbox_executor.flow.try_append_ledger_line", return_value=False),
-            pytest.raises(RuntimeError, match="Stage 3 execution summary"),
-        ):
-            run_execute_stage(ctx)
+        res = run_stage(ctx)
 
-    def test_engine_halts_when_stage1_ledger_append_fails(self, tmp_path):
-        """The engine converts a failed Stage 1 append into a FAILED stage and stops."""
-        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            intent_data={"slug": "engine-append-fail", "goal": "Fail fast"},
-            dry_run=False,
-        )
-        with (
-            patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=0)),
-            patch("sandbox_executor.flow.try_append_ledger_line", return_value=False),
-        ):
-            results = PipelineEngine(ctx).run()
+        assert res.status == StageStatus.FAILED
+        assert "exited with code 1" in (res.error or "")
+
+    def test_engine_halts_when_stage1_role_agent_fails(self, flow_repos):
+        """The engine stops at a failed Stage 1 dispatch and never reaches the plan stage."""
+        host, _origin = flow_repos
+        dispatcher = MagicMock(return_value=1)
+        ctx = _dispatch_context(host, dispatcher)
+
+        results = PipelineEngine(ctx).run()
 
         assert results["intent"].status == StageStatus.FAILED
         assert "plan" not in results
+        assert [c.args[0] for c in dispatcher.call_args_list] == ["intent-creator"]
 
 
 class TestFlowResumptionAndErrorHandling:
@@ -1225,7 +1192,12 @@ class TestReviewMergeabilityGuards:
         # 1. Execute stage: proxy settings reach the role-agent dispatcher, which mounts them into the container
         dispatcher = MagicMock(return_value=0)
         ctx = FlowContext(
-            token_reduce=True, mitm_web=True, plan_branch="I-test/P-1/_", dry_run=False, dispatcher=dispatcher
+            repo_dir=str(tmp_path),
+            token_reduce=True,
+            mitm_web=True,
+            plan_branch="I-test/P-1/_",
+            dry_run=False,
+            dispatcher=dispatcher,
         )
         with patch("sandbox_executor.flow.run_git") as mock_git:
             mock_git.return_value = MagicMock(returncode=0, stdout="")
@@ -3362,3 +3334,103 @@ class TestStageTargetsIgnoreOperatorHead:
         ctx = _dispatch_context(host, agents, dispatcher=_record)
         assert run_intent_stage(ctx).status == StageStatus.SUCCESS
         assert modes == [0o644]
+
+
+# ---------------------------------------------------------------------------
+# Merge interactions: #93 runner resolution / pre-flight and #90 Stage 5 reconciliation with role-agent dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestFlowDispatchMergeInteractions:
+    """Regression tests for behaviour that only holds when the merged features work together."""
+
+    def test_flow_dispatches_the_runner_and_model_resolved_by_the_cli_after_preflight(self, flow_repos, monkeypatch):
+        """'holon flow' resolves runner/model (#93), pre-flights them, then Stage 1 dispatches with those values."""
+        from sandbox_executor.agent_defaults import DEFAULT_MODELS
+
+        host, _origin = flow_repos
+        intent_file = host.parent / "intent.json"
+        intent_file.write_text(json.dumps({"slug": "resolved-runner", "goal": "g"}), encoding="utf-8")
+        monkeypatch.setenv("HOLON_AGENT", "claude-agent")
+        monkeypatch.delenv("HOLON_SKIP_PREFLIGHT", raising=False)
+        order = MagicMock()
+        order.probe.return_value = MagicMock(ok=True)
+        order.dispatch.return_value = 1  # stop the flow at Stage 1; only the dispatch arguments matter here
+
+        with (
+            patch("sandbox_executor.cli.run_preflight_probe", order.probe),
+            patch("sandbox_executor.cli.dispatch_role_agent", order.dispatch),
+            patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
+            patch("sys.argv", ["holon", "flow", str(intent_file), "--repo-dir", str(host), "--skip-review"]),
+            pytest.raises(SystemExit),
+        ):
+            cli_main()
+
+        expected = ("claude-agent", DEFAULT_MODELS["claude"])
+        assert [c[0] for c in order.mock_calls] == ["probe", "dispatch"]
+        assert order.probe.call_args.args[:2] == expected
+        assert order.dispatch.call_args.args[0] == "intent-creator"
+        assert order.dispatch.call_args.args[1:3] == expected
+
+    def test_stage5_checks_out_execution_branch_then_commits_reconciliation_on_calibrated(self, tmp_path):
+        """Stage 5 calibrates from the execution branch (not the operator's HEAD) and, on success, commits the
+        reconciliation rows on /calibrated before fast-forwarding the execution branch to it."""
+
+        def git(*args: str) -> str:
+            return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True).stdout
+
+        execution_branch = "I-100-intent/P-200-plan/E-300-exec/_"
+        calibrated_branch = "I-100-intent/P-200-plan/E-300-exec/calibrated"
+        git("init", "-q", "-b", "main")
+        _configure_identity(tmp_path)
+        ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
+        ledger.parent.mkdir(parents=True)
+        ledger.write_text("", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "initial")
+        git("checkout", "-q", "-b", execution_branch)
+        (tmp_path / "src.py").write_text("x = 1\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "execution change")
+        git("checkout", "-q", "main")  # the operator's checkout is elsewhere when Stage 5 starts
+        main_tip = git("rev-parse", "main").strip()
+
+        seen_head: list[str] = []
+
+        def fake_run_calibrate(**_kwargs):
+            seen_head.append(git("rev-parse", "--abbrev-ref", "HEAD").strip())
+            git("checkout", "-q", "-b", calibrated_branch)
+            (tmp_path / "plans").mkdir()
+            (tmp_path / "plans" / "P-200-plan_calibration.md").write_text("# Calibration\n", encoding="utf-8")
+            git("add", "plans")
+            git("commit", "-q", "-m", "calibration report")
+            report = MagicMock()
+            report.calibrated_branch = calibrated_branch
+            report.to_dict.return_value = {"calibrated_branch": calibrated_branch}
+            return report
+
+        def fake_reconcile(**kwargs):
+            _append_jsonl(Path(kwargs["ledger_path"]), {"entry_type": "action", "action_id": "ACT-RECON-1"})
+
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch=execution_branch,
+            plan_branch="I-100-intent/P-200-plan/_",
+            dry_run=False,
+            skip_push=True,
+        )
+        with (
+            patch("sandbox_executor.flow.run_calibrate", side_effect=fake_run_calibrate),
+            patch("sandbox_executor.flow.reconcile_records", side_effect=fake_reconcile),
+        ):
+            res = run_calibrate_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        assert seen_head == [execution_branch]
+        assert git("log", "-1", "--format=%s", calibrated_branch).strip() == (
+            "chore(calibration): record stage 5 reconciliation"
+        )
+        assert "ACT-RECON-1" in git("show", f"{calibrated_branch}:holon-knowledge/ledger/executions.jsonl")
+        assert git("rev-parse", execution_branch).strip() == git("rev-parse", calibrated_branch).strip()
+        assert git("rev-parse", "main").strip() == main_tip
+        assert git("status", "--porcelain").strip() == ""

@@ -868,14 +868,18 @@ class TestSharedRoleDispatch(unittest.TestCase):
     """'holon intent|plan|execute' and 'holon flow' share one dispatch path (dispatch_role_agent)."""
 
     def test_normalise_agent_id_and_image_resolution(self):
+        from sandbox_executor.agent_defaults import UnmappedAgentRunnerError
         from sandbox_executor.cli import normalise_agent_id, resolve_role_image
 
         self.assertEqual(normalise_agent_id("claude-agent"), "claude")
         self.assertEqual(normalise_agent_id("agent-codex"), "codex")
-        self.assertEqual(normalise_agent_id(None), "antigravity")
         self.assertEqual(resolve_role_image("planner", "claude"), "holon/agent-claude")
-        self.assertEqual(resolve_role_image("executor", "newrunner"), "holon/agent-newrunner")
+        self.assertEqual(resolve_role_image("executor", "claude-agent"), "holon/agent-claude")
         self.assertEqual(resolve_role_image("intent-creator", "claude"), "holon/orchestrator")
+        # Image selection follows agent_defaults (#93): an unmapped runner fails loudly instead of guessing an image.
+        with self.assertRaises(UnmappedAgentRunnerError):
+            resolve_role_image("executor", "newrunner")
+        self.assertEqual(resolve_role_image("intent-creator", "newrunner"), "holon/orchestrator")
 
     @patch("sandbox_executor.cli.dispatch_role_agent", return_value=0)
     def test_per_stage_commands_route_through_dispatch_role_agent(self, mock_dispatch):

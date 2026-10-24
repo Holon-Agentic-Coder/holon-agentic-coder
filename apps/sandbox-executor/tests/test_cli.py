@@ -24,7 +24,16 @@ from sandbox_executor.cli import (
     strip_url_credentials,
 )
 
-from tests.leak_assertions import assert_names_repo, assert_no_fragment, assert_no_leak, make_gh_probe, make_probe
+from tests.leak_assertions import (
+    CREDENTIAL_FREE_URLS,
+    assert_names_repo,
+    assert_no_fragment,
+    assert_no_leak,
+    make_gh_probe,
+    make_probe,
+    make_url_probe,
+    url_userinfo_cases,
+)
 
 # Captured at import, before the suite-wide `isolated_env_file_dir` fixture (conftest.py) replaces it.
 _REAL_ENV_FILE_DIR = cli.env_file_dir
@@ -1033,17 +1042,18 @@ def test_proxy_url_password_travels_only_in_the_env_file(leak_env, monkeypatch, 
     assert docker.argv_env["NO_PROXY"] == "localhost"
 
 
+_URL_ENV_NAMES = ["HOLON_PROXY_URL", "HOLON_LOCAL_BASE_URL", "HOLON_MIRROR_ENDPOINT"]
+
+
 @pytest.mark.parametrize(
-    "form",
-    ["alice:{v}@proxy.corp:8080", "socks5://alice:{v}@proxy:1080", "http://alice:{v}@proxy:3128"],
-    ids=["schemeless", "socks5", "http"],
+    ("form", "separators"), [pytest.param(form, seps, id=case_id) for case_id, form, seps in url_userinfo_cases()]
 )
-@pytest.mark.parametrize("name", ["HOLON_PROXY_URL", "HOLON_LOCAL_BASE_URL", "HOLON_MIRROR_ENDPOINT"])
-def test_url_password_with_raw_delimiters_travels_only_in_the_env_file(leak_env, monkeypatch, capsys, name, form):
-    """A raw `/`, `?` or `#` in the password of any forwarded HOLON_* URL keeps it off the docker argv."""
-    parts = [make_probe(label) for label in "abcd"]
-    sample = parts[0] + "/" + parts[1] + "?" + parts[2] + "#" + parts[3]
-    value = form.format(v=sample)
+@pytest.mark.parametrize("name", _URL_ENV_NAMES)
+def test_url_userinfo_travels_only_in_the_env_file_in_every_shape(
+    leak_env, monkeypatch, capsys, name, form, separators
+):
+    """Any scheme / `//` / path / password shape of a forwarded HOLON_* URL keeps its userinfo off the docker argv."""
+    value, parts = make_url_probe(form, separators)
     monkeypatch.setenv(name, value)
     docker = _RecordingDocker()
     monkeypatch.setattr(cli.subprocess, "run", docker)
@@ -1055,6 +1065,21 @@ def test_url_password_with_raw_delimiters_travels_only_in_the_env_file(leak_env,
         assert_no_leak(part, echo, docker.argv)
     assert docker.env_file_contents[name] == value
     assert name not in docker.argv_env
+
+
+@pytest.mark.parametrize("value", CREDENTIAL_FREE_URLS)
+@pytest.mark.parametrize("name", _URL_ENV_NAMES)
+def test_credential_free_url_stays_readable_on_the_argv(leak_env, monkeypatch, capsys, name, value):
+    monkeypatch.setenv(name, value)
+    docker = _RecordingDocker()
+    monkeypatch.setattr(cli.subprocess, "run", docker)
+
+    assert _run_planner(leak_env["repo"]) == 0
+
+    echo = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("Executing: docker run"))
+    assert f"{name}={value}" in echo
+    assert docker.argv_env[name] == value
+    assert name not in docker.env_file_contents
 
 
 @pytest.mark.parametrize("failure", ["write", "directory"])

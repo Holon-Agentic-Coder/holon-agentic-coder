@@ -20,7 +20,7 @@ from sandbox_executor.preflight import (
     run_preflight_probe,
 )
 
-from tests.leak_assertions import make_probe
+from tests.leak_assertions import CREDENTIAL_FREE_URLS, assert_no_leak, make_probe, make_url_probe, url_userinfo_cases
 
 
 @pytest.fixture
@@ -167,6 +167,47 @@ def test_probe_keeps_credentials_off_the_docker_argv(probe_env, monkeypatch, iso
     assert tail[:2] == ["sh", "-c"]
     assert '--settings "${HOLON_AGENT_SETTINGS}"' in tail[2]
     assert not os.path.exists(seen["path"])
+
+
+def _record_probe(seen):
+    def runner_fn(cmd, **kwargs):
+        seen["cmd"] = cmd
+        if "--env-file" in cmd:
+            with open(_env_file_of(cmd), encoding="utf-8") as fh:
+                seen["lines"] = fh.read().splitlines()
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="OK\n", stderr="")
+
+    return runner_fn
+
+
+@pytest.mark.parametrize(
+    ("form", "separators"), [pytest.param(form, seps, id=case_id) for case_id, form, seps in url_userinfo_cases()]
+)
+@pytest.mark.parametrize("name", ["HOLON_PROXY_URL", "HOLON_LOCAL_BASE_URL", "HOLON_MIRROR_ENDPOINT"])
+def test_probe_keeps_url_userinfo_off_the_argv_in_every_shape(
+    probe_env, monkeypatch, isolated_env_file_dir, name, form, separators
+):
+    """The pre-flight probe shares the main run's classifier: every userinfo shape goes to the env-file."""
+    value, parts = make_url_probe(form, separators)
+    monkeypatch.setenv(name, value)
+    seen = {}
+
+    assert run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=_record_probe(seen)).ok
+
+    for part in parts:
+        assert_no_leak(part, seen["cmd"])
+    assert f"{name}={value}" in seen["lines"]
+
+
+@pytest.mark.parametrize("value", CREDENTIAL_FREE_URLS)
+def test_probe_keeps_a_credential_free_url_readable_on_the_argv(probe_env, monkeypatch, isolated_env_file_dir, value):
+    monkeypatch.setenv("HOLON_PROXY_URL", value)
+    seen = {}
+
+    assert run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=_record_probe(seen)).ok
+
+    assert f"HOLON_PROXY_URL={value}" in seen["cmd"]
+    assert not any(line.startswith("HOLON_PROXY_URL=") for line in seen.get("lines", []))
 
 
 def test_probe_keeps_a_credential_free_multiline_settings_json_on_the_argv(probe_env, monkeypatch):

@@ -15,7 +15,14 @@ from sandbox_executor.redaction import (
     redact_url_value,
 )
 
-from tests.leak_assertions import assert_no_fragment, make_gh_probe, make_probe
+from tests.leak_assertions import (
+    CREDENTIAL_FREE_URLS,
+    assert_no_fragment,
+    make_gh_probe,
+    make_probe,
+    make_url_probe,
+    url_userinfo_cases,
+)
 
 REPO = "github.com/myorg/myrepo.git"
 BRANCH = "I-1792762862-x/_"
@@ -352,28 +359,48 @@ def _delimited_probe() -> str:
     return make_probe("a") + "/" + make_probe("b") + "?" + make_probe("c") + "#" + make_probe("d")
 
 
-_DELIMITED_URL_FORMS = [
-    pytest.param("http://alice:{v}@proxy:3128", id="http"),
-    pytest.param("https://alice:{v}@proxy:3128/path", id="https-with-path"),
-    pytest.param("socks5://alice:{v}@proxy:1080", id="socks5"),
-    pytest.param("//alice:{v}@proxy:1080", id="scheme-relative"),
-    pytest.param("alice:{v}@proxy.corp:8080", id="schemeless"),
-]
+_URL_USERINFO_CASES = [pytest.param(form, seps, id=case_id) for case_id, form, seps in url_userinfo_cases()]
 
 
-@pytest.mark.parametrize("form", _DELIMITED_URL_FORMS)
+@pytest.mark.parametrize(("form", "separators"), _URL_USERINFO_CASES)
 @pytest.mark.parametrize("name", ["HOLON_PROXY_URL", "HOLON_LOCAL_BASE_URL", "HTTP_PROXY"])
-def test_password_with_raw_delimiters_is_masked_and_carried(name: str, form: str) -> None:
-    """A raw `/`, `?` or `#` in the password no longer ends the userinfo early (shared last-`@` rule)."""
-    sample = _delimited_probe()
-    value = form.format(v=sample)
+def test_url_userinfo_is_masked_and_carried_in_every_shape(name: str, form: str, separators: tuple[str, ...]) -> None:
+    """Every scheme / `//` / path / password shape: the echo and the warning are masked, env-file routing fires."""
+    value, parts = make_url_probe(form, separators)
     shown = redact_command(["docker", "run", "-e", f"{name}={value}", "img"])
-    for part in sample.replace("?", "/").replace("#", "/").split("/"):
+    warning = redact_url_value(value)
+    for part in parts:
         assert_no_fragment(shown, part)
-    assert "@proxy" in shown
+        assert_no_fragment(warning, part)
+    assert "@proxy" in shown and "@proxy" in warning
     assert redaction.carries_url_password(value) is True
-    for part in sample.replace("?", "/").replace("#", "/").split("/"):
-        assert_no_fragment(redact_url_value(value), part)
+
+
+@pytest.mark.parametrize("value", CREDENTIAL_FREE_URLS)
+@pytest.mark.parametrize("name", ["HOLON_PROXY_URL", "HOLON_LOCAL_BASE_URL", "HTTP_PROXY"])
+def test_credential_free_url_is_byte_identical(name: str, value: str) -> None:
+    item = f"{name}={value}"
+    assert redaction.redact_text(item) == item
+    assert redact_command([item]) == item
+    assert redact_url_value(value) == value
+    assert redaction.carries_url_password(value) is False
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("http://proxy:3128", True),
+        ("socks5h://alice:pw@proxy", True),
+        ("//proxy:1080", True),
+        ("alice:pw@proxy.corp:8080//v1", False),
+        ("alice:a//b@proxy.corp:8080", False),
+        ("proxy.corp:8080//v1", False),
+        ("a//b", False),
+    ],
+)
+def test_starts_with_url_authority_anchors_on_the_start(value: str, expected: bool) -> None:
+    """A `//` later in the value (path or password) does not make a schemeless value an authority."""
+    assert redaction.starts_with_url_authority(value) is expected
 
 
 @pytest.mark.parametrize(

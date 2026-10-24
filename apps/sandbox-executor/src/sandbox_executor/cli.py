@@ -58,6 +58,7 @@ from sandbox_executor.redaction import (
     redact_command,
     redact_env_literals,
     redact_url_value,
+    starts_with_url_authority,
     url_userinfo_end,
 )
 from sandbox_executor.scaffold import init_project
@@ -599,7 +600,7 @@ def _gateway_host_args() -> list[str]:
 
 def _proxy_host_port(proxy_url: str) -> tuple[str, int] | None:
     """Split a proxy URL into ``(host, port)``; None when it cannot be parsed."""
-    parsed = urlparse(proxy_url if "//" in proxy_url else f"//{proxy_url}")
+    parsed = urlparse(proxy_url if starts_with_url_authority(proxy_url) else f"//{proxy_url}")
     if not parsed.hostname:
         return None
     return parsed.hostname, parsed.port or PROXY_LISTEN_PORT

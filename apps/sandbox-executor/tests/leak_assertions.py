@@ -73,3 +73,73 @@ def assert_names_repo(text: str, repo_path: str, branch: str | None = None) -> N
     assert repo_path in text, "the redacted output no longer names the repository"
     if branch is not None:
         assert branch in text, "the redacted output no longer names the branch"
+
+
+# The URL-userinfo shape matrix shared by the redaction, CLI and pre-flight leak tests, so the echo
+# redactor, the proxy warnings and env-file routing are all held to the same set of shapes.
+URL_PASSWORD_FORMS: dict[str, str] = {
+    "schemeless": "alice:{v}@proxy.corp:8080",
+    "schemeless-path": "alice:{v}@proxy.corp:8080/v1",
+    "schemeless-double-slash-path": "alice:{v}@proxy.corp:8080//v1",
+    "scheme-relative": "//alice:{v}@proxy:1080",
+    "scheme-relative-double-slash-path": "//alice:{v}@proxy:1080//v1",
+    "http": "http://alice:{v}@proxy:3128",
+    "https-double-slash-path": "https://alice:{v}@proxy:3128//v1",
+    "socks5": "socks5://alice:{v}@proxy:1080",
+}
+
+# Separators placed between runtime-built parts of the password: each URL delimiter, `@`, `:` and `//`.
+# In "all" the `@` comes last: a raw `@` followed later by a `/`, `?` or `#` is ambiguous with an `@`
+# in the path (RFC 3986), and every userinfo rule here resolves it as the path.
+URL_PASSWORD_SEPARATORS: dict[str, tuple[str, ...]] = {
+    "plain": (),
+    "slash": ("/",),
+    "query": ("?",),
+    "fragment": ("#",),
+    "at": ("@",),
+    "colon": (":",),
+    "double-slash": ("//",),
+    "all": ("/", "?", "#", "//", ":", "@"),
+}
+
+# A bare token as the whole userinfo; only an `http(s)://` authority marks it as a credential.
+URL_TOKEN_FORMS: dict[str, str] = {
+    "token-https": "https://{v}@proxy:3128",
+    "token-http-double-slash-path": "http://{v}@proxy:3128//v1",
+}
+
+# Credential-free values that every redactor and the env-file routing must leave byte-identical.
+CREDENTIAL_FREE_URLS: tuple[str, ...] = (
+    "proxy.corp:8080",
+    "proxy.corp:8080//v1",
+    "proxy.corp:8080/x@y",
+    "proxy.corp:8080//a@b",
+    "//proxy:1080//v1",
+    "http://proxy.corp:8080//v1",
+    "https://github.com/myorg/myrepo/blob/main/a@b.md",
+    "ssh://git@github.com/myorg/myrepo.git",
+    "[::1]:8080",
+    "host:8080/p?q=1#f",
+)
+
+
+def url_userinfo_cases() -> list[tuple[str, str, tuple[str, ...]]]:
+    """Return `(case_id, form, separators)` for every password form x shape and every token form."""
+    cases = [
+        (f"{form_id}-{shape_id}", form, seps)
+        for form_id, form in URL_PASSWORD_FORMS.items()
+        for shape_id, seps in URL_PASSWORD_SEPARATORS.items()
+    ]
+    cases.extend((form_id, form, ()) for form_id, form in URL_TOKEN_FORMS.items())
+    return cases
+
+
+def make_url_probe(form: str, separators: tuple[str, ...]) -> tuple[str, list[str]]:
+    """Build a URL value from `form` with a runtime password; return it and the password's parts.
+
+    The parts are the runtime-built pieces between the separators, each checked for leaks on its
+    own because a redactor that stops at a separator would leak only the pieces after it.
+    """
+    parts = [make_probe(chr(ord("a") + i)) for i in range(len(separators) + 1)]
+    sample = parts[0] + "".join(sep + part for sep, part in zip(separators, parts[1:], strict=True))
+    return form.format(v=sample), parts

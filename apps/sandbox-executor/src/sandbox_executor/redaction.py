@@ -49,6 +49,23 @@ _URL_VAR_PREFIX_RE = re.compile(r"\b(?:[A-Za-z0-9_]*_)?(?:URL|URI|PROXY)[ \t]*=[
 _URL_TOKEN_RE = re.compile(r"[^\s'\"]{0,2048}")
 
 
+def starts_with_url_authority(value: str) -> bool:
+    """Decide whether a URL value already starts with its authority (`scheme://` or `//`).
+
+    The one test shared by the echo redactor's URL-variable scan and `redact_url_value` (and so by
+    env-file routing), so they always agree on which values need a `//` prefixed before parsing. It
+    anchors on the start of the value: a `//` later on, in a path (`user:pw@host:8080//v1`) or a
+    password (`user:a//b@host`), does not make a schemeless value an authority.
+
+    Args:
+        value: The URL value exactly as configured or assigned.
+
+    Returns:
+        True if the value begins with `scheme://` or a scheme-relative `//`.
+    """
+    return _URL_AUTHORITY_START_RE.match(value) is not None
+
+
 def _first_delimiter(text: str, start: int = 0) -> int:
     """Return the index of the first `/`, `?` or `#` at or after `start`, or `len(text)`."""
     hits = [i for i in (text.find(c, start) for c in _URL_DELIMITERS) if i >= 0]
@@ -110,7 +127,7 @@ def _mask_url_userinfo(text: str) -> str:
             if m.start() < pos:
                 continue
             token = _URL_TOKEN_RE.match(text, m.end()).group(0)
-            if start_re is _URL_VAR_PREFIX_RE and "//" in token:
+            if start_re is _URL_VAR_PREFIX_RE and starts_with_url_authority(token):
                 continue  # An authority: already handled by the first scan.
             at = url_userinfo_end(token)
             if at is None:
@@ -325,8 +342,9 @@ def redact_agent_secrets(text: str) -> str:
 def redact_url_value(value: str) -> str:
     """Redact a bare URL value, treating a schemeless `user:pass@host` as a `//` authority.
 
-    Mirrors how a proxy URL is parsed (`//` is prefixed when the value has none), so the password of
-    a schemeless value is masked even though nothing in the text marks it as a URL.
+    Mirrors how a proxy URL is parsed (`//` is prefixed unless the value starts with an authority,
+    see `starts_with_url_authority`), so the password of a schemeless value is masked even though
+    nothing in the text marks it as a URL.
 
     Args:
         value: The URL exactly as configured, for example the value of `HOLON_PROXY_URL`.
@@ -334,7 +352,7 @@ def redact_url_value(value: str) -> str:
     Returns:
         The value, rendered as `redact_command` would, with any userinfo password masked.
     """
-    if "//" in value:
+    if starts_with_url_authority(value):
         return redact_command([value])
     return redact_command([f"//{value}"])[2:]
 

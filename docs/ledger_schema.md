@@ -98,8 +98,9 @@ ledger appends are guarded by `LedgerLock` (`sandbox_executor.ledger.LedgerLock`
 #### Flow Stage Record Matrix
 
 Every `holon flow` stage writes to the target repository's own `holon-knowledge/ledger/`. The table lists the rows each
-stage function in `sandbox_executor/flow.py` appends. In Stage 3 the in-sandbox executor entrypoint
-(`sandbox_executor/entrypoint/executor.py`) appends further rows of its own, listed below the table.
+stage function in `sandbox_executor/flow.py` appends. In Stages 2 and 3 the in-sandbox planner and executor entrypoints
+(`sandbox_executor/entrypoint/planner.py`, `sandbox_executor/entrypoint/executor.py`) append further rows of their own,
+listed below the table.
 
 | Stage             | Ledger file        | Rows appended                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | ----------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -108,6 +109,13 @@ stage function in `sandbox_executor/flow.py` appends. In Stage 3 the in-sandbox 
 | 3. Execute        | `executions.jsonl` | One execution summary (`entry_type: "summary"`, `execution_id` `E-...`) and one test-run action event (`entry_type: "action"`).                                                                                                                                                                                                                                                                                                                                                                                                      |
 | 4. PR review loop | `executions.jsonl` | Per iteration: `ACT-REV` (evaluation), `ACT-FIND` (when findings exist) and `ACT-RES` (resolver, iterations 2 and later). Once per loop: `ACT-POST` (consensus posting, even when posting fails), a `REV-...` summary and an action event.                                                                                                                                                                                                                                                                                           |
 | 5. Calibration    | `executions.jsonl` | One `ACT-CAL` action (`action_origin: "calibration"`), committed with `plans/{plan_id}_calibration.md` on the `/calibrated` branch. Then reconciliation events (`event_type: "reconciliation"` for the execution branch, plus `ttl_expiration` events for stale `unknown` actions), committed in a follow-up commit on the same `/calibrated` branch. When calibration fails, an `ACT-CAL` row with `outcome: "failure"` and the reconciliation events are appended but left uncommitted (see Known gap). No summary row is written. |
+
+Stage 2 planner entrypoint rows: when a plan turn breached its turn, stall or stage budget and the plan was not
+recovered (the resume or re-prompt did not finish, or no stage time was left for one), one `ACT-BUDGET` action
+(`category: "budget"`, `stage: "plan"`) in `executions.jsonl` under the `P-...` `plan_id` as its `execution_id`, written
+by `record_budget_failure` (`sandbox_executor/turns.py`) and committed to the plan branch together with any salvaged
+partial plan; no `plans.jsonl` row is written for that plan (see
+[Budget Breach Actions](#budget-breach-actions-act-budget)).
 
 Stage 3 executor entrypoint rows (all in `executions.jsonl`, under the same `E-...` `execution_id`):
 
@@ -119,6 +127,9 @@ Stage 3 executor entrypoint rows (all in `executions.jsonl`, under the same `E-.
   re-initialised.
 - When the plan is decomposed instead of executed: sub-intent rows in `intents.jsonl`, a summary and, with action
   logging enabled, a `plan_decomposition` action.
+- When the implementation turn breached its turn, stall or stage budget: one `ACT-BUDGET` action (`category: "budget"`,
+  `stage: "execute"`), written unconditionally (not gated on action logging) by `record_budget_failure` (see
+  [Budget Breach Actions](#budget-breach-actions-act-budget)).
 
 Stage 4 and Stage 5 action rows keep their historical field order and identifier formats:
 

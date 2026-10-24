@@ -815,6 +815,35 @@ def _fetcher(payload, calls=None):
     return fetch
 
 
+class TestHostGateways(unittest.TestCase):
+    def test_groups_providers_by_server_and_skips_unprobeable_endpoints(self):
+        host_config = {
+            "providers": {
+                "a": {"baseUrl": "http://127.0.0.1:8000/v1", "models": [{"id": "x"}]},
+                "b": {"baseUrl": "http://127.0.0.1:8000/anthropic", "models": [{"id": "y"}]},
+                "c": {"baseUrl": "http://gpu.lan:9000/v1", "models": [{"id": "z"}]},
+                "cloud": {"baseUrl": "https://api.example.com/v1", "models": [{"id": "w"}]},
+            }
+        }
+        allow_list = {"gpu.lan"}
+        config = local_llm.build_container_config(host_config, allow_list)
+        gateways = local_llm.host_gateways(host_config, config, {}, allow_list)
+        self.assertEqual(
+            gateways,
+            [
+                ("http://127.0.0.1:8000/v1", frozenset({"a", "b"})),
+                ("http://gpu.lan:9000/v1", frozenset({"c"})),
+            ],
+        )
+
+    def test_synthesised_provider_maps_to_configured_base_url(self):
+        env = {"HOLON_LOCAL_BASE_URL": "http://localhost:11434/v1", "HOLON_LOCAL_MODELS": "m"}
+        with patch.dict(os.environ, env, clear=True):
+            config = local_llm.build_container_config(None)
+            gateways = local_llm.host_gateways(None, config, env)
+        self.assertEqual(gateways, [("http://localhost:11434/v1", frozenset(config["providers"]))])
+
+
 class TestGatewayHealth(unittest.TestCase):
     def test_off_cold_warm_classification(self):
         for payload, expected in ((HEALTH_OFF, "off"), (HEALTH_COLD, "cold"), (HEALTH_WARM, "warm")):

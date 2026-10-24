@@ -1176,8 +1176,9 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
 
     Prints ``model=<id> context=<n> max_tokens=<n> source=host|synthesised`` and
     ``reasoning=<mode> source=env|host|default`` per model, then ``prefill_cache=off|cold|warm`` with memory figures
-    per host-local endpoint, warning when an emitted ``maxTokens`` exceeds the server's
-    ``effective_defaults.max_output_tokens``. Nothing is written; only loopback or allow-listed endpoints are probed.
+    once per distinct host-local server, warning when a model's emitted ``maxTokens`` or ``contextWindow`` exceeds
+    the ``effective_defaults.max_output_tokens`` or ``max_prompt_tokens`` of the server that serves it. Nothing is
+    written; only loopback or allow-listed endpoints are probed.
     """
     from sandbox_executor.budgets import load_budgets
 
@@ -1200,7 +1201,7 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
     allow_list = local_llm.host_local_allow_list()
     host_config = local_llm.host_models_json()
     try:
-        _config, envelopes = local_llm.build_envelope_config(host_config, allow_list, env)
+        config, envelopes = local_llm.build_envelope_config(host_config, allow_list, env)
     except local_llm.LocalLLMConfigError as exc:
         print(f"Error: {exc}", file=out)
         return 1
@@ -1210,14 +1211,16 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
         print(envelope.reasoning_line(), file=out)
 
     probed = False
-    for base_url in local_llm.host_base_urls(host_config, env):
+    # One probe and one line per distinct server; limits are compared only with the models that server serves.
+    for base_url, providers in local_llm.host_gateways(host_config, config, env, allow_list):
         health = local_llm.probe_gateway_health(base_url, fetch=fetch, allow_list=allow_list)
         if health is None:
             continue
         probed = True
         print(f"gateway={health.url} {health.cache_line()}", file=out)
+        served = [envelope for envelope in envelopes if envelope.provider in providers]
         if health.max_output_tokens is not None:
-            for envelope in envelopes:
+            for envelope in served:
                 if envelope.max_tokens > health.max_output_tokens:
                     print(
                         f"WARNING: model={envelope.model_id} max_tokens={envelope.max_tokens} exceeds the server's "
@@ -1225,7 +1228,7 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
                         file=out,
                     )
         if health.max_prompt_tokens is not None:
-            for envelope in envelopes:
+            for envelope in served:
                 if envelope.context_window > health.max_prompt_tokens:
                     print(
                         f"WARNING: model={envelope.model_id} context={envelope.context_window} exceeds the server's "

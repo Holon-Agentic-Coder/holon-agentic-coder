@@ -1,4 +1,5 @@
 import argparse
+import copy
 import importlib.metadata
 import io
 import json
@@ -894,6 +895,24 @@ class TestHolonFlowCLI(unittest.TestCase):
             self.assertTrue(parsed["consensus"]["approved"])
 
 
+_SHARED_SERVER_CONFIG = {
+    "providers": {
+        "a": {
+            "baseUrl": "http://127.0.0.1:8000/v1",
+            "models": [{"id": "big", "contextWindow": 65536, "maxTokens": 16384}],
+        },
+        "b": {
+            "baseUrl": "http://127.0.0.1:8000/anthropic",
+            "models": [{"id": "small", "contextWindow": 8192, "maxTokens": 2048}],
+        },
+        "c": {
+            "baseUrl": "http://127.0.0.1:9000/v1",
+            "models": [{"id": "other", "contextWindow": 65536, "maxTokens": 8192}],
+        },
+    }
+}
+
+
 class TestDoctor(unittest.TestCase):
     def run_doctor(self, env, fetch, host_config=None):
         out = io.StringIO()
@@ -935,6 +954,77 @@ class TestDoctor(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("WARNING: model=qwen3 context=65536 exceeds the server's max_prompt_tokens=32768", output)
         self.assertNotIn("max_output_tokens=16384", output)
+
+    # C12-N1: two providers on one server share one probe and one line, and each model is only compared with the
+    # limits of the server that serves it.
+    @staticmethod
+    def two_server_fetch(urls):
+        def fetch(url, timeout):
+            urls.append(url)
+            limits = (4096, 32768) if ":9000" in url else (16384, 65536)
+            return json.dumps(
+                {
+                    "prefill_cache": {"enabled": True, "entries": 0},
+                    "effective_defaults": {"max_output_tokens": limits[0], "max_prompt_tokens": limits[1]},
+                }
+            ).encode()
+
+        return fetch
+
+    def test_doctor_probes_each_server_once_and_scopes_warnings(self):
+        urls = []
+        code, output = self.run_doctor(
+            {"HOLON_LOCAL_LLM": "1"}, self.two_server_fetch(urls), copy.deepcopy(_SHARED_SERVER_CONFIG)
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(urls, ["http://127.0.0.1:8000/health", "http://127.0.0.1:9000/health"])
+        gateway_lines = [line for line in output.splitlines() if line.startswith("gateway=")]
+        self.assertEqual(
+            gateway_lines,
+            [
+                "gateway=http://127.0.0.1:8000/health prefill_cache=cold",
+                "gateway=http://127.0.0.1:9000/health prefill_cache=cold",
+            ],
+        )
+        warnings = [line for line in output.splitlines() if line.startswith("WARNING")]
+        self.assertEqual(
+            warnings,
+            [
+                "WARNING: model=other max_tokens=8192 exceeds the server's effective_defaults.max_output_tokens=4096",
+                "WARNING: model=other context=65536 exceeds the server's max_prompt_tokens=32768",
+            ],
+        )
+
+    def test_unified_doctor_json_dedupes_servers_and_scopes_warnings(self):
+        code, output = self.run_unified_doctor(
+            {"HOLON_LOCAL_LLM": "1"},
+            self.two_server_fetch([]),
+            copy.deepcopy(_SHARED_SERVER_CONFIG),
+            as_json=True,
+        )
+        self.assertEqual(code, 0)
+        payload = json.loads(output)
+        self.assertEqual(set(payload), {"agent", "model", "preflight", "environment"})
+        self.assertEqual(set(payload["environment"]), {"ok", "lines"})
+        lines = payload["environment"]["lines"]
+        self.assertEqual(sum(line.startswith("gateway=http://127.0.0.1:8000/") for line in lines), 1)
+        self.assertEqual(sum(line.startswith("gateway=http://127.0.0.1:9000/") for line in lines), 1)
+        warnings = [line for line in lines if line.startswith("WARNING")]
+        self.assertEqual(len(warnings), 2)
+        self.assertTrue(all("model=other " in line for line in warnings))
+
+    def test_doctor_scopes_synthesised_provider_to_its_base_url(self):
+        env = {
+            "HOLON_LOCAL_LLM": "1",
+            "HOLON_LOCAL_BASE_URL": "http://localhost:9000/v1",
+            "HOLON_LOCAL_MODELS": "llama",
+            "HOLON_LOCAL_CONTEXT_WINDOW": "65536",
+        }
+        urls = []
+        code, output = self.run_doctor(env, self.two_server_fetch(urls))
+        self.assertEqual(code, 0)
+        self.assertEqual(urls, ["http://localhost:9000/health"])
+        self.assertIn("WARNING: model=llama context=65536 exceeds the server's max_prompt_tokens=32768", output)
 
     def test_doctor_reports_config_errors(self):
         code, output = self.run_doctor({"HOLON_LOCAL_LLM": "1"}, _fetcher(HEALTH_OFF), _config({"id": "m"}))

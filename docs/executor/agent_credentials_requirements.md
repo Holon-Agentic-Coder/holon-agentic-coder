@@ -299,13 +299,15 @@ model=<id> context=<n> max_tokens=<n> source=host|synthesised
 reasoning=<mode> source=env|host|default
 ```
 
-It then probes `<scheme>://<host>:<port>/health` for each host-side (pre-rewrite) endpoint, with a 2 s timeout and no
-proxy, and prints `gateway=<url> prefill_cache=off|cold|warm` followed by any memory figures the server reports. The
-cache is `off` when the server reports it disabled, `cold` when it is enabled with zero cached entries or tokens, and
-`warm` otherwise; an unreachable server or an unrecognised response prints `prefill_cache=unknown` and never fails the
-command. A `WARNING` line is printed when an emitted `maxTokens` exceeds the server's
-`effective_defaults.max_output_tokens`, or when a model's `contextWindow` exceeds the server's `max_prompt_tokens` (read
-from `effective_defaults` or the top level of the response). Only loopback or `HOLON_HOST_LOCAL_HOSTS` authorities are
-ever probed, and only over `http` or `https` (a `file://` or `ftp://` `baseUrl` is skipped): redirects are refused, at
-most 1 MiB of the response is read (a larger one prints `prefill_cache=unknown`), and the probe URL is rebuilt from host
-and port only, so userinfo in a `baseUrl` is never sent or printed.
+It then probes `<scheme>://<host>:<port>/health` once for each distinct host-side (pre-rewrite) server, with a 2 s
+timeout and no proxy (providers that share a host and port, such as `/v1` and `/anthropic` on one server, share one
+probe and one line), and prints `gateway=<url> prefill_cache=off|cold|warm` followed by any memory figures the server
+reports. The cache is `off` when the server reports it disabled, `cold` when it is enabled with zero cached entries or
+tokens, and `warm` otherwise; an unreachable server or an unrecognised response prints `prefill_cache=unknown` and never
+fails the command. A `WARNING` line is printed when an emitted `maxTokens` exceeds the
+`effective_defaults.max_output_tokens` of the server that serves that model, or when a model's `contextWindow` exceeds
+that server's `max_prompt_tokens` (read from `effective_defaults` or the top level of the response); a model is never
+compared with another server's limits. Only loopback or `HOLON_HOST_LOCAL_HOSTS` authorities are ever probed, and only
+over `http` or `https` (a `file://` or `ftp://` `baseUrl` is skipped): redirects are refused, at most 1 MiB of the
+response is read (a larger one prints `prefill_cache=unknown`), and the probe URL is rebuilt from host and port only, so
+userinfo in a `baseUrl` is never sent or printed.

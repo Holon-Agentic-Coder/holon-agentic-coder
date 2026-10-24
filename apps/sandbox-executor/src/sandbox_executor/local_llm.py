@@ -688,3 +688,45 @@ def host_base_urls(host_config: dict | None, env: Mapping[str, str] | None = Non
     if configured:
         urls.append(configured)
     return list(dict.fromkeys(urls))
+
+
+def host_gateways(
+    host_config: dict | None,
+    config: dict,
+    env: Mapping[str, str] | None = None,
+    allow_list: Iterable[str] = (),
+) -> list[tuple[str, frozenset[str]]]:
+    """One ``(host-side base URL, provider names)`` pair per distinct probeable server, in configuration order.
+
+    Several providers can sit on one server (for example ``/v1`` and ``/anthropic`` on the same port), and the health
+    URL is rebuilt from host and port only, so the server, not the base URL, is the unit to probe. ``config`` is the
+    container config :func:`build_envelope_config` returned; each of its providers is attributed to the host base URL
+    it was rewritten from (the synthesised provider to ``HOLON_LOCAL_BASE_URL``), so a model is only compared with the
+    limits of the server that serves it. Endpoints that may not be probed are omitted.
+    """
+    env = os.environ if env is None else env
+    allow_list = tuple(allow_list)
+    host_providers = (host_config or {}).get("providers") or {}
+    host_providers = host_providers if isinstance(host_providers, dict) else {}
+    configured = env.get(ENV_LOCAL_BASE_URL, "").strip()
+    served_by: dict[str, set[str]] = {}
+    for name, provider in (config.get("providers") or {}).items():
+        container_url = provider.get("baseUrl") if isinstance(provider, dict) else None
+        host_provider = host_providers.get(name)
+        host_url = host_provider.get("baseUrl") if isinstance(host_provider, dict) else None
+        if isinstance(host_url, str) and host_url and rewrite_authority(host_url, allow_list) == container_url:
+            source = host_url
+        elif configured:
+            source = configured
+        else:
+            continue
+        served_by.setdefault(source, set()).add(name)
+
+    gateways: dict[str, tuple[str, set[str]]] = {}
+    for base_url in host_base_urls(host_config, env):
+        url = health_url(base_url, allow_list)
+        if url is None:
+            continue
+        _first, names = gateways.setdefault(url, (base_url, set()))
+        names.update(served_by.get(base_url, ()))
+    return [(base_url, frozenset(names)) for base_url, names in gateways.values()]

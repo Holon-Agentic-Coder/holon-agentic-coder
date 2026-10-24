@@ -30,6 +30,7 @@ import traceback
 from datetime import UTC, datetime
 from typing import Any
 
+from sandbox_executor.agent_defaults import FALLBACK_AGENT, default_model_for
 from sandbox_executor.agent_runner import (
     cleanup_repo_dir,
     get_repo_url,
@@ -1079,8 +1080,9 @@ def main() -> None:
         sys.exit(1)
 
     plan_branch = sys.argv[1]
-    agent_name = sys.argv[2] if len(sys.argv) > 2 else "antigravity-agent"
-    model_name = sys.argv[3] if len(sys.argv) > 3 else "gemini-3.5-flash"
+    # The host CLI always passes resolved values; no harness detection inside the container.
+    agent_name = sys.argv[2] if len(sys.argv) > 2 else FALLBACK_AGENT
+    model_name = sys.argv[3] if len(sys.argv) > 3 else default_model_for(agent_name)
 
     runner = get_runner(agent_name)
     runner.validate()

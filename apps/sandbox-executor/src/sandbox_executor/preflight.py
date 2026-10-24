@@ -202,8 +202,14 @@ def resolve_timeout(explicit: float | None = None, environ: Mapping[str, str] | 
 
 
 def redact_output(text: str) -> str:
-    """Mask credential values and token-shaped strings in probe output."""
-    from sandbox_executor.entrypoint.executor import redact_text
+    """Mask credential values and token-shaped strings in probe output.
+
+    The probe-specific sweeps (the values of ``_SENSITIVE_ENV_VARS``, including HOLON_AGENT_SETTINGS, and any
+    ``sk-ant-`` token of any length) run first; the result then goes through the canonical
+    ``redaction.redact_agent_secrets`` (key-name patterns, provider token prefixes, default env literals), so this
+    is never weaker than either.
+    """
+    from sandbox_executor.redaction import redact_agent_secrets
 
     redacted = text or ""
     for var in _SENSITIVE_ENV_VARS:
@@ -211,7 +217,7 @@ def redact_output(text: str) -> str:
         if value and len(value) >= 4:
             redacted = redacted.replace(value, "***REDACTED***")
     redacted = _ANTHROPIC_TOKEN_RE.sub("***REDACTED***", redacted)
-    return redact_text(redacted)
+    return redact_agent_secrets(redacted)
 
 
 def _has_host_credential(agent_id: str, session_mounts: list[str]) -> bool:

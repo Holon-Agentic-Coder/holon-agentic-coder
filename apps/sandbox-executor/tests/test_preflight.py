@@ -129,6 +129,13 @@ def test_redact_output_masks_agent_settings_and_bare_anthropic_tokens(probe_env,
     assert "expired" in redacted
 
 
+def test_redact_output_routes_through_canonical_provider_token_sweep(probe_env):
+    fake = "gh" + "p_" + "fakeProbeValue" * 3
+    redacted = preflight.redact_output(f"probe said: {fake} rejected")
+    assert fake not in redacted
+    assert "rejected" in redacted
+
+
 def test_probe_ok(probe_env):
     runner_fn = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="OK\n", stderr=""))
     res = run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=runner_fn)
@@ -345,7 +352,7 @@ def test_execute_with_unmapped_env_runner_fails_before_docker(probe_env, monkeyp
 def test_run_docker_container_disables_nested_preflight(probe_env):
     with (
         patch("sandbox_executor.cli.shutil.which", return_value="/usr/bin/docker"),
-        patch("sandbox_executor.cli.resolve_target_repo_url", return_value="https://example.invalid/r.git"),
+        patch("sandbox_executor.cli.resolve_target_repo", return_value=("https://example.invalid/r.git", None)),
         patch("sandbox_executor.cli.find_github_token", return_value=None),
         patch("sandbox_executor.cli.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as run,
     ):

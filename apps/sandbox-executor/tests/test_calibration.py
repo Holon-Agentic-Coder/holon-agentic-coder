@@ -279,6 +279,33 @@ class TestMetricsParsing(unittest.TestCase):
             self.assertEqual(actual.insertions, 40)
             self.assertEqual(actual.deletions, 5)
             self.assertEqual(actual.impact, 35.0)
+            # The row records no test result: reported as not measured, never as a pass (C10-N1).
+            self.assertIsNone(actual.test_pass_rate)
+            self.assertIsNone(actual.to_dict()["test_pass_rate"])
+
+    def test_parse_actual_metrics_reports_only_recorded_test_pass_rate(self):
+        predicted = PredictedMetrics(p_success=0.98, entropy=1.2, impact=35.0, cost=4.0, learning_value=2.5, ev=31.19)
+
+        def mock_subp(cmd, **kwargs):
+            if isinstance(cmd, list) and "diff" in cmd:
+                return MagicMock(returncode=0, stdout="1 file changed, 1 insertion(+)\n")
+            return MagicMock(returncode=1, stdout="", stderr="")
+
+        for recorded, expected in ((0.5, 0.5), (1, 1.0), (0.0, 0.0), ("1.0", None), (True, None), (1.5, None)):
+            exec_record = {
+                "execution_id": "E-test-rate",
+                "plan_branch": "I-test/P-test/_",
+                "status": "success",
+                "test_pass_rate": recorded,
+            }
+            with (
+                self.subTest(recorded=recorded),
+                patch("os.path.exists", side_effect=lambda p: "executions.jsonl" in str(p)),
+                patch("builtins.open", unittest.mock.mock_open(read_data=json.dumps(exec_record) + "\n")),
+                patch("subprocess.run", side_effect=mock_subp),
+            ):
+                actual, _meta = parse_actual_metrics("E-test-rate", "I-test/P-test/_", predicted)
+                self.assertEqual(actual.test_pass_rate, expected)
 
     def test_parse_actual_metrics_selects_highest_ledger_revision_when_superseded(self):
         predicted = PredictedMetrics(p_success=0.98, entropy=1.2, impact=35.0, cost=4.0, learning_value=2.5, ev=31.19)

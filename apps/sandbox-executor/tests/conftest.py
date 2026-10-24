@@ -1,10 +1,14 @@
-"""Suite-wide fixtures: no ambient credentials, no operator agent-harness markers, no real pre-flight probes."""
+"""Suite-wide isolation: no ambient credentials, agent-harness markers, real pre-flight probes or ``gh`` writes."""
 
 import os
+import subprocess
+from collections.abc import Iterator
 
 import pytest
 from sandbox_executor import cli
 from sandbox_executor.agent_defaults import detected_harness_markers
+
+from tests.gh_write_guard import guarded_popen
 
 # Ambient variables that can carry a live credential or change which code path a test exercises.
 _AMBIENT_CREDENTIAL_NAMES = ("GITHUB_TOKEN", "GH_TOKEN")
@@ -69,3 +73,18 @@ def _isolate_agent_defaults(no_ambient_credentials, monkeypatch: pytest.MonkeyPa
     for name in ("HOLON_AGENT", "HOLON_MODEL", "HOLON_PREFLIGHT_TIMEOUT"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("HOLON_SKIP_PREFLIGHT", "1")
+
+
+@pytest.fixture(autouse=True)
+def gh_write_guard(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
+    """Fail any test that runs an unmocked ``gh`` write command (comment, review, create, edit, merge, ...).
+
+    Read-only ``gh`` calls still run. The write is refused before ``gh`` starts and the test fails at teardown, even
+    when the code under test swallows the refusal. Yields the list of blocked commands; a test that expects a block
+    clears it.
+    """
+    blocked: list[str] = []
+    monkeypatch.setattr(subprocess, "Popen", guarded_popen(blocked))
+    yield blocked
+    if blocked:
+        pytest.fail("Unmocked gh write command(s) ran in this test: " + "; ".join(blocked), pytrace=False)

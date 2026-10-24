@@ -27,6 +27,7 @@ import sys
 import tempfile
 import time
 import traceback
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -664,6 +665,18 @@ def _repair_git_repo(
     return healthy
 
 
+def _entrypoint_git_runner(repo_dir: str) -> Callable[[list[str]], str]:
+    """Adapt run_cmd (sandbox safe.directory and clean git environment) to the git.py runner interface."""
+
+    def _run(args: list[str]) -> str:
+        res = run_cmd(["git", *args], cwd=repo_dir, check=False)
+        if res.returncode != 0:
+            raise RuntimeError(f"git {' '.join(args[:2])} failed: {redact_text((res.stderr or '').strip())}")
+        return res.stdout if isinstance(res.stdout, str) else ""
+
+    return _run
+
+
 def _safe_float(val: Any, default: float = 0.0) -> float:
     if val is None:
         return default
@@ -986,6 +999,9 @@ def main() -> None:
         exec_branch = f"{plan_branch_prefix}/E-{exec_seq}-{safe_agent}-{safe_model}/_"
 
         run_cmd(["git", "checkout", "-b", exec_branch], cwd=repo_dir)
+        # Plan branch tip: the base the empty-diff guard compares the agent's work against.
+        plan_tip_res = run_cmd(["git", "rev-parse", "HEAD"], cwd=repo_dir, check=False)
+        plan_tip = plan_tip_res.stdout.strip() if plan_tip_res.returncode == 0 and plan_tip_res.stdout else None
 
         # Proactively check and resolve any stage conflicts
         from sandbox_executor.flow import check_and_resolve_stage_conflicts
@@ -1319,6 +1335,39 @@ def main() -> None:
                                 ),
                             )
 
+            # Empty-diff guard (shared with holon flow and the review loop): an agent run that changes nothing
+            # outside holon-knowledge/ledger/, plans/ and executions/ is never recorded as success, and only the ledger
+            # row is committed. Fail closed when the diff cannot be computed.
+            failure_reason: str | None = None
+            if exec_status == "success":
+                # Imported here: sandbox_executor.git imports redact_text from this module.
+                from sandbox_executor.git import (
+                    EMPTY_DIFF_FAILURE_REASON,
+                    EMPTY_DIFF_STATUS,
+                    empty_diff_summary,
+                    has_effective_diff,
+                )
+
+                diff_base = base_tip if recovery_triggered else plan_tip
+                try:
+                    if not diff_base:
+                        raise RuntimeError(f"tip of {plan_branch} is unknown")
+                    effective = has_effective_diff(repo_dir, diff_base, git_runner=_entrypoint_git_runner(repo_dir))
+                except Exception as e:
+                    exec_status = EMPTY_DIFF_STATUS
+                    failure_reason = "diff_unverified"
+                    summary = (
+                        f"Could not verify the execution diff against {plan_branch}; treating it as a failure: "
+                        f"{redact_text(str(e))}"
+                    )
+                else:
+                    if not effective:
+                        exec_status = EMPTY_DIFF_STATUS
+                        failure_reason = EMPTY_DIFF_FAILURE_REASON
+                        summary = empty_diff_summary(plan_branch)
+                if failure_reason:
+                    print(f"Error: {summary}", file=sys.stderr)
+
             exec_entry = {
                 "entry_type": "summary",
                 "execution_id": exec_id,
@@ -1333,6 +1382,8 @@ def main() -> None:
                 "agent_output_bytes": agent_output_bytes,
                 "ledger_revision": 1,
             }
+            if failure_reason:
+                exec_entry["failure_reason"] = failure_reason
             try:
                 os.makedirs(ledger_dir, exist_ok=True)
                 with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as ef:

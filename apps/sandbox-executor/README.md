@@ -38,8 +38,10 @@ apps/sandbox-executor/
 ### Key Submodules
 
 - **`flow.py`**: Houses `PipelineEngine`, `FlowContext`, `FlowCheckpoint`, and stage runners (`run_intent_stage`,
-  `run_plan_stage`, `run_execute_stage`, `run_review_stage`, `run_calibrate_stage`). Manages stage dispatch, atomic
-  checkpointing, and Bean 0034 safety halts.
+  `run_plan_stage`, `run_execute_stage`, `run_review_stage`, `run_calibrate_stage`). Stages 1-3 dispatch the same role
+  containers as the per-stage commands (through `cli.dispatch_role_agent`) and adopt the branches they push; the flow
+  never authors plans or code itself. Also manages atomic checkpointing, the empty-diff guard and Bean 0034 safety
+  halts.
 - **`cli.py`**: Entrypoint for all `holon` commands (`flow`, `plan`, `execute`, `review-loop`, `calibrate`, `consult`,
   `record`, `reconcile`, `promote`, `veto`, `stats`, `ledger`). Handles argument parsing, proxy setup, and process
   dispatch.
@@ -95,7 +97,13 @@ The package provides the unified `holon` CLI command.
 
 ### `holon flow`
 
-Runs the automated 5-stage Holon Flow lifecycle pipeline (Intent -> Plan -> Execute -> Review Loop -> Calibrate):
+Runs the automated 5-stage Holon Flow lifecycle pipeline (Intent -> Plan -> Execute -> Review Loop -> Calibrate). A flow
+run is equivalent to invoking `holon intent`, `holon plan`, `holon execute`, `holon review-loop` and `holon calibrate`
+by hand: Stages 1-3 launch the same role containers with the resolved `--agent` and `--model`, then fetch `origin` to
+adopt the branch each container pushed. The flow fails Stage 2 rather than fabricate a plan when no planner produced
+`plans/P-*.md`, and fails Stage 3 (recording `status: "failed"`, opening no PR) when the execution changes nothing
+outside `holon-knowledge/ledger/`, `plans/` and `executions/`. `--skip-push` is only accepted with `--dry-run`, which
+validates without dispatching. See [the flow equivalence guarantee](../../docs/git_flow.md#flow-equivalence-guarantee).
 
 ```bash
 # Run complete lifecycle

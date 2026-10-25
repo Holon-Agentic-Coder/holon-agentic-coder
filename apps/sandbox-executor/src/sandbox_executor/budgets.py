@@ -238,10 +238,7 @@ class BudgetBreach(Exception):
         )
 
 
-# Seconds the host keeps back from the remaining stage time it hands to a role container: container start-up and
-# teardown, the push after the agent stops, and (for the execute stage) the host-side verification run, whose own floor
-# is VERIFY_TIMEOUT_FLOOR_SECONDS (30 s) in flow.py.
-HANDDOWN_SAFETY_MARGIN_SECONDS = 60.0
+CONTAINER_OVERHEAD_AND_HOST_CHECKS_MARGIN_SECONDS = 60.0
 
 _ACTIVE_STAGE_TIMER: contextvars.ContextVar[StageTimer | None] = contextvars.ContextVar(
     "holon_active_stage_timer", default=None
@@ -264,7 +261,7 @@ def current_stage_timer() -> StageTimer | None:
 
 
 def stage_budget_handdown_env(
-    timer: StageTimer | None = None, margin_seconds: float = HANDDOWN_SAFETY_MARGIN_SECONDS
+    timer: StageTimer | None = None, margin_seconds: float = CONTAINER_OVERHEAD_AND_HOST_CHECKS_MARGIN_SECONDS
 ) -> dict[str, str]:
     """``{HOLON_STAGE_BUDGET_SECONDS: <remaining - margin, floored>}`` for a role container, or ``{}`` with no timer.
 

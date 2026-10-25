@@ -31,16 +31,18 @@ container, because wherever it is set it applies to every stage. The host does t
 timed stage (intent, plan, execute or calibration; `PipelineEngine.timed_execute_stage`), that stage's timer is the
 active host stage timer (`budgets.active_stage_timer`), and every role container started through
 `cli.run_docker_container` during the stage (the flow dispatches Stages 1-3 through `cli.dispatch_role_agent`, which
-calls it) receives `HOLON_STAGE_BUDGET_SECONDS` set to the stage's remaining time minus a safety margin of 60 s (at most
-a tenth of the stage budget) for container start-up, the push and, in the execute stage, the host's post-dispatch checks
-(execution-branch discovery and the empty-diff guard), floored to whole seconds and never less than 1 s. The container's
-own stage ceiling therefore fires before the host's, and the host ceiling stays the stage budget itself. The handed-down
-value replaces a forwarded host value; outside a timed stage (a standalone `holon plan` or `holon execute`) nothing is
-added. The review stage is excluded because its ceiling is one review-iteration budget per iteration, and the review
-loop starts no role container. Non-numeric, non-finite, zero or negative values are ignored with a warning and the
-default is kept (except that `HOLON_TURN_STALL_SECONDS=0` is accepted and disables stall detection); an invalid
-`HOLON_STAGE_BUDGET_SECONDS` is ignored, so the per-stage budgets apply. All of these variables start with `HOLON_`, so
-the host CLI forwards them into the sandbox container automatically. `holon doctor` prints the effective values.
+calls it) receives `HOLON_STAGE_BUDGET_SECONDS` set to the stage's remaining time minus
+`budgets.CONTAINER_OVERHEAD_AND_HOST_CHECKS_MARGIN_SECONDS` (60 s, at most a tenth of the stage budget), which covers
+the container overhead (start-up, teardown and the push after the agent stops) and, in the execute stage, the host's
+post-dispatch checks (execution-branch discovery and the empty-diff guard), floored to whole seconds and never less than
+1 s. The container's own stage ceiling therefore fires before the host's, and the host ceiling stays the stage budget
+itself. The handed-down value replaces a forwarded host value; outside a timed stage (a standalone `holon plan` or
+`holon execute`) nothing is added. The review stage is excluded because its ceiling is one review-iteration budget per
+iteration, and the review loop starts no role container. Non-numeric, non-finite, zero or negative values are ignored
+with a warning and the default is kept (except that `HOLON_TURN_STALL_SECONDS=0` is accepted and disables stall
+detection); an invalid `HOLON_STAGE_BUDGET_SECONDS` is ignored, so the per-stage budgets apply. All of these variables
+start with `HOLON_`, so the host CLI forwards them into the sandbox container automatically. `holon doctor` prints the
+effective values.
 
 > [!NOTE] A turn is a single assistant response (Bean 0139), not a runner process. One `claude -p` or `pi -p` invocation
 > performs a whole plan or execution as many responses and legitimately runs for tens of minutes (31.4 min for a real

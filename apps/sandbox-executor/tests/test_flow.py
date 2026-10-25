@@ -2039,8 +2039,12 @@ class TestStageBudgets:
         )
         assert engine.stage_budget_seconds(FlowStage.REVIEW, review) == 360
 
-    def _dispatch_timed_execute(self, tmp_path, env):
-        """Run timed Stage 3 through the real cli.dispatch_role_agent and capture the executor container's env."""
+    def _dispatch_timed_execute(self, tmp_path, env, exit_code=7):
+        """Run timed Stage 3 through the real cli.dispatch_role_agent and capture the executor container's env.
+
+        With ``exit_code`` 0 the dispatch succeeds and the post-dispatch path runs against a discovered execution branch
+        that changes one path and records a ``success`` summary row.
+        """
         from sandbox_executor.budgets import stage_budget_handdown_env
 
         ctx = FlowContext(
@@ -2056,13 +2060,25 @@ class TestStageBudgets:
         def fake_container(role, image_name, container_args, **kwargs):
             # run_docker_container adds exactly this to the forwarded env (cli test covers the docker argv).
             seen.append((role, image_name, list(container_args), stage_budget_handdown_env()))
-            return 7
+            return exit_code
 
+        exec_branch = "I-1-x/P-2-y/E-3-claude-agent-claude-opus-5-5/_"
         with (
             patch.dict(os.environ, env),
             patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
             patch("sandbox_executor.flow._snapshot_child_branches", return_value=set()),
             patch("sandbox_executor.cli.run_docker_container", side_effect=fake_container),
+            patch("sandbox_executor.flow._fetch_branch_prefix_error", return_value=None),
+            patch("sandbox_executor.flow._discover_child_branch", return_value=(exec_branch, None)),
+            patch("sandbox_executor.flow._track_local_branch"),
+            patch(
+                "sandbox_executor.flow._read_ledger_rows",
+                return_value=[
+                    {"entry_type": "summary", "execution_id": "E-3-claude-agent-claude-opus-5-5", "status": "success"}
+                ],
+            ),
+            patch("sandbox_executor.flow._resolve_branch_ref", return_value="refs/remotes/origin/I-1-x/P-2-y/_"),
+            patch("sandbox_executor.flow.changed_paths", return_value=["src/app.py"]),
         ):
             now = [0.0]
             result = PipelineEngine(ctx, clock=lambda: now[0]).timed_execute_stage(FlowStage.EXECUTE)
@@ -2074,7 +2090,7 @@ class TestStageBudgets:
         result, seen = self._dispatch_timed_execute(tmp_path, {"HOLON_STAGE_BUDGET_EXECUTE_MINUTES": "20"})
         assert [(role, image) for role, image, _, _ in seen] == [("executor", "holon/agent-claude")]
         assert seen[0][2] == ["I-1-x/P-2-y/_", "claude-agent", "claude-opus-5-5"]
-        # 1200 s stage budget minus the 60 s safety margin (at most a tenth of the budget).
+        # 1200 s stage budget minus CONTAINER_OVERHEAD_AND_HOST_CHECKS_MARGIN_SECONDS (at most a tenth of the budget).
         assert seen[0][3] == {"HOLON_STAGE_BUDGET_SECONDS": "1140"}
         assert result.status == StageStatus.FAILED
         assert result.error == "Execute stage failed: executor agent exited with code 7."
@@ -2082,8 +2098,12 @@ class TestStageBudgets:
 
     def test_execute_stage_runs_no_host_side_verification(self, tmp_path):
         with patch("subprocess.run") as mock_sub:
-            self._dispatch_timed_execute(tmp_path, {})
-        assert not any("pytest" in (call.args[0] if call.args else []) for call in mock_sub.call_args_list)
+            result, seen = self._dispatch_timed_execute(tmp_path, {}, exit_code=0)
+        assert [role for role, _, _, _ in seen] == ["executor"]
+        assert result.status == StageStatus.SUCCESS, result.error
+        assert result.payload["changed_files"] == 1
+        commands = [" ".join(map(str, call.args[0])) for call in mock_sub.call_args_list if call.args]
+        assert not [cmd for cmd in commands if "pytest" in cmd or "task test" in cmd]
 
     def test_review_iteration_ceiling_stops_the_loop(self, tmp_path):
         ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1-x/P-2-y/E-3-z/_", dry_run=True)

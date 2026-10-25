@@ -15,6 +15,7 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import unquote, urlparse, urlsplit, urlunsplit
 
 from sandbox_executor import local_llm
@@ -22,6 +23,7 @@ from sandbox_executor.agent_defaults import (
     AGENT_IMAGE_MAPPING as AGENT_IMAGE_MAPPING,  # re-exported: the mapping moved to agent_defaults
 )
 from sandbox_executor.agent_defaults import (
+    FALLBACK_AGENT,
     Resolution,
     UnmappedAgentRunnerError,
     image_for_agent,
@@ -30,7 +32,13 @@ from sandbox_executor.agent_defaults import (
     resolve_model,
 )
 from sandbox_executor.calibration import run_calibrate
-from sandbox_executor.flow import FlowContext, FlowStage, load_checkpoint, run_flow_pipeline
+from sandbox_executor.flow import (
+    SKIP_PUSH_DISPATCH_ERROR,
+    FlowContext,
+    FlowStage,
+    load_checkpoint,
+    run_flow_pipeline,
+)
 from sandbox_executor.knowledge import (
     ActionIndexDatabase,
     ConsultEngine,
@@ -1504,6 +1512,76 @@ def run_docker_container(
             pass
 
 
+INTENT_CREATOR_ROLE: str = "intent-creator"
+INTENT_CREATOR_IMAGE: str = "holon/orchestrator"
+# The intent-creator entrypoint never invokes a runner, so its container keeps the historical antigravity
+# mount profile whatever runner the caller resolved.
+INTENT_CREATOR_AGENT_ID: str = "antigravity"
+
+
+def resolve_role_image(role: str, agent_id: str) -> str:
+    """Resolve the container image that hosts a role agent.
+
+    Args:
+        role: Role name ('intent-creator', 'planner' or 'executor').
+        agent_id: Runner name or normalised agent id (see agent_defaults.normalise_agent_id).
+
+    Returns:
+        str: 'holon/orchestrator' for the intent creator, otherwise the mapped 'holon/agent-<runner>' image.
+
+    Raises:
+        UnmappedAgentRunnerError: If a planner or executor runner has no mapped image.
+    """
+    if role == INTENT_CREATOR_ROLE:
+        return INTENT_CREATOR_IMAGE
+    return image_for_agent(agent_id)
+
+
+def dispatch_role_agent(
+    role: str,
+    runner: str | None,
+    model: str | None,
+    positional_args: list[str],
+    *,
+    repo_dir: str | None = None,
+    intent_file: str | None = None,
+    token_reduce: bool = False,
+    mitm_web: bool = False,
+) -> int:
+    """Launch the containerised role agent shared by 'holon intent|plan|execute' and 'holon flow'.
+
+    This is the single dispatch path for the authoring roles: the per-stage commands and the flow
+    stages both call it, so the two invocations launch the same image with the same arguments.
+
+    Args:
+        role: Role name ('intent-creator', 'planner' or 'executor').
+        runner: Resolved runner name (e.g. 'claude-agent'); selects the 'holon/agent-<runner>' image.
+        model: Resolved model name. Planner and executor receive it through positional_args; the
+            intent creator does not run a model.
+        positional_args: Container arguments (e.g. [plan_branch, runner, model] for the executor).
+        repo_dir: Optional target repository directory used to resolve the origin URL.
+        intent_file: Intent payload path, mandatory for the intent creator.
+        token_reduce: Whether to route container traffic through the token reduction proxy.
+        mitm_web: Whether to start the proxy with the mitmweb interface.
+
+    Returns:
+        int: Container exit code (non-zero on failure).
+    """
+    del model  # Carried in positional_args for the roles that run a model.
+    if role == INTENT_CREATOR_ROLE:
+        kwargs: dict[str, Any] = {"agent_id": INTENT_CREATOR_AGENT_ID, "intent_file": intent_file}
+        if token_reduce:
+            kwargs["token_reduce"] = True
+    else:
+        kwargs = {"agent_id": normalise_agent_id(runner or FALLBACK_AGENT), "token_reduce": token_reduce}
+    if mitm_web:
+        kwargs["mitm_web"] = True
+    if repo_dir:
+        kwargs["repo_dir"] = repo_dir
+    image_name = resolve_role_image(role, kwargs["agent_id"])
+    return run_docker_container(role, image_name, list(positional_args), **kwargs)
+
+
 def resolve_runner_and_model(agent: str | None, model: str | None) -> tuple[Resolution, Resolution]:
     """Resolve the agent runner and model for a command.
 
@@ -1798,7 +1876,12 @@ def main() -> None:
     flow_parser.add_argument(
         "--skip-push",
         action="store_true",
-        help="Skip pushing git branches to remote origin.",
+        help=(
+            "Skip pushing git branches to remote origin. Only valid with --dry-run: the intent, plan and "
+            "execute stages dispatch role agents that fetch from origin, the review stage reviews the origin "
+            "execution branch and the calibrate stage pushes to origin, so any non-dry run, including a "
+            "--from-stage or --checkpoint resume, is rejected before any stage runs."
+        ),
     )
     flow_parser.add_argument(
         "--skip-review",
@@ -2289,8 +2372,16 @@ def main() -> None:
                     flow_model = context.model
                     logger.info(Resolution(flow_model, "checkpoint", from_checkpoint).describe("Model"))
 
+            # --skip-push needs --dry-run on every run, including resumes from any stage; reject it before any side
+            # effect (pre-flight probe, checkpoint, branch or ledger write).
+            effective_dry_run = bool(args.dry_run or (context is not None and context.dry_run))
+            if (args.skip_push or (context is not None and context.skip_push)) and not effective_dry_run:
+                print(f"Error: {SKIP_PUSH_DISPATCH_ERROR}", file=sys.stderr)
+                sys.exit(1)
+                return
+
             # Readiness probe before Stage 1: nothing has been branched, pushed, checkpointed or recorded yet.
-            if args.dry_run or (context is not None and context.dry_run):
+            if effective_dry_run:
                 logger.info("Pre-flight probe skipped for a dry-run flow (no agent is called).")
             elif not flow_dispatches_agent(args.from_stage):
                 logger.info(
@@ -2619,50 +2710,44 @@ def main() -> None:
         if preflight is not None and not preflight.ok:
             sys.exit(1)
             return
-        agent_id = normalise_agent_id(args.agent)
+
+    common_kwargs: dict[str, Any] = {
+        "repo_dir": getattr(args, "repo_dir", None),
+        "token_reduce": bool(getattr(args, "token_reduce", False)),
+        "mitm_web": bool(getattr(args, "mitm_web", False)),
+    }
 
     if args.command == "intent":
-        image_name = "holon/orchestrator"
-        kwargs = {"agent_id": "antigravity", "intent_file": args.intent_file}
-        if getattr(args, "token_reduce", False):
-            kwargs["token_reduce"] = True
-        if getattr(args, "mitm_web", False):
-            kwargs["mitm_web"] = True
-        if getattr(args, "repo_dir", None):
-            kwargs["repo_dir"] = args.repo_dir
-        sys.exit(run_docker_container("intent-creator", image_name, [], **kwargs))
+        sys.exit(
+            dispatch_role_agent(
+                INTENT_CREATOR_ROLE,
+                getattr(args, "agent", None),
+                getattr(args, "model", None),
+                [],
+                intent_file=args.intent_file,
+                **common_kwargs,
+            )
+        )
 
     elif args.command == "plan":
-        image_name = image_for_agent(args.agent)
-        container_args = [args.intent_branch, args.agent, args.model]
-        kwargs = {"agent_id": agent_id, "token_reduce": getattr(args, "token_reduce", False)}
-        if getattr(args, "mitm_web", False):
-            kwargs["mitm_web"] = True
-        if getattr(args, "repo_dir", None):
-            kwargs["repo_dir"] = args.repo_dir
         sys.exit(
-            run_docker_container(
+            dispatch_role_agent(
                 "planner",
-                image_name,
-                container_args,
-                **kwargs,
+                args.agent,
+                args.model,
+                [args.intent_branch, args.agent, args.model],
+                **common_kwargs,
             )
         )
 
     elif args.command == "execute":
-        image_name = image_for_agent(args.agent)
-        container_args = [args.plan_branch, args.agent, args.model]
-        kwargs = {"agent_id": agent_id, "token_reduce": getattr(args, "token_reduce", False)}
-        if getattr(args, "mitm_web", False):
-            kwargs["mitm_web"] = True
-        if getattr(args, "repo_dir", None):
-            kwargs["repo_dir"] = args.repo_dir
         sys.exit(
-            run_docker_container(
+            dispatch_role_agent(
                 "executor",
-                image_name,
-                container_args,
-                **kwargs,
+                args.agent,
+                args.model,
+                [args.plan_branch, args.agent, args.model],
+                **common_kwargs,
             )
         )
 

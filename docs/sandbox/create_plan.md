@@ -187,6 +187,10 @@ During execution, the container performs the following operations:
 6. Appends a structured plan entry to `holon-knowledge/ledger/plans.jsonl`.
 7. Commits the changes and pushes the plan branch to origin.
 
+`holon flow` launches this same planner container for Stage 2 and then adopts the plan branch it pushed. If no planner
+agent produced `plans/P-*.md` on a plan branch under the intent branch, the flow stage fails; it never writes a
+placeholder plan of its own.
+
 ---
 
 ## 3. Verification

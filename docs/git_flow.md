@@ -129,6 +129,65 @@ The evolution pipeline traverses five deterministic stages, representing a singl
 | **4. Review Loop** | PR Review & Resolve Loop | `holon review-loop <execution_branch>` | PR raised + 3-agent ensemble consensus review + micro-actions in `executions.jsonl` |
 | **5. Calibrate**   | Calibration Analysis     | `holon calibrate <execution_branch>`   | `/calibrated` branch + `plans/P-*_calibration.md` (included in PR diff)             |
 
+#### Flow Equivalence Guarantee
+
+`holon flow <intent.json>` is equivalent to running the five commands above by hand, in order. Stages 1-3 call the same
+dispatch function as `holon intent`, `holon plan` and `holon execute` (`dispatch_role_agent` in `cli.py`), so they
+launch the same containers with the resolved runner and model: `holon/agent-<runner>` for the planner and executor, and
+`holon/orchestrator` for the intent creator (which does not run a model). Those containers author every Stage 1-3
+branch, plan file and ledger row; the flow only fetches `origin`, adopts the branch each container pushed and validates
+it, except that it appends a superseding failure row to an empty execution's branch (see the limits below). A branch is
+adopted only if it was not on `origin` before the container was dispatched and its name carries the dispatched runner
+and model; when no such branch or more than one appears, the stage fails instead of guessing, so neither clock skew
+between host and container nor a concurrent run under the same parent branch can redirect the flow. Stages 4 and 5 run
+the same review loop and calibration code as `holon review-loop` and `holon calibrate`. Because Stages 1-3 leave the
+host checkout where `holon flow` started, Stages 4 and 5 each first check out the adopted execution branch (and fail if
+it cannot, for example because local changes would be overwritten; nothing is discarded), so the review loop's ledger
+rows and the Stage 5 calibration report and ledger reconciliation land on that branch even under `--skip-review` or a
+resume that enters at Stage 5. The conflict probes of Stages 2-5 name the branch each stage works from (Stage 1 has none
+yet), and the review records the execution branch's tip, freshly fetched from `origin`, as the reviewed commit, never
+the operator's `HEAD`.
+
+The guarantee has five deliberate limits:
+
+- **No fabricated plans.** If no planner agent produced `plans/P-*.md` on a plan branch under the intent branch, Stage 2
+  fails; the flow never writes a plan from a template.
+- **Empty executions fail.** An execution branch with no changes outside `holon-knowledge/ledger/`, `plans/` and
+  `executions/` relative to its plan branch (content merged in from the target branch does not count) is recorded as
+  `status: "failed"` (`failure_reason: "empty_diff"`, no `test_pass_rate`), Stage 3 fails and no PR is created or
+  updated. The same guard runs inside `holon execute` and before `holon review-loop` opens a PR; there it first fetches
+  the execution and plan branches and compares the origin copies the PR is opened from, so stale or unpushed local
+  branches never decide it (a failed fetch skips the PR as `diff_unverified`). When the guard refuses the PR
+  (`empty_diff` or `diff_unverified`), the review loop fails closed: it does not wait for CI, runs no review iteration
+  and posts no consensus, so no evidence -- not even a Stage 3 `test_pass_rate` of 1.0 or green CI on an existing PR --
+  can approve it. The loop returns `approved: false` with the refusal as its `error` (an `empty_diff` refusal appends no
+  ledger rows; a `diff_unverified` refusal appends only a `failed` "halted without consensus" summary row naming it and
+  the review action event, with no `ACT-REV`, `ACT-FIND`, `ACT-RES` or `ACT-POST` rows), and Stage 4 fails with the
+  refusal's own reason (`Autonomous review halted: Refusing to create or update a PR for ...`), never as a test failure
+  or as unmeasured tests, so Stage 5 does not run. Dry runs never invoke the guard.
+- **Dispatch needs `origin`.** `--dry-run` validates the payload and names the branches without dispatching anything.
+  `--skip-push` is rejected outside `--dry-run` -- on every run, including a `--from-stage` or `--checkpoint` resume
+  from any stage -- before any stage runs, because the role containers clone from and push to `origin`, Stage 4 opens
+  the PR from the `origin` execution branch and Stage 5 pushes the `/calibrated` branch.
+- **Unmeasured tests are never a pass.** Stage 3 carries the executor container's recorded `test_pass_rate` from its
+  `executions.jsonl` summary row; when the row records none, it is `null` ("not measured"). Stage 4 then reports
+  `test_results` with `pass_rate: null`, `measured: false`, `passed: null`, and when no CI checks exist the review
+  loop's `local_tests` fallback reports `NOT_MEASURED` and withholds consensus instead of passing. Before its first
+  iteration the loop waits for CI checks to register on the PR (when `gh` is available; up to
+  `HOLON_CI_REGISTRATION_TIMEOUT` seconds, default 180, `0` disables the wait), without consuming review iterations or
+  writing ledger rows. If none register, the loop stops after that single iteration with consensus status `not_measured`
+  (one iteration's review rows and one summary row, not rows for every iteration), Stage 4 fails with
+  `test results not measured: no recorded Stage 3 test result and no CI checks`, and the pipeline halts before Stage 5
+  calibration runs. `--dry-run` keeps its simulated consensus and does not wait.
+- **Token reduction is auto-detected.** `holon flow` (like `holon review-loop`) resolves token reduction with
+  `detect_holon_coherence`: unless `HOLON_TOKEN_REDUCE` opts out (`0`, `false`, `no`, `off`), it is enabled by
+  `--token-reduce`, `--mitm-web`, a truthy `HOLON_TOKEN_REDUCE` or `HOLON_PASSIVE_MONITORING`, a reachable proxy port, a
+  local holon-coherence or mitmproxy image, or a `holon-coherence` binary on `PATH`, and the result is passed to the
+  Stage 1-3 containers. `holon intent`, `holon plan` and `holon execute` enable it only on the explicit opt-ins
+  (`--token-reduce`, `--mitm-web`, `HOLON_TOKEN_REDUCE`, `HOLON_PASSIVE_MONITORING`), so on a host where detection
+  succeeds the flow routes the role containers through the proxy and the manual commands do not. To launch identical
+  containers either way, pass `--token-reduce` to the manual commands or set `HOLON_TOKEN_REDUCE=0` for both.
+
 #### Safety Halt & Merge Boundary (Bean 0034)
 
 Merging to `main` is strictly reserved for the human maintainer. Upon successful consensus approval in Stage 4 and

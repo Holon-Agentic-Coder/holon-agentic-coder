@@ -3490,6 +3490,12 @@ class TestExecutorIncrementalNotes(unittest.TestCase):
             result.returncode = 0
             result.stdout = ""
             result.stderr = ""
+            # #95 empty-diff guard: the simulated agent changed a source file next to its execution notes, so a
+            # successful run stays a success (the notes alone are metadata and would be an empty diff).
+            if args[:3] == ["git", "rev-parse", "HEAD"]:
+                result.stdout = "plan-tip-sha\n"
+            elif "diff" in args and "--name-only" in args:
+                result.stdout = "executions/E-1-agent-model.md\0src/app.py\0"
             return result
 
         def fake_run_turn(cmd, **kwargs):

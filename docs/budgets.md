@@ -15,29 +15,30 @@ record). The incremental artefact protocol these budgets rely on is described in
 The defaults are the real measurements recorded in Beans 0138 to 0140. They are not derived from synthetic throughput
 data, and the tests that exercise them use injected clocks only to drive control flow.
 
-| Budget                | Default | Variable                                      | Bounds                                             |
-| --------------------- | ------- | --------------------------------------------- | -------------------------------------------------- |
-| Turn                  | 300 s   | `HOLON_TURN_TIMEOUT_SECONDS`                  | One assistant response (see below), not a process. |
-| Stall                 | 90 s    | `HOLON_TURN_STALL_SECONDS`                    | Silence within a streaming turn; `0` disables it.  |
-| Intent stage          | 10 min  | `HOLON_STAGE_BUDGET_INTENT_MINUTES`           | The intent stage.                                  |
-| Plan stage            | 35 min  | `HOLON_STAGE_BUDGET_PLAN_MINUTES`             | The plan stage, including the resume turn.         |
-| Execute stage         | 45 min  | `HOLON_STAGE_BUDGET_EXECUTE_MINUTES`          | The execute stage, including verification tests.   |
-| Review iteration      | 15 min  | `HOLON_STAGE_BUDGET_REVIEW_ITERATION_MINUTES` | Each review-loop iteration.                        |
-| Calibration stage     | 10 min  | `HOLON_STAGE_BUDGET_CALIBRATION_MINUTES`      | The calibration stage.                             |
-| Stage ceiling (exact) | (unset) | `HOLON_STAGE_BUDGET_SECONDS`                  | Replaces every per-stage value above, in seconds.  |
+| Budget                | Default | Variable                                      | Bounds                                                              |
+| --------------------- | ------- | --------------------------------------------- | ------------------------------------------------------------------- |
+| Turn                  | 300 s   | `HOLON_TURN_TIMEOUT_SECONDS`                  | One assistant response (see below), not a process.                  |
+| Stall                 | 90 s    | `HOLON_TURN_STALL_SECONDS`                    | Silence within a streaming turn; `0` disables it.                   |
+| Intent stage          | 10 min  | `HOLON_STAGE_BUDGET_INTENT_MINUTES`           | The intent stage.                                                   |
+| Plan stage            | 35 min  | `HOLON_STAGE_BUDGET_PLAN_MINUTES`             | The plan stage, including the resume turn.                          |
+| Execute stage         | 45 min  | `HOLON_STAGE_BUDGET_EXECUTE_MINUTES`          | The execute stage, including the executor container's own test run. |
+| Review iteration      | 15 min  | `HOLON_STAGE_BUDGET_REVIEW_ITERATION_MINUTES` | Each review-loop iteration.                                         |
+| Calibration stage     | 10 min  | `HOLON_STAGE_BUDGET_CALIBRATION_MINUTES`      | The calibration stage.                                              |
+| Stage ceiling (exact) | (unset) | `HOLON_STAGE_BUDGET_SECONDS`                  | Replaces every per-stage value above, in seconds.                   |
 
 `HOLON_STAGE_BUDGET_SECONDS` is meant for handing one exact ceiling to a single sandbox role; set it only for that
 container, because wherever it is set it applies to every stage. The host does this itself: while `holon flow` runs a
 timed stage (intent, plan, execute or calibration; `PipelineEngine.timed_execute_stage`), that stage's timer is the
 active host stage timer (`budgets.active_stage_timer`), and every role container started through
-`cli.run_docker_container` during the stage receives `HOLON_STAGE_BUDGET_SECONDS` set to the stage's remaining time
-minus a safety margin of 60 s (at most a tenth of the stage budget) for container start-up, the push and, in the execute
-stage, the host-side verification run, floored to whole seconds and never less than 1 s. The container's own stage
-ceiling therefore fires before the host's, and the host ceiling stays the stage budget itself. The handed-down value
-replaces a forwarded host value; outside a timed stage (a standalone `holon plan` or `holon execute`) nothing is added.
-The review stage is excluded because its ceiling is one review-iteration budget per iteration, and the review loop
-starts no role container. Non-numeric, non-finite, zero or negative values are ignored with a warning and the default is
-kept (except that `HOLON_TURN_STALL_SECONDS=0` is accepted and disables stall detection); an invalid
+`cli.run_docker_container` during the stage (the flow dispatches Stages 1-3 through `cli.dispatch_role_agent`, which
+calls it) receives `HOLON_STAGE_BUDGET_SECONDS` set to the stage's remaining time minus a safety margin of 60 s (at most
+a tenth of the stage budget) for container start-up, the push and, in the execute stage, the host's post-dispatch checks
+(execution-branch discovery and the empty-diff guard), floored to whole seconds and never less than 1 s. The container's
+own stage ceiling therefore fires before the host's, and the host ceiling stays the stage budget itself. The handed-down
+value replaces a forwarded host value; outside a timed stage (a standalone `holon plan` or `holon execute`) nothing is
+added. The review stage is excluded because its ceiling is one review-iteration budget per iteration, and the review
+loop starts no role container. Non-numeric, non-finite, zero or negative values are ignored with a warning and the
+default is kept (except that `HOLON_TURN_STALL_SECONDS=0` is accepted and disables stall detection); an invalid
 `HOLON_STAGE_BUDGET_SECONDS` is ignored, so the per-stage budgets apply. All of these variables start with `HOLON_`, so
 the host CLI forwards them into the sandbox container automatically. `holon doctor` prints the effective values.
 
@@ -178,5 +179,6 @@ Every stage reports elapsed time against its budget in the form `stage: status (
   payload. Both review checks use the same source, so `HOLON_STAGE_BUDGET_SECONDS` replaces the per-iteration budget in
   the loop and in the stage ceiling (that value times the iterations run).
 
-The verification test run in the flow execute stage uses the remaining execute-stage budget as its timeout (never less
-than 30 s), replacing the former hard-coded 300 s.
+The flow execute stage runs no host-side test suite: the executor container runs and records its own tests within the
+handed-down ceiling, and writes the stage's `elapsed_seconds` and `budget_seconds` on its execution summary row (see
+[Ledger Schema](ledger_schema.md)). A superseding empty-diff row written by the flow repeats those fields.

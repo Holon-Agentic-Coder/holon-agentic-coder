@@ -1061,6 +1061,16 @@ class TestCalibrationInterleavedActionLedger(unittest.TestCase):
         self.assertFalse(is_metadata_path("Makefile"))
         self.assertFalse(is_metadata_path("README.md"))
 
+    def test_metadata_paths_extend_the_empty_diff_bookkeeping_list(self):
+        # One definition of execution notes as metadata: the empty-diff guard's list (#95) is part of calibration's.
+        from sandbox_executor.calibration import METADATA_PATH_PREFIXES, is_metadata_path
+        from sandbox_executor.git import EMPTY_DIFF_EXCLUDES
+
+        self.assertIn("executions/", EMPTY_DIFF_EXCLUDES)
+        self.assertEqual(METADATA_PATH_PREFIXES[: len(EMPTY_DIFF_EXCLUDES)], EMPTY_DIFF_EXCLUDES)
+        for prefix in EMPTY_DIFF_EXCLUDES:
+            self.assertTrue(is_metadata_path(f"{prefix}example"))
+
     def test_parse_actual_metrics_excludes_metadata_files(self):
         predicted = PredictedMetrics(p_success=0.90, entropy=2.0, impact=50.0, cost=5.0, learning_value=3.0, ev=35.0)
         exec_record = {

@@ -22,7 +22,7 @@ from typing import Any
 
 from sandbox_executor.agent_defaults import LEGACY_DEFAULT_AGENT, LEGACY_DEFAULT_MODEL
 from sandbox_executor.formatting import converge_prettier
-from sandbox_executor.git import run_git
+from sandbox_executor.git import EMPTY_DIFF_EXCLUDES, run_git
 from sandbox_executor.knowledge.records import CredentialRedactor
 from sandbox_executor.ledger import generate_action_id, try_append_action_record
 
@@ -40,13 +40,14 @@ class CalibrationCommitError(RuntimeError):
     """
 
 
-# Paths that hold flow metadata (ledgers, plan and execution notes, checkpoints) rather than project code. This is
-# the single shared list: calibration's actual metrics and the review stage's diff summary both classify through
-# is_metadata_path(), so execution notes (executions/E-*.md, committed by every execution) never count as code.
-METADATA_PATH_PREFIXES = (
+# Paths that hold flow metadata (ledgers, plan and execution notes, checkpoints) rather than project code.
+# calibration's actual metrics and the review stage's diff summary both classify through is_metadata_path(). It extends
+# the empty-diff guard's bookkeeping list (git.EMPTY_DIFF_EXCLUDES, which already names executions/) instead of
+# repeating it, so execution notes (executions/E-*.md, committed by every execution) have one shared definition and
+# never count as code in the guard, the review diff summary or calibration.
+METADATA_PATH_PREFIXES: tuple[str, ...] = (
+    *EMPTY_DIFF_EXCLUDES,
     "holon-knowledge/",
-    "plans/",
-    "executions/",
     ".holon/",
 )
 

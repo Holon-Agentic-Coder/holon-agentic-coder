@@ -2039,39 +2039,51 @@ class TestStageBudgets:
         )
         assert engine.stage_budget_seconds(FlowStage.REVIEW, review) == 360
 
-    def _run_execute(self, tmp_path, env, side_effect=None):
-        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
-        ctx = FlowContext(repo_dir=str(tmp_path), plan_branch="I-1-x/P-2-y/_", dry_run=False)
+    def _dispatch_timed_execute(self, tmp_path, env):
+        """Run timed Stage 3 through the real cli.dispatch_role_agent and capture the executor container's env."""
+        from sandbox_executor.budgets import stage_budget_handdown_env
+
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_data={"slug": "b", "goal": "B"},
+            plan_branch="I-1-x/P-2-y/_",
+            agent="claude-agent",
+            model="claude-opus-5-5",
+            dry_run=False,
+        )
+        seen = []
+
+        def fake_container(role, image_name, container_args, **kwargs):
+            # run_docker_container adds exactly this to the forwarded env (cli test covers the docker argv).
+            seen.append((role, image_name, list(container_args), stage_budget_handdown_env()))
+            return 7
+
         with (
             patch.dict(os.environ, env),
-            patch("sandbox_executor.flow.run_git") as mock_git,
-            patch("subprocess.run") as mock_sub,
+            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow._snapshot_child_branches", return_value=set()),
+            patch("sandbox_executor.cli.run_docker_container", side_effect=fake_container),
         ):
-            mock_git.return_value = MagicMock(returncode=0)
-            mock_sub.return_value = MagicMock(returncode=0, stdout="", stderr="")
-            if side_effect:
-                mock_sub.side_effect = side_effect
-            res = run_execute_stage(ctx)
-        return ctx, res, mock_sub
+            now = [0.0]
+            result = PipelineEngine(ctx, clock=lambda: now[0]).timed_execute_stage(FlowStage.EXECUTE)
+        return result, seen
 
-    def test_verification_timeout_uses_the_execute_budget(self, tmp_path):
-        _, _, mock_sub = self._run_execute(tmp_path, {"HOLON_STAGE_BUDGET_EXECUTE_MINUTES": "20"})
-        timeout = mock_sub.call_args.kwargs["timeout"]
-        assert timeout != 300
-        assert 1190 < timeout <= 1200
+    def test_execute_budget_reaches_the_dispatched_executor_container(self, tmp_path):
+        # After #95 Stage 3 runs no host-side verification: the executor container measures its own tests, so the
+        # execute stage budget must reach that container through dispatch_role_agent -> run_docker_container.
+        result, seen = self._dispatch_timed_execute(tmp_path, {"HOLON_STAGE_BUDGET_EXECUTE_MINUTES": "20"})
+        assert [(role, image) for role, image, _, _ in seen] == [("executor", "holon/agent-claude")]
+        assert seen[0][2] == ["I-1-x/P-2-y/_", "claude-agent", "claude-opus-5-5"]
+        # 1200 s stage budget minus the 60 s safety margin (at most a tenth of the budget).
+        assert seen[0][3] == {"HOLON_STAGE_BUDGET_SECONDS": "1140"}
+        assert result.status == StageStatus.FAILED
+        assert result.error == "Execute stage failed: executor agent exited with code 7."
+        assert result.budget_seconds == 1200
 
-    def test_verification_timeout_has_a_floor(self, tmp_path):
-        _, _, mock_sub = self._run_execute(tmp_path, {"HOLON_STAGE_BUDGET_EXECUTE_MINUTES": "0.1"})
-        assert mock_sub.call_args.kwargs["timeout"] == 30
-
-    def test_verification_timeout_message_names_the_budget(self, tmp_path):
-        def timeout(*args, **kwargs):
-            raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
-
-        ctx, res, _ = self._run_execute(tmp_path, {"HOLON_STAGE_BUDGET_EXECUTE_MINUTES": "20"}, side_effect=timeout)
-        assert res.status == StageStatus.FAILED
-        assert any("timed out after 1200 seconds (execute stage budget)" in line for line in ctx.logs)
-        assert not any("300 seconds" in line for line in ctx.logs)
+    def test_execute_stage_runs_no_host_side_verification(self, tmp_path):
+        with patch("subprocess.run") as mock_sub:
+            self._dispatch_timed_execute(tmp_path, {})
+        assert not any("pytest" in (call.args[0] if call.args else []) for call in mock_sub.call_args_list)
 
     def test_review_iteration_ceiling_stops_the_loop(self, tmp_path):
         ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1-x/P-2-y/E-3-z/_", dry_run=True)

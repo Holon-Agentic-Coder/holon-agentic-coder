@@ -102,8 +102,8 @@ written by the role containers the flow dispatches -- the same intent-creator, p
 `holon intent`, `holon plan` and `holon execute` launch -- and each container commits and pushes them on the branch it
 creates. In Stages 1-3, `sandbox_executor/flow.py` writes only the Stage 3 superseding empty-diff row. In Stages 4 and 5
 the rows are appended by the stage functions in `sandbox_executor/flow.py`. The planner and executor entrypoints
-(`sandbox_executor/entrypoint/planner.py`, `sandbox_executor/entrypoint/executor.py`) append further Stage 2 and Stage
-3 rows of their own, listed below the table.
+(`sandbox_executor/entrypoint/planner.py`, `sandbox_executor/entrypoint/executor.py`) append further Stage 2 and Stage 3
+rows of their own, listed below the table.
 
 | Stage             | Ledger file        | Rows appended                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | ----------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -741,11 +741,13 @@ Appended when a plan execution begins, completes, fails, or decomposes into sub-
 - `agent_output_bytes`: Byte length of captured (and potentially truncated/sanitised) agent output payload.
 - `ledger_revision`: Integer revision number (defaults to `1` on creation).
 - `execution_notes`: Relative path of the execution notes artefact the agent was asked to write
-  (`executions/{execution_id}.md`). Execution notes are flow metadata, so calibration and the review stage never count
-  them as changed code.
+  (`executions/{execution_id}.md`). Execution notes are flow metadata, so the empty-diff guard, calibration and the
+  review stage never count them as changed code (one shared list: `git.EMPTY_DIFF_EXCLUDES`, which
+  `calibration.METADATA_PATH_PREFIXES` extends).
 - `execution_notes_valid`: Boolean; `true` when the notes exist and are usable. Validation is report-only: `false` never
   discards the code changes, and when the agent wrote no notes only the output size (`agent_output_bytes`) is recorded.
-- `elapsed_seconds`: Wall-clock seconds the execute stage had used when the summary was written (one decimal).
+- `elapsed_seconds`: Wall-clock seconds the execute stage had used when the executor container wrote the summary (one
+  decimal).
 - `budget_seconds`: The execute stage's wall-clock ceiling in force for the executor, in seconds (the handed-down
   remaining stage time when the host set `HOLON_STAGE_BUDGET_SECONDS`; Bean 0139, see
   [Turn and Stage Budgets](budgets.md)).

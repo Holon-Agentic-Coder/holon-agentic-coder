@@ -38,11 +38,16 @@ post-dispatch checks (execution-branch discovery and the empty-diff guard), floo
 1 s. The container's own stage ceiling therefore fires before the host's, and the host ceiling stays the stage budget
 itself. The handed-down value replaces a forwarded host value; outside a timed stage (a standalone `holon plan` or
 `holon execute`) nothing is added. The review stage is excluded because its ceiling is one review-iteration budget per
-iteration, and the review loop starts no role container. Non-numeric, non-finite, zero or negative values are ignored
-with a warning and the default is kept (except that `HOLON_TURN_STALL_SECONDS=0` is accepted and disables stall
-detection); an invalid `HOLON_STAGE_BUDGET_SECONDS` is ignored, so the per-stage budgets apply. All of these variables
-start with `HOLON_`, so the host CLI forwards them into the sandbox container automatically. `holon doctor` prints the
-effective values.
+iteration, and the review loop starts no role container. Non-numeric, non-finite, zero or negative values, and values
+above `budgets.MAX_BUDGET_SECONDS` (7 days, checked after the minute variables are converted to seconds, so `1e308`
+minutes cannot overflow to an infinite budget), are ignored with a warning that names the variable, never the value, and
+the default is kept (except that `HOLON_TURN_STALL_SECONDS=0` is accepted and disables stall detection); an invalid
+`HOLON_STAGE_BUDGET_SECONDS` is ignored, so the per-stage budgets apply. Out-of-range values are rejected, never
+clamped, so no `inf`, `nan` or absurd value reaches the timers, the summary lines or the handed-down
+`HOLON_STAGE_BUDGET_SECONDS`. The model-envelope integers (`HOLON_LOCAL_CONTEXT_WINDOW`, `HOLON_CONTEXT_RESERVE_TOKENS`)
+are rejected the same way above 2147483647, but as a configuration error that stops the run, because a wrong envelope
+cannot fall back to a safe default. All of these variables start with `HOLON_`, so the host CLI forwards them into the
+sandbox container automatically. `holon doctor` prints the effective values.
 
 > [!NOTE] A turn is a single assistant response (Bean 0139), not a runner process. One `claude -p` or `pi -p` invocation
 > performs a whole plan or execution as many responses and legitimately runs for tens of minutes (31.4 min for a real

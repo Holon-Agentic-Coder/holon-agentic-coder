@@ -44,6 +44,10 @@ ENV_STAGE_BUDGET_MINUTES = {
 
 DEFAULT_TURN_SECONDS = 300.0
 DEFAULT_STALL_SECONDS = 90.0
+# Largest budget accepted from the environment, in seconds (7 days), checked after any minute -> second conversion.
+# A larger value is rejected like a non-finite one, so no budget can reach arithmetic or a container env as inf, and
+# the floored hand-down value always fits an int.
+MAX_BUDGET_SECONDS = 7 * 24 * 3600.0
 
 # Pipeline stage names (flow.FlowStage values) mapped onto budget names.
 _STAGE_ALIASES = {"calibrate": "calibration", "review": "review_iteration"}
@@ -109,10 +113,14 @@ def _read_positive(
     *,
     allow_zero: bool = False,
     fallback: str | None = None,
+    scale: float = 1.0,
 ) -> float | None:
-    """Positive finite float from ``env[name]``; ``default`` when unset or invalid (invalid values log a warning).
+    """Positive finite float from ``env[name]`` times ``scale``; ``default`` when unset or invalid (with a warning).
 
-    The warning names the variable, never the value (#96), so a misplaced credential cannot reach the log.
+    Invalid means not a number, non-finite, negative (or zero unless ``allow_zero``), or above
+    ``MAX_BUDGET_SECONDS`` once multiplied by ``scale`` (60 for the per-stage minute variables), so ``1e308`` minutes
+    cannot overflow to ``inf`` seconds. ``default`` is returned unscaled. The warning names the variable, never the
+    value (#96), so a misplaced credential cannot reach the log.
 
     ``fallback`` describes what happens instead in the warning; it defaults to "keeping the default of <default>".
     """
@@ -131,7 +139,11 @@ def _read_positive(
     if value < 0 or (value == 0 and not allow_zero):
         logger.warning("Ignoring %s: must be positive; %s", name, instead)
         return default
-    return value
+    seconds = value * scale
+    if not math.isfinite(seconds) or seconds > MAX_BUDGET_SECONDS:
+        logger.warning("Ignoring %s: above the %g s maximum; %s", name, MAX_BUDGET_SECONDS, instead)
+        return default
+    return seconds
 
 
 def load_budgets(env: Mapping[str, str]) -> Budgets:
@@ -142,7 +154,13 @@ def load_budgets(env: Mapping[str, str]) -> Budgets:
     )
     defaults = StageBudgets()
     stage_values = {
-        name: _read_positive(env, var, getattr(defaults, name) / 60.0) * 60.0
+        name: _read_positive(
+            env,
+            var,
+            float(getattr(defaults, name)),
+            fallback=f"keeping the default of {getattr(defaults, name) / 60.0:g} min",
+            scale=60.0,
+        )
         for name, var in ENV_STAGE_BUDGET_MINUTES.items()
     }
     override = _read_positive(
@@ -276,5 +294,11 @@ def stage_budget_handdown_env(
     if timer is None:
         return {}
     margin = min(margin_seconds, timer.budget_seconds / 10.0)
-    seconds = max(1, math.floor(timer.remaining() - margin))
+    left = timer.remaining() - margin
+    if not math.isfinite(left):
+        # Only a timer built in code can get here (load_budgets never yields a non-finite budget); hand nothing down
+        # rather than raise on floor(inf), so the container keeps its own per-stage ceiling.
+        logger.warning("Not handing down %s: the %s stage budget is not finite.", ENV_STAGE_BUDGET_SECONDS, timer.stage)
+        return {}
+    seconds = max(1, math.floor(left))
     return {ENV_STAGE_BUDGET_SECONDS: str(seconds)}

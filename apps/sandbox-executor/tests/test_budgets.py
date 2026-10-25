@@ -5,6 +5,7 @@ from sandbox_executor.budgets import (
     ENV_STAGE_BUDGET_SECONDS,
     ENV_TURN_STALL,
     ENV_TURN_TIMEOUT,
+    MAX_BUDGET_SECONDS,
     BudgetBreach,
     StageBudgets,
     StageTimer,
@@ -60,6 +61,27 @@ class TestBudgets(unittest.TestCase):
                 budgets = load_budgets({ENV_TURN_TIMEOUT: raw, ENV_STAGE_BUDGET_MINUTES["execute"]: raw})
                 self.assertEqual(budgets.turn.turn_seconds, 300)
                 self.assertEqual(budgets.stage_seconds("execute"), 2700)
+
+    def test_values_above_the_bound_keep_defaults_after_conversion(self):
+        # C21-N3 (R1-N1/R2-N5): 1e308 minutes is finite but overflows to inf seconds after * 60; any value above
+        # MAX_BUDGET_SECONDS once converted is ignored with a variable-named warning, so no inf reaches arithmetic.
+        plan = ENV_STAGE_BUDGET_MINUTES["plan"]
+        too_many_minutes = str(MAX_BUDGET_SECONDS / 60 + 1)
+        for env in (
+            {plan: "1e308"},
+            {plan: too_many_minutes},
+            {ENV_TURN_TIMEOUT: "1e308"},
+            {ENV_STAGE_BUDGET_SECONDS: str(MAX_BUDGET_SECONDS + 1)},
+        ):
+            with self.subTest(env=env), self.assertLogs("sandbox_executor.budgets", level="WARNING") as logs:
+                budgets = load_budgets(env)
+            self.assertIn(next(iter(env)), logs.output[0])
+            self.assertNotIn(next(iter(env.values())), logs.output[0])
+            self.assertEqual(budgets.stage_seconds("plan"), 2100)
+            self.assertEqual(budgets.turn.turn_seconds, 300)
+            timer = StageTimer("plan", budgets.stage_seconds("plan"), clock=FakeClock())
+            self.assertEqual(stage_budget_handdown_env(timer), {ENV_STAGE_BUDGET_SECONDS: "2040"})
+        self.assertEqual(load_budgets({plan: str(MAX_BUDGET_SECONDS / 60)}).stage_seconds("plan"), MAX_BUDGET_SECONDS)
 
     def test_invalid_value_logs_a_warning(self):
         with self.assertLogs("sandbox_executor.budgets", level="WARNING") as logs:
@@ -118,6 +140,11 @@ class TestStageBudgetHanddown(unittest.TestCase):
     def test_no_active_timer_hands_down_nothing(self):
         self.assertIsNone(current_stage_timer())
         self.assertEqual(stage_budget_handdown_env(), {})
+
+    def test_non_finite_timer_hands_down_nothing(self):
+        # A timer built in code with an infinite budget must not raise OverflowError from floor(inf) (C21-N3).
+        with self.assertLogs("sandbox_executor.budgets", level="WARNING"):
+            self.assertEqual(stage_budget_handdown_env(StageTimer("plan", float("inf"), clock=FakeClock())), {})
 
     def test_active_timer_hands_down_remaining_minus_margin_floored(self):
         clock = FakeClock()

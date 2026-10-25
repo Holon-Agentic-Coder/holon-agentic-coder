@@ -289,7 +289,11 @@ local-LLM mode, the model envelope and gateway probe (see
 [`holon doctor` environment section](#holon-doctor-environment-section) below). With `--json` that section is carried as
 `"environment": {"ok": <bool>, "lines": [...], "warnings": [...]}` next to `agent`, `model` and `preflight`, where
 `warnings` repeats the section's `WARNING:` lines (empty when there are none). `holon doctor` exits `0` only when the
-probe status is `ok` and the environment section found no local-LLM configuration error.
+probe status is `ok` and the environment section found no local-LLM configuration error. Each part of the environment
+section (budgets, model envelope, base-URL check, gateway probe) is isolated: an invalid configuration prints an
+`Error:` line, and any unexpected exception prints
+`WARNING: doctor <part> check failed unexpectedly (<ExceptionClass>); details withheld` instead of a traceback. Either
+makes the exit code `1`, and `--json` still prints one valid document.
 
 | Status            | Meaning                                                          | Remediation                                                                       |
 | ----------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------- |
@@ -345,7 +349,13 @@ runner only; with any other `--agent` it is ignored with a warning, because the 
 directory.
 
 1. The host `models.json` is read from `~/.pi/agent` (falling back to `~/.config/pi`), or synthesized from
-   `HOLON_LOCAL_BASE_URL` / `HOLON_LOCAL_MODELS` when absent.
+   `HOLON_LOCAL_BASE_URL` / `HOLON_LOCAL_MODELS` when absent. A present file goes through one validated loader
+   (`local_llm.load_models_json`) used by the run path and `holon doctor` alike: at most 1 MiB, strict UTF-8, JSON with
+   integers of at most 19 digits, finite numbers only and at most 64 levels of nesting, and the shape Holon reads
+   (`providers` an object of provider objects; `baseUrl`, `apiKey` and `api` strings; `models` a list of objects with a
+   non-empty string `id`, `contextWindow` and `maxTokens` integers from 1 to 2147483647, and a boolean or string
+   `reasoning`). An invalid file is never skipped: the run aborts with `LocalLLMConfigError` naming the file and the
+   field or failure class, never a value from the file.
 2. Each provider `baseUrl` is rewritten to the gateway **only if** its authority is loopback (the whole `127.0.0.0/8`
    range and `::1`, not merely `127.0.0.1`) or explicitly declared in `HOLON_HOST_LOCAL_HOSTS`. Every other field of a
    kept provider is preserved.
@@ -387,11 +397,11 @@ the rewrite above (the loopback and allow-list rewrite, `NO_PROXY` scoping and `
 | `HOLON_REASONING_MODE`         | `off`   | Reasoning mode for the generated entries: `off`, `minimal`, `low`, `medium` or `high`.  |
 
 - **`maxTokens`.** When a model entry has no `maxTokens`, it is synthesised as `min(16384, contextWindow // 4)` and the
-  model id, value and reason are logged. A host value is kept unless it is a bool, not an integer, zero, negative or
-  larger than `contextWindow - HOLON_CONTEXT_RESERVE_TOKENS`, in which case the run aborts with `LocalLLMConfigError`
-  naming the model and the field. A model with no `contextWindow` uses `HOLON_LOCAL_CONTEXT_WINDOW`; without either the
-  run aborts rather than guessing a window, so configs synthesised from `HOLON_LOCAL_MODELS` need
-  `HOLON_LOCAL_CONTEXT_WINDOW`.
+  model id, value and reason are logged. A host value is kept unless it is a bool, not an integer, zero, negative, above
+  2147483647 or larger than `contextWindow - HOLON_CONTEXT_RESERVE_TOKENS`, in which case the run aborts with
+  `LocalLLMConfigError` naming the model and the field. A model with no `contextWindow` uses
+  `HOLON_LOCAL_CONTEXT_WINDOW`; without either the run aborts rather than guessing a window, so configs synthesised from
+  `HOLON_LOCAL_MODELS` need `HOLON_LOCAL_CONTEXT_WINDOW`.
 - **Reasoning mode.** Resolved from `HOLON_REASONING_MODE`, then the host model entry, then `off` (the least-thinking
   mode, used by default for authoring stages). A host entry with `reasoning: false` always resolves to `off`, even when
   `HOLON_REASONING_MODE` asks for more (a warning is logged), because the model is declared unable to reason; a host

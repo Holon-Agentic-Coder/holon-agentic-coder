@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, TextIO
 from urllib.parse import unquote, urlparse, urlsplit, urlunsplit
@@ -1518,6 +1519,11 @@ def run_docker_container(
             pass
 
 
+def _doctor_section_failed(section: str, exc: BaseException) -> str:
+    """The warning line for a doctor section that raised unexpectedly: section and exception class only, no values."""
+    return f"WARNING: doctor {section} check failed unexpectedly ({type(exc).__name__}); details withheld"
+
+
 def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: TextIO | None = None) -> int:
     """``holon doctor`` environment section: print the effective budgets and the local-LLM model envelope, and probe
     the local gateway (Bean 0140).
@@ -1527,11 +1533,60 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
     once per distinct host-local server, warning when a model's emitted ``maxTokens`` or ``contextWindow`` exceeds
     the ``effective_defaults.max_output_tokens`` or ``max_prompt_tokens`` of the server that serves it. Nothing is
     written; only loopback or allow-listed endpoints are probed.
-    """
-    from sandbox_executor.budgets import load_budgets
 
+    Each part (budgets, envelope, base-URL check, gateway probe) is isolated: an invalid configuration prints an
+    ``Error:`` line, and any unexpected exception becomes a value-free ``WARNING: doctor <part> check failed
+    unexpectedly (<ExceptionClass>)`` line; either makes the result 1, and the doctor never raises from here.
+    """
     env = os.environ
     out = out or sys.stdout
+    code = 0
+    try:
+        _report_budgets(env, out)
+    except Exception as exc:  # The doctor reports; it never crashes (#94 C21).
+        print(_doctor_section_failed("budgets", exc), file=out)
+        code = 1
+
+    if env.get(local_llm.ENV_LOCAL_MODE, "").strip().lower() not in ("1", "true", "yes", "on"):
+        print(f"local_llm=disabled (set {local_llm.ENV_LOCAL_MODE}=1 to inspect the model envelope)", file=out)
+        return code
+
+    try:
+        allow_list = local_llm.host_local_allow_list()
+        # One validated loader (local_llm.load_models_json): a malformed file is a LocalLLMConfigError naming it.
+        host_config = local_llm.host_models_json()
+        config, envelopes = local_llm.build_envelope_config(host_config, allow_list, env)
+    except local_llm.LocalLLMConfigError as exc:
+        # The same top-level redaction as the run path (#96); these lines are also the `--json` environment section.
+        print(f"Error: {redact_cli_error(exc)}", file=out)
+        return 1
+    except Exception as exc:
+        print(_doctor_section_failed("model envelope", exc), file=out)
+        return 1
+
+    for envelope in envelopes:
+        print(envelope.envelope_line(), file=out)
+        print(envelope.reasoning_line(), file=out)
+
+    try:
+        for source in local_llm.unparseable_base_url_sources(host_config, env):
+            # Named by its source only (#96 message rule); like any non-probeable endpoint it is skipped, not fatal.
+            print(f"WARNING: {source} is not a parseable URL, so its server is not probed (value withheld)", file=out)
+    except Exception as exc:
+        print(_doctor_section_failed("base URL", exc), file=out)
+        code = 1
+
+    try:
+        _report_gateways(host_config, config, envelopes, env, allow_list, fetch, out)
+    except Exception as exc:
+        print(_doctor_section_failed("gateway probe", exc), file=out)
+        code = 1
+    return code
+
+
+def _report_budgets(env: Mapping[str, str], out: TextIO) -> None:
+    from sandbox_executor.budgets import load_budgets
+
     budgets = load_budgets(env)
     stage_minutes = " ".join(
         f"{name}={budgets.stage_seconds(name) / 60.0:g}min"
@@ -1542,27 +1597,16 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
         file=out,
     )
 
-    if env.get(local_llm.ENV_LOCAL_MODE, "").strip().lower() not in ("1", "true", "yes", "on"):
-        print(f"local_llm=disabled (set {local_llm.ENV_LOCAL_MODE}=1 to inspect the model envelope)", file=out)
-        return 0
 
-    allow_list = local_llm.host_local_allow_list()
-    host_config = local_llm.host_models_json()
-    try:
-        config, envelopes = local_llm.build_envelope_config(host_config, allow_list, env)
-    except local_llm.LocalLLMConfigError as exc:
-        # The same top-level redaction as the run path (#96); these lines are also the `--json` environment section.
-        print(f"Error: {redact_cli_error(exc)}", file=out)
-        return 1
-
-    for envelope in envelopes:
-        print(envelope.envelope_line(), file=out)
-        print(envelope.reasoning_line(), file=out)
-
-    for source in local_llm.unparseable_base_url_sources(host_config, env):
-        # Named by its source only (#96 message rule); like any non-probeable endpoint it is skipped, not fatal.
-        print(f"WARNING: {source} is not a parseable URL, so its server is not probed (value withheld)", file=out)
-
+def _report_gateways(
+    host_config: dict | None,
+    config: dict,
+    envelopes: list[local_llm.ModelEnvelope],
+    env: Mapping[str, str],
+    allow_list: set[str],
+    fetch: local_llm.Fetcher | None,
+    out: TextIO,
+) -> None:
     probed = False
     # One probe and one line per distinct server; limits are compared only with the models that server serves.
     for base_url, providers in local_llm.host_gateways(host_config, config, env, allow_list):
@@ -1590,7 +1634,6 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
                     )
     if not probed:
         print("prefill_cache=unknown (no loopback or allow-listed endpoint to probe)", file=out)
-    return 0
 
 
 INTENT_CREATOR_ROLE: str = "intent-creator"
@@ -1752,7 +1795,11 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
     import json
 
     env_out = io.StringIO()
-    env_code = report_budgets_and_envelope(fetch=fetch, out=env_out)
+    try:
+        env_code = report_budgets_and_envelope(fetch=fetch, out=env_out)
+    except Exception as exc:  # Last resort; each part already isolates its own failures.
+        print(_doctor_section_failed("environment", exc), file=env_out)
+        env_code = 1
     env_lines = env_out.getvalue().splitlines()
     warnings = [line for line in env_lines if line.startswith("WARNING: ")]
     environment = {"ok": env_code == 0, "lines": env_lines, "warnings": warnings}

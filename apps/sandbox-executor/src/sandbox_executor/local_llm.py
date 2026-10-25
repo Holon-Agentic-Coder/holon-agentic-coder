@@ -24,7 +24,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NotRequired, TypedDict
 from urllib.parse import urlsplit, urlunsplit
 
 from sandbox_executor.redaction import starts_with_url_authority, trusted_url_authority, url_userinfo_end
@@ -223,22 +223,191 @@ def pi_agent_dirs() -> list[str]:
     return candidates
 
 
-def host_models_json() -> dict | None:
-    """The host pi ``models.json`` (providers with their natural base URLs), or None when absent/invalid."""
+# Bounds of the shared JSON reader (:func:`parse_bounded_json`). A models.json is a few KiB; these exist so that a
+# corrupt or hostile file (or health response) is rejected with a clean error instead of an uncaught exception.
+MODELS_JSON_MAX_BYTES = 1 << 20
+MAX_JSON_DEPTH = 64
+MAX_JSON_INT_DIGITS = 19
+# Upper bound for every token count (contextWindow, maxTokens, the reserve and fallback window): the int32 range that
+# pi and the inference servers use; anything larger is a typo or a misplaced value.
+MAX_TOKEN_COUNT = 2**31 - 1
+
+
+class MalformedJSONError(ValueError):
+    """A document :func:`parse_bounded_json` refused; the message names the reason, never document content."""
+
+
+def _bounded_int(text: str) -> int:
+    if len(text.lstrip("-")) > MAX_JSON_INT_DIGITS:
+        raise MalformedJSONError(f"an integer has more than {MAX_JSON_INT_DIGITS} digits")
+    return int(text)
+
+
+def _finite_float(text: str) -> float:
+    value = float(text)
+    if value != value or value in (float("inf"), float("-inf")):
+        raise MalformedJSONError("a number is out of the finite range")
+    return value
+
+
+def _reject_constant(_name: str) -> Any:
+    raise MalformedJSONError("NaN and Infinity are not JSON")
+
+
+def _json_depth_exceeds(value: Any, limit: int) -> bool:
+    """True when ``value`` nests containers deeper than ``limit`` (iterative, so it cannot itself recurse too deep)."""
+    stack = [(value, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, dict | list):
+            if depth > limit:
+                return True
+            children = node.values() if isinstance(node, dict) else node
+            stack.extend((child, depth + 1) for child in children if isinstance(child, dict | list))
+    return False
+
+
+def parse_bounded_json(raw: bytes | str) -> Any:
+    """Parse ``raw`` as strict UTF-8 JSON with bounded integers, finite floats and at most ``MAX_JSON_DEPTH`` levels.
+
+    Every failure (bad encoding, syntax, an oversized integer, NaN/Infinity, a float that overflows, nesting deep
+    enough to exhaust the interpreter stack) raises :class:`MalformedJSONError` whose message carries the failure
+    class only: ``UnicodeDecodeError`` and some parse errors would otherwise quote document bytes.
+    """
+    try:
+        text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+        data = json.loads(text, parse_int=_bounded_int, parse_float=_finite_float, parse_constant=_reject_constant)
+    except MalformedJSONError:
+        raise
+    except UnicodeDecodeError:
+        raise MalformedJSONError("not valid UTF-8") from None
+    except json.JSONDecodeError as exc:
+        # Line and column only: exc.msg is a fixed phrase, and the document itself is never quoted.
+        raise MalformedJSONError(f"invalid JSON at line {exc.lineno} column {exc.colno}") from None
+    except RecursionError:
+        raise MalformedJSONError(f"nested deeper than {MAX_JSON_DEPTH} levels") from None
+    except (ValueError, OverflowError) as exc:
+        raise MalformedJSONError(f"unreadable JSON ({type(exc).__name__})") from None
+    if _json_depth_exceeds(data, MAX_JSON_DEPTH):
+        raise MalformedJSONError(f"nested deeper than {MAX_JSON_DEPTH} levels")
+    return data
+
+
+class ModelEntry(TypedDict):
+    """One validated ``models`` entry; only the fields Holon reads are typed, every other field is kept as is."""
+
+    id: str
+    contextWindow: NotRequired[int]
+    maxTokens: NotRequired[int]
+    reasoning: NotRequired[bool | str]
+
+
+class ProviderEntry(TypedDict, total=False):
+    """One validated provider: every field optional, and present ones have the types below."""
+
+    baseUrl: str
+    apiKey: str
+    api: str
+    models: list[ModelEntry]
+
+
+class ModelsConfig(TypedDict, total=False):
+    """A validated pi ``models.json`` (host or generated): ``providers`` maps provider names to entries."""
+
+    providers: dict[str, ProviderEntry]
+
+
+def _token_count_ok(value: Any) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int) and 0 < value <= MAX_TOKEN_COUNT
+
+
+def validate_models_config(data: Any, source: str = "models.json") -> ModelsConfig:
+    """Check the shape of a pi ``models.json`` document and return it typed as :class:`ModelsConfig`.
+
+    The single shape rule for every consumer (:func:`host_models_json`, :func:`build_container_config`,
+    :func:`apply_model_envelope`, :func:`host_base_urls`, :func:`host_gateways`, the doctor): a JSON object whose
+    optional ``providers`` is an object of provider objects; a provider's ``baseUrl``, ``apiKey`` and ``api`` are
+    strings and its ``models`` a list of model objects; a model has a non-empty string ``id``, positive integer
+    ``contextWindow`` and ``maxTokens`` up to ``MAX_TOKEN_COUNT``, and a boolean or string ``reasoning``. Fields Holon
+    does not read are not checked and are preserved. Raises :class:`LocalLLMConfigError` naming ``source`` and the
+    field (provider by name, model by id, or by position when it has no valid id), never a value.
+    """
+    if not isinstance(data, dict):
+        raise LocalLLMConfigError(f"{source}: the top level must be a JSON object.")
+    providers = data.get("providers")
+    if providers is None:
+        return data  # type: ignore[return-value]
+    if not isinstance(providers, dict):
+        raise LocalLLMConfigError(f"{source}: 'providers' must be an object of provider entries.")
+    for name, provider in providers.items():
+        where = f"{source}: provider {name!r}"
+        if not isinstance(provider, dict):
+            raise LocalLLMConfigError(f"{where} must be an object.")
+        for key in ("baseUrl", "apiKey", "api"):
+            if key in provider and not isinstance(provider[key], str):
+                raise LocalLLMConfigError(f"{where} field {key!r} must be a string.")
+        models = provider.get("models")
+        if models is None:
+            continue
+        if not isinstance(models, list):
+            raise LocalLLMConfigError(f"{where} field 'models' must be a list.")
+        for index, entry in enumerate(models):
+            at = f"{where} models[{index}]"
+            if not isinstance(entry, dict):
+                raise LocalLLMConfigError(f"{at} must be an object.")
+            if not isinstance(entry.get("id"), str) or not entry["id"].strip():
+                raise LocalLLMConfigError(f"{at} field 'id' must be a non-empty string.")
+            # Model ids are already shown in envelope lines and messages; naming one here is no new disclosure.
+            at = f"{where} model {entry['id']!r}"
+            for key in ("contextWindow", "maxTokens"):
+                if key in entry and not _token_count_ok(entry[key]):
+                    raise LocalLLMConfigError(
+                        f"{at} field {key!r} must be a positive integer of at most {MAX_TOKEN_COUNT}."
+                    )
+            if "reasoning" in entry and not isinstance(entry["reasoning"], bool | str):
+                raise LocalLLMConfigError(f"{at} field 'reasoning' must be a boolean or a string.")
+    return data  # type: ignore[return-value]
+
+
+def load_models_json(path: str) -> ModelsConfig:
+    """Read, parse (:func:`parse_bounded_json`) and validate (:func:`validate_models_config`) one ``models.json``.
+
+    Raises :class:`LocalLLMConfigError` naming the file and the reason (an unreadable file, an oversized one, malformed
+    JSON or a wrong shape); never any of its content.
+    """
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read(MODELS_JSON_MAX_BYTES + 1)
+    except OSError as exc:
+        raise LocalLLMConfigError(f"Could not read {path} ({type(exc).__name__}).") from None
+    if len(raw) > MODELS_JSON_MAX_BYTES:
+        raise LocalLLMConfigError(f"{path} exceeds {MODELS_JSON_MAX_BYTES} bytes.")
+    try:
+        data = parse_bounded_json(raw)
+    except MalformedJSONError as exc:
+        raise LocalLLMConfigError(f"{path} is not valid JSON: {exc}.") from None
+    return validate_models_config(data, path)
+
+
+def host_models_json() -> ModelsConfig | None:
+    """The validated host pi ``models.json`` (providers with their natural base URLs), or None when there is none.
+
+    The first existing candidate (:func:`pi_agent_dirs`) is used. A present but invalid file raises
+    :class:`LocalLLMConfigError` (:func:`load_models_json`) instead of being skipped: local mode never silently runs
+    on a configuration other than the one the operator wrote.
+    """
     for agent_dir in pi_agent_dirs():
         path = os.path.join(agent_dir, "models.json")
-        if not os.path.isfile(path):
-            continue
-        try:
-            with open(path, encoding="utf-8") as handle:
-                data = json.load(handle)
-        except (OSError, json.JSONDecodeError) as exc:
-            logger.warning("Could not read %s: %s", path, exc)
-            continue
-        if isinstance(data, dict):
-            return data
-        logger.warning("Ignoring %s: expected a JSON object at the top level", path)
+        if os.path.isfile(path):
+            return load_models_json(path)
     return None
+
+
+def _providers(config: Mapping[str, Any] | None, source: str = "models.json") -> dict[str, ProviderEntry]:
+    """The validated ``providers`` map of ``config`` (empty when absent); raises on a malformed shape."""
+    if not config:
+        return {}
+    return validate_models_config(config, source).get("providers") or {}
 
 
 def _synthesized_config(allow_list: Iterable[str]) -> dict:
@@ -283,22 +452,22 @@ def _synthesized_config(allow_list: Iterable[str]) -> dict:
 
 
 def build_container_config(host_config: dict | None, allow_list: Iterable[str] = ()) -> dict:
-    """Config to present to the container: every provider baseUrl rewritten, all other fields preserved."""
-    if not host_config:
+    """Config to present to the container: every provider baseUrl rewritten, all other fields preserved.
+
+    ``host_config`` is validated first (:func:`validate_models_config`); a malformed one raises
+    :class:`LocalLLMConfigError`.
+    """
+    if not _providers(host_config):
         return _synthesized_config(allow_list)
 
     config = copy.deepcopy(host_config)
-    providers = config.get("providers")
-    if not isinstance(providers, dict) or not providers:
-        return _synthesized_config(allow_list)
+    providers = _providers(config)
 
     kept: dict[str, dict] = {}
     dropped: list[str] = []
     for name, provider in providers.items():
-        if not isinstance(provider, dict):
-            continue
         base_url = provider.get("baseUrl")
-        if not isinstance(base_url, str) or not base_url:
+        if not base_url:
             dropped.append(name)
             continue
         rewritten = rewrite_authority(base_url, allow_list)
@@ -369,13 +538,15 @@ def _env_int(env: Mapping[str, str], name: str) -> int | None:
     raw = env.get(name, "").strip()
     if not raw:
         return None
+    if len(raw.lstrip("+-")) > MAX_JSON_INT_DIGITS:
+        raise LocalLLMConfigError(f"{name} must be a positive integer of at most {MAX_TOKEN_COUNT}.")
     try:
         value = int(raw)
     except ValueError:
         # Name the variable only, never echo the value (#96): a misplaced credential must not reach any message.
         raise LocalLLMConfigError(f"{name} is not an integer; it must be a positive integer.") from None
-    if value <= 0:
-        raise LocalLLMConfigError(f"{name} must be a positive integer.")
+    if not 0 < value <= MAX_TOKEN_COUNT:
+        raise LocalLLMConfigError(f"{name} must be a positive integer of at most {MAX_TOKEN_COUNT}.")
     return value
 
 
@@ -423,26 +594,20 @@ def apply_model_envelope(config: dict, env: Mapping[str, str] | None = None) -> 
       boolean capability flag, so the entry carries ``reasoning: mode != "off"`` and the mode itself is written as the
       agent directory's default thinking level by :func:`prepare_agent_dir`.
 
-    The config is modified in place. Raises :class:`LocalLLMConfigError` for any value it cannot honour.
+    The config is validated first (:func:`validate_models_config`) and then modified in place. Raises
+    :class:`LocalLLMConfigError` for any shape or value it cannot honour.
     """
     env = os.environ if env is None else env
+    providers = _providers(config, "generated models.json")
     reserve = _env_int(env, ENV_CONTEXT_RESERVE_TOKENS)
     reserve = DEFAULT_CONTEXT_RESERVE_TOKENS if reserve is None else reserve
     fallback_window = _env_int(env, ENV_LOCAL_CONTEXT_WINDOW)
     envelopes: list[ModelEnvelope] = []
-    for provider_name, provider in (config.get("providers") or {}).items():
-        if not isinstance(provider, dict):
-            continue
+    for provider_name, provider in providers.items():
         for entry in provider.get("models") or []:
-            if not isinstance(entry, dict):
-                continue
-            model_id = str(entry.get("id", "<unnamed>"))
+            model_id = entry["id"]
             if "contextWindow" in entry:
-                window = _strict_int(entry["contextWindow"])
-                if window is None or window <= 0:
-                    raise LocalLLMConfigError(
-                        f"Model {model_id!r} has an invalid contextWindow; it must be a positive integer."
-                    )
+                window = entry["contextWindow"]
             elif fallback_window is not None:
                 window = fallback_window
                 entry["contextWindow"] = window
@@ -453,11 +618,7 @@ def apply_model_envelope(config: dict, env: Mapping[str, str] | None = None) -> 
                 )
             ceiling = window - reserve
             if "maxTokens" in entry:
-                max_tokens = _strict_int(entry["maxTokens"])
-                if max_tokens is None or max_tokens <= 0:
-                    raise LocalLLMConfigError(
-                        f"Model {model_id!r} has an invalid maxTokens; it must be a positive integer."
-                    )
+                max_tokens = entry["maxTokens"]
                 source = "host"
             else:
                 max_tokens = min(MAX_SYNTHESISED_OUTPUT_TOKENS, window // 4)
@@ -541,9 +702,9 @@ def _write_shared_json(path: str, data: dict) -> None:
 def rewritten_local_hosts(config: dict) -> list[str]:
     """``host:port`` authorities in the generated config that now point at the gateway (for NO_PROXY scoping)."""
     hosts = []
-    for provider in (config.get("providers") or {}).values():
-        base_url = provider.get("baseUrl") if isinstance(provider, dict) else None
-        if not isinstance(base_url, str):
+    for provider in _providers(config, "generated models.json").values():
+        base_url = provider.get("baseUrl")
+        if not base_url:
             continue
         authority = _authority(base_url)
         if authority is None or authority[0] != GATEWAY_HOST:
@@ -703,9 +864,13 @@ def probe_gateway_health(
     try:
         raw = fetcher(url, timeout)
         text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
-        payload = json.loads(text)
     except (OSError, ValueError, http.client.HTTPException) as exc:
         # HTTPException covers malformed responses (BadStatusLine, IncompleteRead), which are not OSErrors.
+        return GatewayHealth(url, "unknown", {}, None, f"health probe failed: {exc}")
+    try:
+        # The same bounded reader as models.json: deep nesting or a huge number is "unknown", never an exception.
+        payload = parse_bounded_json(text)
+    except MalformedJSONError as exc:
         return GatewayHealth(url, "unknown", {}, None, f"health probe failed: {exc}")
     return parse_gateway_health(url, payload)
 
@@ -714,9 +879,9 @@ def host_base_urls(host_config: dict | None, env: Mapping[str, str] | None = Non
     """Host-side (pre-rewrite) base URLs the generated config was built from, for probing from the host."""
     env = os.environ if env is None else env
     urls: list[str] = []
-    for provider in ((host_config or {}).get("providers") or {}).values():
-        base_url = provider.get("baseUrl") if isinstance(provider, dict) else None
-        if isinstance(base_url, str) and base_url:
+    for provider in _providers(host_config).values():
+        base_url = provider.get("baseUrl")
+        if base_url:
             urls.append(base_url)
     configured = env.get(ENV_LOCAL_BASE_URL, "").strip()
     if configured:
@@ -751,10 +916,9 @@ def unparseable_base_url_sources(host_config: dict | None, env: Mapping[str, str
     """
     env = os.environ if env is None else env
     sources: list[str] = []
-    providers = (host_config or {}).get("providers") or {}
-    for name, provider in providers.items() if isinstance(providers, dict) else ():
-        base_url = provider.get("baseUrl") if isinstance(provider, dict) else None
-        if isinstance(base_url, str) and base_url and _unparseable_base_url(base_url):
+    for name, provider in _providers(host_config).items():
+        base_url = provider.get("baseUrl")
+        if base_url and _unparseable_base_url(base_url):
             sources.append(f"host models.json provider {name!r} baseUrl")
     configured = env.get(ENV_LOCAL_BASE_URL, "").strip()
     if configured and _unparseable_base_url(configured):
@@ -778,15 +942,14 @@ def host_gateways(
     """
     env = os.environ if env is None else env
     allow_list = tuple(allow_list)
-    host_providers = (host_config or {}).get("providers") or {}
-    host_providers = host_providers if isinstance(host_providers, dict) else {}
+    host_providers = _providers(host_config)
     configured = env.get(ENV_LOCAL_BASE_URL, "").strip()
     served_by: dict[str, set[str]] = {}
-    for name, provider in (config.get("providers") or {}).items():
-        container_url = provider.get("baseUrl") if isinstance(provider, dict) else None
+    for name, provider in _providers(config, "generated models.json").items():
+        container_url = provider.get("baseUrl")
         host_provider = host_providers.get(name)
-        host_url = host_provider.get("baseUrl") if isinstance(host_provider, dict) else None
-        if isinstance(host_url, str) and host_url and rewrite_authority(host_url, allow_list) == container_url:
+        host_url = host_provider.get("baseUrl") if host_provider else None
+        if host_url and rewrite_authority(host_url, allow_list) == container_url:
             source = host_url
         elif configured:
             source = configured

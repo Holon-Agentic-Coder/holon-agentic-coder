@@ -4,6 +4,7 @@ Covers the authority rewrite decision table, the generated container-side agent 
 the keyless validation path for local providers.
 """
 
+import io
 import json
 import os
 import secrets
@@ -373,12 +374,19 @@ class TestPrepareAgentDir(unittest.TestCase):
                     local_llm.host_models_json()["providers"]["vmlx"]["baseUrl"], "http://localhost:8081/v1"
                 )
 
-    def test_host_models_json_invalid_is_ignored(self):
+    def test_host_models_json_invalid_raises_naming_the_file(self):
+        # A present but malformed models.json is a clean config error naming the file, never silently skipped
+        # (#94 C21); its content never reaches the message.
         with tempfile.TemporaryDirectory() as tmp:
             with open(os.path.join(tmp, "models.json"), "w") as handle:
                 handle.write("{not json")
-            with patch.object(local_llm, "pi_agent_dirs", lambda: [tmp]):
-                self.assertIsNone(local_llm.host_models_json())
+            with (
+                patch.object(local_llm, "pi_agent_dirs", lambda: [tmp]),
+                self.assertRaises(local_llm.LocalLLMConfigError) as ctx,
+            ):
+                local_llm.host_models_json()
+        self.assertIn("models.json is not valid JSON", str(ctx.exception))
+        self.assertNotIn("not json", str(ctx.exception))
 
     def test_pi_agent_dirs_respects_env_var(self):
         with patch.dict(os.environ, {local_llm.ENV_PI_AGENT_DIR: "/custom/pi/dir"}, clear=True):
@@ -1145,3 +1153,108 @@ class TestGatewayHealth(unittest.TestCase):
         top = {"effective_defaults": {"max_output_tokens": 16384}, "max_prompt_tokens": 32768}
         self.assertEqual(local_llm.parse_gateway_health("u", top).max_prompt_tokens, 32768)
         self.assertIsNone(local_llm.parse_gateway_health("u", HEALTH_OFF).max_prompt_tokens)
+
+
+class TestValidatedModelsConfig(unittest.TestCase):
+    """C21-I1/C21-N1/C21-N2: one validated loader; malformed shapes are clean config errors, never crashes."""
+
+    def _write(self, tmp, raw: bytes) -> str:
+        path = os.path.join(tmp, "models.json")
+        with open(path, "wb") as handle:
+            handle.write(raw)
+        return path
+
+    def test_loader_rejects_bad_encoding_huge_numbers_and_deep_nesting(self):
+        # R2-N1 repros: UnicodeDecodeError, the 4300-digit int limit and RecursionError all used to escape.
+        probe = make_probe("k")
+        for case, raw in {
+            "non-utf8": b'{"apiKey": "' + probe.encode() + b'\xff"}',
+            "5000-digit": b'{"x": ' + b"9" * 5000 + b"}",
+            "float-overflow": b'{"x": 1e400}',
+            "nan": b'{"x": NaN}',
+            "deep": b"[" * 200_000,
+            "past-depth-bound": b'{"a":' * (local_llm.MAX_JSON_DEPTH + 1)
+            + b"1"
+            + b"}" * (local_llm.MAX_JSON_DEPTH + 1),
+        }.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                path = self._write(tmp, raw)
+                with self.assertRaises(local_llm.LocalLLMConfigError) as ctx:
+                    local_llm.load_models_json(path)
+                self.assertIn(path, str(ctx.exception))
+                assert_no_fragment(str(ctx.exception), probe)
+
+    def test_loader_rejects_oversized_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, b" " * (local_llm.MODELS_JSON_MAX_BYTES + 1))
+            with self.assertRaisesRegex(local_llm.LocalLLMConfigError, "exceeds"):
+                local_llm.load_models_json(path)
+
+    def test_non_dict_providers_is_a_config_error_everywhere(self):
+        # R1-I1 / R2-N2 repro: host_base_urls used to raise AttributeError on a list of providers.
+        for providers in ([1, 2], "x", 5):
+            config = {"providers": providers}
+            for consumer in (
+                lambda c: local_llm.host_base_urls(c, {}),
+                lambda c: local_llm.unparseable_base_url_sources(c, {}),
+                lambda c: local_llm.host_gateways(c, {"providers": {}}, {}),
+                local_llm.build_container_config,
+            ):
+                with (
+                    self.subTest(providers=providers),
+                    self.assertRaisesRegex(local_llm.LocalLLMConfigError, "'providers' must be an object"),
+                ):
+                    consumer(config)
+
+    def test_non_list_models_is_a_config_error(self):
+        # R1-I1 / R2-N3 repro: apply_model_envelope used to raise TypeError iterating models=5.
+        for models in (5, True, "m", {"id": "m"}):
+            config = {"providers": {"p": {"baseUrl": "http://localhost:8080/v1", "models": models}}}
+            with (
+                self.subTest(models=models),
+                self.assertRaisesRegex(local_llm.LocalLLMConfigError, "provider 'p' field 'models' must be a list"),
+            ):
+                local_llm.apply_model_envelope(config, {})
+
+    def test_run_path_reports_non_list_models_cleanly(self):
+        # R1-I1 repro on the run path: prepare_agent_dir -> TypeError used to escape run_docker_container.
+        config = {"providers": {"p": {"baseUrl": "http://localhost:8080/v1", "models": 5}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            stderr = io.StringIO()
+            with patch.object(local_llm, "host_models_json", return_value=config), patch("sys.stderr", stderr):
+                code, args, _ = TestLauncherIntegration._run(
+                    TestLauncherIntegration(), {"HOLON_LOCAL_LLM": "1"}, mkdtemp_dir=tmp
+                )
+        self.assertEqual(code, 1)
+        self.assertEqual(args, [])
+        self.assertIn("Error: ", stderr.getvalue())
+        self.assertIn("'models' must be a list", stderr.getvalue())
+
+    def test_model_field_types_are_validated(self):
+        for field, value in (
+            ("id", 5),
+            ("id", ""),
+            ("contextWindow", 2**31),
+            ("maxTokens", True),
+            ("reasoning", 1),
+        ):
+            model = {"id": "m", "contextWindow": 32768, field: value}
+            config = {"providers": {"p": {"baseUrl": "http://localhost:8080/v1", "models": [model]}}}
+            with (
+                self.subTest(field=field, value=value),
+                self.assertRaisesRegex(local_llm.LocalLLMConfigError, f"field '{field}'"),
+            ):
+                local_llm.validate_models_config(config)
+
+    def test_envelope_env_ints_are_bounded(self):
+        for raw in ("9" * 5000, str(2**31), "0", "-1"):
+            with self.subTest(size=len(raw)), self.assertRaises(local_llm.LocalLLMConfigError) as ctx:
+                local_llm.apply_model_envelope({}, {local_llm.ENV_LOCAL_CONTEXT_WINDOW: raw})
+            self.assertIn(local_llm.ENV_LOCAL_CONTEXT_WINDOW, str(ctx.exception))
+            self.assertNotIn(raw, str(ctx.exception))
+
+    def test_probe_survives_deeply_nested_health_body(self):
+        # R2-N4 repro: a 200 KB body of "[" (under the 1 MiB cap) raised RecursionError out of the probe.
+        health = local_llm.probe_gateway_health("http://127.0.0.1:8081/v1", fetch=lambda url, timeout: b"[" * 200_000)
+        self.assertEqual(health.prefill_cache, "unknown")
+        self.assertIn("nested deeper than", health.error)

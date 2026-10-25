@@ -218,6 +218,10 @@ plan. The file on disk is now the source of truth:
   `ACT-BUDGET` action is recorded and committed together with the salvaged partial plan, and the planner exits non-zero
   (see [Turn and Stage Budgets](../budgets.md#salvage-resume-and-the-act-budget-record)).
 
+`holon flow` launches this same planner container for Stage 2 and then adopts the plan branch it pushed. If no planner
+agent produced `plans/P-*.md` on a plan branch under the intent branch, the flow stage fails; it never writes a
+placeholder plan of its own.
+
 ---
 
 ## 3. Verification

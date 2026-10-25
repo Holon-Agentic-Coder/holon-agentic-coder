@@ -90,7 +90,8 @@ class ActualMetrics:
     duration_seconds: float | None = None
     tokens: int | None = None
     exit_code: int = 0
-    test_pass_rate: float | None = 1.0
+    # None = not measured; only a test pass rate recorded on the execution summary row is reported.
+    test_pass_rate: float | None = None
     files_changed: int = 0
     insertions: int = 0
     deletions: int = 0
@@ -760,6 +761,9 @@ def parse_actual_metrics(
             actual.duration_seconds = float(best_record["duration"])
         if "tokens" in best_record:
             actual.tokens = int(best_record["tokens"])
+        raw_rate = best_record.get("test_pass_rate")
+        if isinstance(raw_rate, int | float) and not isinstance(raw_rate, bool) and 0.0 <= float(raw_rate) <= 1.0:
+            actual.test_pass_rate = float(raw_rate)
 
     # 2. Compute patch size via git diff between plan_branch and execution_branch (fail loudly on non-zero exit)
     base_ref = plan_branch if plan_branch else "HEAD~1"

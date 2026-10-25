@@ -26,6 +26,7 @@ from sandbox_executor.cli import (
     run_docker_container,
     strip_url_credentials,
 )
+from sandbox_executor.flow import SKIP_PUSH_DISPATCH_ERROR, FlowContext
 
 from tests.leak_assertions import (
     CREDENTIAL_FREE_URLS,
@@ -677,6 +678,53 @@ class TestHolonFlowCLI(unittest.TestCase):
                 self.assertEqual(ctx.max_review_iterations, 5)
                 mock_exit.assert_called_with(0)
 
+    def test_flow_skip_push_rejected_outside_dry_run_for_any_resume(self):
+        """C10-N2: --skip-push without --dry-run is rejected before the pre-flight probe or the pipeline runs."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intent_file = os.path.join(tmp_dir, "intent.json")
+            with open(intent_file, "w", encoding="utf-8") as f:
+                json.dump({"slug": "test-skip-push", "goal": "g"}, f)
+            checkpoint_file = os.path.join(tmp_dir, "checkpoint.json")
+            ckpt_ctx = FlowContext(repo_dir=tmp_dir, intent_data={"slug": "cp"}, skip_push=True)
+            with open(checkpoint_file, "w", encoding="utf-8") as f:
+                json.dump({"context": ckpt_ctx.to_dict(), "current_stage": "calibrate"}, f)
+
+            argvs = [
+                ["holon", "flow", intent_file, "--skip-push"],
+                ["holon", "flow", intent_file, "--skip-push", "--from-stage", "review"],
+                ["holon", "flow", intent_file, "--skip-push", "--from-stage", "calibrate"],
+                # A checkpoint that recorded --skip-push is rejected on a non-dry resume too.
+                ["holon", "flow", "--checkpoint", checkpoint_file],
+            ]
+            for argv in argvs:
+                with (
+                    self.subTest(argv=argv[2:]),
+                    patch("sandbox_executor.cli.run_flow_pipeline") as mock_pipeline,
+                    patch("sandbox_executor.cli.preflight_gate") as mock_preflight,
+                    patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
+                    self.assertRaises(SystemExit) as cm,
+                    patch("sys.argv", argv),
+                ):
+                    main()
+                self.assertEqual(cm.exception.code, 1)
+                self.assertIn(SKIP_PUSH_DISPATCH_ERROR, mock_stderr.getvalue())
+                mock_pipeline.assert_not_called()
+                mock_preflight.assert_not_called()
+
+    def test_flow_skip_push_accepted_with_dry_run_resume(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intent_file = os.path.join(tmp_dir, "intent.json")
+            with open(intent_file, "w", encoding="utf-8") as f:
+                json.dump({"slug": "test-skip-push-dry", "goal": "g"}, f)
+            with patch("sandbox_executor.cli.run_flow_pipeline") as mock_pipeline, patch("sys.exit") as mock_exit:
+                mock_pipeline.return_value = {"status": "ok"}
+                argv = ["holon", "flow", intent_file, "--dry-run", "--skip-push", "--from-stage", "calibrate"]
+                with patch("sys.argv", argv):
+                    main()
+                mock_pipeline.assert_called_once()
+                self.assertTrue(mock_pipeline.call_args[1]["context"].skip_push)
+                mock_exit.assert_called_with(0)
+
     def test_flow_invalid_max_review_iterations(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             intent_file = os.path.join(tmp_dir, "intent.json")
@@ -1175,6 +1223,69 @@ class TestDoctor(unittest.TestCase):
         code, output = self.run_unified_doctor({}, _fetcher(HEALTH_OFF), status=PreflightStatus.EXPIRED_KEY)
         self.assertEqual(code, 1)
         self.assertIn("budgets turn=", output)
+
+
+class TestSharedRoleDispatch(unittest.TestCase):
+    """'holon intent|plan|execute' and 'holon flow' share one dispatch path (dispatch_role_agent)."""
+
+    def test_normalise_agent_id_and_image_resolution(self):
+        from sandbox_executor.agent_defaults import UnmappedAgentRunnerError
+        from sandbox_executor.cli import normalise_agent_id, resolve_role_image
+
+        self.assertEqual(normalise_agent_id("claude-agent"), "claude")
+        self.assertEqual(normalise_agent_id("agent-codex"), "codex")
+        self.assertEqual(resolve_role_image("planner", "claude"), "holon/agent-claude")
+        self.assertEqual(resolve_role_image("executor", "claude-agent"), "holon/agent-claude")
+        self.assertEqual(resolve_role_image("intent-creator", "claude"), "holon/orchestrator")
+        # Image selection follows agent_defaults (#93): an unmapped runner fails loudly instead of guessing an image.
+        with self.assertRaises(UnmappedAgentRunnerError):
+            resolve_role_image("executor", "newrunner")
+        self.assertEqual(resolve_role_image("intent-creator", "newrunner"), "holon/orchestrator")
+
+    @patch("sandbox_executor.cli.dispatch_role_agent", return_value=0)
+    def test_per_stage_commands_route_through_dispatch_role_agent(self, mock_dispatch):
+        cases = [
+            (["holon", "intent", "intents/test.json"], ("intent-creator", None, None, [])),
+            (
+                ["holon", "plan", "I-1-x/_", "--agent", "claude-agent", "--model", "claude-opus-5-5"],
+                ("planner", "claude-agent", "claude-opus-5-5", ["I-1-x/_", "claude-agent", "claude-opus-5-5"]),
+            ),
+            (
+                ["holon", "execute", "I-1-x/P-1/_", "--agent", "claude-agent", "--model", "claude-opus-5-5"],
+                ("executor", "claude-agent", "claude-opus-5-5", ["I-1-x/P-1/_", "claude-agent", "claude-opus-5-5"]),
+            ),
+        ]
+        for argv, expected in cases:
+            mock_dispatch.reset_mock()
+            with patch("sys.argv", argv), self.assertRaises(SystemExit) as cm:
+                main()
+            self.assertEqual(cm.exception.code, 0)
+            mock_dispatch.assert_called_once()
+            self.assertEqual(mock_dispatch.call_args.args, expected)
+
+    @patch("sandbox_executor.cli.run_docker_container", return_value=0)
+    def test_dispatch_role_agent_uses_runner_image(self, mock_run_container):
+        from sandbox_executor.cli import dispatch_role_agent
+
+        rc = dispatch_role_agent(
+            "executor",
+            "claude-agent",
+            "claude-opus-5-5",
+            ["I-1-x/P-1/_", "claude-agent", "claude-opus-5-5"],
+            repo_dir="/repo",
+            token_reduce=True,
+            mitm_web=True,
+        )
+        self.assertEqual(rc, 0)
+        mock_run_container.assert_called_once_with(
+            "executor",
+            "holon/agent-claude",
+            ["I-1-x/P-1/_", "claude-agent", "claude-opus-5-5"],
+            agent_id="claude",
+            token_reduce=True,
+            mitm_web=True,
+            repo_dir="/repo",
+        )
 
 
 # --------------------------------------------------------------------------------------

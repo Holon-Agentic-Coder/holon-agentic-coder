@@ -476,6 +476,71 @@ class TestExecutor(unittest.TestCase):
                 self.assertIn("P-123", content)
                 self.assertIn("success", content)
 
+    def _run_main_with_agent_diff(self, diff_stdout: str, untracked_stdout: str = "", tip_stdout: str = "tip-sha\n"):
+        """Run executor.main() with a successful agent whose working-tree diff is diff_stdout.
+
+        Returns (summary_rows, run_cmd_argv_list).
+        """
+        mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.0.0"
+        mock_runner.build_cmd.return_value = ["agy", "--model", "gemini-3.5-flash", "prompt"]
+
+        def side_effect(args, cwd=None, **kwargs):
+            if "clone" in args:
+                ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
+                os.makedirs(ledger_dir, exist_ok=True)
+                with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
+                    f.write(json.dumps({"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 2.0}) + "\n")
+            if args[:3] == ["git", "rev-parse", "HEAD"]:
+                return MagicMock(returncode=0 if tip_stdout else 1, stdout=tip_stdout, stderr="")
+            if "diff" in args and "--name-only" in args:
+                return MagicMock(returncode=0, stdout=diff_stdout, stderr="")
+            if "ls-files" in args and "--others" in args:
+                return MagicMock(returncode=0, stdout=untracked_stdout, stderr="")
+            return MagicMock(returncode=0, stdout="OK", stderr="")
+
+        with (
+            patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect) as mock_run_cmd,
+            patch("sandbox_executor.entrypoint.executor.get_runner", return_value=mock_runner),
+            patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value="/mock/repo"),
+            tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as tmp_dir,
+            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
+        ):
+            executor.main()
+            with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as ef:
+                rows = [json.loads(line) for line in ef if line.strip()]
+            argv = [c.args[0] for c in mock_run_cmd.call_args_list if c.args]
+        return [r for r in rows if r.get("entry_type") == "summary"], argv
+
+    def test_main_empty_diff_records_failed_and_skips_code_commit(self):
+        """An agent run that only touches ledgers and plans is recorded as failed, never success."""
+        summaries, argv = self._run_main_with_agent_diff(
+            "holon-knowledge/ledger/executions.jsonl\0plans/P-123.md\0", untracked_stdout="plans/notes.md\0"
+        )
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0]["status"], "failed")
+        self.assertEqual(summaries[0]["failure_reason"], "empty_diff")
+        self.assertIn("no changes outside holon-knowledge/ledger/, plans/ and executions/", summaries[0]["summary"])
+        self.assertNotIn("test_pass_rate", summaries[0])
+        self.assertFalse(any(cmd[:3] == ["git", "add", "-A"] for cmd in argv))
+        diff_calls = [cmd for cmd in argv if "diff" in cmd and "--name-only" in cmd]
+        self.assertTrue(diff_calls and "tip-sha" in diff_calls[0])
+
+    def test_main_non_empty_diff_still_succeeds(self):
+        """A real source change keeps the existing success path, including git add -A."""
+        summaries, argv = self._run_main_with_agent_diff("holon-knowledge/ledger/executions.jsonl\0src/app.py\0")
+        self.assertEqual(summaries[0]["status"], "success")
+        self.assertNotIn("failure_reason", summaries[0])
+        self.assertTrue(any(cmd[:3] == ["git", "add", "-A"] for cmd in argv))
+
+    def test_main_empty_diff_guard_fails_closed_without_plan_tip(self):
+        """If the plan tip cannot be resolved the diff is unverifiable, so the run is recorded as failed."""
+        summaries, argv = self._run_main_with_agent_diff("src/app.py\0", tip_stdout="")
+        self.assertEqual(summaries[0]["status"], "failed")
+        self.assertEqual(summaries[0]["failure_reason"], "diff_unverified")
+        self.assertFalse(any(cmd[:3] == ["git", "add", "-A"] for cmd in argv))
+
     @patch("sandbox_executor.entrypoint.executor.converge_prettier")
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
@@ -729,7 +794,18 @@ class TestExecutor(unittest.TestCase):
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = ""
-        mock_run_cmd.return_value = mock_result
+        # The simulated agent changes a source file, so the empty-diff guard lets the run succeed.
+        mock_tip = MagicMock(returncode=0, stdout="plan-tip-sha\n")
+        mock_diff = MagicMock(returncode=0, stdout="src/app.py\0")
+
+        def run_cmd_side_effect(args, cwd=None, **kwargs):
+            if args[:3] == ["git", "rev-parse", "HEAD"]:
+                return mock_tip
+            if "diff" in args and "--name-only" in args:
+                return mock_diff
+            return mock_result
+
+        mock_run_cmd.side_effect = run_cmd_side_effect
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             default_dir = os.path.join(tmp_dir, "repo")
@@ -3306,6 +3382,13 @@ class TestExecutorPrePushSync(unittest.TestCase):
             elif "rev-parse" in args and "--verify" in args and "HEAD^" in args:
                 mock_res.returncode = 0
                 mock_res.stdout = "parent-commit-sha\n"
+            elif args[:3] == ["git", "rev-parse", "HEAD"]:
+                mock_res.returncode = 0
+                mock_res.stdout = "plan-tip-sha\n"
+            elif "diff" in args and "--name-only" in args:
+                # The simulated agent changed a source file, so the empty-diff guard allows success.
+                mock_res.returncode = 0
+                mock_res.stdout = "src/feature.py\0"
             else:
                 mock_res.returncode = 0
                 mock_res.stdout = ""

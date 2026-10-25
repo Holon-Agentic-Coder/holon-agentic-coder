@@ -1,7 +1,9 @@
-"""Property fuzz: malformed ``models.json`` and numeric settings never crash ``holon doctor`` or the run path.
+"""Property fuzz: malformed ``models.json`` and settings never crash ``holon doctor`` or the run path.
 
-A generated matrix of malformed documents (bad encodings, oversized and non-finite numbers, deep nesting, a wrong
-type at every level, missing fields) and malformed numeric environment values is thrown at:
+A generated matrix of malformed documents (bad encodings, lone surrogate escapes, oversized and non-finite numbers,
+deep nesting, a wrong type at every level, missing fields), malformed numeric environment values and string settings
+holding text that cannot be encoded as UTF-8 (a lone surrogate, or a non-UTF-8 byte as decoded by ``surrogateescape``)
+is thrown at:
 
 - ``holon doctor`` (``cli.run_doctor``) in text and ``--json`` form: no exception escapes, the exit code is 0 or 1,
   and ``--json`` prints one valid JSON document whose ``environment`` section has the documented keys;
@@ -9,9 +11,11 @@ type at every level, missing fields) and malformed numeric environment values is
   runs): no exception escapes, an invalid ``models.json`` or envelope value is a clean ``Error:`` with exit 1, and a
   handed-down ``HOLON_STAGE_BUDGET_SECONDS`` is always a finite positive integer.
 
-Every document and value carries a runtime-built fake credential; no fragment of it may reach stdout, stderr or a log
-line. The credential uses letters that occur in no message (``FGJQVZ``) and is compared case-insensitively. Failures
-are collected and reported by case id only, never by value.
+stdout, stderr and the log are strict UTF-8 byte streams (``errors="strict"``), like a real terminal or pipe, so text
+that a ``StringIO`` would accept but a terminal cannot encode fails the case. Every document and value carries a
+runtime-built fake credential; no fragment of it may reach stdout, stderr or a log line. The credential uses letters
+that occur in no message (``FGJQVZ``) and is compared case-insensitively. Failures are collected and reported by case
+id only, never by value.
 """
 
 import argparse
@@ -79,6 +83,28 @@ def _documents(credential: str) -> Iterator[tuple[str, bytes, bool]]:
         "empty-file": b"",
     }.items():
         yield f"encoding:{name}", raw, True
+    # Lone surrogates (built at runtime): json.loads accepts a \\ud800 escape; no terminal can print the str.
+    lone, escaped = chr(0xD800), chr(0xDCFF)
+
+    def with_provider(**fields) -> dict:
+        return {"providers": {"p": {**_valid_provider(credential), **fields}}}
+
+    def with_model(**fields) -> dict:
+        return with_provider(models=[{**_valid_model(credential), **fields}])
+
+    for name, doc in {
+        "model-id": with_model(id=f"bad{lone}id"),
+        "model-id-escaped-byte": with_model(id=f"m{escaped}"),
+        "provider-name": {"providers": {f"p{lone}": _valid_provider(credential)}},
+        "baseUrl": with_provider(baseUrl=_LOOPBACK + lone),
+        "apiKey": with_provider(apiKey=credential + lone),
+        "api": with_provider(api=f"openai{escaped}"),
+        "reasoning": with_model(reasoning=f"off{lone}"),
+        "unread-field": with_provider(note=f"x{lone}"),
+        "unread-key": with_provider(**{f"k{escaped}": 1}),
+    }.items():
+        yield f"surrogate:{name}", dump(doc), True
+    yield "surrogate:utf8-encoded", b'{"providers": {"p": {"models": [{"id": "m\xed\xa0\x80"}]}}}', True
     # Numbers out of range, anywhere in the document.
     for name, literal in {
         "5000-digit-int": b"9" * 5000,
@@ -178,6 +204,8 @@ def _numeric_values(credential: str) -> list[str]:
         "1_0",
         " 12 ",
         credential,
+        "12" + os.fsdecode(b"\xff"),
+        os.fsdecode(b"\xed\xa0\x80"),
     ]
 
 
@@ -224,8 +252,8 @@ class _Workspace:
 
 
 @contextlib.contextmanager
-def _captured_logs() -> Iterator[io.StringIO]:
-    buffer = io.StringIO()
+def _captured_logs() -> Iterator[io.TextIOWrapper]:
+    buffer = _strict_stream()
     handler = logging.StreamHandler(buffer)
     root = logging.getLogger()
     root.addHandler(handler)
@@ -239,8 +267,18 @@ def _deep_health(_url: str, _timeout: float) -> bytes:
     return b"[" * 200_000
 
 
+def _strict_stream() -> io.TextIOWrapper:
+    """A strict UTF-8 text stream over bytes, like a terminal or pipe: unencodable text raises, as it would there."""
+    return io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="strict", write_through=True)
+
+
+def _text(stream: io.TextIOWrapper) -> str:
+    stream.flush()
+    return stream.buffer.getvalue().decode("utf-8")  # type: ignore[attr-defined]
+
+
 def _run_doctor(ws: _Workspace, as_json: bool, fetch: Callable[[str, float], bytes]) -> tuple[int, str]:
-    out, err = io.StringIO(), io.StringIO()
+    out, err = _strict_stream(), _strict_stream()
     args = argparse.Namespace(agent="pi", model=None, json=as_json, timeout=None)
     with (
         _captured_logs() as logs,
@@ -250,15 +288,15 @@ def _run_doctor(ws: _Workspace, as_json: bool, fetch: Callable[[str, float], byt
         contextlib.redirect_stderr(err),
     ):
         code = cli.run_doctor(args, fetch=fetch)
-    stdout = out.getvalue()
+    stdout = _text(out)
     if as_json:
         payload = json.loads(stdout)
         assert set(payload["environment"]) == {"ok", "lines", "warnings"}
-    return code, ws.scrub(stdout + err.getvalue() + logs.getvalue())
+    return code, ws.scrub(stdout + _text(err) + _text(logs))
 
 
 def _run_path(ws: _Workspace) -> tuple[int, str, list[str]]:
-    out, err = io.StringIO(), io.StringIO()
+    out, err = _strict_stream(), _strict_stream()
     stage_dir = os.path.join(ws.root, "stage-agent-dir")
     os.makedirs(stage_dir, exist_ok=True)
     with (
@@ -278,7 +316,7 @@ def _run_path(ws: _Workspace) -> tuple[int, str, list[str]]:
                 "executor", "holon/agent-pi", ["branch", "pi-agent", "m"], agent_id="pi", token_reduce=False
             )
     argv = list(mock_run.call_args[0][0]) if mock_run.called else []
-    return code, ws.scrub(out.getvalue() + err.getvalue() + logs.getvalue()), argv
+    return code, ws.scrub(_text(out) + _text(err) + _text(logs)), argv
 
 
 def _check(case: str, failures: list[str], body: Callable[[], None]) -> None:
@@ -368,4 +406,64 @@ def test_malformed_numeric_env_never_crashes_doctor_or_run_path():
                 _check(f"{case}/doctor-text", failures, lambda: doctor(False))
                 _check(f"{case}/doctor-json", failures, lambda: doctor(True))
                 _check(f"{case}/run", failures, run)
+    assert not failures, f"{len(failures)} failures:\n" + "\n".join(failures)
+
+
+_STRING_VARS = (
+    local_llm.ENV_LOCAL_BASE_URL,
+    local_llm.ENV_LOCAL_PROVIDER,
+    local_llm.ENV_LOCAL_MODELS,
+    local_llm.ENV_HOST_LOCAL_HOSTS,
+    local_llm.ENV_REASONING_MODE,
+    local_llm.ENV_AGENT_PROVIDER,
+)
+
+
+def _unencodable_values(var: str) -> list[str]:
+    """Each value holds text no UTF-8 stream can encode: a non-UTF-8 byte as ``os.environ`` decodes it
+    (``surrogateescape``), at the end and inside an otherwise valid value. A lone surrogate such as ``\\ud800`` cannot
+    reach ``os.environ`` at all (it is not encodable back to bytes), so the bytes of a UTF-8-encoded surrogate stand in
+    for it."""
+    base = {
+        local_llm.ENV_LOCAL_BASE_URL: "http://localhost:8082/v1",
+        local_llm.ENV_HOST_LOCAL_HOSTS: "localhost:8082",
+        local_llm.ENV_REASONING_MODE: "off",
+    }.get(var, "fuzz-value")
+    values = []
+    for bad in (os.fsdecode(b"\xff"), os.fsdecode(b"\x80"), os.fsdecode(b"\xed\xa0\x80")):
+        values.extend((base + bad, base[:4] + bad + base[4:]))
+    return values
+
+
+def test_unencodable_string_env_never_crashes_doctor_or_run_path():
+    """A string ``HOLON_*`` setting that cannot be encoded as UTF-8 is a clean, value-free error naming the variable."""
+    credential = _credential()
+    failures: list[str] = []
+    valid = json.dumps({"providers": {"p": _valid_provider(credential)}}).encode()
+    with tempfile.TemporaryDirectory() as root:
+        for models in (None, valid):
+            source = "synthesised" if models is None else "models.json"
+            for var in (*_STRING_VARS, local_llm.ENV_LOCAL_MODE):
+                for index, value in enumerate(_unencodable_values(var)):
+                    case = f"string-env:{source}:{var}:{index}"
+                    ws = _Workspace(root, models, {var: value}, credential)
+
+                    def doctor(as_json: bool, ws=ws, var=var) -> None:
+                        code, output = _run_doctor(ws, as_json, _deep_health)
+                        assert code in (0, 1), f"doctor exit {code}"
+                        assert "Traceback" not in output, "traceback in output"
+                        assert not _leaks(output, credential), "credential fragment in doctor output"
+                        if var in _STRING_VARS:
+                            assert code == 1 and f"Error: {var} " in output, "unencodable value accepted by doctor"
+
+                    def run(ws=ws, var=var) -> None:
+                        code, output, argv = _run_path(ws)
+                        assert "Traceback" not in output, "traceback in output"
+                        if var in _STRING_VARS:
+                            assert code == 1 and f"Error: {var} " in output, "unencodable value accepted by run path"
+                        _assert_handdown_finite(argv)
+
+                    _check(f"{case}/doctor-text", failures, lambda: doctor(False))
+                    _check(f"{case}/doctor-json", failures, lambda: doctor(True))
+                    _check(f"{case}/run", failures, run)
     assert not failures, f"{len(failures)} failures:\n" + "\n".join(failures)

@@ -1253,6 +1253,58 @@ class TestValidatedModelsConfig(unittest.TestCase):
             self.assertIn(local_llm.ENV_LOCAL_CONTEXT_WINDOW, str(ctx.exception))
             self.assertNotIn(raw, str(ctx.exception))
 
+    def test_loader_rejects_lone_surrogate_strings(self):
+        # C23-I1: json.loads accepts a \\ud800 escape; the str it yields cannot be printed on a UTF-8 terminal.
+        for case, raw in {
+            "model-id": b'{"providers": {"p": {"models": [{"id": "bad\\ud800id"}]}}}',
+            "object-key": b'{"providers": {"p": {"k\\udcff": 1}}}',
+            "unread-field": b'{"note": "x\\ud800"}',
+        }.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                path = self._write(tmp, raw)
+                with self.assertRaisesRegex(local_llm.LocalLLMConfigError, "not valid Unicode") as ctx:
+                    local_llm.load_models_json(path)
+                str(ctx.exception).encode("utf-8")
+
+    def test_validator_rejects_non_text_fields(self):
+        lone = chr(0xD800)
+        model = {"id": "m", "contextWindow": 32768}
+        for case, config in {
+            "provider-name": {"providers": {f"p{lone}": {}}},
+            "baseUrl": {"providers": {"p": {"baseUrl": f"http://localhost:8080/v1{lone}"}}},
+            "id": {"providers": {"p": {"models": [{**model, "id": f"m{lone}"}]}}},
+            "reasoning": {"providers": {"p": {"models": [{**model, "reasoning": f"off{lone}"}]}}},
+        }.items():
+            with (
+                self.subTest(case=case),
+                self.assertRaisesRegex(local_llm.LocalLLMConfigError, "not valid UTF-8 text") as ctx,
+            ):
+                local_llm.validate_models_config(config)
+            str(ctx.exception).encode("utf-8")
+
+    def test_text_settings_must_be_utf8(self):
+        # C23-I1: os.environ decodes a non-UTF-8 byte with surrogateescape; the value is rejected, named, never shown.
+        for name in local_llm.TEXT_SETTINGS:
+            value = "v" + os.fsdecode(b"\xff")
+            with self.subTest(name=name), self.assertRaises(local_llm.LocalLLMConfigError) as ctx:
+                local_llm.build_envelope_config(None, (), {name: value})
+            message = str(ctx.exception)
+            self.assertTrue(message.startswith(f"{name} is not valid UTF-8 text"))
+            message.encode("utf-8")
+        with (
+            patch.dict(os.environ, {local_llm.ENV_HOST_LOCAL_HOSTS: "h" + os.fsdecode(b"\x80")}, clear=True),
+            self.assertRaisesRegex(local_llm.LocalLLMConfigError, local_llm.ENV_HOST_LOCAL_HOSTS),
+        ):
+            local_llm.host_local_allow_list()
+
+    def test_loader_message_escapes_non_utf8_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, os.fsdecode(b"dir\xff"), "models.json")
+            with self.assertRaises(local_llm.LocalLLMConfigError) as ctx:
+                local_llm.load_models_json(path)
+        self.assertIn("dir\\udcff", str(ctx.exception))
+        str(ctx.exception).encode("utf-8")
+
     def test_probe_survives_deeply_nested_health_body(self):
         # R2-N4 repro: a 200 KB body of "[" (under the 1 MiB cap) raised RecursionError out of the probe.
         health = local_llm.probe_gateway_health("http://127.0.0.1:8081/v1", fetch=lambda url, timeout: b"[" * 200_000)

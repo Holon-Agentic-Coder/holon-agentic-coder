@@ -1430,7 +1430,7 @@ def run_docker_container(
                         )
                     add_env("HOLON_AGENT_PROVIDER", chosen)
             except local_llm.LocalLLMConfigError as exc:
-                print(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
+                print_encodable(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
                 return 1
             docker_cmd.extend(local_llm.container_mount_args(local_agent_dir))
             for key, value in local_llm.container_env(local_agent_dir).items():
@@ -1499,7 +1499,8 @@ def run_docker_container(
             # needs no bind mount.
             docker_cmd[2:2] = ["--env-file", env_file]
 
-        print(f"Executing: {redact_command(docker_cmd)}")
+        # A forwarded HOLON_* value may hold a non-UTF-8 byte (surrogateescape); it must not crash the run here.
+        print_encodable(f"Executing: {redact_command(docker_cmd)}")
         result = subprocess.run(docker_cmd)
         return result.returncode
     finally:
@@ -1517,6 +1518,22 @@ def run_docker_container(
                 runner.cleanup_ephemeral_credentials()
         except Exception:
             pass
+
+
+def print_encodable(text: str, file: TextIO | None = None) -> None:
+    """``print(text, file=file)`` that cannot raise ``UnicodeEncodeError``.
+
+    Characters the stream's encoding cannot represent (a lone surrogate, a non-UTF-8 byte that ``os.environ`` decoded
+    with ``surrogateescape``, or non-ASCII text on an ASCII terminal) are written backslash-escaped; text the stream
+    can encode is written unchanged.
+    """
+    stream = sys.stdout if file is None else file
+    encoding = getattr(stream, "encoding", None) or "utf-8"
+    try:
+        text = text.encode(encoding, "backslashreplace").decode(encoding)
+    except LookupError:
+        text = text.encode("ascii", "backslashreplace").decode("ascii")
+    print(text, file=stream)
 
 
 def _doctor_section_failed(section: str, exc: BaseException) -> str:
@@ -1812,8 +1829,8 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
         if args.json:
             print(json.dumps({"error": redact_cli_error(exc), "environment": environment}, indent=2))
         else:
-            print(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
-            print("\n".join(env_lines))
+            print_encodable(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
+            print_encodable("\n".join(env_lines))
         return 1
 
     result = run_preflight_probe(agent_res.value, model_res.value, timeout=resolve_timeout(args.timeout))
@@ -1826,10 +1843,11 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
         }
         print(json.dumps(payload, indent=2))
     else:
-        print(agent_res.describe("Agent runner"))
-        print(model_res.describe("Model"))
-        print(result.format_report())
-        print("\n".join(env_lines))
+        # Encoding-safe: no configuration text can crash the report on a strict terminal (#94 C23).
+        print_encodable(agent_res.describe("Agent runner"))
+        print_encodable(model_res.describe("Model"))
+        print_encodable(result.format_report())
+        print_encodable("\n".join(env_lines))
     return 0 if result.ok and env_code == 0 else 1
 
 

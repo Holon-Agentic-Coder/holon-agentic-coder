@@ -293,7 +293,9 @@ probe status is `ok` and the environment section found no local-LLM configuratio
 section (budgets, model envelope, base-URL check, gateway probe) is isolated: an invalid configuration prints an
 `Error:` line, and any unexpected exception prints
 `WARNING: doctor <part> check failed unexpectedly (<ExceptionClass>); details withheld` instead of a traceback. Either
-makes the exit code `1`, and `--json` still prints one valid document.
+makes the exit code `1`, and `--json` still prints one valid document. The text report is written encoding-safe: any
+character the terminal cannot encode (a lone surrogate, or a non-UTF-8 byte from the environment) is printed
+backslash-escaped instead of raising `UnicodeEncodeError`; encodable text is printed unchanged.
 
 | Status            | Meaning                                                          | Remediation                                                                       |
 | ----------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------- |
@@ -354,8 +356,13 @@ directory.
    integers of at most 19 digits, finite numbers only and at most 64 levels of nesting, and the shape Holon reads
    (`providers` an object of provider objects; `baseUrl`, `apiKey` and `api` strings; `models` a list of objects with a
    non-empty string `id`, `contextWindow` and `maxTokens` integers from 1 to 2147483647, and a boolean or string
-   `reasoning`). An invalid file is never skipped: the run aborts with `LocalLLMConfigError` naming the file and the
-   field or failure class, never a value from the file.
+   `reasoning`). Every string and key must be valid Unicode: a lone surrogate escape such as `\ud800`, which
+   `json.loads` would accept, is rejected. An invalid file is never skipped: the run aborts with `LocalLLMConfigError`
+   naming the file and the field or failure class, never a value from the file. The string settings
+   (`HOLON_LOCAL_BASE_URL`, `HOLON_LOCAL_PROVIDER`, `HOLON_AGENT_PROVIDER`, `HOLON_LOCAL_MODELS`,
+   `HOLON_HOST_LOCAL_HOSTS`, `HOLON_REASONING_MODE`, `HOLON_CONTEXT_RESERVE_TOKENS`, `HOLON_LOCAL_CONTEXT_WINDOW`) must
+   likewise be UTF-8 text; a non-UTF-8 byte is an `Error:` naming the variable, never its value, on the run path and in
+   `holon doctor` alike.
 2. Each provider `baseUrl` is rewritten to the gateway **only if** its authority is loopback (the whole `127.0.0.0/8`
    range and `::1`, not merely `127.0.0.1`) or explicitly declared in `HOLON_HOST_LOCAL_HOSTS`. Every other field of a
    kept provider is preserved.

@@ -38,6 +38,8 @@ ENV_LOCAL_BASE_URL = "HOLON_LOCAL_BASE_URL"
 # Provider name and model ids used to synthesize a config when no host config exists.
 ENV_LOCAL_PROVIDER = "HOLON_LOCAL_PROVIDER"
 ENV_LOCAL_MODELS = "HOLON_LOCAL_MODELS"
+# Provider selected for the runner; also the synthesised provider's name when HOLON_LOCAL_PROVIDER is unset.
+ENV_AGENT_PROVIDER = "HOLON_AGENT_PROVIDER"
 # Explicit, comma-separated allow list of host authorities that may be rewritten (Bean 0027 parity).
 ENV_HOST_LOCAL_HOSTS = "HOLON_HOST_LOCAL_HOSTS"
 # Pi resolves its agent directory (and therefore models.json) from this variable.
@@ -55,6 +57,17 @@ MAX_SYNTHESISED_OUTPUT_TOKENS = 16384
 # Least-thinking first. "off" is the default for authoring stages, whose long outputs are what runs out of tokens.
 REASONING_MODES = ("off", "minimal", "low", "medium", "high")
 DEFAULT_REASONING_MODE = "off"
+# Every string setting local-LLM mode reads; each must be encodable as UTF-8 (:func:`check_text_settings`).
+TEXT_SETTINGS = (
+    ENV_LOCAL_BASE_URL,
+    ENV_LOCAL_PROVIDER,
+    ENV_AGENT_PROVIDER,
+    ENV_LOCAL_MODELS,
+    ENV_HOST_LOCAL_HOSTS,
+    ENV_REASONING_MODE,
+    ENV_CONTEXT_RESERVE_TOKENS,
+    ENV_LOCAL_CONTEXT_WINDOW,
+)
 
 # The only address a container can use to reach the host on Docker Desktop and, with --add-host, on Linux alike.
 GATEWAY_HOST = "host.docker.internal"
@@ -73,6 +86,37 @@ class LocalLLMConfigError(ValueError):
     """Raised when local mode is requested but cannot be satisfied; never silently degraded."""
 
 
+def is_utf8_text(text: str) -> bool:
+    """True when ``text`` can be encoded as UTF-8: no lone surrogate (a JSON ``\\ud800`` escape) and no non-UTF-8
+    byte decoded by ``surrogateescape`` (how ``os.environ`` and file names carry one). A terminal cannot print
+    anything else."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def printable(text: str) -> str:
+    """``text`` with every character UTF-8 cannot encode backslash-escaped, for messages that name a path."""
+    return text.encode("utf-8", "backslashreplace").decode("utf-8")
+
+
+def _not_text_error(name: str) -> LocalLLMConfigError:
+    # Name the variable only, never the value (#96).
+    return LocalLLMConfigError(
+        f"{name} is not valid UTF-8 text (a lone surrogate or a non-UTF-8 byte); value withheld."
+    )
+
+
+def check_text_settings(env: Mapping[str, str] | None = None) -> None:
+    """Raise :class:`LocalLLMConfigError` naming the first :data:`TEXT_SETTINGS` variable that is not UTF-8 text."""
+    env = os.environ if env is None else env
+    for name in TEXT_SETTINGS:
+        if not is_utf8_text(env.get(name, "")):
+            raise _not_text_error(name)
+
+
 def normalize_agent_id(agent_id: str) -> str:
     """Normalize agent identifier (e.g. 'pi-agent', 'agent-pi', 'Pi' -> 'pi')."""
     return agent_id.lower().replace("-agent", "").replace("agent-", "")
@@ -86,6 +130,8 @@ def local_llm_requested() -> bool:
 def host_local_allow_list() -> set[str]:
     """Authorities explicitly declared rewritable, lower-cased and empty entries dropped."""
     raw = os.getenv(ENV_HOST_LOCAL_HOSTS, "")
+    if not is_utf8_text(raw):
+        raise _not_text_error(ENV_HOST_LOCAL_HOSTS)
     allow = set()
     for entry in raw.split(","):
         cleaned = entry.strip().lower()
@@ -267,11 +313,28 @@ def _json_depth_exceeds(value: Any, limit: int) -> bool:
     return False
 
 
+def _has_non_text_string(value: Any) -> bool:
+    """True when a string or object key anywhere in ``value`` is not UTF-8 text (iterative, like the depth check)."""
+    stack = [value]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, str):
+            if not is_utf8_text(node):
+                return True
+        elif isinstance(node, dict):
+            stack.extend(node.keys())
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return False
+
+
 def parse_bounded_json(raw: bytes | str) -> Any:
     """Parse ``raw`` as strict UTF-8 JSON with bounded integers, finite floats and at most ``MAX_JSON_DEPTH`` levels.
 
-    Every failure (bad encoding, syntax, an oversized integer, NaN/Infinity, a float that overflows, nesting deep
-    enough to exhaust the interpreter stack) raises :class:`MalformedJSONError` whose message carries the failure
+    Every failure (bad encoding, syntax, a string or key holding a lone surrogate escape such as ``\\ud800``, an
+    oversized integer, NaN/Infinity, a float that overflows, nesting deep enough to exhaust the interpreter stack)
+    raises :class:`MalformedJSONError` whose message carries the failure
     class only: ``UnicodeDecodeError`` and some parse errors would otherwise quote document bytes.
     """
     try:
@@ -290,6 +353,8 @@ def parse_bounded_json(raw: bytes | str) -> Any:
         raise MalformedJSONError(f"unreadable JSON ({type(exc).__name__})") from None
     if _json_depth_exceeds(data, MAX_JSON_DEPTH):
         raise MalformedJSONError(f"nested deeper than {MAX_JSON_DEPTH} levels")
+    if _has_non_text_string(data):
+        raise MalformedJSONError("a string is not valid Unicode (a lone surrogate escape)")
     return data
 
 
@@ -328,8 +393,9 @@ def validate_models_config(data: Any, source: str = "models.json") -> ModelsConf
     :func:`apply_model_envelope`, :func:`host_base_urls`, :func:`host_gateways`, the doctor): a JSON object whose
     optional ``providers`` is an object of provider objects; a provider's ``baseUrl``, ``apiKey`` and ``api`` are
     strings and its ``models`` a list of model objects; a model has a non-empty string ``id``, positive integer
-    ``contextWindow`` and ``maxTokens`` up to ``MAX_TOKEN_COUNT``, and a boolean or string ``reasoning``. Fields Holon
-    does not read are not checked and are preserved. Raises :class:`LocalLLMConfigError` naming ``source`` and the
+    ``contextWindow`` and ``maxTokens`` up to ``MAX_TOKEN_COUNT``, and a boolean or string ``reasoning``. Provider
+    names and every string field read must be UTF-8 text (:func:`is_utf8_text`). Fields Holon does not read are not
+    checked and are preserved. Raises :class:`LocalLLMConfigError` naming ``source`` and the
     field (provider by name, model by id, or by position when it has no valid id), never a value.
     """
     if not isinstance(data, dict):
@@ -340,12 +406,16 @@ def validate_models_config(data: Any, source: str = "models.json") -> ModelsConf
     if not isinstance(providers, dict):
         raise LocalLLMConfigError(f"{source}: 'providers' must be an object of provider entries.")
     for name, provider in providers.items():
+        if not is_utf8_text(name):
+            raise LocalLLMConfigError(f"{source}: a provider name is not valid UTF-8 text.")
         where = f"{source}: provider {name!r}"
         if not isinstance(provider, dict):
             raise LocalLLMConfigError(f"{where} must be an object.")
         for key in ("baseUrl", "apiKey", "api"):
             if key in provider and not isinstance(provider[key], str):
                 raise LocalLLMConfigError(f"{where} field {key!r} must be a string.")
+            if key in provider and not is_utf8_text(provider[key]):
+                raise LocalLLMConfigError(f"{where} field {key!r} is not valid UTF-8 text.")
         models = provider.get("models")
         if models is None:
             continue
@@ -357,6 +427,8 @@ def validate_models_config(data: Any, source: str = "models.json") -> ModelsConf
                 raise LocalLLMConfigError(f"{at} must be an object.")
             if not isinstance(entry.get("id"), str) or not entry["id"].strip():
                 raise LocalLLMConfigError(f"{at} field 'id' must be a non-empty string.")
+            if not is_utf8_text(entry["id"]):
+                raise LocalLLMConfigError(f"{at} field 'id' is not valid UTF-8 text.")
             # Model ids are already shown in envelope lines and messages; naming one here is no new disclosure.
             at = f"{where} model {entry['id']!r}"
             for key in ("contextWindow", "maxTokens"):
@@ -366,6 +438,8 @@ def validate_models_config(data: Any, source: str = "models.json") -> ModelsConf
                     )
             if "reasoning" in entry and not isinstance(entry["reasoning"], bool | str):
                 raise LocalLLMConfigError(f"{at} field 'reasoning' must be a boolean or a string.")
+            if isinstance(entry.get("reasoning"), str) and not is_utf8_text(entry["reasoning"]):
+                raise LocalLLMConfigError(f"{at} field 'reasoning' is not valid UTF-8 text.")
     return data  # type: ignore[return-value]
 
 
@@ -373,20 +447,22 @@ def load_models_json(path: str) -> ModelsConfig:
     """Read, parse (:func:`parse_bounded_json`) and validate (:func:`validate_models_config`) one ``models.json``.
 
     Raises :class:`LocalLLMConfigError` naming the file and the reason (an unreadable file, an oversized one, malformed
-    JSON or a wrong shape); never any of its content.
+    JSON or a wrong shape); never any of its content. The path is shown with non-UTF-8 bytes escaped
+    (:func:`printable`).
     """
+    shown = printable(path)
     try:
         with open(path, "rb") as handle:
             raw = handle.read(MODELS_JSON_MAX_BYTES + 1)
     except OSError as exc:
-        raise LocalLLMConfigError(f"Could not read {path} ({type(exc).__name__}).") from None
+        raise LocalLLMConfigError(f"Could not read {shown} ({type(exc).__name__}).") from None
     if len(raw) > MODELS_JSON_MAX_BYTES:
-        raise LocalLLMConfigError(f"{path} exceeds {MODELS_JSON_MAX_BYTES} bytes.")
+        raise LocalLLMConfigError(f"{shown} exceeds {MODELS_JSON_MAX_BYTES} bytes.")
     try:
         data = parse_bounded_json(raw)
     except MalformedJSONError as exc:
-        raise LocalLLMConfigError(f"{path} is not valid JSON: {exc}.") from None
-    return validate_models_config(data, path)
+        raise LocalLLMConfigError(f"{shown} is not valid JSON: {exc}.") from None
+    return validate_models_config(data, shown)
 
 
 def host_models_json() -> ModelsConfig | None:
@@ -424,7 +500,7 @@ def _synthesized_config(allow_list: Iterable[str]) -> dict:
             f"{ENV_LOCAL_BASE_URL} is set but no model ids were declared; set {ENV_LOCAL_MODELS} with at least one "
             "model id served by that endpoint."
         )
-    provider = os.getenv(ENV_LOCAL_PROVIDER, "").strip() or os.getenv("HOLON_AGENT_PROVIDER", "").strip() or "local"
+    provider = os.getenv(ENV_LOCAL_PROVIDER, "").strip() or os.getenv(ENV_AGENT_PROVIDER, "").strip() or "local"
     rewritten = rewrite_authority(base_url, allow_list)
     auth = _authority(rewritten)
     if auth is None:
@@ -657,7 +733,12 @@ def apply_model_envelope(config: dict, env: Mapping[str, str] | None = None) -> 
 def build_envelope_config(
     host_config: dict | None, allow_list: Iterable[str] = (), env: Mapping[str, str] | None = None
 ) -> tuple[dict, list[ModelEnvelope]]:
-    """The container config together with its model envelope, without writing anything (used by ``holon doctor``)."""
+    """The container config together with its model envelope, without writing anything (used by ``holon doctor``).
+
+    Every :data:`TEXT_SETTINGS` variable is checked first (:func:`check_text_settings`), so the doctor and the run path
+    reject the same values with the same message.
+    """
+    check_text_settings(env)
     config = build_container_config(host_config, allow_list)
     return config, apply_model_envelope(config, env)
 

@@ -1002,6 +1002,10 @@ _SHARED_SERVER_CONFIG = {
 }
 
 
+def _strict_utf8_stream() -> io.TextIOWrapper:
+    return io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="strict", write_through=True)
+
+
 class TestDoctor(unittest.TestCase):
     def run_doctor(self, env, fetch, host_config=None):
         out = io.StringIO()
@@ -1145,10 +1149,11 @@ class TestDoctor(unittest.TestCase):
             patch.dict(os.environ, env, clear=True),
             patch.object(local_llm, "host_models_json", return_value=host_config),
             patch("sandbox_executor.cli.run_preflight_probe", return_value=probe),
-            patch("sys.stdout", new_callable=io.StringIO) as mock_stdout,
+            # A strict UTF-8 byte stream, like a terminal: text a StringIO accepts but a terminal cannot fails here.
+            patch("sys.stdout", new_callable=_strict_utf8_stream) as mock_stdout,
         ):
             code = cli.run_doctor(args, fetch=fetch)
-        return code, mock_stdout.getvalue()
+        return code, mock_stdout.buffer.getvalue().decode("utf-8")
 
     def test_unified_doctor_reports_resolution_probe_and_envelope(self):
         host_config = _config({"id": "qwen3", "contextWindow": 65536, "maxTokens": 8000})
@@ -1217,6 +1222,39 @@ class TestDoctor(unittest.TestCase):
                         self.assertNotIn(fragment, output)
                     if as_json:
                         assert_shown("\n".join(json.loads(output)["environment"]["lines"]), host, sep)
+
+    def test_unified_doctor_rejects_non_utf8_model_ids(self):
+        # C23-I1 repro: a non-UTF-8 byte in HOLON_LOCAL_MODELS (surrogateescape) used to crash the text report.
+        env = {
+            "HOLON_LOCAL_LLM": "1",
+            "HOLON_LOCAL_BASE_URL": "http://127.0.0.1:1/v1",
+            "HOLON_LOCAL_CONTEXT_WINDOW": "32768",
+            "HOLON_LOCAL_MODELS": "m" + os.fsdecode(b"\xff"),
+        }
+        for as_json in (False, True):
+            with self.subTest(as_json=as_json):
+                code, output = self.run_unified_doctor(env, _fetcher(HEALTH_OFF), as_json=as_json)
+                self.assertEqual(code, 1)
+                self.assertIn("Error: HOLON_LOCAL_MODELS is not valid UTF-8 text", output)
+
+    def test_unified_doctor_text_report_cannot_fail_to_encode(self):
+        # C23-I1 output side: whatever text reaches the report is escaped, never a UnicodeEncodeError.
+        def report(fetch=None, out=None):
+            print("model=bad" + chr(0xD800) + "id", file=out)
+            return 0
+
+        with patch.object(cli, "report_budgets_and_envelope", side_effect=report):
+            code, output = self.run_unified_doctor({}, _fetcher(HEALTH_OFF))
+        self.assertEqual(code, 0)
+        self.assertIn("model=bad\\ud800id", output)
+
+    def test_print_encodable_leaves_encodable_text_unchanged(self):
+        stream = _strict_utf8_stream()
+        cli.print_encodable("h\u00f4st ok", file=stream)
+        self.assertEqual(stream.buffer.getvalue().decode("utf-8"), "h\u00f4st ok\n")
+        ascii_stream = io.TextIOWrapper(io.BytesIO(), encoding="ascii", errors="strict", write_through=True)
+        cli.print_encodable("h\u00f4st", file=ascii_stream)
+        self.assertEqual(ascii_stream.buffer.getvalue().decode("ascii"), "h\\xf4st\n")
 
     def test_unified_doctor_fails_when_probe_fails(self):
         from sandbox_executor.preflight import PreflightStatus

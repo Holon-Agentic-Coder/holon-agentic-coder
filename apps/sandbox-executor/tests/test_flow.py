@@ -1918,7 +1918,7 @@ class SteppingClock:
 
 
 class TestStageBudgets:
-    """Bean 0139: stage ceilings, elapsed-versus-budget summary lines and the verification timeout."""
+    """Bean 0139: stage ceilings, elapsed-versus-budget summary lines and the execute budget hand-down."""
 
     def test_summary_line_format(self):
         res = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS, elapsed_seconds=246, budget_seconds=2100)

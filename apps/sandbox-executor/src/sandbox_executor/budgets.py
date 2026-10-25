@@ -112,6 +112,8 @@ def _read_positive(
 ) -> float | None:
     """Positive finite float from ``env[name]``; ``default`` when unset or invalid (invalid values log a warning).
 
+    The warning names the variable, never the value (#96), so a misplaced credential cannot reach the log.
+
     ``fallback`` describes what happens instead in the warning; it defaults to "keeping the default of <default>".
     """
     raw = env.get(name)
@@ -121,13 +123,13 @@ def _read_positive(
     try:
         value = float(str(raw).strip())
     except ValueError:
-        logger.warning("Ignoring %s=%r: not a number; %s", name, raw, instead)
+        logger.warning("Ignoring %s: not a number; %s", name, instead)
         return default
     if value != value or value in (float("inf"), float("-inf")):
-        logger.warning("Ignoring %s=%r: not a finite number; %s", name, raw, instead)
+        logger.warning("Ignoring %s: not a finite number; %s", name, instead)
         return default
     if value < 0 or (value == 0 and not allow_zero):
-        logger.warning("Ignoring %s=%r: must be positive; %s", name, raw, instead)
+        logger.warning("Ignoring %s: must be positive; %s", name, instead)
         return default
     return value
 

@@ -1551,7 +1551,8 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
     try:
         config, envelopes = local_llm.build_envelope_config(host_config, allow_list, env)
     except local_llm.LocalLLMConfigError as exc:
-        print(f"Error: {exc}", file=out)
+        # The same top-level redaction as the run path (#96); these lines are also the `--json` environment section.
+        print(f"Error: {redact_cli_error(exc)}", file=out)
         return 1
 
     for envelope in envelopes:

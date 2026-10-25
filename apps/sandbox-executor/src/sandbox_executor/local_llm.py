@@ -372,9 +372,10 @@ def _env_int(env: Mapping[str, str], name: str) -> int | None:
     try:
         value = int(raw)
     except ValueError:
-        raise LocalLLMConfigError(f"{name}={raw!r} is not an integer.") from None
+        # Name the variable only, never echo the value (#96): a misplaced credential must not reach any message.
+        raise LocalLLMConfigError(f"{name} is not an integer; it must be a positive integer.") from None
     if value <= 0:
-        raise LocalLLMConfigError(f"{name}={raw!r} must be a positive integer.")
+        raise LocalLLMConfigError(f"{name} must be a positive integer.")
     return value
 
 
@@ -382,8 +383,7 @@ def _resolve_reasoning(env: Mapping[str, str], entry: dict) -> tuple[str, str]:
     raw_env = env.get(ENV_REASONING_MODE, "").strip().lower()
     if raw_env and raw_env not in REASONING_MODES:
         raise LocalLLMConfigError(
-            f"{ENV_REASONING_MODE}={raw_env!r} is not a supported reasoning mode; use one of "
-            f"{', '.join(REASONING_MODES)}."
+            f"{ENV_REASONING_MODE} is not a supported reasoning mode; use one of {', '.join(REASONING_MODES)}."
         )
     host = entry.get("reasoning")
     # pi models.json uses a boolean "reasoning" capability flag; a host value of false means the model never thinks, so
@@ -403,8 +403,8 @@ def _resolve_reasoning(env: Mapping[str, str], entry: dict) -> tuple[str, str]:
         mode = host.strip().lower()
         if mode not in REASONING_MODES:
             raise LocalLLMConfigError(
-                f"Model {entry.get('id')!r} declares reasoning={host!r}; use one of {', '.join(REASONING_MODES)} "
-                f"or set {ENV_REASONING_MODE}."
+                f"Model {entry.get('id')!r} declares an unsupported reasoning mode; use one of "
+                f"{', '.join(REASONING_MODES)} or set {ENV_REASONING_MODE}."
             )
         return mode, "host"
     return DEFAULT_REASONING_MODE, "default"
@@ -441,8 +441,7 @@ def apply_model_envelope(config: dict, env: Mapping[str, str] | None = None) -> 
                 window = _strict_int(entry["contextWindow"])
                 if window is None or window <= 0:
                     raise LocalLLMConfigError(
-                        f"Model {model_id!r} has contextWindow={entry['contextWindow']!r}; it must be a positive "
-                        "integer."
+                        f"Model {model_id!r} has an invalid contextWindow; it must be a positive integer."
                     )
             elif fallback_window is not None:
                 window = fallback_window
@@ -457,7 +456,7 @@ def apply_model_envelope(config: dict, env: Mapping[str, str] | None = None) -> 
                 max_tokens = _strict_int(entry["maxTokens"])
                 if max_tokens is None or max_tokens <= 0:
                     raise LocalLLMConfigError(
-                        f"Model {model_id!r} has maxTokens={entry['maxTokens']!r}; it must be a positive integer."
+                        f"Model {model_id!r} has an invalid maxTokens; it must be a positive integer."
                     )
                 source = "host"
             else:

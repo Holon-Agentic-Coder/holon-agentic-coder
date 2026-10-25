@@ -294,7 +294,9 @@ def test_no_credential_fragment_in_any_message(entry_point, monkeypatch):
     monkeypatch.setattr(cli, "generate_root_ca", lambda: pytest.fail("must not generate a CA"))
     run = ENTRY_POINTS[entry_point]
     failures = [case_id for case_id, value, credential in matrix() if _leaks(run(value), credential)]
-    assert not failures, f"{len(failures)}/{MATRIX_SIZE} cases leaked a credential fragment, e.g. {failures[:5]}"
+    assert not failures, (
+        f"{len(failures)}/{MATRIX_SIZE} cases leaked a credential fragment, e.g. {failures[:5]} ALL={failures}"
+    )
 
 
 def _refuse(*_args, **_kwargs):
@@ -444,3 +446,81 @@ def test_quoted_url_ends_at_its_closing_quote(text, kept):
 
     assert redact_text(text) == text
     assert kept in redact_text(text)
+
+
+# C17-N1: a credential-bearing value placed in a non-URL envelope or budget setting by mistake. The
+# invalid-value messages name the variable (or the model and field) and the expected type only.
+INVALID_VALUE_ENV = (
+    "HOLON_CONTEXT_RESERVE_TOKENS",
+    "HOLON_LOCAL_CONTEXT_WINDOW",
+    "HOLON_REASONING_MODE",
+    "HOLON_TURN_TIMEOUT_SECONDS",
+    "HOLON_STAGE_BUDGET_SECONDS",
+)
+INVALID_VALUE_HOST_FIELDS = ("contextWindow", "maxTokens", "reasoning")
+_LOCAL_ENV = {
+    "HOLON_LOCAL_LLM": "1",
+    "HOLON_LOCAL_BASE_URL": "http://localhost:8081/v1",
+    "HOLON_LOCAL_MODELS": "m1",
+    "HOLON_LOCAL_CONTEXT_WINDOW": "65536",
+    "HOLON_REPO_URL": "https://github.com/myorg/myrepo.git",
+}
+
+
+def _invalid_value_cases() -> Iterator[tuple[str, dict[str, str], dict | None, str]]:
+    """Yield `(case_id, env, host_config, credential)`: every credential shape in every invalid-value slot."""
+    for case_id, value, credential in matrix():
+        if not case_id.endswith("/ipv4/path"):
+            continue
+        for name in INVALID_VALUE_ENV:
+            yield f"env:{name}/{case_id}", {**_LOCAL_ENV, name: value}, None, credential
+        for field in INVALID_VALUE_HOST_FIELDS:
+            entry = {"id": "m", "contextWindow": 65536, field: value}
+            host_config = {"providers": {"vmlx": {"baseUrl": "http://localhost:8081/v1", "models": [entry]}}}
+            yield f"host:{field}/{case_id}", dict(_LOCAL_ENV), host_config, credential
+
+
+def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, tmp_path):
+    """C17-N1: doctor (environment section, text and `--json`) and the run path withhold an invalid value."""
+    from sandbox_executor.preflight import PreflightResult, PreflightStatus
+
+    probe = PreflightResult(
+        status=PreflightStatus.OK, agent="pi-agent", model="m", image="img", exit_code=0, output_excerpt="", hint=""
+    )
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
+    monkeypatch.setattr(cli, "get_agent_session_mounts", lambda agent_id: [])
+    monkeypatch.setattr(cli, "get_ssh_auth_mounts", lambda: ([], {}))
+    monkeypatch.setattr(cli, "get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {}))
+    failures: list[str] = []
+    cases = list(_invalid_value_cases())
+    for case_id, env, host_config, credential in cases:
+        # A budget float falls back to its default, so the run goes on to forward the host `HOLON_*` variables to
+        # the container unchanged (pre-existing behaviour, outside this rule); only its doctor output is checked.
+        rejected = "TIMEOUT" not in case_id and "BUDGET" not in case_id
+        docker = _DockerRecorder()
+        with (
+            patch.object(local_llm, "host_models_json", return_value=host_config),
+            patch.object(cli, "run_preflight_probe", return_value=probe),
+            patch.object(cli.subprocess, "run", docker),
+            _captured({**env, "HOME": str(tmp_path)}) as out,
+        ):
+            env_out = io.StringIO()
+            codes = [cli.report_budgets_and_envelope(fetch=lambda url, timeout: b"{}", out=env_out)]
+            out.append(env_out.getvalue())
+            for as_json in (False, True):
+                codes.append(
+                    cli.run_doctor(
+                        argparse.Namespace(agent=None, model=None, json=as_json, timeout=None),
+                        fetch=lambda url, timeout: b"{}",
+                    )
+                )
+            if rejected:
+                codes.append(cli.run_docker_container("executor", "img", [], agent_id="pi"))
+        if _leaks(out, credential):
+            failures.append(case_id)
+        if rejected and (codes != [1, 1, 1, 1] or docker.argv):
+            failures.append(f"{case_id}:not-rejected")
+    assert len(cases) == (len(INVALID_VALUE_ENV) + len(INVALID_VALUE_HOST_FIELDS)) * MATRIX_SIZE // (
+        len(HOSTS) * len(SUFFIXES)
+    )
+    assert not failures, f"{len(failures)}/{len(cases)} invalid-value cases failed, e.g. {failures[:5]}"

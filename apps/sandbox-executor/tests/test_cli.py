@@ -1094,13 +1094,14 @@ class TestDoctor(unittest.TestCase):
         self.assertEqual(code, 0)
         payload = json.loads(output)
         self.assertEqual(set(payload), {"agent", "model", "preflight", "environment"})
-        self.assertEqual(set(payload["environment"]), {"ok", "lines"})
+        self.assertEqual(set(payload["environment"]), {"ok", "lines", "warnings"})
         lines = payload["environment"]["lines"]
         self.assertEqual(sum(line.startswith("gateway=http://127.0.0.1:8000/") for line in lines), 1)
         self.assertEqual(sum(line.startswith("gateway=http://127.0.0.1:9000/") for line in lines), 1)
         warnings = [line for line in lines if line.startswith("WARNING")]
         self.assertEqual(len(warnings), 2)
         self.assertTrue(all("model=other " in line for line in warnings))
+        self.assertEqual(payload["environment"]["warnings"], warnings)
 
     def test_doctor_scopes_synthesised_provider_to_its_base_url(self):
         env = {

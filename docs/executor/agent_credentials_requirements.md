@@ -287,8 +287,9 @@ Pre-flight antigravity-agent (gemini-3.8-flash-medium) via holon/agent-antigravi
 After the probe report, `holon doctor` prints its environment section: the effective turn and stage budgets and, in
 local-LLM mode, the model envelope and gateway probe (see
 [`holon doctor` environment section](#holon-doctor-environment-section) below). With `--json` that section is carried as
-`"environment": {"ok": <bool>, "lines": [...]}` next to `agent`, `model` and `preflight`. `holon doctor` exits `0` only
-when the probe status is `ok` and the environment section found no local-LLM configuration error.
+`"environment": {"ok": <bool>, "lines": [...], "warnings": [...]}` next to `agent`, `model` and `preflight`, where
+`warnings` repeats the section's `WARNING:` lines (empty when there are none). `holon doctor` exits `0` only when the
+probe status is `ok` and the environment section found no local-LLM configuration error.
 
 | Status            | Meaning                                                          | Remediation                                                                       |
 | ----------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------- |
@@ -420,4 +421,8 @@ that server's `max_prompt_tokens` (read from `effective_defaults` or the top lev
 compared with another server's limits. Only loopback or `HOLON_HOST_LOCAL_HOSTS` authorities are ever probed, and only
 over `http` or `https` (a `file://` or `ftp://` `baseUrl` is skipped): redirects are refused, at most 1 MiB of the
 response is read (a larger one prints `prefill_cache=unknown`), and the probe URL is rebuilt from host and port only, so
-userinfo in a `baseUrl` is never sent or printed.
+userinfo in a `baseUrl` is never sent or printed. A host-side base URL that cannot be parsed at all (an unbalanced `[`,
+a bad port, an empty host, or no `scheme://`) is not probed either; the section prints
+`WARNING: <source> is not a parseable URL, so its server is not probed (value withheld)`, naming only
+`HOLON_LOCAL_BASE_URL` or the host `models.json` provider whose `baseUrl` it is, never the value, and the command does
+not fail on it.

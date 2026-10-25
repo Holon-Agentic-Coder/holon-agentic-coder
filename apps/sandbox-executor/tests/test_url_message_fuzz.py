@@ -524,3 +524,111 @@ def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, 
         len(HOSTS) * len(SUFFIXES)
     )
     assert not failures, f"{len(failures)}/{len(cases)} invalid-value cases failed, e.g. {failures[:5]}"
+
+
+# C19-N1: base URLs `urlsplit` (or its lazy port check) rejects, or that have no usable `scheme://host`.
+UNPARSEABLE_FORMS = {
+    "bad-ipv6-bracket-port": "http://{u}127.0.0.1:9[/v1",
+    "bad-ipv6-bracket-host": "http://{u}[::1/v1",
+    "port-out-of-range": "http://{u}localhost:99999/v1",
+    "port-not-digits": "http://{u}localhost:x1/v1",
+    "empty-host": "http://{u}/v1",
+    "schemeless-garbage": "{u}not a url [",
+}
+_GOOD_HOST_URL = "http://127.0.0.1:8000/v1"
+_GOOD_LOCAL_URL = "http://127.0.0.1:8001/v1"
+
+
+def _unparseable_cases() -> Iterator[tuple[str, str, str, bool]]:
+    """Yield `(case_id, value, credential, plain)`: every form with no userinfo and with each credential shape.
+
+    `plain` marks values whose userinfo boundary is unambiguous, so the parse failure is the only problem and the
+    doctor must name the source. With a delimiter inside the userinfo `urlsplit` may read part of the credential as
+    the host; such a value is withheld as ambiguous instead, which the leak check covers.
+    """
+    for f_id, form in UNPARSEABLE_FORMS.items():
+        yield f"{f_id}/no-userinfo", form.format(u=""), "", True
+        for c_id, make in _credential_shapes().items():
+            credential = make()
+            plain = c_id in ("plain", "percent-encoded")
+            yield f"{f_id}/{c_id}", form.format(u=f"alice:{credential}@"), credential, plain
+
+
+@pytest.mark.parametrize("slot", ["HOLON_LOCAL_BASE_URL", "host-baseUrl"])
+def test_doctor_survives_unparseable_base_url(slot, monkeypatch):
+    """C19-N1: an unparseable host-side base URL is skipped by the probe, never crashes `holon doctor`.
+
+    Text and `--json` both exit 0 (the run path handles the same config), `--json` stays valid JSON with the problem
+    under `environment.warnings`, the warning names only the source, and no part of the value is echoed.
+    """
+    from sandbox_executor.preflight import PreflightResult, PreflightStatus
+
+    monkeypatch.setattr(cli.shutil, "which", lambda *_args, **_kwargs: None)
+    probe = PreflightResult(
+        status=PreflightStatus.OK, agent="pi-agent", model="m", image="img", exit_code=0, output_excerpt="", hint=""
+    )
+    source = "HOLON_LOCAL_BASE_URL" if slot == "HOLON_LOCAL_BASE_URL" else "host models.json provider 'vmlx' baseUrl"
+    expected = f"WARNING: {source} is not a parseable URL, so its server is not probed (value withheld)"
+    failures: list[str] = []
+    cases = list(_unparseable_cases())
+    for case_id, value, credential, plain in cases:
+        host_url, local_url = (_GOOD_HOST_URL, value) if slot == "HOLON_LOCAL_BASE_URL" else (value, _GOOD_LOCAL_URL)
+        env = {
+            "HOLON_LOCAL_LLM": "1",
+            "HOLON_LOCAL_BASE_URL": local_url,
+            "HOLON_LOCAL_MODELS": "m1",
+            "HOLON_LOCAL_CONTEXT_WINDOW": "65536",
+        }
+        host_config = {"providers": {"vmlx": {"baseUrl": host_url, "models": [{"id": "m", "contextWindow": 65536}]}}}
+        probed: list[str] = []
+        texts: list[str] = []
+        with (
+            patch.object(local_llm, "host_models_json", return_value=host_config),
+            patch.object(cli, "run_preflight_probe", return_value=probe),
+            _captured(env) as out,
+        ):
+            try:
+                assert local_llm.health_url(value) is None
+
+                def fetch(url: str, timeout: float, probed: list[str] = probed) -> bytes:
+                    probed.append(url)
+                    return b"{}"
+
+                results = {}
+                for as_json in (False, True):
+                    stdout = io.StringIO()
+                    with contextlib.redirect_stdout(stdout):
+                        code = cli.run_doctor(
+                            argparse.Namespace(agent=None, model=None, json=as_json, timeout=None), fetch=fetch
+                        )
+                    results[as_json] = (code, stdout.getvalue())
+                    out.append(stdout.getvalue())
+            except Exception as exc:  # any escape is the C19-N1 crash; report the case id only
+                failures.append(f"{case_id}:crash:{type(exc).__name__}")
+                continue
+        texts.extend(out)
+        texts.extend(probed)
+        text_code, text_out = results[False]
+        json_code, json_out = results[True]
+        try:
+            environment = json.loads(json_out)["environment"]
+        except (ValueError, KeyError):
+            failures.append(f"{case_id}:invalid-json")
+            continue
+        if set(environment) != {"ok", "lines", "warnings"}:
+            failures.append(f"{case_id}:json-shape")
+            continue
+        if (text_code, json_code) != (0, 0) or environment["ok"] is not True:
+            failures.append(f"{case_id}:exit")
+        if not set(environment["warnings"]) <= set(environment["lines"]):
+            failures.append(f"{case_id}:json-shape")
+        if plain and (expected not in environment["warnings"] or expected not in text_out):
+            failures.append(f"{case_id}:not-reported")
+        if any(line != expected for line in environment["warnings"]):
+            failures.append(f"{case_id}:unexpected-warning")
+        if credential and _leaks(texts, credential):
+            failures.append(f"{case_id}:leak")
+        if not credential and any(value in text for text in texts):
+            failures.append(f"{case_id}:value-echoed")
+    assert len(cases) == len(UNPARSEABLE_FORMS) * (1 + len(_credential_shapes()))
+    assert not failures, f"{len(failures)}/{len(cases)} unparseable-URL cases failed, e.g. {failures[:5]}"

@@ -621,7 +621,12 @@ def health_url(base_url: str, allow_list: Iterable[str] = ()) -> str | None:
     Only authorities :func:`rewrite_authority` would rewrite (loopback or explicitly allow-listed) are probed, so the
     doctor never reaches out to a remote host. The gateway name itself is container-side and not probed.
     """
-    if urlsplit(base_url).scheme.lower() not in HEALTH_SCHEMES:
+    try:
+        scheme = urlsplit(base_url).scheme.lower()
+    except ValueError:
+        # Unparseable (for example an unbalanced "["): not probeable. The doctor names its source, never the value.
+        return None
+    if scheme not in HEALTH_SCHEMES:
         return None
     authority = _authority(base_url)
     # The probe URL (and so the doctor's ``gateway=`` line) is shown, so only a validated authority is probed: an
@@ -717,6 +722,44 @@ def host_base_urls(host_config: dict | None, env: Mapping[str, str] | None = Non
     if configured:
         urls.append(configured)
     return list(dict.fromkeys(urls))
+
+
+def _unparseable_base_url(url: str) -> bool:
+    """True when ``url`` cannot be read as a ``scheme://host[:port]`` base URL at all.
+
+    That is: ``urlsplit`` or the lazy ``port`` check raises (an unbalanced ``[``, a bad port), the value is schemeless
+    (no ``://``), or an ``http``/``https`` URL has an empty host. A well-formed URL with another scheme (``file://``)
+    is merely not probeable and is not reported.
+    """
+    stripped = url.strip()
+    try:
+        parsed = urlsplit(stripped)
+        host = parsed.hostname
+        _port = parsed.port
+    except ValueError:
+        return True
+    if "://" not in stripped:
+        return True
+    return parsed.scheme.lower() in HEALTH_SCHEMES and not host
+
+
+def unparseable_base_url_sources(host_config: dict | None, env: Mapping[str, str] | None = None) -> list[str]:
+    """Where each unparseable host-side base URL came from, for the doctor; the value itself is never returned.
+
+    Each entry names the setting only (``HOLON_LOCAL_BASE_URL`` or a host ``models.json`` provider's ``baseUrl``),
+    per the #96 message rule. Such a URL has no server to probe, so :func:`host_gateways` skips it.
+    """
+    env = os.environ if env is None else env
+    sources: list[str] = []
+    providers = (host_config or {}).get("providers") or {}
+    for name, provider in providers.items() if isinstance(providers, dict) else ():
+        base_url = provider.get("baseUrl") if isinstance(provider, dict) else None
+        if isinstance(base_url, str) and base_url and _unparseable_base_url(base_url):
+            sources.append(f"host models.json provider {name!r} baseUrl")
+    configured = env.get(ENV_LOCAL_BASE_URL, "").strip()
+    if configured and _unparseable_base_url(configured):
+        sources.append(ENV_LOCAL_BASE_URL)
+    return sources
 
 
 def host_gateways(

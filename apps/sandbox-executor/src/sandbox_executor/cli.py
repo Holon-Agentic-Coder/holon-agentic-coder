@@ -1559,6 +1559,10 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
         print(envelope.envelope_line(), file=out)
         print(envelope.reasoning_line(), file=out)
 
+    for source in local_llm.unparseable_base_url_sources(host_config, env):
+        # Named by its source only (#96 message rule); like any non-probeable endpoint it is skipped, not fatal.
+        print(f"WARNING: {source} is not a parseable URL, so its server is not probed (value withheld)", file=out)
+
     probed = False
     # One probe and one line per distinct server; limits are compared only with the models that server serves.
     for base_url, providers in local_llm.host_gateways(host_config, config, env, allow_list):
@@ -1731,7 +1735,7 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
     It resolves the agent runner and model and runs the pre-flight probe on them, then reports the effective turn and
     stage budgets and, when local-LLM mode is enabled, the model envelope and the local gateway probe
     (:func:`report_budgets_and_envelope`). With ``--json`` the environment section is carried under ``environment``
-    as its report lines.
+    as its report lines, with its ``WARNING:`` lines also listed under ``warnings``.
 
     Args:
         args: Parsed namespace with ``agent``, ``model``, ``json`` and ``timeout``.
@@ -1750,7 +1754,8 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
     env_out = io.StringIO()
     env_code = report_budgets_and_envelope(fetch=fetch, out=env_out)
     env_lines = env_out.getvalue().splitlines()
-    environment = {"ok": env_code == 0, "lines": env_lines}
+    warnings = [line for line in env_lines if line.startswith("WARNING: ")]
+    environment = {"ok": env_code == 0, "lines": env_lines, "warnings": warnings}
 
     try:
         # The text report prints both decisions on stdout, so the resolvers' INFO log would show them twice.

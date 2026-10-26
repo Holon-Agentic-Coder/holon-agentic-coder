@@ -722,6 +722,8 @@ _PLACEHOLDER_ITEMS = frozenset({"none", "n/a", "na"})
 # of the same character, at least as long, with nothing but whitespace after it.
 _FENCE_OPEN_RE = re.compile(r"^(`{3,}(?=[^`]*$)|~{3,})")
 _FENCE_CLOSE_RE = re.compile(r"^(`{3,}|~{3,})$")
+# A thematic break: 3+ of the same "*", "-" or "_", optionally separated by spaces or tabs (matched on a stripped line).
+_THEMATIC_BREAK_RE = re.compile(r"^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$")
 
 
 @dataclass(frozen=True)
@@ -761,10 +763,12 @@ def parse_sub_intent_list(plan_content: str) -> list[dict[str, Any]]:
     never become items of their own: they are appended to the preceding item's description. A fence opens at any
     indentation (so a code block nested in an item counts) and every line inside it is ignored, headings included; it
     closes only on a run of the same character at least as long as its opener, and an unclosed fence runs to the end of
-    the plan. Outside fences, only a heading indented 0-3 columns ends the section.
+    the plan. Outside fences, only a heading indented 0-3 columns ends the section, and thematic breaks (``* * *``,
+    ``---``) at 0-3 columns are skipped.
     Per-step sub-intent recommendation bullets are never under such a heading, so they are ignored. Each item becomes
-    ``{slug, description, goal}``; the slug and goal come from the item text only. Empty items and placeholder items
-    (``none``, ``n/a``) are skipped, and duplicate slugs get a numeric suffix.
+    ``{slug, description, goal}``; the slug and goal come from the item text only. Empty items, items with no
+    alphanumeric character and placeholder items (``none``, ``n/a``) are skipped, and duplicate slugs get a numeric
+    suffix.
 
     Args:
         plan_content: The plan markdown.
@@ -798,6 +802,9 @@ def parse_sub_intent_list(plan_content: str) -> list[dict[str, Any]]:
             continue
         if not in_section or not stripped:
             continue
+        if indent <= _MAX_LIST_INDENT and _THEMATIC_BREAK_RE.match(stripped):
+            # "* * *" or "- - -" is a separator, never an item or an item's detail.
+            continue
         if base_indent is not None and indent > base_indent:
             # Nested bullets and continuation lines belong to the item above them, never to a child of their own.
             items[-1][1].append(stripped)
@@ -812,7 +819,8 @@ def parse_sub_intent_list(plan_content: str) -> list[dict[str, Any]]:
     sub_intents: list[dict[str, Any]] = []
     seen: dict[str, int] = {}
     for text, details in items:
-        if _normalise_heading(text).rstrip(".") in _PLACEHOLDER_ITEMS:
+        if _normalise_heading(text).rstrip(".") in _PLACEHOLDER_ITEMS or not any(c.isalnum() for c in text):
+            # Placeholders and punctuation-only items name no child work.
             continue
         base = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:48].strip("-") or "sub-intent"
         count = seen.get(base, 0) + 1

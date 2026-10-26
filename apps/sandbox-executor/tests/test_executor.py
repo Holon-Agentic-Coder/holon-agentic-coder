@@ -3764,7 +3764,7 @@ def _indented_body(indent: str) -> str:
 _INDENTED_EXPECTED = ["Add the parser\n- covers tokens\n- covers errors", "Add the CLI flag\n1. wired in"]
 
 # One regression corpus for parse_sub_intent_list: (plan markdown, expected item descriptions in order). Each item's
-# goal is the first line of its description. Every parser case raised in PR #97 review iterations 3-7 lives here.
+# goal is the first line of its description. Every parser case raised in PR #97 review iterations 3-8 lives here.
 SUB_INTENT_PARSER_CORPUS = [
     # R1-I2: nested bullets and indented continuation lines fold into the item above them.
     pytest.param(_section(_NESTED_BODY), _NESTED_EXPECTED, id="r1-i2-nested-bullets-fold"),
@@ -3869,6 +3869,13 @@ SUB_INTENT_PARSER_CORPUS = [
     # An unclosed fence runs to the end of the plan; items before it survive.
     pytest.param(_section("- First\n```\n- fenced\n## Next\n- fenced too"), ["First"], id="unclosed-fence-after-item"),
     pytest.param(_section("```\n- fenced"), [], id="unclosed-fence-before-items"),
+    # R8-N1: thematic breaks and punctuation-only items never become children.
+    *[
+        pytest.param(_section(f"- A\n- B\n\n{rule}\n\n- C"), ["A", "B", "C"], id=f"r8-n1-thematic-break-{name}")
+        for name, rule in [("stars", "* * *"), ("dashes", "---"), ("underscores", "___"), ("spaced-dashes", "- - -")]
+    ],
+    pytest.param(_section("- A\n  * * *\n- B"), ["A", "B"], id="r8-n1-indented-thematic-break-does-not-fold"),
+    pytest.param(_section("- A\n- ...\n- (!)\n- B"), ["A", "B"], id="r8-n1-punctuation-only-item-skipped"),
 ]
 
 

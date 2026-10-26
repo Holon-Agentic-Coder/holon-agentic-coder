@@ -15,8 +15,9 @@ This directory contains the CI/CD workflows for the `holon-agentic-coder` projec
   - Validating repository cleanup via `uv run task clean`.
 - `test-unit.yml`: Runs on pushes to `main` and on pull requests across both `ubuntu-latest` and `macos-latest`. It
   executes unit tests (`uv run pytest -m "not integration_test and not stress"`) using cached `uv` dependencies.
-- `test-stress.yml`: Runs on pushes to `main` and on pull requests on `ubuntu-latest`. It runs the workspace-survival
-  stress suite (`uv run pytest -m stress`), measuring the execution time explicitly in its own workflow.
+- `test-stress.yml`: Runs on pushes to `main` and on pull requests on `ubuntu-latest`. It runs the stress suite
+  (`uv run pytest -m stress`) -- the workspace-survival test and the hermetic canary guard, both of which re-run the
+  unit suite in a child process -- measuring the execution time explicitly in its own workflow.
 - `test-integration.yml`: Runs on pushes to `main` and on pull requests on `ubuntu-latest`. It builds all sandbox Docker
   images via `./apps/sandbox-executor/build_all_images.sh --output-log` and executes integration tests that require
   Docker services. For why containerized tests run exclusively on Linux, see [macos-docker.md](../macos-docker.md).

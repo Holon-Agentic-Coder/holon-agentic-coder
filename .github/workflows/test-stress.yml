@@ -70,5 +70,5 @@ jobs:
           if totals["tests"] < 1:
               sys.exit("no stress test was collected: the stress suite is missing or not selected")
           if totals["skipped"]:
-              sys.exit("a stress test was skipped: the workspace-survival guarantee was not proven")
+              sys.exit("a stress test was skipped: its workspace-survival or hermetic guarantee was not proven")
           PY

@@ -170,8 +170,9 @@ def remote_show_file(
 #: unit job deliberately deselects and that need images it never builds.
 UV = "uv"
 
-#: Marker expression matching the unit job. ``stress`` is excluded because that suite clones the
-#: repository and re-runs the suite, so a child that selected it would spawn another child.
+#: Marker expression matching the unit job. ``stress`` is excluded because the stress tests (the
+#: workspace-survival suite and the hermetic canary guard) re-run the whole suite, so a child that
+#: selected them would spawn another child.
 UNIT_MARKER_EXPRESSION = "not integration_test and not stress"
 
 #: Repository root, derived from this file rather than assumed: ``pyproject.toml`` lives here and

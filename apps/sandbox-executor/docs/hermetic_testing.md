@@ -105,13 +105,16 @@ Two properties make the guard worth keeping:
 No run on a developer machine can establish that the suite is safe for _any_ future test author. Two checks do that job
 on every push, and both are machine-enforced:
 
-1. The canary guard above, which runs the entire directory -- so a new test file is covered the moment it is added.
+1. The canary guard above, which runs the entire directory -- so a new test file is covered the moment it is added. It
+   is marked `stress` and runs in the `Workspace survival` job rather than the unit matrix, because re-running the whole
+   unit selection in a child roughly doubled the unit job's wall time. Its negative control stays in the unit job.
 2. `test_workspace_survival_stress.py`, marked `stress`, which clones the repository onto the exact path an executor
    works in (`~/.holon-sandbox/workspace` with `HOME` redirected), runs the unit selection from inside it, and requires
    the workspace, its `.git` and its `HEAD` commit to survive. That is the incident shape; a throwaway-`HOME` canary
    never runs _from_ the workspace and so cannot demonstrate it. It runs in the `Workspace survival` job of
    `.github/workflows/test-stress.yml`, which fails if the suite was skipped rather than executed, and is excluded from
-   the ordinary unit matrix by marker expression because it clones the repository and re-runs the suite.
+   the ordinary unit matrix by marker expression because it clones the repository and re-runs the suite. That job runs
+   on `ubuntu-latest` only, so neither suite-rerunning check runs on macOS.
 
 Markers are declared in `pyproject.toml` and pytest runs with `--strict-markers`, so an unregistered or misspelled
 marker fails the run instead of quietly escaping every `-m` selection.

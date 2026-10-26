@@ -13,12 +13,21 @@ The child suite is launched with ``uv run pytest`` -- the repository's only sanc
 with ``python -m unittest`` bypasses both: ``unittest`` has no concept of pytest markers, so it
 re-runs the ``integration_test``-marked Docker image tests that the unit job never builds, and the
 guard then fails for an environment reason that has nothing to do with hermeticity.
+
+Where it runs: the canary re-runs the whole unit selection in a child process, so it roughly doubles
+the unit job's wall time. It is therefore marked ``stress`` and runs only in the ``Workspace
+survival`` job (``.github/workflows/test-stress.yml``, ``-m stress``), which also fails if it was
+skipped. The negative control below is a single short subprocess and stays in the unit job. The
+child's own selection (``not integration_test and not stress``) excludes the canary, and the
+``HOLON_HERMETIC_GUARD_CHILD`` sentinel skips it in any child run, so it cannot recurse.
 """
 
 import os
 import subprocess
 import tempfile
 import unittest
+
+import pytest
 
 from tests.hermetic_fixtures import (
     CHILD_SUITE_SENTINEL,
@@ -66,6 +75,7 @@ class TestSandboxHermeticGuard(unittest.TestCase):
             f"no test modules found under {tests_path}",
         )
 
+    @pytest.mark.stress
     def test_canary_workspace_survives_entrypoint_tests(self):
         with tempfile.TemporaryDirectory() as sim_home:
             sim_sandbox_workspace = os.path.join(sim_home, ".holon-sandbox", "workspace")

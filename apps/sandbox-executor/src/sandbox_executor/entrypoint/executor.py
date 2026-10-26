@@ -715,29 +715,11 @@ DECISION_OVER_BUDGET = "over_budget"
 _SUB_INTENT_HEADINGS = frozenset({"sub intent list", "sub intents"})
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 _LIST_ITEM_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+(.*)$")
-# Phrases that say a plan has no sub-intent list rather than naming child work. An item is a placeholder when, once
-# normalised by _normalise_placeholder_item, it equals one of these phrases or starts with one followed by a separator
-# (";", ":", ",", ".", " -", an en or em dash), so "None required; work is in one step" is a placeholder while
-# "Nonetheless ..." or "None of the existing tests ..." (no separator after the phrase) names real work. Words inside a
-# phrase may be joined by spaces, hyphens or underscores ("no sub-intents").
-_PLACEHOLDER_PHRASES = (
-    "none",
-    "none required",
-    "none needed",
-    "n/a",
-    "na",
-    "nil",
-    "not applicable",
-    "not needed",
-    "not required",
-    "no sub intents",
-    "no sub intent",
-)
-_PLACEHOLDER_RE = re.compile(
-    r"^(?:"
-    + "|".join(r"[\s\-_]+".join(re.escape(word) for word in phrase.split()) for phrase in _PLACEHOLDER_PHRASES)
-    + r")(?:$|\s*[;:,.\u2013\u2014]|\s+-)"
-)
+# An item is a placeholder ("no child work") when, once normalised by _normalise_placeholder_item, its first whole
+# word is one of these, whatever follows: "None (plan fits the budget)", "N/A (single step)" and "No sub-intents
+# needed" are placeholders, while "Nonetheless ...", "Normalise ...", "Notify ..." and "Note ..." name real work. The
+# planner template requires every real item to start with an imperative verb, so a real item never opens with one.
+_PLACEHOLDER_RE = re.compile(r"^(?:none|n/a|na|nil|no|not)\b")
 # Wrapping characters stripped from both ends of an item before the placeholder test: brackets, parentheses, straight
 # and curly quotes, and markdown emphasis or code markers.
 _PLACEHOLDER_WRAPPERS = "()[]{}<>\"'`*_~\u2018\u2019\u201c\u201d"
@@ -789,7 +771,7 @@ def _normalise_placeholder_item(text: str) -> str:
 
 
 def is_placeholder_item(text: str) -> bool:
-    """True when a sub-intent list item says there is no child work rather than naming any (_PLACEHOLDER_PHRASES)."""
+    """True when a sub-intent list item says there is no child work rather than naming any (see _PLACEHOLDER_RE)."""
     return bool(_PLACEHOLDER_RE.match(_normalise_placeholder_item(text)))
 
 
@@ -807,9 +789,8 @@ def parse_sub_intent_list(plan_content: str) -> list[dict[str, Any]]:
     Per-step sub-intent recommendation bullets are never under such a heading, so they are ignored. Each item becomes
     ``{slug, description, goal}``; the slug and goal come from the item text only. Empty items, items with no
     alphanumeric character and placeholder items are skipped (an item that, stripped of wrapping brackets, quotes and
-    emphasis and lower-cased, equals or starts with a phrase such as ``none``, ``n/a``, ``not applicable`` or
-    ``no sub-intents`` followed by a separator; see :func:`is_placeholder_item`), and duplicate slugs get a numeric
-    suffix.
+    emphasis and lower-cased, has ``none``, ``n/a``, ``na``, ``nil``, ``no`` or ``not`` as its first whole word; see
+    :func:`is_placeholder_item`), and duplicate slugs get a numeric suffix.
 
     Args:
         plan_content: The plan markdown.

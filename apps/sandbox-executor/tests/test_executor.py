@@ -3803,10 +3803,25 @@ SUB_INTENT_PARSER_CORPUS = [
     pytest.param(_section("- **None**"), [], id="n-12-1-1-bold-none"),
     pytest.param(_section("- _n/a_"), [], id="n-12-1-1-emphasised-n-a"),
     pytest.param(_section("- No sub-intents: the plan fits the budget."), [], id="n-12-1-1-no-sub-intents-with-reason"),
-    # A real item that merely starts with the letters of a phrase is not a placeholder (word boundary + separator).
+    # N-13-1: the first whole word decides, whatever follows (PLACEHOLDER-CONVERGENCE-ITER13).
+    pytest.param(_section("- None (plan fits the budget)"), [], id="n-13-1-none-parenthetical"),
+    pytest.param(_section("- N/A (single step)"), [], id="n-13-1-n-a-parenthetical"),
+    pytest.param(_section("- No sub-intents needed"), [], id="n-13-1-no-sub-intents-needed"),
+    pytest.param(_section("- Not needed for this plan"), [], id="n-13-1-not-needed-for-this-plan"),
+    pytest.param(_section("- nil"), [], id="n-13-1-nil"),
+    pytest.param(_section("- **No** sub-intents"), [], id="n-13-1-bold-no"),
+    # A real item that merely starts with the letters of a placeholder word is not a placeholder (word boundary).
     pytest.param(
-        _section("- Nonetheless refactor the parser\n- None of the existing tests change"),
-        ["Nonetheless refactor the parser", "None of the existing tests change"],
+        _section(
+            "- Nonetheless refactor the parser\n- Normalise the ledger rows\n- Notify the operator on failure\n"
+            "- Note the budget in the summary"
+        ),
+        [
+            "Nonetheless refactor the parser",
+            "Normalise the ledger rows",
+            "Notify the operator on failure",
+            "Note the budget in the summary",
+        ],
         id="n-12-1-1-word-boundary-real-items",
     ),
     pytest.param(_section("-   \n- Real child"), ["Real child"], id="empty-item-skipped"),

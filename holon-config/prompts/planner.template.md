@@ -40,11 +40,11 @@ into their immediate parent. If the step is small, not risky you can propose an 
   enforced by the executor.
 - If the plan fits the budget (overall `entropy_pred` at or below it), it is executed as one plan.
 - If the work cannot fit the budget, add a level-2 heading `## Sub-intent list` followed by top-level bullet or numbered
-  items, one concrete child intent per item. Indented nested bullets are read as details of the item above, never as
-  separate children. The flow then runs each listed child through the full pipeline, one at a time. Do not add the
-  heading with a placeholder item: an item reading `none`, `n/a`, `nil`, `not applicable`, `not needed`, `not required`,
-  `no sub-intents` (or starting with one of these followed by `;`, `:`, `,`, `.` or a dash), ignoring wrapping brackets,
-  quotes and emphasis, is skipped and never becomes a child.
+  items, one concrete child intent per item. Start every item with an imperative verb (for example `Add ...`,
+  `Normalise ...`). Indented nested bullets are read as details of the item above, never as separate children. The flow
+  then runs each listed child through the full pipeline, one at a time. When there are no sub-intents, omit the section
+  (or write `None`): an item whose first word, ignoring wrapping brackets, quotes and emphasis, is `none`, `n/a`, `na`,
+  `nil`, `no` or `not` is a placeholder whatever follows it, and never becomes a child.
 - A plan above the budget without that list is sent back for re-planning, and fails after a bounded number of attempts.
   Per-step sub‑intent recommendations alone never trigger decomposition.
 

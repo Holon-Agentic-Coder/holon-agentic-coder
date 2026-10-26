@@ -51,8 +51,8 @@ managed centrally.
 
 - High predicted entropy = **high risk** = deeper review, stronger sandboxing, or rejection.
 - Entropy budgets **limit blast radius** (intents cannot exceed allocated entropy).
-- Entropy spikes trigger **automatic escalation** (re-planning, deeper model routing); a human is only involved at the
-  merge.
+- Entropy spikes trigger **automatic escalation** (re-planning, deeper model routing); no stage before the merge waits
+  for a human.
 
 ### 5) Human review is the final gate
 

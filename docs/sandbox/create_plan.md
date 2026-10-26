@@ -214,9 +214,10 @@ plan. The file on disk is now the source of truth:
   `markdown` block if present). This logs
   `WARNING: agent did not write plans/P-...; falling back to the plan text captured from stdout`, and the result is
   validated like any other plan.
-- **Budget failure.** If a turn breaches a budget and no resume turn (attempted only while the stage has time left)
-  produces a usable plan, an `ACT-BUDGET` action is recorded and committed together with the salvaged partial plan, and
-  the planner exits non-zero (see [Turn and Stage Budgets](../budgets.md#salvage-resume-and-the-act-budget-record)).
+- **Budget failure.** If a turn breaches a budget and no resume turn (attempted only when the salvaged plan is
+  incomplete, that is not usable or missing a required section, and the stage has time left) produces a usable plan, an
+  `ACT-BUDGET` action is recorded and committed together with the salvaged partial plan, and the planner exits non-zero
+  (see [Turn and Stage Budgets](../budgets.md#salvage-resume-and-the-act-budget-record)).
 
 `holon flow` launches this same planner container for Stage 2 and then adopts the plan branch it pushed. If no planner
 agent produced `plans/P-*.md` on a plan branch under the intent branch, the flow stage fails; it never writes a

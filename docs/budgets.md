@@ -134,9 +134,10 @@ output read so far is returned after a second bounded wait.
 ## Salvage, resume and the ACT-BUDGET record
 
 1. After a breached turn, whatever the agent already wrote to its artefact is kept on disk (salvage).
-2. Exactly one resume turn is attempted. Its prompt repeats the task context, states that the file is partial, and lists
-   only the missing sections. It is bounded by both the turn budget and what is left of the stage budget; if the stage
-   has no time left, no resume is attempted.
+2. Exactly one resume turn is attempted, but only when the salvaged artefact is incomplete (not usable, or missing a
+   required section) and the stage still has time left: a breach that left a complete artefact needs none. Its prompt
+   repeats the task context, states that the file is partial, and lists only the missing sections. It is bounded by both
+   the turn budget and what is left of the stage budget; if the stage has no time left, no resume is attempted.
 3. If the artefact is usable after the resume (it exists, exceeds the size floor and its metrics table parses), the plan
    stage carries on normally and nothing is recorded. The executor is different: its resume may only touch the execution
    notes, so it can never finish code that was cut off. Any breach of the executor's implementation turn is therefore a

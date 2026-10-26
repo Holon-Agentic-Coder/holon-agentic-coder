@@ -176,12 +176,12 @@ Monitor for:
 The system defines four distinct trust tiers for agents, representing an escalation of capabilities earned through
 historical performance and calibration reliability.
 
-| Trust Level                                 | Capabilities (Can)                                                                                      | Restrictions (Cannot)                                                                                         | Promotion/Escalation Criteria                                                                             |
-| :------------------------------------------ | :------------------------------------------------------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **Baseline** <br>_(Default for new agents)_ | <ul><li>Plan actions</li><li>Execute in isolated sandbox</li><li>Read Ledger and KB</li></ul>           | <ul><li>Spawn sub-intents</li><li>Propose root intents</li><li>Propose estimators</li><li>Modify KB</li></ul> | Initial baseline state upon agent registration                                                            |
-| **Medium** <br>_(Earned)_                   | <ul><li>All Baseline capabilities</li><li>Spawn sub-intents (up to depth 3)</li></ul>                   | <ul><li>Propose root intents</li><li>Propose estimators</li><li>Modify KB directly</li></ul>                  | $\ge 10$ successful executions with average success calibration error $< 0.30$                            |
-| **High** <br>_(Earned)_                     | <ul><li>All Medium capabilities</li><li>Propose root intents (requires human approval)</li></ul>        | <ul><li>Propose estimators</li><li>Modify core invariants</li></ul>                                           | $\ge 30$ successful executions with average success calibration error $< 0.20$                            |
-| **Highest** <br>_(Earned)_                  | <ul><li>All High capabilities</li><li>Propose estimators (requires human approval & backtest)</li></ul> | <ul><li>Modify core invariants directly (always requires human gating)</li></ul>                              | $\ge 100$ successful executions with average success calibration error $< 0.15$ (manual promotion review) |
+| Trust Level                                 | Capabilities (Can)                                                                                                | Restrictions (Cannot)                                                                                         | Promotion/Escalation Criteria                                                                             |
+| :------------------------------------------ | :---------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
+| **Baseline** <br>_(Default for new agents)_ | <ul><li>Plan actions</li><li>Execute in isolated sandbox</li><li>Read Ledger and KB</li></ul>                     | <ul><li>Spawn sub-intents</li><li>Propose root intents</li><li>Propose estimators</li><li>Modify KB</li></ul> | Initial baseline state upon agent registration                                                            |
+| **Medium** <br>_(Earned)_                   | <ul><li>All Baseline capabilities</li><li>Spawn sub-intents (up to `MAX_SUB_INTENT_DEPTH`, currently 2)</li></ul> | <ul><li>Propose root intents</li><li>Propose estimators</li><li>Modify KB directly</li></ul>                  | $\ge 10$ successful executions with average success calibration error $< 0.30$                            |
+| **High** <br>_(Earned)_                     | <ul><li>All Medium capabilities</li><li>Propose root intents (requires human approval)</li></ul>                  | <ul><li>Propose estimators</li><li>Modify core invariants</li></ul>                                           | $\ge 30$ successful executions with average success calibration error $< 0.20$                            |
+| **Highest** <br>_(Earned)_                  | <ul><li>All High capabilities</li><li>Propose estimators (requires human approval & backtest)</li></ul>           | <ul><li>Modify core invariants directly (always requires human gating)</li></ul>                              | $\ge 100$ successful executions with average success calibration error $< 0.15$ (manual promotion review) |
 
 ---
 
@@ -249,7 +249,10 @@ Trust can **decrease** if:
 
 ### Budget allocation
 
-Every intent has an **entropy budget** that limits its blast radius:
+Every intent has an **entropy budget** that limits its blast radius. The allocation below is the target model; in the
+current flow a root plan's budget resolves to its plan row, else its intent row, else `DEFAULT_ENTROPY_BUDGET` (`15.0`),
+and each child intent inherits its parent plan's resolved budget unchanged (see
+[Turn and Stage Budgets](budgets.md#entropy-budget)):
 
 ```python
 def allocate_entropy_budget(intent_type, parent_budget, trust_level):
@@ -293,11 +296,14 @@ If parent intent's entropy budget is exhausted:
 
 ### Automatic human review triggers
 
-Human review is **required** for:
+Human review is **required** for the items below. Only item 1, the PR merge, is on the flow's path; the others are
+out-of-band reviews and never pause a running flow before the merge.
 
 1. **Parent intent merge to `main`**
    - All parent intents (direct children of `main`) require human approval before merge.
-   - Sub-intents merge to parent without human review (parent review covers them).
+   - Sub-intents run autonomously through the full flow and merge only into their parent intent branch; until sub-intent
+     aggregation is automated, the maintainer merges each child PR as well. These PR merges are the only human step: no
+     stage before them waits for a human.
 
 2. **Estimator proposals**
    - Any change to P(success), ΔS, Impact, Learning Value, or EV estimators.

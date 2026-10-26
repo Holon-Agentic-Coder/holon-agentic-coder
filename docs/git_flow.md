@@ -17,12 +17,16 @@ This document defines the **Git branching, rebasing, and merging discipline** fo
 
 - Intents can spawn sub-intents recursively
 - Each sub-intent gets a branch nested under its parent's branch
-- Depth is unlimited (but entropy budgets constrain practical depth)
+- Depth is capped: `holon flow` refuses to nest sub-intents more than `MAX_SUB_INTENT_DEPTH` levels below the root
+  intent (see Stage 3 under the flow equivalence guarantee)
 
 ### 1.3 Human Review Boundary
 
-- **Root intents** (top-level intents) require human review before merging to `main`
-- **Sub-intents** (at any depth) merge automatically to their parent based on evaluation
+- **Root intents** (top-level intents) require human review before merging to `main`: the maintainer's PR merge is the
+  only human step, and no stage before it waits for a human
+- **Sub-intents** merge only into their parent intent branch. In the current flow each child runs autonomously through
+  the full pipeline and opens a PR into its parent intent branch, which the maintainer merges; automatic,
+  evaluation-based sub-intent merging (sections 4.1, 5-8, 12 and 13) is the target model and is not yet automated
 - This applies recursively: sub-sub-intents merge to sub-intents, which merge to root intents
 
 ### 1.4 Terminology
@@ -165,7 +169,8 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
   child's unmerged changes; order dependent items accordingly. Aggregating the merged children and raising the parent
   intent branch's PR to its own target (for a root intent, `main`) are not yet automated. The `holon flow` summary lists
   each child's PR (or its execution branch when no PR was recorded) and names this pending parent-to-target step, which
-  the maintainer performs after merging the child PRs.
+  the maintainer performs after merging the child PRs. Those PR merges are the only human steps. Sections 4.1, 5-8, 12
+  and 13 describe the target model of automatic, evaluation-based sub-intent merges, which is not yet implemented.
 
 - **Over budget without a list:** the flow returns to Stage 2 automatically, asking for a smaller plan or an explicit
   sub-intent list, at most `MAX_REPLAN_ATTEMPTS` times; then Stage 3 fails with a message naming the entropy, the budget
@@ -263,6 +268,9 @@ If rebase fails:
 
 ### 4.1 Sub-Intent → Parent Merge (Automatic)
 
+> [!NOTE] Target model. In the current flow, each child's PR into the parent intent branch is merged by the maintainer
+> (see Stage 3 under the flow equivalence guarantee).
+
 **Trigger:** Sub-intent execution completes successfully
 
 **Process:**
@@ -354,7 +362,7 @@ $ git push origin main
 
 - Discarding sub-intents (close branch without merging)
 - Multiple sub-intents merging to same parent
-- Recursive sub-intent trees of arbitrary depth
+- Recursive sub-intent trees up to `MAX_SUB_INTENT_DEPTH` levels below the root intent
 
 ---
 
@@ -467,6 +475,8 @@ $ git rebase I-1771890389-refactor-metrics/_
 ```
 
 ### 7.4 Merge (Automatic for Sub-Intents)
+
+Target model; in the current flow the maintainer merges the child's PR into the parent intent branch.
 
 ```bash
 $ git checkout I-1771890389-refactor-metrics/_
@@ -670,12 +680,17 @@ Even discarded intents provide value:
 | Conflict resolution       | Attempted  | If fails      | N/A                    |
 | Sub-intent discard        | ✓ Yes      | ✗ No          | N/A                    |
 
-**Key insight:** Human review is only required at the root intent level. All sub-intent merges are automatic and
-evaluation-based.
+**Key insight:** In the target model, human review is only required at the root intent level and all sub-intent merges
+are automatic and evaluation-based. In the current flow, the maintainer also merges each child's PR into its parent
+intent branch; those PR merges are the only human steps, and no stage before them waits for a human.
 
 ---
 
 ## 13) Edge Cases
+
+Sections 13.2 and 13.3 describe the target model. In the current flow the children of a sub-intent list run one at a
+time, and the first failing child fails the parent's Stage 3, so the remaining children do not run, nothing is merged
+automatically and no stage waits for a human.
 
 ### 13.1 Root Intent with No Sub-Intents
 

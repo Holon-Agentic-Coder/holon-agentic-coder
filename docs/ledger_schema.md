@@ -119,6 +119,14 @@ planning agent and the executor enforces. New rows always carry it. It is resolv
 `entropy_budget`, else `DEFAULT_ENTROPY_BUDGET` (`15.0`). Historic rows without the field are never rewritten; the
 resolver falls back for them.
 
+Child intent rows: when Stage 3 runs a recorded sub-intent list, the flow creates each child through the same Stage 1
+intent creator, so each child appends an ordinary intent row on its own intent branch. Its payload carries `slug`,
+`description`, `goal`, `parent_intent_id` and `target_branch` (both the parent's intent branch, `I-.../_`), the parent
+plan's resolved `entropy_budget` when one was recorded, the parent's `labels` when present, and `sub_intent_depth`
+(integer, `>= 1`): the child's nesting level below the root intent. Root intent rows normally omit the field and are
+read as depth `0`; missing or non-numeric values are also read as `0`. The flow refuses to run a sub-intent list whose
+children would exceed `sandbox_executor.budgets.MAX_SUB_INTENT_DEPTH` (`2`).
+
 Stage 2 planner entrypoint rows: when a plan turn breached its turn, stall or stage budget and the plan was not
 recovered (the resume or re-prompt did not finish, or no stage time was left for one), one `ACT-BUDGET` action
 (`category: "budget"`, `stage: "plan"`) in `executions.jsonl` under the `P-...` `plan_id` as its `execution_id`, written

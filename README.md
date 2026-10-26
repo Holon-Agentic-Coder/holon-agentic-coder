@@ -78,10 +78,10 @@ Please take the time to review `core_concepts.md` carefully to get the most out 
 
 ## Core principles (non-negotiable invariants)
 
-### 1) Intent is fractal (recursive, unbounded depth)
+### 1) Intent is fractal (recursive, depth-capped)
 
-There is no fixed number of levels. Any intent may spawn sub-intents, which may spawn sub-sub-intents, until leaf nodes
-become **atomic intents** (direct actions).
+Any intent may spawn sub-intents, which may spawn sub-sub-intents, until leaf nodes become **atomic intents** (direct
+actions). `holon flow` caps the nesting at `MAX_SUB_INTENT_DEPTH` levels below the root intent.
 
 ### 2) Planning is first-class and competitive
 
@@ -101,7 +101,9 @@ Git provides immutable history, causal lineage, reproducibility, and cheap branc
 
 - **Sub-intents merge only into their parent intent branch**
 - **Never directly to `main`**
-- Only **parent intents** are presented to humans for review and promotion to `main`
+- Only **parent intents** are presented to humans for review and promotion to `main`; until sub-intent aggregation is
+  automated, the maintainer also merges each sub-intent's PR into its parent intent branch, and these PR merges are the
+  only human step
 
 ### 6) Mandatory dual rebase gates
 
@@ -192,7 +194,8 @@ Holon enforces a strict Git discipline to ensure isolation, reproducibility, and
 - Sub-intents branch from their parent intent (never from `main`)
 - Sub-intents merge **only** into their parent intent (never directly to `main`)
 - Sub-intents must rebase from parent **before** and **after** execution
-- Only parent intents are reviewed by humans and merged to `main` (short-term goal)
+- Only parent intents are reviewed by humans and merged to `main` (short-term goal); today the maintainer also merges
+  each sub-intent's PR into its parent intent branch
 
 **For complete details**, see [`docs/git_flow.md`](docs/git_flow.md).
 
@@ -572,7 +575,8 @@ Every proposal goes through validation checks:
 
 #### 1. Recursion depth check
 
-Agent's trust level determines max allowed sub-intent depth:
+Agent's trust level determines max allowed sub-intent depth (target model; `holon flow` currently enforces one hard cap,
+`MAX_SUB_INTENT_DEPTH`, for every agent):
 
 ```python
 if proposed_depth > TRUST_LEVEL_MAX_DEPTH[agent.trust_level]:

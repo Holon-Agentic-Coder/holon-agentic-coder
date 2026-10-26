@@ -72,7 +72,8 @@ A **Root Intent** is a top-level intent created either by a human or an autonomo
 
 A **Parent Intent** is the immediate parent of a sub-intent in the intent hierarchy.
 
-- Receives automatic merges from its sub-intents.
+- Receives its sub-intents' merges: each sub-intent runs autonomously through the full pipeline and opens a PR into its
+  parent intent branch, which the maintainer merges (automatic merging is the target model).
 - May itself be a sub-intent of a higher-level intent.
 - Exists at any depth except the root level.
 
@@ -80,8 +81,9 @@ A **Parent Intent** is the immediate parent of a sub-intent in the intent hierar
 
 A **Sub-Intent** is an intent spawned by another intent to break down complex work into manageable parts.
 
-- Merges automatically into its parent intent based on evaluation.
-- Can have its own sub-intents, forming a fractal hierarchy.
+- Merges only into its parent intent: it runs autonomously through the full flow and opens a PR into the parent intent
+  branch, which the maintainer currently merges (automatic, evaluation-based merging is the target model).
+- Can have its own sub-intents, forming a fractal hierarchy up to `MAX_SUB_INTENT_DEPTH` levels below the root.
 
 ### 1.5 Understanding Fractal Recursion (Why it matters)
 
@@ -251,7 +253,8 @@ $$EV = P(success)\cdot Impact + \mu\cdot LearningValue - \lambda \cdot \Delta S_
 
 - **Proposed → Executing**: When an agent starts working on the intent.
 - **Executing → Completed/Failed**: Based on execution outcome.
-- **Completed → Merged**: Automatic for sub-intents; human-reviewed for root intents.
+- **Completed → Merged**: By the maintainer's PR merge, the only human step: for root intents, and for sub-intents until
+  their automatic, evaluation-based merging is implemented.
 - **Failed → Discarded**: Failed intents are pruned but may contribute learnings.
 - **Any → Discarded**: Intent may be discarded due to low value or high entropy.
 
@@ -299,8 +302,8 @@ words, the planner and evaluator agree that the current best plan(s) are good en
 | ---------------------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
 | Intent                                   | Unit of work or goal                                                    | Basic building block                                                                      |
 | Root Intent                              | Top-level intent requiring human review                                 | Human review boundary                                                                     |
-| Parent Intent                            | Immediate parent of a sub-intent                                        | Receives automatic merges                                                                 |
-| Sub-Intent                               | Intent spawned by another intent                                        | Automatic merging and evaluation                                                          |
+| Parent Intent                            | Immediate parent of a sub-intent                                        | Receives its sub-intents' PR merges                                                       |
+| Sub-Intent                               | Intent spawned by another intent                                        | Runs autonomously; its PR is merged into its parent                                       |
 | $P(success)$                             | Probability intent will succeed                                         | Guides planning and merging decisions                                                     |
 | Impact                                   | Expected benefit delivered                                              | Prioritisation metric                                                                     |
 | Cost                                     | Resources required                                                      | Balances benefit vs expenditure                                                           |

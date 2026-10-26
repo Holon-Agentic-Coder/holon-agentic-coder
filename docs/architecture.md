@@ -19,9 +19,9 @@ multi-agent system that plans competitively, executes in sandboxes, and improves
 - All intents, plans, executions, and outcomes are represented as git artifacts.
 - Agents never “just do work”; they **propose diffs**.
 
-#### 2) Fractal intent (infinite recursive depth)
+#### 2) Fractal intent (recursive, depth-capped)
 
-- Any intent may spawn sub-intents recursively.
+- Any intent may spawn sub-intents recursively, up to `MAX_SUB_INTENT_DEPTH` levels below the root intent.
 - Sub-intents are first-class and follow the same rules as root intents.
 
 #### 3) Competitive planning variants per intent
@@ -34,7 +34,9 @@ multi-agent system that plans competitively, executes in sandboxes, and improves
 - **Sub-intents rebase from parent before and after execution.**
 - **Sub-intents may merge ONLY into their parent intent branch.**
 - **No direct merges from sub-intents to `main`.**
-- Human review happens at the **parent intent boundary** (configurable), not at every sub-intent.
+- Human involvement is limited to merging PRs: no stage before a merge waits for a human. The target model reviews only
+  at the **parent intent boundary**; until sub-intent aggregation is automated, the maintainer also merges each
+  sub-intent's PR into its parent intent branch.
 
 #### 5) Sandboxed exploration is allowed (including risky)
 

@@ -283,7 +283,7 @@ Agents communicate with humans through:
 
 ### Level 2: Decomposition autonomy (medium trust)
 
-- Agent can spawn sub-intents (up to depth 3).
+- Agent can spawn sub-intents (up to `MAX_SUB_INTENT_DEPTH`, currently 2).
 - Agent can decompose complex intents.
 - Agent cannot propose root intents.
 

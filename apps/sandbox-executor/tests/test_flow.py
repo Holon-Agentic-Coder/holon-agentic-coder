@@ -4471,6 +4471,9 @@ class TestEntropyBudgetHandoffInFlow:
         assert "sub-intent 1/2 'add-the-parser' failed at stage 'plan'" in (execute.error or "")
         assert [p["slug"] for p in agents.intent_payloads[1:]] == ["add-the-parser"]
         assert "review" not in results
+        summary = flow_module.format_decomposition_summary(execute)
+        assert summary[0].endswith("Stage 3 failed, so no child PR is ready to merge:")
+        assert not any("merge each child PR" in line or line.startswith("Pending") for line in summary)
 
     def test_sub_intent_depth_is_bounded(self, flow_repos, tmp_path):
         host, origin = flow_repos

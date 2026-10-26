@@ -2939,16 +2939,24 @@ def format_decomposition_summary(execute_result: StageResult | None) -> list[str
 
     Each child pipeline stops at its own Stage 4 merge boundary with a PR into the parent intent branch. Aggregating
     the merged children and raising the parent intent branch's PR to its own target are not yet automated, so the
-    summary names that remaining step explicitly. Returns an empty list when Stage 3 was not decomposed.
+    summary names that remaining step explicitly. When the decomposed Stage 3 failed, the merge guidance and the
+    pending parent step are omitted so a failed run never reads as success. Returns an empty list when Stage 3 was
+    not decomposed.
     """
     if execute_result is None or not execute_result.payload.get("decomposed"):
         return []
     payload = execute_result.payload
     children = [c for c in payload.get("children") or [] if isinstance(c, dict)]
-    lines = [f"Decomposed into {len(children)} sub-intent(s); merge each child PR into the parent intent branch:"]
+    failed = execute_result.status == StageStatus.FAILED
+    if failed:
+        lines = [f"Decomposed into {len(children)} sub-intent(s); Stage 3 failed, so no child PR is ready to merge:"]
+    else:
+        lines = [f"Decomposed into {len(children)} sub-intent(s); merge each child PR into the parent intent branch:"]
     for index, child in enumerate(children, start=1):
         where = child.get("pr_url") or child.get("execution_branch") or child.get("intent_branch") or "no branch"
         lines.append(f"  {index}. {child.get('slug')}: {where} ({child.get('status')})")
+    if failed:
+        return lines
     parent_branch = payload.get("parent_branch") or "the parent intent branch"
     parent_target = payload.get("parent_target_branch") or "its target branch"
     lines.append(

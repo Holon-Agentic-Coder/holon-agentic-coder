@@ -1,6 +1,7 @@
 """Unit and integration tests for sandbox_executor.flow."""
 
 import argparse
+import dataclasses
 import json
 import os
 import re
@@ -4668,25 +4669,58 @@ class TestEntropyBudgetHandoffInFlow:
         assert [c["slug"] for c in res.payload["children"]] == ["first"]
         assert run.call_count == 1
 
-    def test_child_context_inherits_the_parent_flags(self):
+    def test_child_context_inherits_or_resets_every_field(self):
+        """Table-driven: every FlowContext field is either inherited from the parent or reset for the new child."""
         dispatcher = MagicMock()
-        ctx = FlowContext(
-            token_reduce=False,
-            dry_run=True,
-            skip_push=True,
-            skip_review=True,
-            skip_calibrate=True,
-            auto_calibrate=False,
-            max_review_iterations=7,
-            dispatcher=dispatcher,
+        parent_values: dict[str, Any] = {
+            "repo_dir": "/srv/parent-repo",
+            "agent": "codex",
+            "model": "parent-only-model",
+            "dry_run": True,
+            "auto_calibrate": False,
+            "token_reduce": True,
+            "skip_push": True,
+            "skip_review": True,
+            "skip_calibrate": True,
+            "max_review_iterations": 7,
+            "mitm_web": True,
+            "dispatcher": dispatcher,
+        }
+        parent = FlowContext(
+            intent_data={"slug": "parent", "entropy_budget": 5.0, "labels": ["parent-label"]},
+            intent_branch="I-1-parent/_",
+            plan_branch="I-1-parent/P-2-agent-model/_",
+            execution_branch="I-1-parent/P-2-agent-model/E-3-agent-model/_",
+            calibrated_branch="I-1-parent/P-2-agent-model/E-3-agent-model/calibrated",
+            stage_results={"intent": StageResult(stage=FlowStage.INTENT, status=StageStatus.SUCCESS)},
+            logs=["parent log line"],
+            replan_attempts=1,
+            **parent_values,
         )
+        child_intent = {"slug": "child", "goal": "Add the parser"}
+        expected: dict[str, Any] = {
+            **parent_values,
+            "intent_data": child_intent,
+            "intent_branch": None,
+            "plan_branch": None,
+            "execution_branch": None,
+            "calibrated_branch": None,
+            "stage_results": {},
+            "logs": [],
+            "schema_version": parent.schema_version,
+            "replan_attempts": 0,
+        }
+        defaults = FlowContext(token_reduce=False)
+        for name, value in parent_values.items():
+            assert getattr(defaults, name) != value, f"{name}: parent value must differ from the default"
 
-        child = flow_module._child_context(ctx, {"slug": "child", "goal": "Add the parser"})
+        # Pin proxy detection to the opposite of the parent's token_reduce so a dropped copy cannot pass by detection.
+        with patch("sandbox_executor.cli.detect_holon_coherence", return_value=False):
+            child = flow_module._child_context(parent, child_intent)
 
-        assert child.intent_data == {"slug": "child", "goal": "Add the parser"}
-        assert (child.dry_run, child.skip_push, child.skip_review, child.skip_calibrate) == (True, True, True, True)
-        assert child.auto_calibrate is False
-        assert child.max_review_iterations == 7
+        assert set(expected) == {f.name for f in dataclasses.fields(FlowContext)}, "classify every new field"
+        for name, value in expected.items():
+            assert getattr(child, name) == value, name
         assert child.dispatcher is dispatcher
 
     @staticmethod

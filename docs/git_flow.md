@@ -16,7 +16,9 @@ This document defines the **Git branching, rebasing, and merging discipline** fo
 ### 1.2 Fractal Intent Hierarchy
 
 - Intents can spawn sub-intents recursively
-- Each sub-intent gets a branch nested under its parent's branch
+- Each sub-intent gets its own intent branch, cut from its parent's intent branch and targeting it. In the current flow
+  that branch is a flat `I-{timestamp}-{slug}/_`, linked to the parent only by its `target_branch` and
+  `parent_intent_id`; branch names nested under the parent's branch (sections 2.2-2.3 and 8) are the target model
 - Depth is capped: `holon flow` refuses to nest sub-intents more than `MAX_SUB_INTENT_DEPTH` levels below the root
   intent (see Stage 3 under the flow equivalence guarantee)
 
@@ -26,7 +28,8 @@ This document defines the **Git branching, rebasing, and merging discipline** fo
   only human step, and no stage before it waits for a human
 - **Sub-intents** merge only into their parent intent branch. In the current flow each child runs autonomously through
   the full pipeline and opens a PR into its parent intent branch, which the maintainer merges; automatic,
-  evaluation-based sub-intent merging (sections 4.1, 5-8, 12 and 13) is the target model and is not yet automated
+  evaluation-based sub-intent merging (sections 2.2-2.3, 4.1, 5, 6, 7.4, 8, the sub-intent rows of section 12 and
+  sections 13.2-13.3) is the target model and is not yet automated
 - This applies recursively: sub-sub-intents merge to sub-intents, which merge to root intents
 
 ### 1.4 Terminology
@@ -62,6 +65,10 @@ I-1771890389-refactor-metrics/_
 ```
 
 ### 2.2 Sub-Intent Branch (Nested)
+
+> [!NOTE] Target model. In the current flow a sub-intent's branch is a flat `I-{timestamp}-{slug}/_` (section 2.1 form)
+> cut from its parent's intent branch, which it targets; the parent link is recorded as `target_branch` and
+> `parent_intent_id`, not in the branch name. Sections 2.2 and 2.3 describe the nested names of the target model.
 
 ```
 I-{timestamp}-{slug}/I-{timestamp}-{slug}/_
@@ -169,8 +176,9 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
   child's unmerged changes; order dependent items accordingly. Aggregating the merged children and raising the parent
   intent branch's PR to its own target (for a root intent, `main`) are not yet automated. The `holon flow` summary lists
   each child's PR (or its execution branch when no PR was recorded) and names this pending parent-to-target step, which
-  the maintainer performs after merging the child PRs. Those PR merges are the only human steps. Sections 4.1, 5-8, 12
-  and 13 describe the target model of automatic, evaluation-based sub-intent merges, which is not yet implemented.
+  the maintainer performs after merging the child PRs. Those PR merges are the only human steps. Sections 2.2-2.3, 4.1,
+  5, 6, 7.4, 8, the sub-intent rows of section 12 and sections 13.2-13.3 describe the target model of automatic,
+  evaluation-based sub-intent merges, which is not yet implemented.
 
 - **Over budget without a list:** the flow returns to Stage 2 automatically, asking for a smaller plan or an explicit
   sub-intent list, at most `MAX_REPLAN_ATTEMPTS` times; then Stage 3 fails with a message naming the entropy, the budget
@@ -456,10 +464,11 @@ def parallel_merge(sub_intents, parent_branch):
 $ git checkout main
 $ git checkout -b I-1771890389-refactor-metrics/_
 
-# Sub-intent
-$ git checkout I-1771890389-refactor-metrics/_
-$ git checkout -b I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_
+# Sub-intent (current flow: a flat branch cut from the parent intent branch, which it targets)
+$ git checkout -b I-1771890390-improve-estimators/_ origin/I-1771890389-refactor-metrics/_
 ```
+
+In the target model the sub-intent branch is nested under its parent's (section 2.2).
 
 ### 7.2 Execution
 
@@ -496,7 +505,7 @@ $ git push origin main
 
 ```bash
 # Delete merged branches
-$ git branch -d I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_
+$ git branch -d I-1771890390-improve-estimators/_
 $ git branch -d I-1771890389-refactor-metrics/_
 ```
 

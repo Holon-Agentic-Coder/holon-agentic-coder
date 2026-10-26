@@ -2915,6 +2915,49 @@ def _sub_intent_depth(intent_data: dict[str, Any]) -> int:
         return 0
 
 
+def _sub_intent_depth_error(context: FlowContext) -> str | None:
+    """Return the Stage 3 failure message when this intent's children would exceed ``MAX_SUB_INTENT_DEPTH``."""
+    depth = _sub_intent_depth(context.intent_data) + 1
+    if depth <= MAX_SUB_INTENT_DEPTH:
+        return None
+    return (
+        f"Execute stage failed: the plan lists a sub-intent list at depth {depth}, deeper than the limit of "
+        f"{MAX_SUB_INTENT_DEPTH}; refusing to recurse further."
+    )
+
+
+def _child_review_pr(results: dict[str, StageResult]) -> tuple[Any, Any]:
+    """Return the ``(pr_url, pr_number)`` a child pipeline's Stage 4 recorded, or ``(None, None)``."""
+    review = results.get(FlowStage.REVIEW.value)
+    if review is None:
+        return None, None
+    return review.payload.get("pr_url"), review.payload.get("pr_number")
+
+
+def format_decomposition_summary(execute_result: StageResult | None) -> list[str]:
+    """Lines for the flow summary of a decomposed Stage 3: each child's PR or branch, then the pending parent step.
+
+    Each child pipeline stops at its own Stage 4 merge boundary with a PR into the parent intent branch. Aggregating
+    the merged children and raising the parent intent branch's PR to its own target are not yet automated, so the
+    summary names that remaining step explicitly. Returns an empty list when Stage 3 was not decomposed.
+    """
+    if execute_result is None or not execute_result.payload.get("decomposed"):
+        return []
+    payload = execute_result.payload
+    children = [c for c in payload.get("children") or [] if isinstance(c, dict)]
+    lines = [f"Decomposed into {len(children)} sub-intent(s); merge each child PR into the parent intent branch:"]
+    for index, child in enumerate(children, start=1):
+        where = child.get("pr_url") or child.get("execution_branch") or child.get("intent_branch") or "no branch"
+        lines.append(f"  {index}. {child.get('slug')}: {where} ({child.get('status')})")
+    parent_branch = payload.get("parent_branch") or "the parent intent branch"
+    parent_target = payload.get("parent_target_branch") or "its target branch"
+    lines.append(
+        f"Pending (not yet automated): after the child PRs merge, raise a PR from '{parent_branch}' to "
+        f"'{parent_target}'."
+    )
+    return lines
+
+
 def _child_context(context: FlowContext, intent_data: dict[str, Any]) -> FlowContext:
     """Build the FlowContext of one child intent, inheriting the parent's runner, flags and dispatcher."""
     return FlowContext(
@@ -2956,17 +2999,13 @@ def _run_decomposed_plan(
             **payload,
         )
     depth = _sub_intent_depth(context.intent_data) + 1
-    if depth > MAX_SUB_INTENT_DEPTH:
-        return _stage_failure(
-            context,
-            FlowStage.EXECUTE,
-            start_time,
-            f"Execute stage failed: the plan lists a sub-intent list at depth {depth}, deeper than the limit of "
-            f"{MAX_SUB_INTENT_DEPTH}; refusing to recurse further.",
-            **payload,
-        )
+    depth_error = _sub_intent_depth_error(context)
+    if depth_error is not None:
+        return _stage_failure(context, FlowStage.EXECUTE, start_time, depth_error, **payload)
 
     parent_branch = context.intent_branch or str(summary_row.get("plan_branch") or "").split("/P-")[0] + "/_"
+    payload["parent_branch"] = parent_branch
+    payload["parent_target_branch"] = str(context.intent_data.get("target_branch") or "main")
     entropy_budget = summary_row.get("entropy_budget")
     labels = context.intent_data.get("labels")
     total = len(items)
@@ -2992,9 +3031,13 @@ def _run_decomposed_plan(
             context.logs.extend(f"[sub-intent {slug}] {line}" for line in child.logs)
         failed = [name for name, res in results.items() if res.status == StageStatus.FAILED]
         final_stage = next(reversed(results)) if results else None
+        pr_url, pr_number = _child_review_pr(results)
         child_summary = {
             "slug": slug,
             "intent_branch": child.intent_branch,
+            "execution_branch": child.execution_branch,
+            "pr_url": pr_url,
+            "pr_number": pr_number,
             "final_stage": final_stage,
             "status": results[final_stage].status.value if final_stage else None,
         }
@@ -3118,6 +3161,11 @@ def run_execute_stage(context: FlowContext) -> StageResult:
     precheck = _plan_budget_decision(context)
     if precheck is not None and precheck.decision == DECISION_OVER_BUDGET:
         return _over_budget_failure(context, start_time, precheck.entropy, precheck.entropy_budget, dispatched=False)
+    if precheck is not None and precheck.decision == DECISION_DECOMPOSED:
+        # Refuse an over-deep sub-intent list before dispatch, so no executor container or execution branch is spent.
+        depth_error = _sub_intent_depth_error(context)
+        if depth_error is not None:
+            return _stage_failure(context, FlowStage.EXECUTE, start_time, depth_error, dispatched=False)
 
     existing_executions = _snapshot_child_branches(repo_dir, plan_prefix, "E")
     if existing_executions is None:

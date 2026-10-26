@@ -4438,6 +4438,17 @@ class TestEntropyBudgetHandoffInFlow:
         assert execute.status == StageStatus.SUCCESS
         assert execute.payload["decomposed"] is True
         assert [c["slug"] for c in execute.payload["children"]] == children
+        assert execute.payload["parent_branch"] == ctx.intent_branch
+        assert execute.payload["parent_target_branch"] == "main"
+        for child in execute.payload["children"]:
+            assert child["execution_branch"].startswith(child["intent_branch"].removesuffix("/_") + "/P-")
+            assert {"pr_url", "pr_number"} <= child.keys()
+        summary = flow_module.format_decomposition_summary(execute)
+        assert summary[0] == "Decomposed into 2 sub-intent(s); merge each child PR into the parent intent branch:"
+        assert summary[1].startswith("  1. add-the-parser: ")
+        assert summary[-1] == (
+            f"Pending (not yet automated): after the child PRs merge, raise a PR from '{ctx.intent_branch}' to 'main'."
+        )
         assert all(c["status"] in ("success", "skipped", "halted_for_human") for c in execute.payload["children"])
         assert results["review"].status == StageStatus.SKIPPED
         assert results["review"].payload == {"reason": "decomposed"}
@@ -4470,7 +4481,14 @@ class TestEntropyBudgetHandoffInFlow:
 
         assert results["execute"].status == StageStatus.FAILED
         assert "deeper than the limit" in (results["execute"].error or "")
-        assert agents.roles() == ["intent-creator", "planner", "executor"]
+        # The pre-dispatch check refuses the over-deep list, so no executor container runs.
+        assert results["execute"].payload["dispatched"] is False
+        assert agents.roles() == ["intent-creator", "planner"]
+
+    def test_format_decomposition_summary_is_empty_for_undecomposed_execute(self):
+        plain = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"execution_id": "E-1"})
+        assert flow_module.format_decomposition_summary(plain) == []
+        assert flow_module.format_decomposition_summary(None) == []
 
     def test_replan_attempts_round_trip_through_checkpoints(self):
         ctx = FlowContext(token_reduce=False, replan_attempts=2)

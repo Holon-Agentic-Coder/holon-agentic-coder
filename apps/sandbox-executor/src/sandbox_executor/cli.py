@@ -38,6 +38,7 @@ from sandbox_executor.flow import (
     SKIP_PUSH_DISPATCH_ERROR,
     FlowContext,
     FlowStage,
+    format_decomposition_summary,
     load_checkpoint,
     run_flow_pipeline,
 )
@@ -2617,6 +2618,11 @@ def main() -> None:
                     if res and res.status.value == "failed" and res.error:
                         print(f"    -> Error: {redact_cli_error(res.error)}")
                 print("========================================================\n")
+                decomposition_lines = format_decomposition_summary(context.stage_results.get("execute"))
+                for line in decomposition_lines:
+                    print(line)
+                if decomposition_lines:
+                    print()
                 review_res = context.stage_results.get("review")
                 if review_res and review_res.payload.get("halted_for_human"):
                     print(

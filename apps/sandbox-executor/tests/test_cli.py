@@ -837,6 +837,51 @@ class TestHolonFlowCLI(unittest.TestCase):
                 self.assertTrue(parsed["skip_review"])
                 self.assertTrue(parsed["skip_calibrate"])
 
+    def test_flow_summary_lists_child_prs_and_pending_parent_step(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intent_file = os.path.join(tmp_dir, "intent.json")
+            with open(intent_file, "w", encoding="utf-8") as f:
+                json.dump({"slug": "test-decomposed"}, f)
+
+            def fake_run(context, **kwargs):
+                from sandbox_executor.flow import FlowStage, StageResult, StageStatus
+
+                context.stage_results["execute"] = StageResult(
+                    stage=FlowStage.EXECUTE,
+                    status=StageStatus.SUCCESS,
+                    payload={
+                        "decomposed": True,
+                        "parent_branch": "I-1-parent/_",
+                        "parent_target_branch": "main",
+                        "children": [
+                            {"slug": "add-the-parser", "pr_url": "https://example.test/pull/7", "status": "success"},
+                            {
+                                "slug": "add-the-cli-flag",
+                                "pr_url": None,
+                                "execution_branch": "I-2-add-the-cli-flag/P-2/E-2/_",
+                                "status": "skipped",
+                            },
+                        ],
+                    },
+                )
+                return context.to_dict()
+
+            with (
+                patch("sandbox_executor.cli.run_flow_pipeline", side_effect=fake_run),
+                patch("sys.stdout", new_callable=io.StringIO) as mock_stdout,
+                patch("sys.exit") as mock_exit,
+            ):
+                with patch("sys.argv", ["holon", "flow", intent_file]):
+                    main()
+                mock_exit.assert_called_with(0)
+                output = mock_stdout.getvalue()
+                self.assertIn("1. add-the-parser: https://example.test/pull/7 (success)", output)
+                self.assertIn("2. add-the-cli-flag: I-2-add-the-cli-flag/P-2/E-2/_ (skipped)", output)
+                self.assertIn(
+                    "Pending (not yet automated): after the child PRs merge, raise a PR from 'I-1-parent/_' to 'main'.",
+                    output,
+                )
+
     def test_flow_exit_code_on_failure_vs_success(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             intent_file = os.path.join(tmp_dir, "intent.json")

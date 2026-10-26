@@ -158,7 +158,15 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
   parent intent branch (`target_branch` and `parent_intent_id`), never `main`, and stops at its own Stage 4 consensus
   halt. The first failing child fails the parent's Stage 3; when all succeed, the parent's own Stage 4 and Stage 5 are
   skipped with reason `decomposed`, because review and calibration ran per child. Nesting is bounded by
-  `MAX_SUB_INTENT_DEPTH`.
+  `MAX_SUB_INTENT_DEPTH`, checked against the plan before the executor is dispatched when the plan can be read.
+
+  **Current limitation:** decomposed children target the parent intent branch, and the flow stops there. Each child is
+  cut from the parent intent branch as it stood when that child started, so a later child does not see an earlier
+  child's unmerged changes; order dependent items accordingly. Aggregating the merged children and raising the parent
+  intent branch's PR to its own target (for a root intent, `main`) are not yet automated. The `holon flow` summary lists
+  each child's PR (or its execution branch when no PR was recorded) and names this pending parent-to-target step, which
+  the maintainer performs after merging the child PRs.
+
 - **Over budget without a list:** the flow returns to Stage 2 automatically, asking for a smaller plan or an explicit
   sub-intent list, at most `MAX_REPLAN_ATTEMPTS` times; then Stage 3 fails with a message naming the entropy, the budget
   and the attempts.

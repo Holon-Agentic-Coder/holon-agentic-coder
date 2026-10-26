@@ -266,7 +266,9 @@ def allocate_entropy_budget(intent_type, parent_budget, trust_level):
 Before execution:
 
 1. **Check predicted entropy** against budget.
-2. If `predicted_entropy > budget`, **reject intent** or **escalate to human review**.
+2. If `predicted_entropy > budget` and the plan lists no explicit sub-intent list, **re-plan automatically** (a bounded
+   number of times) and then **fail the stage**; a plan with an explicit sub-intent list runs each child through the
+   full pipeline. No stage before the merge waits for a human (see [Turn and Stage Budgets](budgets.md#entropy-budget)).
 
 After execution:
 

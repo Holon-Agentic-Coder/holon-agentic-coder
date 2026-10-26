@@ -368,61 +368,12 @@ class TestExecutor(unittest.TestCase):
         expected = expected_head + "\n... (truncated) ...\n" + expected_tail
         self.assertEqual(result, expected)
 
-    def test_should_decompose_high_entropy(self):
-        plan_data = {"entropy": 6.0, "entropy_budget": 5.0, "plan_id": "P-test"}
-        plan_content = "# Plan\nSome plan"
-        decompose, sub_intents = executor.should_decompose(plan_data, plan_content)
-        self.assertTrue(decompose)
-        self.assertGreater(len(sub_intents), 0)
-
-    def test_should_decompose_sub_intents_section(self):
-        plan_data = {"entropy": 2.0, "entropy_budget": 5.0}
-        plan_content = """# Plan
-## Sub-Intents
-- Create DB schema
-- Build API routes
-"""
-        decompose, sub_intents = executor.should_decompose(plan_data, plan_content)
-        self.assertTrue(decompose)
-        self.assertEqual(len(sub_intents), 2)
-        self.assertEqual(sub_intents[0]["slug"], "create-db-schema")
-        self.assertEqual(sub_intents[1]["slug"], "build-api-routes")
-
-    def test_should_not_decompose_low_entropy(self):
-        plan_data = {"entropy": 2.0, "entropy_budget": 5.0}
-        plan_content = "# Plan\nStandard plan without sub-intents"
-        decompose, sub_intents = executor.should_decompose(plan_data, plan_content)
-        self.assertFalse(decompose)
-        self.assertEqual(len(sub_intents), 0)
-
     def test_safe_float(self):
         self.assertEqual(executor._safe_float(None, 5.0), 5.0)
         self.assertEqual(executor._safe_float(None), 0.0)
         self.assertEqual(executor._safe_float(3.14), 3.14)
         self.assertEqual(executor._safe_float("2.5"), 2.5)
         self.assertEqual(executor._safe_float("invalid", 1.0), 1.0)
-
-    def test_should_decompose_numbered_list(self):
-        plan_data = {"entropy": 2.0, "entropy_budget": 5.0}
-        plan_content = """# Plan
-## Sub-Intents
-1. Create DB schema
-2. Build API routes
-3. Write unit tests
-"""
-        decompose, sub_intents = executor.should_decompose(plan_data, plan_content)
-        self.assertTrue(decompose)
-        self.assertEqual(len(sub_intents), 3)
-        self.assertEqual(sub_intents[0]["slug"], "create-db-schema")
-        self.assertEqual(sub_intents[1]["slug"], "build-api-routes")
-        self.assertEqual(sub_intents[2]["slug"], "write-unit-tests")
-
-    def test_should_decompose_none_entropy(self):
-        plan_data = {"entropy": None, "entropy_budget": None}
-        plan_content = "# Plan\nStandard plan without sub-intents"
-        decompose, sub_intents = executor.should_decompose(plan_data, plan_content)
-        self.assertFalse(decompose)
-        self.assertEqual(len(sub_intents), 0)
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
@@ -690,7 +641,7 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    def test_main_decomposition_flow(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
+    def test_main_over_budget_flow_writes_no_intent_rows(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
         mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.0.0"
@@ -742,13 +693,18 @@ class TestExecutor(unittest.TestCase):
             mock_runner.validate.assert_called_once()
             self.assertTrue(os.path.exists(os.path.join(ledger_dir, "executions.jsonl")))
             with open(os.path.join(ledger_dir, "executions.jsonl")) as ef:
-                content = ef.read()
-                self.assertIn("P-123", content)
-                self.assertIn("decomposed", content)
-            self.assertTrue(os.path.exists(os.path.join(ledger_dir, "intents.jsonl")))
+                rows = [json.loads(line) for line in ef if line.strip()]
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["status"], "over_budget")
+            self.assertEqual(rows[0]["entropy"], 8.0)
+            self.assertEqual(rows[0]["entropy_budget"], 5.0)
+            self.assertNotIn("sub_intents", rows[0])
+            self.assertIn("exceeds the entropy budget", rows[0]["summary"])
+            # The agent never ran, and the intents ledger still holds only the parent row.
+            mock_runner.build_cmd.assert_not_called()
             with open(os.path.join(ledger_dir, "intents.jsonl")) as inf:
-                content = inf.read()
-                self.assertIn("sub-intent-part-1", content)
+                intent_rows = [json.loads(line) for line in inf if line.strip()]
+            self.assertEqual([r["slug"] for r in intent_rows], ["parent-intent"])
 
     def test_run_cmd_raises_called_process_error(self):
         with self.assertRaises(subprocess.CalledProcessError) as ctx:
@@ -2773,10 +2729,19 @@ class TestExecutor(unittest.TestCase):
                 with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
                     f.write(
                         json.dumps(
-                            {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 8.0, "entropy_budget": 5.0}
+                            {
+                                "plan_id": "P-123",
+                                "intent_branch": "I-456/_",
+                                "entropy": 8.0,
+                                "entropy_budget": 5.0,
+                                "plan_file": "plans/P-123.md",
+                            }
                         )
                         + "\n"
                     )
+                os.makedirs(os.path.join(cwd, "plans"), exist_ok=True)
+                with open(os.path.join(cwd, "plans", "P-123.md"), "w") as f:
+                    f.write("# Plan\n\n## Sub-intent list\n\n- Create DB schema\n- Build API routes\n")
             elif "diff" in args and "--cached" in args and "--quiet" in args:
                 mock_res.returncode = 1
             return mock_res
@@ -2803,6 +2768,7 @@ class TestExecutor(unittest.TestCase):
         self.assertEqual(failure["ledger_revision"], 2)
         self.assertIn("Pre-push sync failure", failure["summary"])
         self.assertEqual(failure["sub_intents"], decomposed["sub_intents"])
+        self.assertEqual([item["slug"] for item in decomposed["sub_intents"]], ["create-db-schema", "build-api-routes"])
         self.assertEqual(failure["execution_id"], decomposed["execution_id"])
 
     def _clone_workspace(self, base_dir: str, bare_dir: str, plan_branch: str) -> str:
@@ -3706,3 +3672,165 @@ class TestExecutorIncrementalNotes(unittest.TestCase):
             [self.write_notes(partial, returncode=1, stop_reason="length"), self.write_notes(None, returncode=0)]
         )
         self.assertEqual(self.summary(run)["status"], "failure")
+
+
+# --- Entropy budget handoff and explicit sub-intent lists (no fabricated child work) ---------------------------------
+
+# The legacy capitalised plural heading, assembled from fragments so this file never spells it out.
+LEGACY_HEADING_WORD = "Sub" + "-" + "Intents"
+
+
+@pytest.mark.parametrize(
+    ("plan_row", "intent_row", "expected"),
+    [
+        ({"entropy": 12.6, "entropy_budget": 16.0}, None, executor.DECISION_EXECUTE),
+        ({"entropy": 12.6}, {"entropy_budget": 16.0}, executor.DECISION_EXECUTE),
+        ({"entropy": 12.6}, {"entropy_budget": 5.0}, executor.DECISION_OVER_BUDGET),
+        ({"entropy": 12.6, "entropy_budget": 5.0}, {"entropy_budget": 16.0}, executor.DECISION_OVER_BUDGET),
+        ({"entropy": 12.6}, None, executor.DECISION_EXECUTE),
+        ({"entropy": 16.0}, None, executor.DECISION_OVER_BUDGET),
+        ({"entropy": None, "entropy_budget": None}, None, executor.DECISION_EXECUTE),
+    ],
+)
+def test_should_decompose_uses_the_persisted_budget(plan_row, intent_row, expected):
+    decision = executor.should_decompose(plan_row, "# Plan\nStandard plan without a list", intent_row)
+
+    assert decision.decision == expected
+    assert decision.sub_intents == []
+
+
+def test_should_decompose_regression_intent_budget_16_with_entropy_12_6_executes():
+    decision = executor.should_decompose({"plan_id": "P-1", "entropy": 12.6}, "# Plan\n", {"entropy_budget": 16})
+
+    assert decision.decision == executor.DECISION_EXECUTE
+    assert decision.entropy == 12.6
+    assert decision.entropy_budget == 16.0
+
+
+def test_should_decompose_over_budget_never_invents_child_work():
+    decision = executor.should_decompose({"plan_id": "P-1", "entropy": 12.6, "entropy_budget": 5.0}, "# Plan\n")
+
+    assert decision.decision == executor.DECISION_OVER_BUDGET
+    assert decision.sub_intents == []
+
+
+@pytest.mark.parametrize("heading", ["## Sub-intent list", "### Sub-intent list", f"## {LEGACY_HEADING_WORD}"])
+@pytest.mark.parametrize("marker", ["- ", "* ", "1. "])
+def test_should_decompose_honours_an_explicit_list(heading, marker):
+    plan = (
+        f"# Plan\n\n{heading}\n\n{marker}Create DB schema\n{marker}Build API routes\n"
+        "\n## Step 1: Other\n\n- Not a child\n"
+    )
+
+    decision = executor.should_decompose({"entropy": 2.0, "entropy_budget": 5.0}, plan)
+
+    assert decision.decision == executor.DECISION_DECOMPOSED
+    assert decision.sub_intents == [
+        {"slug": "create-db-schema", "description": "Create DB schema", "goal": "Create DB schema"},
+        {"slug": "build-api-routes", "description": "Build API routes", "goal": "Build API routes"},
+    ]
+
+
+def test_should_decompose_explicit_list_wins_over_budget_and_dedupes_slugs():
+    plan = "# Plan\n\n## Sub-intent list\n\n- Write tests\n-   \n- Write tests\n"
+
+    decision = executor.should_decompose({"entropy": 40.0, "entropy_budget": 5.0}, plan)
+
+    assert decision.decision == executor.DECISION_DECOMPOSED
+    assert [item["slug"] for item in decision.sub_intents] == ["write-tests", "write-tests-2"]
+
+
+def test_should_decompose_ignores_per_step_recommendation_bullets():
+    plan = (
+        "# Plan\n\n## Step 1: Thing\n\n- **Sub\u2011intent recommendation:** YES\n- **Sub\u2011intent:** NONE\n"
+        "\n### Sub-intent notes\n\n- not a list either\n"
+    )
+
+    decision = executor.should_decompose({"entropy": 2.0, "entropy_budget": 5.0}, plan)
+
+    assert decision.decision == executor.DECISION_EXECUTE
+    assert decision.sub_intents == []
+
+
+def _run_executor_main(tmp_path, plan_row: dict, plan_md: str | None, intent_row: dict) -> list[dict]:
+    """Run executor.main() with mocked git and runner; return the executions.jsonl rows it wrote."""
+    runner = MagicMock()
+    runner.get_version.return_value = "1.0.0"
+
+    def side_effect(args, cwd=None, **kwargs):
+        res = MagicMock(returncode=0, stdout="", stderr="")
+        if "clone" in args:
+            ledger = os.path.join(cwd, "holon-knowledge/ledger")
+            os.makedirs(ledger, exist_ok=True)
+            with open(os.path.join(ledger, "plans.jsonl"), "w") as f:
+                f.write(json.dumps(plan_row) + "\n")
+            with open(os.path.join(ledger, "intents.jsonl"), "w") as f:
+                f.write(json.dumps(intent_row) + "\n")
+            if plan_md is not None:
+                os.makedirs(os.path.join(cwd, "plans"), exist_ok=True)
+                with open(os.path.join(cwd, plan_row["plan_file"]), "w") as f:
+                    f.write(plan_md)
+        return res
+
+    repo = str(tmp_path / "repo")
+    with (
+        patch.dict(os.environ, {"HOLON_REPO_DIR": repo, "HOLON_SKIP_PUSH": "1"}),
+        patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect),
+        patch("sandbox_executor.entrypoint.executor.get_runner", return_value=runner),
+        patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value="/mock/repo"),
+        patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
+        patch("sys.argv", ["executor.py", "I-456/P-123/_", "claude-agent", "claude-opus-5-5"]),
+    ):
+        executor.main()
+    runner.build_cmd.assert_not_called()
+    ledger = os.path.join(repo, "holon-knowledge/ledger")
+    with open(os.path.join(ledger, "intents.jsonl")) as f:
+        assert [json.loads(line) for line in f if line.strip()] == [intent_row]
+    with open(os.path.join(ledger, "executions.jsonl")) as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def test_main_decomposed_records_sub_intents_without_intent_rows(tmp_path):
+    plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 9.0, "plan_file": "plans/P-123.md"}
+    intent_row = {"branch": "I-456", "slug": "parent", "entropy_budget": 5.0}
+    plan_md = "# Plan\n\n## Sub-intent list\n\n1. Add the parser\n2. Add the CLI flag\n"
+
+    rows = _run_executor_main(tmp_path, plan_row, plan_md, intent_row)
+
+    summaries = [r for r in rows if r.get("entry_type") == "summary"]
+    assert len(summaries) == 1
+    assert summaries[0]["status"] == "decomposed"
+    assert summaries[0]["entropy_budget"] == 5.0
+    assert [s["slug"] for s in summaries[0]["sub_intents"]] == ["add-the-parser", "add-the-cli-flag"]
+
+
+def test_main_over_budget_reads_intent_budget_when_plan_row_has_none(tmp_path):
+    plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 12.6, "plan_file": "plans/P-123.md"}
+    intent_row = {"branch": "I-456", "slug": "parent", "entropy_budget": 5.0}
+
+    rows = _run_executor_main(tmp_path, plan_row, "# Plan\n", intent_row)
+
+    summaries = [r for r in rows if r.get("entry_type") == "summary"]
+    assert [s["status"] for s in summaries] == ["over_budget"]
+    assert summaries[0]["entropy_budget"] == 5.0
+    assert "sub_intents" not in summaries[0]
+
+
+def test_no_placeholder_sub_intent_text_in_source():
+    """The removed fallback goals must not reappear anywhere under src/ (phrases built from fragments)."""
+    phrases = [
+        "Implement component " + "core logic",
+        "Implement integration tests " + "and validation",
+        "sub-intent-" + "part-",
+    ]
+    src_root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+    offenders = []
+    for dirpath, _dirs, files in os.walk(src_root):
+        for name in files:
+            if not name.endswith(".py"):
+                continue
+            path = os.path.join(dirpath, name)
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+            offenders.extend(f"{path}: {phrase}" for phrase in phrases if phrase in text)
+    assert offenders == []

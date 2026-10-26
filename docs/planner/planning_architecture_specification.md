@@ -50,6 +50,17 @@ Entropy represents the disorder and complexity introduced by plans:
 - **Hard Compliance Gate:** If the cumulative predicted step entropy exceeds the intent's allocated budget, the plan
   variant is flagged as non-compliant. The planner is forced to either reframe the strategy or decompose the intent
   further.
+- **One Budget, Shown and Persisted:** The planner entrypoint resolves the budget once with
+  `budgets.resolve_entropy_budget` (the intent's `entropy_budget`, else `DEFAULT_ENTROPY_BUDGET`, `15.0`), shows it to
+  the agent as `{budget_from_intent}` and writes it as `entropy_budget` on the plan's `plans.jsonl` row. The executor
+  enforces exactly that value.
+- **Explicit Sub-intent List:** A plan that cannot fit the budget decomposes by adding a level-2 heading
+  `## Sub-intent list` followed by bullet or numbered items, one concrete child intent per item. The flow runs each item
+  sequentially through the full pipeline as a child intent targeting the parent intent branch. Per-step sub‑intent
+  recommendations alone never trigger decomposition, and the executor never fabricates child work.
+- **Bounded Re-planning:** A plan above its budget without that list is sent back to the planner with a "Re-plan
+  request" paragraph (passed through `HOLON_REPLAN_FEEDBACK`, never written to a ledger), at most `MAX_REPLAN_ATTEMPTS`
+  (`2`) times, after which the Execute stage fails with a clear message.
 
 ---
 

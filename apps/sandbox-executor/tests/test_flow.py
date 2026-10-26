@@ -13,8 +13,10 @@ from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sandbox_executor import flow as flow_module
+from sandbox_executor.budgets import MAX_REPLAN_ATTEMPTS, MAX_SUB_INTENT_DEPTH, resolve_entropy_budget
 from sandbox_executor.cli import main as cli_main
-from sandbox_executor.entrypoint.executor import _sanitize_string
+from sandbox_executor.entrypoint.executor import _sanitize_string, should_decompose
 from sandbox_executor.entrypoint.planner import _sanitize_model_name
 from sandbox_executor.flow import (
     CI_REGISTRATION_TIMEOUT_ENV_VAR,
@@ -4191,3 +4193,296 @@ class TestSkipPushRejectedOnEveryNonDryRun:
         results = PipelineEngine(ctx, from_stage="calibrate").run()
 
         assert results["calibrate"].status == StageStatus.SUCCESS
+
+
+# ---------------------------------------------------------------------------
+# Entropy budget handoff: Stage 3 never halts for a human, re-plans, and drives explicit sub-intent lists
+# ---------------------------------------------------------------------------
+
+
+class BudgetRoleAgents(FakeRoleAgents):
+    """FakeRoleAgents whose planner writes chosen entropies and sections, and whose executor judges plans like the
+    real entrypoint (``should_decompose``), recording ``decomposed`` and ``over_budget`` rows instead of running.
+
+    ``plans`` is consumed one item per planner call: ``(entropy, extra_markdown)``; the last item repeats. A plan for
+    an intent branch containing ``fail_planning_for`` writes nothing, so that child's Stage 2 fails.
+    """
+
+    def __init__(
+        self,
+        root: Path,
+        origin: Path,
+        plans: list[tuple[float, str]],
+        row_budget: bool = False,
+        fail_planning_for: str | None = None,
+    ):
+        super().__init__(root, origin)
+        self.plans = list(plans)
+        self.row_budget = row_budget
+        self.fail_planning_for = fail_planning_for
+        self.planner_calls = 0
+        self.replan_feedback_seen: list[str | None] = []
+        self.in_progress = False
+        self.overlaps = 0
+
+    def __call__(self, role: str, runner: str, model: str, positional_args: list[str], **kwargs: Any) -> int:
+        if self.in_progress:
+            self.overlaps += 1
+        self.in_progress = True
+        try:
+            return super().__call__(role, runner, model, positional_args, **kwargs)
+        finally:
+            self.in_progress = False
+
+    def _plan(self, work: Path, args: list[str], _kwargs: dict[str, Any]) -> int:
+        intent_branch, agent, model = args
+        self.replan_feedback_seen.append(os.environ.get("HOLON_REPLAN_FEEDBACK"))
+        entropy, extra = self.plans[min(self.planner_calls, len(self.plans) - 1)]
+        self.planner_calls += 1
+        # A real planner run takes minutes; keep each plan branch name (stamped in seconds) unique.
+        self.clock_offset += 1
+        if self.fail_planning_for and self.fail_planning_for in intent_branch:
+            return 0
+        plan_id = f"P-{self.now()}-{agent}-{_sanitize_model_name(model)}"
+        plan_branch = f"{intent_branch.removesuffix('/_')}/{plan_id}/_"
+        _git(work, "fetch", "-q", "origin", intent_branch)
+        _git(work, "checkout", "-q", "-B", plan_branch, "FETCH_HEAD")
+        plan_rel = f"plans/{plan_id}.md"
+        (work / "plans").mkdir(exist_ok=True)
+        (work / plan_rel).write_text(
+            PLAN_MARKDOWN.format(intent=intent_branch, plan_id=plan_id) + extra, encoding="utf-8"
+        )
+        row: dict[str, Any] = {
+            "plan_id": plan_id,
+            "intent_branch": intent_branch,
+            "agent": agent,
+            "model": model,
+            "entropy": entropy,
+            "plan_file": plan_rel,
+            "status": "proposed",
+        }
+        if self.row_budget:
+            intents = [
+                json.loads(line)
+                for line in (work / "holon-knowledge/ledger/intents.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+            row["entropy_budget"] = resolve_entropy_budget({}, intents[-1] if intents else None)
+        _append_jsonl(work / "holon-knowledge/ledger/plans.jsonl", row)
+        self._push(work, plan_branch, f"plan: {plan_id} created by {agent} ({model})")
+        return 0
+
+    def _execute(self, work: Path, args: list[str], kwargs: dict[str, Any]) -> int:
+        plan_branch = args[0]
+        _git(work, "fetch", "-q", "origin", plan_branch)
+        plan_id = plan_branch.removesuffix("/_").rsplit("/", 1)[-1]
+        plans = _ledger_rows(work, "FETCH_HEAD", "plans.jsonl")
+        plan_row = next(r for r in reversed(plans) if r.get("plan_id") == plan_id)
+        intent_rows = _ledger_rows(work, "FETCH_HEAD", "intents.jsonl")
+        content = _git(work, "show", f"FETCH_HEAD:{plan_row['plan_file']}")
+        decision = should_decompose(plan_row, content, intent_rows[-1] if intent_rows else None)
+        if decision.decision == "execute":
+            return super()._execute(work, args, kwargs)
+        agent, model = args[1], args[2]
+        exec_id = f"E-{self.now()}-{_sanitize_string(agent)}-{_sanitize_string(model)}"
+        exec_branch = f"{plan_branch.removesuffix('/_')}/{exec_id}/_"
+        _git(work, "checkout", "-q", "-B", exec_branch, "FETCH_HEAD")
+        row: dict[str, Any] = {
+            "entry_type": "summary",
+            "execution_id": exec_id,
+            "plan_branch": plan_branch,
+            "status": decision.decision,
+            "entropy": decision.entropy,
+            "entropy_budget": decision.entropy_budget,
+            "ledger_revision": 1,
+        }
+        if decision.sub_intents:
+            row["sub_intents"] = decision.sub_intents
+        _append_jsonl(work / "holon-knowledge/ledger/executions.jsonl", row)
+        self._push(work, exec_branch, f"execute: {exec_id} recorded {decision.decision}")
+        return 0
+
+
+SUB_INTENT_LIST = "\n## Sub-intent list\n\n- Add the parser\n- Add the CLI flag\n"
+
+
+def _budget_context(host: Path, agents: FakeRoleAgents, budget: float, **intent_extra: Any) -> FlowContext:
+    intent = {"slug": "budget-test", "goal": "Change the application", "labels": ["flow"], "entropy_budget": budget}
+    intent.update(intent_extra)
+    return _dispatch_context(host, agents, intent_data=intent)
+
+
+def _all_intent_rows(host: Path) -> list[dict[str, Any]]:
+    """Every intents.jsonl row on every origin branch, de-duplicated by branch."""
+    _git(host, "fetch", "-q", "origin")
+    rows: dict[str, dict[str, Any]] = {}
+    for ref in _git(host, "for-each-ref", "--format=%(refname)", "refs/remotes/origin").splitlines():
+        for row in _ledger_rows(host, ref, "intents.jsonl"):
+            rows[row["branch"]] = row
+    return list(rows.values())
+
+
+class TestEntropyBudgetHandoffInFlow:
+    """Intent goal 4: no Stage 3 halt, budget handoff, bounded re-planning and sequential child pipelines."""
+
+    @pytest.mark.parametrize(
+        ("entropy", "extra", "expected_status"),
+        [
+            (2.0, "", StageStatus.SUCCESS),
+            (12.6, "", StageStatus.FAILED),
+            (2.0, SUB_INTENT_LIST, StageStatus.SUCCESS),
+        ],
+        ids=["normal", "over-budget", "decomposed"],
+    )
+    @pytest.mark.parametrize("precheck", [True, False], ids=["precheck", "container-row"])
+    def test_stage3_never_halts_for_a_human(self, flow_repos, tmp_path, entropy, extra, expected_status, precheck):
+        host, origin = flow_repos
+        agents = BudgetRoleAgents(tmp_path, origin, plans=[(entropy, extra), (2.0, "")])
+        ctx = _budget_context(host, agents, 5.0)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+
+        if precheck:
+            res = run_execute_stage(ctx)
+        else:
+            # Model a plan the flow could not read before dispatch: the executor's own row decides.
+            with patch("sandbox_executor.flow._plan_budget_decision", return_value=None):
+                res = run_execute_stage(ctx)
+
+        assert res.status != StageStatus.HALTED_FOR_HUMAN
+        assert res.status == expected_status
+        if expected_status == StageStatus.FAILED:
+            assert res.payload["over_budget"] is True
+            assert res.payload["dispatched"] is (not precheck)
+            assert "exceeds the entropy budget 5" in (res.error or "")
+
+    def test_intent_budget_16_with_plan_entropy_12_6_executes_normally(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = BudgetRoleAgents(tmp_path, origin, plans=[(12.6, "")])
+        ctx = _budget_context(host, agents, 16.0)
+
+        results = PipelineEngine(ctx).run()
+
+        assert results["execute"].status == StageStatus.SUCCESS
+        assert agents.roles() == ["intent-creator", "planner", "executor"]
+        assert ctx.replan_attempts == 0
+
+    def test_budget_persisted_on_plan_row_is_the_one_enforced(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = BudgetRoleAgents(tmp_path, origin, plans=[(12.6, "")], row_budget=True)
+        ctx = _budget_context(host, agents, 16.0)
+
+        results = PipelineEngine(ctx).run()
+
+        assert results["execute"].status == StageStatus.SUCCESS
+        plan_rows = _ledger_rows(host, f"origin/{ctx.plan_branch}", "plans.jsonl")
+        assert plan_rows[-1]["entropy_budget"] == 16.0
+
+    def test_over_budget_plan_replans_then_fails_without_intent_rows(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = BudgetRoleAgents(tmp_path, origin, plans=[(12.6, "")])
+        ctx = _budget_context(host, agents, 5.0)
+
+        results = PipelineEngine(ctx).run()
+
+        assert agents.planner_calls == 1 + MAX_REPLAN_ATTEMPTS
+        assert "executor" not in agents.roles()
+        assert ctx.replan_attempts == MAX_REPLAN_ATTEMPTS
+        execute = results["execute"]
+        assert execute.status == StageStatus.FAILED
+        assert execute.error == (
+            f"Execute stage failed: plan entropy 12.6 exceeds the entropy budget 5 after {MAX_REPLAN_ATTEMPTS} "
+            "re-plan attempts and the plan lists no sub-intent list."
+        )
+        assert "review" not in results
+        # The feedback reached the planner on each re-plan only, and never lingers in the payload or environment.
+        assert agents.replan_feedback_seen[0] is None
+        assert all("entropy 12.6" in (fb or "") for fb in agents.replan_feedback_seen[1:])
+        assert "replan_feedback" not in ctx.intent_data
+        assert "HOLON_REPLAN_FEEDBACK" not in os.environ
+        assert [r["slug"] for r in _all_intent_rows(host)] == ["budget-test"]
+
+    def test_over_budget_plan_recovers_after_one_replan(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = BudgetRoleAgents(tmp_path, origin, plans=[(12.6, ""), (4.0, "")])
+        ctx = _budget_context(host, agents, 5.0)
+
+        results = PipelineEngine(ctx).run()
+
+        assert results["execute"].status == StageStatus.SUCCESS
+        assert ctx.replan_attempts == 1
+        assert agents.roles() == ["intent-creator", "planner", "planner", "executor"]
+
+    def test_explicit_sub_intent_list_runs_child_pipelines_in_order(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (2.0, "")])
+        ctx = _budget_context(host, agents, 5.0)
+
+        results = PipelineEngine(ctx).run()
+
+        assert agents.overlaps == 0
+        assert agents.roles() == [
+            "intent-creator",
+            "planner",
+            "executor",
+            *(["intent-creator", "planner", "executor"] * 2),
+        ]
+        children = [p["slug"] for p in agents.intent_payloads[1:]]
+        assert children == ["add-the-parser", "add-the-cli-flag"]
+        for payload in agents.intent_payloads[1:]:
+            assert payload["target_branch"] == ctx.intent_branch
+            assert payload["parent_intent_id"] == ctx.intent_branch
+            assert payload["entropy_budget"] == 5.0
+            assert payload["sub_intent_depth"] == 1
+        execute = results["execute"]
+        assert execute.status == StageStatus.SUCCESS
+        assert execute.payload["decomposed"] is True
+        assert [c["slug"] for c in execute.payload["children"]] == children
+        assert all(c["status"] in ("success", "skipped", "halted_for_human") for c in execute.payload["children"])
+        assert results["review"].status == StageStatus.SKIPPED
+        assert results["review"].payload == {"reason": "decomposed"}
+        assert results["calibrate"].status == StageStatus.SKIPPED
+        assert any("[sub-intent add-the-parser]" in line for line in ctx.logs)
+        # The executor wrote no intent rows: only the parent and the two children created through Stage 1 exist.
+        assert sorted(r["slug"] for r in _all_intent_rows(host)) == sorted(["budget-test", *children])
+
+    def test_first_failing_child_stops_the_loop(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = BudgetRoleAgents(
+            tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (2.0, "")], fail_planning_for="add-the-parser"
+        )
+        ctx = _budget_context(host, agents, 5.0)
+
+        results = PipelineEngine(ctx).run()
+
+        execute = results["execute"]
+        assert execute.status == StageStatus.FAILED
+        assert "sub-intent 1/2 'add-the-parser' failed at stage 'plan'" in (execute.error or "")
+        assert [p["slug"] for p in agents.intent_payloads[1:]] == ["add-the-parser"]
+        assert "review" not in results
+
+    def test_sub_intent_depth_is_bounded(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = BudgetRoleAgents(tmp_path, origin, plans=[(2.0, SUB_INTENT_LIST)])
+        ctx = _budget_context(host, agents, 5.0, sub_intent_depth=MAX_SUB_INTENT_DEPTH)
+
+        results = PipelineEngine(ctx).run()
+
+        assert results["execute"].status == StageStatus.FAILED
+        assert "deeper than the limit" in (results["execute"].error or "")
+        assert agents.roles() == ["intent-creator", "planner", "executor"]
+
+    def test_replan_attempts_round_trip_through_checkpoints(self):
+        ctx = FlowContext(token_reduce=False, replan_attempts=2)
+        assert FlowContext.from_dict(ctx.to_dict()).replan_attempts == 2
+        legacy = ctx.to_dict()
+        del legacy["replan_attempts"]
+        assert FlowContext.from_dict(legacy).replan_attempts == 0
+
+    def test_only_the_review_stage_constructs_a_halt(self):
+        source = Path(flow_module.__file__).read_text(encoding="utf-8")
+        execute_body = source.split("def run_execute_stage(", 1)[1].split("\ndef ", 1)[0]
+        assert "HALTED_FOR_HUMAN" not in execute_body
+        assert source.count("status=StageStatus.HALTED_FOR_HUMAN") == 1
+        review_body = source.split("def run_review_stage(", 1)[1].split("\ndef ", 1)[0]
+        assert "status=StageStatus.HALTED_FOR_HUMAN" in review_body

@@ -9,7 +9,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sandbox_executor.budgets import BudgetBreach
+from sandbox_executor.budgets import DEFAULT_ENTROPY_BUDGET, BudgetBreach
 from sandbox_executor.entrypoint import planner
 from sandbox_executor.turns import TurnResult
 
@@ -214,8 +214,10 @@ class _PlannerHarness:
     ``agent_turns`` is a list of callables ``(cmd, watch_path) -> TurnResult``; each supervised turn pops the next one.
     """
 
-    def __init__(self, testcase, agent_turns, model="gemini", env=None, build_cmd=None):
+    def __init__(self, testcase, agent_turns, model="gemini", env=None, build_cmd=None, intent=None, template=None):
         self.testcase = testcase
+        self.intent = INTENT if intent is None else intent
+        self.template = template or "Template {intent_json} {plan_id} {safe_model}"
         self.build_cmd = build_cmd or (lambda model, pf, inf, prompt: ["pi", "-p", "--model", model, prompt])
         self.agent_turns = list(agent_turns)
         self.model = model
@@ -231,10 +233,10 @@ class _PlannerHarness:
         if args[:2] == ["git", "clone"]:
             ledger = pathlib.Path(cwd) / "holon-knowledge" / "ledger"
             ledger.mkdir(parents=True, exist_ok=True)
-            (ledger / "intents.jsonl").write_text(json.dumps(INTENT) + "\n")
+            (ledger / "intents.jsonl").write_text(json.dumps(self.intent) + "\n")
             prompts = pathlib.Path(cwd) / "holon-config" / "prompts"
             prompts.mkdir(parents=True, exist_ok=True)
-            (prompts / "planner.template.md").write_text("Template {intent_json} {plan_id} {safe_model}")
+            (prompts / "planner.template.md").write_text(self.template)
         result = MagicMock()
         result.returncode = 0
         result.stdout = ""
@@ -332,6 +334,36 @@ class TestPlannerMain(unittest.TestCase):
         self.assertTrue(h.committed())
         self.assertTrue(any(cmd[:2] == ["git", "push"] for cmd in h.git_cmds))
         self.assertRegex(h.stdout, r"plan: ok \(\d+\.\d min / 35 min\)")
+
+    def test_plan_row_persists_the_budget_shown_to_the_agent(self):
+        intent = {**INTENT, "entropy_budget": 16.0}
+        h = self.harness([write_file(VALID_PLAN)], intent=intent, template="Budget is {budget_from_intent}.")
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        self.assertIn("Budget is 16.0.", h.turn_prompts[0])
+        self.assertEqual(h.ledger_lines("plans.jsonl")[0]["entropy_budget"], 16.0)
+
+    def test_missing_intent_budget_uses_the_shared_default(self):
+        intent = {k: v for k, v in INTENT.items() if k != "entropy_budget"}
+        h = self.harness([write_file(VALID_PLAN)], intent=intent, template="Budget is {budget_from_intent}.")
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        self.assertIn(f"Budget is {DEFAULT_ENTROPY_BUDGET}.", h.turn_prompts[0])
+        self.assertEqual(h.ledger_lines("plans.jsonl")[0]["entropy_budget"], DEFAULT_ENTROPY_BUDGET)
+
+    def test_replan_feedback_reaches_the_prompt_but_never_the_row(self):
+        feedback = "The previous plan has entropy 12.6, above the entropy budget 5."
+        h = self.harness(
+            [write_file(VALID_PLAN)],
+            intent={**INTENT, "entropy_budget": 5.0},
+            env={"HOLON_REPLAN_FEEDBACK": feedback},
+        )
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        self.assertIn("## Re-plan request", h.turn_prompts[0])
+        self.assertIn(feedback, h.turn_prompts[0])
+        self.assertIn("entropy budget of 5.0", h.turn_prompts[0])
+        row = h.ledger_lines("plans.jsonl")[0]
+        self.assertNotIn("replan_feedback", row)
+        self.assertNotIn(feedback, json.dumps(row))
+        self.assertNotIn(feedback, json.dumps(h.ledger_lines("intents.jsonl")))
 
     def test_prompt_requires_incremental_file_writes(self):
         h = self.harness([write_file(VALID_PLAN)])

@@ -148,6 +148,21 @@ resume that enters at Stage 5. The conflict probes of Stages 2-5 name the branch
 yet), and the review records the execution branch's tip, freshly fetched from `origin`, as the reviewed commit, never
 the operator's `HEAD`.
 
+Stage 3 never halts for a human. The executor's outcome is judged against the plan's persisted entropy budget (see
+[Turn and Stage Budgets](budgets.md#entropy-budget)):
+
+- **Fits the budget:** the plan is executed as usual.
+- **Explicit sub-intent list:** the executor records the parsed list on its `decomposed` summary row and writes no
+  `intents.jsonl` rows. The flow then runs each item as a child intent, strictly one after another and never
+  concurrently, through the full pipeline (intent, plan, execute, review, calibrate). Each child targets its immediate
+  parent intent branch (`target_branch` and `parent_intent_id`), never `main`, and stops at its own Stage 4 consensus
+  halt. The first failing child fails the parent's Stage 3; when all succeed, the parent's own Stage 4 and Stage 5 are
+  skipped with reason `decomposed`, because review and calibration ran per child. Nesting is bounded by
+  `MAX_SUB_INTENT_DEPTH`.
+- **Over budget without a list:** the flow returns to Stage 2 automatically, asking for a smaller plan or an explicit
+  sub-intent list, at most `MAX_REPLAN_ATTEMPTS` times; then Stage 3 fails with a message naming the entropy, the budget
+  and the attempts.
+
 The guarantee has five deliberate limits:
 
 - **No fabricated plans.** If no planner agent produced `plans/P-*.md` on a plan branch under the intent branch, Stage 2
@@ -192,7 +207,8 @@ The guarantee has five deliberate limits:
 
 Merging to `main` is strictly reserved for the human maintainer. Upon successful consensus approval in Stage 4 and
 calibration report inclusion in Stage 5, the automated flow halts and requests human review and merge. Autonomous
-merging to `main` is strictly forbidden.
+merging to `main` is strictly forbidden. This Stage 4 consensus stop is the only halt in the flow: no earlier stage
+waits for a human, and merging the PR is the only human step.
 
 ---
 

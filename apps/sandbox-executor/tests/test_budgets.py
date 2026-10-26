@@ -1,6 +1,9 @@
+import math
 import unittest
 
+import pytest
 from sandbox_executor.budgets import (
+    DEFAULT_ENTROPY_BUDGET,
     ENV_STAGE_BUDGET_MINUTES,
     ENV_STAGE_BUDGET_SECONDS,
     ENV_TURN_STALL,
@@ -14,6 +17,7 @@ from sandbox_executor.budgets import (
     format_minutes,
     format_stage_summary,
     load_budgets,
+    resolve_entropy_budget,
     stage_budget_handdown_env,
 )
 
@@ -169,3 +173,36 @@ class TestStageBudgetHanddown(unittest.TestCase):
         clock.now += 100
         env = stage_budget_handdown_env(timer)
         self.assertEqual(load_budgets(env).stage_seconds("plan"), 1940)
+
+
+# --- Entropy budget resolution --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("plan_row", "intent_row", "expected"),
+    [
+        ({"entropy_budget": 16.0}, {"entropy_budget": 5.0}, 16.0),
+        ({}, {"entropy_budget": 16}, 16.0),
+        ({}, {"entropy_budget": "7.5"}, 7.5),
+        (None, None, DEFAULT_ENTROPY_BUDGET),
+        ({}, {}, DEFAULT_ENTROPY_BUDGET),
+        ({"entropy_budget": 0}, {"entropy_budget": 9.0}, 0.0),
+    ],
+)
+def test_resolve_entropy_budget_order(plan_row, intent_row, expected):
+    assert resolve_entropy_budget(plan_row, intent_row) == expected
+
+
+@pytest.mark.parametrize("bad", [None, "lots", math.nan, math.inf, -1.0, True, [], {}])
+def test_resolve_entropy_budget_invalid_values_fall_through(bad):
+    assert resolve_entropy_budget({"entropy_budget": bad}, {"entropy_budget": 12.0}) == 12.0
+    assert resolve_entropy_budget({"entropy_budget": bad}, {"entropy_budget": bad}) == DEFAULT_ENTROPY_BUDGET
+
+
+def test_default_entropy_budget_is_the_single_shared_constant():
+    from sandbox_executor.entrypoint import executor, planner
+
+    assert DEFAULT_ENTROPY_BUDGET == 15.0
+    assert executor.DEFAULT_ENTROPY_BUDGET is DEFAULT_ENTROPY_BUDGET
+    assert planner.resolve_entropy_budget is resolve_entropy_budget
+    assert executor.resolve_entropy_budget is resolve_entropy_budget

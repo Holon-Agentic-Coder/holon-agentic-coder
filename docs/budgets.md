@@ -189,3 +189,24 @@ Every stage reports elapsed time against its budget in the form `stage: status (
 The flow execute stage runs no host-side test suite: the executor container runs and records its own tests within the
 handed-down ceiling, and writes the stage's `elapsed_seconds` and `budget_seconds` on its execution summary row (see
 [Ledger Schema](ledger_schema.md)). A superseding empty-diff row written by the flow repeats those fields.
+
+## Entropy budget
+
+The entropy budget is the blast-radius limit a plan must respect (see [Safety](safety.md)). It is not a wall-clock
+budget, but it lives in the same module so that there is exactly one source of truth for it.
+
+- **One shared default.** `budgets.DEFAULT_ENTROPY_BUDGET` (`15.0`) is used by both the planner and the executor; there
+  are no other entropy-budget literals.
+- **One resolver.** `budgets.resolve_entropy_budget(plan_row, intent_row)` returns a finite, non-negative
+  `entropy_budget` from the plan's `plans.jsonl` row, else from the intent's `intents.jsonl` row, else the shared
+  default. Missing, `null`, non-numeric, NaN, infinite or negative values fall through to the next source.
+- **Persisted once.** The planner resolves the budget from the intent, shows it to the planning agent
+  (`{budget_from_intent}` in the planner template) and writes the same value as `entropy_budget` on the plan row. The
+  executor and the flow read it back through the resolver, so historic plan rows without the field fall back to the
+  intent's budget.
+- **Bounded re-planning.** A plan above its budget that lists no sub-intent list is sent back to Stage 2 at most
+  `budgets.MAX_REPLAN_ATTEMPTS` (`2`) times, with a short re-plan request passed to the planner container through
+  `HOLON_REPLAN_FEEDBACK` (never written to a ledger). After that, Stage 3 fails with a message naming the entropy, the
+  budget and the number of attempts.
+- **Bounded nesting.** Child intents created from a sub-intent list carry `sub_intent_depth`; the flow refuses to
+  recurse beyond `budgets.MAX_SUB_INTENT_DEPTH` (`2`).

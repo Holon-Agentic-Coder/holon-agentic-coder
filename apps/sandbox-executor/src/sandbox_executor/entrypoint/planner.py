@@ -10,7 +10,13 @@ from datetime import UTC, datetime
 from sandbox_executor import artefacts
 from sandbox_executor.agent_runner import cleanup_repo_dir, get_repo_url, get_runner, get_workspace_dir
 from sandbox_executor.artefacts import PLAN_REQUIRED_METRICS, PLAN_SPEC, plan_write_protocol, validate_artefact
-from sandbox_executor.budgets import BudgetBreach, StageTimer, load_budgets
+from sandbox_executor.budgets import (
+    ENV_REPLAN_FEEDBACK,
+    BudgetBreach,
+    StageTimer,
+    load_budgets,
+    resolve_entropy_budget,
+)
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.ledger import atomic_ledger_append
 from sandbox_executor.redaction import redact_agent_secrets, redact_command, redact_command_args
@@ -185,6 +191,25 @@ def _record_plan_budget_failure(
         run_cmd(["git", "push", "-u", "origin", plan_branch], cwd=repo_dir, check=False)
 
 
+def build_replan_paragraph(feedback: str, entropy_budget: float) -> str:
+    """Return the "Re-plan request" paragraph appended to the planner prompt when the flow asks for a new plan.
+
+    Args:
+        feedback: The flow's message stating the previous plan's entropy and the budget it exceeded.
+        entropy_budget: The resolved entropy budget the new plan must respect.
+
+    Returns:
+        A markdown paragraph, starting with blank lines so it can be appended to the prompt as is.
+    """
+    return (
+        "\n\n## Re-plan request\n\n"
+        f"{feedback}\n\n"
+        f"Write a smaller plan whose overall entropy_pred is at or below the entropy budget of {entropy_budget}, or, "
+        "if the work cannot fit, add a level-2 heading '## Sub-intent list' followed by one bullet per concrete child "
+        "intent.\n"
+    )
+
+
 _AGENT_ARG_DISPLAY_LEN = 100
 
 
@@ -269,6 +294,14 @@ def main():
         print(f"Error: No intent found for branch prefix '{intent_branch_prefix}' in '{intents_file_path}'")
         sys.exit(1)
 
+    # One budget for the whole handoff: shown to the agent here, persisted on the plans.jsonl row, enforced by the
+    # executor through the same resolver.
+    entropy_budget = resolve_entropy_budget({}, intent_data)
+
+    # Transient re-plan feedback from the flow (HOLON_REPLAN_FEEDBACK). It reaches the agent through the prompt and the
+    # temporary intent file only; it is never written to any ledger.
+    replan_feedback = os.getenv(ENV_REPLAN_FEEDBACK, "").strip()
+
     # Prepare prompt using template
     template_path = os.path.join(repo_dir, "holon-config/prompts/planner.template.md")
     if os.path.exists(template_path):
@@ -301,7 +334,7 @@ Include metrics in this format:
         "{date}": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
         "{intent_json}": json.dumps(intent_data, indent=2),
         "{safe_model}": safe_model,
-        "{budget_from_intent}": str(intent_data.get("entropy_budget", "15.0")),
+        "{budget_from_intent}": str(entropy_budget),
     }
     for k, v in replacements.items():
         template = template.replace(k, v)
@@ -312,9 +345,12 @@ Include metrics in this format:
         f.write("\n\nRepository file structure:\n")
         f.write(get_file_structure(repo_dir))
 
+        if replan_feedback:
+            f.write(build_replan_paragraph(replan_feedback, entropy_budget))
+
     intent_file = f"/tmp/intent-{plan_seq}.json"
     with open(intent_file, "w") as f:
-        json.dump(intent_data, f)
+        json.dump({**intent_data, "replan_feedback": replan_feedback} if replan_feedback else intent_data, f)
 
     # Invoke AI agent
     plan_md_rel = f"plans/P-{plan_seq}-{agent_name}-{safe_model}.md"
@@ -465,6 +501,7 @@ Include metrics in this format:
         "created_at": timestamp_str,
         "plan_file": plan_md_rel,
         "status": "proposed",
+        "entropy_budget": entropy_budget,
     }
 
     plans_ledger_dir = os.path.join(repo_dir, "holon-knowledge/ledger")

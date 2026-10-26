@@ -65,7 +65,9 @@ Planner responsibilities:
 - Generate diverse, focused variants (different approaches / trade-offs)
 - Produce structured plan graphs (explicit steps + sub-intents)
 - Attach predicted metrics and confidence intervals
-- Propose decomposition into sub-intents when appropriate
+- Propose decomposition into sub-intents when appropriate, through an explicit `## Sub-intent list` section (one bullet
+  per concrete child intent); a plan above its entropy budget without that section is re-planned a bounded number of
+  times and then fails (see [Turn and Stage Budgets](budgets.md#entropy-budget))
 
 #### Variant diversity guidance
 

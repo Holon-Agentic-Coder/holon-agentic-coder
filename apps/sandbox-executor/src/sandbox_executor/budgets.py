@@ -13,6 +13,8 @@ the single source of truth for the limits and their configuration:
   and is the only wall-clock limit on a runner process as a whole.
 
 The defaults are the real measurements recorded in Beans 0138 to 0140; they are deliberately not re-derived here.
+The module also holds the one shared *entropy* budget default and its resolver, used by both the planner and the
+executor, together with the bounds on automatic re-planning and sub-intent nesting.
 Clocks are injected so control flow can be tested without sleeping; tests never make performance claims.
 """
 
@@ -302,3 +304,47 @@ def stage_budget_handdown_env(
         return {}
     seconds = max(1, math.floor(left))
     return {ENV_STAGE_BUDGET_SECONDS: str(seconds)}
+
+
+# --- Entropy budgets ---------------------------------------------------------------------------------------------
+
+# Default entropy budget for a plan when neither the plan row nor the intent row carries one. The planner shows this
+# value to the planning agent and persists it on the plans.jsonl row; the executor enforces the same value.
+DEFAULT_ENTROPY_BUDGET = 15.0
+# Number of times the flow sends an over-budget plan back to Stage 2 before failing the Execute stage.
+MAX_REPLAN_ATTEMPTS = 2
+# Host environment variable that carries the flow's re-plan feedback into the planner container (HOLON_* variables are
+# forwarded). The feedback is transient: it is never written to a ledger.
+ENV_REPLAN_FEEDBACK = "HOLON_REPLAN_FEEDBACK"
+# Deepest nesting of sub-intents the flow will drive; a child of a child at this depth fails rather than recursing.
+MAX_SUB_INTENT_DEPTH = 2
+
+
+def _entropy_budget_from(row: Mapping[str, object] | None) -> float | None:
+    """Return a usable ``entropy_budget`` from a ledger row, or ``None`` when it is missing or invalid."""
+    if not isinstance(row, Mapping):
+        return None
+    raw = row.get("entropy_budget")
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return value
+
+
+def resolve_entropy_budget(plan_row: Mapping[str, object] | None, intent_row: Mapping[str, object] | None) -> float:
+    """Resolve the entropy budget for a plan.
+
+    Resolution order: a finite, non-negative ``entropy_budget`` on the plan row; else the same on the intent row; else
+    :data:`DEFAULT_ENTROPY_BUDGET`. Missing, ``None``, non-numeric, NaN, infinite or negative values fall through to
+    the next source, so historic plan rows without the field keep working.
+    """
+    for row in (plan_row, intent_row):
+        value = _entropy_budget_from(row)
+        if value is not None:
+            return value
+    return DEFAULT_ENTROPY_BUDGET

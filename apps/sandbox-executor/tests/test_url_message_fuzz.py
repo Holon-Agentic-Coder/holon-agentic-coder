@@ -5,20 +5,26 @@ and a host that was validated after the userinfo was removed with the shared las
 (`redaction.trusted_url_authority`), and nothing else taken from the value. Every entry point that
 turns a configured URL into a message is driven through the full shape matrix below, and the
 captured output (logs, stdout, stderr, exception text, and the top-level `redact_cli_error`
-rendering) must not hold any 4-character fragment of the credential.
+rendering) must not hold any 4-character fragment of the credential. The #94 sites are driven too:
+`holon doctor` (environment section, text and `--json`), the gateway probe (probe URL, cache line,
+fetch errors, `redact_url`) and the model envelope lines.
 
 Credentials are built at runtime from letters that occur in no message (`FGJQVZ`) and digits, and
 compared case-insensitively, so a 4-character check cannot match ordinary output. Failure messages
 name the case id only, never the value.
 """
 
+import argparse
 import contextlib
 import io
+import json
 import logging
 import os
 import secrets
+import urllib.error
 from collections.abc import Callable, Iterator
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 import pytest
 from sandbox_executor import cli, local_llm
@@ -167,12 +173,110 @@ def _remote_url(value: str) -> list[str]:
     return out
 
 
+# A health response that drives every #94 doctor line: the cache state, memory figures, and both envelope warnings.
+_HEALTH_TIGHT = {
+    "prefill_cache": {"enabled": True, "entries": 1, "memory_bytes": 5},
+    "memory": {"used_bytes": 1},
+    "effective_defaults": {"max_output_tokens": 1, "max_prompt_tokens": 1},
+}
+
+
+def _host_config(value: str) -> dict:
+    return {"providers": {"vmlx": {"baseUrl": value, "models": [{"id": "m", "contextWindow": 65536}]}}}
+
+
+def _fetchers(seen: list[str]) -> tuple[Callable[[str, float], bytes], ...]:
+    """A responding and a failing fetcher; both record the probe URL they were handed, which is shown too."""
+
+    def ok(url: str, timeout: float) -> bytes:
+        seen.append(url)
+        return json.dumps(_HEALTH_TIGHT).encode()
+
+    def fail(url: str, timeout: float) -> bytes:
+        seen.append(url)
+        raise OSError(f"connection refused by {url}")
+
+    return ok, fail
+
+
+def _doctor(value: str) -> list[str]:
+    """#94 `holon doctor`: the environment section, then the unified report as text and as `--json`."""
+    from sandbox_executor.preflight import PreflightResult, PreflightStatus
+
+    probe = PreflightResult(
+        status=PreflightStatus.OK, agent="pi-agent", model="m", image="img", exit_code=0, output_excerpt="", hint=""
+    )
+    env = {"HOLON_LOCAL_LLM": "1", "HOLON_LOCAL_BASE_URL": value, "HOLON_LOCAL_MODELS": "m1"}
+    texts: list[str] = []
+    for host_config in (None, _host_config(value)):
+        for fetch in _fetchers(texts):
+            with (
+                patch.object(local_llm, "host_models_json", return_value=host_config),
+                patch.object(cli, "run_preflight_probe", return_value=probe),
+                _captured(env) as out,
+            ):
+                cli.report_budgets_and_envelope(fetch=fetch)
+                for as_json in (False, True):
+                    cli.run_doctor(argparse.Namespace(agent=None, model=None, json=as_json, timeout=None), fetch=fetch)
+            texts.extend(out)
+    return texts
+
+
+class _RefusingOpener:
+    def open(self, url: str, timeout: float):
+        raise urllib.error.URLError(f"refused {url}")
+
+
+def _gateway_probe(value: str) -> list[str]:
+    """#94 gateway probe: the probe URL, its cache line and error (injected and default fetchers), `redact_url`."""
+    texts: list[str] = []
+    with (
+        patch.object(local_llm.urllib.request, "build_opener", lambda *_handlers: _RefusingOpener()),
+        _captured({}) as out,
+    ):
+        for fetch in (*_fetchers(texts), None):
+            health = local_llm.probe_gateway_health(value, fetch=fetch)
+            if health is not None:
+                out.extend((health.url, health.cache_line(), repr(health)))
+        out.extend((repr(local_llm.health_url(value)), local_llm.redact_url(value)))
+        try:
+            scheme = urlsplit(value).scheme.lower()
+        except ValueError:
+            scheme = ""
+        if scheme not in local_llm.HEALTH_SCHEMES:
+            try:
+                local_llm._default_fetch(value, 0.01)
+            except (OSError, ValueError) as exc:
+                out.append(str(exc))
+    texts.extend(out)
+    return texts
+
+
+def _envelope(value: str) -> list[str]:
+    """#94 model envelope: the per-model envelope and reasoning lines and any config error, host and synthesised."""
+    env = {"HOLON_LOCAL_LLM": "1", "HOLON_LOCAL_BASE_URL": value, "HOLON_LOCAL_MODELS": "m1"}
+    texts: list[str] = []
+    for host_config in (None, _host_config(value)):
+        with _captured(env) as out:
+            try:
+                _config, envelopes = local_llm.build_envelope_config(host_config, (), env)
+                for envelope in envelopes:
+                    out.extend((envelope.envelope_line(), envelope.reasoning_line()))
+            except local_llm.LocalLLMConfigError as exc:
+                out.append(str(exc))
+        texts.extend(out)
+    return texts
+
+
 ENTRY_POINTS: dict[str, Callable[[str], list[str]]] = {
     "detect_holon_coherence": _proxy_detect,
     "attach_external_proxy": _proxy_attach,
     "local_base_url": _local_base_url,
     "host_config_base_url": _host_config_base_url,
     "remote_url": _remote_url,
+    "doctor": _doctor,
+    "gateway_probe": _gateway_probe,
+    "envelope": _envelope,
 }
 
 
@@ -190,7 +294,9 @@ def test_no_credential_fragment_in_any_message(entry_point, monkeypatch):
     monkeypatch.setattr(cli, "generate_root_ca", lambda: pytest.fail("must not generate a CA"))
     run = ENTRY_POINTS[entry_point]
     failures = [case_id for case_id, value, credential in matrix() if _leaks(run(value), credential)]
-    assert not failures, f"{len(failures)}/{MATRIX_SIZE} cases leaked a credential fragment, e.g. {failures[:5]}"
+    assert not failures, (
+        f"{len(failures)}/{MATRIX_SIZE} cases leaked a credential fragment, e.g. {failures[:5]} ALL={failures}"
+    )
 
 
 def _refuse(*_args, **_kwargs):
@@ -340,3 +446,189 @@ def test_quoted_url_ends_at_its_closing_quote(text, kept):
 
     assert redact_text(text) == text
     assert kept in redact_text(text)
+
+
+# C17-N1: a credential-bearing value placed in a non-URL envelope or budget setting by mistake. The
+# invalid-value messages name the variable (or the model and field) and the expected type only.
+INVALID_VALUE_ENV = (
+    "HOLON_CONTEXT_RESERVE_TOKENS",
+    "HOLON_LOCAL_CONTEXT_WINDOW",
+    "HOLON_REASONING_MODE",
+    "HOLON_TURN_TIMEOUT_SECONDS",
+    "HOLON_STAGE_BUDGET_SECONDS",
+)
+INVALID_VALUE_HOST_FIELDS = ("contextWindow", "maxTokens", "reasoning")
+_LOCAL_ENV = {
+    "HOLON_LOCAL_LLM": "1",
+    "HOLON_LOCAL_BASE_URL": "http://localhost:8081/v1",
+    "HOLON_LOCAL_MODELS": "m1",
+    "HOLON_LOCAL_CONTEXT_WINDOW": "65536",
+    "HOLON_REPO_URL": "https://github.com/myorg/myrepo.git",
+}
+
+
+def _invalid_value_cases() -> Iterator[tuple[str, dict[str, str], dict | None, str]]:
+    """Yield `(case_id, env, host_config, credential)`: every credential shape in every invalid-value slot."""
+    for case_id, value, credential in matrix():
+        if not case_id.endswith("/ipv4/path"):
+            continue
+        for name in INVALID_VALUE_ENV:
+            yield f"env:{name}/{case_id}", {**_LOCAL_ENV, name: value}, None, credential
+        for field in INVALID_VALUE_HOST_FIELDS:
+            entry = {"id": "m", "contextWindow": 65536, field: value}
+            host_config = {"providers": {"vmlx": {"baseUrl": "http://localhost:8081/v1", "models": [entry]}}}
+            yield f"host:{field}/{case_id}", dict(_LOCAL_ENV), host_config, credential
+
+
+def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, tmp_path):
+    """C17-N1: doctor (environment section, text and `--json`) and the run path withhold an invalid value."""
+    from sandbox_executor.preflight import PreflightResult, PreflightStatus
+
+    probe = PreflightResult(
+        status=PreflightStatus.OK, agent="pi-agent", model="m", image="img", exit_code=0, output_excerpt="", hint=""
+    )
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
+    monkeypatch.setattr(cli, "get_agent_session_mounts", lambda agent_id: [])
+    monkeypatch.setattr(cli, "get_ssh_auth_mounts", lambda: ([], {}))
+    monkeypatch.setattr(cli, "get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {}))
+    failures: list[str] = []
+    cases = list(_invalid_value_cases())
+    for case_id, env, host_config, credential in cases:
+        # A budget float falls back to its default, so the run goes on to forward the host `HOLON_*` variables to
+        # the container unchanged (pre-existing behaviour, outside this rule); only its doctor output is checked.
+        rejected = "TIMEOUT" not in case_id and "BUDGET" not in case_id
+        docker = _DockerRecorder()
+        with (
+            patch.object(local_llm, "host_models_json", return_value=host_config),
+            patch.object(cli, "run_preflight_probe", return_value=probe),
+            patch.object(cli.subprocess, "run", docker),
+            _captured({**env, "HOME": str(tmp_path)}) as out,
+        ):
+            env_out = io.StringIO()
+            codes = [cli.report_budgets_and_envelope(fetch=lambda url, timeout: b"{}", out=env_out)]
+            out.append(env_out.getvalue())
+            for as_json in (False, True):
+                codes.append(
+                    cli.run_doctor(
+                        argparse.Namespace(agent=None, model=None, json=as_json, timeout=None),
+                        fetch=lambda url, timeout: b"{}",
+                    )
+                )
+            if rejected:
+                codes.append(cli.run_docker_container("executor", "img", [], agent_id="pi"))
+        if _leaks(out, credential):
+            failures.append(case_id)
+        if rejected and (codes != [1, 1, 1, 1] or docker.argv):
+            failures.append(f"{case_id}:not-rejected")
+    assert len(cases) == (len(INVALID_VALUE_ENV) + len(INVALID_VALUE_HOST_FIELDS)) * MATRIX_SIZE // (
+        len(HOSTS) * len(SUFFIXES)
+    )
+    assert not failures, f"{len(failures)}/{len(cases)} invalid-value cases failed, e.g. {failures[:5]}"
+
+
+# C19-N1: base URLs `urlsplit` (or its lazy port check) rejects, or that have no usable `scheme://host`.
+UNPARSEABLE_FORMS = {
+    "bad-ipv6-bracket-port": "http://{u}127.0.0.1:9[/v1",
+    "bad-ipv6-bracket-host": "http://{u}[::1/v1",
+    "port-out-of-range": "http://{u}localhost:99999/v1",
+    "port-not-digits": "http://{u}localhost:x1/v1",
+    "empty-host": "http://{u}/v1",
+    "schemeless-garbage": "{u}not a url [",
+}
+_GOOD_HOST_URL = "http://127.0.0.1:8000/v1"
+_GOOD_LOCAL_URL = "http://127.0.0.1:8001/v1"
+
+
+def _unparseable_cases() -> Iterator[tuple[str, str, str, bool]]:
+    """Yield `(case_id, value, credential, plain)`: every form with no userinfo and with each credential shape.
+
+    `plain` marks values whose userinfo boundary is unambiguous, so the parse failure is the only problem and the
+    doctor must name the source. With a delimiter inside the userinfo `urlsplit` may read part of the credential as
+    the host; such a value is withheld as ambiguous instead, which the leak check covers.
+    """
+    for f_id, form in UNPARSEABLE_FORMS.items():
+        yield f"{f_id}/no-userinfo", form.format(u=""), "", True
+        for c_id, make in _credential_shapes().items():
+            credential = make()
+            plain = c_id in ("plain", "percent-encoded")
+            yield f"{f_id}/{c_id}", form.format(u=f"alice:{credential}@"), credential, plain
+
+
+@pytest.mark.parametrize("slot", ["HOLON_LOCAL_BASE_URL", "host-baseUrl"])
+def test_doctor_survives_unparseable_base_url(slot, monkeypatch):
+    """C19-N1: an unparseable host-side base URL is skipped by the probe, never crashes `holon doctor`.
+
+    Text and `--json` both exit 0 (the run path handles the same config), `--json` stays valid JSON with the problem
+    under `environment.warnings`, the warning names only the source, and no part of the value is echoed.
+    """
+    from sandbox_executor.preflight import PreflightResult, PreflightStatus
+
+    monkeypatch.setattr(cli.shutil, "which", lambda *_args, **_kwargs: None)
+    probe = PreflightResult(
+        status=PreflightStatus.OK, agent="pi-agent", model="m", image="img", exit_code=0, output_excerpt="", hint=""
+    )
+    source = "HOLON_LOCAL_BASE_URL" if slot == "HOLON_LOCAL_BASE_URL" else "host models.json provider 'vmlx' baseUrl"
+    expected = f"WARNING: {source} is not a parseable URL, so its server is not probed (value withheld)"
+    failures: list[str] = []
+    cases = list(_unparseable_cases())
+    for case_id, value, credential, plain in cases:
+        host_url, local_url = (_GOOD_HOST_URL, value) if slot == "HOLON_LOCAL_BASE_URL" else (value, _GOOD_LOCAL_URL)
+        env = {
+            "HOLON_LOCAL_LLM": "1",
+            "HOLON_LOCAL_BASE_URL": local_url,
+            "HOLON_LOCAL_MODELS": "m1",
+            "HOLON_LOCAL_CONTEXT_WINDOW": "65536",
+        }
+        host_config = {"providers": {"vmlx": {"baseUrl": host_url, "models": [{"id": "m", "contextWindow": 65536}]}}}
+        probed: list[str] = []
+        texts: list[str] = []
+        with (
+            patch.object(local_llm, "host_models_json", return_value=host_config),
+            patch.object(cli, "run_preflight_probe", return_value=probe),
+            _captured(env) as out,
+        ):
+            try:
+                assert local_llm.health_url(value) is None
+
+                def fetch(url: str, timeout: float, probed: list[str] = probed) -> bytes:
+                    probed.append(url)
+                    return b"{}"
+
+                results = {}
+                for as_json in (False, True):
+                    stdout = io.StringIO()
+                    with contextlib.redirect_stdout(stdout):
+                        code = cli.run_doctor(
+                            argparse.Namespace(agent=None, model=None, json=as_json, timeout=None), fetch=fetch
+                        )
+                    results[as_json] = (code, stdout.getvalue())
+                    out.append(stdout.getvalue())
+            except Exception as exc:  # any escape is the C19-N1 crash; report the case id only
+                failures.append(f"{case_id}:crash:{type(exc).__name__}")
+                continue
+        texts.extend(out)
+        texts.extend(probed)
+        text_code, text_out = results[False]
+        json_code, json_out = results[True]
+        try:
+            environment = json.loads(json_out)["environment"]
+        except (ValueError, KeyError):
+            failures.append(f"{case_id}:invalid-json")
+            continue
+        if set(environment) != {"ok", "lines", "warnings"}:
+            failures.append(f"{case_id}:json-shape")
+            continue
+        if (text_code, json_code) != (0, 0) or environment["ok"] is not True:
+            failures.append(f"{case_id}:exit")
+        if not set(environment["warnings"]) <= set(environment["lines"]):
+            failures.append(f"{case_id}:json-shape")
+        if plain and (expected not in environment["warnings"] or expected not in text_out):
+            failures.append(f"{case_id}:not-reported")
+        if any(line != expected for line in environment["warnings"]):
+            failures.append(f"{case_id}:unexpected-warning")
+        if credential and _leaks(texts, credential):
+            failures.append(f"{case_id}:leak")
+        if not credential and any(value in text for text in texts):
+            failures.append(f"{case_id}:value-echoed")
+    assert len(cases) == len(UNPARSEABLE_FORMS) * (1 + len(_credential_shapes()))
+    assert not failures, f"{len(failures)}/{len(cases)} unparseable-URL cases failed, e.g. {failures[:5]}"

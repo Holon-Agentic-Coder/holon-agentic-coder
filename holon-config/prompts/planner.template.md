@@ -36,8 +36,18 @@ into their immediate parent. If the step is small, not risky you can propose an 
 
 You will be eliminated from the selection process if you:
 
-- fail to output the complete plan according to the template format with valid metrics table
+- fail to write the complete plan file according to the template format with a valid metrics table
 - make any code change outside of the plan definition
+
+**Write Protocol (incremental artefact):**
+
+1. Create `plans/P-{timestamp}-{agent}-{safe_model}.md` with your file-write tool immediately, before any long analysis.
+2. Write the header and the `## Overall Plan Metrics` table first, with numeric values for every metric row. Update the
+   values later if your estimates change.
+3. Append each `## Step N` section to the file as soon as it is finished, rather than holding the whole plan in memory.
+4. Append the `### Strategy Rationale`, justification and safety sections last.
+5. The file on disk is the deliverable. Keep your final chat message to one short confirmation line; do not repeat the
+   plan there, because a long final message can be cut off by the output-token limit.
 
 **Markdown Hygiene & Formula Formatting Requirements:**
 

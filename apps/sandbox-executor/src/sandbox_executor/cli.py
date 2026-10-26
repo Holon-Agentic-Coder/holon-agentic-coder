@@ -14,8 +14,9 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TextIO
 from urllib.parse import unquote, urlparse, urlsplit, urlunsplit
 
 from sandbox_executor import local_llm
@@ -31,6 +32,7 @@ from sandbox_executor.agent_defaults import (
     resolve_agent_runner,
     resolve_model,
 )
+from sandbox_executor.budgets import stage_budget_handdown_env
 from sandbox_executor.calibration import run_calibrate
 from sandbox_executor.flow import (
     SKIP_PUSH_DISPATCH_ERROR,
@@ -1339,6 +1341,11 @@ def run_docker_container(
     if gh_token:
         env_to_forward["GITHUB_TOKEN"] = gh_token
 
+    # Inside a timed host stage (holon flow), hand the container the time this stage has left so its own ceiling fires
+    # first (Bean 0139); this replaces any forwarded host HOLON_STAGE_BUDGET_SECONDS. Every role-container dispatch goes
+    # through here, so no caller has to pass it.
+    env_to_forward.update(stage_budget_handdown_env())
+
     env_to_forward["HOLON_REPO_URL"] = resolved_repo_url
 
     norm_agent_id = local_llm.normalize_agent_id(agent_id)
@@ -1423,7 +1430,7 @@ def run_docker_container(
                         )
                     add_env("HOLON_AGENT_PROVIDER", chosen)
             except local_llm.LocalLLMConfigError as exc:
-                print(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
+                print_encodable(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
                 return 1
             docker_cmd.extend(local_llm.container_mount_args(local_agent_dir))
             for key, value in local_llm.container_env(local_agent_dir).items():
@@ -1492,7 +1499,8 @@ def run_docker_container(
             # needs no bind mount.
             docker_cmd[2:2] = ["--env-file", env_file]
 
-        print(f"Executing: {redact_command(docker_cmd)}")
+        # A forwarded HOLON_* value may hold a non-UTF-8 byte (surrogateescape); it must not crash the run here.
+        print_encodable(f"Executing: {redact_command(docker_cmd)}")
         result = subprocess.run(docker_cmd)
         return result.returncode
     finally:
@@ -1510,6 +1518,139 @@ def run_docker_container(
                 runner.cleanup_ephemeral_credentials()
         except Exception:
             pass
+
+
+def print_encodable(text: str, file: TextIO | None = None) -> None:
+    """``print(text, file=file)`` that cannot raise ``UnicodeEncodeError``.
+
+    Characters the stream's encoding cannot represent (a lone surrogate, a non-UTF-8 byte that ``os.environ`` decoded
+    with ``surrogateescape``, or non-ASCII text on an ASCII terminal) are written backslash-escaped; text the stream
+    can encode is written unchanged.
+    """
+    stream = sys.stdout if file is None else file
+    encoding = getattr(stream, "encoding", None) or "utf-8"
+    try:
+        text = text.encode(encoding, "backslashreplace").decode(encoding)
+    except LookupError:
+        text = text.encode("ascii", "backslashreplace").decode("ascii")
+    print(text, file=stream)
+
+
+def _doctor_section_failed(section: str, exc: BaseException) -> str:
+    """The warning line for a doctor section that raised unexpectedly: section and exception class only, no values."""
+    return f"WARNING: doctor {section} check failed unexpectedly ({type(exc).__name__}); details withheld"
+
+
+def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: TextIO | None = None) -> int:
+    """``holon doctor`` environment section: print the effective budgets and the local-LLM model envelope, and probe
+    the local gateway (Bean 0140).
+
+    Prints ``model=<id> context=<n> max_tokens=<n> source=host|synthesised`` and
+    ``reasoning=<mode> source=env|host|default`` per model, then ``prefill_cache=off|cold|warm`` with memory figures
+    once per distinct host-local server, warning when a model's emitted ``maxTokens`` or ``contextWindow`` exceeds
+    the ``effective_defaults.max_output_tokens`` or ``max_prompt_tokens`` of the server that serves it. Nothing is
+    written; only loopback or allow-listed endpoints are probed.
+
+    Each part (budgets, envelope, base-URL check, gateway probe) is isolated: an invalid configuration prints an
+    ``Error:`` line, and any unexpected exception becomes a value-free ``WARNING: doctor <part> check failed
+    unexpectedly (<ExceptionClass>)`` line; either makes the result 1, and the doctor never raises from here.
+    """
+    env = os.environ
+    out = out or sys.stdout
+    code = 0
+    try:
+        _report_budgets(env, out)
+    except Exception as exc:  # The doctor reports; it never crashes (#94 C21).
+        print(_doctor_section_failed("budgets", exc), file=out)
+        code = 1
+
+    if env.get(local_llm.ENV_LOCAL_MODE, "").strip().lower() not in ("1", "true", "yes", "on"):
+        print(f"local_llm=disabled (set {local_llm.ENV_LOCAL_MODE}=1 to inspect the model envelope)", file=out)
+        return code
+
+    try:
+        allow_list = local_llm.host_local_allow_list()
+        # One validated loader (local_llm.load_models_json): a malformed file is a LocalLLMConfigError naming it.
+        host_config = local_llm.host_models_json()
+        config, envelopes = local_llm.build_envelope_config(host_config, allow_list, env)
+    except local_llm.LocalLLMConfigError as exc:
+        # The same top-level redaction as the run path (#96); these lines are also the `--json` environment section.
+        print(f"Error: {redact_cli_error(exc)}", file=out)
+        return 1
+    except Exception as exc:
+        print(_doctor_section_failed("model envelope", exc), file=out)
+        return 1
+
+    for envelope in envelopes:
+        print(envelope.envelope_line(), file=out)
+        print(envelope.reasoning_line(), file=out)
+
+    try:
+        for source in local_llm.unparseable_base_url_sources(host_config, env):
+            # Named by its source only (#96 message rule); like any non-probeable endpoint it is skipped, not fatal.
+            print(f"WARNING: {source} is not a parseable URL, so its server is not probed (value withheld)", file=out)
+    except Exception as exc:
+        print(_doctor_section_failed("base URL", exc), file=out)
+        code = 1
+
+    try:
+        _report_gateways(host_config, config, envelopes, env, allow_list, fetch, out)
+    except Exception as exc:
+        print(_doctor_section_failed("gateway probe", exc), file=out)
+        code = 1
+    return code
+
+
+def _report_budgets(env: Mapping[str, str], out: TextIO) -> None:
+    from sandbox_executor.budgets import load_budgets
+
+    budgets = load_budgets(env)
+    stage_minutes = " ".join(
+        f"{name}={budgets.stage_seconds(name) / 60.0:g}min"
+        for name in ("intent", "plan", "execute", "review_iteration", "calibration")
+    )
+    print(
+        f"budgets turn={budgets.turn.turn_seconds:g}s stall={budgets.turn.stall_seconds:g}s {stage_minutes}",
+        file=out,
+    )
+
+
+def _report_gateways(
+    host_config: dict | None,
+    config: dict,
+    envelopes: list[local_llm.ModelEnvelope],
+    env: Mapping[str, str],
+    allow_list: set[str],
+    fetch: local_llm.Fetcher | None,
+    out: TextIO,
+) -> None:
+    probed = False
+    # One probe and one line per distinct server; limits are compared only with the models that server serves.
+    for base_url, providers in local_llm.host_gateways(host_config, config, env, allow_list):
+        health = local_llm.probe_gateway_health(base_url, fetch=fetch, allow_list=allow_list)
+        if health is None:
+            continue
+        probed = True
+        print(f"gateway={health.url} {health.cache_line()}", file=out)
+        served = [envelope for envelope in envelopes if envelope.provider in providers]
+        if health.max_output_tokens is not None:
+            for envelope in served:
+                if envelope.max_tokens > health.max_output_tokens:
+                    print(
+                        f"WARNING: model={envelope.model_id} max_tokens={envelope.max_tokens} exceeds the server's "
+                        f"effective_defaults.max_output_tokens={health.max_output_tokens}",
+                        file=out,
+                    )
+        if health.max_prompt_tokens is not None:
+            for envelope in served:
+                if envelope.context_window > health.max_prompt_tokens:
+                    print(
+                        f"WARNING: model={envelope.model_id} context={envelope.context_window} exceeds the server's "
+                        f"max_prompt_tokens={health.max_prompt_tokens}",
+                        file=out,
+                    )
+    if not probed:
+        print("prefill_cache=unknown (no loopback or allow-listed endpoint to probe)", file=out)
 
 
 INTENT_CREATOR_ROLE: str = "intent-creator"
@@ -1648,19 +1789,37 @@ def preflight_gate(agent: str, model: str, skip: bool = False) -> PreflightResul
     return result
 
 
-def run_doctor(args: argparse.Namespace) -> int:
-    """Implement ``holon doctor``: resolve the runner and model, probe them and report.
+def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None) -> int:
+    """Implement ``holon doctor``: one readiness report for the runner, the model and the local environment.
+
+    It resolves the agent runner and model and runs the pre-flight probe on them, then reports the effective turn and
+    stage budgets and, when local-LLM mode is enabled, the model envelope and the local gateway probe
+    (:func:`report_budgets_and_envelope`). With ``--json`` the environment section is carried under ``environment``
+    as its report lines, with its ``WARNING:`` lines also listed under ``warnings``.
 
     Args:
         args: Parsed namespace with ``agent``, ``model``, ``json`` and ``timeout``.
+        fetch: Optional HTTP fetcher for the gateway probe (tests).
 
     Returns:
-        0 when the probe reports ``ok``, otherwise 1.
+        0 when the probe reports ``ok`` and the environment section found no configuration error, otherwise 1.
 
     Side effects:
-        One ``docker run`` with a minimal prompt. Writes only to stdout/stderr; never to the repository or ledgers.
+        One ``docker run`` with a minimal prompt and, in local-LLM mode, a health request to loopback or allow-listed
+        gateways. Writes only to stdout/stderr; never to the repository or ledgers.
     """
+    import io
     import json
+
+    env_out = io.StringIO()
+    try:
+        env_code = report_budgets_and_envelope(fetch=fetch, out=env_out)
+    except Exception as exc:  # Last resort; each part already isolates its own failures.
+        print(_doctor_section_failed("environment", exc), file=env_out)
+        env_code = 1
+    env_lines = env_out.getvalue().splitlines()
+    warnings = [line for line in env_lines if line.startswith("WARNING: ")]
+    environment = {"ok": env_code == 0, "lines": env_lines, "warnings": warnings}
 
     try:
         # The text report prints both decisions on stdout, so the resolvers' INFO log would show them twice.
@@ -1668,9 +1827,10 @@ def run_doctor(args: argparse.Namespace) -> int:
         model_res = resolve_model(agent_res.value, args.model, log=False)
     except UnmappedAgentRunnerError as exc:
         if args.json:
-            print(json.dumps({"error": redact_cli_error(exc)}, indent=2))
+            print(json.dumps({"error": redact_cli_error(exc), "environment": environment}, indent=2))
         else:
-            print(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
+            print_encodable(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
+            print_encodable("\n".join(env_lines))
         return 1
 
     result = run_preflight_probe(agent_res.value, model_res.value, timeout=resolve_timeout(args.timeout))
@@ -1679,13 +1839,16 @@ def run_doctor(args: argparse.Namespace) -> int:
             "agent": {"value": agent_res.value, "source": agent_res.source, "reason": agent_res.reason},
             "model": {"value": model_res.value, "source": model_res.source, "reason": model_res.reason},
             "preflight": result.to_dict(),
+            "environment": environment,
         }
         print(json.dumps(payload, indent=2))
     else:
-        print(agent_res.describe("Agent runner"))
-        print(model_res.describe("Model"))
-        print(result.format_report())
-    return 0 if result.ok else 1
+        # Encoding-safe: no configuration text can crash the report on a strict terminal (#94 C23).
+        print_encodable(agent_res.describe("Agent runner"))
+        print_encodable(model_res.describe("Model"))
+        print_encodable(result.format_report())
+        print_encodable("\n".join(env_lines))
+    return 0 if result.ok and env_code == 0 else 1
 
 
 def main() -> None:
@@ -1985,7 +2148,10 @@ def main() -> None:
     # Subcommand: doctor
     doctor_parser = subparsers.add_parser(
         "doctor",
-        help="Check that the selected agent runner is ready (one minimal real model call in its container).",
+        help=(
+            "Check that the selected agent runner is ready (one minimal real model call in its container), and show "
+            "the effective budgets, the local-LLM model envelope and the local gateway state."
+        ),
     )
     doctor_parser.add_argument("--agent", default=None, help=_AGENT_HELP)
     doctor_parser.add_argument("--model", default=None, help=_MODEL_HELP)
@@ -2446,8 +2612,8 @@ def main() -> None:
                 stage_order = ["intent", "plan", "execute", "review", "calibrate"]
                 for st in stage_order:
                     res = context.stage_results.get(st)
-                    status_str = res.status.value.upper() if res else "NOT_RUN"
-                    print(f"  Stage {st.upper():<10}: {status_str}")
+                    # Elapsed against budget, e.g. "plan: ok (4.1 min / 35 min)" (Bean 0139).
+                    print(f"  {res.summary_line()}" if res else f"  {st}: not run")
                     if res and res.status.value == "failed" and res.error:
                         print(f"    -> Error: {redact_cli_error(res.error)}")
                 print("========================================================\n")

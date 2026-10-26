@@ -1050,6 +1050,9 @@ class TestCalibrationInterleavedActionLedger(unittest.TestCase):
         self.assertTrue(is_metadata_path("plans/P-1792372417-plan.md"))
         self.assertTrue(is_metadata_path("plans/P-1792372417-plan_calibration.md"))
         self.assertTrue(is_metadata_path(".holon/checkpoints/flow.json"))
+        # C7-I1: execution notes are committed by every execution and are flow metadata, not code.
+        self.assertTrue(is_metadata_path("executions/E-1792372417-claude-agent-claude-opus-5-5.md"))
+        self.assertFalse(is_metadata_path("src/executions/runner.py"))
         self.assertFalse(is_metadata_path(".beans/0001-task.md"))
         self.assertFalse(is_metadata_path("todo/scratch.py"))
 
@@ -1057,6 +1060,16 @@ class TestCalibrationInterleavedActionLedger(unittest.TestCase):
         self.assertFalse(is_metadata_path("apps/sandbox-executor/src/sandbox_executor/flow.py"))
         self.assertFalse(is_metadata_path("Makefile"))
         self.assertFalse(is_metadata_path("README.md"))
+
+    def test_metadata_paths_extend_the_empty_diff_bookkeeping_list(self):
+        # One definition of execution notes as metadata: the empty-diff guard's list (#95) is part of calibration's.
+        from sandbox_executor.calibration import METADATA_PATH_PREFIXES, is_metadata_path
+        from sandbox_executor.git import EMPTY_DIFF_EXCLUDES
+
+        self.assertIn("executions/", EMPTY_DIFF_EXCLUDES)
+        self.assertEqual(METADATA_PATH_PREFIXES[: len(EMPTY_DIFF_EXCLUDES)], EMPTY_DIFF_EXCLUDES)
+        for prefix in EMPTY_DIFF_EXCLUDES:
+            self.assertTrue(is_metadata_path(f"{prefix}example"))
 
     def test_parse_actual_metrics_excludes_metadata_files(self):
         predicted = PredictedMetrics(p_success=0.90, entropy=2.0, impact=50.0, cost=5.0, learning_value=3.0, ev=35.0)
@@ -1071,6 +1084,7 @@ class TestCalibrationInterleavedActionLedger(unittest.TestCase):
         numstat_output = (
             "3\t0\tholon-knowledge/ledger/executions.jsonl\n"
             "60\t0\tplans/P-1234567890-test_calibration.md\n"
+            "42\t0\texecutions/E-meta-test.md\n"
             "20\t2\tapps/sandbox-executor/src/sandbox_executor/calibration.py\n"
         )
 

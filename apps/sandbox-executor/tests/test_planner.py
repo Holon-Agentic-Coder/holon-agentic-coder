@@ -1,15 +1,17 @@
-import contextlib
+import io
 import json
 import os
 import pathlib
-import sys
 import tempfile
 import unittest
 import uuid
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sandbox_executor.budgets import BudgetBreach
 from sandbox_executor.entrypoint import planner
+from sandbox_executor.turns import TurnResult
 
 from tests.leak_assertions import assert_no_fragment, make_gh_probe
 
@@ -154,179 +156,282 @@ Subsections of the overall section are still in scope.
             self.assertEqual(config6["lambda"], 0.3)
             self.assertEqual(config6["mu"], 0.5)
 
-    @patch("subprocess.run")
-    @patch("os.path.exists")
-    @patch("os.path.getsize")
-    @patch("os.makedirs")
-    @patch("sandbox_executor.entrypoint.planner.cleanup_repo_dir")
-    def test_planner_main(self, mock_rmtree, mock_makedirs, mock_getsize, mock_exists, mock_run):
-        test_args = ["planner.py", "I-12345/_", "pi-agent", "gemini"]
 
-        intent_data = {
-            "branch": "I-12345",
-            "intent_id": "I-12345",
-            "description": "Test description",
-            "goal": "Test goal",
-            "entropy_budget": "15.0",
-        }
+VALID_PLAN = """# Plan for I-12345
 
-        file_contents = {}
-
-        def mock_open_impl(file, mode="r", *args, **kwargs):
-            file_str = str(file)
-            if "intents.jsonl" in file_str:
-                mock_file = MagicMock()
-                mock_file.__iter__.return_value = [json.dumps(intent_data) + "\n"]
-                mock_file.__enter__.return_value = mock_file
-                return mock_file
-            elif "planner.template.md" in file_str:
-                mock_file = MagicMock()
-                mock_file.read.return_value = "Template content {intent_json} {plan_id} {safe_model}"
-                mock_file.__enter__.return_value = mock_file
-                return mock_file
-            elif "plans/P-" in file_str and "md" in file_str and "r" in mode:
-                mock_file = MagicMock()
-                plan_md_content = """# Plan
+- **Plan ID:** P-test
 
 ## Overall Plan Metrics
 
-| metric | value |
-| p_success_pred | 0.8 |
-| entropy_pred | 2.5 |
-| impact_pred | 1.0 |
-| cost_pred | 0.5 |
-| learning_value_pred | 0.5 |
-| ev_pred | 0.6 |
+| metric              | value |
+| ------------------- | ----- |
+| p_success_pred      | 0.8   |
+| entropy_pred        | 2.5   |
+| impact_pred         | 10.0  |
+| cost_pred           | 0.5   |
+| learning_value_pred | 0.5   |
+| ev_pred             | 6.0   |
+
+### Strategy Rationale
+
+The plan validates the artefact on disk before anything is committed, so a truncated final message cannot lose work.
+
+## Step 1: Add the validator
+
+- **Step Type:** IMPLEMENTATION
+- **Implementation:** add a validator module, wire it into the planner entrypoint and cover it with tests that use a
+  temporary workspace and a scripted fake agent rather than any real runner process.
+
+| metric         | value |
+| -------------- | ----- |
+| p_success_pred | 0.9   |
+| entropy_pred   | 1.0   |
+
+## Step 2: Document the behaviour
+
+- **Step Type:** DOCUMENTATION
+- **Implementation:** describe the incremental write protocol and the stdout fallback warning in the sandbox docs.
 """
-                mock_file.read.return_value = plan_md_content
-                mock_file.__enter__.return_value = mock_file
-                return mock_file
-            else:
-                mock_file = MagicMock()
-                mock_file.write = MagicMock()
-                mock_file.__enter__.return_value = mock_file
-                file_contents[file_str] = mock_file
-                return mock_file
 
-        def mock_exists_impl(path):
-            path_str = str(path)
-            return "intents.jsonl" in path_str or "planner.template.md" in path_str or "plans/P-" in path_str
+PARTIAL_PLAN = VALID_PLAN.replace(
+    "### Strategy Rationale\n\nThe plan validates the artefact on disk before anything is committed, "
+    "so a truncated final message cannot lose work.\n\n",
+    "",
+)
 
-        mock_exists.side_effect = mock_exists_impl
-        mock_getsize.return_value = 100
+INTENT = {
+    "branch": "I-12345",
+    "intent_id": "I-12345",
+    "description": "Test description",
+    "goal": "Test goal",
+    "entropy_budget": "15.0",
+}
 
-        mock_run_result = MagicMock()
-        mock_run_result.returncode = 0
-        mock_run_result.stdout = "Successful Agent Run Output"
-        mock_run.return_value = mock_run_result
 
-        # Directly modify and restore sys.argv
-        old_argv = sys.argv
-        sys.argv = test_args
-        with tempfile.TemporaryDirectory() as tmp_dir:
+class _PlannerHarness:
+    """Runs planner.main() against a real temporary workspace with git and the agent replaced by fakes.
+
+    ``agent_turns`` is a list of callables ``(cmd, watch_path) -> TurnResult``; each supervised turn pops the next one.
+    """
+
+    def __init__(self, testcase, agent_turns, model="gemini", env=None, build_cmd=None):
+        self.testcase = testcase
+        self.build_cmd = build_cmd or (lambda model, pf, inf, prompt: ["pi", "-p", "--model", model, prompt])
+        self.agent_turns = list(agent_turns)
+        self.model = model
+        self.env = env or {}
+        self.git_cmds = []
+        self.turn_prompts = []
+        self.exit_code = None
+        self.stdout = ""
+        self.stderr = ""
+
+    def _fake_run_cmd(self, args, cwd=None, env=None, check=True):
+        self.git_cmds.append(list(args))
+        if args[:2] == ["git", "clone"]:
+            ledger = pathlib.Path(cwd) / "holon-knowledge" / "ledger"
+            ledger.mkdir(parents=True, exist_ok=True)
+            (ledger / "intents.jsonl").write_text(json.dumps(INTENT) + "\n")
+            prompts = pathlib.Path(cwd) / "holon-config" / "prompts"
+            prompts.mkdir(parents=True, exist_ok=True)
+            (prompts / "planner.template.md").write_text("Template {intent_json} {plan_id} {safe_model}")
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = ""
+        result.stderr = ""
+        return result
+
+    def _fake_run_turn(self, cmd, **kwargs):
+        self.turn_prompts.append(cmd[-1])
+        self.testcase.assertTrue(self.agent_turns, "planner ran more agent turns than scripted")
+        return self.agent_turns.pop(0)(cmd, kwargs["watch_path"])
+
+    def run(self):
+        runner = MagicMock()
+        runner.get_version.return_value = "1.0.0"
+        runner.build_cmd.side_effect = self.build_cmd
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo_dir = self.tmp.name
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            patch.dict(os.environ, {"HOLON_REPO_DIR": self.repo_dir, **self.env}),
+            patch("sys.argv", ["planner.py", "I-12345/_", "pi-agent", self.model]),
+            patch.object(planner, "get_workspace_dir", return_value=self.repo_dir),
+            patch.object(planner, "cleanup_repo_dir") as self.mock_cleanup,
+            patch.object(planner, "get_runner", return_value=runner),
+            patch.object(planner, "run_cmd", side_effect=self._fake_run_cmd),
+            patch.object(planner, "run_turn", side_effect=self._fake_run_turn),
+            patch.object(planner, "converge_prettier") as self.mock_converge,
+            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+            redirect_stdout(out),
+            redirect_stderr(err),
+        ):
             try:
-                with (
-                    patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
-                    patch("sandbox_executor.entrypoint.planner.get_workspace_dir", return_value=tmp_dir),
-                    patch("builtins.open", side_effect=mock_open_impl),
-                ):
-                    planner.main()
-            finally:
-                sys.argv = old_argv
+                planner.main()
+                self.exit_code = 0
+            except SystemExit as exc:
+                self.exit_code = exc.code
+        self.stdout, self.stderr = out.getvalue(), err.getvalue()
+        return self
 
-            mock_rmtree.assert_called_once_with(tmp_dir, raise_on_error=True)
+    def ledger_lines(self, name):
+        path = pathlib.Path(self.repo_dir) / "holon-knowledge" / "ledger" / name
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
-        self.assertGreaterEqual(mock_run.call_count, 5)
-        called_cmds = [" ".join(call[0][0]) for call in mock_run.call_args_list]
-        self.assertTrue(any("git clone" in cmd for cmd in called_cmds))
-        self.assertTrue(any("git checkout -b" in cmd for cmd in called_cmds))
-        self.assertTrue(any("pi -p" in cmd for cmd in called_cmds))
-        self.assertTrue(any("git commit" in cmd for cmd in called_cmds))
-        self.assertTrue(any("git push" in cmd for cmd in called_cmds))
+    def committed(self):
+        return any(cmd[:2] == ["git", "commit"] for cmd in self.git_cmds)
 
-        # Check plans.jsonl written
-        plans_file = next(k for k in file_contents if "plans.jsonl" in k)
-        plans_mock = file_contents[plans_file]
-        plans_mock.write.assert_called()
-        plans_entry = json.loads(plans_mock.write.call_args[0][0].strip())
-        self.assertEqual(plans_entry["p_success"], 0.8)
-        self.assertEqual(plans_entry["entropy"], 2.5)
+    def cleanup(self):
+        self.tmp.cleanup()
 
-    @patch("subprocess.run")
-    @patch("os.path.exists")
-    @patch("os.path.getsize")
-    @patch("os.makedirs")
-    @patch("sandbox_executor.entrypoint.planner.cleanup_repo_dir")
-    def test_planner_main_fail_fast(self, mock_rmtree, mock_makedirs, mock_getsize, mock_exists, mock_run):
-        test_args = ["planner.py", "I-12345/_", "pi-agent", "gemini"]
 
-        intent_data = {
-            "branch": "I-12345",
-            "intent_id": "I-12345",
-            "description": "Test description",
-            "goal": "Test goal",
-            "entropy_budget": "15.0",
-        }
+def write_file(content, returncode=0, stdout="", breach=None):
+    def turn(cmd, watch_path):
+        if content is not None:
+            with open(watch_path, "w", encoding="utf-8") as f:
+                f.write(content)
+        return TurnResult(returncode=returncode, stdout=stdout, breach=breach, stop_reason=None)
 
-        def mock_open_impl(file, mode="r", *args, **kwargs):
-            file_str = str(file)
-            if "intents.jsonl" in file_str:
-                mock_file = MagicMock()
-                mock_file.__iter__.return_value = [json.dumps(intent_data) + "\n"]
-                mock_file.__enter__.return_value = mock_file
-                return mock_file
-            elif "planner.template.md" in file_str:
-                mock_file = MagicMock()
-                mock_file.read.return_value = "Template content"
-                mock_file.__enter__.return_value = mock_file
-                return mock_file
-            else:
-                mock_file = MagicMock()
-                mock_file.write = MagicMock()
-                mock_file.__enter__.return_value = mock_file
-                return mock_file
+    return turn
 
-        def mock_exists_impl(path):
-            path_str = str(path)
-            return "intents.jsonl" in path_str
 
-        mock_exists.side_effect = mock_exists_impl
-        mock_getsize.return_value = 0
+def append_file(content, returncode=0):
+    def turn(cmd, watch_path):
+        with open(watch_path, "a", encoding="utf-8") as f:
+            f.write(content)
+        return TurnResult(returncode=returncode)
 
-        # Git commands succeed, but agent npx/pi command fails
-        def mock_run_side_effect(args, *a, **kw):
-            result = MagicMock()
-            if args[0] in ["pi", "npx"]:
-                result.returncode = 1
-            else:
-                result.returncode = 0
+    return turn
+
+
+def stdout_only(stdout, returncode=0):
+    return lambda cmd, watch_path: TurnResult(returncode=returncode, stdout=stdout)
+
+
+@patch.dict("os.environ", {"HOLON_AGENT_KEY": "dummy", "HOLON_REPO_URL": "git@github.com:example/repo.git"})
+class TestPlannerMain(unittest.TestCase):
+    def test_partial_fixture_lacks_only_the_rationale(self):
+        self.assertNotEqual(PARTIAL_PLAN, VALID_PLAN)
+        self.assertIn("## Step 1", PARTIAL_PLAN)
+
+    def harness(self, turns, **kwargs):
+        h = _PlannerHarness(self, turns, **kwargs).run()
+        self.addCleanup(h.cleanup)
+        return h
+
+    def test_valid_plan_file_is_committed_with_its_metrics(self):
+        h = self.harness([write_file(VALID_PLAN)])
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        h.mock_cleanup.assert_called_once_with(h.repo_dir, raise_on_error=True)
+        entries = h.ledger_lines("plans.jsonl")
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["p_success"], 0.8)
+        self.assertEqual(entries[0]["entropy"], 2.5)
+        self.assertTrue(h.committed())
+        self.assertTrue(any(cmd[:2] == ["git", "push"] for cmd in h.git_cmds))
+        self.assertRegex(h.stdout, r"plan: ok \(\d+\.\d min / 35 min\)")
+
+    def test_prompt_requires_incremental_file_writes(self):
+        h = self.harness([write_file(VALID_PLAN)])
+        prompt = h.turn_prompts[0]
+        self.assertIn("WRITE PROTOCOL", prompt)
+        self.assertIn("plans/P-", prompt)
+        self.assertNotIn("Output the complete markdown plan directly", prompt)
+
+    def test_truncated_final_message_after_valid_plan_file_still_commits(self):
+        truncated = '{"type":"message_end","stopReason":"length"}'
+        turn = write_file(VALID_PLAN, returncode=1, stdout=truncated)
+
+        def truncating_turn(cmd, watch_path):
+            result = turn(cmd, watch_path)
+            result.stop_reason = "length"
             return result
 
-        mock_run.side_effect = mock_run_side_effect
+        h = self.harness([truncating_turn])
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        self.assertEqual(len(h.ledger_lines("plans.jsonl")), 1)
+        self.assertTrue(h.committed())
+        self.assertIn("treating the exit status as informational", h.stdout)
 
-        # Directly modify and restore sys.argv
-        old_argv = sys.argv
-        sys.argv = test_args
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            try:
-                with (
-                    patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
-                    patch("sandbox_executor.entrypoint.planner.get_workspace_dir", return_value=tmp_dir),
-                    patch("builtins.open", side_effect=mock_open_impl),
-                ):
-                    with self.assertRaises(SystemExit) as cm:
-                        planner.main()
-                    self.assertEqual(cm.exception.code, 1)
-            finally:
-                sys.argv = old_argv
+    def test_no_file_and_empty_stdout_fails_metrics_validation(self):
+        h = self.harness([stdout_only("")])
+        self.assertEqual(h.exit_code, 1)
+        self.assertIn("metrics validation failed", h.stderr)
+        self.assertEqual(h.ledger_lines("plans.jsonl"), [])
+        self.assertFalse(h.committed())
 
-    @patch("subprocess.run")
-    @patch("os.path.exists")
-    @patch("os.path.getsize")
-    @patch("os.makedirs")
-    @patch("sandbox_executor.entrypoint.planner.cleanup_repo_dir")
-    def test_planner_main_model_sanitization(self, mock_rmtree, mock_makedirs, mock_getsize, mock_exists, mock_run):
-        # Test model names with special characters to ensure robust sanitization
+    def test_agent_failure_without_output_fails_fast(self):
+        h = self.harness([stdout_only("", returncode=1)])
+        self.assertEqual(h.exit_code, 1)
+        self.assertFalse(h.committed())
+
+    def test_conversational_stdout_fails_validation(self):
+        h = self.harness([stdout_only("I will search for files in the repository to locate safety.md and files.")])
+        self.assertEqual(h.exit_code, 1)
+        self.assertIn("metrics validation failed", h.stderr)
+        self.assertEqual(h.ledger_lines("plans.jsonl"), [])
+
+    def test_step_table_before_overall_section_does_not_reach_the_ledger(self):
+        # C4-I1 (Bean 0146 / PR #91): the gate and the plans.jsonl row both read `## Overall Plan Metrics`.
+        step_first = VALID_PLAN.replace(
+            "## Overall Plan Metrics",
+            "## Step 0: Survey\n\n| metric | value |\n| --- | --- |\n| p_success_pred | 0.1 |\n"
+            "| entropy_pred | 9.0 |\n| impact_pred | 1.0 |\n| cost_pred | 7.0 |\n| learning_value_pred | 0.2 |\n\n"
+            "## Overall Plan Metrics",
+            1,
+        )
+        self.assertNotEqual(step_first, VALID_PLAN)
+        h = self.harness([write_file(step_first)])
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        rows = h.ledger_lines("plans.jsonl")
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(
+            (row["p_success"], row["entropy"], row["impact"], row["cost"], row["learning_value"]),
+            (0.8, 2.5, 10.0, 0.5, 0.5),
+        )
+
+    def test_missing_overall_metric_is_not_back_filled(self):
+        without_cost = VALID_PLAN.replace("| cost_pred           | 0.5   |\n", "")
+        self.assertNotEqual(without_cost, VALID_PLAN)
+        h = self.harness([write_file(without_cost), append_file("")])
+        self.assertEqual(h.exit_code, 1)
+        self.assertIn("metrics validation failed", h.stderr)
+        self.assertIn("cost", h.stderr.split("metrics validation failed")[1])
+        self.assertEqual(h.ledger_lines("plans.jsonl"), [])
+
+    def test_missing_ev_row_is_recomputed_not_failed(self):
+        # C3-N3: EV is recomputed from the five inputs, so a plan without an ev_pred row is valid.
+        without_ev = VALID_PLAN.replace("| ev_pred             | 6.0   |\n", "")
+        self.assertNotEqual(without_ev, VALID_PLAN)
+        h = self.harness([write_file(without_ev)])
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        self.assertEqual(len(h.turn_prompts), 1)
+        rows = h.ledger_lines("plans.jsonl")
+        self.assertEqual(len(rows), 1)
+        self.assertIsInstance(rows[0]["ev"], float)
+
+    def test_partial_plan_triggers_one_targeted_reprompt(self):
+        rest = "\n### Strategy Rationale\n\nAppended by the follow-up turn.\n"
+        h = self.harness([write_file(PARTIAL_PLAN), append_file(rest)])
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        self.assertEqual(len(h.turn_prompts), 2)
+        reprompt = h.turn_prompts[1].split("Intent metadata:")[-1]
+        self.assertIn("Strategy Rationale", reprompt)
+        self.assertNotIn("Overall Plan Metrics", reprompt)
+        self.assertNotIn("## Step", reprompt)
+        self.assertEqual(len(h.ledger_lines("plans.jsonl")), 1)
+
+    def test_stdout_fallback_logs_warning(self):
+        h = self.harness([stdout_only(f"Here is the plan:\n```markdown\n{VALID_PLAN}\n```\n")])
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        self.assertIn("WARNING: agent did not write plans/P-", h.stderr)
+        self.assertIn("falling back", h.stderr)
+        self.assertEqual(len(h.ledger_lines("plans.jsonl")), 1)
+
+    def test_model_name_is_sanitised_in_branch(self):
         test_cases = [
             ("gemini/3.5-flash (Medium) [Special]*?", "gemini_3.5-flash-Medium-Special"),
             ("gemini..3.5", "gemini.3.5"),
@@ -337,235 +442,71 @@ Subsections of the overall section are still in scope.
             ("a" * 63 + "-extra", "a" * 63),
             ("*?($", "unknown-model"),
         ]
+        for model_name, expected_safe_model in test_cases:
+            with self.subTest(model_name=model_name):
+                h = self.harness([write_file(VALID_PLAN)], model=model_name)
+                checkout_cmds = [" ".join(c) for c in h.git_cmds if c[:3] == ["git", "checkout", "-b"]]
+                self.assertTrue(checkout_cmds, f"No 'git checkout -b' command found in: {h.git_cmds}")
+                self.assertIn(expected_safe_model, checkout_cmds[0])
 
-        intent_data = {
-            "branch": "I-12345",
-            "intent_id": "I-12345",
-            "description": "Test description",
-            "goal": "Test goal",
-            "entropy_budget": "15.0",
-        }
+    def test_converges_prettier_on_plan_file(self):
+        h = self.harness([write_file(VALID_PLAN)])
+        h.mock_converge.assert_called_once()
+        call_files = h.mock_converge.call_args[0][0]
+        self.assertEqual(len(call_files), 1)
+        self.assertTrue(call_files[0].startswith("plans/P-") and call_files[0].endswith(".md"))
+        self.assertEqual(h.mock_converge.call_args[1].get("repo_dir"), h.repo_dir)
 
-        def _make_mock_open(intent_data, file_contents):
-            """Factory for mock_open_impl — defined outside the loop to avoid fragile redefinition."""
+    def test_breach_then_successful_resume_commits_without_budget_record(self):
+        stall = BudgetBreach("plan", "stall", 90, 91)
+        rest = "\n### Strategy Rationale\n\nWritten by the resume turn.\n"
+        h = self.harness([write_file(PARTIAL_PLAN, returncode=-15, breach=stall), append_file(rest)])
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        self.assertIn("partial", h.turn_prompts[1])
+        self.assertEqual(h.ledger_lines("executions.jsonl"), [])
+        self.assertEqual(len(h.ledger_lines("plans.jsonl")), 1)
 
-            def mock_open_impl(file, mode="r", *args, _fc=file_contents, **kwargs):
-                file_str = str(file)
-                if "intents.jsonl" in file_str:
-                    mock_file = MagicMock()
-                    mock_file.__iter__.return_value = [json.dumps(intent_data) + "\n"]
-                    mock_file.__enter__.return_value = mock_file
-                    return mock_file
-                elif "planner.template.md" in file_str:
-                    mock_file = MagicMock()
-                    mock_file.read.return_value = "Template content {intent_json} {plan_id} {safe_model}"
-                    mock_file.__enter__.return_value = mock_file
-                    return mock_file
-                elif "plans/P-" in file_str and "md" in file_str and "r" in mode:
-                    mock_file = MagicMock()
-                    plan_md_content = """# Plan
-
-## Overall Plan Metrics
-
-| metric | value |
-| --- | --- |
-| p_success_pred | 0.8 |
-| entropy_pred | 2.5 |
-| impact_pred | 1.0 |
-| cost_pred | 0.5 |
-| learning_value_pred | 0.5 |
-| ev_pred | 0.6 |
-"""
-                    mock_file.read.return_value = plan_md_content
-                    mock_file.__enter__.return_value = mock_file
-                    return mock_file
-                else:
-                    mock_file = MagicMock()
-                    mock_file.write = MagicMock()
-                    mock_file.__enter__.return_value = mock_file
-                    _fc[file_str] = mock_file
-                    return mock_file
-
-            return mock_open_impl
-
-        def _make_mock_exists():
-            """Factory for mock_exists_impl — defined outside the loop to avoid fragile redefinition."""
-
-            def mock_exists_impl(path):
-                path_str = str(path)
-                return "intents.jsonl" in path_str or "planner.template.md" in path_str or "plans/P-" in path_str
-
-            return mock_exists_impl
-
-        with (
-            tempfile.TemporaryDirectory() as tmp_dir,
-            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
-            patch("sandbox_executor.entrypoint.planner.get_workspace_dir", return_value=tmp_dir),
-        ):
-            for model_name, expected_safe_model in test_cases:
-                with self.subTest(model_name=model_name):
-                    mock_run.reset_mock()
-                    test_args = ["planner.py", "I-12345/_", "pi-agent", model_name]
-
-                    file_contents = {}
-                    mock_exists.side_effect = _make_mock_exists()
-                    mock_getsize.return_value = 100
-
-                    mock_run_result = MagicMock()
-                    mock_run_result.returncode = 0
-                    mock_run_result.stdout = "Successful Agent Run Output"
-                    mock_run.return_value = mock_run_result
-
-                    old_argv = sys.argv
-                    sys.argv = test_args
-                    try:
-                        with patch("builtins.open", side_effect=_make_mock_open(intent_data, file_contents)):
-                            planner.main()
-                    finally:
-                        sys.argv = old_argv
-
-                    # Check git branch checkout command — use explicit list assertion for a clear
-                    # AssertionError (not StopIteration) when no matching command is found.
-                    called_cmds = [" ".join(call[0][0]) for call in mock_run.call_args_list]
-                    checkout_cmds = [cmd for cmd in called_cmds if "git checkout -b" in cmd]
-                    self.assertTrue(checkout_cmds, f"No 'git checkout -b' command found in: {called_cmds}")
-                    checkout_cmd = checkout_cmds[0]
-
-                    self.assertIn(expected_safe_model, checkout_cmd)
-
-    @patch("subprocess.run")
-    @patch("os.path.exists")
-    @patch("os.path.getsize")
-    @patch("os.makedirs")
-    @patch("sandbox_executor.entrypoint.planner.cleanup_repo_dir")
-    def test_planner_invalid_plan_structure_fails_fast(
-        self, mock_rmtree, mock_makedirs, mock_getsize, mock_exists, mock_run
-    ):
-        """Test that planner fails fast when agent output is trivial conversational text."""
-        test_args = ["planner.py", "I-12345/_", "pi-agent", "gemini"]
-
-        intent_data = {
-            "branch": "I-12345",
-            "intent_id": "I-12345",
-            "description": "Test description",
-            "goal": "Test goal",
-        }
-
-        def mock_open_impl(file, mode="r", *args, **kwargs):
-            file_str = str(file)
-            if "intents.jsonl" in file_str:
-                mock_file = MagicMock()
-                mock_file.__iter__.return_value = [json.dumps(intent_data) + "\n"]
-                mock_file.__enter__.return_value = mock_file
-                return mock_file
-            elif "planner.template.md" in file_str:
-                mock_file = MagicMock()
-                mock_file.read.return_value = "Template content"
-                mock_file.__enter__.return_value = mock_file
-                return mock_file
-            elif "plans/P-" in file_str and "md" in file_str and "r" in mode:
-                mock_file = MagicMock()
-                mock_file.read.return_value = "I will search for files in the repository to locate safety.md and files."
-                mock_file.__enter__.return_value = mock_file
-                return mock_file
-            else:
-                mock_file = MagicMock()
-                mock_file.write = MagicMock()
-                mock_file.__enter__.return_value = mock_file
-                return mock_file
-
-        mock_exists.side_effect = lambda p: "intents.jsonl" in str(p) or "plans/P-" in str(p)
-        mock_getsize.return_value = 80
-
-        mock_run_result = MagicMock()
-        mock_run_result.returncode = 0
-        mock_run_result.stdout = "I will search for files in the repository to locate safety.md and files."
-        mock_run.return_value = mock_run_result
-
-        old_argv = sys.argv
-        sys.argv = test_args
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            try:
-                with (
-                    patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
-                    patch("sandbox_executor.entrypoint.planner.get_workspace_dir", return_value=tmp_dir),
-                    patch("builtins.open", side_effect=mock_open_impl),
-                ):
-                    with self.assertRaises(SystemExit) as cm:
-                        planner.main()
-                    self.assertEqual(cm.exception.code, 1)
-            finally:
-                sys.argv = old_argv
-
-    @patch("sandbox_executor.entrypoint.planner.converge_prettier")
-    @patch("subprocess.run")
-    @patch("os.path.exists")
-    @patch("os.path.getsize")
-    @patch("os.makedirs")
-    @patch("sandbox_executor.entrypoint.planner.cleanup_repo_dir")
-    def test_planner_main_converges_prettier(
-        self, mock_cleanup, mock_makedirs, mock_getsize, mock_exists, mock_run, mock_converge
-    ):
-        """Test that planner.main() invokes converge_prettier on the plan markdown file before committing."""
-        test_args = ["planner.py", "I-12345/_", "pi-agent", "gemini-3.5-flash"]
-        intent_data = {
-            "branch": "I-12345",
-            "intent_id": "I-12345",
-            "description": "Test description",
-            "goal": "Test goal",
-        }
-
-        def mock_open_impl(file, mode="r", *args, **kwargs):
-            file_str = str(file)
-            mock_file = MagicMock()
-            if "intents.jsonl" in file_str:
-                mock_file.__iter__.return_value = [json.dumps(intent_data) + "\n"]
-            elif "planner.template.md" in file_str:
-                mock_file.read.return_value = "Template content {intent_json}"
-            elif "plans/P-" in file_str and "md" in file_str:
-                mock_file.read.return_value = (
-                    "# Plan for I-12345\n\n"
-                    "| metric | value |\n"
-                    "| p_success_pred | 0.9 |\n"
-                    "| entropy_pred | 1.0 |\n"
-                    "| impact_pred | 10.0 |\n"
-                    "| cost_pred | 2.0 |\n"
-                    "| learning_value_pred | 1.0 |\n"
-                    "| ev_pred | 5.0 |\n"
-                    "## Safety & Constraint Alignment\n"
-                    "## Step 1: Implementation\n"
-                )
-            mock_file.__enter__.return_value = mock_file
-            return mock_file
-
-        mock_exists.side_effect = lambda p: any(
-            k in str(p) for k in ("intents.jsonl", "planner.template.md", "plans/P-")
+    def test_breach_and_failed_resume_records_one_budget_action_and_salvages(self):
+        turn_breach = BudgetBreach("plan", "turn", 300, 300)
+        partial = "# Plan for I-12345\n\n## Step 1: Partial\n\nCut off before the metrics table.\n"
+        h = self.harness(
+            [
+                write_file(partial, returncode=-15, breach=turn_breach),
+                write_file(None, returncode=-15, breach=turn_breach),
+            ]
         )
-        mock_getsize.return_value = 200
+        self.assertEqual(h.exit_code, 1)
+        self.assertEqual(h.ledger_lines("plans.jsonl"), [])
+        records = h.ledger_lines("executions.jsonl")
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertTrue(record["action_id"].startswith("ACT-BUDGET-"))
+        self.assertEqual(record["entry_type"], "action")
+        self.assertEqual(record["outcome"], "failure")
+        self.assertEqual(record["stage"], "plan")
+        self.assertEqual(record["budget_name"], "turn")
+        self.assertEqual(record["budget_seconds"], 300)
+        self.assertEqual(record["elapsed_seconds"], 300)
+        # The salvaged partial plan and the ledger record are committed together so neither is lost with the sandbox.
+        add_cmds = [c for c in h.git_cmds if c[:2] == ["git", "add"]]
+        self.assertTrue(any("holon-knowledge/ledger/executions.jsonl" in c for c in add_cmds))
+        self.assertTrue(any(any(arg.startswith("plans/P-") for arg in c) for c in add_cmds))
+        self.assertTrue(h.committed())
+        self.assertIn("plan: failed", h.stdout)
+        self.assertIn("resume did not recover", record["action"])
 
-        mock_run_result = MagicMock()
-        mock_run_result.returncode = 0
-        mock_run_result.stdout = "Plan generated successfully"
-        mock_run.return_value = mock_run_result
-
-        old_argv = sys.argv
-        sys.argv = test_args
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            try:
-                with (
-                    patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
-                    patch("sandbox_executor.entrypoint.planner.get_workspace_dir", return_value=tmp_dir),
-                    patch("builtins.open", side_effect=mock_open_impl),
-                ):
-                    planner.main()
-                    mock_cleanup.assert_called_once_with(tmp_dir, raise_on_error=True)
-                    mock_converge.assert_called_once()
-                    call_files = mock_converge.call_args[0][0]
-                    self.assertEqual(len(call_files), 1)
-                    self.assertTrue(call_files[0].startswith("plans/P-") and call_files[0].endswith(".md"))
-                    self.assertEqual(mock_converge.call_args[1].get("repo_dir"), tmp_dir)
-            finally:
-                sys.argv = old_argv
+    def test_breach_without_stage_time_for_resume_names_no_resume(self):
+        stage_breach = BudgetBreach("plan", "stage", 2100, 2100)
+        partial = "# Plan for I-12345\n\n## Step 1: Partial\n\nCut off before the metrics table.\n"
+        h = self.harness(
+            [write_file(partial, returncode=-15, breach=stage_breach)],
+            env={"HOLON_STAGE_BUDGET_SECONDS": "0.000001"},
+        )
+        self.assertEqual(h.exit_code, 1)
+        records = h.ledger_lines("executions.jsonl")
+        self.assertEqual(len(records), 1)
+        self.assertIn("no stage time was left to resume", records[0]["action"])
+        self.assertNotIn("resume did not recover", h.stderr)
 
 
 # --------------------------------------------------------------------------------------
@@ -632,54 +573,27 @@ def test_agent_cmd_echo_masks_bare_provider_value_in_long_arg():
 
 
 @pytest.mark.parametrize("agent_fails", [False, True], ids=["agent_ok", "agent_fails_echoing_value"])
-def test_planner_main_agent_echo_carries_no_settings_value(monkeypatch, capsys, tmp_path, agent_fails):
+def test_planner_main_agent_echo_carries_no_settings_value(monkeypatch, agent_fails):
+    monkeypatch.setenv("HOLON_REPO_URL", "https://github.com/myorg/myrepo.git")
     value = _fake_provider_value()
     settings_blob = json.dumps({"env": {"CLAUDE_CODE_OAUTH_TOKEN": value}})
-    runner = MagicMock()
-    runner.get_version.return_value = "1.0.0"
-    runner.build_cmd.return_value = ["claude", "--settings", settings_blob, "-p", "prompt"]
-
-    intent_row = json.dumps({"branch": "I-12345", "intent_id": "I-12345", "goal": "g", "entropy_budget": "15.0"})
-    plan_md = "# Plan\n\n| metric | value |\n| p_success_pred | 0.8 |\n| entropy_pred | 2.5 |\n"
-
-    def fake_open(file, mode="r", *args, **kwargs):
-        handle = MagicMock()
-        handle.__enter__.return_value = handle
-        name = str(file)
-        if "intents.jsonl" in name:
-            handle.__iter__.return_value = [intent_row + "\n"]
-        elif "planner.template.md" in name:
-            handle.read.return_value = "Template {intent_json} {plan_id} {safe_model}"
-        elif "plans/P-" in name and "r" in mode:
-            handle.read.return_value = plan_md
-        return handle
-
-    # A failing agent leaves no plan file behind, which routes main() to the stdout/stderr dump.
-    existing = ("intents.jsonl", "planner.template.md") + (() if agent_fails else ("plans/P-",))
-    ok = MagicMock(returncode=0, stdout="agent output", stderr="")
-    failed_agent = MagicMock(returncode=1, stdout=f"settings loaded: {value}", stderr=f"auth rejected for {value}")
-
-    def fake_run(argv, *args, **kwargs):
-        return failed_agent if agent_fails and argv and argv[0] == "claude" else ok
-
-    monkeypatch.setattr(sys, "argv", ["planner.py", "I-12345/_", "claude-agent", "claude-opus-5-5"])
-    monkeypatch.setenv("HOLON_REPO_DIR", str(tmp_path))
-    monkeypatch.setenv("HOLON_REPO_URL", "https://github.com/myorg/myrepo.git")
-    with (
-        patch("sandbox_executor.entrypoint.planner.get_runner", return_value=runner),
-        patch("sandbox_executor.entrypoint.planner.get_workspace_dir", return_value=str(tmp_path)),
-        patch("sandbox_executor.entrypoint.planner.cleanup_repo_dir"),
-        patch("os.makedirs"),
-        patch("os.path.getsize", return_value=100),
-        patch("os.path.exists", side_effect=lambda p: any(k in str(p) for k in existing)),
-        patch("builtins.open", side_effect=fake_open),
-        patch("subprocess.run", side_effect=fake_run),
-        contextlib.suppress(SystemExit),
-    ):
-        planner.main()
-    output = capsys.readouterr()
-    combined = output.out + output.err
-    assert "Running command: claude --settings " in combined
-    if agent_fails:
-        assert "Error: agent command failed or returned empty. code=1" in combined
-    assert_no_fragment(combined, value)
+    # A failing agent writes no plan file and no stdout, which routes main() to the stdout/stderr dump.
+    turn = (
+        (lambda cmd, watch_path: TurnResult(returncode=1, stdout="", stderr=f"auth rejected for {value}"))
+        if agent_fails
+        else write_file(VALID_PLAN)
+    )
+    h = _PlannerHarness(
+        unittest.TestCase(),
+        [turn],
+        model="claude-opus-5-5",
+        build_cmd=lambda model, pf, inf, prompt: ["claude", "--settings", settings_blob, "-p", prompt],
+    ).run()
+    try:
+        combined = h.stdout + h.stderr
+        assert "Running command: claude --settings " in combined
+        if agent_fails:
+            assert "Error: agent command failed or returned empty. code=1" in combined
+        assert_no_fragment(combined, value)
+    finally:
+        h.cleanup()

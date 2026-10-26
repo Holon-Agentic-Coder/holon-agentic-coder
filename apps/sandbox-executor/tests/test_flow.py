@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 import time
 from collections.abc import Callable, Iterator
@@ -419,6 +420,34 @@ class TestFlowStages:
         assert res.payload["bean_0034_enforced"] is True
         assert res.payload["consensus"]["approved"] is True
         assert "holon review approve" in res.payload["human_approval_command"]
+
+    def test_stage4_review_diff_summary_excludes_execution_notes(self, tmp_path):
+        """C7-I1: executions/E-*.md notes are metadata, so they never count as changed code in the review package."""
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            plan_branch="I-100-intent/P-200-plan/_",
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            dry_run=False,
+        )
+        numstat = (
+            "40\t0\texecutions/E-300-exec.md\n"
+            "3\t0\tholon-knowledge/ledger/executions.jsonl\n"
+            "12\t4\tplans/P-200-plan.md\n"
+            "7\t2\tsrc/app.py\n"
+        )
+
+        def fake_git(args, **kwargs):
+            if args[:2] == ["diff", "--numstat"]:
+                return MagicMock(returncode=0, stdout=numstat)
+            return MagicMock(returncode=0, stdout="")
+
+        loop_res = {"consensus": {"approved": True}, "mergeability": {}}
+        with (
+            patch("sandbox_executor.flow.run_git", side_effect=fake_git),
+            patch("sandbox_executor.flow.run_review_loop", return_value=loop_res),
+        ):
+            res = run_review_stage(ctx)
+        assert res.payload["review_package"]["diff_summary"] == {"files_changed": 1, "insertions": 7, "deletions": 2}
 
     def test_stage4_review_rejection_on_test_failure(self, tmp_path):
         """Test Stage 4 fails consensus and returns FAILED when previous stage failed."""
@@ -1874,6 +1903,219 @@ class TestProactiveConflictAndReviewLoop:
 
             with pytest.raises(ConflictResolutionError, match="Unresolvable merge conflict"):
                 check_and_resolve_stage_conflicts(str(tmp_path), target_branch="main", stage_name="test")
+
+
+class SteppingClock:
+    """Fake monotonic clock that advances by ``step`` seconds on every reading."""
+
+    def __init__(self, step):
+        self.step = step
+        self.now = 0.0
+
+    def __call__(self):
+        self.now += self.step
+        return self.now
+
+
+class TestStageBudgets:
+    """Bean 0139: stage ceilings, elapsed-versus-budget summary lines and the execute budget hand-down."""
+
+    def test_summary_line_format(self):
+        res = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS, elapsed_seconds=246, budget_seconds=2100)
+        assert res.summary_line() == "plan: ok (4.1 min / 35 min)"
+        assert StageResult(stage=FlowStage.EXECUTE, status=StageStatus.FAILED).summary_line() == "execute: failed"
+        restored = StageResult.from_dict(res.to_dict())
+        assert (restored.elapsed_seconds, restored.budget_seconds) == (246, 2100)
+
+    def test_every_stage_reports_elapsed_against_budget(self, tmp_path):
+        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+        ctx = FlowContext(
+            repo_dir=str(tmp_path), intent_data={"slug": "budget", "goal": "Budgets"}, auto_calibrate=True, dry_run=True
+        )
+        results = PipelineEngine(ctx).run()
+        expected_budgets = {"intent": 600, "plan": 2100, "execute": 2700, "review": 900, "calibrate": 600}
+        for stage, budget in expected_budgets.items():
+            assert results[stage].budget_seconds == budget, stage
+            assert results[stage].elapsed_seconds is not None, stage
+        logs = "\n".join(ctx.logs)
+        assert re.search(r"intent: ok \(\d+\.\d min / 10 min\)", logs)
+        assert re.search(r"plan: ok \(\d+\.\d min / 35 min\)", logs)
+        assert re.search(r"execute: ok \(\d+\.\d min / 45 min\)", logs)
+        assert re.search(r"review: halted \(\d+\.\d min / 15 min\)", logs)
+
+    def test_stage_breach_under_fake_clock_fails_the_stage(self, tmp_path):
+        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+        ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "slow", "goal": "Slow"}, dry_run=True)
+        results = PipelineEngine(ctx, clock=SteppingClock(step=3000)).run()
+        assert results["intent"].status == StageStatus.FAILED
+        assert "exceeded its stage budget" in results["intent"].error
+        assert results["intent"].payload["budget_breach"]["budget_name"] == "stage"
+        assert "plan" not in results
+        assert not (tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl").exists()
+
+    def test_sub_minute_stage_ceiling_is_not_reported_as_zero_minutes(self, tmp_path):
+        # C7-N2: budget messages use the shared minutes formatter, so a 20 s ceiling reads "0.3 min", not "0 min".
+        from sandbox_executor.budgets import Budgets
+
+        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+        ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "fast", "goal": "Fast"}, dry_run=True)
+        engine = PipelineEngine(ctx, budgets=Budgets(stage_override_seconds=20), clock=SteppingClock(step=30))
+        results = engine.run()
+        assert results["intent"].status == StageStatus.FAILED
+        assert results["intent"].error.endswith("against 0.3 min.")
+        assert "against 0 min" not in results["intent"].error
+
+    def test_review_overrun_after_consensus_keeps_approval_and_runs_calibration(self, tmp_path):
+        # C3-I3: two review iterations each within budget plus PR/posting overhead exceed 2 x 15 min in total; the
+        # approved review is not downgraded and calibration still runs.
+        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+        ctx = FlowContext(
+            repo_dir=str(tmp_path), intent_data={"slug": "rev", "goal": "Rev"}, auto_calibrate=True, dry_run=True
+        )
+        review = StageResult(
+            stage=FlowStage.REVIEW,
+            status=StageStatus.HALTED_FOR_HUMAN,
+            payload={"consensus": {"approved": True, "iterations": 2}},
+        )
+        calibrate = StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS)
+
+        def fake_review(context):
+            context.stage_results["review"] = review
+            return review
+
+        with (
+            patch("sandbox_executor.flow.run_review_stage", side_effect=fake_review),
+            patch("sandbox_executor.flow.run_calibrate_stage", return_value=calibrate) as mock_cal,
+        ):
+            engine = PipelineEngine(ctx, from_stage="review", clock=SteppingClock(step=30.5 * 60))
+            engine.run()
+        assert review.status == StageStatus.HALTED_FOR_HUMAN
+        assert review.budget_seconds == 2 * 900
+        assert review.payload["budget_overrun"]["budget_name"] == "stage"
+        assert "budget_breach" not in review.payload
+        mock_cal.assert_called_once()
+
+    def test_calibration_overrun_keeps_success(self, tmp_path):
+        ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "cal", "goal": "Cal"}, dry_run=True)
+        calibrate = StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS)
+        with patch("sandbox_executor.flow.run_calibrate_stage", return_value=calibrate):
+            result = PipelineEngine(ctx, clock=SteppingClock(step=3000)).timed_execute_stage(FlowStage.CALIBRATE)
+        assert result.status == StageStatus.SUCCESS
+        assert result.payload["budget_overrun"]["budget_seconds"] == 600
+
+    def test_timed_stage_is_the_active_host_timer_except_review(self, tmp_path):
+        # C6-I1: role containers dispatched during a stage read this timer (cli.run_docker_container hand-down).
+        from sandbox_executor.budgets import current_stage_timer, stage_budget_handdown_env
+
+        ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "h", "goal": "H"}, dry_run=True)
+        seen = {}
+
+        def fake_stage(name):
+            def run(context):
+                seen[name] = (current_stage_timer(), stage_budget_handdown_env())
+                return StageResult(stage=FlowStage(name), status=StageStatus.SUCCESS)
+
+            return run
+
+        engine = PipelineEngine(ctx, clock=lambda: 0.0)
+        with (
+            patch("sandbox_executor.flow.run_plan_stage", side_effect=fake_stage("plan")),
+            patch("sandbox_executor.flow.run_review_stage", side_effect=fake_stage("review")),
+        ):
+            engine.timed_execute_stage(FlowStage.PLAN)
+            engine.timed_execute_stage(FlowStage.REVIEW)
+        plan_timer, plan_env = seen["plan"]
+        assert plan_timer is not None and plan_timer.budget_seconds == 2100
+        assert plan_env == {"HOLON_STAGE_BUDGET_SECONDS": "2040"}
+        assert seen["review"] == (None, {})
+        assert current_stage_timer() is None
+
+    def test_review_stage_budget_honours_the_exact_stage_override(self, tmp_path):
+        ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "o", "goal": "O"}, dry_run=True)
+        with patch.dict(os.environ, {"HOLON_STAGE_BUDGET_SECONDS": "120"}):
+            engine = PipelineEngine(ctx)
+        review = StageResult(
+            stage=FlowStage.REVIEW, status=StageStatus.SUCCESS, payload={"consensus": {"iterations": 3}}
+        )
+        assert engine.stage_budget_seconds(FlowStage.REVIEW, review) == 360
+
+    def _dispatch_timed_execute(self, tmp_path, env, exit_code=7):
+        """Run timed Stage 3 through the real cli.dispatch_role_agent and capture the executor container's env.
+
+        With ``exit_code`` 0 the dispatch succeeds and the post-dispatch path runs against a discovered execution branch
+        that changes one path and records a ``success`` summary row.
+        """
+        from sandbox_executor.budgets import stage_budget_handdown_env
+
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_data={"slug": "b", "goal": "B"},
+            plan_branch="I-1-x/P-2-y/_",
+            agent="claude-agent",
+            model="claude-opus-5-5",
+            dry_run=False,
+        )
+        seen = []
+
+        def fake_container(role, image_name, container_args, **kwargs):
+            # run_docker_container adds exactly this to the forwarded env (cli test covers the docker argv).
+            seen.append((role, image_name, list(container_args), stage_budget_handdown_env()))
+            return exit_code
+
+        exec_branch = "I-1-x/P-2-y/E-3-claude-agent-claude-opus-5-5/_"
+        with (
+            patch.dict(os.environ, env),
+            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow._snapshot_child_branches", return_value=set()),
+            patch("sandbox_executor.cli.run_docker_container", side_effect=fake_container),
+            patch("sandbox_executor.flow._fetch_branch_prefix_error", return_value=None),
+            patch("sandbox_executor.flow._discover_child_branch", return_value=(exec_branch, None)),
+            patch("sandbox_executor.flow._track_local_branch"),
+            patch(
+                "sandbox_executor.flow._read_ledger_rows",
+                return_value=[
+                    {"entry_type": "summary", "execution_id": "E-3-claude-agent-claude-opus-5-5", "status": "success"}
+                ],
+            ),
+            patch("sandbox_executor.flow._resolve_branch_ref", return_value="refs/remotes/origin/I-1-x/P-2-y/_"),
+            patch("sandbox_executor.flow.changed_paths", return_value=["src/app.py"]),
+        ):
+            now = [0.0]
+            result = PipelineEngine(ctx, clock=lambda: now[0]).timed_execute_stage(FlowStage.EXECUTE)
+        return result, seen
+
+    def test_execute_budget_reaches_the_dispatched_executor_container(self, tmp_path):
+        # After #95 Stage 3 runs no host-side verification: the executor container measures its own tests, so the
+        # execute stage budget must reach that container through dispatch_role_agent -> run_docker_container.
+        result, seen = self._dispatch_timed_execute(tmp_path, {"HOLON_STAGE_BUDGET_EXECUTE_MINUTES": "20"})
+        assert [(role, image) for role, image, _, _ in seen] == [("executor", "holon/agent-claude")]
+        assert seen[0][2] == ["I-1-x/P-2-y/_", "claude-agent", "claude-opus-5-5"]
+        # 1200 s stage budget minus CONTAINER_OVERHEAD_AND_HOST_CHECKS_MARGIN_SECONDS (at most a tenth of the budget).
+        assert seen[0][3] == {"HOLON_STAGE_BUDGET_SECONDS": "1140"}
+        assert result.status == StageStatus.FAILED
+        assert result.error == "Execute stage failed: executor agent exited with code 7."
+        assert result.budget_seconds == 1200
+
+    def test_execute_stage_runs_no_host_side_verification(self, tmp_path):
+        with patch("subprocess.run") as mock_sub:
+            result, seen = self._dispatch_timed_execute(tmp_path, {}, exit_code=0)
+        assert [role for role, _, _, _ in seen] == ["executor"]
+        assert result.status == StageStatus.SUCCESS, result.error
+        assert result.payload["changed_files"] == 1
+        commands = [" ".join(map(str, call.args[0])) for call in mock_sub.call_args_list if call.args]
+        assert not [cmd for cmd in commands if "pytest" in cmd or "task test" in cmd]
+
+    def test_review_iteration_ceiling_stops_the_loop(self, tmp_path):
+        ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1-x/P-2-y/E-3-z/_", dry_run=True)
+        ctx.stage_results["execute"] = StageResult(
+            stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"test_pass_rate": 0.0, "exit_code": 1}
+        )
+        with patch("sandbox_executor.flow.run_git") as mock_git:
+            mock_git.return_value = MagicMock(returncode=0, stdout="")
+            res = run_review_loop(ctx, target="I-1-x/P-2-y/E-3-z/_", max_iterations=5, clock=SteppingClock(1000))
+        assert res["total_iterations"] == 1
+        assert res["budget_breach"]["budget_name"] == "review_iteration"
+        assert res["iteration_summaries"] == ["iteration 1 review: failed (16.7 min / 15 min)"]
 
 
 # ---------------------------------------------------------------------------

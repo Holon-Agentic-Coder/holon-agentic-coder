@@ -4,6 +4,7 @@ Covers the authority rewrite decision table, the generated container-side agent 
 the keyless validation path for local providers.
 """
 
+import io
 import json
 import os
 import secrets
@@ -322,7 +323,11 @@ class TestPrepareAgentDir(unittest.TestCase):
     def test_writes_rewritten_models_json_with_safe_container_permissions(self):
         old_umask = os.umask(0o077)
         try:
-            host_config = {"providers": {"vmlx": {"baseUrl": "http://localhost:8081/v1", "models": [{"id": "m"}]}}}
+            host_config = {
+                "providers": {
+                    "vmlx": {"baseUrl": "http://localhost:8081/v1", "models": [{"id": "m", "contextWindow": 32768}]}
+                }
+            }
             with tempfile.TemporaryDirectory() as tmp:
                 dest = os.path.join(tmp, "agent")
                 config = local_llm.prepare_agent_dir(dest, host_config=host_config)
@@ -369,12 +374,19 @@ class TestPrepareAgentDir(unittest.TestCase):
                     local_llm.host_models_json()["providers"]["vmlx"]["baseUrl"], "http://localhost:8081/v1"
                 )
 
-    def test_host_models_json_invalid_is_ignored(self):
+    def test_host_models_json_invalid_raises_naming_the_file(self):
+        # A present but malformed models.json is a clean config error naming the file, never silently skipped
+        # (#94 C21); its content never reaches the message.
         with tempfile.TemporaryDirectory() as tmp:
             with open(os.path.join(tmp, "models.json"), "w") as handle:
                 handle.write("{not json")
-            with patch.object(local_llm, "pi_agent_dirs", lambda: [tmp]):
-                self.assertIsNone(local_llm.host_models_json())
+            with (
+                patch.object(local_llm, "pi_agent_dirs", lambda: [tmp]),
+                self.assertRaises(local_llm.LocalLLMConfigError) as ctx,
+            ):
+                local_llm.host_models_json()
+        self.assertIn("models.json is not valid JSON", str(ctx.exception))
+        self.assertNotIn("not json", str(ctx.exception))
 
     def test_pi_agent_dirs_respects_env_var(self):
         with patch.dict(os.environ, {local_llm.ENV_PI_AGENT_DIR: "/custom/pi/dir"}, clear=True):
@@ -384,7 +396,13 @@ class TestPrepareAgentDir(unittest.TestCase):
 
 class TestLauncherIntegration(unittest.TestCase):
     def _run(self, env, mounts=None, tr_envs=None, mkdtemp_dir=None, agent_id="pi", token_reduce=False):
-        merged_env = {"GITHUB_TOKEN": "mock-token", "HOLON_REPO_URL": "git@github.com:dummy/repo.git", **env}
+        # Synthesised model entries declare no contextWindow; the envelope needs one (Bean 0140).
+        merged_env = {
+            "GITHUB_TOKEN": "mock-token",
+            "HOLON_REPO_URL": "git@github.com:dummy/repo.git",
+            "HOLON_LOCAL_CONTEXT_WINDOW": "32768",
+            **env,
+        }
         with (
             patch("shutil.which", side_effect=lambda name: "/usr/bin/docker" if name == "docker" else None),
             patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run,
@@ -707,3 +725,588 @@ class TestRunnerValidation(unittest.TestCase):
         self.assertEqual(local_llm.normalize_agent_id("agent-pi"), "pi")
         self.assertEqual(local_llm.normalize_agent_id("Pi"), "pi")
         self.assertEqual(local_llm.normalize_agent_id("claude-agent"), "claude")
+
+
+def _config(*models, base_url="http://localhost:8081/v1"):
+    return {"providers": {"vmlx": {"baseUrl": base_url, "apiKey": "holon-local", "models": list(models)}}}
+
+
+class TestModelEnvelope(unittest.TestCase):
+    """Bean 0140: explicit maxTokens and reasoning mode on every generated model entry."""
+
+    def apply(self, config, env=None):
+        return local_llm.apply_model_envelope(config, env or {})
+
+    def test_synthesises_quarter_of_context_window(self):
+        config = _config({"id": "small", "contextWindow": 32768})
+        with self.assertLogs("sandbox_executor.local_llm", level="INFO") as logs:
+            (envelope,) = self.apply(config)
+        entry = config["providers"]["vmlx"]["models"][0]
+        self.assertEqual(entry["maxTokens"], 8192)
+        self.assertEqual((envelope.max_tokens, envelope.max_tokens_source), (8192, "synthesised"))
+        self.assertTrue(
+            any("'small'" in line and "8192" in line and "absent in host config" in line for line in logs.output)
+        )
+
+    def test_synthesis_is_capped(self):
+        config = _config({"id": "big", "contextWindow": 999424})
+        (envelope,) = self.apply(config)
+        self.assertEqual(envelope.max_tokens, 16384)
+        self.assertEqual(config["providers"]["vmlx"]["models"][0]["maxTokens"], 16384)
+
+    def test_valid_host_value_passes_through(self):
+        config = _config({"id": "m", "contextWindow": 32768, "maxTokens": 4000})
+        (envelope,) = self.apply(config)
+        self.assertEqual(config["providers"]["vmlx"]["models"][0]["maxTokens"], 4000)
+        self.assertEqual(envelope.envelope_line(), "model=m context=32768 max_tokens=4000 source=host")
+
+    def test_rejects_invalid_max_tokens(self):
+        for bad in (0, -1, 1.5, 4096.0, "4096", True, None, 32768 - 4096 + 1):
+            with self.subTest(bad=bad), self.assertRaises(local_llm.LocalLLMConfigError) as ctx:
+                self.apply(_config({"id": "m", "contextWindow": 32768, "maxTokens": bad}))
+            self.assertIn("'m'", str(ctx.exception))
+
+    def test_reserve_is_configurable(self):
+        config = _config({"id": "m", "contextWindow": 32768, "maxTokens": 30000})
+        (envelope,) = self.apply(config, {"HOLON_CONTEXT_RESERVE_TOKENS": "1024"})
+        self.assertEqual(envelope.max_tokens, 30000)
+
+    def test_missing_context_window_uses_env_or_fails(self):
+        config = _config({"id": "m"})
+        (envelope,) = self.apply(config, {"HOLON_LOCAL_CONTEXT_WINDOW": "65536"})
+        self.assertEqual((envelope.context_window, envelope.max_tokens), (65536, 16384))
+        self.assertEqual(config["providers"]["vmlx"]["models"][0]["contextWindow"], 65536)
+        with self.assertRaises(local_llm.LocalLLMConfigError) as ctx:
+            self.apply(_config({"id": "m"}))
+        self.assertIn("HOLON_LOCAL_CONTEXT_WINDOW", str(ctx.exception))
+
+    def test_invalid_context_window(self):
+        for bad in (0, -5, "32768", 3.5, False):
+            with self.subTest(bad=bad), self.assertRaises(local_llm.LocalLLMConfigError):
+                self.apply(_config({"id": "m", "contextWindow": bad}))
+
+    def test_reasoning_mode_from_env_host_and_default(self):
+        cases = [
+            ({"HOLON_REASONING_MODE": "LOW"}, {"reasoning": True}, ("low", "env"), True),
+            ({}, {"reasoning": "medium"}, ("medium", "host"), True),
+            ({}, {"reasoning": False}, ("off", "host"), False),
+            ({}, {"reasoning": True}, ("off", "default"), False),
+            ({}, {}, ("off", "default"), False),
+        ]
+        for env, extra, expected, flag in cases:
+            with self.subTest(env=env, extra=extra):
+                config = _config({"id": "m", "contextWindow": 32768, **extra})
+                (envelope,) = self.apply(config, env)
+                self.assertEqual((envelope.reasoning, envelope.reasoning_source), expected)
+                self.assertIs(config["providers"]["vmlx"]["models"][0]["reasoning"], flag)
+                self.assertEqual(envelope.reasoning_line(), f"reasoning={expected[0]} source={expected[1]}")
+
+    def test_env_reasoning_mode_never_overrides_host_reasoning_false(self):
+        # C6-N3: a model declared unable to reason keeps reasoning off; the env mode is ignored with a warning.
+        config = _config(
+            {"id": "plain", "contextWindow": 32768, "reasoning": False},
+            {"id": "thinker", "contextWindow": 32768, "reasoning": True},
+        )
+        with self.assertLogs("sandbox_executor.local_llm", level="WARNING") as logs:
+            plain, thinker = self.apply(config, {"HOLON_REASONING_MODE": "high"})
+        self.assertEqual((plain.reasoning, plain.reasoning_source), ("off", "host"))
+        self.assertEqual((thinker.reasoning, thinker.reasoning_source), ("high", "env"))
+        models = config["providers"]["vmlx"]["models"]
+        self.assertIs(models[0]["reasoning"], False)
+        self.assertIs(models[1]["reasoning"], True)
+        self.assertTrue(any("'plain'" in line and "reasoning: false" in line for line in logs.output))
+        # An explicit "off" agrees with the host entry, so nothing is warned about.
+        with self.assertNoLogs("sandbox_executor.local_llm", level="WARNING"):
+            (envelope,) = self.apply(
+                _config({"id": "m", "contextWindow": 32768, "reasoning": False}), {"HOLON_REASONING_MODE": "off"}
+            )
+        self.assertEqual((envelope.reasoning, envelope.reasoning_source), ("off", "host"))
+
+    def test_invalid_reasoning_mode_raises(self):
+        with self.assertRaises(local_llm.LocalLLMConfigError):
+            self.apply(_config({"id": "m", "contextWindow": 32768}), {"HOLON_REASONING_MODE": "turbo"})
+        with self.assertRaises(local_llm.LocalLLMConfigError):
+            self.apply(_config({"id": "m", "contextWindow": 32768, "reasoning": "max"}))
+
+    def test_prepare_agent_dir_writes_envelope_and_thinking_level(self):
+        host_config = _config({"id": "m", "contextWindow": 32768})
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.dict(os.environ, {"HOLON_REASONING_MODE": "minimal"}, clear=True),
+        ):
+            dest = os.path.join(tmp, "agent")
+            config = local_llm.prepare_agent_dir(dest, host_config=host_config)
+            with open(os.path.join(dest, "models.json")) as f:
+                on_disk = json.load(f)
+            with open(os.path.join(dest, "settings.json")) as f:
+                settings = json.load(f)
+            # Rewrite behaviour is unchanged; the envelope is added on top.
+            self.assertEqual(on_disk["providers"]["vmlx"]["baseUrl"], "http://host.docker.internal:8081/v1")
+            self.assertEqual(on_disk, config)
+            entry = on_disk["providers"]["vmlx"]["models"][0]
+            self.assertIsInstance(entry["maxTokens"], int)
+            self.assertIs(entry["reasoning"], True)
+            self.assertEqual(settings, {"defaultThinkingLevel": "minimal"})
+            self.assertEqual(stat.S_IMODE(os.stat(os.path.join(dest, "settings.json")).st_mode), 0o644)
+            self.assertEqual(local_llm.container_env(dest), {"PI_CODING_AGENT_DIR": local_llm.CONTAINER_AGENT_DIR})
+
+
+# Frozen health fixtures: shapes for parser coverage only, not performance claims.
+HEALTH_OFF = {"status": "ok", "prefill_cache": {"enabled": False}, "effective_defaults": {"max_output_tokens": 8192}}
+HEALTH_COLD = {
+    "status": "ok",
+    "prefill_cache": {"enabled": True, "entries": 0, "cached_tokens": 0, "memory_bytes": 0},
+    "memory": {"used_bytes": 1048576, "limit_bytes": 8589934592},
+    "effective_defaults": {"max_output_tokens": 8192},
+}
+HEALTH_WARM = {
+    "status": "ok",
+    "prefill_cache": {"enabled": True, "entries": 3, "cached_tokens": 41234, "memory_bytes": 536870912},
+    "memory": {"used_bytes": 2147483648, "limit_bytes": 8589934592},
+    "effective_defaults": {"max_output_tokens": 4096},
+}
+HEALTH_SMALL_PROMPT = {
+    "status": "ok",
+    "prefill_cache": {"enabled": True, "entries": 0},
+    "effective_defaults": {"max_output_tokens": 16384, "max_prompt_tokens": 32768},
+}
+HEALTH_MALFORMED = "<html>not json</html>"
+
+
+def _fetcher(payload, calls=None):
+    def fetch(url, timeout):
+        if calls is not None:
+            calls.append((url, timeout))
+        return payload if isinstance(payload, str) else json.dumps(payload).encode()
+
+    return fetch
+
+
+class TestHostGateways(unittest.TestCase):
+    def test_groups_providers_by_server_and_skips_unprobeable_endpoints(self):
+        host_config = {
+            "providers": {
+                "a": {"baseUrl": "http://127.0.0.1:8000/v1", "models": [{"id": "x"}]},
+                "b": {"baseUrl": "http://127.0.0.1:8000/anthropic", "models": [{"id": "y"}]},
+                "c": {"baseUrl": "http://gpu.lan:9000/v1", "models": [{"id": "z"}]},
+                "cloud": {"baseUrl": "https://api.example.com/v1", "models": [{"id": "w"}]},
+            }
+        }
+        allow_list = {"gpu.lan"}
+        config = local_llm.build_container_config(host_config, allow_list)
+        gateways = local_llm.host_gateways(host_config, config, {}, allow_list)
+        self.assertEqual(
+            gateways,
+            [
+                ("http://127.0.0.1:8000/v1", frozenset({"a", "b"})),
+                ("http://gpu.lan:9000/v1", frozenset({"c"})),
+            ],
+        )
+
+    def test_synthesised_provider_maps_to_configured_base_url(self):
+        env = {"HOLON_LOCAL_BASE_URL": "http://localhost:11434/v1", "HOLON_LOCAL_MODELS": "m"}
+        with patch.dict(os.environ, env, clear=True):
+            config = local_llm.build_container_config(None)
+            gateways = local_llm.host_gateways(None, config, env)
+        self.assertEqual(gateways, [("http://localhost:11434/v1", frozenset(config["providers"]))])
+
+
+class TestGatewayHealth(unittest.TestCase):
+    def test_off_cold_warm_classification(self):
+        for payload, expected in ((HEALTH_OFF, "off"), (HEALTH_COLD, "cold"), (HEALTH_WARM, "warm")):
+            with self.subTest(expected=expected):
+                health = local_llm.probe_gateway_health("http://localhost:8081/v1", fetch=_fetcher(payload))
+                self.assertEqual(health.prefill_cache, expected)
+                self.assertTrue(health.cache_line().startswith(f"prefill_cache={expected}"))
+
+    def test_memory_figures_and_output_default(self):
+        health = local_llm.probe_gateway_health("http://localhost:8081/v1", fetch=_fetcher(HEALTH_WARM))
+        self.assertEqual(health.max_output_tokens, 4096)
+        self.assertEqual(health.memory["memory_used_bytes"], 2147483648)
+        self.assertEqual(health.memory["cache_memory_bytes"], 536870912)
+        self.assertIn("memory_limit_bytes=8589934592", health.cache_line())
+
+    def test_malformed_response_is_unknown(self):
+        health = local_llm.probe_gateway_health("http://localhost:8081/v1", fetch=_fetcher(HEALTH_MALFORMED))
+        self.assertEqual(health.prefill_cache, "unknown")
+        self.assertEqual(local_llm.parse_gateway_health("u", ["list"]).prefill_cache, "unknown")
+        self.assertEqual(local_llm.parse_gateway_health("u", {"status": "ok"}).prefill_cache, "unknown")
+
+    def test_network_failure_is_unknown(self):
+        def failing(url, timeout):
+            raise OSError("connection refused")
+
+        health = local_llm.probe_gateway_health("http://127.0.0.1:8081/v1", fetch=failing)
+        self.assertEqual(health.prefill_cache, "unknown")
+        self.assertIn("connection refused", health.cache_line())
+
+    def test_malformed_http_response_is_unknown(self):
+        import http.client
+
+        for exc in (http.client.BadStatusLine("garbage"), http.client.IncompleteRead(b"{")):
+            with self.subTest(exc=type(exc).__name__):
+
+                def failing(url, timeout, exc=exc):
+                    raise exc
+
+                health = local_llm.probe_gateway_health("http://127.0.0.1:8081/v1", fetch=failing)
+                self.assertEqual(health.prefill_cache, "unknown")
+                self.assertIn("health probe failed", health.cache_line())
+
+    def test_probe_targets_health_path_with_short_timeout(self):
+        calls = []
+        local_llm.probe_gateway_health("http://localhost:8081/v1", fetch=_fetcher(HEALTH_OFF, calls))
+        self.assertEqual(calls, [("http://localhost:8081/health", 2.0)])
+
+    def test_never_probes_remote_or_gateway_hosts(self):
+        calls = []
+        for url in ("https://api.example.com/v1", "http://192.168.1.20:8081/v1", "http://host.docker.internal:8081/v1"):
+            with self.subTest(url=url):
+                self.assertIsNone(local_llm.probe_gateway_health(url, fetch=_fetcher(HEALTH_OFF, calls)))
+        self.assertEqual(calls, [])
+        allowed = local_llm.probe_gateway_health(
+            "http://192.168.1.20:8081/v1", fetch=_fetcher(HEALTH_OFF, calls), allow_list={"192.168.1.20"}
+        )
+        self.assertEqual(allowed.prefill_cache, "off")
+
+    def test_probe_url_drops_userinfo(self):
+        calls = []
+        url = "http://user:s3cret@localhost:8081/v1"
+        health = local_llm.probe_gateway_health(url, fetch=_fetcher(HEALTH_OFF, calls))
+        self.assertEqual(calls, [("http://localhost:8081/health", 2.0)])
+        self.assertNotIn("s3cret", health.url)
+        self.assertEqual(local_llm.health_url("http://[::1]:8081/v1"), "http://[::1]:8081/health")
+
+    def test_redact_url_drops_userinfo_query_and_fragment(self):
+        # C8-N1: base URLs echoed into errors or logs must never carry credentials. Built at runtime, not literals.
+        sample = "pw-" + "x" * 8
+        url = f"http://someone:{sample}@gpu.example.com:8000/v1?key={sample}#{sample}"
+        self.assertEqual(local_llm.redact_url(url), "http://***@gpu.example.com:8000/v1")
+        self.assertEqual(local_llm.redact_url("http://localhost:11434/v1"), "http://localhost:11434/v1")
+        unparseable = f"http://someone:{sample}@[::1/v1?key={sample}"
+        self.assertNotIn(sample, local_llm.redact_url(unparseable))
+        with self.assertRaises(ValueError) as caught:
+            local_llm._default_fetch(f"file://someone:{sample}@localhost/etc", 1.0)
+        self.assertNotIn(sample, str(caught.exception))
+
+    def test_redact_url_drops_userinfo_with_unencoded_delimiters(self):
+        # C9-N1: urlsplit ends the authority at the first "/", "?" or "#", so such a password must not leak.
+        # C11-N1: the host after such a segment cannot be trusted, so it is withheld rather than shown.
+        sample = "pw-" + "x" * 8
+        head = "hd-" + "q" * 5
+        for sep in ("/", "?", "#"):
+            for prefix in ("http://", "//", ""):
+                url = f"{prefix}someone:{head}{sep}{sample}@gpu.example.com:8000/v1?key={sample}#{sample}"
+                with self.subTest(sep=sep, prefix=prefix):
+                    redacted = local_llm.redact_url(url)
+                    self.assertEqual(redacted, f"{prefix}***")
+                    for fragment in (sample, head, "someone", "gpu.example.com"):
+                        self.assertNotIn(fragment, redacted)
+        bracketed = f"http://someone:{head}/{sample}@[::1]:8081/v1"
+        self.assertEqual(local_llm.redact_url(bracketed), "http://***")
+        # The same password without an unencoded delimiter still shows the real host.
+        plain = f"http://someone:{head}{sample}@[::1]:8081/v1"
+        self.assertEqual(local_llm.redact_url(plain), "http://***@[::1]:8081/v1")
+
+    def test_redact_url_keeps_credential_free_urls_readable(self):
+        for url in (
+            "http://localhost:11434/v1",
+            "https://gpu.example.com:8443/api/v1/",
+            "http://[::1]:8081/v1",
+            "host.docker.internal:8000/v1",
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(local_llm.redact_url(url), url)
+        # #96 message rule: an unparseable authority is withheld even without any "@".
+        self.assertEqual(local_llm.redact_url("http://[::1/v1"), "http://***")
+        # A URL without any "@" is byte-identical (even its scheme case); only a query or fragment is dropped.
+        self.assertEqual(local_llm.redact_url("HTTP://Host.Example:80/a/b"), "HTTP://Host.Example:80/a/b")
+        self.assertEqual(local_llm.redact_url("http://localhost:8000/v1?key=k#f"), "http://localhost:8000/v1")
+        # C11-N1: an "@" in the path, query or fragment of a credential-free URL is over-redacted, and the text after
+        # it is never presented as the host: the host is withheld instead of showing a believable wrong one.
+        other = "other" + ".example.net"
+        for url in (
+            "http://localhost:8000/v1/@scope/models",
+            "http://localhost:8000/v1?owner=a@",
+            f"http://gpu.lan:8000/v1?owner=ops@{other}",
+            f"http://gpu.lan:8000/v1#ops@{other}",
+            f"http://gpu.lan:8000/v1/ops@{other}/x",
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(local_llm.redact_url(url), "http://***")
+        self.assertEqual(local_llm.redact_url(f"//gpu.lan/v1?owner=ops@{other}"), "//***")
+        self.assertEqual(local_llm.redact_url(f"gpu.lan:8000/v1?owner=ops@{other}"), "***")
+
+    def test_redact_url_never_leaks_userinfo_over_probe_matrix(self):
+        # C10-N1: the strip up to the last "@" is unconditional, so no host shape can gate it. Built at runtime.
+        head = "hd-" + "q" * 5
+        sample = "pw-" + "x" * 8
+        name = "some" + "one"
+        hosts = (
+            "gpu.example.com:8000/v1",
+            "[::1]:8081/v1",
+            "127.0.0.1:59999/v1",
+            "gpu.example.com:abc/v1",
+            "h\u00f4st.example/v1",
+            "[::1/v1",
+            "/v1",
+            "",
+            "gpu example.com/v1",
+        )
+        validated = {"gpu.example.com:8000/v1", "[::1]:8081/v1", "127.0.0.1:59999/v1"}
+        for sep in ("", "/", "?", "#", "@", ":", "%", "%2F"):
+            for userinfo in (f"{name}:{head}{sep}{sample}", f"{head}{sep}{sample}"):
+                for host in hosts:
+                    for prefix in ("http://", "//", ""):
+                        url = f"{prefix}{userinfo}@{host}?key={sample}#{sample}"
+                        with self.subTest(url=url):
+                            redacted = local_llm.redact_url(url)
+                            ambiguous = any(c in userinfo for c in "/?#")
+                            # #96 message rule: a host that does not validate is withheld, never shown.
+                            withheld = ambiguous or host not in validated
+                            expected = f"{prefix}***" if withheld else f"{prefix}***@{host}"
+                            self.assertEqual(redacted, expected)
+                            for fragment in (head, sample, name):
+                                self.assertNotIn(fragment, redacted)
+
+    def test_config_error_and_logs_never_echo_userinfo(self):
+        sample = "pw-" + "y" * 8
+        env = {
+            "HOLON_LOCAL_BASE_URL": f"http://someone:{sample}@gpu.example.com:8000/v1?key={sample}",
+            "HOLON_LOCAL_MODELS": "m",
+        }
+        with patch.dict(os.environ, env, clear=True), self.assertRaises(local_llm.LocalLLMConfigError) as caught:
+            local_llm.build_container_config(None)
+        self.assertNotIn(sample, str(caught.exception))
+        self.assertIn("(host gpu.example.com:8000)", str(caught.exception))
+        host_config = {"providers": {"p": {"baseUrl": f"http://someone:{sample}@localhost:8081/v1", "models": []}}}
+        with self.assertLogs(local_llm.logger, level="INFO") as logs:
+            local_llm.build_container_config(host_config)
+            local_llm.rewrite_authority(f"http://someone:{sample}@localhost:bad/v1")
+        self.assertTrue(logs.output)
+        self.assertFalse(any(sample in line for line in logs.output))
+
+    def test_only_http_and_https_are_probed(self):
+        # C4-N1: a loopback file:// or ftp:// base URL must never make the doctor open a file or an FTP session.
+        calls = []
+        for url in ("file://localhost/etc", "ftp://127.0.0.1:21/x", "gopher://localhost:70/x"):
+            with self.subTest(url=url):
+                self.assertIsNone(local_llm.health_url(url))
+                self.assertIsNone(local_llm.probe_gateway_health(url, fetch=_fetcher(HEALTH_OFF, calls)))
+        self.assertEqual(calls, [])
+        self.assertEqual(local_llm.health_url("HTTPS://localhost:8443/v1"), "https://localhost:8443/health")
+        with self.assertRaises(ValueError):
+            local_llm._default_fetch("file:///etc/hosts", 1.0)
+
+    def test_default_fetch_caps_the_response_read(self):
+        import http.server
+        import threading
+
+        size = local_llm.HEALTH_MAX_BYTES * 3
+
+        class Flood(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", str(size))
+                self.end_headers()
+                self.wfile.write(b"x" * size)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Flood)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        with self.assertRaises(ValueError):
+            local_llm._default_fetch(f"http://127.0.0.1:{server.server_port}/health", 2.0)
+        health = local_llm.probe_gateway_health(f"http://127.0.0.1:{server.server_port}/v1")
+        self.assertEqual(health.prefill_cache, "unknown")
+        self.assertIn("exceeds", health.error)
+
+    def test_default_fetch_refuses_redirects(self):
+        import http.server
+        import threading
+
+        class Redirector(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", "http://198.51.100.7/health")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Redirector)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        health = local_llm.probe_gateway_health(f"http://127.0.0.1:{server.server_port}/v1")
+        self.assertEqual(health.prefill_cache, "unknown")
+        self.assertIn("redirect refused", health.error)
+
+    def test_max_prompt_tokens_parsed_from_defaults_or_top_level(self):
+        nested = {"effective_defaults": {"max_output_tokens": 16384, "max_prompt_tokens": 262144}}
+        self.assertEqual(local_llm.parse_gateway_health("u", nested).max_prompt_tokens, 262144)
+        top = {"effective_defaults": {"max_output_tokens": 16384}, "max_prompt_tokens": 32768}
+        self.assertEqual(local_llm.parse_gateway_health("u", top).max_prompt_tokens, 32768)
+        self.assertIsNone(local_llm.parse_gateway_health("u", HEALTH_OFF).max_prompt_tokens)
+
+
+class TestValidatedModelsConfig(unittest.TestCase):
+    """C21-I1/C21-N1/C21-N2: one validated loader; malformed shapes are clean config errors, never crashes."""
+
+    def _write(self, tmp, raw: bytes) -> str:
+        path = os.path.join(tmp, "models.json")
+        with open(path, "wb") as handle:
+            handle.write(raw)
+        return path
+
+    def test_loader_rejects_bad_encoding_huge_numbers_and_deep_nesting(self):
+        # R2-N1 repros: UnicodeDecodeError, the 4300-digit int limit and RecursionError all used to escape.
+        probe = make_probe("k")
+        for case, raw in {
+            "non-utf8": b'{"apiKey": "' + probe.encode() + b'\xff"}',
+            "5000-digit": b'{"x": ' + b"9" * 5000 + b"}",
+            "float-overflow": b'{"x": 1e400}',
+            "nan": b'{"x": NaN}',
+            "deep": b"[" * 200_000,
+            "past-depth-bound": b'{"a":' * (local_llm.MAX_JSON_DEPTH + 1)
+            + b"1"
+            + b"}" * (local_llm.MAX_JSON_DEPTH + 1),
+        }.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                path = self._write(tmp, raw)
+                with self.assertRaises(local_llm.LocalLLMConfigError) as ctx:
+                    local_llm.load_models_json(path)
+                self.assertIn(path, str(ctx.exception))
+                assert_no_fragment(str(ctx.exception), probe)
+
+    def test_loader_rejects_oversized_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, b" " * (local_llm.MODELS_JSON_MAX_BYTES + 1))
+            with self.assertRaisesRegex(local_llm.LocalLLMConfigError, "exceeds"):
+                local_llm.load_models_json(path)
+
+    def test_non_dict_providers_is_a_config_error_everywhere(self):
+        # R1-I1 / R2-N2 repro: host_base_urls used to raise AttributeError on a list of providers.
+        for providers in ([1, 2], "x", 5):
+            config = {"providers": providers}
+            for consumer in (
+                lambda c: local_llm.host_base_urls(c, {}),
+                lambda c: local_llm.unparseable_base_url_sources(c, {}),
+                lambda c: local_llm.host_gateways(c, {"providers": {}}, {}),
+                local_llm.build_container_config,
+            ):
+                with (
+                    self.subTest(providers=providers),
+                    self.assertRaisesRegex(local_llm.LocalLLMConfigError, "'providers' must be an object"),
+                ):
+                    consumer(config)
+
+    def test_non_list_models_is_a_config_error(self):
+        # R1-I1 / R2-N3 repro: apply_model_envelope used to raise TypeError iterating models=5.
+        for models in (5, True, "m", {"id": "m"}):
+            config = {"providers": {"p": {"baseUrl": "http://localhost:8080/v1", "models": models}}}
+            with (
+                self.subTest(models=models),
+                self.assertRaisesRegex(local_llm.LocalLLMConfigError, "provider 'p' field 'models' must be a list"),
+            ):
+                local_llm.apply_model_envelope(config, {})
+
+    def test_run_path_reports_non_list_models_cleanly(self):
+        # R1-I1 repro on the run path: prepare_agent_dir -> TypeError used to escape run_docker_container.
+        config = {"providers": {"p": {"baseUrl": "http://localhost:8080/v1", "models": 5}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            stderr = io.StringIO()
+            with patch.object(local_llm, "host_models_json", return_value=config), patch("sys.stderr", stderr):
+                code, args, _ = TestLauncherIntegration._run(
+                    TestLauncherIntegration(), {"HOLON_LOCAL_LLM": "1"}, mkdtemp_dir=tmp
+                )
+        self.assertEqual(code, 1)
+        self.assertEqual(args, [])
+        self.assertIn("Error: ", stderr.getvalue())
+        self.assertIn("'models' must be a list", stderr.getvalue())
+
+    def test_model_field_types_are_validated(self):
+        for field, value in (
+            ("id", 5),
+            ("id", ""),
+            ("contextWindow", 2**31),
+            ("maxTokens", True),
+            ("reasoning", 1),
+        ):
+            model = {"id": "m", "contextWindow": 32768, field: value}
+            config = {"providers": {"p": {"baseUrl": "http://localhost:8080/v1", "models": [model]}}}
+            with (
+                self.subTest(field=field, value=value),
+                self.assertRaisesRegex(local_llm.LocalLLMConfigError, f"field '{field}'"),
+            ):
+                local_llm.validate_models_config(config)
+
+    def test_envelope_env_ints_are_bounded(self):
+        for raw in ("9" * 5000, str(2**31), "0", "-1"):
+            with self.subTest(size=len(raw)), self.assertRaises(local_llm.LocalLLMConfigError) as ctx:
+                local_llm.apply_model_envelope({}, {local_llm.ENV_LOCAL_CONTEXT_WINDOW: raw})
+            self.assertIn(local_llm.ENV_LOCAL_CONTEXT_WINDOW, str(ctx.exception))
+            self.assertNotIn(raw, str(ctx.exception))
+
+    def test_loader_rejects_lone_surrogate_strings(self):
+        # C23-I1: json.loads accepts a \\ud800 escape; the str it yields cannot be printed on a UTF-8 terminal.
+        for case, raw in {
+            "model-id": b'{"providers": {"p": {"models": [{"id": "bad\\ud800id"}]}}}',
+            "object-key": b'{"providers": {"p": {"k\\udcff": 1}}}',
+            "unread-field": b'{"note": "x\\ud800"}',
+        }.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                path = self._write(tmp, raw)
+                with self.assertRaisesRegex(local_llm.LocalLLMConfigError, "not valid Unicode") as ctx:
+                    local_llm.load_models_json(path)
+                str(ctx.exception).encode("utf-8")
+
+    def test_validator_rejects_non_text_fields(self):
+        lone = chr(0xD800)
+        model = {"id": "m", "contextWindow": 32768}
+        for case, config in {
+            "provider-name": {"providers": {f"p{lone}": {}}},
+            "baseUrl": {"providers": {"p": {"baseUrl": f"http://localhost:8080/v1{lone}"}}},
+            "id": {"providers": {"p": {"models": [{**model, "id": f"m{lone}"}]}}},
+            "reasoning": {"providers": {"p": {"models": [{**model, "reasoning": f"off{lone}"}]}}},
+        }.items():
+            with (
+                self.subTest(case=case),
+                self.assertRaisesRegex(local_llm.LocalLLMConfigError, "not valid UTF-8 text") as ctx,
+            ):
+                local_llm.validate_models_config(config)
+            str(ctx.exception).encode("utf-8")
+
+    def test_text_settings_must_be_utf8(self):
+        # C23-I1: os.environ decodes a non-UTF-8 byte with surrogateescape; the value is rejected, named, never shown.
+        for name in local_llm.TEXT_SETTINGS:
+            value = "v" + os.fsdecode(b"\xff")
+            with self.subTest(name=name), self.assertRaises(local_llm.LocalLLMConfigError) as ctx:
+                local_llm.build_envelope_config(None, (), {name: value})
+            message = str(ctx.exception)
+            self.assertTrue(message.startswith(f"{name} is not valid UTF-8 text"))
+            message.encode("utf-8")
+        with (
+            patch.dict(os.environ, {local_llm.ENV_HOST_LOCAL_HOSTS: "h" + os.fsdecode(b"\x80")}, clear=True),
+            self.assertRaisesRegex(local_llm.LocalLLMConfigError, local_llm.ENV_HOST_LOCAL_HOSTS),
+        ):
+            local_llm.host_local_allow_list()
+
+    def test_loader_message_escapes_non_utf8_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, os.fsdecode(b"dir\xff"), "models.json")
+            with self.assertRaises(local_llm.LocalLLMConfigError) as ctx:
+                local_llm.load_models_json(path)
+        self.assertIn("dir\\udcff", str(ctx.exception))
+        str(ctx.exception).encode("utf-8")
+
+    def test_probe_survives_deeply_nested_health_body(self):
+        # R2-N4 repro: a 200 KB body of "[" (under the 1 MiB cap) raised RecursionError out of the probe.
+        health = local_llm.probe_gateway_health("http://127.0.0.1:8081/v1", fetch=lambda url, timeout: b"[" * 200_000)
+        self.assertEqual(health.prefill_cache, "unknown")
+        self.assertIn("nested deeper than", health.error)

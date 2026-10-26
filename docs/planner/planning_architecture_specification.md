@@ -36,9 +36,9 @@ Bottleneck steps (e.g., database schema changes, core module refactoring) carry 
 
 - **Decomposition Trigger:** If a step is marked as a critical bottleneck (`Is Bottleneck: YES`) and its predicted
   success probability is low (`P(success) < 0.7`), the engine blocks parent execution.
-- **Automated Decomposition:** The system automatically decomposes this step into a child **Sub-Intent** with its own
-  dedicated git branch, isolated sandbox, and test suites. The step is resolved independently before parent plan
-  execution can continue.
+- **Decomposition via the Sub-intent List:** A bottleneck step is not decomposed automatically. To split it out, the
+  planner lists it as an item of the plan's explicit `## Sub-intent list` (see §4); the flow then runs that item as a
+  child intent with its own branch, sandbox and tests, resolved before the parent intent branch is raised to its target.
 
 ---
 
@@ -55,9 +55,10 @@ Entropy represents the disorder and complexity introduced by plans:
   the agent as `{budget_from_intent}` and writes it as `entropy_budget` on the plan's `plans.jsonl` row. The executor
   enforces exactly that value.
 - **Explicit Sub-intent List:** A plan that cannot fit the budget decomposes by adding a level-2 heading
-  `## Sub-intent list` followed by bullet or numbered items, one concrete child intent per item. The flow runs each item
-  sequentially through the full pipeline as a child intent targeting the parent intent branch. Per-step sub‑intent
-  recommendations alone never trigger decomposition, and the executor never fabricates child work.
+  `## Sub-intent list` followed by top-level bullet or numbered items, one concrete child intent per item (indented
+  nested bullets are details of the item above, never children of their own). The flow runs each item sequentially
+  through the full pipeline as a child intent targeting the parent intent branch. Per-step sub‑intent recommendations
+  alone never trigger decomposition, and the executor never fabricates child work.
 - **Bounded Re-planning:** A plan above its budget without that list is sent back to the planner with a "Re-plan
   request" paragraph (passed through `HOLON_REPLAN_FEEDBACK`, never written to a ledger), at most `MAX_REPLAN_ATTEMPTS`
   (`2`) times, after which the Execute stage fails with a clear message.

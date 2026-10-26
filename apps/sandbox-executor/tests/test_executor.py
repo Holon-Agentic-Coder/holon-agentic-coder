@@ -3740,102 +3740,164 @@ def test_should_decompose_explicit_list_wins_over_budget_and_dedupes_slugs():
     assert [item["slug"] for item in decision.sub_intents] == ["write-tests", "write-tests-2"]
 
 
-def test_parse_sub_intent_list_folds_nested_bullets_into_their_parent_item():
-    plan = (
-        "# Plan\n\n## Sub-intent list\n\n- Add the parser\n  - covers tokens\n  - covers errors\n"
-        "- Add the CLI flag\n    wired into the argument parser\n\n## Risks\n\n- not a child\n"
+def _section(body: str) -> str:
+    """Wrap a body in a plan whose ``## Sub-intent list`` section is followed by a non-list section."""
+    return f"# Plan\n\n## Sub-intent list\n\n{body}\n\n## Risks\n\n- not a child\n"
+
+
+_NESTED_BODY = (
+    "- Add the parser\n  - covers tokens\n  - covers errors\n- Add the CLI flag\n    wired into the argument parser"
+)
+_NESTED_EXPECTED = [
+    "Add the parser\n- covers tokens\n- covers errors",
+    "Add the CLI flag\nwired into the argument parser",
+]
+
+
+def _indented_body(indent: str) -> str:
+    return (
+        f"{indent}- Add the parser\n{indent}  - covers tokens\n{indent}\t- covers errors\n"
+        f"{indent}* Add the CLI flag\n{indent}    1. wired in"
     )
 
+
+_INDENTED_EXPECTED = ["Add the parser\n- covers tokens\n- covers errors", "Add the CLI flag\n1. wired in"]
+
+# One regression corpus for parse_sub_intent_list: (plan markdown, expected item descriptions in order). Each item's
+# goal is the first line of its description. Every parser case raised in PR #97 review iterations 3-7 lives here.
+SUB_INTENT_PARSER_CORPUS = [
+    # R1-I2: nested bullets and indented continuation lines fold into the item above them.
+    pytest.param(_section(_NESTED_BODY), _NESTED_EXPECTED, id="r1-i2-nested-bullets-fold"),
+    # R4-N1: a top-level list may be indented 1-3 spaces; the first item fixes the level.
+    *[
+        pytest.param(_section(_indented_body(" " * n)), _INDENTED_EXPECTED, id=f"r4-n1-list-indented-{n}-spaces")
+        for n in (1, 2, 3)
+    ],
+    pytest.param(_section("    - indented code, not a list"), [], id="four-space-lines-are-not-items"),
+    pytest.param(_section("\t- tab-indented code, not a list"), [], id="tab-indented-first-line-is-not-an-item"),
+    pytest.param(
+        _section("- First\n\t- tab-nested detail\n- Second"),
+        ["First\n- tab-nested detail", "Second"],
+        id="tab-nested-bullet-folds",
+    ),
+    pytest.param(
+        _section("1. First\n   1. detail one\n   2. detail two\n2. Second"),
+        ["First\n1. detail one\n2. detail two", "Second"],
+        id="nested-numbered-folds",
+    ),
+    pytest.param(
+        _section("- One\n* Two\n+ Three\n1) Four\n2. Five"), ["One", "Two", "Three", "Four", "Five"], id="mixed-markers"
+    ),
+    pytest.param(
+        _section("- First\n\n  more about first\n\n\n- Second\n\n- Third"),
+        ["First\nmore about first", "Second", "Third"],
+        id="blank-lines-and-continuation",
+    ),
+    pytest.param(_section(_NESTED_BODY).replace("\n", "\r\n"), _NESTED_EXPECTED, id="crlf-line-endings"),
+    pytest.param(_section("- None\n- N/A\n- n/a.\n- na"), [], id="placeholders-only"),
+    pytest.param(_section("- None\n- Real child"), ["Real child"], id="placeholder-beside-real-item"),
+    pytest.param(_section("-   \n- Real child"), ["Real child"], id="empty-item-skipped"),
+    # R1-I6-N1: a longer outer fence closes only on the same character at least as long.
+    *[
+        pytest.param(
+            _section(f"- First\n````md\n{inner}\n- Nested example\n{inner}\n````\n- Second"),
+            ["First", "Second"],
+            id=f"r1-i6-n1-nested-fence-{name}",
+        )
+        for name, inner in [
+            ("shorter-backticks", "```"),
+            ("other-char", "~~~~"),
+            ("other-char-longer", "~~~~~"),
+            ("trailing-text", "``` not a closer"),
+        ]
+    ],
+    # R6-2-I1: a list quoted inside a fence is never read.
+    *[
+        pytest.param(
+            f"# Plan\n\n{fence}markdown\n## Sub-intent list\n\n- Quoted example\n{fence}\n\n## Risks\n\n- none\n",
+            [],
+            id=f"r6-2-i1-section-quoted-in-{name}-fence",
+        )
+        for name, fence in [("backtick", "```"), ("tilde", "~~~")]
+    ],
+    pytest.param(_section("```text\n- Example child\n```"), [], id="r6-2-i1-fence-under-the-heading"),
+    pytest.param(
+        "# Plan\n\n~~~~markdown\n## Sub-intent list\n- Quoted example\n~~~\n- still quoted\n~~~~~\n\n"
+        "## Sub-intent list\n\n```\n- fenced, not a child\n```\n- Real child\n- Another real child\n",
+        ["Real child", "Another real child"],
+        id="r6-2-i1-real-list-after-closed-fence",
+    ),
+    pytest.param(
+        _section("``` inline `code` ```\n- Real child"), ["Real child"], id="backtick-info-with-backtick-is-not-a-fence"
+    ),
+    pytest.param(_section("~~~ a`b\n- fenced\n~~~\n- Real child"), ["Real child"], id="tilde-info-may-hold-a-backtick"),
+    # R7-I1: a fence nested in an item at 4+ columns holding a "# comment" line neither leaks nor ends the section.
+    pytest.param(
+        _section("- Add CLI flag\n    ```bash\n    # run the tests\n    uv run pytest\n    ```\n- Update docs"),
+        ["Add CLI flag", "Update docs"],
+        id="r7-i1-four-space-bash-fence-with-comment",
+    ),
+    pytest.param(
+        _section("1. Add CLI flag\n    ```python\n    # helper\n    - not a child\n    ```\n2. Update docs"),
+        ["Add CLI flag", "Update docs"],
+        id="r7-i1-numbered-four-space-python-fence",
+    ),
+    pytest.param(
+        _section("- Add CLI flag\n  ```bash\n  # run the tests\n  ```\n- Update docs"),
+        ["Add CLI flag", "Update docs"],
+        id="r7-i1-two-space-fence",
+    ),
+    pytest.param(
+        _section("- Add CLI flag\n\t\t~~~\n\t\t## not a heading\n\t\t~~~\n- Update docs"),
+        ["Add CLI flag", "Update docs"],
+        id="r7-i1-tab-indented-fence",
+    ),
+    pytest.param(
+        _section("- Add CLI flag\n        ````\n```\n## not a heading\n````\n- Update docs"),
+        ["Add CLI flag", "Update docs"],
+        id="r7-i1-deep-fence-closes-at-any-indent",
+    ),
+    # Headings end the section only at 0-3 columns; deeper "#" lines fold into the item above.
+    pytest.param(
+        _section("- First\n    # not a heading\n- Second"),
+        ["First\n# not a heading", "Second"],
+        id="four-space-hash-line-folds",
+    ),
+    pytest.param(_section("- First\n   ## Next\n- not a child"), ["First"], id="three-space-heading-ends-section"),
+    pytest.param("# Plan\n\n# Sub-intent list\n\n- not a child\n", [], id="level-1-heading-does-not-open"),
+    pytest.param("# Plan\n\n#### Sub-intent list\n\n- not a child\n", [], id="level-4-heading-does-not-open"),
+    # An unclosed fence runs to the end of the plan; items before it survive.
+    pytest.param(_section("- First\n```\n- fenced\n## Next\n- fenced too"), ["First"], id="unclosed-fence-after-item"),
+    pytest.param(_section("```\n- fenced"), [], id="unclosed-fence-before-items"),
+]
+
+
+@pytest.mark.parametrize(("plan", "expected"), SUB_INTENT_PARSER_CORPUS)
+def test_parse_sub_intent_list_regression_corpus(plan, expected):
     items = executor.parse_sub_intent_list(plan)
 
-    assert items == [
-        {
-            "slug": "add-the-parser",
-            "description": "Add the parser\n- covers tokens\n- covers errors",
-            "goal": "Add the parser",
-        },
-        {
-            "slug": "add-the-cli-flag",
-            "description": "Add the CLI flag\nwired into the argument parser",
-            "goal": "Add the CLI flag",
-        },
+    assert [item["description"] for item in items] == expected
+    assert [item["goal"] for item in items] == [description.split("\n")[0] for description in expected]
+
+
+def test_parse_sub_intent_list_builds_slug_description_and_goal():
+    assert executor.parse_sub_intent_list(_section(_NESTED_BODY)) == [
+        {"slug": "add-the-parser", "description": _NESTED_EXPECTED[0], "goal": "Add the parser"},
+        {"slug": "add-the-cli-flag", "description": _NESTED_EXPECTED[1], "goal": "Add the CLI flag"},
     ]
-
-
-@pytest.mark.parametrize("indent", [" ", "  ", "   "])
-def test_parse_sub_intent_list_reads_a_top_level_list_indented_one_to_three_spaces(indent):
-    plan = (
-        f"# Plan\n\n## Sub-intent list\n\n{indent}- Add the parser\n{indent}  - covers tokens\n"
-        f"{indent}\t- covers errors\n{indent}* Add the CLI flag\n{indent}    1. wired in\n\n## Risks\n\n- not a child\n"
-    )
-
-    items = executor.parse_sub_intent_list(plan)
-
-    assert items == [
-        {
-            "slug": "add-the-parser",
-            "description": "Add the parser\n- covers tokens\n- covers errors",
-            "goal": "Add the parser",
-        },
-        {"slug": "add-the-cli-flag", "description": "Add the CLI flag\n1. wired in", "goal": "Add the CLI flag"},
-    ]
-    decision = executor.should_decompose({"entropy": 40.0, "entropy_budget": 5.0}, plan)
-    assert decision.decision == executor.DECISION_DECOMPOSED
-
-
-def test_parse_sub_intent_list_ignores_items_indented_four_or_more_spaces():
-    plan = "# Plan\n\n## Sub-intent list\n\n    - indented code, not a list\n"
-
-    assert executor.parse_sub_intent_list(plan) == []
-
-
-@pytest.mark.parametrize("fence", ["```", "~~~"])
-def test_parse_sub_intent_list_ignores_a_list_quoted_in_a_fence(fence):
-    plan = f"# Plan\n\n{fence}markdown\n## Sub-intent list\n\n- Quoted example\n{fence}\n\n## Risks\n\n- none\n"
-
-    assert executor.parse_sub_intent_list(plan) == []
-    decision = executor.should_decompose({"entropy": 2.0, "entropy_budget": 5.0}, plan)
-    assert decision.decision == executor.DECISION_EXECUTE
-
-
-def test_parse_sub_intent_list_ignores_a_fence_under_the_section_heading():
-    plan = "# Plan\n\n## Sub-intent list\n\n```text\n- Example child\n```\n"
-
-    assert executor.parse_sub_intent_list(plan) == []
 
 
 @pytest.mark.parametrize(
-    "inner",
-    ["```", "~~~~", "~~~~~", "``` not a closer"],
-    ids=["shorter-backticks", "other-char", "other-char-longer", "trailing-text"],
+    ("plan", "expected"),
+    [
+        (_section(_indented_body("  ")), executor.DECISION_DECOMPOSED),
+        (_section("- None\n- N/A"), executor.DECISION_OVER_BUDGET),
+        ("# Plan\n\n```markdown\n## Sub-intent list\n\n- Quoted example\n```\n", executor.DECISION_OVER_BUDGET),
+    ],
+    ids=["indented-list-decomposes", "placeholders-are-over-budget", "fenced-list-is-over-budget"],
 )
-def test_parse_sub_intent_list_only_closes_a_fence_on_the_same_char_at_least_as_long(inner):
-    plan = f"# Plan\n\n## Sub-intent list\n\n- First\n````md\n{inner}\n- Nested example\n{inner}\n````\n- Second\n"
-
-    assert [item["goal"] for item in executor.parse_sub_intent_list(plan)] == ["First", "Second"]
-
-
-def test_parse_sub_intent_list_reads_a_real_list_after_a_closed_fence():
-    plan = (
-        "# Plan\n\n~~~~markdown\n## Sub-intent list\n- Quoted example\n~~~\n- still quoted\n~~~~~\n\n"
-        "## Sub-intent list\n\n```\n- fenced, not a child\n```\n- Real child\n- Another real child\n"
-    )
-
-    assert [item["goal"] for item in executor.parse_sub_intent_list(plan)] == ["Real child", "Another real child"]
-
-
-def test_parse_sub_intent_list_backtick_info_string_with_backtick_is_not_a_fence():
-    plan = "# Plan\n\n## Sub-intent list\n\n``` inline `code` ```\n- Real child\n"
-
-    assert [item["goal"] for item in executor.parse_sub_intent_list(plan)] == ["Real child"]
-
-
-def test_parse_sub_intent_list_skips_placeholder_items():
-    plan = "# Plan\n\n## Sub-intent list\n\n- None\n- N/A\n"
-
-    assert executor.parse_sub_intent_list(plan) == []
-    decision = executor.should_decompose({"entropy": 40.0, "entropy_budget": 5.0}, plan)
-    assert decision.decision == executor.DECISION_OVER_BUDGET
+def test_should_decompose_follows_the_parsed_list(plan, expected):
+    assert executor.should_decompose({"entropy": 40.0, "entropy_budget": 5.0}, plan).decision == expected
 
 
 def test_should_decompose_ignores_per_step_recommendation_bullets():

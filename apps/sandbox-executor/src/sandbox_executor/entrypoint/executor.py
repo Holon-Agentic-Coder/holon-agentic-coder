@@ -717,10 +717,11 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 _LIST_ITEM_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+(.*)$")
 # Items that say a plan has no sub-intent list rather than naming child work.
 _PLACEHOLDER_ITEMS = frozenset({"none", "n/a", "na"})
-# CommonMark fences: an opening fence is 3+ backticks or tildes indented 0-3 spaces (a backtick fence's info string may
-# not contain a backtick); it closes only on a line of the same character, at least as long, with nothing after it.
-_FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}(?=[^`]*$)|~{3,})")
-_FENCE_CLOSE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})\s*$")
+# Code fences, matched against a stripped line so a fence nested in a list item at any indentation is still a fence: an
+# opener is 3+ backticks or tildes (a backtick fence's info string may not contain a backtick); it closes only on a line
+# of the same character, at least as long, with nothing but whitespace after it.
+_FENCE_OPEN_RE = re.compile(r"^(`{3,}(?=[^`]*$)|~{3,})")
+_FENCE_CLOSE_RE = re.compile(r"^(`{3,}|~{3,})$")
 
 
 @dataclass(frozen=True)
@@ -757,8 +758,10 @@ def parse_sub_intent_list(plan_content: str) -> list[dict[str, Any]]:
     Only a level-2 or level-3 heading whose normalised text is ``sub intent list`` or ``sub intents`` opens the list;
     top-level bullet and numbered items are collected until the next heading. The first item fixes the top-level
     indentation (0-3 columns, as CommonMark allows); lines indented deeper than it, such as nested detail bullets,
-    never become items of their own: they are appended to the preceding item's description. Lines inside a fenced code
-    block are ignored; per CommonMark a fence closes only on a run of the same character at least as long as its opener.
+    never become items of their own: they are appended to the preceding item's description. A fence opens at any
+    indentation (so a code block nested in an item counts) and every line inside it is ignored, headings included; it
+    closes only on a run of the same character at least as long as its opener, and an unclosed fence runs to the end of
+    the plan. Outside fences, only a heading indented 0-3 columns ends the section.
     Per-step sub-intent recommendation bullets are never under such a heading, so they are ignored. Each item becomes
     ``{slug, description, goal}``; the slug and goal come from the item text only. Empty items and placeholder items
     (``none``, ``n/a``) are skipped, and duplicate slugs get a numeric suffix.
@@ -774,19 +777,20 @@ def parse_sub_intent_list(plan_content: str) -> list[dict[str, Any]]:
     fence: str | None = None
     base_indent: int | None = None
     for line in plan_content.splitlines():
-        stripped = line.strip()
         expanded = line.expandtabs(4)
+        stripped = expanded.strip()
         if fence is not None:
             # Inside a fenced block nothing is a heading or an item; only a matching closing fence ends it.
-            closing = _FENCE_CLOSE_RE.match(expanded)
+            closing = _FENCE_CLOSE_RE.match(stripped)
             if closing and closing.group(1)[0] == fence[0] and len(closing.group(1)) >= len(fence):
                 fence = None
             continue
-        opening = _FENCE_OPEN_RE.match(expanded)
+        opening = _FENCE_OPEN_RE.match(stripped)
         if opening:
             fence = opening.group(1)
             continue
-        heading = _HEADING_RE.match(stripped)
+        indent = len(expanded) - len(expanded.lstrip())
+        heading = _HEADING_RE.match(stripped) if indent <= _MAX_LIST_INDENT else None
         if heading:
             level = len(heading.group(1))
             in_section = level in (2, 3) and _normalise_heading(heading.group(2)) in _SUB_INTENT_HEADINGS
@@ -794,7 +798,6 @@ def parse_sub_intent_list(plan_content: str) -> list[dict[str, Any]]:
             continue
         if not in_section or not stripped:
             continue
-        indent = len(expanded) - len(expanded.lstrip())
         if base_indent is not None and indent > base_indent:
             # Nested bullets and continuation lines belong to the item above them, never to a child of their own.
             items[-1][1].append(stripped)

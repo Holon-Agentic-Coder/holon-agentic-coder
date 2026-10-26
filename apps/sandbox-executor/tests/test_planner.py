@@ -349,6 +349,22 @@ class TestPlannerMain(unittest.TestCase):
         self.assertIn(f"Budget is {DEFAULT_ENTROPY_BUDGET}.", h.turn_prompts[0])
         self.assertEqual(h.ledger_lines("plans.jsonl")[0]["entropy_budget"], DEFAULT_ENTROPY_BUDGET)
 
+    def test_invalid_intent_budget_shows_and_persists_the_shared_default(self):
+        for budget in (None, -1, "lots"):
+            with self.subTest(budget=budget):
+                intent = {**INTENT, "entropy_budget": budget}
+                h = self.harness([write_file(VALID_PLAN)], intent=intent, template="Budget is {budget_from_intent}.")
+                self.assertEqual(h.exit_code, 0, h.stderr)
+                self.assertIn(f"Budget is {DEFAULT_ENTROPY_BUDGET}.", h.turn_prompts[0])
+                self.assertEqual(h.ledger_lines("plans.jsonl")[0]["entropy_budget"], DEFAULT_ENTROPY_BUDGET)
+
+    def test_integer_intent_budget_is_shown_as_the_resolved_float(self):
+        intent = {**INTENT, "entropy_budget": 7}
+        h = self.harness([write_file(VALID_PLAN)], intent=intent, template="Budget is {budget_from_intent}.")
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        self.assertIn("Budget is 7.0.", h.turn_prompts[0])
+        self.assertEqual(h.ledger_lines("plans.jsonl")[0]["entropy_budget"], 7.0)
+
     def test_replan_feedback_reaches_the_prompt_but_never_the_row(self):
         feedback = "The previous plan has entropy 12.6, above the entropy budget 5."
         h = self.harness(

@@ -3789,6 +3789,47 @@ def test_parse_sub_intent_list_ignores_items_indented_four_or_more_spaces():
     assert executor.parse_sub_intent_list(plan) == []
 
 
+@pytest.mark.parametrize("fence", ["```", "~~~"])
+def test_parse_sub_intent_list_ignores_a_list_quoted_in_a_fence(fence):
+    plan = f"# Plan\n\n{fence}markdown\n## Sub-intent list\n\n- Quoted example\n{fence}\n\n## Risks\n\n- none\n"
+
+    assert executor.parse_sub_intent_list(plan) == []
+    decision = executor.should_decompose({"entropy": 2.0, "entropy_budget": 5.0}, plan)
+    assert decision.decision == executor.DECISION_EXECUTE
+
+
+def test_parse_sub_intent_list_ignores_a_fence_under_the_section_heading():
+    plan = "# Plan\n\n## Sub-intent list\n\n```text\n- Example child\n```\n"
+
+    assert executor.parse_sub_intent_list(plan) == []
+
+
+@pytest.mark.parametrize(
+    "inner",
+    ["```", "~~~~", "~~~~~", "``` not a closer"],
+    ids=["shorter-backticks", "other-char", "other-char-longer", "trailing-text"],
+)
+def test_parse_sub_intent_list_only_closes_a_fence_on_the_same_char_at_least_as_long(inner):
+    plan = f"# Plan\n\n## Sub-intent list\n\n- First\n````md\n{inner}\n- Nested example\n{inner}\n````\n- Second\n"
+
+    assert [item["goal"] for item in executor.parse_sub_intent_list(plan)] == ["First", "Second"]
+
+
+def test_parse_sub_intent_list_reads_a_real_list_after_a_closed_fence():
+    plan = (
+        "# Plan\n\n~~~~markdown\n## Sub-intent list\n- Quoted example\n~~~\n- still quoted\n~~~~~\n\n"
+        "## Sub-intent list\n\n```\n- fenced, not a child\n```\n- Real child\n- Another real child\n"
+    )
+
+    assert [item["goal"] for item in executor.parse_sub_intent_list(plan)] == ["Real child", "Another real child"]
+
+
+def test_parse_sub_intent_list_backtick_info_string_with_backtick_is_not_a_fence():
+    plan = "# Plan\n\n## Sub-intent list\n\n``` inline `code` ```\n- Real child\n"
+
+    assert [item["goal"] for item in executor.parse_sub_intent_list(plan)] == ["Real child"]
+
+
 def test_parse_sub_intent_list_skips_placeholder_items():
     plan = "# Plan\n\n## Sub-intent list\n\n- None\n- N/A\n"
 

@@ -4457,6 +4457,74 @@ class TestEntropyBudgetHandoffInFlow:
         # The executor wrote no intent rows: only the parent and the two children created through Stage 1 exist.
         assert sorted(r["slug"] for r in _all_intent_rows(host)) == sorted(["budget-test", *children])
 
+    def test_child_halting_at_its_own_review_is_a_success_and_records_its_pr(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (2.0, "")])
+        ctx = _budget_context(host, agents, 5.0)
+        ctx.skip_review = False
+        reviewed: list[str | None] = []
+
+        def fake_review(child_ctx: FlowContext) -> StageResult:
+            # The payload shape run_review_stage returns at its consensus halt: the PR result sits under "pr".
+            number = 101 + len(reviewed)
+            reviewed.append(child_ctx.execution_branch)
+            return StageResult(
+                stage=FlowStage.REVIEW,
+                status=StageStatus.HALTED_FOR_HUMAN,
+                payload={
+                    "consensus": {"approved": True, "score": 1.0, "iterations": 1, "status": "approved"},
+                    "halted_for_human": True,
+                    "pr": {
+                        "attempted": True,
+                        "success": True,
+                        "action": "create",
+                        "pr_number": number,
+                        "output": f"https://github.com/example/app/pull/{number}",
+                    },
+                },
+            )
+
+        with patch("sandbox_executor.flow.run_review_stage", side_effect=fake_review):
+            results = PipelineEngine(ctx).run()
+
+        execute = results["execute"]
+        assert execute.status == StageStatus.SUCCESS
+        children = execute.payload["children"]
+        # Both children ran although the first stopped at its own merge boundary.
+        assert [c["slug"] for c in children] == ["add-the-parser", "add-the-cli-flag"]
+        assert reviewed == [c["execution_branch"] for c in children]
+        assert [(c["pr_url"], c["pr_number"]) for c in children] == [
+            ("https://github.com/example/app/pull/101", 101),
+            ("https://github.com/example/app/pull/102", 102),
+        ]
+        summary = flow_module.format_decomposition_summary(execute)
+        assert summary[1].startswith("  1. add-the-parser: https://github.com/example/app/pull/101 (")
+        assert results["review"].payload == {"reason": "decomposed"}
+
+    def test_replan_whose_stage_2_fails_ends_the_run_in_stage_2(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = BudgetRoleAgents(tmp_path, origin, plans=[(12.6, "")])
+        ctx = _budget_context(host, agents, 5.0)
+        real_plan_stage = flow_module.run_plan_stage
+        calls: list[int] = []
+
+        def plan_then_fail(plan_ctx: FlowContext) -> StageResult:
+            calls.append(1)
+            if len(calls) == 1:
+                return real_plan_stage(plan_ctx)
+            return StageResult(stage=FlowStage.PLAN, status=StageStatus.FAILED, error="Plan stage failed: no plan")
+
+        with patch("sandbox_executor.flow.run_plan_stage", side_effect=plan_then_fail):
+            results = PipelineEngine(ctx).run()
+
+        assert ctx.replan_attempts == 1
+        assert results["plan"].status == StageStatus.FAILED
+        assert results["plan"].error == "Plan stage failed: no plan"
+        assert results["execute"].payload["over_budget"] is True
+        assert "review" not in results
+        assert "replan_feedback" not in ctx.intent_data
+        assert "HOLON_REPLAN_FEEDBACK" not in os.environ
+
     def test_first_failing_child_stops_the_loop(self, flow_repos, tmp_path):
         host, origin = flow_repos
         agents = BudgetRoleAgents(

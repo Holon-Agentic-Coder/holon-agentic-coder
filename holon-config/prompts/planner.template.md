@@ -39,8 +39,9 @@ into their immediate parent. If the step is small, not risky you can propose an 
 - The entropy budget for this plan is {budget_from_intent}. The same value is stored on the plan's `plans.jsonl` row and
   enforced by the executor.
 - If the plan fits the budget (overall `entropy_pred` at or below it), it is executed as one plan.
-- If the work cannot fit the budget, add a level-2 heading `## Sub-intent list` followed by bullet or numbered items,
-  one concrete child intent per item. The flow then runs each listed child through the full pipeline, one at a time.
+- If the work cannot fit the budget, add a level-2 heading `## Sub-intent list` followed by top-level bullet or numbered
+  items, one concrete child intent per item. Indented nested bullets are read as details of the item above, never as
+  separate children. The flow then runs each listed child through the full pipeline, one at a time.
 - A plan above the budget without that list is sent back for re-planning, and fails after a bounded number of attempts.
   Per-step sub‑intent recommendations alone never trigger decomposition.
 

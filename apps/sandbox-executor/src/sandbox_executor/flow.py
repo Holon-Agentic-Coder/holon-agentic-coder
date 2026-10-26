@@ -2926,12 +2926,25 @@ def _sub_intent_depth_error(context: FlowContext) -> str | None:
     )
 
 
+_PR_URL_RE = re.compile(r"https?://\S+/pull/\d+")
+
+
 def _child_review_pr(results: dict[str, StageResult]) -> tuple[Any, Any]:
-    """Return the ``(pr_url, pr_number)`` a child pipeline's Stage 4 recorded, or ``(None, None)``."""
+    """Return the ``(pr_url, pr_number)`` a child pipeline's Stage 4 recorded, or ``(None, None)``.
+
+    Stage 4 records the ``create_or_update_pr`` result under ``payload["pr"]``: it carries ``pr_number``, and the
+    URL only inside the ``gh`` output, so the URL is read from an explicit ``pr_url`` key when present, else from that
+    output.
+    """
     review = results.get(FlowStage.REVIEW.value)
-    if review is None:
+    pr = review.payload.get("pr") if review is not None else None
+    if not isinstance(pr, dict):
         return None, None
-    return review.payload.get("pr_url"), review.payload.get("pr_number")
+    pr_url = pr.get("pr_url")
+    if not pr_url:
+        match = _PR_URL_RE.search(str(pr.get("output") or ""))
+        pr_url = match.group(0) if match else None
+    return pr_url, pr.get("pr_number")
 
 
 def format_decomposition_summary(execute_result: StageResult | None) -> list[str]:

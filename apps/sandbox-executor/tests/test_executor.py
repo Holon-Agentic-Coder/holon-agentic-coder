@@ -3740,6 +3740,36 @@ def test_should_decompose_explicit_list_wins_over_budget_and_dedupes_slugs():
     assert [item["slug"] for item in decision.sub_intents] == ["write-tests", "write-tests-2"]
 
 
+def test_parse_sub_intent_list_folds_nested_bullets_into_their_parent_item():
+    plan = (
+        "# Plan\n\n## Sub-intent list\n\n- Add the parser\n  - covers tokens\n  - covers errors\n"
+        "- Add the CLI flag\n    wired into the argument parser\n\n## Risks\n\n- not a child\n"
+    )
+
+    items = executor.parse_sub_intent_list(plan)
+
+    assert items == [
+        {
+            "slug": "add-the-parser",
+            "description": "Add the parser\n- covers tokens\n- covers errors",
+            "goal": "Add the parser",
+        },
+        {
+            "slug": "add-the-cli-flag",
+            "description": "Add the CLI flag\nwired into the argument parser",
+            "goal": "Add the CLI flag",
+        },
+    ]
+
+
+def test_parse_sub_intent_list_skips_placeholder_items():
+    plan = "# Plan\n\n## Sub-intent list\n\n- None\n- N/A\n"
+
+    assert executor.parse_sub_intent_list(plan) == []
+    decision = executor.should_decompose({"entropy": 40.0, "entropy_budget": 5.0}, plan)
+    assert decision.decision == executor.DECISION_OVER_BUDGET
+
+
 def test_should_decompose_ignores_per_step_recommendation_bullets():
     plan = (
         "# Plan\n\n## Step 1: Thing\n\n- **Sub\u2011intent recommendation:** YES\n- **Sub\u2011intent:** NONE\n"

@@ -715,6 +715,8 @@ DECISION_OVER_BUDGET = "over_budget"
 _SUB_INTENT_HEADINGS = frozenset({"sub intent list", "sub intents"})
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 _LIST_ITEM_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+(.*)$")
+# Items that say a plan has no sub-intent list rather than naming child work.
+_PLACEHOLDER_ITEMS = frozenset({"none", "n/a", "na"})
 
 
 @dataclass(frozen=True)
@@ -745,9 +747,11 @@ def parse_sub_intent_list(plan_content: str) -> list[dict[str, Any]]:
     """Parse the explicit sub-intent list from a plan's markdown.
 
     Only a level-2 or level-3 heading whose normalised text is ``sub intent list`` or ``sub intents`` opens the list;
-    bullet and numbered items are collected until the next heading. Per-step sub-intent recommendation bullets are
-    never under such a heading, so they are ignored. Each item becomes ``{slug, description, goal}`` built from the item
-    text only; empty items are skipped and duplicate slugs get a numeric suffix.
+    top-level (unindented) bullet and numbered items are collected until the next heading. Indented lines, such as
+    nested detail bullets, never become items of their own: they are appended to the preceding item's description.
+    Per-step sub-intent recommendation bullets are never under such a heading, so they are ignored. Each item becomes
+    ``{slug, description, goal}``; the slug and goal come from the item text only. Empty items and placeholder items
+    (``none``, ``n/a``) are skipped, and duplicate slugs get a numeric suffix.
 
     Args:
         plan_content: The plan markdown.
@@ -755,7 +759,7 @@ def parse_sub_intent_list(plan_content: str) -> list[dict[str, Any]]:
     Returns:
         The parsed items, in plan order; empty when the plan has no such section.
     """
-    items: list[str] = []
+    items: list[tuple[str, list[str]]] = []
     in_section = False
     in_fence = False
     for line in plan_content.splitlines():
@@ -770,20 +774,28 @@ def parse_sub_intent_list(plan_content: str) -> list[dict[str, Any]]:
             level = len(heading.group(1))
             in_section = level in (2, 3) and _normalise_heading(heading.group(2)) in _SUB_INTENT_HEADINGS
             continue
-        if not in_section:
+        if not in_section or not stripped:
+            continue
+        if line[0] in " \t":
+            # Nested bullets and continuation lines belong to the item above them, never to a child of their own.
+            if items:
+                items[-1][1].append(stripped)
             continue
         item = _LIST_ITEM_RE.match(stripped)
         if item and item.group(1).strip():
-            items.append(item.group(1).strip())
+            items.append((item.group(1).strip(), []))
 
     sub_intents: list[dict[str, Any]] = []
     seen: dict[str, int] = {}
-    for text in items:
+    for text, details in items:
+        if _normalise_heading(text).rstrip(".") in _PLACEHOLDER_ITEMS:
+            continue
         base = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:48].strip("-") or "sub-intent"
         count = seen.get(base, 0) + 1
         seen[base] = count
         slug = base if count == 1 else f"{base}-{count}"
-        sub_intents.append({"slug": slug, "description": text, "goal": text})
+        description = "\n".join([text, *details])
+        sub_intents.append({"slug": slug, "description": description, "goal": text})
     return sub_intents
 
 

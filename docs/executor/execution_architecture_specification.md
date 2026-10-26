@@ -119,9 +119,10 @@ It returns one of three outcomes:
 
 - **`execute`**: the plan fits its budget and lists no sub-intent list; the agent runs as described below.
 - **`decomposed`**: the plan contains a level-2 or level-3 heading reading "Sub-intent list" (hyphens, underscores,
-  spacing and case are ignored, so the older plural heading still works) followed by bullet or numbered items. Each item
-  becomes `{slug, description, goal}` from the item text only, whatever the plan entropy. Per-step sub‑intent
-  recommendation bullets are never read as a list.
+  spacing and case are ignored, so the older plural heading still works) followed by bullet or numbered items. Each
+  top-level item becomes `{slug, description, goal}` (slug and goal from the item text only), whatever the plan entropy;
+  indented nested bullets are appended to their parent item's description and never become items, and placeholder items
+  (`none`, `n/a`) are skipped. Per-step sub‑intent recommendation bullets are never read as a list.
 - **`over_budget`**: the plan entropy exceeds the budget and the plan lists no sub-intent list.
 
 The executor never invents child work and never writes `intents.jsonl` rows. For both non-execute outcomes it skips the

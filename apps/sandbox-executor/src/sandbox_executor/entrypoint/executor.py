@@ -738,6 +738,10 @@ class DecompositionDecision:
     entropy_budget: float = DEFAULT_ENTROPY_BUDGET
 
 
+_MAX_LIST_INDENT = 3
+"""Deepest indentation, in columns, at which CommonMark still reads a list item as top-level."""
+
+
 def _normalise_heading(text: str) -> str:
     """Lower-case a heading and collapse hyphens, underscores, non-breaking hyphens and whitespace to single spaces."""
     return re.sub(r"[\s\-_\u2010\u2011]+", " ", text.strip().lower()).strip()
@@ -747,8 +751,9 @@ def parse_sub_intent_list(plan_content: str) -> list[dict[str, Any]]:
     """Parse the explicit sub-intent list from a plan's markdown.
 
     Only a level-2 or level-3 heading whose normalised text is ``sub intent list`` or ``sub intents`` opens the list;
-    top-level (unindented) bullet and numbered items are collected until the next heading. Indented lines, such as
-    nested detail bullets, never become items of their own: they are appended to the preceding item's description.
+    top-level bullet and numbered items are collected until the next heading. The first item fixes the top-level
+    indentation (0-3 columns, as CommonMark allows); lines indented deeper than it, such as nested detail bullets,
+    never become items of their own: they are appended to the preceding item's description.
     Per-step sub-intent recommendation bullets are never under such a heading, so they are ignored. Each item becomes
     ``{slug, description, goal}``; the slug and goal come from the item text only. Empty items and placeholder items
     (``none``, ``n/a``) are skipped, and duplicate slugs get a numeric suffix.
@@ -762,6 +767,7 @@ def parse_sub_intent_list(plan_content: str) -> list[dict[str, Any]]:
     items: list[tuple[str, list[str]]] = []
     in_section = False
     in_fence = False
+    base_indent: int | None = None
     for line in plan_content.splitlines():
         stripped = line.strip()
         if stripped.startswith(("```", "~~~")):
@@ -773,16 +779,21 @@ def parse_sub_intent_list(plan_content: str) -> list[dict[str, Any]]:
         if heading:
             level = len(heading.group(1))
             in_section = level in (2, 3) and _normalise_heading(heading.group(2)) in _SUB_INTENT_HEADINGS
+            base_indent = None
             continue
         if not in_section or not stripped:
             continue
-        if line[0] in " \t":
+        expanded = line.expandtabs(4)
+        indent = len(expanded) - len(expanded.lstrip())
+        if base_indent is not None and indent > base_indent:
             # Nested bullets and continuation lines belong to the item above them, never to a child of their own.
-            if items:
-                items[-1][1].append(stripped)
+            items[-1][1].append(stripped)
             continue
         item = _LIST_ITEM_RE.match(stripped)
-        if item and item.group(1).strip():
+        if item and item.group(1).strip() and indent <= _MAX_LIST_INDENT:
+            # CommonMark allows a top-level list to be indented 0-3 spaces; the first item fixes the section's level.
+            if base_indent is None:
+                base_indent = indent
             items.append((item.group(1).strip(), []))
 
     sub_intents: list[dict[str, Any]] = []

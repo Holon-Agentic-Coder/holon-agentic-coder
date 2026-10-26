@@ -3762,6 +3762,33 @@ def test_parse_sub_intent_list_folds_nested_bullets_into_their_parent_item():
     ]
 
 
+@pytest.mark.parametrize("indent", [" ", "  ", "   "])
+def test_parse_sub_intent_list_reads_a_top_level_list_indented_one_to_three_spaces(indent):
+    plan = (
+        f"# Plan\n\n## Sub-intent list\n\n{indent}- Add the parser\n{indent}  - covers tokens\n"
+        f"{indent}\t- covers errors\n{indent}* Add the CLI flag\n{indent}    1. wired in\n\n## Risks\n\n- not a child\n"
+    )
+
+    items = executor.parse_sub_intent_list(plan)
+
+    assert items == [
+        {
+            "slug": "add-the-parser",
+            "description": "Add the parser\n- covers tokens\n- covers errors",
+            "goal": "Add the parser",
+        },
+        {"slug": "add-the-cli-flag", "description": "Add the CLI flag\n1. wired in", "goal": "Add the CLI flag"},
+    ]
+    decision = executor.should_decompose({"entropy": 40.0, "entropy_budget": 5.0}, plan)
+    assert decision.decision == executor.DECISION_DECOMPOSED
+
+
+def test_parse_sub_intent_list_ignores_items_indented_four_or_more_spaces():
+    plan = "# Plan\n\n## Sub-intent list\n\n    - indented code, not a list\n"
+
+    assert executor.parse_sub_intent_list(plan) == []
+
+
 def test_parse_sub_intent_list_skips_placeholder_items():
     plan = "# Plan\n\n## Sub-intent list\n\n- None\n- N/A\n"
 

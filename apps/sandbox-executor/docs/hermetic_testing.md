@@ -14,10 +14,11 @@ removed a live workspace. An audit of every test that calls a role entrypoint wi
 exposed callers, all in one module:
 
 - `test_executor.py`: `test_main_execution_flow`, `test_main_git_recovery_on_corrupted_repo`,
-  `test_main_decomposition_flow`, `test_main_custom_holon_repo_dir_not_deleted`, `test_main_default_workspace_deleted`,
-  `test_main_raises_exception_on_failure`, `test_main_raises_runtime_error_on_cleanup_failure`,
-  `test_main_mount_point_clears_contents`, `test_main_git_add_not_called_on_failure`. Two of these also exercise
-  `_rmtree` directly: `test_main_default_workspace_deleted` and `test_main_raises_runtime_error_on_cleanup_failure`.
+  `test_main_over_budget_flow_writes_no_intent_rows`, `test_main_custom_holon_repo_dir_not_deleted`,
+  `test_main_default_workspace_deleted`, `test_main_raises_exception_on_failure`,
+  `test_main_raises_runtime_error_on_cleanup_failure`, `test_main_mount_point_clears_contents`,
+  `test_main_git_add_not_called_on_failure`. Two of these also exercise `_rmtree` directly:
+  `test_main_default_workspace_deleted` and `test_main_raises_runtime_error_on_cleanup_failure`.
 
 Because a guard test that cannot fail is worthless, `tests/test_sandbox_hermetic_guard.py` pairs the canary guard with a
 negative control that runs a deliberately unpinned `cleanup_repo_dir()` and asserts the simulated workspace **is**

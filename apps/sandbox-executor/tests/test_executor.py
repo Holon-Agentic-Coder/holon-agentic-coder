@@ -3796,6 +3796,19 @@ SUB_INTENT_PARSER_CORPUS = [
     pytest.param(_section(_NESTED_BODY).replace("\n", "\r\n"), _NESTED_EXPECTED, id="crlf-line-endings"),
     pytest.param(_section("- None\n- N/A\n- n/a.\n- na"), [], id="placeholders-only"),
     pytest.param(_section("- None\n- Real child"), ["Real child"], id="placeholder-beside-real-item"),
+    # N-12-1-1: wrapped or reworded placeholders say "no child work" and never become children.
+    pytest.param(_section("- (none)"), [], id="n-12-1-1-parenthesised-none"),
+    pytest.param(_section("- Not applicable"), [], id="n-12-1-1-not-applicable"),
+    pytest.param(_section("- None required; work is in one step"), [], id="n-12-1-1-none-required-with-reason"),
+    pytest.param(_section("- **None**"), [], id="n-12-1-1-bold-none"),
+    pytest.param(_section("- _n/a_"), [], id="n-12-1-1-emphasised-n-a"),
+    pytest.param(_section("- No sub-intents: the plan fits the budget."), [], id="n-12-1-1-no-sub-intents-with-reason"),
+    # A real item that merely starts with the letters of a phrase is not a placeholder (word boundary + separator).
+    pytest.param(
+        _section("- Nonetheless refactor the parser\n- None of the existing tests change"),
+        ["Nonetheless refactor the parser", "None of the existing tests change"],
+        id="n-12-1-1-word-boundary-real-items",
+    ),
     pytest.param(_section("-   \n- Real child"), ["Real child"], id="empty-item-skipped"),
     # R1-I6-N1: a longer outer fence closes only on the same character at least as long.
     *[

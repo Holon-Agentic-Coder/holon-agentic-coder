@@ -51,7 +51,8 @@ managed centrally.
 
 - High predicted entropy = **high risk** = deeper review, stronger sandboxing, or rejection.
 - Entropy budgets **limit blast radius** (intents cannot exceed allocated entropy).
-- Entropy spikes trigger **automatic escalation** (human review, deeper model routing).
+- Entropy spikes trigger **automatic escalation** (re-planning, deeper model routing); a human is only involved at the
+  merge.
 
 ### 5) Human review is the final gate
 
@@ -283,7 +284,7 @@ If parent intent's entropy budget is exhausted:
 - No more sub-intents can be spawned.
 - Agent must either:
   - Complete remaining work within budget.
-  - Request budget increase (requires human approval).
+  - Re-plan into a smaller plan or an explicit sub-intent list (bounded; no human approval is awaited before the merge).
   - Abandon intent.
 
 ---
@@ -320,7 +321,8 @@ Human review is **required** for:
    - If agent fails 3+ consecutive intents, human reviews agent state.
 
 8. **Novel intent types**
-   - If intent type has no historical precedent in KB, human reviews plan before execution.
+   - If intent type has no historical precedent in KB, the plan is flagged for the reviewer at the merge PR; execution
+     does not wait.
 
 ### Human review workflow
 
@@ -423,7 +425,8 @@ Human review is **required** for:
 
 - **Containment:** Intent cannot spawn more sub-intents.
 - **Response:** Log budget exhaustion, notify agent.
-- **Recovery:** Agent completes work within budget, or requests increase (human approval).
+- **Recovery:** Agent completes work within budget, or the flow re-plans a bounded number of times and then fails the
+  stage; no human approval is awaited before the merge.
 - **Escalation:** If actual entropy >> predicted (> 1.5x), human reviews estimator accuracy.
 
 #### 4) **Sandbox escape attempt**

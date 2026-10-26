@@ -122,7 +122,11 @@ It returns one of three outcomes:
   spacing and case are ignored, so the older plural heading still works) followed by bullet or numbered items. Each
   top-level item becomes `{slug, description, goal}` (slug and goal from the item text only), whatever the plan entropy;
   indented nested bullets are appended to their parent item's description and never become items, and placeholder items
-  (`none`, `n/a`) are skipped. Per-step sub‑intent recommendation bullets are never read as a list.
+  are skipped: an item is a placeholder when, stripped of wrapping brackets, quotes and emphasis markers and trailing
+  punctuation and lower-cased, it equals or starts with one of `none`, `none required`, `none needed`, `n/a`, `na`,
+  `nil`, `not applicable`, `not needed`, `not required`, `no sub-intents` or `no sub-intent` followed by the end of the
+  text or a separator (`;`, `:`, `,`, `.`, ` -`, an en or em dash), so `None required; one step` is skipped while
+  `None of the existing tests ...` is a real item. Per-step sub‑intent recommendation bullets are never read as a list.
 - **`over_budget`**: the plan entropy exceeds the budget and the plan lists no sub-intent list.
 
 The executor never invents child work and never writes `intents.jsonl` rows. For both non-execute outcomes it skips the

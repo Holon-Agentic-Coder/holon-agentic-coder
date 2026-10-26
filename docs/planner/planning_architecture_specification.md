@@ -34,8 +34,8 @@ To ensure all proposed code changes conform to the project’s structure and bou
 
 Bottleneck steps (e.g., database schema changes, core module refactoring) carry high risk:
 
-- **Decomposition Trigger:** If a step is marked as a critical bottleneck (`Is Bottleneck: YES`) and its predicted
-  success probability is low (`P(success) < 0.7`), the engine blocks parent execution.
+- **Decomposition Guidance:** A step marked as a critical bottleneck (`Is Bottleneck: YES`) with a low predicted success
+  probability (`P(success) < 0.7`) is a candidate for the plan's sub-intent list; the engine never blocks on it.
 - **Decomposition via the Sub-intent List:** A bottleneck step is not decomposed automatically. To split it out, the
   planner lists it as an item of the plan's explicit `## Sub-intent list` (see §4); the flow then runs that item as a
   child intent with its own branch, sandbox and tests, resolved before the parent intent branch is raised to its target.

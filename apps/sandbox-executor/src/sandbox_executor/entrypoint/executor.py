@@ -715,8 +715,32 @@ DECISION_OVER_BUDGET = "over_budget"
 _SUB_INTENT_HEADINGS = frozenset({"sub intent list", "sub intents"})
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 _LIST_ITEM_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+(.*)$")
-# Items that say a plan has no sub-intent list rather than naming child work.
-_PLACEHOLDER_ITEMS = frozenset({"none", "n/a", "na"})
+# Phrases that say a plan has no sub-intent list rather than naming child work. An item is a placeholder when, once
+# normalised by _normalise_placeholder_item, it equals one of these phrases or starts with one followed by a separator
+# (";", ":", ",", ".", " -", an en or em dash), so "None required; work is in one step" is a placeholder while
+# "Nonetheless ..." or "None of the existing tests ..." (no separator after the phrase) names real work. Words inside a
+# phrase may be joined by spaces, hyphens or underscores ("no sub-intents").
+_PLACEHOLDER_PHRASES = (
+    "none",
+    "none required",
+    "none needed",
+    "n/a",
+    "na",
+    "nil",
+    "not applicable",
+    "not needed",
+    "not required",
+    "no sub intents",
+    "no sub intent",
+)
+_PLACEHOLDER_RE = re.compile(
+    r"^(?:"
+    + "|".join(r"[\s\-_]+".join(re.escape(word) for word in phrase.split()) for phrase in _PLACEHOLDER_PHRASES)
+    + r")(?:$|\s*[;:,.\u2013\u2014]|\s+-)"
+)
+# Wrapping characters stripped from both ends of an item before the placeholder test: brackets, parentheses, straight
+# and curly quotes, and markdown emphasis or code markers.
+_PLACEHOLDER_WRAPPERS = "()[]{}<>\"'`*_~\u2018\u2019\u201c\u201d"
 # Code fences, matched against a stripped line so a fence nested in a list item at any indentation is still a fence: an
 # opener is 3+ backticks or tildes (a backtick fence's info string may not contain a backtick); it closes only on a line
 # of the same character, at least as long, with nothing but whitespace after it.
@@ -754,6 +778,21 @@ def _normalise_heading(text: str) -> str:
     return re.sub(r"[\s\-_\u2010\u2011]+", " ", text.strip().lower()).strip()
 
 
+def _normalise_placeholder_item(text: str) -> str:
+    """Lower-case an item, strip wrapping brackets, quotes and emphasis markers, and drop trailing punctuation."""
+    normalised = re.sub(r"\s+", " ", text).strip()
+    previous = None
+    while normalised != previous:
+        previous = normalised
+        normalised = normalised.strip(_PLACEHOLDER_WRAPPERS + " ").rstrip(".!?;:,")
+    return normalised.lower()
+
+
+def is_placeholder_item(text: str) -> bool:
+    """True when a sub-intent list item says there is no child work rather than naming any (_PLACEHOLDER_PHRASES)."""
+    return bool(_PLACEHOLDER_RE.match(_normalise_placeholder_item(text)))
+
+
 def parse_sub_intent_list(plan_content: str) -> list[dict[str, Any]]:
     """Parse the explicit sub-intent list from a plan's markdown.
 
@@ -767,7 +806,9 @@ def parse_sub_intent_list(plan_content: str) -> list[dict[str, Any]]:
     ``---``) at 0-3 columns are skipped.
     Per-step sub-intent recommendation bullets are never under such a heading, so they are ignored. Each item becomes
     ``{slug, description, goal}``; the slug and goal come from the item text only. Empty items, items with no
-    alphanumeric character and placeholder items (``none``, ``n/a``) are skipped, and duplicate slugs get a numeric
+    alphanumeric character and placeholder items are skipped (an item that, stripped of wrapping brackets, quotes and
+    emphasis and lower-cased, equals or starts with a phrase such as ``none``, ``n/a``, ``not applicable`` or
+    ``no sub-intents`` followed by a separator; see :func:`is_placeholder_item`), and duplicate slugs get a numeric
     suffix.
 
     Args:
@@ -819,7 +860,7 @@ def parse_sub_intent_list(plan_content: str) -> list[dict[str, Any]]:
     sub_intents: list[dict[str, Any]] = []
     seen: dict[str, int] = {}
     for text, details in items:
-        if _normalise_heading(text).rstrip(".") in _PLACEHOLDER_ITEMS or not any(c.isalnum() for c in text):
+        if is_placeholder_item(text) or not any(c.isalnum() for c in text):
             # Placeholders and punctuation-only items name no child work.
             continue
         base = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:48].strip("-") or "sub-intent"

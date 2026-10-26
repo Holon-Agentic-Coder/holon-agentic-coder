@@ -207,6 +207,11 @@ budget, but it lives in the same module so that there is exactly one source of t
 - **Bounded re-planning.** A plan above its budget that lists no sub-intent list is sent back to Stage 2 at most
   `budgets.MAX_REPLAN_ATTEMPTS` (`2`) times, with a short re-plan request passed to the planner container through
   `HOLON_REPLAN_FEEDBACK` (never written to a ledger). After that, Stage 3 fails with a message naming the entropy, the
-  budget and the number of attempts.
+  budget and the number of attempts. Under `holon flow` the plan row is readable before dispatch, so an over-budget plan
+  is refused before the executor container starts: that attempt creates no execution branch and appends no
+  `executions.jsonl` row. Each rejected plan keeps its `plans.jsonl` row on its plan branch, and the refusals, re-plan
+  count and final failure are recorded only in the flow's stage results, log and checkpoint
+  (`.holon/flow/checkpoint-<slug>.json`). The executor's `over_budget` summary row is written only when the executor
+  itself refuses the plan, as in a direct `holon execute` run.
 - **Bounded nesting.** Child intents created from a sub-intent list carry `sub_intent_depth`; the flow refuses to
   recurse beyond `budgets.MAX_SUB_INTENT_DEPTH` (`2`).

@@ -2005,6 +2005,29 @@ class TestStageBudgets:
         assert result.status == StageStatus.SUCCESS
         assert result.payload["budget_overrun"]["budget_seconds"] == 600
 
+    def test_decomposed_execute_overrun_keeps_success(self, tmp_path):
+        # A decomposed Stage 3 spans whole child pipelines, so its overrun is recorded, never a stage failure.
+        ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "dec", "goal": "Dec"}, dry_run=True)
+        decomposed = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"decomposed": True})
+        with patch("sandbox_executor.flow.run_execute_stage", return_value=decomposed):
+            result = PipelineEngine(ctx, clock=SteppingClock(step=3000)).timed_execute_stage(FlowStage.EXECUTE)
+        assert result.status == StageStatus.SUCCESS
+        assert result.payload["budget_overrun"] == {
+            "budget_name": "stage",
+            "budget_seconds": 2700,
+            "elapsed_seconds": 3000.0,
+        }
+        assert "budget_breach" not in result.payload
+
+    def test_undecomposed_execute_overrun_fails_the_stage(self, tmp_path):
+        ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "plain", "goal": "Plain"}, dry_run=True)
+        plain = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={})
+        with patch("sandbox_executor.flow.run_execute_stage", return_value=plain):
+            result = PipelineEngine(ctx, clock=SteppingClock(step=3000)).timed_execute_stage(FlowStage.EXECUTE)
+        assert result.status == StageStatus.FAILED
+        assert "exceeded its stage budget" in result.error
+        assert result.payload["budget_breach"]["budget_name"] == "stage"
+
     def test_timed_stage_is_the_active_host_timer_except_review(self, tmp_path):
         # C6-I1: role containers dispatched during a stage read this timer (cli.run_docker_container hand-down).
         from sandbox_executor.budgets import current_stage_timer, stage_budget_handdown_env

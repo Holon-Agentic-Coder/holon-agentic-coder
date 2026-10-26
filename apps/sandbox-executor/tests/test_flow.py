@@ -4457,6 +4457,8 @@ class TestEntropyBudgetHandoffInFlow:
             assert payload["parent_intent_id"] == ctx.intent_branch
             assert payload["entropy_budget"] == 5.0
             assert payload["sub_intent_depth"] == 1
+            # Labels drive the PR title scope, so each child PR is scoped like its parent's.
+            assert payload["labels"] == ["flow"]
         execute = results["execute"]
         assert execute.status == StageStatus.SUCCESS
         assert execute.payload["decomposed"] is True
@@ -4543,6 +4545,8 @@ class TestEntropyBudgetHandoffInFlow:
         assert ctx.replan_attempts == 1
         assert results["plan"].status == StageStatus.FAILED
         assert results["plan"].error == "Plan stage failed: no plan"
+        # The rejected plan is dropped before re-planning, so the checkpoint never resumes from the over-budget plan.
+        assert ctx.plan_branch is None
         assert results["execute"].payload["over_budget"] is True
         assert "review" not in results
         assert "replan_feedback" not in ctx.intent_data
@@ -4625,6 +4629,91 @@ class TestEntropyBudgetHandoffInFlow:
         legacy = ctx.to_dict()
         del legacy["replan_attempts"]
         assert FlowContext.from_dict(legacy).replan_attempts == 0
+
+    def test_replan_restores_a_pre_existing_replan_feedback_variable(self, flow_repos, tmp_path, monkeypatch):
+        host, origin = flow_repos
+        monkeypatch.setenv("HOLON_REPLAN_FEEDBACK", "operator value")
+        agents = BudgetRoleAgents(tmp_path, origin, plans=[(12.6, ""), (4.0, "")])
+        ctx = _budget_context(host, agents, 5.0)
+
+        results = PipelineEngine(ctx).run()
+
+        assert results["execute"].status == StageStatus.SUCCESS
+        assert "entropy 12.6" in (agents.replan_feedback_seen[1] or "")
+        assert os.environ.get("HOLON_REPLAN_FEEDBACK") == "operator value"
+
+    def test_failed_decomposed_execute_does_not_skip_review_or_calibration(self):
+        ctx = FlowContext(token_reduce=False)
+        engine = PipelineEngine(ctx)
+        for status, expected in ((StageStatus.FAILED, False), (StageStatus.SUCCESS, True)):
+            ctx.stage_results["execute"] = StageResult(
+                stage=FlowStage.EXECUTE, status=status, payload={"decomposed": True}
+            )
+            assert engine._parent_was_decomposed() is expected
+
+    def test_child_pipeline_that_runs_no_stage_fails_the_parent(self):
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent", "goal": "Change the application"})
+        ctx.intent_branch = "I-1-parent/_"
+        row = {
+            "status": "decomposed",
+            "plan_branch": "I-1-parent/P-2-agent-model/_",
+            "sub_intents": [{"slug": "first", "goal": "Add the parser"}, {"slug": "second", "goal": "Add the flag"}],
+        }
+
+        with patch.object(PipelineEngine, "run", return_value={}) as run:
+            res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", row, {"execution_id": "E-1"})
+
+        assert res.status == StageStatus.FAILED
+        assert res.error == "Execute stage failed: sub-intent 1/2 'first' failed at stage 'none': no stage ran"
+        assert [c["slug"] for c in res.payload["children"]] == ["first"]
+        assert run.call_count == 1
+
+    def test_child_context_inherits_the_parent_flags(self):
+        dispatcher = MagicMock()
+        ctx = FlowContext(
+            token_reduce=False,
+            dry_run=True,
+            skip_push=True,
+            skip_review=True,
+            skip_calibrate=True,
+            auto_calibrate=False,
+            max_review_iterations=7,
+            dispatcher=dispatcher,
+        )
+
+        child = flow_module._child_context(ctx, {"slug": "child", "goal": "Add the parser"})
+
+        assert child.intent_data == {"slug": "child", "goal": "Add the parser"}
+        assert (child.dry_run, child.skip_push, child.skip_review, child.skip_calibrate) == (True, True, True, True)
+        assert child.auto_calibrate is False
+        assert child.max_review_iterations == 7
+        assert child.dispatcher is dispatcher
+
+    @staticmethod
+    def _decide(rows: list[dict[str, Any]], files: dict[str, str]) -> Any:
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent", "entropy_budget": 5.0})
+        ctx.plan_branch = "I-1-parent/P-2-agent-model/_"
+        with (
+            patch("sandbox_executor.flow._resolve_branch_ref", return_value="refs/remotes/origin/plan"),
+            patch("sandbox_executor.flow._read_ledger_rows", return_value=rows),
+            patch("sandbox_executor.flow._git_show_text", side_effect=lambda _repo, _ref, path: files.get(path)),
+        ):
+            return flow_module._plan_budget_decision(ctx)
+
+    def test_budget_precheck_reads_the_newest_plan_row(self):
+        rows = [
+            {"plan_id": "P-2-agent-model", "entropy": 12.6, "plan_file": "plans/P-2-agent-model.md"},
+            {"plan_id": "P-2-agent-model", "entropy": 2.0, "plan_file": "plans/P-2-agent-model.md"},
+        ]
+        decision = self._decide(rows, {"plans/P-2-agent-model.md": "# Plan\n"})
+        assert (decision.decision, decision.entropy) == ("execute", 2.0)
+
+    def test_budget_precheck_ignores_a_plan_file_outside_plans(self):
+        rows = [{"plan_id": "P-2-agent-model", "entropy": 9.0, "plan_file": "README.md"}]
+        files = {"plans/P-2-agent-model.md": "# Plan\n" + SUB_INTENT_LIST, "README.md": "# Readme\n"}
+        decision = self._decide(rows, files)
+        assert decision.decision == "decomposed"
+        assert [i["goal"] for i in decision.sub_intents] == ["Add the parser", "Add the CLI flag"]
 
     def test_only_the_review_stage_constructs_a_halt(self):
         source = Path(flow_module.__file__).read_text(encoding="utf-8")

@@ -4579,6 +4579,41 @@ class TestEntropyBudgetHandoffInFlow:
         assert results["execute"].payload["dispatched"] is False
         assert agents.roles() == ["intent-creator", "planner"]
 
+    def test_sub_intent_depth_is_bounded_when_the_precheck_cannot_read_the_plan(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = BudgetRoleAgents(tmp_path, origin, plans=[(2.0, SUB_INTENT_LIST)])
+        ctx = _budget_context(host, agents, 5.0, sub_intent_depth=MAX_SUB_INTENT_DEPTH)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+
+        # With no pre-dispatch decision, the executor's decomposed row is the only signal: the depth bound must hold.
+        with patch("sandbox_executor.flow._plan_budget_decision", return_value=None):
+            res = run_execute_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        assert "deeper than the limit" in (res.error or "")
+        assert res.payload["decomposed"] is True
+        assert res.payload["children"] == []
+        # The executor ran once and no child intent was created.
+        assert agents.roles() == ["intent-creator", "planner", "executor"]
+        assert len(agents.intent_payloads) == 1
+
+    @pytest.mark.parametrize("sub_intents", [[], None, ["not-a-dict"]], ids=["empty", "missing", "no-dict-items"])
+    def test_decomposed_row_without_sub_intent_items_fails_stage(self, sub_intents):
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent", "goal": "Change the application"})
+        row: dict[str, Any] = {"status": "decomposed", "plan_branch": "I-1-parent/P-2-agent-model/_"}
+        if sub_intents is not None:
+            row["sub_intents"] = sub_intents
+
+        with patch("sandbox_executor.flow._dispatch_role") as dispatch:
+            res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", row, {"execution_id": "E-1"})
+
+        assert res.status == StageStatus.FAILED
+        assert "without any sub-intent list items" in (res.error or "")
+        assert res.payload["sub_intents"] == []
+        assert res.payload["children"] == []
+        dispatch.assert_not_called()
+
     def test_format_decomposition_summary_is_empty_for_undecomposed_execute(self):
         plain = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"execution_id": "E-1"})
         assert flow_module.format_decomposition_summary(plain) == []

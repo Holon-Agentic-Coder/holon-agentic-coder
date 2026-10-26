@@ -3983,6 +3983,29 @@ def test_main_over_budget_reads_intent_budget_when_plan_row_has_none(tmp_path):
     assert "sub_intents" not in summaries[0]
 
 
+@pytest.mark.parametrize(
+    ("plan_md", "expected_status", "expected_outcome"),
+    [
+        ("# Plan\n\n## Sub-intent list\n\n1. Add the parser\n2. Add the CLI flag\n", "decomposed", "success"),
+        ("# Plan\n", "over_budget", "failure"),
+    ],
+    ids=["decomposed-success", "over-budget-failure"],
+)
+def test_main_plan_decomposition_action_outcome(tmp_path, monkeypatch, plan_md, expected_status, expected_outcome):
+    monkeypatch.setenv("HOLON_ACTION_LOGGING", "1")
+    plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 12.6, "plan_file": "plans/P-123.md"}
+    intent_row = {"branch": "I-456", "slug": "parent", "entropy_budget": 5.0}
+
+    rows = _run_executor_main(tmp_path, plan_row, plan_md, intent_row)
+
+    assert [r["status"] for r in rows if r.get("entry_type") == "summary"] == [expected_status]
+    actions = [r for r in rows if r.get("event_type") == "plan_decomposition"]
+    assert len(actions) == 1
+    assert actions[0]["entry_type"] == "action"
+    assert actions[0]["outcome"] == expected_outcome
+    assert actions[0]["target"] == "I-456/P-123/_"
+
+
 def test_no_placeholder_sub_intent_text_in_source():
     """The removed fallback goals must not reappear anywhere under src/ (phrases built from fragments)."""
     phrases = [

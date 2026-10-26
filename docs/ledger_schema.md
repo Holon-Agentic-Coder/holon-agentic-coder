@@ -174,14 +174,14 @@ Write rules for every stage:
   `FlowContext` call the context-free `sandbox_executor.ledger.try_append_action_record(..., preserve_shape=True)`,
   which applies the same validation, LedgerLock and fail-loud reporting.
 - **Fail loud**: no fallback ledger file is ever written. In Stages 1-3 a failed append of the intent row, the plan row,
-  or the executor's superseding failure summaries raises inside the role container, which exits non-zero; the flow then
-  fails the stage and halts the pipeline. The executor catches a failed append of its own execution summary and logs a
-  warning, and the flow then fails Stage 3 because the execution branch carries no summary row for that execution. The
-  executor's action rows are best effort: a failed append is suppressed. A failed write of the flow's superseding
-  empty-diff row is logged and named in the stage error, and Stage 3 fails either way. When a row a Stage 4 or Stage 5
-  stage function in `flow.py` appends fails, the failure is logged at `WARNING` with the ledger path and exception, and
-  mirrored into the flow context log shown to the operator; those rows (action rows, the Stage 4 `REV-...` summary and
-  the Stage 5 `ACT-CAL` row) never abort their stage.
+  the executor's `decomposed` or `over_budget` summary, or the executor's superseding failure summaries raises inside
+  the role container, which exits non-zero; the flow then fails the stage and halts the pipeline. The executor catches a
+  failed append of its own execution summary and logs a warning, and the flow then fails Stage 3 because the execution
+  branch carries no summary row for that execution. The executor's action rows are best effort: a failed append is
+  suppressed. A failed write of the flow's superseding empty-diff row is logged and named in the stage error, and Stage
+  3 fails either way. When a row a Stage 4 or Stage 5 stage function in `flow.py` appends fails, the failure is logged
+  at `WARNING` with the ledger path and exception, and mirrored into the flow context log shown to the operator; those
+  rows (action rows, the Stage 4 `REV-...` summary and the Stage 5 `ACT-CAL` row) never abort their stage.
 - **Suppression**: dry runs append nothing, including the Stage 5 reconciliation events (the review loop logs how many
   rows it suppressed). `holon calibrate` with `skip_commit` appends no `ACT-CAL` row.
 - **No backfill**: only new executions gain these rows. Historical records are never synthesised.
@@ -727,6 +727,9 @@ Appended when a plan is proposed by the planner:
 - `created_at`: Creation timestamp.
 - `plan_file`: Relative path to the plan markdown file.
 - `status`: Plan status (e.g. `proposed`).
+- `entropy_budget`: The resolved entropy budget the planner showed the planning agent and the executor enforces (number,
+  `>= 0`; the intent row's `entropy_budget`, else `DEFAULT_ENTROPY_BUDGET` `15.0`). Always written on new rows; optional
+  on historic rows (see the plan row `entropy_budget` paragraph under the stage matrix).
 
 #### Execution Ledger (`executions.jsonl`)
 

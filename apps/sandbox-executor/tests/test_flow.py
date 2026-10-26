@@ -4694,6 +4694,8 @@ class TestEntropyBudgetHandoffInFlow:
             calibrated_branch="I-1-parent/P-2-agent-model/E-3-agent-model/calibrated",
             stage_results={"intent": StageResult(stage=FlowStage.INTENT, status=StageStatus.SUCCESS)},
             logs=["parent log line"],
+            # A non-current version, as FlowContext.from_dict accepts from a malformed checkpoint (e.g. -1).
+            schema_version=-1,
             replan_attempts=1,
             **parent_values,
         )
@@ -4707,7 +4709,7 @@ class TestEntropyBudgetHandoffInFlow:
             "calibrated_branch": None,
             "stage_results": {},
             "logs": [],
-            "schema_version": parent.schema_version,
+            "schema_version": flow_module.CURRENT_CONTEXT_SCHEMA_VERSION,
             "replan_attempts": 0,
         }
         defaults = FlowContext(token_reduce=False)

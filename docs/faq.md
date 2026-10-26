@@ -111,11 +111,12 @@ the initial high cost is a necessary investment in the system's education.
   a background rebase onto the parent branch to catch up with concurrent changes early, rather than waiting for a
   massive end-of-execution conflict.
 - **Budget Checks:** If a planner or executor turn exceeds its turn, stall or stage budget, one resume turn is attempted
-  first. A plan that is usable after it carries on with nothing recorded, and a breach confined to the executor's
-  notes-only re-prompt is only logged. Otherwise the container commits the salvaged partial artefact (the executor
-  commits its partial notes, not the code changes), records one `ACT-BUDGET` action in the ledger and the stage fails;
-  the flow stops there rather than pausing for a human. A host-side `holon flow` stage ceiling also fails the stage, but
-  writes no `ACT-BUDGET` record (see [Turn and Stage Budgets](budgets.md)).
+  first while the stage still has time left (a stage-budget breach therefore gets none). A plan that is usable after it
+  carries on with nothing recorded, and a breach confined to the executor's notes-only re-prompt is only logged.
+  Otherwise the container commits the salvaged partial artefact (the executor commits its partial notes, not the code
+  changes), records one `ACT-BUDGET` action in the ledger and the stage fails; the flow stops there rather than pausing
+  for a human. A host-side `holon flow` stage ceiling also fails the stage, but writes no `ACT-BUDGET` record (see
+  [Turn and Stage Budgets](budgets.md)).
 
 ### Niche or Unsupported Languages and Frameworks
 

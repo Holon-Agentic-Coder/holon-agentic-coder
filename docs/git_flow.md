@@ -186,8 +186,8 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
   over-budget plan before dispatching the executor, so those attempts create no execution branch and append no
   `executions.jsonl` row; each rejected plan keeps its `plans.jsonl` row, and the refusals are recorded only in the
   flow's stage results, log and checkpoint. The executor's `over_budget` summary row covers a direct `holon execute`
-  run, which exits with code 3 so the refusal is not mistaken for success (code 1 when the push is refused, since no
-  execution branch then records the row).
+  run, which exits with code 3 so the refusal is not mistaken for success (code 1 when the push is refused or fails,
+  since no execution branch then records the row).
 
 The guarantee has five deliberate limits:
 

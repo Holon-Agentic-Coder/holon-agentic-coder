@@ -1528,7 +1528,9 @@ and logs the promotion to the ledger:
 }
 ```
 
-The agent is now permitted to autonomously spawn sub-intents, up to the flow's `MAX_SUB_INTENT_DEPTH` cap (currently 2).
+In the target model the agent is now permitted to autonomously spawn sub-intents. The current `holon flow` does not gate
+sub-intents by trust: any agent's plan may list them, up to one hard cap, `MAX_SUB_INTENT_DEPTH` (currently 2), for
+every agent.
 
 ---
 

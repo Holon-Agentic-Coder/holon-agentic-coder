@@ -3978,7 +3978,10 @@ SUB_INTENT_PARSER_CORPUS = [
     # R2-I18-M-E8: a break-like line at 4+ columns is not a break; it folds into the item above.
     pytest.param(_section("- A\n    - - -\n- B"), ["A\n- - -", "B"], id="four-space-break-like-line-folds"),
     pytest.param(_section("- A\n- ...\n- (!)\n- B"), ["A", "B"], id="r8-n1-punctuation-only-item-skipped"),
-    # N-20-1..N-20-3 and the iteration-20 parser mutation sweep: one row per mutant it kills, each matching CommonMark.
+    # N-20-1..N-20-3 and the iteration-20 parser mutation sweep: one row per mutant it kills. Each row follows the
+    # recorded parser rules, which match CommonMark for what opens, ends or skips the section. Descriptions follow the
+    # recorded fold rule (R1-I2, PARSER-CONVERGENCE-ITER7) instead: an indented line folds into the item above even
+    # where CommonMark makes it part of a later paragraph (row i20-tab-underline-is-4-cols).
     # A fence resets the paragraph state, and a fence left of the item content column ends the list.
     pytest.param(_section("- Add A\n```\nx\n```\nNotes\n---\n- Add B"), ["Add A"], id="n-20-1-fence-resets-paragraph"),
     pytest.param(
@@ -4030,7 +4033,8 @@ SUB_INTENT_PARSER_CORPUS = [
         id="i20-tab-after-marker-is-content-column-4",
     ),
     # Setext underline: 3 columns is still an underline, a tab is 4 columns, mixed or spaced runs are not underlines,
-    # and the underline line is consumed rather than read as a paragraph of its own.
+    # and the underline line is consumed rather than read as a paragraph of its own. In the tab row, CommonMark reads
+    # "\t---" as a continuation of the paragraph "Notes"; the fold rule puts it in item A's description instead.
     pytest.param(_section("- Add A\n\nNotes\n   ---\n- Add B"), ["Add A"], id="i20-underline-at-3-columns"),
     pytest.param(
         _section("- Add A\n\nNotes\n\t---\n- Add B"), ["Add A\n---", "Add B"], id="i20-tab-underline-is-4-cols"

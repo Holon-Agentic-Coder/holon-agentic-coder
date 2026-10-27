@@ -1365,7 +1365,10 @@ class TestSharedRoleDispatch(unittest.TestCase):
                 main()
             # The container's exit status passes through, so 'holon execute ... && holon review ...' stops here.
             self.assertEqual(cm.exception.code, code)
-            self.assertEqual(message in stderr.getvalue().splitlines(), code == OVER_BUDGET_EXIT_CODE, code)
+            if code == OVER_BUDGET_EXIT_CODE:
+                self.assertIn(message, stderr.getvalue().splitlines())
+            else:
+                self.assertNotIn("over its entropy budget", stderr.getvalue(), code)
 
     @patch("sandbox_executor.cli.run_docker_container", return_value=0)
     def test_dispatch_role_agent_uses_runner_image(self, mock_run_container):

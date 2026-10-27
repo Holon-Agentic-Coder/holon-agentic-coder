@@ -2928,16 +2928,17 @@ class TestFlowRoleDispatch:
         rows = _ledger_rows(host, f"origin/{ctx.execution_branch}", "executions.jsonl")
         assert [r["status"] for r in rows] == ["failure"]
 
-    def test_stage3_nonzero_container_exit_fails_stage(self, flow_repos):
+    @pytest.mark.parametrize("code", [1, 2])
+    def test_stage3_nonzero_container_exit_fails_stage(self, flow_repos, code):
         host, _origin = flow_repos
         # Any non-zero exit except the executor's over-budget refusal code (read from its pushed row) fails at once.
-        ctx = _dispatch_context(host, MagicMock(return_value=2), plan_branch="I-1-x/P-1-claude-agent-m/_")
+        ctx = _dispatch_context(host, MagicMock(return_value=code), plan_branch="I-1-x/P-1-claude-agent-m/_")
 
         res = run_execute_stage(ctx)
 
         assert res.status == StageStatus.FAILED
-        assert "exited with code 2" in (res.error or "")
-        assert res.payload["exit_code"] == 2
+        assert res.error == f"Execute stage failed: executor agent exited with code {code}."
+        assert res.payload["exit_code"] == code
 
     def test_skip_push_is_rejected_before_dispatch(self, flow_repos):
         host, _origin = flow_repos

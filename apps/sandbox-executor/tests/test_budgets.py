@@ -206,3 +206,13 @@ def test_default_entropy_budget_is_the_single_shared_constant():
     assert executor.DEFAULT_ENTROPY_BUDGET is DEFAULT_ENTROPY_BUDGET
     assert planner.resolve_entropy_budget is resolve_entropy_budget
     assert executor.resolve_entropy_budget is resolve_entropy_budget
+
+
+def test_replan_and_depth_bounds_are_pinned_to_the_documented_values():
+    # docs/budgets.md and docs/examples.md state these values; a change must update the docs with them.
+    from sandbox_executor.budgets import ENV_REPLAN_FEEDBACK, MAX_REPLAN_ATTEMPTS, MAX_SUB_INTENT_DEPTH
+
+    assert MAX_REPLAN_ATTEMPTS == 2
+    assert MAX_SUB_INTENT_DEPTH == 2
+    # HOLON_* variables are forwarded into role containers, so the feedback variable must keep that prefix.
+    assert ENV_REPLAN_FEEDBACK == "HOLON_REPLAN_FEEDBACK"

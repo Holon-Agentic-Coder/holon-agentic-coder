@@ -4419,6 +4419,7 @@ class TestEntropyBudgetHandoffInFlow:
             "re-plan attempts and the plan lists no sub-intent list."
         )
         assert "review" not in results
+        assert execute.payload["replan_attempts"] == MAX_REPLAN_ATTEMPTS
         # The feedback reached the planner on each re-plan only, and never lingers in the payload or environment.
         assert agents.replan_feedback_seen[0] is None
         assert all("entropy 12.6" in (fb or "") for fb in agents.replan_feedback_seen[1:])
@@ -4479,6 +4480,8 @@ class TestEntropyBudgetHandoffInFlow:
         assert results["review"].status == StageStatus.SKIPPED
         assert results["review"].payload == {"reason": "decomposed"}
         assert results["calibrate"].status == StageStatus.SKIPPED
+        # Skipped because the plan was decomposed, not only by the test context's skip flag (R2-I18-M-F13).
+        assert results["calibrate"].payload == {"reason": "decomposed"}
         assert any("[sub-intent add-the-parser]" in line for line in ctx.logs)
         # The executor wrote no intent rows: only the parent and the two children created through Stage 1 exist.
         assert sorted(r["slug"] for r in _all_intent_rows(host)) == sorted(["budget-test", *children])
@@ -4550,6 +4553,7 @@ class TestEntropyBudgetHandoffInFlow:
         assert ctx.plan_branch is None
         assert results["execute"].payload["over_budget"] is True
         assert "review" not in results
+        assert ctx.logs[-1].endswith("Pipeline halted due to failure in stage 'plan'.")
         assert "replan_feedback" not in ctx.intent_data
         assert "HOLON_REPLAN_FEEDBACK" not in os.environ
 
@@ -4651,6 +4655,34 @@ class TestEntropyBudgetHandoffInFlow:
                 stage=FlowStage.EXECUTE, status=status, payload={"decomposed": True}
             )
             assert engine._parent_was_decomposed() is expected
+
+    @pytest.mark.parametrize(("recorded", "expected"), [(-3, 0), ("-1", 0), (None, 0), ("deep", 0), ("2", 2)], ids=str)
+    def test_sub_intent_depth_is_never_negative(self, recorded, expected):
+        # R2-I18-M-F10: a negative or unreadable depth counts as a root intent, so children start at depth 1.
+        assert flow_module._sub_intent_depth({"sub_intent_depth": recorded}) == expected
+
+    def test_decomposed_summary_names_the_parent_intents_own_target_branch(self):
+        # R2-I18-M-F4b: the pending parent PR targets the parent intent's target_branch, not always main.
+        ctx = FlowContext(
+            token_reduce=False,
+            intent_data={"slug": "parent", "goal": "Change the application", "target_branch": "release/1.x"},
+        )
+        ctx.intent_branch = "I-1-parent/_"
+        row = {
+            "status": "decomposed",
+            "plan_branch": "I-1-parent/P-2-agent-model/_",
+            "sub_intents": [{"slug": "first", "goal": "Add the parser"}],
+        }
+        done = {"intent": StageResult(stage=FlowStage.INTENT, status=StageStatus.SUCCESS)}
+
+        with patch.object(PipelineEngine, "run", return_value=done):
+            res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", row, {"execution_id": "E-1"})
+
+        assert res.status == StageStatus.SUCCESS
+        assert res.payload["parent_target_branch"] == "release/1.x"
+        assert flow_module.format_decomposition_summary(res)[-1] == (
+            "Pending (not yet automated): after the child PRs merge, raise a PR from 'I-1-parent/_' to 'release/1.x'."
+        )
 
     def test_child_pipeline_that_runs_no_stage_fails_the_parent(self):
         ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent", "goal": "Change the application"})

@@ -351,59 +351,62 @@ Include metrics in this format:
     # clobber each other's prompt or intent file. Both are removed in the finally block below.
     prompt_file = _unique_temp_file(f"plan_prompt-{plan_seq}-", ".md")
     intent_file = _unique_temp_file(f"intent-{plan_seq}-", ".json")
-    with open(prompt_file, "w") as f:
-        f.write(template)
-        f.write("\n\nRepository file structure:\n")
-        f.write(get_file_structure(repo_dir))
-
-        if replan_feedback:
-            f.write(build_replan_paragraph(replan_feedback, entropy_budget))
-
-    with open(intent_file, "w") as f:
-        json.dump({**intent_data, "replan_feedback": replan_feedback} if replan_feedback else intent_data, f)
-
-    # Invoke AI agent
-    plan_md_rel = f"plans/P-{plan_seq}-{agent_name}-{safe_model}.md"
-    plan_md_path = os.path.join(repo_dir, plan_md_rel)
-    os.makedirs(os.path.dirname(plan_md_path), exist_ok=True)
-
-    # Load full prompt content for agents that don't support file-based parameters
-    with open(prompt_file) as f:
-        prompt_content = f.read()
-    with open(intent_file) as f:
-        intent_content = f.read()
-    full_prompt = f"{prompt_content}\n\nIntent metadata:\n{intent_content}\n\n{plan_write_protocol(plan_md_rel)}"
-
-    runner = get_runner(agent_name)
-
-    def build_agent_cmd(prompt_text: str) -> list[str]:
-        cmd = runner.build_cmd(model_name, prompt_file, intent_file, prompt_text)
-        # Credentials are masked per argument before long arguments are clamped.
-        print(f"Running command: {format_agent_cmd_for_display(cmd)}")
-        return cmd
-
-    budgets = load_budgets(os.environ)
-    stage_timer = StageTimer("plan", budgets.stage_seconds("plan"))
-    outcome = None
     try:
-        outcome = supervise_authoring_turn(
-            build_agent_cmd,
-            full_prompt,
-            artefact_path=plan_md_path,
-            artefact_rel=plan_md_rel,
-            spec=PLAN_SPEC,
-            stage="plan",
-            turn_budgets=budgets.turn,
-            stage_timer=stage_timer,
-            run=run_turn,
-            context=f"{prompt_content}\n\nIntent metadata:\n{intent_content}",
-            cwd=repo_dir,
-        )
-    except Exception as e:
-        print(f"Error: Exception running agent: {redact_agent_secrets(str(e))}", file=sys.stderr)
+        with open(prompt_file, "w") as f:
+            f.write(template)
+            f.write("\n\nRepository file structure:\n")
+            f.write(get_file_structure(repo_dir))
+
+            if replan_feedback:
+                f.write(build_replan_paragraph(replan_feedback, entropy_budget))
+
+        with open(intent_file, "w") as f:
+            json.dump({**intent_data, "replan_feedback": replan_feedback} if replan_feedback else intent_data, f)
+
+        # Invoke AI agent
+        plan_md_rel = f"plans/P-{plan_seq}-{agent_name}-{safe_model}.md"
+        plan_md_path = os.path.join(repo_dir, plan_md_rel)
+        os.makedirs(os.path.dirname(plan_md_path), exist_ok=True)
+
+        # Load full prompt content for agents that don't support file-based parameters
+        with open(prompt_file) as f:
+            prompt_content = f.read()
+        with open(intent_file) as f:
+            intent_content = f.read()
+        full_prompt = f"{prompt_content}\n\nIntent metadata:\n{intent_content}\n\n{plan_write_protocol(plan_md_rel)}"
+
+        runner = get_runner(agent_name)
+
+        def build_agent_cmd(prompt_text: str) -> list[str]:
+            cmd = runner.build_cmd(model_name, prompt_file, intent_file, prompt_text)
+            # Credentials are masked per argument before long arguments are clamped.
+            print(f"Running command: {format_agent_cmd_for_display(cmd)}")
+            return cmd
+
+        budgets = load_budgets(os.environ)
+        stage_timer = StageTimer("plan", budgets.stage_seconds("plan"))
+        outcome = None
+        try:
+            outcome = supervise_authoring_turn(
+                build_agent_cmd,
+                full_prompt,
+                artefact_path=plan_md_path,
+                artefact_rel=plan_md_rel,
+                spec=PLAN_SPEC,
+                stage="plan",
+                turn_budgets=budgets.turn,
+                stage_timer=stage_timer,
+                run=run_turn,
+                context=f"{prompt_content}\n\nIntent metadata:\n{intent_content}",
+                cwd=repo_dir,
+            )
+        except Exception as e:
+            print(f"Error: Exception running agent: {redact_agent_secrets(str(e))}", file=sys.stderr)
+        finally:
+            # Credentials are removed even when a turn breached its budget.
+            runner.cleanup_ephemeral_credentials()
     finally:
-        # Credentials and temp files are removed even when a turn breached its budget.
-        runner.cleanup_ephemeral_credentials()
+        # Temp files are removed even when writing them, or anything before the turn, raised.
         for temp_f in [prompt_file, intent_file]:
             if os.path.exists(temp_f):
                 os.remove(temp_f)

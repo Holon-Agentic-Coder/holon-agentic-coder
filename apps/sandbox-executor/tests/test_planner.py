@@ -416,6 +416,32 @@ class TestPlannerMain(unittest.TestCase):
             self.assertIn("intent-1792992691-", os.path.basename(intent_file))
             self.assertFalse(os.path.exists(prompt_file) or os.path.exists(intent_file))
 
+    def test_temp_files_are_removed_when_writing_the_prompt_raises(self):
+        # N-19-3: both temp files exist before the prompt is written, so a failure while writing it leaks neither.
+        for target in ("get_file_structure", "build_replan_paragraph"):
+            with self.subTest(target=target):
+                created = self._temp_files_left_when_raising(target)
+                self.assertEqual(len(created), 2)
+                self.assertFalse(any(os.path.exists(path) for path in created), created)
+
+    def _temp_files_left_when_raising(self, target):
+        original = planner._unique_temp_file
+        created = []
+
+        def record(prefix, suffix):
+            created.append(original(prefix, suffix))
+            return created[-1]
+
+        h = _PlannerHarness(self, [], env={"HOLON_REPLAN_FEEDBACK": "Entropy 12.6 is above the budget."})
+        with (
+            patch.object(planner, "_unique_temp_file", side_effect=record),
+            patch.object(planner, target, side_effect=RuntimeError("boom")),
+            self.assertRaisesRegex(RuntimeError, "boom"),
+        ):
+            h.run()
+        h.tmp.cleanup()
+        return created
+
     def test_prompt_requires_incremental_file_writes(self):
         h = self.harness([write_file(VALID_PLAN)])
         prompt = h.turn_prompts[0]

@@ -3904,16 +3904,51 @@ SUB_INTENT_PARSER_CORPUS = [
     ],
     # N-18-1-1: a setext heading (paragraph line underlined with "=" or "-") ends the section like an ATX heading
     # (PARSER-CONVERGENCE-ITER7, extended in iteration 18).
+    # N-19-1: the heading text must be a plain paragraph, so a blank line separates it from the item above.
     pytest.param(
-        _section("- Add the parser\nNotes\n-----\n- Remember to run lint\n- Keep docs current"),
+        _section("- Add the parser\n\nNotes\n-----\n- Remember to run lint\n- Keep docs current"),
         ["Add the parser"],
         id="n-18-1-1-setext-dash-heading-ends-section",
     ),
     pytest.param(
-        _section("- Add the parser\nOther\n=====  \n- Ship it"),
+        _section("- Add the parser\n\nOther\n=====  \n- Ship it"),
         ["Add the parser"],
         id="n-18-1-1-setext-equals-heading-ends-section",
     ),
+    pytest.param(
+        "# Plan\n\nSub-intent\nlist\n---\n\n- Add the parser\n",
+        ["Add the parser"],
+        id="n-19-1-multi-line-setext-heading-text-is-the-whole-paragraph",
+    ),
+    # N-19-1: a text line straight after an item (or its continuation) is a lazy continuation of the item, never a
+    # setext heading text line: "---" under it is a thematic break and "===" is more continuation text.
+    pytest.param(_section("- Add A\nlazy text\n---\n- Add B"), ["Add A", "Add B"], id="n-19-1-lazy-dash"),
+    pytest.param(_section("- Add A\nlazy\n===\n- Add B"), ["Add A", "Add B"], id="n-19-1-lazy-equals"),
+    pytest.param(
+        _section("- Add A\n  more\nNotes\n---\n- Add B"),
+        ["Add A\nmore", "Add B"],
+        id="n-19-1-lazy-after-continuation",
+    ),
+    pytest.param("# Plan\n\n- step\nSub-intent list\n---\n- Add x\n", [], id="n-19-1-lazy-line-does-not-open"),
+    pytest.param("# Plan\n\n- step\n\n  Sub-intent list\n---\n- Add x\n", [], id="n-19-1-item-content-does-not-open"),
+    # A paragraph after a thematic break, an ATX heading or an item's narrower-than-content line starts afresh, so it
+    # can be setext heading text; a line inside an item's fenced block area stays item content.
+    pytest.param(_section("- Add A\n***\nNotes\n---\n- Add B"), ["Add A"], id="n-19-1-paragraph-after-break"),
+    pytest.param(
+        "# Plan\n\n- step\n## Sub-intent list\nNotes\n---\n- Add x\n", [], id="n-19-1-paragraph-after-atx-heading"
+    ),
+    pytest.param(_section("1. Add A\n\n  Notes\n---\n- Add B"), ["Add A"], id="n-19-1-line-left-of-item-content"),
+    pytest.param(
+        _section("- Add A\n\n  ```\n  x\n  ```\n\n  Notes\n---\n- Add B"),
+        ["Add A\nNotes", "Add B"],
+        id="n-19-1-item-content-after-nested-fence",
+    ),
+    # N-19-2: the underline is at most 3 columns deep, a text line at 4+ columns with no paragraph open is indented
+    # code, and a one- or two-dash underline still makes a heading.
+    pytest.param(_section("- Add A\n\nNotes\n    ---\n- Add B"), ["Add A\n---", "Add B"], id="n-19-2a-deep-underline"),
+    pytest.param(_section("    Notes\n---\n- Add B"), ["Add B"], id="n-19-2b-indented-code-is-not-heading-text"),
+    pytest.param(_section("- Add A\n\nNotes\n--\n- Add B"), ["Add A"], id="n-19-2c-two-dash-underline"),
+    pytest.param(_section("- Add A\n\nNotes\n-\n- Add B"), ["Add A"], id="n-19-2c-one-dash-underline"),
     pytest.param(
         "# Plan\n\nSub-intent list\n---------------\n\n- Add the parser\n\nRisks\n-----\n\n- Ship it\n",
         ["Add the parser"],

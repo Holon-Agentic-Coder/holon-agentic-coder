@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import UTC, datetime
 
@@ -234,6 +235,13 @@ def format_agent_cmd_for_display(cmd: list[str]) -> str:
     return " ".join(print_cmd)
 
 
+def _unique_temp_file(prefix: str, suffix: str) -> str:
+    """Create an empty, private temp file with a collision-free name and return its path (the caller removes it)."""
+    fd, path = tempfile.mkstemp(prefix=prefix, suffix=suffix)
+    os.close(fd)
+    return path
+
+
 def main():
     if len(sys.argv) < 4:
         print("Usage: planner.py <intent_branch> <agent_name> <model_name>")
@@ -339,7 +347,10 @@ Include metrics in this format:
     for k, v in replacements.items():
         template = template.replace(k, v)
 
-    prompt_file = f"/tmp/plan_prompt-{plan_seq}.md"
+    # Unique temp files (mkstemp), so two plans started in the same second, in one process or several, never share or
+    # clobber each other's prompt or intent file. Both are removed in the finally block below.
+    prompt_file = _unique_temp_file(f"plan_prompt-{plan_seq}-", ".md")
+    intent_file = _unique_temp_file(f"intent-{plan_seq}-", ".json")
     with open(prompt_file, "w") as f:
         f.write(template)
         f.write("\n\nRepository file structure:\n")
@@ -348,7 +359,6 @@ Include metrics in this format:
         if replan_feedback:
             f.write(build_replan_paragraph(replan_feedback, entropy_budget))
 
-    intent_file = f"/tmp/intent-{plan_seq}.json"
     with open(intent_file, "w") as f:
         json.dump({**intent_data, "replan_feedback": replan_feedback} if replan_feedback else intent_data, f)
 

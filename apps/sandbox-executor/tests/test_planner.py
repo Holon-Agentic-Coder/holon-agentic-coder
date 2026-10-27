@@ -381,6 +381,41 @@ class TestPlannerMain(unittest.TestCase):
         self.assertNotIn(feedback, json.dumps(row))
         self.assertNotIn(feedback, json.dumps(h.ledger_lines("intents.jsonl")))
 
+    def test_replan_feedback_reaches_the_temporary_intent_file(self):
+        # R2-I18-M-P2: the agent's intent metadata (the temp intent file) carries the feedback too.
+        feedback = "The previous plan has entropy 12.6, above the entropy budget 5."
+        h = self.harness([write_file(VALID_PLAN)], env={"HOLON_REPLAN_FEEDBACK": feedback})
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        intent_metadata = h.turn_prompts[0].split("Intent metadata:\n", 1)[1]
+        self.assertIn(json.dumps({"replan_feedback": feedback})[1:-1], intent_metadata)
+
+    def test_whitespace_only_replan_feedback_is_ignored(self):
+        # R2-I18-M-P3: blank feedback adds no Re-plan request and no replan_feedback key.
+        h = self.harness([write_file(VALID_PLAN)], env={"HOLON_REPLAN_FEEDBACK": " \n\t "})
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        self.assertNotIn("## Re-plan request", h.turn_prompts[0])
+        self.assertNotIn("replan_feedback", h.turn_prompts[0])
+
+    def test_plans_started_in_the_same_second_use_distinct_temp_files(self):
+        # R2-I18-N1: the prompt and intent temp paths are unique per run, not keyed by the second, and are removed.
+        paths = []
+
+        def build_cmd(model, prompt_file, intent_file, prompt):
+            paths.append((prompt_file, intent_file))
+            self.assertTrue(os.path.exists(prompt_file) and os.path.exists(intent_file))
+            return ["pi", "-p", "--model", model, prompt]
+
+        with patch.object(planner, "time", MagicMock(time=MagicMock(return_value=1792992691.0))):
+            first = self.harness([write_file(VALID_PLAN)], build_cmd=build_cmd)
+            second = self.harness([write_file(VALID_PLAN)], build_cmd=build_cmd)
+        self.assertEqual((first.exit_code, second.exit_code), (0, 0), first.stderr + second.stderr)
+        self.assertEqual(len(paths), 2)
+        self.assertEqual(len({p for pair in paths for p in pair}), 4)
+        for prompt_file, intent_file in paths:
+            self.assertIn("plan_prompt-1792992691-", os.path.basename(prompt_file))
+            self.assertIn("intent-1792992691-", os.path.basename(intent_file))
+            self.assertFalse(os.path.exists(prompt_file) or os.path.exists(intent_file))
+
     def test_prompt_requires_incremental_file_writes(self):
         h = self.harness([write_file(VALID_PLAN)])
         prompt = h.turn_prompts[0]

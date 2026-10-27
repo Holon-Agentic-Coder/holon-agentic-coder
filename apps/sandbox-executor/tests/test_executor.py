@@ -3978,6 +3978,108 @@ SUB_INTENT_PARSER_CORPUS = [
     # R2-I18-M-E8: a break-like line at 4+ columns is not a break; it folds into the item above.
     pytest.param(_section("- A\n    - - -\n- B"), ["A\n- - -", "B"], id="four-space-break-like-line-folds"),
     pytest.param(_section("- A\n- ...\n- (!)\n- B"), ["A", "B"], id="r8-n1-punctuation-only-item-skipped"),
+    # N-20-1..N-20-3 and the iteration-20 parser mutation sweep: one row per mutant it kills, each matching CommonMark.
+    # A fence resets the paragraph state, and a fence left of the item content column ends the list.
+    pytest.param(_section("- Add A\n```\nx\n```\nNotes\n---\n- Add B"), ["Add A"], id="n-20-1-fence-resets-paragraph"),
+    pytest.param(
+        _section("- Add A\n```\nx\n```\n\n  Notes\n---\n- Add B"),
+        ["Add A"],
+        id="n-20-2-fence-left-of-content-ends-list",
+    ),
+    # A thematic break inside an item keeps the item open; one left of the content column ends the list; a break is
+    # never setext heading text; a break-like line 4+ columns past the content column is paragraph text, not a break.
+    pytest.param(
+        _section("- Add A\n\n  ***\n\n  Notes\n---\n- Add B"),
+        ["Add A\nNotes", "Add B"],
+        id="n-20-3-break-in-item-keeps-the-item-open",
+    ),
+    pytest.param(_section("- Add A\n\n   ***\nNotes\n---\n- Add B"), ["Add A"], id="i20-break-at-3-columns-in-item"),
+    pytest.param(
+        _section("- Add A\n      ***\nNotes\n---\n- Add B"),
+        ["Add A\n***", "Add B"],
+        id="i20-break-like-line-past-content-is-continuation",
+    ),
+    pytest.param(
+        _section("- Add A\n***\n\n  Notes\n---\n- Add B"), ["Add A"], id="i20-break-left-of-content-ends-list"
+    ),
+    pytest.param(_section("- Add A\n***\n---\n- Add B"), ["Add A", "Add B"], id="i20-break-is-not-heading-text"),
+    # Items and paragraphs: a 3-column item still takes lazy lines; an item-like 4-column line with no paragraph open is
+    # indented code; nested items and continuation lines keep the item content column; a 3-column plain paragraph is
+    # heading text; a plain paragraph ends the list, so a later 2-column line is not item content.
+    pytest.param(
+        _section("   - Add A\nNotes\n---\n- Add B"), ["Add A", "Add B"], id="i20-item-at-3-columns-takes-lazy"
+    ),
+    pytest.param(_section("    - code\nNotes\n---\n- Add B"), [], id="i20-item-like-indented-code-then-heading"),
+    pytest.param(
+        _section("- Add A\n\n    - sub\n\n  Notes\n---\n- Add B"),
+        ["Add A\n- sub\nNotes", "Add B"],
+        id="i20-nested-item-keeps-content-column",
+    ),
+    pytest.param(
+        _section("- Add A\n  more\n\n  Notes\n---\n- Add B"),
+        ["Add A\nmore\nNotes", "Add B"],
+        id="i20-continuation-keeps-content-column",
+    ),
+    pytest.param(_section("   Notes\n---\n- Add B"), [], id="i20-3-column-paragraph-is-heading-text"),
+    pytest.param(
+        _section("- Add A\n\nNotes\n\n  Other\n---\n- Add B"), ["Add A"], id="i20-paragraph-drops-content-column"
+    ),
+    pytest.param(
+        _section("-\tAdd A\n\n    more\nOther\n---\n- Add B"),
+        ["Add A\nmore", "Add B"],
+        id="i20-tab-after-marker-is-content-column-4",
+    ),
+    # Setext underline: 3 columns is still an underline, a tab is 4 columns, mixed or spaced runs are not underlines,
+    # and the underline line is consumed rather than read as a paragraph of its own.
+    pytest.param(_section("- Add A\n\nNotes\n   ---\n- Add B"), ["Add A"], id="i20-underline-at-3-columns"),
+    pytest.param(
+        _section("- Add A\n\nNotes\n\t---\n- Add B"), ["Add A\n---", "Add B"], id="i20-tab-underline-is-4-cols"
+    ),
+    pytest.param(_section("- Add A\n\nNotes\n-=-\n- Add B"), ["Add A", "Add B"], id="i20-mixed-underline"),
+    pytest.param(_section("- Add A\n\nNotes\n= =\n- Add B"), ["Add A", "Add B"], id="i20-spaced-underline"),
+    pytest.param(
+        "# Plan\n\nSub-intent list\n--\n--\n- Add the parser\n", ["Add the parser"], id="i20-underline-consumed"
+    ),
+    pytest.param(
+        "# Plan\n\n## Sub-intent list\n===\n---\n- Add the parser\n", [], id="i20-paragraph-after-atx-heading"
+    ),
+    pytest.param(
+        "# Plan\n\nSub-intent\n\nlist\n---\n\n- Add the parser\n", [], id="i20-blank-line-splits-heading-text"
+    ),
+    # Fences: two backticks are not a fence, and a closing fence takes no info string.
+    pytest.param(_section("- Add A\n``\n- Add B\n``"), ["Add A", "Add B"], id="i20-two-backticks-are-not-a-fence"),
+    pytest.param(
+        _section("```\n```python\n- Example child\n```\n- Add B"), ["Add B"], id="i20-fence-with-info-does-not-close"
+    ),
+    # ATX headings: a space after the hashes, at most six hashes, closing hashes stripped, underscores normalised.
+    pytest.param(_section("- Add A\n#hashtag\n- Add B"), ["Add A", "Add B"], id="i20-hash-without-space-not-heading"),
+    pytest.param(_section("- Add A\n####### not a heading\n- Add B"), ["Add A", "Add B"], id="i20-seven-hashes"),
+    pytest.param("# Plan\n\n## Sub-intent list ##\n\n- Add the parser\n", ["Add the parser"], id="i20-closing-hashes"),
+    pytest.param("# Plan\n\n## Sub_intent_list\n\n- Add the parser\n", ["Add the parser"], id="i20-underscore-heading"),
+    pytest.param(
+        "# Plan\n\n## Sub-intent list\n\n- Add A\n\n## Sub-intents\n\n  - Add B\n    - detail\n",
+        ["Add A", "Add B\n- detail"],
+        id="i20-second-section-sets-its-own-level",
+    ),
+    pytest.param("# Plan\n\n- step\n## Sub-intent list\n\n  Notes\n---\n- Add x\n", [], id="i20-heading-ends-the-list"),
+    # Section body: whitespace-only lines, 3-column and underscore breaks, two stars, markers without a space.
+    pytest.param(_section("- Add A\n    \n  more\n- Add B"), ["Add A\nmore", "Add B"], id="i20-whitespace-only-line"),
+    pytest.param(_section("- A\n   ***\n- B"), ["A", "B"], id="i20-break-at-3-columns-skipped"),
+    pytest.param(_section("- A\n  ___\n- B"), ["A", "B"], id="i20-underscore-break-skipped"),
+    pytest.param(_section("- A\n  **\n- B"), ["A\n**", "B"], id="i20-two-stars-fold"),
+    pytest.param(
+        _section("  - Add A\n-   Add B\n  - Add C"), ["Add A", "Add B", "Add C"], id="i20-first-item-fixes-level"
+    ),
+    pytest.param(
+        _section("- Add the CLI flag\n--verbose enables logging\n- Add docs"),
+        ["Add the CLI flag", "Add docs"],
+        id="i20-dash-without-space-is-not-an-item",
+    ),
+    # Placeholders: emphasis followed by a full stop, and curly quotes.
+    pytest.param(_section("- _None_."), [], id="i20-emphasised-none-with-full-stop"),
+    pytest.param(_section("- \u201cNone\u201d"), [], id="i20-curly-quoted-none"),
+    # Ordered items with multi-digit numbers.
+    pytest.param(_section("10. Add A\n11. Add B"), ["Add A", "Add B"], id="i20-multi-digit-ordered-items"),
 ]
 
 
@@ -4003,6 +4105,21 @@ def test_parse_sub_intent_list_truncates_long_slugs_to_48_characters():
 
     assert item["slug"] == "add-" + "x" * 43
     assert item["goal"] == text
+
+
+def test_parse_sub_intent_list_strips_leading_hyphens_before_truncating_the_slug():
+    # Iteration-20 mutation sweep: leading punctuation is dropped before the 48-character cut, so it costs no character.
+    (item,) = executor.parse_sub_intent_list(_section("- **Add** the parser for every ledger row and every intent row"))
+
+    assert item["slug"] == "add-the-parser-for-every-ledger-row-and-every-in"
+
+
+def test_parse_sub_intent_list_falls_back_to_a_generic_slug():
+    # Iteration-20 mutation sweep: an item with no ASCII letter or digit still gets a slug.
+    (item,) = executor.parse_sub_intent_list(_section("- Добавить парсер"))
+
+    assert item["slug"] == "sub-intent"
+    assert item["goal"] == "Добавить парсер"
 
 
 def test_should_decompose_executes_a_plan_exactly_at_the_budget():

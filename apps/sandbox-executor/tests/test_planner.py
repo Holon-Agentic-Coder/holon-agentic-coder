@@ -424,6 +424,28 @@ class TestPlannerMain(unittest.TestCase):
                 self.assertEqual(len(created), 2)
                 self.assertFalse(any(os.path.exists(path) for path in created), created)
 
+    def test_prompt_temp_file_is_removed_when_creating_the_intent_temp_file_raises(self):
+        # N-20-4: the intent temp file is created after the prompt temp file, so mkstemp failing on it (ENOSPC, inode
+        # exhaustion) must not leak the prompt temp file.
+        original = planner._unique_temp_file
+        created = []
+
+        def record(prefix, suffix):
+            if created:
+                raise OSError(28, "No space left on device")
+            created.append(original(prefix, suffix))
+            return created[-1]
+
+        h = _PlannerHarness(self, [])
+        with (
+            patch.object(planner, "_unique_temp_file", side_effect=record),
+            self.assertRaisesRegex(OSError, "No space left on device"),
+        ):
+            h.run()
+        h.tmp.cleanup()
+        self.assertEqual(len(created), 1)
+        self.assertFalse(os.path.exists(created[0]), created)
+
     def _temp_files_left_when_raising(self, target):
         original = planner._unique_temp_file
         created = []

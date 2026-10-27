@@ -348,10 +348,13 @@ Include metrics in this format:
         template = template.replace(k, v)
 
     # Unique temp files (mkstemp), so two plans started in the same second, in one process or several, never share or
-    # clobber each other's prompt or intent file. Both are removed in the finally block below.
-    prompt_file = _unique_temp_file(f"plan_prompt-{plan_seq}-", ".md")
-    intent_file = _unique_temp_file(f"intent-{plan_seq}-", ".json")
+    # clobber each other's prompt or intent file. Both are created inside the try, so the finally block below removes
+    # whichever exist even when creating the second one raises.
+    prompt_file: str | None = None
+    intent_file: str | None = None
     try:
+        prompt_file = _unique_temp_file(f"plan_prompt-{plan_seq}-", ".md")
+        intent_file = _unique_temp_file(f"intent-{plan_seq}-", ".json")
         with open(prompt_file, "w") as f:
             f.write(template)
             f.write("\n\nRepository file structure:\n")
@@ -406,9 +409,9 @@ Include metrics in this format:
             # Credentials are removed even when a turn breached its budget.
             runner.cleanup_ephemeral_credentials()
     finally:
-        # Temp files are removed even when writing them, or anything before the turn, raised.
-        for temp_f in [prompt_file, intent_file]:
-            if os.path.exists(temp_f):
+        # Temp files are removed even when creating or writing them, or anything before the turn, raised.
+        for temp_f in (prompt_file, intent_file):
+            if temp_f is not None and os.path.exists(temp_f):
                 os.remove(temp_f)
 
     if outcome is None:

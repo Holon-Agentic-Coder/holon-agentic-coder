@@ -638,13 +638,21 @@ class TestExecutor(unittest.TestCase):
             self.assertTrue(any(cmd[:4] == ["git", "fetch", "--no-tags", "origin"] for cmd in called_cmds))
             self.assertTrue(any(cmd[:2] == ["git", "reset"] for cmd in called_cmds))
 
-    def _run_over_budget_main(self, sync_result):
-        """Run executor.main() on an over-budget plan whose ledger row is staged; return its exit code and records."""
+    def _run_over_budget_main(
+        self, sync_result, *, staged=True, has_parent=True, skip_push=True, git_calls=None, stdout=None
+    ):
+        """Run executor.main() on an over-budget plan whose ledger row is staged; return its exit code and records.
+
+        ``staged`` and ``has_parent`` set what the staged-changes check and the parent-commit check report;
+        ``skip_push`` disables pushing; ``git_calls`` collects every command run; ``stdout`` captures standard output.
+        """
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.0.0"
         plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 8.0, "entropy_budget": 5.0}
 
         def side_effect(args, cwd=None, **kwargs):
+            if git_calls is not None:
+                git_calls.append(list(args))
             mock_result = MagicMock(returncode=0, stdout="", stderr="")
             if "clone" in args:
                 ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
@@ -654,19 +662,22 @@ class TestExecutor(unittest.TestCase):
                 with open(os.path.join(ledger_dir, "intents.jsonl"), "w") as f:
                     f.write(json.dumps({"branch": "I-456/_", "slug": "parent-intent"}) + "\n")
             elif args[:4] == ["git", "diff", "--cached", "--quiet"]:
-                mock_result.returncode = 1
+                mock_result.returncode = 1 if staged else 0
+            elif args == ["git", "rev-parse", "--verify", "HEAD^"]:
+                mock_result.returncode = 0 if has_parent else 1
             return mock_result
 
         stderr = io.StringIO()
         with (
             tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as tmp_dir,
-            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1" if skip_push else ""}),
             patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect),
             patch("sandbox_executor.entrypoint.executor.get_runner", return_value=mock_runner),
             patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value="/mock/repo"),
             patch("sandbox_executor.entrypoint.executor.sync_and_reconcile_pre_push", return_value=sync_result),
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
             patch("sys.stderr", stderr),
+            contextlib.redirect_stdout(stdout if stdout is not None else io.StringIO()),
         ):
             with self.assertRaises(SystemExit) as refused:
                 executor.main()
@@ -717,6 +728,134 @@ class TestExecutor(unittest.TestCase):
         self.assertIn("Pre-push sync failure", rows[1]["summary"])
         mock_runner.build_cmd.assert_not_called()
         self.assertEqual(intent_slugs, ["parent-intent"])
+
+    NOT_RECORDED_LINE = (
+        "Error: plan I-456/P-123/_ was not executed: its entropy 8.0 exceeds the entropy budget 5.0 and it lists "
+        "no sub-intent list. Its over_budget row was not recorded on an execution branch."
+    )
+
+    def test_main_over_budget_with_nothing_staged_exits_1(self):
+        stdout = io.StringIO()
+        git_calls: list[list[str]] = []
+        code, stderr_lines, rows, _, _ = self._run_over_budget_main(
+            (True, "ok"), staged=False, git_calls=git_calls, stdout=stdout
+        )
+
+        # Nothing was committed, so no branch records the over_budget row: a plain failure, not the refusal code.
+        self.assertEqual(code, 1)
+        self.assertIn("No staged changes to commit.", stdout.getvalue().splitlines())
+        self.assertIn(self.NOT_RECORDED_LINE, stderr_lines)
+        self.assertFalse(any("Re-plan it within the budget" in line for line in stderr_lines))
+        self.assertFalse(any(call[:2] in (["git", "commit"], ["git", "push"]) for call in git_calls))
+        self.assertEqual([row["status"] for row in rows], ["over_budget"])
+
+    def test_main_over_budget_on_a_parentless_commit_refuses_the_push_and_exits_1(self):
+        git_calls: list[list[str]] = []
+        code, stderr_lines, rows, _, _ = self._run_over_budget_main(
+            (True, "ok"), has_parent=False, skip_push=False, git_calls=git_calls
+        )
+
+        # A branch with no parent is never pushed, so the over_budget row is not recorded and the run fails.
+        self.assertEqual(code, 1)
+        self.assertIn(["git", "rev-parse", "--verify", "HEAD^"], git_calls)
+        self.assertFalse(any(call[:2] == ["git", "push"] for call in git_calls))
+        self.assertIn("Refusing to push execution branch: safety or sync verification failed.", stderr_lines)
+        self.assertIn(self.NOT_RECORDED_LINE, stderr_lines)
+        self.assertEqual([row["status"] for row in rows], ["over_budget"])
+
+    def _run_over_budget_main_against_local_origin(self, *, reject_push):
+        """Run executor.main() unmocked against a local bare origin holding an over-budget plan branch.
+
+        Every git command is real and pushing stays enabled, as under ``holon flow``. Returns the exit code (or the
+        raised exception), the executor's stderr lines and the origin's execution branches with their ledger rows.
+        """
+        plan_branch = "I-456/P-123/_"
+        plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 8.0, "entropy_budget": 5.0}
+        mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.0.0"
+
+        def git(cwd, *args):
+            return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+        with tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as root:
+            origin = os.path.join(root, "origin.git")
+            seed = os.path.join(root, "seed")
+            workspace = os.path.join(root, "workspace")
+            subprocess.run(["git", "init", "-q", "--bare", "-b", "main", origin], check=True, capture_output=True)
+            subprocess.run(["git", "init", "-q", "-b", "main", seed], check=True, capture_output=True)
+            git(seed, "config", "user.email", "test@example.test")
+            git(seed, "config", "user.name", "Test")
+            ledger_dir = os.path.join(seed, "holon-knowledge", "ledger")
+            os.makedirs(ledger_dir)
+            with open(os.path.join(ledger_dir, "intents.jsonl"), "w") as f:
+                f.write(json.dumps({"branch": "I-456/_", "slug": "parent-intent"}) + "\n")
+            git(seed, "add", "-A")
+            git(seed, "commit", "-q", "-m", "intent")
+            with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
+                f.write(json.dumps(plan_row) + "\n")
+            git(seed, "add", "-A")
+            git(seed, "commit", "-q", "-m", "plan")
+            git(seed, "push", "-q", origin, f"HEAD:refs/heads/{plan_branch}")
+            if reject_push:
+                hook = os.path.join(origin, "hooks", "pre-receive")
+                with open(hook, "w") as f:
+                    f.write("#!/bin/sh\necho 'push rejected by test hook' >&2\nexit 1\n")
+                os.chmod(hook, 0o755)
+            os.makedirs(workspace)
+
+            stderr = io.StringIO()
+            outcome: int | BaseException
+            with (
+                patch.dict(os.environ, {"HOLON_REPO_DIR": workspace, "HOLON_SKIP_PUSH": ""}),
+                patch("sandbox_executor.entrypoint.executor.get_runner", return_value=mock_runner),
+                patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value=origin),
+                patch("sandbox_executor.entrypoint.executor.sync_and_reconcile_pre_push", return_value=(True, "ok")),
+                patch("sys.argv", ["executor.py", plan_branch, "antigravity-agent", "gemini-3.5-flash"]),
+                patch("sys.stderr", stderr),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                try:
+                    executor.main()
+                    outcome = 0
+                except SystemExit as exit_:
+                    outcome = exit_.code
+                except Exception as exc:  # __main__ turns any escaping exception into exit 1
+                    outcome = exc
+            refs = git(origin, "for-each-ref", "--format=%(refname:short)", "refs/heads/I-456/P-123/").stdout.split()
+            exec_branches = {}
+            for ref in refs:
+                if ref == plan_branch:
+                    continue
+                ledger = git(origin, "show", f"{ref}:holon-knowledge/ledger/executions.jsonl").stdout
+                exec_branches[ref] = [json.loads(line) for line in ledger.splitlines() if line.strip()]
+        mock_runner.build_cmd.assert_not_called()
+        return outcome, stderr.getvalue().splitlines(), exec_branches
+
+    def test_main_over_budget_pushed_to_origin_exits_with_the_refusal_code(self):
+        outcome, stderr_lines, exec_branches = self._run_over_budget_main_against_local_origin(reject_push=False)
+
+        # The push path is the one holon flow takes (it refuses --skip-push): the pushed refusal must exit with the
+        # code the flow reads as "the over_budget row is recorded", never 1.
+        self.assertEqual(outcome, executor.OVER_BUDGET_EXIT_CODE)
+        self.assertIn(
+            "Error: plan I-456/P-123/_ was not executed: its entropy 8.0 exceeds the entropy budget 5.0 and it lists "
+            "no sub-intent list. Re-plan it within the budget, or add an explicit sub-intent list.",
+            stderr_lines,
+        )
+        self.assertNotIn(self.NOT_RECORDED_LINE, stderr_lines)
+        self.assertEqual(len(exec_branches), 1)
+        [(branch, rows)] = exec_branches.items()
+        self.assertRegex(branch, r"^I-456/P-123/E-[^/]+/_$")
+        self.assertEqual([row["status"] for row in rows], ["over_budget"])
+
+    def test_main_over_budget_whose_push_is_rejected_by_origin_fails(self):
+        outcome, stderr_lines, exec_branches = self._run_over_budget_main_against_local_origin(reject_push=True)
+
+        # The rejected push raises, which the module entry point turns into exit 1; nothing reaches the origin.
+        self.assertIsInstance(outcome, subprocess.CalledProcessError)
+        self.assertEqual(outcome.cmd[:3], ["git", "push", "-u"])
+        self.assertFalse(any("Re-plan it within the budget" in line for line in stderr_lines))
+        self.assertEqual(exec_branches, {})
 
     def test_run_cmd_raises_called_process_error(self):
         with self.assertRaises(subprocess.CalledProcessError) as ctx:

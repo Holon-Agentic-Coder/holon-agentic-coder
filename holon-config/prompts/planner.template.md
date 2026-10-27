@@ -39,8 +39,9 @@ into their immediate parent. If the step is small, not risky you can propose an 
 - The entropy budget for this plan is {budget_from_intent}. The same value is stored on the plan's `plans.jsonl` row and
   enforced by the executor.
 - If the plan fits the budget (overall `entropy_pred` at or below it) and has no `## Sub-intent list` section, it is
-  executed as one plan. A non-empty sub-intent list is always run as child intents, whatever the entropy, so add one
-  only when the work should really be split.
+  executed as one plan. A non-empty sub-intent list is run as child intents whatever the entropy, so add one only when
+  the work should really be split. Sub-intents nest at most two levels below the root intent: when this intent is
+  already at that limit, Stage 3 refuses a sub-intent list and fails instead of recursing further.
 - If the work cannot fit the budget, add a level-2 heading `## Sub-intent list` followed by top-level bullet or numbered
   items, one concrete child intent per item. Start every item with an imperative verb (for example `Add ...`,
   `Normalise ...`). Indented nested bullets are read as details of the item above, never as separate children. The flow

@@ -53,8 +53,9 @@ jobs:
       - name: Assert the stress suite really ran
         # Non-skippable by construction: pytest exits non-zero when nothing is collected, a skipped
         # stress test reports skipped=1, and a stress test that is no longer collected is missing
-        # from the named test cases; each fails here instead of passing quietly. The report is parsed rather than grepped, so the check does not depend on
-        # junit attribute ordering, quoting, or an extra wrapper element.
+        # from the named test cases; each fails here instead of passing quietly. The report is
+        # parsed rather than grepped, so the check does not depend on junit attribute ordering,
+        # quoting, or an extra wrapper element.
         run: |
           uv run python - <<'PY'
           import sys

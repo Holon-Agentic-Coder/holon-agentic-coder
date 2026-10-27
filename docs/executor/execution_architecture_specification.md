@@ -133,7 +133,9 @@ The executor never invents child work and never writes `intents.jsonl` rows. For
 agent, records one `executions.jsonl` summary (`status: "decomposed"` with `sub_intents`, or `status: "over_budget"`
 with `entropy`, `entropy_budget` and a message), commits only that ledger and pushes the branch, exiting 0 so that the
 flow decides what happens next: each child intent is created through the normal Stage 1 intent creator and run through
-the full pipeline, or the plan is sent back to Stage 2 (see [Git Flow](../git_flow.md#flow-equivalence-guarantee)).
+the full pipeline (unless the plan's intent is already at `budgets.MAX_SUB_INTENT_DEPTH`, in which case Stage 3 fails
+and refuses to recurse further), or the plan is sent back to Stage 2 (see
+[Git Flow](../git_flow.md#flow-equivalence-guarantee)).
 
 ### 6. Agent Invocation
 

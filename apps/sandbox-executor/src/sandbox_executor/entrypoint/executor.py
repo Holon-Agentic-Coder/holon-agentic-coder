@@ -933,7 +933,8 @@ def should_decompose(
     The budget is the one the planner showed the agent and persisted on the plan row, resolved by
     :func:`sandbox_executor.budgets.resolve_entropy_budget` (plan row, then intent row, then the shared default). A
     non-empty explicit sub-intent list gives ``decomposed`` whatever the entropy; a plan above the budget without a
-    list gives ``over_budget``; anything else gives ``execute``. No child work is ever invented.
+    list gives ``over_budget``; anything else gives ``execute``. No child work is ever invented. The flow, not this
+    function, enforces ``MAX_SUB_INTENT_DEPTH``: it fails Stage 3 on a ``decomposed`` plan nested beyond that limit.
 
     Args:
         plan_data: The plan's ``plans.jsonl`` row.

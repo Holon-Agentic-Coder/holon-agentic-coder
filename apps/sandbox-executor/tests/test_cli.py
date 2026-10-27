@@ -875,7 +875,11 @@ class TestHolonFlowCLI(unittest.TestCase):
                     main()
                 mock_exit.assert_called_with(0)
                 output = mock_stdout.getvalue()
-                self.assertIn("1. add-the-parser: https://example.test/pull/7 (success)", output)
+                self.assertIn(
+                    "\nDecomposed into 2 sub-intent(s); merge each child PR into the parent intent branch:\n"
+                    "  1. add-the-parser: https://example.test/pull/7 (success)\n",
+                    output,
+                )
                 self.assertIn("2. add-the-cli-flag: I-2-add-the-cli-flag/P-2/E-2/_ (skipped)", output)
                 self.assertIn(
                     "Pending (not yet automated): after the child PRs merge, raise a PR from 'I-1-parent/_' to "

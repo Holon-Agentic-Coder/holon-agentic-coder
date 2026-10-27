@@ -694,6 +694,8 @@ class TestExecutor(unittest.TestCase):
         # A refused plan is a failure for a direct run too, with an exit status the flow can tell apart.
         self.assertEqual(code, executor.OVER_BUDGET_EXIT_CODE)
         self.assertNotIn(executor.OVER_BUDGET_EXIT_CODE, (0, 1))
+        # The status is a documented interface: budgets.md, git_flow.md and the specification say exit code 3.
+        self.assertEqual(executor.OVER_BUDGET_EXIT_CODE, 3)
         self.assertIn(
             "Error: plan I-456/P-123/_ was not executed: its entropy 8.0 exceeds the entropy budget 5.0 and it lists "
             "no sub-intent list. Re-plan it within the budget, or add an explicit sub-intent list.",

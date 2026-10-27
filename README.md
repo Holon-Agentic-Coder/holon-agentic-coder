@@ -224,9 +224,11 @@ _Note: This example shows a "Deep" model planning for an intent that was origina
 ### Branch naming (Fractal Nesting)
 
 Holon uses a filesystem-like branch structure to represent the intent hierarchy. In the target model, sub-intents are
-nested under their parent's path. The current `holon flow` cuts each sub-intent a flat `I-{timestamp}-{slug}/_` branch
-from its parent intent branch and targets its PR at that parent branch; the parent link is recorded in the child's
-`parent_intent_id`, not in the branch name.
+nested under their parent's path. The current `holon flow` cuts each sub-intent a flat `{parent}--{n}-{slug}/_` branch
+from its parent intent branch and targets its PR at that parent branch: `{parent}` is the parent's intent branch without
+`/_` and `{n}` the item's position in the parent's sub-intent list, so the name never depends on the clock and cannot
+collide with the parent or a sibling (see [Git Flow](docs/git_flow.md) section 2.2). The parent link is also recorded in
+the child's `parent_intent_id`.
 
 #### Root Intent Branch
 

@@ -17,7 +17,7 @@ This document defines the **Git branching, rebasing, and merging discipline** fo
 
 - Intents can spawn sub-intents recursively
 - Each sub-intent gets its own intent branch, cut from its parent's intent branch and targeting it. In the current flow
-  that branch is a flat `I-{timestamp}-{slug}/_`, linked to the parent only by its `target_branch` and
+  that branch is a flat `{parent}--{n}-{slug}/_` (section 2.2), linked to the parent by its `target_branch` and
   `parent_intent_id`; branch names nested under the parent's branch (sections 2.2-2.3 and 8) are the target model
 - Depth is capped: `holon flow` refuses to nest sub-intents more than `MAX_SUB_INTENT_DEPTH` levels below the root
   intent (see Stage 3 under the flow equivalence guarantee)
@@ -40,8 +40,9 @@ This document defines the **Git branching, rebasing, and merging discipline** fo
 
 ### 1.5 ID Generation
 
-- All intent, plan, execution IDs are generated using the current Unix timestamp.
-- This ensures decentralised, collision-free ID creation across the entire fractal tree.
+- Root intent, plan and execution IDs are generated using the current Unix timestamp.
+- Sub-intent IDs are derived from their parent's ID and their position in the parent's sub-intent list, never from the
+  clock (section 2.2), so children created within the same second as their parent or siblings never collide.
 - Example: `I-1771422315`, `P-1771422316`, `E-1771422317`
 
 ---
@@ -66,9 +67,15 @@ I-1771890389-refactor-metrics/_
 
 ### 2.2 Sub-Intent Branch (Nested)
 
-> [!NOTE] Target model. In the current flow a sub-intent's branch is a flat `I-{timestamp}-{slug}/_` (section 2.1 form)
-> cut from its parent's intent branch, which it targets; the parent link is recorded as `target_branch` and
-> `parent_intent_id`, not in the branch name. Sections 2.2 and 2.3 describe the nested names of the target model.
+> [!NOTE] Target model. In the current flow a sub-intent's branch is the flat `{parent}--{n}-{slug}/_`, cut from its
+> parent's intent branch, which it targets; the parent link is also recorded as `target_branch` and `parent_intent_id`.
+> `{parent}` is the parent's intent branch without its `/_` suffix, `{n}` the item's 1-based position in the parent's
+> sub-intent list and `{slug}` the item's slug, for example `I-1771890389-refactor-metrics--1-improve-estimators/_` and,
+> one level deeper, `I-1771890389-refactor-metrics--1-improve-estimators--2-p-success/_`. A generated slug never
+> contains `--`, so the name cannot collide with the parent, a sibling or any other intent, even when they are created
+> within the same second or share a slug. Re-running the same parent's sub-intent list derives the same names, so the
+> intent stage reuses a branch only for that same child. Sections 2.2 and 2.3 describe the nested names of the target
+> model.
 
 ```
 I-{timestamp}-{slug}/I-{timestamp}-{slug}/_
@@ -471,7 +478,7 @@ $ git checkout main
 $ git checkout -b I-1771890389-refactor-metrics/_
 
 # Sub-intent (current flow: a flat branch cut from the parent intent branch, which it targets)
-$ git checkout -b I-1771890390-improve-estimators/_ origin/I-1771890389-refactor-metrics/_
+$ git checkout -b I-1771890389-refactor-metrics--1-improve-estimators/_ origin/I-1771890389-refactor-metrics/_
 ```
 
 In the target model the sub-intent branch is nested under its parent's (section 2.2).
@@ -492,7 +499,8 @@ $ git rebase I-1771890389-refactor-metrics/_
 ### 7.4 Merge (Automatic for Sub-Intents)
 
 Target model, using the nested sub-intent name of section 2.2. In the current flow the sub-intent branch is the flat
-`I-1771890390-improve-estimators/_` from section 7.1, and the maintainer merges its PR into the parent intent branch.
+`I-1771890389-refactor-metrics--1-improve-estimators/_` from section 7.1, and the maintainer merges its PR into the
+parent intent branch.
 
 ```bash
 # Target model: the nested sub-intent branch merges automatically
@@ -514,7 +522,7 @@ $ git push origin main
 ```bash
 # Delete merged branches (current flow: the flat sub-intent branch of section 7.1; in the target model, the nested
 # name merged in section 7.4)
-$ git branch -d I-1771890390-improve-estimators/_
+$ git branch -d I-1771890389-refactor-metrics--1-improve-estimators/_
 $ git branch -d I-1771890389-refactor-metrics/_
 ```
 

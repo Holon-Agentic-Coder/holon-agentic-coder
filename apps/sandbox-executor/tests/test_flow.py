@@ -4511,6 +4511,11 @@ class TestEntropyBudgetHandoffInFlow:
         assert "decomposed" not in second
         grandchildren = first["children"]
         assert [g["slug"] for g in grandchildren] == ["add-the-parser", "add-the-cli-flag"]
+        # The first grandchild shares its parent's slug yet runs on its own branch, however fast the run.
+        assert [g["intent_branch"] for g in grandchildren] == [
+            first["intent_branch"].removesuffix("/_") + suffix
+            for suffix in ("--1-add-the-parser/_", "--2-add-the-cli-flag/_")
+        ]
         assert [p["sub_intent_depth"] for p in agents.intent_payloads[1:]] == [1, 2, 2, 1]
         assert [p["target_branch"] for p in agents.intent_payloads[2:4]] == [first["intent_branch"]] * 2
         summary = flow_module.format_decomposition_summary(execute)
@@ -4526,6 +4531,31 @@ class TestEntropyBudgetHandoffInFlow:
         ]
         # The decomposed child's ledger-only execution branch is never offered as a PR to merge.
         assert not any(first["execution_branch"] in line for line in summary)
+
+    def test_same_slug_child_created_in_the_same_second_gets_its_own_intent_branch(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        # The first grandchild shares its parent's slug, and a frozen clock creates every intent in the same second.
+        agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (9.0, SUB_INTENT_LIST), (2.0, "")])
+        ctx = _budget_context(host, agents, 5.0)
+
+        with patch.object(flow_module.time, "time", return_value=1793098938.0):
+            results = PipelineEngine(ctx).run()
+
+        # Every intent was dispatched to the intent creator on a branch of its own: none reused another's.
+        branches = [p["branch"] for p in agents.intent_payloads]
+        assert len(branches) == len(set(branches)) == 5
+        root = ctx.intent_branch.removesuffix("/_")
+        assert branches == [
+            "I-1793098938-budget-test",
+            f"{root}--1-add-the-parser",
+            f"{root}--1-add-the-parser--1-add-the-parser",
+            f"{root}--1-add-the-parser--2-add-the-cli-flag",
+            f"{root}--2-add-the-cli-flag",
+        ]
+        assert [p["sub_intent_depth"] for p in agents.intent_payloads[1:]] == [1, 2, 2, 1]
+        assert results["execute"].status == StageStatus.SUCCESS
+        first = results["execute"].payload["children"][0]
+        assert [g["intent_branch"] for g in first["children"]] == [f"{b}/_" for b in branches[2:4]]
 
     def test_child_halting_at_its_own_review_is_a_success_and_records_its_pr(self, flow_repos, tmp_path):
         host, origin = flow_repos

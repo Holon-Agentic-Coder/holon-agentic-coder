@@ -3061,7 +3061,11 @@ def _run_decomposed_plan(
     total = len(items)
     for index, item in enumerate(items, start=1):
         slug = str(item.get("slug") or f"sub-intent-{index}")
+        child_slug = re.sub(r"[^a-zA-Z0-9]+", "-", slug).strip("-").lower() or f"sub-intent-{index}"
         child_data: dict[str, Any] = {
+            # Derived from the parent's branch and the item's position, never the clock: a generated slug never
+            # contains '--', so the name cannot collide with the parent, a sibling or any other intent.
+            "branch": f"{parent_branch.removesuffix('/_')}--{index}-{child_slug}",
             "slug": slug,
             "description": str(item.get("description") or item.get("goal") or slug),
             "goal": str(item.get("goal") or item.get("description") or slug),

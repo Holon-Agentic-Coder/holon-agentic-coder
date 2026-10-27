@@ -41,8 +41,8 @@ jobs:
         # Clones the repository onto the exact path an executor works in (~/.holon-sandbox/workspace
         # with HOME redirected), runs this suite's unit selection from there, and requires the
         # workspace, its .git and its HEAD commit to survive -- the bean 0019 incident deleted the
-        # workspace, which pushed executor.py into its destructive git re-initialisation. Also runs the
-        # hermetic canary guard (test_sandbox_hermetic_guard.py), which re-runs the whole unit
+        # workspace, which pushed executor.py into its destructive git re-initialisation. Also runs
+        # the hermetic canary guard (test_sandbox_hermetic_guard.py), which re-runs the whole unit
         # selection under a simulated container HOME and is kept out of the unit matrix for runtime.
         env:
           PYTHONDONTWRITEBYTECODE: "1"
@@ -77,7 +77,10 @@ jobs:
           if totals["tests"] < len(expected) or expected - names:
               sys.exit(f"a stress test was not collected: missing {sorted(expected - names)}")
           if totals["skipped"]:
-              sys.exit("a stress test was skipped: its workspace-survival or hermetic guarantee was not proven")
+              sys.exit(
+                  "a stress test was skipped: its workspace-survival or hermetic guarantee "
+                  "was not proven"
+              )
           if totals["failures"] or totals["errors"]:
               sys.exit("a stress test failed or errored")
           PY

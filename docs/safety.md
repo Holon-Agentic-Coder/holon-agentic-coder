@@ -331,8 +331,8 @@ out-of-band reviews and never pause a running flow before the merge.
    - If agent fails 3+ consecutive intents, human reviews agent state.
 
 8. **Novel intent types**
-   - If intent type has no historical precedent in KB, the plan is flagged for the reviewer at the merge PR; execution
-     does not wait.
+   - Target model (nothing flags novel intent types yet): if the intent type has no historical precedent in the KB, the
+     plan is flagged for the reviewer at the merge PR; execution does not wait.
 
 ### Human review workflow
 

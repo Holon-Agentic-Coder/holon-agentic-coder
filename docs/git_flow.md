@@ -181,11 +181,12 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
   evaluation-based sub-intent merges, which is not yet implemented.
 
 - **Over budget without a list:** the flow returns to Stage 2 automatically, asking for a smaller plan or an explicit
-  sub-intent list, at most `MAX_REPLAN_ATTEMPTS` times; then Stage 3 fails with a message naming the entropy, the budget
-  and the attempts. The flow refuses each over-budget plan before dispatching the executor, so those attempts create no
-  execution branch and append no `executions.jsonl` row; each rejected plan keeps its `plans.jsonl` row, and the
-  refusals are recorded only in the flow's stage results, log and checkpoint. The executor's `over_budget` summary row
-  covers a direct `holon execute` run.
+  sub-intent list (only a smaller plan when the intent is at the sub-intent depth limit), at most `MAX_REPLAN_ATTEMPTS`
+  times; then Stage 3 fails with a message naming the entropy, the budget and the attempts. The flow refuses each
+  over-budget plan before dispatching the executor, so those attempts create no execution branch and append no
+  `executions.jsonl` row; each rejected plan keeps its `plans.jsonl` row, and the refusals are recorded only in the
+  flow's stage results, log and checkpoint. The executor's `over_budget` summary row covers a direct `holon execute`
+  run, which exits with code 3 so the refusal is not mistaken for success.
 
 The guarantee has five deliberate limits:
 

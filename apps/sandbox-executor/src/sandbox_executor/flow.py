@@ -61,6 +61,7 @@ from sandbox_executor.calibration import (
 from sandbox_executor.entrypoint.executor import (
     DECISION_DECOMPOSED,
     DECISION_OVER_BUDGET,
+    OVER_BUDGET_EXIT_CODE,
     DecompositionDecision,
     _sanitize_string,
     should_decompose,
@@ -3198,7 +3199,8 @@ def run_execute_stage(context: FlowContext) -> StageResult:
             "before dispatching the executor.",
         )
     exit_code = _dispatch_role(context, "executor", [context.plan_branch, context.agent, context.model])
-    if exit_code != 0:
+    # The executor exits OVER_BUDGET_EXIT_CODE after pushing its over_budget row; that row, read below, decides.
+    if exit_code not in (0, OVER_BUDGET_EXIT_CODE):
         return _stage_failure(
             context,
             FlowStage.EXECUTE,
@@ -3213,7 +3215,7 @@ def run_execute_stage(context: FlowContext) -> StageResult:
             context,
             FlowStage.EXECUTE,
             start_time,
-            f"Execute stage failed: the executor agent exited 0 but origin branches under {plan_prefix} "
+            f"Execute stage failed: the executor agent exited {exit_code} but origin branches under {plan_prefix} "
             f"could not be fetched to adopt its execution branch: {fetch_error}",
             exit_code=exit_code,
         )
@@ -3258,6 +3260,14 @@ def run_execute_stage(context: FlowContext) -> StageResult:
             summary_row.get("entropy"),
             summary_row.get("entropy_budget"),
             dispatched=True,
+            **base_payload,
+        )
+    if exit_code != 0:
+        return _stage_failure(
+            context,
+            FlowStage.EXECUTE,
+            start_time,
+            f"Execute stage failed: executor agent exited with code {exit_code}.",
             **base_payload,
         )
 
@@ -4751,7 +4761,8 @@ class PipelineEngine:
         """Return an over-budget plan to Stage 2 up to ``MAX_REPLAN_ATTEMPTS`` times, then fail Stage 3 clearly.
 
         Each attempt asks the planner, through transient feedback that is never checkpointed or written to a ledger,
-        for a plan within the budget or an explicit sub-intent list, and re-runs Stage 2 and Stage 3 in place.
+        for a plan within the budget or an explicit sub-intent list (only a smaller plan at the sub-intent depth limit,
+        where a list would be refused), and re-runs Stage 2 and Stage 3 in place.
         """
         while (
             result.stage == FlowStage.EXECUTE
@@ -4766,10 +4777,18 @@ class PipelineEngine:
                 f"Stage 3: plan entropy {entropy} exceeds the entropy budget {budget}; returning to Stage 2 "
                 f"(re-plan attempt {self.context.replan_attempts} of {MAX_REPLAN_ATTEMPTS})."
             )
+            if _sub_intent_depth_error(self.context) is None:
+                request = "write a smaller plan within the budget, or add an explicit sub-intent list."
+            else:
+                # A sub-intent list here would be refused for depth, wasting the attempt: ask for one smaller plan only.
+                request = (
+                    "write a smaller single plan within the budget. Do not add a sub-intent list: this intent is at "
+                    f"the sub-intent depth limit of {MAX_SUB_INTENT_DEPTH}, so a sub-intent list would be refused."
+                )
             self.context.intent_data["replan_feedback"] = (
                 f"The previous plan '{self.context.plan_branch}' has entropy {entropy}, above the entropy budget "
                 f"{budget}, and lists no sub-intent list. Re-plan attempt {self.context.replan_attempts} of "
-                f"{MAX_REPLAN_ATTEMPTS}: write a smaller plan within the budget, or add an explicit sub-intent list."
+                f"{MAX_REPLAN_ATTEMPTS}: {request}"
             )
             self.context.plan_branch = None
             self.before_stage(FlowStage.PLAN)

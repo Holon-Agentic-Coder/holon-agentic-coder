@@ -205,9 +205,9 @@ def build_replan_paragraph(feedback: str, entropy_budget: float) -> str:
     return (
         "\n\n## Re-plan request\n\n"
         f"{feedback}\n\n"
-        f"Write a smaller plan whose overall entropy_pred is at or below the entropy budget of {entropy_budget}, or, "
-        "if the work cannot fit, add a level-2 heading '## Sub-intent list' followed by one bullet per concrete child "
-        "intent.\n"
+        f"Write a smaller plan whose overall entropy_pred is at or below the entropy budget of {entropy_budget}. "
+        "Only if the request above offers a sub-intent list and the work cannot fit, add a level-2 heading "
+        "'## Sub-intent list' followed by one bullet per concrete child intent.\n"
     )
 
 

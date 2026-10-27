@@ -709,6 +709,9 @@ def _sanitize_string(name: str) -> str:
 DECISION_EXECUTE = "execute"
 DECISION_DECOMPOSED = "decomposed"
 DECISION_OVER_BUDGET = "over_budget"
+# Exit status of an executor run that refused an over-budget plan. Distinct from 1 (a failed run) so the flow can tell
+# the refusal apart and read the over_budget row the run pushed, while a direct 'holon execute' still exits non-zero.
+OVER_BUDGET_EXIT_CODE = 3
 
 # Normalised heading texts (lower-cased, hyphens, underscores and runs of spaces collapsed to one space) that open an
 # explicit sub-intent list. The legacy capitalised plural heading normalises to "sub intents".
@@ -1941,6 +1944,14 @@ def main() -> None:
             print(stage_timer.summary("ok" if exec_status == "success" else "failed"))
             if budget_breach is not None:
                 sys.exit(1)
+        elif decision.decision == DECISION_OVER_BUDGET:
+            print(
+                f"Error: plan {plan_branch} was not executed: its entropy {decision.entropy} exceeds the entropy "
+                f"budget {decision.entropy_budget} and it lists no sub-intent list. Re-plan it within the budget, or "
+                "add an explicit sub-intent list.",
+                file=sys.stderr,
+            )
+            sys.exit(OVER_BUDGET_EXIT_CODE)
 
     except Exception as e:
         print(f"Execution failed: {redact_agent_secrets(str(e))}", file=sys.stderr)

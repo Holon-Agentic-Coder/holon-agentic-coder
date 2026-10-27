@@ -1348,6 +1348,25 @@ class TestSharedRoleDispatch(unittest.TestCase):
             mock_dispatch.assert_called_once()
             self.assertEqual(mock_dispatch.call_args.args, expected)
 
+    @patch("sandbox_executor.cli.dispatch_role_agent")
+    def test_execute_of_a_refused_over_budget_plan_exits_non_zero_with_a_message(self, mock_dispatch):
+        from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
+
+        argv = ["holon", "execute", "I-1-x/P-1/_", "--agent", "claude-agent", "--model", "claude-opus-5-5"]
+        message = (
+            f"Error: plan I-1-x/P-1/_ is over its entropy budget and was not executed (exit code "
+            f"{OVER_BUDGET_EXIT_CODE}); its execution branch records the over_budget row. Re-plan it within the "
+            "budget, or add an explicit sub-intent list."
+        )
+        for code in (OVER_BUDGET_EXIT_CODE, 1, 0):
+            mock_dispatch.return_value = code
+            stderr = io.StringIO()
+            with patch("sys.argv", argv), patch("sys.stderr", stderr), self.assertRaises(SystemExit) as cm:
+                main()
+            # The container's exit status passes through, so 'holon execute ... && holon review ...' stops here.
+            self.assertEqual(cm.exception.code, code)
+            self.assertEqual(message in stderr.getvalue().splitlines(), code == OVER_BUDGET_EXIT_CODE, code)
+
     @patch("sandbox_executor.cli.run_docker_container", return_value=0)
     def test_dispatch_role_agent_uses_runner_image(self, mock_run_container):
         from sandbox_executor.cli import dispatch_role_agent

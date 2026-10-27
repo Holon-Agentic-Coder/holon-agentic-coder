@@ -131,11 +131,12 @@ It returns one of three outcomes:
 
 The executor never invents child work and never writes `intents.jsonl` rows. For both non-execute outcomes it skips the
 agent, records one `executions.jsonl` summary (`status: "decomposed"` with `sub_intents`, or `status: "over_budget"`
-with `entropy`, `entropy_budget` and a message), commits only that ledger and pushes the branch, exiting 0 so that the
-flow decides what happens next: each child intent is created through the normal Stage 1 intent creator and run through
-the full pipeline (unless the plan's intent is already at `budgets.MAX_SUB_INTENT_DEPTH`, in which case Stage 3 fails
-and refuses to recurse further), or the plan is sent back to Stage 2 (see
-[Git Flow](../git_flow.md#flow-equivalence-guarantee)).
+with `entropy`, `entropy_budget` and a message), commits only that ledger and pushes the branch. It then exits 0 for
+`decomposed` and 3 (`OVER_BUDGET_EXIT_CODE`) for `over_budget`, so a direct `holon execute` of a refused plan fails,
+while the flow reads the pushed row and decides what happens next: each child intent is created through the normal Stage
+1 intent creator and run through the full pipeline (unless the plan's intent is already at
+`budgets.MAX_SUB_INTENT_DEPTH`, in which case Stage 3 fails and refuses to recurse further), or the plan is sent back to
+Stage 2 (see [Git Flow](../git_flow.md#flow-equivalence-guarantee)).
 
 ### 6. Agent Invocation
 

@@ -687,9 +687,15 @@ class TestExecutor(unittest.TestCase):
         ):
             ledger_dir = os.path.join(tmp_dir, "holon-knowledge/ledger")
 
-            with patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]):
+            with (
+                patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
+                self.assertRaises(SystemExit) as refused,
+            ):
                 executor.main()
 
+            # A refused plan is a failure for a direct run too, with an exit status the flow can tell apart.
+            self.assertEqual(refused.exception.code, executor.OVER_BUDGET_EXIT_CODE)
+            self.assertNotIn(executor.OVER_BUDGET_EXIT_CODE, (0, 1))
             mock_runner.validate.assert_called_once()
             self.assertTrue(os.path.exists(os.path.join(ledger_dir, "executions.jsonl")))
             with open(os.path.join(ledger_dir, "executions.jsonl")) as ef:
@@ -4155,7 +4161,8 @@ def _run_executor_main(
     """Run executor.main() with mocked git and runner; return the executions.jsonl rows it wrote.
 
     When ``commands`` is given, every run_cmd argument list is appended to it and the index reports staged changes, so
-    the commit command is issued too.
+    the commit command is issued too. A refused (over-budget) plan must exit with OVER_BUDGET_EXIT_CODE after pushing
+    its row, and every other non-execute outcome must return normally.
     """
     runner = MagicMock()
     runner.get_version.return_value = "1.0.0"
@@ -4188,13 +4195,20 @@ def _run_executor_main(
         patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
         patch("sys.argv", ["executor.py", "I-456/P-123/_", "claude-agent", "claude-opus-5-5"]),
     ):
-        executor.main()
+        exit_code = 0
+        try:
+            executor.main()
+        except SystemExit as exc:
+            exit_code = exc.code
     runner.build_cmd.assert_not_called()
     ledger = os.path.join(repo, "holon-knowledge/ledger")
     with open(os.path.join(ledger, "intents.jsonl")) as f:
         assert [json.loads(line) for line in f if line.strip()] == [intent_row]
     with open(os.path.join(ledger, "executions.jsonl")) as f:
-        return [json.loads(line) for line in f if line.strip()]
+        rows = [json.loads(line) for line in f if line.strip()]
+    statuses = [r.get("status") for r in rows if r.get("entry_type") == "summary"]
+    assert exit_code == (executor.OVER_BUDGET_EXIT_CODE if statuses == ["over_budget"] else 0)
+    return rows
 
 
 def test_main_decomposed_records_sub_intents_without_intent_rows(tmp_path):
@@ -4221,6 +4235,71 @@ def test_main_over_budget_reads_intent_budget_when_plan_row_has_none(tmp_path):
     assert [s["status"] for s in summaries] == ["over_budget"]
     assert summaries[0]["entropy_budget"] == 5.0
     assert "sub_intents" not in summaries[0]
+
+
+def test_main_over_budget_without_a_plan_row_judges_the_fallback_entropy_against_the_intent_budget(tmp_path):
+    # No plans.jsonl row matches the plan branch: the fallback plan carries entropy 3.0 and no budget of its own, so the
+    # intent's budget (2.0) decides and the plan is refused rather than judged against any fixed fallback budget.
+    plan_row = {"plan_id": "P-999", "intent_branch": "I-456/_", "entropy": 1.0}
+    intent_row = {"branch": "I-456", "slug": "parent", "entropy_budget": 2.0}
+
+    rows = _run_executor_main(tmp_path, plan_row, None, intent_row)
+
+    (summary,) = [r for r in rows if r.get("entry_type") == "summary"]
+    assert (summary["status"], summary["entropy"], summary["entropy_budget"]) == ("over_budget", 3.0, 2.0)
+
+
+@pytest.mark.parametrize(
+    ("plan_md", "stdout_line", "stderr_line"),
+    [
+        (
+            "# Plan\n\n## Sub-intent list\n\n1. Add the parser\n2. Add the CLI flag\n",
+            "Plan lists an explicit sub-intent list of 2 item(s); recording it.",
+            None,
+        ),
+        (
+            "# Plan\n",
+            "Plan entropy 12.6 exceeds the entropy budget 5.0 and the plan lists no sub-intent list; the plan was not "
+            "executed.",
+            "Error: plan I-456/P-123/_ was not executed: its entropy 12.6 exceeds the entropy budget 5.0 and it lists "
+            "no sub-intent list. Re-plan it within the budget, or add an explicit sub-intent list.",
+        ),
+    ],
+    ids=["decomposed", "over-budget"],
+)
+def test_main_non_execute_outcome_reports_on_stdout_and_stderr(tmp_path, capsys, plan_md, stdout_line, stderr_line):
+    plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 12.6, "plan_file": "plans/P-123.md"}
+    intent_row = {"branch": "I-456", "slug": "parent", "entropy_budget": 5.0}
+
+    _run_executor_main(tmp_path, plan_row, plan_md, intent_row)
+
+    out, err = capsys.readouterr()
+    assert stdout_line in out.splitlines()
+    if stderr_line is None:
+        assert "was not executed" not in err
+    else:
+        assert stderr_line in err.splitlines()
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        "`\tNone`",
+        "_None_;",
+        "_None_!",
+        "_None_?",
+        "_None_:",
+        "_None_,",
+        "[None]",
+        "<none>",
+        "{none}",
+        "[N/A]",
+    ],
+)
+def test_is_placeholder_item_normalises_whitespace_wrappers_and_trailing_punctuation(item):
+    # Whitespace inside wrappers collapses, every wrapper pair is stripped, and trailing punctuation that sits outside a
+    # wrapper is dropped before the first-word test, so each of these says "no child work".
+    assert executor.is_placeholder_item(item) is True
 
 
 @pytest.mark.parametrize(

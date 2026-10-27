@@ -395,9 +395,9 @@ class TestPlannerMain(unittest.TestCase):
             planner.build_replan_paragraph("Entropy 12.6 is above the budget 5.", 5.0),
             "\n\n## Re-plan request\n\n"
             "Entropy 12.6 is above the budget 5.\n\n"
-            "Write a smaller plan whose overall entropy_pred is at or below the entropy budget of 5.0, or, if the work "
-            "cannot fit, add a level-2 heading '## Sub-intent list' followed by one bullet per concrete child "
-            "intent.\n",
+            "Write a smaller plan whose overall entropy_pred is at or below the entropy budget of 5.0. Only if the "
+            "request above offers a sub-intent list and the work cannot fit, add a level-2 heading "
+            "'## Sub-intent list' followed by one bullet per concrete child intent.\n",
         )
 
     def test_unique_temp_file_closes_its_descriptor(self):

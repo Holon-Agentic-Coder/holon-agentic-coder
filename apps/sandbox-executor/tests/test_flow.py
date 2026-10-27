@@ -2521,17 +2521,16 @@ class TestFlowRoleDispatch:
         assert resumed.intent_branch == "I-1-parent--1-add-the-parser/_"
         assert agents.roles() == ["intent-creator"]
 
-    def test_stage1_refuses_existing_child_branch_recording_a_different_goal(self, flow_repos, tmp_path):
+    @pytest.mark.parametrize("changed", ["goal", "description"])
+    def test_stage1_refuses_existing_child_branch_recording_a_different_goal(self, flow_repos, tmp_path, changed):
         host, origin = flow_repos
         agents = FakeRoleAgents(tmp_path, origin)
         first = _dispatch_context(host, agents, intent_data=self._child_intent("Add the parser"))
         assert run_intent_stage(first).status == StageStatus.SUCCESS
 
         # A re-plan changed the item at the same position while keeping its slug.
-        replanned = _dispatch_context(
-            host, agents, intent_data=self._child_intent("Add the parser with error recovery")
-        )
-        res = run_intent_stage(replanned)
+        replanned_data = {**self._child_intent("Add the parser"), changed: "Add the parser with error recovery"}
+        res = run_intent_stage(_dispatch_context(host, agents, intent_data=replanned_data))
 
         assert res.status == StageStatus.FAILED
         assert "'I-1-parent--1-add-the-parser/_' already exists on origin for a different intent" in (res.error or "")

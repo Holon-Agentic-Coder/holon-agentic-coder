@@ -3206,7 +3206,7 @@ def run_execute_stage(context: FlowContext) -> StageResult:
             "before dispatching the executor.",
         )
     exit_code = _dispatch_role(context, "executor", [context.plan_branch, context.agent, context.model])
-    # The executor exits OVER_BUDGET_EXIT_CODE only after committing its over_budget row; that row, read below, decides.
+    # The executor exits OVER_BUDGET_EXIT_CODE only once its over_budget row is committed and pushed; that row decides.
     if exit_code not in (0, OVER_BUDGET_EXIT_CODE):
         return _stage_failure(
             context,

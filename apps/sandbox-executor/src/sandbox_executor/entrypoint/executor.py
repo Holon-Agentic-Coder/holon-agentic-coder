@@ -711,7 +711,7 @@ DECISION_DECOMPOSED = "decomposed"
 DECISION_OVER_BUDGET = "over_budget"
 # Exit status of an executor run that refused an over-budget plan and committed its over_budget row to the execution
 # branch (pushed unless pushing is disabled). Distinct from 1 (a failed run) so the flow can tell the refusal apart and
-# read that row, while a direct 'holon execute' still exits non-zero. A refusal whose push was refused exits 1.
+# read that row, while a direct 'holon execute' still exits non-zero. Every other over_budget outcome exits 1.
 OVER_BUDGET_EXIT_CODE = 3
 
 # Normalised heading texts (lower-cased, hyphens, underscores and runs of spaces collapsed to one space) that open an

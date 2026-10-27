@@ -208,14 +208,15 @@ budget, but it lives in the same module so that there is exactly one source of t
 - **Bounded re-planning.** A plan above its budget that lists no sub-intent list is sent back to Stage 2 at most
   `budgets.MAX_REPLAN_ATTEMPTS` (`2`) times, with a short re-plan request passed to the planner container through
   `HOLON_REPLAN_FEEDBACK` (never written to a ledger). After that, Stage 3 fails with a message naming the entropy, the
-  budget and the number of attempts. Under `holon flow` the plan row is readable before dispatch, so an over-budget plan
-  is refused before the executor container starts: that attempt creates no execution branch and appends no
-  `executions.jsonl` row. Each rejected plan keeps its `plans.jsonl` row on its plan branch, and the refusals, re-plan
-  count and final failure are recorded only in the flow's stage results, log and checkpoint
-  (`.holon/flow/checkpoint-<slug>.json`). The executor's `over_budget` summary row is written only when the executor
-  itself refuses the plan, as in a direct `holon execute` run, which then exits with code 3 (`OVER_BUDGET_EXIT_CODE`)
-  only when that row is committed and then either pushed or kept local because pushing is disabled, and with code 1
-  otherwise (see
+  budget and the number of attempts. Under `holon flow`, when the plan row can be read before dispatch, an over-budget
+  plan is refused before the executor container starts: that attempt creates no execution branch and appends no
+  `executions.jsonl` row. Each rejected plan keeps its `plans.jsonl` row on its plan branch, and those refusals, the
+  re-plan count and the final failure are recorded only in the flow's stage results, log and checkpoint
+  (`.holon/flow/checkpoint-<slug>.json`). When the plan row cannot be read before dispatch, the executor refuses the
+  plan itself and the flow reads the `over_budget` row it records on an execution branch. The executor's `over_budget`
+  summary row is written only when the executor itself refuses the plan, as in that case or a direct `holon execute`
+  run, which then exits with code 3 (`OVER_BUDGET_EXIT_CODE`) only when that row is committed and then either pushed or
+  kept local because pushing is disabled, and with code 1 otherwise (see
   [Entropy Budget and Decomposition Evaluation](executor/execution_architecture_specification.md#5-entropy-budget-and-decomposition-evaluation)).
   For an intent already at `budgets.MAX_SUB_INTENT_DEPTH`, the re-plan request asks only for a smaller plan, since a
   sub-intent list would be refused there.

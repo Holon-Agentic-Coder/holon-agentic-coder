@@ -182,12 +182,14 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
 
 - **Over budget without a list:** the flow returns to Stage 2 automatically, asking for a smaller plan or an explicit
   sub-intent list (only a smaller plan when the intent is at the sub-intent depth limit), at most `MAX_REPLAN_ATTEMPTS`
-  times; then Stage 3 fails with a message naming the entropy, the budget and the attempts. The flow refuses each
-  over-budget plan before dispatching the executor, so those attempts create no execution branch and append no
-  `executions.jsonl` row; each rejected plan keeps its `plans.jsonl` row, and the refusals are recorded only in the
-  flow's stage results, log and checkpoint. The executor's `over_budget` summary row covers a direct `holon execute`
-  run, which exits with code 3, so the refusal is not mistaken for success, only when that row is committed and then
-  either pushed or kept local because pushing is disabled, and with code 1 otherwise (see
+  times; then Stage 3 fails with a message naming the entropy, the budget and the attempts. When the plan can be read,
+  the flow refuses each over-budget plan before dispatching the executor, so those attempts create no execution branch
+  and append no `executions.jsonl` row; each rejected plan keeps its `plans.jsonl` row, and the refusals are recorded
+  only in the flow's stage results, log and checkpoint. When the plan cannot be read before dispatch, the executor
+  refuses the plan itself and the flow reads the `over_budget` row it records on an execution branch (exit code 3). That
+  row also covers a direct `holon execute` run, which exits with code 3 (so the refusal is not mistaken for success)
+  only when that row is committed and then either pushed or kept local because pushing is disabled, and with code 1
+  otherwise (see
   [Entropy Budget and Decomposition Evaluation](executor/execution_architecture_specification.md#5-entropy-budget-and-decomposition-evaluation)).
 
 The guarantee has five deliberate limits:

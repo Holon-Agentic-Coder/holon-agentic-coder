@@ -2961,11 +2961,18 @@ def format_decomposition_summary(execute_result: StageResult | None) -> list[str
         return []
     payload = execute_result.payload
     children = [c for c in payload.get("children") or [] if isinstance(c, dict)]
+    raw_items = payload.get("sub_intents")
+    # Count the items the plan listed, not only the children that ran: a failed run stops at its first failing child,
+    # and a depth refusal runs none.
+    listed = sum(isinstance(i, dict) for i in raw_items) if isinstance(raw_items, list) else len(children)
     failed = execute_result.status == StageStatus.FAILED
     if failed:
-        lines = [f"Decomposed into {len(children)} sub-intent(s); Stage 3 failed, so no child PR is ready to merge:"]
+        lines = [
+            f"Decomposed into {listed} sub-intent(s); {len(children)} of {listed} ran before Stage 3 failed, so no "
+            "child PR is ready to merge:"
+        ]
     else:
-        lines = [f"Decomposed into {len(children)} sub-intent(s); merge each child PR into the parent intent branch:"]
+        lines = [f"Decomposed into {listed} sub-intent(s); merge each child PR into the parent intent branch:"]
     for index, child in enumerate(children, start=1):
         where = child.get("pr_url") or child.get("execution_branch") or child.get("intent_branch") or "no branch"
         lines.append(f"  {index}. {child.get('slug')}: {where} ({child.get('status')})")

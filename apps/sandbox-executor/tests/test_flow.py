@@ -4582,7 +4582,10 @@ class TestEntropyBudgetHandoffInFlow:
         assert [p["slug"] for p in agents.intent_payloads[1:]] == ["add-the-parser"]
         assert "review" not in results
         summary = flow_module.format_decomposition_summary(execute)
-        assert summary[0].endswith("Stage 3 failed, so no child PR is ready to merge:")
+        assert summary[0] == (
+            "Decomposed into 2 sub-intent(s); 1 of 2 ran before Stage 3 failed, so no child PR is ready to merge:"
+        )
+        assert len(summary) == 2
         assert not any("merge each child PR" in line or line.startswith("Pending") for line in summary)
 
     def test_sub_intent_depth_is_bounded(self, flow_repos, tmp_path):
@@ -4613,6 +4616,9 @@ class TestEntropyBudgetHandoffInFlow:
         assert "deeper than the limit" in (res.error or "")
         assert res.payload["decomposed"] is True
         assert res.payload["children"] == []
+        assert flow_module.format_decomposition_summary(res) == [
+            "Decomposed into 2 sub-intent(s); 0 of 2 ran before Stage 3 failed, so no child PR is ready to merge:"
+        ]
         # The executor ran once and no child intent was created.
         assert agents.roles() == ["intent-creator", "planner", "executor"]
         assert len(agents.intent_payloads) == 1
@@ -4980,6 +4986,43 @@ class TestEntropyBudgetHandoffInFlow:
 
         assert flow_module._child_review_pr(results) == expected
         assert flow_module._child_review_pr({}) == (None, None)
+
+    def test_failed_decomposition_summary_counts_the_listed_items_not_only_the_children_that_ran(self):
+        items = [{"slug": "a"}, {"slug": "b"}, {"slug": "c"}, "not-an-item"]
+        ran_one = StageResult(
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.FAILED,
+            payload={
+                "decomposed": True,
+                "sub_intents": items,
+                "children": [{"slug": "a", "execution_branch": "E-a", "status": "failed"}],
+            },
+        )
+        assert flow_module.format_decomposition_summary(ran_one) == [
+            "Decomposed into 3 sub-intent(s); 1 of 3 ran before Stage 3 failed, so no child PR is ready to merge:",
+            "  1. a: E-a (failed)",
+        ]
+        # A depth refusal inside the decomposed run fails before any child runs.
+        ran_none = StageResult(
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.FAILED,
+            payload={"decomposed": True, "sub_intents": items, "children": []},
+        )
+        assert flow_module.format_decomposition_summary(ran_none) == [
+            "Decomposed into 3 sub-intent(s); 0 of 3 ran before Stage 3 failed, so no child PR is ready to merge:",
+        ]
+        succeeded = StageResult(
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.SUCCESS,
+            payload={
+                "decomposed": True,
+                "sub_intents": items[:2],
+                "children": [{"slug": "a", "status": "s"}, {"slug": "b", "status": "s"}],
+            },
+        )
+        assert flow_module.format_decomposition_summary(succeeded)[0] == (
+            "Decomposed into 2 sub-intent(s); merge each child PR into the parent intent branch:"
+        )
 
     def test_format_decomposition_summary_fallbacks(self):
         children = [

@@ -223,8 +223,10 @@ _Note: This example shows a "Deep" model planning for an intent that was origina
 
 ### Branch naming (Fractal Nesting)
 
-Holon uses a filesystem-like branch structure to represent the intent hierarchy. Sub-intents are nested under their
-parent's path.
+Holon uses a filesystem-like branch structure to represent the intent hierarchy. In the target model, sub-intents are
+nested under their parent's path. The current `holon flow` cuts each sub-intent a flat `I-{timestamp}-{slug}/_` branch
+from its parent intent branch and targets its PR at that parent branch; the parent link is recorded in the child's
+`parent_intent_id`, not in the branch name.
 
 #### Root Intent Branch
 
@@ -234,7 +236,7 @@ I-{timestamp}-{slug}/_
 
 Example: `I-1771890389-refactor-metrics/_`
 
-#### Sub-Intent Branch (Nested)
+#### Sub-Intent Branch (Nested, target model)
 
 ```
 {root_intent}/I-{timestamp}-{slug}
@@ -528,10 +530,12 @@ Agents progress through **capability tiers** based on demonstrated performance:
 | **1** | **Proposer**   | Propose atomic intents (no sub-intents)      | 10 successful executions                                |
 | **2** | **Decomposer** | Propose intents with 1 level of sub-intents  | Intent Quality > 0.7 for 20 proposals                   |
 | **3** | **Architect**  | Propose intents with 2 levels of sub-intents | Intent Quality > 0.8 for 50 proposals                   |
-| **4** | **Autonomous** | Unlimited recursion depth                    | Intent Quality > 0.85 for 100 proposals                 |
+| **4** | **Autonomous** | Unlimited depth (target model)               | Intent Quality > 0.85 for 100 proposals                 |
 | **5** | **Meta**       | Can propose changes to validation rules      | Intent Quality > 0.9 for 200 proposals + human approval |
 
-**Trust levels are per-agent** and can be **demoted** if quality degrades.
+**Trust levels are per-agent** and can be **demoted** if quality degrades. The tiers are the target model: `holon flow`
+currently lets any agent's plan list sub-intents and enforces one hard nesting cap, `MAX_SUB_INTENT_DEPTH` (currently 2
+levels below the root intent), for every agent.
 
 ### Intent proposal mechanism
 

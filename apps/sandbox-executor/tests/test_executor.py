@@ -770,6 +770,11 @@ class TestExecutor(unittest.TestCase):
 
         Every git command is real and pushing stays enabled, as under ``holon flow``. Returns the exit code (or the
         raised exception), the executor's stderr lines and the origin's execution branches with their ledger rows.
+
+        Hooks never come from the developer's global git config (a global ``core.hooksPath`` would replace them):
+        the origin pins its own ``hooks`` directory in its local config, and every client-side git command runs with
+        ``core.hooksPath`` pinned to an empty directory through ``GIT_CONFIG_COUNT``, which git drops for the
+        receiving side of a local push.
         """
         plan_branch = "I-456/P-123/_"
         plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 8.0, "entropy_budget": 5.0}
@@ -779,11 +784,20 @@ class TestExecutor(unittest.TestCase):
         def git(cwd, *args):
             return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
 
-        with tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as root:
+        with tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as root, contextlib.ExitStack() as stack:
             origin = os.path.join(root, "origin.git")
             seed = os.path.join(root, "seed")
             workspace = os.path.join(root, "workspace")
+            client_hooks = os.path.join(root, "client-hooks")
+            os.makedirs(client_hooks)
+            stack.enter_context(
+                patch.dict(
+                    os.environ,
+                    {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": client_hooks},
+                )
+            )
             subprocess.run(["git", "init", "-q", "--bare", "-b", "main", origin], check=True, capture_output=True)
+            git(origin, "config", "core.hooksPath", os.path.join(origin, "hooks"))
             subprocess.run(["git", "init", "-q", "-b", "main", seed], check=True, capture_output=True)
             git(seed, "config", "user.email", "test@example.test")
             git(seed, "config", "user.name", "Test")

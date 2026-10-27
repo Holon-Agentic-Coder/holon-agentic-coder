@@ -4496,6 +4496,37 @@ class TestEntropyBudgetHandoffInFlow:
         # The executor wrote no intent rows: only the parent and the two children created through Stage 1 exist.
         assert sorted(r["slug"] for r in _all_intent_rows(host)) == sorted(["budget-test", *children])
 
+    def test_child_that_itself_decomposes_lists_its_own_children_in_the_summary(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        # Parent and first child both list sub-intents; the two grandchildren and the second child execute.
+        agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (9.0, SUB_INTENT_LIST), (2.0, "")])
+        ctx = _budget_context(host, agents, 5.0)
+
+        results = PipelineEngine(ctx).run()
+
+        execute = results["execute"]
+        assert execute.status == StageStatus.SUCCESS
+        first, second = execute.payload["children"]
+        assert first["decomposed"] is True
+        assert "decomposed" not in second
+        grandchildren = first["children"]
+        assert [g["slug"] for g in grandchildren] == ["add-the-parser", "add-the-cli-flag"]
+        assert [p["sub_intent_depth"] for p in agents.intent_payloads[1:]] == [1, 2, 2, 1]
+        assert [p["target_branch"] for p in agents.intent_payloads[2:4]] == [first["intent_branch"]] * 2
+        summary = flow_module.format_decomposition_summary(execute)
+        assert summary == [
+            "Decomposed into 2 sub-intent(s); merge each child PR into the parent intent branch:",
+            f"  1. add-the-parser: decomposed into 2 sub-intent(s), so it has no PR of its own; merge its child PRs "
+            f"below into '{first['intent_branch']}', then raise a PR from '{first['intent_branch']}' to "
+            f"'{ctx.intent_branch}' (not yet automated):",
+            f"     1. add-the-parser: {grandchildren[0]['execution_branch']} ({grandchildren[0]['status']})",
+            f"     2. add-the-cli-flag: {grandchildren[1]['execution_branch']} ({grandchildren[1]['status']})",
+            f"  2. add-the-cli-flag: {second['execution_branch']} ({second['status']})",
+            f"Pending (not yet automated): after the child PRs merge, raise a PR from '{ctx.intent_branch}' to 'main'.",
+        ]
+        # The decomposed child's ledger-only execution branch is never offered as a PR to merge.
+        assert not any(first["execution_branch"] in line for line in summary)
+
     def test_child_halting_at_its_own_review_is_a_success_and_records_its_pr(self, flow_repos, tmp_path):
         host, origin = flow_repos
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (2.0, "")])
@@ -5051,6 +5082,80 @@ class TestEntropyBudgetHandoffInFlow:
             "Pending (not yet automated): after the child PRs merge, raise a PR from 'the parent intent branch' to "
             "'its target branch'.",
         ]
+
+    def test_failed_decomposition_summary_nests_a_decomposed_child_without_merge_guidance(self):
+        children = [
+            {
+                "slug": "a",
+                "intent_branch": "I-a/_",
+                "execution_branch": "E-a",
+                "status": "skipped",
+                "decomposed": True,
+                "children": [{"slug": "x", "pr_url": "https://x/pull/3", "status": "s"}, "not-a-child"],
+            },
+            {"slug": "b", "execution_branch": "E-b", "status": "failed"},
+        ]
+        result = StageResult(
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.FAILED,
+            payload={"decomposed": True, "sub_intents": [{"slug": "a"}, {"slug": "b"}], "children": children},
+        )
+
+        assert flow_module.format_decomposition_summary(result) == [
+            "Decomposed into 2 sub-intent(s); 2 of 2 ran before Stage 3 failed, so no child PR is ready to merge:",
+            "  1. a: decomposed into 1 sub-intent(s) (skipped):",
+            "     1. x: https://x/pull/3 (s)",
+            "  2. b: E-b (failed)",
+        ]
+
+    def test_decomposition_summary_names_each_decomposed_level_after_its_own_parent(self):
+        # The rendering recurses, so a decomposed grandchild points at its own parent, not at the root intent branch.
+        grandchild = {
+            "slug": "g",
+            "intent_branch": "I-g/_",
+            "decomposed": True,
+            "children": [{"slug": "x", "pr_url": "https://x/pull/9", "status": "s"}],
+        }
+        child = {"slug": "a", "intent_branch": "I-a/_", "decomposed": True, "children": [grandchild]}
+        result = StageResult(
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.SUCCESS,
+            payload={"decomposed": True, "sub_intents": [{"slug": "a"}], "children": [child], "parent_branch": "I-p/_"},
+        )
+
+        assert flow_module.format_decomposition_summary(result)[1:4] == [
+            "  1. a: decomposed into 1 sub-intent(s), so it has no PR of its own; merge its child PRs below into "
+            "'I-a/_', then raise a PR from 'I-a/_' to 'I-p/_' (not yet automated):",
+            "     1. g: decomposed into 1 sub-intent(s), so it has no PR of its own; merge its child PRs below into "
+            "'I-g/_', then raise a PR from 'I-g/_' to 'I-a/_' (not yet automated):",
+            "        1. x: https://x/pull/9 (s)",
+        ]
+
+    def test_successful_decomposition_summary_header_counts_the_listed_items(self):
+        # The header counts the dict items the plan listed, independently of how many child summaries are present.
+        result = StageResult(
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.SUCCESS,
+            payload={
+                "decomposed": True,
+                "sub_intents": [{"slug": "a"}, {"slug": "b"}, {"slug": "c"}, "not-an-item"],
+                "children": [{"slug": "a", "status": "s"}],
+            },
+        )
+        assert flow_module.format_decomposition_summary(result)[0] == (
+            "Decomposed into 3 sub-intent(s); merge each child PR into the parent intent branch:"
+        )
+
+    @pytest.mark.parametrize("sub_intents", ["abc", 5], ids=["string", "number"])
+    def test_decomposition_summary_with_a_non_list_sub_intent_value_counts_the_children(self, sub_intents):
+        result = StageResult(
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.SUCCESS,
+            payload={"decomposed": True, "sub_intents": sub_intents, "children": [{"slug": "a", "status": "s"}]},
+        )
+        assert flow_module.format_decomposition_summary(result)[0] == (
+            "Decomposed into 1 sub-intent(s); merge each child PR into the parent intent branch:"
+        )
 
     # --- Pre-dispatch budget decision -----------------------------------------------------------------------------
 

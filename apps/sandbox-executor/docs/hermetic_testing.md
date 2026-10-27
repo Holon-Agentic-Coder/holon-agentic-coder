@@ -13,8 +13,8 @@ patched `cleanup_repo_dir` (decorators at lines 9, 66, 113 and 161 of the pre-fi
 removed a live workspace. An audit of every test that calls a role entrypoint without patching cleanup found the actual
 exposed callers, all in one module:
 
-- `test_executor.py`: `test_main_execution_flow`, `test_main_git_recovery_on_corrupted_repo`, every over-budget `main()`
-  test (those run through `_run_over_budget_main` or `_run_over_budget_main_against_local_origin`),
+- `test_executor.py`: `test_main_execution_flow`, `test_main_git_recovery_on_corrupted_repo`, the over-budget `main()`
+  tests that run through `_run_over_budget_main` or `_run_over_budget_main_against_local_origin`,
   `test_main_custom_holon_repo_dir_not_deleted`, `test_main_default_workspace_deleted`,
   `test_main_raises_exception_on_failure`, `test_main_raises_runtime_error_on_cleanup_failure`,
   `test_main_mount_point_clears_contents`, `test_main_git_add_not_called_on_failure`. Two of these also exercise

@@ -175,10 +175,11 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
   cut from the parent intent branch as it stood when that child started, so a later child does not see an earlier
   child's unmerged changes; order dependent items accordingly. Aggregating the merged children and raising the parent
   intent branch's PR to its own target (for a root intent, `main`) are not yet automated. The `holon flow` summary lists
-  each child's PR (or its execution branch when no PR was recorded) and names this pending parent-to-target step, which
-  the maintainer performs after merging the child PRs. Those PR merges are the only human steps. Sections 4.1, 5, 6,
-  7.4, 8, the sub-intent rows of section 12 and sections 13.2-13.3 describe the target model of automatic,
-  evaluation-based sub-intent merges, which is not yet implemented.
+  each child's PR (or its execution branch when no PR was recorded), lists a child that itself decomposed as having no
+  PR of its own with its own children nested below it, and names this pending parent-to-target step, which the
+  maintainer performs after merging the child PRs. Those PR merges are the only human steps. Sections 4.1, 5, 6, 7.4, 8,
+  the sub-intent rows of section 12 and sections 13.2-13.3 describe the target model of automatic, evaluation-based
+  sub-intent merges, which is not yet implemented.
 
 - **Over budget without a list:** the flow returns to Stage 2 automatically, asking for a smaller plan or an explicit
   sub-intent list (only a smaller plan when the intent is at the sub-intent depth limit), at most `MAX_REPLAN_ATTEMPTS`
@@ -490,9 +491,11 @@ $ git rebase I-1771890389-refactor-metrics/_
 
 ### 7.4 Merge (Automatic for Sub-Intents)
 
-Target model; in the current flow the maintainer merges the child's PR into the parent intent branch.
+Target model, using the nested sub-intent name of section 2.2. In the current flow the sub-intent branch is the flat
+`I-1771890390-improve-estimators/_` from section 7.1, and the maintainer merges its PR into the parent intent branch.
 
 ```bash
+# Target model: the nested sub-intent branch merges automatically
 $ git checkout I-1771890389-refactor-metrics/_
 $ git merge I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_
 ```
@@ -509,7 +512,8 @@ $ git push origin main
 ### 7.6 Cleanup
 
 ```bash
-# Delete merged branches
+# Delete merged branches (current flow: the flat sub-intent branch of section 7.1; in the target model, the nested
+# name merged in section 7.4)
 $ git branch -d I-1771890390-improve-estimators/_
 $ git branch -d I-1771890389-refactor-metrics/_
 ```

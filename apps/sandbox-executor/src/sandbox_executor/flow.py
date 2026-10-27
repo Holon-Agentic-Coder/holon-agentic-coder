@@ -41,6 +41,9 @@ from sandbox_executor.agent_defaults import (
     normalise_agent_id,
 )
 from sandbox_executor.budgets import (
+    ENV_REPLAN_FEEDBACK,
+    MAX_REPLAN_ATTEMPTS,
+    MAX_SUB_INTENT_DEPTH,
     Budgets,
     StageTimer,
     active_stage_timer,
@@ -55,7 +58,14 @@ from sandbox_executor.calibration import (
     record_calibration_action,
     run_calibrate,
 )
-from sandbox_executor.entrypoint.executor import _sanitize_string
+from sandbox_executor.entrypoint.executor import (
+    DECISION_DECOMPOSED,
+    DECISION_OVER_BUDGET,
+    OVER_BUDGET_EXIT_CODE,
+    DecompositionDecision,
+    _sanitize_string,
+    should_decompose,
+)
 from sandbox_executor.entrypoint.planner import (
     _sanitize_model_name,
     load_metrics_config,
@@ -302,6 +312,8 @@ class FlowContext:
     stage_results: dict[str, StageResult] = field(default_factory=dict)
     logs: list[str] = field(default_factory=list)
     schema_version: int = CURRENT_CONTEXT_SCHEMA_VERSION
+    # Automatic returns to Stage 2 after an over-budget plan (bounded by budgets.MAX_REPLAN_ATTEMPTS).
+    replan_attempts: int = 0
     # Role-agent dispatcher for Stages 1-3; None means cli.dispatch_role_agent. Never checkpointed.
     dispatcher: Callable[..., int] | None = field(default=None, repr=False, compare=False)
 
@@ -340,6 +352,7 @@ class FlowContext:
             "skip_calibrate": self.skip_calibrate,
             "max_review_iterations": self.max_review_iterations,
             "mitm_web": self.mitm_web,
+            "replan_attempts": self.replan_attempts,
             "stage_results": {k: v.to_dict() for k, v in self.stage_results.items()},
             "logs": self.logs,
         }
@@ -374,6 +387,7 @@ class FlowContext:
             skip_calibrate=data.get("skip_calibrate", False),
             max_review_iterations=data.get("max_review_iterations", 25),
             mitm_web=data.get("mitm_web", False),
+            replan_attempts=int(data.get("replan_attempts") or 0),
             stage_results=parsed_results,
             logs=data.get("logs", []),
         )
@@ -437,7 +451,13 @@ def save_checkpoint(context: FlowContext, filepath: str | None = None) -> str:
         slug = context.intent_data["branch"].replace("I-", "").split("-", 2)[-1]
     if not slug:
         slug = "default"
-    target_path = filepath or get_default_checkpoint_path(context.repo_dir, slug)
+    # A sub-intent's slug can repeat its parent's or a sibling's, so its checkpoint is keyed on its unique branch.
+    key = (
+        str(context.intent_data["branch"]).removesuffix("/_")
+        if context.intent_data.get("parent_intent_id") and context.intent_data.get("branch")
+        else slug
+    )
+    target_path = filepath or get_default_checkpoint_path(context.repo_dir, key)
     target_dir = os.path.dirname(os.path.abspath(target_path))
     os.makedirs(target_dir, exist_ok=True)
 
@@ -2525,6 +2545,32 @@ def _execution_effective_diff(repo_dir: str, execution_branch: str) -> tuple[boo
 # ---------------------------------------------------------------------------
 
 
+def _reused_intent_conflict(repo_dir: str, intent_branch: str, branch: str, intent_data: dict[str, Any]) -> str | None:
+    """Return why an existing origin intent branch cannot be reused for ``intent_data``, or None when it can.
+
+    The branch is reused only when its ``intents.jsonl`` row for ``branch`` records the same goal and description, so a
+    re-plan that changes a child at the same position and slug never silently inherits the earlier child's intent.
+    """
+    rows = [
+        r for r in _read_ledger_rows(repo_dir, f"origin/{intent_branch}", "intents.jsonl") if r.get("branch") == branch
+    ]
+    if not rows:
+        return (
+            f"Intent stage failed: '{intent_branch}' already exists on origin but records no intent row for "
+            f"'{branch}'; refusing to reuse it. Delete that branch or give this intent a different branch."
+        )
+    recorded = rows[-1]
+    if recorded.get("goal") == intent_data.get("goal") and recorded.get("description") == intent_data.get(
+        "description"
+    ):
+        return None
+    return (
+        f"Intent stage failed: '{intent_branch}' already exists on origin for a different intent (its recorded goal or "
+        "description differs from this one); refusing to reuse it. Delete that branch or give this intent a different "
+        "branch."
+    )
+
+
 def run_intent_stage(context: FlowContext) -> StageResult:
     """Execute Stage 1: validate the intent payload and dispatch the intent-creator agent.
 
@@ -2607,6 +2653,9 @@ def run_intent_stage(context: FlowContext) -> StageResult:
                 intent_branch=intent_branch,
             )
         if _origin_has_branch(repo_dir, intent_branch):
+            conflict = _reused_intent_conflict(repo_dir, intent_branch, branch, intent_data)
+            if conflict is not None:
+                return _stage_failure(context, FlowStage.INTENT, start_time, conflict, intent_branch=intent_branch)
             context.log(f"Intent branch '{intent_branch}' already exists on origin; reusing it without re-dispatching.")
         else:
             tmp_dir = os.path.expanduser("~/.holon/tmp")
@@ -2754,7 +2803,19 @@ def run_plan_stage(context: FlowContext) -> StageResult:
             start_time,
             f"Plan stage failed: could not fetch origin branches under {intent_prefix} before dispatching the planner.",
         )
-    exit_code = _dispatch_role(context, "planner", [context.intent_branch, context.agent, context.model])
+    replan_feedback = str(context.intent_data.get("replan_feedback") or "").strip()
+    previous_feedback_env = os.environ.get(ENV_REPLAN_FEEDBACK)
+    if replan_feedback:
+        # Forwarded into the planner container like every HOLON_* variable; never written to a ledger.
+        os.environ[ENV_REPLAN_FEEDBACK] = replan_feedback
+    try:
+        exit_code = _dispatch_role(context, "planner", [context.intent_branch, context.agent, context.model])
+    finally:
+        if replan_feedback:
+            if previous_feedback_env is None:
+                os.environ.pop(ENV_REPLAN_FEEDBACK, None)
+            else:
+                os.environ[ENV_REPLAN_FEEDBACK] = previous_feedback_env
     if exit_code != 0:
         return _stage_failure(
             context, FlowStage.PLAN, start_time, f"{no_plan_error} (planner agent exited with code {exit_code})"
@@ -2834,6 +2895,278 @@ def run_plan_stage(context: FlowContext) -> StageResult:
 # ---------------------------------------------------------------------------
 
 
+def _plan_budget_decision(context: FlowContext) -> DecompositionDecision | None:
+    """Judge the active plan against its entropy budget before the executor is dispatched.
+
+    Reads the plan row and plan file from the plan branch (origin first, then local) and calls the executor's own
+    ``should_decompose`` with the intent payload, so the flow and the container apply one rule. Returns ``None`` when
+    the plan row cannot be read, leaving the decision to the executor container.
+    """
+    if not context.plan_branch:
+        return None
+    plan_ref = _resolve_branch_ref(context.repo_dir, context.plan_branch)
+    if not plan_ref:
+        return None
+    plan_id = context.plan_branch.removesuffix("/_").rsplit("/", 1)[-1]
+    rows = [r for r in _read_ledger_rows(context.repo_dir, plan_ref, "plans.jsonl") if r.get("plan_id") == plan_id]
+    if not rows:
+        return None
+    plan_row = rows[-1]
+    plan_md_rel = str(plan_row.get("plan_file") or f"plans/{plan_id}.md")
+    if not re.fullmatch(r"plans/P-[^/]+\.md", plan_md_rel):
+        plan_md_rel = f"plans/{plan_id}.md"
+    plan_content = _git_show_text(context.repo_dir, plan_ref, plan_md_rel) or ""
+    return should_decompose(plan_row, plan_content, context.intent_data)
+
+
+def _format_entropy(value: Any) -> str:
+    """Render an entropy value for messages, tolerating missing or non-numeric values."""
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return f"{float(value):g}"
+    return str(value) if value is not None else "unknown"
+
+
+def _over_budget_failure(
+    context: FlowContext, start_time: str, entropy: Any, entropy_budget: Any, *, dispatched: bool, **payload: Any
+) -> StageResult:
+    """Fail Stage 3 for a plan above its entropy budget that lists no sub-intent list (re-planned by the engine)."""
+    payload.update(
+        {"over_budget": True, "entropy": entropy, "entropy_budget": entropy_budget, "dispatched": dispatched}
+    )
+    return _stage_failure(
+        context,
+        FlowStage.EXECUTE,
+        start_time,
+        f"Execute stage failed: plan entropy {_format_entropy(entropy)} exceeds the entropy budget "
+        f"{_format_entropy(entropy_budget)} and the plan lists no sub-intent list.",
+        **payload,
+    )
+
+
+def _sub_intent_depth(intent_data: dict[str, Any]) -> int:
+    """Return the nesting depth recorded on an intent payload (0 for a root intent)."""
+    try:
+        return max(0, int(intent_data.get("sub_intent_depth") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _sub_intent_depth_error(context: FlowContext) -> str | None:
+    """Return the Stage 3 failure message when this intent's children would exceed ``MAX_SUB_INTENT_DEPTH``."""
+    depth = _sub_intent_depth(context.intent_data) + 1
+    if depth <= MAX_SUB_INTENT_DEPTH:
+        return None
+    return (
+        f"Execute stage failed: the plan lists a sub-intent list at depth {depth}, deeper than the limit of "
+        f"{MAX_SUB_INTENT_DEPTH}; refusing to recurse further."
+    )
+
+
+_PR_URL_RE = re.compile(r"https?://\S+/pull/\d+")
+
+
+def _child_review_pr(results: dict[str, StageResult]) -> tuple[Any, Any]:
+    """Return the ``(pr_url, pr_number)`` a child pipeline's Stage 4 recorded, or ``(None, None)``.
+
+    Stage 4 records the ``create_or_update_pr`` result under ``payload["pr"]``: it carries ``pr_number``, and the
+    URL only inside the ``gh`` output, so the URL is read from an explicit ``pr_url`` key when present, else from that
+    output.
+    """
+    review = results.get(FlowStage.REVIEW.value)
+    pr = review.payload.get("pr") if review is not None else None
+    if not isinstance(pr, dict):
+        return None, None
+    pr_url = pr.get("pr_url")
+    if not pr_url:
+        match = _PR_URL_RE.search(str(pr.get("output") or ""))
+        pr_url = match.group(0) if match else None
+    return pr_url, pr.get("pr_number")
+
+
+def _decomposition_child_lines(children: list[Any], parent_branch: str, indent: str, failed: bool) -> list[str]:
+    """Summary lines for one level of children; a child that itself decomposed lists its own children below it."""
+    lines: list[str] = []
+    for index, child in enumerate((c for c in children if isinstance(c, dict)), start=1):
+        if not child.get("decomposed"):
+            where = child.get("pr_url") or child.get("execution_branch") or child.get("intent_branch") or "no branch"
+            lines.append(f"{indent}{index}. {child.get('slug')}: {where} ({child.get('status')})")
+            continue
+        grandchildren = [c for c in child.get("children") or [] if isinstance(c, dict)]
+        branch = child.get("intent_branch") or "its intent branch"
+        if failed:
+            note = f"decomposed into {len(grandchildren)} sub-intent(s) ({child.get('status')})"
+        else:
+            note = (
+                f"decomposed into {len(grandchildren)} sub-intent(s), so it has no PR of its own; merge its child "
+                f"PRs below into '{branch}', then raise a PR from '{branch}' to '{parent_branch}' (not yet automated)"
+            )
+        lines.append(f"{indent}{index}. {child.get('slug')}: {note}:")
+        lines.extend(_decomposition_child_lines(grandchildren, branch, indent + "   ", failed))
+    return lines
+
+
+def format_decomposition_summary(execute_result: StageResult | None) -> list[str]:
+    """Lines for the flow summary of a decomposed Stage 3: each child's PR or branch, then the pending parent step.
+
+    Each child pipeline that executes its plan stops at its own Stage 4 merge boundary with a PR into the parent
+    intent branch. A child that itself decomposed has no PR of its own: it is listed as decomposed, with its own
+    children (whose PRs need merging) nested below it. Aggregating the merged children and raising an intent branch's
+    PR to its own target are not yet automated, so the summary names that remaining step explicitly. When the
+    decomposed Stage 3 failed, the merge guidance and the pending parent step are omitted so a failed run never reads
+    as success. Returns an empty list when Stage 3 was not decomposed.
+    """
+    if execute_result is None or not execute_result.payload.get("decomposed"):
+        return []
+    payload = execute_result.payload
+    children = [c for c in payload.get("children") or [] if isinstance(c, dict)]
+    raw_items = payload.get("sub_intents")
+    # Count the items the plan listed, not only the children that ran: a failed run stops at its first failing child,
+    # and a depth refusal runs none.
+    listed = sum(isinstance(i, dict) for i in raw_items) if isinstance(raw_items, list) else len(children)
+    failed = execute_result.status == StageStatus.FAILED
+    if failed:
+        lines = [
+            f"Decomposed into {listed} sub-intent(s); {len(children)} of {listed} ran before Stage 3 failed, so no "
+            "child PR is ready to merge:"
+        ]
+    else:
+        lines = [f"Decomposed into {listed} sub-intent(s); merge each child PR into the parent intent branch:"]
+    parent_branch = payload.get("parent_branch") or "the parent intent branch"
+    lines.extend(_decomposition_child_lines(children, parent_branch, "  ", failed))
+    if failed:
+        return lines
+    parent_target = payload.get("parent_target_branch") or "its target branch"
+    lines.append(
+        f"Pending (not yet automated): after the child PRs merge, raise a PR from '{parent_branch}' to "
+        f"'{parent_target}'."
+    )
+    return lines
+
+
+def _child_context(context: FlowContext, intent_data: dict[str, Any]) -> FlowContext:
+    """Build the FlowContext of one child intent, inheriting the parent's runner, flags and dispatcher."""
+    return FlowContext(
+        repo_dir=context.repo_dir,
+        intent_data=intent_data,
+        agent=context.agent,
+        model=context.model,
+        dry_run=context.dry_run,
+        auto_calibrate=context.auto_calibrate,
+        token_reduce=context.token_reduce,
+        skip_push=context.skip_push,
+        skip_review=context.skip_review,
+        skip_calibrate=context.skip_calibrate,
+        max_review_iterations=context.max_review_iterations,
+        mitm_web=context.mitm_web,
+        dispatcher=context.dispatcher,
+    )
+
+
+def _child_intent_branch(parent_branch: str, index: int, slug: str) -> str:
+    """Return the bare intent branch of the ``index``-th (1-based) child of ``parent_branch``: ``{parent}--{n}-{slug}``.
+
+    The name is derived from the parent's branch and the item's position, never from the clock. A sanitised slug never
+    contains ``--``, so the name cannot collide with the parent, a sibling or any other intent, even one created in the
+    same second with the same slug; re-running the same parent's list derives the same name for the same child.
+    """
+    child_slug = re.sub(r"[^a-zA-Z0-9]+", "-", slug).strip("-").lower() or f"sub-intent-{index}"
+    return f"{parent_branch.removesuffix('/_')}--{index}-{child_slug}"
+
+
+def _run_decomposed_plan(
+    context: FlowContext, start_time: str, summary_row: dict[str, Any], base_payload: dict[str, Any]
+) -> StageResult:
+    """Drive each item of a recorded sub-intent list through the full pipeline, strictly one after another.
+
+    Each child is a new intent (created by the normal Stage 1 intent creator) whose ``target_branch`` and
+    ``parent_intent_id`` are this intent's branch, so it merges into its immediate parent and never into ``main``. A
+    child succeeds when its own pipeline ends without a failed stage (normally at its own Stage 4 consensus halt, the
+    merge boundary). The first failing child stops the loop and fails this stage, naming the child.
+    """
+    raw_items = summary_row.get("sub_intents")
+    items = [i for i in raw_items if isinstance(i, dict)] if isinstance(raw_items, list) else []
+    payload: dict[str, Any] = {**base_payload, "decomposed": True, "sub_intents": items, "children": []}
+    if not items:
+        return _stage_failure(
+            context,
+            FlowStage.EXECUTE,
+            start_time,
+            "Execute stage failed: the executor recorded a decomposed plan without any sub-intent list items.",
+            **payload,
+        )
+    depth = _sub_intent_depth(context.intent_data) + 1
+    depth_error = _sub_intent_depth_error(context)
+    if depth_error is not None:
+        return _stage_failure(context, FlowStage.EXECUTE, start_time, depth_error, **payload)
+
+    parent_branch = context.intent_branch or str(summary_row.get("plan_branch") or "").split("/P-")[0] + "/_"
+    payload["parent_branch"] = parent_branch
+    payload["parent_target_branch"] = str(context.intent_data.get("target_branch") or "main")
+    entropy_budget = summary_row.get("entropy_budget")
+    labels = context.intent_data.get("labels")
+    total = len(items)
+    for index, item in enumerate(items, start=1):
+        slug = str(item.get("slug") or f"sub-intent-{index}")
+        child_data: dict[str, Any] = {
+            "branch": _child_intent_branch(parent_branch, index, slug),
+            "slug": slug,
+            "description": str(item.get("description") or item.get("goal") or slug),
+            "goal": str(item.get("goal") or item.get("description") or slug),
+            "parent_intent_id": parent_branch,
+            "target_branch": parent_branch,
+            "sub_intent_depth": depth,
+        }
+        if entropy_budget is not None:
+            child_data["entropy_budget"] = entropy_budget
+        if isinstance(labels, list):
+            child_data["labels"] = list(labels)
+        child = _child_context(context, child_data)
+        context.log(f"Stage 3: running sub-intent {index}/{total} '{slug}' through the full pipeline.")
+        try:
+            results = PipelineEngine(child).run()
+        finally:
+            context.logs.extend(f"[sub-intent {slug}] {line}" for line in child.logs)
+        failed = [name for name, res in results.items() if res.status == StageStatus.FAILED]
+        final_stage = next(reversed(results)) if results else None
+        pr_url, pr_number = _child_review_pr(results)
+        child_summary = {
+            "slug": slug,
+            "intent_branch": child.intent_branch,
+            "execution_branch": child.execution_branch,
+            "pr_url": pr_url,
+            "pr_number": pr_number,
+            "final_stage": final_stage,
+            "status": results[final_stage].status.value if final_stage else None,
+        }
+        child_execute = results.get(FlowStage.EXECUTE.value)
+        if child_execute is not None and child_execute.payload.get("decomposed"):
+            # The child ran its own sub-intents instead of opening a PR: carry them so the summary can list them.
+            child_summary["decomposed"] = True
+            child_summary["children"] = list(child_execute.payload.get("children") or [])
+        payload["children"].append(child_summary)
+        if failed or not results:
+            error = (results[failed[0]].error if failed else None) or "no stage ran"
+            return _stage_failure(
+                context,
+                FlowStage.EXECUTE,
+                start_time,
+                f"Execute stage failed: sub-intent {index}/{total} '{slug}' failed at stage "
+                f"'{failed[0] if failed else 'none'}': {error}",
+                **payload,
+            )
+
+    context.log(f"Stage 3 completed: all {total} sub-intent(s) of '{context.plan_branch}' ran through the pipeline.")
+    result = StageResult(
+        stage=FlowStage.EXECUTE,
+        status=StageStatus.SUCCESS,
+        start_time=start_time,
+        end_time=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        payload=payload,
+    )
+    context.stage_results["execute"] = result
+    return result
+
+
 def run_execute_stage(context: FlowContext) -> StageResult:
     """Execute Stage 3: dispatch the executor agent, adopt its execution branch and apply the empty-diff guard.
 
@@ -2841,7 +3174,17 @@ def run_execute_stage(context: FlowContext) -> StageResult:
     executions.jsonl and pushes. An execution whose diff against the plan branch is empty outside
     holon-knowledge/ledger/, plans/ and executions/ fails: a superseding 'failed' row is recorded if the container
     claimed success, and the stage fails so no PR is created or updated.
-    Downstream stages operate unattended: picks conservative non-blocking execution options.
+
+    The stage never halts for a human. The plan is judged against the entropy budget the planner persisted (see
+    ``entrypoint.executor.should_decompose``), with one of three outcomes:
+
+    - *execute*: the executor implements the plan as described above;
+    - *decomposed*: the plan lists an explicit sub-intent list, which the executor records on its summary row; each
+      item then runs, one at a time, through the full pipeline as a child intent targeting this intent's branch, and
+      the stage succeeds only when every child does;
+    - *over budget*: the plan exceeds its budget without such a list; the stage fails with ``payload["over_budget"]``
+      (before dispatch when the plan can be read, or from the executor's ``over_budget`` row), and the pipeline engine
+      returns to Stage 2 a bounded number of times before failing for good.
     """
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log("Starting Stage 3: Plan Execution")
@@ -2917,6 +3260,15 @@ def run_execute_stage(context: FlowContext) -> StageResult:
         repo_dir, target_branch=target_branch, stage_name="execute", branch=context.plan_branch
     )
 
+    precheck = _plan_budget_decision(context)
+    if precheck is not None and precheck.decision == DECISION_OVER_BUDGET:
+        return _over_budget_failure(context, start_time, precheck.entropy, precheck.entropy_budget, dispatched=False)
+    if precheck is not None and precheck.decision == DECISION_DECOMPOSED:
+        # Refuse an over-deep sub-intent list before dispatch, so no executor container or execution branch is spent.
+        depth_error = _sub_intent_depth_error(context)
+        if depth_error is not None:
+            return _stage_failure(context, FlowStage.EXECUTE, start_time, depth_error, dispatched=False)
+
     existing_executions = _snapshot_child_branches(repo_dir, plan_prefix, "E")
     if existing_executions is None:
         return _stage_failure(
@@ -2927,7 +3279,8 @@ def run_execute_stage(context: FlowContext) -> StageResult:
             "before dispatching the executor.",
         )
     exit_code = _dispatch_role(context, "executor", [context.plan_branch, context.agent, context.model])
-    if exit_code != 0:
+    # The executor exits OVER_BUDGET_EXIT_CODE only once its over_budget row is committed and pushed; that row decides.
+    if exit_code not in (0, OVER_BUDGET_EXIT_CODE):
         return _stage_failure(
             context,
             FlowStage.EXECUTE,
@@ -2942,7 +3295,7 @@ def run_execute_stage(context: FlowContext) -> StageResult:
             context,
             FlowStage.EXECUTE,
             start_time,
-            f"Execute stage failed: the executor agent exited 0 but origin branches under {plan_prefix} "
+            f"Execute stage failed: the executor agent exited {exit_code} but origin branches under {plan_prefix} "
             f"could not be fetched to adopt its execution branch: {fetch_error}",
             exit_code=exit_code,
         )
@@ -2979,17 +3332,27 @@ def run_execute_stage(context: FlowContext) -> StageResult:
         "token_reduce": context.token_reduce,
     }
 
-    if container_status == "decomposed":
-        context.log(f"Stage 3: executor decomposed '{context.plan_branch}' into sub-intents; halting for human review.")
-        result = StageResult(
-            stage=FlowStage.EXECUTE,
-            status=StageStatus.HALTED_FOR_HUMAN,
-            start_time=start_time,
-            end_time=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            payload={**base_payload, "sub_intents": summary_row.get("sub_intents", []) if summary_row else []},
+    if summary_row is not None and container_status == DECISION_OVER_BUDGET:
+        # Defence in depth: the pre-dispatch check normally catches this before the container starts.
+        return _over_budget_failure(
+            context,
+            start_time,
+            summary_row.get("entropy"),
+            summary_row.get("entropy_budget"),
+            dispatched=True,
+            **base_payload,
         )
-        context.stage_results["execute"] = result
-        return result
+    if exit_code != 0:
+        return _stage_failure(
+            context,
+            FlowStage.EXECUTE,
+            start_time,
+            f"Execute stage failed: executor agent exited with code {exit_code}.",
+            **base_payload,
+        )
+
+    if summary_row is not None and container_status == DECISION_DECOMPOSED:
+        return _run_decomposed_plan(context, start_time, summary_row, base_payload)
 
     # Empty-diff guard: shared definition with the executor entrypoint and the review loop.
     plan_ref = _resolve_branch_ref(repo_dir, context.plan_branch)
@@ -4381,7 +4744,8 @@ class PipelineEngine:
         result.elapsed_seconds = round(elapsed, 3)
         result.budget_seconds = budget_seconds
         if elapsed > budget_seconds and result.status not in (StageStatus.FAILED, StageStatus.SKIPPED):
-            if stage in self.POST_HOC_BUDGET_EXEMPT:
+            # A decomposed Execute stage spans whole child pipelines, each of whose stages ran under its own budget.
+            if stage in self.POST_HOC_BUDGET_EXEMPT or result.payload.get("decomposed"):
                 result.payload = {
                     **result.payload,
                     "budget_overrun": {
@@ -4468,6 +4832,72 @@ class PipelineEngine:
         """Save active pipeline state to checkpoint file."""
         return save_checkpoint(self.context, self.checkpoint_path)
 
+    def _parent_was_decomposed(self) -> bool:
+        """True when Stage 3 succeeded by running the plan's sub-intent list as child pipelines."""
+        execute = self.context.stage_results.get(FlowStage.EXECUTE.value)
+        return bool(execute is not None and execute.status == StageStatus.SUCCESS and execute.payload.get("decomposed"))
+
+    def _replan_after_over_budget(self, result: StageResult) -> StageResult:
+        """Return an over-budget plan to Stage 2 up to ``MAX_REPLAN_ATTEMPTS`` times, then fail Stage 3 clearly.
+
+        Each attempt asks the planner, through transient feedback that is never checkpointed or written to a ledger,
+        for a plan within the budget or an explicit sub-intent list (only a smaller plan at the sub-intent depth limit,
+        where a list would be refused), and re-runs Stage 2 and Stage 3 in place.
+        """
+        while (
+            result.stage == FlowStage.EXECUTE
+            and result.status == StageStatus.FAILED
+            and result.payload.get("over_budget")
+            and self.context.replan_attempts < MAX_REPLAN_ATTEMPTS
+        ):
+            self.context.replan_attempts += 1
+            entropy = _format_entropy(result.payload.get("entropy"))
+            budget = _format_entropy(result.payload.get("entropy_budget"))
+            self.context.log(
+                f"Stage 3: plan entropy {entropy} exceeds the entropy budget {budget}; returning to Stage 2 "
+                f"(re-plan attempt {self.context.replan_attempts} of {MAX_REPLAN_ATTEMPTS})."
+            )
+            if _sub_intent_depth_error(self.context) is None:
+                request = "write a smaller plan within the budget, or add an explicit sub-intent list."
+            else:
+                # A sub-intent list here would be refused for depth, wasting the attempt: ask for one smaller plan only.
+                request = (
+                    "write a smaller single plan within the budget. Do not add a sub-intent list: this intent is at "
+                    f"the sub-intent depth limit of {MAX_SUB_INTENT_DEPTH}, so a sub-intent list would be refused."
+                )
+            self.context.intent_data["replan_feedback"] = (
+                f"The previous plan '{self.context.plan_branch}' has entropy {entropy}, above the entropy budget "
+                f"{budget}, and lists no sub-intent list. Re-plan attempt {self.context.replan_attempts} of "
+                f"{MAX_REPLAN_ATTEMPTS}: {request}"
+            )
+            self.context.plan_branch = None
+            self.before_stage(FlowStage.PLAN)
+            try:
+                plan_result = self.timed_execute_stage(FlowStage.PLAN)
+            finally:
+                self.context.intent_data.pop("replan_feedback", None)
+            self.after_stage(FlowStage.PLAN, plan_result)
+            self.save_checkpoint()
+            if plan_result.status != StageStatus.SUCCESS:
+                return plan_result
+            self.before_stage(FlowStage.EXECUTE)
+            result = self.timed_execute_stage(FlowStage.EXECUTE)
+            self.after_stage(FlowStage.EXECUTE, result)
+            self.save_checkpoint()
+
+        exhausted = result.stage == FlowStage.EXECUTE and result.status == StageStatus.FAILED
+        if exhausted and result.payload.get("over_budget"):
+            result.error = (
+                f"Execute stage failed: plan entropy {_format_entropy(result.payload.get('entropy'))} exceeds the "
+                f"entropy budget {_format_entropy(result.payload.get('entropy_budget'))} after "
+                f"{self.context.replan_attempts} re-plan attempts and the plan lists no sub-intent list."
+            )
+            result.payload = {**result.payload, "replan_attempts": self.context.replan_attempts}
+            self.context.stage_results[FlowStage.EXECUTE.value] = result
+            self.context.log(result.error)
+            self.save_checkpoint()
+        return result
+
     def run(self) -> dict[str, StageResult]:
         """Execute the configured pipeline stages sequentially."""
         start_idx = 0
@@ -4495,6 +4925,14 @@ class PipelineEngine:
 
         for i in range(start_idx, len(self.STAGE_ORDER)):
             stage = self.STAGE_ORDER[i]
+
+            if stage in (FlowStage.REVIEW, FlowStage.CALIBRATE) and self._parent_was_decomposed():
+                # Review and calibration already ran per child; the parent's own execution branch is ledger-only.
+                self.context.log(f"Stage '{stage.value}' skipped: the plan was decomposed into child pipelines.")
+                result = StageResult(stage=stage, status=StageStatus.SKIPPED, payload={"reason": "decomposed"})
+                self.after_stage(stage, result)
+                self.save_checkpoint()
+                continue
 
             if stage == FlowStage.REVIEW and self.context.skip_review:
                 self.context.log("Stage 4 (REVIEW) skipped due to --skip-review flag.")
@@ -4524,10 +4962,15 @@ class PipelineEngine:
             self.after_stage(stage, result)
             self.save_checkpoint()
 
+            if stage == FlowStage.EXECUTE:
+                result = self._replan_after_over_budget(result)
+
             if result.status == StageStatus.FAILED:
-                self.context.log(f"Pipeline halted due to failure in stage '{stage.value}'.")
+                # result.stage, not stage: a failed re-plan ends the run in Stage 2.
+                self.context.log(f"Pipeline halted due to failure in stage '{result.stage.value}'.")
                 break
 
+            # Only Stage 4 (the review consensus halt before merge) may halt; no earlier stage waits for a human.
             if result.status == StageStatus.HALTED_FOR_HUMAN:
                 if stage == FlowStage.REVIEW:
                     if self.context.auto_calibrate and not self.context.skip_calibrate:

@@ -105,13 +105,27 @@ the rows are appended by the stage functions in `sandbox_executor/flow.py`. The 
 (`sandbox_executor/entrypoint/planner.py`, `sandbox_executor/entrypoint/executor.py`) append further Stage 2 and Stage 3
 rows of their own, listed below the table.
 
-| Stage             | Ledger file        | Rows appended                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| ----------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1. Intent         | `intents.jsonl`    | One intent row (the intent payload with `status: "proposed"` and `created_at`), appended by the intent-creator container (`sandbox_executor/entrypoint/intent_creator.py`) on the new intent branch. Nothing is appended when the intent branch already exists on `origin`: the flow reuses it without dispatching.                                                                                                                                                                                                                                                                                                              |
-| 2. Plan           | `plans.jsonl`      | One plan row (`plan_id`, the plan metrics and `ev`, `plan_file`, `status: "proposed"`), appended by the planner container (`sandbox_executor/entrypoint/planner.py`) with `plans/{plan_id}.md` on the new plan branch. The flow reads the row back and never writes one.                                                                                                                                                                                                                                                                                                                                                         |
-| 3. Execute        | `executions.jsonl` | One execution summary (`entry_type: "summary"`, `execution_id` `E-...`), appended by the executor container on the new execution branch. When that branch changes nothing outside `holon-knowledge/ledger/`, `plans/` and `executions/` relative to its plan branch and its newest summary row has any status other than `failed`, `failure` or `decomposed` (in practice the executor's `success`), `flow.py` appends one superseding summary (`status: "failed"`, `failure_reason: "empty_diff"`, higher `ledger_revision`, no `test_pass_rate`) in a temporary worktree and commits and pushes it to the execution branch.    |
-| 4. PR review loop | `executions.jsonl` | Per iteration: `ACT-REV` (evaluation), `ACT-FIND` (when findings exist) and `ACT-RES` (resolver, iterations 2 and later). Once per loop that runs an iteration: `ACT-POST` (consensus posting, even when posting fails), a `REV-...` summary and an action event, including a loop that halts after an iteration because tests were not measured. When the empty-diff guard refuses the PR, no iteration runs and no `ACT-POST` is written: an `empty_diff` refusal appends nothing, and a `diff_unverified` refusal appends only a `failed` `REV-...` summary naming the refusal and the action event. Dry runs append nothing. |
-| 5. Calibration    | `executions.jsonl` | One `ACT-CAL` action (`action_origin: "calibration"`), committed with `plans/{plan_id}_calibration.md` on the `/calibrated` branch. Then reconciliation events (`event_type: "reconciliation"` for the execution branch, plus `ttl_expiration` events for stale `unknown` actions), committed in a follow-up commit on the same `/calibrated` branch. When calibration fails, an `ACT-CAL` row with `outcome: "failure"` and the reconciliation events are appended but left uncommitted (see Known gap). No summary row is written.                                                                                             |
+| Stage             | Ledger file        | Rows appended                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ----------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1. Intent         | `intents.jsonl`    | One intent row (the intent payload with `status: "proposed"` and `created_at`), appended by the intent-creator container (`sandbox_executor/entrypoint/intent_creator.py`) on the new intent branch. Nothing is appended when the intent branch already exists on `origin`: the flow reuses it without dispatching.                                                                                                                                                                                                                                                                                                                          |
+| 2. Plan           | `plans.jsonl`      | One plan row (`plan_id`, the plan metrics and `ev`, `plan_file`, `status: "proposed"`, `entropy_budget`), appended by the planner container (`sandbox_executor/entrypoint/planner.py`) with `plans/{plan_id}.md` on the new plan branch. The flow reads the row back and never writes one.                                                                                                                                                                                                                                                                                                                                                   |
+| 3. Execute        | `executions.jsonl` | One execution summary (`entry_type: "summary"`, `execution_id` `E-...`), appended by the executor container on the new execution branch. When that branch changes nothing outside `holon-knowledge/ledger/`, `plans/` and `executions/` relative to its plan branch and its newest summary row has any status other than `failed`, `failure`, `decomposed` or `over_budget` (in practice the executor's `success`), `flow.py` appends one superseding summary (`status: "failed"`, `failure_reason: "empty_diff"`, higher `ledger_revision`, no `test_pass_rate`) in a temporary worktree and commits and pushes it to the execution branch. |
+| 4. PR review loop | `executions.jsonl` | Per iteration: `ACT-REV` (evaluation), `ACT-FIND` (when findings exist) and `ACT-RES` (resolver, iterations 2 and later). Once per loop that runs an iteration: `ACT-POST` (consensus posting, even when posting fails), a `REV-...` summary and an action event, including a loop that halts after an iteration because tests were not measured. When the empty-diff guard refuses the PR, no iteration runs and no `ACT-POST` is written: an `empty_diff` refusal appends nothing, and a `diff_unverified` refusal appends only a `failed` `REV-...` summary naming the refusal and the action event. Dry runs append nothing.             |
+| 5. Calibration    | `executions.jsonl` | One `ACT-CAL` action (`action_origin: "calibration"`), committed with `plans/{plan_id}_calibration.md` on the `/calibrated` branch. Then reconciliation events (`event_type: "reconciliation"` for the execution branch, plus `ttl_expiration` events for stale `unknown` actions), committed in a follow-up commit on the same `/calibrated` branch. When calibration fails, an `ACT-CAL` row with `outcome: "failure"` and the reconciliation events are appended but left uncommitted (see Known gap). No summary row is written.                                                                                                         |
+
+Plan row `entropy_budget` (number, `>= 0`, optional on historic rows): the entropy budget the planner showed the
+planning agent and the executor enforces. New rows always carry it. It is resolved by
+`sandbox_executor.budgets.resolve_entropy_budget`: a valid value on the plan row, else the intent row's
+`entropy_budget`, else `DEFAULT_ENTROPY_BUDGET` (`15.0`). Historic rows without the field are never rewritten; the
+resolver falls back for them.
+
+Child intent rows: when Stage 3 runs a recorded sub-intent list, the flow creates each child through the same Stage 1
+intent creator, so each child appends an ordinary intent row on its own intent branch. Its payload carries `slug`,
+`description`, `goal`, `parent_intent_id` and `target_branch` (both the parent's intent branch, `I-.../_`), the parent
+plan's resolved `entropy_budget` when one was recorded, the parent's `labels` when present, and `sub_intent_depth`
+(integer, `>= 1`): the child's nesting level below the root intent. Root intent rows normally omit the field and are
+read as depth `0`; missing or non-numeric values are also read as `0`. The flow refuses to run a sub-intent list whose
+children would exceed `sandbox_executor.budgets.MAX_SUB_INTENT_DEPTH` (`2`).
 
 Stage 2 planner entrypoint rows: when a plan turn breached its turn, stall or stage budget and the plan was not
 recovered (the resume or re-prompt did not finish, or no stage time was left for one), one `ACT-BUDGET` action
@@ -129,8 +143,14 @@ Stage 3 executor entrypoint rows (all in `executions.jsonl`, under the same `E-.
   ("Executed agent ...") and a `git_mutation` action for the commit ("Committed execution changes: ..."), plus a
   `doc_update` action when markdown files are formatted and a `git_mutation` action when a corrupted repository is
   re-initialised.
-- When the plan is decomposed instead of executed: sub-intent rows in `intents.jsonl`, a summary and, with action
-  logging enabled, a `plan_decomposition` action.
+- When the plan lists an explicit sub-intent list: a summary with `status: "decomposed"`, `entropy`, `entropy_budget`
+  and `sub_intents` (the parsed items, each `{slug, description, goal}`) and, with action logging enabled, a
+  `plan_decomposition` action. The executor writes no `intents.jsonl` row; the flow creates each child intent through
+  the normal Stage 1 intent creator.
+- When the plan entropy exceeds its entropy budget and the plan lists no sub-intent list: a summary with
+  `status: "over_budget"`, `entropy`, `entropy_budget` and a `summary` message and, with action logging enabled, a
+  `plan_decomposition` action with `outcome: "failure"`. The agent is not run and no `intents.jsonl` row is written; the
+  flow re-plans or fails the stage.
 - When the implementation turn breached its turn, stall or stage budget: one `ACT-BUDGET` action (`category: "budget"`,
   `stage: "execute"`), written unconditionally (not gated on action logging) by `record_budget_failure` (see
   [Budget Breach Actions](#budget-breach-actions-act-budget)).
@@ -162,14 +182,14 @@ Write rules for every stage:
   `FlowContext` call the context-free `sandbox_executor.ledger.try_append_action_record(..., preserve_shape=True)`,
   which applies the same validation, LedgerLock and fail-loud reporting.
 - **Fail loud**: no fallback ledger file is ever written. In Stages 1-3 a failed append of the intent row, the plan row,
-  or the executor's decomposition rows and superseding failure summaries raises inside the role container, which exits
-  non-zero; the flow then fails the stage and halts the pipeline. The executor catches a failed append of its own
-  execution summary and logs a warning, and the flow then fails Stage 3 because the execution branch carries no summary
-  row for that execution. The executor's action rows are best effort: a failed append is suppressed. A failed write of
-  the flow's superseding empty-diff row is logged and named in the stage error, and Stage 3 fails either way. When a row
-  a Stage 4 or Stage 5 stage function in `flow.py` appends fails, the failure is logged at `WARNING` with the ledger
-  path and exception, and mirrored into the flow context log shown to the operator; those rows (action rows, the Stage 4
-  `REV-...` summary and the Stage 5 `ACT-CAL` row) never abort their stage.
+  the executor's `decomposed` or `over_budget` summary, or the executor's superseding failure summaries raises inside
+  the role container, which exits non-zero; the flow then fails the stage and halts the pipeline. The executor catches a
+  failed append of its own execution summary and logs a warning, and the flow then fails Stage 3 because the execution
+  branch carries no summary row for that execution. The executor's action rows are best effort: a failed append is
+  suppressed. A failed write of the flow's superseding empty-diff row is logged and named in the stage error, and Stage
+  3 fails either way. When a row a Stage 4 or Stage 5 stage function in `flow.py` appends fails, the failure is logged
+  at `WARNING` with the ledger path and exception, and mirrored into the flow context log shown to the operator; those
+  rows (action rows, the Stage 4 `REV-...` summary and the Stage 5 `ACT-CAL` row) never abort their stage.
 - **Suppression**: dry runs append nothing, including the Stage 5 reconciliation events (the review loop logs how many
   rows it suppressed). `holon calibrate` with `skip_commit` appends no `ACT-CAL` row.
 - **No backfill**: only new executions gain these rows. Historical records are never synthesised.
@@ -715,6 +735,9 @@ Appended when a plan is proposed by the planner:
 - `created_at`: Creation timestamp.
 - `plan_file`: Relative path to the plan markdown file.
 - `status`: Plan status (e.g. `proposed`).
+- `entropy_budget`: The resolved entropy budget the planner showed the planning agent and the executor enforces (number,
+  `>= 0`; the intent row's `entropy_budget`, else `DEFAULT_ENTROPY_BUDGET` `15.0`). Always written on new rows; optional
+  on historic rows (see the plan row `entropy_budget` paragraph under the stage matrix).
 
 #### Execution Ledger (`executions.jsonl`)
 
@@ -722,7 +745,8 @@ The execution ledger contains two entry types discriminated by `entry_type`:
 
 ##### 1. Summary Records (`"entry_type": "summary"`)
 
-Appended when a plan execution begins, completes, fails, or decomposes into sub-intents:
+Appended when a plan execution begins, completes, fails, decomposes into its sub-intent list, or is rejected as over
+budget:
 
 - `entry_type`: Always `"summary"` (defaults to `"summary"` for backward compatibility if omitted).
 - `execution_id`: Unique identifier for the execution record.
@@ -730,8 +754,9 @@ Appended when a plan execution begins, completes, fails, or decomposes into sub-
 - `agent`: The active agent name.
 - `agent_version`: The resolved version string of the agent CLI.
 - `model`: The model used for execution.
-- `status`: Execution status (e.g. `success`, `failure`, `failed`, `decomposed`). Readers treat `failure` and `failed`
-  as the same outcome; rows written by the empty-diff guard use `failed`.
+- `status`: Execution status (e.g. `success`, `failure`, `failed`, `decomposed`, `over_budget`). Readers treat `failure`
+  and `failed` as the same outcome; rows written by the empty-diff guard use `failed`. `over_budget` means the plan
+  entropy exceeded its entropy budget and the plan lists no sub-intent list, so the agent was not run.
 - `summary`: Description of execution outcome (only for terminal states).
 - `failure_reason`: _(Optional)_ Machine-readable cause of a guard failure: `empty_diff` when the execution changed
   nothing outside `holon-knowledge/ledger/`, `plans/` and `executions/` relative to its plan branch, or
@@ -751,7 +776,11 @@ Appended when a plan execution begins, completes, fails, or decomposes into sub-
 - `budget_seconds`: The execute stage's wall-clock ceiling in force for the executor, in seconds (the handed-down
   remaining stage time when the host set `HOLON_STAGE_BUDGET_SECONDS`; Bean 0139, see
   [Turn and Stage Budgets](budgets.md)).
-- `sub_intents`: List of sub-intents generated upon decomposition (only for `decomposed` state).
+- `entropy`: _(Only on `decomposed` and `over_budget` rows)_ The plan entropy compared against the budget.
+- `entropy_budget`: _(Only on `decomposed` and `over_budget` rows)_ The resolved entropy budget the plan was judged
+  against (plan row, then intent row, then `DEFAULT_ENTROPY_BUDGET`).
+- `sub_intents`: _(Only on `decomposed` rows)_ The plan's explicit sub-intent list as parsed, each
+  `{slug, description, goal}`; never generated by the executor.
 - `created_at`: Creation timestamp.
 
 **Reader Contract for Superseding Rows:** When a ledger row is superseded (e.g. `ledger_revision >= 2` due to
@@ -763,9 +792,9 @@ the highest `ledger_revision` for a given `execution_id` without needing to merg
 `executions/` relative to its plan branch is never recorded as `success` and never carries `test_pass_rate`. The
 executor entrypoint (`holon execute`) writes such a run directly as `status: "failed"` with
 `failure_reason: "empty_diff"`. If `holon flow` finds an empty execution whose newest summary row has any status other
-than `failed`, `failure` or `decomposed` (in practice `success`), it appends a superseding row (same `execution_id`,
-higher `ledger_revision`, every authoritative field repeated, `test_pass_rate` dropped) instead of editing the original
-row.
+than `failed`, `failure`, `decomposed` or `over_budget` (in practice `success`), it appends a superseding row (same
+`execution_id`, higher `ledger_revision`, every authoritative field repeated, `test_pass_rate` dropped) instead of
+editing the original row.
 
 ##### 2. Discrete Action Records (`"entry_type": "action"`)
 
@@ -792,9 +821,11 @@ config/env changes, command executions, test runs, git mutations):
 
 ###### Budget Breach Actions (`ACT-BUDGET`)
 
-When a runner turn breaches its turn, stall or stage budget and the single resume turn does not recover the artefact
-(for the executor: whenever the implementation turn breached, since its notes-only resume cannot finish the code),
-exactly one action is appended (Bean 0139, see [Turn and Stage Budgets](budgets.md)):
+When a runner turn breaches its turn, stall or stage budget and no resume turn recovers the artefact, exactly one action
+is appended (see [Turn and Stage Budgets](budgets.md)). A resume turn is attempted only when the salvaged artefact is
+incomplete, meaning not usable or missing a required section, and the stage has time left. The executor appends the
+action whenever the implementation turn breached, since its notes-only resume cannot finish the code. The action's
+fields:
 
 - `action_id`: `ACT-BUDGET-{timestamp}-{suffix}`; `event_type`: `budget_breach`; `category`: `budget`; `outcome`:
   `failure`.

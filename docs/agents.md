@@ -278,12 +278,15 @@ Agents communicate with humans through:
 ### Level 1: Execution autonomy (baseline trust)
 
 - Agent executes assigned intents.
-- Agent cannot spawn sub-intents.
+- Agent cannot spawn sub-intents (target model).
 - Agent cannot propose root intents.
 
 ### Level 2: Decomposition autonomy (medium trust)
 
-- Agent can spawn sub-intents (up to depth 3).
+Trust-gated decomposition is the target model: `holon flow` currently lets any agent's plan list sub-intents and
+enforces one hard cap, `MAX_SUB_INTENT_DEPTH` (currently 2), for every agent.
+
+- Agent can spawn sub-intents (target model).
 - Agent can decompose complex intents.
 - Agent cannot propose root intents.
 

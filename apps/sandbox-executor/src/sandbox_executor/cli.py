@@ -34,10 +34,12 @@ from sandbox_executor.agent_defaults import (
 )
 from sandbox_executor.budgets import stage_budget_handdown_env
 from sandbox_executor.calibration import run_calibrate
+from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
 from sandbox_executor.flow import (
     SKIP_PUSH_DISPATCH_ERROR,
     FlowContext,
     FlowStage,
+    format_decomposition_summary,
     load_checkpoint,
     run_flow_pipeline,
 )
@@ -2617,6 +2619,11 @@ def main() -> None:
                     if res and res.status.value == "failed" and res.error:
                         print(f"    -> Error: {redact_cli_error(res.error)}")
                 print("========================================================\n")
+                decomposition_lines = format_decomposition_summary(context.stage_results.get("execute"))
+                for line in decomposition_lines:
+                    print(line)
+                if decomposition_lines:
+                    print()
                 review_res = context.stage_results.get("review")
                 if review_res and review_res.payload.get("halted_for_human"):
                     print(
@@ -2907,15 +2914,21 @@ def main() -> None:
         )
 
     elif args.command == "execute":
-        sys.exit(
-            dispatch_role_agent(
-                "executor",
-                args.agent,
-                args.model,
-                [args.plan_branch, args.agent, args.model],
-                **common_kwargs,
-            )
+        exit_code = dispatch_role_agent(
+            "executor",
+            args.agent,
+            args.model,
+            [args.plan_branch, args.agent, args.model],
+            **common_kwargs,
         )
+        if exit_code == OVER_BUDGET_EXIT_CODE:
+            print(
+                f"Error: plan {args.plan_branch} is over its entropy budget and was not executed (exit code "
+                f"{exit_code}); its execution branch records the over_budget row. Re-plan it within the budget, or "
+                "add an explicit sub-intent list.",
+                file=sys.stderr,
+            )
+        sys.exit(exit_code)
 
 
 if __name__ == "__main__":

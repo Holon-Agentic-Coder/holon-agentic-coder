@@ -592,8 +592,9 @@ periodic security drills:
 
 Validate the harness's Git flow compliance by running mock intent trees:
 
-- **Rebase and Merge Accuracy:** Simulate two sibling sub-intents modifying overlapping files concurrently. Verify that
-  the harness detects the rebase conflict, spawns a reactive conflict resolution intent, successfully merges both
-  without human intervention, and outputs a clean git history.
+- **Rebase and Merge Accuracy (target model; the current flow runs sibling sub-intents one at a time and the maintainer
+  merges their PRs):** Simulate two sibling sub-intents modifying overlapping files concurrently. Verify that the
+  harness detects the rebase conflict, spawns a reactive conflict resolution intent, successfully merges both without
+  human intervention, and outputs a clean git history.
 - **Schema Conformance:** Run validation checks to ensure all intermediate and final ledger entries conform to
   [ledger_schema.md](ledger_schema.md).

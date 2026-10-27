@@ -42,7 +42,7 @@ pythonpath = [".", "apps/sandbox-executor/src"]
 addopts = ["--strict-markers"]
 markers = [
     "integration_test: marks tests as integration tests",
-    "stress: marks long-running workspace-survival checks that run the suite from a live executor workspace",
+    "stress: marks long-running checks that re-run the unit suite in a child process (workspace survival, hermetic canary)",
 ]
 
 [tool.ruff]

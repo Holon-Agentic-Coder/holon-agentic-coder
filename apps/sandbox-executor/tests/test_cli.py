@@ -837,6 +837,56 @@ class TestHolonFlowCLI(unittest.TestCase):
                 self.assertTrue(parsed["skip_review"])
                 self.assertTrue(parsed["skip_calibrate"])
 
+    def test_flow_summary_lists_child_prs_and_pending_parent_step(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intent_file = os.path.join(tmp_dir, "intent.json")
+            with open(intent_file, "w", encoding="utf-8") as f:
+                json.dump({"slug": "test-decomposed"}, f)
+
+            def fake_run(context, **kwargs):
+                from sandbox_executor.flow import FlowStage, StageResult, StageStatus
+
+                context.stage_results["execute"] = StageResult(
+                    stage=FlowStage.EXECUTE,
+                    status=StageStatus.SUCCESS,
+                    payload={
+                        "decomposed": True,
+                        "parent_branch": "I-1-parent/_",
+                        "parent_target_branch": "main",
+                        "children": [
+                            {"slug": "add-the-parser", "pr_url": "https://example.test/pull/7", "status": "success"},
+                            {
+                                "slug": "add-the-cli-flag",
+                                "pr_url": None,
+                                "execution_branch": "I-2-add-the-cli-flag/P-2/E-2/_",
+                                "status": "skipped",
+                            },
+                        ],
+                    },
+                )
+                return context.to_dict()
+
+            with (
+                patch("sandbox_executor.cli.run_flow_pipeline", side_effect=fake_run),
+                patch("sys.stdout", new_callable=io.StringIO) as mock_stdout,
+                patch("sys.exit") as mock_exit,
+            ):
+                with patch("sys.argv", ["holon", "flow", intent_file]):
+                    main()
+                mock_exit.assert_called_with(0)
+                output = mock_stdout.getvalue()
+                self.assertIn(
+                    "\nDecomposed into 2 sub-intent(s); merge each child PR into the parent intent branch:\n"
+                    "  1. add-the-parser: https://example.test/pull/7 (success)\n",
+                    output,
+                )
+                self.assertIn("2. add-the-cli-flag: I-2-add-the-cli-flag/P-2/E-2/_ (skipped)", output)
+                self.assertIn(
+                    "Pending (not yet automated): after the child PRs merge, raise a PR from 'I-1-parent/_' to "
+                    "'main'.\n\n",
+                    output,
+                )
+
     def test_flow_exit_code_on_failure_vs_success(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             intent_file = os.path.join(tmp_dir, "intent.json")
@@ -1301,6 +1351,28 @@ class TestSharedRoleDispatch(unittest.TestCase):
             self.assertEqual(cm.exception.code, 0)
             mock_dispatch.assert_called_once()
             self.assertEqual(mock_dispatch.call_args.args, expected)
+
+    @patch("sandbox_executor.cli.dispatch_role_agent")
+    def test_execute_of_a_refused_over_budget_plan_exits_non_zero_with_a_message(self, mock_dispatch):
+        from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
+
+        argv = ["holon", "execute", "I-1-x/P-1/_", "--agent", "claude-agent", "--model", "claude-opus-5-5"]
+        message = (
+            f"Error: plan I-1-x/P-1/_ is over its entropy budget and was not executed (exit code "
+            f"{OVER_BUDGET_EXIT_CODE}); its execution branch records the over_budget row. Re-plan it within the "
+            "budget, or add an explicit sub-intent list."
+        )
+        for code in (OVER_BUDGET_EXIT_CODE, 1, 0):
+            mock_dispatch.return_value = code
+            stderr = io.StringIO()
+            with patch("sys.argv", argv), patch("sys.stderr", stderr), self.assertRaises(SystemExit) as cm:
+                main()
+            # The container's exit status passes through, so 'holon execute ... && holon review ...' stops here.
+            self.assertEqual(cm.exception.code, code)
+            if code == OVER_BUDGET_EXIT_CODE:
+                self.assertIn(message, stderr.getvalue().splitlines())
+            else:
+                self.assertNotIn("over its entropy budget", stderr.getvalue(), code)
 
     @patch("sandbox_executor.cli.run_docker_container", return_value=0)
     def test_dispatch_role_agent_uses_runner_image(self, mock_run_container):

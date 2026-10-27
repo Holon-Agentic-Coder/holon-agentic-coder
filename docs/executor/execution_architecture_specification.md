@@ -53,11 +53,13 @@ sequenceDiagram
     end
     Exec->>Exec: Create unique execution branch
     Exec->>Exec: Parse ledger (plans.jsonl & intents.jsonl)
-    Exec->>Exec: Evaluate plan decomposition criteria
-    alt Plan requires decomposition
-        Exec->>Exec: Write sub-intents to intents.jsonl
-        Exec->>Exec: Update execution ledger to 'decomposed'
-        Exec->>Git: Commit and push sub-intents branch
+    Exec->>Exec: Judge the plan against its entropy budget
+    alt Plan lists an explicit sub-intent list
+        Exec->>Exec: Record a 'decomposed' summary with sub_intents
+        Exec->>Git: Commit and push the ledger-only execution branch
+    else Plan over budget without a sub-intent list
+        Exec->>Exec: Record an 'over_budget' summary
+        Exec->>Git: Commit and push the ledger-only execution branch
     else Direct execution
         Exec->>Agent: Construct cmd & invoke with plan prompt
         Agent-->>Exec: Return output (success or failure)
@@ -108,17 +110,39 @@ A unique, tracking-compatible execution branch is spawned off the plan branch:
 The executor parses the local ledger files `holon-knowledge/ledger/plans.jsonl` and
 `holon-knowledge/ledger/intents.jsonl` to locate active intent configurations.
 
-### 5. Decomposition Evaluation
+### 5. Entropy Budget and Decomposition Evaluation
 
-Before invoking the agent, the executor verifies whether the plan needs to be broken down:
+Before invoking the agent, `should_decompose(plan_data, plan_content, intent_data)` judges the plan against the same
+entropy budget the planner showed the agent and persisted on the plan row, resolved by `budgets.resolve_entropy_budget`
+(plan row, then intent row, then `DEFAULT_ENTROPY_BUDGET`; see [Turn and Stage Budgets](../budgets.md#entropy-budget)).
+It returns one of three outcomes:
 
-- **Entropy Check**: If the plan's `entropy` exceeds the `entropy_budget` (defaults to `5.0`).
-- **Explicit Section Check**: If the plan markdown contains a `## Sub-Intents` or `### Sub-Intents` header, the
-  sub-intents are parsed from the bullet list.
-- If decomposition is triggered:
-  - New sub-intents are appended to `intents.jsonl`.
-  - An execution record with state `decomposed` is written to `executions.jsonl`.
-  - The branch is committed and pushed, skipping direct agent code execution.
+- **`execute`**: the plan fits its budget and lists no sub-intent list; the agent runs as described below.
+- **`decomposed`**: the plan contains a level-2 or level-3 heading reading "Sub-intent list" (hyphens, underscores,
+  spacing and case are ignored, so the older plural heading still works) followed by bullet or numbered items. Each
+  top-level item becomes `{slug, description, goal}` (slug and goal from the item text only), whatever the plan entropy;
+  indented nested bullets are appended to their parent item's description and never become items, and placeholder items
+  are skipped: an item is a placeholder when, stripped of wrapping brackets, quotes and emphasis markers and trailing
+  punctuation and lower-cased, its first whole word is `none`, `n/a`, `na`, `nil`, `no` or `not`, whatever follows, so
+  `None (plan fits the budget)` and `No sub-intents needed` are skipped while `Nonetheless ...` and `Normalise ...` are
+  real items (the planner template requires every real item to start with an imperative verb). Per-step sub‑intent
+  recommendation bullets are never read as a list.
+- **`over_budget`**: the plan entropy exceeds the budget and the plan lists no sub-intent list.
+
+The executor never invents child work and never writes `intents.jsonl` rows. For both non-execute outcomes it skips the
+agent, records one `executions.jsonl` summary (`status: "decomposed"` with `sub_intents`, or `status: "over_budget"`
+with `entropy`, `entropy_budget` and a message) and commits only that ledger to the execution branch. The branch is then
+pushed, or kept locally when `HOLON_SKIP_PUSH` disables pushing. Because the agent never runs, the git-recovery
+verification never applies here, so only two checks can refuse that push: the branch has no parent commit, or the
+pre-push sync fails (the latter first commits a superseding failure row). Exit codes: `over_budget` exits 3
+(`OVER_BUDGET_EXIT_CODE`) only when its row is committed and then either pushed or deliberately kept local because
+`HOLON_SKIP_PUSH` disables pushing; every other outcome exits 1. `decomposed` exits 0 when recording, committing and
+pushing its row raise no error, which includes a run where nothing was staged or the push is refused, since neither
+raises one; any failure while recording, committing or pushing its row exits 1. Whether it exits 3 or 1, a direct
+`holon execute` of an `over_budget` plan fails, while the flow reads the recorded row and decides what happens next:
+each child intent is created through the normal Stage 1 intent creator and run through the full pipeline (unless the
+plan's intent is already at `budgets.MAX_SUB_INTENT_DEPTH`, in which case Stage 3 fails and refuses to recurse further),
+or the plan is sent back to Stage 2 (see [Git Flow](../git_flow.md#flow-equivalence-guarantee)).
 
 ### 6. Agent Invocation
 

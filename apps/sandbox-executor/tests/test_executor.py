@@ -368,61 +368,12 @@ class TestExecutor(unittest.TestCase):
         expected = expected_head + "\n... (truncated) ...\n" + expected_tail
         self.assertEqual(result, expected)
 
-    def test_should_decompose_high_entropy(self):
-        plan_data = {"entropy": 6.0, "entropy_budget": 5.0, "plan_id": "P-test"}
-        plan_content = "# Plan\nSome plan"
-        decompose, sub_intents = executor.should_decompose(plan_data, plan_content)
-        self.assertTrue(decompose)
-        self.assertGreater(len(sub_intents), 0)
-
-    def test_should_decompose_sub_intents_section(self):
-        plan_data = {"entropy": 2.0, "entropy_budget": 5.0}
-        plan_content = """# Plan
-## Sub-Intents
-- Create DB schema
-- Build API routes
-"""
-        decompose, sub_intents = executor.should_decompose(plan_data, plan_content)
-        self.assertTrue(decompose)
-        self.assertEqual(len(sub_intents), 2)
-        self.assertEqual(sub_intents[0]["slug"], "create-db-schema")
-        self.assertEqual(sub_intents[1]["slug"], "build-api-routes")
-
-    def test_should_not_decompose_low_entropy(self):
-        plan_data = {"entropy": 2.0, "entropy_budget": 5.0}
-        plan_content = "# Plan\nStandard plan without sub-intents"
-        decompose, sub_intents = executor.should_decompose(plan_data, plan_content)
-        self.assertFalse(decompose)
-        self.assertEqual(len(sub_intents), 0)
-
     def test_safe_float(self):
         self.assertEqual(executor._safe_float(None, 5.0), 5.0)
         self.assertEqual(executor._safe_float(None), 0.0)
         self.assertEqual(executor._safe_float(3.14), 3.14)
         self.assertEqual(executor._safe_float("2.5"), 2.5)
         self.assertEqual(executor._safe_float("invalid", 1.0), 1.0)
-
-    def test_should_decompose_numbered_list(self):
-        plan_data = {"entropy": 2.0, "entropy_budget": 5.0}
-        plan_content = """# Plan
-## Sub-Intents
-1. Create DB schema
-2. Build API routes
-3. Write unit tests
-"""
-        decompose, sub_intents = executor.should_decompose(plan_data, plan_content)
-        self.assertTrue(decompose)
-        self.assertEqual(len(sub_intents), 3)
-        self.assertEqual(sub_intents[0]["slug"], "create-db-schema")
-        self.assertEqual(sub_intents[1]["slug"], "build-api-routes")
-        self.assertEqual(sub_intents[2]["slug"], "write-unit-tests")
-
-    def test_should_decompose_none_entropy(self):
-        plan_data = {"entropy": None, "entropy_budget": None}
-        plan_content = "# Plan\nStandard plan without sub-intents"
-        decompose, sub_intents = executor.should_decompose(plan_data, plan_content)
-        self.assertFalse(decompose)
-        self.assertEqual(len(sub_intents), 0)
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
@@ -687,68 +638,240 @@ class TestExecutor(unittest.TestCase):
             self.assertTrue(any(cmd[:4] == ["git", "fetch", "--no-tags", "origin"] for cmd in called_cmds))
             self.assertTrue(any(cmd[:2] == ["git", "reset"] for cmd in called_cmds))
 
-    @patch("sandbox_executor.entrypoint.executor.run_cmd")
-    @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    def test_main_decomposition_flow(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
-        mock_get_repo_url.return_value = "/mock/repo"
+    def _run_over_budget_main(
+        self, sync_result, *, staged=True, has_parent=True, skip_push=True, git_calls=None, stdout=None
+    ):
+        """Run executor.main() on an over-budget plan whose ledger row is staged; return its exit code and records.
+
+        ``staged`` and ``has_parent`` set what the staged-changes check and the parent-commit check report;
+        ``skip_push`` disables pushing; ``git_calls`` collects every command run; ``stdout`` captures standard output.
+        """
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.0.0"
-        mock_get_runner.return_value = mock_runner
-
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
+        plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 8.0, "entropy_budget": 5.0}
 
         def side_effect(args, cwd=None, **kwargs):
+            if git_calls is not None:
+                git_calls.append(list(args))
+            mock_result = MagicMock(returncode=0, stdout="", stderr="")
             if "clone" in args:
                 ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
                 os.makedirs(ledger_dir, exist_ok=True)
                 with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
-                    f.write(
-                        json.dumps(
-                            {
-                                "plan_id": "P-123",
-                                "intent_branch": "I-456/_",
-                                "entropy": 8.0,
-                                "entropy_budget": 5.0,
-                            }
-                        )
-                        + "\n"
-                    )
+                    f.write(json.dumps(plan_row) + "\n")
                 with open(os.path.join(ledger_dir, "intents.jsonl"), "w") as f:
-                    f.write(
-                        json.dumps(
-                            {
-                                "branch": "I-456/_",
-                                "slug": "parent-intent",
-                            }
-                        )
-                        + "\n"
-                    )
+                    f.write(json.dumps({"branch": "I-456/_", "slug": "parent-intent"}) + "\n")
+            elif args[:4] == ["git", "diff", "--cached", "--quiet"]:
+                mock_result.returncode = 1 if staged else 0
+            elif args == ["git", "rev-parse", "--verify", "HEAD^"]:
+                mock_result.returncode = 0 if has_parent else 1
             return mock_result
 
-        mock_run_cmd.side_effect = side_effect
-
+        stderr = io.StringIO()
         with (
             tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as tmp_dir,
-            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1" if skip_push else ""}),
+            patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect),
+            patch("sandbox_executor.entrypoint.executor.get_runner", return_value=mock_runner),
+            patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value="/mock/repo"),
+            patch("sandbox_executor.entrypoint.executor.sync_and_reconcile_pre_push", return_value=sync_result),
+            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
+            patch("sys.stderr", stderr),
+            contextlib.redirect_stdout(stdout if stdout is not None else io.StringIO()),
         ):
-            ledger_dir = os.path.join(tmp_dir, "holon-knowledge/ledger")
-
-            with patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]):
+            with self.assertRaises(SystemExit) as refused:
                 executor.main()
-
-            mock_runner.validate.assert_called_once()
-            self.assertTrue(os.path.exists(os.path.join(ledger_dir, "executions.jsonl")))
+            ledger_dir = os.path.join(tmp_dir, "holon-knowledge/ledger")
             with open(os.path.join(ledger_dir, "executions.jsonl")) as ef:
-                content = ef.read()
-                self.assertIn("P-123", content)
-                self.assertIn("decomposed", content)
-            self.assertTrue(os.path.exists(os.path.join(ledger_dir, "intents.jsonl")))
+                rows = [json.loads(line) for line in ef if line.strip()]
             with open(os.path.join(ledger_dir, "intents.jsonl")) as inf:
-                content = inf.read()
-                self.assertIn("sub-intent-part-1", content)
+                intent_slugs = [json.loads(line)["slug"] for line in inf if line.strip()]
+        return refused.exception.code, stderr.getvalue().splitlines(), rows, intent_slugs, mock_runner
+
+    def test_main_over_budget_flow_writes_no_intent_rows(self):
+        code, stderr_lines, rows, intent_slugs, mock_runner = self._run_over_budget_main((True, "ok"))
+
+        # A refused plan is a failure for a direct run too, with an exit status the flow can tell apart.
+        self.assertEqual(code, executor.OVER_BUDGET_EXIT_CODE)
+        self.assertNotIn(executor.OVER_BUDGET_EXIT_CODE, (0, 1))
+        # The status is a documented interface: budgets.md, git_flow.md and the specification say exit code 3.
+        self.assertEqual(executor.OVER_BUDGET_EXIT_CODE, 3)
+        self.assertIn(
+            "Error: plan I-456/P-123/_ was not executed: its entropy 8.0 exceeds the entropy budget 5.0 and it lists "
+            "no sub-intent list. Re-plan it within the budget, or add an explicit sub-intent list.",
+            stderr_lines,
+        )
+        mock_runner.validate.assert_called_once()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "over_budget")
+        self.assertEqual(rows[0]["entropy"], 8.0)
+        self.assertEqual(rows[0]["entropy_budget"], 5.0)
+        self.assertNotIn("sub_intents", rows[0])
+        self.assertIn("exceeds the entropy budget", rows[0]["summary"])
+        # The agent never ran, and the intents ledger still holds only the parent row.
+        mock_runner.build_cmd.assert_not_called()
+        self.assertEqual(intent_slugs, ["parent-intent"])
+
+    def test_main_over_budget_with_a_refused_push_exits_1_without_claiming_a_recorded_row(self):
+        code, stderr_lines, rows, intent_slugs, mock_runner = self._run_over_budget_main(
+            (False, "unresolvable conflicts")
+        )
+
+        # No execution branch records the over_budget row, so the run is a plain failure, not the refusal exit code.
+        self.assertEqual(code, 1)
+        self.assertIn(
+            "Error: plan I-456/P-123/_ was not executed: its entropy 8.0 exceeds the entropy budget 5.0 and it lists "
+            "no sub-intent list. Its over_budget row was not recorded on an execution branch.",
+            stderr_lines,
+        )
+        self.assertIn("Refusing to push execution branch: safety or sync verification failed.", stderr_lines)
+        self.assertFalse(any("Re-plan it within the budget" in line for line in stderr_lines))
+        self.assertEqual([row["status"] for row in rows], ["over_budget", "failure"])
+        self.assertIn("Pre-push sync failure", rows[1]["summary"])
+        mock_runner.build_cmd.assert_not_called()
+        self.assertEqual(intent_slugs, ["parent-intent"])
+
+    NOT_RECORDED_LINE = (
+        "Error: plan I-456/P-123/_ was not executed: its entropy 8.0 exceeds the entropy budget 5.0 and it lists "
+        "no sub-intent list. Its over_budget row was not recorded on an execution branch."
+    )
+
+    def test_main_over_budget_with_nothing_staged_exits_1(self):
+        stdout = io.StringIO()
+        git_calls: list[list[str]] = []
+        code, stderr_lines, rows, _, _ = self._run_over_budget_main(
+            (True, "ok"), staged=False, git_calls=git_calls, stdout=stdout
+        )
+
+        # Nothing was committed, so no branch records the over_budget row: a plain failure, not the refusal code.
+        self.assertEqual(code, 1)
+        self.assertIn("No staged changes to commit.", stdout.getvalue().splitlines())
+        self.assertIn(self.NOT_RECORDED_LINE, stderr_lines)
+        self.assertFalse(any("Re-plan it within the budget" in line for line in stderr_lines))
+        self.assertFalse(any(call[:2] in (["git", "commit"], ["git", "push"]) for call in git_calls))
+        self.assertEqual([row["status"] for row in rows], ["over_budget"])
+
+    def test_main_over_budget_on_a_parentless_commit_refuses_the_push_and_exits_1(self):
+        git_calls: list[list[str]] = []
+        code, stderr_lines, rows, _, _ = self._run_over_budget_main(
+            (True, "ok"), has_parent=False, skip_push=False, git_calls=git_calls
+        )
+
+        # A branch with no parent is never pushed, so the over_budget row is not recorded and the run fails.
+        self.assertEqual(code, 1)
+        self.assertIn(["git", "rev-parse", "--verify", "HEAD^"], git_calls)
+        self.assertFalse(any(call[:2] == ["git", "push"] for call in git_calls))
+        self.assertIn("Refusing to push execution branch: safety or sync verification failed.", stderr_lines)
+        self.assertIn(self.NOT_RECORDED_LINE, stderr_lines)
+        self.assertEqual([row["status"] for row in rows], ["over_budget"])
+
+    def _run_over_budget_main_against_local_origin(self, *, reject_push):
+        """Run executor.main() unmocked against a local bare origin holding an over-budget plan branch.
+
+        Every git command is real and pushing stays enabled, as under ``holon flow``. Returns the exit code (or the
+        raised exception), the executor's stderr lines and the origin's execution branches with their ledger rows.
+
+        Hooks never come from the developer's global git config (a global ``core.hooksPath`` would replace them):
+        the origin pins its own ``hooks`` directory in its local config, and every client-side git command runs with
+        ``core.hooksPath`` pinned to an empty directory through ``GIT_CONFIG_COUNT``, which git drops for the
+        receiving side of a local push.
+        """
+        plan_branch = "I-456/P-123/_"
+        plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 8.0, "entropy_budget": 5.0}
+        mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.0.0"
+
+        def git(cwd, *args):
+            return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+        with tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as root, contextlib.ExitStack() as stack:
+            origin = os.path.join(root, "origin.git")
+            seed = os.path.join(root, "seed")
+            workspace = os.path.join(root, "workspace")
+            client_hooks = os.path.join(root, "client-hooks")
+            os.makedirs(client_hooks)
+            stack.enter_context(
+                patch.dict(
+                    os.environ,
+                    {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": client_hooks},
+                )
+            )
+            subprocess.run(["git", "init", "-q", "--bare", "-b", "main", origin], check=True, capture_output=True)
+            git(origin, "config", "core.hooksPath", os.path.join(origin, "hooks"))
+            subprocess.run(["git", "init", "-q", "-b", "main", seed], check=True, capture_output=True)
+            git(seed, "config", "user.email", "test@example.test")
+            git(seed, "config", "user.name", "Test")
+            ledger_dir = os.path.join(seed, "holon-knowledge", "ledger")
+            os.makedirs(ledger_dir)
+            with open(os.path.join(ledger_dir, "intents.jsonl"), "w") as f:
+                f.write(json.dumps({"branch": "I-456/_", "slug": "parent-intent"}) + "\n")
+            git(seed, "add", "-A")
+            git(seed, "commit", "-q", "-m", "intent")
+            with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
+                f.write(json.dumps(plan_row) + "\n")
+            git(seed, "add", "-A")
+            git(seed, "commit", "-q", "-m", "plan")
+            git(seed, "push", "-q", origin, f"HEAD:refs/heads/{plan_branch}")
+            if reject_push:
+                hook = os.path.join(origin, "hooks", "pre-receive")
+                with open(hook, "w") as f:
+                    f.write("#!/bin/sh\necho 'push rejected by test hook' >&2\nexit 1\n")
+                os.chmod(hook, 0o755)
+            os.makedirs(workspace)
+
+            stderr = io.StringIO()
+            outcome: int | BaseException
+            with (
+                patch.dict(os.environ, {"HOLON_REPO_DIR": workspace, "HOLON_SKIP_PUSH": ""}),
+                patch("sandbox_executor.entrypoint.executor.get_runner", return_value=mock_runner),
+                patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value=origin),
+                patch("sandbox_executor.entrypoint.executor.sync_and_reconcile_pre_push", return_value=(True, "ok")),
+                patch("sys.argv", ["executor.py", plan_branch, "antigravity-agent", "gemini-3.5-flash"]),
+                patch("sys.stderr", stderr),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                try:
+                    executor.main()
+                    outcome = 0
+                except SystemExit as exit_:
+                    outcome = exit_.code
+                except Exception as exc:  # __main__ turns any escaping exception into exit 1
+                    outcome = exc
+            refs = git(origin, "for-each-ref", "--format=%(refname:short)", "refs/heads/I-456/P-123/").stdout.split()
+            exec_branches = {}
+            for ref in refs:
+                if ref == plan_branch:
+                    continue
+                ledger = git(origin, "show", f"{ref}:holon-knowledge/ledger/executions.jsonl").stdout
+                exec_branches[ref] = [json.loads(line) for line in ledger.splitlines() if line.strip()]
+        mock_runner.build_cmd.assert_not_called()
+        return outcome, stderr.getvalue().splitlines(), exec_branches
+
+    def test_main_over_budget_pushed_to_origin_exits_with_the_refusal_code(self):
+        outcome, stderr_lines, exec_branches = self._run_over_budget_main_against_local_origin(reject_push=False)
+
+        # The push path is the one holon flow takes (it refuses --skip-push): the pushed refusal must exit with the
+        # code the flow reads as "the over_budget row is recorded", never 1.
+        self.assertEqual(outcome, executor.OVER_BUDGET_EXIT_CODE)
+        self.assertIn(
+            "Error: plan I-456/P-123/_ was not executed: its entropy 8.0 exceeds the entropy budget 5.0 and it lists "
+            "no sub-intent list. Re-plan it within the budget, or add an explicit sub-intent list.",
+            stderr_lines,
+        )
+        self.assertNotIn(self.NOT_RECORDED_LINE, stderr_lines)
+        self.assertEqual(len(exec_branches), 1)
+        [(branch, rows)] = exec_branches.items()
+        self.assertRegex(branch, r"^I-456/P-123/E-[^/]+/_$")
+        self.assertEqual([row["status"] for row in rows], ["over_budget"])
+
+    def test_main_over_budget_whose_push_is_rejected_by_origin_fails(self):
+        outcome, stderr_lines, exec_branches = self._run_over_budget_main_against_local_origin(reject_push=True)
+
+        # The rejected push raises, which the module entry point turns into exit 1; nothing reaches the origin.
+        self.assertIsInstance(outcome, subprocess.CalledProcessError)
+        self.assertEqual(outcome.cmd[:3], ["git", "push", "-u"])
+        self.assertFalse(any("Re-plan it within the budget" in line for line in stderr_lines))
+        self.assertEqual(exec_branches, {})
 
     def test_run_cmd_raises_called_process_error(self):
         with self.assertRaises(subprocess.CalledProcessError) as ctx:
@@ -2773,10 +2896,19 @@ class TestExecutor(unittest.TestCase):
                 with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
                     f.write(
                         json.dumps(
-                            {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 8.0, "entropy_budget": 5.0}
+                            {
+                                "plan_id": "P-123",
+                                "intent_branch": "I-456/_",
+                                "entropy": 8.0,
+                                "entropy_budget": 5.0,
+                                "plan_file": "plans/P-123.md",
+                            }
                         )
                         + "\n"
                     )
+                os.makedirs(os.path.join(cwd, "plans"), exist_ok=True)
+                with open(os.path.join(cwd, "plans", "P-123.md"), "w") as f:
+                    f.write("# Plan\n\n## Sub-intent list\n\n- Create DB schema\n- Build API routes\n")
             elif "diff" in args and "--cached" in args and "--quiet" in args:
                 mock_res.returncode = 1
             return mock_res
@@ -2803,6 +2935,7 @@ class TestExecutor(unittest.TestCase):
         self.assertEqual(failure["ledger_revision"], 2)
         self.assertIn("Pre-push sync failure", failure["summary"])
         self.assertEqual(failure["sub_intents"], decomposed["sub_intents"])
+        self.assertEqual([item["slug"] for item in decomposed["sub_intents"]], ["create-db-schema", "build-api-routes"])
         self.assertEqual(failure["execution_id"], decomposed["execution_id"])
 
     def _clone_workspace(self, base_dir: str, bare_dir: str, plan_branch: str) -> str:
@@ -3706,3 +3839,712 @@ class TestExecutorIncrementalNotes(unittest.TestCase):
             [self.write_notes(partial, returncode=1, stop_reason="length"), self.write_notes(None, returncode=0)]
         )
         self.assertEqual(self.summary(run)["status"], "failure")
+
+
+# --- Entropy budget handoff and explicit sub-intent lists (no fabricated child work) ---------------------------------
+
+# The legacy capitalised plural heading, assembled from fragments so this file never spells it out.
+LEGACY_HEADING_WORD = "Sub" + "-" + "Intents"
+
+
+@pytest.mark.parametrize(
+    ("plan_row", "intent_row", "expected"),
+    [
+        ({"entropy": 12.6, "entropy_budget": 16.0}, None, executor.DECISION_EXECUTE),
+        ({"entropy": 12.6}, {"entropy_budget": 16.0}, executor.DECISION_EXECUTE),
+        ({"entropy": 12.6}, {"entropy_budget": 5.0}, executor.DECISION_OVER_BUDGET),
+        ({"entropy": 12.6, "entropy_budget": 5.0}, {"entropy_budget": 16.0}, executor.DECISION_OVER_BUDGET),
+        ({"entropy": 12.6}, None, executor.DECISION_EXECUTE),
+        ({"entropy": 16.0}, None, executor.DECISION_OVER_BUDGET),
+        ({"entropy": None, "entropy_budget": None}, None, executor.DECISION_EXECUTE),
+    ],
+)
+def test_should_decompose_uses_the_persisted_budget(plan_row, intent_row, expected):
+    decision = executor.should_decompose(plan_row, "# Plan\nStandard plan without a list", intent_row)
+
+    assert decision.decision == expected
+    assert decision.sub_intents == []
+
+
+def test_should_decompose_regression_intent_budget_16_with_entropy_12_6_executes():
+    decision = executor.should_decompose({"plan_id": "P-1", "entropy": 12.6}, "# Plan\n", {"entropy_budget": 16})
+
+    assert decision.decision == executor.DECISION_EXECUTE
+    assert decision.entropy == 12.6
+    assert decision.entropy_budget == 16.0
+
+
+def test_should_decompose_over_budget_never_invents_child_work():
+    decision = executor.should_decompose({"plan_id": "P-1", "entropy": 12.6, "entropy_budget": 5.0}, "# Plan\n")
+
+    assert decision.decision == executor.DECISION_OVER_BUDGET
+    assert decision.sub_intents == []
+
+
+@pytest.mark.parametrize("heading", ["## Sub-intent list", "### Sub-intent list", f"## {LEGACY_HEADING_WORD}"])
+@pytest.mark.parametrize("marker", ["- ", "* ", "1. "])
+def test_should_decompose_honours_an_explicit_list(heading, marker):
+    plan = (
+        f"# Plan\n\n{heading}\n\n{marker}Create DB schema\n{marker}Build API routes\n"
+        "\n## Step 1: Other\n\n- Not a child\n"
+    )
+
+    decision = executor.should_decompose({"entropy": 2.0, "entropy_budget": 5.0}, plan)
+
+    assert decision.decision == executor.DECISION_DECOMPOSED
+    assert decision.sub_intents == [
+        {"slug": "create-db-schema", "description": "Create DB schema", "goal": "Create DB schema"},
+        {"slug": "build-api-routes", "description": "Build API routes", "goal": "Build API routes"},
+    ]
+
+
+def test_should_decompose_explicit_list_wins_over_budget_and_dedupes_slugs():
+    plan = "# Plan\n\n## Sub-intent list\n\n- Write tests\n-   \n- Write tests\n"
+
+    decision = executor.should_decompose({"entropy": 40.0, "entropy_budget": 5.0}, plan)
+
+    assert decision.decision == executor.DECISION_DECOMPOSED
+    assert [item["slug"] for item in decision.sub_intents] == ["write-tests", "write-tests-2"]
+
+
+def _section(body: str) -> str:
+    """Wrap a body in a plan whose ``## Sub-intent list`` section is followed by a non-list section."""
+    return f"# Plan\n\n## Sub-intent list\n\n{body}\n\n## Risks\n\n- not a child\n"
+
+
+_NESTED_BODY = (
+    "- Add the parser\n  - covers tokens\n  - covers errors\n- Add the CLI flag\n    wired into the argument parser"
+)
+_NESTED_EXPECTED = [
+    "Add the parser\n- covers tokens\n- covers errors",
+    "Add the CLI flag\nwired into the argument parser",
+]
+
+
+def _indented_body(indent: str) -> str:
+    return (
+        f"{indent}- Add the parser\n{indent}  - covers tokens\n{indent}\t- covers errors\n"
+        f"{indent}* Add the CLI flag\n{indent}    1. wired in"
+    )
+
+
+_INDENTED_EXPECTED = ["Add the parser\n- covers tokens\n- covers errors", "Add the CLI flag\n1. wired in"]
+
+# One regression corpus for parse_sub_intent_list: (plan markdown, expected item descriptions in order). Each item's
+# goal is the first line of its description. Every parser edge case found so far lives here.
+SUB_INTENT_PARSER_CORPUS = [
+    # Nested bullets and indented continuation lines fold into the item above them.
+    pytest.param(_section(_NESTED_BODY), _NESTED_EXPECTED, id="nested-bullets-fold"),
+    # A top-level list may be indented 1-3 spaces; the first item fixes the level.
+    *[
+        pytest.param(_section(_indented_body(" " * n)), _INDENTED_EXPECTED, id=f"list-indented-{n}-spaces")
+        for n in (1, 2, 3)
+    ],
+    pytest.param(_section("    - indented code, not a list"), [], id="four-space-lines-are-not-items"),
+    pytest.param(_section("\t- tab-indented code, not a list"), [], id="tab-indented-first-line-is-not-an-item"),
+    pytest.param(
+        _section("- First\n\t- tab-nested detail\n- Second"),
+        ["First\n- tab-nested detail", "Second"],
+        id="tab-nested-bullet-folds",
+    ),
+    pytest.param(
+        _section("1. First\n   1. detail one\n   2. detail two\n2. Second"),
+        ["First\n1. detail one\n2. detail two", "Second"],
+        id="nested-numbered-folds",
+    ),
+    pytest.param(
+        _section("- One\n* Two\n+ Three\n1) Four\n2. Five"), ["One", "Two", "Three", "Four", "Five"], id="mixed-markers"
+    ),
+    pytest.param(
+        _section("- First\n\n  more about first\n\n\n- Second\n\n- Third"),
+        ["First\nmore about first", "Second", "Third"],
+        id="blank-lines-and-continuation",
+    ),
+    pytest.param(_section(_NESTED_BODY).replace("\n", "\r\n"), _NESTED_EXPECTED, id="crlf-line-endings"),
+    pytest.param(_section("- None\n- N/A\n- n/a.\n- na"), [], id="placeholders-only"),
+    pytest.param(_section("- None\n- Real child"), ["Real child"], id="placeholder-beside-real-item"),
+    # Wrapped or reworded placeholders say "no child work" and never become children.
+    pytest.param(_section("- (none)"), [], id="parenthesised-none"),
+    pytest.param(_section("- Not applicable"), [], id="not-applicable"),
+    pytest.param(_section("- None required; work is in one step"), [], id="none-required-with-reason"),
+    pytest.param(_section("- **None**"), [], id="bold-none"),
+    pytest.param(_section("- _n/a_"), [], id="emphasised-n-a"),
+    pytest.param(_section("- No sub-intents: the plan fits the budget."), [], id="no-sub-intents-with-reason"),
+    # The first whole word (none, n/a, na, nil, no, not) decides, whatever follows.
+    pytest.param(_section("- None (plan fits the budget)"), [], id="none-parenthetical"),
+    pytest.param(_section("- N/A (single step)"), [], id="n-a-parenthetical"),
+    pytest.param(_section("- No sub-intents needed"), [], id="no-sub-intents-needed"),
+    pytest.param(_section("- Not needed for this plan"), [], id="not-needed-for-this-plan"),
+    pytest.param(_section("- nil"), [], id="nil"),
+    pytest.param(_section("- **No** sub-intents"), [], id="bold-no"),
+    # A real item that merely starts with the letters of a placeholder word is not a placeholder (word boundary).
+    pytest.param(
+        _section(
+            "- Nonetheless refactor the parser\n- Normalise the ledger rows\n- Notify the operator on failure\n"
+            "- Note the budget in the summary"
+        ),
+        [
+            "Nonetheless refactor the parser",
+            "Normalise the ledger rows",
+            "Notify the operator on failure",
+            "Note the budget in the summary",
+        ],
+        id="word-boundary-real-items",
+    ),
+    pytest.param(_section("-   \n- Real child"), ["Real child"], id="empty-item-skipped"),
+    # A longer outer fence closes only on the same character at least as long.
+    *[
+        pytest.param(
+            _section(f"- First\n````md\n{inner}\n- Nested example\n{inner}\n````\n- Second"),
+            ["First", "Second"],
+            id=f"nested-fence-{name}",
+        )
+        for name, inner in [
+            ("shorter-backticks", "```"),
+            ("other-char", "~~~~"),
+            ("other-char-longer", "~~~~~"),
+            ("trailing-text", "``` not a closer"),
+        ]
+    ],
+    # A list quoted inside a fence is never read.
+    *[
+        pytest.param(
+            f"# Plan\n\n{fence}markdown\n## Sub-intent list\n\n- Quoted example\n{fence}\n\n## Risks\n\n- none\n",
+            [],
+            id=f"section-quoted-in-{name}-fence",
+        )
+        for name, fence in [("backtick", "```"), ("tilde", "~~~")]
+    ],
+    pytest.param(_section("```text\n- Example child\n```"), [], id="fence-under-the-heading"),
+    pytest.param(
+        "# Plan\n\n~~~~markdown\n## Sub-intent list\n- Quoted example\n~~~\n- still quoted\n~~~~~\n\n"
+        "## Sub-intent list\n\n```\n- fenced, not a child\n```\n- Real child\n- Another real child\n",
+        ["Real child", "Another real child"],
+        id="real-list-after-closed-fence",
+    ),
+    pytest.param(
+        _section("``` inline `code` ```\n- Real child"), ["Real child"], id="backtick-info-with-backtick-is-not-a-fence"
+    ),
+    pytest.param(_section("~~~ a`b\n- fenced\n~~~\n- Real child"), ["Real child"], id="tilde-info-may-hold-a-backtick"),
+    # A fence nested in an item at 4+ columns holding a "# comment" line neither leaks nor ends the section.
+    pytest.param(
+        _section("- Add CLI flag\n    ```bash\n    # run the tests\n    uv run pytest\n    ```\n- Update docs"),
+        ["Add CLI flag", "Update docs"],
+        id="four-space-bash-fence-with-comment",
+    ),
+    pytest.param(
+        _section("1. Add CLI flag\n    ```python\n    # helper\n    - not a child\n    ```\n2. Update docs"),
+        ["Add CLI flag", "Update docs"],
+        id="numbered-four-space-python-fence",
+    ),
+    pytest.param(
+        _section("- Add CLI flag\n  ```bash\n  # run the tests\n  ```\n- Update docs"),
+        ["Add CLI flag", "Update docs"],
+        id="two-space-fence",
+    ),
+    pytest.param(
+        _section("- Add CLI flag\n\t\t~~~\n\t\t## not a heading\n\t\t~~~\n- Update docs"),
+        ["Add CLI flag", "Update docs"],
+        id="tab-indented-fence",
+    ),
+    pytest.param(
+        _section("- Add CLI flag\n        ````\n```\n## not a heading\n````\n- Update docs"),
+        ["Add CLI flag", "Update docs"],
+        id="deep-fence-closes-at-any-indent",
+    ),
+    # Headings end the section only at 0-3 columns; deeper "#" lines fold into the item above.
+    pytest.param(
+        _section("- First\n    # not a heading\n- Second"),
+        ["First\n# not a heading", "Second"],
+        id="four-space-hash-line-folds",
+    ),
+    pytest.param(_section("- First\n   ## Next\n- not a child"), ["First"], id="three-space-heading-ends-section"),
+    # Real (non-placeholder) items, so only the heading level decides.
+    pytest.param("# Plan\n\n# Sub-intent list\n\n- Add the parser\n", [], id="level-1-heading-does-not-open"),
+    pytest.param("# Plan\n\n#### Sub-intent list\n\n- Add the parser\n", [], id="level-4-heading-does-not-open"),
+    # A Unicode hyphen or non-breaking hyphen in the heading normalises like an ASCII hyphen.
+    *[
+        pytest.param(
+            f"# Plan\n\n## Sub{hyphen}intent list\n\n- Add the parser\n", ["Add the parser"], id=f"heading-{name}"
+        )
+        for name, hyphen in [("unicode-hyphen", "\u2010"), ("non-breaking-hyphen", "\u2011")]
+    ],
+    # A setext heading (paragraph line underlined with "=" or "-") ends the section like an ATX heading.
+    # The heading text must be a plain paragraph, so a blank line separates it from the item above.
+    pytest.param(
+        _section("- Add the parser\n\nNotes\n-----\n- Remember to run lint\n- Keep docs current"),
+        ["Add the parser"],
+        id="setext-dash-heading-ends-section",
+    ),
+    pytest.param(
+        _section("- Add the parser\n\nOther\n=====  \n- Ship it"),
+        ["Add the parser"],
+        id="setext-equals-heading-ends-section",
+    ),
+    pytest.param(
+        "# Plan\n\nSub-intent\nlist\n---\n\n- Add the parser\n",
+        ["Add the parser"],
+        id="multi-line-setext-heading-text-is-the-whole-paragraph",
+    ),
+    # A text line straight after an item (or its continuation) is a lazy continuation of the item, never a
+    # setext heading text line: "---" under it is a thematic break and "===" is more continuation text.
+    pytest.param(_section("- Add A\nlazy text\n---\n- Add B"), ["Add A", "Add B"], id="lazy-dash"),
+    pytest.param(_section("- Add A\nlazy\n===\n- Add B"), ["Add A", "Add B"], id="lazy-equals"),
+    pytest.param(
+        _section("- Add A\n  more\nNotes\n---\n- Add B"),
+        ["Add A\nmore", "Add B"],
+        id="lazy-after-continuation",
+    ),
+    pytest.param("# Plan\n\n- step\nSub-intent list\n---\n- Add x\n", [], id="lazy-line-does-not-open"),
+    pytest.param("# Plan\n\n- step\n\n  Sub-intent list\n---\n- Add x\n", [], id="item-content-does-not-open"),
+    # A paragraph after a thematic break, an ATX heading or an item's narrower-than-content line starts afresh, so it
+    # can be setext heading text; a line inside an item's fenced block area stays item content.
+    pytest.param(_section("- Add A\n***\nNotes\n---\n- Add B"), ["Add A"], id="paragraph-after-break"),
+    pytest.param("# Plan\n\n- step\n## Sub-intent list\nNotes\n---\n- Add x\n", [], id="paragraph-after-atx-heading"),
+    pytest.param(_section("1. Add A\n\n  Notes\n---\n- Add B"), ["Add A"], id="line-left-of-item-content"),
+    pytest.param(
+        _section("- Add A\n\n  ```\n  x\n  ```\n\n  Notes\n---\n- Add B"),
+        ["Add A\nNotes", "Add B"],
+        id="item-content-after-nested-fence",
+    ),
+    # The underline is at most 3 columns deep, a text line at 4+ columns with no paragraph open is indented
+    # code, and a one- or two-dash underline still makes a heading.
+    pytest.param(_section("- Add A\n\nNotes\n    ---\n- Add B"), ["Add A\n---", "Add B"], id="deep-underline"),
+    pytest.param(_section("    Notes\n---\n- Add B"), ["Add B"], id="indented-code-is-not-heading-text"),
+    pytest.param(_section("- Add A\n\nNotes\n--\n- Add B"), ["Add A"], id="two-dash-underline"),
+    pytest.param(_section("- Add A\n\nNotes\n-\n- Add B"), ["Add A"], id="one-dash-underline"),
+    pytest.param(
+        "# Plan\n\nSub-intent list\n---------------\n\n- Add the parser\n\nRisks\n-----\n\n- Ship it\n",
+        ["Add the parser"],
+        id="level-2-setext-heading-opens-and-ends",
+    ),
+    pytest.param(
+        "# Plan\n\nSub-intent list\n===============\n\n- Add the parser\n",
+        [],
+        id="level-1-setext-does-not-open",
+    ),
+    # A "---" line straight after a list item, or under a continuation line, is a thematic break, not an underline.
+    pytest.param(_section("- A\n---\n- B"), ["A", "B"], id="break-after-item-is-not-an-underline"),
+    pytest.param(
+        _section("- A\n  more about A\n  ---\n- B"),
+        ["A\nmore about A", "B"],
+        id="break-under-continuation-is-not-an-underline",
+    ),
+    # An unclosed fence runs to the end of the plan; items before it survive.
+    pytest.param(_section("- First\n```\n- fenced\n## Next\n- fenced too"), ["First"], id="unclosed-fence-after-item"),
+    pytest.param(_section("```\n- fenced"), [], id="unclosed-fence-before-items"),
+    # Thematic breaks and punctuation-only items never become children.
+    *[
+        pytest.param(_section(f"- A\n- B\n\n{rule}\n\n- C"), ["A", "B", "C"], id=f"thematic-break-{name}")
+        for name, rule in [("stars", "* * *"), ("dashes", "---"), ("underscores", "___"), ("spaced-dashes", "- - -")]
+    ],
+    pytest.param(_section("- A\n  * * *\n- B"), ["A", "B"], id="indented-thematic-break-does-not-fold"),
+    # A break-like line at 4+ columns is not a break; it folds into the item above.
+    pytest.param(_section("- A\n    - - -\n- B"), ["A\n- - -", "B"], id="four-space-break-like-line-folds"),
+    pytest.param(_section("- A\n- ...\n- (!)\n- B"), ["A", "B"], id="punctuation-only-item-skipped"),
+    # Each row below pins one parser rule; the rules match CommonMark for what opens, ends or skips the section.
+    # Descriptions follow the fold rule instead: an indented line folds into the item above even where CommonMark
+    # makes it part of a later paragraph (row tab-underline-is-4-cols).
+    # A fence resets the paragraph state, and a fence left of the item content column ends the list.
+    pytest.param(_section("- Add A\n```\nx\n```\nNotes\n---\n- Add B"), ["Add A"], id="fence-resets-paragraph"),
+    pytest.param(
+        _section("- Add A\n```\nx\n```\n\n  Notes\n---\n- Add B"),
+        ["Add A"],
+        id="fence-left-of-content-ends-list",
+    ),
+    # A thematic break inside an item keeps the item open; one left of the content column ends the list; a break is
+    # never setext heading text; a break-like line 4+ columns past the content column is paragraph text, not a break.
+    pytest.param(
+        _section("- Add A\n\n  ***\n\n  Notes\n---\n- Add B"),
+        ["Add A\nNotes", "Add B"],
+        id="break-in-item-keeps-the-item-open",
+    ),
+    pytest.param(_section("- Add A\n\n   ***\nNotes\n---\n- Add B"), ["Add A"], id="break-at-3-columns-in-item"),
+    pytest.param(
+        _section("- Add A\n      ***\nNotes\n---\n- Add B"),
+        ["Add A\n***", "Add B"],
+        id="break-like-line-past-content-is-continuation",
+    ),
+    pytest.param(_section("- Add A\n***\n\n  Notes\n---\n- Add B"), ["Add A"], id="break-left-of-content-ends-list"),
+    pytest.param(_section("- Add A\n***\n---\n- Add B"), ["Add A", "Add B"], id="break-is-not-heading-text"),
+    # Items and paragraphs: a 3-column item still takes lazy lines; an item-like 4-column line with no paragraph open is
+    # indented code; nested items and continuation lines keep the item content column; a 3-column plain paragraph is
+    # heading text; a plain paragraph ends the list, so a later 2-column line is not item content.
+    pytest.param(_section("   - Add A\nNotes\n---\n- Add B"), ["Add A", "Add B"], id="item-at-3-columns-takes-lazy"),
+    pytest.param(_section("    - code\nNotes\n---\n- Add B"), [], id="item-like-indented-code-then-heading"),
+    pytest.param(
+        _section("- Add A\n\n    - sub\n\n  Notes\n---\n- Add B"),
+        ["Add A\n- sub\nNotes", "Add B"],
+        id="nested-item-keeps-content-column",
+    ),
+    pytest.param(
+        _section("- Add A\n  more\n\n  Notes\n---\n- Add B"),
+        ["Add A\nmore\nNotes", "Add B"],
+        id="continuation-keeps-content-column",
+    ),
+    pytest.param(_section("   Notes\n---\n- Add B"), [], id="3-column-paragraph-is-heading-text"),
+    pytest.param(_section("- Add A\n\nNotes\n\n  Other\n---\n- Add B"), ["Add A"], id="paragraph-drops-content-column"),
+    pytest.param(
+        _section("-\tAdd A\n\n    more\nOther\n---\n- Add B"),
+        ["Add A\nmore", "Add B"],
+        id="tab-after-marker-is-content-column-4",
+    ),
+    # Setext underline: 3 columns is still an underline, a tab is 4 columns, mixed or spaced runs are not underlines,
+    # and the underline line is consumed rather than read as a paragraph of its own. In the tab row, CommonMark reads
+    # "\t---" as a continuation of the paragraph "Notes"; the fold rule puts it in item A's description instead.
+    pytest.param(_section("- Add A\n\nNotes\n   ---\n- Add B"), ["Add A"], id="underline-at-3-columns"),
+    pytest.param(_section("- Add A\n\nNotes\n\t---\n- Add B"), ["Add A\n---", "Add B"], id="tab-underline-is-4-cols"),
+    pytest.param(_section("- Add A\n\nNotes\n-=-\n- Add B"), ["Add A", "Add B"], id="mixed-underline"),
+    pytest.param(_section("- Add A\n\nNotes\n= =\n- Add B"), ["Add A", "Add B"], id="spaced-underline"),
+    pytest.param("# Plan\n\nSub-intent list\n--\n--\n- Add the parser\n", ["Add the parser"], id="underline-consumed"),
+    pytest.param(
+        "# Plan\n\n## Sub-intent list\n===\n---\n- Add the parser\n",
+        [],
+        id="equals-line-after-atx-heading-is-a-paragraph",
+    ),
+    pytest.param("# Plan\n\nSub-intent\n\nlist\n---\n\n- Add the parser\n", [], id="blank-line-splits-heading-text"),
+    # Fences: two backticks are not a fence, and a closing fence takes no info string.
+    pytest.param(_section("- Add A\n``\n- Add B\n``"), ["Add A", "Add B"], id="two-backticks-are-not-a-fence"),
+    pytest.param(
+        _section("```\n```python\n- Example child\n```\n- Add B"), ["Add B"], id="fence-with-info-does-not-close"
+    ),
+    # ATX headings: a space after the hashes, at most six hashes, closing hashes stripped, underscores normalised.
+    pytest.param(_section("- Add A\n#hashtag\n- Add B"), ["Add A", "Add B"], id="hash-without-space-not-heading"),
+    pytest.param(_section("- Add A\n####### not a heading\n- Add B"), ["Add A", "Add B"], id="seven-hashes"),
+    # An empty ATX heading (a bare "#" or "##", or one holding only closing hashes) still ends the section.
+    pytest.param(_section("- Add X\n\n##\n\n- Do Y"), ["Add X"], id="empty-h2-ends-section"),
+    pytest.param(_section("- Add X\n\n#\n\n- Do Y"), ["Add X"], id="empty-h1-ends-section"),
+    pytest.param(_section("- Add X\n##   \n- Do Y"), ["Add X"], id="empty-h2-with-trailing-spaces-ends-section"),
+    pytest.param(_section("- Add X\n### ###\n- Do Y"), ["Add X"], id="closing-hashes-only-heading-ends-section"),
+    pytest.param(_section("- Add X\n#######\n- Do Y"), ["Add X", "Do Y"], id="seven-bare-hashes-not-heading"),
+    pytest.param(_section("- Add X\n#5 bolts\n- Do Y"), ["Add X", "Do Y"], id="hash-before-digit-not-heading"),
+    pytest.param("# Plan\n\n## Sub-intent list ##\n\n- Add the parser\n", ["Add the parser"], id="closing-hashes"),
+    pytest.param("# Plan\n\n## Sub_intent_list\n\n- Add the parser\n", ["Add the parser"], id="underscore-heading"),
+    pytest.param(
+        "# Plan\n\n## Sub-intent list\n\n- Add A\n\n## Sub-intents\n\n  - Add B\n    - detail\n",
+        ["Add A", "Add B\n- detail"],
+        id="second-section-sets-its-own-level",
+    ),
+    pytest.param("# Plan\n\n- step\n## Sub-intent list\n\n  Notes\n---\n- Add x\n", [], id="heading-ends-the-list"),
+    # Section body: whitespace-only lines, 3-column and underscore breaks, two stars, markers without a space.
+    pytest.param(_section("- Add A\n    \n  more\n- Add B"), ["Add A\nmore", "Add B"], id="whitespace-only-line"),
+    pytest.param(_section("- A\n   ***\n- B"), ["A", "B"], id="break-at-3-columns-skipped"),
+    pytest.param(_section("- A\n  ___\n- B"), ["A", "B"], id="underscore-break-skipped"),
+    pytest.param(_section("- A\n  **\n- B"), ["A\n**", "B"], id="two-stars-fold"),
+    pytest.param(_section("  - Add A\n-   Add B\n  - Add C"), ["Add A", "Add B", "Add C"], id="first-item-fixes-level"),
+    pytest.param(
+        _section("- Add the CLI flag\n--verbose enables logging\n- Add docs"),
+        ["Add the CLI flag", "Add docs"],
+        id="dash-without-space-is-not-an-item",
+    ),
+    # Placeholders: emphasis followed by a full stop, and curly quotes.
+    pytest.param(_section("- _None_."), [], id="emphasised-none-with-full-stop"),
+    pytest.param(_section("- \u201cNone\u201d"), [], id="curly-quoted-none"),
+    # Ordered items with multi-digit numbers.
+    pytest.param(_section("10. Add A\n11. Add B"), ["Add A", "Add B"], id="multi-digit-ordered-items"),
+]
+
+
+@pytest.mark.parametrize(("plan", "expected"), SUB_INTENT_PARSER_CORPUS)
+def test_parse_sub_intent_list_regression_corpus(plan, expected):
+    items = executor.parse_sub_intent_list(plan)
+
+    assert [item["description"] for item in items] == expected
+    assert [item["goal"] for item in items] == [description.split("\n")[0] for description in expected]
+
+
+def test_parse_sub_intent_list_builds_slug_description_and_goal():
+    assert executor.parse_sub_intent_list(_section(_NESTED_BODY)) == [
+        {"slug": "add-the-parser", "description": _NESTED_EXPECTED[0], "goal": "Add the parser"},
+        {"slug": "add-the-cli-flag", "description": _NESTED_EXPECTED[1], "goal": "Add the CLI flag"},
+    ]
+
+
+def test_parse_sub_intent_list_truncates_long_slugs_to_48_characters():
+    # The slug is cut to 48 characters, and a cut that lands on a hyphen leaves no trailing hyphen.
+    text = "Add " + "x" * 43 + " parser for every ledger row"
+    (item,) = executor.parse_sub_intent_list(_section(f"- {text}"))
+
+    assert item["slug"] == "add-" + "x" * 43
+    assert item["goal"] == text
+
+
+def test_parse_sub_intent_list_strips_leading_hyphens_before_truncating_the_slug():
+    # Leading punctuation is dropped before the 48-character cut, so it costs no character.
+    (item,) = executor.parse_sub_intent_list(_section("- **Add** the parser for every ledger row and every intent row"))
+
+    assert item["slug"] == "add-the-parser-for-every-ledger-row-and-every-in"
+
+
+def test_parse_sub_intent_list_falls_back_to_a_generic_slug():
+    # An item with no ASCII letter or digit still gets a slug.
+    (item,) = executor.parse_sub_intent_list(_section("- Добавить парсер"))
+
+    assert item["slug"] == "sub-intent"
+    assert item["goal"] == "Добавить парсер"
+
+
+def test_should_decompose_executes_a_plan_exactly_at_the_budget():
+    # Only entropy strictly above the budget is over budget ("at or below" executes).
+    decision = executor.should_decompose({"entropy": 5.0, "entropy_budget": 5.0}, "# Plan\n")
+
+    assert decision.decision == executor.DECISION_EXECUTE
+
+
+@pytest.mark.parametrize(
+    ("plan", "expected"),
+    [
+        (_section(_indented_body("  ")), executor.DECISION_DECOMPOSED),
+        (_section("- None\n- N/A"), executor.DECISION_OVER_BUDGET),
+        ("# Plan\n\n```markdown\n## Sub-intent list\n\n- Quoted example\n```\n", executor.DECISION_OVER_BUDGET),
+    ],
+    ids=["indented-list-decomposes", "placeholders-are-over-budget", "fenced-list-is-over-budget"],
+)
+def test_should_decompose_follows_the_parsed_list(plan, expected):
+    assert executor.should_decompose({"entropy": 40.0, "entropy_budget": 5.0}, plan).decision == expected
+
+
+def test_should_decompose_ignores_per_step_recommendation_bullets():
+    plan = (
+        "# Plan\n\n## Step 1: Thing\n\n- **Sub\u2011intent recommendation:** YES\n- **Sub\u2011intent:** NONE\n"
+        "\n### Sub-intent notes\n\n- not a list either\n"
+    )
+
+    decision = executor.should_decompose({"entropy": 2.0, "entropy_budget": 5.0}, plan)
+
+    assert decision.decision == executor.DECISION_EXECUTE
+    assert decision.sub_intents == []
+
+
+def _run_executor_main(
+    tmp_path, plan_row: dict, plan_md: str | None, intent_row: dict, commands: list | None = None
+) -> list[dict]:
+    """Run executor.main() with mocked git and runner; return the executions.jsonl rows it wrote.
+
+    The index always reports staged changes, so the ledger row is committed; when ``commands`` is given, every run_cmd
+    argument list is appended to it. A refused (over-budget) plan must exit with OVER_BUDGET_EXIT_CODE after committing
+    its row, and every other non-execute outcome must return normally.
+    """
+    runner = MagicMock()
+    runner.get_version.return_value = "1.0.0"
+
+    def side_effect(args, cwd=None, **kwargs):
+        res = MagicMock(returncode=0, stdout="", stderr="")
+        if commands is not None:
+            commands.append(list(args))
+        if args[:4] == ["git", "diff", "--cached", "--quiet"]:
+            res.returncode = 1
+        if "clone" in args:
+            ledger = os.path.join(cwd, "holon-knowledge/ledger")
+            os.makedirs(ledger, exist_ok=True)
+            with open(os.path.join(ledger, "plans.jsonl"), "w") as f:
+                f.write(json.dumps(plan_row) + "\n")
+            with open(os.path.join(ledger, "intents.jsonl"), "w") as f:
+                f.write(json.dumps(intent_row) + "\n")
+            if plan_md is not None:
+                os.makedirs(os.path.join(cwd, "plans"), exist_ok=True)
+                with open(os.path.join(cwd, plan_row["plan_file"]), "w") as f:
+                    f.write(plan_md)
+        return res
+
+    repo = str(tmp_path / "repo")
+    with (
+        patch.dict(os.environ, {"HOLON_REPO_DIR": repo, "HOLON_SKIP_PUSH": "1"}),
+        patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect),
+        patch("sandbox_executor.entrypoint.executor.get_runner", return_value=runner),
+        patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value="/mock/repo"),
+        patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
+        patch("sys.argv", ["executor.py", "I-456/P-123/_", "claude-agent", "claude-opus-5-5"]),
+    ):
+        exit_code = 0
+        try:
+            executor.main()
+        except SystemExit as exc:
+            exit_code = exc.code
+    runner.build_cmd.assert_not_called()
+    ledger = os.path.join(repo, "holon-knowledge/ledger")
+    with open(os.path.join(ledger, "intents.jsonl")) as f:
+        assert [json.loads(line) for line in f if line.strip()] == [intent_row]
+    with open(os.path.join(ledger, "executions.jsonl")) as f:
+        rows = [json.loads(line) for line in f if line.strip()]
+    statuses = [r.get("status") for r in rows if r.get("entry_type") == "summary"]
+    assert exit_code == (executor.OVER_BUDGET_EXIT_CODE if statuses == ["over_budget"] else 0)
+    return rows
+
+
+def test_main_decomposed_records_sub_intents_without_intent_rows(tmp_path):
+    plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 9.0, "plan_file": "plans/P-123.md"}
+    intent_row = {"branch": "I-456", "slug": "parent", "entropy_budget": 5.0}
+    plan_md = "# Plan\n\n## Sub-intent list\n\n1. Add the parser\n2. Add the CLI flag\n"
+
+    rows = _run_executor_main(tmp_path, plan_row, plan_md, intent_row)
+
+    summaries = [r for r in rows if r.get("entry_type") == "summary"]
+    assert len(summaries) == 1
+    assert summaries[0]["status"] == "decomposed"
+    assert summaries[0]["entropy_budget"] == 5.0
+    assert [s["slug"] for s in summaries[0]["sub_intents"]] == ["add-the-parser", "add-the-cli-flag"]
+
+
+def test_main_over_budget_reads_intent_budget_when_plan_row_has_none(tmp_path):
+    plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 12.6, "plan_file": "plans/P-123.md"}
+    intent_row = {"branch": "I-456", "slug": "parent", "entropy_budget": 5.0}
+
+    rows = _run_executor_main(tmp_path, plan_row, "# Plan\n", intent_row)
+
+    summaries = [r for r in rows if r.get("entry_type") == "summary"]
+    assert [s["status"] for s in summaries] == ["over_budget"]
+    assert summaries[0]["entropy_budget"] == 5.0
+    assert "sub_intents" not in summaries[0]
+
+
+def test_main_over_budget_without_a_plan_row_judges_the_fallback_entropy_against_the_intent_budget(tmp_path):
+    # No plans.jsonl row matches the plan branch: the fallback plan carries entropy 3.0 and no budget of its own, so the
+    # intent's budget (2.0) decides and the plan is refused rather than judged against any fixed fallback budget.
+    plan_row = {"plan_id": "P-999", "intent_branch": "I-456/_", "entropy": 1.0}
+    intent_row = {"branch": "I-456", "slug": "parent", "entropy_budget": 2.0}
+
+    rows = _run_executor_main(tmp_path, plan_row, None, intent_row)
+
+    (summary,) = [r for r in rows if r.get("entry_type") == "summary"]
+    assert (summary["status"], summary["entropy"], summary["entropy_budget"]) == ("over_budget", 3.0, 2.0)
+
+
+@pytest.mark.parametrize(
+    ("plan_md", "stdout_line", "stderr_line"),
+    [
+        (
+            "# Plan\n\n## Sub-intent list\n\n1. Add the parser\n2. Add the CLI flag\n",
+            "Plan lists an explicit sub-intent list of 2 item(s); recording it.",
+            None,
+        ),
+        (
+            "# Plan\n",
+            "Plan entropy 12.6 exceeds the entropy budget 5.0 and the plan lists no sub-intent list; the plan was not "
+            "executed.",
+            "Error: plan I-456/P-123/_ was not executed: its entropy 12.6 exceeds the entropy budget 5.0 and it lists "
+            "no sub-intent list. Re-plan it within the budget, or add an explicit sub-intent list.",
+        ),
+    ],
+    ids=["decomposed", "over-budget"],
+)
+def test_main_non_execute_outcome_reports_on_stdout_and_stderr(tmp_path, capsys, plan_md, stdout_line, stderr_line):
+    plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 12.6, "plan_file": "plans/P-123.md"}
+    intent_row = {"branch": "I-456", "slug": "parent", "entropy_budget": 5.0}
+
+    _run_executor_main(tmp_path, plan_row, plan_md, intent_row)
+
+    out, err = capsys.readouterr()
+    assert stdout_line in out.splitlines()
+    if stderr_line is None:
+        assert "was not executed" not in err
+    else:
+        assert stderr_line in err.splitlines()
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        "`\tNone`",
+        "_None_;",
+        "_None_!",
+        "_None_?",
+        "_None_:",
+        "_None_,",
+        "[None]",
+        "<none>",
+        "{none}",
+        "[N/A]",
+    ],
+)
+def test_is_placeholder_item_normalises_whitespace_wrappers_and_trailing_punctuation(item):
+    # Whitespace inside wrappers collapses, every wrapper pair is stripped, and trailing punctuation that sits outside a
+    # wrapper is dropped before the first-word test, so each of these says "no child work".
+    assert executor.is_placeholder_item(item) is True
+
+
+@pytest.mark.parametrize(
+    ("plan_md", "expected_status", "expected_outcome"),
+    [
+        ("# Plan\n\n## Sub-intent list\n\n1. Add the parser\n2. Add the CLI flag\n", "decomposed", "success"),
+        ("# Plan\n", "over_budget", "failure"),
+    ],
+    ids=["decomposed-success", "over-budget-failure"],
+)
+def test_main_plan_decomposition_action_outcome(tmp_path, monkeypatch, plan_md, expected_status, expected_outcome):
+    monkeypatch.setenv("HOLON_ACTION_LOGGING", "1")
+    plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 12.6, "plan_file": "plans/P-123.md"}
+    intent_row = {"branch": "I-456", "slug": "parent", "entropy_budget": 5.0}
+
+    rows = _run_executor_main(tmp_path, plan_row, plan_md, intent_row)
+
+    assert [r["status"] for r in rows if r.get("entry_type") == "summary"] == [expected_status]
+    actions = [r for r in rows if r.get("event_type") == "plan_decomposition"]
+    assert len(actions) == 1
+    assert actions[0]["entry_type"] == "action"
+    assert actions[0]["outcome"] == expected_outcome
+    assert actions[0]["target"] == "I-456/P-123/_"
+
+
+@pytest.mark.parametrize(
+    ("plan_md", "summary", "action", "commit"),
+    [
+        (
+            "# Plan\n\n## Sub-intent list\n\n1. Add the parser\n2. Add the CLI flag\n",
+            "Plan I-456/P-123/_ lists 2 sub-intent(s); the flow runs each one through the full pipeline.",
+            "Recorded the sub-intent list of I-456/P-123/_ (2 item(s))",
+            "execute: recorded the sub-intent list of I-456/P-123/_ (2 item(s))",
+        ),
+        (
+            "# Plan\n",
+            "Plan entropy 12.6 exceeds the entropy budget 5.0 and the plan lists no sub-intent list; the plan was not "
+            "executed.",
+            "Refused over-budget plan I-456/P-123/_",
+            "execute: plan I-456/P-123/_ is over its entropy budget",
+        ),
+    ],
+    ids=["decomposed", "over-budget"],
+)
+def test_main_non_execute_row_summary_action_and_commit(tmp_path, monkeypatch, plan_md, summary, action, commit):
+    monkeypatch.setenv("HOLON_ACTION_LOGGING", "1")
+    plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 12.6, "plan_file": "plans/P-123.md"}
+    intent_row = {"branch": "I-456", "slug": "parent", "entropy_budget": 5.0}
+    commands: list = []
+
+    rows = _run_executor_main(tmp_path, plan_row, plan_md, intent_row, commands)
+
+    (row,) = [r for r in rows if r.get("entry_type") == "summary"]
+    assert row["summary"] == summary
+    assert row["entropy"] == 12.6
+    (recorded,) = [r for r in rows if r.get("event_type") == "plan_decomposition"]
+    assert recorded["action"] == action
+    # Only the executions ledger is staged; the commit carries the outcome-specific message.
+    assert ["git", "add", "holon-knowledge/ledger/executions.jsonl"] in commands
+    assert not any(cmd[:2] == ["git", "add"] and "holon-knowledge/ledger/intents.jsonl" in cmd for cmd in commands)
+    assert ["git", "commit", "-m", commit] in commands
+
+
+def test_should_decompose_treats_a_missing_entropy_as_zero():
+    decision = executor.should_decompose({"entropy_budget": 5.0}, "# Plan\n")
+
+    assert (decision.decision, decision.entropy) == (executor.DECISION_EXECUTE, 0.0)
+
+
+def test_no_placeholder_sub_intent_text_in_source():
+    """The removed fallback goals must not reappear anywhere under src/ (phrases built from fragments)."""
+    phrases = [
+        "Implement component " + "core logic",
+        "Implement integration tests " + "and validation",
+        "sub-intent-" + "part-",
+    ]
+    src_root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+    offenders = []
+    for dirpath, _dirs, files in os.walk(src_root):
+        for name in files:
+            if not name.endswith(".py"):
+                continue
+            path = os.path.join(dirpath, name)
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+            offenders.extend(f"{path}: {phrase}" for phrase in phrases if phrase in text)
+    assert offenders == []

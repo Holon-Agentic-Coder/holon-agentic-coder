@@ -13,8 +13,9 @@ patched `cleanup_repo_dir` (decorators at lines 9, 66, 113 and 161 of the pre-fi
 removed a live workspace. An audit of every test that calls a role entrypoint without patching cleanup found the actual
 exposed callers, all in one module:
 
-- `test_executor.py`: `test_main_execution_flow`, `test_main_git_recovery_on_corrupted_repo`,
-  `test_main_decomposition_flow`, `test_main_custom_holon_repo_dir_not_deleted`, `test_main_default_workspace_deleted`,
+- `test_executor.py`: `test_main_execution_flow`, `test_main_git_recovery_on_corrupted_repo`, the over-budget `main()`
+  tests that run through `_run_over_budget_main` or `_run_over_budget_main_against_local_origin`,
+  `test_main_custom_holon_repo_dir_not_deleted`, `test_main_default_workspace_deleted`,
   `test_main_raises_exception_on_failure`, `test_main_raises_runtime_error_on_cleanup_failure`,
   `test_main_mount_point_clears_contents`, `test_main_git_add_not_called_on_failure`. Two of these also exercise
   `_rmtree` directly: `test_main_default_workspace_deleted` and `test_main_raises_runtime_error_on_cleanup_failure`.
@@ -105,13 +106,16 @@ Two properties make the guard worth keeping:
 No run on a developer machine can establish that the suite is safe for _any_ future test author. Two checks do that job
 on every push, and both are machine-enforced:
 
-1. The canary guard above, which runs the entire directory -- so a new test file is covered the moment it is added.
+1. The canary guard above, which runs the entire directory -- so a new test file is covered the moment it is added. It
+   is marked `stress` and runs in the `Workspace survival` job rather than the unit matrix, because re-running the whole
+   unit selection in a child roughly doubled the unit job's wall time. Its negative control stays in the unit job.
 2. `test_workspace_survival_stress.py`, marked `stress`, which clones the repository onto the exact path an executor
    works in (`~/.holon-sandbox/workspace` with `HOME` redirected), runs the unit selection from inside it, and requires
    the workspace, its `.git` and its `HEAD` commit to survive. That is the incident shape; a throwaway-`HOME` canary
    never runs _from_ the workspace and so cannot demonstrate it. It runs in the `Workspace survival` job of
    `.github/workflows/test-stress.yml`, which fails if the suite was skipped rather than executed, and is excluded from
-   the ordinary unit matrix by marker expression because it clones the repository and re-runs the suite.
+   the ordinary unit matrix by marker expression because it clones the repository and re-runs the suite. That job runs
+   on `ubuntu-latest` only, so neither suite-rerunning check runs on macOS.
 
 Markers are declared in `pyproject.toml` and pytest runs with `--strict-markers`, so an unregistered or misspelled
 marker fails the run instead of quietly escaping every `-m` selection.

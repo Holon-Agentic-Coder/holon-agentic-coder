@@ -22,8 +22,9 @@ managed centrally.
   `holon-config/rules/trust_levels.json`.
 - **Sandbox Selection Policy:** Logic for choosing sandbox types based on entropy and trust is loaded from
   `holon-config/rules/sandbox_policy.json`.
-- **Entropy Budgets:** Default allocations and enforcement rules are loaded from
-  `holon-config/rules/entropy_rules.json`.
+- **Entropy Budgets:** Not config-loaded: `budgets.DEFAULT_ENTROPY_BUDGET` (`15.0`) in `sandbox_executor.budgets` is the
+  single default, and [Turn and Stage Budgets](budgets.md#entropy-budget) describes how a plan's budget resolves and is
+  enforced.
 - **Git Flow Constraints:** Mandatory rebase and merge rules are loaded from `holon-config/rules/git_flow_rules.json`.
 
 ---
@@ -51,7 +52,8 @@ managed centrally.
 
 - High predicted entropy = **high risk** = deeper review, stronger sandboxing, or rejection.
 - Entropy budgets **limit blast radius** (intents cannot exceed allocated entropy).
-- Entropy spikes trigger **automatic escalation** (human review, deeper model routing).
+- Entropy spikes trigger **automatic escalation** (re-planning, deeper model routing); no stage before the merge waits
+  for a human.
 
 ### 5) Human review is the final gate
 
@@ -175,12 +177,15 @@ Monitor for:
 The system defines four distinct trust tiers for agents, representing an escalation of capabilities earned through
 historical performance and calibration reliability.
 
-| Trust Level                                 | Capabilities (Can)                                                                                      | Restrictions (Cannot)                                                                                         | Promotion/Escalation Criteria                                                                             |
-| :------------------------------------------ | :------------------------------------------------------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **Baseline** <br>_(Default for new agents)_ | <ul><li>Plan actions</li><li>Execute in isolated sandbox</li><li>Read Ledger and KB</li></ul>           | <ul><li>Spawn sub-intents</li><li>Propose root intents</li><li>Propose estimators</li><li>Modify KB</li></ul> | Initial baseline state upon agent registration                                                            |
-| **Medium** <br>_(Earned)_                   | <ul><li>All Baseline capabilities</li><li>Spawn sub-intents (up to depth 3)</li></ul>                   | <ul><li>Propose root intents</li><li>Propose estimators</li><li>Modify KB directly</li></ul>                  | $\ge 10$ successful executions with average success calibration error $< 0.30$                            |
-| **High** <br>_(Earned)_                     | <ul><li>All Medium capabilities</li><li>Propose root intents (requires human approval)</li></ul>        | <ul><li>Propose estimators</li><li>Modify core invariants</li></ul>                                           | $\ge 30$ successful executions with average success calibration error $< 0.20$                            |
-| **Highest** <br>_(Earned)_                  | <ul><li>All High capabilities</li><li>Propose estimators (requires human approval & backtest)</li></ul> | <ul><li>Modify core invariants directly (always requires human gating)</li></ul>                              | $\ge 100$ successful executions with average success calibration error $< 0.15$ (manual promotion review) |
+| Trust Level                                 | Capabilities (Can)                                                                                      | Restrictions (Cannot)                                                                                                        | Promotion/Escalation Criteria                                                                             |
+| :------------------------------------------ | :------------------------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------- |
+| **Baseline** <br>_(Default for new agents)_ | <ul><li>Plan actions</li><li>Execute in isolated sandbox</li><li>Read Ledger and KB</li></ul>           | <ul><li>Spawn sub-intents (target model)</li><li>Propose root intents</li><li>Propose estimators</li><li>Modify KB</li></ul> | Initial baseline state upon agent registration                                                            |
+| **Medium** <br>_(Earned)_                   | <ul><li>All Baseline capabilities</li><li>Spawn sub-intents (target model)</li></ul>                    | <ul><li>Propose root intents</li><li>Propose estimators</li><li>Modify KB directly</li></ul>                                 | $\ge 10$ successful executions with average success calibration error $< 0.30$                            |
+| **High** <br>_(Earned)_                     | <ul><li>All Medium capabilities</li><li>Propose root intents (requires human approval)</li></ul>        | <ul><li>Propose estimators</li><li>Modify core invariants</li></ul>                                                          | $\ge 30$ successful executions with average success calibration error $< 0.20$                            |
+| **Highest** <br>_(Earned)_                  | <ul><li>All High capabilities</li><li>Propose estimators (requires human approval & backtest)</li></ul> | <ul><li>Modify core invariants directly (always requires human gating)</li></ul>                                             | $\ge 100$ successful executions with average success calibration error $< 0.15$ (manual promotion review) |
+
+Trust-gated sub-intents are the target model: `holon flow` currently lets any agent's plan list sub-intents and enforces
+one hard cap, `MAX_SUB_INTENT_DEPTH` (currently 2), for every agent.
 
 ---
 
@@ -248,7 +253,10 @@ Trust can **decrease** if:
 
 ### Budget allocation
 
-Every intent has an **entropy budget** that limits its blast radius:
+Every intent has an **entropy budget** that limits its blast radius. The allocation below is the target model; in the
+current flow a root plan's budget resolves to its plan row, else its intent row, else `DEFAULT_ENTROPY_BUDGET` (`15.0`),
+and each child intent inherits its parent plan's resolved budget unchanged (see
+[Turn and Stage Budgets](budgets.md#entropy-budget)):
 
 ```python
 def allocate_entropy_budget(intent_type, parent_budget, trust_level):
@@ -266,7 +274,9 @@ def allocate_entropy_budget(intent_type, parent_budget, trust_level):
 Before execution:
 
 1. **Check predicted entropy** against budget.
-2. If `predicted_entropy > budget`, **reject intent** or **escalate to human review**.
+2. If `predicted_entropy > budget` and the plan lists no explicit sub-intent list, **re-plan automatically** (a bounded
+   number of times) and then **fail the stage**; a plan with an explicit sub-intent list runs each child through the
+   full pipeline. No stage before the merge waits for a human (see [Turn and Stage Budgets](budgets.md#entropy-budget)).
 
 After execution:
 
@@ -281,7 +291,7 @@ If parent intent's entropy budget is exhausted:
 - No more sub-intents can be spawned.
 - Agent must either:
   - Complete remaining work within budget.
-  - Request budget increase (requires human approval).
+  - Re-plan into a smaller plan or an explicit sub-intent list (bounded; no human approval is awaited before the merge).
   - Abandon intent.
 
 ---
@@ -290,11 +300,14 @@ If parent intent's entropy budget is exhausted:
 
 ### Automatic human review triggers
 
-Human review is **required** for:
+Human review is **required** for the items below. Only item 1, the PR merge, is on the flow's path; the others are
+out-of-band reviews and never pause a running flow before the merge.
 
 1. **Parent intent merge to `main`**
    - All parent intents (direct children of `main`) require human approval before merge.
-   - Sub-intents merge to parent without human review (parent review covers them).
+   - Sub-intents run autonomously through the full flow and merge only into their parent intent branch; until sub-intent
+     aggregation is automated, the maintainer merges each child PR as well. These PR merges are the only human step: no
+     stage before them waits for a human.
 
 2. **Estimator proposals**
    - Any change to P(success), ΔS, Impact, Learning Value, or EV estimators.
@@ -318,7 +331,8 @@ Human review is **required** for:
    - If agent fails 3+ consecutive intents, human reviews agent state.
 
 8. **Novel intent types**
-   - If intent type has no historical precedent in KB, human reviews plan before execution.
+   - Target model (nothing flags novel intent types yet): if the intent type has no historical precedent in the KB, the
+     plan is flagged for the reviewer at the merge PR; execution does not wait.
 
 ### Human review workflow
 
@@ -421,7 +435,8 @@ Human review is **required** for:
 
 - **Containment:** Intent cannot spawn more sub-intents.
 - **Response:** Log budget exhaustion, notify agent.
-- **Recovery:** Agent completes work within budget, or requests increase (human approval).
+- **Recovery:** Agent completes work within budget, or the flow re-plans a bounded number of times and then fails the
+  stage; no human approval is awaited before the merge.
 - **Escalation:** If actual entropy >> predicted (> 1.5x), human reviews estimator accuracy.
 
 #### 4) **Sandbox escape attempt**

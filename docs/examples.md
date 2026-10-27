@@ -636,6 +636,10 @@ $ git push origin main
 
 Human creates a root intent to "Implement metrics module". Agent decomposes into sub-intents.
 
+> [!NOTE] The merge steps below show the target model of automatic sub-intent merges. In the current `holon flow`, the
+> children run one at a time, each through the full pipeline, and each opens a PR into its parent intent branch that the
+> maintainer merges; nesting stops at `MAX_SUB_INTENT_DEPTH`.
+
 ### Intent hierarchy
 
 ```
@@ -780,7 +784,7 @@ $ git rebase intent/I-root-002-implement-metrics-module
 $ git rebase intent/I-root-002-implement-metrics-module
 ```
 
-**Merge to parent (no human review for sub-intent):**
+**Merge to parent (target model: no human review for sub-intent):**
 
 ```bash
 $ git checkout intent/I-root-002-implement-metrics-module
@@ -848,7 +852,7 @@ intent/I-root-002-implement-metrics-module/I-root-002-002-implement-entropy
 1. Rebases from parent (`I-root-002-002-implement-entropy`) before execution
 2. Executes
 3. Rebases from parent after execution
-4. Merges to parent (no human review)
+4. Merges to parent (target model: no human review)
 
 **After both sub-sub-intents complete:**
 
@@ -907,7 +911,8 @@ $ git push origin main
 
 ### Scenario
 
-Two sub-intents modify the same file concurrently, causing a rebase conflict.
+Two sub-intents modify the same file concurrently, causing a rebase conflict. This is the target model: the current flow
+runs sibling sub-intents one at a time.
 
 ### Setup
 
@@ -1523,7 +1528,9 @@ and logs the promotion to the ledger:
 }
 ```
 
-The agent is now permitted to autonomously spawn sub-intents up to a depth of 3.
+In the target model the agent is now permitted to autonomously spawn sub-intents. The current `holon flow` does not gate
+sub-intents by trust: any agent's plan may list them, up to one hard cap, `MAX_SUB_INTENT_DEPTH` (currently 2), for
+every agent.
 
 ---
 
@@ -1655,7 +1662,8 @@ git rebase origin/I-100-refactor-api/_
 
 #### 5) Push and trigger automatic merge evaluation
 
-Once tests pass on the rebased code, the branch is pushed and merged into the parent:
+Once tests pass on the rebased code, the branch is pushed and merged into the parent. The merge commands below are the
+target model; in the current flow the child's PR into the parent intent branch is merged by the maintainer:
 
 ```bash
 # Push branch to remote
@@ -1687,18 +1695,18 @@ git push origin --delete I-100-refactor-api/I-101-add-serializers/_
 
 ## Summary of examples
 
-| Example | Demonstrates                                                                          |
-| ------- | ------------------------------------------------------------------------------------- |
-| 1       | Simple root intent, competitive planning, human review, promotion to main             |
-| 2       | Recursive sub-intent decomposition, git branch hierarchy, automatic sub-intent merges |
-| 3       | Rebase conflict detection, reactive intent spawning, conflict resolution              |
-| 4       | Autonomous intent generation, quality scoring, approval gates                         |
-| 5       | KB pattern extraction, evidence validation, pattern reuse in future planning          |
-| 6       | Model routing based on complexity, ROI measurement                                    |
-| 7       | Failure mode extraction, mitigation identification, failure avoidance                 |
-| 8       | Trust level progression, trust scoring formulas, and tier promotions                  |
-| 9       | Sandbox network/file egress violations, security alerts, and trust demotion           |
-| 10      | Concrete git terminal commands for branching, rebasing, and merging sub-intents       |
+| Example | Demonstrates                                                                             |
+| ------- | ---------------------------------------------------------------------------------------- |
+| 1       | Simple root intent, competitive planning, human review, promotion to main                |
+| 2       | Recursive sub-intent decomposition, git branch hierarchy, target-model sub-intent merges |
+| 3       | Rebase conflict detection, reactive intent spawning, conflict resolution                 |
+| 4       | Autonomous intent generation, quality scoring, approval gates                            |
+| 5       | KB pattern extraction, evidence validation, pattern reuse in future planning             |
+| 6       | Model routing based on complexity, ROI measurement                                       |
+| 7       | Failure mode extraction, mitigation identification, failure avoidance                    |
+| 8       | Trust level progression, trust scoring formulas, and tier promotions                     |
+| 9       | Sandbox network/file egress violations, security alerts, and trust demotion              |
+| 10      | Concrete git terminal commands for branching, rebasing, and merging sub-intents          |
 
 ---
 

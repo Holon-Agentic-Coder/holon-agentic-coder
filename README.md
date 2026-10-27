@@ -78,10 +78,10 @@ Please take the time to review `core_concepts.md` carefully to get the most out 
 
 ## Core principles (non-negotiable invariants)
 
-### 1) Intent is fractal (recursive, unbounded depth)
+### 1) Intent is fractal (recursive, depth-capped)
 
-There is no fixed number of levels. Any intent may spawn sub-intents, which may spawn sub-sub-intents, until leaf nodes
-become **atomic intents** (direct actions).
+Any intent may spawn sub-intents, which may spawn sub-sub-intents, until leaf nodes become **atomic intents** (direct
+actions). `holon flow` caps the nesting at `MAX_SUB_INTENT_DEPTH` levels below the root intent.
 
 ### 2) Planning is first-class and competitive
 
@@ -101,7 +101,9 @@ Git provides immutable history, causal lineage, reproducibility, and cheap branc
 
 - **Sub-intents merge only into their parent intent branch**
 - **Never directly to `main`**
-- Only **parent intents** are presented to humans for review and promotion to `main`
+- Only **parent intents** are presented to humans for review and promotion to `main`; until sub-intent aggregation is
+  automated, the maintainer also merges each sub-intent's PR into its parent intent branch, and these PR merges are the
+  only human step
 
 ### 6) Mandatory dual rebase gates
 
@@ -192,7 +194,8 @@ Holon enforces a strict Git discipline to ensure isolation, reproducibility, and
 - Sub-intents branch from their parent intent (never from `main`)
 - Sub-intents merge **only** into their parent intent (never directly to `main`)
 - Sub-intents must rebase from parent **before** and **after** execution
-- Only parent intents are reviewed by humans and merged to `main` (short-term goal)
+- Only parent intents are reviewed by humans and merged to `main` (short-term goal); today the maintainer also merges
+  each sub-intent's PR into its parent intent branch
 
 **For complete details**, see [`docs/git_flow.md`](docs/git_flow.md).
 
@@ -220,8 +223,12 @@ _Note: This example shows a "Deep" model planning for an intent that was origina
 
 ### Branch naming (Fractal Nesting)
 
-Holon uses a filesystem-like branch structure to represent the intent hierarchy. Sub-intents are nested under their
-parent's path.
+Holon uses a filesystem-like branch structure to represent the intent hierarchy. In the target model, sub-intents are
+nested under their parent's path. The current `holon flow` cuts each sub-intent a flat `{parent}--{n}-{slug}/_` branch
+from its parent intent branch and targets its PR at that parent branch: `{parent}` is the parent's intent branch without
+`/_` and `{n}` the item's position in the parent's sub-intent list, so the name never depends on the clock and cannot
+collide with the parent or a sibling (see [Git Flow](docs/git_flow.md) section 2.2). The parent link is also recorded in
+the child's `parent_intent_id`.
 
 #### Root Intent Branch
 
@@ -231,7 +238,7 @@ I-{timestamp}-{slug}/_
 
 Example: `I-1771890389-refactor-metrics/_`
 
-#### Sub-Intent Branch (Nested)
+#### Sub-Intent Branch (Nested, target model)
 
 ```
 {root_intent}/I-{timestamp}-{slug}
@@ -525,10 +532,12 @@ Agents progress through **capability tiers** based on demonstrated performance:
 | **1** | **Proposer**   | Propose atomic intents (no sub-intents)      | 10 successful executions                                |
 | **2** | **Decomposer** | Propose intents with 1 level of sub-intents  | Intent Quality > 0.7 for 20 proposals                   |
 | **3** | **Architect**  | Propose intents with 2 levels of sub-intents | Intent Quality > 0.8 for 50 proposals                   |
-| **4** | **Autonomous** | Unlimited recursion depth                    | Intent Quality > 0.85 for 100 proposals                 |
+| **4** | **Autonomous** | Unlimited depth (target model)               | Intent Quality > 0.85 for 100 proposals                 |
 | **5** | **Meta**       | Can propose changes to validation rules      | Intent Quality > 0.9 for 200 proposals + human approval |
 
-**Trust levels are per-agent** and can be **demoted** if quality degrades.
+**Trust levels are per-agent** and can be **demoted** if quality degrades. The tiers are the target model: `holon flow`
+currently lets any agent's plan list sub-intents and enforces one hard nesting cap, `MAX_SUB_INTENT_DEPTH` (currently 2
+levels below the root intent), for every agent.
 
 ### Intent proposal mechanism
 
@@ -572,7 +581,8 @@ Every proposal goes through validation checks:
 
 #### 1. Recursion depth check
 
-Agent's trust level determines max allowed sub-intent depth:
+Agent's trust level determines max allowed sub-intent depth (target model; `holon flow` currently enforces one hard cap,
+`MAX_SUB_INTENT_DEPTH`, for every agent):
 
 ```python
 if proposed_depth > TRUST_LEVEL_MAX_DEPTH[agent.trust_level]:

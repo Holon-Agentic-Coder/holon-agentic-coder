@@ -70,8 +70,9 @@ Agents must adhere to the following immutable contracts unless explicitly overri
 - **Metric-Driven Decisions:** Agents use defined metrics (P(success), Entropy, Impact, LearningValue, Cost, EV) for all
   planning and execution.
 - **No Core Invariant Modification:** Agents cannot autonomously change core system invariants or safety policies.
-- **Human Review Boundary:** Root intents require human approval before promotion; sub-intents merge automatically based
-  on evaluation.
+- **Human Review Boundary:** Root intents require human approval before promotion, given by the maintainer's PR merge,
+  the only human step; no stage before it waits for a human. Sub-intents open PRs into their parent intent branch, which
+  the maintainer currently merges too (automatic, evaluation-based sub-intent merging is the target model).
 - **Communication via Ledger:** All inter-agent communication and state changes are logged in the ledger; no direct
   agent-to-agent messaging.
 

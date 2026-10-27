@@ -16,13 +16,20 @@ This document defines the **Git branching, rebasing, and merging discipline** fo
 ### 1.2 Fractal Intent Hierarchy
 
 - Intents can spawn sub-intents recursively
-- Each sub-intent gets a branch nested under its parent's branch
-- Depth is unlimited (but entropy budgets constrain practical depth)
+- Each sub-intent gets its own intent branch, cut from its parent's intent branch and targeting it. In the current flow
+  that branch is a flat `{parent}--{n}-{slug}/_` (section 2.2), linked to the parent by its `target_branch` and
+  `parent_intent_id`; branch names nested under the parent's branch (sections 2.2-2.3 and 8) are the target model
+- Depth is capped: `holon flow` refuses to nest sub-intents more than `MAX_SUB_INTENT_DEPTH` levels below the root
+  intent (see Stage 3 under the flow equivalence guarantee)
 
 ### 1.3 Human Review Boundary
 
-- **Root intents** (top-level intents) require human review before merging to `main`
-- **Sub-intents** (at any depth) merge automatically to their parent based on evaluation
+- **Root intents** (top-level intents) require human review before merging to `main`: the maintainer's PR merge is the
+  only human step, and no stage before it waits for a human
+- **Sub-intents** merge only into their parent intent branch. In the current flow each child runs autonomously through
+  the full pipeline and opens a PR into its parent intent branch, which the maintainer merges; automatic,
+  evaluation-based sub-intent merging (sections 4.1, 5, 6, 7.4, 8, the sub-intent rows of section 12 and sections
+  13.2-13.3) is the target model and is not yet automated
 - This applies recursively: sub-sub-intents merge to sub-intents, which merge to root intents
 
 ### 1.4 Terminology
@@ -33,8 +40,10 @@ This document defines the **Git branching, rebasing, and merging discipline** fo
 
 ### 1.5 ID Generation
 
-- All intent, plan, execution IDs are generated using the current Unix timestamp.
-- This ensures decentralised, collision-free ID creation across the entire fractal tree.
+- Root intent, plan and execution IDs are generated using the current Unix timestamp.
+- In the current flow, sub-intent IDs are derived from their parent's ID and their position in the parent's sub-intent
+  list, never from the clock (section 2.2), so children created within the same second as their parent or siblings never
+  collide. The target-model examples in sections 2.2, 2.3, 3, 4 and 8 still show timestamped sub-intent IDs.
 - Example: `I-1771422315`, `P-1771422316`, `E-1771422317`
 
 ---
@@ -58,6 +67,19 @@ I-1771890389-refactor-metrics/_
 ```
 
 ### 2.2 Sub-Intent Branch (Nested)
+
+> [!NOTE] Target model. In the current flow a sub-intent's branch is the flat `{parent}--{n}-{slug}/_`, cut from its
+> parent's intent branch, which it targets; the parent link is also recorded as `target_branch` and `parent_intent_id`.
+> `{parent}` is the parent's intent branch without its `/_` suffix, `{n}` the item's 1-based position in the parent's
+> sub-intent list and `{slug}` the item's slug, for example `I-1771890389-refactor-metrics--1-improve-estimators/_` and,
+> one level deeper, `I-1771890389-refactor-metrics--1-improve-estimators--2-p-success/_`. A generated slug never
+> contains `--`, so the name cannot collide with the parent, a sibling or any other intent, even when they are created
+> within the same second or share a slug. Re-running the same parent's sub-intent list derives the same names. The
+> intent stage reuses an existing branch of that name only when its `intents.jsonl` row records the same goal and
+> description; otherwise (for example after a re-plan changed the item at that position) the stage fails and names the
+> conflicting branch rather than reuse it. A sub-intent's flow checkpoint is keyed on its intent branch
+> (`.holon/flow/checkpoint-{parent}--{n}-{slug}.json`), so a child and a grandchild sharing a slug never overwrite each
+> other's. Sections 2.2 and 2.3 describe the nested names of the target model.
 
 ```
 I-{timestamp}-{slug}/I-{timestamp}-{slug}/_
@@ -148,6 +170,40 @@ resume that enters at Stage 5. The conflict probes of Stages 2-5 name the branch
 yet), and the review records the execution branch's tip, freshly fetched from `origin`, as the reviewed commit, never
 the operator's `HEAD`.
 
+Stage 3 never halts for a human. The executor's outcome is judged against the plan's persisted entropy budget (see
+[Turn and Stage Budgets](budgets.md#entropy-budget)):
+
+- **Fits the budget:** the plan is executed as usual.
+- **Explicit sub-intent list:** the executor records the parsed list on its `decomposed` summary row and writes no
+  `intents.jsonl` rows. The flow then runs each item as a child intent, strictly one after another and never
+  concurrently, through the full pipeline (intent, plan, execute, review, calibrate). Each child targets its immediate
+  parent intent branch (`target_branch` and `parent_intent_id`), never `main`, and stops at its own Stage 4 consensus
+  halt. The first failing child fails the parent's Stage 3; when all succeed, the parent's own Stage 4 and Stage 5 are
+  skipped with reason `decomposed`, because review and calibration ran per child. Nesting is bounded by
+  `MAX_SUB_INTENT_DEPTH`, checked against the plan before the executor is dispatched when the plan can be read.
+
+  **Current limitation:** decomposed children target the parent intent branch, and the flow stops there. Each child is
+  cut from the parent intent branch as it stood when that child started, so a later child does not see an earlier
+  child's unmerged changes; order dependent items accordingly. Aggregating the merged children and raising the parent
+  intent branch's PR to its own target (for a root intent, `main`) are not yet automated. The `holon flow` summary lists
+  each child's PR (or its execution branch when no PR was recorded), lists a child that itself decomposed as having no
+  PR of its own with its own children nested below it, and names this pending parent-to-target step, which the
+  maintainer performs after merging the child PRs. Those PR merges are the only human steps. Sections 4.1, 5, 6, 7.4, 8,
+  the sub-intent rows of section 12 and sections 13.2-13.3 describe the target model of automatic, evaluation-based
+  sub-intent merges, which is not yet implemented.
+
+- **Over budget without a list:** the flow returns to Stage 2 automatically, asking for a smaller plan or an explicit
+  sub-intent list (only a smaller plan when the intent is at the sub-intent depth limit), at most `MAX_REPLAN_ATTEMPTS`
+  times; then Stage 3 fails with a message naming the entropy, the budget and the attempts. When the plan can be read,
+  the flow refuses each over-budget plan before dispatching the executor, so those attempts create no execution branch
+  and append no `executions.jsonl` row; each rejected plan keeps its `plans.jsonl` row, and the refusals are recorded
+  only in the flow's stage results, log and checkpoint. When the plan cannot be read before dispatch, the executor
+  refuses the plan itself and the flow reads the `over_budget` row it records on an execution branch (exit code 3). That
+  row also covers a direct `holon execute` run, which exits with code 3 (so the refusal is not mistaken for success)
+  only when that row is committed and then either pushed or kept local because pushing is disabled, and with code 1
+  otherwise (see
+  [Entropy Budget and Decomposition Evaluation](executor/execution_architecture_specification.md#5-entropy-budget-and-decomposition-evaluation)).
+
 The guarantee has five deliberate limits:
 
 - **No fabricated plans.** If no planner agent produced `plans/P-*.md` on a plan branch under the intent branch, Stage 2
@@ -192,7 +248,8 @@ The guarantee has five deliberate limits:
 
 Merging to `main` is strictly reserved for the human maintainer. Upon successful consensus approval in Stage 4 and
 calibration report inclusion in Stage 5, the automated flow halts and requests human review and merge. Autonomous
-merging to `main` is strictly forbidden.
+merging to `main` is strictly forbidden. This Stage 4 consensus stop is the only halt in the flow: no earlier stage
+waits for a human, and merging the PR is the only human step.
 
 ---
 
@@ -235,6 +292,9 @@ If rebase fails:
 ## 4) Merge Rules
 
 ### 4.1 Sub-Intent → Parent Merge (Automatic)
+
+> [!NOTE] Target model. In the current flow, each child's PR into the parent intent branch is merged by the maintainer
+> (see Stage 3 under the flow equivalence guarantee).
 
 **Trigger:** Sub-intent execution completes successfully
 
@@ -327,7 +387,7 @@ $ git push origin main
 
 - Discarding sub-intents (close branch without merging)
 - Multiple sub-intents merging to same parent
-- Recursive sub-intent trees of arbitrary depth
+- Recursive sub-intent trees up to `MAX_SUB_INTENT_DEPTH` levels below the root intent
 
 ---
 
@@ -421,10 +481,11 @@ def parallel_merge(sub_intents, parent_branch):
 $ git checkout main
 $ git checkout -b I-1771890389-refactor-metrics/_
 
-# Sub-intent
-$ git checkout I-1771890389-refactor-metrics/_
-$ git checkout -b I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_
+# Sub-intent (current flow: a flat branch cut from the parent intent branch, which it targets)
+$ git checkout -b I-1771890389-refactor-metrics--1-improve-estimators/_ origin/I-1771890389-refactor-metrics/_
 ```
+
+In the target model the sub-intent branch is nested under its parent's (section 2.2).
 
 ### 7.2 Execution
 
@@ -441,7 +502,12 @@ $ git rebase I-1771890389-refactor-metrics/_
 
 ### 7.4 Merge (Automatic for Sub-Intents)
 
+Target model, using the nested sub-intent name of section 2.2. In the current flow the sub-intent branch is the flat
+`I-1771890389-refactor-metrics--1-improve-estimators/_` from section 7.1, and the maintainer merges its PR into the
+parent intent branch.
+
 ```bash
+# Target model: the nested sub-intent branch merges automatically
 $ git checkout I-1771890389-refactor-metrics/_
 $ git merge I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_
 ```
@@ -458,8 +524,9 @@ $ git push origin main
 ### 7.6 Cleanup
 
 ```bash
-# Delete merged branches
-$ git branch -d I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_
+# Delete merged branches (current flow: the flat sub-intent branch of section 7.1; in the target model, the nested
+# name merged in section 7.4)
+$ git branch -d I-1771890389-refactor-metrics--1-improve-estimators/_
 $ git branch -d I-1771890389-refactor-metrics/_
 ```
 
@@ -643,12 +710,17 @@ Even discarded intents provide value:
 | Conflict resolution       | Attempted  | If fails      | N/A                    |
 | Sub-intent discard        | ✓ Yes      | ✗ No          | N/A                    |
 
-**Key insight:** Human review is only required at the root intent level. All sub-intent merges are automatic and
-evaluation-based.
+**Key insight:** In the target model, human review is only required at the root intent level and all sub-intent merges
+are automatic and evaluation-based. In the current flow, the maintainer also merges each child's PR into its parent
+intent branch; those PR merges are the only human steps, and no stage before them waits for a human.
 
 ---
 
 ## 13) Edge Cases
+
+Sections 13.2 and 13.3 describe the target model. In the current flow the children of a sub-intent list run one at a
+time, and the first failing child fails the parent's Stage 3, so the remaining children do not run, nothing is merged
+automatically and no stage waits for a human.
 
 ### 13.1 Root Intent with No Sub-Intents
 

@@ -34,6 +34,23 @@ For each step, if it is large, risky, or reusable, you should recommend whether 
 own branch and evaluation. Respect the rule that only root intents eventually merge to `main`, and all sub‑intents merge
 into their immediate parent. If the step is small, not risky you can propose an execution branch.
 
+**Entropy Budget and Decomposition Contract:**
+
+- The entropy budget for this plan is {budget_from_intent}. The same value is stored on the plan's `plans.jsonl` row and
+  enforced by the executor.
+- If the plan fits the budget (overall `entropy_pred` at or below it) and has no `## Sub-intent list` section, it is
+  executed as one plan. A non-empty sub-intent list is run as child intents whatever the entropy, so add one only when
+  the work should really be split. Sub-intents nest at most two levels below the root intent: when this intent is
+  already at that limit, Stage 3 refuses a sub-intent list and fails instead of recursing further.
+- If the work cannot fit the budget, add a level-2 heading `## Sub-intent list` followed by top-level bullet or numbered
+  items, one concrete child intent per item. Start every item with an imperative verb (for example `Add ...`,
+  `Normalise ...`). Indented nested bullets are read as details of the item above, never as separate children. The flow
+  then runs each listed child through the full pipeline, one at a time. When there are no sub-intents, omit the section
+  (or write `None`): an item whose first word, ignoring wrapping brackets, quotes and emphasis, is `none`, `n/a`, `na`,
+  `nil`, `no` or `not` is a placeholder whatever follows it, and never becomes a child.
+- A plan above the budget without that list is sent back for re-planning, and fails after a bounded number of attempts.
+  Per-step sub‑intent recommendations alone never trigger decomposition.
+
 You will be eliminated from the selection process if you:
 
 - fail to write the complete plan file according to the template format with a valid metrics table

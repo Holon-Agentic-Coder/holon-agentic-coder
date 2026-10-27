@@ -34,11 +34,11 @@ To ensure all proposed code changes conform to the project’s structure and bou
 
 Bottleneck steps (e.g., database schema changes, core module refactoring) carry high risk:
 
-- **Decomposition Trigger:** If a step is marked as a critical bottleneck (`Is Bottleneck: YES`) and its predicted
-  success probability is low (`P(success) < 0.7`), the engine blocks parent execution.
-- **Automated Decomposition:** The system automatically decomposes this step into a child **Sub-Intent** with its own
-  dedicated git branch, isolated sandbox, and test suites. The step is resolved independently before parent plan
-  execution can continue.
+- **Decomposition Guidance:** A step marked as a critical bottleneck (`Is Bottleneck: YES`) with a low predicted success
+  probability (`P(success) < 0.7`) is a candidate for the plan's sub-intent list; the engine never blocks on it.
+- **Decomposition via the Sub-intent List:** A bottleneck step is not decomposed automatically. To split it out, the
+  planner lists it as an item of the plan's explicit `## Sub-intent list` (see §4); the flow then runs that item as a
+  child intent with its own branch, sandbox and tests, resolved before the parent intent branch is raised to its target.
 
 ---
 
@@ -50,6 +50,18 @@ Entropy represents the disorder and complexity introduced by plans:
 - **Hard Compliance Gate:** If the cumulative predicted step entropy exceeds the intent's allocated budget, the plan
   variant is flagged as non-compliant. The planner is forced to either reframe the strategy or decompose the intent
   further.
+- **One Budget, Shown and Persisted:** The planner entrypoint resolves the budget once with
+  `budgets.resolve_entropy_budget` (the intent's `entropy_budget`, else `DEFAULT_ENTROPY_BUDGET`, `15.0`), shows it to
+  the agent as `{budget_from_intent}` and writes it as `entropy_budget` on the plan's `plans.jsonl` row. The executor
+  enforces exactly that value.
+- **Explicit Sub-intent List:** A plan that cannot fit the budget decomposes by adding a level-2 heading
+  `## Sub-intent list` followed by top-level bullet or numbered items, one concrete child intent per item (indented
+  nested bullets are details of the item above, never children of their own). The flow runs each item sequentially
+  through the full pipeline as a child intent targeting the parent intent branch. Per-step sub‑intent recommendations
+  alone never trigger decomposition, and the executor never fabricates child work.
+- **Bounded Re-planning:** A plan above its budget without that list is sent back to the planner with a "Re-plan
+  request" paragraph (passed through `HOLON_REPLAN_FEEDBACK`, never written to a ledger), at most `MAX_REPLAN_ATTEMPTS`
+  (`2`) times, after which the Execute stage fails with a clear message.
 
 ---
 

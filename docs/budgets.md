@@ -134,9 +134,10 @@ output read so far is returned after a second bounded wait.
 ## Salvage, resume and the ACT-BUDGET record
 
 1. After a breached turn, whatever the agent already wrote to its artefact is kept on disk (salvage).
-2. Exactly one resume turn is attempted. Its prompt repeats the task context, states that the file is partial, and lists
-   only the missing sections. It is bounded by both the turn budget and what is left of the stage budget; if the stage
-   has no time left, no resume is attempted.
+2. Exactly one resume turn is attempted, but only when the salvaged artefact is incomplete (not usable, or missing a
+   required section) and the stage still has time left: a breach that left a complete artefact needs none. Its prompt
+   repeats the task context, states that the file is partial, and lists only the missing sections. It is bounded by both
+   the turn budget and what is left of the stage budget; if the stage has no time left, no resume is attempted.
 3. If the artefact is usable after the resume (it exists, exceeds the size floor and its metrics table parses), the plan
    stage carries on normally and nothing is recorded. The executor is different: its resume may only touch the execution
    notes, so it can never finish code that was cut off. Any breach of the executor's implementation turn is therefore a
@@ -189,3 +190,36 @@ Every stage reports elapsed time against its budget in the form `stage: status (
 The flow execute stage runs no host-side test suite: the executor container runs and records its own tests within the
 handed-down ceiling, and writes the stage's `elapsed_seconds` and `budget_seconds` on its execution summary row (see
 [Ledger Schema](ledger_schema.md)). A superseding empty-diff row written by the flow repeats those fields.
+
+## Entropy budget
+
+The entropy budget is the blast-radius limit a plan must respect (see [Safety](safety.md)). It is not a wall-clock
+budget, but it lives in the same module so that there is exactly one source of truth for it.
+
+- **One shared default.** `budgets.DEFAULT_ENTROPY_BUDGET` (`15.0`) is used by both the planner and the executor; there
+  are no other entropy-budget literals.
+- **One resolver.** `budgets.resolve_entropy_budget(plan_row, intent_row)` returns a finite, non-negative
+  `entropy_budget` from the plan's `plans.jsonl` row, else from the intent's `intents.jsonl` row, else the shared
+  default. Missing, `null`, non-numeric, NaN, infinite or negative values fall through to the next source.
+- **Persisted once.** The planner resolves the budget from the intent, shows it to the planning agent
+  (`{budget_from_intent}` in the planner template) and writes the same value as `entropy_budget` on the plan row. The
+  executor and the flow read it back through the resolver, so historic plan rows without the field fall back to the
+  intent's budget.
+- **Bounded re-planning.** A plan above its budget that lists no sub-intent list is sent back to Stage 2 at most
+  `budgets.MAX_REPLAN_ATTEMPTS` (`2`) times, with a short re-plan request passed to the planner container through
+  `HOLON_REPLAN_FEEDBACK` (never written to a ledger). After that, Stage 3 fails with a message naming the entropy, the
+  budget and the number of attempts. Under `holon flow`, when the plan row can be read before dispatch, an over-budget
+  plan is refused before the executor container starts: that attempt creates no execution branch and appends no
+  `executions.jsonl` row. Each rejected plan keeps its `plans.jsonl` row on its plan branch, and those refusals, the
+  re-plan count and the final failure are recorded only in the flow's stage results, log and checkpoint
+  (`.holon/flow/checkpoint-<slug>.json`; a sub-intent's is keyed on its intent branch instead). When the plan row cannot
+  be read before dispatch, the executor refuses the plan itself and the flow reads the `over_budget` row it records on
+  an execution branch. The executor's `over_budget` summary row is written only when the executor itself refuses the
+  plan, as in that case or a direct `holon execute` run, which then exits with code 3 (`OVER_BUDGET_EXIT_CODE`) only
+  when that row is committed and then either pushed or kept local because pushing is disabled, and with code 1 otherwise
+  (see
+  [Entropy Budget and Decomposition Evaluation](executor/execution_architecture_specification.md#5-entropy-budget-and-decomposition-evaluation)).
+  For an intent already at `budgets.MAX_SUB_INTENT_DEPTH`, the re-plan request asks only for a smaller plan, since a
+  sub-intent list would be refused there.
+- **Bounded nesting.** Child intents created from a sub-intent list carry `sub_intent_depth`; the flow refuses to
+  recurse beyond `budgets.MAX_SUB_INTENT_DEPTH` (`2`).

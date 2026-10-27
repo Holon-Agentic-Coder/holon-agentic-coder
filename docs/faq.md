@@ -110,9 +110,14 @@ the initial high cost is a necessary investment in the system's education.
 - **Active Rebase Pulses:** If an execution branch remains open for a long period, the orchestrator periodically pushes
   a background rebase onto the parent branch to catch up with concurrent changes early, rather than waiting for a
   massive end-of-execution conflict.
-- **Budget Checks & Pause State:** If an intent exceeds its cost or time budget, the harness commits current progress to
-  the branch, saves the intermediate state to the Ledger, pauses the intent, and alerts human operators for a review or
-  budget expansion.
+- **Budget Checks:** If a planner or executor turn exceeds its turn, stall or stage budget, one resume turn is attempted
+  first, but only when the salvaged artefact is incomplete (not usable, or missing a required section) and the stage
+  still has time left (so neither a stage-budget breach nor a breach that left a complete artefact gets one). A plan
+  that is usable after it carries on with nothing recorded, and a breach confined to the executor's notes-only re-prompt
+  is only logged. Otherwise the container commits the salvaged partial artefact (the executor commits its partial notes,
+  not the code changes), records one `ACT-BUDGET` action in the ledger and the stage fails; the flow stops there rather
+  than pausing for a human. A host-side `holon flow` stage ceiling also fails the stage, but writes no `ACT-BUDGET`
+  record (see [Turn and Stage Budgets](budgets.md)).
 
 ### Niche or Unsupported Languages and Frameworks
 

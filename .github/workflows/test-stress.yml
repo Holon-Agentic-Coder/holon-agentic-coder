@@ -41,7 +41,9 @@ jobs:
         # Clones the repository onto the exact path an executor works in (~/.holon-sandbox/workspace
         # with HOME redirected), runs this suite's unit selection from there, and requires the
         # workspace, its .git and its HEAD commit to survive -- the bean 0019 incident deleted the
-        # workspace, which pushed executor.py into its destructive git re-initialisation.
+        # workspace, which pushed executor.py into its destructive git re-initialisation. Also runs
+        # the hermetic canary guard (test_sandbox_hermetic_guard.py), which re-runs the whole unit
+        # selection under a simulated container HOME and is kept out of the unit matrix for runtime.
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
@@ -49,24 +51,36 @@ jobs:
           time uv run pytest -v -l --tb=short -m stress --junitxml=stress-report.xml
 
       - name: Assert the stress suite really ran
-        # Non-skippable by construction: pytest exits non-zero when nothing is collected, and a
-        # skipped or absent stress test reports tests=1/skipped=1, which fails here instead of
-        # passing quietly. The report is parsed rather than grepped, so the check does not depend on
-        # junit attribute ordering, quoting, or an extra wrapper element.
+        # Non-skippable by construction: pytest exits non-zero when nothing is collected, a skipped
+        # stress test reports skipped=1, and a stress test that is no longer collected is missing
+        # from the named test cases; each fails here instead of passing quietly. The report is
+        # parsed rather than grepped, so the check does not depend on junit attribute ordering,
+        # quoting, or an extra wrapper element.
         run: |
           uv run python - <<'PY'
           import sys
           import xml.etree.ElementTree as ET
 
-          suites = ET.parse("stress-report.xml").getroot().iter("testsuite")
+          root = ET.parse("stress-report.xml").getroot()
           totals = {k: 0 for k in ("tests", "skipped", "failures", "errors")}
-          for suite in suites:
+          for suite in root.iter("testsuite"):
               for key in totals:
                   totals[key] += int(suite.get(key, 0))
+          names = {case.get("name") for case in root.iter("testcase")}
+          # Both stress tests must run: the workspace-survival test and the hermetic canary guard.
+          expected = {
+              "test_suite_run_from_live_executor_workspace_preserves_workspace_and_history",
+              "test_canary_workspace_survives_entrypoint_tests",
+          }
 
-          print(f"stress report: {totals}")
-          if totals["tests"] < 1:
-              sys.exit("no stress test was collected: the stress suite is missing or not selected")
+          print(f"stress report: {totals}, tests: {sorted(names)}")
+          if totals["tests"] < len(expected) or expected - names:
+              sys.exit(f"a stress test was not collected: missing {sorted(expected - names)}")
           if totals["skipped"]:
-              sys.exit("a stress test was skipped: the workspace-survival guarantee was not proven")
+              sys.exit(
+                  "a stress test was skipped: its workspace-survival or hermetic guarantee "
+                  "was not proven"
+              )
+          if totals["failures"] or totals["errors"]:
+              sys.exit("a stress test failed or errored")
           PY

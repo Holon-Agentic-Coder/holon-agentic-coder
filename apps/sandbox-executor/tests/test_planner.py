@@ -9,7 +9,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sandbox_executor.budgets import BudgetBreach
+from sandbox_executor.budgets import DEFAULT_ENTROPY_BUDGET, BudgetBreach
 from sandbox_executor.entrypoint import planner
 from sandbox_executor.turns import TurnResult
 
@@ -214,8 +214,10 @@ class _PlannerHarness:
     ``agent_turns`` is a list of callables ``(cmd, watch_path) -> TurnResult``; each supervised turn pops the next one.
     """
 
-    def __init__(self, testcase, agent_turns, model="gemini", env=None, build_cmd=None):
+    def __init__(self, testcase, agent_turns, model="gemini", env=None, build_cmd=None, intent=None, template=None):
         self.testcase = testcase
+        self.intent = INTENT if intent is None else intent
+        self.template = template or "Template {intent_json} {plan_id} {safe_model}"
         self.build_cmd = build_cmd or (lambda model, pf, inf, prompt: ["pi", "-p", "--model", model, prompt])
         self.agent_turns = list(agent_turns)
         self.model = model
@@ -231,10 +233,10 @@ class _PlannerHarness:
         if args[:2] == ["git", "clone"]:
             ledger = pathlib.Path(cwd) / "holon-knowledge" / "ledger"
             ledger.mkdir(parents=True, exist_ok=True)
-            (ledger / "intents.jsonl").write_text(json.dumps(INTENT) + "\n")
+            (ledger / "intents.jsonl").write_text(json.dumps(self.intent) + "\n")
             prompts = pathlib.Path(cwd) / "holon-config" / "prompts"
             prompts.mkdir(parents=True, exist_ok=True)
-            (prompts / "planner.template.md").write_text("Template {intent_json} {plan_id} {safe_model}")
+            (prompts / "planner.template.md").write_text(self.template)
         result = MagicMock()
         result.returncode = 0
         result.stdout = ""
@@ -250,6 +252,7 @@ class _PlannerHarness:
         runner = MagicMock()
         runner.get_version.return_value = "1.0.0"
         runner.build_cmd.side_effect = self.build_cmd
+        self.runner = runner
         self.tmp = tempfile.TemporaryDirectory()
         self.repo_dir = self.tmp.name
         out, err = io.StringIO(), io.StringIO()
@@ -332,6 +335,176 @@ class TestPlannerMain(unittest.TestCase):
         self.assertTrue(h.committed())
         self.assertTrue(any(cmd[:2] == ["git", "push"] for cmd in h.git_cmds))
         self.assertRegex(h.stdout, r"plan: ok \(\d+\.\d min / 35 min\)")
+
+    def test_plan_row_persists_the_budget_shown_to_the_agent(self):
+        intent = {**INTENT, "entropy_budget": 16.0}
+        h = self.harness([write_file(VALID_PLAN)], intent=intent, template="Budget is {budget_from_intent}.")
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        self.assertIn("Budget is 16.0.", h.turn_prompts[0])
+        self.assertEqual(h.ledger_lines("plans.jsonl")[0]["entropy_budget"], 16.0)
+
+    def test_missing_intent_budget_uses_the_shared_default(self):
+        intent = {k: v for k, v in INTENT.items() if k != "entropy_budget"}
+        h = self.harness([write_file(VALID_PLAN)], intent=intent, template="Budget is {budget_from_intent}.")
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        self.assertIn(f"Budget is {DEFAULT_ENTROPY_BUDGET}.", h.turn_prompts[0])
+        self.assertEqual(h.ledger_lines("plans.jsonl")[0]["entropy_budget"], DEFAULT_ENTROPY_BUDGET)
+
+    def test_invalid_intent_budget_shows_and_persists_the_shared_default(self):
+        for budget in (None, -1, "lots"):
+            with self.subTest(budget=budget):
+                intent = {**INTENT, "entropy_budget": budget}
+                h = self.harness([write_file(VALID_PLAN)], intent=intent, template="Budget is {budget_from_intent}.")
+                self.assertEqual(h.exit_code, 0, h.stderr)
+                self.assertIn(f"Budget is {DEFAULT_ENTROPY_BUDGET}.", h.turn_prompts[0])
+                self.assertEqual(h.ledger_lines("plans.jsonl")[0]["entropy_budget"], DEFAULT_ENTROPY_BUDGET)
+
+    def test_integer_intent_budget_is_shown_as_the_resolved_float(self):
+        intent = {**INTENT, "entropy_budget": 7}
+        h = self.harness([write_file(VALID_PLAN)], intent=intent, template="Budget is {budget_from_intent}.")
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        self.assertIn("Budget is 7.0.", h.turn_prompts[0])
+        self.assertEqual(h.ledger_lines("plans.jsonl")[0]["entropy_budget"], 7.0)
+
+    def test_replan_feedback_reaches_the_prompt_but_never_the_row(self):
+        feedback = "The previous plan has entropy 12.6, above the entropy budget 5."
+        h = self.harness(
+            [write_file(VALID_PLAN)],
+            intent={**INTENT, "entropy_budget": 5.0},
+            env={"HOLON_REPLAN_FEEDBACK": feedback},
+        )
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        self.assertIn("## Re-plan request", h.turn_prompts[0])
+        self.assertIn(feedback, h.turn_prompts[0])
+        self.assertIn("entropy budget of 5.0", h.turn_prompts[0])
+        row = h.ledger_lines("plans.jsonl")[0]
+        self.assertNotIn("replan_feedback", row)
+        self.assertNotIn(feedback, json.dumps(row))
+        self.assertNotIn(feedback, json.dumps(h.ledger_lines("intents.jsonl")))
+
+    def test_replan_feedback_reaches_the_temporary_intent_file(self):
+        # The agent's intent metadata (the temp intent file) carries the feedback too.
+        feedback = "The previous plan has entropy 12.6, above the entropy budget 5."
+        h = self.harness([write_file(VALID_PLAN)], env={"HOLON_REPLAN_FEEDBACK": feedback})
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        intent_metadata = h.turn_prompts[0].split("Intent metadata:\n", 1)[1]
+        self.assertIn(json.dumps({"replan_feedback": feedback})[1:-1], intent_metadata)
+
+    def test_replan_paragraph_names_the_feedback_the_budget_and_the_sub_intent_heading(self):
+        self.assertEqual(
+            planner.build_replan_paragraph("Entropy 12.6 is above the budget 5.", 5.0),
+            "\n\n## Re-plan request\n\n"
+            "Entropy 12.6 is above the budget 5.\n\n"
+            "Write a smaller plan whose overall entropy_pred is at or below the entropy budget of 5.0. Only if the "
+            "request above offers a sub-intent list and the work cannot fit, add a level-2 heading "
+            "'## Sub-intent list' followed by one bullet per concrete child intent.\n",
+        )
+
+    def test_unique_temp_file_closes_its_descriptor(self):
+        opened = []
+        original = planner.tempfile.mkstemp
+
+        def spy(**kwargs):
+            fd, path = original(**kwargs)
+            opened.append(fd)
+            return fd, path
+
+        with patch.object(planner.tempfile, "mkstemp", side_effect=spy):
+            path = planner._unique_temp_file("plan_prompt-1-", ".md")
+        self.addCleanup(os.remove, path)
+        self.assertEqual(len(opened), 1)
+        with self.assertRaises(OSError):
+            os.fstat(opened[0])
+
+    def test_ephemeral_credentials_are_cleaned_up_after_the_turn(self):
+        for turns in ([write_file(VALID_PLAN)], []):
+            with self.subTest(turns=len(turns)):
+                # With no scripted turn the agent turn raises; the credentials are still removed.
+                h = self.harness(turns)
+                h.runner.cleanup_ephemeral_credentials.assert_called_once_with()
+
+    def test_temp_file_removed_during_the_run_is_not_an_error(self):
+        def build_cmd(model, prompt_file, intent_file, prompt):
+            os.remove(prompt_file)
+            return ["pi", "-p", "--model", model, prompt]
+
+        h = self.harness([write_file(VALID_PLAN)], build_cmd=build_cmd)
+        self.assertEqual(h.exit_code, 0, h.stderr)
+
+    def test_whitespace_only_replan_feedback_is_ignored(self):
+        # Blank feedback adds no Re-plan request and no replan_feedback key.
+        h = self.harness([write_file(VALID_PLAN)], env={"HOLON_REPLAN_FEEDBACK": " \n\t "})
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        self.assertNotIn("## Re-plan request", h.turn_prompts[0])
+        self.assertNotIn("replan_feedback", h.turn_prompts[0])
+
+    def test_plans_started_in_the_same_second_use_distinct_temp_files(self):
+        # The prompt and intent temp paths are unique per run, not keyed by the second, and are removed.
+        paths = []
+
+        def build_cmd(model, prompt_file, intent_file, prompt):
+            paths.append((prompt_file, intent_file))
+            self.assertTrue(os.path.exists(prompt_file) and os.path.exists(intent_file))
+            return ["pi", "-p", "--model", model, prompt]
+
+        with patch.object(planner, "time", MagicMock(time=MagicMock(return_value=1792992691.0))):
+            first = self.harness([write_file(VALID_PLAN)], build_cmd=build_cmd)
+            second = self.harness([write_file(VALID_PLAN)], build_cmd=build_cmd)
+        self.assertEqual((first.exit_code, second.exit_code), (0, 0), first.stderr + second.stderr)
+        self.assertEqual(len(paths), 2)
+        self.assertEqual(len({p for pair in paths for p in pair}), 4)
+        for prompt_file, intent_file in paths:
+            self.assertIn("plan_prompt-1792992691-", os.path.basename(prompt_file))
+            self.assertIn("intent-1792992691-", os.path.basename(intent_file))
+            self.assertFalse(os.path.exists(prompt_file) or os.path.exists(intent_file))
+
+    def test_temp_files_are_removed_when_writing_the_prompt_raises(self):
+        # Both temp files exist before the prompt is written, so a failure while writing it leaks neither.
+        for target in ("get_file_structure", "build_replan_paragraph"):
+            with self.subTest(target=target):
+                created = self._temp_files_left_when_raising(target)
+                self.assertEqual(len(created), 2)
+                self.assertFalse(any(os.path.exists(path) for path in created), created)
+
+    def test_prompt_temp_file_is_removed_when_creating_the_intent_temp_file_raises(self):
+        # The intent temp file is created after the prompt temp file, so mkstemp failing on it (ENOSPC, inode
+        # exhaustion) must not leak the prompt temp file.
+        original = planner._unique_temp_file
+        created = []
+
+        def record(prefix, suffix):
+            if created:
+                raise OSError(28, "No space left on device")
+            created.append(original(prefix, suffix))
+            return created[-1]
+
+        h = _PlannerHarness(self, [])
+        with (
+            patch.object(planner, "_unique_temp_file", side_effect=record),
+            self.assertRaisesRegex(OSError, "No space left on device"),
+        ):
+            h.run()
+        h.tmp.cleanup()
+        self.assertEqual(len(created), 1)
+        self.assertFalse(os.path.exists(created[0]), created)
+
+    def _temp_files_left_when_raising(self, target):
+        original = planner._unique_temp_file
+        created = []
+
+        def record(prefix, suffix):
+            created.append(original(prefix, suffix))
+            return created[-1]
+
+        h = _PlannerHarness(self, [], env={"HOLON_REPLAN_FEEDBACK": "Entropy 12.6 is above the budget."})
+        with (
+            patch.object(planner, "_unique_temp_file", side_effect=record),
+            patch.object(planner, target, side_effect=RuntimeError("boom")),
+            self.assertRaisesRegex(RuntimeError, "boom"),
+        ):
+            h.run()
+        h.tmp.cleanup()
+        return created
 
     def test_prompt_requires_incremental_file_writes(self):
         h = self.harness([write_file(VALID_PLAN)])

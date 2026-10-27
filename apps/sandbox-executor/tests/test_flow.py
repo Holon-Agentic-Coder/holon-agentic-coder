@@ -4532,6 +4532,19 @@ class TestEntropyBudgetHandoffInFlow:
         # The decomposed child's ledger-only execution branch is never offered as a PR to merge.
         assert not any(first["execution_branch"] in line for line in summary)
 
+    @pytest.mark.parametrize(
+        ("parent", "index", "slug", "expected"),
+        [
+            ("I-1-root/_", 1, "add-the-parser", "I-1-root--1-add-the-parser"),
+            ("I-1-root--1-a/_", 2, "add-the-parser", "I-1-root--1-a--2-add-the-parser"),
+            ("I-1-root/_", 3, " Add the--CLI flag! ", "I-1-root--3-add-the-cli-flag"),
+            ("I-1-root/_", 4, "--", "I-1-root--4-sub-intent-4"),
+        ],
+        ids=["child", "grandchild", "unsanitised-slug", "empty-slug"],
+    )
+    def test_child_intent_branch_is_derived_from_parent_and_position(self, parent, index, slug, expected):
+        assert flow_module._child_intent_branch(parent, index, slug) == expected
+
     def test_same_slug_child_created_in_the_same_second_gets_its_own_intent_branch(self, flow_repos, tmp_path):
         host, origin = flow_repos
         # The first grandchild shares its parent's slug, and a frozen clock creates every intent in the same second.

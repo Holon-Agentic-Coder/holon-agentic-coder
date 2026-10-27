@@ -3027,6 +3027,17 @@ def _child_context(context: FlowContext, intent_data: dict[str, Any]) -> FlowCon
     )
 
 
+def _child_intent_branch(parent_branch: str, index: int, slug: str) -> str:
+    """Return the bare intent branch of the ``index``-th (1-based) child of ``parent_branch``: ``{parent}--{n}-{slug}``.
+
+    The name is derived from the parent's branch and the item's position, never from the clock. A sanitised slug never
+    contains ``--``, so the name cannot collide with the parent, a sibling or any other intent, even one created in the
+    same second with the same slug; re-running the same parent's list derives the same name for the same child.
+    """
+    child_slug = re.sub(r"[^a-zA-Z0-9]+", "-", slug).strip("-").lower() or f"sub-intent-{index}"
+    return f"{parent_branch.removesuffix('/_')}--{index}-{child_slug}"
+
+
 def _run_decomposed_plan(
     context: FlowContext, start_time: str, summary_row: dict[str, Any], base_payload: dict[str, Any]
 ) -> StageResult:
@@ -3061,11 +3072,8 @@ def _run_decomposed_plan(
     total = len(items)
     for index, item in enumerate(items, start=1):
         slug = str(item.get("slug") or f"sub-intent-{index}")
-        child_slug = re.sub(r"[^a-zA-Z0-9]+", "-", slug).strip("-").lower() or f"sub-intent-{index}"
         child_data: dict[str, Any] = {
-            # Derived from the parent's branch and the item's position, never the clock: a generated slug never
-            # contains '--', so the name cannot collide with the parent, a sibling or any other intent.
-            "branch": f"{parent_branch.removesuffix('/_')}--{index}-{child_slug}",
+            "branch": _child_intent_branch(parent_branch, index, slug),
             "slug": slug,
             "description": str(item.get("description") or item.get("goal") or slug),
             "goal": str(item.get("goal") or item.get("description") or slug),

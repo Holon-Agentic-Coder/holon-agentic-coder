@@ -713,7 +713,9 @@ DECISION_OVER_BUDGET = "over_budget"
 # Normalised heading texts (lower-cased, hyphens, underscores and runs of spaces collapsed to one space) that open an
 # explicit sub-intent list. The legacy capitalised plural heading normalises to "sub intents".
 _SUB_INTENT_HEADINGS = frozenset({"sub intent list", "sub intents"})
-_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
+# An ATX heading (matched on a stripped line): 1-6 "#" followed by whitespace and the text, or by nothing at all, so
+# a bare "#" or "##" is an empty heading, as in CommonMark; group 2 is None for an empty heading.
+_HEADING_RE = re.compile(r"^(#{1,6})(?:\s+(.*?)\s*#*\s*)?$")
 _LIST_ITEM_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+(.*)$")
 # An item is a placeholder ("no child work") when, once normalised by _normalise_placeholder_item, its first whole
 # word is one of these, whatever follows: "None (plan fits the budget)", "N/A (single step)" and "No sub-intents
@@ -883,7 +885,10 @@ def parse_sub_intent_list(plan_content: str) -> list[dict[str, Any]]:
                 setext = _setext_level(lines, index)
         if heading or setext:
             # A setext heading's text is its whole paragraph, so "Sub-intent" then "list" over "---" opens the list.
-            level, text = (len(heading.group(1)), heading.group(2)) if heading else (setext, " ".join(paragraph_lines))
+            if heading:
+                level, text = len(heading.group(1)), heading.group(2) or ""
+            else:
+                level, text = setext, " ".join(paragraph_lines)
             in_section = level in (2, 3) and _normalise_heading(text) in _SUB_INTENT_HEADINGS
             base_indent = None
             paragraph, list_col = None, None

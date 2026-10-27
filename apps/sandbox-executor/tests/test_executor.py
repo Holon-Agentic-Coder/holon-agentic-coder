@@ -3764,13 +3764,13 @@ def _indented_body(indent: str) -> str:
 _INDENTED_EXPECTED = ["Add the parser\n- covers tokens\n- covers errors", "Add the CLI flag\n1. wired in"]
 
 # One regression corpus for parse_sub_intent_list: (plan markdown, expected item descriptions in order). Each item's
-# goal is the first line of its description. Every parser case raised in PR #97 review iterations 3-8 lives here.
+# goal is the first line of its description. Every parser edge case found so far lives here.
 SUB_INTENT_PARSER_CORPUS = [
-    # R1-I2: nested bullets and indented continuation lines fold into the item above them.
-    pytest.param(_section(_NESTED_BODY), _NESTED_EXPECTED, id="r1-i2-nested-bullets-fold"),
-    # R4-N1: a top-level list may be indented 1-3 spaces; the first item fixes the level.
+    # Nested bullets and indented continuation lines fold into the item above them.
+    pytest.param(_section(_NESTED_BODY), _NESTED_EXPECTED, id="nested-bullets-fold"),
+    # A top-level list may be indented 1-3 spaces; the first item fixes the level.
     *[
-        pytest.param(_section(_indented_body(" " * n)), _INDENTED_EXPECTED, id=f"r4-n1-list-indented-{n}-spaces")
+        pytest.param(_section(_indented_body(" " * n)), _INDENTED_EXPECTED, id=f"list-indented-{n}-spaces")
         for n in (1, 2, 3)
     ],
     pytest.param(_section("    - indented code, not a list"), [], id="four-space-lines-are-not-items"),
@@ -3796,20 +3796,20 @@ SUB_INTENT_PARSER_CORPUS = [
     pytest.param(_section(_NESTED_BODY).replace("\n", "\r\n"), _NESTED_EXPECTED, id="crlf-line-endings"),
     pytest.param(_section("- None\n- N/A\n- n/a.\n- na"), [], id="placeholders-only"),
     pytest.param(_section("- None\n- Real child"), ["Real child"], id="placeholder-beside-real-item"),
-    # N-12-1-1: wrapped or reworded placeholders say "no child work" and never become children.
-    pytest.param(_section("- (none)"), [], id="n-12-1-1-parenthesised-none"),
-    pytest.param(_section("- Not applicable"), [], id="n-12-1-1-not-applicable"),
-    pytest.param(_section("- None required; work is in one step"), [], id="n-12-1-1-none-required-with-reason"),
-    pytest.param(_section("- **None**"), [], id="n-12-1-1-bold-none"),
-    pytest.param(_section("- _n/a_"), [], id="n-12-1-1-emphasised-n-a"),
-    pytest.param(_section("- No sub-intents: the plan fits the budget."), [], id="n-12-1-1-no-sub-intents-with-reason"),
-    # N-13-1: the first whole word decides, whatever follows (PLACEHOLDER-CONVERGENCE-ITER13).
-    pytest.param(_section("- None (plan fits the budget)"), [], id="n-13-1-none-parenthetical"),
-    pytest.param(_section("- N/A (single step)"), [], id="n-13-1-n-a-parenthetical"),
-    pytest.param(_section("- No sub-intents needed"), [], id="n-13-1-no-sub-intents-needed"),
-    pytest.param(_section("- Not needed for this plan"), [], id="n-13-1-not-needed-for-this-plan"),
-    pytest.param(_section("- nil"), [], id="n-13-1-nil"),
-    pytest.param(_section("- **No** sub-intents"), [], id="n-13-1-bold-no"),
+    # Wrapped or reworded placeholders say "no child work" and never become children.
+    pytest.param(_section("- (none)"), [], id="parenthesised-none"),
+    pytest.param(_section("- Not applicable"), [], id="not-applicable"),
+    pytest.param(_section("- None required; work is in one step"), [], id="none-required-with-reason"),
+    pytest.param(_section("- **None**"), [], id="bold-none"),
+    pytest.param(_section("- _n/a_"), [], id="emphasised-n-a"),
+    pytest.param(_section("- No sub-intents: the plan fits the budget."), [], id="no-sub-intents-with-reason"),
+    # The first whole word (none, n/a, na, nil, no, not) decides, whatever follows.
+    pytest.param(_section("- None (plan fits the budget)"), [], id="none-parenthetical"),
+    pytest.param(_section("- N/A (single step)"), [], id="n-a-parenthetical"),
+    pytest.param(_section("- No sub-intents needed"), [], id="no-sub-intents-needed"),
+    pytest.param(_section("- Not needed for this plan"), [], id="not-needed-for-this-plan"),
+    pytest.param(_section("- nil"), [], id="nil"),
+    pytest.param(_section("- **No** sub-intents"), [], id="bold-no"),
     # A real item that merely starts with the letters of a placeholder word is not a placeholder (word boundary).
     pytest.param(
         _section(
@@ -3822,15 +3822,15 @@ SUB_INTENT_PARSER_CORPUS = [
             "Notify the operator on failure",
             "Note the budget in the summary",
         ],
-        id="n-12-1-1-word-boundary-real-items",
+        id="word-boundary-real-items",
     ),
     pytest.param(_section("-   \n- Real child"), ["Real child"], id="empty-item-skipped"),
-    # R1-I6-N1: a longer outer fence closes only on the same character at least as long.
+    # A longer outer fence closes only on the same character at least as long.
     *[
         pytest.param(
             _section(f"- First\n````md\n{inner}\n- Nested example\n{inner}\n````\n- Second"),
             ["First", "Second"],
-            id=f"r1-i6-n1-nested-fence-{name}",
+            id=f"nested-fence-{name}",
         )
         for name, inner in [
             ("shorter-backticks", "```"),
@@ -3839,51 +3839,51 @@ SUB_INTENT_PARSER_CORPUS = [
             ("trailing-text", "``` not a closer"),
         ]
     ],
-    # R6-2-I1: a list quoted inside a fence is never read.
+    # A list quoted inside a fence is never read.
     *[
         pytest.param(
             f"# Plan\n\n{fence}markdown\n## Sub-intent list\n\n- Quoted example\n{fence}\n\n## Risks\n\n- none\n",
             [],
-            id=f"r6-2-i1-section-quoted-in-{name}-fence",
+            id=f"section-quoted-in-{name}-fence",
         )
         for name, fence in [("backtick", "```"), ("tilde", "~~~")]
     ],
-    pytest.param(_section("```text\n- Example child\n```"), [], id="r6-2-i1-fence-under-the-heading"),
+    pytest.param(_section("```text\n- Example child\n```"), [], id="fence-under-the-heading"),
     pytest.param(
         "# Plan\n\n~~~~markdown\n## Sub-intent list\n- Quoted example\n~~~\n- still quoted\n~~~~~\n\n"
         "## Sub-intent list\n\n```\n- fenced, not a child\n```\n- Real child\n- Another real child\n",
         ["Real child", "Another real child"],
-        id="r6-2-i1-real-list-after-closed-fence",
+        id="real-list-after-closed-fence",
     ),
     pytest.param(
         _section("``` inline `code` ```\n- Real child"), ["Real child"], id="backtick-info-with-backtick-is-not-a-fence"
     ),
     pytest.param(_section("~~~ a`b\n- fenced\n~~~\n- Real child"), ["Real child"], id="tilde-info-may-hold-a-backtick"),
-    # R7-I1: a fence nested in an item at 4+ columns holding a "# comment" line neither leaks nor ends the section.
+    # A fence nested in an item at 4+ columns holding a "# comment" line neither leaks nor ends the section.
     pytest.param(
         _section("- Add CLI flag\n    ```bash\n    # run the tests\n    uv run pytest\n    ```\n- Update docs"),
         ["Add CLI flag", "Update docs"],
-        id="r7-i1-four-space-bash-fence-with-comment",
+        id="four-space-bash-fence-with-comment",
     ),
     pytest.param(
         _section("1. Add CLI flag\n    ```python\n    # helper\n    - not a child\n    ```\n2. Update docs"),
         ["Add CLI flag", "Update docs"],
-        id="r7-i1-numbered-four-space-python-fence",
+        id="numbered-four-space-python-fence",
     ),
     pytest.param(
         _section("- Add CLI flag\n  ```bash\n  # run the tests\n  ```\n- Update docs"),
         ["Add CLI flag", "Update docs"],
-        id="r7-i1-two-space-fence",
+        id="two-space-fence",
     ),
     pytest.param(
         _section("- Add CLI flag\n\t\t~~~\n\t\t## not a heading\n\t\t~~~\n- Update docs"),
         ["Add CLI flag", "Update docs"],
-        id="r7-i1-tab-indented-fence",
+        id="tab-indented-fence",
     ),
     pytest.param(
         _section("- Add CLI flag\n        ````\n```\n## not a heading\n````\n- Update docs"),
         ["Add CLI flag", "Update docs"],
-        id="r7-i1-deep-fence-closes-at-any-indent",
+        id="deep-fence-closes-at-any-indent",
     ),
     # Headings end the section only at 0-3 columns; deeper "#" lines fold into the item above.
     pytest.param(
@@ -3892,198 +3892,189 @@ SUB_INTENT_PARSER_CORPUS = [
         id="four-space-hash-line-folds",
     ),
     pytest.param(_section("- First\n   ## Next\n- not a child"), ["First"], id="three-space-heading-ends-section"),
-    # Real (non-placeholder) items, so only the heading level decides (R2-I18-M-E3).
+    # Real (non-placeholder) items, so only the heading level decides.
     pytest.param("# Plan\n\n# Sub-intent list\n\n- Add the parser\n", [], id="level-1-heading-does-not-open"),
     pytest.param("# Plan\n\n#### Sub-intent list\n\n- Add the parser\n", [], id="level-4-heading-does-not-open"),
-    # R2-I18-M-E5b: a Unicode hyphen or non-breaking hyphen in the heading normalises like an ASCII hyphen.
+    # A Unicode hyphen or non-breaking hyphen in the heading normalises like an ASCII hyphen.
     *[
         pytest.param(
             f"# Plan\n\n## Sub{hyphen}intent list\n\n- Add the parser\n", ["Add the parser"], id=f"heading-{name}"
         )
         for name, hyphen in [("unicode-hyphen", "\u2010"), ("non-breaking-hyphen", "\u2011")]
     ],
-    # N-18-1-1: a setext heading (paragraph line underlined with "=" or "-") ends the section like an ATX heading
-    # (PARSER-CONVERGENCE-ITER7, extended in iteration 18).
-    # N-19-1: the heading text must be a plain paragraph, so a blank line separates it from the item above.
+    # A setext heading (paragraph line underlined with "=" or "-") ends the section like an ATX heading.
+    # The heading text must be a plain paragraph, so a blank line separates it from the item above.
     pytest.param(
         _section("- Add the parser\n\nNotes\n-----\n- Remember to run lint\n- Keep docs current"),
         ["Add the parser"],
-        id="n-18-1-1-setext-dash-heading-ends-section",
+        id="setext-dash-heading-ends-section",
     ),
     pytest.param(
         _section("- Add the parser\n\nOther\n=====  \n- Ship it"),
         ["Add the parser"],
-        id="n-18-1-1-setext-equals-heading-ends-section",
+        id="setext-equals-heading-ends-section",
     ),
     pytest.param(
         "# Plan\n\nSub-intent\nlist\n---\n\n- Add the parser\n",
         ["Add the parser"],
-        id="n-19-1-multi-line-setext-heading-text-is-the-whole-paragraph",
+        id="multi-line-setext-heading-text-is-the-whole-paragraph",
     ),
-    # N-19-1: a text line straight after an item (or its continuation) is a lazy continuation of the item, never a
+    # A text line straight after an item (or its continuation) is a lazy continuation of the item, never a
     # setext heading text line: "---" under it is a thematic break and "===" is more continuation text.
-    pytest.param(_section("- Add A\nlazy text\n---\n- Add B"), ["Add A", "Add B"], id="n-19-1-lazy-dash"),
-    pytest.param(_section("- Add A\nlazy\n===\n- Add B"), ["Add A", "Add B"], id="n-19-1-lazy-equals"),
+    pytest.param(_section("- Add A\nlazy text\n---\n- Add B"), ["Add A", "Add B"], id="lazy-dash"),
+    pytest.param(_section("- Add A\nlazy\n===\n- Add B"), ["Add A", "Add B"], id="lazy-equals"),
     pytest.param(
         _section("- Add A\n  more\nNotes\n---\n- Add B"),
         ["Add A\nmore", "Add B"],
-        id="n-19-1-lazy-after-continuation",
+        id="lazy-after-continuation",
     ),
-    pytest.param("# Plan\n\n- step\nSub-intent list\n---\n- Add x\n", [], id="n-19-1-lazy-line-does-not-open"),
-    pytest.param("# Plan\n\n- step\n\n  Sub-intent list\n---\n- Add x\n", [], id="n-19-1-item-content-does-not-open"),
+    pytest.param("# Plan\n\n- step\nSub-intent list\n---\n- Add x\n", [], id="lazy-line-does-not-open"),
+    pytest.param("# Plan\n\n- step\n\n  Sub-intent list\n---\n- Add x\n", [], id="item-content-does-not-open"),
     # A paragraph after a thematic break, an ATX heading or an item's narrower-than-content line starts afresh, so it
     # can be setext heading text; a line inside an item's fenced block area stays item content.
-    pytest.param(_section("- Add A\n***\nNotes\n---\n- Add B"), ["Add A"], id="n-19-1-paragraph-after-break"),
-    pytest.param(
-        "# Plan\n\n- step\n## Sub-intent list\nNotes\n---\n- Add x\n", [], id="n-19-1-paragraph-after-atx-heading"
-    ),
-    pytest.param(_section("1. Add A\n\n  Notes\n---\n- Add B"), ["Add A"], id="n-19-1-line-left-of-item-content"),
+    pytest.param(_section("- Add A\n***\nNotes\n---\n- Add B"), ["Add A"], id="paragraph-after-break"),
+    pytest.param("# Plan\n\n- step\n## Sub-intent list\nNotes\n---\n- Add x\n", [], id="paragraph-after-atx-heading"),
+    pytest.param(_section("1. Add A\n\n  Notes\n---\n- Add B"), ["Add A"], id="line-left-of-item-content"),
     pytest.param(
         _section("- Add A\n\n  ```\n  x\n  ```\n\n  Notes\n---\n- Add B"),
         ["Add A\nNotes", "Add B"],
-        id="n-19-1-item-content-after-nested-fence",
+        id="item-content-after-nested-fence",
     ),
-    # N-19-2: the underline is at most 3 columns deep, a text line at 4+ columns with no paragraph open is indented
+    # The underline is at most 3 columns deep, a text line at 4+ columns with no paragraph open is indented
     # code, and a one- or two-dash underline still makes a heading.
-    pytest.param(_section("- Add A\n\nNotes\n    ---\n- Add B"), ["Add A\n---", "Add B"], id="n-19-2a-deep-underline"),
-    pytest.param(_section("    Notes\n---\n- Add B"), ["Add B"], id="n-19-2b-indented-code-is-not-heading-text"),
-    pytest.param(_section("- Add A\n\nNotes\n--\n- Add B"), ["Add A"], id="n-19-2c-two-dash-underline"),
-    pytest.param(_section("- Add A\n\nNotes\n-\n- Add B"), ["Add A"], id="n-19-2c-one-dash-underline"),
+    pytest.param(_section("- Add A\n\nNotes\n    ---\n- Add B"), ["Add A\n---", "Add B"], id="deep-underline"),
+    pytest.param(_section("    Notes\n---\n- Add B"), ["Add B"], id="indented-code-is-not-heading-text"),
+    pytest.param(_section("- Add A\n\nNotes\n--\n- Add B"), ["Add A"], id="two-dash-underline"),
+    pytest.param(_section("- Add A\n\nNotes\n-\n- Add B"), ["Add A"], id="one-dash-underline"),
     pytest.param(
         "# Plan\n\nSub-intent list\n---------------\n\n- Add the parser\n\nRisks\n-----\n\n- Ship it\n",
         ["Add the parser"],
-        id="n-18-1-1-level-2-setext-heading-opens-and-ends",
+        id="level-2-setext-heading-opens-and-ends",
     ),
     pytest.param(
         "# Plan\n\nSub-intent list\n===============\n\n- Add the parser\n",
         [],
-        id="n-18-1-1-level-1-setext-does-not-open",
+        id="level-1-setext-does-not-open",
     ),
     # A "---" line straight after a list item, or under a continuation line, is a thematic break, not an underline.
-    pytest.param(_section("- A\n---\n- B"), ["A", "B"], id="n-18-1-1-break-after-item-is-not-an-underline"),
+    pytest.param(_section("- A\n---\n- B"), ["A", "B"], id="break-after-item-is-not-an-underline"),
     pytest.param(
         _section("- A\n  more about A\n  ---\n- B"),
         ["A\nmore about A", "B"],
-        id="n-18-1-1-break-under-continuation-is-not-an-underline",
+        id="break-under-continuation-is-not-an-underline",
     ),
     # An unclosed fence runs to the end of the plan; items before it survive.
     pytest.param(_section("- First\n```\n- fenced\n## Next\n- fenced too"), ["First"], id="unclosed-fence-after-item"),
     pytest.param(_section("```\n- fenced"), [], id="unclosed-fence-before-items"),
-    # R8-N1: thematic breaks and punctuation-only items never become children.
+    # Thematic breaks and punctuation-only items never become children.
     *[
-        pytest.param(_section(f"- A\n- B\n\n{rule}\n\n- C"), ["A", "B", "C"], id=f"r8-n1-thematic-break-{name}")
+        pytest.param(_section(f"- A\n- B\n\n{rule}\n\n- C"), ["A", "B", "C"], id=f"thematic-break-{name}")
         for name, rule in [("stars", "* * *"), ("dashes", "---"), ("underscores", "___"), ("spaced-dashes", "- - -")]
     ],
-    pytest.param(_section("- A\n  * * *\n- B"), ["A", "B"], id="r8-n1-indented-thematic-break-does-not-fold"),
-    # R2-I18-M-E8: a break-like line at 4+ columns is not a break; it folds into the item above.
+    pytest.param(_section("- A\n  * * *\n- B"), ["A", "B"], id="indented-thematic-break-does-not-fold"),
+    # A break-like line at 4+ columns is not a break; it folds into the item above.
     pytest.param(_section("- A\n    - - -\n- B"), ["A\n- - -", "B"], id="four-space-break-like-line-folds"),
-    pytest.param(_section("- A\n- ...\n- (!)\n- B"), ["A", "B"], id="r8-n1-punctuation-only-item-skipped"),
-    # N-20-1..N-20-3 and the iteration-20 parser mutation sweep: one row per mutant it kills. Each row follows the
-    # recorded parser rules, which match CommonMark for what opens, ends or skips the section. Descriptions follow the
-    # recorded fold rule (R1-I2, PARSER-CONVERGENCE-ITER7) instead: an indented line folds into the item above even
-    # where CommonMark makes it part of a later paragraph (row i20-tab-underline-is-4-cols).
+    pytest.param(_section("- A\n- ...\n- (!)\n- B"), ["A", "B"], id="punctuation-only-item-skipped"),
+    # Each row below pins one parser rule; the rules match CommonMark for what opens, ends or skips the section.
+    # Descriptions follow the fold rule instead: an indented line folds into the item above even where CommonMark
+    # makes it part of a later paragraph (row tab-underline-is-4-cols).
     # A fence resets the paragraph state, and a fence left of the item content column ends the list.
-    pytest.param(_section("- Add A\n```\nx\n```\nNotes\n---\n- Add B"), ["Add A"], id="n-20-1-fence-resets-paragraph"),
+    pytest.param(_section("- Add A\n```\nx\n```\nNotes\n---\n- Add B"), ["Add A"], id="fence-resets-paragraph"),
     pytest.param(
         _section("- Add A\n```\nx\n```\n\n  Notes\n---\n- Add B"),
         ["Add A"],
-        id="n-20-2-fence-left-of-content-ends-list",
+        id="fence-left-of-content-ends-list",
     ),
     # A thematic break inside an item keeps the item open; one left of the content column ends the list; a break is
     # never setext heading text; a break-like line 4+ columns past the content column is paragraph text, not a break.
     pytest.param(
         _section("- Add A\n\n  ***\n\n  Notes\n---\n- Add B"),
         ["Add A\nNotes", "Add B"],
-        id="n-20-3-break-in-item-keeps-the-item-open",
+        id="break-in-item-keeps-the-item-open",
     ),
-    pytest.param(_section("- Add A\n\n   ***\nNotes\n---\n- Add B"), ["Add A"], id="i20-break-at-3-columns-in-item"),
+    pytest.param(_section("- Add A\n\n   ***\nNotes\n---\n- Add B"), ["Add A"], id="break-at-3-columns-in-item"),
     pytest.param(
         _section("- Add A\n      ***\nNotes\n---\n- Add B"),
         ["Add A\n***", "Add B"],
-        id="i20-break-like-line-past-content-is-continuation",
+        id="break-like-line-past-content-is-continuation",
     ),
-    pytest.param(
-        _section("- Add A\n***\n\n  Notes\n---\n- Add B"), ["Add A"], id="i20-break-left-of-content-ends-list"
-    ),
-    pytest.param(_section("- Add A\n***\n---\n- Add B"), ["Add A", "Add B"], id="i20-break-is-not-heading-text"),
+    pytest.param(_section("- Add A\n***\n\n  Notes\n---\n- Add B"), ["Add A"], id="break-left-of-content-ends-list"),
+    pytest.param(_section("- Add A\n***\n---\n- Add B"), ["Add A", "Add B"], id="break-is-not-heading-text"),
     # Items and paragraphs: a 3-column item still takes lazy lines; an item-like 4-column line with no paragraph open is
     # indented code; nested items and continuation lines keep the item content column; a 3-column plain paragraph is
     # heading text; a plain paragraph ends the list, so a later 2-column line is not item content.
-    pytest.param(
-        _section("   - Add A\nNotes\n---\n- Add B"), ["Add A", "Add B"], id="i20-item-at-3-columns-takes-lazy"
-    ),
-    pytest.param(_section("    - code\nNotes\n---\n- Add B"), [], id="i20-item-like-indented-code-then-heading"),
+    pytest.param(_section("   - Add A\nNotes\n---\n- Add B"), ["Add A", "Add B"], id="item-at-3-columns-takes-lazy"),
+    pytest.param(_section("    - code\nNotes\n---\n- Add B"), [], id="item-like-indented-code-then-heading"),
     pytest.param(
         _section("- Add A\n\n    - sub\n\n  Notes\n---\n- Add B"),
         ["Add A\n- sub\nNotes", "Add B"],
-        id="i20-nested-item-keeps-content-column",
+        id="nested-item-keeps-content-column",
     ),
     pytest.param(
         _section("- Add A\n  more\n\n  Notes\n---\n- Add B"),
         ["Add A\nmore\nNotes", "Add B"],
-        id="i20-continuation-keeps-content-column",
+        id="continuation-keeps-content-column",
     ),
-    pytest.param(_section("   Notes\n---\n- Add B"), [], id="i20-3-column-paragraph-is-heading-text"),
-    pytest.param(
-        _section("- Add A\n\nNotes\n\n  Other\n---\n- Add B"), ["Add A"], id="i20-paragraph-drops-content-column"
-    ),
+    pytest.param(_section("   Notes\n---\n- Add B"), [], id="3-column-paragraph-is-heading-text"),
+    pytest.param(_section("- Add A\n\nNotes\n\n  Other\n---\n- Add B"), ["Add A"], id="paragraph-drops-content-column"),
     pytest.param(
         _section("-\tAdd A\n\n    more\nOther\n---\n- Add B"),
         ["Add A\nmore", "Add B"],
-        id="i20-tab-after-marker-is-content-column-4",
+        id="tab-after-marker-is-content-column-4",
     ),
     # Setext underline: 3 columns is still an underline, a tab is 4 columns, mixed or spaced runs are not underlines,
     # and the underline line is consumed rather than read as a paragraph of its own. In the tab row, CommonMark reads
     # "\t---" as a continuation of the paragraph "Notes"; the fold rule puts it in item A's description instead.
-    pytest.param(_section("- Add A\n\nNotes\n   ---\n- Add B"), ["Add A"], id="i20-underline-at-3-columns"),
+    pytest.param(_section("- Add A\n\nNotes\n   ---\n- Add B"), ["Add A"], id="underline-at-3-columns"),
+    pytest.param(_section("- Add A\n\nNotes\n\t---\n- Add B"), ["Add A\n---", "Add B"], id="tab-underline-is-4-cols"),
+    pytest.param(_section("- Add A\n\nNotes\n-=-\n- Add B"), ["Add A", "Add B"], id="mixed-underline"),
+    pytest.param(_section("- Add A\n\nNotes\n= =\n- Add B"), ["Add A", "Add B"], id="spaced-underline"),
+    pytest.param("# Plan\n\nSub-intent list\n--\n--\n- Add the parser\n", ["Add the parser"], id="underline-consumed"),
     pytest.param(
-        _section("- Add A\n\nNotes\n\t---\n- Add B"), ["Add A\n---", "Add B"], id="i20-tab-underline-is-4-cols"
+        "# Plan\n\n## Sub-intent list\n===\n---\n- Add the parser\n",
+        [],
+        id="equals-line-after-atx-heading-is-a-paragraph",
     ),
-    pytest.param(_section("- Add A\n\nNotes\n-=-\n- Add B"), ["Add A", "Add B"], id="i20-mixed-underline"),
-    pytest.param(_section("- Add A\n\nNotes\n= =\n- Add B"), ["Add A", "Add B"], id="i20-spaced-underline"),
-    pytest.param(
-        "# Plan\n\nSub-intent list\n--\n--\n- Add the parser\n", ["Add the parser"], id="i20-underline-consumed"
-    ),
-    pytest.param(
-        "# Plan\n\n## Sub-intent list\n===\n---\n- Add the parser\n", [], id="i20-paragraph-after-atx-heading"
-    ),
-    pytest.param(
-        "# Plan\n\nSub-intent\n\nlist\n---\n\n- Add the parser\n", [], id="i20-blank-line-splits-heading-text"
-    ),
+    pytest.param("# Plan\n\nSub-intent\n\nlist\n---\n\n- Add the parser\n", [], id="blank-line-splits-heading-text"),
     # Fences: two backticks are not a fence, and a closing fence takes no info string.
-    pytest.param(_section("- Add A\n``\n- Add B\n``"), ["Add A", "Add B"], id="i20-two-backticks-are-not-a-fence"),
+    pytest.param(_section("- Add A\n``\n- Add B\n``"), ["Add A", "Add B"], id="two-backticks-are-not-a-fence"),
     pytest.param(
-        _section("```\n```python\n- Example child\n```\n- Add B"), ["Add B"], id="i20-fence-with-info-does-not-close"
+        _section("```\n```python\n- Example child\n```\n- Add B"), ["Add B"], id="fence-with-info-does-not-close"
     ),
     # ATX headings: a space after the hashes, at most six hashes, closing hashes stripped, underscores normalised.
-    pytest.param(_section("- Add A\n#hashtag\n- Add B"), ["Add A", "Add B"], id="i20-hash-without-space-not-heading"),
-    pytest.param(_section("- Add A\n####### not a heading\n- Add B"), ["Add A", "Add B"], id="i20-seven-hashes"),
-    pytest.param("# Plan\n\n## Sub-intent list ##\n\n- Add the parser\n", ["Add the parser"], id="i20-closing-hashes"),
-    pytest.param("# Plan\n\n## Sub_intent_list\n\n- Add the parser\n", ["Add the parser"], id="i20-underscore-heading"),
+    pytest.param(_section("- Add A\n#hashtag\n- Add B"), ["Add A", "Add B"], id="hash-without-space-not-heading"),
+    pytest.param(_section("- Add A\n####### not a heading\n- Add B"), ["Add A", "Add B"], id="seven-hashes"),
+    # An empty ATX heading (a bare "#" or "##", or one holding only closing hashes) still ends the section.
+    pytest.param(_section("- Add X\n\n##\n\n- Do Y"), ["Add X"], id="empty-h2-ends-section"),
+    pytest.param(_section("- Add X\n\n#\n\n- Do Y"), ["Add X"], id="empty-h1-ends-section"),
+    pytest.param(_section("- Add X\n##   \n- Do Y"), ["Add X"], id="empty-h2-with-trailing-spaces-ends-section"),
+    pytest.param(_section("- Add X\n### ###\n- Do Y"), ["Add X"], id="closing-hashes-only-heading-ends-section"),
+    pytest.param(_section("- Add X\n#######\n- Do Y"), ["Add X", "Do Y"], id="seven-bare-hashes-not-heading"),
+    pytest.param(_section("- Add X\n#5 bolts\n- Do Y"), ["Add X", "Do Y"], id="hash-before-digit-not-heading"),
+    pytest.param("# Plan\n\n## Sub-intent list ##\n\n- Add the parser\n", ["Add the parser"], id="closing-hashes"),
+    pytest.param("# Plan\n\n## Sub_intent_list\n\n- Add the parser\n", ["Add the parser"], id="underscore-heading"),
     pytest.param(
         "# Plan\n\n## Sub-intent list\n\n- Add A\n\n## Sub-intents\n\n  - Add B\n    - detail\n",
         ["Add A", "Add B\n- detail"],
-        id="i20-second-section-sets-its-own-level",
+        id="second-section-sets-its-own-level",
     ),
-    pytest.param("# Plan\n\n- step\n## Sub-intent list\n\n  Notes\n---\n- Add x\n", [], id="i20-heading-ends-the-list"),
+    pytest.param("# Plan\n\n- step\n## Sub-intent list\n\n  Notes\n---\n- Add x\n", [], id="heading-ends-the-list"),
     # Section body: whitespace-only lines, 3-column and underscore breaks, two stars, markers without a space.
-    pytest.param(_section("- Add A\n    \n  more\n- Add B"), ["Add A\nmore", "Add B"], id="i20-whitespace-only-line"),
-    pytest.param(_section("- A\n   ***\n- B"), ["A", "B"], id="i20-break-at-3-columns-skipped"),
-    pytest.param(_section("- A\n  ___\n- B"), ["A", "B"], id="i20-underscore-break-skipped"),
-    pytest.param(_section("- A\n  **\n- B"), ["A\n**", "B"], id="i20-two-stars-fold"),
-    pytest.param(
-        _section("  - Add A\n-   Add B\n  - Add C"), ["Add A", "Add B", "Add C"], id="i20-first-item-fixes-level"
-    ),
+    pytest.param(_section("- Add A\n    \n  more\n- Add B"), ["Add A\nmore", "Add B"], id="whitespace-only-line"),
+    pytest.param(_section("- A\n   ***\n- B"), ["A", "B"], id="break-at-3-columns-skipped"),
+    pytest.param(_section("- A\n  ___\n- B"), ["A", "B"], id="underscore-break-skipped"),
+    pytest.param(_section("- A\n  **\n- B"), ["A\n**", "B"], id="two-stars-fold"),
+    pytest.param(_section("  - Add A\n-   Add B\n  - Add C"), ["Add A", "Add B", "Add C"], id="first-item-fixes-level"),
     pytest.param(
         _section("- Add the CLI flag\n--verbose enables logging\n- Add docs"),
         ["Add the CLI flag", "Add docs"],
-        id="i20-dash-without-space-is-not-an-item",
+        id="dash-without-space-is-not-an-item",
     ),
     # Placeholders: emphasis followed by a full stop, and curly quotes.
-    pytest.param(_section("- _None_."), [], id="i20-emphasised-none-with-full-stop"),
-    pytest.param(_section("- \u201cNone\u201d"), [], id="i20-curly-quoted-none"),
+    pytest.param(_section("- _None_."), [], id="emphasised-none-with-full-stop"),
+    pytest.param(_section("- \u201cNone\u201d"), [], id="curly-quoted-none"),
     # Ordered items with multi-digit numbers.
-    pytest.param(_section("10. Add A\n11. Add B"), ["Add A", "Add B"], id="i20-multi-digit-ordered-items"),
+    pytest.param(_section("10. Add A\n11. Add B"), ["Add A", "Add B"], id="multi-digit-ordered-items"),
 ]
 
 
@@ -4103,7 +4094,7 @@ def test_parse_sub_intent_list_builds_slug_description_and_goal():
 
 
 def test_parse_sub_intent_list_truncates_long_slugs_to_48_characters():
-    # R2-I18-M-E2: the slug is cut to 48 characters, and a cut that lands on a hyphen leaves no trailing hyphen.
+    # The slug is cut to 48 characters, and a cut that lands on a hyphen leaves no trailing hyphen.
     text = "Add " + "x" * 43 + " parser for every ledger row"
     (item,) = executor.parse_sub_intent_list(_section(f"- {text}"))
 
@@ -4112,14 +4103,14 @@ def test_parse_sub_intent_list_truncates_long_slugs_to_48_characters():
 
 
 def test_parse_sub_intent_list_strips_leading_hyphens_before_truncating_the_slug():
-    # Iteration-20 mutation sweep: leading punctuation is dropped before the 48-character cut, so it costs no character.
+    # Leading punctuation is dropped before the 48-character cut, so it costs no character.
     (item,) = executor.parse_sub_intent_list(_section("- **Add** the parser for every ledger row and every intent row"))
 
     assert item["slug"] == "add-the-parser-for-every-ledger-row-and-every-in"
 
 
 def test_parse_sub_intent_list_falls_back_to_a_generic_slug():
-    # Iteration-20 mutation sweep: an item with no ASCII letter or digit still gets a slug.
+    # An item with no ASCII letter or digit still gets a slug.
     (item,) = executor.parse_sub_intent_list(_section("- Добавить парсер"))
 
     assert item["slug"] == "sub-intent"
@@ -4127,7 +4118,7 @@ def test_parse_sub_intent_list_falls_back_to_a_generic_slug():
 
 
 def test_should_decompose_executes_a_plan_exactly_at_the_budget():
-    # R2-I18-M-E1: only entropy strictly above the budget is over budget ("at or below" executes).
+    # Only entropy strictly above the budget is over budget ("at or below" executes).
     decision = executor.should_decompose({"entropy": 5.0, "entropy_budget": 5.0}, "# Plan\n")
 
     assert decision.decision == executor.DECISION_EXECUTE
@@ -4158,13 +4149,23 @@ def test_should_decompose_ignores_per_step_recommendation_bullets():
     assert decision.sub_intents == []
 
 
-def _run_executor_main(tmp_path, plan_row: dict, plan_md: str | None, intent_row: dict) -> list[dict]:
-    """Run executor.main() with mocked git and runner; return the executions.jsonl rows it wrote."""
+def _run_executor_main(
+    tmp_path, plan_row: dict, plan_md: str | None, intent_row: dict, commands: list | None = None
+) -> list[dict]:
+    """Run executor.main() with mocked git and runner; return the executions.jsonl rows it wrote.
+
+    When ``commands`` is given, every run_cmd argument list is appended to it and the index reports staged changes, so
+    the commit command is issued too.
+    """
     runner = MagicMock()
     runner.get_version.return_value = "1.0.0"
 
     def side_effect(args, cwd=None, **kwargs):
         res = MagicMock(returncode=0, stdout="", stderr="")
+        if commands is not None:
+            commands.append(list(args))
+            if args[:4] == ["git", "diff", "--cached", "--quiet"]:
+                res.returncode = 1
         if "clone" in args:
             ledger = os.path.join(cwd, "holon-knowledge/ledger")
             os.makedirs(ledger, exist_ok=True)
@@ -4243,6 +4244,50 @@ def test_main_plan_decomposition_action_outcome(tmp_path, monkeypatch, plan_md, 
     assert actions[0]["entry_type"] == "action"
     assert actions[0]["outcome"] == expected_outcome
     assert actions[0]["target"] == "I-456/P-123/_"
+
+
+@pytest.mark.parametrize(
+    ("plan_md", "summary", "action", "commit"),
+    [
+        (
+            "# Plan\n\n## Sub-intent list\n\n1. Add the parser\n2. Add the CLI flag\n",
+            "Plan I-456/P-123/_ lists 2 sub-intent(s); the flow runs each one through the full pipeline.",
+            "Recorded the sub-intent list of I-456/P-123/_ (2 item(s))",
+            "execute: recorded the sub-intent list of I-456/P-123/_ (2 item(s))",
+        ),
+        (
+            "# Plan\n",
+            "Plan entropy 12.6 exceeds the entropy budget 5.0 and the plan lists no sub-intent list; the plan was not "
+            "executed.",
+            "Refused over-budget plan I-456/P-123/_",
+            "execute: plan I-456/P-123/_ is over its entropy budget",
+        ),
+    ],
+    ids=["decomposed", "over-budget"],
+)
+def test_main_non_execute_row_summary_action_and_commit(tmp_path, monkeypatch, plan_md, summary, action, commit):
+    monkeypatch.setenv("HOLON_ACTION_LOGGING", "1")
+    plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 12.6, "plan_file": "plans/P-123.md"}
+    intent_row = {"branch": "I-456", "slug": "parent", "entropy_budget": 5.0}
+    commands: list = []
+
+    rows = _run_executor_main(tmp_path, plan_row, plan_md, intent_row, commands)
+
+    (row,) = [r for r in rows if r.get("entry_type") == "summary"]
+    assert row["summary"] == summary
+    assert row["entropy"] == 12.6
+    (recorded,) = [r for r in rows if r.get("event_type") == "plan_decomposition"]
+    assert recorded["action"] == action
+    # Only the executions ledger is staged; the commit carries the outcome-specific message.
+    assert ["git", "add", "holon-knowledge/ledger/executions.jsonl"] in commands
+    assert not any(cmd[:2] == ["git", "add"] and "holon-knowledge/ledger/intents.jsonl" in cmd for cmd in commands)
+    assert ["git", "commit", "-m", commit] in commands
+
+
+def test_should_decompose_treats_a_missing_entropy_as_zero():
+    decision = executor.should_decompose({"entropy_budget": 5.0}, "# Plan\n")
+
+    assert (decision.decision, decision.entropy) == (executor.DECISION_EXECUTE, 0.0)
 
 
 def test_no_placeholder_sub_intent_text_in_source():

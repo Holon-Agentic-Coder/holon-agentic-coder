@@ -4378,7 +4378,11 @@ class TestEntropyBudgetHandoffInFlow:
         if expected_status == StageStatus.FAILED:
             assert res.payload["over_budget"] is True
             assert res.payload["dispatched"] is (not precheck)
+            assert (res.payload["entropy"], res.payload["entropy_budget"]) == (entropy, 5.0)
             assert "exceeds the entropy budget 5" in (res.error or "")
+            if not precheck:
+                # The executor's row also carries the execution it recorded.
+                assert res.payload["execution_branch"] == ctx.execution_branch is not None
 
     def test_intent_budget_16_with_plan_entropy_12_6_executes_normally(self, flow_repos, tmp_path):
         host, origin = flow_repos
@@ -4480,7 +4484,7 @@ class TestEntropyBudgetHandoffInFlow:
         assert results["review"].status == StageStatus.SKIPPED
         assert results["review"].payload == {"reason": "decomposed"}
         assert results["calibrate"].status == StageStatus.SKIPPED
-        # Skipped because the plan was decomposed, not only by the test context's skip flag (R2-I18-M-F13).
+        # Skipped because the plan was decomposed, not only by the test context's skip flag.
         assert results["calibrate"].payload == {"reason": "decomposed"}
         assert any("[sub-intent add-the-parser]" in line for line in ctx.logs)
         # The executor wrote no intent rows: only the parent and the two children created through Stage 1 exist.
@@ -4658,11 +4662,11 @@ class TestEntropyBudgetHandoffInFlow:
 
     @pytest.mark.parametrize(("recorded", "expected"), [(-3, 0), ("-1", 0), (None, 0), ("deep", 0), ("2", 2)], ids=str)
     def test_sub_intent_depth_is_never_negative(self, recorded, expected):
-        # R2-I18-M-F10: a negative or unreadable depth counts as a root intent, so children start at depth 1.
+        # A negative or unreadable depth counts as a root intent, so children start at depth 1.
         assert flow_module._sub_intent_depth({"sub_intent_depth": recorded}) == expected
 
     def test_decomposed_summary_names_the_parent_intents_own_target_branch(self):
-        # R2-I18-M-F4b: the pending parent PR targets the parent intent's target_branch, not always main.
+        # The pending parent PR targets the parent intent's target_branch, not always main.
         ctx = FlowContext(
             token_reduce=False,
             intent_data={"slug": "parent", "goal": "Change the application", "target_branch": "release/1.x"},
@@ -4790,3 +4794,353 @@ class TestEntropyBudgetHandoffInFlow:
         assert source.count("status=StageStatus.HALTED_FOR_HUMAN") == 1
         review_body = source.split("def run_review_stage(", 1)[1].split("\ndef ", 1)[0]
         assert "status=StageStatus.HALTED_FOR_HUMAN" in review_body
+
+    # --- Depth cap boundary -------------------------------------------------------------------------------------
+
+    def test_sub_intent_depth_error_allows_children_at_the_cap_and_refuses_one_deeper(self):
+        at_cap = FlowContext(token_reduce=False, intent_data={"sub_intent_depth": MAX_SUB_INTENT_DEPTH - 1})
+        past_cap = FlowContext(token_reduce=False, intent_data={"sub_intent_depth": MAX_SUB_INTENT_DEPTH})
+
+        assert flow_module._sub_intent_depth_error(at_cap) is None
+        assert flow_module._sub_intent_depth_error(past_cap) == (
+            f"Execute stage failed: the plan lists a sub-intent list at depth {MAX_SUB_INTENT_DEPTH + 1}, deeper than "
+            f"the limit of {MAX_SUB_INTENT_DEPTH}; refusing to recurse further."
+        )
+
+    @staticmethod
+    def _run_children(
+        intent_data: dict[str, Any], row: dict[str, Any], child_results: dict[str, StageResult] | None = None, **ctx_kw
+    ) -> tuple[StageResult, FlowContext, list[FlowContext]]:
+        """Run _run_decomposed_plan with each child pipeline replaced by a stub; return result, parent, children."""
+        ctx = FlowContext(token_reduce=False, intent_data=intent_data, **ctx_kw)
+        children: list[FlowContext] = []
+        done = child_results or {"intent": StageResult(stage=FlowStage.INTENT, status=StageStatus.SUCCESS)}
+
+        def fake_run(engine: PipelineEngine) -> dict[str, StageResult]:
+            children.append(engine.context)
+            return done
+
+        with patch.object(PipelineEngine, "run", autospec=True, side_effect=fake_run):
+            res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", row, {"execution_id": "E-1"})
+        return res, ctx, children
+
+    _ROW: ClassVar[dict[str, Any]] = {
+        "status": "decomposed",
+        "plan_branch": "I-1-parent/P-2-agent-model/_",
+        "entropy_budget": 5.0,
+        "sub_intents": [{"slug": "first", "description": "Add the parser\n- with tests", "goal": "Add the parser"}],
+    }
+
+    def test_child_at_exactly_the_depth_cap_runs(self):
+        res, _ctx, children = self._run_children(
+            {"slug": "parent", "sub_intent_depth": MAX_SUB_INTENT_DEPTH - 1}, self._ROW, intent_branch="I-1-parent/_"
+        )
+
+        assert res.status == StageStatus.SUCCESS
+        assert [c.intent_data["sub_intent_depth"] for c in children] == [MAX_SUB_INTENT_DEPTH]
+
+    def test_child_one_deeper_than_the_cap_is_refused(self):
+        res, _ctx, children = self._run_children(
+            {"slug": "parent", "sub_intent_depth": MAX_SUB_INTENT_DEPTH}, self._ROW, intent_branch="I-1-parent/_"
+        )
+
+        assert res.status == StageStatus.FAILED
+        assert "deeper than the limit" in (res.error or "")
+        assert children == []
+
+    # --- Child intent payloads ----------------------------------------------------------------------------------
+
+    def test_child_payload_fallbacks_and_copies(self):
+        labels = ["flow"]
+        row = {
+            "status": "decomposed",
+            "plan_branch": "I-1-parent/P-2-agent-model/_",
+            "sub_intents": [{"goal": "Add the parser"}, {"description": "Add the flag\n- detail"}, "not-an-item"],
+        }
+        res, ctx, children = self._run_children({"slug": "parent", "labels": labels}, row)
+
+        assert res.status == StageStatus.SUCCESS
+        # A checkpoint without intent_branch still names the parent from the plan branch.
+        assert res.payload["parent_branch"] == "I-1-parent/_"
+        assert [c.intent_data["target_branch"] for c in children] == ["I-1-parent/_"] * 2
+        first, second = (c.intent_data for c in children)
+        assert (first["slug"], first["description"], first["goal"]) == (
+            "sub-intent-1",
+            "Add the parser",
+            "Add the parser",
+        )
+        assert (second["slug"], second["goal"]) == ("sub-intent-2", "Add the flag\n- detail")
+        assert second["description"] == "Add the flag\n- detail"
+        # A row without entropy_budget hands no budget down, so each child resolves its own.
+        assert "entropy_budget" not in first
+        # Labels are copied, not shared, so a child cannot change its parent's labels.
+        assert first["labels"] == labels and first["labels"] is not labels
+        assert res.payload["sub_intents"] == row["sub_intents"][:2]
+        assert ctx.stage_results["execute"] is res
+        assert any(
+            line.endswith("] Stage 3: running sub-intent 1/2 'sub-intent-1' through the full pipeline.")
+            for line in ctx.logs
+        )
+
+    def test_child_payload_prefers_the_intent_branch_and_hands_down_the_budget(self):
+        row = {k: v for k, v in self._ROW.items() if k != "plan_branch"}
+        res, _ctx, children = self._run_children(
+            {"slug": "parent", "labels": "flow"}, row, intent_branch="I-9-parent/_"
+        )
+
+        assert res.payload["parent_branch"] == "I-9-parent/_"
+        (child,) = (c.intent_data for c in children)
+        assert child["entropy_budget"] == 5.0
+        assert (child["description"], child["goal"]) == ("Add the parser\n- with tests", "Add the parser")
+        # Labels that are not a list are not handed down.
+        assert "labels" not in child
+
+    def test_failed_child_names_its_own_error_and_final_stage(self):
+        failed = {
+            "intent": StageResult(stage=FlowStage.INTENT, status=StageStatus.SUCCESS),
+            "plan": StageResult(stage=FlowStage.PLAN, status=StageStatus.FAILED, error="Plan stage failed: no plan"),
+        }
+        res, _ctx, _children = self._run_children(
+            {"slug": "parent"}, self._ROW, child_results=failed, intent_branch="I-1-parent/_"
+        )
+
+        assert res.error == (
+            "Execute stage failed: sub-intent 1/1 'first' failed at stage 'plan': Plan stage failed: no plan"
+        )
+        (child,) = res.payload["children"]
+        assert (child["final_stage"], child["status"]) == ("plan", "failed")
+
+    @pytest.mark.parametrize("sub_intents", [5, "abc"], ids=["number", "string"])
+    def test_decomposed_row_with_a_non_list_sub_intent_value_fails_stage(self, sub_intents):
+        row = {"status": "decomposed", "plan_branch": "I-1-parent/P-2-agent-model/_", "sub_intents": sub_intents}
+        res, _ctx, children = self._run_children({"slug": "parent"}, row, intent_branch="I-1-parent/_")
+
+        assert res.status == StageStatus.FAILED
+        assert "without any sub-intent list items" in (res.error or "")
+        assert children == []
+
+    # --- Child PR reporting and the flow summary ------------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        ("pr", "expected"),
+        [
+            (
+                {"pr_url": "https://github.com/o/r/pull/7", "pr_number": 7, "output": ""},
+                ("https://github.com/o/r/pull/7", 7),
+            ),
+            (
+                {
+                    "pr_number": 5,
+                    "output": "see https://github.com/o/r/compare/x then https://github.com/o/r/pull/5 ok",
+                },
+                ("https://github.com/o/r/pull/5", 5),
+            ),
+            ("not a dict", (None, None)),
+            (None, (None, None)),
+        ],
+        ids=["explicit-url", "url-from-output", "not-a-dict", "missing"],
+    )
+    def test_child_review_pr(self, pr, expected):
+        payload = {} if pr is None else {"pr": pr}
+        results = {"review": StageResult(stage=FlowStage.REVIEW, status=StageStatus.HALTED_FOR_HUMAN, payload=payload)}
+
+        assert flow_module._child_review_pr(results) == expected
+        assert flow_module._child_review_pr({}) == (None, None)
+
+    def test_format_decomposition_summary_fallbacks(self):
+        children = [
+            {
+                "slug": "a",
+                "pr_url": "https://x/pull/1",
+                "execution_branch": "E-a",
+                "intent_branch": "I-a",
+                "status": "s",
+            },
+            {"slug": "b", "execution_branch": "E-b", "intent_branch": "I-b", "status": "s"},
+            {"slug": "c", "intent_branch": "I-c", "status": "s"},
+            {"slug": "d", "status": "s"},
+            "not-a-child",
+        ]
+        result = StageResult(
+            stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"decomposed": True, "children": children}
+        )
+
+        assert flow_module.format_decomposition_summary(result) == [
+            "Decomposed into 4 sub-intent(s); merge each child PR into the parent intent branch:",
+            "  1. a: https://x/pull/1 (s)",
+            "  2. b: E-b (s)",
+            "  3. c: I-c (s)",
+            "  4. d: no branch (s)",
+            "Pending (not yet automated): after the child PRs merge, raise a PR from 'the parent intent branch' to "
+            "'its target branch'.",
+        ]
+
+    # --- Pre-dispatch budget decision -----------------------------------------------------------------------------
+
+    def test_budget_precheck_without_a_plan_branch_reads_nothing(self):
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"})
+        with patch("sandbox_executor.flow._resolve_branch_ref") as resolve:
+            assert flow_module._plan_budget_decision(ctx) is None
+        resolve.assert_not_called()
+
+    def test_budget_precheck_with_an_unresolvable_plan_ref_reads_no_ledger(self):
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"})
+        ctx.plan_branch = "I-1-parent/P-2-agent-model/_"
+        with (
+            patch("sandbox_executor.flow._resolve_branch_ref", return_value=None),
+            patch("sandbox_executor.flow._read_ledger_rows") as read_rows,
+        ):
+            assert flow_module._plan_budget_decision(ctx) is None
+        read_rows.assert_not_called()
+
+    def test_budget_precheck_ignores_rows_of_other_plans(self):
+        rows = [
+            {"plan_id": "P-2-agent-model", "entropy": 2.0, "plan_file": "plans/P-2-agent-model.md"},
+            {"plan_id": "P-3-agent-model", "entropy": 12.6, "plan_file": "plans/P-3-agent-model.md"},
+        ]
+        files = {"plans/P-2-agent-model.md": "# Plan\n", "plans/P-3-agent-model.md": "# Plan\n"}
+        assert self._decide(rows, files).decision == "execute"
+        assert self._decide(rows[1:], files) is None
+
+    def test_budget_precheck_reads_the_recorded_plan_file_and_the_intent_budget(self):
+        rows = [{"plan_id": "P-2-agent-model", "entropy": 9.0, "plan_file": "plans/P-2-agent-model-v2.md"}]
+        decision = self._decide(rows, {"plans/P-2-agent-model-v2.md": "# Plan\n" + SUB_INTENT_LIST})
+        assert decision.decision == "decomposed"
+        # No list and no budget on the row: the intent's budget (5.0, not the default) decides.
+        decision = self._decide(rows, {"plans/P-2-agent-model-v2.md": "# Plan\n"})
+        assert (decision.decision, decision.entropy_budget) == ("over_budget", 5.0)
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [(12.6, "12.6"), (5, "5"), (5.0, "5"), (True, "True"), (None, "unknown"), ("lots", "lots")],
+        ids=str,
+    )
+    def test_format_entropy(self, value, expected):
+        assert flow_module._format_entropy(value) == expected
+
+    # --- Re-plan loop checkpoints ---------------------------------------------------------------------------------
+
+    @staticmethod
+    def _engine_run(
+        ctx: FlowContext, plans: list[StageResult], executes: list[StageResult]
+    ) -> tuple[dict[str, StageResult], list[dict[str, Any]]]:
+        """Run the engine with stub stages; return the results and every checkpoint the engine saved, in order."""
+        plan_iter, exec_iter = iter(plans), iter(executes)
+        saved: list[dict[str, Any]] = []
+
+        def plan(context: FlowContext) -> StageResult:
+            result = next(plan_iter)
+            if result.status == StageStatus.SUCCESS:
+                context.plan_branch = f"I-1-parent/P-{len(saved)}-agent-model/_"
+            return result
+
+        def snapshot(context: FlowContext, filepath: str | None = None) -> str:
+            saved.append(json.loads(json.dumps(context.to_dict())))
+            return filepath or "checkpoint.json"
+
+        intent = StageResult(stage=FlowStage.INTENT, status=StageStatus.SUCCESS)
+        with (
+            patch("sandbox_executor.flow.run_intent_stage", return_value=intent),
+            patch("sandbox_executor.flow.run_plan_stage", side_effect=plan),
+            patch("sandbox_executor.flow.run_execute_stage", side_effect=lambda _c: next(exec_iter)),
+            patch("sandbox_executor.flow.save_checkpoint", side_effect=snapshot),
+        ):
+            results = PipelineEngine(ctx).run()
+        return results, saved
+
+    @staticmethod
+    def _over_budget() -> StageResult:
+        return StageResult(
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.FAILED,
+            error="Execute stage failed: over budget",
+            payload={"over_budget": True, "entropy": 12.6, "entropy_budget": 5.0},
+        )
+
+    def test_replan_checkpoints_the_failed_replan(self):
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_review=True, skip_calibrate=True)
+        ok = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS)
+        no_plan = StageResult(stage=FlowStage.PLAN, status=StageStatus.FAILED, error="Plan stage failed: no plan")
+
+        _results, saved = self._engine_run(ctx, [ok, no_plan], [self._over_budget()])
+
+        last = saved[-1]
+        assert last["replan_attempts"] == 1
+        assert last["plan_branch"] is None
+        assert last["stage_results"]["plan"]["status"] == "failed"
+        assert sum("Entering stage: PLAN" in line for line in ctx.logs) == 2
+
+    def test_replan_checkpoints_the_new_execute_result(self):
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_review=True, skip_calibrate=True)
+        ok = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS)
+        other = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.FAILED, error="Execute stage failed: push")
+
+        _results, saved = self._engine_run(ctx, [ok, ok], [self._over_budget(), other])
+
+        last = saved[-1]
+        assert last["replan_attempts"] == 1
+        assert last["stage_results"]["execute"]["error"] == "Execute stage failed: push"
+        assert last["plan_branch"] == ctx.plan_branch is not None
+        assert sum("Entering stage: EXECUTE" in line for line in ctx.logs) == 2
+
+    def test_exhausted_replans_checkpoint_the_final_error(self):
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_review=True, skip_calibrate=True)
+        ok = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS)
+        attempts = MAX_REPLAN_ATTEMPTS + 1
+
+        results, saved = self._engine_run(ctx, [ok] * attempts, [self._over_budget() for _ in range(attempts)])
+
+        error = results["execute"].error
+        assert error == (
+            f"Execute stage failed: plan entropy 12.6 exceeds the entropy budget 5 after {MAX_REPLAN_ATTEMPTS} "
+            "re-plan attempts and the plan lists no sub-intent list."
+        )
+        assert saved[-1]["stage_results"]["execute"]["error"] == error
+        assert saved[-1]["stage_results"]["execute"]["payload"]["replan_attempts"] == MAX_REPLAN_ATTEMPTS
+        assert any(line.endswith("] " + error) for line in ctx.logs)
+
+    def test_decomposed_parent_checkpoints_its_skipped_review_and_calibration(self):
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_review=True, skip_calibrate=True)
+        ok = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS)
+        decomposed = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"decomposed": True})
+
+        results, saved = self._engine_run(ctx, [ok], [decomposed])
+
+        assert results["calibrate"].payload == {"reason": "decomposed"}
+        assert saved[-1]["stage_results"]["calibrate"]["payload"] == {"reason": "decomposed"}
+
+    def test_undecomposed_success_runs_review_and_calibration_normally(self):
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_review=True, skip_calibrate=True)
+        ok = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS)
+        plain = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"execution_id": "E-1"})
+
+        results, _saved = self._engine_run(ctx, [ok], [plain])
+
+        assert results["review"].payload == {"skipped_by_flag": True}
+        assert results["calibrate"].payload == {"skipped_by_flag": True}
+
+    @pytest.mark.parametrize(
+        ("feedback", "expected"),
+        [(" \n\t ", None), ("  Re-plan: entropy 12.6  ", "Re-plan: entropy 12.6")],
+        ids=["blank", "padded"],
+    )
+    def test_plan_stage_forwards_only_non_blank_stripped_feedback(self, feedback, expected, monkeypatch):
+        monkeypatch.delenv("HOLON_REPLAN_FEEDBACK", raising=False)
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent", "replan_feedback": feedback})
+        ctx.intent_branch = "I-1-parent/_"
+        seen: list[str | None] = []
+
+        def dispatch(_context: FlowContext, _role: str, _args: list[str]) -> int:
+            seen.append(os.environ.get("HOLON_REPLAN_FEEDBACK"))
+            return 1
+
+        with (
+            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow._snapshot_child_branches", return_value=set()),
+            patch("sandbox_executor.flow._dispatch_role", side_effect=dispatch),
+        ):
+            res = run_plan_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        assert seen == [expected]
+        assert "HOLON_REPLAN_FEEDBACK" not in os.environ

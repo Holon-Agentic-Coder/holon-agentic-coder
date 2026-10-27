@@ -132,15 +132,16 @@ It returns one of three outcomes:
 The executor never invents child work and never writes `intents.jsonl` rows. For both non-execute outcomes it skips the
 agent, records one `executions.jsonl` summary (`status: "decomposed"` with `sub_intents`, or `status: "over_budget"`
 with `entropy`, `entropy_budget` and a message) and commits only that ledger to the execution branch. The branch is then
-pushed, or kept locally when `HOLON_SKIP_PUSH` disables pushing. The push is refused when the branch has no parent
-commit, a git-recovery verification fails, or the pre-push sync fails (the last two first commit a superseding failure
-row). Exit codes: `decomposed` exits 0, unless the push command itself fails, which exits 1. `over_budget` exits 3
-(`OVER_BUDGET_EXIT_CODE`) only once its row is recorded on the execution branch (pushed, or kept locally when pushing is
-disabled); when nothing was staged, the push is refused or the push command fails, no execution branch records the row
-and it exits 1. Either way a direct `holon execute` of a refused plan fails, while the flow reads the recorded row and
-decides what happens next: each child intent is created through the normal Stage 1 intent creator and run through the
-full pipeline (unless the plan's intent is already at `budgets.MAX_SUB_INTENT_DEPTH`, in which case Stage 3 fails and
-refuses to recurse further), or the plan is sent back to Stage 2 (see
+pushed, or kept locally when `HOLON_SKIP_PUSH` disables pushing. Because the agent never runs, the git-recovery
+verification never applies here, so only two checks can refuse that push: the branch has no parent commit, or the
+pre-push sync fails (the latter first commits a superseding failure row). Exit codes: `decomposed` exits 0, including
+when nothing was staged or the push is refused, unless the commit or push command itself fails, which exits 1.
+`over_budget` exits 3 (`OVER_BUDGET_EXIT_CODE`) only once its row is recorded on the execution branch (pushed, or kept
+locally when pushing is disabled); when nothing was staged, the push is refused or the commit or push command fails, no
+execution branch records the row and it exits 1. Either way a direct `holon execute` of a refused plan fails, while the
+flow reads the recorded row and decides what happens next: each child intent is created through the normal Stage 1
+intent creator and run through the full pipeline (unless the plan's intent is already at `budgets.MAX_SUB_INTENT_DEPTH`,
+in which case Stage 3 fails and refuses to recurse further), or the plan is sent back to Stage 2 (see
 [Git Flow](../git_flow.md#flow-equivalence-guarantee)).
 
 ### 6. Agent Invocation

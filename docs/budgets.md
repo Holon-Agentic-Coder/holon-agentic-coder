@@ -214,8 +214,10 @@ budget, but it lives in the same module so that there is exactly one source of t
   count and final failure are recorded only in the flow's stage results, log and checkpoint
   (`.holon/flow/checkpoint-<slug>.json`). The executor's `over_budget` summary row is written only when the executor
   itself refuses the plan, as in a direct `holon execute` run, which then exits with code 3 (`OVER_BUDGET_EXIT_CODE`)
-  once that row is committed to its execution branch, or with code 1 when the push is refused or fails and no branch
-  records it. For an intent already at `budgets.MAX_SUB_INTENT_DEPTH`, the re-plan request asks only for a smaller plan,
-  since a sub-intent list would be refused there.
+  once that row is recorded on its execution branch, or with code 1 when no branch records it (the conditions are listed
+  in
+  [Entropy Budget and Decomposition Evaluation](executor/execution_architecture_specification.md#5-entropy-budget-and-decomposition-evaluation)).
+  For an intent already at `budgets.MAX_SUB_INTENT_DEPTH`, the re-plan request asks only for a smaller plan, since a
+  sub-intent list would be refused there.
 - **Bounded nesting.** Child intents created from a sub-intent list carry `sub_intent_depth`; the flow refuses to
   recurse beyond `budgets.MAX_SUB_INTENT_DEPTH` (`2`).

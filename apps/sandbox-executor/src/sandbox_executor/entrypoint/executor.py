@@ -730,6 +730,8 @@ _FENCE_OPEN_RE = re.compile(r"^(`{3,}(?=[^`]*$)|~{3,})")
 _FENCE_CLOSE_RE = re.compile(r"^(`{3,}|~{3,})$")
 # A thematic break: 3+ of the same "*", "-" or "_", optionally separated by spaces or tabs (matched on a stripped line).
 _THEMATIC_BREAK_RE = re.compile(r"^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$")
+# A setext heading underline (matched on a stripped line): only "=" (level 1) or only "-" (level 2), no inner spaces.
+_SETEXT_UNDERLINE_RE = re.compile(r"^(=+|-+)$")
 
 
 @dataclass(frozen=True)
@@ -775,6 +777,27 @@ def is_placeholder_item(text: str) -> bool:
     return bool(_PLACEHOLDER_RE.match(_normalise_placeholder_item(text)))
 
 
+def _setext_heading(
+    stripped: str, indent: int, base_indent: int | None, lines: list[str], index: int
+) -> tuple[int, str] | None:
+    """Return ``(level, text)`` when the line at ``index`` is the text line of a setext heading, else ``None``.
+
+    The text line is a non-blank paragraph line (not a list item, thematic break or continuation of the item above) at
+    0-3 columns, and the next line is an underline of only ``=`` (level 1) or only ``-`` (level 2) at 0-3 columns. A
+    ``---`` line that follows a list item, a blank line or another non-paragraph line is a thematic break, not an
+    underline.
+    """
+    if not stripped or indent > _MAX_LIST_INDENT or (base_indent is not None and indent > base_indent):
+        return None
+    if _LIST_ITEM_RE.match(stripped) or _THEMATIC_BREAK_RE.match(stripped) or index + 1 >= len(lines):
+        return None
+    following = lines[index + 1].expandtabs(4)
+    underline = _SETEXT_UNDERLINE_RE.match(following.strip())
+    if not underline or len(following) - len(following.lstrip()) > _MAX_LIST_INDENT:
+        return None
+    return (1 if underline.group(1)[0] == "=" else 2), stripped
+
+
 def parse_sub_intent_list(plan_content: str) -> list[dict[str, Any]]:
     """Parse the explicit sub-intent list from a plan's markdown.
 
@@ -784,8 +807,10 @@ def parse_sub_intent_list(plan_content: str) -> list[dict[str, Any]]:
     never become items of their own: they are appended to the preceding item's description. A fence opens at any
     indentation (so a code block nested in an item counts) and every line inside it is ignored, headings included; it
     closes only on a run of the same character at least as long as its opener, and an unclosed fence runs to the end of
-    the plan. Outside fences, only a heading indented 0-3 columns ends the section, and thematic breaks (``* * *``,
-    ``---``) at 0-3 columns are skipped.
+    the plan. Outside fences, only a heading indented 0-3 columns ends the section, whether ATX (``## Next``) or setext
+    (a paragraph line underlined with ``===`` or ``---``, see :func:`_setext_heading`; a level-2 setext heading opens
+    the list like its ATX form), and thematic breaks (``* * *``, or ``---`` not under a paragraph line) at 0-3 columns
+    are skipped.
     Per-step sub-intent recommendation bullets are never under such a heading, so they are ignored. Each item becomes
     ``{slug, description, goal}``; the slug and goal come from the item text only. Empty items, items with no
     alphanumeric character and placeholder items are skipped (an item that, stripped of wrapping brackets, quotes and
@@ -802,7 +827,13 @@ def parse_sub_intent_list(plan_content: str) -> list[dict[str, Any]]:
     in_section = False
     fence: str | None = None
     base_indent: int | None = None
-    for line in plan_content.splitlines():
+    lines = plan_content.splitlines()
+    skip_underline = False
+    for index, line in enumerate(lines):
+        if skip_underline:
+            # The underline of the setext heading on the line above.
+            skip_underline = False
+            continue
         expanded = line.expandtabs(4)
         stripped = expanded.strip()
         if fence is not None:
@@ -817,10 +848,12 @@ def parse_sub_intent_list(plan_content: str) -> list[dict[str, Any]]:
             continue
         indent = len(expanded) - len(expanded.lstrip())
         heading = _HEADING_RE.match(stripped) if indent <= _MAX_LIST_INDENT else None
-        if heading:
-            level = len(heading.group(1))
-            in_section = level in (2, 3) and _normalise_heading(heading.group(2)) in _SUB_INTENT_HEADINGS
+        setext = None if heading else _setext_heading(stripped, indent, base_indent, lines, index)
+        if heading or setext:
+            level, text = (len(heading.group(1)), heading.group(2)) if heading else setext
+            in_section = level in (2, 3) and _normalise_heading(text) in _SUB_INTENT_HEADINGS
             base_indent = None
+            skip_underline = setext is not None
             continue
         if not in_section or not stripped:
             continue

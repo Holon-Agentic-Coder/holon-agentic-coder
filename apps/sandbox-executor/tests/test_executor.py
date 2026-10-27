@@ -3892,8 +3892,45 @@ SUB_INTENT_PARSER_CORPUS = [
         id="four-space-hash-line-folds",
     ),
     pytest.param(_section("- First\n   ## Next\n- not a child"), ["First"], id="three-space-heading-ends-section"),
-    pytest.param("# Plan\n\n# Sub-intent list\n\n- not a child\n", [], id="level-1-heading-does-not-open"),
-    pytest.param("# Plan\n\n#### Sub-intent list\n\n- not a child\n", [], id="level-4-heading-does-not-open"),
+    # Real (non-placeholder) items, so only the heading level decides (R2-I18-M-E3).
+    pytest.param("# Plan\n\n# Sub-intent list\n\n- Add the parser\n", [], id="level-1-heading-does-not-open"),
+    pytest.param("# Plan\n\n#### Sub-intent list\n\n- Add the parser\n", [], id="level-4-heading-does-not-open"),
+    # R2-I18-M-E5b: a Unicode hyphen or non-breaking hyphen in the heading normalises like an ASCII hyphen.
+    *[
+        pytest.param(
+            f"# Plan\n\n## Sub{hyphen}intent list\n\n- Add the parser\n", ["Add the parser"], id=f"heading-{name}"
+        )
+        for name, hyphen in [("unicode-hyphen", "\u2010"), ("non-breaking-hyphen", "\u2011")]
+    ],
+    # N-18-1-1: a setext heading (paragraph line underlined with "=" or "-") ends the section like an ATX heading
+    # (PARSER-CONVERGENCE-ITER7, extended in iteration 18).
+    pytest.param(
+        _section("- Add the parser\nNotes\n-----\n- Remember to run lint\n- Keep docs current"),
+        ["Add the parser"],
+        id="n-18-1-1-setext-dash-heading-ends-section",
+    ),
+    pytest.param(
+        _section("- Add the parser\nOther\n=====  \n- Ship it"),
+        ["Add the parser"],
+        id="n-18-1-1-setext-equals-heading-ends-section",
+    ),
+    pytest.param(
+        "# Plan\n\nSub-intent list\n---------------\n\n- Add the parser\n\nRisks\n-----\n\n- Ship it\n",
+        ["Add the parser"],
+        id="n-18-1-1-level-2-setext-heading-opens-and-ends",
+    ),
+    pytest.param(
+        "# Plan\n\nSub-intent list\n===============\n\n- Add the parser\n",
+        [],
+        id="n-18-1-1-level-1-setext-does-not-open",
+    ),
+    # A "---" line straight after a list item, or under a continuation line, is a thematic break, not an underline.
+    pytest.param(_section("- A\n---\n- B"), ["A", "B"], id="n-18-1-1-break-after-item-is-not-an-underline"),
+    pytest.param(
+        _section("- A\n  more about A\n  ---\n- B"),
+        ["A\nmore about A", "B"],
+        id="n-18-1-1-break-under-continuation-is-not-an-underline",
+    ),
     # An unclosed fence runs to the end of the plan; items before it survive.
     pytest.param(_section("- First\n```\n- fenced\n## Next\n- fenced too"), ["First"], id="unclosed-fence-after-item"),
     pytest.param(_section("```\n- fenced"), [], id="unclosed-fence-before-items"),
@@ -3903,6 +3940,8 @@ SUB_INTENT_PARSER_CORPUS = [
         for name, rule in [("stars", "* * *"), ("dashes", "---"), ("underscores", "___"), ("spaced-dashes", "- - -")]
     ],
     pytest.param(_section("- A\n  * * *\n- B"), ["A", "B"], id="r8-n1-indented-thematic-break-does-not-fold"),
+    # R2-I18-M-E8: a break-like line at 4+ columns is not a break; it folds into the item above.
+    pytest.param(_section("- A\n    - - -\n- B"), ["A\n- - -", "B"], id="four-space-break-like-line-folds"),
     pytest.param(_section("- A\n- ...\n- (!)\n- B"), ["A", "B"], id="r8-n1-punctuation-only-item-skipped"),
 ]
 
@@ -3920,6 +3959,22 @@ def test_parse_sub_intent_list_builds_slug_description_and_goal():
         {"slug": "add-the-parser", "description": _NESTED_EXPECTED[0], "goal": "Add the parser"},
         {"slug": "add-the-cli-flag", "description": _NESTED_EXPECTED[1], "goal": "Add the CLI flag"},
     ]
+
+
+def test_parse_sub_intent_list_truncates_long_slugs_to_48_characters():
+    # R2-I18-M-E2: the slug is cut to 48 characters, and a cut that lands on a hyphen leaves no trailing hyphen.
+    text = "Add " + "x" * 43 + " parser for every ledger row"
+    (item,) = executor.parse_sub_intent_list(_section(f"- {text}"))
+
+    assert item["slug"] == "add-" + "x" * 43
+    assert item["goal"] == text
+
+
+def test_should_decompose_executes_a_plan_exactly_at_the_budget():
+    # R2-I18-M-E1: only entropy strictly above the budget is over budget ("at or below" executes).
+    decision = executor.should_decompose({"entropy": 5.0, "entropy_budget": 5.0}, "# Plan\n")
+
+    assert decision.decision == executor.DECISION_EXECUTE
 
 
 @pytest.mark.parametrize(

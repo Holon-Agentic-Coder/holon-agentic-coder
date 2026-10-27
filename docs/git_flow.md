@@ -41,8 +41,9 @@ This document defines the **Git branching, rebasing, and merging discipline** fo
 ### 1.5 ID Generation
 
 - Root intent, plan and execution IDs are generated using the current Unix timestamp.
-- Sub-intent IDs are derived from their parent's ID and their position in the parent's sub-intent list, never from the
-  clock (section 2.2), so children created within the same second as their parent or siblings never collide.
+- In the current flow, sub-intent IDs are derived from their parent's ID and their position in the parent's sub-intent
+  list, never from the clock (section 2.2), so children created within the same second as their parent or siblings never
+  collide. The target-model examples in sections 2.2, 2.3, 3, 4 and 8 still show timestamped sub-intent IDs.
 - Example: `I-1771422315`, `P-1771422316`, `E-1771422317`
 
 ---
@@ -73,9 +74,12 @@ I-1771890389-refactor-metrics/_
 > sub-intent list and `{slug}` the item's slug, for example `I-1771890389-refactor-metrics--1-improve-estimators/_` and,
 > one level deeper, `I-1771890389-refactor-metrics--1-improve-estimators--2-p-success/_`. A generated slug never
 > contains `--`, so the name cannot collide with the parent, a sibling or any other intent, even when they are created
-> within the same second or share a slug. Re-running the same parent's sub-intent list derives the same names, so the
-> intent stage reuses a branch only for that same child. Sections 2.2 and 2.3 describe the nested names of the target
-> model.
+> within the same second or share a slug. Re-running the same parent's sub-intent list derives the same names. The
+> intent stage reuses an existing branch of that name only when its `intents.jsonl` row records the same goal and
+> description; otherwise (for example after a re-plan changed the item at that position) the stage fails and names the
+> conflicting branch rather than reuse it. A sub-intent's flow checkpoint is keyed on its intent branch
+> (`.holon/flow/checkpoint-{parent}--{n}-{slug}.json`), so a child and a grandchild sharing a slug never overwrite each
+> other's. Sections 2.2 and 2.3 describe the nested names of the target model.
 
 ```
 I-{timestamp}-{slug}/I-{timestamp}-{slug}/_

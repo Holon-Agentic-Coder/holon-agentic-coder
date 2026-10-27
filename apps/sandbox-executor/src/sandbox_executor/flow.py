@@ -451,7 +451,13 @@ def save_checkpoint(context: FlowContext, filepath: str | None = None) -> str:
         slug = context.intent_data["branch"].replace("I-", "").split("-", 2)[-1]
     if not slug:
         slug = "default"
-    target_path = filepath or get_default_checkpoint_path(context.repo_dir, slug)
+    # A sub-intent's slug can repeat its parent's or a sibling's, so its checkpoint is keyed on its unique branch.
+    key = (
+        str(context.intent_data["branch"]).removesuffix("/_")
+        if context.intent_data.get("parent_intent_id") and context.intent_data.get("branch")
+        else slug
+    )
+    target_path = filepath or get_default_checkpoint_path(context.repo_dir, key)
     target_dir = os.path.dirname(os.path.abspath(target_path))
     os.makedirs(target_dir, exist_ok=True)
 
@@ -2539,6 +2545,32 @@ def _execution_effective_diff(repo_dir: str, execution_branch: str) -> tuple[boo
 # ---------------------------------------------------------------------------
 
 
+def _reused_intent_conflict(repo_dir: str, intent_branch: str, branch: str, intent_data: dict[str, Any]) -> str | None:
+    """Return why an existing origin intent branch cannot be reused for ``intent_data``, or None when it can.
+
+    The branch is reused only when its ``intents.jsonl`` row for ``branch`` records the same goal and description, so a
+    re-plan that changes a child at the same position and slug never silently inherits the earlier child's intent.
+    """
+    rows = [
+        r for r in _read_ledger_rows(repo_dir, f"origin/{intent_branch}", "intents.jsonl") if r.get("branch") == branch
+    ]
+    if not rows:
+        return (
+            f"Intent stage failed: '{intent_branch}' already exists on origin but records no intent row for "
+            f"'{branch}'; refusing to reuse it. Delete that branch or give this intent a different branch."
+        )
+    recorded = rows[-1]
+    if recorded.get("goal") == intent_data.get("goal") and recorded.get("description") == intent_data.get(
+        "description"
+    ):
+        return None
+    return (
+        f"Intent stage failed: '{intent_branch}' already exists on origin for a different intent (its recorded goal or "
+        "description differs from this one); refusing to reuse it. Delete that branch or give this intent a different "
+        "branch."
+    )
+
+
 def run_intent_stage(context: FlowContext) -> StageResult:
     """Execute Stage 1: validate the intent payload and dispatch the intent-creator agent.
 
@@ -2621,6 +2653,9 @@ def run_intent_stage(context: FlowContext) -> StageResult:
                 intent_branch=intent_branch,
             )
         if _origin_has_branch(repo_dir, intent_branch):
+            conflict = _reused_intent_conflict(repo_dir, intent_branch, branch, intent_data)
+            if conflict is not None:
+                return _stage_failure(context, FlowStage.INTENT, start_time, conflict, intent_branch=intent_branch)
             context.log(f"Intent branch '{intent_branch}' already exists on origin; reusing it without re-dispatching.")
         else:
             tmp_dir = os.path.expanduser("~/.holon/tmp")

@@ -233,6 +233,41 @@ class TestFlowDataModels:
         assert loaded.context.agent == "antigravity-agent"
         assert "intent" in loaded.completed_stages
 
+    def test_default_checkpoint_of_a_sub_intent_is_keyed_on_its_branch(self, tmp_path):
+        root = FlowContext(
+            repo_dir=str(tmp_path), intent_data={"slug": "add-the-parser", "branch": "I-1-add-the-parser"}
+        )
+        child = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_data={
+                "slug": "add-the-parser",
+                "branch": "I-1-add-the-parser--1-add-the-parser",
+                "parent_intent_id": "I-1-add-the-parser/_",
+            },
+        )
+        grandchild = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_data={
+                "slug": "add-the-parser",
+                "branch": "I-1-add-the-parser--1-add-the-parser--1-add-the-parser",
+                "parent_intent_id": "I-1-add-the-parser--1-add-the-parser/_",
+            },
+        )
+
+        paths = [save_checkpoint(ctx) for ctx in (root, child, grandchild)]
+
+        flow_dir = tmp_path / ".holon" / "flow"
+        assert paths == [
+            str(flow_dir / "checkpoint-add-the-parser.json"),
+            str(flow_dir / "checkpoint-I-1-add-the-parser--1-add-the-parser.json"),
+            str(flow_dir / "checkpoint-I-1-add-the-parser--1-add-the-parser--1-add-the-parser.json"),
+        ]
+        assert [load_checkpoint(p).context.intent_data["branch"] for p in paths] == [
+            "I-1-add-the-parser",
+            "I-1-add-the-parser--1-add-the-parser",
+            "I-1-add-the-parser--1-add-the-parser--1-add-the-parser",
+        ]
+
         # Test non-existent checkpoint
         with pytest.raises(FileNotFoundError):
             load_checkpoint(str(tmp_path / "does_not_exist.json"))
@@ -2458,6 +2493,64 @@ class TestFlowRoleDispatch:
         again = _dispatch_context(host, agents, intent_data=dict(ctx.intent_data))
         assert run_intent_stage(again).status == StageStatus.SUCCESS
         assert agents.roles() == ["intent-creator"]
+
+    @staticmethod
+    def _child_intent(goal: str) -> dict[str, Any]:
+        parent = "I-1-parent/_"
+        return {
+            "branch": "I-1-parent--1-add-the-parser",
+            "slug": "add-the-parser",
+            "goal": goal,
+            "description": goal,
+            "parent_intent_id": parent,
+            "target_branch": "main",
+            "sub_intent_depth": 1,
+        }
+
+    def test_stage1_reuses_existing_child_branch_recording_the_same_goal(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin)
+        first = _dispatch_context(host, agents, intent_data=self._child_intent("Add the parser"))
+        assert run_intent_stage(first).status == StageStatus.SUCCESS
+
+        resumed = _dispatch_context(host, agents, intent_data=self._child_intent("Add the parser"))
+        res = run_intent_stage(resumed)
+
+        assert res.status == StageStatus.SUCCESS
+        assert res.payload["dispatched"] is False
+        assert resumed.intent_branch == "I-1-parent--1-add-the-parser/_"
+        assert agents.roles() == ["intent-creator"]
+
+    def test_stage1_refuses_existing_child_branch_recording_a_different_goal(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin)
+        first = _dispatch_context(host, agents, intent_data=self._child_intent("Add the parser"))
+        assert run_intent_stage(first).status == StageStatus.SUCCESS
+
+        # A re-plan changed the item at the same position while keeping its slug.
+        replanned = _dispatch_context(
+            host, agents, intent_data=self._child_intent("Add the parser with error recovery")
+        )
+        res = run_intent_stage(replanned)
+
+        assert res.status == StageStatus.FAILED
+        assert "'I-1-parent--1-add-the-parser/_' already exists on origin for a different intent" in (res.error or "")
+        assert agents.roles() == ["intent-creator"]
+        rows = _ledger_rows(host, "origin/I-1-parent--1-add-the-parser/_", "intents.jsonl")
+        assert [r["goal"] for r in rows] == ["Add the parser"]
+
+    def test_stage1_refuses_existing_branch_without_an_intent_row(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin)
+        branch = "I-1-parent--1-add-the-parser/_"
+        _git(host, "branch", branch, "main")
+        _git(host, "push", "-q", "origin", branch)
+
+        res = run_intent_stage(_dispatch_context(host, agents, intent_data=self._child_intent("Add the parser")))
+
+        assert res.status == StageStatus.FAILED
+        assert f"'{branch}' already exists on origin but records no intent row" in (res.error or "")
+        assert agents.roles() == []
 
     def test_silent_planner_fails_plan_stage_without_fabricating(self, flow_repos, tmp_path):
         host, origin = flow_repos

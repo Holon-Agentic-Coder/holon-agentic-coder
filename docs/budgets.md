@@ -212,11 +212,12 @@ budget, but it lives in the same module so that there is exactly one source of t
   plan is refused before the executor container starts: that attempt creates no execution branch and appends no
   `executions.jsonl` row. Each rejected plan keeps its `plans.jsonl` row on its plan branch, and those refusals, the
   re-plan count and the final failure are recorded only in the flow's stage results, log and checkpoint
-  (`.holon/flow/checkpoint-<slug>.json`). When the plan row cannot be read before dispatch, the executor refuses the
-  plan itself and the flow reads the `over_budget` row it records on an execution branch. The executor's `over_budget`
-  summary row is written only when the executor itself refuses the plan, as in that case or a direct `holon execute`
-  run, which then exits with code 3 (`OVER_BUDGET_EXIT_CODE`) only when that row is committed and then either pushed or
-  kept local because pushing is disabled, and with code 1 otherwise (see
+  (`.holon/flow/checkpoint-<slug>.json`; a sub-intent's is keyed on its intent branch instead). When the plan row cannot
+  be read before dispatch, the executor refuses the plan itself and the flow reads the `over_budget` row it records on
+  an execution branch. The executor's `over_budget` summary row is written only when the executor itself refuses the
+  plan, as in that case or a direct `holon execute` run, which then exits with code 3 (`OVER_BUDGET_EXIT_CODE`) only
+  when that row is committed and then either pushed or kept local because pushing is disabled, and with code 1 otherwise
+  (see
   [Entropy Budget and Decomposition Evaluation](executor/execution_architecture_specification.md#5-entropy-budget-and-decomposition-evaluation)).
   For an intent already at `budgets.MAX_SUB_INTENT_DEPTH`, the re-plan request asks only for a smaller plan, since a
   sub-intent list would be refused there.

@@ -638,79 +638,85 @@ class TestExecutor(unittest.TestCase):
             self.assertTrue(any(cmd[:4] == ["git", "fetch", "--no-tags", "origin"] for cmd in called_cmds))
             self.assertTrue(any(cmd[:2] == ["git", "reset"] for cmd in called_cmds))
 
-    @patch("sandbox_executor.entrypoint.executor.run_cmd")
-    @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    def test_main_over_budget_flow_writes_no_intent_rows(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
-        mock_get_repo_url.return_value = "/mock/repo"
+    def _run_over_budget_main(self, sync_result):
+        """Run executor.main() on an over-budget plan whose ledger row is staged; return its exit code and records."""
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.0.0"
-        mock_get_runner.return_value = mock_runner
-
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
+        plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 8.0, "entropy_budget": 5.0}
 
         def side_effect(args, cwd=None, **kwargs):
+            mock_result = MagicMock(returncode=0, stdout="", stderr="")
             if "clone" in args:
                 ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
                 os.makedirs(ledger_dir, exist_ok=True)
                 with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
-                    f.write(
-                        json.dumps(
-                            {
-                                "plan_id": "P-123",
-                                "intent_branch": "I-456/_",
-                                "entropy": 8.0,
-                                "entropy_budget": 5.0,
-                            }
-                        )
-                        + "\n"
-                    )
+                    f.write(json.dumps(plan_row) + "\n")
                 with open(os.path.join(ledger_dir, "intents.jsonl"), "w") as f:
-                    f.write(
-                        json.dumps(
-                            {
-                                "branch": "I-456/_",
-                                "slug": "parent-intent",
-                            }
-                        )
-                        + "\n"
-                    )
+                    f.write(json.dumps({"branch": "I-456/_", "slug": "parent-intent"}) + "\n")
+            elif args[:4] == ["git", "diff", "--cached", "--quiet"]:
+                mock_result.returncode = 1
             return mock_result
 
-        mock_run_cmd.side_effect = side_effect
-
+        stderr = io.StringIO()
         with (
             tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as tmp_dir,
             patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect),
+            patch("sandbox_executor.entrypoint.executor.get_runner", return_value=mock_runner),
+            patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value="/mock/repo"),
+            patch("sandbox_executor.entrypoint.executor.sync_and_reconcile_pre_push", return_value=sync_result),
+            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
+            patch("sys.stderr", stderr),
         ):
-            ledger_dir = os.path.join(tmp_dir, "holon-knowledge/ledger")
-
-            with (
-                patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
-                self.assertRaises(SystemExit) as refused,
-            ):
+            with self.assertRaises(SystemExit) as refused:
                 executor.main()
-
-            # A refused plan is a failure for a direct run too, with an exit status the flow can tell apart.
-            self.assertEqual(refused.exception.code, executor.OVER_BUDGET_EXIT_CODE)
-            self.assertNotIn(executor.OVER_BUDGET_EXIT_CODE, (0, 1))
-            mock_runner.validate.assert_called_once()
-            self.assertTrue(os.path.exists(os.path.join(ledger_dir, "executions.jsonl")))
+            ledger_dir = os.path.join(tmp_dir, "holon-knowledge/ledger")
             with open(os.path.join(ledger_dir, "executions.jsonl")) as ef:
                 rows = [json.loads(line) for line in ef if line.strip()]
-            self.assertEqual(len(rows), 1)
-            self.assertEqual(rows[0]["status"], "over_budget")
-            self.assertEqual(rows[0]["entropy"], 8.0)
-            self.assertEqual(rows[0]["entropy_budget"], 5.0)
-            self.assertNotIn("sub_intents", rows[0])
-            self.assertIn("exceeds the entropy budget", rows[0]["summary"])
-            # The agent never ran, and the intents ledger still holds only the parent row.
-            mock_runner.build_cmd.assert_not_called()
             with open(os.path.join(ledger_dir, "intents.jsonl")) as inf:
-                intent_rows = [json.loads(line) for line in inf if line.strip()]
-            self.assertEqual([r["slug"] for r in intent_rows], ["parent-intent"])
+                intent_slugs = [json.loads(line)["slug"] for line in inf if line.strip()]
+        return refused.exception.code, stderr.getvalue().splitlines(), rows, intent_slugs, mock_runner
+
+    def test_main_over_budget_flow_writes_no_intent_rows(self):
+        code, stderr_lines, rows, intent_slugs, mock_runner = self._run_over_budget_main((True, "ok"))
+
+        # A refused plan is a failure for a direct run too, with an exit status the flow can tell apart.
+        self.assertEqual(code, executor.OVER_BUDGET_EXIT_CODE)
+        self.assertNotIn(executor.OVER_BUDGET_EXIT_CODE, (0, 1))
+        self.assertIn(
+            "Error: plan I-456/P-123/_ was not executed: its entropy 8.0 exceeds the entropy budget 5.0 and it lists "
+            "no sub-intent list. Re-plan it within the budget, or add an explicit sub-intent list.",
+            stderr_lines,
+        )
+        mock_runner.validate.assert_called_once()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "over_budget")
+        self.assertEqual(rows[0]["entropy"], 8.0)
+        self.assertEqual(rows[0]["entropy_budget"], 5.0)
+        self.assertNotIn("sub_intents", rows[0])
+        self.assertIn("exceeds the entropy budget", rows[0]["summary"])
+        # The agent never ran, and the intents ledger still holds only the parent row.
+        mock_runner.build_cmd.assert_not_called()
+        self.assertEqual(intent_slugs, ["parent-intent"])
+
+    def test_main_over_budget_with_a_refused_push_exits_1_without_claiming_a_recorded_row(self):
+        code, stderr_lines, rows, intent_slugs, mock_runner = self._run_over_budget_main(
+            (False, "unresolvable conflicts")
+        )
+
+        # No execution branch records the over_budget row, so the run is a plain failure, not the refusal exit code.
+        self.assertEqual(code, 1)
+        self.assertIn(
+            "Error: plan I-456/P-123/_ was not executed: its entropy 8.0 exceeds the entropy budget 5.0 and it lists "
+            "no sub-intent list. Its over_budget row was not recorded on an execution branch.",
+            stderr_lines,
+        )
+        self.assertIn("Refusing to push execution branch: safety or sync verification failed.", stderr_lines)
+        self.assertFalse(any("Re-plan it within the budget" in line for line in stderr_lines))
+        self.assertEqual([row["status"] for row in rows], ["over_budget", "failure"])
+        self.assertIn("Pre-push sync failure", rows[1]["summary"])
+        mock_runner.build_cmd.assert_not_called()
+        self.assertEqual(intent_slugs, ["parent-intent"])
 
     def test_run_cmd_raises_called_process_error(self):
         with self.assertRaises(subprocess.CalledProcessError) as ctx:
@@ -4160,8 +4166,8 @@ def _run_executor_main(
 ) -> list[dict]:
     """Run executor.main() with mocked git and runner; return the executions.jsonl rows it wrote.
 
-    When ``commands`` is given, every run_cmd argument list is appended to it and the index reports staged changes, so
-    the commit command is issued too. A refused (over-budget) plan must exit with OVER_BUDGET_EXIT_CODE after pushing
+    The index always reports staged changes, so the ledger row is committed; when ``commands`` is given, every run_cmd
+    argument list is appended to it. A refused (over-budget) plan must exit with OVER_BUDGET_EXIT_CODE after committing
     its row, and every other non-execute outcome must return normally.
     """
     runner = MagicMock()
@@ -4171,8 +4177,8 @@ def _run_executor_main(
         res = MagicMock(returncode=0, stdout="", stderr="")
         if commands is not None:
             commands.append(list(args))
-            if args[:4] == ["git", "diff", "--cached", "--quiet"]:
-                res.returncode = 1
+        if args[:4] == ["git", "diff", "--cached", "--quiet"]:
+            res.returncode = 1
         if "clone" in args:
             ledger = os.path.join(cwd, "holon-knowledge/ledger")
             os.makedirs(ledger, exist_ok=True)

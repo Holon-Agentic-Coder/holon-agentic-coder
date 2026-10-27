@@ -709,8 +709,9 @@ def _sanitize_string(name: str) -> str:
 DECISION_EXECUTE = "execute"
 DECISION_DECOMPOSED = "decomposed"
 DECISION_OVER_BUDGET = "over_budget"
-# Exit status of an executor run that refused an over-budget plan. Distinct from 1 (a failed run) so the flow can tell
-# the refusal apart and read the over_budget row the run pushed, while a direct 'holon execute' still exits non-zero.
+# Exit status of an executor run that refused an over-budget plan and committed its over_budget row to the execution
+# branch (pushed unless pushing is disabled). Distinct from 1 (a failed run) so the flow can tell the refusal apart and
+# read that row, while a direct 'holon execute' still exits non-zero. A refusal whose push was refused exits 1.
 OVER_BUDGET_EXIT_CODE = 3
 
 # Normalised heading texts (lower-cased, hyphens, underscores and runs of spaces collapsed to one space) that open an
@@ -1832,6 +1833,8 @@ def main() -> None:
             print("Current git repository status:")
             print(redact_text(status_output.stdout))
 
+        # Set once the commit is pushed (or kept locally when pushing is disabled), never when the push is refused.
+        branch_recorded = False
         staged_check = run_cmd(["git", "diff", "--cached", "--quiet"], cwd=repo_dir, check=False)
         if staged_check.returncode != 0:
             run_cmd(["git", "config", "--local", "user.email", "executor-agent@holon-agentic-coder.com"], cwd=repo_dir)
@@ -1930,6 +1933,7 @@ def main() -> None:
                     file=sys.stderr,
                 )
             else:
+                branch_recorded = True
                 skip_push = os.getenv("HOLON_SKIP_PUSH")
                 if not (skip_push and skip_push.lower() in ("1", "true", "yes")):
                     run_cmd(["git", "push", "-u", "origin", exec_branch], cwd=repo_dir)
@@ -1945,10 +1949,16 @@ def main() -> None:
             if budget_breach is not None:
                 sys.exit(1)
         elif decision.decision == DECISION_OVER_BUDGET:
-            print(
+            refusal = (
                 f"Error: plan {plan_branch} was not executed: its entropy {decision.entropy} exceeds the entropy "
-                f"budget {decision.entropy_budget} and it lists no sub-intent list. Re-plan it within the budget, or "
-                "add an explicit sub-intent list.",
+                f"budget {decision.entropy_budget} and it lists no sub-intent list."
+            )
+            if not branch_recorded:
+                # Nothing was pushed, so no execution branch records the over_budget row: a failed run, not a refusal.
+                print(f"{refusal} Its over_budget row was not recorded on an execution branch.", file=sys.stderr)
+                sys.exit(1)
+            print(
+                f"{refusal} Re-plan it within the budget, or add an explicit sub-intent list.",
                 file=sys.stderr,
             )
             sys.exit(OVER_BUDGET_EXIT_CODE)

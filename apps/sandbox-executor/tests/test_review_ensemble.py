@@ -281,6 +281,7 @@ FAILING_ACTIONS = {
     "runner raises": [("raise", RuntimeError("agent crashed"))],
     "budget breach": [("breach", None)],
     "breach salvaged by follow-up": [("breach", "# Partial\n"), ("write", report("Salvaged."))],
+    "breach in re-prompt follow-up": [("write", "# Review\n\n" + "x" * 100 + "\n"), ("breach", report("Late."))],
     "unparseable report": [("write", trailer(_payload(verdict="LGTM")))],
     "report without trailer": [("write", "# Review\n\nLooks fine to me, approved.\n" * 3)],
 }
@@ -293,6 +294,15 @@ def test_failures_give_failed_without_verdict(tmp_path: Path, actions: list[tupl
     assert result.verdict is None
     assert result.failure_reason
     assert factory.runners[0].cleanups == 1
+
+
+def test_follow_up_breach_fails_the_reviewer_and_the_consensus(tmp_path: Path) -> None:
+    # The clean first turn leaves no trailer, so a re-prompt runs; it breaches yet writes a valid APPROVED report.
+    result, _ = reviewer(tmp_path, [("write", "# Review\n\nStill thinking.\n"), ("breach", report("Late."))])
+    assert result.status is ReviewerStatus.FAILED
+    assert result.verdict is None
+    assert "cut short" in (result.failure_reason or "")
+    assert decide_consensus([result], 1, mergeable=True, ci_green=True) is ConsensusVerdict.FAILED
 
 
 def test_failure_reason_is_redacted(tmp_path: Path) -> None:

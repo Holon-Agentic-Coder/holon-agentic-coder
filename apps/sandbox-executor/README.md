@@ -194,8 +194,8 @@ The review loop fails closed:
   `review_iteration` budget per ensemble, and ephemeral credentials are cleaned up in a `finally`. Its prompt holds only
   the diff, the PR description, its report path and the trailer contract. Before the next reviewer starts, the previous
   report has been read into memory and its directory removed, so no reviewer sees another's output. A runner exception
-  (including an unknown agent), a budget breach, a missing report or an invalid trailer makes the reviewer `FAILED` with
-  a redacted reason; a `FAILED` reviewer carries no verdict and is never counted as a vote.
+  (including an unknown agent), a budget breach on any turn, a missing report or an invalid trailer makes the reviewer
+  `FAILED` with a redacted reason; a `FAILED` reviewer carries no verdict and is never counted as a vote.
 - **Trailer contract.** A report ends with a `<!-- holon-review-trailer -->` line, one JSON object with exactly the keys
   `verdict` (`APPROVED` or `CHANGES_REQUESTED`), `critical`, `important`, `nit` and `findings` (objects with `severity`,
   `file`, `line` and `summary`), and a final `<!-- /holon-review-trailer -->` line. Counts must equal the findings per

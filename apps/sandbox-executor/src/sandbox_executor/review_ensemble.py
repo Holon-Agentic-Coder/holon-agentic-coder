@@ -12,7 +12,7 @@ Reviewer turns
     another reviewer's output. The turn is supervised by :func:`~sandbox_executor.turns.supervise_authoring_turn`, the
     same supervision the planner uses, with :data:`REVIEW_REPORT_SPEC` as the artefact spec and ``modify_code=False``;
     it needed no change to ``turns.py``. A runner exception (including ``SystemExit`` from an unknown agent or missing
-    credentials), any budget breach of the first turn, a missing report or an invalid trailer makes the reviewer
+    credentials), a budget breach on any turn, a missing report or an invalid trailer makes the reviewer
     FAILED with a redacted reason. A FAILED reviewer carries no verdict and is never counted as a vote. The runner's
     exit code is not judged: the report on disk is the deliverable, as it is for plans.
 
@@ -527,9 +527,9 @@ def run_reviewer(
     """Run one supervised reviewer turn and turn its report into a :class:`ReviewerResult`.
 
     Every failure, including ``SystemExit`` from the runner factory or credential validation, becomes a FAILED result
-    with a redacted reason. A breach of the first turn fails the reviewer even when the follow-up salvaged a parseable
-    report, because the review itself was cut short. The scratch directory is left in place; :func:`run_ensemble`
-    removes it before the next reviewer starts.
+    with a redacted reason. A budget breach on any turn fails the reviewer, even when the first turn or a follow-up left
+    a parseable report, because a cut-short turn cannot count as a finished review. The scratch directory is left in
+    place; :func:`run_ensemble` removes it before the next reviewer starts.
     """
     report_rel = reviewer_report_rel(request.iteration, index)
     budgets = budgets or load_budgets(os.environ)
@@ -594,11 +594,8 @@ def _command_builder(runner: AgentRunner, model: str, prompt_file: str, intent_f
 
 def _turn_failure(outcome: AuthoringOutcome) -> str | None:
     """Why a supervised turn cannot count, or None when the report may be judged."""
-    if outcome.budget_failure is not None:
-        return f"budget failure: {outcome.budget_failure.describe()}"
-    if outcome.turns and outcome.first.breach is not None:
-        return f"review turn cut short: {outcome.first.breach.describe()}"
-    return None
+    breach = outcome.breach  # the last breach of any turn; it covers every unrecovered budget failure too
+    return f"review turn cut short: {breach.describe()}" if breach is not None else None
 
 
 def _result_from_outcome(

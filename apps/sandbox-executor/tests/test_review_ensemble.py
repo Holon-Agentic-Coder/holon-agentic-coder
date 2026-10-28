@@ -331,7 +331,7 @@ def test_no_reviewer_sees_another_reviewers_report(tmp_path: Path) -> None:
     marker = "DISTINCTIVE-REPORT-TEXT-{}"
     actions = [("write", report(marker.format(index))) for index in (1, 2, 3)]
     turn_runner = FakeTurnRunner(tmp_path, actions)
-    results = run_ensemble(make_request(tmp_path), 3, "claude-agent", "model-x", **seams(turn_runner))
+    results = run_ensemble(make_request(tmp_path), agent="claude-agent", model="model-x", size=3, **seams(turn_runner))
 
     assert [result.status for result in results] == [ReviewerStatus.COMPLETED] * 3
     for call in turn_runner.calls:
@@ -351,7 +351,7 @@ def test_stale_reports_from_an_earlier_run_are_removed_first(tmp_path: Path) -> 
     stale.parent.mkdir(parents=True)
     stale.write_text(report("STALE"), encoding="utf-8")
     turn_runner = FakeTurnRunner(tmp_path, [("write", report("fresh"))])
-    run_ensemble(make_request(tmp_path), 1, "claude-agent", "model-x", **seams(turn_runner))
+    run_ensemble(make_request(tmp_path), agent="claude-agent", model="model-x", size=1, **seams(turn_runner))
     assert turn_runner.calls[0].existing_reports == []
     assert not stale.exists()
 
@@ -359,7 +359,11 @@ def test_stale_reports_from_an_earlier_run_are_removed_first(tmp_path: Path) -> 
 def test_failed_reviewer_does_not_stop_the_ensemble(tmp_path: Path) -> None:
     actions = [("write", report("one")), ("raise", RuntimeError("boom")), ("write", report("three"))]
     results = run_ensemble(
-        make_request(tmp_path), 3, "claude-agent", "model-x", **seams(FakeTurnRunner(tmp_path, actions))
+        make_request(tmp_path),
+        agent="claude-agent",
+        model="model-x",
+        size=3,
+        **seams(FakeTurnRunner(tmp_path, actions)),
     )
     assert [result.status for result in results] == [
         ReviewerStatus.COMPLETED,
@@ -383,7 +387,7 @@ def test_unremovable_earlier_report_fails_the_remaining_reviewers(
         real_remove(repo_dir, rel)
 
     monkeypatch.setattr(review_ensemble, "_remove_scratch", remove_scratch)
-    results = run_ensemble(make_request(tmp_path), 3, "claude-agent", "model-x", **seams(turn_runner))
+    results = run_ensemble(make_request(tmp_path), agent="claude-agent", model="model-x", size=3, **seams(turn_runner))
 
     assert len(turn_runner.calls) == 1
     assert [result.status for result in results] == [
@@ -397,7 +401,9 @@ def test_unremovable_earlier_report_fails_the_remaining_reviewers(
 
 def test_zero_size_dispatches_nothing(tmp_path: Path) -> None:
     turn_runner = FakeTurnRunner(tmp_path, [])
-    assert run_ensemble(make_request(tmp_path), 0, "claude-agent", "model-x", **seams(turn_runner)) == []
+    assert (
+        run_ensemble(make_request(tmp_path), agent="claude-agent", model="model-x", size=0, **seams(turn_runner)) == []
+    )
     assert turn_runner.calls == []
 
 
@@ -406,13 +412,22 @@ def test_three_clean_reviewers_end_to_end_approve(tmp_path: Path) -> None:
     factory = FakeRunnerFactory()
     results = run_ensemble(
         make_request(tmp_path),
-        DEFAULT_ENSEMBLE_SIZE,
-        "claude-agent",
-        "model-x",
+        agent="claude-agent",
+        model="model-x",
+        size=DEFAULT_ENSEMBLE_SIZE,
         **seams(FakeTurnRunner(tmp_path, actions), factory),
     )
     assert [runner.cleanups for runner in factory.runners] == [1, 1, 1]
     assert decide_consensus(results, DEFAULT_ENSEMBLE_SIZE, mergeable=True, ci_green=True) is ConsensusVerdict.APPROVED
+
+
+def test_ensemble_defaults_to_three_reviewers(tmp_path: Path) -> None:
+    turn_runner = FakeTurnRunner(tmp_path, [("write", report(f"Clean {index}.")) for index in (1, 2, 3, 4)])
+    results = run_ensemble(make_request(tmp_path), agent="claude-agent", model="model-x", **seams(turn_runner))
+    assert DEFAULT_ENSEMBLE_SIZE == 3
+    assert len(turn_runner.calls) == 3
+    assert [result.index for result in results] == [1, 2, 3]
+    assert [result.status for result in results] == [ReviewerStatus.COMPLETED] * 3
 
 
 # --- Consensus -----------------------------------------------------------------------------------------------------
@@ -470,7 +485,11 @@ def test_decide_consensus(
 def test_one_unparseable_reviewer_blocks(tmp_path: Path) -> None:
     actions = [("write", report("one")), ("write", trailer("{not json")), ("write", report("three"))]
     results = run_ensemble(
-        make_request(tmp_path), 3, "claude-agent", "model-x", **seams(FakeTurnRunner(tmp_path, actions))
+        make_request(tmp_path),
+        agent="claude-agent",
+        model="model-x",
+        size=3,
+        **seams(FakeTurnRunner(tmp_path, actions)),
     )
     assert results[1].status is ReviewerStatus.FAILED
     assert decide_consensus(results, 3, mergeable=True, ci_green=True) is ConsensusVerdict.FAILED

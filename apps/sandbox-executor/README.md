@@ -184,11 +184,12 @@ The review loop fails closed:
 `sandbox_executor/review_ensemble.py` holds the real reviewer ensemble. Stage 4 does not call it yet: wiring it into
 `run_review_loop()` and rebuilding the consensus report is the next change, so today's loop still runs no reviewer.
 
-- **Public API.** `run_ensemble(request, size, agent, model, **seams)` runs `size` reviewers (default
-  `DEFAULT_ENSEMBLE_SIZE`, 3) one after another through `run_reviewer(...)` and returns one `ReviewerResult` per
-  reviewer. `decide_consensus(results, configured_size, mergeable, ci_green)` returns `APPROVED`, `CHANGES_REQUESTED` or
-  `FAILED`. `parse_review_trailer(text)` and `render_review_trailer(parsed)` read and write the trailer;
-  `build_reviewer_prompt(template_text, request, report_rel)` fills `holon-config/prompts/review_loop.template.md`.
+- **Public API.** `run_ensemble(request, *, agent, model, size=DEFAULT_ENSEMBLE_SIZE, **seams)` runs `size` reviewers
+  (default `DEFAULT_ENSEMBLE_SIZE`, 3) one after another through `run_reviewer(...)` and returns one `ReviewerResult`
+  per reviewer. `decide_consensus(results, configured_size, mergeable, ci_green)` returns `APPROVED`,
+  `CHANGES_REQUESTED` or `FAILED`. `parse_review_trailer(text)` and `render_review_trailer(parsed)` read and write the
+  trailer; `build_reviewer_prompt(template_text, request, report_rel)` fills
+  `holon-config/prompts/review_loop.template.md`.
 - **Reviewer turns.** Each reviewer runs in a fresh scratch directory `.holon/review/iter-<n>/reviewer-<i>/`
   (git-ignored) under the same turn supervision as the planner (`supervise_authoring_turn`), within one shared
   `review_iteration` budget per ensemble, and ephemeral credentials are cleaned up in a `finally`. Its prompt holds only

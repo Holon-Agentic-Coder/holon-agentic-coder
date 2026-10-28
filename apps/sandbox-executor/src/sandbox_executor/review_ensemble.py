@@ -632,8 +632,10 @@ def _logged(result: ReviewerResult) -> ReviewerResult:
 # --- Ensemble ------------------------------------------------------------------------------------------------------
 
 
-def run_ensemble(request: ReviewRequest, size: int, agent: str, model: str, **seams: Any) -> list[ReviewerResult]:
-    """Run ``size`` independent reviewers one after another and return their results in dispatch order.
+def run_ensemble(
+    request: ReviewRequest, *, agent: str, model: str, size: int = DEFAULT_ENSEMBLE_SIZE, **seams: Any
+) -> list[ReviewerResult]:
+    """Run ``size`` independent reviewers (three by default) one after another and return their results in order.
 
     ``seams`` are passed to :func:`run_reviewer`. Budgets, the stage timer and the template are resolved once, so the
     whole ensemble shares one review-iteration ceiling. The iteration directory is cleared first; each reviewer's

@@ -395,6 +395,16 @@ class TestPrepareAgentDir(unittest.TestCase):
 
 
 class TestLauncherIntegration(unittest.TestCase):
+    def setUp(self):
+        # The launcher really writes the generated agent files into whatever the mocked mkdtemp returns, so each test
+        # gets its own directories rather than a fixed path that parallel workers would share.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.default_agent_dir = os.path.join(tmp.name, "holon-pi-agent-test")
+        self.generated_agent_dir = os.path.join(tmp.name, "generated-agent")
+        os.mkdir(self.default_agent_dir)
+        os.mkdir(self.generated_agent_dir)
+
     def _run(self, env, mounts=None, tr_envs=None, mkdtemp_dir=None, agent_id="pi", token_reduce=False):
         # Synthesised model entries declare no contextWindow; the envelope needs one (Bean 0140).
         merged_env = {
@@ -412,7 +422,7 @@ class TestLauncherIntegration(unittest.TestCase):
                 "get_token_reduction_mounts_and_envs",
                 return_value=([], dict(tr_envs or {})),
             ),
-            patch.object(cli.tempfile, "mkdtemp", return_value=mkdtemp_dir or "/tmp/holon-pi-agent-test"),
+            patch.object(cli.tempfile, "mkdtemp", return_value=mkdtemp_dir or self.default_agent_dir),
             patch.object(cli.shutil, "rmtree") as mock_rmtree,
             patch.dict(os.environ, merged_env, clear=True),
         ):
@@ -442,7 +452,12 @@ class TestLauncherIntegration(unittest.TestCase):
             self.assertEqual(args.count("--add-host"), 1 + len(cli.BLOCKED_METADATA_HOSTS))
 
     def test_setup_token_reduction_proxy_excludes_gateway_host_args(self):
+        # The proxy creates its cache, wire-log and proxy-cache directories under the repository root and the home
+        # directory; keep them in this test's own directory.
+        root = os.path.dirname(self.default_agent_dir)
         with (
+            patch.object(cli, "_find_git_root", return_value=os.path.join(root, "repo")),
+            patch.object(cli.os.path, "expanduser", lambda path: os.path.join(root, "home", path.lstrip("~/"))),
             patch.object(cli, "generate_root_ca", return_value=("/tmp/mock-ca.crt", "/tmp/mock-ca.key")),
             patch.object(cli, "_mitm_proxy_ca_paths", return_value=("/tmp/mock-ca.pem", "/tmp/mock-ca-cert.pem")),
             patch.object(cli.os.path, "isfile", lambda path: True),
@@ -504,9 +519,9 @@ class TestLauncherIntegration(unittest.TestCase):
             }
         }
         with patch.object(local_llm, "host_models_json", return_value=host_config):
-            code, _, rmtree = self._run({"HOLON_LOCAL_LLM": "1"}, mkdtemp_dir="/tmp/generated-agent")
+            code, _, rmtree = self._run({"HOLON_LOCAL_LLM": "1"}, mkdtemp_dir=self.generated_agent_dir)
         self.assertEqual(code, 1)
-        rmtree.assert_called_once_with("/tmp/generated-agent", ignore_errors=True)
+        rmtree.assert_called_once_with(self.generated_agent_dir, ignore_errors=True)
 
     def test_multiple_local_providers_with_local_named_provider_defaults_to_local(self):
         host_config = {
@@ -551,13 +566,13 @@ class TestLauncherIntegration(unittest.TestCase):
             "HOLON_LOCAL_MODELS": "qwen3:test",
         }
         with patch.object(local_llm, "prepare_agent_dir", wraps=local_llm.prepare_agent_dir) as prep:
-            code, args, rmtree = self._run(env, mkdtemp_dir="/tmp/generated-agent")
+            code, args, rmtree = self._run(env, mkdtemp_dir=self.generated_agent_dir)
         self.assertEqual(code, 0)
         prep.assert_called_once()
         self.assertIn("-v", args)
-        self.assertIn(f"/tmp/generated-agent:{local_llm.CONTAINER_AGENT_DIR}:rw", args)
+        self.assertIn(f"{self.generated_agent_dir}:{local_llm.CONTAINER_AGENT_DIR}:rw", args)
         self.assertIn(f"PI_CODING_AGENT_DIR={local_llm.CONTAINER_AGENT_DIR}", args)
-        rmtree.assert_called_once_with("/tmp/generated-agent", ignore_errors=True)
+        rmtree.assert_called_once_with(self.generated_agent_dir, ignore_errors=True)
 
     def test_local_mode_extends_no_proxy_for_local_endpoint(self):
         env = {
@@ -577,9 +592,9 @@ class TestLauncherIntegration(unittest.TestCase):
 
     def test_unsatisfiable_local_mode_fails_loudly_and_cleans_up(self):
         with patch.object(local_llm, "host_models_json", return_value=None):
-            code, _, rmtree = self._run({"HOLON_LOCAL_LLM": "1"}, mkdtemp_dir="/tmp/generated-agent")
+            code, _, rmtree = self._run({"HOLON_LOCAL_LLM": "1"}, mkdtemp_dir=self.generated_agent_dir)
         self.assertEqual(code, 1)
-        rmtree.assert_called_once_with("/tmp/generated-agent", ignore_errors=True)
+        rmtree.assert_called_once_with(self.generated_agent_dir, ignore_errors=True)
 
     def test_host_pi_agent_dir_is_not_mounted_in_local_mode(self):
         with tempfile.TemporaryDirectory() as home:

@@ -44,6 +44,12 @@ You can filter tests by their pytest markers (such as `integration_test`) or by 
   ```bash
   uv run pytest -m "not integration_test"
   ```
+- **Run the unit selection the way CI does (in parallel, with pytest-xdist):**
+  ```bash
+  uv run task test
+  ```
+  This runs `pytest -n auto --dist worksteal -m "not integration_test and not stress"`. To debug serially, use
+  `uv run task test -n 0`, or disable xdist with `uv run pytest -p no:xdist -m "not integration_test and not stress"`.
 - **Run a specific test file:**
   ```bash
   uv run pytest apps/sandbox-executor/tests/test_planner.py

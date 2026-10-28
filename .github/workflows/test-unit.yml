@@ -39,4 +39,4 @@ jobs:
       - name: Run unit tests
         run: |
           uv sync --locked
-          uv run pytest -v -l --tb=short -m "not integration_test and not stress"
+          uv run pytest -n auto --dist worksteal -v -l --tb=short -m "not integration_test and not stress"

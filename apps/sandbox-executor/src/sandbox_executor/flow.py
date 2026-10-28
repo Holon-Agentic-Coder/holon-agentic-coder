@@ -97,6 +97,13 @@ from sandbox_executor.ledger import (
     try_append_ledger_line,
 )
 from sandbox_executor.redaction import redact_agent_secrets
+from sandbox_executor.review_target import (
+    DiffVerdict,
+    ReviewTargetError,
+    classify_review_diff,
+    is_pr_reference,
+    resolve_review_target,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1006,6 +1013,7 @@ def check_pr_mergeability(
                     capture_output=True,
                     text=True,
                     check=False,
+                    timeout=60,
                     env=gh_env,
                 )
                 if gh_proc.returncode != 0:
@@ -2249,21 +2257,11 @@ def _resolve_review_commit(repo_dir: str, review_target: str, fetch: bool = True
     clean = review_target.strip()
     rev = "HEAD"
     if clean and clean != "HEAD":
-        if clean.isdigit() or clean.startswith(("http://", "https://")):
-            if shutil.which("gh"):
-                try:
-                    gh_proc = subprocess.run(
-                        ["gh", "pr", "view", clean, "--json", "headRefOid", "--jq", ".headRefOid"],
-                        cwd=repo_dir,
-                        capture_output=True,
-                        text=True,
-                        check=False,
-                        timeout=60,
-                    )
-                    if gh_proc.returncode == 0 and gh_proc.stdout.strip():
-                        rev = gh_proc.stdout.strip()
-                except (OSError, subprocess.SubprocessError) as exc:
-                    logger.debug("gh pr view headRefOid failed for %s: %s", clean, exc)
+        if is_pr_reference(clean):
+            try:
+                rev = resolve_review_target(repo_dir, clean).head_sha
+            except ReviewTargetError as exc:
+                logger.debug("Could not resolve the PR head for %s: %s", clean, exc)
         else:
             if fetch:
                 run_git(
@@ -3522,6 +3520,8 @@ def _wait_for_ci_registration(
     proxy_env: dict[str, str],
     timeout: float,
     poll_interval: float,
+    clock: Callable[[], float] | None = None,
+    sleep: Callable[[float], None] | None = None,
 ) -> None:
     """Poll until GitHub CI checks register on ``review_target`` or ``timeout`` elapses.
 
@@ -3529,17 +3529,79 @@ def _wait_for_ci_registration(
     """
     if timeout <= 0:
         return
-    deadline = time.monotonic() + timeout
+    clock = clock or time.monotonic
+    sleep = sleep or time.sleep
+    deadline = clock() + timeout
     context.log(f"[Review Loop] No recorded test result: waiting up to {timeout:g}s for CI checks to register.")
     while True:
         if probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env).get("source") == "github_cli":
             context.log("[Review Loop] CI checks registered.")
             return
-        remaining = deadline - time.monotonic()
+        remaining = deadline - clock()
         if remaining <= 0:
             context.log(f"[Review Loop] No CI checks registered within {timeout:g}s.")
             return
-        time.sleep(max(0.0, min(poll_interval, remaining)))
+        sleep(max(0.0, min(poll_interval, remaining)))
+
+
+def _wait_for_pending_ci(
+    context: FlowContext,
+    repo_dir: str,
+    review_target: str,
+    proxy_env: dict[str, str],
+    ci_status: dict[str, Any],
+    timeout: float,
+    poll_interval: float,
+    clock: Callable[[], float] | None = None,
+    sleep: Callable[[float], None] | None = None,
+) -> dict[str, Any]:
+    """Re-probe GitHub CI while checks are pending, for at most ``timeout`` seconds.
+
+    The deadline is the rest of the iteration's ``review_iteration`` budget. Checks still pending at the
+    deadline are returned as they are: pending is never ``all_passed``, so the iteration records a CI finding.
+
+    Returns:
+        dict[str, Any]: The last CI probe result.
+    """
+    clock = clock or time.monotonic
+    sleep = sleep or time.sleep
+    deadline = clock() + max(0.0, timeout)
+    interval = poll_interval if poll_interval > 0 else CI_REGISTRATION_POLL_SECONDS
+    while ci_status.get("pending", 0) > 0:
+        remaining = deadline - clock()
+        if remaining <= 0:
+            context.log(f"[Review Loop] {ci_status['pending']} GitHub CI check(s) still pending at the deadline.")
+            break
+        context.log(f"[Review Loop] Waiting for {ci_status['pending']} pending GitHub CI check(s)...")
+        sleep(min(interval, remaining))
+        ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
+    return ci_status
+
+
+def _refused_review_result(review_target: str, budget: int, error: str) -> dict[str, Any]:
+    """Build the non-approved result for a target whose diff is empty: no PR, no iterations, no post."""
+    return {
+        "target": review_target,
+        "consensus": {
+            "approved": False,
+            "score": 0.0,
+            "iterations": 0,
+            "max_review_iterations": budget,
+            "status": "rejected",
+        },
+        "halted_for_human": False,
+        "bean_0034_enforced": False,
+        "mergeability": {},
+        "ci_checks": {},
+        "trailers": "",
+        "total_iterations": 0,
+        "max_iterations": budget,
+        "findings": [],
+        "severity": "critical",
+        "posting": {},
+        "pr": {"success": False, "skipped": True, "reason": EMPTY_DIFF_FAILURE_REASON},
+        "error": error,
+    }
 
 
 def _bounded_error_context(detail: str) -> str:
@@ -3626,7 +3688,8 @@ def run_review_loop(
     dry_run: bool = False,
     ci_registration_timeout: float | None = None,
     ci_poll_interval: float = CI_REGISTRATION_POLL_SECONDS,
-    clock: Callable[[], float] = time.monotonic,
+    clock: Callable[[], float] | None = None,
+    sleep: Callable[[float], None] | None = None,
 ) -> dict[str, Any]:
     """Execute autonomous native multi-pass review loop (Bean 0118).
 
@@ -3643,12 +3706,19 @@ def run_review_loop(
         dry_run: If True, evaluate without applying git commits or mutations.
         ci_registration_timeout: Seconds to wait for CI checks to register when Stage 3 recorded no test
             result (default: ``HOLON_CI_REGISTRATION_TIMEOUT``, then 180; ``0`` disables the wait).
-        ci_poll_interval: Seconds between CI registration probes.
-        clock: Monotonic clock used for the per-iteration budget (Bean 0139); injectable for tests.
+        ci_poll_interval: Seconds between CI registration and pending-CI probes.
+        clock: Monotonic clock for the per-iteration budget (Bean 0139) and the CI waits (default: time.monotonic).
+        sleep: Sleep function used by the CI waits (default: time.sleep); injectable for tests.
+
+    The empty-diff guard runs for every target whatever ``auto_pr`` is: an empty diff is rejected and an
+    unverifiable one fails, before any PR, iteration or post. A dry run never measures anything, so it reports
+    ``not_measured`` and is never approved. A consensus that cannot be posted is ``post_failed``, never approved.
 
     Returns:
         dict[str, Any]: Review loop outcome dictionary.
     """
+    clock = clock or time.monotonic
+    sleep = sleep or time.sleep
     review_target = str(target or context.execution_branch or context.intent_branch or "HEAD").strip()
     budget = max(1, max_iterations or context.max_review_iterations or 25)
     repo_dir = context.repo_dir
@@ -3693,37 +3763,16 @@ def run_review_loop(
     pr_allowed = True
     # Why the empty-diff guard refused the PR; reported as the loop's error instead of a test outcome.
     pr_refusal_error: str | None = None
-    if auto_pr and not effective_dry_run and shutil.which("gh"):
-        # Empty-diff guard: an execution that changes nothing outside the ledgers and plans never gets a PR.
-        has_diff, diff_detail = _execution_effective_diff(repo_dir, review_target)
-        if has_diff:
-            context.log(f"[Review Loop] Empty-diff guard passed for '{review_target}': {diff_detail}.")
-        if has_diff is False:
+    if effective_dry_run:
+        context.log(f"[Review Loop] Dry run: the diff of '{review_target}' is not measured.")
+    else:
+        # Empty-diff guard, for every target and whatever auto_pr is: nothing to review is never approved.
+        diff_verdict, diff_detail = classify_review_diff(repo_dir, review_target, target_branch)
+        if diff_verdict is DiffVerdict.EMPTY:
             err_msg = f"Refusing to create or update a PR for '{review_target}': {diff_detail}."
             context.log(f"[Review Loop] {err_msg}")
-            return {
-                "target": review_target,
-                "consensus": {
-                    "approved": False,
-                    "score": 0.0,
-                    "iterations": 0,
-                    "max_review_iterations": budget,
-                    "status": "rejected",
-                },
-                "halted_for_human": False,
-                "bean_0034_enforced": False,
-                "mergeability": {},
-                "ci_checks": {},
-                "trailers": "",
-                "total_iterations": 0,
-                "max_iterations": budget,
-                "findings": [],
-                "severity": "critical",
-                "posting": {},
-                "pr": {"success": False, "skipped": True, "reason": EMPTY_DIFF_FAILURE_REASON},
-                "error": err_msg,
-            }
-        if has_diff is None:
+            return _refused_review_result(review_target, budget, err_msg)
+        if diff_verdict is DiffVerdict.UNVERIFIED:
             pr_refusal_error = (
                 f"Refusing to create or update a PR for '{review_target}': "
                 f"could not verify the execution diff ({diff_detail})."
@@ -3731,6 +3780,8 @@ def run_review_loop(
             context.log(f"[Review Loop] Skipping PR creation: could not verify the execution diff ({diff_detail}).")
             pr_res = {"success": False, "skipped": True, "reason": "diff_unverified"}
             pr_allowed = False
+        else:
+            context.log(f"[Review Loop] Empty-diff guard passed for '{review_target}': {diff_detail}.")
     if pr_allowed and auto_pr and not effective_dry_run and shutil.which("gh"):
         try:
             plan_res = context.stage_results.get("plan")
@@ -3764,6 +3815,8 @@ def run_review_loop(
             proxy_env,
             resolve_ci_registration_timeout(ci_registration_timeout),
             ci_poll_interval,
+            clock=clock,
+            sleep=sleep,
         )
 
     if pr_refusal_error:
@@ -3834,9 +3887,17 @@ def run_review_loop(
             and last_ci_status.get("pending", 0) > 0
             and not effective_dry_run
         ):
-            context.log(f"[Review Loop] Waiting for {last_ci_status['pending']} pending GitHub CI check(s)...")
-            time.sleep(15)
-            last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
+            last_ci_status = _wait_for_pending_ci(
+                context,
+                repo_dir,
+                review_target,
+                proxy_env,
+                last_ci_status,
+                iteration_timer.remaining(),
+                ci_poll_interval,
+                clock=clock,
+                sleep=sleep,
+            )
 
         # 3. Analyze findings
         finding_ids = []
@@ -3948,8 +4009,14 @@ def run_review_loop(
         consensus_status = "conflicted_dirty"
     elif tests_not_measured:
         consensus_status = "not_measured"
+    elif pr_refusal_error:
+        consensus_status = "failed"
     else:
         consensus_status = "rejected"
+    if effective_dry_run and consensus_reached:
+        # A dry run simulates the loop and measures nothing, so a simulated approval is never an approval.
+        consensus_reached = False
+        consensus_status = "not_measured"
     approval_score = 1.0 if consensus_reached else 0.0
 
     current_commit_sha = "HEAD"
@@ -3983,6 +4050,7 @@ def run_review_loop(
 
     # Dual-post review consensus to GitHub and handle self-approval restriction (Bean 0119)
     posting_res: dict[str, Any] = {}
+    post_error: str | None = None
     if effective_dry_run:
         suppressed_ledger_records += 1
     elif pr_refusal_error:
@@ -4025,10 +4093,21 @@ def run_review_loop(
             posting_action_record["error_context"] = _posting_failure_context(posting_res)
         posting_action_record["created_at"] = datetime.now(UTC).isoformat()
         record_review_action(context, exec_file, posting_action_record)
+        if not posted:
+            # Fail closed: an approval nobody can see on the PR is not an approval.
+            post_error = f"Posting the review consensus for '{review_target}' failed: " + str(
+                posting_action_record["error_context"]
+            )
+            context.log(f"[Review Loop] {post_error}")
+            consensus_reached = False
+            consensus_status = "post_failed"
+            approval_score = 0.0
 
     halt_reasons: list[str] = []
     if pr_refusal_error:
         halt_reasons.append(_bounded_error_context(pr_refusal_error))
+    if post_error:
+        halt_reasons.append("consensus post failed")
     if tests_not_measured:
         halt_reasons.append("test results not measured")
 
@@ -4116,8 +4195,8 @@ def run_review_loop(
         "iteration_summaries": iteration_summaries,
         "budget_breach": budget_breach,
     }
-    if pr_refusal_error:
-        loop_result["error"] = pr_refusal_error
+    if pr_refusal_error or post_error:
+        loop_result["error"] = pr_refusal_error or post_error
     return loop_result
 
 
@@ -4326,7 +4405,9 @@ def run_review_stage(context: FlowContext) -> StageResult:
         context.stage_results["review"] = result
         return result
 
-    if not consensus_reached:
+    # A dry run simulates the loop and is never approved; it still halts for a human like a real review would.
+    dry_run_simulation = bool(context.dry_run) and consensus_info.get("status") == "not_measured"
+    if not consensus_reached and not dry_run_simulation:
         ci_checks = loop_res.get("ci_checks") or {}
         loop_breach = loop_res.get("budget_breach")
         if loop_res.get("error"):
@@ -4363,8 +4444,13 @@ def run_review_stage(context: FlowContext) -> StageResult:
         return result
 
     human_instruction = f"holon review approve {context.intent_branch or 'intent'}"
+    halt_reason = (
+        "Dry-run review loop finished; consensus not measured and not approved."
+        if dry_run_simulation
+        else "PR Review Loop reached consensus approval."
+    )
     context.log(
-        "[BEAN 0034 SAFETY HALT] PR Review Loop reached consensus approval. "
+        f"[BEAN 0034 SAFETY HALT] {halt_reason} "
         "Under Bean 0034, autonomous merge to main is strictly prohibited. "
         f"Pipeline halted for human review. To approve manually, run: '{human_instruction}'"
     )
@@ -4398,7 +4484,7 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
         token_reduce: Whether token reduction proxy is enabled.
 
     Returns:
-        int: Process exit code (0 on consensus approval / human halt, 1 on failure).
+        int: Process exit code: 0 only when the consensus was approved and posted (human halt), otherwise 1.
     """
     repo_dir = getattr(args, "repo_dir", ".")
     target = getattr(args, "target", "")
@@ -4454,7 +4540,10 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
             cmd = loop_res.get("human_approval_command", f"holon review approve {target}")
             print(f"To approve manually, run: {cmd}\n")
         else:
-            print(f"PR Review Loop did not reach consensus approval (status={consensus.get('status')}).\n")
+            print(f"PR Review Loop did not reach consensus approval (status={consensus.get('status')}).")
+            if loop_res.get("error"):
+                print(f"Reason: {_bounded_error_context(str(loop_res['error']))}")
+            print()
 
     return 0 if approved else 1
 

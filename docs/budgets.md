@@ -178,7 +178,9 @@ Every stage reports elapsed time against its budget in the form `stage: status (
 
 - The planner and executor entrypoints print the line when they finish (`plan: ok ...`, `execute: failed ...`).
 - `holon flow` logs it for every stage and prints it in the flow summary. The review stage's budget is one review
-  iteration budget per iteration it ran; each iteration also logs `iteration N review: ok (... / 15 min)`.
+  iteration budget per iteration it ran; each iteration also logs `iteration N review: ok (... / 15 min)`. Within an
+  iteration, pending GitHub CI checks are re-probed every `CI_REGISTRATION_POLL_SECONDS` (15 s) for at most the rest of
+  that iteration's `review_iteration` budget; checks still pending at that deadline count as a CI finding, never a pass.
 - A `holon flow` intent, plan or execute stage that returns after its ceiling is marked failed with an error naming the
   budget, which stops the pipeline. A review iteration that overruns stops the review loop without consensus (an
   iteration that reaches consensus is kept). The review and calibration stages are never downgraded after the fact: a

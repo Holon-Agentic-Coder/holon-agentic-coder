@@ -191,13 +191,22 @@ def _diff_verdict(repo_dir: str, base_ref: str, head_ref: str) -> tuple[DiffVerd
     return DiffVerdict.VERIFIED, f"{len(changed)} changed path(s) relative to {base_ref}"
 
 
-def _base_ref(repo_dir: str, base_branch: str) -> str | None:
-    """Fetch ``base_branch`` from origin when there is one and return the ref to diff against."""
+def _base_ref(repo_dir: str, base_branch: str) -> tuple[str | None, str]:
+    """Return ``(ref, "")`` for the base to diff against, or ``(None, reason)`` when it is unusable.
+
+    With an 'origin' remote the base is fetched first and a failed fetch is a reason to refuse, so a
+    stale cached or local copy of the base never decides the verdict (as for execution branches).
+    Without an 'origin' remote there is nothing to fetch, so the local branch is the base.
+    """
     from sandbox_executor.flow import _fetch_refspecs_error, _has_origin_remote, _resolve_branch_ref
 
     if _has_origin_remote(repo_dir):
-        _fetch_refspecs_error(repo_dir, [f"+refs/heads/{base_branch}:refs/remotes/origin/{base_branch}"])
-    return _resolve_branch_ref(repo_dir, base_branch, prefer_remote=True)
+        refspec = f"+refs/heads/{base_branch}:refs/remotes/origin/{base_branch}"
+        error = _fetch_refspecs_error(repo_dir, [refspec])
+        if error is not None:
+            return None, f"base branch '{base_branch}' could not be fetched from origin: {error}"
+    ref = _resolve_branch_ref(repo_dir, base_branch, prefer_remote=True)
+    return ref, "" if ref else f"base branch '{base_branch}' could not be resolved"
 
 
 def _head_ref(repo_dir: str, target: ReviewTarget | str) -> str | None:
@@ -228,8 +237,9 @@ def verify_review_diff(repo_dir: str, target: ReviewTarget | str, base_branch: s
     Execution branches are compared with their parent plan branch (the flow's existing guard). A resolved
     PR is compared by its head SHA with its own base branch, falling back to ``base_branch`` when gh
     reported none; a branch is compared by its tip with ``base_branch``.
-    A raw PR reference that was never resolved is unverified, and so is any git failure. No gh call is
-    made here, so the guard never depends on gh being installed.
+    A raw PR reference that was never resolved is unverified, and so is any git failure, including a
+    failed fetch of the base from origin. No gh call is made here, so the guard never depends on gh
+    being installed.
 
     Args:
         repo_dir: Repository to inspect.
@@ -253,9 +263,9 @@ def verify_review_diff(repo_dir: str, target: ReviewTarget | str, base_branch: s
         return verdict, detail
     if isinstance(target, ReviewTarget) and target.base_branch:
         base_branch = target.base_branch
-    base_ref = _base_ref(repo_dir, base_branch)
+    base_ref, base_problem = _base_ref(repo_dir, base_branch)
     if base_ref is None:
-        return DiffVerdict.UNVERIFIED, f"base branch '{base_branch}' could not be resolved"
+        return DiffVerdict.UNVERIFIED, base_problem
     head_ref = _head_ref(repo_dir, target if isinstance(target, ReviewTarget) else branch)
     if head_ref is None:
         return DiffVerdict.UNVERIFIED, f"'{branch}' could not be resolved to a commit"

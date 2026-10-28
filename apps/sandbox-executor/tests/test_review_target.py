@@ -338,6 +338,88 @@ def test_missing_base_branch_is_unverified(tmp_path):
     assert "trunk" in detail
 
 
+class FakeOriginGit:
+    """Wraps the real ``run_git`` and fakes an 'origin' remote plus the outcome of every fetch from it."""
+
+    def __init__(self, real: Any, fetch_returncode: int, fetch_stderr: str = ""):
+        self.real = real
+        self.fetch_returncode = fetch_returncode
+        self.fetch_stderr = fetch_stderr
+        self.fetches: list[list[str]] = []
+
+    def __call__(self, args: list[str], *a: Any, **kw: Any) -> subprocess.CompletedProcess[str]:
+        if args[:3] == ["remote", "get-url", "origin"]:
+            return subprocess.CompletedProcess(args, 0, stdout="https://github.com/acme/widgets.git\n", stderr="")
+        if args[:1] == ["fetch"]:
+            self.fetches.append(args)
+            return subprocess.CompletedProcess(args, self.fetch_returncode, stdout="", stderr=self.fetch_stderr)
+        return self.real(args, *a, **kw)
+
+
+def _fake_origin(monkeypatch: pytest.MonkeyPatch, fetch_returncode: int, fetch_stderr: str = "") -> FakeOriginGit:
+    from sandbox_executor import flow
+
+    fake = FakeOriginGit(flow.run_git, fetch_returncode, fetch_stderr)
+    monkeypatch.setattr(flow, "run_git", fake)
+    return fake
+
+
+def test_pr_base_that_cannot_be_fetched_from_origin_is_unverified(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    base_sha = _git(repo, "rev-parse", "main")
+    target = ReviewTarget(raw="90", head_branch="feature/x", head_sha=base_sha, pr_number=90, base_branch="main")
+    fake = _fake_origin(monkeypatch, fetch_returncode=128, fetch_stderr="fatal: could not read from remote")
+
+    verdict, detail = verify_review_diff(str(repo), target)
+
+    assert verdict is DiffVerdict.UNVERIFIED
+    assert detail == "base branch 'main' could not be fetched from origin: fatal: could not read from remote"
+    assert fake.fetches == [["fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"]]
+
+
+def test_pr_base_fetched_from_origin_keeps_the_empty_and_verified_verdicts(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    base_sha = _git(repo, "rev-parse", "main")
+    _git(repo, "checkout", "-q", "-b", "feature/x")
+    head = _commit(repo, "app.py", "x = 3\n", "change")
+    fake = _fake_origin(monkeypatch, fetch_returncode=0)
+
+    same = ReviewTarget(raw="90", head_branch="feature/x", head_sha=base_sha, pr_number=90, base_branch="main")
+    changed = ReviewTarget(raw="90", head_branch="feature/x", head_sha=head, pr_number=90, base_branch="main")
+
+    assert verify_review_diff(str(repo), same)[0] is DiffVerdict.EMPTY
+    assert verify_review_diff(str(repo), changed)[0] is DiffVerdict.VERIFIED
+    assert len(fake.fetches) == 2
+
+
+def test_pr_base_without_origin_uses_the_local_branch(tmp_path, monkeypatch):
+    """With no 'origin' remote there is nothing to fetch, so the local base branch is the base.
+
+    A repository without origin is a local-only checkout: no PR is opened from a remote copy, so the
+    local branch is the only base there is, and the guard must not refuse it for lacking a fetch.
+    """
+    from sandbox_executor import flow
+
+    repo = _repo(tmp_path)
+    _git(repo, "checkout", "-q", "-b", "feature/x")
+    head = _commit(repo, "app.py", "x = 3\n", "change")
+    calls: list[list[str]] = []
+    real = flow.run_git
+
+    def recording(args: list[str], *a: Any, **kw: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return real(args, *a, **kw)
+
+    monkeypatch.setattr(flow, "run_git", recording)
+    target = ReviewTarget(raw="90", head_branch="feature/x", head_sha=head, pr_number=90, base_branch="main")
+
+    verdict, detail = verify_review_diff(str(repo), target)
+
+    assert verdict is DiffVerdict.VERIFIED
+    assert detail == "1 changed path(s) relative to refs/heads/main"
+    assert not [call for call in calls if call[:1] == ["fetch"]]
+
+
 def test_verify_review_diff_never_calls_gh(tmp_path, monkeypatch):
     repo = _repo(tmp_path)
     monkeypatch.setattr(rt.shutil, "which", lambda name: None)

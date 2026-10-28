@@ -516,9 +516,10 @@ the fixed legacy values `antigravity-agent` / `gemini-3.8-flash-medium`, not wit
 
 Before `holon plan`, `holon execute` and `holon flow` start any work, the selected runner is checked with a readiness
 probe; see [`holon doctor`](executor/agent_credentials_requirements.md#readiness-probe-holon-doctor). A flow resumed at
-the review stage is probed too, because Stage 4 dispatches reviewer agent turns; only a flow resumed at calibration
-skips the probe. `holon review-loop` itself is not probed on the host: its reviewer turns run in the `review-loop`
-container, where a runner that cannot start makes the reviewer `FAILED`, so the review fails closed.
+the review stage is probed too, because the Stage 4 loop needs the runner for its reviewer turns (on a host, Stage 4
+refuses them until routing into the `review-loop` container lands); only a flow resumed at calibration skips the probe.
+`holon review-loop` itself is not probed on the host: its reviewer turns run in the `review-loop` container, where a
+runner that cannot start makes the reviewer `FAILED`, so the review fails closed.
 
 ---
 

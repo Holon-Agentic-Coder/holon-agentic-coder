@@ -98,6 +98,7 @@ from sandbox_executor.ledger import (
 )
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.review_ensemble import (
+    DEFAULT_ENSEMBLE_SIZE,
     ConsensusVerdict,
     ReviewerResult,
     ReviewerStatus,
@@ -326,8 +327,7 @@ class FlowContext:
     skip_review: bool = False
     skip_calibrate: bool = False
     max_review_iterations: int = 25
-    # Independent reviewer agent turns per Stage 4 iteration (review_ensemble.DEFAULT_ENSEMBLE_SIZE).
-    review_ensemble_size: int = 3
+    review_ensemble_size: int = DEFAULT_ENSEMBLE_SIZE  # Independent reviewer agent turns per Stage 4 iteration.
     mitm_web: bool = False
     stage_results: dict[str, StageResult] = field(default_factory=dict)
     logs: list[str] = field(default_factory=list)
@@ -407,7 +407,7 @@ class FlowContext:
             skip_review=data.get("skip_review", False),
             skip_calibrate=data.get("skip_calibrate", False),
             max_review_iterations=data.get("max_review_iterations", 25),
-            review_ensemble_size=int(data.get("review_ensemble_size") or 3),
+            review_ensemble_size=int(data.get("review_ensemble_size") or DEFAULT_ENSEMBLE_SIZE),
             mitm_web=data.get("mitm_web", False),
             replan_attempts=int(data.get("replan_attempts") or 0),
             stage_results=parsed_results,
@@ -3975,9 +3975,10 @@ def run_review_loop(
     )
     approval_score = 1.0 if consensus_reached else 0.0
 
-    current_commit_sha = "HEAD"
+    current_commit_sha = (resolved_target.head_sha if resolved_target else "") or "HEAD"  # The SHA reviewers saw.
     try:
-        current_commit_sha = _resolve_review_commit(repo_dir, review_target, fetch=not effective_dry_run)
+        if current_commit_sha == "HEAD":
+            current_commit_sha = _resolve_review_commit(repo_dir, review_target, fetch=not effective_dry_run)
     except Exception as exc:
         logger.debug("Could not resolve the reviewed commit for %s: %s", review_target, exc)
 

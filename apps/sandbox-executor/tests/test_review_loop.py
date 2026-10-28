@@ -1146,6 +1146,16 @@ def test_three_clean_reviewers_with_mergeable_pr_and_green_ci_approve(tmp_path):
     assert [r.index for r in post.call_args.kwargs["reviewers"]] == [1, 2, 3]
 
 
+def test_report_names_the_commit_the_reviewers_saw_even_when_the_branch_moves(tmp_path):
+    from tests.review_fakes import FAKE_HEAD_SHA, FakeEnsemble
+
+    # _LoopStubs makes the late branch lookup return "abc1234", as if the head moved after the reviewers ran.
+    res, post, _ = _loop(tmp_path, FakeEnsemble())
+
+    assert res["consensus"]["approved"] is True
+    assert post.call_args.kwargs["consensus_data"]["target_commit"] == FAKE_HEAD_SHA
+
+
 def test_cli_exits_zero_only_for_the_clean_ensemble(tmp_path, capsys):
     from tests.review_fakes import FakeEnsemble
 

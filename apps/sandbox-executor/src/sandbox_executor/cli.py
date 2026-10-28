@@ -1751,8 +1751,9 @@ def resolve_runner_and_model(agent: str | None, model: str | None) -> tuple[Reso
 
 
 # Resumption points from which a flow still reaches a stage that needs the agent runner: plan and execute, and review,
-# whose loop dispatches the sandboxed reviewer agent turns. A flow resumed at review must preflight the runner too;
-# only calibration (git and local checks) has nothing for the probe to protect.
+# whose loop needs the runner for its reviewer turns (on a host, Stage 4 refuses them until routing into the
+# review-loop container lands). A flow resumed at review must preflight the runner too; only calibration (git and
+# local checks) has nothing for the probe to protect.
 _AGENT_FLOW_STAGES = ("intent", "plan", "execute", "review")
 
 

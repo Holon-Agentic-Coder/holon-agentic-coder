@@ -66,6 +66,8 @@ from sandbox_executor.review_target import DiffVerdict
 from tests.leak_assertions import make_gh_probe, make_probe
 from tests.review_fakes import clean_reviewer, install_fake_reviewers
 
+_REAL_RESOLVE_REVIEWED_TARGET = flow_module._resolve_reviewed_target
+
 
 @pytest.fixture(autouse=True)
 def _sandboxed_clean_reviewers(monkeypatch):
@@ -3717,7 +3719,9 @@ class TestStageTargetsIgnoreOperatorHead:
             captured.update(kwargs["consensus_data"])
             return {"dual_posted": True}
 
+        # Resolve the reviewed target with real git, so the reported commit is the one the reviewers' diff names.
         with (
+            patch("sandbox_executor.flow._resolve_reviewed_target", _REAL_RESOLVE_REVIEWED_TARGET),
             patch("sandbox_executor.flow.post_pr_review_consensus", side_effect=_capture),
             patch("sandbox_executor.flow.probe_ci_checks", return_value={"all_passed": True}),
             _verified_diff(),
@@ -3728,7 +3732,7 @@ class TestStageTargetsIgnoreOperatorHead:
     def test_review_target_commit_is_execution_tip_not_operator_head(self, flow_repos, tmp_path):
         host, origin = flow_repos
         ctx = self._run_stages_1_to_3(host, origin, tmp_path)
-        exec_tip = _git(host, "rev-parse", "--short", f"refs/remotes/origin/{ctx.execution_branch}")
+        exec_tip = _git(host, "rev-parse", f"refs/remotes/origin/{ctx.execution_branch}")
         assert exec_tip != _git(host, "rev-parse", "--short", "HEAD")
 
         consensus = self._run_loop_capturing_consensus(ctx, ctx.execution_branch)
@@ -3748,7 +3752,7 @@ class TestStageTargetsIgnoreOperatorHead:
         _git(work, "add", "-A")
         _git(work, "commit", "-q", "-m", "fix")
         _git(work, "push", "-q", "origin", ctx.execution_branch)
-        new_tip = _git(work, "rev-parse", "--short", "HEAD")
+        new_tip = _git(work, "rev-parse", "HEAD")
         assert _git(host, "rev-parse", f"refs/remotes/origin/{ctx.execution_branch}") == stale
 
         consensus = self._run_loop_capturing_consensus(ctx, ctx.execution_branch)
@@ -3761,7 +3765,7 @@ class TestStageTargetsIgnoreOperatorHead:
 
         consensus = self._run_loop_capturing_consensus(ctx, "HEAD")
 
-        assert consensus["target_commit"] == _git(host, "rev-parse", "--short", "HEAD")
+        assert consensus["target_commit"] == _git(host, "rev-parse", "HEAD")
 
     def test_review_stage_checks_out_execution_branch_and_probes_it(self, flow_repos, tmp_path):
         host, origin = flow_repos

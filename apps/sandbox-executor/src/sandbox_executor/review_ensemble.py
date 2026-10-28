@@ -304,8 +304,12 @@ def _load_trailer_object(inner: str) -> dict[str, Any]:
     """Decode the trailer JSON and require exactly the trailer keys."""
     try:
         obj = json.loads(inner, object_pairs_hook=_reject_repeated_keys)
+    except TrailerError:
+        raise
     except json.JSONDecodeError as error:
         raise TrailerError(f"the trailer is not valid JSON: {error.msg}") from error
+    except (ValueError, RecursionError) as error:  # an oversized integer or a too-deeply nested value
+        raise TrailerError(f"the trailer cannot be decoded ({type(error).__name__})") from error
     if not isinstance(obj, dict):
         raise TrailerError("the trailer must be one JSON object")
     if set(obj) != _TRAILER_KEYS:
@@ -554,7 +558,7 @@ def run_reviewer(
     except (Exception, SystemExit) as error:
         reason = f"reviewer turn raised {type(error).__name__}: {error}"
         return _logged(ReviewerResult.failed(index, agent, model, report_rel, reason))
-    return _logged(_result_from_outcome(outcome, request.repo_dir, report_rel, index, agent, model))
+    return _logged(_judged_report(outcome, request.repo_dir, report_rel, index, agent, model))
 
 
 def _supervise_reviewer_turn(
@@ -608,6 +612,17 @@ def _turn_failure(outcome: AuthoringOutcome) -> str | None:
     """Why a supervised turn cannot count, or None when the report may be judged."""
     breach = outcome.breach  # the last breach of any turn; it covers every unrecovered budget failure too
     return f"review turn cut short: {breach.describe()}" if breach is not None else None
+
+
+def _judged_report(
+    outcome: AuthoringOutcome, repo_dir: str, report_rel: str, index: int, agent: str, model: str
+) -> ReviewerResult:
+    """:func:`_result_from_outcome`, but an unexpected error reading or parsing the report fails only this reviewer."""
+    try:
+        return _result_from_outcome(outcome, repo_dir, report_rel, index, agent, model)
+    except Exception as error:  # KeyboardInterrupt and SystemExit still propagate
+        reason = f"judging the review report raised {type(error).__name__}: {error}"
+        return ReviewerResult.failed(index, agent, model, report_rel, reason)
 
 
 def _result_from_outcome(

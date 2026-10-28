@@ -216,6 +216,8 @@ REJECTED = {
     "repeated key in a finding": trailer(
         _payload(verdict="CHANGES_REQUESTED", nit=1, findings=[_NIT]).replace('"line": 1', '"line": 1, "line": 2')
     ),
+    "oversized integer count": trailer(_payload().replace('"nit": 0', '"nit": ' + "1" * 5000)),
+    "deeply nested value": trailer(_payload()[:-1] + ', "extra": ' + "[" * 100_000 + "]" * 100_000 + "}"),
 }
 
 
@@ -499,6 +501,47 @@ def test_one_unparseable_reviewer_blocks(tmp_path: Path) -> None:
         **seams(FakeTurnRunner(tmp_path, actions)),
     )
     assert results[1].status is ReviewerStatus.FAILED
+    assert decide_consensus(results, 3, mergeable=True, ci_green=True) is ConsensusVerdict.FAILED
+
+
+def _ensemble_of_three(tmp_path: Path, first_report: str) -> list[ReviewerResult]:
+    actions = [("write", first_report), ("write", report("two")), ("write", report("three"))]
+    turn_runner = FakeTurnRunner(tmp_path, actions)
+    results = run_ensemble(make_request(tmp_path), agent="claude-agent", model="model-x", size=3, **seams(turn_runner))
+    assert len(turn_runner.calls) == 3
+    return results
+
+
+def test_undecodable_trailer_fails_one_reviewer_and_the_rest_still_run(tmp_path: Path) -> None:
+    results = _ensemble_of_three(tmp_path, REJECTED["oversized integer count"])
+    assert [result.status for result in results] == [
+        ReviewerStatus.FAILED,
+        ReviewerStatus.COMPLETED,
+        ReviewerStatus.COMPLETED,
+    ]
+    assert "invalid review trailer" in (results[0].failure_reason or "")
+    assert decide_consensus(results, 3, mergeable=True, ci_green=True) is ConsensusVerdict.FAILED
+
+
+def test_unexpected_error_judging_a_report_fails_only_that_reviewer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_parse = review_ensemble.parse_review_trailer
+
+    def parse(text: str) -> ParsedTrailer:
+        if "first" in text:
+            raise RecursionError(f"too deep {SECRET}")
+        return real_parse(text)
+
+    monkeypatch.setattr(review_ensemble, "parse_review_trailer", parse)
+    results = _ensemble_of_three(tmp_path, report("first"))
+    assert [result.status for result in results] == [
+        ReviewerStatus.FAILED,
+        ReviewerStatus.COMPLETED,
+        ReviewerStatus.COMPLETED,
+    ]
+    assert "RecursionError" in (results[0].failure_reason or "")
+    assert SECRET not in (results[0].failure_reason or "")
     assert decide_consensus(results, 3, mergeable=True, ci_green=True) is ConsensusVerdict.FAILED
 
 

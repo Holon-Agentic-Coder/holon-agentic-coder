@@ -1012,6 +1012,24 @@ class TestHolonFlowCLI(unittest.TestCase):
                 mock_runner.assert_not_called()
                 self.assertIn("Error:", mock_stderr.getvalue())
 
+    def test_review_loop_local_exits_one_when_not_approved(self):
+        fake_result = {
+            "target": "my-branch",
+            "consensus": {"approved": False, "status": "post_failed", "iterations": 1},
+            "error": "Posting the review consensus for 'my-branch' failed: HTTP 502",
+        }
+        with (
+            patch("sandbox_executor.flow.run_review_loop", return_value=fake_result),
+            patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
+            patch("sys.stdout", new_callable=io.StringIO) as mock_stdout,
+            patch("sys.exit") as mock_exit,
+        ):
+            with patch("sys.argv", ["holon", "review-loop", "my-branch", "--local"]):
+                main()
+            mock_exit.assert_called_with(1)
+            self.assertIn("POST_FAILED", mock_stdout.getvalue())
+            self.assertIn("HTTP 502", mock_stdout.getvalue())
+
     def test_review_loop_cli_json_output(self):
         fake_result = {
             "target": "my-branch",
@@ -2219,3 +2237,56 @@ def test_redact_cli_error_keeps_messages_without_url_credentials(monkeypatch):
     message = "Checkpoint file is not valid JSON: Expecting value: line 1 column 1"
 
     assert cli.redact_cli_error(ValueError(message)) == message
+
+
+def _confine_git_lookups(monkeypatch, root):
+    """Make `_find_git_root` see only `.git` entries under `root`, whatever the real ancestors hold."""
+    real_exists = os.path.exists
+    root_str = str(root)
+
+    def fake_exists(path):
+        text = os.fspath(path)
+        if os.path.basename(text) == ".git" and not text.startswith(root_str + os.sep):
+            return False
+        return real_exists(path)
+
+    monkeypatch.setattr(cli.os.path, "exists", fake_exists)
+
+
+def _find_git_root_within_deadline(start_dir, deadline_seconds=5.0):
+    """Run `_find_git_root` on a daemon thread, returning `(finished, result)` after the deadline."""
+    import threading
+
+    result: dict[str, str] = {}
+    worker = threading.Thread(target=lambda: result.update(root=cli._find_git_root(start_dir=start_dir)), daemon=True)
+    worker.start()
+    worker.join(timeout=deadline_seconds)
+    return not worker.is_alive(), result.get("root")
+
+
+def test_find_git_root_terminates_without_a_git_ancestor(tmp_path, monkeypatch):
+    """With no `.git` anywhere above the start directory, the search ends and falls back to it."""
+    nested = tmp_path / "a" / "b" / "c"
+    nested.mkdir(parents=True)
+    _confine_git_lookups(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli.os, "getcwd", lambda: str(nested))
+    monkeypatch.setattr(cli, "__file__", str(nested / "cli.py"))
+
+    finished, root = _find_git_root_within_deadline(str(nested))
+
+    assert finished, "_find_git_root did not return within its deadline"
+    assert root == os.path.abspath(nested)
+
+
+def test_find_git_root_returns_the_nearest_git_ancestor(tmp_path, monkeypatch):
+    """A `.git` two levels above the start directory is found by walking upwards."""
+    repo = tmp_path / "repo"
+    nested = repo / "x" / "y"
+    nested.mkdir(parents=True)
+    (repo / ".git").mkdir()
+    _confine_git_lookups(monkeypatch, tmp_path)
+
+    finished, root = _find_git_root_within_deadline(str(nested))
+
+    assert finished, "_find_git_root did not return within its deadline"
+    assert root == str(repo)

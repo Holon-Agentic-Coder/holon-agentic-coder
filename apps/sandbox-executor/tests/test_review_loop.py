@@ -2,6 +2,7 @@
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -11,6 +12,16 @@ from sandbox_executor.entrypoint.review_loop import main as review_loop_main
 from sandbox_executor.entrypoint.review_loop import run_cmd
 
 from tests.leak_assertions import assert_no_fragment, make_gh_probe
+
+
+def _prepared(branch: str):
+    """Skip the git preparation of the entrypoint, as if ``branch`` had been cloned and verified."""
+    from sandbox_executor.review_target import ReviewTarget
+
+    return patch(
+        "sandbox_executor.entrypoint.review_loop._prepare_workspace",
+        return_value=ReviewTarget(raw=branch, head_branch=branch, head_sha="a" * 40),
+    )
 
 
 class TestReviewLoopEntrypoint:
@@ -52,6 +63,7 @@ class TestReviewLoopEntrypoint:
             patch.object(sys, "argv", test_args),
             patch("sandbox_executor.entrypoint.review_loop.check_and_resolve_stage_conflicts") as mock_conflicts,
             patch("sandbox_executor.entrypoint.review_loop.run_review_loop") as mock_loop,
+            _prepared("I-100-test/P-200-test/E-300-exec/_"),
         ):
             mock_loop.return_value = {
                 "target": "I-100-test/P-200-test/E-300-exec/_",
@@ -94,6 +106,7 @@ class TestReviewLoopEntrypoint:
             patch.object(sys, "argv", test_args),
             patch("sandbox_executor.entrypoint.review_loop.check_and_resolve_stage_conflicts"),
             patch("sandbox_executor.entrypoint.review_loop.run_review_loop") as mock_loop,
+            _prepared("I-100-test/P-200-test/E-300-exec/_"),
         ):
             mock_loop.return_value = {
                 "target": "I-100-test/P-200-test/E-300-exec/_",
@@ -127,6 +140,7 @@ class TestReviewLoopEntrypoint:
             patch.object(sys, "argv", test_args),
             patch("sandbox_executor.entrypoint.review_loop.check_and_resolve_stage_conflicts"),
             patch("sandbox_executor.entrypoint.review_loop.run_review_loop") as mock_loop,
+            _prepared("I-100-test"),
         ):
             mock_loop.return_value = {
                 "target": "I-100-test",
@@ -300,7 +314,7 @@ class TestReviewLoopEmptyDiffGuard:
             patch("sandbox_executor.flow.create_or_update_pr", return_value={"success": True}) as mock_pr,
             patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
             patch("sandbox_executor.flow.probe_ci_checks", return_value={"all_passed": True, "source": "github_cli"}),
-            patch("sandbox_executor.flow.post_pr_review_consensus", return_value={}),
+            patch("sandbox_executor.flow.post_pr_review_consensus", return_value={"dual_posted": True}),
         ):
             res = run_review_loop(ctx, target=self.EXEC, max_iterations=1, dry_run=False)
         return res, mock_pr
@@ -380,7 +394,7 @@ class TestReviewLoopEmptyDiffGuardOrigin:
             patch("sandbox_executor.flow.create_or_update_pr", return_value={"success": True}) as mock_pr,
             patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
             patch("sandbox_executor.flow.probe_ci_checks", return_value={"all_passed": True, "source": "github_cli"}),
-            patch("sandbox_executor.flow.post_pr_review_consensus", return_value={}),
+            patch("sandbox_executor.flow.post_pr_review_consensus", return_value={"dual_posted": True}),
         ):
             res = run_review_loop(ctx, target=self.EXEC, max_iterations=1, dry_run=False)
         return res, mock_pr
@@ -494,3 +508,451 @@ def test_main_clone_banner_carries_no_token_fragment(clone_leak_env, monkeypatch
     assert "Cloning I-100-test into" in output
     assert "github.com/myorg/myrepo.git" in output
     assert_no_fragment(output, sample)
+
+
+# --------------------------------------------------------------------------------------
+# Fail-closed entrypoint preparation: resolve, clone, verify
+# --------------------------------------------------------------------------------------
+
+PR_HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
+ENTRYPOINT = "sandbox_executor.entrypoint.review_loop"
+
+
+class FakeGitCommands:
+    """A fake ``run_cmd`` that records argv and answers git commands from a small rule table."""
+
+    def __init__(self, head_sha: str = PR_HEAD_SHA, fail_on: tuple[str, ...] = (), heads: list[str] | None = None):
+        self.calls: list[list[str]] = []
+        self._head_sha = head_sha
+        self._fail_on = fail_on
+        # Successive answers for 'git rev-parse HEAD'; the last one repeats.
+        self._heads = list(heads or [head_sha])
+
+    def __call__(self, args, cwd=None, env=None, check=True):
+        self.calls.append(list(args))
+        verb = args[1] if len(args) > 1 else ""
+        if verb in self._fail_on:
+            return subprocess.CompletedProcess(args, 128, stdout="", stderr=f"fatal: {verb} failed")
+        if verb == "rev-parse" and args[-1].startswith("HEAD"):
+            head = self._heads.pop(0) if len(self._heads) > 1 else self._heads[0]
+            return subprocess.CompletedProcess(args, 0, stdout=f"{head}\n", stderr="")
+        if verb == "rev-parse":
+            return subprocess.CompletedProcess(args, 0, stdout=f"{self._head_sha}\n", stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+
+def _fake_gh(head_branch: str = "feature/x"):
+    payload = {"number": 90, "headRefName": head_branch, "headRefOid": PR_HEAD_SHA, "title": "T", "body": "B"}
+    calls: list[list[str]] = []
+
+    def _run(argv, cwd):
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(payload), stderr="")
+
+    return _run, calls
+
+
+def _ledger_rows(repo_dir: Path) -> list[dict]:
+    ledger = repo_dir / "holon-knowledge" / "ledger" / "executions.jsonl"
+    if not ledger.exists():
+        return []
+    return [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _run_entrypoint(repo_dir: Path, target: str, fake_git: FakeGitCommands, *extra: str):
+    """Run the entrypoint main() with fakes at the gh, run_cmd and loop seams; returns (exit, loop, post)."""
+    run_gh, gh_calls = _fake_gh()
+    loop_result = {"target": target, "consensus": {"approved": True, "status": "approved", "iterations": 1}}
+    with (
+        patch.object(sys, "argv", ["review_loop", target, f"--repo-dir={repo_dir}", *extra]),
+        patch.dict(os.environ, {"HOLON_REPO_URL": "https://github.com/acme/widgets.git"}),
+        patch(f"{ENTRYPOINT}._gh_runner", return_value=run_gh),
+        patch(f"{ENTRYPOINT}.run_cmd", side_effect=fake_git),
+        patch(f"{ENTRYPOINT}.check_and_resolve_stage_conflicts"),
+        patch(f"{ENTRYPOINT}.run_review_loop", return_value=loop_result) as mock_loop,
+        patch("sandbox_executor.flow.post_pr_review_consensus") as mock_post,
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        review_loop_main()
+    return exit_info.value.code, mock_loop, mock_post, gh_calls
+
+
+def test_pr_number_target_clones_the_head_branch_never_the_number(tmp_path):
+    fake_git = FakeGitCommands()
+
+    code, mock_loop, _post, gh_calls = _run_entrypoint(tmp_path, "90", fake_git)
+
+    assert code == 0
+    assert gh_calls == [["gh", "pr", "view", "90", "--json", "number,headRefName,headRefOid,title,body"]]
+    clone = next(c for c in fake_git.calls if c[1] == "clone")
+    assert clone[:4] == ["git", "clone", "--branch", "feature/x"]
+    for argv in fake_git.calls:
+        for i, token in enumerate(argv[:-1]):
+            assert not (token == "--branch" and argv[i + 1] == "90"), argv
+    # The PR stays the loop target; the head branch is the execution branch.
+    assert mock_loop.call_args.kwargs["target"] == "90"
+    assert mock_loop.call_args.kwargs["context"].execution_branch == "feature/x"
+
+
+def test_branch_target_in_an_existing_checkout_fetches_and_checks_out_the_branch(tmp_path):
+    (tmp_path / ".git").mkdir()
+    fake_git = FakeGitCommands()
+
+    code, mock_loop, _post, gh_calls = _run_entrypoint(tmp_path, "feature/y", fake_git)
+
+    assert code == 0
+    assert gh_calls == []
+    assert ["git", "fetch", "origin", "+refs/heads/feature/y:refs/remotes/origin/feature/y"] in fake_git.calls
+    assert ["git", "checkout", "-B", "feature/y", "origin/feature/y"] in fake_git.calls
+    assert mock_loop.call_args.kwargs["target"] == "feature/y"
+
+
+def test_failing_clone_exits_one_posts_nothing_and_writes_one_failure_row(tmp_path, capsys):
+    (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+    fake_git = FakeGitCommands(fail_on=("clone",))
+
+    code, mock_loop, mock_post, _gh = _run_entrypoint(tmp_path, "90", fake_git)
+
+    assert code == 1
+    mock_loop.assert_not_called()
+    mock_post.assert_not_called()
+    rows = _ledger_rows(tmp_path)
+    assert len(rows) == 1
+    assert rows[0]["action_id"].startswith("ACT-REV-")
+    assert rows[0]["outcome"] == "failure"
+    assert rows[0]["action_origin"] == "pr_review"
+    assert rows[0]["target"] == "90"
+    assert "clone failed" in rows[0]["error_context"]
+    out = capsys.readouterr().out
+    assert "Consensus      : FAILED" in out
+    assert "APPROVED" not in out
+
+
+def test_failing_clone_without_a_ledger_reports_on_stderr_only(tmp_path, capsys):
+    fake_git = FakeGitCommands(fail_on=("clone",))
+
+    code, mock_loop, _post, _gh = _run_entrypoint(tmp_path, "feature/x", fake_git)
+
+    assert code == 1
+    mock_loop.assert_not_called()
+    assert not (tmp_path / "holon-knowledge").exists()
+    err = capsys.readouterr().err
+    assert "Review preparation failed (clone)" in err
+    assert "No ledger row was written" in err
+
+
+def test_failing_resolution_exits_one_before_any_git_command(tmp_path, capsys):
+    fake_git = FakeGitCommands()
+
+    def _failing_gh(argv, cwd):
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="no pull requests found")
+
+    with (
+        patch.object(sys, "argv", ["review_loop", "90", f"--repo-dir={tmp_path}", "--json"]),
+        patch(f"{ENTRYPOINT}._gh_runner", return_value=_failing_gh),
+        patch(f"{ENTRYPOINT}.run_cmd", side_effect=fake_git),
+        patch(f"{ENTRYPOINT}.run_review_loop") as mock_loop,
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        review_loop_main()
+
+    assert exit_info.value.code == 1
+    assert fake_git.calls == []
+    mock_loop.assert_not_called()
+    data = json.loads(capsys.readouterr().out)
+    assert data["consensus"] == {"approved": False, "status": "failed", "iterations": 0}
+    assert "no pull requests found" in data["error"]
+
+
+def test_head_mismatch_fetches_the_resolved_sha_explicitly(tmp_path):
+    fake_git = FakeGitCommands(heads=["f" * 40, PR_HEAD_SHA])
+
+    code, _loop, _post, _gh = _run_entrypoint(tmp_path, "90", fake_git)
+
+    assert code == 0
+    assert ["git", "fetch", "origin", PR_HEAD_SHA] in fake_git.calls
+    assert ["git", "checkout", "--detach", PR_HEAD_SHA] in fake_git.calls
+
+
+def test_head_mismatch_with_a_failing_sha_fetch_exits_one(tmp_path):
+    (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+    fake_git = FakeGitCommands(heads=["f" * 40], fail_on=("fetch",))
+
+    code, mock_loop, _post, _gh = _run_entrypoint(tmp_path, "90", fake_git)
+
+    assert code == 1
+    mock_loop.assert_not_called()
+    assert len(_ledger_rows(tmp_path)) == 1
+
+
+def test_gh_runner_names_the_repository_without_credentials(tmp_path, monkeypatch):
+    from sandbox_executor.entrypoint import review_loop as entry
+
+    monkeypatch.setenv("HOLON_REPO_URL", "https://x-access-token:secret@github.com/acme/widgets.git")
+    seen: dict = {}
+
+    def _fake_run(argv, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    with patch(f"{ENTRYPOINT}.subprocess.run", side_effect=_fake_run):
+        entry._gh_runner(str(tmp_path))(["gh", "pr", "view", "90"], str(tmp_path))
+
+    assert seen["env"]["GH_REPO"] == "acme/widgets"
+    assert seen["timeout"] == 60
+
+
+# --------------------------------------------------------------------------------------
+# run_review_loop: empty-diff guard, failed posts, dry runs, merges and pending CI
+# --------------------------------------------------------------------------------------
+
+
+def _loop_ctx(tmp_path: Path, target: str = "feature/x", dry_run: bool = False):
+    from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
+
+    (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True, exist_ok=True)
+    ctx = FlowContext(repo_dir=str(tmp_path), execution_branch=target, token_reduce=False, dry_run=dry_run)
+    ctx.stage_results["execute"] = StageResult(
+        stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"test_pass_rate": 1.0, "exit_code": 0}
+    )
+    return ctx
+
+
+def _green_loop_patches(verdict=None, post=None, which=None):
+    from contextlib import ExitStack
+
+    from sandbox_executor.review_target import DiffVerdict
+
+    stack = ExitStack()
+    verify = stack.enter_context(
+        patch(
+            "sandbox_executor.flow.verify_review_diff",
+            return_value=(verdict or DiffVerdict.VERIFIED, "guard detail"),
+        )
+    )
+    stack.enter_context(patch("sandbox_executor.flow.shutil.which", return_value=which))
+    stack.enter_context(patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}))
+    stack.enter_context(
+        patch("sandbox_executor.flow.probe_ci_checks", return_value={"all_passed": True, "source": "local_tests"})
+    )
+    stack.enter_context(patch("sandbox_executor.flow._resolve_review_commit", return_value="abc123"))
+    mock_post = stack.enter_context(
+        patch("sandbox_executor.flow.post_pr_review_consensus", **(post or {"return_value": {"dual_posted": True}}))
+    )
+    return stack, verify, mock_post
+
+
+@pytest.mark.parametrize("which", [None, "/usr/bin/gh"], ids=["no-gh", "gh"])
+def test_empty_diff_guard_runs_without_auto_pr_and_without_gh(tmp_path, which):
+    from sandbox_executor.flow import run_review_loop
+    from sandbox_executor.review_target import DiffVerdict
+
+    stack, verify, mock_post = _green_loop_patches(verdict=DiffVerdict.EMPTY, which=which)
+    with stack:
+        res = run_review_loop(_loop_ctx(tmp_path), target="feature/x", auto_pr=False, max_iterations=1)
+
+    verify.assert_called_once()
+    assert res["consensus"]["approved"] is False
+    assert res["consensus"]["status"] == "rejected"
+    mock_post.assert_not_called()
+
+
+def test_empty_diff_guard_runs_for_a_pr_number_target(tmp_path):
+    from sandbox_executor.flow import run_review_loop
+    from sandbox_executor.review_target import DiffVerdict, ReviewTarget
+
+    resolved = ReviewTarget(raw="90", head_branch="feature/x", head_sha=PR_HEAD_SHA, pr_number=90)
+    stack, verify, mock_post = _green_loop_patches(verdict=DiffVerdict.EMPTY)
+    with stack, patch("sandbox_executor.flow.resolve_review_target", return_value=resolved) as resolve:
+        res = run_review_loop(_loop_ctx(tmp_path, "90"), target="90", auto_pr=False, max_iterations=1)
+
+    resolve.assert_called_once_with(str(tmp_path), "90")
+    assert verify.call_args.args[1] == resolved
+    assert res["consensus"]["approved"] is False
+    mock_post.assert_not_called()
+
+
+def test_unresolvable_pr_target_fails_closed_without_posting(tmp_path):
+    from sandbox_executor.flow import run_review_loop
+    from sandbox_executor.review_target import ReviewTargetError
+
+    stack, verify, mock_post = _green_loop_patches()
+    with stack, patch("sandbox_executor.flow.resolve_review_target", side_effect=ReviewTargetError("gh missing")):
+        res = run_review_loop(_loop_ctx(tmp_path, "90"), target="90", auto_pr=False, max_iterations=1)
+
+    verify.assert_not_called()
+    assert res["consensus"]["approved"] is False
+    assert res["consensus"]["status"] == "failed"
+    assert "gh missing" in res["error"]
+    mock_post.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "post",
+    [
+        {"return_value": {"dual_posted": False, "error": "HTTP 502"}},
+        {"side_effect": RuntimeError("HTTP 502")},
+    ],
+    ids=["returned-failure", "raised"],
+)
+def test_failed_post_makes_the_loop_non_approved(tmp_path, post):
+    from sandbox_executor.flow import run_review_loop
+
+    stack, _verify, mock_post = _green_loop_patches(post=post)
+    with stack:
+        res = run_review_loop(_loop_ctx(tmp_path), target="feature/x", auto_pr=False, max_iterations=1)
+
+    mock_post.assert_called_once()
+    assert res["consensus"]["approved"] is False
+    assert res["consensus"]["status"] == "post_failed"
+    assert res["consensus"]["score"] == 0.0
+    assert res["halted_for_human"] is False
+    assert "HTTP 502" in res["error"]
+    rows = _ledger_rows(tmp_path)
+    posts = [r for r in rows if str(r.get("action_id", "")).startswith("ACT-POST")]
+    assert len(posts) == 1
+    assert posts[0]["outcome"] == "failure"
+    summary = next(r for r in rows if r.get("entry_type") == "summary")
+    assert summary["status"] == "failed"
+    assert "consensus post failed" in summary["summary"]
+
+
+def test_failed_post_makes_the_cli_exit_one(tmp_path, capsys):
+    import argparse
+
+    from sandbox_executor.flow import run_review_loop_cli
+
+    args = argparse.Namespace(repo_dir=str(tmp_path), target="feature/x", auto_pr=False, dry_run=False, json=False)
+    (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+    stack, _verify, _post = _green_loop_patches(post={"return_value": {"dual_posted": False, "error": "HTTP 502"}})
+    with stack:
+        code = run_review_loop_cli(args)
+
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "POST_FAILED" in out
+    assert "Reason:" in out and "HTTP 502" in out
+
+
+def test_dry_run_is_never_approved(tmp_path):
+    from sandbox_executor.flow import run_review_loop
+
+    stack, verify, mock_post = _green_loop_patches()
+    with stack:
+        res = run_review_loop(_loop_ctx(tmp_path, dry_run=True), target="feature/x", dry_run=True, max_iterations=1)
+
+    verify.assert_not_called()
+    mock_post.assert_not_called()
+    assert res["consensus"]["approved"] is False
+    assert res["consensus"]["status"] == "not_measured"
+
+
+def test_approved_loop_never_merges(tmp_path, gh_write_guard):
+    """A full approved loop through the real posting code issues no merge or auto-merge gh command."""
+    from sandbox_executor.flow import run_review_loop
+    from sandbox_executor.review_target import DiffVerdict
+
+    real_run = subprocess.run
+    gh_calls: list[list[str]] = []
+
+    def _recording_run(argv, *args, **kwargs):
+        if isinstance(argv, list) and argv and argv[0] == "gh":
+            gh_calls.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        return real_run(argv, *args, **kwargs)
+
+    with (
+        patch("sandbox_executor.flow.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "ok")),
+        patch("sandbox_executor.flow.shutil.which", return_value="/usr/bin/gh"),
+        patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
+        patch("sandbox_executor.flow.probe_ci_checks", return_value={"all_passed": True, "source": "github_cli"}),
+        patch("sandbox_executor.flow.create_or_update_pr", return_value={"success": True}),
+        patch("sandbox_executor.flow._resolve_review_commit", return_value="abc123"),
+        patch("sandbox_executor.flow.subprocess.run", side_effect=_recording_run),
+    ):
+        res = run_review_loop(_loop_ctx(tmp_path), target="feature/x", max_iterations=1)
+
+    assert res["consensus"]["approved"] is True
+    assert gh_calls, "the posting path issued no gh command"
+    for argv in gh_calls:
+        assert "merge" not in argv[:3], argv
+        assert "--auto" not in argv, argv
+    assert gh_write_guard == []
+
+
+def test_pending_ci_wait_honours_its_deadline(tmp_path):
+    from sandbox_executor.flow import FlowContext, _wait_for_pending_ci
+
+    now = [0.0]
+    sleeps: list[float] = []
+
+    def _sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    pending = {"source": "github_cli", "pending": 2, "all_passed": False}
+    probe = MagicMock(return_value=dict(pending))
+    with patch("sandbox_executor.flow.probe_ci_checks", probe):
+        res = _wait_for_pending_ci(
+            FlowContext(repo_dir=str(tmp_path)),
+            str(tmp_path),
+            "feature/x",
+            {},
+            dict(pending),
+            timeout=40.0,
+            poll_interval=15.0,
+            clock=lambda: now[0],
+            sleep=_sleep,
+        )
+
+    assert sleeps == [15.0, 15.0, 10.0]
+    assert now[0] == 40.0
+    assert res["pending"] == 2
+    assert res["all_passed"] is False
+
+
+def test_pending_ci_wait_returns_once_checks_settle(tmp_path):
+    from sandbox_executor.flow import FlowContext, _wait_for_pending_ci
+
+    sleeps: list[float] = []
+    settled = {"source": "github_cli", "pending": 0, "all_passed": True}
+    probe = MagicMock(return_value=dict(settled))
+    with patch("sandbox_executor.flow.probe_ci_checks", probe):
+        res = _wait_for_pending_ci(
+            FlowContext(repo_dir=str(tmp_path)),
+            str(tmp_path),
+            "feature/x",
+            {},
+            {"source": "github_cli", "pending": 1},
+            timeout=600.0,
+            poll_interval=15.0,
+            clock=lambda: 0.0,
+            sleep=sleeps.append,
+        )
+
+    assert sleeps == [15.0]
+    assert probe.call_count == 1
+    assert res["all_passed"] is True
+
+
+def test_mergeability_probe_is_bounded_by_a_subprocess_timeout(tmp_path):
+    from sandbox_executor.flow import check_pr_mergeability
+
+    seen: list[dict] = []
+
+    def _timing_out(argv, *args, **kwargs):
+        if argv[0] == "gh":
+            seen.append(kwargs)
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="")
+
+    with (
+        patch("sandbox_executor.flow.shutil.which", return_value="/usr/bin/gh"),
+        patch("sandbox_executor.flow.subprocess.run", side_effect=_timing_out),
+        patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=1, stdout="", stderr="")),
+    ):
+        res = check_pr_mergeability(str(tmp_path), "feature/x", "main")
+
+    assert len(seen) == 1
+    assert seen[0]["timeout"] == 60
+    assert res["source"] != "github_cli"

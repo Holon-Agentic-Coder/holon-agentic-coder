@@ -814,7 +814,10 @@ def _published_loopback_port(container_name: str) -> int | None:
 
 
 def _find_git_root(start_dir: str | None = None) -> str:
-    """Traverse upwards to find the git repository root containing .git, or fallback to start_dir / getcwd."""
+    """Walk upwards to the nearest directory containing .git, or fall back to start_dir / getcwd.
+
+    Each walk ends at the filesystem root, so the search always terminates.
+    """
     for base in (start_dir, os.getcwd(), os.path.dirname(os.path.abspath(__file__))):
         if not base:
             continue
@@ -825,6 +828,7 @@ def _find_git_root(start_dir: str | None = None) -> str:
             parent = os.path.dirname(cur)
             if parent == cur:
                 break
+            cur = parent
     return os.path.abspath(start_dir or os.getcwd())
 
 
@@ -2082,7 +2086,10 @@ def main() -> None:
     review_parser = subparsers.add_parser(
         "review-loop",
         aliases=["review", "pr-review-loop"],
-        help="Run autonomous native review loop on an execution branch or pull request (Bean 0118).",
+        help=(
+            "Run autonomous native review loop on an execution branch or pull request (Bean 0118). "
+            "Fails closed: exits 1 unless the consensus is approved and posted."
+        ),
     )
     review_parser.add_argument(
         "target",
@@ -2104,7 +2111,10 @@ def main() -> None:
         "--auto-pr",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Automatically create PR if only a branch exists (default: True).",
+        help=(
+            "Automatically create PR if only a branch exists (default: True). "
+            "The empty-diff guard runs whatever this is."
+        ),
     )
     review_parser.add_argument(
         "--dry-run",

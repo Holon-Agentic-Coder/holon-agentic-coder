@@ -61,8 +61,14 @@ from sandbox_executor.flow import (
     save_checkpoint,
 )
 from sandbox_executor.ledger import parse_commit_trailers
+from sandbox_executor.review_target import DiffVerdict
 
 from tests.leak_assertions import make_gh_probe, make_probe
+
+
+def _verified_diff():
+    """Patch the empty-diff guard to pass, for review-loop tests whose repository is not a real git checkout."""
+    return patch("sandbox_executor.flow.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 changed path(s)"))
 
 
 @contextmanager
@@ -3220,6 +3226,7 @@ class TestStage4LedgerProvenance:
                 return_value={"all_passed": True, "source": "local_tests"},
             ),
             patch("sandbox_executor.flow.post_pr_review_consensus", **posting),
+            _verified_diff(),
         ):
             result = run_review_loop(ctx, auto_pr=False)
         return ctx, result, tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
@@ -3362,6 +3369,7 @@ class TestStage4LedgerProvenance:
             ),
             patch("sandbox_executor.flow.post_pr_review_consensus", return_value={"dual_posted": True}),
             patch("sandbox_executor.ledger.LedgerLock.__enter__", side_effect=PermissionError("ledger denied")),
+            _verified_diff(),
             patch("sandbox_executor.knowledge.records.atomic_ledger_append", side_effect=PermissionError("denied")),
         ):
             result = run_review_loop(ctx, auto_pr=False)
@@ -3670,6 +3678,7 @@ class TestStageTargetsIgnoreOperatorHead:
         with (
             patch("sandbox_executor.flow.post_pr_review_consensus", side_effect=_capture),
             patch("sandbox_executor.flow.probe_ci_checks", return_value={"all_passed": True}),
+            _verified_diff(),
         ):
             run_review_loop(ctx, target=target, max_iterations=1, auto_pr=False)
         return captured
@@ -3940,6 +3949,7 @@ class TestStage4TestEvidence:
             patch("sandbox_executor.flow.shutil.which", return_value=None),
             patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
             patch("sandbox_executor.flow.post_pr_review_consensus", return_value={"dual_posted": True}),
+            _verified_diff(),
         ):
             return run_review_loop(ctx, auto_pr=False, max_iterations=1)
 
@@ -4071,6 +4081,7 @@ class TestUnmeasuredTestsStopEarly:
             patch("sandbox_executor.flow.post_pr_review_consensus", return_value={"dual_posted": True}),
             patch("sandbox_executor.flow._resolve_review_commit", return_value="abc123"),
             patch("sandbox_executor.flow.time.sleep", sleep),
+            _verified_diff(),
         ):
             res = run_review_loop(ctx, auto_pr=False, max_iterations=25, **kwargs)
         return res, probe, sleep
@@ -4134,7 +4145,9 @@ class TestUnmeasuredTestsStopEarly:
 
         res, _probe, sleep = self._loop(ctx, lambda *a, **k: dict(self.LOCAL), ci_registration_timeout=600.0)
 
-        assert res["consensus"]["approved"] is True
+        # A simulated approval is never an approval: the dry run reports not_measured.
+        assert res["consensus"]["approved"] is False
+        assert res["consensus"]["status"] == "not_measured"
         assert res["ci_checks"]["measured"] is False
         sleep.assert_not_called()
         assert self._ledger_rows(tmp_path) == []
@@ -4285,7 +4298,7 @@ class TestUnmeasuredTestsStopEarly:
             tmp_path, payload, ci, lambda ctx: run_review_loop(ctx, max_iterations=2, dry_run=False)
         )
         assert res["consensus"]["approved"] is False
-        assert res["consensus"]["status"] == "rejected"
+        assert res["consensus"]["status"] == "failed"
         assert res["halted_for_human"] is False
         assert res["pr"]["reason"] == "diff_unverified"
         assert "could not verify the execution diff (fetch failed)" in res["error"]

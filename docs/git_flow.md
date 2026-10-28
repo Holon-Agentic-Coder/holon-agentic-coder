@@ -211,16 +211,21 @@ The guarantee has five deliberate limits:
 - **Empty executions fail.** An execution branch with no changes outside `holon-knowledge/ledger/`, `plans/` and
   `executions/` relative to its plan branch (content merged in from the target branch does not count) is recorded as
   `status: "failed"` (`failure_reason: "empty_diff"`, no `test_pass_rate`), Stage 3 fails and no PR is created or
-  updated. The same guard runs inside `holon execute` and before `holon review-loop` opens a PR; there it first fetches
-  the execution and plan branches and compares the origin copies the PR is opened from, so stale or unpushed local
-  branches never decide it (a failed fetch skips the PR as `diff_unverified`). When the guard refuses the PR
-  (`empty_diff` or `diff_unverified`), the review loop fails closed: it does not wait for CI, runs no review iteration
-  and posts no consensus, so no evidence -- not even a Stage 3 `test_pass_rate` of 1.0 or green CI on an existing PR --
-  can approve it. The loop returns `approved: false` with the refusal as its `error` (an `empty_diff` refusal appends no
-  ledger rows; a `diff_unverified` refusal appends only a `failed` "halted without consensus" summary row naming it and
-  the review action event, with no `ACT-REV`, `ACT-FIND`, `ACT-RES` or `ACT-POST` rows), and Stage 4 fails with the
-  refusal's own reason (`Autonomous review halted: Refusing to create or update a PR for ...`), never as a test failure
-  or as unmeasured tests, so Stage 5 does not run. Dry runs never invoke the guard.
+  updated. The same guard runs inside `holon execute` and in every non-dry `holon review-loop` run, whatever `--auto-pr`
+  is, whether or not `gh` is installed and for every target (a PR number or URL is first resolved to its head SHA, which
+  is compared with the intent's target branch); for an execution branch it first fetches the execution and plan branches
+  and compares the origin copies the PR is opened from, so stale or unpushed local branches never decide it (a failed
+  fetch skips the PR as `diff_unverified`). When the guard refuses the PR (`empty_diff` or `diff_unverified`), the
+  review loop fails closed: it does not wait for CI, runs no review iteration and posts no consensus, so no evidence --
+  not even a Stage 3 `test_pass_rate` of 1.0 or green CI on an existing PR -- can approve it. The loop returns
+  `approved: false` with the refusal as its `error` (an `empty_diff` refusal appends no ledger rows; a `diff_unverified`
+  refusal appends only a `failed` "halted without consensus" summary row naming it and the review action event, with no
+  `ACT-REV`, `ACT-FIND`, `ACT-RES` or `ACT-POST` rows), and Stage 4 fails with the refusal's own reason
+  (`Autonomous review halted: Refusing to create or update a PR for ...`), never as a test failure or as unmeasured
+  tests, so Stage 5 does not run. An empty diff has consensus status `rejected` and an unverifiable one `failed`. Dry
+  runs never invoke the guard and are never approved: a simulated approval reports `not_measured`. A consensus whose
+  post to the PR fails or raises is `post_failed` and not approved, and `holon review-loop` exits 1 unless the consensus
+  is approved and posted.
 - **Dispatch needs `origin`.** `--dry-run` validates the payload and names the branches without dispatching anything.
   `--skip-push` is rejected outside `--dry-run` -- on every run, including a `--from-stage` or `--checkpoint` resume
   from any stage -- before any stage runs, because the role containers clone from and push to `origin`, Stage 4 opens
@@ -234,7 +239,9 @@ The guarantee has five deliberate limits:
   writing ledger rows. If none register, the loop stops after that single iteration with consensus status `not_measured`
   (one iteration's review rows and one summary row, not rows for every iteration), Stage 4 fails with
   `test results not measured: no recorded Stage 3 test result and no CI checks`, and the pipeline halts before Stage 5
-  calibration runs. `--dry-run` keeps its simulated consensus and does not wait.
+  calibration runs. Checks that registered but are still pending are re-probed every `CI_REGISTRATION_POLL_SECONDS` (15
+  s) until they settle or the iteration's `review_iteration` budget runs out; checks still pending then count as a CI
+  finding. `--dry-run` does not wait, and its simulated consensus reports `not_measured`.
 - **Token reduction is auto-detected.** `holon flow` (like `holon review-loop`) resolves token reduction with
   `detect_holon_coherence`: unless `HOLON_TOKEN_REDUCE` opts out (`0`, `false`, `no`, `off`), it is enabled by
   `--token-reduce`, `--mitm-web`, a truthy `HOLON_TOKEN_REDUCE` or `HOLON_PASSIVE_MONITORING`, a reachable proxy port, a

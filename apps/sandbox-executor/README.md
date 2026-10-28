@@ -150,6 +150,29 @@ Runs the autonomous native review loop on an execution branch or pull request:
 ./holon review-loop 87 --dry-run
 ```
 
+The review loop fails closed:
+
+- **Target resolution.** A PR number or GitHub PR URL is resolved through
+  `gh pr view <target> --json number,headRefName,headRefOid,title,body` to its head branch and head SHA
+  (`sandbox_executor/review_target.py`); a branch resolves to its fetched tip. The container entrypoint does this before
+  any git operation, clones or fetches the head branch (never `git clone --branch 87`), checks every git return code and
+  requires `HEAD` to equal the head SHA, fetching that SHA explicitly if the branch has moved. Before the clone, `gh`
+  learns the repository from `GH_REPO`, derived from `HOLON_REPO_URL` without its credentials. On any resolution, clone,
+  fetch or checkout failure it appends one `ACT-REV` failure row to `holon-knowledge/ledger/executions.jsonl`, prints a
+  FAILED summary and exits 1 without computing or posting a consensus. Limitation: when the workspace has no
+  `holon-knowledge/ledger/` directory, the failure is reported only on stderr and through the exit code.
+- **Empty-diff guard.** The guard runs for every target, whatever `--auto-pr` is and whether or not `gh` is installed:
+  an empty diff is `rejected` and an unverifiable one `failed`, before any PR, iteration or post. Execution branches are
+  compared with their plan branch, PRs (by head SHA) and other branches with the intent's target branch (`main` by
+  default).
+- **Posting.** A consensus whose post fails or raises is `post_failed`, never approved; the `ACT-POST` failure row is
+  still written.
+- **Dry runs.** A dry run measures nothing, so a simulated approval reports `not_measured` and is never approved.
+- **Exit code.** The command exits 0 only when the consensus is approved and posted; otherwise it exits 1 and prints the
+  reason. It never merges and never enables auto-merge.
+- **Bounded waits.** Pending CI checks are re-probed every `CI_REGISTRATION_POLL_SECONDS` (15 s) until they settle or
+  the iteration's `review_iteration` budget runs out; checks still pending then count as a CI finding.
+
 ### `holon calibrate`
 
 Runs post-execution calibration on an execution branch without rerunning tests:

@@ -12,6 +12,17 @@ from sandbox_executor.entrypoint.review_loop import main as review_loop_main
 from sandbox_executor.entrypoint.review_loop import run_cmd
 
 from tests.leak_assertions import assert_no_fragment, make_gh_probe
+from tests.review_fakes import install_fake_reviewers
+
+
+@pytest.fixture(autouse=True)
+def _sandboxed_clean_reviewers(monkeypatch):
+    """Run every review-loop test inside a simulated sandbox with clean fake reviewers (no runner is ever called).
+
+    Mergeability and CI then decide the outcome as they did before the real ensemble was wired in; the tests of the
+    ensemble wiring and of the host refusal override this explicitly.
+    """
+    install_fake_reviewers(monkeypatch)
 
 
 def _prepared(branch: str):
@@ -73,6 +84,7 @@ class TestReviewLoopEntrypoint:
                     "iterations": 1,
                     "status": "approved",
                 },
+                "ensemble_verdict": "APPROVED",
                 "halted_for_human": True,
                 "human_approval_command": "holon review approve I-100-test/P-200-test/E-300-exec/_",
                 "ci_checks": {"total": 1, "passed": 1, "failed": 0, "pending": 0, "source": "local_tests"},
@@ -145,6 +157,7 @@ class TestReviewLoopEntrypoint:
             mock_loop.return_value = {
                 "target": "I-100-test",
                 "consensus": {"approved": True, "iterations": 1},
+                "ensemble_verdict": "APPROVED",
                 "max_iterations": 25,
             }
 
@@ -569,7 +582,11 @@ def _ledger_rows(repo_dir: Path) -> list[dict]:
 def _run_entrypoint(repo_dir: Path, target: str, fake_git: FakeGitCommands, *extra: str):
     """Run the entrypoint main() with fakes at the gh, run_cmd and loop seams; returns (exit, loop, post)."""
     run_gh, gh_calls = _fake_gh()
-    loop_result = {"target": target, "consensus": {"approved": True, "status": "approved", "iterations": 1}}
+    loop_result = {
+        "target": target,
+        "consensus": {"approved": True, "status": "approved", "iterations": 1},
+        "ensemble_verdict": "APPROVED",
+    }
     with (
         patch.object(sys, "argv", ["review_loop", target, f"--repo-dir={repo_dir}", *extra]),
         patch.dict(os.environ, {"HOLON_REPO_URL": "https://github.com/acme/widgets.git"}),
@@ -977,3 +994,398 @@ def test_mergeability_probe_is_bounded_by_a_subprocess_timeout(tmp_path):
     assert len(seen) == 1
     assert seen[0]["timeout"] == 60
     assert res["source"] != "github_cli"
+
+
+# --- Real reviewer ensemble wiring (fakes only: no runner, gh, Docker or remote) ------------------------------------
+
+EXEC_TARGET = "I-100-intent/P-200-plan/E-300-exec/_"
+_CLEAN_MERGE = {"is_dirty": False, "merge_state_status": "CLEAN", "mergeable": "MERGEABLE"}
+_GREEN_CI = {"all_passed": True, "passed": 1, "failed": 0, "pending": 0, "total": 1, "source": "github_cli"}
+
+
+def _ensemble_ctx(tmp_path: Path, **kwargs):
+    from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
+
+    (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True, exist_ok=True)
+    ctx = FlowContext(
+        repo_dir=str(tmp_path),
+        execution_branch=EXEC_TARGET,
+        agent="fake-agent",
+        model="fake-model",
+        token_reduce=False,
+        **kwargs,
+    )
+    ctx.stage_results["execute"] = StageResult(
+        stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"test_pass_rate": 1.0, "exit_code": 0}
+    )
+    return ctx
+
+
+def _ledger(tmp_path: Path) -> list[dict]:
+    ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
+    return [json.loads(line) for line in ledger.read_text().splitlines() if line.strip()] if ledger.exists() else []
+
+
+def _rows(tmp_path: Path, prefix: str) -> list[dict]:
+    return [r for r in _ledger(tmp_path) if str(r.get("action_id", "")).startswith(prefix + "-")]
+
+
+def _reviewer_rows(tmp_path: Path) -> list[dict]:
+    return [r for r in _rows(tmp_path, "ACT-REV") if "review_reviewer_index" in r]
+
+
+class _LoopStubs:
+    """Patch mergeability, CI, the empty-diff guard, the reviewed commit and posting; ``post`` is the posting mock."""
+
+    def __init__(self, merge=None, ci=None):
+        self.merge = dict(merge or _CLEAN_MERGE)
+        self.ci = dict(ci or _GREEN_CI)
+        self._patches = []
+        self.post = MagicMock(return_value={"dual_posted": True, "official_review": {"success": True}})
+
+    def __enter__(self):
+        from sandbox_executor.review_target import DiffVerdict
+
+        self._patches = [
+            patch("sandbox_executor.flow.shutil.which", return_value=None),
+            patch("sandbox_executor.flow.check_pr_mergeability", side_effect=lambda *a, **k: dict(self.merge)),
+            patch("sandbox_executor.flow.probe_ci_checks", side_effect=lambda *a, **k: dict(self.ci)),
+            patch("sandbox_executor.flow.post_pr_review_consensus", self.post),
+            patch("sandbox_executor.flow._resolve_review_commit", return_value="abc1234"),
+            patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
+        ]
+        for p in self._patches:
+            p.start()
+        return self
+
+    def __exit__(self, *exc):
+        for p in reversed(self._patches):
+            p.stop()
+
+
+def _loop(tmp_path: Path, ensemble, *, size: int = 3, merge=None, ci=None, **ctx_kwargs):
+    from sandbox_executor.flow import run_review_loop
+
+    ctx = _ensemble_ctx(tmp_path, **ctx_kwargs)
+    with _LoopStubs(merge, ci) as stubs:
+        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=5, ensemble_size=size, run_ensemble_fn=ensemble)
+    return res, stubs.post, ctx
+
+
+def _cli(tmp_path: Path, ensemble, **stub_kwargs) -> int:
+    import argparse
+
+    from sandbox_executor.flow import run_review_loop_cli
+
+    _ensemble_ctx(tmp_path)
+    args = argparse.Namespace(
+        repo_dir=str(tmp_path),
+        target=EXEC_TARGET,
+        max_iterations=5,
+        ensemble_size=3,
+        auto_pr=False,
+        dry_run=False,
+        json=False,
+        agent="fake-agent",
+        model="fake-model",
+    )
+    with _LoopStubs(**stub_kwargs), patch("sandbox_executor.flow.run_ensemble", ensemble):
+        return run_review_loop_cli(args)
+
+
+def test_three_clean_reviewers_with_mergeable_pr_and_green_ci_approve(tmp_path):
+    from tests.review_fakes import FakeEnsemble
+
+    ensemble = FakeEnsemble()
+    res, post, _ = _loop(tmp_path, ensemble)
+
+    assert res["consensus"]["approved"] is True
+    assert res["consensus"]["status"] == "approved"
+    assert res["ensemble_verdict"] == "APPROVED"
+    assert [call["size"] for call in ensemble.calls] == [3]
+    assert (ensemble.calls[0]["agent"], ensemble.calls[0]["model"]) == ("fake-agent", "fake-model")
+    rows = _reviewer_rows(tmp_path)
+    assert [r["review_reviewer_index"] for r in rows] == [1, 2, 3]
+    assert {(r["review_status"], r["review_verdict"], r["outcome"]) for r in rows} == {
+        ("COMPLETED", "APPROVED", "success")
+    }
+    assert rows[0]["review_counts"] == {"critical": 0, "important": 0, "nit": 0}
+    assert not _rows(tmp_path, "ACT-FIND")
+    assert not _rows(tmp_path, "ACT-RES")
+    post.assert_called_once()
+    assert [r.index for r in post.call_args.kwargs["reviewers"]] == [1, 2, 3]
+
+
+def test_cli_exits_zero_only_for_the_clean_ensemble(tmp_path, capsys):
+    from tests.review_fakes import FakeEnsemble
+
+    assert _cli(tmp_path, FakeEnsemble()) == 0
+    out = capsys.readouterr().out
+    assert "Ensemble       : APPROVED" in out
+    assert "Reviewer 1: fake-agent / fake-model: APPROVED (critical 0, important 0, nit 0)" in out
+
+
+def _blocking_cases():
+    from sandbox_executor.review_ensemble import ReviewerVerdict
+
+    from tests.review_fakes import clean_reviewer, failed_reviewer, objecting_reviewer
+
+    return {
+        "zero-reviewers": [],
+        "failed-reviewer": [clean_reviewer(1), failed_reviewer(2), clean_reviewer(3)],
+        "unparseable-reviewer": [
+            clean_reviewer(1),
+            clean_reviewer(2),
+            failed_reviewer(3, "invalid review trailer: the closing marker is not the last line"),
+        ],
+        "changes-requested": [clean_reviewer(1), objecting_reviewer(2, "important"), clean_reviewer(3)],
+        "approved-with-a-nit": [
+            clean_reviewer(1),
+            clean_reviewer(2),
+            objecting_reviewer(3, "nit", verdict=ReviewerVerdict.APPROVED),
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "case", ["zero-reviewers", "failed-reviewer", "unparseable-reviewer", "changes-requested", "approved-with-a-nit"]
+)
+def test_any_blocking_reviewer_outcome_stops_after_one_iteration_and_records_rows(tmp_path, case):
+    from tests.review_fakes import FakeEnsemble
+
+    results = _blocking_cases()[case]
+    ensemble = FakeEnsemble(results)
+    res, post, _ = _loop(tmp_path, ensemble)
+
+    assert res["consensus"]["approved"] is False
+    assert res["ensemble_verdict"] in ("FAILED", "CHANGES_REQUESTED")
+    assert res["total_iterations"] == 1
+    assert len(ensemble.calls) == 1
+    rows = _reviewer_rows(tmp_path)
+    assert [r["review_reviewer_index"] for r in rows] == [r.index for r in results]
+    findings = [r for r in _rows(tmp_path, "ACT-FIND") if "review_reviewer_index" in r]
+    assert len(findings) == sum(len(r.findings) for r in results)
+    for row in findings:
+        assert row["review_file"] == "src/app.py"
+        assert row["review_line"] == 12
+        assert row["outcome"] == "failure"
+    failed_rows = [r for r in rows if r["review_status"] == "FAILED"]
+    assert all(r["review_verdict"] is None and r["error_context"] for r in failed_rows)
+    assert not _rows(tmp_path, "ACT-RES")
+    # A review is posted only when at least one reviewer completed.
+    assert post.called is bool(results)
+    assert bool(_rows(tmp_path, "ACT-POST")) is bool(results)
+
+
+@pytest.mark.parametrize(
+    "case", ["zero-reviewers", "failed-reviewer", "unparseable-reviewer", "changes-requested", "approved-with-a-nit"]
+)
+def test_cli_exits_one_for_every_blocking_reviewer_outcome(tmp_path, case):
+    from tests.review_fakes import FakeEnsemble
+
+    assert _cli(tmp_path, FakeEnsemble(_blocking_cases()[case])) == 1
+    assert _rows(tmp_path, "ACT-REV")
+
+
+def test_changes_requested_maps_to_its_own_status_and_carries_reviewer_summaries(tmp_path):
+    from tests.review_fakes import FakeEnsemble, clean_reviewer, objecting_reviewer
+
+    res, post, _ = _loop(tmp_path, FakeEnsemble([clean_reviewer(1), objecting_reviewer(2, "critical")]), size=2)
+
+    assert res["consensus"]["status"] == "changes_requested"
+    assert res["severity"] == "critical"
+    assert "FIND-R2-001-01" in res["findings"]
+    assert res["reviewers"][1]["verdict"] == "CHANGES_REQUESTED"
+    assert "report_text" not in json.dumps(res)
+    assert post.call_args.kwargs["consensus_data"]["ensemble_verdict"] == "CHANGES_REQUESTED"
+
+
+@pytest.mark.parametrize(
+    ("merge", "ci"),
+    [
+        ({"is_dirty": True, "merge_state_status": "DIRTY", "mergeable": "CONFLICTING"}, None),
+        (None, {**_GREEN_CI, "all_passed": False, "passed": 0, "failed": 1}),
+        (None, {"source": "github_cli", "total": 0}),
+    ],
+    ids=["dirty", "ci-failing", "ci-unknown"],
+)
+def test_clean_reviewers_never_approve_without_a_mergeable_pr_and_green_ci(tmp_path, merge, ci):
+    from tests.review_fakes import FakeEnsemble
+
+    res, _, _ = _loop(tmp_path, FakeEnsemble(), merge=merge, ci=ci)
+
+    assert res["consensus"]["approved"] is False
+    assert res["ensemble_verdict"] == "CHANGES_REQUESTED"
+    assert res["total_iterations"] == 1
+
+
+def test_host_run_refuses_before_any_reviewer_turn_row_or_post(tmp_path, monkeypatch):
+    from sandbox_executor.flow import HOST_REVIEW_REFUSAL
+
+    monkeypatch.delenv("HOLON_IN_SANDBOX", raising=False)
+    monkeypatch.delenv("HOLON_ROLE", raising=False)
+    ensemble = MagicMock(side_effect=AssertionError("a reviewer turn ran on the host"))
+    with patch("sandbox_executor.review_ensemble.get_runner", side_effect=AssertionError("runner on the host")):
+        res, post, _ = _loop(tmp_path, ensemble)
+
+    assert res["consensus"]["status"] == "failed"
+    assert res["consensus"]["approved"] is False
+    assert res["error"] == HOST_REVIEW_REFUSAL
+    assert res["total_iterations"] == 0
+    ensemble.assert_not_called()
+    post.assert_not_called()
+    assert not _rows(tmp_path, "ACT-REV")
+    assert not _rows(tmp_path, "ACT-POST")
+
+
+def test_stage4_on_the_host_fails_closed_without_dispatching_or_running_reviewers(tmp_path, monkeypatch):
+    from sandbox_executor.flow import StageStatus, run_review_stage
+
+    monkeypatch.delenv("HOLON_IN_SANDBOX", raising=False)
+    monkeypatch.delenv("HOLON_ROLE", raising=False)
+    dispatcher = MagicMock(side_effect=AssertionError("no role container is dispatched under the fallback"))
+    ensemble = MagicMock(side_effect=AssertionError("a reviewer turn ran on the host"))
+    ctx = _ensemble_ctx(tmp_path, plan_branch="I-100-intent/P-200-plan/_", dispatcher=dispatcher)
+    with (
+        _LoopStubs() as stubs,
+        patch("sandbox_executor.flow.run_ensemble", ensemble),
+        patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
+        patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=1, stdout="", stderr="")),
+    ):
+        result = run_review_stage(ctx)
+
+    assert result.status is StageStatus.FAILED
+    assert "Refusing to run reviewer agent turns on the host" in (result.error or "")
+    dispatcher.assert_not_called()
+    ensemble.assert_not_called()
+    stubs.post.assert_not_called()
+
+
+def test_stage4_threads_the_flow_ensemble_size_and_reports_reviewer_objections(tmp_path):
+    from sandbox_executor.flow import StageStatus, run_review_stage
+
+    from tests.review_fakes import FakeEnsemble, objecting_reviewer
+
+    ensemble = FakeEnsemble(lambda size: [objecting_reviewer(i) for i in range(1, size + 1)])
+    ctx = _ensemble_ctx(tmp_path, review_ensemble_size=2)
+    with (
+        _LoopStubs(),
+        patch("sandbox_executor.flow.run_ensemble", ensemble),
+        patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
+        patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+    ):
+        result = run_review_stage(ctx)
+
+    assert [call["size"] for call in ensemble.calls] == [2]
+    assert result.status is StageStatus.FAILED
+    assert "requested changes" in (result.error or "")
+    assert "no automatic resolver" in (result.error or "")
+
+
+def test_unresolvable_target_fails_closed_without_reviewers_or_post(tmp_path, monkeypatch):
+    from sandbox_executor import flow
+
+    monkeypatch.setattr(flow, "_resolve_reviewed_target", lambda repo, target: (None, "Could not resolve x"))
+    ensemble = MagicMock()
+    res, post, _ = _loop(tmp_path, ensemble)
+
+    assert res["consensus"]["status"] == "failed"
+    assert res["error"] == "Could not resolve x"
+    ensemble.assert_not_called()
+    post.assert_not_called()
+
+
+def test_a_failing_diff_fails_the_iteration_and_posts_nothing(tmp_path, monkeypatch):
+    from sandbox_executor import flow
+
+    def _broken(*_args, **_kwargs):
+        raise RuntimeError("git diff exited 128")
+
+    monkeypatch.setattr(flow, "build_review_request", _broken)
+    ensemble = MagicMock()
+    res, post, _ = _loop(tmp_path, ensemble)
+
+    assert res["consensus"]["status"] == "failed"
+    assert res["ensemble_verdict"] == "FAILED"
+    assert "git diff exited 128" in res["error"]
+    assert res["total_iterations"] == 1
+    ensemble.assert_not_called()
+    post.assert_not_called()
+    assert not _rows(tmp_path, "ACT-POST")
+
+
+def test_dry_run_never_dispatches_reviewers(tmp_path):
+    ensemble = MagicMock()
+    res, post, _ = _loop(tmp_path, ensemble, dry_run=True)
+
+    assert res["consensus"]["approved"] is False
+    assert res["consensus"]["status"] == "not_measured"
+    ensemble.assert_not_called()
+    post.assert_not_called()
+
+
+def test_entrypoint_exits_one_when_the_consensus_lacks_an_approved_ensemble_verdict(tmp_path):
+    (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+    loop_result = {"target": "I-100-test", "consensus": {"approved": True, "iterations": 1}}
+    with (
+        patch.object(sys, "argv", ["review_loop", "I-100-test", f"--repo-dir={tmp_path}"]),
+        patch("sandbox_executor.entrypoint.review_loop.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.entrypoint.review_loop.run_review_loop", return_value=loop_result),
+        patch("sandbox_executor.entrypoint.review_loop.run_cmd"),
+        _prepared("I-100-test"),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        review_loop_main()
+    assert exc_info.value.code == 1
+
+
+def test_build_review_request_diffs_base_to_head_without_metadata_paths(tmp_path):
+    from sandbox_executor.review_ensemble import build_review_request
+    from sandbox_executor.review_target import ReviewTarget
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    (tmp_path / "README.md").write_text("base\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "base")
+    git("checkout", "-q", "-b", "feature")
+    (tmp_path / "src.py").write_text("print('changed')\n")
+    (tmp_path / "plans").mkdir()
+    (tmp_path / "plans" / "P-1.md").write_text("plan\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "change")
+    head = git("rev-parse", "HEAD")
+
+    target = ReviewTarget(raw="feature", head_branch="feature", head_sha=head, title="Real title", body="Real body")
+    request = build_review_request(target, "main", 2, "fallback title", "fallback body", str(tmp_path))
+
+    assert request.head_sha == head
+    assert request.iteration == 2
+    assert (request.pr_title, request.pr_body) == ("Real title", "Real body")
+    assert "src.py" in request.diff_text
+    assert "plans/P-1.md" not in request.diff_text
+    with pytest.raises(RuntimeError):
+        build_review_request(target, "no-such-base", 1, "", "", str(tmp_path))
+    with pytest.raises(RuntimeError):
+        build_review_request(ReviewTarget("x", "x", ""), "main", 1, "", "", str(tmp_path))
+
+
+def test_ensemble_size_help_text_and_validation(capsys):
+    from sandbox_executor.cli import main
+    from sandbox_executor.review_ensemble import ENSEMBLE_SIZE_HELP
+
+    assert ENSEMBLE_SIZE_HELP == (
+        "Number of independent reviewer agent turns per iteration; approval needs every reviewer to approve with "
+        "zero findings (default: 3)"
+    )
+    for command in ("review-loop", "flow"):
+        with patch.object(sys, "argv", ["holon", command, "--help"]), pytest.raises(SystemExit):
+            main()
+        assert ENSEMBLE_SIZE_HELP in " ".join(capsys.readouterr().out.split())
+    with patch.object(sys, "argv", ["holon", "flow", "--ensemble-size", "0"]), pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 1
+    assert "--ensemble-size must be at least 1" in capsys.readouterr().err

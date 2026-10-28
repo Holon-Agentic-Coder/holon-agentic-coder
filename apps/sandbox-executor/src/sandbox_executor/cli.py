@@ -73,6 +73,7 @@ from sandbox_executor.redaction import (
     trusted_url_authority,
     url_userinfo_end,
 )
+from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 from sandbox_executor.scaffold import init_project
 from sandbox_executor.token_reduction import generate_root_ca
 
@@ -1749,10 +1750,10 @@ def resolve_runner_and_model(agent: str | None, model: str | None) -> tuple[Reso
     return agent_res, model_res
 
 
-# Resumption points from which a flow still reaches the plan and execute stages, the ones that need the agent runner.
-# Review (the native review loop) and calibration run only git, gh and local checks, so a flow resumed at either of
-# them has nothing for the probe to protect.
-_AGENT_FLOW_STAGES = ("intent", "plan", "execute")
+# Resumption points from which a flow still reaches a stage that needs the agent runner: plan and execute, and review,
+# whose loop dispatches the sandboxed reviewer agent turns. A flow resumed at review must preflight the runner too;
+# only calibration (git and local checks) has nothing for the probe to protect.
+_AGENT_FLOW_STAGES = ("intent", "plan", "execute", "review")
 
 
 def flow_dispatches_agent(from_stage: str | None) -> bool:
@@ -2069,6 +2070,12 @@ def main() -> None:
         help="Maximum number of autonomous review loop iterations in Stage 4 (must be >= 1, default: 25).",
     )
     flow_parser.add_argument(
+        "--ensemble-size",
+        type=int,
+        default=None,
+        help=ENSEMBLE_SIZE_HELP,
+    )
+    flow_parser.add_argument(
         "--token-reduce",
         action="store_true",
         help=_TOKEN_REDUCE_HELP,
@@ -2105,7 +2112,7 @@ def main() -> None:
         "--ensemble-size",
         type=int,
         default=3,
-        help="Number of review models/heuristics in evaluation ensemble (default: 3).",
+        help=ENSEMBLE_SIZE_HELP,
     )
     review_parser.add_argument(
         "--auto-pr",
@@ -2508,6 +2515,9 @@ def main() -> None:
             if getattr(args, "max_review_iterations", None) is not None and args.max_review_iterations < 1:
                 print("Error: --max-review-iterations must be at least 1.", file=sys.stderr)
                 sys.exit(1)
+            if getattr(args, "ensemble_size", None) is not None and args.ensemble_size < 1:
+                print("Error: --ensemble-size must be at least 1.", file=sys.stderr)
+                sys.exit(1)
 
             context = None
             if args.checkpoint:
@@ -2585,6 +2595,7 @@ def main() -> None:
                     skip_calibrate=args.skip_calibrate,
                     auto_calibrate=not args.skip_calibrate,
                     max_review_iterations=args.max_review_iterations,
+                    review_ensemble_size=args.ensemble_size or DEFAULT_ENSEMBLE_SIZE,
                     token_reduce=effective_token_reduce,
                     mitm_web=args.mitm_web,
                 )
@@ -2604,6 +2615,8 @@ def main() -> None:
                     context.auto_calibrate = False
                 if args.max_review_iterations is not None:
                     context.max_review_iterations = args.max_review_iterations
+                if args.ensemble_size is not None:
+                    context.review_ensemble_size = args.ensemble_size
                 if effective_token_reduce:
                     context.token_reduce = True
                 if args.mitm_web:

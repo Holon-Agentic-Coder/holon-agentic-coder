@@ -4,7 +4,8 @@
 Coordinates the multi-pass review loop within an isolated container:
 - Proactive conflict detection and resolution.
 - Git identity configuration as 'Holon Review Loop Agent'.
-- Iterative code diff analysis, CI status probing, and mergeability inspection.
+- Independent reviewer agent turns on the real diff (the container is the sandbox they must run in), plus CI
+  status probing and mergeability inspection; the exit code is 0 only for an APPROVED ensemble verdict.
 - Automated PR creation or update via GitHub API / gh CLI.
 - RFC 2822 commit trailer formatting and discrete ledger recording.
 - Enforces Bean 0034 (Human-Only PR Merging) by halting unconditionally upon consensus approval.
@@ -33,10 +34,13 @@ from sandbox_executor.flow import (
     FlowContext,
     _bounded_error_context,
     check_and_resolve_stage_conflicts,
+    review_loop_approved,
+    review_summary_lines,
     run_review_loop,
 )
 from sandbox_executor.ledger import generate_action_id, try_append_action_record
 from sandbox_executor.redaction import redact_agent_secrets, redact_command
+from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 from sandbox_executor.review_target import (
     GH_TIMEOUT_SECONDS,
     ReviewTarget,
@@ -246,8 +250,8 @@ def main() -> None:
     parser.add_argument(
         "--ensemble-size",
         type=int,
-        default=3,
-        help="Evaluation ensemble heuristic count (default: 3).",
+        default=DEFAULT_ENSEMBLE_SIZE,
+        help=ENSEMBLE_SIZE_HELP,
     )
     parser.add_argument(
         "--auto-pr",
@@ -390,7 +394,8 @@ def main() -> None:
     )
 
     consensus = loop_res.get("consensus", {})
-    approved = bool(consensus.get("approved"))
+    # Exit 0 only for an APPROVED ensemble verdict whose consensus was approved and posted.
+    approved = review_loop_approved(loop_res)
 
     if args.json:
         print(json.dumps(loop_res, indent=2))
@@ -406,6 +411,8 @@ def main() -> None:
             f"  CI Checks      : {ci.get('total', 0)} total, {ci.get('passed', 0)} passed, "
             f"{ci.get('failed', 0)} failed, {ci.get('pending', 0)} pending ({ci.get('source', 'unknown')})"
         )
+        for line in review_summary_lines(loop_res):
+            print(line)
         print(f"  Consensus      : {consensus.get('status', 'unknown').upper()}")
         if not approved and loop_res.get("error"):
             print(f"  Reason         : {_bounded_error_context(str(loop_res['error']))}")

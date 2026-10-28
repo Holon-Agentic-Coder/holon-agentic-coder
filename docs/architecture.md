@@ -169,19 +169,23 @@ flowchart TD
   - Git abstraction: Routes all repository interactions through `sandbox_executor.git` (`run_git`, `get_diff_numstat`,
     `resolve_ref`, `get_head_commit`, `branch_exists`) with automatic credential sanitisation and timeout enforcement.
   - Runs a chosen plan variant in an isolated environment.
-- **Review Ensemble (not yet wired into Stage 4)**
+- **Review Ensemble (Stage 4)**
   - `sandbox_executor/review_ensemble.py` runs independent reviewer agent turns, each in its own scratch directory under
     `.holon/review/` and blind to the other reviewers' reports, parses the strict JSON trailer that ends each report,
     and approves only by unanimity: every configured reviewer completed with `APPROVED` and zero findings, plus
-    mergeable and green CI. Any failed reviewer, or zero completed reviewers, can never approve. Stage 4 does not call
-    it yet; see the [sandbox-executor README](../apps/sandbox-executor/README.md#reviewer-ensemble-not-yet-wired).
+    mergeable and green CI. Any failed reviewer, zero completed reviewers or unknown CI can never approve.
+    `run_review_loop()` calls it once per iteration on the real diff (`--ensemble-size`, default 3), stops at the first
+    iteration that is not approved (there is no automatic resolver), and `sandbox_executor/review_report.py` renders the
+    posted report from the real reviewer results. Reviewer turns run only inside the sandbox: on the host the loop
+    refuses before any PR, iteration or post. See the
+    [sandbox-executor README](../apps/sandbox-executor/README.md#reviewer-ensemble).
 - **Evolution Ledger (Canonical 3-Ledger Architecture)**
   - Knowledge-driven: Strictly maintains three append-only ledgers in `holon-knowledge/ledger/`:
     1. `intents.jsonl`: Intent registrations, goals, constraints, and hierarchy links.
     2. `plans.jsonl`: Competing plan proposals, predictions, and model routing metadata.
     3. `executions.jsonl`: Execution summaries, Stage 4 PR review summaries, and fine-grained micro-actions
-       (`entry_type: "action"`, e.g. `ACT-REV`, `ACT-FIND`, `ACT-RES`, `ACT-POST` and the Stage 5 `ACT-CAL`). See the
-       flow stage record matrix in `docs/ledger_schema.md`.
+       (`entry_type: "action"`, e.g. `ACT-REV`, `ACT-FIND`, `ACT-POST`, historical `ACT-RES` rows and the Stage 5
+       `ACT-CAL`). See the flow stage record matrix in `docs/ledger_schema.md`.
   - Retirement of auxiliary ledgers: Auxiliary ledgers such as `actions.jsonl` and `reviews.jsonl` are completely
     retired and prohibited.
   - Concurrency & Interleaving Protection: All ledger appends are guarded by `LedgerLock` (POSIX advisory file locking

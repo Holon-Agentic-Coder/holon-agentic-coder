@@ -64,6 +64,17 @@ from sandbox_executor.ledger import parse_commit_trailers
 from sandbox_executor.review_target import DiffVerdict
 
 from tests.leak_assertions import make_gh_probe, make_probe
+from tests.review_fakes import install_fake_reviewers
+
+
+@pytest.fixture(autouse=True)
+def _sandboxed_clean_reviewers(monkeypatch):
+    """Run every review-loop test inside a simulated sandbox with clean fake reviewers (no runner is ever called).
+
+    Mergeability and CI then decide the outcome as they did before the real ensemble was wired in; the tests of the
+    ensemble wiring and of the host refusal override this explicitly.
+    """
+    install_fake_reviewers(monkeypatch)
 
 
 def _verified_diff():
@@ -1509,7 +1520,8 @@ class TestReviewLoopStage:
         )
         res = run_review_loop(ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=3, dry_run=True)
         assert res["consensus"]["approved"] is False
-        assert res["total_iterations"] == 3
+        # No resolver runs, so the loop stops after the first iteration instead of re-reviewing the same diff.
+        assert res["total_iterations"] == 1
         assert res["consensus"]["status"] == "rejected"
 
     def test_review_loop_appends_executions_ledger(self, tmp_path):
@@ -1568,6 +1580,7 @@ class TestReviewLoopStage:
         with patch("sandbox_executor.flow.run_review_loop") as mock_loop:
             mock_loop.return_value = {
                 "consensus": {"approved": True, "status": "approved", "iterations": 1},
+                "ensemble_verdict": "APPROVED",
                 "max_iterations": 2,
                 "ci_checks": {"total": 1, "passed": 1, "failed": 0, "pending": 0, "source": "local_tests"},
                 "human_approval_command": "holon review approve I-100-intent/P-200-plan/E-300-exec/_",
@@ -1830,7 +1843,7 @@ class TestSemanticPRAndConsensusReview:
             assert "edit" in edit_args
 
     def test_review_loop_granular_ledger_records(self, tmp_path):
-        """Verify executions.jsonl records discrete evaluations, findings, resolver events, and dual-posting."""
+        """Verify executions.jsonl records the evaluation, per-reviewer rows, findings and dual-posting, no resolver."""
         ledger_dir = tmp_path / "holon-knowledge" / "ledger"
         ledger_dir.mkdir(parents=True)
         ctx = FlowContext(
@@ -1852,8 +1865,8 @@ class TestSemanticPRAndConsensusReview:
             patch("sandbox_executor.flow._execution_effective_diff", return_value=(True, "1 file changed")),
             patch("sandbox_executor.flow.create_or_update_pr", return_value={"success": True}),
         ):
-            # Iteration 1: finding detected (dirty conflict)
-            # Iteration 2: clean and passes (resolver pass)
+            # Iteration 1: finding detected (dirty conflict). There is no resolver, so the loop stops there and the
+            # clean second probe is never reached.
             mock_merge.side_effect = [
                 {"is_dirty": True, "merge_state_status": "DIRTY", "mergeable": "CONFLICTING"},
                 {"is_dirty": False, "merge_state_status": "CLEAN", "mergeable": "MERGEABLE"},
@@ -1871,7 +1884,10 @@ class TestSemanticPRAndConsensusReview:
                 max_iterations=3,
                 dry_run=False,
             )
-            assert res["consensus"]["approved"] is True
+            assert res["consensus"]["approved"] is False
+            assert res["consensus"]["status"] == "conflicted_dirty"
+            assert res["ensemble_verdict"] == "CHANGES_REQUESTED"
+            assert res["total_iterations"] == 1
 
         exec_file = ledger_dir / "executions.jsonl"
         assert exec_file.exists()
@@ -1881,25 +1897,28 @@ class TestSemanticPRAndConsensusReview:
 
         # 1. Evaluation records
         eval_records = [r for r in action_records if "evaluation for" in r.get("action", "")]
-        assert len(eval_records) == 2
+        assert len(eval_records) == 1
         assert eval_records[0]["review_iteration"] == 1
         assert eval_records[0]["category"] == "code"
-        assert eval_records[1]["review_iteration"] == 2
 
-        # 2. Finding detection records
-        finding_records = [r for r in action_records if "findings detected" in r.get("action", "")]
+        # 2. One ACT-REV row per (fake) reviewer
+        reviewer_records = [
+            r for r in action_records if "review_reviewer_index" in r and r["action_id"][:7] == "ACT-REV"
+        ]
+        assert [r["review_reviewer_index"] for r in reviewer_records] == [1, 2, 3]
+        assert {r["review_verdict"] for r in reviewer_records} == {"APPROVED"}
+
+        # 3. Finding detection records, one per finding
+        finding_records = [r for r in action_records if "finding detected" in r.get("action", "")]
         assert len(finding_records) == 1
         assert finding_records[0]["review_finding_ids"] == ["FIND-DIRTY-001"]
         assert finding_records[0]["review_severity"] == "critical"
         assert finding_records[0]["outcome"] == "failure"
 
-        # 3. Resolver iteration record (iteration 2)
-        resolver_records = [r for r in action_records if "resolver triggered" in r.get("action", "")]
-        assert len(resolver_records) == 1
-        assert resolver_records[0]["review_iteration"] == 2
-        assert resolver_records[0]["outcome"] == "success"
+        # 4. No resolver row: no automatic resolver exists
+        assert not [r for r in action_records if str(r.get("action_id", "")).startswith("ACT-RES")]
 
-        # 4. PR review dual-posting action record
+        # 5. PR review dual-posting action record
         post_records = [r for r in action_records if "PR Review consensus dual-posted" in r.get("action", "")]
         assert len(post_records) == 1
         assert post_records[0]["outcome"] == "success"
@@ -3167,6 +3186,14 @@ HISTORICAL_KEYS_BY_PREFIX = {
     "ACT-RES": HISTORICAL_RESOLVER_KEYS,
     "ACT-POST": HISTORICAL_RESOLVER_KEYS,
 }
+REVIEWER_ROW_KEYS = [
+    "review_reviewer_index",
+    "review_agent",
+    "review_model",
+    "review_status",
+    "review_verdict",
+    "review_counts",
+]
 EXECUTION_ID_PATTERNS = {
     "ACT-REV": r"^REV-ITR-\d+-\d+$",
     "ACT-FIND": r"^REV-FIND-\d+-\d+$",
@@ -3203,7 +3230,7 @@ class TestStage4LedgerProvenance:
         yield
         assert _ledger_fingerprint(REAL_EXECUTIONS_LEDGER) == before, "Real executions.jsonl was modified"
 
-    def _run_two_iteration_loop(self, tmp_path, posting_side_effect=None, posting_return=None):
+    def _run_dirty_then_clean_loop(self, tmp_path, posting_side_effect=None, posting_return=None):
         ctx = FlowContext(
             repo_dir=str(tmp_path),
             execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
@@ -3234,11 +3261,12 @@ class TestStage4LedgerProvenance:
         return ctx, result, tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
 
     def test_review_loop_appends_act_rows_to_target_repository(self, tmp_path):
-        _, result, ledger = self._run_two_iteration_loop(tmp_path)
+        _, result, ledger = self._run_dirty_then_clean_loop(tmp_path)
 
-        assert result["consensus"]["approved"] is True
+        # The dirty first iteration stops the loop (no resolver); the review of it is still posted.
+        assert result["consensus"]["approved"] is False
         action_rows = [r for r in _read_rows(ledger) if _prefix(r) in HISTORICAL_KEYS_BY_PREFIX]
-        assert [_prefix(r) for r in action_rows] == ["ACT-REV", "ACT-FIND", "ACT-RES", "ACT-REV", "ACT-POST"]
+        assert [_prefix(r) for r in action_rows] == ["ACT-REV", "ACT-REV", "ACT-REV", "ACT-REV", "ACT-FIND", "ACT-POST"]
         for row in action_rows:
             assert row["entry_type"] == "action"
             assert row["action_origin"] == "pr_review"
@@ -3254,7 +3282,7 @@ class TestStage4LedgerProvenance:
     def test_review_rows_are_byte_compatible_with_historical_shapes(self, tmp_path):
         import re
 
-        _, _, ledger = self._run_two_iteration_loop(tmp_path)
+        _, _, ledger = self._run_dirty_then_clean_loop(tmp_path)
 
         raw_lines = [line for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
         seen: set[str] = set()
@@ -3264,15 +3292,20 @@ class TestStage4LedgerProvenance:
             if prefix not in HISTORICAL_KEYS_BY_PREFIX:
                 continue
             seen.add(prefix)
-            assert list(row.keys()) == HISTORICAL_KEYS_BY_PREFIX[prefix], prefix
+            expected = HISTORICAL_KEYS_BY_PREFIX[prefix]
+            if "review_reviewer_index" in row:
+                # Per-reviewer rows keep the historical keys and add only the documented reviewer keys.
+                expected = [*HISTORICAL_REVIEW_KEYS[:-1], *REVIEWER_ROW_KEYS, "created_at"]
+            assert list(row.keys()) == expected, prefix
             assert re.match(EXECUTION_ID_PATTERNS[prefix], row["execution_id"]), row["execution_id"]
             # Serialised exactly as json.dumps would have written the literal.
             assert raw == json.dumps(row)
-        assert seen == set(HISTORICAL_KEYS_BY_PREFIX)
+        # New runs never write the per-iteration resolver row; historical ACT-RES rows stay valid.
+        assert seen == set(HISTORICAL_KEYS_BY_PREFIX) - {"ACT-RES"}
 
     def test_act_post_recorded_when_posting_raises(self, tmp_path, caplog):
         caplog.set_level("WARNING", logger="sandbox_executor.flow")
-        ctx, result, ledger = self._run_two_iteration_loop(tmp_path, posting_side_effect=RuntimeError("gh exploded"))
+        ctx, result, ledger = self._run_dirty_then_clean_loop(tmp_path, posting_side_effect=RuntimeError("gh exploded"))
 
         post_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-POST"]
         assert len(post_rows) == 1
@@ -3288,7 +3321,7 @@ class TestStage4LedgerProvenance:
     def test_act_post_redacts_credentials_when_posting_raises(self, tmp_path, caplog):
         caplog.set_level("WARNING", logger="sandbox_executor.flow")
         sample_value = "ghp_" + "Q" * 36
-        ctx, result, ledger = self._run_two_iteration_loop(
+        ctx, result, ledger = self._run_dirty_then_clean_loop(
             tmp_path, posting_side_effect=RuntimeError(f"gh exploded using {sample_value}")
         )
 
@@ -3312,7 +3345,7 @@ class TestStage4LedgerProvenance:
                 "output": f"Official review submission failed (exit code 1): bad credentials {sample_value}",
             },
         }
-        _, _, ledger = self._run_two_iteration_loop(tmp_path, posting_return=returned_failure)
+        _, _, ledger = self._run_dirty_then_clean_loop(tmp_path, posting_return=returned_failure)
 
         post_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-POST"]
         assert len(post_rows) == 1
@@ -3333,7 +3366,7 @@ class TestStage4LedgerProvenance:
             "dual_posted": False,
             "official_review": {"success": False, "output": f"{padding} {sample_value} trailing detail"},
         }
-        _, _, ledger = self._run_two_iteration_loop(tmp_path, posting_return=returned_failure)
+        _, _, ledger = self._run_dirty_then_clean_loop(tmp_path, posting_return=returned_failure)
 
         error_context = next(r for r in _read_rows(ledger) if _prefix(r) == "ACT-POST")["error_context"]
         assert len(error_context) <= POSTING_ERROR_CONTEXT_MAX_CHARS
@@ -3562,8 +3595,9 @@ class TestMergeabilityRefResolution:
             "mergeability_note": note,
         }
         body = build_pr_review_consensus_report(".", "does-not-exist", consensus)
-        assert "**Finding `FIND-REF-001`**" in body
-        assert note in body
+        # The report renders only real data: the mergeability note, never a fabricated per-finding remediation.
+        assert f"**Mergeability:** {note}" in body
+        assert "Actionable Remediations" not in body
 
         without_note = build_pr_review_consensus_report(".", "does-not-exist", {**consensus, "mergeability_note": None})
         assert "cannot evaluate mergeability" not in without_note
@@ -4101,7 +4135,10 @@ class TestUnmeasuredTestsStopEarly:
         assert [c.args[0] for c in sleep.call_args_list] == [5.0, 5.0]
         rows = self._ledger_rows(tmp_path)
         assert not [r for r in rows if str(r.get("action_id", "")).startswith("ACT-RES")]
-        assert len([r for r in rows if str(r.get("action_id", "")).startswith("ACT-REV")]) == 1
+        rev_rows = [r for r in rows if str(r.get("action_id", "")).startswith("ACT-REV")]
+        # One evaluation row for the iteration plus one row per (fake) reviewer.
+        assert len([r for r in rev_rows if "evaluation for" in r["action"]]) == 1
+        assert len([r for r in rev_rows if "review_reviewer_index" in r]) == 3
 
     def test_checks_never_registering_stop_once_with_not_measured(self, tmp_path):
         ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": None})
@@ -4120,9 +4157,12 @@ class TestUnmeasuredTestsStopEarly:
         assert 1 <= sleep.call_count <= 4
         rows = self._ledger_rows(tmp_path)
         assert not [r for r in rows if str(r.get("action_id", "")).startswith("ACT-RES")]
-        assert len([r for r in rows if str(r.get("action_id", "")).startswith("ACT-REV")]) == 1
+        rev_rows = [r for r in rows if str(r.get("action_id", "")).startswith("ACT-REV")]
+        assert len([r for r in rev_rows if "evaluation for" in r["action"]]) == 1
+        assert len([r for r in rev_rows if "review_reviewer_index" in r]) == 3
         assert len([r for r in rows if r.get("entry_type") == "summary"]) == 1
-        assert len(rows) <= 6
+        # Evaluation, three reviewer rows, FIND-CI, ACT-POST, summary and the action event.
+        assert len(rows) <= 8
 
     def test_recorded_result_skips_the_registration_wait(self, tmp_path):
         ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": 1.0})
@@ -4943,6 +4983,7 @@ class TestEntropyBudgetHandoffInFlow:
             "skip_review": True,
             "skip_calibrate": True,
             "max_review_iterations": 7,
+            "review_ensemble_size": 5,
             "mitm_web": True,
             "dispatcher": dispatcher,
         }

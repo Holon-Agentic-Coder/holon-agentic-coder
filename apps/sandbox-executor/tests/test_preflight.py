@@ -691,7 +691,7 @@ def test_resume_with_new_runner_resolves_its_default_model(
 
 
 @pytest.mark.parametrize(
-    ("stage", "probed"), [("plan", True), ("execute", True), ("review", False), ("calibrate", False)]
+    ("stage", "probed"), [("plan", True), ("execute", True), ("review", True), ("calibrate", False)]
 )
 def test_resume_probes_only_when_an_agent_stage_remains(flow_repo, stage, probed):
     repo, _ = flow_repo

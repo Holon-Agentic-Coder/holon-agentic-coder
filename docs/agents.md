@@ -506,16 +506,19 @@ export HOLON_AGENT=antigravity-agent
 ```
 
 `holon review-loop` decides between running locally and in a container exactly as before (`--local`, `--dry-run`,
-`--json` or a sandbox environment), whatever runner is resolved. The resolved runner only selects the image and the
-attribution.
+`--json` or a sandbox environment), whatever runner is resolved. The resolved runner selects the image and is the agent
+for the Stage 4 reviewer turns (`--ensemble-size`, default 3, independent reviewers per iteration, each with the
+resolved runner and model). Reviewer turns run only inside a sandbox (`HOLON_IN_SANDBOX` or `HOLON_ROLE` set, as in the
+`review-loop` role container); a local run on the host refuses before any reviewer turn.
 
 Historical records are never re-attributed: checkpoints and ledger rows without an agent or model are back-filled with
 the fixed legacy values `antigravity-agent` / `gemini-3.8-flash-medium`, not with the current detection result.
 
 Before `holon plan`, `holon execute` and `holon flow` start any work, the selected runner is checked with a readiness
-probe; see [`holon doctor`](executor/agent_credentials_requirements.md#readiness-probe-holon-doctor).
-`holon review-loop` is not probed: the review loop runs git, `gh` and local checks only and never calls the runner,
-which it uses for image selection and attribution.
+probe; see [`holon doctor`](executor/agent_credentials_requirements.md#readiness-probe-holon-doctor). A flow resumed at
+the review stage is probed too, because Stage 4 dispatches reviewer agent turns; only a flow resumed at calibration
+skips the probe. `holon review-loop` itself is not probed on the host: its reviewer turns run in the `review-loop`
+container, where a runner that cannot start makes the reviewer `FAILED`, so the review fails closed.
 
 ---
 

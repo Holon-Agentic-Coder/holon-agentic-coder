@@ -54,11 +54,11 @@ apps/sandbox-executor/
 - **`ledger.py`**: Provides structured querying, deduplication, conflict resolution, and filtering across
   `intents.jsonl`, `plans.jsonl`, and `executions.jsonl`. Implements `LedgerLock` (POSIX advisory file locking with
   exponential backoff) for concurrent append safety.
-- **`review_ensemble.py`**: The independent reviewer ensemble for Stage 4 (reviewer turns, the review trailer parser and
-  the unanimity consensus). Not yet called by Stage 4; see
-  [Reviewer ensemble (not yet wired)](#reviewer-ensemble-not-yet-wired).
-- **`entrypoint/review_loop.py`**: Powers autonomous Stage 4 review loops with multi-agent ensemble consensus
-  evaluations, dry-run reviews, and automated PR issue resolution.
+- **`review_ensemble.py`**: The independent reviewer ensemble that decides every Stage 4 iteration (reviewer turns, the
+  review trailer parser, the request builder and the unanimity consensus); see [Reviewer ensemble](#reviewer-ensemble).
+- **`review_report.py`**: Renders the posted Stage 4 consensus report from the real reviewer results only.
+- **`entrypoint/review_loop.py`**: The `review-loop` role container entrypoint: prepares the workspace and runs the
+  Stage 4 loop, with its reviewer agent turns, inside the sandbox; exits 0 only for an `APPROVED` ensemble verdict.
 - **`knowledge/`**: Implements Knowledge and Wisdom consultation (`ConsultEngine`, `ActionIndexDatabase`), indexing
   discrete actions into SQLite FTS5 with sub-50ms query SLAs, semantic deduplication, and candidate promotion.
 - **`token_reduction/`**: Runs a locally-contained mitmproxy sidecar performing prompt cache optimisation, local body
@@ -143,7 +143,7 @@ Runs the Sandbox Executor to implement plan changes and run tests within contain
 Runs the autonomous native review loop on an execution branch or pull request:
 
 ```bash
-# Review an execution branch with 3-agent ensemble
+# Review an execution branch with the default three independent reviewers
 ./holon review-loop I-1784983150-build-execution/P-1784983200-antigravity-agent/E-1784983300-impl/_
 
 # Review a pull request by number or URL with max 10 iterations
@@ -152,6 +152,14 @@ Runs the autonomous native review loop on an execution branch or pull request:
 # Run in dry-run mode without applying changes or pushing commits
 ./holon review-loop 87 --dry-run
 ```
+
+Each iteration probes mergeability and CI, then runs `--ensemble-size` (default 3) independent reviewer agent turns on
+the real diff between the base and the resolved head SHA. Approval needs every reviewer to approve with zero findings,
+plus a mergeable PR and green CI. There is no automatic resolver: the first iteration that is not approved stops the
+loop, its findings are recorded in `executions.jsonl` and the command exits 1. Reviewer turns run only inside the
+sandbox: `holon review-loop` without `--local`, `--json` or `--dry-run` runs the loop in the `review-loop` role
+container, and a host run (`--local`, `--json`, or `holon flow` Stage 4 on the host) refuses with "Refusing to run
+reviewer agent turns on the host" before any PR, iteration, reviewer row or post.
 
 The review loop fails closed:
 
@@ -171,18 +179,27 @@ The review loop fails closed:
   reports none), and other branches with the intent's target branch (`main` by default). With an `origin` remote the
   base and a plain-branch head are fetched first, so a stale or unpushed local copy never decides the verdict; a failed
   fetch or a git command that times out is unverifiable. Without `origin` the local branches are compared.
-- **Posting.** A consensus whose post fails or raises is `post_failed`, never approved; the `ACT-POST` failure row is
-  still written.
-- **Dry runs.** A dry run measures nothing, so a simulated approval reports `not_measured` and is never approved.
-- **Exit code.** The command exits 0 only when the consensus is approved and posted; otherwise it exits 1 and prints the
-  reason. It never merges and never enables auto-merge.
+- **Reviewers.** Zero reviewers, any `FAILED` reviewer (including an unparseable report), any `CHANGES_REQUESTED`
+  verdict or any finding (a single nit) blocks approval, as do a dirty PR, an unresolved ref and failing or unknown CI.
+- **Posting.** The report is posted only when at least one reviewer completed and no infrastructure step (sandbox check,
+  target resolution, diff) failed; otherwise nothing is posted and no `ACT-POST` row is written. It names each
+  reviewer's real agent, model, status, verdict and counts (a failed reviewer with its redacted reason), lists every
+  finding, and is titled with the intent title, else the PR title, else the PR number or branch. A consensus whose post
+  fails or raises is `post_failed`, never approved; the `ACT-POST` failure row is still written.
+- **Dry runs.** A dry run measures nothing and dispatches no reviewer, so it reports `not_measured` and is never
+  approved.
+- **Exit code.** The command exits 0 only when the ensemble verdict is `APPROVED` and the consensus is approved and
+  posted; otherwise it exits 1 and prints the reason. The summary prints one line per reviewer. It never merges and
+  never enables auto-merge.
 - **Bounded waits.** Pending CI checks are re-probed every `CI_REGISTRATION_POLL_SECONDS` (15 s) until they settle or
   the iteration's `review_iteration` budget runs out; checks still pending then count as a CI finding.
 
-#### Reviewer ensemble (not yet wired)
+#### Reviewer ensemble
 
-`sandbox_executor/review_ensemble.py` holds the real reviewer ensemble. Stage 4 does not call it yet: wiring it into
-`run_review_loop()` and rebuilding the consensus report is the next change, so today's loop still runs no reviewer.
+`sandbox_executor/review_ensemble.py` holds the reviewer ensemble that `run_review_loop()` calls once per iteration (the
+`run_ensemble_fn` keyword is the test seam).
+`build_review_request(target, base_ref, iteration, pr_title, pr_body, repo_dir)` builds the request from
+`git diff <base>...<head_sha>` without the ledgers, plans and execution notes; a failing diff fails the iteration.
 
 - **Public API.** `run_ensemble(request, *, agent, model, size=DEFAULT_ENSEMBLE_SIZE, **seams)` runs `size` reviewers
   (default `DEFAULT_ENSEMBLE_SIZE`, 3) one after another through `run_reviewer(...)` and returns one `ReviewerResult`

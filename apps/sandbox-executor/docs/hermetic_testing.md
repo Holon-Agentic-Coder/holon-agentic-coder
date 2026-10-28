@@ -145,8 +145,9 @@ When verifying tests in an active container environment:
 ### Session-wide test git config
 
 `tests/conftest.py` has a session-scoped autouse fixture, `hermetic_git_config`, that writes a test-only gitconfig and
-sets `GIT_CONFIG_GLOBAL` to it and `GIT_CONFIG_NOSYSTEM=1` for the whole session. No git process started by a test reads
-the developer's or the system's config. The file sets:
+sets `GIT_CONFIG_GLOBAL` to it and `GIT_CONFIG_NOSYSTEM=1` for the whole session, after clearing environment-injected
+git config (`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`). No git
+process started by a test reads the developer's or the system's config. The file sets:
 
 - `gc.auto=0`, `maintenance.auto=false`, `fetch.writeCommitGraph=false` and `core.fsmonitor=false`, so git never spawns
   housekeeping work that no test asked for (automatic `git maintenance` used to be about 1,300 extra processes over

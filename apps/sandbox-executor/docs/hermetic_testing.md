@@ -177,7 +177,7 @@ and in `pytest_suite_command`. `auto` starts one worker per CPU. `worksteal` reb
 than `load` or `loadfile`. The integration and stress selections stay serial (`-n` is not in `addopts`). A test that
 runs under xdist must not depend on order, on the current working directory or on another test's state, and must never
 write to a fixed path, the repository working tree or the real home directory: use `tmp_path`, `tmp_path_factory` or a
-per-test patch of the default path. Parametrize ids must be identical in every worker, so never put a random value into
+per-test patch of the default path. Parametrise ids must be identical in every worker, so never put a random value into
 an id; give such a case a fixed `pytest.param(..., id=...)`.
 
 To debug serially, either keep xdist loaded but start no workers, or disable the plugin:

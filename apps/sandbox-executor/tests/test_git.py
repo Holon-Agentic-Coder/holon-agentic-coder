@@ -227,15 +227,32 @@ def test_has_effective_diff_reverted_change_is_empty(plan_repo: Path) -> None:
     assert has_effective_diff(str(plan_repo), "plan", "exec") is False
 
 
-def test_suite_git_config_is_the_hermetic_test_config(hermetic_git_config: str) -> None:
-    """Every git process in the suite reads the test-only global config, never the developer's or the system's."""
+def test_suite_git_config_is_the_hermetic_test_config(hermetic_git_config: str, tmp_path: Path) -> None:
+    """Every git process in the suite reads the test-only global config, never the developer's or the system's.
+
+    The queries run from ``tmp_path``, outside any repository, so a checkout's own ``.git/config`` (which takes
+    precedence over the global file) cannot answer them: only the system and global scopes apply.
+    """
     config_file = Path(hermetic_git_config)
     hooks = subprocess.run(
-        ["git", "config", "--global", "--get", "core.hooksPath"], capture_output=True, text=True, check=True
+        ["git", "config", "--global", "--get", "core.hooksPath"],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=tmp_path,
     )
     assert hooks.stdout.strip() == (config_file.parent / "hooks").as_posix()
     assert list((config_file.parent / "hooks").iterdir()) == []
     origin = subprocess.run(
-        ["git", "config", "--show-origin", "--get", "gc.auto"], capture_output=True, text=True, check=True
+        ["git", "config", "--show-origin", "--get", "gc.auto"],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=tmp_path,
     )
     assert origin.stdout.strip() == f"file:{config_file.as_posix()}\t0"
+    listing = subprocess.run(
+        ["git", "config", "--list", "--show-origin"], capture_output=True, text=True, check=True, cwd=tmp_path
+    )
+    origins = {line.split("\t", 1)[0] for line in listing.stdout.splitlines()}
+    assert origins == {f"file:{config_file.as_posix()}"}

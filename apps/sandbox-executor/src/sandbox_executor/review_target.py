@@ -191,38 +191,53 @@ def _diff_verdict(repo_dir: str, base_ref: str, head_ref: str) -> tuple[DiffVerd
     return DiffVerdict.VERIFIED, f"{len(changed)} changed path(s) relative to {base_ref}"
 
 
-def _base_ref(repo_dir: str, base_branch: str) -> tuple[str | None, str]:
-    """Return ``(ref, "")`` for the base to diff against, or ``(None, reason)`` when it is unusable.
+def _fetched_branch_ref(repo_dir: str, branch: str, role: str) -> tuple[str | None, str]:
+    """Return ``(ref, "")`` for ``branch`` as origin has it, or ``(None, reason)`` when it is unusable.
 
-    With an 'origin' remote the base is fetched first and a failed fetch is a reason to refuse, so a
-    stale cached or local copy of the base never decides the verdict (as for execution branches).
-    Without an 'origin' remote there is nothing to fetch, so the local branch is the base.
+    With an 'origin' remote the branch is fetched first and a failed fetch is a reason to refuse, so a
+    stale cached or unpushed local copy never decides the verdict (as for execution branches). Without
+    an 'origin' remote there is nothing to fetch, so the local branch is used as it is.
     """
     from sandbox_executor.flow import _fetch_refspecs_error, _has_origin_remote, _resolve_branch_ref
 
     if _has_origin_remote(repo_dir):
-        refspec = f"+refs/heads/{base_branch}:refs/remotes/origin/{base_branch}"
+        refspec = f"+refs/heads/{branch}:refs/remotes/origin/{branch}"
         error = _fetch_refspecs_error(repo_dir, [refspec])
         if error is not None:
-            return None, f"base branch '{base_branch}' could not be fetched from origin: {error}"
-    ref = _resolve_branch_ref(repo_dir, base_branch, prefer_remote=True)
-    return ref, "" if ref else f"base branch '{base_branch}' could not be resolved"
+            return None, f"{role} '{branch}' could not be fetched from origin: {error}"
+    ref = _resolve_branch_ref(repo_dir, branch, prefer_remote=True)
+    return ref, "" if ref else f"{role} '{branch}' could not be resolved"
 
 
-def _head_ref(repo_dir: str, target: ReviewTarget | str) -> str | None:
-    """Return the ref or SHA to diff for a target, fetching a PR head SHA that is not present yet."""
-    from sandbox_executor.flow import _has_origin_remote, _resolve_branch_ref
+def _base_ref(repo_dir: str, base_branch: str) -> tuple[str | None, str]:
+    """Return ``(ref, "")`` for the base to diff against, or ``(None, reason)`` when it is unusable."""
+    return _fetched_branch_ref(repo_dir, base_branch, "base branch")
 
+
+def _pr_head_ref(repo_dir: str, sha: str) -> str | None:
+    """Return a PR head SHA once it is present, fetching it from origin when it is not there yet."""
+    from sandbox_executor.flow import _has_origin_remote
+
+    if _commit_exists(repo_dir, sha):
+        return sha
+    if _has_origin_remote(repo_dir):
+        run_git(["fetch", "--no-tags", "origin", sha], cwd=repo_dir, check=False, timeout=300)
+    return sha if _commit_exists(repo_dir, sha) else None
+
+
+def _head_ref(repo_dir: str, target: ReviewTarget | str) -> tuple[str | None, str]:
+    """Return ``(ref, "")`` for the head to diff, or ``(None, reason)`` when it is unusable.
+
+    A resolved PR is diffed by its head SHA and 'HEAD' by the checkout. A plain branch is fetched from
+    origin like the base, so a stale or unpushed local copy of it is never judged verified.
+    """
     if isinstance(target, ReviewTarget):
-        sha = target.head_sha
-        if _commit_exists(repo_dir, sha):
-            return sha
-        if _has_origin_remote(repo_dir):
-            run_git(["fetch", "--no-tags", "origin", sha], cwd=repo_dir, check=False, timeout=300)
-        return sha if _commit_exists(repo_dir, sha) else None
+        ref = _pr_head_ref(repo_dir, target.head_sha)
+        return ref, "" if ref else f"'{target.head_branch}' could not be resolved to a commit"
     if target == "HEAD":
-        return "HEAD" if _commit_exists(repo_dir, "HEAD") else None
-    return _resolve_branch_ref(repo_dir, target, prefer_remote=True)
+        ref = "HEAD" if _commit_exists(repo_dir, "HEAD") else None
+        return ref, "" if ref else "'HEAD' could not be resolved to a commit"
+    return _fetched_branch_ref(repo_dir, target, "head branch")
 
 
 def _commit_exists(repo_dir: str, rev: str) -> bool:
@@ -237,8 +252,9 @@ def verify_review_diff(repo_dir: str, target: ReviewTarget | str, base_branch: s
     Execution branches are compared with their parent plan branch (the flow's existing guard). A resolved
     PR is compared by its head SHA with its own base branch, falling back to ``base_branch`` when gh
     reported none; a branch is compared by its tip with ``base_branch``.
-    A raw PR reference that was never resolved is unverified, and so is any git failure, including a
-    failed fetch of the base from origin. No gh call is made here, so the guard never depends on gh
+    With an 'origin' remote the base and a plain-branch head are fetched first. A raw PR reference
+    that was never resolved is unverified, and so is any git failure, including a failed fetch from
+    origin and a git command that times out. No gh call is made here, so the guard never depends on gh
     being installed.
 
     Args:
@@ -250,6 +266,14 @@ def verify_review_diff(repo_dir: str, target: ReviewTarget | str, base_branch: s
     Returns:
         tuple[DiffVerdict, str]: The verdict and a redacted, human-readable detail.
     """
+    try:
+        return _classify_target_diff(repo_dir, target, base_branch)
+    except (TimeoutError, subprocess.TimeoutExpired) as exc:
+        return DiffVerdict.UNVERIFIED, f"git timed out while checking the review diff: {redact_agent_secrets(str(exc))}"
+
+
+def _classify_target_diff(repo_dir: str, target: ReviewTarget | str, base_branch: str) -> tuple[DiffVerdict, str]:
+    """Classify the diff for ``verify_review_diff``; a git timeout propagates to the caller."""
     from sandbox_executor.flow import _execution_effective_diff, _execution_parent_plan_branch
 
     if isinstance(target, ReviewTarget) and not target.is_pr:
@@ -266,9 +290,9 @@ def verify_review_diff(repo_dir: str, target: ReviewTarget | str, base_branch: s
     base_ref, base_problem = _base_ref(repo_dir, base_branch)
     if base_ref is None:
         return DiffVerdict.UNVERIFIED, base_problem
-    head_ref = _head_ref(repo_dir, target if isinstance(target, ReviewTarget) else branch)
+    head_ref, head_problem = _head_ref(repo_dir, target if isinstance(target, ReviewTarget) else branch)
     if head_ref is None:
-        return DiffVerdict.UNVERIFIED, f"'{branch}' could not be resolved to a commit"
+        return DiffVerdict.UNVERIFIED, head_problem
     return _diff_verdict(repo_dir, base_ref, head_ref)
 
 

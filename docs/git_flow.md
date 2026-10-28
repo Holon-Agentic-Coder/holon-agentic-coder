@@ -215,18 +215,20 @@ The guarantee has five deliberate limits:
   is, whether or not `gh` is installed and for every target (a PR number or URL is first resolved to its head SHA and
   base branch, and the head SHA is compared with the PR's own base branch, or with the intent's target branch when `gh`
   reports no base; a PR whose base cannot be resolved or fetched is `diff_unverified`); for an execution branch it first
-  fetches the execution and plan branches and compares the origin copies the PR is opened from, so stale or unpushed
-  local branches never decide it (a failed fetch skips the PR as `diff_unverified`). When the guard refuses the PR
-  (`empty_diff` or `diff_unverified`), the review loop fails closed: it does not wait for CI, runs no review iteration
-  and posts no consensus, so no evidence -- not even a Stage 3 `test_pass_rate` of 1.0 or green CI on an existing PR --
-  can approve it. The loop returns `approved: false` with the refusal as its `error` (an `empty_diff` refusal appends no
-  ledger rows; a `diff_unverified` refusal appends only a `failed` "halted without consensus" summary row naming it and
-  the review action event, with no `ACT-REV`, `ACT-FIND`, `ACT-RES` or `ACT-POST` rows), and Stage 4 fails with the
-  refusal's own reason (`Autonomous review halted: Refusing to create or update a PR for ...`), never as a test failure
-  or as unmeasured tests, so Stage 5 does not run. An empty diff has consensus status `rejected` and an unverifiable one
-  `failed`. Dry runs never invoke the guard and are never approved: a simulated approval reports `not_measured`. A
-  consensus whose post to the PR fails or raises is `post_failed` and not approved, and `holon review-loop` exits 1
-  unless the consensus is approved and posted.
+  fetches the execution and plan branches and compares the origin copies the PR is opened from, and for any other branch
+  it fetches both that branch and the base, so stale or unpushed local branches never decide it (a failed fetch, or a
+  git command that times out, skips the PR as `diff_unverified`; only a repository without an `origin` remote compares
+  its local branches). When the guard refuses the PR (`empty_diff` or `diff_unverified`), the review loop fails closed:
+  it does not wait for CI, runs no review iteration and posts no consensus, so no evidence -- not even a Stage 3
+  `test_pass_rate` of 1.0 or green CI on an existing PR -- can approve it. The loop returns `approved: false` with the
+  refusal as its `error` (an `empty_diff` refusal appends no ledger rows; a `diff_unverified` refusal appends only a
+  `failed` "halted without consensus" summary row naming it and the review action event, with no `ACT-REV`, `ACT-FIND`,
+  `ACT-RES` or `ACT-POST` rows), and Stage 4 fails with the refusal's own reason
+  (`Autonomous review halted: Refusing to create or update a PR for ...`), never as a test failure or as unmeasured
+  tests, so Stage 5 does not run. An empty diff has consensus status `rejected` and an unverifiable one `failed`. Dry
+  runs never invoke the guard and are never approved: a simulated approval reports `not_measured`. A consensus whose
+  post to the PR fails or raises is `post_failed` and not approved, and `holon review-loop` exits 1 unless the consensus
+  is approved and posted.
 - **Dispatch needs `origin`.** `--dry-run` validates the payload and names the branches without dispatching anything.
   `--skip-push` is rejected outside `--dry-run` -- on every run, including a `--from-stage` or `--checkpoint` resume
   from any stage -- before any stage runs, because the role containers clone from and push to `origin`, Stage 4 opens

@@ -18,6 +18,7 @@ a FAILED summary is printed and the process exits 1: no consensus is computed or
 """
 
 import argparse
+import dataclasses
 import json
 import logging
 import os
@@ -157,14 +158,7 @@ def _verify_head(repo_dir: str, target: ReviewTarget) -> ReviewTarget:
         actual = _rev_parse(repo_dir, "HEAD", "verify")
         if actual != head_sha:
             raise ReviewPreparationError("verify", f"HEAD is {actual}, expected the review head {head_sha}")
-    return ReviewTarget(
-        raw=target.raw,
-        head_branch=target.head_branch,
-        head_sha=head_sha,
-        pr_number=target.pr_number,
-        title=target.title,
-        body=target.body,
-    )
+    return dataclasses.replace(target, head_sha=head_sha)
 
 
 def _record_preparation_failure(repo_dir: str, raw: str, stage: str, detail: str) -> bool:

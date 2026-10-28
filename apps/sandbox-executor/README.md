@@ -165,7 +165,9 @@ The review loop fails closed:
 - **Empty-diff guard.** The guard runs for every target, whatever `--auto-pr` is and whether or not `gh` is installed:
   an empty diff is `rejected` and an unverifiable one `failed`, before any PR, iteration or post. Execution branches are
   compared with their plan branch, PRs by head SHA with their own base branch (the intent's target branch when `gh`
-  reports none), and other branches with the intent's target branch (`main` by default).
+  reports none), and other branches with the intent's target branch (`main` by default). With an `origin` remote the
+  base and a plain-branch head are fetched first, so a stale or unpushed local copy never decides the verdict; a failed
+  fetch or a git command that times out is unverifiable. Without `origin` the local branches are compared.
 - **Posting.** A consensus whose post fails or raises is `post_failed`, never approved; the `ACT-POST` failure row is
   still written.
 - **Dry runs.** A dry run measures nothing, so a simulated approval reports `not_measured` and is never approved.

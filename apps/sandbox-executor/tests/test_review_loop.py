@@ -542,7 +542,14 @@ class FakeGitCommands:
 
 
 def _fake_gh(head_branch: str = "feature/x"):
-    payload = {"number": 90, "headRefName": head_branch, "headRefOid": PR_HEAD_SHA, "title": "T", "body": "B"}
+    payload = {
+        "number": 90,
+        "headRefName": head_branch,
+        "headRefOid": PR_HEAD_SHA,
+        "baseRefName": "release",
+        "title": "T",
+        "body": "B",
+    }
     calls: list[list[str]] = []
 
     def _run(argv, cwd):
@@ -578,9 +585,18 @@ def _run_entrypoint(repo_dir: Path, target: str, fake_git: FakeGitCommands, *ext
 
 
 def test_pr_number_target_clones_the_head_branch_never_the_number(tmp_path):
-    fake_git = FakeGitCommands()
+    from sandbox_executor.entrypoint import review_loop as entrypoint
 
-    code, mock_loop, _post, gh_calls = _run_entrypoint(tmp_path, "90", fake_git)
+    fake_git = FakeGitCommands()
+    verified = []
+    real_verify_head = entrypoint._verify_head
+
+    def spy(repo_dir, target):
+        verified.append(real_verify_head(repo_dir, target))
+        return verified[-1]
+
+    with patch(f"{ENTRYPOINT}._verify_head", side_effect=spy):
+        code, mock_loop, _post, gh_calls = _run_entrypoint(tmp_path, "90", fake_git)
 
     assert code == 0
     assert gh_calls == [["gh", "pr", "view", "90", "--json", "number,headRefName,headRefOid,baseRefName,title,body"]]
@@ -592,6 +608,8 @@ def test_pr_number_target_clones_the_head_branch_never_the_number(tmp_path):
     # The PR stays the loop target; the head branch is the execution branch.
     assert mock_loop.call_args.kwargs["target"] == "90"
     assert mock_loop.call_args.kwargs["context"].execution_branch == "feature/x"
+    # Verifying HEAD keeps every resolved field, including the PR's own base branch.
+    assert [(t.head_sha, t.pr_number, t.base_branch) for t in verified] == [(PR_HEAD_SHA, 90, "release")]
 
 
 def test_branch_target_in_an_existing_checkout_fetches_and_checks_out_the_branch(tmp_path):

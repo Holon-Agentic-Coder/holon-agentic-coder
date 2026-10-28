@@ -341,25 +341,35 @@ def test_missing_base_branch_is_unverified(tmp_path):
 class FakeOriginGit:
     """Wraps the real ``run_git`` and fakes an 'origin' remote plus the outcome of every fetch from it."""
 
-    def __init__(self, real: Any, fetch_returncode: int, fetch_stderr: str = ""):
+    def __init__(self, real: Any, fetch_returncode: int, fetch_stderr: str = "", failing_branch: str | None = None):
         self.real = real
         self.fetch_returncode = fetch_returncode
         self.fetch_stderr = fetch_stderr
+        self.failing_branch = failing_branch
         self.fetches: list[list[str]] = []
+
+    def _fetch_returncode(self, args: list[str]) -> int:
+        """Fail every fetch, or only the fetch of ``failing_branch`` when one is named."""
+        if self.failing_branch is None or f"refs/heads/{self.failing_branch}:" in " ".join(args):
+            return self.fetch_returncode
+        return 0
 
     def __call__(self, args: list[str], *a: Any, **kw: Any) -> subprocess.CompletedProcess[str]:
         if args[:3] == ["remote", "get-url", "origin"]:
             return subprocess.CompletedProcess(args, 0, stdout="https://github.com/acme/widgets.git\n", stderr="")
         if args[:1] == ["fetch"]:
             self.fetches.append(args)
-            return subprocess.CompletedProcess(args, self.fetch_returncode, stdout="", stderr=self.fetch_stderr)
+            code = self._fetch_returncode(args)
+            return subprocess.CompletedProcess(args, code, stdout="", stderr=self.fetch_stderr if code else "")
         return self.real(args, *a, **kw)
 
 
-def _fake_origin(monkeypatch: pytest.MonkeyPatch, fetch_returncode: int, fetch_stderr: str = "") -> FakeOriginGit:
+def _fake_origin(
+    monkeypatch: pytest.MonkeyPatch, fetch_returncode: int, fetch_stderr: str = "", failing_branch: str | None = None
+) -> FakeOriginGit:
     from sandbox_executor import flow
 
-    fake = FakeOriginGit(flow.run_git, fetch_returncode, fetch_stderr)
+    fake = FakeOriginGit(flow.run_git, fetch_returncode, fetch_stderr, failing_branch)
     monkeypatch.setattr(flow, "run_git", fake)
     return fake
 
@@ -418,6 +428,85 @@ def test_pr_base_without_origin_uses_the_local_branch(tmp_path, monkeypatch):
     assert verdict is DiffVerdict.VERIFIED
     assert detail == "1 changed path(s) relative to refs/heads/main"
     assert not [call for call in calls if call[:1] == ["fetch"]]
+
+
+def test_plain_branch_head_that_cannot_be_fetched_from_origin_is_unverified(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _git(repo, "checkout", "-q", "-b", "feature/x")
+    _commit(repo, "app.py", "x = 3\n", "unpushed change")
+    fake = _fake_origin(monkeypatch, 128, "fatal: couldn't find remote ref feature/x", failing_branch="feature/x")
+
+    verdict, detail = verify_review_diff(str(repo), "feature/x")
+
+    assert verdict is DiffVerdict.UNVERIFIED
+    assert detail == (
+        "head branch 'feature/x' could not be fetched from origin: fatal: couldn't find remote ref feature/x"
+    )
+    assert fake.fetches == [
+        ["fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"],
+        ["fetch", "--no-tags", "origin", "+refs/heads/feature/x:refs/remotes/origin/feature/x"],
+    ]
+
+
+def test_plain_branch_head_fetched_from_origin_keeps_the_empty_and_verified_verdicts(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _git(repo, "branch", "same")
+    _git(repo, "checkout", "-q", "-b", "changed")
+    _commit(repo, "lib.py", "y = 1\n", "add lib")
+    fake = _fake_origin(monkeypatch, fetch_returncode=0)
+
+    assert verify_review_diff(str(repo), "same")[0] is DiffVerdict.EMPTY
+    assert verify_review_diff(str(repo), "changed")[0] is DiffVerdict.VERIFIED
+    head_fetches = [call[-1] for call in fake.fetches if "main:" not in call[-1]]
+    assert head_fetches == [
+        "+refs/heads/same:refs/remotes/origin/same",
+        "+refs/heads/changed:refs/remotes/origin/changed",
+    ]
+
+
+def test_plain_branch_head_without_origin_uses_the_local_branch_and_never_fetches(tmp_path, monkeypatch):
+    from sandbox_executor import flow
+
+    repo = _repo(tmp_path)
+    _git(repo, "checkout", "-q", "-b", "feature/x")
+    _commit(repo, "app.py", "x = 3\n", "change")
+    calls: list[list[str]] = []
+    real = flow.run_git
+
+    def recording(args: list[str], *a: Any, **kw: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return real(args, *a, **kw)
+
+    monkeypatch.setattr(flow, "run_git", recording)
+
+    verdict, detail = verify_review_diff(str(repo), "feature/x")
+
+    assert verdict is DiffVerdict.VERIFIED
+    assert detail == "1 changed path(s) relative to refs/heads/main"
+    assert not [call for call in calls if call[:1] == ["fetch"]]
+
+
+@pytest.mark.parametrize("raised", ["helper", "subprocess"])
+def test_git_timeout_during_the_diff_check_is_unverified_and_redacted(tmp_path, monkeypatch, raised):
+    from sandbox_executor import flow
+
+    repo = _repo(tmp_path)
+    secret = "ghp_" + "A" * 36
+
+    def timing_out(args: list[str], *a: Any, **kw: Any) -> subprocess.CompletedProcess[str]:
+        if args[:3] == ["remote", "get-url", "origin"]:
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if raised == "helper":
+            raise TimeoutError(f"Git command timed out after 300s: git fetch https://x:{secret}@github.com/a/b")
+        raise subprocess.TimeoutExpired(["git", "fetch", f"https://x:{secret}@github.com/a/b"], 300)
+
+    monkeypatch.setattr(flow, "run_git", timing_out)
+
+    verdict, detail = verify_review_diff(str(repo), "feature/x")
+
+    assert verdict is DiffVerdict.UNVERIFIED
+    assert detail.startswith("git timed out while checking the review diff: ")
+    assert secret not in detail
 
 
 def test_verify_review_diff_never_calls_gh(tmp_path, monkeypatch):

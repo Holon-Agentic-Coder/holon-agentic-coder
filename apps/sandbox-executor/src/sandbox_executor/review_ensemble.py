@@ -667,20 +667,22 @@ def run_ensemble(
     ``seams`` are passed to :func:`run_reviewer`. Budgets, the stage timer and the template are resolved once, so the
     whole ensemble shares one review-iteration ceiling. The iteration directory is cleared first; each reviewer's
     report is held in memory and its scratch directory removed before the next reviewer starts, and the iteration
-    directory is removed at the end. If a report cannot be removed, the remaining reviewers are not dispatched and are
+    directory is removed at the end. If the iteration directory cannot be cleared, no reviewer is dispatched; if a
+    report cannot be removed, the remaining reviewers are not dispatched. Either way the undispatched reviewers are
     recorded as FAILED, so the consensus fails closed. ``size < 1`` dispatches nothing.
     """
     if size < 1:
         return []
     seams = _shared_seams(request, seams)
     iteration_rel = _iteration_dir_rel(request.iteration)
-    _remove_scratch(request.repo_dir, iteration_rel)
+    clear_error = _clear_iteration(request.repo_dir, iteration_rel)
+    if clear_error is not None:
+        return [_undispatched(request, index, agent, model, clear_error) for index in range(1, size + 1)]
     results: list[ReviewerResult] = []
     for index in range(1, size + 1):
-        isolation_error = _isolate(request.repo_dir, results)
+        isolation_error = _isolate(request.repo_dir, results, consequence="stopping the ensemble", level=logging.ERROR)
         if isolation_error is not None:
-            report_rel = reviewer_report_rel(request.iteration, index)
-            results.append(_logged(ReviewerResult.failed(index, agent, model, report_rel, isolation_error)))
+            results.append(_undispatched(request, index, agent, model, isolation_error))
             continue
         results.append(run_reviewer(request, index, agent, model, **seams))
     _remove_leftovers(request.repo_dir, results, iteration_rel)
@@ -699,6 +701,26 @@ def _shared_seams(request: ReviewRequest, seams: Mapping[str, Any]) -> dict[str,
     return shared
 
 
+def _clear_iteration(repo_dir: str, iteration_rel: str) -> str | None:
+    """Remove stale reports from an earlier run; return why the iteration could not be cleared, or None."""
+    try:
+        _remove_scratch(repo_dir, iteration_rel)
+    except (OSError, ValueError) as error:
+        logger.error(
+            "Could not clear %s before the ensemble (%s); no reviewer is dispatched.",
+            iteration_rel,
+            type(error).__name__,
+        )
+        return f"isolation from an earlier run could not be guaranteed: {error}"
+    return None
+
+
+def _undispatched(request: ReviewRequest, index: int, agent: str, model: str, reason: str) -> ReviewerResult:
+    """A FAILED result for a reviewer that was never dispatched because isolation could not be guaranteed."""
+    report_rel = reviewer_report_rel(request.iteration, index)
+    return _logged(ReviewerResult.failed(index, agent, model, report_rel, reason))
+
+
 def _remove_leftovers(repo_dir: str, results: Sequence[ReviewerResult], iteration_rel: str) -> None:
     """Remove the last reports and the iteration directory; a failure here is logged, the results stand.
 
@@ -713,17 +735,20 @@ def _remove_leftovers(repo_dir: str, results: Sequence[ReviewerResult], iteratio
             iteration_rel,
             type(error).__name__,
         )
-    _isolate(repo_dir, results)
+    _isolate(repo_dir, results, consequence="it may remain", level=logging.WARNING)
 
 
-def _isolate(repo_dir: str, earlier: Sequence[ReviewerResult]) -> str | None:
-    """Remove every earlier reviewer's scratch directory; return why isolation failed, or None."""
+def _isolate(repo_dir: str, earlier: Sequence[ReviewerResult], *, consequence: str, level: int) -> str | None:
+    """Remove every earlier reviewer's scratch directory; return why isolation failed, or None.
+
+    A directory that cannot be removed is logged at ``level`` with the caller's ``consequence`` (no error detail).
+    """
     for result in earlier:
         scratch_rel = os.path.dirname(result.report_path)
         try:
             _remove_scratch(repo_dir, scratch_rel)
         except (OSError, ValueError) as error:
-            logger.error("Could not remove reviewer %d's scratch directory; stopping the ensemble.", result.index)
+            logger.log(level, "Could not remove reviewer %d's scratch directory; %s.", result.index, consequence)
             return f"isolation from earlier reviewers could not be guaranteed: {error}"
         if os.path.lexists(os.path.join(repo_dir, result.report_path)):
             return "isolation from earlier reviewers could not be guaranteed: an earlier report is still present"

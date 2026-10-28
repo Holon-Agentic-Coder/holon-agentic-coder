@@ -441,6 +441,28 @@ def test_symlinked_iteration_directory_does_not_abort_the_ensemble(tmp_path: Pat
     assert (repo_dir / ".holon" / "review" / "iter-1").is_symlink()
 
 
+def test_uncleared_symlinked_iteration_fails_every_reviewer_without_dispatch(tmp_path: Path) -> None:
+    repo_dir = tmp_path / "repo"
+    outside = tmp_path / "outside-iteration"
+    (outside / "reviewer-1").mkdir(parents=True)
+    stale = outside / "reviewer-1" / "report.md"
+    stale.write_text("stale", encoding="utf-8")
+    review_root = repo_dir / ".holon" / "review"
+    review_root.mkdir(parents=True)
+    (review_root / "iter-1").symlink_to(outside, target_is_directory=True)
+    turn_runner = FakeTurnRunner(repo_dir, [("write", report(f"Clean {index}.")) for index in (1, 2, 3)])
+
+    results = run_ensemble(make_request(repo_dir), agent="claude-agent", model="model-x", size=3, **seams(turn_runner))
+
+    assert turn_runner.calls == []
+    assert [result.index for result in results] == [1, 2, 3]
+    assert [result.status for result in results] == [ReviewerStatus.FAILED] * 3
+    assert all("isolation" in (result.failure_reason or "") for result in results)
+    assert decide_consensus(results, 3, mergeable=True, ci_green=True) is ConsensusVerdict.FAILED
+    assert stale.read_text(encoding="utf-8") == "stale"
+    assert (review_root / "iter-1").is_symlink()
+
+
 def test_zero_size_dispatches_nothing(tmp_path: Path) -> None:
     turn_runner = FakeTurnRunner(tmp_path, [])
     assert (

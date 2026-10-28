@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from sandbox_executor import review_ensemble
 from sandbox_executor.budgets import BudgetBreach, Budgets, StageTimer, TurnBudgets
 from sandbox_executor.review_ensemble import (
     DEFAULT_ENSEMBLE_SIZE,
@@ -355,6 +356,32 @@ def test_failed_reviewer_does_not_stop_the_ensemble(tmp_path: Path) -> None:
         ReviewerStatus.FAILED,
         ReviewerStatus.COMPLETED,
     ]
+    assert decide_consensus(results, 3, mergeable=True, ci_green=True) is ConsensusVerdict.FAILED
+
+
+def test_unremovable_earlier_report_fails_the_remaining_reviewers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_remove = review_ensemble._remove_scratch
+    first_scratch = os.path.dirname(reviewer_report_rel(1, 1))
+    turn_runner = FakeTurnRunner(tmp_path, [("write", report(f"Clean {index}.")) for index in (1, 2, 3)])
+
+    def remove_scratch(repo_dir: str, rel: str) -> None:
+        # Reviewer 1 prepares its own directory first; only removing it after its turn fails.
+        if rel == first_scratch and turn_runner.calls:
+            raise OSError("permission denied")
+        real_remove(repo_dir, rel)
+
+    monkeypatch.setattr(review_ensemble, "_remove_scratch", remove_scratch)
+    results = run_ensemble(make_request(tmp_path), 3, "claude-agent", "model-x", **seams(turn_runner))
+
+    assert len(turn_runner.calls) == 1
+    assert [result.status for result in results] == [
+        ReviewerStatus.COMPLETED,
+        ReviewerStatus.FAILED,
+        ReviewerStatus.FAILED,
+    ]
+    assert all("isolation" in (result.failure_reason or "") for result in results[1:])
     assert decide_consensus(results, 3, mergeable=True, ci_green=True) is ConsensusVerdict.FAILED
 
 

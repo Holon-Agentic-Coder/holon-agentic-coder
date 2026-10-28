@@ -478,9 +478,19 @@ def reviewer_report_rel(iteration: int, index: int) -> str:
     return f"{_iteration_dir_rel(iteration)}/reviewer-{_require_index(index, 'index')}/{REPORT_NAME}"
 
 
+def _review_root(repo_dir: str) -> str:
+    """The resolved ``<repo_dir>/.holon/review``, refusing a root that a symlinked ``.holon`` or ``.holon/review``
+    steers anywhere else (for example outside the repository)."""
+    expected = os.path.join(os.path.realpath(repo_dir), REVIEW_ROOT_REL)
+    root = os.path.realpath(os.path.join(repo_dir, REVIEW_ROOT_REL))
+    if root != expected:
+        raise ValueError(f"review scratch root {REVIEW_ROOT_REL}/ resolves outside the repository")
+    return root
+
+
 def _contained_path(repo_dir: str, rel: str) -> str:
     """Absolute path of ``rel``, refusing anything that does not resolve inside ``<repo_dir>/.holon/review/``."""
-    root = os.path.realpath(os.path.join(repo_dir, REVIEW_ROOT_REL))
+    root = _review_root(repo_dir)
     path = os.path.realpath(os.path.join(repo_dir, rel))
     if not path.startswith(root + os.sep):
         raise ValueError(f"review scratch path {rel!r} escapes {REVIEW_ROOT_REL}/")

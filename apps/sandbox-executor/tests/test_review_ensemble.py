@@ -463,6 +463,57 @@ def test_uncleared_symlinked_iteration_fails_every_reviewer_without_dispatch(tmp
     assert (review_root / "iter-1").is_symlink()
 
 
+def _snapshot(root: Path) -> dict[str, str]:
+    """Every file under ``root`` with its content, and every directory, keyed by relative path."""
+    return {
+        str(path.relative_to(root)): path.read_text(encoding="utf-8") if path.is_file() else "<dir>"
+        for path in sorted(root.rglob("*"))
+    }
+
+
+@pytest.mark.parametrize("symlinked", [".holon", ".holon/review"])
+def test_scratch_root_resolving_outside_the_repository_fails_every_reviewer_without_dispatch(
+    tmp_path: Path, symlinked: str
+) -> None:
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    outside = tmp_path / "outside"
+    target_root = outside / "review" if symlinked == ".holon" else outside
+    stale = target_root / "iter-1" / "reviewer-1" / "report.md"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("stale", encoding="utf-8")
+    link = repo_dir / symlinked
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(outside, target_is_directory=True)
+    before = _snapshot(outside)
+    turn_runner = FakeTurnRunner(repo_dir, [("write", report(f"Clean {index}.")) for index in (1, 2, 3)])
+
+    results = run_ensemble(make_request(repo_dir), agent="claude-agent", model="model-x", size=3, **seams(turn_runner))
+
+    assert turn_runner.calls == []
+    assert [result.index for result in results] == [1, 2, 3]
+    assert [result.status for result in results] == [ReviewerStatus.FAILED] * 3
+    assert all("isolation" in (result.failure_reason or "") for result in results)
+    assert all("outside the repository" in (result.failure_reason or "") for result in results)
+    assert decide_consensus(results, 3, mergeable=True, ci_green=True) is ConsensusVerdict.FAILED
+    assert _snapshot(outside) == before
+    assert link.is_symlink()
+
+
+def test_repository_reached_through_a_symlinked_parent_still_completes(tmp_path: Path) -> None:
+    real_parent = tmp_path / "real"
+    (real_parent / "repo").mkdir(parents=True)
+    (tmp_path / "alias").symlink_to(real_parent, target_is_directory=True)
+    repo_dir = tmp_path / "alias" / "repo"
+    turn_runner = FakeTurnRunner(repo_dir, [("write", report(f"Clean {index}.")) for index in (1, 2, 3)])
+
+    results = run_ensemble(make_request(repo_dir), agent="claude-agent", model="model-x", size=3, **seams(turn_runner))
+
+    assert [result.status for result in results] == [ReviewerStatus.COMPLETED] * 3
+    assert decide_consensus(results, 3, mergeable=True, ci_green=True) is ConsensusVerdict.APPROVED
+    assert len(turn_runner.calls) == 3
+
+
 def test_zero_size_dispatches_nothing(tmp_path: Path) -> None:
     turn_runner = FakeTurnRunner(tmp_path, [])
     assert (

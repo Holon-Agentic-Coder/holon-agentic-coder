@@ -12,6 +12,7 @@ from sandbox_executor.review_target import (
     DiffVerdict,
     ReviewTarget,
     ReviewTargetError,
+    classify_review_diff,
     github_repo_slug,
     is_pr_reference,
     resolve_review_target,
@@ -62,7 +63,14 @@ class FakeGh:
 
 
 def _pr_json(**overrides: Any) -> str:
-    data = {"number": 90, "headRefName": "feature/x", "headRefOid": HEAD_SHA, "title": "T", "body": "B"}
+    data = {
+        "number": 90,
+        "headRefName": "feature/x",
+        "headRefOid": HEAD_SHA,
+        "baseRefName": "release",
+        "title": "T",
+        "body": "B",
+    }
     data.update(overrides)
     return json.dumps(data)
 
@@ -118,13 +126,25 @@ def test_pr_reference_resolves_to_head_branch_and_sha(tmp_path, target):
     resolved = resolve_review_target(str(tmp_path), target, run_gh=gh)
 
     assert resolved == ReviewTarget(
-        raw=target, head_branch="feature/x", head_sha=HEAD_SHA, pr_number=90, title="T", body="B"
+        raw=target,
+        head_branch="feature/x",
+        head_sha=HEAD_SHA,
+        pr_number=90,
+        title="T",
+        body="B",
+        base_branch="release",
     )
     assert resolved.is_pr
     assert gh.calls == [
-        (["gh", "pr", "view", target, "--json", "number,headRefName,headRefOid,title,body"], str(tmp_path))
+        (["gh", "pr", "view", target, "--json", "number,headRefName,headRefOid,baseRefName,title,body"], str(tmp_path))
     ]
-    assert PR_VIEW_FIELDS == "number,headRefName,headRefOid,title,body"
+    assert PR_VIEW_FIELDS == "number,headRefName,headRefOid,baseRefName,title,body"
+
+
+def test_pr_without_a_base_ref_name_carries_no_base_branch(tmp_path):
+    resolved = resolve_review_target(str(tmp_path), "90", run_gh=FakeGh(stdout=_pr_json(baseRefName="")))
+
+    assert resolved.base_branch is None
 
 
 @pytest.mark.parametrize(
@@ -241,6 +261,44 @@ def test_pr_head_equal_to_its_base_is_empty(tmp_path):
     assert verdict is DiffVerdict.EMPTY
 
 
+def _release_repo(tmp_path: Path) -> tuple[Path, str]:
+    """A repository whose 'release' branch carries a code change that 'main' does not."""
+    repo = _repo(tmp_path)
+    _git(repo, "checkout", "-q", "-b", "release")
+    release_sha = _commit(repo, "app.py", "x = 2\n", "release change")
+    _git(repo, "checkout", "-q", "main")
+    return repo, release_sha
+
+
+def test_pr_head_equal_to_its_non_main_base_is_empty(tmp_path):
+    repo, release_sha = _release_repo(tmp_path)
+    target = ReviewTarget(raw="90", head_branch="feature/x", head_sha=release_sha, pr_number=90, base_branch="release")
+
+    verdict, detail = verify_review_diff(str(repo), target, base_branch="main")
+
+    assert verdict is DiffVerdict.EMPTY
+    assert "release" in detail
+
+
+def test_pr_base_is_honoured_over_the_target_branch(tmp_path):
+    repo, release_sha = _release_repo(tmp_path)
+    _git(repo, "checkout", "-q", "-b", "feature/x", "release")
+    head = _commit(repo, "lib.py", "y = 1\n", "feature change")
+    _git(repo, "checkout", "-q", "main")
+    on_release = ReviewTarget(
+        raw="90", head_branch="feature/x", head_sha=release_sha, pr_number=90, base_branch="release"
+    )
+    on_main = ReviewTarget(raw="90", head_branch="feature/x", head_sha=release_sha, pr_number=90)
+
+    assert verify_review_diff(str(repo), on_main, base_branch="main")[0] is DiffVerdict.VERIFIED
+    assert verify_review_diff(str(repo), on_release, base_branch="main")[0] is DiffVerdict.EMPTY
+    changed = ReviewTarget(raw="90", head_branch="feature/x", head_sha=head, pr_number=90, base_branch="release")
+    verdict, detail = verify_review_diff(str(repo), changed, base_branch="main")
+    assert verdict is DiffVerdict.VERIFIED
+    assert detail.startswith("1 changed path(s) relative to")
+    assert detail.endswith("release")
+
+
 def test_pr_head_with_a_code_change_is_verified(tmp_path):
     repo = _repo(tmp_path)
     _git(repo, "checkout", "-q", "-b", "feature/x")
@@ -285,3 +343,36 @@ def test_verify_review_diff_never_calls_gh(tmp_path, monkeypatch):
     monkeypatch.setattr(rt.shutil, "which", lambda name: None)
 
     assert verify_review_diff(str(repo), "main")[0] is DiffVerdict.EMPTY
+
+
+# --------------------------------------------------------------------------------------
+# classify_review_diff: resolve a raw PR reference, then run the guard
+# --------------------------------------------------------------------------------------
+
+
+def test_classify_review_diff_resolves_a_pr_and_diffs_against_its_base(tmp_path):
+    repo, release_sha = _release_repo(tmp_path)
+    gh = FakeGh(stdout=_pr_json(headRefOid=release_sha, baseRefName="release"))
+
+    verdict, _detail = classify_review_diff(str(repo), "90", base_branch="main", run_gh=gh)
+
+    assert verdict is DiffVerdict.EMPTY
+    assert len(gh.calls) == 1
+
+
+def test_classify_review_diff_is_unverified_when_the_pr_cannot_be_resolved(tmp_path):
+    repo = _repo(tmp_path)
+
+    verdict, detail = classify_review_diff(str(repo), "90", run_gh=FakeGh(returncode=1, stderr="not found"))
+
+    assert verdict is DiffVerdict.UNVERIFIED
+    assert "not found" in detail
+
+
+def test_classify_review_diff_passes_a_branch_straight_to_the_guard(tmp_path):
+    repo = _repo(tmp_path)
+    _git(repo, "branch", "same")
+    gh = FakeGh()
+
+    assert classify_review_diff(str(repo), "same", run_gh=gh)[0] is DiffVerdict.EMPTY
+    assert gh.calls == []

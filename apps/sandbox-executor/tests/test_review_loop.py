@@ -583,7 +583,7 @@ def test_pr_number_target_clones_the_head_branch_never_the_number(tmp_path):
     code, mock_loop, _post, gh_calls = _run_entrypoint(tmp_path, "90", fake_git)
 
     assert code == 0
-    assert gh_calls == [["gh", "pr", "view", "90", "--json", "number,headRefName,headRefOid,title,body"]]
+    assert gh_calls == [["gh", "pr", "view", "90", "--json", "number,headRefName,headRefOid,baseRefName,title,body"]]
     clone = next(c for c in fake_git.calls if c[1] == "clone")
     assert clone[:4] == ["git", "clone", "--branch", "feature/x"]
     for argv in fake_git.calls:
@@ -726,7 +726,7 @@ def _green_loop_patches(verdict=None, post=None, which=None):
     stack = ExitStack()
     verify = stack.enter_context(
         patch(
-            "sandbox_executor.flow.verify_review_diff",
+            "sandbox_executor.review_target.verify_review_diff",
             return_value=(verdict or DiffVerdict.VERIFIED, "guard detail"),
         )
     )
@@ -763,10 +763,10 @@ def test_empty_diff_guard_runs_for_a_pr_number_target(tmp_path):
 
     resolved = ReviewTarget(raw="90", head_branch="feature/x", head_sha=PR_HEAD_SHA, pr_number=90)
     stack, verify, mock_post = _green_loop_patches(verdict=DiffVerdict.EMPTY)
-    with stack, patch("sandbox_executor.flow.resolve_review_target", return_value=resolved) as resolve:
+    with stack, patch("sandbox_executor.review_target.resolve_review_target", return_value=resolved) as resolve:
         res = run_review_loop(_loop_ctx(tmp_path, "90"), target="90", auto_pr=False, max_iterations=1)
 
-    resolve.assert_called_once_with(str(tmp_path), "90")
+    resolve.assert_called_once_with(str(tmp_path), "90", run_gh=None)
     assert verify.call_args.args[1] == resolved
     assert res["consensus"]["approved"] is False
     mock_post.assert_not_called()
@@ -777,7 +777,10 @@ def test_unresolvable_pr_target_fails_closed_without_posting(tmp_path):
     from sandbox_executor.review_target import ReviewTargetError
 
     stack, verify, mock_post = _green_loop_patches()
-    with stack, patch("sandbox_executor.flow.resolve_review_target", side_effect=ReviewTargetError("gh missing")):
+    with (
+        stack,
+        patch("sandbox_executor.review_target.resolve_review_target", side_effect=ReviewTargetError("gh missing")),
+    ):
         res = run_review_loop(_loop_ctx(tmp_path, "90"), target="90", auto_pr=False, max_iterations=1)
 
     verify.assert_not_called()
@@ -862,7 +865,7 @@ def test_approved_loop_never_merges(tmp_path, gh_write_guard):
         return real_run(argv, *args, **kwargs)
 
     with (
-        patch("sandbox_executor.flow.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "ok")),
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "ok")),
         patch("sandbox_executor.flow.shutil.which", return_value="/usr/bin/gh"),
         patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
         patch("sandbox_executor.flow.probe_ci_checks", return_value={"all_passed": True, "source": "github_cli"}),

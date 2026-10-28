@@ -68,7 +68,9 @@ from tests.leak_assertions import make_gh_probe, make_probe
 
 def _verified_diff():
     """Patch the empty-diff guard to pass, for review-loop tests whose repository is not a real git checkout."""
-    return patch("sandbox_executor.flow.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 changed path(s)"))
+    return patch(
+        "sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 changed path(s)")
+    )
 
 
 @contextmanager

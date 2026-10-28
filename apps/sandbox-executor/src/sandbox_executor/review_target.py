@@ -23,18 +23,20 @@ from sandbox_executor.git import changed_paths, run_git
 from sandbox_executor.redaction import redact_agent_secrets
 
 __all__ = [
+    "GH_TIMEOUT_SECONDS",
     "PR_VIEW_FIELDS",
     "DiffVerdict",
     "ReviewTarget",
     "ReviewTargetError",
     "RunGh",
+    "classify_review_diff",
     "github_repo_slug",
     "is_pr_reference",
     "resolve_review_target",
     "verify_review_diff",
 ]
 
-PR_VIEW_FIELDS = "number,headRefName,headRefOid,title,body"
+PR_VIEW_FIELDS = "number,headRefName,headRefOid,baseRefName,title,body"
 GH_TIMEOUT_SECONDS = 60
 
 _PR_URL = re.compile(r"^https://github\.com/[^/\s]+/[^/\s]+/pull/(\d+)(?:[/?#].*)?$")
@@ -63,6 +65,7 @@ class ReviewTarget:
     pr_number: int | None = None
     title: str | None = None
     body: str | None = None
+    base_branch: str | None = None
 
     @property
     def is_pr(self) -> bool:
@@ -129,6 +132,7 @@ def _resolve_pr(repo_dir: str, target: str, run_gh: RunGh) -> ReviewTarget:
     if not head_branch or not head_sha:
         raise ReviewTargetError(f"gh pr view {target} reported no head branch or head SHA")
     number = data.get("number")
+    base_branch = str(data.get("baseRefName") or "").strip() or None
     return ReviewTarget(
         raw=target,
         head_branch=head_branch,
@@ -136,6 +140,7 @@ def _resolve_pr(repo_dir: str, target: str, run_gh: RunGh) -> ReviewTarget:
         pr_number=int(number) if str(number or "").isdigit() else _pr_number(target),
         title=data.get("title"),
         body=data.get("body"),
+        base_branch=base_branch,
     )
 
 
@@ -220,15 +225,17 @@ def _commit_exists(repo_dir: str, rev: str) -> bool:
 def verify_review_diff(repo_dir: str, target: ReviewTarget | str, base_branch: str = "main") -> tuple[DiffVerdict, str]:
     """Classify the diff a review of ``target`` would judge, failing closed.
 
-    Execution branches are compared with their parent plan branch (the flow's existing guard). Every
-    other target is compared with ``base_branch``: a resolved PR by its head SHA, a branch by its tip.
+    Execution branches are compared with their parent plan branch (the flow's existing guard). A resolved
+    PR is compared by its head SHA with its own base branch, falling back to ``base_branch`` when gh
+    reported none; a branch is compared by its tip with ``base_branch``.
     A raw PR reference that was never resolved is unverified, and so is any git failure. No gh call is
     made here, so the guard never depends on gh being installed.
 
     Args:
         repo_dir: Repository to inspect.
         target: A resolved target, or a raw target string.
-        base_branch: Branch a non-execution target is compared with (the intent's target branch).
+        base_branch: Branch a non-execution target is compared with (the intent's target branch) when a
+            resolved PR carries no base branch of its own.
 
     Returns:
         tuple[DiffVerdict, str]: The verdict and a redacted, human-readable detail.
@@ -244,6 +251,8 @@ def verify_review_diff(repo_dir: str, target: ReviewTarget | str, base_branch: s
         has_diff, detail = _execution_effective_diff(repo_dir, branch)
         verdict = {True: DiffVerdict.VERIFIED, False: DiffVerdict.EMPTY}.get(has_diff, DiffVerdict.UNVERIFIED)
         return verdict, detail
+    if isinstance(target, ReviewTarget) and target.base_branch:
+        base_branch = target.base_branch
     base_ref = _base_ref(repo_dir, base_branch)
     if base_ref is None:
         return DiffVerdict.UNVERIFIED, f"base branch '{base_branch}' could not be resolved"
@@ -251,3 +260,28 @@ def verify_review_diff(repo_dir: str, target: ReviewTarget | str, base_branch: s
     if head_ref is None:
         return DiffVerdict.UNVERIFIED, f"'{branch}' could not be resolved to a commit"
     return _diff_verdict(repo_dir, base_ref, head_ref)
+
+
+def classify_review_diff(
+    repo_dir: str, raw_target: str, base_branch: str = "main", run_gh: RunGh | None = None
+) -> tuple[DiffVerdict, str]:
+    """Run the empty-diff guard for a raw target, resolving a PR reference to its head first.
+
+    A PR reference that cannot be resolved is unverified, with the redacted resolution error as detail.
+
+    Args:
+        repo_dir: Repository to inspect.
+        raw_target: Branch, PR number or PR URL as the caller received it.
+        base_branch: Branch a non-execution target is compared with when a PR names no base of its own.
+        run_gh: Optional gh runner for the PR lookup; defaults to a bounded ``subprocess.run``.
+
+    Returns:
+        tuple[DiffVerdict, str]: The verdict and a redacted, human-readable detail.
+    """
+    target: ReviewTarget | str = raw_target
+    if is_pr_reference(raw_target):
+        try:
+            target = resolve_review_target(repo_dir, raw_target, run_gh=run_gh)
+        except ReviewTargetError as exc:
+            return DiffVerdict.UNVERIFIED, str(exc)
+    return verify_review_diff(repo_dir, target, base_branch=base_branch)

@@ -37,6 +37,7 @@ from sandbox_executor.flow import (
 from sandbox_executor.ledger import generate_action_id, try_append_action_record
 from sandbox_executor.redaction import redact_agent_secrets, redact_command
 from sandbox_executor.review_target import (
+    GH_TIMEOUT_SECONDS,
     ReviewTarget,
     ReviewTargetError,
     RunGh,
@@ -95,7 +96,9 @@ def _gh_runner(repo_dir: str) -> RunGh:
             env = {**os.environ, "GH_REPO": slug}
 
     def _run(argv: list[str], cwd: str | None) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, check=False, timeout=60)
+        return subprocess.run(
+            argv, cwd=cwd, env=env, capture_output=True, text=True, check=False, timeout=GH_TIMEOUT_SECONDS
+        )
 
     return _run
 

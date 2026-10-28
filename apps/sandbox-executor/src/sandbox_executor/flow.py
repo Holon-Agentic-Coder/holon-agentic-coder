@@ -100,9 +100,9 @@ from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.review_target import (
     DiffVerdict,
     ReviewTargetError,
+    classify_review_diff,
     is_pr_reference,
     resolve_review_target,
-    verify_review_diff,
 )
 
 logger = logging.getLogger(__name__)
@@ -3578,17 +3578,6 @@ def _wait_for_pending_ci(
     return ci_status
 
 
-def _review_diff_verdict(repo_dir: str, review_target: str, base_branch: str) -> tuple[DiffVerdict, str]:
-    """Run the empty-diff guard for any target, resolving a PR reference to its head first."""
-    target: Any = review_target
-    if is_pr_reference(review_target):
-        try:
-            target = resolve_review_target(repo_dir, review_target)
-        except ReviewTargetError as exc:
-            return DiffVerdict.UNVERIFIED, str(exc)
-    return verify_review_diff(repo_dir, target, base_branch=base_branch)
-
-
 def _refused_review_result(review_target: str, budget: int, error: str) -> dict[str, Any]:
     """Build the non-approved result for a target whose diff is empty: no PR, no iterations, no post."""
     return {
@@ -3778,7 +3767,7 @@ def run_review_loop(
         context.log(f"[Review Loop] Dry run: the diff of '{review_target}' is not measured.")
     else:
         # Empty-diff guard, for every target and whatever auto_pr is: nothing to review is never approved.
-        diff_verdict, diff_detail = _review_diff_verdict(repo_dir, review_target, target_branch)
+        diff_verdict, diff_detail = classify_review_diff(repo_dir, review_target, target_branch)
         if diff_verdict is DiffVerdict.EMPTY:
             err_msg = f"Refusing to create or update a PR for '{review_target}': {diff_detail}."
             context.log(f"[Review Loop] {err_msg}")

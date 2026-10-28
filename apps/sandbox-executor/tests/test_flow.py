@@ -64,7 +64,7 @@ from sandbox_executor.ledger import parse_commit_trailers
 from sandbox_executor.review_target import DiffVerdict
 
 from tests.leak_assertions import make_gh_probe, make_probe
-from tests.review_fakes import install_fake_reviewers
+from tests.review_fakes import clean_reviewer, install_fake_reviewers
 
 
 @pytest.fixture(autouse=True)
@@ -1698,6 +1698,7 @@ class TestSemanticPRAndConsensusReview:
             mock_run.return_value = MagicMock(returncode=0, stdout="success", stderr="")
             consensus_data = {
                 "approved": True,
+                "ensemble_verdict": "APPROVED",
                 "status": "approved",
                 "iterations": 1,
                 "max_review_iterations": 25,
@@ -1705,7 +1706,9 @@ class TestSemanticPRAndConsensusReview:
                 "mergeability": {"mergeable": "MERGEABLE", "merge_state_status": "CLEAN"},
                 "trailers": "Action-Origin: pr_review",
             }
-            res = post_pr_review_consensus(repo_dir="/tmp", target="42", consensus_data=consensus_data)
+            res = post_pr_review_consensus(
+                repo_dir="/tmp", target="42", consensus_data=consensus_data, reviewers=[clean_reviewer(1)]
+            )
 
             assert res["dual_posted"] is True
             assert res["discussion_comment"]["success"] is True
@@ -1734,11 +1737,14 @@ class TestSemanticPRAndConsensusReview:
 
             consensus_data = {
                 "approved": True,
+                "ensemble_verdict": "APPROVED",
                 "status": "approved",
                 "iterations": 1,
                 "max_review_iterations": 25,
             }
-            res = post_pr_review_consensus(repo_dir="/tmp", target="42", consensus_data=consensus_data)
+            res = post_pr_review_consensus(
+                repo_dir="/tmp", target="42", consensus_data=consensus_data, reviewers=[clean_reviewer(1)]
+            )
 
             assert res["dual_posted"] is True
             assert res["discussion_comment"]["success"] is True

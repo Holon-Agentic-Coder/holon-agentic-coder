@@ -1564,7 +1564,8 @@ def post_pr_review_consensus(
         dict[str, Any]: Posting outcome diagnostics.
     """
     clean_target = str(target or "").strip()
-    approved = bool(consensus_data.get("approved"))
+    backed = consensus_data.get("ensemble_verdict") == str(ConsensusVerdict.APPROVED) and consensus_data.get("approved")
+    approved = bool(backed) and any(r.status is ReviewerStatus.COMPLETED for r in reviewers or [])
 
     report_text = build_pr_review_consensus_report(
         repo_dir=repo_dir,
@@ -3400,7 +3401,7 @@ def record_review_action(
 # Reviewer agent turns run only inside a sandbox (docs/safety.md, Invariant 2); host-side Stage 4 fails closed.
 HOST_REVIEW_REFUSAL = (
     "Refusing to run reviewer agent turns on the host: Stage 4 reviewers run only inside the sandbox "
-    "(use 'holon review-loop' without --local, or run inside the review-loop container)"
+    "(use 'holon review-loop' without --local or --json, or run inside the review-loop container)"
 )
 _SEVERITY_RANK = {"clean": 0, "nit": 1, "important": 2, "critical": 3}
 
@@ -4383,6 +4384,7 @@ def run_review_stage(context: FlowContext) -> StageResult:
     if not consensus_reached and not dry_run_simulation:
         ci_checks = loop_res.get("ci_checks") or {}
         loop_breach = loop_res.get("budget_breach")
+        summaries = "; ".join(render_reviewer_summary_line(r) for r in loop_res.get("reviewers") or [])
         if loop_res.get("error"):
             # The empty-diff guard refused the PR (empty_diff / diff_unverified): no tests decided this outcome.
             err_msg = f"Autonomous review halted: {loop_res['error']}"
@@ -4394,10 +4396,11 @@ def run_review_stage(context: FlowContext) -> StageResult:
             )
         elif ci_checks.get("measured") is False and not context.dry_run:
             err_msg = TESTS_NOT_MEASURED_ERROR
+        elif loop_res.get("ensemble_verdict") == str(ConsensusVerdict.FAILED):
+            err_msg = f"Autonomous review failed: the reviewer ensemble did not complete ({summaries})."
         elif _reviewers_objected(loop_res):
             err_msg = (
-                "Autonomous review requested changes: reviewers reported findings or did not approve "
-                f"({'; '.join(render_reviewer_summary_line(r) for r in loop_res.get('reviewers') or [])}). "
+                f"Autonomous review requested changes: reviewers reported findings or did not approve ({summaries}). "
                 "Findings are recorded in executions.jsonl; no automatic resolver runs."
             )
         else:

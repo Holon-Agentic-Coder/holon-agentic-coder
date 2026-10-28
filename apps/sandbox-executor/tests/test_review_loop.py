@@ -229,15 +229,20 @@ class TestReviewLoopGitHubCLIDiagnostics:
     def test_post_pr_review_consensus_detects_gh_and_executes_commands(self):
         from sandbox_executor.flow import post_pr_review_consensus
 
+        from tests.review_fakes import clean_reviewer
+
         with patch("shutil.which", return_value="/usr/bin/gh"), patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="Success", stderr="")
             consensus_data = {
                 "approved": True,
+                "ensemble_verdict": "APPROVED",
                 "status": "approved",
                 "iterations": 1,
                 "max_review_iterations": 25,
             }
-            res = post_pr_review_consensus(repo_dir="/tmp", target="123", consensus_data=consensus_data)
+            res = post_pr_review_consensus(
+                repo_dir="/tmp", target="123", consensus_data=consensus_data, reviewers=[clean_reviewer(1)]
+            )
 
             assert res["gh_available"] is True
             assert res["dual_posted"] is True
@@ -248,6 +253,31 @@ class TestReviewLoopGitHubCLIDiagnostics:
             review_call = mock_run.call_args_list[1][0][0]
             assert comment_call[:4] == ["gh", "pr", "comment", "123"]
             assert review_call[:5] == ["gh", "pr", "review", "123", "--approve"]
+
+    @pytest.mark.parametrize(
+        ("verdict", "reviewers"),
+        [("APPROVED", []), (None, [1]), ("FAILED", [1])],
+        ids=["zero-reviewers", "no-ensemble-verdict", "failed-ensemble"],
+    )
+    def test_post_pr_review_consensus_never_approves_without_a_completed_approving_ensemble(self, verdict, reviewers):
+        from sandbox_executor.flow import post_pr_review_consensus
+
+        from tests.review_fakes import clean_reviewer
+
+        consensus_data = {"approved": True, "ensemble_verdict": verdict, "status": "approved", "iterations": 1}
+        with patch("shutil.which", return_value="/usr/bin/gh"), patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="Success", stderr="")
+            res = post_pr_review_consensus(
+                repo_dir="/tmp",
+                target="123",
+                consensus_data=consensus_data,
+                reviewers=[clean_reviewer(i) for i in reviewers],
+            )
+
+        assert res["official_review"]["flag"] == "--comment"
+        review_call = mock_run.call_args_list[1][0][0]
+        assert review_call[:5] == ["gh", "pr", "review", "123", "--comment"]
+        assert "--approve" not in review_call
 
     def test_post_pr_review_consensus_diagnostics_when_gh_missing(self):
         from sandbox_executor.flow import post_pr_review_consensus
@@ -1281,6 +1311,30 @@ def test_stage4_threads_the_flow_ensemble_size_and_reports_reviewer_objections(t
     assert result.status is StageStatus.FAILED
     assert "requested changes" in (result.error or "")
     assert "no automatic resolver" in (result.error or "")
+
+
+def test_stage4_reports_an_incomplete_ensemble_rather_than_failed_tests(tmp_path):
+    from sandbox_executor.flow import StageStatus, run_review_stage
+
+    from tests.review_fakes import FakeEnsemble, clean_reviewer, failed_reviewer
+
+    ensemble = FakeEnsemble([clean_reviewer(1), failed_reviewer(2, "runner exited token=ghp_" + "a" * 36)])
+    ctx = _ensemble_ctx(tmp_path, review_ensemble_size=2)
+    with (
+        _LoopStubs(),
+        patch("sandbox_executor.flow.run_ensemble", ensemble),
+        patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
+        patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+    ):
+        result = run_review_stage(ctx)
+
+    error = result.error or ""
+    assert result.status is StageStatus.FAILED
+    assert "the reviewer ensemble did not complete" in error
+    assert "Reviewer 1: fake-agent / fake-model: APPROVED" in error
+    assert "Reviewer 2: fake-agent / fake-model: FAILED (runner exited" in error
+    assert "ghp_" + "a" * 36 not in error
+    assert "test suite reported failures" not in error
 
 
 def test_unresolvable_target_fails_closed_without_reviewers_or_post(tmp_path, monkeypatch):

@@ -2148,7 +2148,10 @@ def main() -> None:
     review_parser.add_argument(
         "--local",
         action="store_true",
-        help="Run review loop directly on host rather than inside Docker container.",
+        help=(
+            "Run the review loop on the host rather than inside the Docker container; reviewer agent turns are "
+            "refused outside a sandbox, so only --dry-run is useful here."
+        ),
     )
     review_parser.add_argument(
         "--skip-push",

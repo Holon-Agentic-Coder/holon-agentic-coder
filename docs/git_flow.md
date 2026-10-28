@@ -254,6 +254,11 @@ The guarantee has five deliberate limits:
   succeeds the flow routes the role containers through the proxy and the manual commands do not. To launch identical
   containers either way, pass `--token-reduce` to the manual commands or set `HOLON_TOKEN_REDUCE=0` for both.
 
+**Reviewer ensemble (not yet wired).** The Stage 4 loop described above still runs no reviewer agent. The reviewer
+ensemble (`sandbox_executor/review_ensemble.py`: independent, mutually blind reviewer turns, a strict report trailer and
+a fail-closed unanimity consensus) exists and is tested, but Stage 4 does not call it yet; see the
+[sandbox-executor README](../apps/sandbox-executor/README.md#reviewer-ensemble-not-yet-wired).
+
 #### Safety Halt & Merge Boundary (Bean 0034)
 
 Merging to `main` is strictly reserved for the human maintainer. Upon successful consensus approval in Stage 4 and

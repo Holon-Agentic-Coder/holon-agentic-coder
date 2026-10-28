@@ -169,6 +169,12 @@ flowchart TD
   - Git abstraction: Routes all repository interactions through `sandbox_executor.git` (`run_git`, `get_diff_numstat`,
     `resolve_ref`, `get_head_commit`, `branch_exists`) with automatic credential sanitisation and timeout enforcement.
   - Runs a chosen plan variant in an isolated environment.
+- **Review Ensemble (not yet wired into Stage 4)**
+  - `sandbox_executor/review_ensemble.py` runs independent reviewer agent turns, each in its own scratch directory under
+    `.holon/review/` and blind to the other reviewers' reports, parses the strict JSON trailer that ends each report,
+    and approves only by unanimity: every configured reviewer completed with `APPROVED` and zero findings, plus
+    mergeable and green CI. Any failed reviewer, or zero completed reviewers, can never approve. Stage 4 does not call
+    it yet; see the [sandbox-executor README](../apps/sandbox-executor/README.md#reviewer-ensemble-not-yet-wired).
 - **Evolution Ledger (Canonical 3-Ledger Architecture)**
   - Knowledge-driven: Strictly maintains three append-only ledgers in `holon-knowledge/ledger/`:
     1. `intents.jsonl`: Intent registrations, goals, constraints, and hierarchy links.

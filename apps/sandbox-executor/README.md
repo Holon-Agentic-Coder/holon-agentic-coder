@@ -54,6 +54,9 @@ apps/sandbox-executor/
 - **`ledger.py`**: Provides structured querying, deduplication, conflict resolution, and filtering across
   `intents.jsonl`, `plans.jsonl`, and `executions.jsonl`. Implements `LedgerLock` (POSIX advisory file locking with
   exponential backoff) for concurrent append safety.
+- **`review_ensemble.py`**: The independent reviewer ensemble for Stage 4 (reviewer turns, the review trailer parser and
+  the unanimity consensus). Not yet called by Stage 4; see
+  [Reviewer ensemble (not yet wired)](#reviewer-ensemble-not-yet-wired).
 - **`entrypoint/review_loop.py`**: Powers autonomous Stage 4 review loops with multi-agent ensemble consensus
   evaluations, dry-run reviews, and automated PR issue resolution.
 - **`knowledge/`**: Implements Knowledge and Wisdom consultation (`ConsultEngine`, `ActionIndexDatabase`), indexing
@@ -175,6 +178,34 @@ The review loop fails closed:
   reason. It never merges and never enables auto-merge.
 - **Bounded waits.** Pending CI checks are re-probed every `CI_REGISTRATION_POLL_SECONDS` (15 s) until they settle or
   the iteration's `review_iteration` budget runs out; checks still pending then count as a CI finding.
+
+#### Reviewer ensemble (not yet wired)
+
+`sandbox_executor/review_ensemble.py` holds the real reviewer ensemble. Stage 4 does not call it yet: wiring it into
+`run_review_loop()` and rebuilding the consensus report is the next change, so today's loop still runs no reviewer.
+
+- **Public API.** `run_ensemble(request, *, agent, model, size=DEFAULT_ENSEMBLE_SIZE, **seams)` runs `size` reviewers
+  (default `DEFAULT_ENSEMBLE_SIZE`, 3) one after another through `run_reviewer(...)` and returns one `ReviewerResult`
+  per reviewer. `decide_consensus(results, configured_size, mergeable, ci_green)` returns `APPROVED`,
+  `CHANGES_REQUESTED` or `FAILED`. `parse_review_trailer(text)` and `render_review_trailer(parsed)` read and write the
+  trailer; `build_reviewer_prompt(template_text, request, report_rel)` fills
+  `holon-config/prompts/review_loop.template.md`.
+- **Reviewer turns.** Each reviewer runs in a fresh scratch directory `.holon/review/iter-<n>/reviewer-<i>/`
+  (git-ignored) under the same turn supervision as the planner (`supervise_authoring_turn`), within one shared
+  `review_iteration` budget per ensemble, and ephemeral credentials are cleaned up in a `finally`. Its prompt holds only
+  the diff, the PR description, its report path and the trailer contract. Before the next reviewer starts, the previous
+  report has been read into memory and its directory removed, so no reviewer sees another's output. A runner exception
+  (including an unknown agent), a budget breach on any turn, a missing report or an invalid trailer makes the reviewer
+  `FAILED` with a redacted reason; a `FAILED` reviewer carries no verdict and is never counted as a vote.
+- **Trailer contract.** A report ends with a `<!-- holon-review-trailer -->` line, one JSON object with exactly the keys
+  `verdict` (`APPROVED` or `CHANGES_REQUESTED`), `critical`, `important`, `nit` and `findings` (objects with `severity`,
+  `file`, `line` and `summary`), and a final `<!-- /holon-review-trailer -->` line. Counts must equal the findings per
+  severity, `APPROVED` with any non-zero count is rejected, and a key repeated in any object is rejected rather than
+  resolved to its last value, so an inconsistent report fails closed.
+- **Unanimity rule.** `FAILED` when no reviewer was dispatched, any reviewer failed, or the number of results differs
+  from the configured size. `CHANGES_REQUESTED` when any reviewer requested changes or reported any finding (a single
+  nit blocks), or mergeability or CI is not known to be clean. `APPROVED` only otherwise: there is no majority vote and
+  zero completed reviewers can never approve. Approval never merges; merging stays with the human maintainer.
 
 ### `holon calibrate`
 

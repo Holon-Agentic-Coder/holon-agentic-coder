@@ -268,3 +268,21 @@ suite are all green. CI timings are pending, because no PR run exists yet.
 | GIT_TRACE over `test_flow.py` and `test_executor.py`, serial, after                        | 9,234 git processes, 0 `git maintenance` |
 | `uv run task lint` (on a temporary commit, so `git diff --exit-code uv.lock` applies)      | passed                                   |
 | `uv run task lint-docs`                                                                    | passed                                   |
+
+## CI After-Numbers (Added During PR Review)
+
+Real GitHub Actions timings for this pull request, against the baseline on `main` at `fbd3b35`. Job total is the whole
+job; the test step is the pytest step alone.
+
+| job                                  | baseline `main` `fbd3b35` (job / test step) | head `7204b9a` (job / test step) | head `7aa6b25` (job) |
+| ------------------------------------ | ------------------------------------------- | -------------------------------- | -------------------- |
+| `unit (macos-latest)`                | 404 s / 382 s                               | 171 s / 157 s                    | 169 s                |
+| `unit (ubuntu-latest)`               | 251 s / 242 s                               | 122 s / 114 s                    | 140 s                |
+| `Workspace survival (ubuntu-latest)` | 430 s / 417 s                               | 178 s / 169 s                    | cancelled            |
+| `integration`                        | not recorded                                | 162 s                            | not recorded         |
+
+- At `7204b9a`, `unit (ubuntu-latest)` failed only on `test_consult_latency_benchmark`, which timed the consult in wall
+  time: under `-n auto` the other workers' CPU load pushed its p95 to 71.28 ms against the 50 ms limit. The follow-up
+  commit measures the consult in the consulting thread's CPU time (`time.thread_time()`) with the same 100 iterations,
+  cold prime, match assertion and 50 ms limit.
+- At `7aa6b25` every job passed except `Workspace survival`, which was cancelled by a superseding push.

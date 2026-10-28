@@ -3733,7 +3733,7 @@ class TestStageTargetsIgnoreOperatorHead:
         host, origin = flow_repos
         ctx = self._run_stages_1_to_3(host, origin, tmp_path)
         exec_tip = _git(host, "rev-parse", f"refs/remotes/origin/{ctx.execution_branch}")
-        assert exec_tip != _git(host, "rev-parse", "--short", "HEAD")
+        assert exec_tip != _git(host, "rev-parse", "HEAD")
 
         consensus = self._run_loop_capturing_consensus(ctx, ctx.execution_branch)
 

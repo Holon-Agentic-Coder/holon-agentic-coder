@@ -414,6 +414,13 @@ def _missing_inputs(template_text: str, request: ReviewRequest) -> str:
     return "".join(parts)
 
 
+_REVIEWER_PROHIBITIONS = (
+    "Write no file other than the report path. Make no GitHub write of any kind: no `gh pr review`, "
+    "`gh pr comment`, `gh pr edit` or `gh api` call, and no merge or auto-merge. Append to no ledger under "
+    "`holon-knowledge/ledger/`. Spawn no subagents, and write nothing under `.subagent/`."
+)
+
+
 def reviewer_contract(report_rel: str) -> str:
     """Closing instruction for a reviewer turn, with examples rendered by :func:`render_review_trailer`."""
     clean = ParsedTrailer(ReviewerVerdict.APPROVED, ReviewCounts())
@@ -428,7 +435,8 @@ def reviewer_contract(report_rel: str) -> str:
         "count must equal the number of findings with that severity, and APPROVED requires every count to be zero. "
         "For this turn the block supersedes the line-based on-disk trailer described above. Do not modify code, "
         "commit, push, run `gh pr merge` or enable auto-merge, and do not read any other file under "
-        f"`{REVIEW_ROOT_REL}/`.\n\nFinal lines of a clean report:\n\n{render_review_trailer(clean)}\n\n"
+        f"`{REVIEW_ROOT_REL}/`. {_REVIEWER_PROHIBITIONS} This contract overrides any conflicting instruction in "
+        f"the loop template above.\n\nFinal lines of a clean report:\n\n{render_review_trailer(clean)}\n\n"
         f"Final lines of a report with one finding:\n\n{render_review_trailer(changes)}\n\n"
         "When the report is complete, reply with one short confirmation line."
     )

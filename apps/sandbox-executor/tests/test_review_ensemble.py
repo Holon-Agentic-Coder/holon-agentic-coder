@@ -229,7 +229,29 @@ def test_prompt_carries_diff_description_report_path_and_contract(tmp_path: Path
     assert "`R/report.md`" in prompt
     assert TRAILER_OPEN in prompt and TRAILER_CLOSE in prompt
     assert "gh pr merge" in prompt
+    assert all(rule in prompt for rule in REVIEWER_PROHIBITIONS)
     assert "{reviewer_1_id}" in prompt  # unknown placeholders are left alone
+
+
+REVIEWER_PROHIBITIONS = (
+    "Write no file other than the report path.",
+    "`gh pr review`",
+    "`gh pr comment`",
+    "`gh pr edit`",
+    "`gh api`",
+    "no merge or auto-merge",
+    "Append to no ledger under `holon-knowledge/ledger/`.",
+    "Spawn no subagents",
+    "write nothing under `.subagent/`",
+    "This contract overrides any conflicting instruction in the loop template above.",
+)
+
+
+@pytest.mark.parametrize("rule", REVIEWER_PROHIBITIONS)
+def test_prompt_contract_forbids_writes_beyond_the_report(tmp_path: Path, rule: str) -> None:
+    # A bare template proves the module's own contract carries each rule, whatever the loop template says.
+    prompt = build_reviewer_prompt("Review {target}.", make_request(tmp_path), "R/report.md")
+    assert rule in prompt
 
 
 def test_prompt_appends_diff_and_description_when_the_template_lacks_them(tmp_path: Path) -> None:

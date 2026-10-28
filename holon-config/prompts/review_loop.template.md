@@ -266,6 +266,10 @@ the loop instructions above:
 5. For reviewer turns, this JSON trailer block supersedes the line-based on-disk trailer described above.
 6. Never modify code, commit, push, run `gh pr merge`, enable auto-merge or add the PR to a merge queue.
 7. Never read other files under `.holon/review/`; other reviewers' reports are not part of your input.
+8. Write no file other than the report path. Make no GitHub write of any kind: no `gh pr review`, `gh pr comment`,
+   `gh pr edit` or `gh api` call, and no merge or auto-merge. Append to no ledger under `holon-knowledge/ledger/`.
+9. Spawn no subagents, and write nothing under `.subagent/`. The loop that runs the ensemble posts the consensus and
+   records the ledger rows itself.
 
 The final lines of a report with no findings:
 

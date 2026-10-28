@@ -497,6 +497,8 @@ def test_flow_stage_integration_and_stats(temp_dir: str) -> None:
 
 def test_cli_knowledge_commands(temp_dir: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
     """Verify CLI dispatch for holon consult, record, reconcile, and stats."""
+    # `holon record` syncs the cwd-relative default project index, so keep it out of the repository.
+    monkeypatch.chdir(temp_dir)
     db_path = os.path.join(temp_dir, "cli_test.db")
     ledger_path = os.path.join(temp_dir, "actions.jsonl")
 

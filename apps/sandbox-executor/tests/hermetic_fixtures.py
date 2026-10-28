@@ -200,6 +200,8 @@ def pytest_suite_command(*extra_args: str) -> list[str]:
     configuration and marker policy. ``no:cacheprovider`` stops a child whose ``HOME`` points at a
     throwaway directory writing cache state, and ``--import-mode=importlib`` avoids
     ``prepend``-mode basename collisions if a sibling branch ever adds a ``conftest.py``.
+    ``-n auto --dist worksteal`` matches ``task test`` and the unit job; the xdist workers are
+    started from the child's own interpreter and environment, so they inherit its simulated ``HOME``.
     """
     return [
         UV,
@@ -209,6 +211,10 @@ def pytest_suite_command(*extra_args: str) -> list[str]:
         "-p",
         "no:cacheprovider",
         "--import-mode=importlib",
+        "-n",
+        "auto",
+        "--dist",
+        "worksteal",
         "-q",
         "--tb=short",
         "-m",

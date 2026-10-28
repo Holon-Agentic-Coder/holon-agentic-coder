@@ -28,6 +28,53 @@ _HARNESS_NAMES = frozenset(
 )
 
 
+#: Test-only global git config. Each value either stops git spawning work no test asks for (automatic
+#: gc and maintenance, commit-graph writes, fsmonitor) or replaces a value the developer's own config
+#: would otherwise supply (hooks, default branch, identity, signing).
+_TEST_GIT_CONFIG = """\
+[gc]
+\tauto = 0
+[maintenance]
+\tauto = false
+[fetch]
+\twriteCommitGraph = false
+[core]
+\thooksPath = {hooks_dir}
+\tfsmonitor = false
+[init]
+\tdefaultBranch = main
+[user]
+\tname = Holon Test
+\temail = test@holon.invalid
+[commit]
+\tgpgsign = false
+[tag]
+\tgpgsign = false
+[advice]
+\tdetachedHead = false
+"""
+
+
+@pytest.fixture(scope="session", autouse=True)
+def hermetic_git_config(tmp_path_factory) -> Iterator[str]:
+    """Point every git process in the session at a test-only global config, never the developer's.
+
+    Sets `GIT_CONFIG_GLOBAL` to a temporary file and `GIT_CONFIG_NOSYSTEM=1` in `os.environ` for the
+    whole session, so child processes that copy the environment (the stress canary's child suite,
+    xdist workers) inherit them. `tmp_path_factory` is per xdist worker, so each worker owns its
+    file. A repository's own `.git/config` still overrides these values. Yields the config path.
+    """
+    config_dir = tmp_path_factory.mktemp("git-config")
+    hooks_dir = config_dir / "hooks"
+    hooks_dir.mkdir()
+    config_file = config_dir / "gitconfig"
+    config_file.write_text(_TEST_GIT_CONFIG.format(hooks_dir=hooks_dir.as_posix()), encoding="utf-8")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("GIT_CONFIG_GLOBAL", str(config_file))
+        mp.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        yield str(config_file)
+
+
 @pytest.fixture(autouse=True)
 def no_ambient_credentials(monkeypatch):
     """Run every test without the developer's or the sandbox's own credentials.

@@ -96,10 +96,10 @@ Two properties make the guard worth keeping:
   module list cannot prove it is gone -- and such a list is exactly how the earlier version of this guard ended up
   excluding `test_agent_runner.py`, the module that exercises the real `cleanup_repo_dir`/`_rmtree`.
 - It launches its child with `uv run pytest` and the unit job's marker selection
-  (`-m "not integration_test and not stress"`), through the shared helpers in `hermetic_fixtures.py`
-  (`pytest_suite_command`, `simulated_container_env`). It must not shell out to `python -m unittest`: `unittest` ignores
-  pytest markers, so it re-runs the `integration_test`-marked Docker image tests that the unit job never builds, and the
-  guard then fails for an environment reason unrelated to hermeticity.
+  (`-m "not integration_test and not stress"`) and parallel flags (`-n auto --dist worksteal`), through the shared
+  helpers in `hermetic_fixtures.py` (`pytest_suite_command`, `simulated_container_env`). It must not shell out to
+  `python -m unittest`: `unittest` ignores pytest markers, so it re-runs the `integration_test`-marked Docker image
+  tests that the unit job never builds, and the guard then fails for an environment reason unrelated to hermeticity.
 
 ### Rule 5: Prove Suite-Wide Safety in CI, Not Locally
 
@@ -135,5 +135,54 @@ When verifying tests in an active container environment:
   export HOLON_REPO_DIR=/tmp/holon-test-fixture
   cp -r /home/holon/.holon-sandbox/workspace /tmp/holon-fixture
   cd /tmp/holon-fixture
-  uv run pytest -m "not integration_test and not stress"
+  uv run task test
   ```
+
+---
+
+## 4. Fast, Parallel-Safe Unit Runs
+
+### Session-wide test git config
+
+`tests/conftest.py` has a session-scoped autouse fixture, `hermetic_git_config`, that writes a test-only gitconfig and
+sets `GIT_CONFIG_GLOBAL` to it and `GIT_CONFIG_NOSYSTEM=1` for the whole session. No git process started by a test reads
+the developer's or the system's config. The file sets:
+
+- `gc.auto=0`, `maintenance.auto=false`, `fetch.writeCommitGraph=false` and `core.fsmonitor=false`, so git never spawns
+  housekeeping work that no test asked for (automatic `git maintenance` used to be about 1,300 extra processes over
+  `test_flow.py` and `test_executor.py`);
+- `core.hooksPath` pointing at an empty directory, so a developer's global hooks never run in a fixture repository;
+- `init.defaultBranch=main`, a neutral `user.name` and `user.email`, `commit.gpgsign=false`, `tag.gpgsign=false` and
+  `advice.detachedHead=false`, values that fixtures used to set one repository at a time.
+
+The variables live in `os.environ`, so every child process inherits them: the stress canary's child suite, its xdist
+workers and every git subprocess. A repository's own `.git/config` still overrides them. A test that builds its own git
+environment (for example the `leak_env` tests in `test_cli.py`, which strip every `GIT_*` variable and point `HOME` at
+an empty directory) keeps that isolation.
+
+### Template repositories
+
+`flow_repos` in `test_flow.py` no longer runs init, seed commit, push and clone for every test. A session-scoped
+`_flow_repos_template` builds the seeded bare origin and the host clone once per session, which means once per xdist
+worker, because `tmp_path_factory` is per worker. Each test copies both into its own `tmp_path` and re-points the host's
+`origin` at its private copy, so it starts from an identical state and cannot see another test's commits. The template
+tree is read-only: a push to or commit in the template instead of the copy fails loudly instead of leaking state into
+later tests. Only convert a fixture to a template when its setup is measurably expensive, and never one whose test
+asserts on the creation steps themselves.
+
+### Parallel execution
+
+The unit selection runs under pytest-xdist with `-n auto --dist worksteal`, in `uv run task test`, in the unit workflow
+and in `pytest_suite_command`. `auto` starts one worker per CPU. `worksteal` rebalances the uneven test durations better
+than `load` or `loadfile`. The integration and stress selections stay serial (`-n` is not in `addopts`). A test that
+runs under xdist must not depend on order, on the current working directory or on another test's state, and must never
+write to a fixed path, the repository working tree or the real home directory: use `tmp_path`, `tmp_path_factory` or a
+per-test patch of the default path. Parametrize ids must be identical in every worker, so never put a random value into
+an id; give such a case a fixed `pytest.param(..., id=...)`.
+
+To debug serially, either keep xdist loaded but start no workers, or disable the plugin:
+
+```bash
+uv run task test -n 0
+uv run pytest -p no:xdist -m "not integration_test and not stress"
+```

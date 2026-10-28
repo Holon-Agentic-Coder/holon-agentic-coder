@@ -5,6 +5,8 @@ import dataclasses
 import json
 import os
 import re
+import shutil
+import stat
 import subprocess
 import time
 from collections.abc import Callable, Iterator
@@ -361,14 +363,15 @@ class TestFlowDataModels:
 class TestFlowStages:
     """Test the individual execution stages with isolated mocking."""
 
-    def test_stage1_intent_validation_failure(self):
-        ctx = FlowContext(intent_data={}, dry_run=True)
+    def test_stage1_intent_validation_failure(self, tmp_path):
+        ctx = FlowContext(repo_dir=str(tmp_path), intent_data={}, dry_run=True)
         res = run_intent_stage(ctx)
         assert res.status == StageStatus.FAILED
         assert "Validation failed" in (res.error or "")
 
-    def test_intent_stage_fails_fast_on_unresolved_open_questions(self):
+    def test_intent_stage_fails_fast_on_unresolved_open_questions(self, tmp_path):
         ctx = FlowContext(
+            repo_dir=str(tmp_path),
             intent_data={
                 "slug": "unresolved-q",
                 "goal": "Build stage 1",
@@ -2258,7 +2261,6 @@ class FakeRoleAgents:
         self.calls.append({"role": role, "runner": runner, "model": model, "args": list(positional_args), **kwargs})
         work = self.root / f"agent-{len(self.calls)}-{role}"
         subprocess.run(["git", "clone", "-q", str(self.origin), str(work)], check=True, capture_output=True)
-        _configure_identity(work)
         handler = {"intent-creator": self._intent, "planner": self._plan, "executor": self._execute}[role]
         exit_code = handler(work, positional_args, kwargs)
         if self.during_dispatch is not None:
@@ -2353,15 +2355,28 @@ class FakeRoleAgents:
         return [c["role"] for c in self.calls]
 
 
-@pytest.fixture
-def flow_repos(tmp_path, monkeypatch):
-    """Bare origin with a seeded main branch, plus a host clone the flow runs in."""
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    origin = tmp_path / "origin.git"
+def _set_user_write(root: Path, enabled: bool) -> None:
+    """Add or strip the owner's write bit on every directory and file under ``root``."""
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for path in [dirpath, *(os.path.join(dirpath, name) for name in filenames)]:
+            if os.path.islink(path):
+                continue
+            mode = os.stat(path).st_mode
+            os.chmod(path, mode | stat.S_IWUSR if enabled else mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+
+
+@pytest.fixture(scope="session")
+def _flow_repos_template(tmp_path_factory, hermetic_git_config) -> Path:
+    """Build the seeded origin and host clone once per session (per xdist worker); ``flow_repos`` copies it.
+
+    The tree is made read-only, so a test that pushed to or committed in the template instead of its own
+    copy would fail loudly rather than leak state into the tests after it.
+    """
+    root = tmp_path_factory.mktemp("flow-template")
+    origin = root / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True, capture_output=True)
-    seed = tmp_path / "seed"
+    seed = root / "seed"
     subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True, capture_output=True)
-    _configure_identity(seed)
     for name in ("intents.jsonl", "plans.jsonl", "executions.jsonl"):
         (seed / "holon-knowledge" / "ledger").mkdir(parents=True, exist_ok=True)
         (seed / "holon-knowledge" / "ledger" / name).write_text("", encoding="utf-8")
@@ -2371,9 +2386,22 @@ def flow_repos(tmp_path, monkeypatch):
     _git(seed, "commit", "-q", "-m", "seed")
     _git(seed, "remote", "add", "origin", str(origin))
     _git(seed, "push", "-q", "origin", "main")
+    subprocess.run(["git", "clone", "-q", str(origin), str(root / "host")], check=True, capture_output=True)
+    _set_user_write(root, enabled=False)
+    return root
+
+
+@pytest.fixture
+def flow_repos(tmp_path, monkeypatch, _flow_repos_template):
+    """Bare origin with a seeded main branch, plus a host clone the flow runs in (private copies per test)."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    origin = tmp_path / "origin.git"
     host = tmp_path / "host"
-    subprocess.run(["git", "clone", "-q", str(origin), str(host)], check=True, capture_output=True)
-    _configure_identity(host)
+    for name, target in (("origin.git", origin), ("host", host)):
+        shutil.copytree(_flow_repos_template / name, target, symlinks=True)
+        _set_user_write(target, enabled=True)
+    _git(host, "remote", "set-url", "origin", str(origin))
+    assert _git(host, "remote", "get-url", "origin") == str(origin), "host still points at the shared template"
     return host, origin
 
 
@@ -2399,7 +2427,6 @@ def _push_child_branch(tmp_path: Path, origin: Path, parent_branch: str, child_i
     child_branch = f"{parent_branch.removesuffix('/_')}/{child_id}/_"
     work = tmp_path / f"other-{child_id}"
     subprocess.run(["git", "clone", "-q", str(origin), str(work)], check=True, capture_output=True)
-    _configure_identity(work)
     _git(work, "checkout", "-q", "-b", child_branch, f"origin/{parent_branch}")
     folder = "plans" if child_id.startswith("P-") else "src"
     (work / folder).mkdir(exist_ok=True)
@@ -5448,9 +5475,11 @@ class TestEntropyBudgetHandoffInFlow:
         [(" \n\t ", None), ("  Re-plan: entropy 12.6  ", "Re-plan: entropy 12.6")],
         ids=["blank", "padded"],
     )
-    def test_plan_stage_forwards_only_non_blank_stripped_feedback(self, feedback, expected, monkeypatch):
+    def test_plan_stage_forwards_only_non_blank_stripped_feedback(self, feedback, expected, monkeypatch, tmp_path):
         monkeypatch.delenv("HOLON_REPLAN_FEEDBACK", raising=False)
-        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent", "replan_feedback": feedback})
+        ctx = FlowContext(
+            repo_dir=str(tmp_path), token_reduce=False, intent_data={"slug": "parent", "replan_feedback": feedback}
+        )
         ctx.intent_branch = "I-1-parent/_"
         seen: list[str | None] = []
 

@@ -1942,7 +1942,12 @@ _GH_USER_PROBE = make_gh_probe()
         ("https://someuser@github.com/o/r.git", ("https://github.com/o/r.git", None)),
         ("https://someuser:@github.com/o/r.git", ("https://github.com/o/r.git", None)),
         # A token-shaped bare user name is the credential (GitHub accepts a token as the user name).
-        (f"https://{_GH_USER_PROBE}@github.com/o/r.git", ("https://github.com/o/r.git", _GH_USER_PROBE)),
+        # A fixed id: the probe is random per process, and xdist workers must collect identical test ids.
+        pytest.param(
+            f"https://{_GH_USER_PROBE}@github.com/o/r.git",
+            ("https://github.com/o/r.git", _GH_USER_PROBE),
+            id="token-as-user-name",
+        ),
         ("https://someuser:SECRET@github.com/o/r.git", ("https://github.com/o/r.git", "SECRET")),
         # The `<token>:x-oauth-basic` form carries the token as the user name.
         ("https://SECRET:x-oauth-basic@github.com/o/r.git", ("https://github.com/o/r.git", "SECRET")),

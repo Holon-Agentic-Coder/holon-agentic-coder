@@ -225,3 +225,17 @@ def test_has_effective_diff_reverted_change_is_empty(plan_repo: Path) -> None:
     _write(plan_repo, "src/app.py", "print('hi')\n")
     _commit_all(plan_repo, "revert")
     assert has_effective_diff(str(plan_repo), "plan", "exec") is False
+
+
+def test_suite_git_config_is_the_hermetic_test_config(hermetic_git_config: str) -> None:
+    """Every git process in the suite reads the test-only global config, never the developer's or the system's."""
+    config_file = Path(hermetic_git_config)
+    hooks = subprocess.run(
+        ["git", "config", "--global", "--get", "core.hooksPath"], capture_output=True, text=True, check=True
+    )
+    assert hooks.stdout.strip() == (config_file.parent / "hooks").as_posix()
+    assert list((config_file.parent / "hooks").iterdir()) == []
+    origin = subprocess.run(
+        ["git", "config", "--show-origin", "--get", "gc.auto"], capture_output=True, text=True, check=True
+    )
+    assert origin.stdout.strip() == f"file:{config_file.as_posix()}\t0"

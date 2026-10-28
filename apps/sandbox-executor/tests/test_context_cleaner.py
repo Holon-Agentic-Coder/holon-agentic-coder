@@ -301,7 +301,7 @@ def test_thread_safety_local_state() -> None:
     assert res2["messages"][0]["content"] == long_text
 
 
-def test_mitm_interceptor_and_addon() -> None:
+def test_mitm_interceptor_and_addon(tmp_path) -> None:
     interceptor = MITMProxyInterceptor()
 
     # Provider detection
@@ -314,8 +314,8 @@ def test_mitm_interceptor_and_addon() -> None:
     raw = {"data": "test"}
     assert interceptor.intercept_request("https://example.com/api", raw) == (raw, None)
 
-    # Addon flow handling
-    addon = MitmproxyAddon()
+    # Addon flow handling, with its cache and wire logs kept out of the real home and the repository
+    addon = MitmproxyAddon(cache_dir=str(tmp_path / "cache"), wire_log_dir=str(tmp_path / "wire-logs"))
 
     flow_mock = MagicMock()
     flow_mock.request.pretty_url = "https://api.anthropic.com/v1/messages"

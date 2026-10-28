@@ -124,10 +124,20 @@ def reset_sidecar_state():
     cli._sidecar_state.network_created = False
 
 
+@pytest.fixture(autouse=True)
+def _default_wire_log_dir_in_tmp(tmp_path, monkeypatch):
+    """Point the addon's default wire-log directory (relative to the cwd, the repository root) at this test."""
+    from sandbox_executor.token_reduction import mitm_addon
+
+    monkeypatch.setattr(mitm_addon, "WIRE_LOG_DIR", str(tmp_path / "default-wire-logs"))
+
+
 @pytest.fixture
 def host_paths(tmp_path, monkeypatch):
-    """Keep every host-side write (CA dir, proxy cache) inside tmp_path and hand out a real CA."""
+    """Keep every host-side write (CA dir, proxy cache, wire logs) inside tmp_path and hand out a real CA."""
     monkeypatch.setattr(cli.os.path, "expanduser", lambda path: str(tmp_path / "home" / path.lstrip("~/")))
+    # The default wire-log and cache directories sit under the repository root; use a per-test one.
+    monkeypatch.setattr(cli, "_find_git_root", lambda *a, **k: str(tmp_path / "repo"))
     ca_dir = tmp_path / "certs"
     monkeypatch.setattr(cli, "generate_root_ca", lambda *a, **k: generate_root_ca(cert_dir=str(ca_dir)))
     return tmp_path
@@ -2655,7 +2665,7 @@ def test_dump_flow_transaction_case_insensitive_agent_headers(tmp_path):
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon
 
     wire_dir = tmp_path / "addon_logs"
-    addon = MitmproxyAddon(wire_log_dir=str(wire_dir))
+    addon = MitmproxyAddon(cache_dir=str(tmp_path / "cache"), wire_log_dir=str(wire_dir))
 
     flow = SimpleNamespace(
         id="flow_headers_case",
@@ -2764,7 +2774,7 @@ def test_ab_measure_all_methods_endpoint_fallback(tmp_path):
     assert res.tier1_tokens == 0
 
 
-def test_cli_directory_permissions_0o775_and_socket_conflict(monkeypatch):
+def test_cli_directory_permissions_0o775_and_socket_conflict(host_paths, monkeypatch):
     chmod_calls = []
     monkeypatch.setattr(cli.os, "chmod", lambda path, mode: chmod_calls.append((path, mode)))
     monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
@@ -2924,7 +2934,7 @@ def test_ab_measure_pricing_and_cache_hit_gate(tmp_path):
     assert not (custom_cache / "test.db").exists()
 
 
-def test_setup_token_reduction_proxy_chmod_oserror_fallback(monkeypatch):
+def test_setup_token_reduction_proxy_chmod_oserror_fallback(host_paths, monkeypatch):
     """Verifies that OSError on os.chmod is logged and does not halt proxy startup."""
     from sandbox_executor import cli
 

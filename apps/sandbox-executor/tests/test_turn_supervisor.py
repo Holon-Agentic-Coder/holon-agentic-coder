@@ -40,6 +40,11 @@ class TickStream:
         self.chunks.put(data)
         self.chunks.join()  # wait until the reader thread has taken it
 
+    def close(self):
+        # The EOF sentinel wakes a reader blocked in read1 at once, instead of on its next poll.
+        self.closed = True
+        self.chunks.put(b"")
+
     def read1(self, size):
         while True:
             try:
@@ -50,6 +55,34 @@ class TickStream:
                 continue
             self.chunks.task_done()
             return data
+
+
+class RecordedReaders(list):
+    """Patches ``turns._StreamReader`` so the test can join exactly the readers one ``run_turn`` call starts.
+
+    ``run_turn`` gives its readers ``READER_JOIN_TIMEOUT_SECONDS`` of real time to see EOF. A fake ``killpg`` that
+    closes the pipe joins them itself before returning, so the outcome never depends on thread scheduling.
+    """
+
+    def __enter__(self):
+        recorded = self
+
+        class Reader(turns._StreamReader):
+            def __init__(self, stream):
+                super().__init__(stream)
+                recorded.append(self)
+
+        self._patch = mock.patch.object(turns, "_StreamReader", Reader)
+        self._patch.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._patch.stop()
+
+    def join(self):
+        for reader in self:
+            # A safety net only: the pipe is already at EOF, so this returns at once.
+            reader.join(timeout=5.0)
 
 
 class FakeClock:
@@ -84,7 +117,7 @@ class FakeProc:
             return
         self.returncode = -sig
         if isinstance(self.stdout, TickStream):
-            self.stdout.closed = True
+            self.stdout.close()
 
     def send_signal(self, sig):
         self.signal(sig)
@@ -450,14 +483,16 @@ class TestRunTurn(unittest.TestCase):
         # agent's process group (pgid == agent pid) gets SIGTERM, and the agent's own exit status is kept.
         stream = TickStream()
         h = Harness(exit_at=5, stdout=stream)
-        self.addCleanup(setattr, stream, "closed", True)
+        self.addCleanup(stream.close)
         signals = []
+        readers = RecordedReaders()
 
         def killpg(pgid, sig):
             signals.append((pgid, sig))
-            stream.closed = True
+            stream.close()
+            readers.join()
 
-        with mock.patch.object(turns, "READER_JOIN_TIMEOUT_SECONDS", 0.05):
+        with readers, mock.patch.object(turns, "READER_JOIN_TIMEOUT_SECONDS", 0.05):
             result = run_turn(
                 ["agent", "-p", "prompt"],
                 turn_budgets=TurnBudgets(turn_seconds=300, stall_seconds=90),
@@ -477,15 +512,17 @@ class TestRunTurn(unittest.TestCase):
         # SIGKILL, and the readers are joined again before the output is read.
         stream = TickStream()
         h = Harness(exit_at=5, stdout=stream)
-        self.addCleanup(setattr, stream, "closed", True)
+        self.addCleanup(stream.close)
         signals = []
+        readers = RecordedReaders()
 
         def killpg(pgid, sig):
             signals.append((pgid, sig))
             if sig == signal.SIGKILL:
-                stream.closed = True
+                stream.close()
+                readers.join()
 
-        with mock.patch.object(turns, "READER_JOIN_TIMEOUT_SECONDS", 0.05):
+        with readers, mock.patch.object(turns, "READER_JOIN_TIMEOUT_SECONDS", 0.05):
             result = run_turn(
                 ["agent", "-p", "prompt"],
                 turn_budgets=TurnBudgets(turn_seconds=300, stall_seconds=90),
@@ -502,7 +539,7 @@ class TestRunTurn(unittest.TestCase):
     def test_lingering_pipe_holder_that_survives_sigkill_does_not_hang(self):
         stream = TickStream()
         h = Harness(exit_at=5, stdout=stream)
-        self.addCleanup(setattr, stream, "closed", True)
+        self.addCleanup(stream.close)
         signals = []
         with mock.patch.object(turns, "READER_JOIN_TIMEOUT_SECONDS", 0.05):
             result = run_turn(
@@ -521,7 +558,7 @@ class TestRunTurn(unittest.TestCase):
     def test_lingering_pipe_holder_never_signals_its_own_process_group(self):
         stream = TickStream()
         h = Harness(exit_at=5, stdout=stream)
-        self.addCleanup(setattr, stream, "closed", True)
+        self.addCleanup(stream.close)
         signals = []
         with mock.patch.object(turns, "READER_JOIN_TIMEOUT_SECONDS", 0.05):
             result = run_turn(
@@ -862,17 +899,30 @@ class TestReapedChildrenProgress(unittest.TestCase):
 class TestProcessSamplerOnThisHost(unittest.TestCase):
     def test_busy_grandchild_is_sampled_on_this_host(self):
         # Portability check for the real sampler (/proc on Linux, ps on macOS): a shell runner with a busy child.
+        import contextlib
         import subprocess
         import sys
         import time
 
-        busy = "import time\nend = time.time() + 1.5\nwhile time.time() < end: pass\n"
+        # The child burns CPU until it has used 3 s of its own (or 30 s of wall time), and the sampler is polled until
+        # it reports more than the asserted 0.3 s, so a loaded host only makes the test slower, never wrong.
+        busy = "import time\nend = time.time() + 30\nwhile time.process_time() < 3.0 and time.time() < end: pass\n"
         proc = subprocess.Popen(
             ["/bin/sh", "-c", f'"{sys.executable}" -c "$0"; sleep 0.5', busy], start_new_session=True
         )
         self.addCleanup(proc.wait)
-        time.sleep(1.2)
-        sample = turns.descendant_cpu_seconds(proc.pid)
+
+        def stop_group():
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+
+        self.addCleanup(stop_group)
+        deadline = time.monotonic() + 20
+        while True:
+            sample = turns.descendant_cpu_seconds(proc.pid)
+            if sample is None or (sample and max(sample.values()) > 0.3) or time.monotonic() > deadline:
+                break
+            time.sleep(0.05)
         if sample is None:
             self.skipTest("no /proc and no ps on this host")
         self.assertNotIn(proc.pid, sample)

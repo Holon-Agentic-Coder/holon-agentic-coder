@@ -260,7 +260,7 @@ the loop instructions above:
 3. End the report with the review trailer block as its final lines. Between the opening and closing marker lines sits
    one JSON object with exactly the keys `verdict` (`APPROVED` or `CHANGES_REQUESTED`), `critical`, `important` and
    `nit` (non-negative integers) and `findings` (a list of objects with exactly the keys `severity` (`critical`,
-   `important` or `nit`), `file`, `line` (an integer or `null`) and `summary`).
+   `important` or `nit`), `file`, `line` (an integer or `null`) and `summary`). No key may appear twice in any object.
 4. Each count must equal the number of findings with that severity, and `APPROVED` requires every count to be zero. A
    report whose trailer is missing, malformed or inconsistent counts as a failed review, never as an approval.
 5. For reviewer turns, this JSON trailer block supersedes the line-based on-disk trailer described above.

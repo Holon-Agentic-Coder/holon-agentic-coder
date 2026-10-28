@@ -209,6 +209,13 @@ REJECTED = {
     "findings not a list": trailer(_payload(findings={})),
     "approved with a nit": trailer(_payload(nit=1, findings=[_NIT])),
     "approved with a critical": trailer(_payload(critical=1, findings=[{**_NIT, "severity": "critical"}])),
+    "repeated key forging an approval": trailer(
+        _payload(verdict="CHANGES_REQUESTED", critical=1, findings=[{**_NIT, "severity": "critical"}])[:-1]
+        + ', "verdict": "APPROVED", "critical": 0, "findings": []}'
+    ),
+    "repeated key in a finding": trailer(
+        _payload(verdict="CHANGES_REQUESTED", nit=1, findings=[_NIT]).replace('"line": 1', '"line": 1, "line": 2')
+    ),
 }
 
 

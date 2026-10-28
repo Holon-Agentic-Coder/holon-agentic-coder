@@ -200,7 +200,8 @@ The review loop fails closed:
 - **Trailer contract.** A report ends with a `<!-- holon-review-trailer -->` line, one JSON object with exactly the keys
   `verdict` (`APPROVED` or `CHANGES_REQUESTED`), `critical`, `important`, `nit` and `findings` (objects with `severity`,
   `file`, `line` and `summary`), and a final `<!-- /holon-review-trailer -->` line. Counts must equal the findings per
-  severity, and `APPROVED` with any non-zero count is rejected, so an inconsistent report fails closed.
+  severity, `APPROVED` with any non-zero count is rejected, and a key repeated in any object is rejected rather than
+  resolved to its last value, so an inconsistent report fails closed.
 - **Unanimity rule.** `FAILED` when no reviewer was dispatched, any reviewer failed, or the number of results differs
   from the configured size. `CHANGES_REQUESTED` when any reviewer requested changes or reported any finding (a single
   nit blocks), or mergeability or CI is not known to be clean. `APPROVED` only otherwise: there is no majority vote and

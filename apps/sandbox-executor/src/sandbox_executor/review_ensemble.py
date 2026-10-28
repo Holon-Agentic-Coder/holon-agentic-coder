@@ -700,11 +700,19 @@ def _shared_seams(request: ReviewRequest, seams: Mapping[str, Any]) -> dict[str,
 
 
 def _remove_leftovers(repo_dir: str, results: Sequence[ReviewerResult], iteration_rel: str) -> None:
-    """Remove the last reports and the iteration directory; a failure here is logged, the results stand."""
+    """Remove the last reports and the iteration directory; a failure here is logged, the results stand.
+
+    A path that cannot be removed, or that resolves outside ``.holon/review/`` (for example a symlinked iteration
+    directory), is left in place rather than aborting the ensemble.
+    """
     try:
         _remove_scratch(repo_dir, iteration_rel)
-    except OSError:
-        logger.warning("Could not remove %s after the ensemble; earlier reports may remain.", iteration_rel)
+    except (OSError, ValueError) as error:
+        logger.warning(
+            "Could not remove %s after the ensemble (%s); earlier reports may remain.",
+            iteration_rel,
+            type(error).__name__,
+        )
     _isolate(repo_dir, results)
 
 

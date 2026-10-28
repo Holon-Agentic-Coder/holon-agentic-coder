@@ -408,6 +408,39 @@ def test_unremovable_earlier_report_fails_the_remaining_reviewers(
     assert decide_consensus(results, 3, mergeable=True, ci_green=True) is ConsensusVerdict.FAILED
 
 
+class SymlinkingTurnRunner(FakeTurnRunner):
+    """After the last scripted turn, moves the iteration directory outside the scratch root and symlinks it back."""
+
+    def __init__(self, repo_dir: Path, actions: Sequence[tuple[Any, ...]], outside: Path) -> None:
+        super().__init__(repo_dir, actions)
+        self.outside = outside
+
+    def __call__(self, cmd: list[str], **kwargs: Any) -> TurnResult:
+        result = super().__call__(cmd, **kwargs)
+        if not self.actions:
+            iteration_dir = self.repo_dir / ".holon" / "review" / "iter-1"
+            os.rename(iteration_dir, self.outside)
+            iteration_dir.symlink_to(self.outside, target_is_directory=True)
+        return result
+
+
+def test_symlinked_iteration_directory_does_not_abort_the_ensemble(tmp_path: Path) -> None:
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    outside = tmp_path / "outside-iteration"
+    keep = tmp_path / "keep.txt"
+    keep.write_text("untouched", encoding="utf-8")
+    turn_runner = SymlinkingTurnRunner(repo_dir, [("write", report(f"Clean {index}.")) for index in (1, 2, 3)], outside)
+
+    results = run_ensemble(make_request(repo_dir), agent="claude-agent", model="model-x", size=3, **seams(turn_runner))
+
+    assert [result.index for result in results] == [1, 2, 3]
+    assert [result.status for result in results] == [ReviewerStatus.COMPLETED] * 3
+    assert (outside / "reviewer-3" / "report.md").is_file()
+    assert keep.read_text(encoding="utf-8") == "untouched"
+    assert (repo_dir / ".holon" / "review" / "iter-1").is_symlink()
+
+
 def test_zero_size_dispatches_nothing(tmp_path: Path) -> None:
     turn_runner = FakeTurnRunner(tmp_path, [])
     assert (

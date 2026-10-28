@@ -278,8 +278,10 @@ figures on fixed bases: the job total (job start to job end, from the Actions AP
 `in N.NNs` figure on pytest's final summary line in the job log). The pytest time excludes the rest of its step (for
 example `uv sync` and interpreter start-up), so it is a few seconds below the Actions step duration. Deltas and
 speed-ups are computed from these figures. The "after" column is head `8925e19`: the first head on which every job
-passed, and the last head that changes code or tests. Later commits touch only these notes, so the `8925e19` figures
-describe the final test code. The earlier heads are kept for reference only.
+passed, and the last head that changes code or tests. The commits after `8925e19` change documentation only (the
+execution notes and the wording of `hermetic_testing.md`); no code, test, configuration or workflow file changed, so the
+`8925e19` figures describe the final test code. CI stayed green at the later heads (`917ef43` job totals: unit macOS 185
+s, unit Ubuntu 123 s, Workspace survival 241 s, integration 138 s). The earlier heads are kept for reference only.
 
 | job                                  | baseline `main` `fbd3b35` (job / pytest) | after: head `8925e19` (job / pytest) | delta (job / pytest) | speed-up (job / pytest) | earlier head `7204b9a` (job / pytest) | earlier head `7aa6b25` (job / pytest) |
 | ------------------------------------ | ---------------------------------------- | ------------------------------------ | -------------------- | ----------------------- | ------------------------------------- | ------------------------------------- |

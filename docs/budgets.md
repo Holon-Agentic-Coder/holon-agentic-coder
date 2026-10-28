@@ -185,7 +185,7 @@ Every stage reports elapsed time against its budget in the form `stage: status (
   budget, which stops the pipeline. All reviewer agent turns of one iteration share that iteration's `review_iteration`
   budget (one stage timer per ensemble), and a reviewer whose turn breaches it is `FAILED`. A review iteration that
   overruns stops the review loop without consensus (an iteration that reaches consensus is kept). Any iteration that is
-  not approved stops the loop as well, because no automatic resolver runs, so the review stage normally runs one
+  not approved stops the loop as well, because no automatic resolver runs, so the review stage runs at most one
   iteration. The review and calibration stages are never downgraded after the fact: a review that reached consensus has
   already posted its approval and must still be calibrated before the merge, and calibration is the last stage. Their
   overrun is logged as a `WARNING` and recorded as `budget_overrun` in the stage payload. Both review checks use the

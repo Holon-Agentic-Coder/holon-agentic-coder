@@ -1508,8 +1508,8 @@ class TestReviewLoopStage:
         assert res["bean_0034_enforced"] is True
         assert "holon review approve" in res["human_approval_command"]
 
-    def test_review_loop_max_iterations_exhaustion(self, tmp_path):
-        """Simulate failing tests and verify loop terminates at max_iterations without infinite looping."""
+    def test_review_loop_stops_after_the_first_non_approved_iteration(self, tmp_path):
+        """A non-approved iteration stops the loop at once, well inside ``max_iterations``, since no resolver runs."""
         ctx = FlowContext(
             repo_dir=str(tmp_path),
             execution_branch="I-100-intent/P-200-plan/E-300-exec/_",

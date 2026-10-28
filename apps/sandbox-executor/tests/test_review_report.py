@@ -122,3 +122,24 @@ def test_report_uses_the_resolved_title_and_falls_back_to_the_target_without_one
     assert _report([], title="PR title").startswith("## Holon PR Review: PR title (iteration 1)")
     assert _report([]).startswith("## Holon PR Review: 42 (iteration 1)")
     assert "No findings were reported." in _report([])
+
+
+@pytest.mark.parametrize("target", ["42", "feat/raw"])
+def test_report_without_a_github_origin_renders_the_target_without_a_link(tmp_path, monkeypatch, target):
+    import subprocess
+
+    from sandbox_executor import review_report
+
+    (tmp_path / ".git").mkdir()
+
+    def fake_git(args, cwd=None, check=False):
+        out = "https://gitlab.example.com/acme/widgets.git" if args[:2] == ["remote", "get-url"] else ""
+        return subprocess.CompletedProcess(["git", *args], 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(review_report, "run_git", fake_git)
+    body = build_pr_review_consensus_report(str(tmp_path), target, _consensus(repo_name=""), [])
+
+    assert f"**Pull Request:** `{target}`" in body
+    assert "](" not in body
+    assert "github.com" not in body
+    assert "Holon-Agentic-Coder" not in body

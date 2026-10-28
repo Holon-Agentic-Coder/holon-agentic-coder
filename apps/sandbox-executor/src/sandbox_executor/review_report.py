@@ -128,16 +128,16 @@ def _target_commit(repo_dir: str, consensus_data: Mapping[str, Any]) -> str:
 
 
 def _repo_name(repo_dir: str, consensus_data: Mapping[str, Any]) -> str:
-    """The GitHub ``owner/name`` from the consensus data or the origin remote."""
+    """The GitHub ``owner/name`` from the consensus data or the origin remote, else an empty string."""
     name = str(consensus_data.get("repo_name") or "").strip()
     if name:
         return name
     match = _GITHUB_SLUG.search(_git_output(repo_dir, ["remote", "get-url", "origin"]))
-    return match.group(1) if match else "Holon-Agentic-Coder/holon-agentic-coder"
+    return match.group(1) if match else ""
 
 
 def _pr_link(repo_dir: str, target: str, consensus_data: Mapping[str, Any]) -> str:
-    """A markdown link to the PR (or the branch) under review."""
+    """A markdown link to the PR (or the branch) under review; plain text when no repository name resolves."""
     repo_name = _repo_name(repo_dir, consensus_data)
     pr_number = consensus_data.get("pr_number")
     pr_url = consensus_data.get("pr_url")
@@ -147,10 +147,10 @@ def _pr_link(repo_dir: str, target: str, consensus_data: Mapping[str, Any]) -> s
         pr_number = match.group(1) if match else pr_number
     elif not pr_url and target.isdigit():
         pr_number = target
-        pr_url = f"https://github.com/{repo_name}/pull/{target}"
+        pr_url = f"https://github.com/{repo_name}/pull/{target}" if repo_name else ""
     elif not pr_url and target:
-        pr_url = f"https://github.com/{repo_name}/tree/{target}"
-    if pr_url and pr_number:
+        pr_url = f"https://github.com/{repo_name}/tree/{target}" if repo_name else ""
+    if pr_url and pr_number and repo_name:
         return f"[{repo_name}#{pr_number}]({pr_url})"
     if pr_url:
         return f"[{target}]({pr_url})"

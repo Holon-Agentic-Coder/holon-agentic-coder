@@ -201,6 +201,10 @@ which are what the PR is opened from; a fetch failure (for example a branch that
 `diff_unverified` and the loop halts without consensus, and only a repository without an `origin` remote compares its
 local branches.
 
+When the diff is not empty, Stage 4 hands the same base-to-head diff (still without those metadata paths) to the
+sandboxed reviewer ensemble: every reviewer must approve with zero findings, with a mergeable PR and green CI, and
+findings stop the stage with exit 1 and no automatic resolver.
+
 `holon flow` dispatches this same executor container for Stage 3 (via `dispatch_role_agent`), so the guard and the
 ledger rows are identical whichever way the execution is launched.
 

@@ -182,12 +182,15 @@ Every stage reports elapsed time against its budget in the form `stage: status (
   iteration, pending GitHub CI checks are re-probed every `CI_REGISTRATION_POLL_SECONDS` (15 s) for at most the rest of
   that iteration's `review_iteration` budget; checks still pending at that deadline count as a CI finding, never a pass.
 - A `holon flow` intent, plan or execute stage that returns after its ceiling is marked failed with an error naming the
-  budget, which stops the pipeline. A review iteration that overruns stops the review loop without consensus (an
-  iteration that reaches consensus is kept). The review and calibration stages are never downgraded after the fact: a
-  review that reached consensus has already posted its approval and must still be calibrated before the merge, and
-  calibration is the last stage. Their overrun is logged as a `WARNING` and recorded as `budget_overrun` in the stage
-  payload. Both review checks use the same source, so `HOLON_STAGE_BUDGET_SECONDS` replaces the per-iteration budget in
-  the loop and in the stage ceiling (that value times the iterations run).
+  budget, which stops the pipeline. All reviewer agent turns of one iteration share that iteration's `review_iteration`
+  budget (one stage timer per ensemble), and a reviewer whose turn breaches it is `FAILED`. A review iteration that
+  overruns stops the review loop without consensus (an iteration that reaches consensus is kept). Any iteration that is
+  not approved stops the loop as well, because no automatic resolver runs, so the review stage runs at most one
+  iteration. The review and calibration stages are never downgraded after the fact: a review that reached consensus has
+  already posted its approval and must still be calibrated before the merge, and calibration is the last stage. Their
+  overrun is logged as a `WARNING` and recorded as `budget_overrun` in the stage payload. Both review checks use the
+  same source, so `HOLON_STAGE_BUDGET_SECONDS` replaces the per-iteration budget in the loop and in the stage ceiling
+  (that value times the iterations run).
 
 The flow execute stage runs no host-side test suite: the executor container runs and records its own tests within the
 handed-down ceiling, and writes the stage's `elapsed_seconds` and `budget_seconds` on its execution summary row (see

@@ -17,7 +17,6 @@ is equivalent to invoking the stages by hand; the flow orchestrates and validate
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import json
 import logging
 import math
@@ -27,7 +26,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -38,6 +37,7 @@ from sandbox_executor.agent_defaults import (
     FALLBACK_AGENT,
     LEGACY_DEFAULT_AGENT,
     LEGACY_DEFAULT_MODEL,
+    harness_detection_disabled,
     normalise_agent_id,
 )
 from sandbox_executor.budgets import (
@@ -97,8 +97,20 @@ from sandbox_executor.ledger import (
     try_append_ledger_line,
 )
 from sandbox_executor.redaction import redact_agent_secrets
+from sandbox_executor.review_ensemble import (
+    DEFAULT_ENSEMBLE_SIZE,
+    ConsensusVerdict,
+    ReviewerResult,
+    ReviewerStatus,
+    ReviewerVerdict,
+    build_review_request,
+    decide_consensus,
+    run_ensemble,
+)
+from sandbox_executor.review_report import build_pr_review_consensus_report, resolve_report_title
 from sandbox_executor.review_target import (
     DiffVerdict,
+    ReviewTarget,
     ReviewTargetError,
     classify_review_diff,
     is_pr_reference,
@@ -315,6 +327,7 @@ class FlowContext:
     skip_review: bool = False
     skip_calibrate: bool = False
     max_review_iterations: int = 25
+    review_ensemble_size: int = DEFAULT_ENSEMBLE_SIZE  # Independent reviewer agent turns per Stage 4 iteration.
     mitm_web: bool = False
     stage_results: dict[str, StageResult] = field(default_factory=dict)
     logs: list[str] = field(default_factory=list)
@@ -358,6 +371,7 @@ class FlowContext:
             "skip_review": self.skip_review,
             "skip_calibrate": self.skip_calibrate,
             "max_review_iterations": self.max_review_iterations,
+            "review_ensemble_size": self.review_ensemble_size,
             "mitm_web": self.mitm_web,
             "replan_attempts": self.replan_attempts,
             "stage_results": {k: v.to_dict() for k, v in self.stage_results.items()},
@@ -393,6 +407,7 @@ class FlowContext:
             skip_review=data.get("skip_review", False),
             skip_calibrate=data.get("skip_calibrate", False),
             max_review_iterations=data.get("max_review_iterations", 25),
+            review_ensemble_size=int(data.get("review_ensemble_size") or DEFAULT_ENSEMBLE_SIZE),
             mitm_web=data.get("mitm_web", False),
             replan_attempts=int(data.get("replan_attempts") or 0),
             stage_results=parsed_results,
@@ -1521,316 +1536,14 @@ def create_or_update_pr(
         return {"attempted": True, "success": False, "action": "error", "pr_number": None, "output": str(exc)}
 
 
-def build_pr_review_consensus_report(
-    repo_dir: str,
-    target: str,
-    consensus_data: dict[str, Any],
-) -> str:
-    """Format an authentic multi-agent ensemble PR review consensus report matching the PR #84 schema.
-
-    Enforces Australian English (en-AU) spelling and includes:
-    1. Multi-Agent Ensemble PR Review header with PR link, target commit SHA, and base branch.
-    2. Dynamic Persona Activation & Assessment Matrix with diff-grounded justifications.
-    3. Evaluation Summary & Verified Positive Findings (or Flagged Findings & Remediations).
-    4. Ensemble Review Breakdown with individual reviewer votes, consensus verdict, and CI status.
-    5. Agent and Model attribution footer.
-    6. Bean 0034 Notice (Human-Only PR Merging constraint).
-    """
-    clean_target = str(target or "").strip()
-    approved = bool(consensus_data.get("approved"))
-    status_str = str(consensus_data.get("status", "unknown")).upper()
-    verdict = "APPROVED" if approved else status_str
-    iterations = consensus_data.get("iterations", 1)
-    ci_status = consensus_data.get("ci_checks") or {}
-    base_branch = str(consensus_data.get("base_branch") or "main").strip()
-    # Consensus payloads can come from historical data without attribution.
-    agent = str(consensus_data.get("agent") or LEGACY_DEFAULT_AGENT).strip()
-    model = str(consensus_data.get("model") or "inherit").strip()
-    ensemble_size = int(consensus_data.get("ensemble_size") or 3)
-
-    has_git = os.path.isdir(os.path.join(repo_dir, ".git"))
-
-    # 1. Target Commit SHA resolution
-    target_commit = str(consensus_data.get("target_commit") or "").strip()
-    if (not target_commit or target_commit == "HEAD") and has_git:
-        try:
-            rev_proc = run_git(["rev-parse", "--short", "HEAD"], cwd=repo_dir, check=False)
-            if rev_proc.returncode == 0 and rev_proc.stdout.strip():
-                target_commit = rev_proc.stdout.strip()
-        except Exception:
-            pass
-    if not target_commit:
-        target_commit = "HEAD"
-
-    # 2. Repository Slug, PR Number, and PR URL
-    repo_name = str(consensus_data.get("repo_name") or "").strip()
-    if not repo_name and has_git:
-        try:
-            remote_proc = run_git(["remote", "get-url", "origin"], cwd=repo_dir, check=False)
-            if remote_proc.returncode == 0 and remote_proc.stdout.strip():
-                m_remote = re.search(r"github\.com[:/]([^/]+/[^/.]+?)(?:\.git)?$", remote_proc.stdout.strip())
-                if m_remote:
-                    repo_name = m_remote.group(1)
-        except Exception:
-            pass
-    if not repo_name:
-        repo_name = "Holon-Agentic-Coder/holon-agentic-coder"
-
-    pr_number = consensus_data.get("pr_number")
-    pr_url = consensus_data.get("pr_url")
-
-    if not pr_url and clean_target:
-        if clean_target.startswith("http://") or clean_target.startswith("https://"):
-            pr_url = clean_target
-            m_url = re.search(r"/pull/(\d+)", clean_target)
-            if m_url:
-                pr_number = m_url.group(1)
-        elif clean_target.isdigit():
-            pr_number = clean_target
-            pr_url = f"https://github.com/{repo_name}/pull/{pr_number}"
-        else:
-            pr_url = f"https://github.com/{repo_name}/tree/{clean_target}"
-
-    if pr_url and pr_number:
-        pr_link = f"[{repo_name}#{pr_number}]({pr_url})"
-    elif pr_url:
-        pr_link = f"[{clean_target}]({pr_url})"
-    elif clean_target.isdigit():
-        pr_link = f"[{repo_name}#{clean_target}](https://github.com/{repo_name}/pull/{clean_target})"
-    else:
-        pr_link = f"`{clean_target or 'unknown'}`"
-
-    # 3. Changed Files Inspection & Dynamic Persona Matrix
-    changed_files: list[str] = list(consensus_data.get("changed_files") or [])
-    if not changed_files and has_git:
-        # Diff the reviewed commit, not whatever the operator's checkout happens to be on.
-        diff_head = target_commit or "HEAD"
-        try:
-            diff_proc = run_git(
-                ["diff", "--name-only", f"origin/{base_branch}...{diff_head}"], cwd=repo_dir, check=False
-            )
-            if diff_proc.returncode == 0 and diff_proc.stdout.strip():
-                changed_files = [f.strip() for f in diff_proc.stdout.splitlines() if f.strip()]
-            if not changed_files:
-                diff_local = run_git(["diff", "--name-only", f"{diff_head}~1..{diff_head}"], cwd=repo_dir, check=False)
-                if diff_local.returncode == 0 and diff_local.stdout.strip():
-                    changed_files = [f.strip() for f in diff_local.stdout.splitlines() if f.strip()]
-        except Exception:
-            pass
-
-    personas: list[dict[str, str]] = []
-    has_flow_src = (
-        any("sandbox_executor" in f or "cli.py" in f or "flow.py" in f for f in changed_files) or not changed_files
-    )
-    has_tests = any("test" in f for f in changed_files) or not changed_files
-    has_sec = any("security" in f or "pre_commit" in f or "secret" in f for f in changed_files) or not changed_files
-    has_ops = (
-        any(
-            "Makefile" in f or "Dockerfile" in f or "bake" in f or ".github" in f or "role_dispatcher" in f
-            for f in changed_files
-        )
-        or not changed_files
-    )
-
-    if has_flow_src:
-        pe_trigger = "High-impact flow lifecycle changes (`cli.py`, `flow.py`, `review_loop.py`, role dispatcher)."
-        pe_assessment = (
-            "**APPROVED**: Clean stage boundaries, proper role routing, and standard fail-fast semantics."
-            if approved
-            else "**CHANGES_REQUESTED**: Blockers or conflicts detected in flow lifecycle."
-        )
-        personas.append(
-            {"persona": "**Principal Engineer / Tech Lead**", "trigger": pe_trigger, "assessment": pe_assessment}
-        )
-
-        sa_trigger = "Pipeline lifecycle, ledger provenance, and stage conflict guard implementation."
-        sa_assessment = (
-            "**APPROVED**: Robust mergeability inspection, JSONL reconciliation, and provenance trailers."
-            if approved
-            else "**CHANGES_REQUESTED**: Stage conflicts or ledger irregularities detected."
-        )
-        personas.append({"persona": "**Solution Architect**", "trigger": sa_trigger, "assessment": sa_assessment})
-
-    if has_tests:
-        qa_trigger = "Test suite expansion (`test_pre_commit_check.py`, `test_review_loop.py`, `test_flow.py`)."
-        qa_assessment = (
-            "**APPROVED**: 100% test pass rate across unit/integration test suite with zero regressions."
-            if (approved and ci_status.get("all_passed", True))
-            else "**CHANGES_REQUESTED**: Test suite failures or regression errors detected."
-        )
-        personas.append({"persona": "**QA & Test Engineer**", "trigger": qa_trigger, "assessment": qa_assessment})
-
-    if has_sec:
-        sec_trigger = "Pre-commit credential hygiene and scratch file scanning (`scripts/pre_commit_check.py`)."
-        sec_assessment = (
-            "**APPROVED**: Secret patterns and disallowed paths enforced with zero false positives."
-            if approved
-            else "**CHANGES_REQUESTED**: Security or credential violations detected."
-        )
-        personas.append({"persona": "**Security Architect**", "trigger": sec_trigger, "assessment": sec_assessment})
-
-    if has_ops:
-        ops_trigger = "Container entrypoint, Makefile hygiene targets, Docker bake compatibility."
-        ops_assessment = (
-            "**APPROVED**: Hermetic execution, role dispatcher simplicity, and clean CI build pipelines."
-            if approved
-            else "**CHANGES_REQUESTED**: Container entrypoint or CI workflow issues detected."
-        )
-        personas.append({"persona": "**DevOps & SRE**", "trigger": ops_trigger, "assessment": ops_assessment})
-
-    if not personas:
-        personas.append(
-            {
-                "persona": "**Principal Engineer / Tech Lead**",
-                "trigger": f"Changeset review on branch `{clean_target}`.",
-                "assessment": f"**{verdict}**: General architectural and code quality review.",
-            }
-        )
-
-    persona_table_lines = [
-        "| Persona | Activation Justification | Assessment |",
-        "| :--- | :--- | :--- |",
-    ]
-    for p in personas:
-        persona_table_lines.append(f"| {p['persona']} | {p['trigger']} | {p['assessment']} |")
-
-    # 4. Evaluation Summary & Positive Findings / Remediations
-    intent_data = consensus_data.get("intent_data") or {}
-    intent_title = intent_data.get("title") or "Audit Remediation and Flow Review Hardening"
-    intent_beans = intent_data.get("beans") or []
-    findings_list = consensus_data.get("findings") or []
-
-    eval_summary_lines: list[str] = []
-    if approved:
-        eval_summary_lines.append("### 📋 Evaluation Summary & Verified Positive Findings")
-        eval_summary_lines.append("")
-        item_idx = 1
-        if intent_beans:
-            eval_summary_lines.append(f"{item_idx}. **Ecosystem Audit & Remediation ({', '.join(intent_beans[:4])})**:")
-            eval_summary_lines.append(
-                f"   - Verified implementation addressing requirements for {', '.join(intent_beans)}."
-            )
-            eval_summary_lines.append(
-                "   - Git configuration, lockfile hygiene, and environment consistency validated across repositories."
-            )
-            item_idx += 1
-        elif intent_title:
-            eval_summary_lines.append(f"{item_idx}. **{intent_title}**:")
-            eval_summary_lines.append("   - Verified complete and robust implementation across all touched modules.")
-            eval_summary_lines.append(
-                "   - Clean integration with existing codebase and standard lifecycle interfaces."
-            )
-            item_idx += 1
-
-        eval_summary_lines.append(f"{item_idx}. **Pre-Commit Security & Hygiene Guard**:")
-        eval_summary_lines.append(
-            "   - Comprehensive scanning for credentials, secrets, private keys, "
-            "and disallowed temporary scratch files."
-        )
-        eval_summary_lines.append("   - Fully integrated into repository build scripts and developer workflows.")
-        item_idx += 1
-
-        eval_summary_lines.append(f"{item_idx}. **Australian English Orthography Standardisation**:")
-        eval_summary_lines.append(
-            "   - Standardised on Australian English (`en-AU`) spelling conventions "
-            "(`initialise`, `summarise`, `optimisation`)."
-        )
-        eval_summary_lines.append(
-            "   - Complete parity between review prompt templates and multi-agent ensemble specifications."
-        )
-        item_idx += 1
-
-        eval_summary_lines.append(f"{item_idx}. **Bean 0034 Compliance (Human-Only PR Merging)**:")
-        eval_summary_lines.append(
-            "   - Verified across all code paths: no autonomous merging or auto-merge flags exist. "
-            "Pipeline halts safely upon consensus approval for manual maintainer action."
-        )
-    else:
-        eval_summary_lines.append("### 🔍 Flagged Findings & Actionable Remediations")
-        eval_summary_lines.append("")
-        if findings_list:
-            for idx, fid in enumerate(findings_list, 1):
-                eval_summary_lines.append(f"{idx}. **Finding `{fid}`**:")
-                eval_summary_lines.append(
-                    "   - Flagged during iteration evaluation; requires code or CI resolution before approval."
-                )
-        else:
-            eval_summary_lines.append(f"1. **Status `{verdict}`**:")
-            eval_summary_lines.append("   - Consensus criteria not met during review evaluation.")
-        mergeability_note = str(consensus_data.get("mergeability_note") or "").strip()
-        if mergeability_note:
-            eval_summary_lines.append("")
-            eval_summary_lines.append(f"> ⚠️ **Mergeability**: {mergeability_note}")
-
-    # 5. Ensemble Review Breakdown
-    ci_passed = ci_status.get("passed", 0)
-    ci_total = ci_status.get("total", 0)
-    ci_failed = ci_status.get("failed", 0)
-    ci_pending = ci_status.get("pending", 0)
-    ci_src = ci_status.get("source", "github_cli")
-
-    if ci_total > 0:
-        ci_str = f"`{ci_passed}/{ci_total} PASS` ({ci_passed} successful, {ci_failed} failing, {ci_pending} pending)"
-    elif ci_status.get("all_passed"):
-        ci_str = "`PASS` (100% pass rate, exit code 0)"
-    else:
-        ci_str = f"`{ci_passed}/{ci_total or 1} {status_str}` ({ci_src})"
-
-    breakdown_lines: list[str] = [
-        "### 🗳️ Ensemble Review Breakdown",
-        "",
-    ]
-    for i in range(1, ensemble_size + 1):
-        rev_id = hashlib.sha256(f"{target_commit}-reviewer-{i}".encode()).hexdigest()[:8]
-        vote = "APPROVED" if approved else "CHANGES_REQUESTED"
-        counts = "(Critical: 0, Important: 0, Nit: 0)" if approved else f"(Findings: {len(findings_list)})"
-        breakdown_lines.append(f"- **Reviewer {i}** (`{rev_id}`): `{vote}` {counts}")
-
-    breakdown_lines.append(f"- **Ensemble Consensus Verdict**: `{verdict}`")
-    breakdown_lines.append(f"- **GitHub Actions CI Status**: {ci_str}")
-    breakdown_lines.append("")
-    breakdown_lines.append(f"> 🤖 **Reviewed by**: `{agent}` ({ensemble_size}-Agent Ensemble) · **Model**: `{model}`")
-
-    lines = [
-        f"## 🔍 Multi-Agent Ensemble PR Review (Iteration {iterations})",
-        "",
-        f"**Pull Request:** {pr_link}  ",
-        f"**Target Commit:** `{target_commit}`  ",
-        f"**Base Branch:** `{base_branch}`  ",
-        f"**Review Type:** {ensemble_size}-Agent Independent Ensemble Consensus Review  ",
-        "",
-        "---",
-        "",
-        "### 👥 Dynamic Persona Activation & Assessment Matrix",
-        "",
-        *persona_table_lines,
-        "",
-        "---",
-        "",
-        *eval_summary_lines,
-        "",
-        "---",
-        "",
-        *breakdown_lines,
-        "",
-        "---",
-        "",
-        "> [!NOTE]",
-        (
-            "> **Bean 0034 Notice:** Under Bean 0034 (Human-Only PR Merging), "
-            "autonomous merging to `main` is strictly prohibited. "
-            "Pipeline halts for manual human approval."
-        ),
-    ]
-
-    return "\n".join(lines)
-
-
 def post_pr_review_consensus(
     repo_dir: str,
     target: str,
     consensus_data: dict[str, Any],
     proxy_env: dict[str, str] | None = None,
+    *,
+    reviewers: list[ReviewerResult] | None = None,
+    title: str | None = None,
 ) -> dict[str, Any]:
     """Dual-post PR review consensus to GitHub and handle author self-approval HTTP 422 fallback (Bean 0119).
 
@@ -1844,17 +1557,22 @@ def post_pr_review_consensus(
         target: Target PR number, URL, or branch name.
         consensus_data: Review consensus diagnostics dictionary.
         proxy_env: Optional proxy environment variables.
+        reviewers: Reviewer results of the deciding iteration; the report renders only these.
+        title: Resolved report title (intent title, else PR title, else PR number or branch).
 
     Returns:
         dict[str, Any]: Posting outcome diagnostics.
     """
     clean_target = str(target or "").strip()
-    approved = bool(consensus_data.get("approved"))
+    backed = consensus_data.get("ensemble_verdict") == str(ConsensusVerdict.APPROVED) and consensus_data.get("approved")
+    approved = bool(backed) and any(r.status is ReviewerStatus.COMPLETED for r in reviewers or [])
 
     report_text = build_pr_review_consensus_report(
         repo_dir=repo_dir,
         target=clean_target,
         consensus_data=consensus_data,
+        reviewers=reviewers or [],
+        title=title,
     )
 
     gh_available = bool(shutil.which("gh"))
@@ -3055,6 +2773,7 @@ def _child_context(context: FlowContext, intent_data: dict[str, Any]) -> FlowCon
         skip_review=context.skip_review,
         skip_calibrate=context.skip_calibrate,
         max_review_iterations=context.max_review_iterations,
+        review_ensemble_size=context.review_ensemble_size,
         mitm_web=context.mitm_web,
         dispatcher=context.dispatcher,
     )
@@ -3679,6 +3398,243 @@ def record_review_action(
     return try_append_action_record(ledger_path, record, label=label, preserve_shape=True, log_fn=context.log)
 
 
+# Reviewer agent turns run only inside a sandbox (docs/safety.md, Invariant 2); host-side Stage 4 fails closed.
+HOST_REVIEW_REFUSAL = (
+    "Refusing to run reviewer agent turns on the host: Stage 4 reviewers run only inside the sandbox "
+    "(use 'holon review-loop' without --local or --json, or run inside the review-loop container)"
+)
+_SEVERITY_RANK = {"clean": 0, "nit": 1, "important": 2, "critical": 3}
+
+
+def reviewers_sandboxed(environ: Mapping[str, str] | None = None) -> bool:
+    """Return True when an explicit sandbox signal (``HOLON_IN_SANDBOX`` or ``HOLON_ROLE``) is set.
+
+    Reuses ``agent_defaults.SANDBOX_GUARD_VARS``; the ``USER=holon`` heuristic is deliberately not trusted.
+    """
+    return harness_detection_disabled(environ)
+
+
+def _worst_severity(*severities: str) -> str:
+    """The most severe of ``severities`` (``clean`` when none is given)."""
+    return max(severities, key=lambda value: _SEVERITY_RANK.get(value, 0), default="clean")
+
+
+def _reviewer_summary(result: ReviewerResult) -> dict[str, Any]:
+    """A JSON-safe per-reviewer summary; never the report text."""
+    return {
+        "index": result.index,
+        "agent": result.agent,
+        "model": result.model,
+        "status": str(result.status),
+        "verdict": str(result.verdict) if result.verdict else None,
+        "counts": {"critical": result.counts.critical, "important": result.counts.important, "nit": result.counts.nit},
+        "failure_reason": result.failure_reason,
+    }
+
+
+def _reviewer_finding_ids(result: ReviewerResult, iteration: int) -> list[str]:
+    """Stable ids for one reviewer's findings, numbered in report order."""
+    return [f"FIND-R{result.index}-{iteration:03d}-{n:02d}" for n in range(1, len(result.findings) + 1)]
+
+
+def _review_row(
+    prefix: str,
+    review_target: str,
+    iteration: int,
+    action: str,
+    outcome: str,
+    *,
+    severity: str | None,
+    finding_ids: list[str] | None,
+    labels: list[str],
+    error_context: str | None,
+    **extra: Any,
+) -> dict[str, Any]:
+    """A Stage 4 ACT-REV or ACT-FIND row in the historical key order; ``extra`` keys go before ``created_at``."""
+    kind = "FIND" if prefix == "ACT-FIND" else "ITR"
+    row: dict[str, Any] = {
+        "action_id": generate_action_id(prefix),
+        "execution_id": f"REV-{kind}-{iteration}-{int(time.time())}",
+        "action": action,
+        "category": "code",
+        "target": review_target,
+        "outcome": outcome,
+        "entry_type": "action",
+        "action_origin": "pr_review",
+        "review_severity": severity,
+        "review_iteration": iteration,
+        "review_finding_ids": finding_ids or None,
+        "labels": labels,
+        "error_context": error_context,
+        **extra,
+    }
+    row["created_at"] = datetime.now(UTC).isoformat()
+    return row
+
+
+def _record_reviewer_rows(
+    context: FlowContext, exec_file: str, review_target: str, iteration: int, results: list[ReviewerResult]
+) -> None:
+    """Append one ACT-REV row per reviewer and one ACT-FIND row per reviewer finding."""
+    for result in results:
+        summary = _reviewer_summary(result)
+        clean = summary["verdict"] == str(ReviewerVerdict.APPROVED) and not result.counts.total and not result.findings
+        finding_ids = _reviewer_finding_ids(result, iteration)
+        worst = _worst_severity(*(finding.severity for finding in result.findings))
+        record_review_action(
+            context,
+            exec_file,
+            _review_row(
+                "ACT-REV",
+                review_target,
+                iteration,
+                f"PR Review Loop iteration {iteration} reviewer {result.index} {summary['status'].lower()}",
+                "success" if clean else "failure",
+                severity=None if worst == "clean" else worst,
+                finding_ids=finding_ids,
+                labels=["review", "reviewer", f"iteration-{iteration}"],
+                error_context=_bounded_error_context(result.failure_reason) if result.failure_reason else None,
+                review_reviewer_index=result.index,
+                review_agent=result.agent,
+                review_model=result.model,
+                review_status=summary["status"],
+                review_verdict=summary["verdict"],
+                review_counts=summary["counts"],
+            ),
+        )
+        for finding_id, finding in zip(finding_ids, result.findings, strict=True):
+            record_review_action(
+                context,
+                exec_file,
+                _review_row(
+                    "ACT-FIND",
+                    review_target,
+                    iteration,
+                    f"PR Review Loop iteration {iteration} finding detected: {finding_id}",
+                    "failure",
+                    severity=finding.severity,
+                    finding_ids=[finding_id],
+                    labels=["review", "finding", f"iteration-{iteration}"],
+                    error_context=_bounded_error_context(finding.summary),
+                    review_reviewer_index=result.index,
+                    review_file=finding.path,
+                    review_line=finding.line,
+                ),
+            )
+
+
+def _record_infrastructure_findings(
+    context: FlowContext, exec_file: str, review_target: str, iteration: int, finding_ids: list[str], note: str
+) -> None:
+    """Append one ACT-FIND row per mergeability or CI finding (``FIND-DIRTY``, ``FIND-REF``, ``FIND-CI``)."""
+    for finding_id in finding_ids:
+        record_review_action(
+            context,
+            exec_file,
+            _review_row(
+                "ACT-FIND",
+                review_target,
+                iteration,
+                f"PR Review Loop iteration {iteration} finding detected: {finding_id}",
+                "failure",
+                severity="critical" if finding_id.startswith("FIND-DIRTY") else "important",
+                finding_ids=[finding_id],
+                labels=["review", "finding", f"iteration-{iteration}"],
+                error_context=note,
+            ),
+        )
+
+
+def _resolve_reviewed_target(repo_dir: str, review_target: str) -> tuple[ReviewTarget | None, str | None]:
+    """Resolve the target once before the loop; ``(None, error)`` fails the review closed."""
+    try:
+        return resolve_review_target(repo_dir, review_target), None
+    except (ReviewTargetError, RuntimeError, TimeoutError, OSError) as exc:
+        return None, f"Could not resolve the review target '{review_target}': {redact_agent_secrets(str(exc))}"
+
+
+def _semantic_pr_text(context: FlowContext) -> tuple[str, str]:
+    """The PR title and body generated from the intent and plan; empty strings if generation fails."""
+    plan_res = context.stage_results.get("plan")
+    plan_meta = plan_res.payload if plan_res and isinstance(plan_res.payload, dict) else None
+    try:
+        return generate_semantic_pr_metadata(context.intent_data, plan_metadata=plan_meta)
+    except Exception as exc:
+        logger.debug("Non-fatal PR metadata generation in review loop: %s", exc)
+        return "", ""
+
+
+def _review_base_ref(repo_dir: str, target: ReviewTarget, target_branch: str) -> str:
+    """The ref the reviewed diff starts from: the PR's base branch, else the intent's target branch (origin first)."""
+    base = target.base_branch or target_branch
+    return _resolve_branch_ref(repo_dir, base, prefer_remote=True) or base
+
+
+def _ensemble_iteration(
+    context: FlowContext,
+    target: ReviewTarget,
+    target_branch: str,
+    iteration: int,
+    pr_text: tuple[str, str],
+    ensemble_fn: Callable[..., list[ReviewerResult]],
+    ensemble_size: int,
+) -> tuple[list[ReviewerResult], str | None]:
+    """Build the request from the real diff and run the ensemble; ``([], error)`` on an infrastructure failure."""
+    base_ref = _review_base_ref(context.repo_dir, target, target_branch)
+    try:
+        request = build_review_request(target, base_ref, iteration, pr_text[0], pr_text[1], context.repo_dir)
+    except (RuntimeError, OSError) as exc:
+        return [], f"Could not build the review diff for '{target.head_branch}': {redact_agent_secrets(str(exc))}"
+    try:
+        results = ensemble_fn(request, agent=context.agent, model=context.model, size=ensemble_size)
+    except Exception as exc:
+        return [], f"The reviewer ensemble could not run: {redact_agent_secrets(str(exc))}"
+    for result in results:
+        context.log(f"[Review Loop] {render_reviewer_summary_line(result)}")
+    return list(results), None
+
+
+def render_reviewer_summary_line(result: ReviewerResult | Mapping[str, Any]) -> str:
+    """One plain-text summary line for a reviewer (a ``ReviewerResult`` or its serialised summary)."""
+    data = _reviewer_summary(result) if isinstance(result, ReviewerResult) else result
+    head = f"Reviewer {data.get('index')}: {data.get('agent')} / {data.get('model')}"
+    if data.get("status") != str(ReviewerStatus.COMPLETED):
+        return f"{head}: FAILED ({_bounded_error_context(str(data.get('failure_reason') or 'unknown failure'))})"
+    counts = data.get("counts") or {}
+    return (
+        f"{head}: {data.get('verdict')} (critical {counts.get('critical', 0)}, "
+        f"important {counts.get('important', 0)}, nit {counts.get('nit', 0)})"
+    )
+
+
+def _ci_green(ci_status: dict[str, Any], tests_failed: bool) -> bool | None:
+    """True or False when CI was measured, None when it was not (unknown is never green)."""
+    if ci_status.get("measured") is False or "all_passed" not in ci_status:
+        return None
+    return ci_status.get("all_passed") is True and not tests_failed
+
+
+def _loop_status(
+    consensus_reached: bool,
+    verdict: ConsensusVerdict | None,
+    failed: bool,
+    is_dirty: bool,
+    tests_not_measured: bool,
+) -> str:
+    """Map the loop outcome to its consensus status."""
+    if consensus_reached:
+        return "approved"
+    if failed or verdict is ConsensusVerdict.FAILED:
+        return "failed"
+    if is_dirty:
+        return "conflicted_dirty"
+    if tests_not_measured:
+        return "not_measured"
+    if verdict is ConsensusVerdict.CHANGES_REQUESTED:
+        return "changes_requested"
+    return "rejected"
+
+
 def run_review_loop(
     context: FlowContext,
     target: str | None = None,
@@ -3690,18 +3646,22 @@ def run_review_loop(
     ci_poll_interval: float = CI_REGISTRATION_POLL_SECONDS,
     clock: Callable[[], float] | None = None,
     sleep: Callable[[float], None] | None = None,
+    *,
+    run_ensemble_fn: Callable[..., list[ReviewerResult]] | None = None,
 ) -> dict[str, Any]:
-    """Execute autonomous native multi-pass review loop (Bean 0118).
+    """Execute the native Stage 4 review loop (Bean 0118) with the real reviewer ensemble.
 
-    Iteratively evaluates code diffs, mergeability, CI checks (via gh pr checks or local fallback),
-    manages iteration budgets, formats RFC 2822 commit trailers, and enforces Bean 0034
-    (Human-Only PR Merging) by halting at consensus approval without merging to main.
+    Each iteration probes mergeability and CI, then runs ``ensemble_size`` independent reviewer agent turns on the
+    real diff between the base and the resolved head SHA and decides with ``decide_consensus()``: approval needs every
+    reviewer to approve with zero findings, a mergeable PR and green CI. There is no resolver, so the loop stops after
+    the first iteration that is not approved. Reviewers run only inside a sandbox: on the host the loop refuses before
+    any PR, iteration or post. It enforces Bean 0034 (Human-Only PR Merging) by halting at approval without merging.
 
     Args:
         context: Active FlowContext carrying repository and pipeline state.
         target: Target execution branch name, PR number, or PR URL.
         max_iterations: Maximum iteration budget before forced termination.
-        ensemble_size: Review ensemble size / heuristic count.
+        ensemble_size: Number of independent reviewer agent turns per iteration.
         auto_pr: Whether to create PR automatically if target is only a branch.
         dry_run: If True, evaluate without applying git commits or mutations.
         ci_registration_timeout: Seconds to wait for CI checks to register when Stage 3 recorded no test
@@ -3709,15 +3669,18 @@ def run_review_loop(
         ci_poll_interval: Seconds between CI registration and pending-CI probes.
         clock: Monotonic clock for the per-iteration budget (Bean 0139) and the CI waits (default: time.monotonic).
         sleep: Sleep function used by the CI waits (default: time.sleep); injectable for tests.
+        run_ensemble_fn: Reviewer ensemble seam (default: ``review_ensemble.run_ensemble``); tests inject a fake.
 
     The empty-diff guard runs for every target whatever ``auto_pr`` is: an empty diff is rejected and an
     unverifiable one fails, before any PR, iteration or post. A dry run never measures anything, so it reports
-    ``not_measured`` and is never approved. A consensus that cannot be posted is ``post_failed``, never approved.
+    ``not_measured`` and is never approved; it never dispatches a reviewer. A consensus is posted only when at least one
+    reviewer completed and no infrastructure step failed; one that cannot be posted is ``post_failed``, never approved.
 
     Returns:
         dict[str, Any]: Review loop outcome dictionary.
     """
     clock = clock or time.monotonic
+    ensemble_fn = run_ensemble_fn or run_ensemble
     sleep = sleep or time.sleep
     review_target = str(target or context.execution_branch or context.intent_branch or "HEAD").strip()
     budget = max(1, max_iterations or context.max_review_iterations or 25)
@@ -3752,6 +3715,11 @@ def run_review_loop(
     mergeability_note: str | None = None
     finding_ids: list[str] = []
     severity = "clean"
+    reviewers: list[ReviewerResult] = []
+    ensemble_verdict: ConsensusVerdict | None = None
+    # Why the review failed before or outside the ensemble (sandbox refusal, target, diff); never posted.
+    infra_error: str | None = None
+    resolved_target: ReviewTarget | None = None
 
     ledger_dir = os.path.join(repo_dir, "holon-knowledge", "ledger")
     exec_file = os.path.join(ledger_dir, "executions.jsonl")
@@ -3782,17 +3750,24 @@ def run_review_loop(
             pr_allowed = False
         else:
             context.log(f"[Review Loop] Empty-diff guard passed for '{review_target}': {diff_detail}.")
+        if pr_refusal_error is None and not reviewers_sandboxed():
+            infra_error = HOST_REVIEW_REFUSAL
+        elif pr_refusal_error is None:
+            resolved_target, infra_error = _resolve_reviewed_target(repo_dir, review_target)
+        if infra_error:
+            # Fail closed before any PR, iteration, reviewer row or post.
+            context.log(f"[Review Loop] {infra_error}.")
+            pr_allowed = False
+            pr_res = {"success": False, "skipped": True, "reason": "review_refused"}
+    pr_text = _semantic_pr_text(context)
     if pr_allowed and auto_pr and not effective_dry_run and shutil.which("gh"):
         try:
-            plan_res = context.stage_results.get("plan")
-            plan_meta = plan_res.payload if plan_res and isinstance(plan_res.payload, dict) else None
-            pr_title, pr_body = generate_semantic_pr_metadata(context.intent_data, plan_metadata=plan_meta)
             pr_res = create_or_update_pr(
                 repo_dir=repo_dir,
                 branch=review_target,
                 target_branch=target_branch,
-                title=pr_title,
-                body=pr_body,
+                title=pr_text[0],
+                body=pr_text[1],
                 proxy_env=proxy_env,
             )
             if pr_res.get("success"):
@@ -3823,29 +3798,10 @@ def run_review_loop(
         # Fail closed: a PR the guard refused is never reviewed, so no evidence can turn the refusal into approval.
         context.log("[Review Loop] Halting review loop without consensus: the empty-diff guard refused the PR.")
 
-    while pr_refusal_error is None and iteration < budget:
+    while pr_refusal_error is None and infra_error is None and iteration < budget:
         iteration += 1
         context.log(f"[Review Loop] Starting review iteration {iteration}/{budget} for target '{review_target}'.")
         iteration_timer = StageTimer("review", iteration_budget_seconds, clock=clock)
-
-        # Discrete Action 3: Resolver Iteration Events (Bean 0113)
-        if iteration > 1 and effective_dry_run:
-            suppressed_ledger_records += 1
-        elif iteration > 1:
-            resolver_record = {
-                "action_id": generate_action_id("ACT-RES"),
-                "execution_id": f"REV-RES-{iteration}-{int(time.time())}",
-                "action": f"PR Review Loop iteration {iteration} resolver triggered",
-                "category": "code",
-                "target": review_target,
-                "outcome": "success",
-                "entry_type": "action",
-                "action_origin": "pr_review",
-                "review_iteration": iteration,
-                "labels": ["review", "resolver", f"iteration-{iteration}"],
-                "created_at": datetime.now(UTC).isoformat(),
-            }
-            record_review_action(context, exec_file, resolver_record)
 
         # 1. Mergeability inspection
         last_mergeability = check_pr_mergeability(
@@ -3899,72 +3855,74 @@ def run_review_loop(
                 sleep=sleep,
             )
 
-        # 3. Analyze findings
-        finding_ids = []
-        severity = "clean"
-        if is_dirty:
-            finding_ids.append(f"FIND-DIRTY-{iteration:03d}")
-            severity = "critical"
-        if missing_ref:
-            finding_ids.append(f"FIND-REF-{iteration:03d}")
-            if severity != "critical":
-                severity = "important"
-        if not last_ci_status.get("all_passed", False) or tests_failed:
-            finding_ids.append(f"FIND-CI-{iteration:03d}")
-            if severity != "critical":
-                severity = "important"
+        # 3. Real reviewer ensemble on the resolved head (a dry run never dispatches reviewers)
+        reviewers, ensemble_verdict = [], None
+        if not effective_dry_run and resolved_target is not None:
+            reviewers, infra_error = _ensemble_iteration(
+                context, resolved_target, target_branch, iteration, pr_text, ensemble_fn, ensemble_size
+            )
+            ensemble_verdict = decide_consensus(
+                reviewers,
+                ensemble_size,
+                mergeable=None if missing_ref else not is_dirty,
+                ci_green=_ci_green(last_ci_status, tests_failed),
+            )
 
-        # 4. Git trailer generation
+        # 4. Findings: mergeability and CI infrastructure ids, then every reviewer finding
+        ci_finding = not last_ci_status.get("all_passed", False) or tests_failed
+        finding_ids = [
+            finding_id
+            for finding_id, present in (
+                (f"FIND-DIRTY-{iteration:03d}", is_dirty),
+                (f"FIND-REF-{iteration:03d}", missing_ref),
+                (f"FIND-CI-{iteration:03d}", ci_finding),
+            )
+            if present
+        ]
+        infra_ids = list(finding_ids)
+        severity = _worst_severity(
+            "critical" if is_dirty else "clean",
+            "important" if (missing_ref or ci_finding) else "clean",
+            *(finding.severity for result in reviewers for finding in result.findings),
+        )
+        for result in reviewers:
+            finding_ids.extend(_reviewer_finding_ids(result, iteration))
+
+        # 5. Git trailer generation
         last_trailers_str = format_review_git_trailers("pr_review", iteration, finding_ids, severity)
         last_trailers_dict = parse_commit_trailers(last_trailers_str)
 
         findings_context = f"Findings detected: {finding_ids}"
         if mergeability_note:
             findings_context += f"; {mergeability_note}"
+        if infra_error:
+            findings_context += f"; {infra_error}"
 
-        # 5. Append discrete action record to executions.jsonl if not dry-run (Bean 0113)
+        # 6. Ledger rows (Bean 0113): the iteration evaluation, one row per reviewer, one row per finding
         action_record = {
             "action_id": generate_action_id("ACT-REV"),
             "execution_id": f"REV-ITR-{iteration}-{int(time.time())}",
             "action": f"PR Review Loop iteration {iteration} evaluation for {review_target}",
             "category": "code",
             "target": review_target,
-            "outcome": "success" if (not finding_ids and not is_dirty) else "failure",
+            "outcome": "success" if ensemble_verdict is ConsensusVerdict.APPROVED else "failure",
             "entry_type": "action",
             "action_origin": "pr_review",
             "review_severity": severity if severity in ("critical", "important", "nit") else None,
             "review_iteration": iteration,
             "review_finding_ids": finding_ids if finding_ids else None,
             "labels": ["review", "review-loop", f"iteration-{iteration}"],
-            "error_context": findings_context if finding_ids else None,
+            "error_context": _bounded_error_context(findings_context) if (finding_ids or infra_error) else None,
             "created_at": datetime.now(UTC).isoformat(),
         }
         if effective_dry_run:
-            suppressed_ledger_records += 1
+            suppressed_ledger_records += 1 + len(infra_ids)
         else:
             record_review_action(context, exec_file, action_record)
-
-        # Discrete Action 2: Finding Detection Events (Bean 0113)
-        if finding_ids and effective_dry_run:
-            suppressed_ledger_records += 1
-        elif finding_ids:
-            finding_record = {
-                "action_id": generate_action_id("ACT-FIND"),
-                "execution_id": f"REV-FIND-{iteration}-{int(time.time())}",
-                "action": f"PR Review Loop iteration {iteration} findings detected: {', '.join(finding_ids)}",
-                "category": "code",
-                "target": review_target,
-                "outcome": "failure",
-                "entry_type": "action",
-                "action_origin": "pr_review",
-                "review_severity": severity if severity in ("critical", "important", "nit") else None,
-                "review_iteration": iteration,
-                "review_finding_ids": finding_ids,
-                "labels": ["review", "finding", f"iteration-{iteration}"],
-                "error_context": findings_context,
-                "created_at": datetime.now(UTC).isoformat(),
-            }
-            record_review_action(context, exec_file, finding_record)
+            _record_reviewer_rows(context, exec_file, review_target, iteration, reviewers)
+            _record_infrastructure_findings(
+                context, exec_file, review_target, iteration, infra_ids, _bounded_error_context(findings_context)
+            )
 
         iteration_timer.stop()
         iteration_breached = iteration_timer.breached()
@@ -3972,7 +3930,7 @@ def run_review_loop(
         iteration_summaries.append(iteration_line)
         context.log(f"[Review Loop] {iteration_line}")
 
-        # 6. A ref that does not resolve will not resolve on the next pass either: fail closed now
+        # 7. A ref that does not resolve will not resolve on the next pass either: fail closed now
         # rather than burn the remaining iteration budget.
         if missing_ref:
             context.log("[Review Loop] Halting review loop without consensus: mergeability could not be evaluated.")
@@ -3982,12 +3940,11 @@ def run_review_loop(
             context.log("[Review Loop] Halting review loop without consensus: test results not measured.")
             break
 
-        # 7. Check termination criteria
-        if not is_dirty and not finding_ids and last_ci_status.get("all_passed", False):
+        # 8. Termination: only the ensemble approves; any other verdict stops the loop, since no resolver runs
+        if ensemble_verdict is ConsensusVerdict.APPROVED:
             consensus_reached = True
             context.log(f"[Review Loop] Consensus approval reached at iteration {iteration}.")
             break
-
         if iteration_breached:
             breach = iteration_timer.breach()
             budget_breach = {
@@ -3999,29 +3956,29 @@ def run_review_loop(
             }
             context.log(f"[Review Loop] Stopping: iteration {iteration} exceeded its {breach.describe()}.")
             break
+        if effective_dry_run:
+            context.log("[Review Loop] Dry run: no reviewer was dispatched; stopping after one iteration.")
+            break
+        context.log(
+            f"[Review Loop] Halting review loop at iteration {iteration}: verdict "
+            f"{ensemble_verdict or ConsensusVerdict.FAILED} (no automatic resolver; findings stop the stage)."
+        )
+        break
 
-    if not consensus_reached and pr_refusal_error is None and iteration >= budget:
+    if not consensus_reached and pr_refusal_error is None and infra_error is None and iteration >= budget:
         context.log(f"[Review Loop] Iteration budget ({budget}) exhausted without consensus.")
 
-    if consensus_reached:
-        consensus_status = "approved"
-    elif is_dirty:
-        consensus_status = "conflicted_dirty"
-    elif tests_not_measured:
-        consensus_status = "not_measured"
-    elif pr_refusal_error:
-        consensus_status = "failed"
-    else:
-        consensus_status = "rejected"
-    if effective_dry_run and consensus_reached:
-        # A dry run simulates the loop and measures nothing, so a simulated approval is never an approval.
-        consensus_reached = False
-        consensus_status = "not_measured"
+    # A dry run measures nothing and dispatches no reviewer, so a clean simulation is reported as not measured.
+    not_measured = tests_not_measured or (effective_dry_run and iteration > 0 and not finding_ids)
+    consensus_status = _loop_status(
+        consensus_reached, ensemble_verdict, bool(pr_refusal_error or infra_error), is_dirty, not_measured
+    )
     approval_score = 1.0 if consensus_reached else 0.0
 
-    current_commit_sha = "HEAD"
+    current_commit_sha = (resolved_target.head_sha if resolved_target else "") or "HEAD"  # The SHA reviewers saw.
     try:
-        current_commit_sha = _resolve_review_commit(repo_dir, review_target, fetch=not effective_dry_run)
+        if current_commit_sha == "HEAD":
+            current_commit_sha = _resolve_review_commit(repo_dir, review_target, fetch=not effective_dry_run)
     except Exception as exc:
         logger.debug("Could not resolve the reviewed commit for %s: %s", review_target, exc)
 
@@ -4039,7 +3996,9 @@ def run_review_loop(
         "agent": context.agent or FALLBACK_AGENT,
         "model": context.model or "inherit",
         "ensemble_size": ensemble_size,
-        "base_branch": target_branch,
+        "ensemble_verdict": str(ensemble_verdict) if ensemble_verdict else None,
+        "reviewers": [_reviewer_summary(result) for result in reviewers],
+        "base_branch": (resolved_target.base_branch if resolved_target else None) or target_branch,
         "intent_data": context.intent_data,
         "target_commit": current_commit_sha,
         "pr_url": (
@@ -4053,9 +4012,11 @@ def run_review_loop(
     post_error: str | None = None
     if effective_dry_run:
         suppressed_ledger_records += 1
-    elif pr_refusal_error:
-        # No PR was created or updated for a refused diff, so there is no consensus to post and no ACT-POST row.
-        context.log(f"[Review Loop] Not posting a review consensus for '{review_target}': the PR was refused.")
+    elif pr_refusal_error or infra_error:
+        # A refused diff, a refused host run or a failed target, diff or ensemble has no real review to post.
+        context.log(f"[Review Loop] Not posting a review consensus for '{review_target}': the review failed.")
+    elif not any(result.status is ReviewerStatus.COMPLETED for result in reviewers):
+        context.log(f"[Review Loop] Not posting a review consensus for '{review_target}': no reviewer completed.")
     else:
         try:
             posting_res = post_pr_review_consensus(
@@ -4063,6 +4024,8 @@ def run_review_loop(
                 target=review_target,
                 consensus_data=consensus_data,
                 proxy_env=proxy_env,
+                reviewers=reviewers,
+                title=resolve_report_title(context.intent_data, resolved_target, review_target),
             )
         except Exception as exc:
             safe_error = CredentialRedactor.redact_text(str(exc))
@@ -4104,8 +4067,8 @@ def run_review_loop(
             approval_score = 0.0
 
     halt_reasons: list[str] = []
-    if pr_refusal_error:
-        halt_reasons.append(_bounded_error_context(pr_refusal_error))
+    if pr_refusal_error or infra_error:
+        halt_reasons.append(_bounded_error_context(str(pr_refusal_error or infra_error)))
     if post_error:
         halt_reasons.append("consensus post failed")
     if tests_not_measured:
@@ -4194,10 +4157,21 @@ def run_review_loop(
         "pr": pr_res,
         "iteration_summaries": iteration_summaries,
         "budget_breach": budget_breach,
+        "ensemble_verdict": consensus_data["ensemble_verdict"],
+        "reviewers": consensus_data["reviewers"],
     }
-    if pr_refusal_error or post_error:
-        loop_result["error"] = pr_refusal_error or post_error
+    if pr_refusal_error or infra_error or post_error:
+        loop_result["error"] = pr_refusal_error or infra_error or post_error
     return loop_result
+
+
+def _reviewers_objected(loop_res: dict[str, Any]) -> bool:
+    """True when a completed reviewer did not approve cleanly in the deciding iteration."""
+    return any(
+        r.get("status") == str(ReviewerStatus.COMPLETED)
+        and (r.get("verdict") != "APPROVED" or any((r.get("counts") or {}).values()))
+        for r in loop_res.get("reviewers") or []
+    )
 
 
 def _checkout_execution_branch(context: FlowContext) -> str | None:
@@ -4312,6 +4286,7 @@ def run_review_stage(context: FlowContext) -> StageResult:
         context=context,
         target=context.execution_branch,
         max_iterations=context.max_review_iterations,
+        ensemble_size=context.review_ensemble_size,
         dry_run=context.dry_run,
     )
 
@@ -4410,6 +4385,7 @@ def run_review_stage(context: FlowContext) -> StageResult:
     if not consensus_reached and not dry_run_simulation:
         ci_checks = loop_res.get("ci_checks") or {}
         loop_breach = loop_res.get("budget_breach")
+        summaries = "; ".join(render_reviewer_summary_line(r) for r in loop_res.get("reviewers") or [])
         if loop_res.get("error"):
             # The empty-diff guard refused the PR (empty_diff / diff_unverified): no tests decided this outcome.
             err_msg = f"Autonomous review halted: {loop_res['error']}"
@@ -4421,6 +4397,13 @@ def run_review_stage(context: FlowContext) -> StageResult:
             )
         elif ci_checks.get("measured") is False and not context.dry_run:
             err_msg = TESTS_NOT_MEASURED_ERROR
+        elif loop_res.get("ensemble_verdict") == str(ConsensusVerdict.FAILED):
+            err_msg = f"Autonomous review failed: the reviewer ensemble did not complete ({summaries})."
+        elif _reviewers_objected(loop_res):
+            err_msg = (
+                f"Autonomous review requested changes: reviewers reported findings or did not approve ({summaries}). "
+                "Findings are recorded in executions.jsonl; no automatic resolver runs."
+            )
         else:
             err_msg = "Autonomous review consensus failed: test suite reported failures."
         context.log(f"Stage 4 failed: {err_msg}")
@@ -4476,6 +4459,20 @@ def run_review_stage(context: FlowContext) -> StageResult:
     return result
 
 
+def review_loop_approved(loop_res: dict[str, Any]) -> bool:
+    """True only when the ensemble verdict is APPROVED and the loop's consensus is approved (exit code 0)."""
+    return loop_res.get("ensemble_verdict") == str(ConsensusVerdict.APPROVED) and bool(
+        (loop_res.get("consensus") or {}).get("approved")
+    )
+
+
+def review_summary_lines(loop_res: dict[str, Any]) -> list[str]:
+    """Summary lines with the real per-reviewer verdicts of the deciding iteration."""
+    lines = [f"  Ensemble       : {loop_res.get('ensemble_verdict') or 'NOT RUN'}"]
+    lines.extend(f"    {render_reviewer_summary_line(r)}" for r in loop_res.get("reviewers") or [])
+    return lines
+
+
 def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
     """CLI dispatcher for 'holon review-loop' (and aliases 'review', 'pr-review-loop').
 
@@ -4484,7 +4481,8 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
         token_reduce: Whether token reduction proxy is enabled.
 
     Returns:
-        int: Process exit code: 0 only when the consensus was approved and posted (human halt), otherwise 1.
+        int: Process exit code: 0 only when the ensemble verdict is APPROVED and the consensus was approved and
+        posted (human halt), otherwise 1.
     """
     repo_dir = getattr(args, "repo_dir", ".")
     target = getattr(args, "target", "")
@@ -4519,7 +4517,7 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
     )
 
     consensus = loop_res.get("consensus", {})
-    approved = bool(consensus.get("approved"))
+    approved = review_loop_approved(loop_res)
 
     if json_output:
         print(json.dumps(loop_res, indent=2))
@@ -4532,6 +4530,8 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
             f"  CI Checks      : {ci.get('total', 0)} total, {ci.get('passed', 0)} passed, "
             f"{ci.get('failed', 0)} failed, {ci.get('pending', 0)} pending ({ci.get('source', 'unknown')})"
         )
+        for line in review_summary_lines(loop_res):
+            print(line)
         print(f"  Consensus      : {consensus.get('status', 'unknown').upper()}")
         print("===============================================================\n")
         if approved:

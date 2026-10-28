@@ -1,8 +1,9 @@
 """Independent reviewer ensemble for the Stage 4 review loop, with a strict report trailer and a unanimity consensus.
 
 This module runs ``N`` independent reviewer agent turns against one diff, parses each reviewer's report and decides
-the ensemble verdict. Stage 4 does not call it yet: wiring it into ``run_review_loop()`` and rebuilding the consensus
-report is the next change.
+the ensemble verdict. ``run_review_loop()`` calls :func:`run_ensemble` and :func:`decide_consensus` once per iteration,
+with a request built by :func:`build_review_request`, and ``review_report.py`` renders the posted report from the
+results; the loop refuses to run reviewers outside a sandbox.
 
 Reviewer turns
     Each reviewer gets a fresh scratch directory ``.holon/review/iter-<n>/reviewer-<i>/`` (``.holon/`` is git-ignored)
@@ -46,12 +47,15 @@ from typing import Any
 from sandbox_executor.agent_runner import AgentRunner, get_runner
 from sandbox_executor.artefacts import ArtefactSection, ArtefactSpec
 from sandbox_executor.budgets import Budgets, StageTimer, load_budgets
+from sandbox_executor.git import EMPTY_DIFF_EXCLUDES, run_git
 from sandbox_executor.redaction import redact_agent_secrets
+from sandbox_executor.review_target import ReviewTarget
 from sandbox_executor.scaffold import REVIEW_LOOP_TEMPLATE
 from sandbox_executor.turns import AuthoringOutcome, TurnRunner, run_turn, supervise_authoring_turn
 
 __all__ = [
     "DEFAULT_ENSEMBLE_SIZE",
+    "ENSEMBLE_SIZE_HELP",
     "REVIEW_REPORT_SPEC",
     "REVIEW_STAGE",
     "SEVERITIES",
@@ -66,6 +70,7 @@ __all__ = [
     "ReviewerStatus",
     "ReviewerVerdict",
     "TrailerError",
+    "build_review_request",
     "build_reviewer_prompt",
     "decide_consensus",
     "parse_review_trailer",
@@ -78,6 +83,11 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 DEFAULT_ENSEMBLE_SIZE = 3
+# Help text for every ``--ensemble-size`` option (``holon flow``, ``holon review-loop`` and the container entrypoint).
+ENSEMBLE_SIZE_HELP = (
+    "Number of independent reviewer agent turns per iteration; approval needs every reviewer to approve with zero "
+    "findings (default: 3)"
+)
 # Budget stage for reviewer turns; ``review`` resolves to the ``review_iteration`` ceiling in ``budgets.py``. One
 # ensemble is one review iteration, so all of its reviewers share a single stage timer.
 REVIEW_STAGE = "review"
@@ -190,6 +200,35 @@ class ReviewRequest:
     pr_body: str
     diff_text: str
     iteration: int
+
+
+def build_review_request(
+    target: ReviewTarget, base_ref: str, iteration: int, pr_title: str, pr_body: str, repo_dir: str
+) -> ReviewRequest:
+    """Build the request every reviewer judges: the real diff between ``base_ref`` and the resolved head SHA.
+
+    The diff excludes the ledgers, plans and execution notes, as the empty-diff guard does. PR title and body come
+    from the resolved target when it carries them, else from the caller.
+
+    Raises:
+        RuntimeError: If the head SHA is missing or ``git diff`` fails or times out (the iteration then fails closed).
+    """
+    if not target.head_sha:
+        raise RuntimeError(f"'{target.head_branch}' has no resolved head commit to review")
+    pathspec = ["--", ".", *(f":(exclude){prefix}" for prefix in EMPTY_DIFF_EXCLUDES)]
+    try:
+        proc = run_git(["diff", f"{base_ref}...{target.head_sha}", *pathspec], cwd=repo_dir, check=True, timeout=120)
+    except TimeoutError as exc:
+        raise RuntimeError(f"git diff timed out: {redact_agent_secrets(str(exc))}") from exc
+    return ReviewRequest(
+        repo_dir=repo_dir,
+        head_sha=target.head_sha,
+        base_ref=base_ref,
+        pr_title=target.title or pr_title,
+        pr_body=target.body or pr_body,
+        diff_text=proc.stdout or "",
+        iteration=iteration,
+    )
 
 
 @dataclass(frozen=True)

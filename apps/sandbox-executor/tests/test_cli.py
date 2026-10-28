@@ -1034,6 +1034,7 @@ class TestHolonFlowCLI(unittest.TestCase):
         fake_result = {
             "target": "my-branch",
             "consensus": {"approved": True, "status": "approved", "iterations": 1},
+            "ensemble_verdict": "APPROVED",
             "halted_for_human": True,
             "bean_0034_enforced": True,
             "human_approval_command": "holon review approve my-branch",

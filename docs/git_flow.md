@@ -143,13 +143,13 @@ I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/E-17714
 
 The evolution pipeline traverses five deterministic stages, representing a single continuous provenance lifecycle:
 
-| Stage              | Name                     | CLI Command                            | Artifacts & Outputs                                                                 |
-| :----------------- | :----------------------- | :------------------------------------- | :---------------------------------------------------------------------------------- |
-| **1. Intent**      | Intent Initialisation    | `holon intent <intent.json>`           | Intent branch `I-.../_` + `holon-knowledge/ledger/intents.jsonl`                    |
-| **2. Plan**        | Plan Generation          | `holon plan <intent_branch>`           | Plan branch `I-.../P-.../_` + `plans/P-*.md` + `plans.jsonl`                        |
-| **3. Execute**     | Sandbox Execution        | `holon execute <plan_branch>`          | Execution branch `I-.../P-.../E-.../_` + `executions.jsonl`                         |
-| **4. Review Loop** | PR Review & Resolve Loop | `holon review-loop <execution_branch>` | PR raised + 3-agent ensemble consensus review + micro-actions in `executions.jsonl` |
-| **5. Calibrate**   | Calibration Analysis     | `holon calibrate <execution_branch>`   | `/calibrated` branch + `plans/P-*_calibration.md` (included in PR diff)             |
+| Stage              | Name                  | CLI Command                            | Artifacts & Outputs                                                                       |
+| :----------------- | :-------------------- | :------------------------------------- | :---------------------------------------------------------------------------------------- |
+| **1. Intent**      | Intent Initialisation | `holon intent <intent.json>`           | Intent branch `I-.../_` + `holon-knowledge/ledger/intents.jsonl`                          |
+| **2. Plan**        | Plan Generation       | `holon plan <intent_branch>`           | Plan branch `I-.../P-.../_` + `plans/P-*.md` + `plans.jsonl`                              |
+| **3. Execute**     | Sandbox Execution     | `holon execute <plan_branch>`          | Execution branch `I-.../P-.../E-.../_` + `executions.jsonl`                               |
+| **4. Review Loop** | PR Review Loop        | `holon review-loop <execution_branch>` | PR raised + sandboxed reviewer ensemble (unanimity) + micro-actions in `executions.jsonl` |
+| **5. Calibrate**   | Calibration Analysis  | `holon calibrate <execution_branch>`   | `/calibrated` branch + `plans/P-*_calibration.md` (included in PR diff)                   |
 
 #### Flow Equivalence Guarantee
 
@@ -222,13 +222,13 @@ The guarantee has five deliberate limits:
   it does not wait for CI, runs no review iteration and posts no consensus, so no evidence -- not even a Stage 3
   `test_pass_rate` of 1.0 or green CI on an existing PR -- can approve it. The loop returns `approved: false` with the
   refusal as its `error` (an `empty_diff` refusal appends no ledger rows; a `diff_unverified` refusal appends only a
-  `failed` "halted without consensus" summary row naming it and the review action event, with no `ACT-REV`, `ACT-FIND`,
-  `ACT-RES` or `ACT-POST` rows), and Stage 4 fails with the refusal's own reason
+  `failed` "halted without consensus" summary row naming it and the review action event, with no `ACT-REV`, `ACT-FIND`
+  or `ACT-POST` rows), and Stage 4 fails with the refusal's own reason
   (`Autonomous review halted: Refusing to create or update a PR for ...`), never as a test failure or as unmeasured
   tests, so Stage 5 does not run. An empty diff has consensus status `rejected` and an unverifiable one `failed`. Dry
-  runs never invoke the guard and are never approved: a simulated approval reports `not_measured`. A consensus whose
-  post to the PR fails or raises is `post_failed` and not approved, and `holon review-loop` exits 1 unless the consensus
-  is approved and posted.
+  runs never invoke the guard, dispatch no reviewer and are never approved: a clean simulation reports `not_measured`. A
+  consensus whose post to the PR fails or raises is `post_failed` and not approved, and `holon review-loop` exits 1
+  unless the ensemble verdict is `APPROVED` and the consensus is approved and posted.
 - **Dispatch needs `origin`.** `--dry-run` validates the payload and names the branches without dispatching anything.
   `--skip-push` is rejected outside `--dry-run` -- on every run, including a `--from-stage` or `--checkpoint` resume
   from any stage -- before any stage runs, because the role containers clone from and push to `origin`, Stage 4 opens
@@ -254,10 +254,19 @@ The guarantee has five deliberate limits:
   succeeds the flow routes the role containers through the proxy and the manual commands do not. To launch identical
   containers either way, pass `--token-reduce` to the manual commands or set `HOLON_TOKEN_REDUCE=0` for both.
 
-**Reviewer ensemble (not yet wired).** The Stage 4 loop described above still runs no reviewer agent. The reviewer
-ensemble (`sandbox_executor/review_ensemble.py`: independent, mutually blind reviewer turns, a strict report trailer and
-a fail-closed unanimity consensus) exists and is tested, but Stage 4 does not call it yet; see the
-[sandbox-executor README](../apps/sandbox-executor/README.md#reviewer-ensemble-not-yet-wired).
+**Reviewer ensemble.** Every Stage 4 iteration is decided by real reviewers: after the mergeability and CI probes,
+`run_review_loop()` runs `--ensemble-size` (default 3, on both `holon flow` and `holon review-loop`) independent,
+mutually blind reviewer agent turns on the real diff between the base and the resolved head SHA
+(`sandbox_executor/review_ensemble.py`). Approval needs every reviewer to approve with zero findings, plus a mergeable
+PR and green CI; zero or failed reviewers, any finding (a single nit) and unknown CI never approve. There is no
+automatic resolver: the first iteration that is not approved stops the stage, its `ACT-FIND` rows are recorded in
+`executions.jsonl` and the command exits 1. The posted report contains only real reviewer data and is posted only when
+at least one reviewer completed. Reviewer turns run only inside the sandbox. `holon review-loop` runs the loop in the
+`review-loop` role container; `holon flow` Stage 4 runs the loop on the host, where it refuses with "Refusing to run
+reviewer agent turns on the host" before any PR, iteration or post, so a flow on a host currently stops at Stage 4 and
+the review is run with `holon review-loop <execution_branch>`. Routing Stage 4 reviewer turns into the role container
+needs a result transport for the container's ledger rows and is follow-up work. See the
+[sandbox-executor README](../apps/sandbox-executor/README.md#reviewer-ensemble).
 
 #### Safety Halt & Merge Boundary (Bean 0034)
 

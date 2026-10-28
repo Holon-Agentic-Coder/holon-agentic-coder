@@ -194,17 +194,17 @@ suite are all green. On CI, at the first all-green head `8925e19`, `unit (macos-
      `todo/mitm_wire_logs`, `custom`, `/tmp/generated-agent`, `/tmp/holon-pi-agent-test`) existed.
 8. **Step 8 (after-measurements).** All local figures come from the same host as step 1.
 
-   | environment       | step or job                              | before   | after    | delta      | speed-up    |
-   | ----------------- | ---------------------------------------- | -------- | -------- | ---------- | ----------- |
-   | local, 18 cores   | unit selection, serial (`-n 0`)          | 89.57 s  | 87.42 s  | −2.15 s    | 1.02x       |
-   | local, 18 cores   | unit selection, `task test` (xdist)      | 89.57 s  | 29.82 s  | −59.75 s   | 3.00x       |
-   | local, 18 cores   | stress suite (`-m stress`)               | 185.83 s | 61.80 s  | −124.03 s  | 3.01x       |
-   | local, 18 cores   | git processes, flow and executor (573)   | 12,481   | 9,234    | −3,247     | −26 %       |
-   | local, 18 cores   | of which `git maintenance`               | 1,308    | 0        | −1,308     | n/a         |
-   | local, 18 cores   | `test_flow.py` fixture setup             | 2.46 s   | 0.88 s   | −1.58 s    | 2.80x       |
-   | CI, ubuntu-latest | unit: job / `Run unit tests` pytest time | 251/242s | 136/126s | −115/−116s | 1.85x/1.92x |
-   | CI, macos-latest  | unit: job / `Run unit tests` pytest time | 404/382s | 178/156s | −226/−226s | 2.27x/2.45x |
-   | CI, ubuntu-latest | Workspace survival: job / pytest time    | 430/417s | 273/260s | −157/−157s | 1.58x/1.60x |
+   | environment       | step or job                              | before     | after      | delta        | speed-up    |
+   | ----------------- | ---------------------------------------- | ---------- | ---------- | ------------ | ----------- |
+   | local, 18 cores   | unit selection, serial (`-n 0`)          | 89.57 s    | 87.42 s    | −2.15 s      | 1.02x       |
+   | local, 18 cores   | unit selection, `task test` (xdist)      | 89.57 s    | 29.82 s    | −59.75 s     | 3.00x       |
+   | local, 18 cores   | stress suite (`-m stress`)               | 185.83 s   | 61.80 s    | −124.03 s    | 3.01x       |
+   | local, 18 cores   | git processes, flow and executor (573)   | 12,481     | 9,234      | −3,247       | −26 %       |
+   | local, 18 cores   | of which `git maintenance`               | 1,308      | 0          | −1,308       | n/a         |
+   | local, 18 cores   | `test_flow.py` fixture setup             | 2.46 s     | 0.88 s     | −1.58 s      | 2.80x       |
+   | CI, ubuntu-latest | unit: job / `Run unit tests` pytest time | 251/241.8s | 136/123.4s | −115/−118.4s | 1.85x/1.96x |
+   | CI, macos-latest  | unit: job / `Run unit tests` pytest time | 404/382.4s | 178/153.1s | −226/−229.3s | 2.27x/2.50x |
+   | CI, ubuntu-latest | Workspace survival: job / pytest time    | 430/417.0s | 273/257.7s | −157/−159.3s | 1.58x/1.62x |
 
    The CI "before" values are the intent's fbd3b35 baseline. The CI "after" values were filled in during PR review from
    the PR's own GitHub Actions runs at `8925e19`, the first head where every job passed (see CI After-Numbers below).
@@ -273,18 +273,27 @@ suite are all green. On CI, at the first all-green head `8925e19`, `unit (macos-
 
 ## CI After-Numbers (Added During PR Review)
 
-Real GitHub Actions timings for this pull request, against the baseline on `main` at `fbd3b35`. Job total is the whole
-job; the test step is the pytest step alone. The "after" column is head `8925e19`: the first head on which every job
+Real GitHub Actions timings for this pull request, against the baseline on `main` at `fbd3b35`. Each cell gives two
+figures on fixed bases: the job total (job start to job end, from the Actions API) and pytest's own reported time (the
+`in N.NNs` figure on pytest's final summary line in the job log). The pytest time excludes the rest of its step (for
+example `uv sync` and interpreter start-up), so it is a few seconds below the Actions step duration. Deltas and
+speed-ups are computed from these figures. The "after" column is head `8925e19`: the first head on which every job
 passed, and the last head that changes code or tests. Later commits touch only these notes, so the `8925e19` figures
 describe the final test code. The earlier heads are kept for reference only.
 
-| job                                  | baseline `main` `fbd3b35` (job / test step) | after: head `8925e19` (job / test step) | speed-up (job / test step) | earlier head `7204b9a` (job / test step) | earlier head `7aa6b25` (job) |
-| ------------------------------------ | ------------------------------------------- | --------------------------------------- | -------------------------- | ---------------------------------------- | ---------------------------- |
-| `unit (macos-latest)`                | 404 s / 382 s                               | 178 s / 156 s                           | 2.27x / 2.45x              | 171 s / 157 s                            | 169 s                        |
-| `unit (ubuntu-latest)`               | 251 s / 242 s                               | 136 s / 126 s                           | 1.85x / 1.92x              | 122 s / 114 s (failed, see below)        | 140 s                        |
-| `Workspace survival (ubuntu-latest)` | 430 s / 417 s                               | 273 s / 260 s                           | 1.58x / 1.60x              | 178 s / 169 s                            | cancelled                    |
-| `integration`                        | not recorded                                | 159 s                                   | n/a                        | 162 s                                    | not recorded                 |
+| job                                  | baseline `main` `fbd3b35` (job / pytest) | after: head `8925e19` (job / pytest) | delta (job / pytest) | speed-up (job / pytest) | earlier head `7204b9a` (job / pytest) | earlier head `7aa6b25` (job / pytest) |
+| ------------------------------------ | ---------------------------------------- | ------------------------------------ | -------------------- | ----------------------- | ------------------------------------- | ------------------------------------- |
+| `unit (macos-latest)`                | 404 s / 382.41 s                         | 178 s / 153.14 s                     | −226 s / −229.27 s   | 2.27x / 2.50x           | 171 s / 154.37 s                      | 169 s / 147.41 s                      |
+| `unit (ubuntu-latest)`               | 251 s / 241.76 s                         | 136 s / 123.35 s                     | −115 s / −118.41 s   | 1.85x / 1.96x           | 122 s / 111.04 s (failed, see below)  | 140 s / 124.00 s                      |
+| `Workspace survival (ubuntu-latest)` | 430 s / 416.95 s                         | 273 s / 257.66 s                     | −157 s / −159.29 s   | 1.58x / 1.62x           | 178 s / 166.51 s                      | cancelled                             |
+| `integration (ubuntu-latest)`        | 131 s / 29.71 s                          | 159 s / 30.37 s                      | +28 s / +0.66 s      | 0.82x / 0.98x           | 162 s / 30.79 s                       | 146 s / 29.78 s                       |
 
+Runs: `fbd3b35` 40501662438 (unit), 40501662572 (survival), 40501662750 (integration); `8925e19` 40663895210,
+40663895236, 40663895001; `7204b9a` 40662540049, 40662540178, 40662540095; `7aa6b25` 40661853200, 40661853199.
+
+- The `integration` job-total difference is the `Build all Docker images` step (84 s at `fbd3b35`, 95 s at `7aa6b25`,
+  109 s at `7204b9a`, 106 s at `8925e19`), which varies with the Docker layer cache. The integration tests themselves
+  are flat at about 30 s, as expected: they stay serial and this pull request does not change them.
 - `Workspace survival` varied considerably from run to run, although the survival suite itself did not change between
   those heads: 178 s at `7204b9a` against 273 s at `8925e19`. The `8925e19` figure is the one reported as "after"; it is
   still 1.58x faster than the baseline.

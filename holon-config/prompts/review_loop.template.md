@@ -249,6 +249,40 @@ FINDINGS: <int>
 
 ---
 
+## Reviewer turn contract
+
+When you run as one reviewer of the independent ensemble (one reviewer turn), these rules apply and take precedence over
+the loop instructions above:
+
+1. Review only the diff and PR description supplied in this prompt. Do not resolve findings, and do not run other review
+   passes.
+2. Write the full report with your file-write tool to the report path given at the end of this prompt.
+3. End the report with the review trailer block as its final lines. Between the opening and closing marker lines sits
+   one JSON object with exactly the keys `verdict` (`APPROVED` or `CHANGES_REQUESTED`), `critical`, `important` and
+   `nit` (non-negative integers) and `findings` (a list of objects with exactly the keys `severity` (`critical`,
+   `important` or `nit`), `file`, `line` (an integer or `null`) and `summary`).
+4. Each count must equal the number of findings with that severity, and `APPROVED` requires every count to be zero. A
+   report whose trailer is missing, malformed or inconsistent counts as a failed review, never as an approval.
+5. For reviewer turns, this JSON trailer block supersedes the line-based on-disk trailer described above.
+6. Never modify code, commit, push, run `gh pr merge`, enable auto-merge or add the PR to a merge queue.
+7. Never read other files under `.holon/review/`; other reviewers' reports are not part of your input.
+
+The final lines of a report with no findings:
+
+```text
+<!-- holon-review-trailer -->
+{
+  "verdict": "APPROVED",
+  "critical": 0,
+  "important": 0,
+  "nit": 0,
+  "findings": []
+}
+<!-- /holon-review-trailer -->
+```
+
+---
+
 ## 📋 Evaluation Context
 
 - **Target Ref**: `{target}`

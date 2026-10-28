@@ -97,9 +97,10 @@ Two properties make the guard worth keeping:
   excluding `test_agent_runner.py`, the module that exercises the real `cleanup_repo_dir`/`_rmtree`.
 - It launches its child with `uv run pytest` and the unit job's marker selection
   (`-m "not integration_test and not stress"`) and parallel flags (`-n auto --dist worksteal`), through the shared
-  helpers in `hermetic_fixtures.py` (`pytest_suite_command`, `simulated_container_env`). It must not shell out to
-  `python -m unittest`: `unittest` ignores pytest markers, so it re-runs the `integration_test`-marked Docker image
-  tests that the unit job never builds, and the guard then fails for an environment reason unrelated to hermeticity.
+  helpers in `hermetic_fixtures.py` (`pytest_suite_command`, `simulated_container_env`). The child must run pytest
+  itself: only pytest honours the marker selection, so any other runner would re-run the `integration_test`-marked
+  Docker image tests that the unit job never builds, and the guard would then fail for an environment reason unrelated
+  to hermeticity.
 
 ### Rule 5: Prove Suite-Wide Safety in CI, Not Locally
 

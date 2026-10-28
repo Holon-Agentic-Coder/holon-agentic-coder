@@ -706,20 +706,21 @@ def decide_consensus(
 
     FAILED when nothing was dispatched, the result count differs from ``configured_size`` or any reviewer FAILED.
     CHANGES_REQUESTED when any reviewer requested changes or reported any finding (a single nit blocks), or when
-    ``mergeable`` or ``ci_green`` is not exactly ``True`` (unknown is never clean). APPROVED only otherwise, and never
-    with zero completed reviewers.
+    ``mergeable`` or ``ci_green`` is not exactly ``True`` (unknown is never clean). APPROVED only otherwise.
+    :func:`_ensemble_failed` guarantees APPROVED never comes from zero completed reviewers.
     """
     if _ensemble_failed(results, configured_size):
         return ConsensusVerdict.FAILED
     if _any_reviewer_objects(results) or mergeable is not True or ci_green is not True:
         return ConsensusVerdict.CHANGES_REQUESTED
-    if not any(result.status is ReviewerStatus.COMPLETED for result in results):
-        return ConsensusVerdict.FAILED
     return ConsensusVerdict.APPROVED
 
 
 def _ensemble_failed(results: Sequence[ReviewerResult], configured_size: int) -> bool:
-    """True when the ensemble did not run in full with every reviewer completing."""
+    """True when the ensemble did not run in full with every reviewer completing.
+
+    Empty results and any non-COMPLETED result are FAILED here, so past this check at least one reviewer completed.
+    """
     if configured_size < 1 or not results or len(results) != configured_size:
         return True
     return any(result.status is not ReviewerStatus.COMPLETED for result in results)

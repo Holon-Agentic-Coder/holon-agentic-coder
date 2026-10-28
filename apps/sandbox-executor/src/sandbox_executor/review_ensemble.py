@@ -484,7 +484,10 @@ def _review_root(repo_dir: str) -> str:
     expected = os.path.join(os.path.realpath(repo_dir), REVIEW_ROOT_REL)
     root = os.path.realpath(os.path.join(repo_dir, REVIEW_ROOT_REL))
     if root != expected:
-        raise ValueError(f"review scratch root {REVIEW_ROOT_REL}/ resolves outside the repository")
+        raise ValueError(
+            f"review scratch root {REVIEW_ROOT_REL}/ does not resolve to {REVIEW_ROOT_REL}/ under the repository"
+            f" directory (a symlinked .holon or {REVIEW_ROOT_REL} is the likely cause)"
+        )
     return root
 
 

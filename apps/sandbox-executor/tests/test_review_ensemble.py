@@ -471,13 +471,15 @@ def _snapshot(root: Path) -> dict[str, str]:
     }
 
 
-@pytest.mark.parametrize("symlinked", [".holon", ".holon/review"])
-def test_scratch_root_resolving_outside_the_repository_fails_every_reviewer_without_dispatch(
-    tmp_path: Path, symlinked: str
+@pytest.mark.parametrize(
+    ("symlinked", "inside_repo"), [(".holon", False), (".holon/review", False), (".holon/review", True)]
+)
+def test_scratch_root_not_resolving_to_its_expected_path_fails_every_reviewer_without_dispatch(
+    tmp_path: Path, symlinked: str, inside_repo: bool
 ) -> None:
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
-    outside = tmp_path / "outside"
+    outside = repo_dir / "elsewhere" if inside_repo else tmp_path / "outside"
     target_root = outside / "review" if symlinked == ".holon" else outside
     stale = target_root / "iter-1" / "reviewer-1" / "report.md"
     stale.parent.mkdir(parents=True)
@@ -494,7 +496,8 @@ def test_scratch_root_resolving_outside_the_repository_fails_every_reviewer_with
     assert [result.index for result in results] == [1, 2, 3]
     assert [result.status for result in results] == [ReviewerStatus.FAILED] * 3
     assert all("isolation" in (result.failure_reason or "") for result in results)
-    assert all("outside the repository" in (result.failure_reason or "") for result in results)
+    assert all("does not resolve to .holon/review/" in (result.failure_reason or "") for result in results)
+    assert all("symlinked .holon" in (result.failure_reason or "") for result in results)
     assert decide_consensus(results, 3, mergeable=True, ci_green=True) is ConsensusVerdict.FAILED
     assert _snapshot(outside) == before
     assert link.is_symlink()

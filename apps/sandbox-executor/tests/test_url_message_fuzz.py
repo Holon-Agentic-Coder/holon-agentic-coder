@@ -9,9 +9,11 @@ rendering) must not hold any 4-character fragment of the credential. The #94 sit
 `holon doctor` (environment section, text and `--json`), the gateway probe (probe URL, cache line,
 fetch errors, `redact_url`) and the model envelope lines.
 
-Credentials are built at runtime from letters that occur in no message (`FGJQVZ`) and digits, and
-compared case-insensitively, so a 4-character check cannot match ordinary output. Failure messages
-name the case id only, never the value.
+Credentials are built at runtime from letters that occur in no message built by the code (`FGJQVZ`)
+and digits, and compared case-insensitively, so a 4-character check cannot match ordinary output.
+The one incidental random text in the checked output, the exact `--env-file` path that `mkstemp`
+creates, is masked before the fragment check, so a random temp path cannot cause a false leak.
+Failure messages name the case id only, never the value.
 """
 
 import argparse
@@ -387,48 +389,125 @@ class _DockerRecorder:
         return MagicMock(returncode=0)
 
 
-def test_every_delimiter_in_a_password_stays_off_argv_and_echo(monkeypatch):
-    """Main-run argv, probe argv and the `Executing:` echo hold no password part; the env-file does."""
-    from sandbox_executor import preflight
-    from sandbox_executor.redaction import redact_command, redact_text
-
+def _patch_docker_host(monkeypatch) -> None:
+    """Stand in a docker binary and empty mount helpers, so `run_docker_container` reaches the echo."""
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
     monkeypatch.setattr(cli, "get_agent_session_mounts", lambda agent_id: [])
     monkeypatch.setattr(cli, "get_ssh_auth_mounts", lambda: ([], {}))
     monkeypatch.setattr(cli, "get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {}))
-    failures: list[str] = []
-    for case_id, value, parts in _delimiter_cases():
-        docker = _DockerRecorder()
-        env = {"HOLON_REPO_URL": "https://github.com/myorg/myrepo.git", "HOLON_PROXY_URL": value}
-        stdout = io.StringIO()
-        with (
-            patch.dict(os.environ, env),
-            patch.object(cli.subprocess, "run", docker),
-            contextlib.redirect_stdout(stdout),
-            contextlib.redirect_stderr(io.StringIO()),
-        ):
-            rc = cli.run_docker_container("executor", "img", [], agent_id="claude-agent")
-            probe_argv, probe_secret = preflight.build_probe_docker_cmd(
-                "claude-agent", "m", "img", "probe", session_mounts=[]
-            )
-        echo = [line for line in stdout.getvalue().splitlines() if line.startswith("Executing:")]
-        texts = {
-            "main-argv": [" ".join(docker.argv)],
-            "probe-argv": [" ".join(probe_argv)],
-            "echo": echo,
-            "env-item-echo": [redact_command(["-e", f"HOLON_PROXY_URL={value}"])],
-            # Free text marks a schemeless value as a URL only by its `<NAME>_URL=` assignment.
-            "free-text": [
-                redact_text(f"proxy {'HOLON_PROXY_URL=' if case_id.startswith('schemeless') else ''}{value} x")
-            ],
-        }
-        leaked = [where for where, text in texts.items() if any(_leaks(text, part) for part in parts)]
-        if rc != 0 or not echo:
-            leaked.append("no-run")
-        if docker.env_file.get("HOLON_PROXY_URL") != value or probe_secret.get("HOLON_PROXY_URL") != value:
-            leaked.append("not-env-file")
-        failures.extend(f"{case_id}:{where}" for where in leaked)
+
+
+def _delimiter_texts(case_id: str, value: str, argv: list[str], probe_argv: list[str], echo: list[str]):
+    """Return the checked texts of one delimiter case, keyed by site name."""
+    from sandbox_executor.redaction import redact_command, redact_text
+
+    return {
+        "main-argv": [" ".join(argv)],
+        "probe-argv": [" ".join(probe_argv)],
+        "echo": echo,
+        "env-item-echo": [redact_command(["-e", f"HOLON_PROXY_URL={value}"])],
+        # Free text marks a schemeless value as a URL only by its `<NAME>_URL=` assignment.
+        "free-text": [redact_text(f"proxy {'HOLON_PROXY_URL=' if case_id.startswith('schemeless') else ''}{value} x")],
+    }
+
+
+ENV_FILE_PLACEHOLDER = "<env-file>"
+
+
+def _without_env_file_path(texts: list[str], argv: list[str]) -> list[str]:
+    """Replace the exact `--env-file` path of `argv` in `texts` with a placeholder, and nothing else.
+
+    The path comes from `mkstemp` in a fixture-owned directory, so its random characters can share a
+    4-letter run with a password part without any part having leaked.
+    """
+    if "--env-file" not in argv:
+        return list(texts)
+    path = argv[argv.index("--env-file") + 1]
+    return [text.replace(path, ENV_FILE_PLACEHOLDER) for text in texts]
+
+
+def _leak_sites(texts: dict[str, list[str]], argv: list[str], parts: list[str]) -> list[str]:
+    """Name each checked text that holds a fragment of any password part once the env-file path is masked."""
+    return [
+        where
+        for where, text in texts.items()
+        if any(_leaks(_without_env_file_path(text, argv), part) for part in parts)
+    ]
+
+
+def _delimiter_case_failures(case_id: str, value: str, parts: list[str]) -> list[str]:
+    """Run the main container and the probe for one case and name every failing site."""
+    from sandbox_executor import preflight
+
+    docker = _DockerRecorder()
+    env = {"HOLON_REPO_URL": "https://github.com/myorg/myrepo.git", "HOLON_PROXY_URL": value}
+    stdout = io.StringIO()
+    with (
+        patch.dict(os.environ, env),
+        patch.object(cli.subprocess, "run", docker),
+        contextlib.redirect_stdout(stdout),
+        contextlib.redirect_stderr(io.StringIO()),
+    ):
+        rc = cli.run_docker_container("executor", "img", [], agent_id="claude-agent")
+        probe_argv, probe_secret = preflight.build_probe_docker_cmd(
+            "claude-agent", "m", "img", "probe", session_mounts=[]
+        )
+    echo = [line for line in stdout.getvalue().splitlines() if line.startswith("Executing:")]
+    failures = _leak_sites(_delimiter_texts(case_id, value, docker.argv, probe_argv, echo), docker.argv, parts)
+    if rc != 0 or not echo:
+        failures.append("no-run")
+    if docker.env_file.get("HOLON_PROXY_URL") != value or probe_secret.get("HOLON_PROXY_URL") != value:
+        failures.append("not-env-file")
+    return failures
+
+
+def test_every_delimiter_in_a_password_stays_off_argv_and_echo(monkeypatch):
+    """Main-run argv, probe argv and the `Executing:` echo hold no password part; the env-file does."""
+    _patch_docker_host(monkeypatch)
+    failures = [
+        f"{case_id}:{where}"
+        for case_id, value, parts in _delimiter_cases()
+        for where in _delimiter_case_failures(case_id, value, parts)
+    ]
     assert not failures, f"{len(failures)} delimiter cases failed, e.g. {failures[:40]}"
+
+
+def _colliding_parts() -> list[str]:
+    """Return two fixed password parts built from `_LETTERS`; the first repeats one 4-letter run."""
+    run = "".join(_LETTERS[i] for i in (5, 3, 4, 2))
+    return [run * 3, _LETTERS * 2]
+
+
+def test_env_file_path_sharing_a_part_run_is_not_a_leak(monkeypatch, tmp_path_factory):
+    """A random env-file path that happens to share a 4-letter run with a part is not reported as a leak."""
+    _patch_docker_host(monkeypatch)
+    parts = _colliding_parts()
+    env_dir = tmp_path_factory.mktemp(f"env-{parts[0][:FRAGMENT_LEN].lower()}")
+    os.chmod(env_dir, 0o700)
+    monkeypatch.setattr(cli, "env_file_dir", lambda: str(env_dir))
+    assert _leaks([str(env_dir)], parts[0]), "the env-file directory must share a run with the part"
+    value = DELIMITER_FORMS["http"].format(c="[".join(parts))
+    assert _delimiter_case_failures("http/'['", value, parts) == []
+
+
+@pytest.mark.parametrize(
+    ("site", "template"),
+    [
+        ("main-argv", "docker run --env-file {path} -e X={fragment} img"),
+        ("echo", "Executing: docker run --env-file {path} -e X={fragment} img"),
+        ("main-argv", "docker run --env-file {path}{fragment} img"),
+        ("echo", "Executing: docker run --env-file {path}{fragment} img"),
+    ],
+    ids=["main-argv", "echo", "main-argv-beside-path", "echo-beside-path"],
+)
+def test_fragment_beside_env_file_path_is_still_a_leak(site, template, tmp_path_factory):
+    """A 4-character fragment of a part in the argv or the echo is reported, even right after the path."""
+    parts = _colliding_parts()
+    path = str(tmp_path_factory.mktemp(f"env-{parts[0][:FRAGMENT_LEN].lower()}") / "holon-env-x")
+    argv = ["docker", "run", "--env-file", path, "img"]
+    texts = {"main-argv": [" ".join(argv)], "echo": [f"Executing: {' '.join(argv)}"]}
+    texts[site] = [template.format(path=path, fragment=parts[1][:FRAGMENT_LEN])]
+    assert _leak_sites(texts, argv, parts) == [site]
 
 
 @pytest.mark.parametrize(

@@ -638,10 +638,12 @@ Human creates a root intent to "Implement metrics module". Agent decomposes into
 nests under the plan that listed it (`P-1771890501-claude-code-claude-sonnet-4.6` for the root's sub-intents), so the
 branch path records which plan spawned it.
 
-> [!NOTE] The merge steps below show the target model of automatic merges for leaf sub-intents; whether a nested parent
-> such as `I-1771890503-implement-entropy` also stops for a human is still open (see [Git Flow](git_flow.md) section
-> 4.2). In the current `holon flow`, the children run one at a time, each through the full pipeline, and each opens a PR
-> into its parent intent branch that the maintainer merges; nesting stops at `MAX_SUB_INTENT_DEPTH`.
+> [!NOTE] Every sub-intent, including the nested parent `I-1771890503-implement-entropy`, is cut from and merged into
+> its deciding plan branch; the agent raises and merges each sub-intent PR automatically, and only the root intent's PR
+> to `main` stops for a human. The children run one at a time, each through the full pipeline; nesting stops at
+> `MAX_SUB_INTENT_DEPTH`. Until the implementation follows, the current `holon flow` still targets the parent intent
+> branch and leaves child PR merges to the maintainer (see [Git Flow](git_flow.md) Stage 3 under the flow equivalence
+> guarantee).
 
 ### Intent hierarchy
 
@@ -770,6 +772,7 @@ $ git commit -m "Create metrics module structure"
   "parent_intent_id": "I-1771890500-implement-metrics-module",
   "deciding_branch": "I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_",
   "parent_plan_id": "P-1771890501-claude-code-claude-sonnet-4.6",
+  "target_branch": "I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_",
   "goal": "Implement P(success) estimator",
   "constraints": {
     "entropy_budget": 37.5
@@ -781,28 +784,30 @@ $ git commit -m "Create metrics module structure"
 **Git:**
 
 ```bash
-$ git checkout -b I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890502-implement-p-success/_
+$ git checkout -b I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890502-implement-p-success/_ origin/I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
 ```
 
-**Rebase from parent before execution:**
+**Rebase from the deciding plan branch before execution:**
 
 ```bash
-$ git rebase I-1771890500-implement-metrics-module/_
+$ git fetch origin
+$ git rebase origin/I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
 ```
 
 **Execute:** (similar to Example 1)
 
-**Rebase from parent after execution:**
+**Rebase from the deciding plan branch after execution:**
 
 ```bash
-$ git rebase I-1771890500-implement-metrics-module/_
+$ git fetch origin
+$ git rebase origin/I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
 ```
 
-**Merge to parent (target model: no human review for sub-intent):**
+**Merge into the deciding plan branch (automatic, raised and merged by the agent, no human review):**
 
 ```bash
-$ git checkout I-1771890500-implement-metrics-module/_
-$ git merge I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890502-implement-p-success/_
+$ git checkout I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
+$ git merge --no-ff I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890502-implement-p-success/_
 ```
 
 **Ledger event:**
@@ -814,7 +819,7 @@ $ git merge I-1771890500-implement-metrics-module/P-1771890501-claude-code-claud
   "payload": {
     "intent_id": "I-1771890502-implement-p-success",
     "from_branch": "I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890502-implement-p-success/_",
-    "to_branch": "I-1771890500-implement-metrics-module/_",
+    "to_branch": "I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_",
     "status": "success"
   }
 }
@@ -832,6 +837,7 @@ $ git merge I-1771890500-implement-metrics-module/P-1771890501-claude-code-claud
   "parent_intent_id": "I-1771890500-implement-metrics-module",
   "deciding_branch": "I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_",
   "parent_plan_id": "P-1771890501-claude-code-claude-sonnet-4.6",
+  "target_branch": "I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_",
   "goal": "Implement entropy estimator"
 }
 ```
@@ -867,39 +873,43 @@ I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6
 
 **Each sub-sub-intent:**
 
-1. Rebases from parent (`I-1771890503-implement-entropy`) before execution
+1. Is cut from, and rebases from, its deciding plan branch
+   (`…/I-1771890503-implement-entropy/P-1771890506-claude-code-claude-sonnet-4.6/_`) before execution, with
+   `target_branch` set to that plan branch
 2. Executes
-3. Rebases from parent after execution
-4. Merges to parent (target model: no human review)
+3. Rebases from the deciding plan branch after execution
+4. Merges into the deciding plan branch (automatic, no human review)
 
-**After both sub-sub-intents complete**, the nested parent merges into the root intent branch (target model; whether its
-combined-diff PR also stops for a human is still open, see [Git Flow](git_flow.md) section 4.2):
+**After both sub-sub-intents complete**, the agent raises the nested parent's PR, carrying its own deciding plan branch
+with both sub-sub-intents merged, and merges it automatically into the root's deciding plan branch, with no human
+intervention:
 
 ```bash
-$ git checkout I-1771890500-implement-metrics-module/_
-$ git merge I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890503-implement-entropy/_
+$ git checkout I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
+$ git merge --no-ff I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890503-implement-entropy/P-1771890506-claude-code-claude-sonnet-4.6/_
 ```
 
 ---
 
 #### 6) Complete remaining sub-intents
 
-Sub-intents 3 and 4 execute similarly, merging to parent.
+Sub-intents 3 and 4 execute similarly, each merging automatically into the deciding plan branch.
 
 ---
 
 #### 7) Parent intent complete
 
-**All sub-intents merged to parent branch.**
+**All sub-intents merged into the deciding plan branch**
+(`I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_`), with no human step so far.
 
 **Rebase from main:**
 
 ```bash
-$ git checkout I-1771890500-implement-metrics-module/_
+$ git checkout I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
 $ git rebase origin/main
 ```
 
-**Human review requested** (parent intent).
+**Human review requested** (root intent): the root intent's PR to `main` is the only human stop.
 
 **Human approves.**
 
@@ -907,7 +917,7 @@ $ git rebase origin/main
 
 ```bash
 $ git checkout main
-$ git merge I-1771890500-implement-metrics-module/_
+$ git merge I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
 $ git push origin main
 ```
 
@@ -930,14 +940,16 @@ $ git push origin main
 
 ### Scenario
 
-Two sub-intents modify the same file concurrently, causing a rebase conflict. This is the target model: the current flow
-runs sibling sub-intents one at a time.
+Two sub-intents modify the same file concurrently, causing a rebase conflict. This illustrates concurrent siblings; the
+current flow runs sibling sub-intents one at a time.
 
 ### Setup
 
 **Parent intent:** `I-1771890600-refactor-metrics`
 
-**Deciding plan:** `P-1771890601-claude-code-claude-sonnet-4.6` (both sub-intent branches nest under it)
+**Deciding plan:** `P-1771890601-claude-code-claude-sonnet-4.6` (both sub-intent branches nest under it, are cut from
+`I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/_` and merge back into it automatically;
+siblings build on each other through that branch)
 
 **Sub-intents (concurrent):**
 
@@ -949,9 +961,9 @@ runs sibling sub-intents one at a time.
 #### 1) Sub-intent `add-caching` completes first
 
 ```bash
-$ git checkout I-1771890600-refactor-metrics/_
-$ git merge I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890602-add-caching/_
-# Merge successful
+$ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/_
+$ git merge --no-ff I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890602-add-caching/_
+# Merge successful (automatic, no human review)
 ```
 
 ---
@@ -960,7 +972,8 @@ $ git merge I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet
 
 ```bash
 $ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/_
-$ git rebase I-1771890600-refactor-metrics/_
+$ git fetch origin
+$ git rebase origin/I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/_
 # CONFLICT in holon/metrics/p_success.py
 ```
 
@@ -1002,6 +1015,7 @@ This execution-decided split illustrates the general rule only; the example's ma
   "deciding_branch": "I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/_",
   "parent_plan_id": "P-1771890604-claude-code-claude-sonnet-4.6",
   "parent_execution_id": "E-1771890605-add-logging",
+  "target_branch": "I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/_",
   "goal": "Resolve rebase conflict in p_success.py",
   "intent_type": "reactive",
   "trigger": "rebase_conflict"
@@ -1050,15 +1064,15 @@ This execution-decided split illustrates the general rule only; the example's ma
 
 **Executor agent resolves conflict:**
 
-The sub-intent rebases from its immediate parent, `add-logging`'s intent branch (dual rebase rule,
-[Git Flow](git_flow.md) section 3.1), then brings in the changes already merged into `refactor-metrics`'s intent branch
-and resolves the conflict:
+The sub-intent rebases from its immediate parent, its deciding execution branch `E-1771890605-add-logging` (dual rebase
+rule, [Git Flow](git_flow.md) section 3.1), then brings in the changes already merged into `add-logging`'s deciding plan
+branch and resolves the conflict:
 
 ```bash
 $ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/I-1771890606-resolve-conflict/_
-$ git rebase I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/_
-# Up to date with add-logging
-$ git merge I-1771890600-refactor-metrics/_
+$ git rebase I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/_
+# Up to date with the add-logging execution
+$ git merge I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/_
 # CONFLICT in holon/metrics/p_success.py
 # Manual conflict resolution by agent
 $ git add holon/metrics/p_success.py
@@ -1083,36 +1097,36 @@ $ pytest holon/metrics/test_p_success.py
 
 ---
 
-#### 5) Sub-intent `resolve-conflict` merges to `add-logging`
+#### 5) Sub-intent `resolve-conflict` merges into the `add-logging` execution
 
-`resolve-conflict` is a leaf sub-intent, so it merges into its parent intent branch automatically:
+`resolve-conflict` merges automatically into its deciding execution branch, with no human review:
 
 ```bash
-$ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/_
-$ git merge I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/I-1771890606-resolve-conflict/_
+$ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/_
+$ git merge --no-ff I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/I-1771890606-resolve-conflict/_
 # Merge successful
 ```
 
 ---
 
-#### 6) Sub-intent `add-logging` merges to parent
+#### 6) Sub-intent `add-logging` merges into the deciding plan branch
 
-`add-logging` is a nested parent here (its execution spawned `I-1771890606-resolve-conflict`), so it merges into the
-parent intent branch once that sub-intent has merged into it in step 5 (target model; whether its combined-diff PR also
-stops for a human is still open, see [Git Flow](git_flow.md) section 4.2).
+`add-logging` is a nested parent here (its execution spawned `I-1771890606-resolve-conflict`), so once that sub-intent
+has merged in step 5, the agent raises `add-logging`'s PR, carrying its execution branch, and merges it automatically
+into the deciding plan branch, with no human intervention.
 
 The merge meets the prior-rebase rule ([Git Flow](git_flow.md) section 4.3) without a second `git rebase`. Step 2's
 after-execution rebase failed, and step 3 aborted it and handed the conflict to a reactive intent
-([Git Flow](git_flow.md) section 3.3). Step 4's merge brought in `refactor-metrics`'s intent branch and resolved the
-conflict, and step 5 merged that into `add-logging`'s intent branch, which therefore already contains its parent's tip.
-Re-running `git rebase` would replay `add-logging`'s original commits and raise the same conflict again:
+([Git Flow](git_flow.md) section 3.3). Step 4's merge brought in the deciding plan branch and resolved the conflict, and
+step 5 merged that into `add-logging`'s execution branch, which therefore already contains the deciding plan branch's
+tip. Re-running `git rebase` would replay `add-logging`'s original commits and raise the same conflict again:
 
 ```bash
-$ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/_
-$ git merge-base --is-ancestor I-1771890600-refactor-metrics/_ HEAD
-# Exit 0: the parent intent branch is already contained
-$ git checkout I-1771890600-refactor-metrics/_
-$ git merge I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/_
+$ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/_
+$ git merge-base --is-ancestor I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/_ HEAD
+# Exit 0: the deciding plan branch is already contained
+$ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/_
+$ git merge --no-ff I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/_
 # Merge successful (conflict already resolved)
 ```
 
@@ -1691,20 +1705,22 @@ workflow when executing a sub-intent.
 - Root Intent: `I-1771890389-refactor-metrics`
   - Current Branch: `I-1771890389-refactor-metrics/_`
 - Deciding Plan: `P-1771890390-claude-code-claude-sonnet-4.6` (its `## Sub-intent list` names the sub-intent as item 2)
+  - Deciding Plan Branch: `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_` (the sub-intent's
+    branch base and merge target)
 - Sub-Intent: `I-1771890394-add-logging` (a leaf: it has no sub-intents of its own)
   - Sub-Branch: `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_`
-    (nested under the deciding plan, cut from the parent intent branch)
+    (nested under the deciding plan, cut from the deciding plan branch)
 
 ### Git Command Sequence
 
-#### 1) Spawn the sub-intent branch from the parent branch tip
+#### 1) Spawn the sub-intent branch from the deciding plan branch tip
 
 ```bash
 # Ensure local tracking is up-to-date
 git fetch origin
 
-# Create and checkout the sub-branch rooted at the current parent branch tip
-git checkout -b I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_ origin/I-1771890389-refactor-metrics/_
+# Create and checkout the sub-branch rooted at the current deciding plan branch tip
+git checkout -b I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_ origin/I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
 ```
 
 #### 2) Write code and run tests inside the isolated sandbox
@@ -1721,36 +1737,38 @@ git add holon/metrics/metrics_logging.py tests/test_metrics_logging.py
 git commit -m "feat: add metrics logging"
 ```
 
-#### 4) Rebase onto the latest parent branch (handling concurrency)
+#### 4) Rebase onto the latest deciding plan branch (handling concurrency)
 
-If a sibling sub-intent branch was merged into `I-1771890389-refactor-metrics/_` while `I-1771890394-add-logging` was
-executing, the harness pulls updates and rebases:
+Siblings build on each other through the deciding plan branch. If a sibling sub-intent branch was merged into
+`I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_` while `I-1771890394-add-logging` was
+executing, the agent pulls updates and rebases:
 
 ```bash
-# Fetch latest parent commits
+# Fetch latest deciding plan branch commits
 git fetch origin
 
-# Rebase local work onto the updated parent branch tip
-git rebase origin/I-1771890389-refactor-metrics/_
+# Rebase local work onto the updated deciding plan branch tip
+git rebase origin/I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
 ```
 
 #### 5) Push and trigger automatic merge evaluation
 
-Once tests pass on the rebased code, the branch is pushed and merged into the parent. The merge commands below are the
-target model; in the current flow the child's PR into the parent intent branch is merged by the maintainer:
+Once tests pass on the rebased code, the agent pushes the branch, raises its PR and merges it automatically into the
+deciding plan branch, with no human review (until the implementation follows, the current flow leaves this merge to the
+maintainer; see [Git Flow](git_flow.md) Stage 3 under the flow equivalence guarantee):
 
 ```bash
 # Push branch to remote
 git push origin I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_
 
-# Switch back to the parent branch
-git checkout I-1771890389-refactor-metrics/_
+# Switch to the deciding plan branch
+git checkout I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
 
 # Merge the sub-intent branch with no-fast-forward to preserve history
 git merge --no-ff I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_ -m "merge: sub-intent I-1771890394-add-logging"
 
-# Push the merged parent branch
-git push origin I-1771890389-refactor-metrics/_
+# Push the merged deciding plan branch
+git push origin I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
 ```
 
 #### 6) Branch namespace cleanup
@@ -1769,18 +1787,18 @@ git push origin --delete I-1771890389-refactor-metrics/P-1771890390-claude-code-
 
 ## Summary of examples
 
-| Example | Demonstrates                                                                             |
-| ------- | ---------------------------------------------------------------------------------------- |
-| 1       | Simple root intent, competitive planning, human review, promotion to main                |
-| 2       | Recursive sub-intent decomposition, git branch hierarchy, target-model sub-intent merges |
-| 3       | Rebase conflict detection, reactive intent spawning, conflict resolution                 |
-| 4       | Autonomous intent generation, quality scoring, approval gates                            |
-| 5       | KB pattern extraction, evidence validation, pattern reuse in future planning             |
-| 6       | Model routing based on complexity, ROI measurement                                       |
-| 7       | Failure mode extraction, mitigation identification, failure avoidance                    |
-| 8       | Trust level progression, trust scoring formulas, and tier promotions                     |
-| 9       | Sandbox network/file egress violations, security alerts, and trust demotion              |
-| 10      | Concrete git terminal commands for branching, rebasing, and merging sub-intents          |
+| Example | Demonstrates                                                                                                 |
+| ------- | ------------------------------------------------------------------------------------------------------------ |
+| 1       | Simple root intent, competitive planning, human review, promotion to main                                    |
+| 2       | Recursive sub-intent decomposition, git branch hierarchy, automatic sub-intent merges into the deciding node |
+| 3       | Rebase conflict detection, reactive intent spawning, conflict resolution                                     |
+| 4       | Autonomous intent generation, quality scoring, approval gates                                                |
+| 5       | KB pattern extraction, evidence validation, pattern reuse in future planning                                 |
+| 6       | Model routing based on complexity, ROI measurement                                                           |
+| 7       | Failure mode extraction, mitigation identification, failure avoidance                                        |
+| 8       | Trust level progression, trust scoring formulas, and tier promotions                                         |
+| 9       | Sandbox network/file egress violations, security alerts, and trust demotion                                  |
+| 10      | Concrete git terminal commands for branching, rebasing, and merging sub-intents                              |
 
 ---
 

@@ -388,8 +388,8 @@ If rebase fails:
 **Trigger:** Sub-intent execution completes successfully. The agent raises the sub-intent's PR into the deciding plan or
 execution branch automatically and merges it automatically, with no human intervention. This holds for a leaf sub-intent
 and for a nested parent alike; a nested parent merges once its own sub-intents have merged into their deciding node
-inside it. (Until the implementation follows, the current flow leaves these merges to the maintainer; see Stage 3 under
-the flow equivalence guarantee.)
+inside it, and its PR carries that deciding node's branch. (Until the implementation follows, the current flow leaves
+these merges to the maintainer; see Stage 3 under the flow equivalence guarantee.)
 
 **Process:**
 
@@ -698,7 +698,8 @@ merged automatically by the agent.
      `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_` (leaf sub-intent)
    - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890395-add-tests/_` →
      `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_` (leaf sub-intent)
-   - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_` →
+   - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/_`
+     (the nested parent's PR, carrying its deciding plan branch) →
      `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_` (nested parent, after step 1)
 
 3. **Root → Main** (human review, the only human step):

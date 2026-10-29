@@ -59,3 +59,18 @@ cannot collide because siblings have different slugs) across `README.md`, `docs/
   current flow still records the parent intent branch; decision 2 and the sibling invariant added; validation rule 9
   reworded. `git diff` hunks fall only at the child-intent-row paragraphs (from line 121) and rule 9 (line 718); the
   write-guarantee wording is untouched.
+
+### Step 5: Trees, ledger rows and merge steps in `docs/examples.md`
+
+- Example 2: note rewritten (automatic merges, root-only human stop, pointer to the Stage 3 note); `target_branch`
+  added to both child rows equal to `deciding_branch`; branch creation, both rebases, merge command and ledger event
+  use the deciding plan branch; sub-sub-intents use the nested parent's plan branch; the nested parent's PR carries its
+  own deciding plan branch into the root's deciding plan branch; step 7 promotes the root's deciding plan branch to
+  `main` as the only human step.
+- Example 3: siblings rebase onto and merge into the deciding plan branch; `resolve-conflict` records, rebases from and
+  merges into its deciding execution branch `E-1771890605-add-logging`; `add-logging` merges its execution branch into
+  the deciding plan branch automatically; open question removed.
+- Example 10: spawn, rebase and merge commands use the deciding plan branch; the merge is performed automatically by the
+  agent; summary table row updated.
+- To keep the nested-parent wording coherent, `docs/git_flow.md` section 4.1 and the section 8 merge order now say a
+  nested parent's PR carries its own deciding node's branch (where its sub-intents merged).

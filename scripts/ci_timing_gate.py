@@ -373,7 +373,7 @@ def run_compare(
     clock: Callable[[], float],
     fetcher: Callable[[str, str, int], list[TimingRecord]],
 ) -> Verdict:
-    """Compare this job with its ``main`` baseline, print the per-test report and return the verdict."""
+    """Compare this job with its ``main`` baseline and return the verdict, with the per-test report after its lines."""
     record, warnings = measure(args, clock)
     thresholds = thresholds_from(args)
     name = artefact_name(record.workflow, record.job, record.os)

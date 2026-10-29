@@ -67,7 +67,8 @@ overwriting `/etc/shadow` or `/usr/bin/`).
   - `HOLON_AGENT_PROVIDER`: Specifies the target model provider (e.g., `openai`, `anthropic`, `google`).
   - `HOLON_AGENT_SETTINGS`: Custom JSON or file-path configurations passed directly to the agent.
   - `HOLON_AGENT_SKIP_PERMISSIONS`: Defaults to `true`; makes the `claude` and `antigravity` runners pass their
-    permission-bypass flags on the command line. Set to `false` to opt out.
+    permission-bypass flags on the command line. Only `1`, `true`, `yes` or `on` (case-insensitive) enable it; any other
+    value, including an empty one, opts out.
   - `HOLON_REPO_URL`: (Optional override). The target git repository URL, which never carries credentials. The `./holon`
     host CLI resolves the active repository remote (`remote.origin.url`). When `find_github_token()` finds a token, the
     remote is normalised to a plain HTTPS URL (`https://<host>/<org>/<repo>.git`). If no token is detected, the remote
@@ -229,11 +230,12 @@ Each agent has specific command-line structures and validation routines:
 - **Binary**: `claude`
 - **Command template**:
   `claude --allow-dangerously-skip-permissions --permission-mode bypassPermissions --model <model_name> -p [--settings <HOLON_AGENT_SETTINGS>] <prompt>`
-- **Permission bypass**: `HOLON_AGENT_SKIP_PERMISSIONS` (default `true`; `false`, `0`, `no` or `off` opts out) controls
-  the two bypass flags, read each time the command is built. In print mode both are needed: the first only makes bypass
-  available and the second selects it, otherwise every file write is refused. They are command-line parameters only and
-  never part of the `HOLON_AGENT_SETTINGS` value or any settings file. The bypass is acceptable because the claude
-  runner only executes inside a sandboxed role container.
+- **Permission bypass**: `HOLON_AGENT_SKIP_PERMISSIONS` (default `true`; only `1`, `true`, `yes` or `on`,
+  case-insensitive, enable it and any other value, including an empty one, opts out) controls the two bypass flags, read
+  each time the command is built. In print mode both are needed: the first only makes bypass available and the second
+  selects it, otherwise every file write is refused. They are command-line parameters only and never part of the
+  `HOLON_AGENT_SETTINGS` value or any settings file. The bypass is acceptable because the claude runner only executes
+  inside a sandboxed role container.
 - **Validation**: Requires `HOLON_AGENT_KEY` to be set, or active session configuration mounted to
   `/home/holon/.config/claude`.
 

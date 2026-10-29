@@ -235,7 +235,7 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
 - **Explicit sub-intent list:** the executor records the parsed list on its `decomposed` summary row and writes no
   `intents.jsonl` rows. The flow then runs each item as a child intent, strictly one after another and never
   concurrently, through the full pipeline (intent, plan, execute, review, calibrate). Each child nests under the plan
-  that listed it and records it as its provenance (section 2.2), is meant to target the deciding plan branch
+  that listed it, records it as its provenance (section 2.2) and is meant to target the deciding plan branch
   (`target_branch`; see the current limitation below), never `main`. The first failing child fails the parent's Stage 3;
   when all succeed, the parent's own Stage 4 and Stage 5 are skipped with reason `decomposed`, because review and
   calibration ran per child. Nesting is bounded by `MAX_SUB_INTENT_DEPTH`, checked against the plan before the executor
@@ -340,13 +340,11 @@ waits for a human, and merging the PR is the only human step.
 
 ### 3.1 Dual Rebase Rule
 
-Every sub-intent **must rebase from its immediate parent**:
+Every sub-intent **must rebase from its deciding node's branch** (in practice the plan branch `I-.../P-.../_`), not the
+parent intent branch (section 2.2):
 
-1. **Before execution** (to get latest parent state)
+1. **Before execution** (to get that branch's latest state)
 2. **After execution** (to ensure clean merge)
-
-The immediate parent is the deciding node's branch (in practice the plan branch `I-.../P-.../_`), not the parent intent
-branch (section 2.2).
 
 **Building on siblings.** Siblings build on each other through the deciding node's branch: a sub-intent that depends on
 earlier siblings starts from, or rebases onto, that branch only after those siblings have merged into it, so no
@@ -625,6 +623,7 @@ $ git push origin main
 ```bash
 # Delete merged branches
 $ git branch -d I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_
+$ git branch -d I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
 $ git branch -d I-1771890389-refactor-metrics/_
 ```
 

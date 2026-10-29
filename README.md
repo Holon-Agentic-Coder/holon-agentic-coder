@@ -101,7 +101,7 @@ from outcomes without polluting the mainline.
 
 Git provides immutable history, causal lineage, reproducibility, and cheap branching as isolation.
 
-### 5) Strict parent-centric Git flow
+### 5) Strict hierarchical Git flow
 
 - **Sub-intents merge only into the branch of the node that decided the split** (in practice the plan branch)
 - **Never directly to `main`**

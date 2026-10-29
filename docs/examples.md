@@ -1068,8 +1068,8 @@ This execution-decided split illustrates the general rule only; the example's ma
 
 **Executor agent resolves conflict:**
 
-The sub-intent rebases from its immediate parent, its deciding execution branch `E-1771890605-add-logging` (dual rebase
-rule, [Git Flow](git_flow.md) section 3.1), then brings in the changes already merged into `add-logging`'s deciding plan
+The sub-intent rebases from its deciding execution branch `E-1771890605-add-logging` (dual rebase rule,
+[Git Flow](git_flow.md) section 3.1), then brings in the changes already merged into `add-logging`'s deciding plan
 branch and resolves the conflict:
 
 ```bash

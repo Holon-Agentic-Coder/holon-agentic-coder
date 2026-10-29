@@ -273,7 +273,7 @@ Every ledger event MUST contain:
   },
   "git": {
     "repo": "origin",
-    "branch": "intent/I-root-001-bootstrap-metrics",
+    "branch": "I-1771890200-bootstrap-metrics/_",
     "head_sha": "abc123",
     "dirty": false
   },
@@ -288,11 +288,11 @@ Every ledger event MUST contain:
 ### Required identifiers in relevant events
 
 - `intent_id` (string)  
-  Example: `"I-root-001-bootstrap-metrics"`
+  Example: `"I-1771890200-bootstrap-metrics"`
 - `parent_intent_id` (string or null)  
-  Example: `"I-root-000-project-init"`
+  Example: `"I-1771890100-project-init"`
 - `plan_id` (string)  
-  Example: `"P-I-root-001-bootstrap-metrics-v3-flash"`
+  Example: `"P-1771890203-gemini-cli-gemini-3.6-flash"`
 - `variant_id` (string)  
   Example: `"v3"`
 - `sandbox_id` (string)  
@@ -430,12 +430,12 @@ Payload:
   },
   "git": {
     "repo": "origin",
-    "branch": "intent/I-root-001-bootstrap-metrics",
+    "branch": "I-1771890200-bootstrap-metrics/_",
     "head_sha": "abc123",
     "dirty": false
   },
   "payload": {
-    "intent_id": "I-root-001-bootstrap-metrics",
+    "intent_id": "I-1771890200-bootstrap-metrics",
     "parent_intent_id": null,
     "goal": "Bootstrap naive metrics estimators and ledger logging.",
     "constraints": {

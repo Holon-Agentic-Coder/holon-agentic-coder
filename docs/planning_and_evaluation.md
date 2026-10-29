@@ -142,7 +142,7 @@ Ledger event examples:
 {
   "event_type": "plan_predicted_metrics",
   "payload": {
-    "plan_id": "P-I-root-050-v1-flash",
+    "plan_id": "P-1771890701-gemini-cli-gemini-3.6-flash",
     "predicted": {
       "p_success": 0.67,
       "entropy": 12.3,
@@ -159,7 +159,7 @@ Ledger event examples:
 {
   "event_type": "plan_execution_result",
   "payload": {
-    "plan_id": "P-I-root-050-v1-flash",
+    "plan_id": "P-1771890701-gemini-cli-gemini-3.6-flash",
     "actual": {
       "p_success": 1.0,
       "entropy": 10.9,
@@ -321,8 +321,9 @@ All agents must:
 Plan artifacts and planning events must be recorded in the ledger and correspond to git branches:
 
 - Plan artifact branch naming: branch for work derived from a plan should follow:
-  - `intent/{intent_branch}/plan/{plan_id}` or use integrated branch `intent/{intent_branch}/{plan_id}` depending on
-    repo layout.
+  - `I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/_` for the plan and
+    `I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/E-{timestamp}-{action-slug}/_` for its execution (see
+    [Git Flow](git_flow.md) section 2).
 - Ledger must capture:
   - `plan_created`, `plan_predicted_metrics`, `planning_converged`, `plan_selected`, `plan_execution_started/ended`,
     `planner_agent_id`, `model_id`, `routing_reason`.
@@ -335,8 +336,8 @@ Example ledger entry (planning_converged):
   "event_type": "planning_converged",
   "payload": {
     "intent_id": "I-root-050",
-    "variants_considered": ["P-I-root-050-v1-flash", "P-I-root-050-v2-deep"],
-    "winner_plan_id": "P-I-root-050-v2-deep",
+    "variants_considered": ["P-1771890701-gemini-cli-gemini-3.6-flash", "P-1771890702-claude-code-claude-opus-4.6"],
+    "winner_plan_id": "P-1771890702-claude-code-claude-opus-4.6",
     "reason": "dominant_plan",
     "convergence_at": "2026-02-11T09:12:00Z"
   }

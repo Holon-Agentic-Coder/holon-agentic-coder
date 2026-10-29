@@ -4906,6 +4906,91 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         public = f"-----BEGIN PUBLIC KEY-----\n{body}\n-----END PUBLIC KEY-----\n"
         self.assertEqual(executor.mask_private_keys(public), public)
 
+    def test_marker_only_source_keeps_later_files_intact_and_patch_applies_with_git_am(self):
+        """A file that only names a BEGIN marker never masks the rest of the patch, so recovery still works."""
+        self._reject_pushes()
+        detector = (
+            'MARKER = "-----BEGIN RSA PRIVATE KEY-----"\n'
+            'TEMPLATE = """-----BEGIN RSA PRIVATE KEY-----\n'
+            '"""\n'
+            "def looks_like_key(text):\n"
+            "    return MARKER in text\n"
+        )
+
+        def marker_turn(workspace, path):
+            self.dirty_turn(workspace, path)
+            with open(os.path.join(workspace, "src/detect.py"), "w") as f:
+                f.write(detector)
+            with open(os.path.join(workspace, "src/zapp.py"), "w") as f:
+                f.write("def zapp():\n    return 42\n")
+
+        _code, stderr, _ = self.run_main(marker_turn, returncode=1)
+        patch_text = stderr.split(executor.UNPUSHED_PATCH_BEGIN + "\n", 1)[1].split(executor.UNPUSHED_PATCH_END, 1)[0]
+        self.assertNotIn(executor._PRIVATE_KEY_MASK, patch_text)
+        raw = self.git(self.workspace, "format-patch", "--stdout", f"{self.plan_tip}..HEAD", "--", "src/zapp.py")
+        zapp_section = "diff --git a/src/zapp.py" + raw.split("diff --git a/src/zapp.py", 1)[1].split("\n-- \n", 1)[0]
+        self.assertIn(zapp_section, patch_text)
+        patch_file = os.path.join(self.root, "unpushed.patch")
+        with open(patch_file, "w") as f:
+            f.write(patch_text)
+        self.git(self.seed, "am", "-q", patch_file)
+        with open(os.path.join(self.seed, "src/detect.py")) as f:
+            self.assertEqual(f.read(), detector)
+        with open(os.path.join(self.seed, "src/zapp.py")) as f:
+            self.assertIn("return 42", f.read())
+
+    def test_mask_private_keys_never_crosses_patch_headers(self):
+        body = "FAKE0TEST0KEY0BODY"
+        text = (
+            "diff --git a/a.py b/a.py\n@@ -0,0 +1,2 @@\n+KEY = '''-----BEGIN RSA PRIVATE KEY-----\n+" + body + "\n"
+            "diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n@@ -1 +1,2 @@\n same\n+abc\n"
+            "+-----END RSA PRIVATE KEY-----\n-- \n2.43.0\n"
+        )
+        masked = executor.mask_private_keys(text)
+        self.assertNotIn(body, masked)
+        self.assertEqual(masked.count(executor._PRIVATE_KEY_MASK), 1)
+        self.assertEqual(masked.split("diff --git a/b.py", 1)[1], text.split("diff --git a/b.py", 1)[1])
+
+    def test_mask_private_keys_covers_pgp_blocks_and_putty_private_lines(self):
+        body = "FAKE0TEST0PGP0BODY"
+        pgp = (
+            "+-----BEGIN PGP PRIVATE KEY BLOCK-----\n+Version: fake\n+\n+" + body + "\n+=Ab12\n"
+            "+-----END PGP PRIVATE KEY BLOCK-----\n+after\n"
+        )
+        masked = executor.mask_private_keys(pgp)
+        self.assertNotIn(body, masked)
+        self.assertNotIn("=Ab12", masked)
+        self.assertEqual(masked.splitlines()[-2:], ["+-----END PGP PRIVATE KEY BLOCK-----", "+after"])
+        inline = f'"k": "-----BEGIN PGP PRIVATE KEY BLOCK-----\\n{body}\\n-----END PGP PRIVATE KEY BLOCK-----"'
+        self.assertNotIn(body, executor.mask_private_keys(inline))
+        ppk = (
+            "+PuTTY-User-Key-File-3: ssh-ed25519\n+Public-Lines: 1\n+FAKEPUBLIC\n+Private-Lines: 2\n"
+            f"+{body}\n+{body}2\n+Private-MAC: fake\n"
+        )
+        masked = executor.mask_private_keys(ppk)
+        self.assertNotIn(body, masked)
+        self.assertIn("+FAKEPUBLIC", masked)
+        self.assertIn("+Private-MAC: fake", masked)
+        self.assertEqual(masked.count(executor._PRIVATE_KEY_MASK), 2)
+
+    def test_unpushed_patch_excludes_putty_and_pgp_key_files(self):
+        self._reject_pushes()
+        unrecognisable = "plain-key-value-7q2w"
+
+        def key_turn(workspace, path):
+            self.dirty_turn(workspace, path)
+            for rel in ("keys/deploy.ppk", "keys/Signing.ASC", "keys/secring.gpg"):
+                os.makedirs(os.path.dirname(os.path.join(workspace, rel)), exist_ok=True)
+                with open(os.path.join(workspace, rel), "w") as f:
+                    f.write(f"{unrecognisable}\n")
+
+        code, stderr, _ = self.run_main(key_turn, returncode=1)
+        self.assertEqual(code, 1)
+        self.assertNotIn(unrecognisable, stderr)
+        notice = next(line for line in stderr.splitlines() if line.startswith("Unpushed patch excludes"))
+        for rel in ("keys/deploy.ppk", "keys/Signing.ASC", "keys/secring.gpg"):
+            self.assertIn(rel, notice)
+
     def test_salvaged_commit_is_pushed_when_the_failure_commit_has_nothing_staged(self):
         def code_only(workspace, _path):
             with open(os.path.join(workspace, "src/codebase.py"), "a") as f:

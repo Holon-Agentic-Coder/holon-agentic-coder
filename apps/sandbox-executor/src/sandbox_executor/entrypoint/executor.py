@@ -745,11 +745,22 @@ UNPUSHED_PATCH_EXCLUDED_GLOBS = (
     "**/id_dsa*",
     "**/id_ecdsa*",
     "**/id_ed25519*",
+    "**/*.ppk",
+    "**/*.asc",
+    "**/*.gpg",
 )
-# A PEM or OpenSSH private-key block in any file, whatever its name; an unterminated block runs to the end of the text.
-_PRIVATE_KEY_BLOCK_RE = re.compile(
-    r"(-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----)([\s\S]*?)(-----END [A-Z0-9 ]*PRIVATE KEY-----|\Z)"
-)
+# PEM, OpenSSH and armoured PGP private-key markers, in any file whatever its name.
+_PRIVATE_KEY_BEGIN = r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"
+_PRIVATE_KEY_END = r"-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"
+# A whole key on one line, for example a JSON value with escaped newlines.
+_INLINE_PRIVATE_KEY_RE = re.compile(rf"({_PRIVATE_KEY_BEGIN})(.*?)({_PRIVATE_KEY_END})")
+# A BEGIN marker that ends its line opens a multi-line block (trailing whitespace allowed).
+_PRIVATE_KEY_BLOCK_START_RE = re.compile(rf"{_PRIVATE_KEY_BEGIN}\s*$")
+_PRIVATE_KEY_BLOCK_END_RE = re.compile(_PRIVATE_KEY_END)
+# A line that can only be key material: base64 (PEM, OpenSSH, PGP armour and its checksum) or an armour header.
+_PRIVATE_KEY_MATERIAL_RE = re.compile(r"^(?:[A-Za-z0-9+/=]+|(?:Proc-Type|DEK-Info|Version|Comment|Charset|Hash): .*)$")
+# PuTTY key files give the number of private base64 lines that follow.
+_PPK_PRIVATE_LINES_RE = re.compile(r"^Private-Lines:\s*(\d+)$")
 _PRIVATE_KEY_MASK = "[REDACTED PRIVATE KEY]"
 
 # A resumable execution branch name (validated before it reaches a refspec) and a full commit sha.
@@ -1292,20 +1303,56 @@ def _salvage_partial_work(
     return sha if sha and sha != diff_base else None
 
 
-def _mask_private_key_body(match: re.Match[str]) -> str:
-    """Mask a private-key block's body line by line, keeping its markers, line count and diff line prefixes."""
-    segments = match.group(2).split("\n")
-    masked = []
-    for index, segment in enumerate(segments):
-        prefix = segment[0] if index > 0 and segment[:1] in ("+", "-", " ") else ""
-        rest = segment[len(prefix) :]
-        masked.append(f"{prefix}{_PRIVATE_KEY_MASK}" if rest.strip() else segment)
-    return f"{match.group(1)}{chr(10).join(masked)}{match.group(3)}"
+def _split_diff_prefix(line: str) -> tuple[str, str]:
+    """Split a diff line into its ``+``, ``-`` or space prefix (empty when there is none) and its content."""
+    return (line[0], line[1:]) if line[:1] in ("+", "-", " ") else ("", line)
+
+
+def _is_patch_structure(line: str) -> bool:
+    """Whether ``line`` is a patch header that a key mask must never swallow or cross."""
+    return line.startswith(("diff --git ", "@@ ", "From ", "index ", "--- ", "+++ ")) or line == "-- "
 
 
 def mask_private_keys(text: str) -> str:
-    """Mask the body of every PEM or OpenSSH private-key block in ``text``, whatever file it came from."""
-    return _PRIVATE_KEY_BLOCK_RE.sub(_mask_private_key_body, text)
+    """Mask private-key material in ``text`` line by line, keeping markers, line count and diff line prefixes.
+
+    A multi-line block is opened only by a BEGIN marker that ends its line, and only the lines after it that can be key
+    material are masked. Masking stops at the END marker, at the first other line, or at a patch header, so a file that
+    merely names the marker never masks the rest of the patch, and a block never crosses into another file or commit.
+    """
+    masked = []
+    in_block = False
+    ppk_lines = 0
+    for line in text.split("\n"):
+        prefix, rest = _split_diff_prefix(line)
+        content = rest.strip()
+        if _is_patch_structure(line):
+            in_block, ppk_lines = False, 0
+            masked.append(line)
+            continue
+        if in_block or ppk_lines:
+            if in_block and _PRIVATE_KEY_BLOCK_END_RE.search(rest):
+                in_block = False
+                masked.append(line)
+                continue
+            if not content and in_block:
+                masked.append(line)
+                continue
+            if _PRIVATE_KEY_MATERIAL_RE.match(content):
+                ppk_lines = max(ppk_lines - 1, 0)
+                indent = rest[: len(rest) - len(rest.lstrip())]
+                masked.append(f"{prefix}{indent}{_PRIVATE_KEY_MASK}")
+                continue
+            in_block, ppk_lines = False, 0
+        line = _INLINE_PRIVATE_KEY_RE.sub(
+            lambda m: f"{m.group(1)}{_PRIVATE_KEY_MASK if m.group(2) else ''}{m.group(3)}", line
+        )
+        if _PRIVATE_KEY_BLOCK_START_RE.search(line):
+            in_block = True
+        elif ppk := _PPK_PRIVATE_LINES_RE.match(content):
+            ppk_lines = int(ppk.group(1))
+        masked.append(line)
+    return "\n".join(masked)
 
 
 def _unpushed_patch_text(repo_dir: str, plan_tip: str) -> str:

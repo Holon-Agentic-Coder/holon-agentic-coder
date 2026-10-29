@@ -193,14 +193,19 @@ stderr. It then prints `git format-patch --stdout <plan tip>..HEAD` between the 
 `END UNPUSHED EXECUTION PATCH` lines, and exits non-zero. Every line is redacted. Env files, credential stores and
 secrets directories (`UNPUSHED_PATCH_EXCLUDED_GLOBS`: `.env`, `.env.*`, any name containing `credential`, `.netrc`,
 `.npmrc`, `.pypirc`, `.pgpass`, private-key and keystore files (`*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`,
-`id_dsa*`, `id_ecdsa*`, `id_ed25519*`) and anything under a `secrets/` directory, at any depth and in any case) are left
-out of the patch and the diffstat, and a line before the block names the ones that changed. A PEM or OpenSSH private-key
-block in any other file has its body masked line by line before the patch is redacted, keeping its marker lines. The
-block is capped at `UNPUSHED_PATCH_MAX_BYTES` (96 KiB), which is below the redaction input limit, and the raw patch is
-measured before it is redacted. Above the cap, `git diff --stat <plan tip>..HEAD` is printed with a line saying the
-patch was omitted. A pre-push sync merge with `main` adds `main`'s commits to that range, so a large merge can push the
-patch past the cap. To recover the work, copy the lines between the markers from the captured container log into a file,
-then run `git am <file>` on a checkout of the plan branch.
+`id_dsa*`, `id_ecdsa*`, `id_ed25519*`, PuTTY `*.ppk`, and PGP `*.asc` and `*.gpg`) and anything under a `secrets/`
+directory, at any depth and in any case) are left out of the patch and the diffstat, and a line before the block names
+the ones that changed. A PEM, OpenSSH or armoured PGP private-key block, or the private lines of a PuTTY key, in any
+other file has its key material masked line by line before the patch is redacted, keeping its marker lines. Masking
+stops at the end marker, at the first line that is not key material, and at every patch header, so a file that only
+names a marker leaves the rest of the patch intact. The block is capped at `UNPUSHED_PATCH_MAX_BYTES` (96 KiB), which is
+below the redaction input limit, and the raw patch is measured before it is redacted. Above the cap,
+`git diff --stat <plan tip>..HEAD` is printed with a line saying the patch was omitted. A pre-push sync merge with
+`main` adds `main`'s commits to that range, so a large merge can push the patch past the cap. To recover the work, copy
+the lines between the markers from the captured container log into a file, then run `git am <file>` on a checkout of the
+plan branch. Files left out by name, and masked key material, cannot be recovered from the printed patch: masked added
+lines apply as the literal `[REDACTED PRIVATE KEY]` text, so re-create those files from their source. A hunk whose
+context or removed lines were masked no longer matches, and needs `git am --reject` or a manual edit.
 
 A `holon flow --checkpoint` or `holon flow --from-stage execute` resume at Stage 3 looks for the newest failed execution
 branch under the plan whose latest summary row carries a `partial_head`, and passes it to the executor as a fourth

@@ -10,11 +10,11 @@ a pure append, guarded by a byte-prefix check, and no stage pre-check rewrites o
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.0   |
-| entropy_actual        | 0.0   |
-| impact_actual         | 0.0   |
-| cost_actual           | 0.0   |
-| learning_value_actual | 0.0   |
+| success_actual        | 1.0   |
+| entropy_actual        | 5.6   |
+| impact_actual         | 82.0  |
+| cost_actual           | 13.0  |
+| learning_value_actual | 5.0   |
 
 ## Steps Executed
 
@@ -119,10 +119,48 @@ a pure append, guarded by a byte-prefix check, and no stage pre-check rewrites o
 
 ### Step 6: Run lint, docs lint and the full test suite once (done)
 
-- The first affected-test run surfaced 4 failures in `test_intent_creator.py`. Those tests mock `builtins.open` and
-  kept only the last handle opened per path, so the guard's post-write `"rb"` read replaced the appending handle the
-  tests inspect. The fix is test bookkeeping only: record a handle only when it was opened for writing, with a comment.
-  The tests' semantics are unchanged. No other failures.
+- The first affected-test run surfaced 4 failures in `test_intent_creator.py`. Those tests mock `builtins.open` and kept
+  only the last handle opened per path, so the guard's post-write `"rb"` read replaced the appending handle the tests
+  inspect. The fix is test bookkeeping only: record a handle only when it was opened for writing, with a comment. The
+  tests' semantics are unchanged. No other failures.
 - `uv run task lint`, `uv run task lint-docs` and `uv run task test` all exit 0 (figures under Tests Run).
 - The diff against the plan commit touches only `ledger.py`, `flow.py`, `entrypoint/executor.py`, their tests,
   `docs/ledger_schema.md` and this record.
+
+### Step 7: Verify byte-prefix preservation against main's real ledgers (done)
+
+- `test_repository_ledgers_survive_precheck_and_reconcile_byte_for_byte` copies the repository's three ledgers into
+  `tmp_path`, which includes the `intents.jsonl` row that mentions `|||||||`. On the copies it runs
+  `check_and_resolve_stage_conflicts` with fake git, then `reconcile_ledger_file`, and asserts byte identity and no
+  ledger `add` call. It then appends one row through `atomic_ledger_append` and asserts an exact prefix. The originals'
+  SHA-256 digests are unchanged at the end. The test is skipped if the ledgers are absent.
+- The old code rewrote these real files (Step 1: `executions.jsonl` shrank from 341,674 to 341,198 bytes). They now pass
+  through unchanged.
+- `git status --porcelain holon-knowledge/ledger` was empty after the full suite.
+
+### Residual notes
+
+- Stage pre-checks no longer run `git add`. A genuinely unmerged (`UU`) ledger in the operator's checkout is resolved in
+  the working tree by pure append, and the commit step that owns the ledger stages it.
+- Historical rows on main were not repaired, as the intent's Q&A requires.
+
+## Tests Run
+
+All `pytest` runs used `-n auto --dist worksteal`. Each figure was run once and is not a timing measurement. The intent
+has no performance goal, so a median is the single value.
+
+| command                                                                                                                                   | result                                           | pytest time |
+| ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ | ----------- |
+| `uv run pytest apps/sandbox-executor/tests/test_ledger_append_only.py` (Step 1, unmodified code)                                          | `1 failed` (expected reproduction)               | `0.01s`     |
+| `uv run pytest test_ledger_append_only.py test_ledger_lock.py test_ledger_query.py` (Step 2)                                              | `59 passed`, `1 failed` (reproduction)           | `3.32s`     |
+| `uv run pytest test_ledger_append_only.py test_flow.py test_review_loop.py test_planner.py test_calibration.py test_executor.py` (Step 3) | `787 passed`, `6 failed` (old contract tests)    | `29.19s`    |
+| `uv run pytest test_ledger_append_only.py test_ledger_lock.py test_flow.py` (Step 4)                                                      | `344 passed`                                     | `5.96s`     |
+| `uv run pytest test_ledger_append_only.py` with Step 3 reverted locally                                                                   | `13 failed`, `6 passed` (expected)               | `1.99s`     |
+| `uv run pytest test_ledger_append_only.py` (Step 7 added)                                                                                 | `20 passed`                                      | `3.06s`     |
+| `uv run pytest` affected set (append-only, lock, flow, review loop, planner, intent creator, executor)                                    | `760 passed`, `4 failed` (`test_intent_creator`) | `28.95s`    |
+| `uv run pytest` affected set, after the intent creator mock fix                                                                           | `764 passed`                                     | `27.95s`    |
+| `uv run task test` (full suite, once)                                                                                                     | `2811 passed`, `0 failed`                        | `30.74s`    |
+| `uv run task lint`                                                                                                                        | passed                                           | n/a         |
+| `uv run task lint-docs`                                                                                                                   | passed                                           | n/a         |
+
+Median of the single full-suite run: `30.74s`.

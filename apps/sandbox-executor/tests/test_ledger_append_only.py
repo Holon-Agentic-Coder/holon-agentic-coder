@@ -1,6 +1,8 @@
 """Pure-append guarantee for the three ledgers: no write reorders, deduplicates or re-serialises existing rows."""
 
+import hashlib
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -335,3 +337,32 @@ class TestPrePushMerge:
         assert branch_bytes.startswith(main_bytes["intents"])
         for name in ("plans", "executions"):
             assert (host / "holon-knowledge" / "ledger" / f"{name}.jsonl").read_bytes() == main_bytes[name]
+
+
+REPO_LEDGER_DIR = Path(__file__).resolve().parents[3] / "holon-knowledge" / "ledger"
+
+
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.mark.skipif(not (REPO_LEDGER_DIR / "intents.jsonl").exists(), reason="repository ledgers are absent")
+def test_repository_ledgers_survive_precheck_and_reconcile_byte_for_byte(tmp_path: Path, fake_git: FakeGit) -> None:
+    """Main's real ledgers (one row mentions ``|||||||``) pass through unchanged; the originals are only read."""
+    originals = {n: _digest(REPO_LEDGER_DIR / f"{n}.jsonl") for n in LEDGER_NAMES}
+    copy_dir = tmp_path / "holon-knowledge" / "ledger"
+    copy_dir.mkdir(parents=True)
+    for name in LEDGER_NAMES:
+        shutil.copyfile(REPO_LEDGER_DIR / f"{name}.jsonl", copy_dir / f"{name}.jsonl")
+    before = _snapshot(tmp_path)
+
+    flow.check_and_resolve_stage_conflicts(str(tmp_path), stage_name="intent", branch=None)
+    for name in LEDGER_NAMES:
+        assert reconcile_ledger_file(str(copy_dir / f"{name}.jsonl")) is True
+    assert _snapshot(tmp_path) == before
+    assert fake_git.ledger_adds() == []
+
+    with atomic_ledger_append(str(copy_dir / "intents.jsonl")) as f:
+        f.write('{"slug":"appended"}\n')
+    assert (copy_dir / "intents.jsonl").read_bytes() == before["intents"] + b'{"slug":"appended"}\n'
+    assert {n: _digest(REPO_LEDGER_DIR / f"{n}.jsonl") for n in LEDGER_NAMES} == originals

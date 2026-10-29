@@ -79,7 +79,9 @@ A **Parent Intent** is the immediate parent of a sub-intent in the intent hierar
 
 ### 1.4 Sub-Intent
 
-A **Sub-Intent** is an intent spawned by another intent to break down complex work into manageable parts.
+A **Sub-Intent** is an intent spawned from another intent to break down complex work into manageable parts. In practice
+the split is decided by one of the parent intent's plans, which sits between the parent and its sub-intents in the
+hierarchy.
 
 - Merges only into its parent intent: it runs autonomously through the full flow and opens a PR into the parent intent
   branch, which the maintainer currently merges (automatic, evaluation-based merging is the target model).
@@ -303,7 +305,7 @@ words, the planner and evaluator agree that the current best plan(s) are good en
 | Intent                                   | Unit of work or goal                                                    | Basic building block                                                                      |
 | Root Intent                              | Top-level intent requiring human review                                 | Human review boundary                                                                     |
 | Parent Intent                            | Immediate parent of a sub-intent                                        | Receives its sub-intents' PR merges                                                       |
-| Sub-Intent                               | Intent spawned by another intent                                        | Runs autonomously; its PR is merged into its parent                                       |
+| Sub-Intent                               | Intent spawned from another intent by its deciding plan                 | Runs autonomously; its PR is merged into its parent                                       |
 | $P(success)$                             | Probability intent will succeed                                         | Guides planning and merging decisions                                                     |
 | Impact                                   | Expected benefit delivered                                              | Prioritisation metric                                                                     |
 | Cost                                     | Resources required                                                      | Balances benefit vs expenditure                                                           |

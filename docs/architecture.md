@@ -21,7 +21,8 @@ multi-agent system that plans competitively, executes in sandboxes, and improves
 
 #### 2) Fractal intent (recursive, depth-capped)
 
-- Any intent may spawn sub-intents recursively, up to `MAX_SUB_INTENT_DEPTH` levels below the root intent.
+- Any intent may spawn sub-intents recursively, in practice through the plan that decides the split, up to
+  `MAX_SUB_INTENT_DEPTH` levels below the root intent.
 - Sub-intents are first-class and follow the same rules as root intents.
 
 #### 3) Competitive planning variants per intent

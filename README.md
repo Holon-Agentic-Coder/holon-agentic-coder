@@ -80,11 +80,12 @@ Please take the time to review `core_concepts.md` carefully to get the most out 
 
 ### 1) Intent is fractal (recursive, depth-capped)
 
-Any intent may spawn sub-intents, which may spawn sub-sub-intents, until leaf nodes become **atomic intents** (direct
-actions). `holon flow` caps the nesting at `MAX_SUB_INTENT_DEPTH` levels below the root intent. In practice so far,
-splits have happened after planning: the planner writes a `## Sub-intent list` in its plan and the flow runs each item.
-The model is not limited to that: a split may be decided at any stage (intent, plan, execution or review), and the
-sub-intent nests under the branch node whose stage decided it.
+Any intent may spawn sub-intents through one of its plans, and a sub-intent's own plans may spawn sub-sub-intents, until
+leaf nodes become **atomic intents** (direct actions). `holon flow` caps the nesting at `MAX_SUB_INTENT_DEPTH` levels
+below the root intent. In practice a split is decided by a plan: the planner writes a `## Sub-intent list` in its plan
+and the flow runs each item as a sub-intent nested under that plan. The model leaves other stages open: a split may also
+be decided at the intent, execution or review stage, and the sub-intent then nests under the branch node whose stage
+decided it.
 
 ### 2) Planning is first-class and competitive
 

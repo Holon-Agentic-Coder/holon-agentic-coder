@@ -646,12 +646,14 @@ branch path records which plan spawned it.
 
 ```
 I-1771890500-implement-metrics-module (parent)
-├── I-1771890501-implement-p-success (sub-intent, depth 1)
-├── I-1771890502-implement-entropy (sub-intent, depth 1)
-│   ├── I-1771890505-define-entropy-sources (sub-sub-intent, depth 2)
-│   └── I-1771890506-implement-entropy-formula (sub-sub-intent, depth 2)
-├── I-1771890503-implement-impact (sub-intent, depth 1)
-└── I-1771890504-implement-ev (sub-intent, depth 1)
+└── P-1771890510-claude-code-claude-sonnet-4.6 (plan, decided the split)
+    ├── I-1771890501-implement-p-success (sub-intent)
+    ├── I-1771890502-implement-entropy (sub-intent)
+    │   └── P-1771890511-claude-code-claude-sonnet-4.6 (plan, decided the split)
+    │       ├── I-1771890505-define-entropy-sources (sub-sub-intent)
+    │       └── I-1771890506-implement-entropy-formula (sub-sub-intent)
+    ├── I-1771890503-implement-impact (sub-intent)
+    └── I-1771890504-implement-ev (sub-intent)
 ```
 
 ### Git branch structure

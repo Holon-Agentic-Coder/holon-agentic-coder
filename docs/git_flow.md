@@ -15,12 +15,14 @@ This document defines the **Git branching, rebasing, and merging discipline** fo
 
 ### 1.2 Fractal Intent Hierarchy
 
-- Intents can spawn sub-intents recursively
+- Intents can spawn sub-intents recursively; in practice each split is decided by one of the intent's plans, which sits
+  between the intent and its sub-intents in the hierarchy
 - Each sub-intent gets its own intent branch, cut from its parent's intent branch and targeting it. The branch nests
   under the node whose stage decided the split (sections 2.2-2.3 and 8), and its provenance records that node
-- A split may be decided at any stage -- intent, plan, execution or review -- as long as the hierarchy is honoured. In
-  practice so far, splits have happened after planning: the planner decides the split by writing a `## Sub-intent list`
-  in its plan, and the flow runs each item. That plan-decided split is the default, but the model is not limited to it
+- In practice a split is decided by a plan: the planner writes a `## Sub-intent list` in its plan, and the flow runs
+  each item as a sub-intent nested under that plan. This is what the flow does and what every example in this document
+  shows. The model leaves other stages open -- a split may also be decided at the intent, execution or review stage, as
+  long as the hierarchy is honoured (section 2.2)
 - Depth is capped: `holon flow` refuses to nest sub-intents more than `MAX_SUB_INTENT_DEPTH` levels below the root
   intent (see Stage 3 under the flow equivalence guarantee)
 
@@ -38,7 +40,8 @@ This document defines the **Git branching, rebasing, and merging discipline** fo
 
 - **Root Intent**: Top-level intent that will eventually merge to `main` (requires human review)
 - **Parent Intent**: Immediate parent of a sub-intent in the tree (may itself be a sub-intent)
-- **Sub-Intent**: Any intent spawned by another intent (can have its own sub-intents)
+- **Sub-Intent**: Any intent spawned from another intent, in practice by the plan that decided the split (can have its
+  own sub-intents)
 
 ### 1.5 ID Generation
 
@@ -76,18 +79,19 @@ spawned the sub-intent; nesting under the deciding node records it in the branch
 | Split decided by         | Sub-intent branch                                                                                       |
 | ------------------------ | ------------------------------------------------------------------------------------------------------- |
 | The intent stage         | `I-{timestamp}-{slug}/I-{timestamp}-{slug}/_`                                                           |
-| A plan (the default)     | `I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/I-{timestamp}-{slug}/_`                             |
+| A plan (in practice)     | `I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/I-{timestamp}-{slug}/_`                             |
 | An execution             | `I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/E-{timestamp}-{action-slug}/I-{timestamp}-{slug}/_` |
 | A review of an execution | The reviewed execution's node, as for an execution (a review has no branch node of its own)             |
 
-In practice so far, splits have been decided by a plan: the planner writes a `## Sub-intent list` in its plan, the
-executor records it, and the flow runs each item as a sub-intent nested under that plan. Example:
+In practice, splits are decided by a plan: the planner writes a `## Sub-intent list` in its plan, the executor records
+it, and the flow runs each item as a sub-intent nested under that plan. Example:
 
 ```
 I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_
 ```
 
-The same sub-intent, had the split been decided at the intent stage or during execution:
+For illustration of the general rule only, the same sub-intent would be named as follows had the split been decided at
+the intent stage or during execution:
 
 ```
 I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_
@@ -612,14 +616,14 @@ Intent Hierarchy (each split decided by a plan):
 
 ```
 I-1771890389-refactor-metrics (root)
-└── P-1771422315-claude-code-claude-sonnet-4.6 (deciding plan)
-    ├── I-1771890390-improve-estimators (sub, depth 1)
-    │   └── P-1771890398-claude-code-claude-opus-4.6 (deciding plan)
-    │       ├── I-1771890391-p-success (sub-sub, depth 2)
-    │       ├── I-1771890392-entropy (sub-sub, depth 2)
-    │       └── I-1771890393-impact (sub-sub, depth 2)
-    ├── I-1771890394-add-logging (sub, depth 1)
-    └── I-1771890395-add-tests (sub, depth 1)
+└── P-1771422315-claude-code-claude-sonnet-4.6 (plan, decided the split)
+    ├── I-1771890390-improve-estimators (sub-intent)
+    │   └── P-1771890398-claude-code-claude-opus-4.6 (plan, decided the split)
+    │       ├── I-1771890391-p-success (sub-sub-intent)
+    │       ├── I-1771890392-entropy (sub-sub-intent)
+    │       └── I-1771890393-impact (sub-sub-intent)
+    ├── I-1771890394-add-logging (sub-intent)
+    └── I-1771890395-add-tests (sub-intent)
 ```
 
 Git branch structure:

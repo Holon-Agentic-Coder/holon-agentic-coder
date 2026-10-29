@@ -480,20 +480,25 @@ def test_repository_ledgers_survive_precheck_and_reconcile_byte_for_byte(tmp_pat
 # ---------------------------------------------------------------------------
 
 
-def _run_executor_main(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+def _run_executor_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, plan: dict[str, Any] | None = None, status: str = "tip-sha\n"
+) -> list[list[str]]:
     """Run the executor entrypoint with faked git and agent until it raises; return every command it ran."""
     from tests.test_executor import _turn_via_run_cmd
 
     commands: list[list[str]] = []
+    plan_row = plan or {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 2.0}
 
     def fake_run_cmd(args: list[str], cwd: str | None = None, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         commands.append(list(args))
         if "clone" in args and cwd:
             plans = Path(cwd) / "holon-knowledge" / "ledger" / "plans.jsonl"
             plans.parent.mkdir(parents=True, exist_ok=True)
-            plans.write_text(json.dumps({"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 2.0}) + "\n")
+            plans.write_text(json.dumps(plan_row) + "\n")
         if "diff" in args and "--name-only" in args:
             return subprocess.CompletedProcess(args, 0, stdout="src/app.py\0", stderr="")
+        if "status" in args:
+            return subprocess.CompletedProcess(args, 0, stdout=status, stderr="")
         return subprocess.CompletedProcess(args, 0, stdout="tip-sha\n", stderr="")
 
     runner = SimpleNamespace(
@@ -505,7 +510,6 @@ def _run_executor_main(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[
     monkeypatch.setattr(executor_module, "run_turn", _turn_via_run_cmd)
     monkeypatch.setattr(executor_module, "get_runner", lambda *_a, **_k: runner)
     monkeypatch.setattr(executor_module, "get_repo_url", lambda *_a, **_k: "/fake/repo")
-    monkeypatch.setattr(ledger_module, "assert_ledger_prefix", _report_rewrite)
     monkeypatch.setenv("HOLON_REPO_DIR", str(tmp_path))
     monkeypatch.setenv("HOLON_SKIP_PUSH", "1")
     monkeypatch.setattr("sys.argv", ["executor.py", "I-456/P-123/_", "agent", "model"])
@@ -520,7 +524,66 @@ def test_executor_rewrite_stops_before_commit_and_push(
 ) -> None:
     """The summary-row write and the best-effort action-record writes both fail closed."""
     monkeypatch.setenv("HOLON_ACTION_LOGGING", action_logging)
+    monkeypatch.setattr(ledger_module, "assert_ledger_prefix", _report_rewrite)
     commands = _run_executor_main(tmp_path, monkeypatch)
+    assert not any(c[:2] in (["git", "commit"], ["git", "push"]) for c in commands)
+
+
+def _rewrite_only(event_type: str, target: str | None = None) -> Any:
+    """Wrap the action-record writer so only the named record reports a rewrite and every other write is real."""
+    real = executor_module.append_action_record
+
+    def fake(path: str, record: Any, **kwargs: Any) -> Any:
+        if record.event_type == event_type and target in (None, record.target):
+            raise LedgerRewriteError(f"Ledger {path} was rewritten, not appended")
+        return real(path, record, **kwargs)
+
+    return fake
+
+
+def _unrepairable_repo(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(executor_module, "_probe_git_repo", lambda _d: (False, "broken"))
+    monkeypatch.setattr(executor_module, "_repair_git_repo", lambda *_a, **_k: False)
+
+
+def _budget_breach(monkeypatch: pytest.MonkeyPatch) -> None:
+    classify = executor_module.classify_execution_outcome
+    monkeypatch.setattr(
+        executor_module, "classify_execution_outcome", lambda o: (*classify(o)[:2], object(), "over budget")
+    )
+    monkeypatch.setattr(executor_module, "record_budget_failure", _raise_rewrite)
+
+
+def _over_budget_plan(_monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    return {"plan": {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 40.0, "entropy_budget": 5.0}}
+
+
+def _markdown_changed(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    monkeypatch.setattr(executor_module, "converge_prettier", lambda *_a, **_k: None)
+    return {"status": " M notes.md\n"}
+
+
+_EXECUTOR_SITES: dict[str, tuple[str | None, str | None, Any]] = {
+    "plan-decomposition": ("plan_decomposition", None, _over_budget_plan),
+    "budget-failure": (None, None, _budget_breach),
+    "agent-command": ("command_execution", None, None),
+    "git-recovery": ("git_mutation", ".git", _unrepairable_repo),
+    "prettier-action": ("doc_update", None, _markdown_changed),
+    "commit-action": ("git_mutation", "HEAD", None),
+}
+
+
+@pytest.mark.parametrize("site", list(_EXECUTOR_SITES))
+def test_each_executor_write_site_fails_closed_on_its_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, site: str
+) -> None:
+    """A rewrite reported by one write alone still stops the run, so no site may swallow it."""
+    event_type, target, arrange = _EXECUTOR_SITES[site]
+    monkeypatch.setenv("HOLON_ACTION_LOGGING", "1")
+    if event_type:
+        monkeypatch.setattr(executor_module, "append_action_record", _rewrite_only(event_type, target))
+    extra = (arrange(monkeypatch) if arrange else None) or {}
+    commands = _run_executor_main(tmp_path, monkeypatch, **extra)
     assert not any(c[:2] in (["git", "commit"], ["git", "push"]) for c in commands)
 
 

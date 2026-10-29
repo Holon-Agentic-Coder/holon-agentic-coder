@@ -1146,6 +1146,22 @@ def test_three_clean_reviewers_with_mergeable_pr_and_green_ci_approve(tmp_path):
     assert [r.index for r in post.call_args.kwargs["reviewers"]] == [1, 2, 3]
 
 
+def test_stage4_action_event_rewrite_propagates_instead_of_warning(tmp_path):
+    """A rewrite reported by the Stage 4 action event stops the loop; it is never downgraded to a warning."""
+    from sandbox_executor.ledger import LedgerRewriteError
+
+    from tests.review_fakes import FakeEnsemble
+
+    rewrite = LedgerRewriteError("executions.jsonl was rewritten, not appended")
+    with (
+        patch("sandbox_executor.flow.append_action_event", side_effect=rewrite),
+        patch("sandbox_executor.flow._warn_ledger_failure") as warn,
+        pytest.raises(LedgerRewriteError),
+    ):
+        _loop(tmp_path, FakeEnsemble())
+    warn.assert_not_called()
+
+
 def test_report_names_the_commit_the_reviewers_saw_even_when_the_branch_moves(tmp_path):
     from tests.review_fakes import FAKE_HEAD_SHA, FakeEnsemble
 

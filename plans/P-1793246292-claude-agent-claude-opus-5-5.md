@@ -69,7 +69,7 @@ account for prettier rewrapping and a possible lint-docs failure on the template
     substituted by the renderer.
   - Prettier (`uv run task lint-docs`) may rewrap the new prose, splitting asserted phrases across lines.
   - The executor might be tempted to also edit `review_loop.template.md`, `docs/budgets.md` or an entrypoint module.
-  - Harness paths (`.beans/`, `todo/`, `.agents/`) or review ids leaking into target files.
+  - Paths outside the target repository, or review ids, leaking into target files.
   - The commit directive could be read as permission to push or rebase.
 - **Mitigations built into the plan:**
   - Explicit no-brace rule in Steps 1 and 2; Step 4 keeps the existing unmatched-placeholder test and asserts the
@@ -144,7 +144,8 @@ Commit as you go during execution: one commit per completed step on the current 
 ### Safety & Constraint Considerations
 
 - **Relevant rules:** intent TOUCH SET; `holon-config/world/ruleset.md` section 3.
-- **Potential failure modes for this step:** braces introduced; harness paths mentioned; prettier reformat of the block.
+- **Potential failure modes for this step:** braces introduced; paths outside the target repository mentioned; prettier
+  reformat of the block.
 - **Guardrails and early‑abort checks:** search the edited file for new `{` characters; run
   `uv run pytest apps/sandbox-executor/tests/test_prompt_templates.py` after the edit.
 
@@ -270,7 +271,7 @@ because the executor is where the 27 minutes of serial runs were spent.
    report each run's pass/fail count and pytest-reported time plus the median, from real runs only, and do not
    re-measure a commit that already has a figure.
 3. Optionally cite the motivating figures in neutral terms (about 30 s per serial run under load versus 16.97 s under
-   `-n auto`) without any harness path or id.
+   `-n auto`) without any path outside the target repository or any review id.
 4. Do not repair the pre-existing odd fence around line 41 unless `lint-docs` fails on it; it is in the touch set but
    unrelated, so leave it unless required.
 5. Commit: `Step 3: document repeated-run rule in testing guide`.

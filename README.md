@@ -103,15 +103,14 @@ Git provides immutable history, causal lineage, reproducibility, and cheap branc
 
 ### 5) Strict parent-centric Git flow
 
-- **Sub-intents merge only into their parent intent branch**
+- **Sub-intents merge only into the branch of the node that decided the split** (in practice the plan branch)
 - **Never directly to `main`**
-- Only **parent intents** are presented to humans for review and promotion to `main`; until sub-intent aggregation is
-  automated, the maintainer also merges each sub-intent's PR into its parent intent branch, and these PR merges are the
-  only human step
+- Below the root the agent raises and merges every sub-intent PR automatically; only the **root intent's** PR to `main`
+  is presented to a human for review and promotion
 
 ### 6) Mandatory dual rebase gates
 
-Sub-intents must rebase from the latest remote parent:
+Sub-intents must rebase from the latest remote deciding node branch (in practice the plan branch):
 
 - **before** execution (to avoid stale work)
 - **after** execution (to resolve conflicts at the smallest semantic scope)
@@ -195,11 +194,10 @@ Holon enforces a strict Git discipline to ensure isolation, reproducibility, and
 
 **Key rules:**
 
-- Sub-intents branch from their parent intent (never from `main`)
-- Sub-intents merge **only** into their parent intent (never directly to `main`)
-- Sub-intents must rebase from parent **before** and **after** execution
-- Only parent intents are reviewed by humans and merged to `main` (short-term goal); today the maintainer also merges
-  each sub-intent's PR into its parent intent branch
+- Sub-intents branch from their deciding node's branch, in practice the plan branch (never from `main`)
+- Sub-intents merge **only** into their deciding node's branch, automatically (never directly to `main`)
+- Sub-intents must rebase from the deciding node's branch **before** and **after** execution
+- Only root intents are reviewed by humans: the root intent's PR to `main` is the only human stop
 
 **For complete details**, see [`docs/git_flow.md`](docs/git_flow.md).
 
@@ -229,11 +227,14 @@ _Note: This example shows a "Deep" model planning for an intent that was origina
 
 Holon uses a filesystem-like branch structure to represent the intent hierarchy. A sub-intent's branch nests under the
 branch node whose stage decided the split -- by default the plan whose `## Sub-intent list` named it -- so the path
-records which of an intent's competing plans spawned it. The sub-intent is still cut from its parent intent branch and
-targets its PR at that branch. Its provenance records the parent intent, the deciding node (`deciding_branch`, plus
-`parent_plan_id` when a plan, or an execution or review of that plan, decided the split, and `parent_execution_id`
-additionally for an execution- or review-decided split); the list item it came from is identified by its own recorded
-goal and description (see [Git Flow](docs/git_flow.md) section 2.2).
+records which of an intent's competing plans spawned it. The sub-intent is cut from the deciding node's branch and
+merges back into it automatically (`target_branch` equals `deciding_branch`). A split decided during review may nest
+under the reviewed plan or the reviewed execution; either is acceptable. Its provenance records the parent intent, the
+deciding node (`deciding_branch`, plus `parent_plan_id` when a plan, an execution of that plan or a review decided the
+split, and `parent_execution_id` additionally for an execution-decided split or a review-decided split nested under the
+execution); the list item it came from is identified by its own recorded goal and description. Siblings under one
+deciding node always have different slugs, so their ids cannot collide (see [Git Flow](docs/git_flow.md) sections 1.5
+and 2.2).
 
 #### Root Intent Branch
 

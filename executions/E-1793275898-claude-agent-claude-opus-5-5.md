@@ -44,3 +44,9 @@ cannot collide because siblings have different slugs) across `README.md`, `docs/
   maintainer.
 - Sections 3.1-3.2, 4.1-4.3, 7.1-7.4, 8, 9.2, 12, 13: immediate parent, rebase sources, merge commands, ledger event,
   tree merge order and summary table all name the deciding node's branch; every open question removed.
+
+### Step 3: Mirror the rules in `README.md`
+
+- Principle 5 and 6, the git-flow key rules and the branch-naming paragraph now state the deciding-node branch base,
+  merge target and rebase source, automatic sub-intent PR merges, the root-only human stop, decision 2 and the sibling
+  invariant. Trust/autonomy sections untouched.

@@ -397,7 +397,9 @@ def _patch_docker_host(monkeypatch) -> None:
     monkeypatch.setattr(cli, "get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {}))
 
 
-def _delimiter_texts(case_id: str, value: str, argv: list[str], probe_argv: list[str], echo: list[str]):
+def _delimiter_texts(
+    case_id: str, value: str, argv: list[str], probe_argv: list[str], echo: list[str]
+) -> dict[str, list[str]]:
     """Return the checked texts of one delimiter case, keyed by site name."""
     from sandbox_executor.redaction import redact_command, redact_text
 
@@ -435,8 +437,8 @@ def _leak_sites(texts: dict[str, list[str]], argv: list[str], parts: list[str]) 
     ]
 
 
-def _delimiter_case_failures(case_id: str, value: str, parts: list[str]) -> list[str]:
-    """Run the main container and the probe for one case and name every failing site."""
+def _run_delimiter_case(value: str) -> tuple[int, _DockerRecorder, list[str], dict[str, str], list[str]]:
+    """Run the main container and the probe for one value; return `(rc, docker, probe_argv, probe_secret, echo)`."""
     from sandbox_executor import preflight
 
     docker = _DockerRecorder()
@@ -453,6 +455,12 @@ def _delimiter_case_failures(case_id: str, value: str, parts: list[str]) -> list
             "claude-agent", "m", "img", "probe", session_mounts=[]
         )
     echo = [line for line in stdout.getvalue().splitlines() if line.startswith("Executing:")]
+    return rc, docker, probe_argv, probe_secret, echo
+
+
+def _delimiter_case_failures(case_id: str, value: str, parts: list[str]) -> list[str]:
+    """Run the main container and the probe for one case and name every failing site."""
+    rc, docker, probe_argv, probe_secret, echo = _run_delimiter_case(value)
     failures = _leak_sites(_delimiter_texts(case_id, value, docker.argv, probe_argv, echo), docker.argv, parts)
     if rc != 0 or not echo:
         failures.append("no-run")
@@ -485,9 +493,18 @@ def test_env_file_path_sharing_a_part_run_is_not_a_leak(monkeypatch, tmp_path_fa
     env_dir = tmp_path_factory.mktemp(f"env-{parts[0][:FRAGMENT_LEN].lower()}")
     os.chmod(env_dir, 0o700)
     monkeypatch.setattr(cli, "env_file_dir", lambda: str(env_dir))
-    assert _leaks([str(env_dir)], parts[0]), "the env-file directory must share a run with the part"
     value = DELIMITER_FORMS["http"].format(c="[".join(parts))
+    _, docker, _, _, echo = _run_delimiter_case(value)
+    _assert_collision_forced(docker.argv, echo, str(env_dir), parts[0])
     assert _delimiter_case_failures("http/'['", value, parts) == []
+
+
+def _assert_collision_forced(argv: list[str], echo: list[str], env_dir: str, part: str) -> None:
+    """Fail unless the real env-file path sits in `env_dir` and, unmasked, reads as a leak of `part`."""
+    assert "--env-file" in argv, "the main run must route the value to an env-file"
+    assert os.path.dirname(argv[argv.index("--env-file") + 1]) == env_dir, "the env-file must live in env_dir"
+    assert _leaks([" ".join(argv)], part), "the unmasked main argv must share a run with the part"
+    assert _leaks(echo, part), "the unmasked echo must share a run with the part"
 
 
 @pytest.mark.parametrize(

@@ -1016,8 +1016,9 @@ def sync_and_reconcile_pre_push(repo_dir: str, target_branch: str = "main") -> t
 
     If the target branch on remote origin has diverged from HEAD, attempts an in-flight
     merge. If merge conflicts are strictly confined to holon-knowledge/ledger/*.jsonl,
-    reconciles each conflicted ledger via deterministic union, stages the resolved files,
-    verifies that no unmerged paths remain, and commits the merge.
+    resolves each conflicted ledger by pure append (the target branch's bytes stay a prefix and the
+    branch's missing lines follow in their original order), stages the resolved files, verifies that
+    no unmerged paths remain, and commits the merge. A clean merge leaves the ledgers as git merged them.
     If any non-ledger file has conflicts, aborts the merge via `git merge --abort` and fails loudly.
 
     Args:
@@ -1068,11 +1069,7 @@ def sync_and_reconcile_pre_push(repo_dir: str, target_branch: str = "main") -> t
 
     merge_res = run_cmd(["git", "merge", target_ref, "--no-commit", "--no-ff"], cwd=repo_dir, check=False)
     if merge_res.returncode == 0:
-        from sandbox_executor.flow import reconcile_ledgers
-
-        reconciled_all = reconcile_ledgers(repo_dir)
-        for rel in reconciled_all:
-            run_cmd(["git", "add", rel], cwd=repo_dir, check=False)
+        # A clean merge of append-only ledgers is already correct; rewriting them here would reorder rows.
         staged = run_cmd(["git", "diff", "--cached", "--quiet"], cwd=repo_dir, check=False)
         if staged.returncode != 0:
             run_cmd(
@@ -1107,16 +1104,11 @@ def sync_and_reconcile_pre_push(repo_dir: str, target_branch: str = "main") -> t
     try:
         for ledger_path in ledger_conflicts:
             full_path = os.path.join(repo_dir, ledger_path)
-            if not reconcile_ledger_file(full_path):
+            # The target branch is published history, so its ledger stays a byte prefix of the merge result.
+            if not reconcile_ledger_file(full_path, prefix_side="theirs"):
                 run_cmd(["git", "merge", "--abort"], cwd=repo_dir, check=False)
                 return False, f"Failed to reconcile ledger file {ledger_path}"
             run_cmd(["git", "add", ledger_path], cwd=repo_dir, check=True)
-
-        from sandbox_executor.flow import reconcile_ledgers
-
-        reconciled_all = reconcile_ledgers(repo_dir)
-        for rel in reconciled_all:
-            run_cmd(["git", "add", rel], cwd=repo_dir, check=False)
 
         rem_unmerged = run_cmd(["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_dir, check=False)
         if rem_unmerged.stdout.strip():

@@ -53,3 +53,28 @@ pure append, guarded by a byte-prefix check, and no stage pre-check rewrites or 
   `LedgerLock`, so every in-module appender is guarded.
 - Guard tests (`TestPrefixGuard`, 5 cases including an in-context rewrite) pass, and `test_ledger_lock.py` and
   `test_ledger_query.py` stay green: `59 passed` with the Step 1 reproduction still failing as intended.
+
+### Step 3: Remove the rewriting paths and stop staging ledgers (done)
+
+- `flow.py`: a ledger counts as conflicted only when git reports it unmerged or a line starts with a marker
+  (`_has_conflict_marker_lines`, `_ledgers_with_conflict_markers`). JSON rows that mention `|||||||` no longer count.
+- The `check_and_resolve_stage_conflicts` pre-check resolves a conflicted ledger through `_resolve_conflicting_ledger`
+  (which calls `reconcile_ledger_file`). It no longer runs `git add`, so a failed or dry run cannot leave a ledger
+  staged.
+- New pure-append resolution: `_split_conflict_sides` keeps exact line text for each side and drops the diff3 base.
+  `_append_only_union` keeps the prefix side byte for byte and appends the other side's missing lines in their original
+  order, comparing exact text. `resolve_append_only_conflict(content, prefix_side)` returns the prefix and the result.
+  `_write_resolved_ledger` writes it (temp file plus `os.replace`, the only non-append write left, because the file
+  holds markers) and then calls `assert_ledger_prefix`.
+- Public names kept: `reconcile_jsonl_ledger_conflict` and `reconcile_ledger_content` return marker-free content
+  unchanged. `reconcile_ledger_file` does not touch a file that has no markers. `reconcile_ledgers` resolves only
+  marker-bearing files. `reconcile_ledger_rows` no longer sorts or picks a winner by key or revision; it only drops
+  exact repeats, keeping the original order. The now-unused `_parse_ledger_timestamp` was removed.
+- `entrypoint/executor.py` `sync_and_reconcile_pre_push`: no reconciliation after a clean merge. On a ledger-only
+  conflict, each conflicted ledger is resolved with `prefix_side="theirs"`, so the target branch's published bytes stay
+  a prefix and the branch's rows follow. The extra `reconcile_ledgers` pass over all three ledgers was removed.
+- Deviation from the plan: the plan suggested keeping "ours" as the prefix everywhere. For the pre-push merge of the
+  target into the branch, "theirs" is the target branch. Keeping it as the prefix is what makes main's file a byte
+  prefix of the branch's file, which is the intent's acceptance condition. The stage pre-check keeps "ours".
+- Affected tests: `793` collected, `787 passed`, `6 failed`. All 6 are `TestLedgerReconciliation` cases that encode
+  the old dedupe or sort contract, which is under the plan's 10-test discard limit. They are updated in Step 4.

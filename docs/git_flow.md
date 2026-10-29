@@ -390,7 +390,8 @@ inside it, and its PR carries that deciding node's branch. (Until the implementa
 these merges to the maintainer; see Stage 3 under the flow equivalence guarantee.)
 
 In the worked commands a leaf sub-intent's merge source is written as its intent branch (`I-.../_`), shorthand for the
-branch that carries its work and that its PR carries; a nested parent's merge source is its deciding node's branch.
+branch that carries its work and that its PR carries; a nested parent's merge source is the branch of the deciding node
+inside it (the plan or execution that decided its own sub-intents), which its PR carries.
 
 **Process:**
 
@@ -709,7 +710,7 @@ merged automatically by the agent.
    - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890395-add-tests/_` →
      `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_` (leaf sub-intent)
    - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/_`
-     (the nested parent's PR, carrying its deciding plan branch) →
+     (the nested parent's PR, carrying the deciding plan branch inside it) →
      `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_` (nested parent, after step 1)
 
 3. **Root → Main** (human review, the only human step):

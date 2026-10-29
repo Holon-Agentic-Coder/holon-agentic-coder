@@ -87,7 +87,9 @@ hierarchy.
 
 - Is cut from, and merges only into, its deciding node's branch (in practice the plan branch): it runs autonomously
   through the full flow, and the agent raises its PR and merges it automatically, whether it is a leaf or has its own
-  sub-intents. Only the root intent's PR to `main` stops for a human (see [Git Flow](git_flow.md) sections 4.1-4.2).
+  sub-intents. Only the root intent's PR to `main` stops for a human (see [Git Flow](git_flow.md) sections 4.1-4.2;
+  until the implementation follows, the current flow still targets the parent intent branch and leaves each sub-intent
+  PR merge to the maintainer, see [Git Flow](git_flow.md) Stage 3 under the flow equivalence guarantee).
 - Has a slug different from every sibling under the same deciding node, so sibling ids cannot collide.
 - Can have its own sub-intents, forming a fractal hierarchy up to `MAX_SUB_INTENT_DEPTH` levels below the root.
 

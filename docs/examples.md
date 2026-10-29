@@ -875,6 +875,16 @@ $ git push origin I-1771890500-implement-metrics-module/P-1771890501-claude-code
 }
 ```
 
+**Git:** the nested parent is cut from the root's deciding plan branch, and its own deciding plan branch is cut from it
+and pushed, so the sub-sub-intents can be cut from it:
+
+```bash
+$ git fetch origin
+$ git checkout -b I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890503-implement-entropy/_ origin/I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
+$ git checkout -b I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890503-implement-entropy/P-1771890506-claude-code-claude-sonnet-4.6/_ I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890503-implement-entropy/_
+$ git push origin I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890503-implement-entropy/P-1771890506-claude-code-claude-sonnet-4.6/_
+```
+
 **Git branches:**
 
 ```
@@ -891,7 +901,7 @@ I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6
    `target_branch` set to that plan branch
 2. Executes
 3. Rebases from the deciding plan branch after execution
-4. Merges into the deciding plan branch (automatic, no human review)
+4. Merges into the deciding plan branch, which is then pushed (automatic, no human review)
 
 **After both sub-sub-intents complete**, the agent raises the nested parent's PR, carrying its own deciding plan branch
 with both sub-sub-intents merged, and merges it automatically into the root's deciding plan branch, with no human

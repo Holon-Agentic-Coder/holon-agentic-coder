@@ -28,8 +28,9 @@ create.
 
 ### JSON Schema
 
-- **`branch`** (string, optional): The target branch name (e.g., `I-1771890389-refactor-metrics`). If omitted, it will
-  be automatically generated on the fly as `I-{timestamp}-{slug}`.
+- **`branch`** (string, optional): The intent's base name (e.g., `I-1771890389-refactor-metrics`), without the `/_`
+  leaf; the intent branch itself is `{branch}/_`. If omitted, it will be automatically generated on the fly as
+  `I-{timestamp}-{slug}`.
 - **`slug`** (string, required if `branch` is omitted): A short URL-safe identifier for the task.
 - **`description`** (string, optional): A high-level description of what changes are being made.
 - **`goal`** (string, optional): The target objective or test criteria.

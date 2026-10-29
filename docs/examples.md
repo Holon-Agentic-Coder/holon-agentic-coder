@@ -1098,11 +1098,15 @@ mean_p_success_error = mean(e.calibration.p_success_error for e in recent_execut
 ```json
 {
   "proposed_intent": {
-    "intent_id": "I-root-010-improve-p-success-estimator",
+    "intent_id": "I-1771891100-improve-p-success-estimator",
     "goal": "Improve P(success) estimator to reduce calibration error",
     "rationale": "Mean calibration error over last 7 days is 0.42, exceeding threshold of 0.30",
     "evidence": {
-      "ledger_refs": ["I-root-005-001", "I-root-006-002", "I-root-007-001"],
+      "ledger_refs": [
+        "I-1771891051-implement-cost-estimator",
+        "I-1771891062-tune-entropy-weights",
+        "I-1771891071-implement-routing-roi"
+      ],
       "mean_error": 0.42,
       "sample_size": 15
     }
@@ -1119,7 +1123,7 @@ mean_p_success_error = mean(e.calibration.p_success_error for e in recent_execut
   "event_type": "intent_proposed",
   "seq": 150,
   "payload": {
-    "intent_id": "I-root-010-improve-p-success-estimator",
+    "intent_id": "I-1771891100-improve-p-success-estimator",
     "proposed_by": "agent-curator-05",
     "quality_score": 0.78
   }
@@ -1157,7 +1161,7 @@ approval = approve_intent_proposal(proposed_intent, "agent-curator-05", quality_
   "event_type": "intent_approved",
   "seq": 151,
   "payload": {
-    "intent_id": "I-root-010-improve-p-success-estimator",
+    "intent_id": "I-1771891100-improve-p-success-estimator",
     "approval_type": "auto_approved",
     "quality_score": 0.78
   }
@@ -1191,7 +1195,7 @@ After 5 successful intents with similar structure, curator agent extracts a patt
 ```python
 intents = ledger.query_intents(status="success", since=now() - timedelta(days=14))
 # Found 5 intents with similar structure:
-# - I-root-001-001, I-root-002-003, I-root-005-002, I-root-007-001, I-root-008-001
+# - I-1771890300-bootstrap-p-success, I-1771890503-implement-impact, I-1771891052-implement-learning-value-estimator, I-1771891071-implement-routing-roi, I-1771891081-implement-calibration-error
 # All implement estimators with similar steps
 ```
 
@@ -1232,7 +1236,13 @@ validate_evidence(pattern, intents)
   "version": "1.0",
   "status": "proposed",
   "evidence": {
-    "ledger_refs": ["I-root-001-001", "I-root-002-003", "I-root-005-002", "I-root-007-001", "I-root-008-001"],
+    "ledger_refs": [
+      "I-1771890300-bootstrap-p-success",
+      "I-1771890503-implement-impact",
+      "I-1771891052-implement-learning-value-estimator",
+      "I-1771891071-implement-routing-roi",
+      "I-1771891081-implement-calibration-error"
+    ],
     "success_count": 5,
     "failure_count": 0,
     "avg_p_success": 0.88,
@@ -1339,7 +1349,7 @@ model = router.select_model(predicted_entropy=5.0, novelty=0.2, complexity=0.3)
   "event_type": "model_routed",
   "seq": 250,
   "payload": {
-    "intent_id": "I-root-015-add-docstrings",
+    "intent_id": "I-1771891150-add-docstrings",
     "model": {
       "provider": "gemini",
       "model_id": "gemini-3.6-flash",
@@ -1383,7 +1393,7 @@ model = router.select_model(predicted_entropy=45.0, novelty=0.9, complexity=0.8)
   "event_type": "model_routed",
   "seq": 275,
   "payload": {
-    "intent_id": "I-root-020-design-entropy-algorithm",
+    "intent_id": "I-1771891200-design-entropy-algorithm",
     "model": {
       "provider": "gemini",
       "model_id": "gemini-3.6-flash-thinking",
@@ -1415,7 +1425,7 @@ After 3 intents fail with rebase conflicts, curator extracts a failure mode.
 ```python
 failures = ledger.query_intents(status="failure", since=now() - timedelta(days=7))
 conflict_failures = [f for f in failures if "rebase_conflict" in f.failure_reason]
-# Found 3 failures: I-root-012-002, I-root-013-001, I-root-014-003
+# Found 3 failures: I-1771891122-add-metric-caching, I-1771891131-add-metric-logging, I-1771891143-refactor-p-success
 ```
 
 ---

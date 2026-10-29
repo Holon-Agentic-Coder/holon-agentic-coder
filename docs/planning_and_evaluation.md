@@ -335,7 +335,7 @@ Example ledger entry (planning_converged):
 {
   "event_type": "planning_converged",
   "payload": {
-    "intent_id": "I-root-050",
+    "intent_id": "I-1771890700-calibrate-estimators",
     "variants_considered": ["P-1771890701-gemini-cli-gemini-3.6-flash", "P-1771890702-claude-code-claude-opus-4.6"],
     "winner_plan_id": "P-1771890702-claude-code-claude-opus-4.6",
     "reason": "dominant_plan",

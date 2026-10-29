@@ -725,7 +725,7 @@ All Git operations are logged to the ledger:
 {
   "event_type": "git_branch_created",
   "payload": {
-    "branch": "I-1771890389-refactor-metrics"
+    "branch": "I-1771890389-refactor-metrics/_"
   }
 }
 {

@@ -26,7 +26,7 @@ sequenceDiagram
     alt Validation Fails
         Orc->>Git: Post validation errors to PR & fail CI
     else Validation Passes
-        Orc->>Git: Create target intent branch (I-{timestamp}-{slug})
+        Orc->>Git: Create target intent branch (I-{timestamp}-{slug}/_)
         Orc->>Git: Append/Update intent in ledger (intents.jsonl)
         Orc->>Git: Commit and Push new branch
     end
@@ -79,7 +79,8 @@ Refactor local metrics calculations to reduce entropy.
    - Checked against a JSON Schema enforcing:
      - `slug`: Required if `branch` is omitted. Must be alphanumeric and hyphenated (`^[a-z0-9-]+$`).
      - `description`: Optional string.
-     - `branch`: Optional string.
+     - `branch`: Optional string: the intent's base name (`I-{timestamp}-{slug}`, as in the examples above), without the
+       `/_` leaf. The intent branch itself is `{branch}/_`.
 2. **Markdown Body (Goal)**:
    - The text under the `# Goal` or `## Goal` header is extracted as the intent's `goal` field.
    - Must contain at least one non-empty line of content.
@@ -105,8 +106,8 @@ layered priority:
 When a PR description is updated, the orchestrator triggers again. Since the intent branch may already exist, the
 synchronisation logic behaves as follows:
 
-- **Checking Existing Branch**: The orchestrator checks if a remote branch matches the target `branch` or
-  `I-{timestamp}-{slug}`.
+- **Checking Existing Branch**: The orchestrator checks if a remote branch matches the target `{branch}/_` or
+  `I-{timestamp}-{slug}/_`.
 - **Ledger Overwrite (Not Append)**: If the branch already exists, the orchestrator updates/replaces the existing JSON
   entry matching `branch` in `holon-knowledge/ledger/intents.jsonl` rather than appending a duplicate entry.
 - **Commit/Push**: The orchestrator commits the updated ledger on the target branch and performs a standard push.

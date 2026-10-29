@@ -253,15 +253,17 @@ Example: `I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4
 
 #### Plan Branch (Execution)
 
-Work derived from a specific plan variant occurs on a plan branch nested under the intent:
+Work derived from a specific plan variant occurs on a plan branch nested under the intent, and each execution of that
+plan on an execution branch nested under the plan:
 
 ```
-I-1771890389-refactor-metrics/P-{timestamp}-{agent}-{model}
-I-1771890389-refactor-metrics/E-{timestamp}-{agent}-{model}
+I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/_
+I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/E-{timestamp}-{action-slug}/_
 ```
 
-Example Plan Branch: `I-1771890389-refactor-metrics/P-1771890396-claude-code-claude-opus-4.6`  
-Example Execution Branch: `I-1771890389-refactor-metrics/E-1771890398-opencode-big-pickle`
+Example Plan Branch: `I-1771890389-refactor-metrics/P-1771890396-claude-code-claude-opus-4.6/_`  
+Example Execution Branch:
+`I-1771890389-refactor-metrics/P-1771890396-claude-code-claude-opus-4.6/E-1771890398-init-project/_`
 
 ---
 

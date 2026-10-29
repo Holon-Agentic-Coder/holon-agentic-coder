@@ -126,7 +126,7 @@ Every KB entry MUST contain:
   "created_by": "agent-curator-03",
   "status": "active",
   "evidence": {
-    "ledger_refs": ["I-root-001-001", "I-root-002-003"],
+    "ledger_refs": ["I-1771890300-bootstrap-p-success", "I-1771890503-implement-impact"],
     "success_count": 5,
     "failure_count": 0
   },
@@ -158,7 +158,11 @@ Every KB entry MUST contain:
   "created_by": "agent-curator-03",
   "status": "active",
   "evidence": {
-    "ledger_refs": ["I-root-001-001", "I-root-002-003", "I-root-005-002"],
+    "ledger_refs": [
+      "I-1771890300-bootstrap-p-success",
+      "I-1771890503-implement-impact",
+      "I-1771891052-implement-learning-value-estimator"
+    ],
     "success_count": 8,
     "failure_count": 1,
     "avg_p_success": 0.92,
@@ -209,7 +213,7 @@ Every KB entry MUST contain:
   "created_by": "agent-executor-12",
   "status": "active",
   "evidence": {
-    "ledger_refs": ["I-root-003-002", "I-root-007-001"],
+    "ledger_refs": ["I-1771890602-add-logging", "I-1771891071-implement-routing-roi"],
     "success_count": 12,
     "failure_count": 0
   },
@@ -252,7 +256,7 @@ Every KB entry MUST contain:
   "created_by": "agent-curator-05",
   "status": "active",
   "evidence": {
-    "ledger_refs": ["I-root-002-004", "I-root-003-001", "I-root-006-002"],
+    "ledger_refs": ["I-1771890504-implement-ev", "I-1771890601-add-caching", "I-1771891062-tune-entropy-weights"],
     "success_count": 0,
     "failure_count": 7
   },
@@ -320,7 +324,7 @@ Every KB entry MUST contain:
   "created_by": "agent-researcher-08",
   "status": "proposed",
   "evidence": {
-    "ledger_refs": ["I-root-010-001"],
+    "ledger_refs": ["I-1771891101-backtest-p-success-estimator"],
     "success_count": 0,
     "failure_count": 0,
     "calibration_improvement": 0.12,
@@ -440,7 +444,7 @@ Every KB entry MUST contain:
   "created_by": "agent-extractor-02",
   "status": "active",
   "evidence": {
-    "ledger_refs": ["I-root-001-001", "I-root-002-002"],
+    "ledger_refs": ["I-1771890300-bootstrap-p-success", "I-1771890502-implement-entropy"],
     "success_count": 6,
     "failure_count": 0
   },

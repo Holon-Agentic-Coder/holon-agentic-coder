@@ -1077,6 +1077,10 @@ $ pytest holon/metrics/test_p_success.py
 
 #### 5) Sub-intent `add-logging` merges to parent
 
+`add-logging` is a nested parent here (its execution spawned `I-1771890606-resolve-conflict`), so it merges into the
+parent intent branch once that sub-intent has merged into it (target model; whether its combined-diff PR also stops for
+a human is still open, see [Git Flow](git_flow.md) section 4.2):
+
 ```bash
 $ git checkout I-1771890600-refactor-metrics/_
 $ git merge I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/_
@@ -1608,7 +1612,7 @@ event to the Evolution Ledger:
   "seq": 601,
   "payload": {
     "agent_id": "coder-alpha",
-    "intent_id": "I-045-read-api-key",
+    "intent_id": "I-1771891300-read-api-key",
     "violation_type": "network_egress_violation",
     "syscall": "connect",
     "destination": "evil-api.com:80"

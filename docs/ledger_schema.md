@@ -130,7 +130,7 @@ children would exceed `sandbox_executor.budgets.MAX_SUB_INTENT_DEPTH` (`2`).
 Child intent rows also record the node that decided the split, under which the child's branch nests (see
 [Git Flow](git_flow.md#22-sub-intent-branch-nested-under-the-deciding-node)): `deciding_branch` (the deciding node's
 branch, for a plan-decided split the plan branch `I-.../P-.../_`), `parent_plan_id` (the deciding plan, when a plan or
-an execution or review of that plan decided the split), `parent_execution_id` (when an execution or a review of it
+an execution or review of that plan decided the split), and `parent_execution_id` (when an execution or a review of it
 decided the split); the list item it came from is identified by its own `goal` and `description`. A sub-intent promoted
 to its own root intent records its source plan (`parent_plan_id`), so its lineage is not lost.
 

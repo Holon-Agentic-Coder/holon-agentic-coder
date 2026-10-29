@@ -46,9 +46,10 @@ This document defines the **Git branching, rebasing, and merging discipline** fo
 ### 1.5 ID Generation
 
 - Root intent, sub-intent, plan and execution IDs are generated using the current Unix timestamp.
-- A sub-intent's branch nests under the node that decided its split (section 2.2), so its ID only has to be unique among
-  that node's children.
-- Example: `I-1771422315`, `P-1771422316`, `E-1771422317`
+- Every ID (`I-`, `P-` and `E-`) is unique across the whole project: the timestamp plus the slug (intents), the agent
+  and model (plans) or the action slug (executions). Ledgers key records on the bare ID, so a sub-intent's nested branch
+  path only places it in the tree (section 2.2); it does not scope the ID.
+- Example: `I-1771422315-example-intent`, `P-1771422316-claude-code-claude-sonnet-4.6`, `E-1771422317-example-action`
 
 ---
 
@@ -707,11 +708,17 @@ def auto_resolve_conflict(sub_intent, parent_branch):
 ### 9.2 Reactive Intent (If Auto-Resolution Fails)
 
 ```python
+import time
+
+
 def handle_conflict(sub_intent):
     spawn_intent(
         {
-            "intent_id": f"{sub_intent.intent_id}-R001-resolve-conflict",
+            "intent_id": f"I-{int(time.time())}-resolve-conflict",
             "parent_intent_id": sub_intent.intent_id,
+            "deciding_branch": sub_intent.execution_branch,
+            "parent_plan_id": sub_intent.plan_id,
+            "parent_execution_id": sub_intent.execution_id,
             "goal": f"Resolve rebase conflict in {sub_intent.conflict_files}",
             "intent_type": "reactive",
             "trigger": "rebase_conflict",

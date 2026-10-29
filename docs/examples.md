@@ -716,19 +716,19 @@ $ git checkout -b I-1771890500-implement-metrics-module/_
     ],
     "sub_intents": [
       {
-        "intent_id": "I-1771890502-implement-p-success",
+        "slug": "implement-p-success",
         "goal": "Implement P(success) estimator"
       },
       {
-        "intent_id": "I-1771890503-implement-entropy",
+        "slug": "implement-entropy",
         "goal": "Implement entropy estimator"
       },
       {
-        "intent_id": "I-1771890504-implement-impact",
+        "slug": "implement-impact",
         "goal": "Implement impact estimator"
       },
       {
-        "intent_id": "I-1771890505-implement-ev",
+        "slug": "implement-ev",
         "goal": "Implement EV calculator"
       }
     ]
@@ -843,11 +843,11 @@ $ git merge I-1771890500-implement-metrics-module/P-1771890501-claude-code-claud
   "plan_graph": {
     "sub_intents": [
       {
-        "intent_id": "I-1771890507-define-entropy-sources",
+        "slug": "define-entropy-sources",
         "goal": "Define entropy sources"
       },
       {
-        "intent_id": "I-1771890508-implement-entropy-formula",
+        "slug": "implement-entropy-formula",
         "goal": "Implement entropy formula"
       }
     ]
@@ -944,7 +944,7 @@ runs sibling sub-intents one at a time.
 
 ### Execution
 
-#### 1) Sub-intent 001 completes first
+#### 1) Sub-intent `add-caching` completes first
 
 ```bash
 $ git checkout I-1771890600-refactor-metrics/_
@@ -954,7 +954,7 @@ $ git merge I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet
 
 ---
 
-#### 2) Sub-intent 002 attempts rebase after execution
+#### 2) Sub-intent `add-logging` attempts rebase after execution
 
 ```bash
 $ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/_
@@ -1073,7 +1073,7 @@ $ pytest holon/metrics/test_p_success.py
 
 ---
 
-#### 5) Sub-intent 002 merges to parent
+#### 5) Sub-intent `add-logging` merges to parent
 
 ```bash
 $ git checkout I-1771890600-refactor-metrics/_

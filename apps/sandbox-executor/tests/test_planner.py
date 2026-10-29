@@ -770,3 +770,34 @@ def test_planner_main_agent_echo_carries_no_settings_value(monkeypatch, agent_fa
         assert_no_fragment(combined, value)
     finally:
         h.cleanup()
+
+
+def test_render_placeholders_plan_path() -> None:
+    assert planner.render_placeholders("plans/{plan_id}.md", {"plan_id": "P-1793241058-a-b"}) == (
+        "plans/P-1793241058-a-b.md"
+    )
+
+
+@pytest.mark.parametrize(("template", "expected"), [("x {plan_id y", "x P-1 y"), ("x {plan_id", "x P-1")])
+def test_render_placeholders_unmatched_brace(template: str, expected: str) -> None:
+    assert planner.render_placeholders(template, {"plan_id": "P-1"}) == expected
+
+
+def test_render_placeholders_order_independent() -> None:
+    values = {"plan_id": "P-1", "agent": "claude", "date": "2026-10-29"}
+    template = "{plan_id} {plan_id {agent}/{date} plans/{plan_id}.md"
+    forward = planner.render_placeholders(template, values)
+    reverse = planner.render_placeholders(template, dict(reversed(list(values.items()))))
+    assert forward == reverse == "P-1 P-1 claude/2026-10-29 plans/P-1.md"
+
+
+def test_render_placeholders_inserts_values_literally() -> None:
+    literal = "{agent} \\1 \\g<0> \\n {plan_id"
+    rendered = planner.render_placeholders("[{description}] {agent}", {"description": literal, "agent": "claude"})
+    assert rendered == f"[{literal}] claude"
+
+
+def test_render_placeholders_leaves_unknown_and_prose_braces() -> None:
+    template = "{plan_identifier} {unknown} {standard | elevated} {"
+    assert planner.render_placeholders(template, {"plan_id": "P-1"}) == template
+    assert planner.render_placeholders(template, {}) == template

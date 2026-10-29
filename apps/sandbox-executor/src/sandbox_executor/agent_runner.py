@@ -172,6 +172,17 @@ def get_workspace_dir() -> str:
     return os.path.expanduser("~/.holon-sandbox/workspace") if in_sandbox else os.path.expanduser("~/.holon/repo")
 
 
+_TRUTHY = ("1", "true", "yes", "on")
+
+
+def skip_permissions_enabled() -> bool:
+    """Return whether ``HOLON_AGENT_SKIP_PERMISSIONS`` (default true) asks runners to bypass permission prompts.
+
+    Read on every call, so a runner honours the value current when its command is built rather than at import time.
+    """
+    return os.getenv("HOLON_AGENT_SKIP_PERMISSIONS", "true").lower() in _TRUTHY
+
+
 class EnvMapping:
     """Defines a mapping from an environment variable to a command-line flag."""
 
@@ -215,9 +226,12 @@ class StandardAgentRunner(AgentRunner):
         env_mappings: list[EnvMapping] | None = None,
         required_keys: list[str] | None = None,
         custom_validator: str | None = None,
+        bypass_flags: list[str] | None = None,
     ):
         super().__init__(agent_id, binary_name, model_flag)
         self.prefix = prefix or []
+        # Bypass argv, emitted only while skip_permissions_enabled(); never routed through any settings value.
+        self.bypass_flags = bypass_flags or []
         self.suffix = suffix or []
         self.env_mappings = env_mappings or []
         self.required_keys = required_keys or []
@@ -378,7 +392,8 @@ class StandardAgentRunner(AgentRunner):
         Used by :meth:`build_cmd` and by the host-side pre-flight probe, which runs the command inside the runner's
         container where the binary and credentials actually live.
         """
-        cmd = [self.binary_name, *self.prefix, self.model_flag, model_name, *self.suffix]
+        prefix = [*self.prefix, *self.bypass_flags] if self.bypass_flags and skip_permissions_enabled() else self.prefix
+        cmd = [self.binary_name, *prefix, self.model_flag, model_name, *self.suffix]
         self._append_env_mappings(cmd)
         cmd.append(full_prompt)
         return cmd
@@ -466,7 +481,7 @@ class AntigravityAgentRunner(StandardAgentRunner):
         # Resolve HOLON_AGENT_EFFORT and optional permissions bypass at call time
         prefix = list(self.prefix)
         suffix = list(self.suffix)
-        if os.getenv("HOLON_AGENT_SKIP_PERMISSIONS", "true").lower() in ("1", "true", "yes", "on"):
+        if skip_permissions_enabled():
             prefix.append("--dangerously-skip-permissions")
         suffix.extend(["--effort", os.getenv("HOLON_AGENT_EFFORT", "medium"), "-p"])
 
@@ -506,6 +521,8 @@ runners = {
         "claude",
         "--model",
         suffix=["-p"],
+        # Print mode refuses every write unless bypass is both allowed and selected; both are plain CLI parameters.
+        bypass_flags=["--allow-dangerously-skip-permissions", "--permission-mode", "bypassPermissions"],
         env_mappings=[
             EnvMapping("HOLON_AGENT_SETTINGS", "--settings"),
         ],

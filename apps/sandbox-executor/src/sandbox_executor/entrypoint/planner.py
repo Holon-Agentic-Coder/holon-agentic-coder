@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime
 
 from sandbox_executor import artefacts
@@ -22,6 +23,24 @@ from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.ledger import atomic_ledger_append
 from sandbox_executor.redaction import redact_agent_secrets, redact_command, redact_command_args
 from sandbox_executor.turns import record_budget_failure, run_turn, supervise_authoring_turn
+
+
+def render_placeholders(template: str, values: Mapping[str, str]) -> str:
+    """Render every ``{name}`` or unmatched ``{name`` placeholder in one regular-expression pass.
+
+    Args:
+        template: Prompt template text.
+        values: Replacement values keyed by bare placeholder name (``"plan_id"``, not ``"{plan_id}"``).
+
+    Returns:
+        The rendered text. Values are inserted literally and never rescanned, so braces or backslashes inside a value
+        are not re-expanded, and the result does not depend on the mapping's order. Unknown names are left untouched.
+    """
+    if not values:
+        return template
+    names = "|".join(re.escape(name) for name in sorted(values, key=len, reverse=True))
+    pattern = re.compile(r"\{(" + names + r")(?![A-Za-z0-9_])\}?")
+    return pattern.sub(lambda match: values[match.group(1)], template)
 
 
 def run_cmd(
@@ -329,23 +348,21 @@ Include metrics in this format:
 | ev_pred | {ev_pred} |
 """
 
-    replacements = {
-        "{timestamp}": str(plan_seq),
-        "{agent}": agent_name,
-        "{agent_version}": runner.get_version(),
-        "{model}": model_name,
-        "{intent_id}": intent_data.get("intent_id", intent_data.get("branch", intent_branch_prefix)),
-        "{parent_intent_id}": intent_data.get("parent_intent_id", "NONE"),
-        "{description}": intent_data.get("description", ""),
-        "{plan_id": plan_id,  # cover partial braces
-        "{plan_id}": plan_id,
-        "{date}": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
-        "{intent_json}": json.dumps(intent_data, indent=2),
-        "{safe_model}": safe_model,
-        "{budget_from_intent}": str(entropy_budget),
+    values = {
+        "timestamp": str(plan_seq),
+        "agent": agent_name,
+        "agent_version": runner.get_version(),
+        "model": model_name,
+        "intent_id": intent_data.get("intent_id", intent_data.get("branch", intent_branch_prefix)),
+        "parent_intent_id": intent_data.get("parent_intent_id", "NONE"),
+        "description": intent_data.get("description", ""),
+        "plan_id": plan_id,
+        "date": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+        "intent_json": json.dumps(intent_data, indent=2),
+        "safe_model": safe_model,
+        "budget_from_intent": str(entropy_budget),
     }
-    for k, v in replacements.items():
-        template = template.replace(k, v)
+    template = render_placeholders(template, values)
 
     # Unique temp files (mkstemp), so two plans started in the same second, in one process or several, never share or
     # clobber each other's prompt or intent file. Both are created inside the try, so the finally block below removes

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import urllib.error
 import urllib.request
 import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -334,6 +336,29 @@ def test_non_object_listing_degrades_to_cold_start() -> None:
     records, warnings = safe_fetch(lambda: fetch_baseline("o/r", "n", 5, "", opener))
     assert records == []
     assert "AttributeError" in warnings[0]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        http.client.IncompleteRead(b"partial"),
+        http.client.BadStatusLine("garbage"),
+        zlib.error("invalid stored block lengths"),
+        EOFError(),
+        RuntimeError("File is encrypted"),
+        TimeoutError("timed out"),
+    ],
+)
+def test_download_error_degrades_to_cold_start(error: BaseException) -> None:
+    def opener(request: urllib.request.Request) -> bytes:
+        if "artifacts?name=" in request.full_url:
+            return json.dumps({"artifacts": [artefact(1)]}).encode()
+        raise error
+
+    records, warnings = safe_fetch(lambda: fetch_baseline("o/r", "n", 5, "", opener))
+    assert records == []
+    assert type(error).__name__ in warnings[0]
+    assert "treating as cold start" in warnings[0]
 
 
 def test_cold_start_compare_reports_per_test_skipped(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -25,6 +25,7 @@ artefact access sit behind injectable functions; a failed fetch degrades to cold
 from __future__ import annotations
 
 import argparse
+import http.client
 import io
 import json
 import os
@@ -34,6 +35,7 @@ import time
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
+import zlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
@@ -287,11 +289,28 @@ def fetch_baseline(
     return [read_record_zip(opener(build_request(item["archive_download_url"], token))) for item in candidates[:runs]]
 
 
+# Every stdlib failure reachable from fetching and parsing the baseline: network and timeout (OSError),
+# truncated or malformed HTTP responses (HTTPException), broken or truncated archives (BadZipFile, zlib.error,
+# EOFError, RuntimeError for encrypted or unsupported members) and malformed JSON payloads (the rest).
+FETCH_ERRORS: tuple[type[BaseException], ...] = (
+    OSError,
+    http.client.HTTPException,
+    zipfile.BadZipFile,
+    zlib.error,
+    EOFError,
+    RuntimeError,
+    KeyError,
+    ValueError,
+    TypeError,
+    AttributeError,
+)
+
+
 def safe_fetch(fetcher: Callable[[], list[TimingRecord]]) -> tuple[list[TimingRecord], list[str]]:
     """Run ``fetcher``; on any fetch or parse error return no records and a warning (cold start)."""
     try:
         return fetcher(), []
-    except (OSError, zipfile.BadZipFile, KeyError, ValueError, TypeError, AttributeError) as exc:
+    except FETCH_ERRORS as exc:
         return [], [
             f"::warning::Could not fetch the timing baseline ({type(exc).__name__}: {exc}); treating as cold start."
         ]

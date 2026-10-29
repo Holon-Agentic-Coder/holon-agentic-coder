@@ -718,7 +718,9 @@ These are invariants that validators should enforce:
    - `0 <= predicted.learning_value <= 10`
    - `predicted.entropy >= 0`
    - `actual.entropy >= 0`
-9. If a sub-intent merges, the target must be its deciding node's branch (no merges to `main` from sub-intents).
+9. If a sub-intent merges, the target must be its deciding node's branch (no merges to `main` from sub-intents); until
+   the implementation follows, the current flow still records the parent intent branch `I-.../_` as the target, and
+   historic rows are never rewritten.
 
 ---
 

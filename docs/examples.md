@@ -749,15 +749,27 @@ $ git checkout -b I-1771890500-implement-metrics-module/_
 
 **Plan selected:** v1 (only variant, EV positive)
 
+**Git:** the deciding plan branch is cut from the root intent branch and pushed, so the sub-intents can be cut from it:
+
+```bash
+$ git checkout -b I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_ I-1771890500-implement-metrics-module/_
+$ git push origin I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
+```
+
 ---
 
 #### 3) Execution: Create module structure
 
+The structure commit lands on the deciding plan branch before any sub-intent is cut from it, so every sub-intent starts
+from it and the root intent's PR to `main` carries it:
+
 ```bash
+$ git checkout I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
 $ mkdir -p holon/metrics
 $ touch holon/metrics/__init__.py
 $ git add holon/metrics
 $ git commit -m "Create metrics module structure"
+$ git push origin I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
 ```
 
 ---
@@ -808,6 +820,7 @@ $ git rebase origin/I-1771890500-implement-metrics-module/P-1771890501-claude-co
 ```bash
 $ git checkout I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
 $ git merge --no-ff I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890502-implement-p-success/_
+$ git push origin I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
 ```
 
 **Ledger event:**
@@ -887,6 +900,7 @@ intervention:
 ```bash
 $ git checkout I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
 $ git merge --no-ff I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890503-implement-entropy/P-1771890506-claude-code-claude-sonnet-4.6/_
+$ git push origin I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
 ```
 
 ---
@@ -956,6 +970,11 @@ siblings build on each other through that branch)
 - `I-1771890602-add-caching` (modifies `holon/metrics/p_success.py`)
 - `I-1771890603-add-logging` (modifies `holon/metrics/p_success.py`)
 
+The deciding plan branch and both sub-intent branches were created and pushed to `origin` when the split was recorded,
+and `add-logging` has its own plan `P-1771890604-claude-code-claude-sonnet-4.6` and execution `E-1771890605-add-logging`
+below its node. Step 1 writes `add-caching`, a leaf, by its intent branch, the shorthand the worked commands use for the
+branch that carries a leaf sub-intent's work ([Git Flow](git_flow.md) section 4.1).
+
 ### Execution
 
 #### 1) Sub-intent `add-caching` completes first
@@ -964,14 +983,16 @@ siblings build on each other through that branch)
 $ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/_
 $ git merge --no-ff I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890602-add-caching/_
 # Merge successful (automatic, no human review)
+$ git push origin I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/_
 ```
 
 ---
 
 #### 2) Sub-intent `add-logging` attempts rebase after execution
 
-`add-logging`'s work lives on its execution branch (plan `P-1771890604-claude-code-claude-sonnet-4.6`, execution
-`E-1771890605-add-logging`), so that is the branch the after-execution rebase replays:
+The rebase must replay the commits themselves, so it runs on the branch that holds them: `add-logging`'s execution
+branch (plan `P-1771890604-claude-code-claude-sonnet-4.6`, execution `E-1771890605-add-logging`), which its PR carries
+once its execution spawns a sub-intent in step 3:
 
 ```bash
 $ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/_
@@ -1026,6 +1047,12 @@ This execution-decided split illustrates the general rule only; the example's ma
 }
 ```
 
+**Git:** the reactive sub-intent is cut from its deciding execution branch:
+
+```bash
+$ git checkout -b I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/I-1771890606-resolve-conflict/_ I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/_
+```
+
 ---
 
 #### 4) Conflict resolution intent executes
@@ -1038,7 +1065,7 @@ This execution-decided split illustrates the general rule only; the example's ma
     "steps": [
       {
         "id": 1,
-        "description": "Fetch parent changes",
+        "description": "Fetch deciding branch changes",
         "tool": "git"
       },
       {
@@ -1109,6 +1136,7 @@ $ pytest holon/metrics/test_p_success.py
 $ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/_
 $ git merge --no-ff I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/I-1771890606-resolve-conflict/_
 # Merge successful
+$ git push origin I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/_
 ```
 
 ---
@@ -1132,6 +1160,7 @@ $ git merge-base --is-ancestor I-1771890600-refactor-metrics/P-1771890601-claude
 $ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/_
 $ git merge --no-ff I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/_
 # Merge successful (conflict already resolved)
+$ git push origin I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/_
 ```
 
 ---

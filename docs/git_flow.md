@@ -389,6 +389,9 @@ and for a nested parent alike; a nested parent merges once its own sub-intents h
 inside it, and its PR carries that deciding node's branch. (Until the implementation follows, the current flow leaves
 these merges to the maintainer; see Stage 3 under the flow equivalence guarantee.)
 
+In the worked commands a leaf sub-intent's merge source is written as its intent branch (`I-.../_`), shorthand for the
+branch that carries its work and that its PR carries; a nested parent's merge source is its deciding node's branch.
+
 **Process:**
 
 1. Evaluate all completed sub-intents under the same deciding node
@@ -407,6 +410,7 @@ these merges to the maintainer; see Stage 3 under the flow equivalence guarantee
 $ git checkout I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
 $ git merge --no-ff I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_
 # Automatic for every sub-intent, no human review
+$ git push origin I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
 ```
 
 **Ledger event:**
@@ -580,6 +584,10 @@ def parallel_merge(sub_intents, deciding_branch):
 $ git checkout main
 $ git checkout -b I-1771890389-refactor-metrics/_
 
+# Deciding plan: cut from the root intent branch and pushed, so sub-intents can be cut from it
+$ git checkout -b I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_ I-1771890389-refactor-metrics/_
+$ git push origin I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
+
 # Sub-intent: nested under the plan that decided the split, cut from that plan branch, which it targets
 $ git checkout -b I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_ origin/I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
 ```
@@ -606,6 +614,7 @@ is a leaf or a nested parent (section 4.1).
 # The sub-intent branch merges automatically into the deciding plan branch
 $ git checkout I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
 $ git merge --no-ff I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_
+$ git push origin I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
 ```
 
 ### 7.5 Promotion (Human Review for Root Intents)

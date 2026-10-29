@@ -106,7 +106,8 @@ Git provides immutable history, causal lineage, reproducibility, and cheap branc
 - **Sub-intents merge only into the branch of the node that decided the split** (in practice the plan branch)
 - **Never directly to `main`**
 - Below the root the agent raises and merges every sub-intent PR automatically; only the **root intent's** PR to `main`
-  is presented to a human for review and promotion
+  is presented to a human for review and promotion (until the implementation follows, the current flow leaves each
+  sub-intent PR merge to the maintainer; see [`docs/git_flow.md`](docs/git_flow.md) Stage 3)
 
 ### 6) Mandatory dual rebase gates
 
@@ -198,6 +199,9 @@ Holon enforces a strict Git discipline to ensure isolation, reproducibility, and
 - Sub-intents merge **only** into their deciding node's branch, automatically (never directly to `main`)
 - Sub-intents must rebase from the deciding node's branch **before** and **after** execution
 - Only root intents are reviewed by humans: the root intent's PR to `main` is the only human stop
+
+Until the implementation follows, the current `holon flow` still targets the parent intent branch and leaves each
+sub-intent PR merge to the maintainer (see [`docs/git_flow.md`](docs/git_flow.md) Stage 3).
 
 **For complete details**, see [`docs/git_flow.md`](docs/git_flow.md).
 

@@ -60,6 +60,7 @@ from sandbox_executor.flow import (
     run_review_stage,
     save_checkpoint,
 )
+from sandbox_executor.git import EMPTY_DIFF_STATUS
 from sandbox_executor.ledger import parse_commit_trailers
 from sandbox_executor.review_target import DiffVerdict
 
@@ -5773,3 +5774,25 @@ class TestStage3PartialResumeDispatch:
         with patch("sandbox_executor.flow._read_ledger_rows", side_effect=read_rows):
             branch = flow_module._resumable_partial_branch(str(tmp_path), {self.FAILED, self.OLDER})
         assert branch == self.OLDER
+
+    @pytest.mark.parametrize("status", ["failure", EMPTY_DIFF_STATUS])
+    def test_failed_partial_head_accepts_both_failure_statuses(self, tmp_path, status):
+        row = {"entry_type": "summary", "execution_id": "E-100", "status": status, "partial_head": "c" * 40}
+        with patch("sandbox_executor.flow._read_ledger_rows", return_value=[row]):
+            assert flow_module.failed_partial_head(str(tmp_path), "refs/remotes/origin/x", "E-100") == "c" * 40
+
+    def test_resumable_partial_branch_resumes_an_empty_diff_failed_row(self, tmp_path):
+        def read_rows(_repo_dir, ref, _ledger):
+            exec_id = ref.removesuffix("/_").rsplit("/", 1)[-1]
+            return [
+                {
+                    "entry_type": "summary",
+                    "execution_id": exec_id,
+                    "status": EMPTY_DIFF_STATUS,
+                    "partial_head": "d" * 40,
+                }
+            ]
+
+        with patch("sandbox_executor.flow._read_ledger_rows", side_effect=read_rows):
+            branch = flow_module._resumable_partial_branch(str(tmp_path), {self.FAILED, self.OLDER})
+        assert branch == self.FAILED

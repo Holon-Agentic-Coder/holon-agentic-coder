@@ -183,10 +183,12 @@ modifications and deletions, and untracked files that `.gitignore` does not excl
 `execute: E-... partial work (failed) for plan ...`, ahead of the failure commit for the notes and the ledger row. The
 pre-push safety and sync checks apply unchanged, and the successful path still makes one `completed` commit.
 
-The failure summary row in `executions.jsonl` keeps `status: failure` and gains an optional `partial_head` field: the
-sha of the salvaged commit, or of the agent's own last commit when the tree was already clean. It is absent when nothing
-differs from the plan tip, and always absent on success. A superseding sync or recovery row repeats it. The salvaged
-commit is pushed even when the failure commit has nothing to stage, for example when the ledger append failed.
+The failure summary row in `executions.jsonl` keeps its failure status, `status: failure` for a budget breach, an agent
+exit other than 0 or any other failure, and `status: failed` for an empty or unverified diff, and gains an optional
+`partial_head` field: the sha of the salvaged commit, or of the agent's own last commit when the tree was already clean.
+It is absent when nothing differs from the plan tip, and always absent on success. A superseding sync or recovery row
+repeats it. The salvaged commit is pushed even when the failure commit has nothing to stage, for example when the ledger
+append failed.
 
 When the push of the execution branch is refused, the executor prints the branch, the local head sha and git's reason on
 stderr. It then prints `git format-patch --stdout <plan tip>..HEAD` between the `BEGIN UNPUSHED EXECUTION PATCH` and
@@ -208,12 +210,12 @@ lines apply as the literal `[REDACTED PRIVATE KEY]` text, so re-create those fil
 context or removed lines were masked no longer matches, and needs `git am --reject` or a manual edit.
 
 A `holon flow --checkpoint` or `holon flow --from-stage execute` resume at Stage 3 looks for the newest failed execution
-branch under the plan whose latest summary row carries a `partial_head`, and passes it to the executor as a fourth
-argument. The executor fetches that branch and re-reads `partial_head` from its own ledger. When the partial head
-descends from the plan tip, the new execution branch is cut from it, and the agent's prompt gets a note saying it
-continues that partial work. The empty-diff guard still compares against the plan tip. Otherwise, the executor starts
-from the plan tip and logs why. A plain `holon execute <plan_branch>` and a flow that is not resumed at Stage 3 always
-start from the plan tip.
+branch under the plan whose latest summary row has either failure status (`failure` or `failed`) and carries a
+`partial_head`, and passes it to the executor as a fourth argument. The executor fetches that branch and re-reads
+`partial_head` from its own ledger. When the partial head descends from the plan tip, the new execution branch is cut
+from it, and the agent's prompt gets a note saying it continues that partial work. The empty-diff guard still compares
+against the plan tip. Otherwise, the executor starts from the plan tip and logs why. A plain
+`holon execute <plan_branch>` and a flow that is not resumed at Stage 3 always start from the plan tip.
 
 ## Stage summary lines
 

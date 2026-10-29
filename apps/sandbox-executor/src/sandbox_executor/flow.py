@@ -2885,10 +2885,14 @@ def _run_decomposed_plan(
 
 
 def failed_partial_head(repo_dir: str, ref: str, execution_id: str) -> str | None:
-    """The ``partial_head`` on ``ref``'s latest summary row for ``execution_id`` when that row is a failure."""
+    """The ``partial_head`` on ``ref``'s latest summary row for ``execution_id`` when that row is a failure.
+
+    Both failure statuses count: ``failure`` (a budget breach, an agent error or any other failure) and
+    ``EMPTY_DIFF_STATUS`` (an empty or unverified diff), since either row can carry salvaged partial work.
+    """
     row = _latest_execution_summary(_read_ledger_rows(repo_dir, ref, "executions.jsonl"), execution_id) or {}
     partial_head = row.get("partial_head")
-    if row.get("status") == "failure" and isinstance(partial_head, str) and partial_head:
+    if row.get("status") in ("failure", EMPTY_DIFF_STATUS) and isinstance(partial_head, str) and partial_head:
         return partial_head
     return None
 

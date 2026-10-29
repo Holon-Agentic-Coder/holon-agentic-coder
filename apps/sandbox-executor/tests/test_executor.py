@@ -5034,6 +5034,28 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         self.assertIn(executor.continuation_note(failed, partial_head), prompts[0])
         self.assertEqual(self.summary(new)["status"], "success")
 
+    def test_resume_continues_from_an_unverified_diff_failed_row(self):
+        """A row recorded as failed (unverified diff) with a partial_head is resumed like a failure row."""
+        with patch("sandbox_executor.git.has_effective_diff", side_effect=RuntimeError("diff unavailable")):
+            self.run_main(self.dirty_turn, returncode=0)
+        [failed] = self.exec_branches()
+        row = self.summary(failed)
+        self.assertEqual((row["status"], row["failure_reason"]), ("failed", "diff_unverified"))
+        partial_head = row["partial_head"]
+
+        def continue_turn(workspace, path):
+            with open(os.path.join(workspace, "src/new_module.py"), "a") as f:
+                f.write("MORE = 2\n")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(VALID_NOTES)
+
+        code, stderr, prompts = self.run_main(continue_turn, extra_args=(failed,), url=f"file://{self.bare}")
+        self.assertEqual(code, 0, stderr)
+        [new] = [b for b in self.exec_branches() if b != failed]
+        self.assertEqual(self.git(self.bare, "rev-parse", f"{new}~1").strip(), partial_head)
+        self.assertIn(executor.continuation_note(failed, partial_head), prompts[0])
+
     def test_resume_without_partial_head_starts_from_the_plan_tip(self):
         def notes_only(_workspace, path):
             os.makedirs(os.path.dirname(path), exist_ok=True)

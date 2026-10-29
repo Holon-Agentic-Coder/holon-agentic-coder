@@ -2884,6 +2884,15 @@ def _run_decomposed_plan(
     return result
 
 
+def failed_partial_head(repo_dir: str, ref: str, execution_id: str) -> str | None:
+    """The ``partial_head`` on ``ref``'s latest summary row for ``execution_id`` when that row is a failure."""
+    row = _latest_execution_summary(_read_ledger_rows(repo_dir, ref, "executions.jsonl"), execution_id) or {}
+    partial_head = row.get("partial_head")
+    if row.get("status") == "failure" and isinstance(partial_head, str) and partial_head:
+        return partial_head
+    return None
+
+
 def _resumable_partial_branch(repo_dir: str, branches: set[str]) -> str | None:
     """Newest failed execution branch whose latest summary row carries a ``partial_head`` to resume from.
 
@@ -2897,10 +2906,7 @@ def _resumable_partial_branch(repo_dir: str, branches: set[str]) -> str | None:
 
     for branch in sorted(branches, key=seq, reverse=True):
         exec_id = branch.removesuffix("/_").rsplit("/", 1)[-1]
-        rows = _read_ledger_rows(repo_dir, f"refs/remotes/origin/{branch}", "executions.jsonl")
-        row = _latest_execution_summary(rows, exec_id) or {}
-        partial_head = row.get("partial_head")
-        if row.get("status") == "failure" and isinstance(partial_head, str) and partial_head:
+        if failed_partial_head(repo_dir, f"refs/remotes/origin/{branch}", exec_id):
             return branch
     return None
 

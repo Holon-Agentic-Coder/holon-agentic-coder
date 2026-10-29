@@ -4805,6 +4805,68 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         self.assertIn("UNPUSHED_PATCH_MAX_BYTES", stderr)
         self.assertNotIn(self.SECRET, stderr)
 
+    def test_unpushed_patch_cap_is_below_the_redaction_input_limit(self):
+        self.assertLessEqual(executor.UNPUSHED_PATCH_MAX_BYTES, executor._MAX_REDACT_INPUT_LEN)
+
+    def test_patch_over_the_redaction_limit_falls_back_to_diffstat_at_the_real_cap(self):
+        """A patch between the redaction limit and 256 KiB is never printed with its middle cut out."""
+        self._reject_pushes()
+
+        def large_turn(workspace, path):
+            self.dirty_turn(workspace, path)
+            with open(os.path.join(workspace, "src/large.py"), "w") as f:
+                f.writelines(f"VALUE_{i} = {i}\n" for i in range(12_000))
+
+        code, stderr, _ = self.run_main(large_turn, returncode=1)
+        self.assertEqual(code, 1)
+        raw = self.git(self.workspace, "format-patch", "--stdout", f"{self.plan_tip}..HEAD")
+        self.assertGreater(len(raw.encode()), executor._MAX_REDACT_INPUT_LEN)
+        self.assertLess(len(raw.encode()), 256 * 1024)
+        self.assertNotIn(executor.UNPUSHED_PATCH_BEGIN, stderr)
+        self.assertIn("src/large.py", stderr)
+        self.assertIn("Unpushed patch omitted", stderr)
+
+    def test_unpushed_patch_excludes_env_and_credential_files(self):
+        self._reject_pushes()
+        unrecognisable = "hunter2-plain-value-9f3k"
+
+        def env_turn(workspace, path):
+            self.dirty_turn(workspace, path)
+            with open(os.path.join(workspace, ".env"), "w") as f:
+                f.write(f"{unrecognisable}\n")
+            os.makedirs(os.path.join(workspace, "config/secrets"))
+            with open(os.path.join(workspace, "config/secrets/db"), "w") as f:
+                f.write(f"{unrecognisable}\n")
+            with open(os.path.join(workspace, "Credentials.json"), "w") as f:
+                f.write(f'{{"p": "{unrecognisable}"}}\n')
+
+        code, stderr, _ = self.run_main(env_turn, returncode=1)
+        self.assertEqual(code, 1)
+        self.assertIn(executor.UNPUSHED_PATCH_BEGIN, stderr)
+        self.assertNotIn(unrecognisable, stderr)
+        self.assertIn("src/new_module.py", stderr)
+        notice = next(line for line in stderr.splitlines() if line.startswith("Unpushed patch excludes"))
+        for rel in (".env", "config/secrets/db", "Credentials.json"):
+            self.assertIn(rel, notice)
+        # The excluded files are committed locally, so they are on the branch once a push succeeds.
+        tree = self.git(self.workspace, "ls-tree", "-r", "--name-only", "HEAD").split()
+        self.assertIn(".env", tree)
+
+    def test_salvaged_commit_is_pushed_when_the_failure_commit_has_nothing_staged(self):
+        def code_only(workspace, _path):
+            with open(os.path.join(workspace, "src/codebase.py"), "a") as f:
+                f.write("def added(): pass\n")
+
+        def failing_append(_path):
+            raise OSError("ledger unavailable")
+
+        with patch.object(executor, "atomic_ledger_append", side_effect=failing_append):
+            _code, _stderr, _ = self.run_main(code_only, returncode=1)
+        [branch] = self.exec_branches()
+        self.assertIn("partial work (failed) for plan", self.subject(branch))
+        self.assertEqual(self.git(self.bare, "rev-parse", f"{branch}~1").strip(), self.plan_tip)
+        self.assertEqual(self.files_in(branch), {"src/codebase.py"})
+
     def _failed_branch_with_partial_head(self):
         self.run_main(self.dirty_turn, breach=BudgetBreach("execute", "stage", 2700, 2700))
         [branch] = self.exec_branches()

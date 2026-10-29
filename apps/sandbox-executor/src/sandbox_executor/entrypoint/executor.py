@@ -722,8 +722,12 @@ EXECUTIONS_LEDGER_REL = "holon-knowledge/ledger/executions.jsonl"
 # Marker lines around the unpushed-work patch printed on stderr when the execution branch push is refused.
 UNPUSHED_PATCH_BEGIN = "BEGIN UNPUSHED EXECUTION PATCH"
 UNPUSHED_PATCH_END = "END UNPUSHED EXECUTION PATCH"
-# 256 KiB: large enough for a typical execution's patch, small enough for the host's captured container log.
-UNPUSHED_PATCH_MAX_BYTES = 256 * 1024
+# 96 KiB: large enough for a typical execution's patch, and below the redaction input limit, so redaction never cuts
+# the middle out of a patch that is still printed. The raw patch is checked against it before redaction.
+UNPUSHED_PATCH_MAX_BYTES = 96 * 1024
+# Env files, credential stores and secrets directories, matched case-insensitively at any depth. They are left out of
+# the unpushed patch and its diffstat, because pattern redaction cannot recognise every value they may hold.
+UNPUSHED_PATCH_EXCLUDED_GLOBS = ("**/.env", "**/.env.*", "**/*credential*", "**/.netrc", "**/secrets/**")
 
 # A resumable execution branch name (validated before it reaches a refspec) and a full commit sha.
 _PARTIAL_BRANCH_RE = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/E-\d+-[A-Za-z0-9._-]+/_$")
@@ -1266,14 +1270,32 @@ def _salvage_partial_work(
 
 
 def _unpushed_patch_text(repo_dir: str, plan_tip: str) -> str:
-    """The redacted patch block for ``<plan tip>..HEAD``, or a redacted diffstat when it exceeds the size cap."""
-    patch = run_cmd(["git", "format-patch", "--stdout", f"{plan_tip}..HEAD"], cwd=repo_dir, check=False)
-    patch_text = redact_agent_secrets(patch.stdout or "")
-    if patch.returncode == 0 and len(patch_text.encode("utf-8")) <= UNPUSHED_PATCH_MAX_BYTES:
-        return f"{UNPUSHED_PATCH_BEGIN}\n{patch_text.rstrip(chr(10))}\n{UNPUSHED_PATCH_END}"
-    stat = run_cmd(["git", "diff", "--stat", f"{plan_tip}..HEAD"], cwd=repo_dir, check=False)
+    """The redacted patch block for ``<plan tip>..HEAD``, or a redacted diffstat when it exceeds the size cap.
+
+    Paths matching ``UNPUSHED_PATCH_EXCLUDED_GLOBS`` are left out of both, and a line before the block names the
+    excluded paths that changed, so the reader knows the patch is incomplete.
+    """
+    excluded = [f":(exclude,glob,icase){glob}" for glob in UNPUSHED_PATCH_EXCLUDED_GLOBS]
+    pathspec = ["--", ".", *excluded]
+    rev_range = f"{plan_tip}..HEAD"
+    matched = [f":(glob,icase){glob}" for glob in UNPUSHED_PATCH_EXCLUDED_GLOBS]
+    left_out = run_cmd(["git", "diff", "--name-only", rev_range, "--", *matched], cwd=repo_dir, check=False)
+    left_out_paths = (left_out.stdout or "").split()
+    notice = (
+        f"Unpushed patch excludes env and credential files: {redact_agent_secrets(', '.join(left_out_paths))}\n"
+        if left_out_paths
+        else ""
+    )
+    patch = run_cmd(["git", "format-patch", "--stdout", rev_range, *pathspec], cwd=repo_dir, check=False)
+    raw_patch = patch.stdout or ""
+    # Checked raw first: redaction cuts any input over its limit, which would hide an oversized patch.
+    if patch.returncode == 0 and len(raw_patch.encode("utf-8")) <= UNPUSHED_PATCH_MAX_BYTES:
+        patch_text = redact_agent_secrets(raw_patch)
+        if len(patch_text.encode("utf-8")) <= UNPUSHED_PATCH_MAX_BYTES:
+            return f"{notice}{UNPUSHED_PATCH_BEGIN}\n{patch_text.rstrip(chr(10))}\n{UNPUSHED_PATCH_END}"
+    stat = run_cmd(["git", "diff", "--stat", rev_range, *pathspec], cwd=repo_dir, check=False)
     return (
-        f"{redact_agent_secrets(stat.stdout or '').rstrip()}\n"
+        f"{notice}{redact_agent_secrets(stat.stdout or '').rstrip()}\n"
         f"Unpushed patch omitted: it could not be produced or exceeded UNPUSHED_PATCH_MAX_BYTES "
         f"({UNPUSHED_PATCH_MAX_BYTES} bytes)."
     )
@@ -1324,13 +1346,12 @@ def _resolve_partial_head(
     refusal = _resume_refusal(repo_dir, repo_url, partial_branch, plan_branch_prefix)
     if refusal:
         return None, refusal
-    from sandbox_executor.flow import _latest_execution_summary, _read_ledger_rows
+    from sandbox_executor.flow import failed_partial_head
 
     ref = f"refs/remotes/origin/{partial_branch}"
     exec_id = partial_branch.removesuffix("/_").rsplit("/", 1)[-1]
-    row = _latest_execution_summary(_read_ledger_rows(repo_dir, ref, "executions.jsonl"), exec_id) or {}
-    sha = row.get("partial_head")
-    if row.get("status") != "failure" or not isinstance(sha, str) or not _SHA_RE.match(sha):
+    sha = failed_partial_head(repo_dir, ref, exec_id)
+    if not sha or not _SHA_RE.match(sha):
         return None, "no partial_head"
     if run_cmd(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=repo_dir, check=False).returncode != 0:
         return None, "the partial head is not on the fetched branch"
@@ -1555,6 +1576,8 @@ def main() -> None:
         decision = should_decompose(plan_data, plan_content, intent_data)
         # Both non-execute outcomes record one summary row, commit and push it for the flow to read, and skip the agent.
         skip_agent = decision.decision != DECISION_EXECUTE
+        # Set when a failed execution's code is salvaged; that commit is pushed even when nothing else is staged.
+        salvaged_head: str | None = None
 
         if skip_agent:
             exec_entry = {
@@ -1921,7 +1944,6 @@ def main() -> None:
 
             # Salvage on failure, in two commits: first the agent's code changes ("partial work (failed)"), then the
             # notes and the ledger row ("failed for plan"), so a failed execution never loses its code.
-            salvaged_head: str | None = None
             salvage_base = base_tip if recovery_triggered else plan_tip
             if exec_status != "success" and salvage_base:
                 salvaged_head = _salvage_partial_work(repo_dir, exec_id, plan_branch, notes_rel, salvage_base)
@@ -2008,9 +2030,10 @@ def main() -> None:
         # Set once the commit is pushed (or kept locally when pushing is disabled), never when the push is refused.
         branch_recorded = False
         staged_check = run_cmd(["git", "diff", "--cached", "--quiet"], cwd=repo_dir, check=False)
-        if staged_check.returncode != 0:
-            _configure_executor_identity(repo_dir)
-            run_cmd(["git", "commit", "-m", commit_msg], cwd=repo_dir)
+        if staged_check.returncode != 0 or salvaged_head:
+            if staged_check.returncode != 0:
+                _configure_executor_identity(repo_dir)
+                run_cmd(["git", "commit", "-m", commit_msg], cwd=repo_dir)
 
             can_push = True
             if recovery_triggered:

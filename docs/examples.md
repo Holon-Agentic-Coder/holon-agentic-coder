@@ -39,7 +39,7 @@ $ holon intent create \
 ```json
 {
   "event_type": "intent_created",
-  "ts": "2026-02-10T10:00:00Z",
+  "ts": "2026-02-24T10:00:00Z",
   "seq": 1,
   "payload": {
     "intent_id": "I-1771890300-bootstrap-p-success",
@@ -418,7 +418,7 @@ $ docker run --rm --network none -v $(pwd):/workspace holon-sandbox:latest
   "event_type": "sandbox_created",
   "seq": 12,
   "payload": {
-    "sandbox_id": "S-20260210-1005-a3f2",
+    "sandbox_id": "S-20260224-1005-a3f2",
     "sandbox_type": "container"
   }
 }

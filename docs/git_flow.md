@@ -796,16 +796,17 @@ Even discarded intents provide value:
 
 ## 12) Summary Table
 
-| Operation                 | Automatic? | Human Review? | Rebase Required?       |
-| ------------------------- | ---------- | ------------- | ---------------------- |
-| Sub-intent → Parent merge | ✓ Yes      | ✗ No          | ✓ Yes (before & after) |
-| Root intent → Main merge  | ✗ No       | ✓ Yes         | ✓ Yes (before)         |
-| Branch creation           | ✓ Yes      | ✗ No          | N/A                    |
-| Conflict resolution       | Attempted  | If fails      | N/A                    |
-| Sub-intent discard        | ✓ Yes      | ✗ No          | N/A                    |
+| Operation                      | Automatic? | Human Review? | Rebase Required?       |
+| ------------------------------ | ---------- | ------------- | ---------------------- |
+| Leaf sub-intent → Parent merge | ✓ Yes      | ✗ No          | ✓ Yes (before & after) |
+| Root intent → Main merge       | ✗ No       | ✓ Yes         | ✓ Yes (before)         |
+| Branch creation                | ✓ Yes      | ✗ No          | N/A                    |
+| Conflict resolution            | Attempted  | If fails      | N/A                    |
+| Sub-intent discard             | ✓ Yes      | ✗ No          | N/A                    |
 
-**Key insight:** In the target model, human review is only required at the root intent level and all sub-intent merges
-are automatic and evaluation-based. In the current flow, the maintainer also merges each child's PR into its parent
+**Key insight:** In the target model, human review is required at the root intent level and leaf sub-intent merges into
+their parent intent branch are automatic and evaluation-based; whether a nested parent's combined-diff PR also stops for
+a human is still open (see section 4.2). In the current flow, the maintainer also merges each child's PR into its parent
 intent branch; those PR merges are the only human steps, and no stage before them waits for a human.
 
 ---

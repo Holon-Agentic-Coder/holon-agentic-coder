@@ -339,7 +339,7 @@ Example ledger entry (planning_converged):
     "variants_considered": ["P-1771890701-gemini-cli-gemini-3.6-flash", "P-1771890702-claude-code-claude-opus-4.6"],
     "winner_plan_id": "P-1771890702-claude-code-claude-opus-4.6",
     "reason": "dominant_plan",
-    "convergence_at": "2026-02-11T09:12:00Z"
+    "convergence_at": "2026-02-25T09:12:00Z"
   }
 }
 ```

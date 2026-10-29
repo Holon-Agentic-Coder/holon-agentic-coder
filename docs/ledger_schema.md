@@ -238,11 +238,11 @@ Every ledger event MUST contain:
 - `event_type` (string)  
   Example: `"intent_created"`
 - `ts` (string, ISO-8601 UTC)  
-  Example: `"2026-02-10T03:12:45Z"`
+  Example: `"2026-02-24T03:12:45Z"`
 - `seq` (integer, monotonically increasing within a ledger file)  
   Example: `1842`
 - `run_id` (string, unique per orchestrator run / session)  
-  Example: `"R-20260210-0312-8c1d"`
+  Example: `"R-20260224-0312-8c1d"`
 - `agent_id` (string)  
   Example: `"agent-planner-07"`
 - `host` (object)
@@ -261,9 +261,9 @@ Every ledger event MUST contain:
 {
   "schema_version": "1.0",
   "event_type": "intent_created",
-  "ts": "2026-02-10T03:12:45Z",
+  "ts": "2026-02-24T03:12:45Z",
   "seq": 1,
-  "run_id": "R-20260210-0312-8c1d",
+  "run_id": "R-20260224-0312-8c1d",
   "agent_id": "agent-orchestrator-01",
   "host": {
     "hostname": "runner-01",
@@ -295,7 +295,7 @@ Every ledger event MUST contain:
 - `variant_id` (string)  
   Example: `"v3"`
 - `sandbox_id` (string)  
-  Example: `"S-20260210-0315-2f93"`
+  Example: `"S-20260224-0315-2f93"`
 - `model` (object) Full "DNA" of the execution engine to enable high-resolution evolutionary analysis.
 
 ```json
@@ -418,9 +418,9 @@ Payload:
 {
   "schema_version": "1.0",
   "event_type": "intent_created",
-  "ts": "2026-02-10T03:12:45Z",
+  "ts": "2026-02-24T03:12:45Z",
   "seq": 12,
-  "run_id": "R-20260210-0312-8c1d",
+  "run_id": "R-20260224-0312-8c1d",
   "agent_id": "agent-orchestrator-01",
   "host": {
     "hostname": "runner-01",

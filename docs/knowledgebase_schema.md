@@ -121,8 +121,8 @@ Every KB entry MUST contain:
   "kb_id": "KB-pattern-001",
   "kb_type": "pattern",
   "version": "1.0",
-  "created_ts": "2026-02-10T05:30:00Z",
-  "updated_ts": "2026-02-10T05:30:00Z",
+  "created_ts": "2026-02-24T05:30:00Z",
+  "updated_ts": "2026-02-24T05:30:00Z",
   "created_by": "agent-curator-03",
   "status": "active",
   "evidence": {
@@ -153,8 +153,8 @@ Every KB entry MUST contain:
   "kb_id": "KB-pattern-001",
   "kb_type": "pattern",
   "version": "1.0",
-  "created_ts": "2026-02-10T05:30:00Z",
-  "updated_ts": "2026-02-10T05:30:00Z",
+  "created_ts": "2026-02-24T05:30:00Z",
+  "updated_ts": "2026-02-24T05:30:00Z",
   "created_by": "agent-curator-03",
   "status": "active",
   "evidence": {
@@ -208,8 +208,8 @@ Every KB entry MUST contain:
   "kb_id": "KB-tactic-001",
   "kb_type": "tactic",
   "version": "1.0",
-  "created_ts": "2026-02-10T06:15:00Z",
-  "updated_ts": "2026-02-10T06:15:00Z",
+  "created_ts": "2026-02-24T06:15:00Z",
+  "updated_ts": "2026-02-24T06:15:00Z",
   "created_by": "agent-executor-12",
   "status": "active",
   "evidence": {
@@ -251,8 +251,8 @@ Every KB entry MUST contain:
   "kb_id": "KB-failure-001",
   "kb_type": "failure_mode",
   "version": "1.0",
-  "created_ts": "2026-02-10T07:00:00Z",
-  "updated_ts": "2026-02-10T07:00:00Z",
+  "created_ts": "2026-02-24T07:00:00Z",
+  "updated_ts": "2026-02-24T07:00:00Z",
   "created_by": "agent-curator-05",
   "status": "active",
   "evidence": {
@@ -319,8 +319,8 @@ Every KB entry MUST contain:
   "kb_id": "KB-estimator-p_success-v2",
   "kb_type": "estimator",
   "version": "2.0",
-  "created_ts": "2026-02-12T10:00:00Z",
-  "updated_ts": "2026-02-12T10:00:00Z",
+  "created_ts": "2026-02-26T10:00:00Z",
+  "updated_ts": "2026-02-26T10:00:00Z",
   "created_by": "agent-researcher-08",
   "status": "proposed",
   "evidence": {
@@ -328,7 +328,7 @@ Every KB entry MUST contain:
     "success_count": 0,
     "failure_count": 0,
     "calibration_improvement": 0.12,
-    "backtest_window": "2026-02-01 to 2026-02-10",
+    "backtest_window": "2026-02-15 to 2026-02-24",
     "backtest_sample_size": 47
   },
   "tags": ["p_success", "estimator", "improvement"],
@@ -381,8 +381,8 @@ Every KB entry MUST contain:
   "kb_id": "KB-routing-v1",
   "kb_type": "routing_heuristic",
   "version": "1.0",
-  "created_ts": "2026-02-10T08:00:00Z",
-  "updated_ts": "2026-02-10T08:00:00Z",
+  "created_ts": "2026-02-24T08:00:00Z",
+  "updated_ts": "2026-02-24T08:00:00Z",
   "created_by": "human@example.com",
   "status": "active",
   "evidence": {
@@ -439,8 +439,8 @@ Every KB entry MUST contain:
   "kb_id": "KB-module-001",
   "kb_type": "module",
   "version": "1.0",
-  "created_ts": "2026-02-10T09:00:00Z",
-  "updated_ts": "2026-02-10T09:00:00Z",
+  "created_ts": "2026-02-24T09:00:00Z",
+  "updated_ts": "2026-02-24T09:00:00Z",
   "created_by": "agent-extractor-02",
   "status": "active",
   "evidence": {
@@ -532,21 +532,21 @@ Each KB subdirectory has an `index.json` for fast lookup:
 ```json
 {
   "index_version": "1.0",
-  "updated_ts": "2026-02-10T10:00:00Z",
+  "updated_ts": "2026-02-24T10:00:00Z",
   "entries": [
     {
       "kb_id": "KB-pattern-001",
       "file": "pattern_001.json",
       "tags": ["metrics", "estimator", "bootstrap"],
       "status": "active",
-      "created_ts": "2026-02-10T05:30:00Z"
+      "created_ts": "2026-02-24T05:30:00Z"
     },
     {
       "kb_id": "KB-pattern-002",
       "file": "pattern_002.json",
       "tags": ["git", "rebase", "conflict"],
       "status": "active",
-      "created_ts": "2026-02-10T06:00:00Z"
+      "created_ts": "2026-02-24T06:00:00Z"
     }
   ],
   "tag_index": {

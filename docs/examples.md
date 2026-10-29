@@ -1099,9 +1099,18 @@ $ git merge I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet
 
 `add-logging` is a nested parent here (its execution spawned `I-1771890606-resolve-conflict`), so it merges into the
 parent intent branch once that sub-intent has merged into it in step 5 (target model; whether its combined-diff PR also
-stops for a human is still open, see [Git Flow](git_flow.md) section 4.2):
+stops for a human is still open, see [Git Flow](git_flow.md) section 4.2).
+
+The merge meets the prior-rebase rule ([Git Flow](git_flow.md) section 4.3) without a second `git rebase`. Step 2's
+after-execution rebase failed, and step 3 aborted it and handed the conflict to a reactive intent (section 3.3). Step
+4's merge brought in `refactor-metrics`'s intent branch and resolved the conflict, and step 5 merged that into
+`add-logging`'s intent branch, which therefore already contains its parent's tip. Re-running `git rebase` would replay
+`add-logging`'s original commits and raise the same conflict again:
 
 ```bash
+$ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/_
+$ git merge-base --is-ancestor I-1771890600-refactor-metrics/_ HEAD
+# Exit 0: the parent intent branch is already contained
 $ git checkout I-1771890600-refactor-metrics/_
 $ git merge I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/_
 # Merge successful (conflict already resolved)

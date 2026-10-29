@@ -235,11 +235,11 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
 - **Explicit sub-intent list:** the executor records the parsed list on its `decomposed` summary row and writes no
   `intents.jsonl` rows. The flow then runs each item as a child intent, strictly one after another and never
   concurrently, through the full pipeline (intent, plan, execute, review, calibrate). Each child nests under the plan
-  that listed it and records it as its provenance (section 2.2), targets the deciding plan branch (`target_branch`),
-  never `main`, and stops at its own Stage 4 consensus halt. The first failing child fails the parent's Stage 3; when
-  all succeed, the parent's own Stage 4 and Stage 5 are skipped with reason `decomposed`, because review and calibration
-  ran per child. Nesting is bounded by `MAX_SUB_INTENT_DEPTH`, checked against the plan before the executor is
-  dispatched when the plan can be read.
+  that listed it and records it as its provenance (section 2.2), is meant to target the deciding plan branch
+  (`target_branch`; see the current limitation below), never `main`, and stops at its own Stage 4 consensus halt. The
+  first failing child fails the parent's Stage 3; when all succeed, the parent's own Stage 4 and Stage 5 are skipped
+  with reason `decomposed`, because review and calibration ran per child. Nesting is bounded by `MAX_SUB_INTENT_DEPTH`,
+  checked against the plan before the executor is dispatched when the plan can be read.
 
   **Current limitation (until the implementation follows):** the current flow still records the parent intent branch as
   each decomposed child's `target_branch`, cuts each child from that branch and leaves the child PR merges to the
@@ -457,7 +457,8 @@ $ holon review approve I-1771890389-refactor-metrics
 
 # System merges
 $ git checkout main
-$ git merge I-1771890389-refactor-metrics/_
+# The root PR carries the deciding plan branch, into which every sub-intent merged
+$ git merge I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
 $ git push origin main
 ```
 
@@ -614,7 +615,8 @@ $ git merge --no-ff I-1771890389-refactor-metrics/P-1771890390-claude-code-claud
 ```bash
 $ holon review approve I-1771890389-refactor-metrics
 $ git checkout main
-$ git merge I-1771890389-refactor-metrics/_
+# The root PR carries the deciding plan branch, into which every sub-intent merged
+$ git merge I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
 $ git push origin main
 ```
 

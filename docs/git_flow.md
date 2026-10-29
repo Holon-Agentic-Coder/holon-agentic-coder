@@ -20,8 +20,9 @@ This document defines the **Git branching, rebasing, and merging discipline** fo
   under the node whose stage decided the split (sections 2.2-2.3 and 8), and its provenance records that node
 - In practice a split is decided by a plan: the planner writes a `## Sub-intent list` in its plan, and the flow runs
   each item as a sub-intent nested under that plan, which sits between the intent and its sub-intents in the hierarchy.
-  This is what the flow does and what every example in this document shows. The model leaves other stages open -- a
-  split may also be decided at the intent, execution or review stage, as long as the hierarchy is honoured (section 2.2)
+  This is what the flow does and what every worked example in this document shows. The model leaves other stages open --
+  a split may also be decided at the intent, execution or review stage, as long as the hierarchy is honoured (section
+  2.2)
 - Depth is capped: `holon flow` refuses to nest sub-intents more than `MAX_SUB_INTENT_DEPTH` levels below the root
   intent (see Stage 3 under the flow equivalence guarantee)
 
@@ -711,6 +712,9 @@ def auto_resolve_conflict(sub_intent, parent_branch):
 ```
 
 ### 9.2 Reactive Intent (If Auto-Resolution Fails)
+
+The reactive intent is decided during the sub-intent's execution, so it nests under that execution (section 2.2). Like
+Example 3 in [Examples](examples.md), this illustrates the general rule only; the plan-decided split stays the practice.
 
 ```python
 import time

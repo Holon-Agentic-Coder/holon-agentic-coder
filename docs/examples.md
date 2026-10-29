@@ -1050,11 +1050,19 @@ This execution-decided split illustrates the general rule only; the example's ma
 
 **Executor agent resolves conflict:**
 
+The sub-intent rebases from its immediate parent, `add-logging`'s intent branch (dual rebase rule,
+[Git Flow](git_flow.md) section 3.1), then brings in the changes already merged into `refactor-metrics`'s intent branch
+and resolves the conflict:
+
 ```bash
-$ git rebase I-1771890600-refactor-metrics/_
+$ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/I-1771890606-resolve-conflict/_
+$ git rebase I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/_
+# Up to date with add-logging
+$ git merge I-1771890600-refactor-metrics/_
+# CONFLICT in holon/metrics/p_success.py
 # Manual conflict resolution by agent
 $ git add holon/metrics/p_success.py
-$ git rebase --continue
+$ git commit
 $ pytest holon/metrics/test_p_success.py
 # Tests pass
 ```
@@ -1075,11 +1083,23 @@ $ pytest holon/metrics/test_p_success.py
 
 ---
 
-#### 5) Sub-intent `add-logging` merges to parent
+#### 5) Sub-intent `resolve-conflict` merges to `add-logging`
+
+`resolve-conflict` is a leaf sub-intent, so it merges into its parent intent branch automatically:
+
+```bash
+$ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/_
+$ git merge I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/I-1771890606-resolve-conflict/_
+# Merge successful
+```
+
+---
+
+#### 6) Sub-intent `add-logging` merges to parent
 
 `add-logging` is a nested parent here (its execution spawned `I-1771890606-resolve-conflict`), so it merges into the
-parent intent branch once that sub-intent has merged into it (target model; whether its combined-diff PR also stops for
-a human is still open, see [Git Flow](git_flow.md) section 4.2):
+parent intent branch once that sub-intent has merged into it in step 5 (target model; whether its combined-diff PR also
+stops for a human is still open, see [Git Flow](git_flow.md) section 4.2):
 
 ```bash
 $ git checkout I-1771890600-refactor-metrics/_

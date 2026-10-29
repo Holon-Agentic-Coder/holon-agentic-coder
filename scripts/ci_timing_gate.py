@@ -189,6 +189,13 @@ def format_report(rows: Sequence[Offender]) -> list[str]:
     return lines
 
 
+def per_test_report(current: dict[str, float], baselines: Sequence[dict[str, float]]) -> list[str]:
+    """Render the per-test report, or say it was skipped when no baseline record carries per-test times."""
+    if not any(baselines):
+        return ["Per-test report: skipped, no baseline records with per-test times yet."]
+    return format_report(top_offenders(current, baselines))
+
+
 def check_ceiling(duration: float, thresholds: Thresholds) -> Verdict | None:
     """Return a failing verdict when ``duration`` is above the ceiling, otherwise ``None``."""
     if duration <= thresholds.ceiling:
@@ -284,7 +291,7 @@ def safe_fetch(fetcher: Callable[[], list[TimingRecord]]) -> tuple[list[TimingRe
     """Run ``fetcher``; on any fetch or parse error return no records and a warning (cold start)."""
     try:
         return fetcher(), []
-    except (OSError, zipfile.BadZipFile, KeyError, ValueError, TypeError) as exc:
+    except (OSError, zipfile.BadZipFile, KeyError, ValueError, TypeError, AttributeError) as exc:
         return [], [
             f"::warning::Could not fetch the timing baseline ({type(exc).__name__}: {exc}); treating as cold start."
         ]
@@ -387,7 +394,7 @@ def run_compare(
         thresholds,
         args.override_label_present == "true",
     )
-    report = format_report(top_offenders(record.tests, [b.tests for b in baselines])) if args.junit else []
+    report = per_test_report(record.tests, [b.tests for b in baselines]) if args.junit else []
     write_step_summary([f"### Timing gate: {name}", "", *(line.split("::")[-1] for line in verdict.lines), "", *report])
     return Verdict(verdict.passed, (*warnings, *fetch_warnings, *verdict.lines, *report))
 

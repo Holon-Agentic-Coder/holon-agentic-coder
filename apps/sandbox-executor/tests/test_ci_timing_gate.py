@@ -22,6 +22,7 @@ from scripts.ci_timing_gate import (
     format_report,
     main,
     parse_junit,
+    per_test_report,
     rolling_median,
     safe_fetch,
     top_offenders,
@@ -197,6 +198,14 @@ def test_format_report_with_and_without_rows() -> None:
     assert "| `m::slow` | 10.0 | 30.0 | +20.0 |" in lines
 
 
+def test_per_test_report_skipped_without_baseline_times() -> None:
+    assert per_test_report({"m::slow": 30.0}, []) == [
+        "Per-test report: skipped, no baseline records with per-test times yet."
+    ]
+    assert "skipped" in per_test_report({"m::slow": 30.0}, [{}, {}])[0]
+    assert "no test grew" in per_test_report({"m::slow": 10.0}, [{"m::slow": 10.0}])[0]
+
+
 def write_junit(path: Path, cases: dict[str, float]) -> None:
     """Write a minimal JUnit report with ``classname::name`` cases."""
     body = "".join(
@@ -316,6 +325,24 @@ def test_bad_archive_degrades_to_cold_start() -> None:
     records, warnings = safe_fetch(lambda: fetch_baseline("o/r", "n", 5, "", opener))
     assert records == []
     assert "BadZipFile" in warnings[0]
+
+
+def test_non_object_listing_degrades_to_cold_start() -> None:
+    def opener(request: urllib.request.Request) -> bytes:
+        return json.dumps([]).encode()
+
+    records, warnings = safe_fetch(lambda: fetch_baseline("o/r", "n", 5, "", opener))
+    assert records == []
+    assert "AttributeError" in warnings[0]
+
+
+def test_cold_start_compare_reports_per_test_skipped(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    junit = tmp_path / "unit-report.xml"
+    write_junit(junit, {"tests.m::slow": 60.0})
+    assert main(gate_args("compare", "--junit", str(junit)), clock=fixed_clock(110.0), fetcher=fake_fetcher([])) == 0
+    out = capsys.readouterr().out
+    assert "Per-test report: skipped" in out
+    assert "no test grew" not in out
 
 
 # Command line

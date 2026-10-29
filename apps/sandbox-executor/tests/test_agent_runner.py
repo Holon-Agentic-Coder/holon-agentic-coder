@@ -35,7 +35,16 @@ class TestAgentRunner(unittest.TestCase):
 
         expected_commands = {
             "pi": ["pi", "-p", "--model", "gemini-3.5-flash", "compiled prompt text"],
-            "claude": ["claude", "--model", "gemini-3.5-flash", "-p", "compiled prompt text"],
+            "claude": [
+                "claude",
+                "--allow-dangerously-skip-permissions",
+                "--permission-mode",
+                "bypassPermissions",
+                "--model",
+                "gemini-3.5-flash",
+                "-p",
+                "compiled prompt text",
+            ],
             "gemini": ["gemini", "--model", "gemini-3.5-flash", "-p", "compiled prompt text"],
             "opencode": ["opencode", "run", "--model", "gemini-3.5-flash", "compiled prompt text"],
             "codex": ["codex", "exec", "-m", "gemini-3.5-flash", "compiled prompt text"],
@@ -56,7 +65,12 @@ class TestAgentRunner(unittest.TestCase):
         with patch.dict(os.environ, dummy_env):
             # Hermetic against the ambient sandbox/host env: these add --settings/--effort flags to the commands.
             # patch.dict restores the removed values on exit.
-            for var in ("CLAUDE_CODE_OAUTH_TOKEN", "HOLON_AGENT_SETTINGS", "HOLON_AGENT_EFFORT"):
+            for var in (
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "HOLON_AGENT_SETTINGS",
+                "HOLON_AGENT_EFFORT",
+                "HOLON_AGENT_SKIP_PERMISSIONS",
+            ):
                 os.environ.pop(var, None)
             for agent_name, expected_cmd in expected_commands.items():
                 with self.subTest(agent=agent_name):
@@ -592,3 +606,63 @@ class TestWorkspaceDirAndCleanup(unittest.TestCase):
                 runner.cleanup_ephemeral_credentials()
                 self.assertFalse(os.path.exists(target_config))
                 self.assertEqual(runner._ephemeral_files, [])
+
+
+CLAUDE_BYPASS = ["--allow-dangerously-skip-permissions", "--permission-mode", "bypassPermissions"]
+
+
+@pytest.fixture
+def claude_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+    """Hermetic environment for the claude runner: dummy key, no ambient bypass, settings or secret bundle."""
+    monkeypatch.setenv("HOLON_AGENT_KEY", "dummy")
+    for var in ("HOLON_AGENT_SKIP_PERMISSIONS", "HOLON_AGENT_SETTINGS"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HOLON_SECRET_BUNDLE_PATH", "/nonexistent/holon_auth.json")
+    return monkeypatch
+
+
+def test_claude_bypass_on_by_default(claude_env: pytest.MonkeyPatch) -> None:
+    cmd = get_runner("claude").build_cmd("m", "/tmp/p", "/tmp/i", "p")
+    assert cmd == ["claude", *CLAUDE_BYPASS, "--model", "m", "-p", "p"]
+
+
+@pytest.mark.parametrize("value", ["false", "0", "no", "off", "FALSE"])
+def test_claude_bypass_opt_out(claude_env: pytest.MonkeyPatch, value: str) -> None:
+    claude_env.setenv("HOLON_AGENT_SKIP_PERMISSIONS", value)
+    cmd = get_runner("claude").build_cmd("m", "/tmp/p", "/tmp/i", "p")
+    assert cmd == ["claude", "--model", "m", "-p", "p"]
+    assert not set(CLAUDE_BYPASS) & set(cmd)
+
+
+def test_claude_bypass_ordering_is_valid(claude_env: pytest.MonkeyPatch) -> None:
+    cmd = get_runner("claude").compose_cmd("m", "the prompt")
+    assert cmd[0] == "claude"
+    assert cmd[cmd.index("--permission-mode") + 1] == "bypassPermissions"
+    assert cmd.index("--allow-dangerously-skip-permissions") < cmd.index("-p")
+    assert cmd.index("--permission-mode") < cmd.index("-p")
+    assert cmd[-1] == "the prompt"
+
+
+def test_claude_bypass_coexists_with_settings(claude_env: pytest.MonkeyPatch) -> None:
+    settings = '{"env": {"ANTHROPIC_API_KEY": "x"}}'
+    claude_env.setenv("HOLON_AGENT_SETTINGS", settings)
+    cmd = get_runner("claude").compose_cmd("m", "p")
+    assert cmd == ["claude", *CLAUDE_BYPASS, "--model", "m", "-p", "--settings", settings, "p"]
+    value = cmd[cmd.index("--settings") + 1]
+    assert value == settings
+    assert "bypassPermissions" not in value and "skip-permissions" not in value
+
+
+def test_claude_bypass_evaluated_at_build_time(claude_env: pytest.MonkeyPatch) -> None:
+    runner = get_runner("claude")
+    assert "bypassPermissions" in runner.compose_cmd("m", "p")
+    claude_env.setenv("HOLON_AGENT_SKIP_PERMISSIONS", "false")
+    assert "bypassPermissions" not in runner.compose_cmd("m", "p")
+    claude_env.setenv("HOLON_AGENT_SKIP_PERMISSIONS", "yes")
+    assert "bypassPermissions" in runner.compose_cmd("m", "p")
+
+
+@pytest.mark.parametrize("agent", ["pi", "gemini", "opencode", "codex"])
+def test_other_runners_never_emit_claude_bypass(claude_env: pytest.MonkeyPatch, agent: str) -> None:
+    cmd = runners[agent].compose_cmd("m", "p")
+    assert not set(CLAUDE_BYPASS) & set(cmd)

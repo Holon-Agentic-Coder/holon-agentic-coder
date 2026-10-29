@@ -245,14 +245,14 @@ $$EV = P(success)\cdot Impact + \mu\cdot LearningValue - \lambda \cdot \Delta S_
 
 ### 5.1 States
 
-| State     | Description                                   |
-| --------- | --------------------------------------------- |
-| Proposed  | Intent has been created but not yet executed. |
-| Executing | Intent is currently being worked on.          |
-| Completed | Intent execution finished successfully.       |
-| Failed    | Intent execution finished with failure.       |
-| Merged    | Intent changes merged into parent or main.    |
-| Discarded | Intent abandoned and branch closed.           |
+| State     | Description                                                                                  |
+| --------- | -------------------------------------------------------------------------------------------- |
+| Proposed  | Intent has been created but not yet executed.                                                |
+| Executing | Intent is currently being worked on.                                                         |
+| Completed | Intent execution finished successfully.                                                      |
+| Failed    | Intent execution finished with failure.                                                      |
+| Merged    | Intent changes merged into the deciding node's branch (sub-intents) or `main` (root intent). |
+| Discarded | Intent abandoned and branch closed.                                                          |
 
 ### 5.2 Transitions
 

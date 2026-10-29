@@ -176,13 +176,13 @@ MR --> SI[Sub-Intent Expansion]
 SI --> RB1[Rebase Gate 1<br>#40;pre-execution#41;]
 RB1 --> SX[Sandbox Execution<br>#40;1 sandbox per sub-intent#41;]
 SX --> RB2[Rebase Gate 2<br>#40;post-execution#41;]
-RB2 --> MP[Merge ONLY to Parent]
+RB2 --> MP[Automatic merge ONLY to<br>deciding node branch]
 MP --> L[Evolution Ledger<br>append-only]
 MP --> KB[Knowledge Base<br>curated + versioned]
 L --> SEL[Selection Pressure<br>#40;plan fitness, routing ROI#41;]
 KB --> SEL
 SEL --> PV
-MP --> HR[Human Review<br>Parent intent only]
+MP --> HR[Human Review<br>Root intent only]
 HR --> MAIN[Merge to main]
 ```
 

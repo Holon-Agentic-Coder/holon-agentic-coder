@@ -898,7 +898,7 @@ If a root intent remains open for extended period (e.g., weeks):
 ### 14.3 Rebase Frequently
 
 - Don't let branches diverge too far
-- Rebase from parent regularly, not just before/after execution
+- Rebase from the deciding node's branch regularly, not just before/after execution
 - Reduces conflict resolution cost
 
 ### 14.4 Prune Aggressively

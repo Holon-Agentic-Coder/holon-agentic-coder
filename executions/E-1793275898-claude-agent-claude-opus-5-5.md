@@ -74,3 +74,17 @@ cannot collide because siblings have different slugs) across `README.md`, `docs/
   agent; summary table row updated.
 - To keep the nested-parent wording coherent, `docs/git_flow.md` section 4.1 and the section 8 merge order now say a
   nested parent's PR carries its own deciding node's branch (where its sub-intents merged).
+
+### Step 6: Cross-document consistency sweep
+
+- Phrase grep: every remaining `parent intent branch` hit is an intended keep (the Stage 3 current-implementation note
+  and its pointers, the section 3.1 and section 8 contrasts "not the parent intent branch", the ledger-schema
+  current-flow note). No `open question`, `is open`, `still open` or `combined-diff` hits remain.
+- Paraphrase grep found 4 misses the phrase list did not cover: README mermaid nodes "Merge ONLY to Parent" and "Human
+  Review Parent intent only", `docs/git_flow.md` 14.3 "Rebase from parent regularly", and the `docs/core_concepts.md`
+  status table "merged into parent or main". All fixed. Learning: phrase sweeps miss diagram labels and table cells;
+  a paraphrase pass (`to parent`, `from parent`, `into parent`) is needed.
+- Every JSON `target_branch` equals its adjacent `deciding_branch`; all new refs end in `/_`; ids reused from the
+  existing examples; anchor `#22-sub-intent-branch-nested-under-the-deciding-node` still resolves (heading unchanged).
+- No American spellings introduced; no fourth ledger mentioned; `docs/ledger_schema.md` hunks avoid the
+  write-guarantee wording; diff touches only the five touch-set files plus this record.

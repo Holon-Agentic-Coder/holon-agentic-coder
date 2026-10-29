@@ -111,9 +111,10 @@ on its intent branch, so a child and a grandchild sharing a slug never overwrite
 - `deciding_branch`: the deciding node's branch (`I-.../_`, `I-.../P-.../_` or `I-.../P-.../E-.../_`).
 - `parent_plan_id`: the deciding plan, when a plan, or an execution or review of that plan, decided the split.
 - `parent_execution_id`: the deciding execution, when an execution or a review of it decided the split.
-- `sub_intent_index`: the item's 1-based position in the deciding node's sub-intent list (for a plan, its
-  `## Sub-intent list`).
 - `target_branch`: the parent intent branch the sub-intent merges into.
+
+The specific item of the deciding node's sub-intent list is identified by the sub-intent's own recorded goal and
+description.
 
 ```json
 {
@@ -121,14 +122,12 @@ on its intent branch, so a child and a grandchild sharing a slug never overwrite
   "parent_intent_id": "I-1771890389-refactor-metrics",
   "deciding_branch": "I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/_",
   "parent_plan_id": "P-1771422315-claude-code-claude-sonnet-4.6",
-  "sub_intent_index": 1,
   "target_branch": "I-1771890389-refactor-metrics/_"
 }
 ```
 
-**Promotion.** If an operator promotes a sub-intent to its own root intent, the root intent keeps the deciding node it
-came from (`deciding_branch`, with `parent_plan_id` or `parent_execution_id` as applicable) and its `sub_intent_index`,
-so the lineage is not lost even though the new root no longer nests under that node.
+**Promotion.** If an operator promotes a sub-intent to its own root intent, the root intent records its source plan
+(`parent_plan_id`), so the lineage is not lost even though the new root no longer nests under that plan.
 
 ### 2.3 Sub-Sub-Intent Branch (Deeper Nesting)
 

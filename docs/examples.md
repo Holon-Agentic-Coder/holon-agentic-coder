@@ -767,7 +767,6 @@ $ git commit -m "Create metrics module structure"
   "parent_intent_id": "I-1771890500-implement-metrics-module",
   "deciding_branch": "I-1771890500-implement-metrics-module/P-1771890510-claude-code-claude-sonnet-4.6/_",
   "parent_plan_id": "P-1771890510-claude-code-claude-sonnet-4.6",
-  "sub_intent_index": 1,
   "goal": "Implement P(success) estimator",
   "constraints": {
     "entropy_budget": 37.5
@@ -830,7 +829,6 @@ $ git merge I-1771890500-implement-metrics-module/P-1771890510-claude-code-claud
   "parent_intent_id": "I-1771890500-implement-metrics-module",
   "deciding_branch": "I-1771890500-implement-metrics-module/P-1771890510-claude-code-claude-sonnet-4.6/_",
   "parent_plan_id": "P-1771890510-claude-code-claude-sonnet-4.6",
-  "sub_intent_index": 2,
   "goal": "Implement entropy estimator"
 }
 ```

@@ -76,7 +76,7 @@ Entropy sits inside EV as a penalty. If two plans are equal in every other way, 
 the lower EV.
 
 The aim is the most value for the least mess, not zero mess. A plan that makes some mess but does a lot of good can
-still have the highest EV and win.
+still have the highest EV, scoring above a tidier plan that does little.
 
 Why does high entropy lower EV? Because entropy is subtracted: every extra point of entropy takes `0.3` off EV.
 

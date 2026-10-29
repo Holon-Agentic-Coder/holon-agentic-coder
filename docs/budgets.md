@@ -165,11 +165,57 @@ The record has these fields in addition to the standard action fields (see [Ledg
 | `target`          | The artefact path (`plans/P-*.md` or `executions/E-*.md`)               |
 
 The record is written in one place only, once per stage failure. The planner commits it together with the salvaged
-partial plan on the plan branch (no `plans.jsonl` entry is made for an unusable plan); the executor commits it with the
-failed execution summary (`status: failure`) and stages the partial notes, but not the code changes, in a commit titled
-`execute: E-... failed for plan ...` rather than `completed`.
+partial plan on the plan branch (no `plans.jsonl` entry is made for an unusable plan). The executor first commits the
+agent's working-tree changes in `execute: E-... partial work (failed) for plan ...`, then commits the record with the
+failed execution summary (`status: failure`) and the partial notes in `execute: E-... failed for plan ...` rather than
+`completed`. Gitignored files are never committed, and the agent's own commits are never squashed, amended or rewritten
+(see [Partial work on failure](#partial-work-on-failure)).
 
 Host-side stage ceilings in `holon flow` (below) never write an ACT-BUDGET record, so a failure is not recorded twice.
+
+### Partial work on failure
+
+An execution's code is never silently dropped. The executor configures its repo-local git identity straight after it
+creates the execution branch, so commits the agent makes step by step land on that branch. On every non-success status
+that reaches the commit step (a budget breach, an agent exit other than 0, an empty diff or any other failure), the
+executor stages everything except `holon-knowledge/ledger/executions.jsonl` and the run's own notes file: tracked
+modifications and deletions, and untracked files that `.gitignore` does not exclude. It commits them in
+`execute: E-... partial work (failed) for plan ...`, ahead of the failure commit for the notes and the ledger row. The
+pre-push safety and sync checks apply unchanged, and the successful path still makes one `completed` commit.
+
+The failure summary row in `executions.jsonl` keeps its failure status, `status: failure` for a budget breach, an agent
+exit other than 0 or any other failure, and `status: failed` for an empty or unverified diff, and gains an optional
+`partial_head` field: the sha of the salvaged commit, or of the agent's own last commit when the tree was already clean.
+It is absent when nothing differs from the plan tip, and always absent on success. A superseding sync or recovery row
+repeats it. The salvaged commit is pushed even when the failure commit has nothing to stage, for example when the ledger
+append failed.
+
+When the push of the execution branch is refused, the executor prints the branch, the local head sha and git's reason on
+stderr. It then prints `git format-patch --stdout <plan tip>..HEAD` between the `BEGIN UNPUSHED EXECUTION PATCH` and
+`END UNPUSHED EXECUTION PATCH` lines, and exits non-zero. Every line is redacted. Env files, credential stores and
+secrets directories (`UNPUSHED_PATCH_EXCLUDED_GLOBS`: `.env`, `.env.*`, any name containing `credential`, `.netrc`,
+`.npmrc`, `.pypirc`, `.pgpass`, private-key and keystore files (`*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`,
+`id_dsa*`, `id_ecdsa*`, `id_ed25519*`, PuTTY `*.ppk`, and PGP `*.asc` and `*.gpg`) and anything under a `secrets/`
+directory, at any depth and in any case) are left out of the patch and the diffstat, and a line before the block names
+the ones that changed. A PEM, OpenSSH or armoured PGP private-key block, or the private lines of a PuTTY key, in any
+other file has its key material masked line by line before the patch is redacted, keeping its marker lines. Masking
+stops at the end marker, at the first line that is not key material, and at every patch header, so a file that only
+names a marker leaves the rest of the patch intact. The block is capped at `UNPUSHED_PATCH_MAX_BYTES` (96 KiB), which is
+below the redaction input limit, and the raw patch is measured before it is redacted. Above the cap,
+`git diff --stat <plan tip>..HEAD` is printed with a line saying the patch was omitted. A pre-push sync merge with
+`main` adds `main`'s commits to that range, so a large merge can push the patch past the cap. To recover the work, copy
+the lines between the markers from the captured container log into a file, then run `git am <file>` on a checkout of the
+plan branch. Files left out by name, and masked key material, cannot be recovered from the printed patch: masked added
+lines apply as the literal `[REDACTED PRIVATE KEY]` text, so re-create those files from their source. A hunk whose
+context or removed lines were masked no longer matches, and needs `git am --reject` or a manual edit.
+
+A `holon flow --checkpoint` or `holon flow --from-stage execute` resume at Stage 3 looks for the newest failed execution
+branch under the plan whose latest summary row has either failure status (`failure` or `failed`) and carries a
+`partial_head`, and passes it to the executor as a fourth argument. The executor fetches that branch and re-reads
+`partial_head` from its own ledger. When the partial head descends from the plan tip, the new execution branch is cut
+from it, and the agent's prompt gets a note saying it continues that partial work. The empty-diff guard still compares
+against the plan tip. Otherwise, the executor starts from the plan tip and logs why. A plain
+`holon execute <plan_branch>` and a flow that is not resumed at Stage 3 always start from the plan tip.
 
 ## Stage summary lines
 

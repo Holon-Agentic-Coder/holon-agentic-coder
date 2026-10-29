@@ -2884,13 +2884,47 @@ def _run_decomposed_plan(
     return result
 
 
-def run_execute_stage(context: FlowContext) -> StageResult:
+def failed_partial_head(repo_dir: str, ref: str, execution_id: str) -> str | None:
+    """The ``partial_head`` on ``ref``'s latest summary row for ``execution_id`` when that row is a failure.
+
+    Both failure statuses count: ``failure`` (a budget breach, an agent error or any other failure) and
+    ``EMPTY_DIFF_STATUS`` (an empty or unverified diff), since either row can carry salvaged partial work.
+    """
+    row = _latest_execution_summary(_read_ledger_rows(repo_dir, ref, "executions.jsonl"), execution_id) or {}
+    partial_head = row.get("partial_head")
+    if row.get("status") in ("failure", EMPTY_DIFF_STATUS) and isinstance(partial_head, str) and partial_head:
+        return partial_head
+    return None
+
+
+def _resumable_partial_branch(repo_dir: str, branches: set[str]) -> str | None:
+    """Newest failed execution branch whose latest summary row carries a ``partial_head`` to resume from.
+
+    ``branches`` is the pre-dispatch snapshot of execution branches under the plan; each is read at
+    ``refs/remotes/origin/<branch>``. The executor re-reads and verifies the partial head itself.
+    """
+
+    def seq(branch: str) -> int:
+        match = re.search(r"/E-(\d+)-[^/]+/_$", branch)
+        return int(match.group(1)) if match else -1
+
+    for branch in sorted(branches, key=seq, reverse=True):
+        exec_id = branch.removesuffix("/_").rsplit("/", 1)[-1]
+        if failed_partial_head(repo_dir, f"refs/remotes/origin/{branch}", exec_id):
+            return branch
+    return None
+
+
+def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> StageResult:
     """Execute Stage 3: dispatch the executor agent, adopt its execution branch and apply the empty-diff guard.
 
     The executor container (the same one 'holon execute' launches) implements the plan, appends
     executions.jsonl and pushes. An execution whose diff against the plan branch is empty outside
     holon-knowledge/ledger/, plans/ and executions/ fails: a superseding 'failed' row is recorded if the container
     claimed success, and the stage fails so no PR is created or updated.
+
+    With ``resume_partial`` (a Stage 3 resume), the newest failed execution branch under the plan whose latest summary
+    row carries a ``partial_head`` is passed to the executor as a fourth argument, so it continues that partial work.
 
     The stage never halts for a human. The plan is judged against the entropy budget the planner persisted (see
     ``entrypoint.executor.should_decompose``), with one of three outcomes:
@@ -2995,7 +3029,15 @@ def run_execute_stage(context: FlowContext) -> StageResult:
             f"Execute stage failed: could not fetch origin branches under {plan_prefix} "
             "before dispatching the executor.",
         )
-    exit_code = _dispatch_role(context, "executor", [context.plan_branch, context.agent, context.model])
+    executor_args = [context.plan_branch, context.agent, context.model]
+    if resume_partial:
+        partial_branch = _resumable_partial_branch(repo_dir, existing_executions)
+        if partial_branch:
+            executor_args.append(partial_branch)
+            context.log(f"Stage 3 resume: continuing partial work from {partial_branch}")
+        else:
+            context.log("Stage 3 resume: no failed execution branch carries partial work; starting from the plan tip.")
+    exit_code = _dispatch_role(context, "executor", executor_args)
     # The executor exits OVER_BUDGET_EXIT_CODE only once its over_budget row is committed and pushed; that row decides.
     if exit_code not in (0, OVER_BUDGET_EXIT_CODE):
         return _stage_failure(
@@ -4788,6 +4830,8 @@ class PipelineEngine:
         self.checkpoint_path = checkpoint_path
         self.budgets = budgets or load_budgets(os.environ)
         self.clock = clock
+        # True only while the first stage of a run resumed at Stage 3 is pending; deliberately not checkpointed.
+        self._resume_partial_pending = False
 
     def stage_budget_seconds(self, stage: FlowStage, result: StageResult | None = None) -> float:
         """Ceiling for ``stage``; the review stage gets one review-iteration budget per iteration it ran."""
@@ -4871,6 +4915,10 @@ class PipelineEngine:
         elif stage == FlowStage.PLAN:
             return run_plan_stage(self.context)
         elif stage == FlowStage.EXECUTE:
+            # Only the first Execute stage of a Stage 3 resume continues partial work; a re-plan starts afresh.
+            resume_partial, self._resume_partial_pending = self._resume_partial_pending, False
+            if resume_partial:
+                return run_execute_stage(self.context, resume_partial=True)
             return run_execute_stage(self.context)
         elif stage == FlowStage.REVIEW:
             if self.context.skip_review:
@@ -4997,6 +5045,8 @@ class PipelineEngine:
                 valid = [s.value for s in self.STAGE_ORDER]
                 raise ValueError(f"Invalid resumption stage '{self.from_stage}'. Must be one of: {valid}") from None
 
+        # A --from-stage execute or --checkpoint resume at Stage 3 (cli.py sets from_stage from the checkpoint).
+        self._resume_partial_pending = self.from_stage == FlowStage.EXECUTE
         self.context.log(
             f"Pipeline run initiated from stage: {self.STAGE_ORDER[start_idx].value.upper()} "
             f"(dry_run={self.context.dry_run}, auto_calibrate={self.context.auto_calibrate})"

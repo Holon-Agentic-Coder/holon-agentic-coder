@@ -51,6 +51,18 @@ into their immediate parent. If the step is small, not risky you can propose an 
 - A plan above the budget without that list is sent back for re-planning, and fails after a bounded number of attempts.
   Per-step sub‑intent recommendations alone never trigger decomposition.
 
+**Test-Run Discipline:**
+
+- Plan repeated test runs only when the intent requires measuring performance or timing behaviour (test-suite speed, a
+  timing-sensitive or flaky test, a stated performance target).
+- Otherwise plan the affected tests first with `uv run pytest <paths>`, then the full suite once with
+  `uv run task test`.
+- When repetition is required, take N from the intent, or state N and the reason in the plan; never open-ended or "many"
+  runs.
+- Each repetition runs with `-n auto --dist worksteal`, including runs under CPU load. Serial runs happen only when
+  serial behaviour is itself the measurement, and then once. Report each run's pass/fail count and pytest-reported time,
+  plus the median.
+
 You will be eliminated from the selection process if you:
 
 - fail to write the complete plan file according to the template format with a valid metrics table

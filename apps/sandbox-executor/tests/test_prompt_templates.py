@@ -1,7 +1,12 @@
-"""Template hygiene: no shipped prompt template may carry an unmatched placeholder brace."""
+"""Template hygiene: no unmatched placeholder braces, and the shipped prompts carry the test-run and commit rules."""
 
 import pathlib
 import re
+from collections.abc import Callable
+
+import pytest
+from sandbox_executor.entrypoint.executor import build_execution_prompt
+from sandbox_executor.entrypoint.planner import render_placeholders
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 TEMPLATES = sorted((REPO_ROOT / "holon-config" / "prompts").glob("*.template.md"))
@@ -21,6 +26,14 @@ PLANNER_KEYS = {
     "safe_model",
     "budget_from_intent",
 }
+# Lower-case test-run rule phrases both the planner and the executor prompt must carry.
+TEST_RUN_RULE_PHRASES = (
+    "only when the intent requires measuring performance or timing behaviour",
+    "state n and the reason",
+    'never open-ended or "many" runs',
+    "-n auto --dist worksteal",
+    "median",
+)
 
 
 def known_names(texts: list[str]) -> set[str]:
@@ -68,3 +81,51 @@ def test_shipped_templates_have_no_unmatched_placeholders() -> None:
     names = known_names(list(texts.values()))
     defects = [(name, line, ph) for name, text in texts.items() for line, ph in unmatched_placeholders(text, names)]
     assert defects == [], f"unmatched placeholder braces (file, line, name): {defects}"
+
+
+def rendered_planner() -> str:
+    """Return the shipped planner template rendered with a dummy value for every planner key."""
+    template = (REPO_ROOT / "holon-config" / "prompts" / "planner.template.md").read_text(encoding="utf-8")
+    return render_placeholders(template, {name: f"dummy-{name}" for name in PLANNER_KEYS})
+
+
+def rendered_executor() -> str:
+    """Return the shipped executor template rendered through the executor's own prompt builder."""
+    return build_execution_prompt(
+        repo_dir=str(REPO_ROOT),
+        plan_branch="P-1-test",
+        plan_data={"plan_id": "P-1-test"},
+        plan_content="Dummy plan.",
+        intent_data={"intent_id": "I-1-test"},
+        exec_id="E-1-test",
+    )
+
+
+def normalised(text: str) -> str:
+    """Collapse every whitespace run to one space and lower-case, so prettier rewrapping cannot break assertions."""
+    return " ".join(text.split()).lower()
+
+
+@pytest.mark.parametrize("render", [rendered_planner, rendered_executor], ids=["planner", "executor"])
+def test_rendered_templates_carry_test_run_rule(render: Callable[[], str]) -> None:
+    text = normalised(render())
+    missing = [phrase for phrase in TEST_RUN_RULE_PHRASES if phrase not in text]
+    assert missing == [], f"test-run rule phrases missing: {missing}"
+
+
+def test_rendered_executor_runs_suite_once_and_commits_each_step() -> None:
+    text = normalised(rendered_executor())
+    assert "uv run pytest <paths>" in text
+    assert "uv run task test" in text
+    assert ".venv/bin/pytest" not in text
+    assert "after each completed plan step, stage and commit the work on the current branch" in text
+    assert "never push, rebase, amend, squash or switch branches" in text
+
+
+def test_rendered_executor_expands_every_placeholder() -> None:
+    text = rendered_executor()
+    leftovers = [
+        name for name in ("repo_dir", "plan_id", "intent_id", "exec_id", "notes_path") if f"{{{name}}}" in text
+    ]
+    assert leftovers == []
+    assert "executions/E-1-test.md" in text

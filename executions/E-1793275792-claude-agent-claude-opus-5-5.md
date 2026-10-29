@@ -3,8 +3,8 @@
 ## Summary
 
 Implements plan `P-1793275622-claude-agent-claude-opus-5-5` for intent
-`I-1793275605-ledger-writes-are-pure-appends-never-reorder-intents`: every write to `holon-knowledge/ledger/*.jsonl` is a
-pure append, guarded by a byte-prefix check, and no stage pre-check rewrites or stages a ledger.
+`I-1793275605-ledger-writes-are-pure-appends-never-reorder-intents`: every write to `holon-knowledge/ledger/*.jsonl` is
+a pure append, guarded by a byte-prefix check, and no stage pre-check rewrites or stages a ledger.
 
 ## Actual Metrics
 
@@ -23,8 +23,8 @@ pure append, guarded by a byte-prefix check, and no stage pre-check rewrites or 
 - Environment note: `uv` was not installed in the sandbox, so it was installed with `pip install --user uv` and the
   workspace was synced with `uv sync`. No project dependency changed.
 - Writer inventory under `apps/sandbox-executor/src/sandbox_executor`:
-  - Rewriting: `flow.check_and_resolve_stage_conflicts` (substring scan for `<<<<<<<`, `|||||||`, `=======`,
-    `>>>>>>>` anywhere in the file, then `reconcile_jsonl_ledger_conflict`, `open(..., "w")` and `git add`).
+  - Rewriting: `flow.check_and_resolve_stage_conflicts` (substring scan for `<<<<<<<`, `|||||||`, `=======`, `>>>>>>>`
+    anywhere in the file, then `reconcile_jsonl_ledger_conflict`, `open(..., "w")` and `git add`).
   - Rewriting: `flow.reconcile_ledger_file` (temp file plus `os.replace`), reached through `flow.reconcile_ledgers` and
     `entrypoint/executor.py` `sync_and_reconcile_pre_push`, which ran `reconcile_ledgers` and `git add` after every
     merge, including a clean one.
@@ -32,8 +32,8 @@ pure append, guarded by a byte-prefix check, and no stage pre-check rewrites or 
     `created_at` sort), re-serialised with default `json.dumps` separators.
   - Pure appends (`"a"` mode): `ledger.LedgerLock`, `ledger.atomic_ledger_append`, `append_action_record`,
     `append_summary_record`, `try_append_ledger_line`, `try_append_action_record`, `knowledge/records.py`,
-    `entrypoint/intent_creator.py`, `entrypoint/planner.py`, the executor's execution-row writers, `flow.py` Stage 3
-    row writer and calibration ACT-CAL records.
+    `entrypoint/intent_creator.py`, `entrypoint/planner.py`, the executor's execution-row writers, `flow.py` Stage 3 row
+    writer and calibration ACT-CAL records.
 - Reproduction: `tests/test_ledger_append_only.py::test_stage_precheck_leaves_ledgers_byte_identical` fails on the
   unmodified code. The intents ledger (a row mentioning `|||||||` in a JSON string) is deduplicated (the earlier `late`
   row is dropped), sorted by `created_at` and re-serialised with `", "` separators. All three movements happen.
@@ -76,8 +76,8 @@ pure append, guarded by a byte-prefix check, and no stage pre-check rewrites or 
 - Deviation from the plan: the plan suggested keeping "ours" as the prefix everywhere. For the pre-push merge of the
   target into the branch, "theirs" is the target branch. Keeping it as the prefix is what makes main's file a byte
   prefix of the branch's file, which is the intent's acceptance condition. The stage pre-check keeps "ours".
-- Affected tests: `793` collected, `787 passed`, `6 failed`. All 6 are `TestLedgerReconciliation` cases that encode
-  the old dedupe or sort contract, which is under the plan's 10-test discard limit. They are updated in Step 4.
+- Affected tests: `793` collected, `787 passed`, `6 failed`. All 6 are `TestLedgerReconciliation` cases that encode the
+  old dedupe or sort contract, which is under the plan's 10-test discard limit. They are updated in Step 4.
 
 ### Step 4: Add the pytest suite for the pure-append guarantee (done)
 
@@ -91,8 +91,8 @@ pure append, guarded by a byte-prefix check, and no stage pre-check rewrites or 
     - Failed Stage 1 (the stand-in exits 3): the ledgers are byte-identical, `git diff --cached --name-only` is empty
       and tracked status is clean.
     - Dry run: the same assertions, and no dispatch.
-  - `test_stage_precheck_leaves_ledgers_byte_identical`: the Step 1 reproduction, now green, with fake `run_git` and
-    no ledger `add` call.
+  - `test_stage_precheck_leaves_ledgers_byte_identical`: the Step 1 reproduction, now green, with fake `run_git` and no
+    ledger `add` call.
   - `TestAppendOnlyResolution`: marker-free input is returned unchanged, and a file without markers is not rewritten
     (its mtime is unchanged). Real conflicts, in both standard and diff3 form, give the ours bytes and then the missing
     theirs lines in their original order. A `theirs` prefix keeps the target's bytes first, and lines that are already
@@ -109,3 +109,10 @@ pure append, guarded by a byte-prefix check, and no stage pre-check rewrites or 
   The 6 that still pass are the guard tests and the dry run, which skips the pre-check on both versions.
 - `uv run pytest apps/sandbox-executor/tests/test_ledger_append_only.py apps/sandbox-executor/tests/test_ledger_lock.py apps/sandbox-executor/tests/test_flow.py -n auto --dist worksteal`:
   `344 passed` (before the 2 pre-push tests were added).
+
+### Step 5: Document the pure-append guarantee in docs/ledger_schema.md (done)
+
+- Added one "Pure-Append Guarantee" bullet to the `LedgerLock` section of `docs/ledger_schema.md`. It covers the
+  byte-prefix rule, `assert_ledger_prefix` and `LedgerRewriteError`, append-only conflict resolution and no staging on
+  failed or dry runs. `docs/git_flow.md`, `docs/examples.md` and `README.md` are untouched.
+- `npx prettier --check docs/ledger_schema.md`: passes.

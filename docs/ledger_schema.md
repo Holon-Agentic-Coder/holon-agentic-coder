@@ -94,6 +94,11 @@ ledger appends are guarded by `LedgerLock` (`sandbox_executor.ledger.LedgerLock`
   guaranteeing on-disk persistence without torn writes or interleaving.
 - **Graceful Fallback**: On platforms or filesystems without flock support, logs a warning and proceeds with
   uncoordinated appends.
+- **Pure-Append Guarantee**: Every ledger write is a pure append under `LedgerLock`. The bytes a ledger held before a
+  write are always a byte prefix of its bytes afterwards; `assert_ledger_prefix` checks this inside
+  `atomic_ledger_append` and fails closed with `LedgerRewriteError`. Conflict resolution only appends the missing lines
+  of the other side after one side's unchanged bytes, and never sorts, deduplicates or re-serialises rows. Failed and
+  dry-run stages never stage a ledger.
 
 #### Flow Stage Record Matrix
 

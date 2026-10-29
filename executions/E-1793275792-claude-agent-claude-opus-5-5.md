@@ -42,3 +42,14 @@ pure append, guarded by a byte-prefix check, and no stage pre-check rewrites or 
   `sync_and_reconcile_pre_push` would hit after any divergent merge.
 - Stage 3 reaches `sync_and_reconcile_pre_push` through the executor entrypoint before its push; the flow's own stage
   pre-checks call `check_and_resolve_stage_conflicts` directly.
+
+### Step 2: Add the prefix guard helper in ledger.py (done)
+
+- Added `LedgerRewriteError` (a `RuntimeError`), `assert_ledger_prefix(path, before)`, `_read_ledger_bytes` (a missing
+  file reads as `b""`) and `_first_divergence` to `ledger.py`.
+- `atomic_ledger_append` now captures the file bytes under the lock, yields, flushes and then calls
+  `assert_ledger_prefix`. `LedgerLock` is unchanged.
+- `append_action_record` and `append_summary_record` now write through `atomic_ledger_append` instead of a bare
+  `LedgerLock`, so every in-module appender is guarded.
+- Guard tests (`TestPrefixGuard`, 5 cases including an in-context rewrite) pass, and `test_ledger_lock.py` and
+  `test_ledger_query.py` stay green: `59 passed` with the Step 1 reproduction still failing as intended.

@@ -295,6 +295,41 @@ class LedgerLock:
                 self._file.close()
 
 
+class LedgerRewriteError(RuntimeError):
+    """Raised when a ledger write changed bytes that were already in the file instead of only appending."""
+
+
+def _read_ledger_bytes(path: str) -> bytes:
+    """Return the bytes of a ledger file, treating a missing file as empty."""
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except FileNotFoundError:
+        return b""
+
+
+def _first_divergence(before: bytes, after: bytes) -> int:
+    """Return the offset of the first byte at which ``after`` stops matching ``before``."""
+    limit = min(len(before), len(after))
+    return next((i for i in range(limit) if before[i] != after[i]), limit)
+
+
+def assert_ledger_prefix(path: str, before: bytes) -> None:
+    """Fail closed unless the ledger's pre-write bytes are a byte prefix of its current bytes.
+
+    Args:
+        path: Path to the ledger file.
+        before: Bytes of the ledger captured before the write.
+
+    Raises:
+        LedgerRewriteError: When the write rewrote, reordered or truncated existing bytes.
+    """
+    after = _read_ledger_bytes(path)
+    if not after.startswith(before):
+        offset = _first_divergence(before, after)
+        raise LedgerRewriteError(f"Ledger {path} was rewritten, not appended: first divergence at byte {offset}")
+
+
 @contextlib.contextmanager
 def atomic_ledger_append(
     filepath: str,
@@ -302,14 +337,21 @@ def atomic_ledger_append(
     initial_delay: float = 0.02,
     max_delay: float = 0.5,
 ) -> Iterator[TextIO]:
-    """Atomic context manager for appending records to a ledger file with advisory locking."""
+    """Atomic context manager for appending records to a ledger file with advisory locking.
+
+    The bytes present when the lock is taken must remain a byte prefix of the file once the caller's block has
+    written; otherwise ``LedgerRewriteError`` is raised.
+    """
     with LedgerLock(
         filepath=filepath,
         timeout=timeout,
         initial_delay=initial_delay,
         max_delay=max_delay,
     ) as f:
+        before = _read_ledger_bytes(filepath)
         yield f
+        f.flush()
+        assert_ledger_prefix(filepath, before)
 
 
 def _prepare_shape_preserving_action(record: dict[str, Any]) -> dict[str, Any]:
@@ -380,7 +422,7 @@ def append_action_record(
         data = ActionRecord.from_dict(copy_rec).to_dict()
 
     line = json.dumps(data) + "\n"
-    with LedgerLock(ledger_path) as f:
+    with atomic_ledger_append(ledger_path) as f:
         f.write(line)
 
     return data
@@ -500,7 +542,7 @@ def append_summary_record(ledger_path: str, record: SummaryRecord | dict[str, An
         data = dict(record)
         data["entry_type"] = "summary"
 
-    with LedgerLock(ledger_path) as f:
+    with atomic_ledger_append(ledger_path) as f:
         f.write(json.dumps(data) + "\n")
 
     return data

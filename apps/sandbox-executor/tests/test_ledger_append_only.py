@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from sandbox_executor import flow
+from sandbox_executor.ledger import LedgerRewriteError, assert_ledger_prefix, atomic_ledger_append
 
 LEDGER_NAMES = ("intents", "plans", "executions")
 
@@ -73,3 +74,38 @@ def test_stage_precheck_leaves_ledgers_byte_identical(tmp_path: Path, fake_git: 
     assert _snapshot(tmp_path) == before
     assert fake_git.ledger_adds() == []
     assert result["conflicting_files"] == []
+
+
+class TestPrefixGuard:
+    """``assert_ledger_prefix`` and the guarded ``atomic_ledger_append`` fail closed on any non-append write."""
+
+    def test_pure_append_passes(self, tmp_path: Path) -> None:
+        ledger = tmp_path / "plans.jsonl"
+        ledger.write_bytes(b'{"plan_id":"P-1"}\n')
+        before = ledger.read_bytes()
+        with atomic_ledger_append(str(ledger)) as f:
+            f.write('{"plan_id":"P-2"}\n')
+        assert ledger.read_bytes() == before + b'{"plan_id":"P-2"}\n'
+        assert_ledger_prefix(str(ledger), before)
+
+    def test_missing_file_counts_as_empty(self, tmp_path: Path) -> None:
+        ledger = tmp_path / "ledger" / "executions.jsonl"
+        with atomic_ledger_append(str(ledger)) as f:
+            f.write('{"execution_id":"E-1"}\n')
+        assert_ledger_prefix(str(ledger), b"")
+
+    @pytest.mark.parametrize("rewritten", [b'{"plan_id":"P-1"', b'{"plan_id":"P-2"}\n{"plan_id":"P-1"}\n'])
+    def test_truncated_or_reordered_file_raises(self, tmp_path: Path, rewritten: bytes) -> None:
+        ledger = tmp_path / "plans.jsonl"
+        ledger.write_bytes(b'{"plan_id":"P-1"}\n{"plan_id":"P-2"}\n')
+        before = ledger.read_bytes()
+        ledger.write_bytes(rewritten)
+        with pytest.raises(LedgerRewriteError, match="first divergence at byte"):
+            assert_ledger_prefix(str(ledger), before)
+
+    def test_rewrite_inside_append_context_raises(self, tmp_path: Path) -> None:
+        ledger = tmp_path / "intents.jsonl"
+        ledger.write_bytes(b'{"slug":"b"}\n{"slug":"a"}\n')
+        with pytest.raises(LedgerRewriteError), atomic_ledger_append(str(ledger)) as f:
+            ledger.write_bytes(b'{"slug":"a"}\n')
+            f.write('{"slug":"c"}\n')

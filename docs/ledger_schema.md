@@ -127,6 +127,14 @@ plan's resolved `entropy_budget` when one was recorded, the parent's `labels` wh
 read as depth `0`; missing or non-numeric values are also read as `0`. The flow refuses to run a sub-intent list whose
 children would exceed `sandbox_executor.budgets.MAX_SUB_INTENT_DEPTH` (`2`).
 
+Child intent rows also record the node that decided the split, under which the child's branch nests (see
+[Git Flow](git_flow.md#22-sub-intent-branch-nested-under-the-deciding-node)): `deciding_branch` (the deciding node's
+branch, for a plan-decided split the plan branch `I-.../P-.../_`), `parent_plan_id` (the deciding plan, when a plan or
+an execution or review of that plan decided the split), `parent_execution_id` (when an execution or a review of it
+decided the split) and `sub_intent_index` (integer, `>= 1`: the item's position in the deciding node's sub-intent list,
+for a plan its `## Sub-intent list`). A sub-intent promoted to its own root intent keeps these fields, so its lineage is
+not lost.
+
 Stage 2 planner entrypoint rows: when a plan turn breached its turn, stall or stage budget and the plan was not
 recovered (the resume or re-prompt did not finish, or no stage time was left for one), one `ACT-BUDGET` action
 (`category: "budget"`, `stage: "plan"`) in `executions.jsonl` under the `P-...` `plan_id` as its `execution_id`, written

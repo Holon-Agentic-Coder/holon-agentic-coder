@@ -16,9 +16,11 @@ This document defines the **Git branching, rebasing, and merging discipline** fo
 ### 1.2 Fractal Intent Hierarchy
 
 - Intents can spawn sub-intents recursively
-- Each sub-intent gets its own intent branch, cut from its parent's intent branch and targeting it. In the current flow
-  that branch is a flat `{parent}--{n}-{slug}/_` (section 2.2), linked to the parent by its `target_branch` and
-  `parent_intent_id`; branch names nested under the parent's branch (sections 2.2-2.3 and 8) are the target model
+- Each sub-intent gets its own intent branch, cut from its parent's intent branch and targeting it. The branch nests
+  under the node whose stage decided the split (sections 2.2-2.3 and 8), and its provenance records that node
+- A split may be decided at any stage -- intent, plan, execution or review -- as long as the hierarchy is honoured. In
+  practice so far, splits have happened after planning: the planner decides the split by writing a `## Sub-intent list`
+  in its plan, and the flow runs each item. That plan-decided split is the default, but the model is not limited to it
 - Depth is capped: `holon flow` refuses to nest sub-intents more than `MAX_SUB_INTENT_DEPTH` levels below the root
   intent (see Stage 3 under the flow equivalence guarantee)
 
@@ -40,10 +42,9 @@ This document defines the **Git branching, rebasing, and merging discipline** fo
 
 ### 1.5 ID Generation
 
-- Root intent, plan and execution IDs are generated using the current Unix timestamp.
-- In the current flow, sub-intent IDs are derived from their parent's ID and their position in the parent's sub-intent
-  list, never from the clock (section 2.2), so children created within the same second as their parent or siblings never
-  collide. The target-model examples in sections 2.2, 2.3, 3, 4 and 8 still show timestamped sub-intent IDs.
+- Root intent, sub-intent, plan and execution IDs are generated using the current Unix timestamp.
+- A sub-intent's branch nests under the node that decided its split (section 2.2), so its ID only has to be unique among
+  that node's children.
 - Example: `I-1771422315`, `P-1771422316`, `E-1771422317`
 
 ---
@@ -66,44 +67,84 @@ Example:
 I-1771890389-refactor-metrics/_
 ```
 
-### 2.2 Sub-Intent Branch (Nested)
+### 2.2 Sub-Intent Branch (Nested Under the Deciding Node)
 
-> [!NOTE] Target model. In the current flow a sub-intent's branch is the flat `{parent}--{n}-{slug}/_`, cut from its
-> parent's intent branch, which it targets; the parent link is also recorded as `target_branch` and `parent_intent_id`.
-> `{parent}` is the parent's intent branch without its `/_` suffix, `{n}` the item's 1-based position in the parent's
-> sub-intent list and `{slug}` the item's slug, for example `I-1771890389-refactor-metrics--1-improve-estimators/_` and,
-> one level deeper, `I-1771890389-refactor-metrics--1-improve-estimators--2-p-success/_`. A generated slug never
-> contains `--`, so the name cannot collide with the parent, a sibling or any other intent, even when they are created
-> within the same second or share a slug. Re-running the same parent's sub-intent list derives the same names. The
-> intent stage reuses an existing branch of that name only when its `intents.jsonl` row records the same goal and
-> description; otherwise (for example after a re-plan changed the item at that position) the stage fails and names the
-> conflicting branch rather than reuse it. A sub-intent's flow checkpoint is keyed on its intent branch
-> (`.holon/flow/checkpoint-{parent}--{n}-{slug}.json`), so a child and a grandchild sharing a slug never overwrite each
-> other's. Sections 2.2 and 2.3 describe the nested names of the target model.
+A sub-intent's branch nests under the branch node whose stage decided the split, with no child marker in the name. An
+intent can have several competing plans (section 2.4), so a branch nested only under the intent would not say which plan
+spawned the sub-intent; nesting under the deciding node records it in the branch path itself.
+
+| Split decided by         | Sub-intent branch                                                                                       |
+| ------------------------ | ------------------------------------------------------------------------------------------------------- |
+| The intent stage         | `I-{timestamp}-{slug}/I-{timestamp}-{slug}/_`                                                           |
+| A plan (the default)     | `I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/I-{timestamp}-{slug}/_`                             |
+| An execution             | `I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/E-{timestamp}-{action-slug}/I-{timestamp}-{slug}/_` |
+| A review of an execution | The reviewed execution's node, as for an execution (a review has no branch node of its own)             |
+
+In practice so far, splits have been decided by a plan: the planner writes a `## Sub-intent list` in its plan, the
+executor records it, and the flow runs each item as a sub-intent nested under that plan. Example:
 
 ```
-I-{timestamp}-{slug}/I-{timestamp}-{slug}/_
+I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_
 ```
 
-Example:
+The same sub-intent, had the split been decided at the intent stage or during execution:
 
 ```
 I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_
+I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/E-1771422350-init-project/I-1771890390-improve-estimators/_
 ```
+
+The sub-intent's own plan and execution branches continue below its node:
+
+```
+I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/_
+I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/E-1771890399-add-estimators/_
+```
+
+Whichever node decided the split, the sub-intent branch is cut from its parent intent branch (`I-.../_`) and merges back
+into it (sections 3 and 4.1); the deciding node only fixes where the name sits. A sub-intent's flow checkpoint is keyed
+on its intent branch, so a child and a grandchild sharing a slug never overwrite each other's.
+
+**Provenance.** A sub-intent's `intents.jsonl` row and its plan header record the node that decided the split:
+
+- `parent_intent_id`: the parent intent.
+- `deciding_branch`: the deciding node's branch (`I-.../_`, `I-.../P-.../_` or `I-.../P-.../E-.../_`).
+- `parent_plan_id`: the deciding plan, when a plan, or an execution or review of that plan, decided the split.
+- `parent_execution_id`: the deciding execution, when an execution or a review of it decided the split.
+- `sub_intent_index`: the item's 1-based position in the deciding node's sub-intent list (for a plan, its
+  `## Sub-intent list`).
+- `target_branch`: the parent intent branch the sub-intent merges into.
+
+```json
+{
+  "intent_id": "I-1771890390-improve-estimators",
+  "parent_intent_id": "I-1771890389-refactor-metrics",
+  "deciding_branch": "I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/_",
+  "parent_plan_id": "P-1771422315-claude-code-claude-sonnet-4.6",
+  "sub_intent_index": 1,
+  "target_branch": "I-1771890389-refactor-metrics/_"
+}
+```
+
+**Promotion.** If an operator promotes a sub-intent to its own root intent, the root intent keeps the deciding node it
+came from (`deciding_branch`, with `parent_plan_id` or `parent_execution_id` as applicable) and its `sub_intent_index`,
+so the lineage is not lost even though the new root no longer nests under that node.
 
 ### 2.3 Sub-Sub-Intent Branch (Deeper Nesting)
 
+Deeper nesting repeats the pattern. For plan-decided splits:
+
 ```
-I-{timestamp}-{slug}/I-{timestamp}-{slug}/I-{timestamp}-{slug}/_
+I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/I-{timestamp}-{slug}/_
 ```
 
 Example:
 
 ```
-I-1771890389-refactor-metrics/I-1771890390-improve-estimators/I-1771890391-p-success/_
+I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/I-1771890391-p-success/_
 ```
 
-**Pattern:** Each level appends to the path, creating a filesystem-like hierarchy.
+**Pattern:** Each level appends the deciding node and the sub-intent to the path, creating a filesystem-like hierarchy.
 
 ### 2.4 Plan Branch (Proposal)
 
@@ -176,11 +217,12 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
 - **Fits the budget:** the plan is executed as usual.
 - **Explicit sub-intent list:** the executor records the parsed list on its `decomposed` summary row and writes no
   `intents.jsonl` rows. The flow then runs each item as a child intent, strictly one after another and never
-  concurrently, through the full pipeline (intent, plan, execute, review, calibrate). Each child targets its immediate
-  parent intent branch (`target_branch` and `parent_intent_id`), never `main`, and stops at its own Stage 4 consensus
-  halt. The first failing child fails the parent's Stage 3; when all succeed, the parent's own Stage 4 and Stage 5 are
-  skipped with reason `decomposed`, because review and calibration ran per child. Nesting is bounded by
-  `MAX_SUB_INTENT_DEPTH`, checked against the plan before the executor is dispatched when the plan can be read.
+  concurrently, through the full pipeline (intent, plan, execute, review, calibrate). Each child nests under the plan
+  that listed it and records it as its provenance (section 2.2), targets its immediate parent intent branch
+  (`target_branch`), never `main`, and stops at its own Stage 4 consensus halt. The first failing child fails the
+  parent's Stage 3; when all succeed, the parent's own Stage 4 and Stage 5 are skipped with reason `decomposed`, because
+  review and calibration ran per child. Nesting is bounded by `MAX_SUB_INTENT_DEPTH`, checked against the plan before
+  the executor is dispatched when the plan can be read.
 
   **Current limitation:** decomposed children target the parent intent branch, and the flow stops there. Each child is
   cut from the parent intent branch as it stood when that child started, so a later child does not see an earlier
@@ -286,12 +328,19 @@ Every sub-intent **must rebase from its immediate parent**:
 1. **Before execution** (to get latest parent state)
 2. **After execution** (to ensure clean merge)
 
+The immediate parent is the parent intent branch (`I-.../_`), not the node that decided the split (section 2.2).
+
+**Building on siblings (target model).** A sub-intent that depends on earlier siblings starts from, or rebases onto, the
+parent intent branch only after those siblings have merged into it, so no sub-intent is implemented blind to the work it
+depends on. The before-execution rebase of the dual rebase rule is that step. In the current flow each child is cut from
+the parent intent branch as it stood when that child started (see Stage 3 under the flow equivalence guarantee).
+
 ### 3.2 Rebase Commands
 
 **Before execution:**
 
 ```bash
-$ git checkout I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_
+$ git checkout I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_
 $ git fetch origin
 $ git rebase I-1771890389-refactor-metrics/_
 ```
@@ -337,8 +386,8 @@ If rebase fails:
 
 ```bash
 # Sub-intent completes
-$ git checkout I-1771890389-refactor-metrics
-$ git merge I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_
+$ git checkout I-1771890389-refactor-metrics/_
+$ git merge I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_
 # Automatic, no human review
 ```
 
@@ -349,7 +398,7 @@ $ git merge I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_
   "event_type": "git_merge_attempted",
   "payload": {
     "intent_id": "I-1771890390-improve-estimators",
-    "from_branch": "I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_",
+    "from_branch": "I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_",
     "to_branch": "I-1771890389-refactor-metrics/_",
     "status": "success",
     "merge_type": "automatic_sub_intent",
@@ -361,6 +410,11 @@ $ git merge I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_
 ### 4.2 Root Intent → Main Merge (Human Review Required)
 
 **Trigger:** All sub-intents merged, root intent ready for promotion
+
+**Parent PR (target model):** once all sub-intents have merged into the parent intent branch, the parent intent's PR to
+its own target is raised, reviewed (Stage 4) and calibrated (Stage 5) on the combined diff, stopping at the human merge
+boundary. In the current flow this parent-to-target step is not yet automated (see Stage 3 under the flow equivalence
+guarantee).
 
 **Process:**
 
@@ -505,11 +559,9 @@ def parallel_merge(sub_intents, parent_branch):
 $ git checkout main
 $ git checkout -b I-1771890389-refactor-metrics/_
 
-# Sub-intent (current flow: a flat branch cut from the parent intent branch, which it targets)
-$ git checkout -b I-1771890389-refactor-metrics--1-improve-estimators/_ origin/I-1771890389-refactor-metrics/_
+# Sub-intent: nested under the plan that decided the split, cut from the parent intent branch, which it targets
+$ git checkout -b I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_ origin/I-1771890389-refactor-metrics/_
 ```
-
-In the target model the sub-intent branch is nested under its parent's (section 2.2).
 
 ### 7.2 Execution
 
@@ -526,14 +578,12 @@ $ git rebase I-1771890389-refactor-metrics/_
 
 ### 7.4 Merge (Automatic for Sub-Intents)
 
-Target model, using the nested sub-intent name of section 2.2. In the current flow the sub-intent branch is the flat
-`I-1771890389-refactor-metrics--1-improve-estimators/_` from section 7.1, and the maintainer merges its PR into the
-parent intent branch.
+Target model. In the current flow the maintainer merges the sub-intent's PR into the parent intent branch.
 
 ```bash
-# Target model: the nested sub-intent branch merges automatically
+# Target model: the sub-intent branch merges automatically
 $ git checkout I-1771890389-refactor-metrics/_
-$ git merge I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_
+$ git merge I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_
 ```
 
 ### 7.5 Promotion (Human Review for Root Intents)
@@ -548,9 +598,8 @@ $ git push origin main
 ### 7.6 Cleanup
 
 ```bash
-# Delete merged branches (current flow: the flat sub-intent branch of section 7.1; in the target model, the nested
-# name merged in section 7.4)
-$ git branch -d I-1771890389-refactor-metrics--1-improve-estimators/_
+# Delete merged branches
+$ git branch -d I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_
 $ git branch -d I-1771890389-refactor-metrics/_
 ```
 
@@ -560,16 +609,18 @@ $ git branch -d I-1771890389-refactor-metrics/_
 
 ### Intent Hierarchy and Git Branch Structure
 
-Intent Hierarchy:
+Intent Hierarchy (each split decided by a plan):
 
 ```
 I-1771890389-refactor-metrics (root)
-├── I-1771890390-improve-estimators (sub, depth 1)
-│ ├── I-1771890391-p-success (sub-sub, depth 2)
-│ ├── I-1771890392-entropy (sub-sub, depth 2)
-│ └── I-1771890393-impact (sub-sub, depth 2)
-├── I-1771890394-add-logging (sub, depth 1)
-└── I-1771890395-add-tests (sub, depth 1)
+└── P-1771422315-claude-code-claude-sonnet-4.6 (deciding plan)
+    ├── I-1771890390-improve-estimators (sub, depth 1)
+    │   └── P-1771890398-claude-code-claude-opus-4.6 (deciding plan)
+    │       ├── I-1771890391-p-success (sub-sub, depth 2)
+    │       ├── I-1771890392-entropy (sub-sub, depth 2)
+    │       └── I-1771890393-impact (sub-sub, depth 2)
+    ├── I-1771890394-add-logging (sub, depth 1)
+    └── I-1771890395-add-tests (sub, depth 1)
 ```
 
 Git branch structure:
@@ -578,42 +629,50 @@ Git branch structure:
 main
 └── I-1771890389-refactor-metrics
     ├── _
-    ├── P-1771890396-claude-code-claude-opus-4.6
-    │   └── _
-    ├── P-1771890397-gemini-cli-gemini-3.6-flash
+    ├── P-1771422315-claude-code-claude-sonnet-4.6
     │   ├── _
-    │   └── E-1771890398-opencode-big-pickle
+    │   ├── I-1771890390-improve-estimators
+    │   │   ├── _
+    │   │   └── P-1771890398-claude-code-claude-opus-4.6
+    │   │       ├── _
+    │   │       ├── I-1771890391-p-success
+    │   │       │   └── _
+    │   │       ├── I-1771890392-entropy
+    │   │       │   └── _
+    │   │       └── I-1771890393-impact
+    │   │           └── _
+    │   ├── I-1771890394-add-logging
+    │   │   └── _
+    │   └── I-1771890395-add-tests
     │       └── _
-    ├── I-1771890390-improve-estimators
-    │   ├── _
-    │   ├── P-1771890398-claude-code-claude-opus-4.6
-    │   │   └── _
-    │   ├── I-1771890391-p-success
-    │   │   └── _
-    │   ├── I-1771890392-entropy
-    │   │   └── _
-    │   └── I-1771890393-impact
-    │       └── _
-    ├── I-1771890394-add-logging
-    │   └── _
-    └── I-1771890395-add-tests
-        └── _
+    └── P-1771890397-gemini-cli-gemini-3.6-flash
+        ├── _
+        └── E-1771890398-opencode-big-pickle
+            └── _
 ```
+
+`P-1771890397-gemini-cli-gemini-3.6-flash` is a competing plan for the same root intent; the sub-intents sit under
+`P-1771422315-claude-code-claude-sonnet-4.6`, the plan whose `## Sub-intent list` created them.
 
 ### Merge Flow
 
+Sub-intents merge into their parent intent branch, never into the deciding plan branch.
+
 1. **Depth 2 → Depth 1** (automatic):
-   - `I-1771890389-refactor-metrics/I-1771890390-improve-estimators/I-1771890391-p-success/_` →
-     `I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_`
-   - `I-1771890389-refactor-metrics/I-1771890390-improve-estimators/I-1771890392-entropy/_` →
-     `I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_`
-   - `I-1771890389-refactor-metrics/I-1771890390-improve-estimators/I-1771890393-impact/_` →
-     `I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_`
+   - `I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/I-1771890391-p-success/_`
+     → `I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_`
+   - `I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/I-1771890392-entropy/_`
+     → `I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_`
+   - `I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/I-1771890393-impact/_`
+     → `I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_`
 
 2. **Depth 1 → Root** (automatic):
-   - `I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_` → `I-1771890389-refactor-metrics/_`
-   - `I-1771890389-refactor-metrics/I-1771890394-add-logging/_` → `I-1771890389-refactor-metrics/_`
-   - `I-1771890389-refactor-metrics/I-1771890395-add-tests/_` → `I-1771890389-refactor-metrics/_`
+   - `I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_` →
+     `I-1771890389-refactor-metrics/_`
+   - `I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_` →
+     `I-1771890389-refactor-metrics/_`
+   - `I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890395-add-tests/_` →
+     `I-1771890389-refactor-metrics/_`
 
 3. **Root → Main** (human review):
    - `I-1771890389-refactor-metrics/_` → `main` (after human approval)

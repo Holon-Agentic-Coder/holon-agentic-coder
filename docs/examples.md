@@ -634,7 +634,9 @@ $ git push origin main
 
 ### Scenario
 
-Human creates a root intent to "Implement metrics module". Agent decomposes into sub-intents.
+Human creates a root intent to "Implement metrics module". Agent decomposes into sub-intents. Each sub-intent branch
+nests under the plan that listed it (`P-I-root-002-implement-metrics-module-v1-medium` for the root's sub-intents), so
+the branch path records which plan spawned it.
 
 > [!NOTE] The merge steps below show the target model of automatic sub-intent merges. In the current `holon flow`, the
 > children run one at a time, each through the full pipeline, and each opens a PR into its parent intent branch that the
@@ -657,12 +659,12 @@ I-root-002-implement-metrics-module (parent)
 ```
 main
 └── intent/I-root-002-implement-metrics-module
-├── intent/I-root-002-implement-metrics-module/I-root-002-001-implement-p-success
-├── intent/I-root-002-implement-metrics-module/I-root-002-002-implement-entropy
-│   ├── .../I-root-002-002-001-define-entropy-sources
-│   └── .../I-root-002-002-002-implement-entropy-formula
-├── intent/I-root-002-implement-metrics-module/I-root-002-003-implement-impact
-└── intent/I-root-002-implement-metrics-module/I-root-002-004-implement-ev
+├── intent/I-root-002-implement-metrics-module/P-I-root-002-implement-metrics-module-v1-medium/I-root-002-001-implement-p-success
+├── intent/I-root-002-implement-metrics-module/P-I-root-002-implement-metrics-module-v1-medium/I-root-002-002-implement-entropy
+│   ├── .../P-I-root-002-002-implement-entropy-v1-medium/I-root-002-002-001-define-entropy-sources
+│   └── .../P-I-root-002-002-implement-entropy-v1-medium/I-root-002-002-002-implement-entropy-formula
+├── intent/I-root-002-implement-metrics-module/P-I-root-002-implement-metrics-module-v1-medium/I-root-002-003-implement-impact
+└── intent/I-root-002-implement-metrics-module/P-I-root-002-implement-metrics-module-v1-medium/I-root-002-004-implement-ev
 ```
 
 ### Execution flow
@@ -756,6 +758,9 @@ $ git commit -m "Create metrics module structure"
 {
   "intent_id": "I-root-002-001-implement-p-success",
   "parent_intent_id": "I-root-002-implement-metrics-module",
+  "deciding_branch": "intent/I-root-002-implement-metrics-module/P-I-root-002-implement-metrics-module-v1-medium",
+  "parent_plan_id": "P-I-root-002-implement-metrics-module-v1-medium",
+  "sub_intent_index": 1,
   "goal": "Implement P(success) estimator",
   "constraints": {
     "entropy_budget": 37.5
@@ -767,7 +772,7 @@ $ git commit -m "Create metrics module structure"
 **Git:**
 
 ```bash
-$ git checkout -b intent/I-root-002-implement-metrics-module/I-root-002-001-implement-p-success
+$ git checkout -b intent/I-root-002-implement-metrics-module/P-I-root-002-implement-metrics-module-v1-medium/I-root-002-001-implement-p-success
 ```
 
 **Rebase from parent before execution:**
@@ -788,7 +793,7 @@ $ git rebase intent/I-root-002-implement-metrics-module
 
 ```bash
 $ git checkout intent/I-root-002-implement-metrics-module
-$ git merge intent/I-root-002-implement-metrics-module/I-root-002-001-implement-p-success
+$ git merge intent/I-root-002-implement-metrics-module/P-I-root-002-implement-metrics-module-v1-medium/I-root-002-001-implement-p-success
 ```
 
 **Ledger event:**
@@ -799,7 +804,7 @@ $ git merge intent/I-root-002-implement-metrics-module/I-root-002-001-implement-
   "seq": 45,
   "payload": {
     "intent_id": "I-root-002-001-implement-p-success",
-    "from_branch": "intent/I-root-002-implement-metrics-module/I-root-002-001-implement-p-success",
+    "from_branch": "intent/I-root-002-implement-metrics-module/P-I-root-002-implement-metrics-module-v1-medium/I-root-002-001-implement-p-success",
     "to_branch": "intent/I-root-002-implement-metrics-module",
     "status": "success"
   }
@@ -816,6 +821,9 @@ $ git merge intent/I-root-002-implement-metrics-module/I-root-002-001-implement-
 {
   "intent_id": "I-root-002-002-implement-entropy",
   "parent_intent_id": "I-root-002-implement-metrics-module",
+  "deciding_branch": "intent/I-root-002-implement-metrics-module/P-I-root-002-implement-metrics-module-v1-medium",
+  "parent_plan_id": "P-I-root-002-implement-metrics-module-v1-medium",
+  "sub_intent_index": 2,
   "goal": "Implement entropy estimator"
 }
 ```
@@ -824,6 +832,7 @@ $ git merge intent/I-root-002-implement-metrics-module/I-root-002-001-implement-
 
 ```json
 {
+  "plan_id": "P-I-root-002-002-implement-entropy-v1-medium",
   "plan_graph": {
     "sub_intents": [
       {
@@ -842,9 +851,9 @@ $ git merge intent/I-root-002-implement-metrics-module/I-root-002-001-implement-
 **Git branches:**
 
 ```
-intent/I-root-002-implement-metrics-module/I-root-002-002-implement-entropy
-├── .../I-root-002-002-001-define-entropy-sources
-└── .../I-root-002-002-002-implement-entropy-formula
+intent/I-root-002-implement-metrics-module/P-I-root-002-implement-metrics-module-v1-medium/I-root-002-002-implement-entropy
+├── .../P-I-root-002-002-implement-entropy-v1-medium/I-root-002-002-001-define-entropy-sources
+└── .../P-I-root-002-002-implement-entropy-v1-medium/I-root-002-002-002-implement-entropy-formula
 ```
 
 **Each sub-sub-intent:**
@@ -858,7 +867,7 @@ intent/I-root-002-implement-metrics-module/I-root-002-002-implement-entropy
 
 ```bash
 $ git checkout intent/I-root-002-implement-metrics-module
-$ git merge intent/I-root-002-implement-metrics-module/I-root-002-002-implement-entropy
+$ git merge intent/I-root-002-implement-metrics-module/P-I-root-002-implement-metrics-module-v1-medium/I-root-002-002-implement-entropy
 ```
 
 ---
@@ -918,6 +927,8 @@ runs sibling sub-intents one at a time.
 
 **Parent intent:** `I-root-003-refactor-metrics`
 
+**Deciding plan:** `P-I-root-003-refactor-metrics-v1-medium` (both sub-intent branches nest under it)
+
 **Sub-intents (concurrent):**
 
 - `I-root-003-001-add-caching` (modifies `holon/metrics/p_success.py`)
@@ -929,7 +940,7 @@ runs sibling sub-intents one at a time.
 
 ```bash
 $ git checkout intent/I-root-003-refactor-metrics
-$ git merge intent/I-root-003-refactor-metrics/I-root-003-001-add-caching
+$ git merge intent/I-root-003-refactor-metrics/P-I-root-003-refactor-metrics-v1-medium/I-root-003-001-add-caching
 # Merge successful
 ```
 
@@ -938,7 +949,7 @@ $ git merge intent/I-root-003-refactor-metrics/I-root-003-001-add-caching
 #### 2) Sub-intent 002 attempts rebase after execution
 
 ```bash
-$ git checkout intent/I-root-003-refactor-metrics/I-root-003-002-add-logging
+$ git checkout intent/I-root-003-refactor-metrics/P-I-root-003-refactor-metrics-v1-medium/I-root-003-002-add-logging
 $ git rebase intent/I-root-003-refactor-metrics
 # CONFLICT in holon/metrics/p_success.py
 ```
@@ -1050,7 +1061,7 @@ $ pytest holon/metrics/test_p_success.py
 
 ```bash
 $ git checkout intent/I-root-003-refactor-metrics
-$ git merge intent/I-root-003-refactor-metrics/I-root-003-002-add-logging
+$ git merge intent/I-root-003-refactor-metrics/P-I-root-003-refactor-metrics-v1-medium/I-root-003-002-add-logging
 # Merge successful (conflict already resolved)
 ```
 
@@ -1616,10 +1627,13 @@ workflow when executing a sub-intent.
 
 **Intent Context:**
 
-- Root Intent: `I-100-refactor-api`
-  - Current Branch: `I-100-refactor-api/_`
-- Sub-Intent: `I-101-add-serializers`
-  - Sub-Branch: `I-100-refactor-api/I-101-add-serializers/_`
+- Root Intent: `I-1771890389-refactor-metrics`
+  - Current Branch: `I-1771890389-refactor-metrics/_`
+- Deciding Plan: `P-1771422315-claude-code-claude-sonnet-4.6` (its `## Sub-intent list` names the sub-intent as item 1)
+- Sub-Intent: `I-1771890390-improve-estimators`
+  - Sub-Branch:
+    `I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_` (nested
+    under the deciding plan, cut from the parent intent branch)
 
 ### Git Command Sequence
 
@@ -1630,34 +1644,34 @@ workflow when executing a sub-intent.
 git fetch origin
 
 # Create and checkout the sub-branch rooted at the current parent branch tip
-git checkout -b I-100-refactor-api/I-101-add-serializers/_ origin/I-100-refactor-api/_
+git checkout -b I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_ origin/I-1771890389-refactor-metrics/_
 ```
 
 #### 2) Write code and run tests inside the isolated sandbox
 
-The agent modifies the codebase (e.g., creating `holon/api/serializers.py`).
+The agent modifies the codebase (e.g., creating `holon/metrics/estimators.py`).
 
 #### 3) Commit the changes within the sandbox
 
 ```bash
 # Stage the modified files
-git add holon/api/serializers.py tests/test_serializers.py
+git add holon/metrics/estimators.py tests/test_estimators.py
 
 # Commit with semantic message
-git commit -m "feat: implement JSON serializers for api payloads"
+git commit -m "feat: improve metrics estimators"
 ```
 
 #### 4) Rebase onto the latest parent branch (handling concurrency)
 
-If a sibling sub-intent branch was merged into `I-100-refactor-api/_` while `I-101` was executing, the harness pulls
-updates and rebases:
+If a sibling sub-intent branch was merged into `I-1771890389-refactor-metrics/_` while `I-1771890390-improve-estimators`
+was executing, the harness pulls updates and rebases:
 
 ```bash
 # Fetch latest parent commits
 git fetch origin
 
 # Rebase local work onto the updated parent branch tip
-git rebase origin/I-100-refactor-api/_
+git rebase origin/I-1771890389-refactor-metrics/_
 ```
 
 #### 5) Push and trigger automatic merge evaluation
@@ -1667,16 +1681,16 @@ target model; in the current flow the child's PR into the parent intent branch i
 
 ```bash
 # Push branch to remote
-git push origin I-100-refactor-api/I-101-add-serializers/_
+git push origin I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_
 
 # Switch back to the parent branch
-git checkout I-100-refactor-api/_
+git checkout I-1771890389-refactor-metrics/_
 
 # Merge the sub-intent branch with no-fast-forward to preserve history
-git merge --no-ff I-100-refactor-api/I-101-add-serializers/_ -m "merge: sub-intent I-101-add-serializers"
+git merge --no-ff I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_ -m "merge: sub-intent I-1771890390-improve-estimators"
 
 # Push the merged parent branch
-git push origin I-100-refactor-api/_
+git push origin I-1771890389-refactor-metrics/_
 ```
 
 #### 6) Branch namespace cleanup
@@ -1685,10 +1699,10 @@ The remote and local sub-branches are immediately pruned to maintain system clea
 
 ```bash
 # Delete local sub-branch
-git branch -d I-100-refactor-api/I-101-add-serializers/_
+git branch -d I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_
 
 # Delete remote sub-branch
-git push origin --delete I-100-refactor-api/I-101-add-serializers/_
+git push origin --delete I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_
 ```
 
 ---

@@ -87,22 +87,22 @@ In practice, splits are decided by a plan: the planner writes a `## Sub-intent l
 it, and the flow runs each item as a sub-intent nested under that plan. Example:
 
 ```
-I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_
+I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_
 ```
 
 For illustration of the general rule only, the same sub-intent would be named as follows had the split been decided at
 the intent stage or during execution:
 
 ```
-I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_
-I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/E-1771422350-init-project/I-1771890390-improve-estimators/_
+I-1771890389-refactor-metrics/I-1771890392-improve-estimators/_
+I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/E-1771890391-init-project/I-1771890392-improve-estimators/_
 ```
 
 The sub-intent's own plan and execution branches continue below its node:
 
 ```
-I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/_
-I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/E-1771890399-add-estimators/_
+I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/_
+I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/E-1771890399-add-estimators/_
 ```
 
 Whichever node decided the split, the sub-intent branch is cut from its parent intent branch (`I-.../_`) and merges back
@@ -122,10 +122,10 @@ description.
 
 ```json
 {
-  "intent_id": "I-1771890390-improve-estimators",
+  "intent_id": "I-1771890392-improve-estimators",
   "parent_intent_id": "I-1771890389-refactor-metrics",
-  "deciding_branch": "I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/_",
-  "parent_plan_id": "P-1771422315-claude-code-claude-sonnet-4.6",
+  "deciding_branch": "I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_",
+  "parent_plan_id": "P-1771890390-claude-code-claude-sonnet-4.6",
   "target_branch": "I-1771890389-refactor-metrics/_"
 }
 ```
@@ -144,7 +144,7 @@ I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/I-{timestamp}-{slug}/P-{times
 Example:
 
 ```
-I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/I-1771890391-p-success/_
+I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/I-1771890400-p-success/_
 ```
 
 **Pattern:** Each level appends the deciding node and the sub-intent to the path, creating a filesystem-like hierarchy.
@@ -161,7 +161,7 @@ I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/_
 Example:
 
 ```
-I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/_
+I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
 ```
 
 ### 2.5 Execution Branch (Action)
@@ -176,7 +176,7 @@ I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/E-{timestamp}-{action-slug}/_
 Example:
 
 ```
-I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/E-1771422350-init-project/_
+I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/E-1771890391-init-project/_
 ```
 
 ### 2.6 Hierarchy Summary
@@ -343,7 +343,7 @@ the parent intent branch as it stood when that child started (see Stage 3 under 
 **Before execution:**
 
 ```bash
-$ git checkout I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_
+$ git checkout I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_
 $ git fetch origin
 $ git rebase I-1771890389-refactor-metrics/_
 ```
@@ -390,7 +390,7 @@ If rebase fails:
 ```bash
 # Sub-intent completes
 $ git checkout I-1771890389-refactor-metrics/_
-$ git merge I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_
+$ git merge I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_
 # Automatic, no human review
 ```
 
@@ -400,8 +400,8 @@ $ git merge I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet
 {
   "event_type": "git_merge_attempted",
   "payload": {
-    "intent_id": "I-1771890390-improve-estimators",
-    "from_branch": "I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_",
+    "intent_id": "I-1771890392-improve-estimators",
+    "from_branch": "I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_",
     "to_branch": "I-1771890389-refactor-metrics/_",
     "status": "success",
     "merge_type": "automatic_sub_intent",
@@ -563,7 +563,7 @@ $ git checkout main
 $ git checkout -b I-1771890389-refactor-metrics/_
 
 # Sub-intent: nested under the plan that decided the split, cut from the parent intent branch, which it targets
-$ git checkout -b I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_ origin/I-1771890389-refactor-metrics/_
+$ git checkout -b I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_ origin/I-1771890389-refactor-metrics/_
 ```
 
 ### 7.2 Execution
@@ -586,7 +586,7 @@ Target model. In the current flow the maintainer merges the sub-intent's PR into
 ```bash
 # Target model: the sub-intent branch merges automatically
 $ git checkout I-1771890389-refactor-metrics/_
-$ git merge I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_
+$ git merge I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_
 ```
 
 ### 7.5 Promotion (Human Review for Root Intents)
@@ -602,7 +602,7 @@ $ git push origin main
 
 ```bash
 # Delete merged branches
-$ git branch -d I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_
+$ git branch -d I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_
 $ git branch -d I-1771890389-refactor-metrics/_
 ```
 
@@ -616,12 +616,12 @@ Intent Hierarchy (each split decided by a plan):
 
 ```
 I-1771890389-refactor-metrics (root)
-└── P-1771422315-claude-code-claude-sonnet-4.6 (plan, decided the split)
-    ├── I-1771890390-improve-estimators (sub-intent)
+└── P-1771890390-claude-code-claude-sonnet-4.6 (plan, decided the split)
+    ├── I-1771890392-improve-estimators (sub-intent)
     │   └── P-1771890398-claude-code-claude-opus-4.6 (plan, decided the split)
-    │       ├── I-1771890391-p-success (sub-sub-intent)
-    │       ├── I-1771890392-entropy (sub-sub-intent)
-    │       └── I-1771890393-impact (sub-sub-intent)
+    │       ├── I-1771890400-p-success (sub-sub-intent)
+    │       ├── I-1771890401-entropy (sub-sub-intent)
+    │       └── I-1771890402-impact (sub-sub-intent)
     ├── I-1771890394-add-logging (sub-intent)
     └── I-1771890395-add-tests (sub-intent)
 ```
@@ -632,17 +632,17 @@ Git branch structure:
 main
 └── I-1771890389-refactor-metrics
     ├── _
-    ├── P-1771422315-claude-code-claude-sonnet-4.6
+    ├── P-1771890390-claude-code-claude-sonnet-4.6
     │   ├── _
-    │   ├── I-1771890390-improve-estimators
+    │   ├── I-1771890392-improve-estimators
     │   │   ├── _
     │   │   └── P-1771890398-claude-code-claude-opus-4.6
     │   │       ├── _
-    │   │       ├── I-1771890391-p-success
+    │   │       ├── I-1771890400-p-success
     │   │       │   └── _
-    │   │       ├── I-1771890392-entropy
+    │   │       ├── I-1771890401-entropy
     │   │       │   └── _
-    │   │       └── I-1771890393-impact
+    │   │       └── I-1771890402-impact
     │   │           └── _
     │   ├── I-1771890394-add-logging
     │   │   └── _
@@ -650,31 +650,31 @@ main
     │       └── _
     └── P-1771890397-gemini-cli-gemini-3.6-flash
         ├── _
-        └── E-1771890398-opencode-big-pickle
+        └── E-1771890398-init-project
             └── _
 ```
 
 `P-1771890397-gemini-cli-gemini-3.6-flash` is a competing plan for the same root intent; the sub-intents sit under
-`P-1771422315-claude-code-claude-sonnet-4.6`, the plan whose `## Sub-intent list` created them.
+`P-1771890390-claude-code-claude-sonnet-4.6`, the plan whose `## Sub-intent list` created them.
 
 ### Merge Flow
 
 Sub-intents merge into their parent intent branch, never into the deciding plan branch.
 
 1. **Depth 2 → Depth 1** (automatic):
-   - `I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/I-1771890391-p-success/_`
-     → `I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_`
-   - `I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/I-1771890392-entropy/_`
-     → `I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_`
-   - `I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/I-1771890393-impact/_`
-     → `I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_`
+   - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/I-1771890400-p-success/_`
+     → `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_`
+   - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/I-1771890401-entropy/_`
+     → `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_`
+   - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/I-1771890402-impact/_`
+     → `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_`
 
 2. **Depth 1 → Root** (automatic):
-   - `I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_` →
+   - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_` →
      `I-1771890389-refactor-metrics/_`
-   - `I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_` →
+   - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_` →
      `I-1771890389-refactor-metrics/_`
-   - `I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890395-add-tests/_` →
+   - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890395-add-tests/_` →
      `I-1771890389-refactor-metrics/_`
 
 3. **Root → Main** (human review):

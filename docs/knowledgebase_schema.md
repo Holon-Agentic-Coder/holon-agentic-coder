@@ -126,7 +126,7 @@ Every KB entry MUST contain:
   "created_by": "agent-curator-03",
   "status": "active",
   "evidence": {
-    "ledger_refs": ["I-1771890300-bootstrap-p-success", "I-1771890503-implement-impact"],
+    "ledger_refs": ["I-1771890300-bootstrap-p-success", "I-1771890504-implement-impact"],
     "success_count": 5,
     "failure_count": 0
   },
@@ -160,7 +160,7 @@ Every KB entry MUST contain:
   "evidence": {
     "ledger_refs": [
       "I-1771890300-bootstrap-p-success",
-      "I-1771890503-implement-impact",
+      "I-1771890504-implement-impact",
       "I-1771891052-implement-learning-value-estimator"
     ],
     "success_count": 8,
@@ -213,7 +213,7 @@ Every KB entry MUST contain:
   "created_by": "agent-executor-12",
   "status": "active",
   "evidence": {
-    "ledger_refs": ["I-1771890602-add-logging", "I-1771891071-implement-routing-roi"],
+    "ledger_refs": ["I-1771890603-add-logging", "I-1771891071-implement-routing-roi"],
     "success_count": 12,
     "failure_count": 0
   },
@@ -256,7 +256,7 @@ Every KB entry MUST contain:
   "created_by": "agent-curator-05",
   "status": "active",
   "evidence": {
-    "ledger_refs": ["I-1771890504-implement-ev", "I-1771890601-add-caching", "I-1771891062-tune-entropy-weights"],
+    "ledger_refs": ["I-1771890505-implement-ev", "I-1771890602-add-caching", "I-1771891062-tune-entropy-weights"],
     "success_count": 0,
     "failure_count": 7
   },
@@ -444,7 +444,7 @@ Every KB entry MUST contain:
   "created_by": "agent-extractor-02",
   "status": "active",
   "evidence": {
-    "ledger_refs": ["I-1771890300-bootstrap-p-success", "I-1771890502-implement-entropy"],
+    "ledger_refs": ["I-1771890300-bootstrap-p-success", "I-1771890503-implement-entropy"],
     "success_count": 6,
     "failure_count": 0
   },

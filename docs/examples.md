@@ -635,7 +635,7 @@ $ git push origin main
 ### Scenario
 
 Human creates a root intent to "Implement metrics module". Agent decomposes into sub-intents. Each sub-intent branch
-nests under the plan that listed it (`P-1771890510-claude-code-claude-sonnet-4.6` for the root's sub-intents), so the
+nests under the plan that listed it (`P-1771890501-claude-code-claude-sonnet-4.6` for the root's sub-intents), so the
 branch path records which plan spawned it.
 
 > [!NOTE] The merge steps below show the target model of automatic sub-intent merges. In the current `holon flow`, the
@@ -646,14 +646,14 @@ branch path records which plan spawned it.
 
 ```
 I-1771890500-implement-metrics-module (parent)
-└── P-1771890510-claude-code-claude-sonnet-4.6 (plan, decided the split)
-    ├── I-1771890501-implement-p-success (sub-intent)
-    ├── I-1771890502-implement-entropy (sub-intent)
-    │   └── P-1771890511-claude-code-claude-sonnet-4.6 (plan, decided the split)
-    │       ├── I-1771890505-define-entropy-sources (sub-sub-intent)
-    │       └── I-1771890506-implement-entropy-formula (sub-sub-intent)
-    ├── I-1771890503-implement-impact (sub-intent)
-    └── I-1771890504-implement-ev (sub-intent)
+└── P-1771890501-claude-code-claude-sonnet-4.6 (plan, decided the split)
+    ├── I-1771890502-implement-p-success (sub-intent)
+    ├── I-1771890503-implement-entropy (sub-intent)
+    │   └── P-1771890506-claude-code-claude-sonnet-4.6 (plan, decided the split)
+    │       ├── I-1771890507-define-entropy-sources (sub-sub-intent)
+    │       └── I-1771890508-implement-entropy-formula (sub-sub-intent)
+    ├── I-1771890504-implement-impact (sub-intent)
+    └── I-1771890505-implement-ev (sub-intent)
 ```
 
 ### Git branch structure
@@ -663,18 +663,18 @@ Each node below elides the path of the node above it with `…/`.
 ```
 main
 └── I-1771890500-implement-metrics-module/_
-    └── …/P-1771890510-claude-code-claude-sonnet-4.6/_
-        ├── …/I-1771890501-implement-p-success/_
-        ├── …/I-1771890502-implement-entropy/_
-        │   └── …/P-1771890511-claude-code-claude-sonnet-4.6/_
-        │       ├── …/I-1771890505-define-entropy-sources/_
-        │       └── …/I-1771890506-implement-entropy-formula/_
-        ├── …/I-1771890503-implement-impact/_
-        └── …/I-1771890504-implement-ev/_
+    └── …/P-1771890501-claude-code-claude-sonnet-4.6/_
+        ├── …/I-1771890502-implement-p-success/_
+        ├── …/I-1771890503-implement-entropy/_
+        │   └── …/P-1771890506-claude-code-claude-sonnet-4.6/_
+        │       ├── …/I-1771890507-define-entropy-sources/_
+        │       └── …/I-1771890508-implement-entropy-formula/_
+        ├── …/I-1771890504-implement-impact/_
+        └── …/I-1771890505-implement-ev/_
 ```
 
-For example, `…/I-1771890505-define-entropy-sources/_` is
-`I-1771890500-implement-metrics-module/P-1771890510-claude-code-claude-sonnet-4.6/I-1771890502-implement-entropy/P-1771890511-claude-code-claude-sonnet-4.6/I-1771890505-define-entropy-sources/_`.
+For example, `…/I-1771890507-define-entropy-sources/_` is
+`I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890503-implement-entropy/P-1771890506-claude-code-claude-sonnet-4.6/I-1771890507-define-entropy-sources/_`.
 
 ### Execution flow
 
@@ -700,7 +700,7 @@ $ git checkout -b I-1771890500-implement-metrics-module/_
 
 ```json
 {
-  "plan_id": "P-1771890510-claude-code-claude-sonnet-4.6",
+  "plan_id": "P-1771890501-claude-code-claude-sonnet-4.6",
   "plan_graph": {
     "steps": [
       {
@@ -716,19 +716,19 @@ $ git checkout -b I-1771890500-implement-metrics-module/_
     ],
     "sub_intents": [
       {
-        "intent_id": "I-1771890501-implement-p-success",
+        "intent_id": "I-1771890502-implement-p-success",
         "goal": "Implement P(success) estimator"
       },
       {
-        "intent_id": "I-1771890502-implement-entropy",
+        "intent_id": "I-1771890503-implement-entropy",
         "goal": "Implement entropy estimator"
       },
       {
-        "intent_id": "I-1771890503-implement-impact",
+        "intent_id": "I-1771890504-implement-impact",
         "goal": "Implement impact estimator"
       },
       {
-        "intent_id": "I-1771890504-implement-ev",
+        "intent_id": "I-1771890505-implement-ev",
         "goal": "Implement EV calculator"
       }
     ]
@@ -765,10 +765,10 @@ $ git commit -m "Create metrics module structure"
 
 ```json
 {
-  "intent_id": "I-1771890501-implement-p-success",
+  "intent_id": "I-1771890502-implement-p-success",
   "parent_intent_id": "I-1771890500-implement-metrics-module",
-  "deciding_branch": "I-1771890500-implement-metrics-module/P-1771890510-claude-code-claude-sonnet-4.6/_",
-  "parent_plan_id": "P-1771890510-claude-code-claude-sonnet-4.6",
+  "deciding_branch": "I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_",
+  "parent_plan_id": "P-1771890501-claude-code-claude-sonnet-4.6",
   "goal": "Implement P(success) estimator",
   "constraints": {
     "entropy_budget": 37.5
@@ -780,7 +780,7 @@ $ git commit -m "Create metrics module structure"
 **Git:**
 
 ```bash
-$ git checkout -b I-1771890500-implement-metrics-module/P-1771890510-claude-code-claude-sonnet-4.6/I-1771890501-implement-p-success/_
+$ git checkout -b I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890502-implement-p-success/_
 ```
 
 **Rebase from parent before execution:**
@@ -801,7 +801,7 @@ $ git rebase I-1771890500-implement-metrics-module/_
 
 ```bash
 $ git checkout I-1771890500-implement-metrics-module/_
-$ git merge I-1771890500-implement-metrics-module/P-1771890510-claude-code-claude-sonnet-4.6/I-1771890501-implement-p-success/_
+$ git merge I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890502-implement-p-success/_
 ```
 
 **Ledger event:**
@@ -811,8 +811,8 @@ $ git merge I-1771890500-implement-metrics-module/P-1771890510-claude-code-claud
   "event_type": "git_merge_attempted",
   "seq": 45,
   "payload": {
-    "intent_id": "I-1771890501-implement-p-success",
-    "from_branch": "I-1771890500-implement-metrics-module/P-1771890510-claude-code-claude-sonnet-4.6/I-1771890501-implement-p-success/_",
+    "intent_id": "I-1771890502-implement-p-success",
+    "from_branch": "I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890502-implement-p-success/_",
     "to_branch": "I-1771890500-implement-metrics-module/_",
     "status": "success"
   }
@@ -827,10 +827,10 @@ $ git merge I-1771890500-implement-metrics-module/P-1771890510-claude-code-claud
 
 ```json
 {
-  "intent_id": "I-1771890502-implement-entropy",
+  "intent_id": "I-1771890503-implement-entropy",
   "parent_intent_id": "I-1771890500-implement-metrics-module",
-  "deciding_branch": "I-1771890500-implement-metrics-module/P-1771890510-claude-code-claude-sonnet-4.6/_",
-  "parent_plan_id": "P-1771890510-claude-code-claude-sonnet-4.6",
+  "deciding_branch": "I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_",
+  "parent_plan_id": "P-1771890501-claude-code-claude-sonnet-4.6",
   "goal": "Implement entropy estimator"
 }
 ```
@@ -839,15 +839,15 @@ $ git merge I-1771890500-implement-metrics-module/P-1771890510-claude-code-claud
 
 ```json
 {
-  "plan_id": "P-1771890511-claude-code-claude-sonnet-4.6",
+  "plan_id": "P-1771890506-claude-code-claude-sonnet-4.6",
   "plan_graph": {
     "sub_intents": [
       {
-        "intent_id": "I-1771890505-define-entropy-sources",
+        "intent_id": "I-1771890507-define-entropy-sources",
         "goal": "Define entropy sources"
       },
       {
-        "intent_id": "I-1771890506-implement-entropy-formula",
+        "intent_id": "I-1771890508-implement-entropy-formula",
         "goal": "Implement entropy formula"
       }
     ]
@@ -858,15 +858,15 @@ $ git merge I-1771890500-implement-metrics-module/P-1771890510-claude-code-claud
 **Git branches:**
 
 ```
-I-1771890500-implement-metrics-module/P-1771890510-claude-code-claude-sonnet-4.6/I-1771890502-implement-entropy/_
-└── …/P-1771890511-claude-code-claude-sonnet-4.6/_
-    ├── …/I-1771890505-define-entropy-sources/_
-    └── …/I-1771890506-implement-entropy-formula/_
+I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890503-implement-entropy/_
+└── …/P-1771890506-claude-code-claude-sonnet-4.6/_
+    ├── …/I-1771890507-define-entropy-sources/_
+    └── …/I-1771890508-implement-entropy-formula/_
 ```
 
 **Each sub-sub-intent:**
 
-1. Rebases from parent (`I-1771890502-implement-entropy`) before execution
+1. Rebases from parent (`I-1771890503-implement-entropy`) before execution
 2. Executes
 3. Rebases from parent after execution
 4. Merges to parent (target model: no human review)
@@ -875,7 +875,7 @@ I-1771890500-implement-metrics-module/P-1771890510-claude-code-claude-sonnet-4.6
 
 ```bash
 $ git checkout I-1771890500-implement-metrics-module/_
-$ git merge I-1771890500-implement-metrics-module/P-1771890510-claude-code-claude-sonnet-4.6/I-1771890502-implement-entropy/_
+$ git merge I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890503-implement-entropy/_
 ```
 
 ---
@@ -935,12 +935,12 @@ runs sibling sub-intents one at a time.
 
 **Parent intent:** `I-1771890600-refactor-metrics`
 
-**Deciding plan:** `P-1771890610-claude-code-claude-sonnet-4.6` (both sub-intent branches nest under it)
+**Deciding plan:** `P-1771890601-claude-code-claude-sonnet-4.6` (both sub-intent branches nest under it)
 
 **Sub-intents (concurrent):**
 
-- `I-1771890601-add-caching` (modifies `holon/metrics/p_success.py`)
-- `I-1771890602-add-logging` (modifies `holon/metrics/p_success.py`)
+- `I-1771890602-add-caching` (modifies `holon/metrics/p_success.py`)
+- `I-1771890603-add-logging` (modifies `holon/metrics/p_success.py`)
 
 ### Execution
 
@@ -948,7 +948,7 @@ runs sibling sub-intents one at a time.
 
 ```bash
 $ git checkout I-1771890600-refactor-metrics/_
-$ git merge I-1771890600-refactor-metrics/P-1771890610-claude-code-claude-sonnet-4.6/I-1771890601-add-caching/_
+$ git merge I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890602-add-caching/_
 # Merge successful
 ```
 
@@ -957,7 +957,7 @@ $ git merge I-1771890600-refactor-metrics/P-1771890610-claude-code-claude-sonnet
 #### 2) Sub-intent 002 attempts rebase after execution
 
 ```bash
-$ git checkout I-1771890600-refactor-metrics/P-1771890610-claude-code-claude-sonnet-4.6/I-1771890602-add-logging/_
+$ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/_
 $ git rebase I-1771890600-refactor-metrics/_
 # CONFLICT in holon/metrics/p_success.py
 ```
@@ -969,7 +969,7 @@ $ git rebase I-1771890600-refactor-metrics/_
   "event_type": "git_rebase_completed",
   "seq": 102,
   "payload": {
-    "intent_id": "I-1771890602-add-logging",
+    "intent_id": "I-1771890603-add-logging",
     "status": "conflict",
     "conflict_files": ["holon/metrics/p_success.py"]
   }
@@ -988,10 +988,18 @@ $ git rebase --abort
 
 **Agent spawns reactive intent:**
 
+The executor of `I-1771890603-add-logging` (plan `P-1771890604-claude-code-claude-sonnet-4.6`, execution
+`E-1771890605-add-logging`) decides this split during execution, so the reactive sub-intent nests under that execution:
+`I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/I-1771890606-resolve-conflict/_`.
+This execution-decided split illustrates the general rule only; the example's main split stays plan-decided.
+
 ```json
 {
-  "intent_id": "I-1771890603-resolve-conflict",
-  "parent_intent_id": "I-1771890602-add-logging",
+  "intent_id": "I-1771890606-resolve-conflict",
+  "parent_intent_id": "I-1771890603-add-logging",
+  "deciding_branch": "I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/_",
+  "parent_plan_id": "P-1771890604-claude-code-claude-sonnet-4.6",
+  "parent_execution_id": "E-1771890605-add-logging",
   "goal": "Resolve rebase conflict in p_success.py",
   "intent_type": "reactive",
   "trigger": "rebase_conflict"
@@ -1056,7 +1064,7 @@ $ pytest holon/metrics/test_p_success.py
   "event_type": "git_rebase_completed",
   "seq": 108,
   "payload": {
-    "intent_id": "I-1771890603-resolve-conflict",
+    "intent_id": "I-1771890606-resolve-conflict",
     "status": "success",
     "conflict_files": []
   }
@@ -1069,7 +1077,7 @@ $ pytest holon/metrics/test_p_success.py
 
 ```bash
 $ git checkout I-1771890600-refactor-metrics/_
-$ git merge I-1771890600-refactor-metrics/P-1771890610-claude-code-claude-sonnet-4.6/I-1771890602-add-logging/_
+$ git merge I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/_
 # Merge successful (conflict already resolved)
 ```
 
@@ -1197,7 +1205,7 @@ After 5 successful intents with similar structure, curator agent extracts a patt
 ```python
 intents = ledger.query_intents(status="success", since=now() - timedelta(days=14))
 # Found 5 intents with similar structure:
-# - I-1771890300-bootstrap-p-success, I-1771890503-implement-impact, I-1771891052-implement-learning-value-estimator, I-1771891071-implement-routing-roi, I-1771891081-implement-calibration-error
+# - I-1771890300-bootstrap-p-success, I-1771890504-implement-impact, I-1771891052-implement-learning-value-estimator, I-1771891071-implement-routing-roi, I-1771891081-implement-calibration-error
 # All implement estimators with similar steps
 ```
 
@@ -1240,7 +1248,7 @@ validate_evidence(pattern, intents)
   "evidence": {
     "ledger_refs": [
       "I-1771890300-bootstrap-p-success",
-      "I-1771890503-implement-impact",
+      "I-1771890504-implement-impact",
       "I-1771891052-implement-learning-value-estimator",
       "I-1771891071-implement-routing-roi",
       "I-1771891081-implement-calibration-error"
@@ -1647,10 +1655,10 @@ workflow when executing a sub-intent.
 
 - Root Intent: `I-1771890389-refactor-metrics`
   - Current Branch: `I-1771890389-refactor-metrics/_`
-- Deciding Plan: `P-1771422315-claude-code-claude-sonnet-4.6` (its `## Sub-intent list` names the sub-intent as item 1)
-- Sub-Intent: `I-1771890390-improve-estimators`
+- Deciding Plan: `P-1771890390-claude-code-claude-sonnet-4.6` (its `## Sub-intent list` names the sub-intent as item 1)
+- Sub-Intent: `I-1771890392-improve-estimators`
   - Sub-Branch:
-    `I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_` (nested
+    `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_` (nested
     under the deciding plan, cut from the parent intent branch)
 
 ### Git Command Sequence
@@ -1662,7 +1670,7 @@ workflow when executing a sub-intent.
 git fetch origin
 
 # Create and checkout the sub-branch rooted at the current parent branch tip
-git checkout -b I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_ origin/I-1771890389-refactor-metrics/_
+git checkout -b I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_ origin/I-1771890389-refactor-metrics/_
 ```
 
 #### 2) Write code and run tests inside the isolated sandbox
@@ -1681,7 +1689,7 @@ git commit -m "feat: improve metrics estimators"
 
 #### 4) Rebase onto the latest parent branch (handling concurrency)
 
-If a sibling sub-intent branch was merged into `I-1771890389-refactor-metrics/_` while `I-1771890390-improve-estimators`
+If a sibling sub-intent branch was merged into `I-1771890389-refactor-metrics/_` while `I-1771890392-improve-estimators`
 was executing, the harness pulls updates and rebases:
 
 ```bash
@@ -1699,13 +1707,13 @@ target model; in the current flow the child's PR into the parent intent branch i
 
 ```bash
 # Push branch to remote
-git push origin I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_
+git push origin I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_
 
 # Switch back to the parent branch
 git checkout I-1771890389-refactor-metrics/_
 
 # Merge the sub-intent branch with no-fast-forward to preserve history
-git merge --no-ff I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_ -m "merge: sub-intent I-1771890390-improve-estimators"
+git merge --no-ff I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_ -m "merge: sub-intent I-1771890392-improve-estimators"
 
 # Push the merged parent branch
 git push origin I-1771890389-refactor-metrics/_
@@ -1717,10 +1725,10 @@ The remote and local sub-branches are immediately pruned to maintain system clea
 
 ```bash
 # Delete local sub-branch
-git branch -d I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_
+git branch -d I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_
 
 # Delete remote sub-branch
-git push origin --delete I-1771890389-refactor-metrics/P-1771422315-claude-code-claude-sonnet-4.6/I-1771890390-improve-estimators/_
+git push origin --delete I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_
 ```
 
 ---

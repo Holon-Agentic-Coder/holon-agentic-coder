@@ -650,7 +650,7 @@ main
     │       └── _
     └── P-1771890397-gemini-cli-gemini-3.6-flash
         ├── _
-        └── E-1771890398-init-project
+        └── E-1771890403-init-project
             └── _
 ```
 

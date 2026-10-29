@@ -236,20 +236,20 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
   `intents.jsonl` rows. The flow then runs each item as a child intent, strictly one after another and never
   concurrently, through the full pipeline (intent, plan, execute, review, calibrate). Each child nests under the plan
   that listed it and records it as its provenance (section 2.2), is meant to target the deciding plan branch
-  (`target_branch`; see the current limitation below), never `main`, and stops at its own Stage 4 consensus halt. The
-  first failing child fails the parent's Stage 3; when all succeed, the parent's own Stage 4 and Stage 5 are skipped
-  with reason `decomposed`, because review and calibration ran per child. Nesting is bounded by `MAX_SUB_INTENT_DEPTH`,
-  checked against the plan before the executor is dispatched when the plan can be read.
+  (`target_branch`; see the current limitation below), never `main`. The first failing child fails the parent's Stage 3;
+  when all succeed, the parent's own Stage 4 and Stage 5 are skipped with reason `decomposed`, because review and
+  calibration ran per child. Nesting is bounded by `MAX_SUB_INTENT_DEPTH`, checked against the plan before the executor
+  is dispatched when the plan can be read.
 
   **Current limitation (until the implementation follows):** the current flow still records the parent intent branch as
-  each decomposed child's `target_branch`, cuts each child from that branch and leaves the child PR merges to the
-  maintainer; the decided rule (sections 2.2, 3.1 and 4.1) is that the child is cut from and merged automatically into
-  the deciding plan or execution branch, and only the root intent's PR to `main` stops for a human. Each child is cut as
-  the branch stood when that child started, so a later child does not see an earlier child's unmerged changes; order
-  dependent items accordingly. Aggregating the merged children and raising the parent's PR to its own target (for a root
-  intent, `main`) are not yet automated. The `holon flow` summary lists each child's PR (or its execution branch when no
-  PR was recorded), lists a child that itself decomposed as having no PR of its own with its own children nested below
-  it, and names this pending parent-to-target step.
+  each decomposed child's `target_branch`, cuts each child from that branch, and stops each child at its own Stage 4
+  consensus halt, where the maintainer merges its PR; the decided rule (sections 2.2, 3.1 and 4.1) is that the child is
+  cut from and merged automatically into the deciding plan or execution branch, and only the root intent's PR to `main`
+  stops for a human. Each child is cut as the branch stood when that child started, so a later child does not see an
+  earlier child's unmerged changes; order dependent items accordingly. Aggregating the merged children and raising the
+  parent's PR to its own target (for a root intent, `main`) are not yet automated. The `holon flow` summary lists each
+  child's PR (or its execution branch when no PR was recorded), lists a child that itself decomposed as having no PR of
+  its own with its own children nested below it, and names this pending parent-to-target step.
 
 - **Over budget without a list:** the flow returns to Stage 2 automatically, asking for a smaller plan or an explicit
   sub-intent list (only a smaller plan when the intent is at the sub-intent depth limit), at most `MAX_REPLAN_ATTEMPTS`
@@ -541,14 +541,14 @@ def compute_redundancy_penalty(sub_intent):
 ### 6.1 Sequential Merge (Safe Default)
 
 ```python
-def sequential_merge(sub_intents, parent_branch):
+def sequential_merge(sub_intents, deciding_branch):
     # Sort by merge_value descending
     sorted_subs = sorted(sub_intents, key=lambda s: s.merge_value, reverse=True)
 
     for sub in sorted_subs:
-        rebase_from_parent(sub, parent_branch)
+        rebase_onto(sub, deciding_branch)
         if rebase_successful():
-            merge_to_parent(sub, parent_branch)
+            merge_into(sub, deciding_branch)
             log_merge(sub, "automatic_sequential")
         else:
             handle_conflict(sub)
@@ -557,7 +557,7 @@ def sequential_merge(sub_intents, parent_branch):
 ### 6.2 Parallel Merge (Optimised)
 
 ```python
-def parallel_merge(sub_intents, parent_branch):
+def parallel_merge(sub_intents, deciding_branch):
     # Cluster by file overlap
     clusters = cluster_by_file_overlap(sub_intents)
 
@@ -565,10 +565,10 @@ def parallel_merge(sub_intents, parent_branch):
         if cluster.no_internal_conflicts():
             # Merge all in parallel
             for sub in cluster:
-                rebase_and_merge(sub, parent_branch)
+                rebase_and_merge(sub, deciding_branch)
         else:
             # Fall back to sequential within cluster
-            sequential_merge(cluster, parent_branch)
+            sequential_merge(cluster, deciding_branch)
 ```
 
 ---
@@ -715,10 +715,10 @@ merged automatically by the agent.
 ### 9.1 Automatic Resolution (Attempted First)
 
 ```python
-def auto_resolve_conflict(sub_intent, parent_branch):
+def auto_resolve_conflict(sub_intent, deciding_branch):
     # Try simple strategies
     if conflict_is_whitespace_only():
-        accept_parent_version()
+        accept_deciding_branch_version()
         return True
 
     if conflict_is_import_order():

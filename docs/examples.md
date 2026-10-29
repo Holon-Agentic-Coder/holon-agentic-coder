@@ -970,8 +970,11 @@ $ git merge --no-ff I-1771890600-refactor-metrics/P-1771890601-claude-code-claud
 
 #### 2) Sub-intent `add-logging` attempts rebase after execution
 
+`add-logging`'s work lives on its execution branch (plan `P-1771890604-claude-code-claude-sonnet-4.6`, execution
+`E-1771890605-add-logging`), so that is the branch the after-execution rebase replays:
+
 ```bash
-$ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/_
+$ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/_
 $ git fetch origin
 $ git rebase origin/I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/_
 # CONFLICT in holon/metrics/p_success.py
@@ -995,7 +998,8 @@ $ git rebase origin/I-1771890600-refactor-metrics/P-1771890601-claude-code-claud
 
 #### 3) Agent detects conflict
 
-**Executor agent logs conflict and aborts rebase:**
+**Executor agent logs conflict and aborts rebase** (the conflict arose on `add-logging`'s execution branch, which the
+abort restores to its pre-rebase state):
 
 ```bash
 $ git rebase --abort
@@ -1003,8 +1007,8 @@ $ git rebase --abort
 
 **Agent spawns reactive intent:**
 
-The executor of `I-1771890603-add-logging` (plan `P-1771890604-claude-code-claude-sonnet-4.6`, execution
-`E-1771890605-add-logging`) decides this split during execution, so the reactive sub-intent nests under that execution:
+The executor of `I-1771890603-add-logging` decides this split during execution, so the reactive sub-intent nests under
+that execution:
 `I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/I-1771890606-resolve-conflict/_`.
 This execution-decided split illustrates the general rule only; the example's main split stays plan-decided.
 

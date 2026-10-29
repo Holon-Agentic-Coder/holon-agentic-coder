@@ -257,6 +257,14 @@ def read_record_zip(payload: bytes) -> TimingRecord:
         return TimingRecord.from_json(json.loads(archive.read(RECORD_FILE)))
 
 
+def is_main_artefact(item: dict[str, object]) -> bool:
+    """Return true for an unexpired artefact from a ``main`` run of this repository, never from a fork's ``main``."""
+    run = item.get("workflow_run") or {}
+    if item.get("expired") or not isinstance(run, dict) or run.get("head_branch") != BASELINE_BRANCH:
+        return False
+    return run.get("head_repository_id") is not None and run.get("head_repository_id") == run.get("repository_id")
+
+
 def fetch_baseline(
     repo: str,
     name: str,
@@ -267,11 +275,7 @@ def fetch_baseline(
     """Return up to ``runs`` records from unexpired ``main`` artefacts called ``name``, newest first."""
     url = f"{API_ROOT}/repos/{repo}/actions/artifacts?name={name}&per_page=100"
     listing = json.loads(opener(build_request(url, token)))
-    candidates = [
-        item
-        for item in listing.get("artifacts", [])
-        if not item.get("expired") and (item.get("workflow_run") or {}).get("head_branch") == BASELINE_BRANCH
-    ]
+    candidates = [item for item in listing.get("artifacts", []) if is_main_artefact(item)]
     candidates.sort(key=lambda item: item.get("created_at", ""), reverse=True)
     return [read_record_zip(opener(build_request(item["archive_download_url"], token))) for item in candidates[:runs]]
 
@@ -385,12 +389,7 @@ def run_compare(
     )
     report = format_report(top_offenders(record.tests, [b.tests for b in baselines])) if args.junit else []
     write_step_summary([f"### Timing gate: {name}", "", *(line.split("::")[-1] for line in verdict.lines), "", *report])
-    for line in report:
-        print(line)
-    lines = (*warnings, *fetch_warnings, *verdict.lines)
-    if not verdict.passed:
-        lines = (*lines, *report)
-    return Verdict(verdict.passed, lines)
+    return Verdict(verdict.passed, (*warnings, *fetch_warnings, *verdict.lines, *report))
 
 
 def github_fetcher(repo: str, name: str, runs: int) -> list[TimingRecord]:

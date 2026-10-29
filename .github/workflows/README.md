@@ -80,6 +80,9 @@ to 10 tests (`classname::name`) whose time grew by more than 50 % and more than 
 the baseline median, the current time and the growth in seconds. The report is appended to a failure message but never
 fails a job on its own.
 
+A relative failure that the per-test report does not explain (no test listed) is most likely hosted-runner noise: re-run
+the failed job first, and keep the label below for a deliberate slow-down.
+
 ### Accepting a deliberate slow-down
 
 Add the `timing-regression-accepted` label to the pull request. The label event re-runs the pull-request workflows, and

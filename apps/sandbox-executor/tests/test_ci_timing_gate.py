@@ -36,11 +36,6 @@ def record(duration: float, tests: dict[str, float] | None = None) -> TimingReco
     return TimingRecord(job="unit", os="ubuntu-latest", workflow="test-unit", duration=duration, tests=tests or {})
 
 
-def reconstruct(median: float) -> list[float]:
-    """Reconstruct five baseline durations with ``median``; the intent cites the median, not the raw series."""
-    return [median - 20, median - 10, median, median + 10, median + 20]
-
-
 def fixed_clock(duration: float):
     """Return a clock that reads ``duration`` seconds after ``START``."""
     return lambda: START + duration
@@ -233,6 +228,7 @@ def test_report_appended_to_failure_and_step_summary(
     out = capsys.readouterr().out
     error_at = out.index("::error::Timing regression")
     assert out.index("| `tests.m::slow`", error_at) > error_at
+    assert out.count("| `tests.m::slow`") == 1
     text = summary.read_text()
     assert "### Timing gate: ci-timing-test-unit-unit-ubuntu-latest" in text
     assert "`tests.m::slow`" in text
@@ -270,20 +266,20 @@ def zipped(rec: TimingRecord) -> bytes:
     return buffer.getvalue()
 
 
-def artefact(index: int, branch: str = "main", expired: bool = False) -> dict[str, object]:
-    """Return one artefact listing entry."""
+def artefact(index: int, branch: str = "main", expired: bool = False, head_repo: int = 1) -> dict[str, object]:
+    """Return one artefact listing entry; ``head_repo`` other than 1 marks a run from a fork."""
     return {
         "id": index,
         "expired": expired,
         "created_at": f"2026-10-{index:02d}T00:00:00Z",
         "archive_download_url": f"https://api.github.com/download/{index}",
-        "workflow_run": {"head_branch": branch},
+        "workflow_run": {"head_branch": branch, "repository_id": 1, "head_repository_id": head_repo},
     }
 
 
 def test_fetch_baseline_filters_limits_and_keeps_token_unredirected() -> None:
     entries = [artefact(i) for i in range(1, 8)]
-    entries += [artefact(20, branch="feature"), artefact(21, expired=True)]
+    entries += [artefact(20, branch="feature"), artefact(21, expired=True), artefact(22, head_repo=2)]
     requests: list[urllib.request.Request] = []
 
     def opener(request: urllib.request.Request) -> bytes:
@@ -363,39 +359,88 @@ def test_compare_without_repo_is_cold_start(capsys: pytest.CaptureFixture[str]) 
     assert "::notice::Cold start" in capsys.readouterr().out
 
 
-# Replay of the real main durations cited in the intent. Baselines given only as a median are reconstructions.
-
-
-@pytest.mark.parametrize(
-    ("label", "duration", "median"),
-    [
-        ("unit ubuntu at e0dfd24", 432.0, 256.0),
-        ("unit macOS at e0dfd24", 609.0, 218.0),
-        ("stress spike at fbd3b35", 430.0, 137.0),
-        ("stress step at acb5dc0", 278.0, 156.0),
-    ],
+# Replay of the real main durations cited in the intent: job wall clock (started_at to completed_at, from the GitHub
+# Actions jobs API) for the 13 successful pushes to main of 2026-10-24 to 2026-10-29, oldest first. Run ids, in the same
+# commit order:
+# test-unit:        40074382122 40074799021 40089243594 40172880759 40259484748 40468502785 40501662438
+#                   40668530637 40714173679 40773976148 40785247773 40804868369 40812897144
+# test-integration: 40074382146 40074798862 40089243595 40172880807 40259484955 40468502885 40501662750
+#                   40668530635 40714173408 40773976083 40785247937 40804868400 40812897170
+# test-stress:      40074382144 40074798926 40089243573 40172880809 40259484863 40468502754 40501662572
+#                   40668530666 40714173246 40773976097 40785247777 40804868491 40812897147
+# test-hygiene:     40074382120 40074798860 40089243562 40172880778 40259484736 40468502753 40501662233
+#                   40668530629 40714173221 40773976064 40785247727 40804868418 40812897162
+# make:             40074382209 40074798873 40089243584 40172880793 40259484862 40468502800 40501662676
+#                   40668530627 40714173303 40773976061 40785247853 40804868398 40812897238
+MAIN_COMMITS = (
+    "a3f1f79",
+    "21411eb",
+    "fbabb3a",
+    "b3e2727",
+    "e3bbd67",
+    "e0dfd24",
+    "fbd3b35",
+    "0e54457",
+    "acb5dc0",
+    "b1b5a1b",
+    "f09ca5e",
+    "e187393",
+    "cc4bf1b",
 )
-def test_replay_historical_regressions_fail(label: str, duration: float, median: float) -> None:
-    assert not evaluate(duration, reconstruct(median), DEFAULTS, override=False).passed, label
+MAIN_DURATIONS: dict[str, tuple[float, ...]] = {
+    "unit ubuntu": (178, 107, 256, 286, 429, 432, 251, 136, 139, 129, 86, 123, 132),
+    "unit macOS": (175, 160, 218, 395, 682, 609, 404, 133, 223, 202, 138, 177, 131),
+    "integration": (162, 136, 170, 141, 158, 156, 131, 178, 138, 174, 134, 153, 153),
+    "stress": (85, 89, 100, 156, 142, 137, 430, 163, 278, 262, 215, 265, 263),
+    "hygiene": (32, 29, 28, 25, 21, 25, 27, 24, 46, 28, 23, 22, 28),
+    "make ubuntu": (6, 4, 7, 6, 4, 6, 5, 7, 7, 5, 4, 5, 5),
+    "make macOS": (10, 6, 9, 11, 11, 12, 11, 12, 10, 8, 7, 10, 10),
+}
 
 
-@pytest.mark.parametrize(
-    ("label", "duration", "median"),
-    [
-        ("unit ubuntu", 132.0, 150.0),
-        ("unit macOS", 131.0, 180.0),
-        ("integration", 153.0, 150.0),
-        ("stress", 263.0, 265.0),
-        ("hygiene", 28.0, 30.0),
-        ("make ubuntu", 5.0, 6.0),
-        ("make macOS", 10.0, 9.0),
-    ],
-)
-def test_replay_latest_main_cc4bf1b_passes_with_baseline_and_cold_start(
-    label: str, duration: float, median: float
-) -> None:
-    assert evaluate(duration, reconstruct(median), DEFAULTS, override=False).passed, label
-    assert evaluate(duration, [], DEFAULTS, override=False).passed, label
+def previous_runs(series: tuple[float, ...], index: int) -> list[float]:
+    """Return the up to five durations before ``index``, newest first, as the gate receives its baseline."""
+    return list(reversed(series[max(0, index - DEFAULTS.runs) : index]))
+
+
+def replay_relative_failures() -> dict[tuple[str, str], float]:
+    """Return the baseline median of every replayed run that a full five-run baseline flags as a regression."""
+    flagged: dict[tuple[str, str], float] = {}
+    for label, series in MAIN_DURATIONS.items():
+        for index in range(DEFAULTS.runs, len(series)):
+            median = rolling_median(previous_runs(series, index))
+            assert median is not None
+            if exceeds_relative(series[index], median, DEFAULTS):
+                flagged[(label, MAIN_COMMITS[index])] = median
+    return flagged
+
+
+def test_replay_relative_check_flags_exactly_the_cited_regressions() -> None:
+    assert replay_relative_failures() == {
+        ("unit ubuntu", "e0dfd24"): 256.0,
+        ("unit macOS", "e0dfd24"): 218.0,
+        ("stress", "fbd3b35"): 137.0,
+        ("stress", "acb5dc0"): 156.0,
+    }
+
+
+def test_replay_ceiling_fails_only_the_slow_macos_unit_runs() -> None:
+    failing = {
+        (label, MAIN_COMMITS[index])
+        for label, series in MAIN_DURATIONS.items()
+        for index, duration in enumerate(series)
+        if not evaluate(duration, [], DEFAULTS, override=True).passed
+    }
+    assert failing == {("unit macOS", "e3bbd67"), ("unit macOS", "e0dfd24")}
+
+
+@pytest.mark.parametrize("label", sorted(MAIN_DURATIONS))
+def test_replay_four_most_recent_main_runs_pass(label: str) -> None:
+    series = MAIN_DURATIONS[label]
+    for index in range(len(series) - 4, len(series)):
+        verdict = evaluate(series[index], previous_runs(series, index), DEFAULTS, override=False)
+        assert verdict.passed, (label, MAIN_COMMITS[index], verdict.lines)
+        assert verdict.lines[0].startswith("Timing gate passed"), (label, MAIN_COMMITS[index])
 
 
 def test_replay_682_second_unit_run_fails_ceiling() -> None:

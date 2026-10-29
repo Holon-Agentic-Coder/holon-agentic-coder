@@ -30,7 +30,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from sandbox_executor.agent_defaults import (
     DEFAULT_MODELS,
@@ -90,6 +90,7 @@ from sandbox_executor.knowledge import (
 )
 from sandbox_executor.ledger import (
     ActionRecord,
+    LedgerRewriteError,
     assert_ledger_prefix,
     atomic_ledger_append,
     generate_action_id,
@@ -536,6 +537,8 @@ class ConflictResolutionError(RuntimeError):
 _CONFLICT_MARKERS = ("<<<<<<<", "|||||||", "=======", ">>>>>>>")
 #: The conflict section that each marker opens: ours, the diff3 base, theirs, then back to lines both sides share.
 _SECTION_AFTER_MARKER = {"<<<<<<<": "ours", "|||||||": "base", "=======": "theirs", ">>>>>>>": "both"}
+#: The side of a conflicted ledger whose bytes stay an untouched prefix of the resolution.
+PrefixSide = Literal["ours", "theirs"]
 LEDGER_REL_PATHS = (
     os.path.join("holon-knowledge", "ledger", "intents.jsonl"),
     os.path.join("holon-knowledge", "ledger", "plans.jsonl"),
@@ -576,22 +579,6 @@ def extract_valid_ledger_rows(content: str) -> list[dict[str, Any]]:
     return rows
 
 
-def reconcile_ledger_rows(rows: list[dict[str, Any]], ledger_type: str) -> list[dict[str, Any]]:
-    """Drop exact repeats of earlier rows, keeping every other row in its original order.
-
-    Ledgers are append-only, so rows are never sorted, merged by primary key or replaced by a later revision; a row
-    is only dropped when an identical row already appears earlier in the list.
-
-    Args:
-        rows: List of ledger entry dictionaries.
-        ledger_type: Ledger type name, kept for callers; the result does not depend on it.
-
-    Returns:
-        list[dict[str, Any]]: The rows in their original order, without exact repeats.
-    """
-    return list({json.dumps(row, sort_keys=True): row for row in rows}.values())
-
-
 def _split_conflict_sides(content: str) -> tuple[list[str], list[str]]:
     """Split conflicted content into the ours and theirs files, each keeping the shared lines in place.
 
@@ -627,7 +614,7 @@ def _append_only_union(prefix_lines: list[str], other_lines: list[str]) -> str:
     return prefix + "".join(extra)
 
 
-def resolve_append_only_conflict(content: str, prefix_side: str = "ours") -> tuple[str, str]:
+def resolve_append_only_conflict(content: str, prefix_side: PrefixSide = "ours") -> tuple[str, str]:
     """Resolve conflicted ledger content by appending, keeping one side's bytes as an untouched prefix.
 
     Args:
@@ -636,13 +623,18 @@ def resolve_append_only_conflict(content: str, prefix_side: str = "ours") -> tup
 
     Returns:
         tuple[str, str]: The prefix side's file and the resolved content, which starts with it.
+
+    Raises:
+        ValueError: When ``prefix_side`` is neither ``"ours"`` nor ``"theirs"``.
     """
+    if prefix_side not in ("ours", "theirs"):
+        raise ValueError(f"prefix_side must be 'ours' or 'theirs', not {prefix_side!r}")
     ours, theirs = _split_conflict_sides(content)
     prefix_lines, other_lines = (theirs, ours) if prefix_side == "theirs" else (ours, theirs)
     return "".join(prefix_lines), _append_only_union(prefix_lines, other_lines)
 
 
-def reconcile_jsonl_ledger_conflict(content: str, ledger_type: str, prefix_side: str = "ours") -> str:
+def reconcile_jsonl_ledger_conflict(content: str, prefix_side: PrefixSide = "ours") -> str:
     """Resolve JSONL ledger content containing standard or diff3 conflict markers by pure append.
 
     Content without line-anchored conflict markers is returned unchanged. Otherwise the ``prefix_side`` file is kept
@@ -651,7 +643,6 @@ def reconcile_jsonl_ledger_conflict(content: str, ledger_type: str, prefix_side:
 
     Args:
         content: Raw JSONL ledger content.
-        ledger_type: Ledger type name, kept for callers; the result does not depend on it.
         prefix_side: ``"ours"`` or ``"theirs"``: the side whose file stays a byte prefix.
 
     Returns:
@@ -662,17 +653,15 @@ def reconcile_jsonl_ledger_conflict(content: str, ledger_type: str, prefix_side:
     return resolve_append_only_conflict(content, prefix_side)[1]
 
 
-def reconcile_ledger_content(content: str, ledger_type: str, prefix_side: str = "ours") -> str:
-    """Resolve ledger content by pure append; see ``reconcile_jsonl_ledger_conflict``."""
-    return reconcile_jsonl_ledger_conflict(content, ledger_type, prefix_side)
-
-
 def _write_resolved_ledger(file_path: str, prefix: str, resolved: str) -> None:
     """Replace a conflicted ledger with its resolution, then check the prefix side survived byte for byte.
 
-    The file holds conflict markers, so it cannot be resolved by appending; the prefix check fails closed with
-    ``LedgerRewriteError`` if any byte of the kept side moved.
+    The file holds conflict markers, so it cannot be resolved by appending. The prefix is checked before the file is
+    touched and again after the replace; either check fails closed with ``LedgerRewriteError`` if any byte of the kept
+    side moved.
     """
+    if not resolved.startswith(prefix):
+        raise LedgerRewriteError(f"Resolution of {file_path} does not keep the prefix side byte for byte")
     temp_name = f".{os.path.basename(file_path)}.tmp.{os.getpid()}"
     temp_file = os.path.join(os.path.dirname(os.path.abspath(file_path)), temp_name)
     try:
@@ -685,12 +674,11 @@ def _write_resolved_ledger(file_path: str, prefix: str, resolved: str) -> None:
     assert_ledger_prefix(file_path, prefix.encode("utf-8"))
 
 
-def reconcile_ledger_file(file_path: str, ledger_type: str | None = None, prefix_side: str = "ours") -> bool:
+def reconcile_ledger_file(file_path: str, prefix_side: PrefixSide = "ours") -> bool:
     """Resolve git conflict markers in a ledger file by pure append; a file without markers is left untouched.
 
     Args:
         file_path: Absolute or relative path to the ledger file.
-        ledger_type: Optional ledger type name, kept for callers.
         prefix_side: ``"ours"`` or ``"theirs"``: the side whose file stays a byte prefix.
 
     Returns:
@@ -705,20 +693,6 @@ def reconcile_ledger_file(file_path: str, ledger_type: str | None = None, prefix
     except Exception as exc:
         logger.error(f"Failed to reconcile ledger file '{file_path}': {exc}")
         return False
-
-
-def reconcile_ledgers(repo_dir: str, prefix_side: str = "ours") -> list[str]:
-    """Resolve conflict markers in the three Holon ledger files of a repository by pure append.
-
-    Args:
-        repo_dir: Path to repository root.
-        prefix_side: ``"ours"`` or ``"theirs"``: the side whose file stays a byte prefix.
-
-    Returns:
-        list[str]: Relative paths of the ledgers that exist and are free of conflicts afterwards.
-    """
-    paths = [rel for rel in LEDGER_REL_PATHS if os.path.exists(os.path.join(repo_dir, rel))]
-    return [rel for rel in paths if reconcile_ledger_file(os.path.join(repo_dir, rel), prefix_side=prefix_side)]
 
 
 def _ledgers_with_conflict_markers(repo_dir: str) -> list[str]:

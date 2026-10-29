@@ -46,10 +46,7 @@ from sandbox_executor.flow import (
     post_pr_review_consensus,
     probe_ci_checks,
     reconcile_jsonl_ledger_conflict,
-    reconcile_ledger_content,
     reconcile_ledger_file,
-    reconcile_ledger_rows,
-    reconcile_ledgers,
     resolve_ci_registration_timeout,
     run_calibrate_stage,
     run_execute_stage,
@@ -1100,7 +1097,7 @@ class TestLedgerReconciliation:
             '{"slug": "intent-1", "branch": "I-intent-1", "created_at": "2026-10-06T08:00:00Z"}\n'
             '{"slug": "intent-1", "branch": "I-intent-1", "created_at": "2026-10-06T09:00:00Z", "extra": "latest"}\n'
         )
-        assert reconcile_ledger_content(content, "intents") == content
+        assert reconcile_jsonl_ledger_conflict(content) == content
 
     def test_reconcile_plans_ledger_keeps_every_revision(self):
         content = (
@@ -1108,14 +1105,14 @@ class TestLedgerReconciliation:
             '{"plan_id": "P-100", "created_at": "2026-10-06T10:00:00Z", "status": "superseded", "ledger_revision": 2}\n'
             '{"plan_id": "P-200", "created_at": "2026-10-06T11:00:00Z", "status": "proposed"}\n'
         )
-        assert reconcile_ledger_content(content, "plans") == content
+        assert reconcile_jsonl_ledger_conflict(content) == content
 
     def test_reconcile_executions_ledger_keeps_bytes(self):
         content = (
             '{"execution_id": "E-2", "created_at": "2026-10-06T11:00:00Z", "status": "success"}\n'
             '{"execution_id":"E-1","created_at":"2026-10-06T09:00:00Z","status":"failed"}\n'
         )
-        assert reconcile_ledger_content(content, "executions") == content
+        assert reconcile_jsonl_ledger_conflict(content) == content
 
     def test_reconcile_ledger_with_git_conflict_markers(self, tmp_path):
         ledger_path = tmp_path / "executions.jsonl"
@@ -1138,23 +1135,6 @@ class TestLedgerReconciliation:
         # Ours stays the prefix and theirs is appended after it, never sorted by created_at.
         assert [r["execution_id"] for r in lines] == ["E-head", "E-main"]
 
-    def test_reconcile_ledger_rows_direct(self):
-        raw_rows = [
-            {"plan_id": "P-1", "created_at": "2026-10-06T10:00:00Z", "v": 1},
-            {"plan_id": "P-1", "created_at": "2026-10-06T10:00:00Z", "v": 2, "ledger_revision": 2},
-            {"plan_id": "P-1", "created_at": "2026-10-06T10:00:00Z", "v": 1},
-        ]
-        # Only the exact repeat is dropped; both revisions stay in their original order.
-        reconciled = reconcile_ledger_rows(raw_rows, "plans")
-        assert [r["v"] for r in reconciled] == [1, 2]
-
-    def test_reconcile_ledger_rows_never_sorts(self):
-        raw_rows = [
-            {"plan_id": "P-2", "created_at": "2026-10-06T12:00:00Z", "ledger_revision": None},
-            {"plan_id": "P-1", "created_at": "2026-10-06T10:00:00Z", "ledger_revision": "invalid"},
-        ]
-        assert reconcile_ledger_rows(raw_rows, "plans") == raw_rows
-
     def test_reconcile_ledger_file_atomic(self, tmp_path):
         ledger_file = tmp_path / "plans.jsonl"
         ledger_file.write_text('{"plan_id": "p1", "created_at": "2026-10-06T10:00:00Z"}\n')
@@ -1162,18 +1142,6 @@ class TestLedgerReconciliation:
         # Verify no temp files remain in directory
         dir_files = [f.name for f in tmp_path.iterdir()]
         assert dir_files == ["plans.jsonl"]
-
-    def test_reconcile_ledgers_utility(self, tmp_path):
-        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
-        ledger_dir.mkdir(parents=True)
-        intents_file = ledger_dir / "intents.jsonl"
-        plans_file = ledger_dir / "plans.jsonl"
-        intents_file.write_text('{"branch": "b1", "slug": "s1", "created_at": "2026-10-06T10:00:00Z"}\n')
-        plans_file.write_text('{"plan_id": "p1", "created_at": "2026-10-06T10:05:00Z"}\n')
-
-        reconciled = reconcile_ledgers(str(tmp_path))
-        assert "holon-knowledge/ledger/intents.jsonl" in reconciled
-        assert "holon-knowledge/ledger/plans.jsonl" in reconciled
 
 
 class TestReviewMergeabilityGuards:
@@ -1925,7 +1893,7 @@ class TestProactiveConflictAndReviewLoop:
             '{"action_id": "ACT-002", "execution_id": "E-001", "outcome": "success", "status": "done"}\n'
             ">>>>>>> origin/main\n"
         )
-        reconciled = reconcile_jsonl_ledger_conflict(content, ledger_type="executions")
+        reconciled = reconcile_jsonl_ledger_conflict(content)
         lines = [json.loads(line) for line in reconciled.strip().splitlines() if line.strip()]
         action_ids = {r.get("action_id") for r in lines}
         assert "ACT-001" in action_ids

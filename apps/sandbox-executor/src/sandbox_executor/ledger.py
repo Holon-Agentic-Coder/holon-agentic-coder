@@ -466,7 +466,8 @@ def try_append_action_record(
 
     A failed append is never silent: it is logged at WARNING level with the label, record
     identifier, ledger path and exception detail, and mirrored to ``log_fn`` when supplied.
-    No alternative ledger file is ever written.
+    No alternative ledger file is ever written. A ``LedgerRewriteError`` is never reported:
+    it propagates so a rewritten ledger always fails closed.
 
     Args:
         ledger_path: Path to the executions.jsonl ledger file.
@@ -489,6 +490,8 @@ def try_append_action_record(
         else:
             record = CredentialRedactor.redact_structure(dict(record))
         return append_action_record(ledger_path, record, preserve_shape=preserve_shape)
+    except LedgerRewriteError:
+        raise
     except Exception as exc:
         _report_ledger_failure(ledger_path, label, record_id, exc, log_fn)
         return None
@@ -504,7 +507,8 @@ def try_append_ledger_line(
     """Append an arbitrary JSON ledger row verbatim under LedgerLock, reporting failures.
 
     Intended for summary, intent and plan rows whose shape must stay unchanged. Follows the
-    same fail-loud contract as ``try_append_action_record``.
+    same fail-loud contract as ``try_append_action_record``, so a ``LedgerRewriteError``
+    propagates rather than being reported.
 
     Args:
         ledger_path: Path to the JSONL ledger file.
@@ -520,6 +524,8 @@ def try_append_ledger_line(
         with atomic_ledger_append(ledger_path) as f:
             f.write(line)
         return True
+    except LedgerRewriteError:
+        raise
     except Exception as exc:
         record_id = str(record.get("action_id") or record.get("execution_id") or record.get("plan_id") or "?")
         _report_ledger_failure(ledger_path, label, record_id, exc, log_fn)

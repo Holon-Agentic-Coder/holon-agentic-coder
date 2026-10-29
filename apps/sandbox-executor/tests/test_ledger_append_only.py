@@ -9,15 +9,21 @@ from typing import Any
 
 import pytest
 from sandbox_executor import flow
+from sandbox_executor import ledger as ledger_module
 from sandbox_executor.entrypoint.executor import sync_and_reconcile_pre_push
 from sandbox_executor.flow import (
     StageStatus,
     reconcile_jsonl_ledger_conflict,
     reconcile_ledger_file,
-    reconcile_ledgers,
     run_intent_stage,
 )
-from sandbox_executor.ledger import LedgerRewriteError, assert_ledger_prefix, atomic_ledger_append
+from sandbox_executor.ledger import (
+    LedgerRewriteError,
+    assert_ledger_prefix,
+    atomic_ledger_append,
+    try_append_action_record,
+    try_append_ledger_line,
+)
 
 from tests.test_flow import FakeRoleAgents, _dispatch_context, _git
 
@@ -88,6 +94,23 @@ def test_stage_precheck_leaves_ledgers_byte_identical(tmp_path: Path, fake_git: 
     assert result["conflicting_files"] == []
 
 
+#: A minimal action row for the guarded helpers.
+GUARD_ACTION: dict[str, Any] = {
+    "action_id": "ACT-GUARD-1",
+    "execution_id": "E-guard",
+    "action": "Guarded append",
+    "category": "code",
+    "target": "I-1/P-2/E-3/_",
+    "outcome": "success",
+    "created_at": "2026-10-29T10:00:00+00:00",
+}
+
+
+def _report_rewrite(path: str, before: bytes) -> None:
+    """Stand in for the prefix guard detecting a rewrite."""
+    raise LedgerRewriteError(f"Ledger {path} was rewritten, not appended")
+
+
 class TestPrefixGuard:
     """``assert_ledger_prefix`` and the guarded ``atomic_ledger_append`` fail closed on any non-append write."""
 
@@ -121,6 +144,40 @@ class TestPrefixGuard:
         with pytest.raises(LedgerRewriteError), atomic_ledger_append(str(ledger)) as f:
             ledger.write_bytes(b'{"slug":"a"}\n')
             f.write('{"slug":"c"}\n')
+
+    def test_try_append_action_record_propagates_rewrite_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(ledger_module, "assert_ledger_prefix", _report_rewrite)
+        reported: list[str] = []
+        with pytest.raises(LedgerRewriteError):
+            try_append_action_record(
+                str(tmp_path / "executions.jsonl"), dict(GUARD_ACTION), label="guard", log_fn=reported.append
+            )
+        assert reported == []
+
+    def test_try_append_ledger_line_propagates_rewrite_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(ledger_module, "assert_ledger_prefix", _report_rewrite)
+        reported: list[str] = []
+        with pytest.raises(LedgerRewriteError):
+            try_append_ledger_line(
+                str(tmp_path / "executions.jsonl"), {"execution_id": "E-1"}, label="guard", log_fn=reported.append
+            )
+        assert reported == []
+
+    def test_resolution_that_moves_the_prefix_never_touches_the_file(self, tmp_path: Path) -> None:
+        ledger = tmp_path / "executions.jsonl"
+        ledger.write_text(_conflicted(), encoding="utf-8")
+        before = ledger.read_bytes()
+        with pytest.raises(LedgerRewriteError):
+            flow._write_resolved_ledger(str(ledger), f"{OURS_ROW}\n", f"{THEIRS_ROWS[0]}\n{OURS_ROW}\n")
+        assert ledger.read_bytes() == before
+
+    def test_unknown_prefix_side_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="prefix_side"):
+            reconcile_jsonl_ledger_conflict(_conflicted(), prefix_side="main")  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -244,27 +301,28 @@ class TestAppendOnlyResolution:
 
     def test_content_without_marker_lines_is_unchanged(self) -> None:
         content = "".join(json.dumps(r) + "\n" for r in INTENT_ROWS)
-        assert reconcile_jsonl_ledger_conflict(content, "intents") == content
+        assert reconcile_jsonl_ledger_conflict(content) == content
 
     @pytest.mark.parametrize("diff3", [False, True])
     def test_ours_prefix_then_missing_theirs_lines_in_order(self, diff3: bool) -> None:
-        resolved = reconcile_jsonl_ledger_conflict(_conflicted(diff3), "executions")
+        resolved = reconcile_jsonl_ledger_conflict(_conflicted(diff3))
         assert resolved == "\n".join([BASE_ROW, OURS_ROW, *THEIRS_ROWS]) + "\n"
 
     def test_theirs_prefix_keeps_target_bytes_first(self) -> None:
-        resolved = reconcile_jsonl_ledger_conflict(_conflicted(), "executions", prefix_side="theirs")
+        resolved = reconcile_jsonl_ledger_conflict(_conflicted(), prefix_side="theirs")
         assert resolved == "\n".join([BASE_ROW, *THEIRS_ROWS, OURS_ROW]) + "\n"
 
     def test_lines_already_present_are_not_repeated(self) -> None:
         content = f"<<<<<<< HEAD\n{OURS_ROW}\n=======\n{OURS_ROW}\n{THEIRS_ROWS[1]}\n>>>>>>> main\n"
-        assert reconcile_jsonl_ledger_conflict(content, "executions") == f"{OURS_ROW}\n{THEIRS_ROWS[1]}\n"
+        assert reconcile_jsonl_ledger_conflict(content) == f"{OURS_ROW}\n{THEIRS_ROWS[1]}\n"
 
     def test_file_without_marker_lines_is_not_rewritten(self, tmp_path: Path) -> None:
         before = _seed_ledgers(tmp_path)
         ledger = tmp_path / "holon-knowledge" / "ledger" / "intents.jsonl"
         mtime = ledger.stat().st_mtime_ns
         assert reconcile_ledger_file(str(ledger)) is True
-        assert len(reconcile_ledgers(str(tmp_path))) == 3
+        for name in LEDGER_NAMES:
+            assert reconcile_ledger_file(str(tmp_path / "holon-knowledge" / "ledger" / f"{name}.jsonl")) is True
         assert _snapshot(tmp_path) == before
         assert ledger.stat().st_mtime_ns == mtime
 

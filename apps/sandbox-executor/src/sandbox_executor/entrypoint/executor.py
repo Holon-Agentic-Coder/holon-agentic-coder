@@ -50,11 +50,13 @@ from sandbox_executor.budgets import (
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.ledger import (
     ActionRecord,
+    LedgerRewriteError,
     append_action_record,
     atomic_ledger_append,
     extract_action_provenance_from_commit,
     format_commit_trailers,
     generate_action_id,
+    suppress_ledger_failures,
 )
 
 # The redactors live in the shared module; they are re-exported here so existing importers of
@@ -1122,6 +1124,9 @@ def sync_and_reconcile_pre_push(repo_dir: str, target_branch: str = "main") -> t
             check=True,
         )
         return True, f"Successfully reconciled ledger conflicts and committed merge with {target_ref}"
+    except LedgerRewriteError:
+        run_cmd(["git", "merge", "--abort"], cwd=repo_dir, check=False)
+        raise
     except Exception as exc:
         run_cmd(["git", "merge", "--abort"], cwd=repo_dir, check=False)
         return False, f"Exception during ledger reconciliation merge: {exc}"
@@ -1694,7 +1699,7 @@ def main() -> None:
                 ef.write(json.dumps(exec_entry) + "\n")
 
             if is_action_logging_enabled(intent_data):
-                with contextlib.suppress(Exception):
+                with suppress_ledger_failures():
                     append_action_record(
                         os.path.join(ledger_dir, "executions.jsonl"),
                         ActionRecord(
@@ -1771,6 +1776,8 @@ def main() -> None:
                         clock_elapsed=stage_timer.elapsed(),
                         reason=budget_reason,
                     )
+                except LedgerRewriteError:
+                    raise
                 except Exception as e:
                     print(f"Warning: Failed to record budget failure: {e}", file=sys.stderr)
 
@@ -1812,7 +1819,7 @@ def main() -> None:
                     review_finding_ids = extracted_prov.get("review_finding_ids") or review_finding_ids
 
             if is_action_logging_enabled(intent_data):
-                with contextlib.suppress(Exception):
+                with suppress_ledger_failures():
                     os.makedirs(ledger_dir, exist_ok=True)
                     append_action_record(
                         os.path.join(ledger_dir, "executions.jsonl"),
@@ -1936,7 +1943,7 @@ def main() -> None:
                             print(f"Fetch diagnostic error: {redact_agent_secrets(fetch_err)}", file=sys.stderr)
 
                     if is_action_logging_enabled(intent_data):
-                        with contextlib.suppress(Exception):
+                        with suppress_ledger_failures():
                             append_action_record(
                                 os.path.join(ledger_dir, "executions.jsonl"),
                                 ActionRecord(
@@ -2003,7 +2010,7 @@ def main() -> None:
                 if md_files:
                     converge_prettier(md_files, repo_dir=repo_dir)
                     if is_action_logging_enabled(intent_data):
-                        with contextlib.suppress(Exception):
+                        with suppress_ledger_failures():
                             append_action_record(
                                 os.path.join(ledger_dir, "executions.jsonl"),
                                 ActionRecord(
@@ -2018,6 +2025,8 @@ def main() -> None:
                                     action_origin=action_origin,
                                 ),
                             )
+            except LedgerRewriteError:
+                raise
             except Exception as e:
                 print(f"Warning: Prettier formatting failed: {e}", file=sys.stderr)
 
@@ -2053,6 +2062,8 @@ def main() -> None:
                 os.makedirs(ledger_dir, exist_ok=True)
                 with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as ef:
                     ef.write(json.dumps(exec_entry) + "\n")
+            except LedgerRewriteError:
+                raise
             except Exception as e:
                 print(f"Warning: Failed to write execution ledger entry: {e}", file=sys.stderr)
 
@@ -2071,7 +2082,7 @@ def main() -> None:
                 commit_msg = f"{commit_msg}\n\n{trailers}"
 
             if is_action_logging_enabled(intent_data):
-                with contextlib.suppress(Exception):
+                with suppress_ledger_failures():
                     append_action_record(
                         os.path.join(ledger_dir, "executions.jsonl"),
                         ActionRecord(

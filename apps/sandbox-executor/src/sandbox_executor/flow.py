@@ -30,7 +30,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, TextIO
 
 from sandbox_executor.agent_defaults import (
     DEFAULT_MODELS,
@@ -90,6 +90,7 @@ from sandbox_executor.knowledge import (
 )
 from sandbox_executor.ledger import (
     ActionRecord,
+    LedgerLock,
     LedgerRewriteError,
     assert_ledger_prefix,
     atomic_ledger_append,
@@ -603,7 +604,8 @@ def _split_conflict_sides(content: str) -> tuple[list[str], list[str]]:
 def _append_only_union(prefix_lines: list[str], other_lines: list[str]) -> str:
     """Return the prefix side unchanged, followed by the other side's lines it lacks, in their original order.
 
-    Lines are compared as exact text (ignoring only the line ending); rows are never parsed, sorted or re-serialised.
+    Lines are compared as exact text (ignoring only the line ending), so an identical line is not repeated; rows are
+    never parsed, deduplicated by key, sorted or re-serialised.
     """
     prefix = "".join(prefix_lines)
     if prefix and not prefix.endswith("\n"):
@@ -653,25 +655,30 @@ def reconcile_jsonl_ledger_conflict(content: str, prefix_side: PrefixSide = "our
     return resolve_append_only_conflict(content, prefix_side)[1]
 
 
-def _write_resolved_ledger(file_path: str, prefix: str, resolved: str) -> None:
-    """Replace a conflicted ledger with its resolution, then check the prefix side survived byte for byte.
+def _write_resolved_ledger(locked: TextIO, file_path: str, prefix: str, resolved: str) -> None:
+    """Rewrite a conflicted ledger in place through its held ``LedgerLock``, then check the prefix side survived.
 
-    The file holds conflict markers, so it cannot be resolved by appending. The prefix is checked before the file is
-    touched and again after the replace; either check fails closed with ``LedgerRewriteError`` if any byte of the kept
-    side moved.
+    The file holds conflict markers, so it cannot be resolved by appending. Writing through the locked descriptor keeps
+    the inode, so an appender waiting on the lock appends after the resolution instead of to a replaced file; git still
+    holds both sides in the index if the write is interrupted. The prefix is checked before the file is touched and
+    again afterwards; either check fails closed with ``LedgerRewriteError`` if any byte of the kept side moved.
     """
     if not resolved.startswith(prefix):
         raise LedgerRewriteError(f"Resolution of {file_path} does not keep the prefix side byte for byte")
-    temp_name = f".{os.path.basename(file_path)}.tmp.{os.getpid()}"
-    temp_file = os.path.join(os.path.dirname(os.path.abspath(file_path)), temp_name)
-    try:
-        with open(temp_file, "w", encoding="utf-8", newline="") as f:
-            f.write(resolved)
-        os.replace(temp_file, file_path)
-    finally:
-        with contextlib.suppress(OSError):
-            os.remove(temp_file)
+    locked.flush()
+    locked.buffer.truncate(0)
+    locked.buffer.write(resolved.encode("utf-8"))
+    locked.flush()
     assert_ledger_prefix(file_path, prefix.encode("utf-8"))
+
+
+def _resolve_ledger_under_lock(file_path: str, prefix_side: PrefixSide) -> None:
+    """Under ``LedgerLock``, read the ledger and resolve any line-anchored conflict markers by pure append."""
+    with LedgerLock(file_path) as locked:
+        with open(file_path, encoding="utf-8", newline="") as f:
+            content = f.read()
+        if _has_conflict_marker_lines(content):
+            _write_resolved_ledger(locked, file_path, *resolve_append_only_conflict(content, prefix_side))
 
 
 def reconcile_ledger_file(file_path: str, prefix_side: PrefixSide = "ours") -> bool:
@@ -683,13 +690,18 @@ def reconcile_ledger_file(file_path: str, prefix_side: PrefixSide = "ours") -> b
 
     Returns:
         bool: True if the file has no conflict or was resolved, False when it is missing or cannot be resolved.
+
+    Raises:
+        LedgerRewriteError: When the resolution would move or moved a byte of the kept side; never turned into False.
     """
+    if not os.path.exists(file_path):
+        logger.error(f"Failed to reconcile ledger file '{file_path}': it does not exist")
+        return False
     try:
-        with open(file_path, encoding="utf-8", newline="") as f:
-            content = f.read()
-        if _has_conflict_marker_lines(content):
-            _write_resolved_ledger(file_path, *resolve_append_only_conflict(content, prefix_side))
+        _resolve_ledger_under_lock(file_path, prefix_side)
         return True
+    except LedgerRewriteError:
+        raise
     except Exception as exc:
         logger.error(f"Failed to reconcile ledger file '{file_path}': {exc}")
         return False
@@ -710,7 +722,9 @@ def _resolve_conflicting_ledger(repo_dir: str, rel_path: str) -> bool:
     """Resolve one conflicted working-tree ledger by pure append, without staging it.
 
     Staging belongs to the commit step that owns the ledger append, so a failed or dry run never leaves a ledger
-    staged in the operator's checkout.
+    staged in the operator's checkout. ``ours`` (the checked-out HEAD's file) is kept as the prefix because this
+    pre-check cannot tell which side is published: the checkout already holds those bytes, and the pre-push sync,
+    which knows the target branch, keeps ``theirs`` instead. Either way every row of both sides is kept.
     """
     full_path = os.path.join(repo_dir, rel_path)
     return os.path.exists(full_path) and reconcile_ledger_file(full_path)
@@ -2077,6 +2091,8 @@ def _append_superseding_execution_row(context: FlowContext, exec_branch: str, ro
         )
         pushed_sha = run_git(["rev-parse", "HEAD"], cwd=worktree).stdout.strip()
         run_git(["push", "origin", f"HEAD:refs/heads/{exec_branch}"], cwd=worktree, timeout=300)
+    except LedgerRewriteError:
+        raise
     except (RuntimeError, TimeoutError, OSError) as exc:
         return redact_agent_secrets(str(exc))
     finally:
@@ -4073,6 +4089,8 @@ def run_review_loop(
                 ledger_path=exec_file,
                 project_db_path=os.path.join(repo_dir, "holon-knowledge", ".index", "action_index.db"),
             )
+        except LedgerRewriteError:
+            raise
         except Exception as e:
             _warn_ledger_failure(context, "Stage 4 review action event", exec_file, e)
 
@@ -4583,6 +4601,8 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
         context.calibrated_branch = report.calibrated_branch
         report_dict = report.to_dict()
         calibration_succeeded = True
+    except LedgerRewriteError:
+        raise
     except Exception as e:
         context.log(
             f"Calibration run encountered exception: {CredentialRedactor.redact_text(str(e))}. "
@@ -4660,6 +4680,8 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
             )
             if promoted_candidates:
                 context.log(f"Stage 5 promoted {len(promoted_candidates)} knowledge/wisdom candidate(s).")
+    except LedgerRewriteError:
+        raise
     except Exception as e:
         _warn_ledger_failure(context, "Stage 5 ledger reconciliation", executions_file, e)
 

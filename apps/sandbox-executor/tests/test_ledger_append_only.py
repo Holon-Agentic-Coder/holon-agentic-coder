@@ -5,11 +5,13 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from sandbox_executor import flow
 from sandbox_executor import ledger as ledger_module
+from sandbox_executor.entrypoint import executor as executor_module
 from sandbox_executor.entrypoint.executor import sync_and_reconcile_pre_push
 from sandbox_executor.flow import (
     StageStatus,
@@ -18,9 +20,11 @@ from sandbox_executor.flow import (
     run_intent_stage,
 )
 from sandbox_executor.ledger import (
+    LedgerLock,
     LedgerRewriteError,
     assert_ledger_prefix,
     atomic_ledger_append,
+    suppress_ledger_failures,
     try_append_action_record,
     try_append_ledger_line,
 )
@@ -171,9 +175,28 @@ class TestPrefixGuard:
         ledger = tmp_path / "executions.jsonl"
         ledger.write_text(_conflicted(), encoding="utf-8")
         before = ledger.read_bytes()
-        with pytest.raises(LedgerRewriteError):
-            flow._write_resolved_ledger(str(ledger), f"{OURS_ROW}\n", f"{THEIRS_ROWS[0]}\n{OURS_ROW}\n")
+        with pytest.raises(LedgerRewriteError), LedgerLock(str(ledger)) as locked:
+            flow._write_resolved_ledger(locked, str(ledger), f"{OURS_ROW}\n", f"{THEIRS_ROWS[0]}\n{OURS_ROW}\n")
         assert ledger.read_bytes() == before
+
+    def test_suppress_ledger_failures_hides_other_errors_but_not_a_rewrite(self) -> None:
+        with suppress_ledger_failures():
+            raise OSError("disk full")
+        with pytest.raises(LedgerRewriteError), suppress_ledger_failures():
+            raise LedgerRewriteError("rewritten")
+
+    def test_reconcile_ledger_file_propagates_rewrite_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ledger = tmp_path / "executions.jsonl"
+        ledger.write_text(_conflicted(), encoding="utf-8")
+        monkeypatch.setattr(flow, "assert_ledger_prefix", _report_rewrite)
+        with pytest.raises(LedgerRewriteError):
+            reconcile_ledger_file(str(ledger))
+
+    def test_reconcile_missing_ledger_file_is_false_and_creates_nothing(self, tmp_path: Path) -> None:
+        assert reconcile_ledger_file(str(tmp_path / "executions.jsonl")) is False
+        assert list(tmp_path.iterdir()) == []
 
     def test_unknown_prefix_side_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="prefix_side"):
@@ -297,7 +320,7 @@ def _conflicted(diff3: bool = False) -> str:
 
 
 class TestAppendOnlyResolution:
-    """``reconcile_jsonl_ledger_conflict`` and ``reconcile_ledger_file`` never sort, deduplicate or re-serialise."""
+    """``reconcile_jsonl_ledger_conflict`` and ``reconcile_ledger_file`` never sort, dedupe by key or re-serialise."""
 
     def test_content_without_marker_lines_is_unchanged(self) -> None:
         content = "".join(json.dumps(r) + "\n" for r in INTENT_ROWS)
@@ -332,6 +355,17 @@ class TestAppendOnlyResolution:
         assert reconcile_ledger_file(str(ledger)) is True
         assert ledger.read_text(encoding="utf-8") == "\n".join([BASE_ROW, OURS_ROW, *THEIRS_ROWS]) + "\n"
         assert [p.name for p in tmp_path.iterdir()] == ["executions.jsonl"]
+
+    def test_resolution_rewrites_in_place_so_a_waiting_appender_lands_after_it(self, tmp_path: Path) -> None:
+        ledger = tmp_path / "executions.jsonl"
+        ledger.write_text(_conflicted(), encoding="utf-8")
+        inode = ledger.stat().st_ino
+        assert reconcile_ledger_file(str(ledger)) is True
+        with atomic_ledger_append(str(ledger)) as f:
+            f.write('{"execution_id":"E-next"}\n')
+        assert ledger.stat().st_ino == inode
+        expected = [BASE_ROW, OURS_ROW, *THEIRS_ROWS, '{"execution_id":"E-next"}']
+        assert ledger.read_text(encoding="utf-8") == "\n".join(expected) + "\n"
 
     def test_stage_precheck_resolves_marker_conflict_without_staging(self, tmp_path: Path, fake_git: FakeGit) -> None:
         ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
@@ -396,6 +430,21 @@ class TestPrePushMerge:
         for name in ("plans", "executions"):
             assert (host / "holon-knowledge" / "ledger" / f"{name}.jsonl").read_bytes() == main_bytes[name]
 
+    def test_rewrite_during_ledger_conflict_aborts_the_merge_and_propagates(
+        self, seeded_repos, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        host, origin, _ = seeded_repos
+        self._branch_with_intent_row(host)
+        self._advance_main(origin, tmp_path, "holon-knowledge/ledger/intents.jsonl", '{"slug":"main-row"}\n')
+        head = _git(host, "rev-parse", "HEAD")
+        monkeypatch.setattr(flow, "assert_ledger_prefix", _report_rewrite)
+
+        with pytest.raises(LedgerRewriteError):
+            sync_and_reconcile_pre_push(str(host), target_branch="main")
+
+        assert _git(host, "rev-parse", "HEAD") == head
+        assert not (host / ".git" / "MERGE_HEAD").exists()
+
 
 REPO_LEDGER_DIR = Path(__file__).resolve().parents[3] / "holon-knowledge" / "ledger"
 
@@ -424,3 +473,101 @@ def test_repository_ledgers_survive_precheck_and_reconcile_byte_for_byte(tmp_pat
         f.write('{"slug":"appended"}\n')
     assert (copy_dir / "intents.jsonl").read_bytes() == before["intents"] + b'{"slug":"appended"}\n'
     assert {n: _digest(REPO_LEDGER_DIR / f"{n}.jsonl") for n in LEDGER_NAMES} == originals
+
+
+# ---------------------------------------------------------------------------
+# Callers let a detected rewrite stop the stage instead of logging and carrying on
+# ---------------------------------------------------------------------------
+
+
+def _run_executor_main(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """Run the executor entrypoint with faked git and agent until it raises; return every command it ran."""
+    from tests.test_executor import _turn_via_run_cmd
+
+    commands: list[list[str]] = []
+
+    def fake_run_cmd(args: list[str], cwd: str | None = None, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        commands.append(list(args))
+        if "clone" in args and cwd:
+            plans = Path(cwd) / "holon-knowledge" / "ledger" / "plans.jsonl"
+            plans.parent.mkdir(parents=True, exist_ok=True)
+            plans.write_text(json.dumps({"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 2.0}) + "\n")
+        if "diff" in args and "--name-only" in args:
+            return subprocess.CompletedProcess(args, 0, stdout="src/app.py\0", stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout="tip-sha\n", stderr="")
+
+    runner = SimpleNamespace(
+        validate=lambda *_a, **_k: None,
+        get_version=lambda: "1.0.0",
+        build_cmd=lambda *_a, **_k: ["agent", "prompt"],
+    )
+    monkeypatch.setattr(executor_module, "run_cmd", fake_run_cmd)
+    monkeypatch.setattr(executor_module, "run_turn", _turn_via_run_cmd)
+    monkeypatch.setattr(executor_module, "get_runner", lambda *_a, **_k: runner)
+    monkeypatch.setattr(executor_module, "get_repo_url", lambda *_a, **_k: "/fake/repo")
+    monkeypatch.setattr(ledger_module, "assert_ledger_prefix", _report_rewrite)
+    monkeypatch.setenv("HOLON_REPO_DIR", str(tmp_path))
+    monkeypatch.setenv("HOLON_SKIP_PUSH", "1")
+    monkeypatch.setattr("sys.argv", ["executor.py", "I-456/P-123/_", "agent", "model"])
+    with pytest.raises(LedgerRewriteError):
+        executor_module.main()
+    return commands
+
+
+@pytest.mark.parametrize("action_logging", ["0", "1"], ids=["summary-row", "action-record"])
+def test_executor_rewrite_stops_before_commit_and_push(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action_logging: str
+) -> None:
+    """The summary-row write and the best-effort action-record writes both fail closed."""
+    monkeypatch.setenv("HOLON_ACTION_LOGGING", action_logging)
+    commands = _run_executor_main(tmp_path, monkeypatch)
+    assert not any(c[:2] in (["git", "commit"], ["git", "push"]) for c in commands)
+
+
+def _raise_rewrite(*_args: Any, **_kwargs: Any) -> Any:
+    """Stand in for a writer whose prefix guard detected a rewrite."""
+    raise LedgerRewriteError("rewritten")
+
+
+def _flow_context(tmp_path: Path, **kwargs: Any) -> flow.FlowContext:
+    return flow.FlowContext(
+        repo_dir=str(tmp_path),
+        execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+        plan_branch="I-100-intent/P-200-plan/_",
+        **kwargs,
+    )
+
+
+def test_superseding_row_rewrite_propagates_before_push(
+    tmp_path: Path, fake_git: FakeGit, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ledger_module, "assert_ledger_prefix", _report_rewrite)
+    with pytest.raises(LedgerRewriteError):
+        flow._append_superseding_execution_row(_flow_context(tmp_path), "I-1/P-2/E-3/_", {"execution_id": "E-3"})
+    assert not any(c[:1] in (["commit"], ["push"]) for c in fake_git.calls)
+
+
+def test_calibration_rewrite_propagates_instead_of_writing_a_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fallback_calls: list[Any] = []
+    monkeypatch.setattr(flow, "_checkout_execution_branch", lambda _ctx: None)
+    monkeypatch.setattr(flow, "run_calibrate", _raise_rewrite)
+    monkeypatch.setattr(flow, "record_calibration_action", lambda *a, **_k: fallback_calls.append(a))
+    with pytest.raises(LedgerRewriteError):
+        flow.run_calibrate_stage(_flow_context(tmp_path))
+    assert fallback_calls == []
+    assert not (tmp_path / "plans").exists()
+
+
+def test_stage5_reconciliation_rewrite_propagates_before_push(
+    tmp_path: Path, fake_git: FakeGit, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_ledgers(tmp_path)
+    report = SimpleNamespace(calibrated_branch="I-100-intent/P-200-plan/E-300-exec/calibrated", to_dict=dict)
+    monkeypatch.setattr(flow, "_checkout_execution_branch", lambda _ctx: None)
+    monkeypatch.setattr(flow, "run_calibrate", lambda **_k: report)
+    monkeypatch.setattr(flow, "reconcile_records", _raise_rewrite)
+    with pytest.raises(LedgerRewriteError):
+        flow.run_calibrate_stage(_flow_context(tmp_path))
+    assert not any(c[:1] in (["commit"], ["push"]) for c in fake_git.calls)

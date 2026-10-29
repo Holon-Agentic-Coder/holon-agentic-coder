@@ -354,6 +354,21 @@ def atomic_ledger_append(
         assert_ledger_prefix(filepath, before)
 
 
+@contextlib.contextmanager
+def suppress_ledger_failures() -> Iterator[None]:
+    """Suppress a failed best-effort ledger write, except ``LedgerRewriteError``, which always propagates.
+
+    Use it in place of ``contextlib.suppress(Exception)`` around a ledger write, so a rewritten ledger stops the stage
+    instead of being committed and pushed.
+    """
+    try:
+        yield
+    except LedgerRewriteError:
+        raise
+    except Exception as exc:
+        logger.debug("Best-effort ledger write failed: %s", type(exc).__name__)
+
+
 def _prepare_shape_preserving_action(record: dict[str, Any]) -> dict[str, Any]:
     """Validate an action dictionary while keeping its key order and any extra keys.
 

@@ -127,6 +127,13 @@ plan's resolved `entropy_budget` when one was recorded, the parent's `labels` wh
 read as depth `0`; missing or non-numeric values are also read as `0`. The flow refuses to run a sub-intent list whose
 children would exceed `sandbox_executor.budgets.MAX_SUB_INTENT_DEPTH` (`2`).
 
+Child intent rows also record the node that decided the split, under which the child's branch nests (see
+[Git Flow](git_flow.md#22-sub-intent-branch-nested-under-the-deciding-node)): `deciding_branch` (the deciding node's
+branch, for a plan-decided split the plan branch `I-.../P-.../_`), `parent_plan_id` (the deciding plan, when a plan or
+an execution or review of that plan decided the split), and `parent_execution_id` (when an execution or a review of it
+decided the split); the list item it came from is identified by its own `goal` and `description`. A sub-intent promoted
+to its own root intent records its source plan (`parent_plan_id`), so its lineage is not lost.
+
 Stage 2 planner entrypoint rows: when a plan turn breached its turn, stall or stage budget and the plan was not
 recovered (the resume or re-prompt did not finish, or no stage time was left for one), one `ACT-BUDGET` action
 (`category: "budget"`, `stage: "plan"`) in `executions.jsonl` under the `P-...` `plan_id` as its `execution_id`, written
@@ -231,11 +238,11 @@ Every ledger event MUST contain:
 - `event_type` (string)  
   Example: `"intent_created"`
 - `ts` (string, ISO-8601 UTC)  
-  Example: `"2026-02-10T03:12:45Z"`
+  Example: `"2026-02-24T03:12:45Z"`
 - `seq` (integer, monotonically increasing within a ledger file)  
   Example: `1842`
 - `run_id` (string, unique per orchestrator run / session)  
-  Example: `"R-20260210-0312-8c1d"`
+  Example: `"R-20260224-0312-8c1d"`
 - `agent_id` (string)  
   Example: `"agent-planner-07"`
 - `host` (object)
@@ -254,9 +261,9 @@ Every ledger event MUST contain:
 {
   "schema_version": "1.0",
   "event_type": "intent_created",
-  "ts": "2026-02-10T03:12:45Z",
+  "ts": "2026-02-24T03:12:45Z",
   "seq": 1,
-  "run_id": "R-20260210-0312-8c1d",
+  "run_id": "R-20260224-0312-8c1d",
   "agent_id": "agent-orchestrator-01",
   "host": {
     "hostname": "runner-01",
@@ -265,7 +272,7 @@ Every ledger event MUST contain:
   },
   "git": {
     "repo": "origin",
-    "branch": "intent/I-root-001-bootstrap-metrics",
+    "branch": "I-1771890200-bootstrap-metrics/_",
     "head_sha": "abc123",
     "dirty": false
   },
@@ -280,15 +287,15 @@ Every ledger event MUST contain:
 ### Required identifiers in relevant events
 
 - `intent_id` (string)  
-  Example: `"I-root-001-bootstrap-metrics"`
+  Example: `"I-1771890200-bootstrap-metrics"`
 - `parent_intent_id` (string or null)  
-  Example: `"I-root-000-project-init"`
+  Example: `"I-1771890100-project-init"`
 - `plan_id` (string)  
-  Example: `"P-I-root-001-bootstrap-metrics-v3-flash"`
+  Example: `"P-1771890203-gemini-cli-gemini-3.6-flash"`
 - `variant_id` (string)  
   Example: `"v3"`
 - `sandbox_id` (string)  
-  Example: `"S-20260210-0315-2f93"`
+  Example: `"S-20260224-0315-2f93"`
 - `model` (object) Full "DNA" of the execution engine to enable high-resolution evolutionary analysis.
 
 ```json
@@ -411,9 +418,9 @@ Payload:
 {
   "schema_version": "1.0",
   "event_type": "intent_created",
-  "ts": "2026-02-10T03:12:45Z",
+  "ts": "2026-02-24T03:12:45Z",
   "seq": 12,
-  "run_id": "R-20260210-0312-8c1d",
+  "run_id": "R-20260224-0312-8c1d",
   "agent_id": "agent-orchestrator-01",
   "host": {
     "hostname": "runner-01",
@@ -422,12 +429,12 @@ Payload:
   },
   "git": {
     "repo": "origin",
-    "branch": "intent/I-root-001-bootstrap-metrics",
+    "branch": "I-1771890200-bootstrap-metrics/_",
     "head_sha": "abc123",
     "dirty": false
   },
   "payload": {
-    "intent_id": "I-root-001-bootstrap-metrics",
+    "intent_id": "I-1771890200-bootstrap-metrics",
     "parent_intent_id": null,
     "goal": "Bootstrap naive metrics estimators and ledger logging.",
     "constraints": {

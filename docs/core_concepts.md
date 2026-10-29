@@ -73,16 +73,21 @@ A **Root Intent** is a top-level intent created either by a human or an autonomo
 A **Parent Intent** is the immediate parent of a sub-intent in the intent hierarchy.
 
 - Receives its sub-intents' merges: each sub-intent runs autonomously through the full pipeline and opens a PR into its
-  parent intent branch, which the maintainer merges (automatic merging is the target model).
+  parent intent branch, which the maintainer merges (automatic merging of leaf sub-intents is the target model; whether
+  a nested parent's combined-diff PR also stops for a human is open, see [Git Flow](git_flow.md) section 4.2).
 - May itself be a sub-intent of a higher-level intent.
 - Exists at any depth except the root level.
 
 ### 1.4 Sub-Intent
 
-A **Sub-Intent** is an intent spawned by another intent to break down complex work into manageable parts.
+A **Sub-Intent** is an intent spawned from another intent to break down complex work into manageable parts. In practice
+the split is decided by one of the parent intent's plans, which sits between the parent and its sub-intents in the
+hierarchy.
 
 - Merges only into its parent intent: it runs autonomously through the full flow and opens a PR into the parent intent
-  branch, which the maintainer currently merges (automatic, evaluation-based merging is the target model).
+  branch, which the maintainer currently merges (automatic, evaluation-based merging is the target model for a leaf
+  sub-intent; for a sub-intent with its own sub-intents it is open whether its PR also stops for a human, see
+  [Git Flow](git_flow.md) section 4.2).
 - Can have its own sub-intents, forming a fractal hierarchy up to `MAX_SUB_INTENT_DEPTH` levels below the root.
 
 ### 1.5 Understanding Fractal Recursion (Why it matters)
@@ -254,7 +259,8 @@ $$EV = P(success)\cdot Impact + \mu\cdot LearningValue - \lambda \cdot \Delta S_
 - **Proposed → Executing**: When an agent starts working on the intent.
 - **Executing → Completed/Failed**: Based on execution outcome.
 - **Completed → Merged**: By the maintainer's PR merge, the only human step: for root intents, and for sub-intents until
-  their automatic, evaluation-based merging is implemented.
+  automatic, evaluation-based merging of leaf sub-intents is implemented (for a nested parent this is open, see
+  [Git Flow](git_flow.md) section 4.2).
 - **Failed → Discarded**: Failed intents are pruned but may contribute learnings.
 - **Any → Discarded**: Intent may be discarded due to low value or high entropy.
 
@@ -303,7 +309,7 @@ words, the planner and evaluator agree that the current best plan(s) are good en
 | Intent                                   | Unit of work or goal                                                    | Basic building block                                                                      |
 | Root Intent                              | Top-level intent requiring human review                                 | Human review boundary                                                                     |
 | Parent Intent                            | Immediate parent of a sub-intent                                        | Receives its sub-intents' PR merges                                                       |
-| Sub-Intent                               | Intent spawned by another intent                                        | Runs autonomously; its PR is merged into its parent                                       |
+| Sub-Intent                               | Intent spawned from another intent by its deciding plan                 | Runs autonomously; its PR is merged into its parent                                       |
 | $P(success)$                             | Probability intent will succeed                                         | Guides planning and merging decisions                                                     |
 | Impact                                   | Expected benefit delivered                                              | Prioritisation metric                                                                     |
 | Cost                                     | Resources required                                                      | Balances benefit vs expenditure                                                           |

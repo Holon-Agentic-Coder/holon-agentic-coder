@@ -359,10 +359,10 @@ out-of-band reviews and never pause a running flow before the merge.
 
 ```json
 {
-  "intent_id": "I-root-001-bootstrap-metrics",
+  "intent_id": "I-1771890200-bootstrap-metrics",
   "goal": "Bootstrap naive metrics estimators and ledger logging",
   "status": "awaiting_review",
-  "branch": "intent/I-root-001-bootstrap-metrics",
+  "branch": "I-1771890200-bootstrap-metrics/_",
   "parent_branch": "main",
   "agent_id": "agent-planner-03",
   "trust_level": "medium",
@@ -407,7 +407,7 @@ out-of-band reviews and never pause a running flow before the merge.
     "seq 48-67: tool_calls (git, pytest, python)",
     "seq 68: execution_completed (success)"
   ],
-  "review_url": "https://github.com/user/holon/compare/main...intent/I-root-001-bootstrap-metrics"
+  "review_url": "https://github.com/user/holon/compare/main...I-1771890200-bootstrap-metrics/_"
 }
 ```
 

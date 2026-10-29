@@ -80,8 +80,12 @@ Please take the time to review `core_concepts.md` carefully to get the most out 
 
 ### 1) Intent is fractal (recursive, depth-capped)
 
-Any intent may spawn sub-intents, which may spawn sub-sub-intents, until leaf nodes become **atomic intents** (direct
-actions). `holon flow` caps the nesting at `MAX_SUB_INTENT_DEPTH` levels below the root intent.
+Any intent may spawn sub-intents through one of its plans, and a sub-intent's own plans may spawn sub-sub-intents, until
+leaf nodes become **atomic intents** (direct actions). `holon flow` caps the nesting at `MAX_SUB_INTENT_DEPTH` levels
+below the root intent. In practice a split is decided by a plan: the planner writes a `## Sub-intent list` in its plan
+and the flow runs each item as a sub-intent nested under that plan. The model leaves other stages open: a split may also
+be decided at the intent, execution or review stage, and the sub-intent then nests under the branch node whose stage
+decided it.
 
 ### 2) Planning is first-class and competitive
 
@@ -223,12 +227,13 @@ _Note: This example shows a "Deep" model planning for an intent that was origina
 
 ### Branch naming (Fractal Nesting)
 
-Holon uses a filesystem-like branch structure to represent the intent hierarchy. In the target model, sub-intents are
-nested under their parent's path. The current `holon flow` cuts each sub-intent a flat `{parent}--{n}-{slug}/_` branch
-from its parent intent branch and targets its PR at that parent branch: `{parent}` is the parent's intent branch without
-`/_` and `{n}` the item's position in the parent's sub-intent list, so the name never depends on the clock and cannot
-collide with the parent or a sibling (see [Git Flow](docs/git_flow.md) section 2.2). The parent link is also recorded in
-the child's `parent_intent_id`.
+Holon uses a filesystem-like branch structure to represent the intent hierarchy. A sub-intent's branch nests under the
+branch node whose stage decided the split -- by default the plan whose `## Sub-intent list` named it -- so the path
+records which of an intent's competing plans spawned it. The sub-intent is still cut from its parent intent branch and
+targets its PR at that branch. Its provenance records the parent intent, the deciding node (`deciding_branch`, plus
+`parent_plan_id` when a plan, or an execution or review of that plan, decided the split, and `parent_execution_id`
+additionally for an execution- or review-decided split); the list item it came from is identified by its own recorded
+goal and description (see [Git Flow](docs/git_flow.md) section 2.2).
 
 #### Root Intent Branch
 
@@ -238,25 +243,29 @@ I-{timestamp}-{slug}/_
 
 Example: `I-1771890389-refactor-metrics/_`
 
-#### Sub-Intent Branch (Nested, target model)
+#### Sub-Intent Branch (Nested Under the Deciding Node)
 
 ```
-{root_intent}/I-{timestamp}-{slug}
+I-{timestamp}-{slug}/I-{timestamp}-{slug}/_                                                          # decided at the intent stage
+I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/I-{timestamp}-{slug}/_                            # decided by a plan (default)
+I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/E-{timestamp}-{action-slug}/I-{timestamp}-{slug}/_ # decided during execution
 ```
 
-Example: `I-1771890389-refactor-metrics/I-1771890390-improve-estimators/_`
+Example: `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_`
 
 #### Plan Branch (Execution)
 
-Work derived from a specific plan variant occurs on a plan branch nested under the intent:
+Work derived from a specific plan variant occurs on a plan branch nested under the intent, and each execution of that
+plan on an execution branch nested under the plan:
 
 ```
-I-1771890389-refactor-metrics/P-{timestamp}-{agent}-{model}
-I-1771890389-refactor-metrics/E-{timestamp}-{agent}-{model}
+I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/_
+I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/E-{timestamp}-{action-slug}/_
 ```
 
-Example Plan Branch: `I-1771890389-refactor-metrics/P-1771890396-claude-code-claude-opus-4.6`  
-Example Execution Branch: `I-1771890389-refactor-metrics/E-1771890398-opencode-big-pickle`
+Example Plan Branch: `I-1771890389-refactor-metrics/P-1771890396-claude-code-claude-opus-4.6/_`  
+Example Execution Branch:
+`I-1771890389-refactor-metrics/P-1771890396-claude-code-claude-opus-4.6/E-1771890398-init-project/_`
 
 ---
 

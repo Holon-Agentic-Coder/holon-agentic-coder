@@ -121,12 +121,12 @@ Every KB entry MUST contain:
   "kb_id": "KB-pattern-001",
   "kb_type": "pattern",
   "version": "1.0",
-  "created_ts": "2026-02-10T05:30:00Z",
-  "updated_ts": "2026-02-10T05:30:00Z",
+  "created_ts": "2026-02-24T05:30:00Z",
+  "updated_ts": "2026-02-24T05:30:00Z",
   "created_by": "agent-curator-03",
   "status": "active",
   "evidence": {
-    "ledger_refs": ["I-root-001-001", "I-root-002-003"],
+    "ledger_refs": ["I-1771890300-bootstrap-p-success", "I-1771890504-implement-impact"],
     "success_count": 5,
     "failure_count": 0
   },
@@ -153,12 +153,16 @@ Every KB entry MUST contain:
   "kb_id": "KB-pattern-001",
   "kb_type": "pattern",
   "version": "1.0",
-  "created_ts": "2026-02-10T05:30:00Z",
-  "updated_ts": "2026-02-10T05:30:00Z",
+  "created_ts": "2026-02-24T05:30:00Z",
+  "updated_ts": "2026-02-24T05:30:00Z",
   "created_by": "agent-curator-03",
   "status": "active",
   "evidence": {
-    "ledger_refs": ["I-root-001-001", "I-root-002-003", "I-root-005-002"],
+    "ledger_refs": [
+      "I-1771890300-bootstrap-p-success",
+      "I-1771890504-implement-impact",
+      "I-1771891052-implement-learning-value-estimator"
+    ],
     "success_count": 8,
     "failure_count": 1,
     "avg_p_success": 0.92,
@@ -204,12 +208,12 @@ Every KB entry MUST contain:
   "kb_id": "KB-tactic-001",
   "kb_type": "tactic",
   "version": "1.0",
-  "created_ts": "2026-02-10T06:15:00Z",
-  "updated_ts": "2026-02-10T06:15:00Z",
+  "created_ts": "2026-02-24T06:15:00Z",
+  "updated_ts": "2026-02-24T06:15:00Z",
   "created_by": "agent-executor-12",
   "status": "active",
   "evidence": {
-    "ledger_refs": ["I-root-003-002", "I-root-007-001"],
+    "ledger_refs": ["I-1771890603-add-logging", "I-1771891071-implement-routing-roi"],
     "success_count": 12,
     "failure_count": 0
   },
@@ -247,14 +251,18 @@ Every KB entry MUST contain:
   "kb_id": "KB-failure-001",
   "kb_type": "failure_mode",
   "version": "1.0",
-  "created_ts": "2026-02-10T07:00:00Z",
-  "updated_ts": "2026-02-10T07:00:00Z",
+  "created_ts": "2026-02-24T07:00:00Z",
+  "updated_ts": "2026-02-24T07:00:00Z",
   "created_by": "agent-curator-05",
   "status": "active",
   "evidence": {
-    "ledger_refs": ["I-root-002-004", "I-root-003-001", "I-root-006-002"],
+    "ledger_refs": [
+      "I-1771891122-add-metric-caching",
+      "I-1771891131-add-metric-logging",
+      "I-1771891143-refactor-p-success"
+    ],
     "success_count": 0,
-    "failure_count": 7
+    "failure_count": 3
   },
   "tags": ["rebase", "conflict", "concurrent-work"],
   "human_approved": true,
@@ -315,16 +323,16 @@ Every KB entry MUST contain:
   "kb_id": "KB-estimator-p_success-v2",
   "kb_type": "estimator",
   "version": "2.0",
-  "created_ts": "2026-02-12T10:00:00Z",
-  "updated_ts": "2026-02-12T10:00:00Z",
+  "created_ts": "2026-02-26T10:00:00Z",
+  "updated_ts": "2026-02-26T10:00:00Z",
   "created_by": "agent-researcher-08",
   "status": "proposed",
   "evidence": {
-    "ledger_refs": ["I-root-010-001"],
+    "ledger_refs": ["I-1771891101-backtest-p-success-estimator"],
     "success_count": 0,
     "failure_count": 0,
     "calibration_improvement": 0.12,
-    "backtest_window": "2026-02-01 to 2026-02-10",
+    "backtest_window": "2026-02-15 to 2026-02-24",
     "backtest_sample_size": 47
   },
   "tags": ["p_success", "estimator", "improvement"],
@@ -377,8 +385,8 @@ Every KB entry MUST contain:
   "kb_id": "KB-routing-v1",
   "kb_type": "routing_heuristic",
   "version": "1.0",
-  "created_ts": "2026-02-10T08:00:00Z",
-  "updated_ts": "2026-02-10T08:00:00Z",
+  "created_ts": "2026-02-24T08:00:00Z",
+  "updated_ts": "2026-02-24T08:00:00Z",
   "created_by": "human@example.com",
   "status": "active",
   "evidence": {
@@ -435,12 +443,12 @@ Every KB entry MUST contain:
   "kb_id": "KB-module-001",
   "kb_type": "module",
   "version": "1.0",
-  "created_ts": "2026-02-10T09:00:00Z",
-  "updated_ts": "2026-02-10T09:00:00Z",
+  "created_ts": "2026-02-24T09:00:00Z",
+  "updated_ts": "2026-02-24T09:00:00Z",
   "created_by": "agent-extractor-02",
   "status": "active",
   "evidence": {
-    "ledger_refs": ["I-root-001-001", "I-root-002-002"],
+    "ledger_refs": ["I-1771890300-bootstrap-p-success", "I-1771890503-implement-entropy"],
     "success_count": 6,
     "failure_count": 0
   },
@@ -528,21 +536,21 @@ Each KB subdirectory has an `index.json` for fast lookup:
 ```json
 {
   "index_version": "1.0",
-  "updated_ts": "2026-02-10T10:00:00Z",
+  "updated_ts": "2026-02-24T10:00:00Z",
   "entries": [
     {
       "kb_id": "KB-pattern-001",
       "file": "pattern_001.json",
       "tags": ["metrics", "estimator", "bootstrap"],
       "status": "active",
-      "created_ts": "2026-02-10T05:30:00Z"
+      "created_ts": "2026-02-24T05:30:00Z"
     },
     {
       "kb_id": "KB-pattern-002",
       "file": "pattern_002.json",
       "tags": ["git", "rebase", "conflict"],
       "status": "active",
-      "created_ts": "2026-02-10T06:00:00Z"
+      "created_ts": "2026-02-24T06:00:00Z"
     }
   ],
   "tag_index": {

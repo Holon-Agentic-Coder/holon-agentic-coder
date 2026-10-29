@@ -29,13 +29,22 @@ def known_names(texts: list[str]) -> set[str]:
 
 
 def unmatched_placeholders(text: str, names: set[str]) -> list[tuple[int, str]]:
-    """Return ``(line_number, name)`` for each known ``{name`` whose brace is never closed on its line.
+    """Return ``(line_number, name)`` for each known ``{name`` that is not a well-formed ``{name}`` placeholder.
 
-    Brace groups closed on the same line, such as ``{standard | elevated}`` or ``{bullets with rule IDs}``, are prose
-    for the agent to fill in rather than placeholders, and a lone ``{`` names nothing; both are ignored.
+    A planner key must close immediately, because ``render_placeholders`` substitutes only ``{key}``: ``{plan_id here}``
+    would render as ``P-1 here}``. Any other name may open a brace group closed later on its line, such as
+    ``{standard | elevated}`` or ``{bullets with rule IDs}``, which is prose for the agent to fill in. A lone ``{``
+    names nothing and is ignored.
     """
-    pattern = re.compile(r"\{(" + "|".join(map(re.escape, sorted(names))) + r")(?![A-Za-z0-9_])(?![^{}\n]*\})")
-    return [(text.count("\n", 0, m.start()) + 1, m.group(1)) for m in pattern.finditer(text)]
+
+    def opener(group: set[str], close_ahead: str) -> str:
+        alternatives = "|".join(map(re.escape, sorted(group))) or r"(?!)"
+        return r"\{(" + alternatives + r")(?![A-Za-z0-9_])" + close_ahead
+
+    planner = opener(names & PLANNER_KEYS, r"(?!\})")
+    prose = opener(names - PLANNER_KEYS, r"(?![^{}\n]*\})")
+    pattern = re.compile(planner + "|" + prose)
+    return [(text.count("\n", 0, m.start()) + 1, m.group(m.lastindex)) for m in pattern.finditer(text)]
 
 
 def test_lint_flags_injected_partial_brace() -> None:
@@ -46,6 +55,11 @@ def test_lint_flags_injected_partial_brace() -> None:
 def test_lint_ignores_prose_braces_and_longer_names() -> None:
     sample = "{standard | elevated | critical}\n{\n{plan_identifier}\n{plan_id}\n{bullets with rule IDs}"
     assert unmatched_placeholders(sample, {"plan_id", "standard", "bullets"}) == []
+
+
+def test_lint_flags_closed_but_malformed_planner_placeholder() -> None:
+    sample = "plans/{plan_id here}.md\n{standard here}\n{plan_id}"
+    assert unmatched_placeholders(sample, {"plan_id", "standard"}) == [(1, "plan_id")]
 
 
 def test_shipped_templates_have_no_unmatched_placeholders() -> None:

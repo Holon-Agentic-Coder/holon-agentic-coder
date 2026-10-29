@@ -66,7 +66,8 @@ A **Root Intent** is a top-level intent created either by a human or an autonomo
 
 - It represents a major goal or project.
 - Requires human review before merging into the canonical `main` branch.
-- All other intents in its hierarchy eventually merge into it.
+- All other intents in its hierarchy eventually reach it: each merges into its deciding node's branch, and the root's
+  deciding plan branch is what its PR carries to `main`.
 
 ### 1.3 Parent Intent
 

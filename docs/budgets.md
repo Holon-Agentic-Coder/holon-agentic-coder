@@ -165,11 +165,43 @@ The record has these fields in addition to the standard action fields (see [Ledg
 | `target`          | The artefact path (`plans/P-*.md` or `executions/E-*.md`)               |
 
 The record is written in one place only, once per stage failure. The planner commits it together with the salvaged
-partial plan on the plan branch (no `plans.jsonl` entry is made for an unusable plan); the executor commits it with the
-failed execution summary (`status: failure`) and stages the partial notes, but not the code changes, in a commit titled
-`execute: E-... failed for plan ...` rather than `completed`.
+partial plan on the plan branch (no `plans.jsonl` entry is made for an unusable plan). The executor first commits the
+agent's working-tree changes in `execute: E-... partial work (failed) for plan ...`, then commits the record with the
+failed execution summary (`status: failure`) and the partial notes in `execute: E-... failed for plan ...` rather than
+`completed`. Gitignored files are never committed, and the agent's own commits are never squashed, amended or rewritten
+(see [Partial work on failure](#partial-work-on-failure)).
 
 Host-side stage ceilings in `holon flow` (below) never write an ACT-BUDGET record, so a failure is not recorded twice.
+
+### Partial work on failure
+
+An execution's code is never silently dropped. The executor configures its repo-local git identity straight after it
+creates the execution branch, so commits the agent makes step by step land on that branch. On every non-success status
+that reaches the commit step (a budget breach, an agent exit other than 0, an empty diff or any other failure), the
+executor stages everything except `holon-knowledge/ledger/executions.jsonl` and the run's own notes file: tracked
+modifications and deletions, and untracked files that `.gitignore` does not exclude. It commits them in
+`execute: E-... partial work (failed) for plan ...`, ahead of the failure commit for the notes and the ledger row. The
+pre-push safety and sync checks apply unchanged, and the successful path still makes one `completed` commit.
+
+The failure summary row in `executions.jsonl` keeps `status: failure` and gains an optional `partial_head` field: the
+sha of the salvaged commit, or of the agent's own last commit when the tree was already clean. It is absent when nothing
+differs from the plan tip, and always absent on success. A superseding sync or recovery row repeats it.
+
+When the push of the execution branch is refused, the executor prints the branch, the local head sha and git's reason on
+stderr. It then prints `git format-patch --stdout <plan tip>..HEAD` between the `BEGIN UNPUSHED EXECUTION PATCH` and
+`END UNPUSHED EXECUTION PATCH` lines, and exits non-zero. Every line is redacted. The block is capped at
+`UNPUSHED_PATCH_MAX_BYTES` (256 KiB). Above the cap, `git diff --stat <plan tip>..HEAD` is printed with a line saying
+the patch was omitted. A pre-push sync merge with `main` adds `main`'s commits to that range, so a large merge can push
+the patch past the cap. To recover the work, copy the lines between the markers from the captured container log into a
+file, then run `git am <file>` on a checkout of the plan branch.
+
+A `holon flow --checkpoint` or `holon flow --from-stage execute` resume at Stage 3 looks for the newest failed execution
+branch under the plan whose latest summary row carries a `partial_head`, and passes it to the executor as a fourth
+argument. The executor fetches that branch and re-reads `partial_head` from its own ledger. When the partial head
+descends from the plan tip, the new execution branch is cut from it, and the agent's prompt gets a note saying it
+continues that partial work. The empty-diff guard still compares against the plan tip. Otherwise, the executor starts
+from the plan tip and logs why. A plain `holon execute <plan_branch>` and a flow that is not resumed at Stage 3 always
+start from the plan tip.
 
 ## Stage summary lines
 

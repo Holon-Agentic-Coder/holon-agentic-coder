@@ -55,6 +55,16 @@ def _fake_token(prefix: str, body: str = "9f3Aq7ZxR2tKp8Wm") -> str:
     return prefix + _FAKE_FILLER + body
 
 
+def _unscoped_add_all(cmds) -> bool:
+    """True when a command list holds a `git add -A` without the failure-salvage pathspec (the success staging)."""
+    return any(c[:3] == ["git", "add", "-A"] and "--" not in c for c in cmds)
+
+
+def _salvage_add(cmds) -> bool:
+    """True when a command list holds the scoped failure-salvage `git add -A` that excludes the executions ledger."""
+    return any(c[:3] == ["git", "add", "-A"] and ":(exclude)holon-knowledge/ledger/executions.jsonl" in c for c in cmds)
+
+
 def _superseded_bound_then_redact(stream: str, budget: int) -> str:
     """The pipeline as shipped at `38fe087`, kept so counter-examples can be run against it.
 
@@ -474,7 +484,10 @@ class TestExecutor(unittest.TestCase):
         self.assertEqual(summaries[0]["failure_reason"], "empty_diff")
         self.assertIn("no changes outside holon-knowledge/ledger/, plans/ and executions/", summaries[0]["summary"])
         self.assertNotIn("test_pass_rate", summaries[0])
-        self.assertFalse(any(cmd[:3] == ["git", "add", "-A"] for cmd in argv))
+        # Only the scoped salvage add runs; the success staging never does.
+        self.assertFalse(_unscoped_add_all(argv))
+        self.assertTrue(_salvage_add(argv))
+        self.assertFalse(any(c[:2] == ["git", "commit"] and "completed for plan" in " ".join(c) for c in argv))
         diff_calls = [cmd for cmd in argv if "diff" in cmd and "--name-only" in cmd]
         self.assertTrue(diff_calls and "tip-sha" in diff_calls[0])
 
@@ -483,13 +496,14 @@ class TestExecutor(unittest.TestCase):
         summaries, argv = self._run_main_with_agent_diff("holon-knowledge/ledger/executions.jsonl\0src/app.py\0")
         self.assertEqual(summaries[0]["status"], "success")
         self.assertNotIn("failure_reason", summaries[0])
-        self.assertTrue(any(cmd[:3] == ["git", "add", "-A"] for cmd in argv))
+        self.assertTrue(_unscoped_add_all(argv))
 
     def test_main_empty_diff_guard_fails_closed_without_plan_tip(self):
         """If the plan tip cannot be resolved the diff is unverifiable, so the run is recorded as failed."""
         summaries, argv = self._run_main_with_agent_diff("src/app.py\0", tip_stdout="")
         self.assertEqual(summaries[0]["status"], "failed")
         self.assertEqual(summaries[0]["failure_reason"], "diff_unverified")
+        # Without a plan tip there is no diff base, so nothing is salvaged and nothing is staged wholesale.
         self.assertFalse(any(cmd[:3] == ["git", "add", "-A"] for cmd in argv))
 
     @patch("sandbox_executor.entrypoint.executor.converge_prettier")
@@ -867,9 +881,12 @@ class TestExecutor(unittest.TestCase):
     def test_main_over_budget_whose_push_is_rejected_by_origin_fails(self):
         outcome, stderr_lines, exec_branches = self._run_over_budget_main_against_local_origin(reject_push=True)
 
-        # The rejected push raises, which the module entry point turns into exit 1; nothing reaches the origin.
-        self.assertIsInstance(outcome, subprocess.CalledProcessError)
-        self.assertEqual(outcome.cmd[:3], ["git", "push", "-u"])
+        # The rejected push is handled: it is reported with the local head and git's reason, then exits 1; nothing
+        # reaches the origin.
+        self.assertEqual(outcome, 1)
+        refused = [line for line in stderr_lines if "was refused; local head" in line]
+        self.assertEqual(len(refused), 1)
+        self.assertIn("push rejected by test hook", refused[0])
         self.assertFalse(any("Re-plan it within the budget" in line for line in stderr_lines))
         self.assertEqual(exec_branches, {})
 
@@ -3695,7 +3712,7 @@ class TestExecutorIncrementalNotes(unittest.TestCase):
         self.assertEqual(summary["status"], "success")
         self.assertTrue(summary["execution_notes_valid"])
         self.assertIn("treating the exit status as informational", run["stdout"])
-        self.assertTrue(any(c[:3] == ["git", "add", "-A"] for c in run["git_cmds"]))
+        self.assertTrue(_unscoped_add_all(run["git_cmds"]))
         self.assertRegex(run["stdout"], r"execute: ok \(\d+\.\d min / 45 min\)")
 
     def test_missing_notes_logs_warning_without_failing(self):
@@ -3728,10 +3745,11 @@ class TestExecutorIncrementalNotes(unittest.TestCase):
         self.assertEqual(budget[0]["budget_name"], "stall")
         self.assertEqual(budget[0]["outcome"], "failure")
         self.assertEqual(self.summary(run)["status"], "failure")
-        # The partial notes are salvaged into the commit; code changes are not staged on failure.
+        # The code is salvaged by the scoped add (which excludes the ledger and notes); the notes are staged apart.
         add_cmds = [c for c in run["git_cmds"] if c[:2] == ["git", "add"]]
-        self.assertTrue(any(any(arg.startswith("executions/E-") for arg in c) for c in add_cmds))
-        self.assertFalse(any(c[:3] == ["git", "add", "-A"] for c in add_cmds))
+        self.assertTrue(any(arg.startswith("executions/E-") for c in add_cmds if c[2] != "-A" for arg in c))
+        self.assertTrue(_salvage_add(add_cmds))
+        self.assertFalse(_unscoped_add_all(add_cmds))
 
     def test_breach_then_notes_only_resume_is_not_success(self):
         # I1: the notes are usable from the start by design, the implementation turn breaches, and the notes-only
@@ -3753,7 +3771,7 @@ class TestExecutorIncrementalNotes(unittest.TestCase):
         self.assertIn("implementation turn did not finish", budget[0]["action"])
         self.assertEqual(run["exit_code"], 1)
         add_cmds = [c for c in run["git_cmds"] if c[:2] == ["git", "add"]]
-        self.assertFalse(any(c[:3] == ["git", "add", "-A"] for c in add_cmds))
+        self.assertFalse(_unscoped_add_all(add_cmds))
         commits = [c for c in run["git_cmds"] if c[:2] == ["git", "commit"]]
         self.assertTrue(all("completed for plan" not in " ".join(c) for c in commits))
 
@@ -3769,7 +3787,7 @@ class TestExecutorIncrementalNotes(unittest.TestCase):
         self.assertTrue(summary["execution_notes_valid"])
         self.assertEqual(run["exit_code"], 0)
         self.assertFalse([e for e in run["entries"] if str(e.get("action_id", "")).startswith("ACT-BUDGET-")])
-        self.assertTrue(any(c[:3] == ["git", "add", "-A"] for c in run["git_cmds"]))
+        self.assertTrue(_unscoped_add_all(run["git_cmds"]))
         self.assertIn("notes-only follow-up turn stopped", run["stderr"])
 
     def test_breached_reprompt_with_unusable_notes_after_clean_implementation_turn_is_success(self):
@@ -3831,7 +3849,8 @@ class TestExecutorIncrementalNotes(unittest.TestCase):
         summary = self.summary(run)
         self.assertEqual(summary["status"], "failure")
         self.assertNotIn("treating the exit status as informational", run["stdout"])
-        self.assertFalse(any(c[:3] == ["git", "add", "-A"] for c in run["git_cmds"]))
+        self.assertFalse(_unscoped_add_all(run["git_cmds"]))
+        self.assertTrue(_salvage_add(run["git_cmds"]))
 
     def test_truncation_with_incomplete_notes_is_failure(self):
         partial = VALID_NOTES.split("## Tests Run")[0]
@@ -4548,3 +4567,299 @@ def test_no_placeholder_sub_intent_text_in_source():
                 text = f.read()
             offenders.extend(f"{path}: {phrase}" for phrase in phrases if phrase in text)
     assert offenders == []
+
+
+class TestExecutorPartialWorkSalvage(unittest.TestCase):
+    """An execution's code is never lost: salvage on failure, identity before dispatch, refused push, resume."""
+
+    PLAN = "I-456/P-123/_"
+    SECRET = _fake_token("ghp_")
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix="sandbox_salvage_test_")
+        self.addCleanup(tmp.cleanup)
+        self.root = tmp.name
+        self.bare = os.path.join(self.root, "origin.git")
+        self.seed = os.path.join(self.root, "seed")
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", self.bare], check=True)
+        self.git(self.bare, "config", "core.hooksPath", os.path.join(self.bare, "hooks"))
+        subprocess.run(["git", "init", "-q", "-b", "main", self.seed], check=True)
+        files = {
+            ".gitignore": "*.ignored\n",
+            "src/codebase.py": "def app(): pass\n",
+            "src/obsolete.py": "OLD = 1\n",
+            "holon-knowledge/ledger/plans.jsonl": json.dumps(
+                {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 2.0, "entropy_budget": 5.0}
+            )
+            + "\n",
+            "holon-knowledge/ledger/intents.jsonl": json.dumps({"branch": "I-456/_", "slug": "intent-456"}) + "\n",
+        }
+        for rel, content in files.items():
+            os.makedirs(os.path.dirname(os.path.join(self.seed, rel)) or self.seed, exist_ok=True)
+            with open(os.path.join(self.seed, rel), "w") as f:
+                f.write(content)
+        self.git(self.seed, "add", "-A")
+        self.git(self.seed, "commit", "-q", "-m", "plan")
+        self.git(self.seed, "push", "-q", self.bare, f"HEAD:refs/heads/{self.PLAN}")
+        self.plan_tip = self.git(self.seed, "rev-parse", "HEAD").strip()
+        self.runs = 0
+
+    @staticmethod
+    def git(cwd, *args):
+        return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
+
+    @staticmethod
+    def dirty_turn(workspace, path):
+        """Edit a tracked file, delete another, create an untracked and an ignored file, and write the notes."""
+        with open(os.path.join(workspace, "src/codebase.py"), "a") as f:
+            f.write("def added(): pass\n")
+        os.remove(os.path.join(workspace, "src/obsolete.py"))
+        with open(os.path.join(workspace, "src/new_module.py"), "w") as f:
+            f.write("NEW = 1\n")
+        with open(os.path.join(workspace, "scratch.ignored"), "w") as f:
+            f.write("ignored\n")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(VALID_NOTES)
+
+    def run_main(self, first_turn, *, extra_args=(), url=None, breach=None, returncode=0):
+        """Run executor.main() against the bare origin with a fake agent; returns (exit code, stderr, prompts)."""
+        self.runs += 1
+        workspace = os.path.join(self.root, f"workspace-{self.runs}")
+        os.makedirs(workspace)
+        self.workspace = workspace
+        prompts = []
+
+        def fake_run_turn(cmd, **kwargs):
+            prompts.append(cmd[-1])
+            if len(prompts) == 1:
+                first_turn(workspace, kwargs["watch_path"])
+                return TurnResult(returncode=returncode, breach=breach)
+            return TurnResult(returncode=0)
+
+        runner = MagicMock()
+        runner.get_version.return_value = "1.0.0"
+        runner.build_cmd.side_effect = lambda model, pf, inf, prompt: ["agy", prompt]
+        real_time = time.time
+        stderr = io.StringIO()
+        code = 0
+        with (
+            patch.dict(os.environ, {"HOLON_REPO_DIR": workspace, "HOLON_SKIP_PUSH": ""}),
+            patch.object(executor, "run_turn", side_effect=fake_run_turn),
+            patch.object(executor, "get_runner", return_value=runner),
+            patch.object(executor, "get_repo_url", return_value=url or self.bare),
+            # Distinct execution ids for several runs in one test.
+            patch("time.time", side_effect=lambda: real_time() + 1000 * self.runs),
+            patch("sys.argv", ["executor.py", self.PLAN, "antigravity-agent", "gemini-3.5-flash", *extra_args]),
+            patch("sys.stderr", stderr),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            try:
+                executor.main()
+            except SystemExit as exc:
+                code = exc.code
+        return code, stderr.getvalue(), prompts
+
+    def exec_branches(self):
+        out = self.git(self.bare, "for-each-ref", "--format=%(refname:short)", "refs/heads/I-456/P-123/")
+        return sorted(b for b in out.split() if "/E-" in b)
+
+    def summary(self, branch):
+        ledger = self.git(self.bare, "show", f"{branch}:holon-knowledge/ledger/executions.jsonl")
+        rows = [json.loads(line) for line in ledger.splitlines() if line.strip()]
+        return [r for r in rows if r.get("entry_type") == "summary"][-1]
+
+    def files_in(self, commit):
+        return set(self.git(self.bare, "show", "--name-only", "--format=", commit).split())
+
+    def subject(self, commit):
+        return self.git(self.bare, "log", "-1", "--format=%s", commit).strip()
+
+    def assert_salvaged(self, branch):
+        self.assertIn("failed for plan", self.subject(branch))
+        self.assertIn("partial work (failed) for plan", self.subject(f"{branch}~1"))
+        self.assertEqual(self.git(self.bare, "rev-parse", f"{branch}~2").strip(), self.plan_tip)
+        partial = self.files_in(f"{branch}~1")
+        self.assertEqual(partial, {"src/codebase.py", "src/obsolete.py", "src/new_module.py"})
+        failure = self.files_in(branch)
+        self.assertIn("holon-knowledge/ledger/executions.jsonl", failure)
+        self.assertTrue(all(f.startswith(("executions/", "holon-knowledge/ledger/")) for f in failure))
+        tree = self.git(self.bare, "ls-tree", "-r", "--name-only", branch).split()
+        self.assertNotIn("scratch.ignored", tree)
+        self.assertNotIn("src/obsolete.py", tree)
+        row = self.summary(branch)
+        self.assertEqual(row["status"], "failure")
+        self.assertEqual(row["partial_head"], self.git(self.bare, "rev-parse", f"{branch}~1").strip())
+
+    def test_budget_breach_salvages_dirty_tree_into_partial_work_commit(self):
+        code, _stderr, _ = self.run_main(self.dirty_turn, breach=BudgetBreach("execute", "stage", 2700, 2700))
+        self.assertEqual(code, 1)
+        [branch] = self.exec_branches()
+        self.assert_salvaged(branch)
+
+    def test_agent_exit_one_salvages_dirty_tree_into_partial_work_commit(self):
+        code, _stderr, _ = self.run_main(self.dirty_turn, returncode=1)
+        self.assertEqual(code, 0)
+        [branch] = self.exec_branches()
+        self.assert_salvaged(branch)
+
+    def test_nothing_to_salvage_records_no_partial_head(self):
+        def notes_only(_workspace, path):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(VALID_NOTES)
+
+        self.run_main(notes_only, returncode=1)
+        [branch] = self.exec_branches()
+        self.assertNotIn("partial_head", self.summary(branch))
+        self.assertEqual(self.git(self.bare, "rev-parse", f"{branch}~1").strip(), self.plan_tip)
+        log = self.git(self.bare, "log", "--format=%s", f"{self.plan_tip}..{branch}")
+        self.assertNotIn("partial work", log)
+
+    def test_agent_commits_with_clean_tree_record_the_agent_head(self):
+        def committing_agent(workspace, path):
+            self.dirty_turn(workspace, path)
+            os.remove(os.path.join(workspace, "scratch.ignored"))
+            self.git(workspace, "add", "src")
+            self.git(workspace, "commit", "-q", "-m", "step 1")
+
+        self.run_main(committing_agent, breach=BudgetBreach("execute", "stage", 2700, 2700))
+        [branch] = self.exec_branches()
+        self.assertEqual(self.subject(f"{branch}~1"), "step 1")
+        author = self.git(self.bare, "log", "-1", "--format=%ae", f"{branch}~1").strip()
+        self.assertEqual(author, executor.EXECUTOR_GIT_EMAIL)
+        self.assertEqual(self.summary(branch)["partial_head"], self.git(self.bare, "rev-parse", f"{branch}~1").strip())
+
+    def test_success_path_has_one_completed_commit_and_no_partial_head(self):
+        code, _stderr, _ = self.run_main(self.dirty_turn)
+        self.assertEqual(code, 0)
+        [branch] = self.exec_branches()
+        log = self.git(self.bare, "log", "--format=%s", f"{self.plan_tip}..{branch}").splitlines()
+        self.assertEqual(len(log), 1)
+        self.assertIn("completed for plan", log[0])
+        self.assertNotIn("partial_head", self.summary(branch))
+        self.assertNotIn("scratch.ignored", self.git(self.bare, "ls-tree", "-r", "--name-only", branch).split())
+
+    def test_identity_is_configured_on_the_execution_branch_before_the_agent_runs(self):
+        seen = {}
+
+        def probe(workspace, path):
+            seen["email"] = self.git(workspace, "config", "--local", "user.email").strip()
+            seen["name"] = self.git(workspace, "config", "--local", "user.name").strip()
+            seen["branch"] = self.git(workspace, "rev-parse", "--abbrev-ref", "HEAD").strip()
+            self.dirty_turn(workspace, path)
+
+        self.run_main(probe)
+        self.assertEqual(seen["email"], executor.EXECUTOR_GIT_EMAIL)
+        self.assertEqual(seen["name"], executor.EXECUTOR_GIT_NAME)
+        self.assertRegex(seen["branch"], r"^I-456/P-123/E-\d+-antigravity-agent-gemini-3\.5-flash/_$")
+
+    def _reject_pushes(self):
+        hook = os.path.join(self.bare, "hooks", "pre-receive")
+        with open(hook, "w") as f:
+            f.write("#!/bin/sh\necho 'push refused by test hook' >&2\nexit 1\n")
+        os.chmod(hook, 0o755)
+
+    def secret_turn(self, workspace, path):
+        self.dirty_turn(workspace, path)
+        with open(os.path.join(workspace, "src/settings.py"), "w") as f:
+            f.write(f'TOKEN = "{self.SECRET}"\n')
+
+    def test_refused_push_prints_redacted_patch_and_exits_non_zero(self):
+        self._reject_pushes()
+        code, stderr, _ = self.run_main(self.secret_turn, breach=BudgetBreach("execute", "stage", 2700, 2700))
+        self.assertEqual(code, 1)
+        self.assertEqual(self.exec_branches(), [])
+        head = self.git(self.workspace, "rev-parse", "HEAD").strip()
+        branch = self.git(self.workspace, "rev-parse", "--abbrev-ref", "HEAD").strip()
+        self.assertIn(f"Error: push of execution branch '{branch}' was refused; local head {head}", stderr)
+        self.assertIn("push refused by test hook", stderr)
+        lines = stderr.splitlines()
+        self.assertIn(executor.UNPUSHED_PATCH_BEGIN, lines)
+        self.assertIn(executor.UNPUSHED_PATCH_END, lines)
+        patch_text = stderr.split(executor.UNPUSHED_PATCH_BEGIN, 1)[1].split(executor.UNPUSHED_PATCH_END, 1)[0]
+        # format-patch folds long subjects onto a continuation line.
+        self.assertRegex(patch_text, r"Subject: \[PATCH 1/2\] execute: E-\S+\s+partial work \(failed\) for plan")
+        self.assertIn("src/settings.py", patch_text)
+        self.assertNotIn(self.SECRET, stderr)
+
+    def test_refused_push_patch_applies_with_git_am(self):
+        self._reject_pushes()
+        _code, stderr, _ = self.run_main(self.dirty_turn, returncode=1)
+        patch_text = stderr.split(executor.UNPUSHED_PATCH_BEGIN + "\n", 1)[1].split(executor.UNPUSHED_PATCH_END, 1)[0]
+        patch_file = os.path.join(self.root, "unpushed.patch")
+        with open(patch_file, "w") as f:
+            f.write(patch_text)
+        self.git(self.seed, "am", "-q", patch_file)
+        with open(os.path.join(self.seed, "src/codebase.py")) as f:
+            self.assertIn("def added(): pass", f.read())
+
+    def test_oversized_unpushed_patch_falls_back_to_diffstat(self):
+        self._reject_pushes()
+        with patch.object(executor, "UNPUSHED_PATCH_MAX_BYTES", 16):
+            code, stderr, _ = self.run_main(self.secret_turn, returncode=1)
+        self.assertEqual(code, 1)
+        self.assertNotIn(executor.UNPUSHED_PATCH_BEGIN, stderr)
+        self.assertIn("src/new_module.py", stderr)
+        self.assertIn("Unpushed patch omitted", stderr)
+        self.assertIn("UNPUSHED_PATCH_MAX_BYTES", stderr)
+        self.assertNotIn(self.SECRET, stderr)
+
+    def _failed_branch_with_partial_head(self):
+        self.run_main(self.dirty_turn, breach=BudgetBreach("execute", "stage", 2700, 2700))
+        [branch] = self.exec_branches()
+        return branch, self.summary(branch)["partial_head"]
+
+    def test_resume_cuts_the_new_branch_from_a_descending_partial_head(self):
+        failed, partial_head = self._failed_branch_with_partial_head()
+        seen = {}
+
+        def continue_turn(workspace, path):
+            seen["shallow"] = self.git(workspace, "rev-parse", "--is-shallow-repository").strip()
+            # The partial work is already in the tree: the edit and the deletion survive.
+            seen["deleted"] = not os.path.exists(os.path.join(workspace, "src/obsolete.py"))
+            with open(os.path.join(workspace, "src/new_module.py"), "a") as f:
+                f.write("MORE = 2\n")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(VALID_NOTES)
+
+        url = f"file://{self.bare}"  # file:// keeps the clone shallow, as it is in the container
+        code, stderr, prompts = self.run_main(continue_turn, extra_args=(failed,), url=url)
+        self.assertEqual(seen, {"shallow": "true", "deleted": True})
+        self.assertEqual(code, 0, stderr)
+        [new] = [b for b in self.exec_branches() if b != failed]
+        self.assertEqual(self.git(self.bare, "rev-parse", f"{new}~1").strip(), partial_head)
+        self.assertIn(executor.continuation_note(failed, partial_head), prompts[0])
+        self.assertEqual(self.summary(new)["status"], "success")
+
+    def test_resume_without_partial_head_starts_from_the_plan_tip(self):
+        def notes_only(_workspace, path):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(VALID_NOTES)
+
+        self.run_main(notes_only, returncode=1)
+        [failed] = self.exec_branches()
+        _code, stderr, prompts = self.run_main(self.dirty_turn, extra_args=(failed,), url=f"file://{self.bare}")
+        self.assertIn(f"Starting from the plan tip of {self.PLAN}: no partial_head", stderr)
+        [new] = [b for b in self.exec_branches() if b != failed]
+        self.assertEqual(self.git(self.bare, "rev-parse", f"{new}~1").strip(), self.plan_tip)
+        self.assertNotIn("Continuation:", prompts[0])
+
+    def test_resume_from_a_partial_head_off_the_plan_tip_starts_from_the_plan_tip(self):
+        failed, _partial_head = self._failed_branch_with_partial_head()
+        # The plan branch moved on, so the old partial head no longer descends from the plan tip.
+        with open(os.path.join(self.seed, "src/codebase.py"), "a") as f:
+            f.write("# plan revision\n")
+        self.git(self.seed, "commit", "-q", "-am", "plan revision")
+        self.git(self.seed, "push", "-q", self.bare, f"HEAD:refs/heads/{self.PLAN}")
+        new_tip = self.git(self.seed, "rev-parse", "HEAD").strip()
+        _code, stderr, _ = self.run_main(self.dirty_turn, extra_args=(failed,), url=f"file://{self.bare}")
+        self.assertIn(f"Starting from the plan tip of {self.PLAN}: not a descendant of the plan tip", stderr)
+        [new] = [b for b in self.exec_branches() if b != failed]
+        self.assertEqual(self.git(self.bare, "rev-parse", f"{new}~1").strip(), new_tip)
+
+    def test_resume_refuses_a_branch_outside_the_plan(self):
+        _code, stderr, _ = self.run_main(self.dirty_turn, extra_args=("I-9/P-9/E-1-x-y/_",))
+        self.assertIn("is not an execution branch of this plan", stderr)

@@ -714,6 +714,21 @@ DECISION_OVER_BUDGET = "over_budget"
 # read that row, while a direct 'holon execute' still exits non-zero. Every other over_budget outcome exits 1.
 OVER_BUDGET_EXIT_CODE = 3
 
+# The repo-local identity of every commit the executor (and the agent it runs) makes inside the container.
+EXECUTOR_GIT_EMAIL = "executor-agent@holon-agentic-coder.com"
+EXECUTOR_GIT_NAME = "Holon Executor Agent"
+EXECUTIONS_LEDGER_REL = "holon-knowledge/ledger/executions.jsonl"
+
+# Marker lines around the unpushed-work patch printed on stderr when the execution branch push is refused.
+UNPUSHED_PATCH_BEGIN = "BEGIN UNPUSHED EXECUTION PATCH"
+UNPUSHED_PATCH_END = "END UNPUSHED EXECUTION PATCH"
+# 256 KiB: large enough for a typical execution's patch, small enough for the host's captured container log.
+UNPUSHED_PATCH_MAX_BYTES = 256 * 1024
+
+# A resumable execution branch name (validated before it reaches a refspec) and a full commit sha.
+_PARTIAL_BRANCH_RE = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/E-\d+-[A-Za-z0-9._-]+/_$")
+_SHA_RE = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
+
 # Normalised heading texts (lower-cased, hyphens, underscores and runs of spaces collapsed to one space) that open an
 # explicit sub-intent list. The legacy capitalised plural heading normalises to "sub intents".
 _SUB_INTENT_HEADINGS = frozenset({"sub intent list", "sub intents"})
@@ -1011,16 +1026,7 @@ def sync_and_reconcile_pre_push(repo_dir: str, target_branch: str = "main") -> t
         return True, f"Branch is already up to date with {target_ref}"
 
     # 4. Divergence detected: Attempt merge
-    run_cmd(
-        ["git", "config", "--local", "user.email", "executor-agent@holon-agentic-coder.com"],
-        cwd=repo_dir,
-        check=False,
-    )
-    run_cmd(
-        ["git", "config", "--local", "user.name", "Holon Executor Agent"],
-        cwd=repo_dir,
-        check=False,
-    )
+    _configure_executor_identity(repo_dir)
 
     merge_res = run_cmd(["git", "merge", target_ref, "--no-commit", "--no-ff"], cwd=repo_dir, check=False)
     if merge_res.returncode == 0:
@@ -1137,7 +1143,8 @@ def classify_execution_outcome(outcome: AuthoringOutcome) -> tuple[str, str, Bud
     may only touch the execution notes. Therefore the outcome is decided from the first turn:
 
     - a breach of the implementation turn is a non-success, even when a notes-only resume made the notes usable: the
-      code changes were cut off mid-implementation, so the breach is recorded and the partial code is not committed;
+      code changes were cut off mid-implementation, so the breach is recorded and the partial code is salvaged into a
+      ``partial work (failed)`` commit rather than recorded as a completed execution;
     - a breach confined to the notes-only re-prompt after a clean implementation turn never fails the execution: the
       code is complete, the breach is only logged and ``execution_notes_valid`` reports the notes as they are;
     - a non-zero first-turn exit counts as success only when the runner reported a structured truncation of its final
@@ -1152,7 +1159,7 @@ def classify_execution_outcome(outcome: AuthoringOutcome) -> tuple[str, str, Bud
         if outcome.follow_up == "resume" and outcome.budget_failure is not None:
             reason = "resume did not recover"
         else:
-            reason = "the implementation turn did not finish (partial execution notes salvaged; code not committed)"
+            reason = "the implementation turn did not finish (partial code and execution notes salvaged)"
         return "failure", f"Plan execution stopped: {breach.describe()}; {reason}", breach, reason
     if outcome.breach is not None:
         print(
@@ -1209,6 +1216,144 @@ def superseding_failure_row(base_row: dict[str, Any], summary: str) -> dict[str,
     }
 
 
+def _configure_executor_identity(repo_dir: str) -> None:
+    """Set the repo-local executor git identity, so the agent's own commits and the executor's commits can land.
+
+    Called straight after the execution branch is created (before the agent runs) and again before the executor
+    commits, because a git recovery re-initialises the repository and discards the local config.
+    """
+    run_cmd(["git", "config", "--local", "user.email", EXECUTOR_GIT_EMAIL], cwd=repo_dir, check=False)
+    run_cmd(["git", "config", "--local", "user.name", EXECUTOR_GIT_NAME], cwd=repo_dir, check=False)
+
+
+def _salvage_pathspec(notes_rel: str) -> list[str]:
+    """Pathspec for everything in the working tree except the executions ledger and this run's notes file."""
+    return ["--", ".", f":(exclude){EXECUTIONS_LEDGER_REL}", f":(exclude){notes_rel}"]
+
+
+def _salvage_partial_work(
+    repo_dir: str, exec_id: str, plan_branch: str, notes_rel: str, diff_base: str | None
+) -> str | None:
+    """Commit the agent's working-tree changes on a failed execution and return the partial head, if any.
+
+    Tracked edits and deletions and untracked files that ``.gitignore`` does not exclude are committed in a commit of
+    their own, ahead of the failure commit that carries the notes and the ledger row. Nothing is amended, squashed or
+    reset. Returns the sha of HEAD when it differs from ``diff_base`` (the salvage commit or the agent's own last
+    commit), else None: there was nothing to salvage.
+    """
+    run_cmd(["git", "add", "-A", *_salvage_pathspec(notes_rel)], cwd=repo_dir, check=False)
+    staged = run_cmd(["git", "diff", "--cached", "--quiet"], cwd=repo_dir, check=False)
+    if staged.returncode != 0:
+        _configure_executor_identity(repo_dir)
+        commit = run_cmd(
+            ["git", "commit", "-m", f"execute: {exec_id} partial work (failed) for plan {plan_branch}"],
+            cwd=repo_dir,
+            check=False,
+        )
+        if commit.returncode != 0:
+            left = run_cmd(["git", "diff", "--cached", "--name-only"], cwd=repo_dir, check=False).stdout or ""
+            print(
+                "Warning: could not commit the partial work; these files are left uncommitted: "
+                f"{redact_agent_secrets(', '.join(left.split()))}; reason: "
+                f"{redact_agent_secrets((commit.stderr or commit.stdout or '').strip())}",
+                file=sys.stderr,
+            )
+            # Unstage them, so the failure commit still carries only the notes and the ledger row.
+            run_cmd(["git", "reset", "-q", *_salvage_pathspec(notes_rel)], cwd=repo_dir, check=False)
+    head = run_cmd(["git", "rev-parse", "HEAD"], cwd=repo_dir, check=False)
+    sha = (head.stdout or "").strip() if head.returncode == 0 else ""
+    return sha if sha and sha != diff_base else None
+
+
+def _unpushed_patch_text(repo_dir: str, plan_tip: str) -> str:
+    """The redacted patch block for ``<plan tip>..HEAD``, or a redacted diffstat when it exceeds the size cap."""
+    patch = run_cmd(["git", "format-patch", "--stdout", f"{plan_tip}..HEAD"], cwd=repo_dir, check=False)
+    patch_text = redact_agent_secrets(patch.stdout or "")
+    if patch.returncode == 0 and len(patch_text.encode("utf-8")) <= UNPUSHED_PATCH_MAX_BYTES:
+        return f"{UNPUSHED_PATCH_BEGIN}\n{patch_text.rstrip(chr(10))}\n{UNPUSHED_PATCH_END}"
+    stat = run_cmd(["git", "diff", "--stat", f"{plan_tip}..HEAD"], cwd=repo_dir, check=False)
+    return (
+        f"{redact_agent_secrets(stat.stdout or '').rstrip()}\n"
+        f"Unpushed patch omitted: it could not be produced or exceeded UNPUSHED_PATCH_MAX_BYTES "
+        f"({UNPUSHED_PATCH_MAX_BYTES} bytes)."
+    )
+
+
+def _report_unpushed_work(repo_dir: str, exec_branch: str, plan_tip: str | None, reason: str) -> None:
+    """Report a refused push on stderr with a recoverable copy of the unpushed commits.
+
+    The host captures the container's stderr, so the patch between the marker lines survives the ``--rm`` container
+    without any new mount. Every line printed is redacted.
+    """
+    head = run_cmd(["git", "rev-parse", "HEAD"], cwd=repo_dir, check=False)
+    head_sha = (head.stdout or "").strip() or "unknown"
+    print(
+        f"Error: push of execution branch '{exec_branch}' was refused; local head {head_sha}: "
+        f"{redact_agent_secrets(reason.strip())}",
+        file=sys.stderr,
+    )
+    if not plan_tip:
+        print("Unpushed patch omitted: the plan tip is unknown.", file=sys.stderr)
+        return
+    print(_unpushed_patch_text(repo_dir, plan_tip), file=sys.stderr)
+
+
+def _resume_refusal(repo_dir: str, repo_url: str, partial_branch: str, plan_branch_prefix: str) -> str | None:
+    """Fetch a failed execution branch for a resume and return why it cannot be used, or None when it can."""
+    shaped = _PARTIAL_BRANCH_RE.match(partial_branch) and ".." not in partial_branch
+    if not shaped or not partial_branch.startswith(f"{plan_branch_prefix}/E-"):
+        return f"'{partial_branch}' is not an execution branch of this plan"
+    fetch = run_cmd(
+        ["git", "fetch", "--no-tags", repo_url, f"+refs/heads/{partial_branch}:refs/remotes/origin/{partial_branch}"],
+        cwd=repo_dir,
+        check=False,
+    )
+    return "fetch failed" if fetch.returncode != 0 else None
+
+
+def _resolve_partial_head(
+    repo_dir: str, repo_url: str, partial_branch: str, plan_tip: str | None, plan_branch_prefix: str
+) -> tuple[str | None, str]:
+    """Return the partial head to resume from (or None) and the reason, read from the failed branch's own ledger.
+
+    The partial head must be recorded on the branch's latest summary row of a failed execution and must descend
+    from the plan tip; otherwise the caller starts from the plan tip and logs the reason.
+    """
+    if not plan_tip:
+        return None, "the plan tip is unknown"
+    refusal = _resume_refusal(repo_dir, repo_url, partial_branch, plan_branch_prefix)
+    if refusal:
+        return None, refusal
+    from sandbox_executor.flow import _latest_execution_summary, _read_ledger_rows
+
+    ref = f"refs/remotes/origin/{partial_branch}"
+    exec_id = partial_branch.removesuffix("/_").rsplit("/", 1)[-1]
+    row = _latest_execution_summary(_read_ledger_rows(repo_dir, ref, "executions.jsonl"), exec_id) or {}
+    sha = row.get("partial_head")
+    if row.get("status") != "failure" or not isinstance(sha, str) or not _SHA_RE.match(sha):
+        return None, "no partial_head"
+    if run_cmd(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=repo_dir, check=False).returncode != 0:
+        return None, "the partial head is not on the fetched branch"
+    ancestry = ["git", "merge-base", "--is-ancestor", plan_tip, sha]
+    if run_cmd(ancestry, cwd=repo_dir, check=False).returncode != 0:
+        shallow = run_cmd(["git", "rev-parse", "--is-shallow-repository"], cwd=repo_dir, check=False)
+        if (shallow.stdout or "").strip() != "true":
+            return None, "not a descendant of the plan tip"
+        run_cmd(["git", "fetch", "--deepen=50", repo_url, f"refs/heads/{partial_branch}"], cwd=repo_dir, check=False)
+        if run_cmd(ancestry, cwd=repo_dir, check=False).returncode != 0:
+            return None, "not a descendant of the plan tip"
+    return sha, "resumed"
+
+
+def continuation_note(partial_branch: str, partial_head: str) -> str:
+    """Prompt note telling the agent it continues the partial work of a failed execution."""
+    return (
+        f"Continuation: the working tree already holds partial work from the failed execution {partial_branch} "
+        f"(commit {partial_head}); its execution notes stay on that branch. Review the existing commits and the "
+        "plan's completed steps, then continue from where that run stopped rather than redoing them."
+    )
+
+
 def main() -> None:
     is_default_repo = False
     repo_dir = None
@@ -1220,13 +1365,15 @@ def main() -> None:
     backup_path: str | None = None
 
     if len(sys.argv) < 2:
-        print("Usage: executor.py <plan_branch> [agent_name] [model_name]")
+        print("Usage: executor.py <plan_branch> [agent_name] [model_name] [partial_execution_branch]")
         sys.exit(1)
 
     plan_branch = sys.argv[1]
     # The host CLI always passes resolved values; no harness detection inside the container.
     agent_name = sys.argv[2] if len(sys.argv) > 2 else FALLBACK_AGENT
     model_name = sys.argv[3] if len(sys.argv) > 3 else default_model_for(agent_name)
+    # Passed by 'holon flow' only on a Stage 3 resume: a failed execution branch whose partial work to continue.
+    partial_branch = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else None
 
     runner = get_runner(agent_name)
     runner.validate()
@@ -1320,10 +1467,24 @@ def main() -> None:
         exec_id = f"E-{exec_seq}-{safe_agent}-{safe_model}"
         exec_branch = f"{plan_branch_prefix}/E-{exec_seq}-{safe_agent}-{safe_model}/_"
 
-        run_cmd(["git", "checkout", "-b", exec_branch], cwd=repo_dir)
-        # Plan branch tip: the base the empty-diff guard compares the agent's work against.
+        # Plan branch tip: the base the empty-diff guard compares the agent's work against, even on a resume.
         plan_tip_res = run_cmd(["git", "rev-parse", "HEAD"], cwd=repo_dir, check=False)
         plan_tip = plan_tip_res.stdout.strip() if plan_tip_res.returncode == 0 and plan_tip_res.stdout else None
+        partial_head: str | None = None
+        if partial_branch:
+            partial_head, resume_reason = _resolve_partial_head(
+                repo_dir, repo_url, partial_branch, plan_tip, plan_branch_prefix
+            )
+            if partial_head:
+                print(f"Resuming partial work from {partial_branch} at {partial_head}")
+            else:
+                print(
+                    f"Starting from the plan tip of {plan_branch}: {redact_agent_secrets(resume_reason)}",
+                    file=sys.stderr,
+                )
+        run_cmd(["git", "checkout", "-b", exec_branch, *([partial_head] if partial_head else [])], cwd=repo_dir)
+        # Before the agent runs, so the commits it makes step by step land on the execution branch.
+        _configure_executor_identity(repo_dir)
 
         # Proactively check and resolve any stage conflicts
         from sandbox_executor.flow import check_and_resolve_stage_conflicts
@@ -1455,6 +1616,8 @@ def main() -> None:
             notes_rel = f"executions/{exec_id}.md"
             notes_path = os.path.join(repo_dir, notes_rel)
             base_prompt = build_execution_prompt(repo_dir, plan_branch, plan_data, plan_content, intent_data, exec_id)
+            if partial_branch and partial_head:
+                base_prompt = f"{base_prompt}\n\n{continuation_note(partial_branch, partial_head)}"
             full_prompt = f"{base_prompt}\n\n{execution_write_protocol(notes_rel)}"
 
             budgets = load_budgets(os.environ)
@@ -1688,8 +1851,8 @@ def main() -> None:
                             )
 
             # Empty-diff guard (shared with holon flow and the review loop): an agent run that changes nothing
-            # outside holon-knowledge/ledger/, plans/ and executions/ is never recorded as success, and only the ledger
-            # row is committed. Fail closed when the diff cannot be computed.
+            # outside holon-knowledge/ledger/, plans/ and executions/ is never recorded as success, and whatever it did
+            # change is committed only as failed partial work. Fail closed when the diff cannot be computed.
             failure_reason: str | None = None
             if exec_status == "success":
                 # Imported here: sandbox_executor.git imports redact_text from this module.
@@ -1719,33 +1882,6 @@ def main() -> None:
                         summary = empty_diff_summary(plan_branch)
                 if failure_reason:
                     print(f"Error: {summary}", file=sys.stderr)
-
-            exec_entry = {
-                "entry_type": "summary",
-                "execution_id": exec_id,
-                "plan_branch": plan_branch,
-                "agent": agent_name,
-                "agent_version": runner.get_version(),
-                "model": model_name,
-                "status": exec_status,
-                "summary": summary,
-                "created_at": timestamp_str,
-                "agent_output_truncated": agent_output_truncated,
-                "agent_output_bytes": agent_output_bytes,
-                "ledger_revision": 1,
-                "execution_notes": notes_rel,
-                "execution_notes_valid": notes_valid,
-                "elapsed_seconds": round(stage_timer.elapsed(), 1),
-                "budget_seconds": stage_timer.budget_seconds,
-            }
-            if failure_reason:
-                exec_entry["failure_reason"] = failure_reason
-            try:
-                os.makedirs(ledger_dir, exist_ok=True)
-                with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as ef:
-                    ef.write(json.dumps(exec_entry) + "\n")
-            except Exception as e:
-                print(f"Warning: Failed to write execution ledger entry: {e}", file=sys.stderr)
 
             # Format modified/untracked markdown files with prettier
             try:
@@ -1783,10 +1919,46 @@ def main() -> None:
             except Exception as e:
                 print(f"Warning: Prettier formatting failed: {e}", file=sys.stderr)
 
+            # Salvage on failure, in two commits: first the agent's code changes ("partial work (failed)"), then the
+            # notes and the ledger row ("failed for plan"), so a failed execution never loses its code.
+            salvaged_head: str | None = None
+            salvage_base = base_tip if recovery_triggered else plan_tip
+            if exec_status != "success" and salvage_base:
+                salvaged_head = _salvage_partial_work(repo_dir, exec_id, plan_branch, notes_rel, salvage_base)
+
+            exec_entry = {
+                "entry_type": "summary",
+                "execution_id": exec_id,
+                "plan_branch": plan_branch,
+                "agent": agent_name,
+                "agent_version": runner.get_version(),
+                "model": model_name,
+                "status": exec_status,
+                "summary": summary,
+                "created_at": timestamp_str,
+                "agent_output_truncated": agent_output_truncated,
+                "agent_output_bytes": agent_output_bytes,
+                "ledger_revision": 1,
+                "execution_notes": notes_rel,
+                "execution_notes_valid": notes_valid,
+                "elapsed_seconds": round(stage_timer.elapsed(), 1),
+                "budget_seconds": stage_timer.budget_seconds,
+            }
+            if failure_reason:
+                exec_entry["failure_reason"] = failure_reason
+            if salvaged_head:
+                exec_entry["partial_head"] = salvaged_head
+            try:
+                os.makedirs(ledger_dir, exist_ok=True)
+                with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as ef:
+                    ef.write(json.dumps(exec_entry) + "\n")
+            except Exception as e:
+                print(f"Warning: Failed to write execution ledger entry: {e}", file=sys.stderr)
+
             if exec_status == "success":
                 commit_msg = f"execute: {exec_id} completed for plan {plan_branch}"
             else:
-                # Salvage commits (ledger + partial notes, never code) must not read as a completed execution.
+                # The failure commit (ledger row and notes, after the partial-work commit) never reads as completed.
                 commit_msg = f"execute: {exec_id} failed for plan {plan_branch}"
             trailers = format_commit_trailers(
                 action_origin=action_origin,
@@ -1821,7 +1993,7 @@ def main() -> None:
                 f for f in ("holon-knowledge/ledger/executions.jsonl",) if os.path.exists(os.path.join(repo_dir, f))
             ]
             if exec_status != "success" and os.path.exists(notes_path):
-                # Salvage: the notes (partial or not) explain the failure even when code changes are not staged.
+                # The notes (partial or not) explain the failure; the code changes are already in the partial commit.
                 add_targets.append(notes_rel)
             if add_targets:
                 run_cmd(["git", "add", *add_targets], cwd=repo_dir, check=False)
@@ -1837,8 +2009,7 @@ def main() -> None:
         branch_recorded = False
         staged_check = run_cmd(["git", "diff", "--cached", "--quiet"], cwd=repo_dir, check=False)
         if staged_check.returncode != 0:
-            run_cmd(["git", "config", "--local", "user.email", "executor-agent@holon-agentic-coder.com"], cwd=repo_dir)
-            run_cmd(["git", "config", "--local", "user.name", "Holon Executor Agent"], cwd=repo_dir)
+            _configure_executor_identity(repo_dir)
             run_cmd(["git", "commit", "-m", commit_msg], cwd=repo_dir)
 
             can_push = True
@@ -1933,12 +2104,19 @@ def main() -> None:
                     file=sys.stderr,
                 )
             else:
-                branch_recorded = True
                 skip_push = os.getenv("HOLON_SKIP_PUSH")
                 if not (skip_push and skip_push.lower() in ("1", "true", "yes")):
-                    run_cmd(["git", "push", "-u", "origin", exec_branch], cwd=repo_dir)
+                    push = run_cmd(["git", "push", "-u", "origin", exec_branch], cwd=repo_dir, check=False)
+                    if push.returncode != 0:
+                        # The container is removed on exit, so the commits survive only as the patch on stderr.
+                        _report_unpushed_work(repo_dir, exec_branch, plan_tip, push.stderr or push.stdout or "")
+                        if not skip_agent:
+                            print(stage_timer.summary("failed"))
+                        sys.exit(1)
+                    branch_recorded = True
                     print(f"Execution branch '{exec_branch}' successfully committed and pushed.")
                 else:
+                    branch_recorded = True
                     print(f"Skipping git push for {exec_branch} (push disabled via environment variable).")
                     print(f"Execution branch '{exec_branch}' successfully committed locally.")
         else:

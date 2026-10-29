@@ -5,8 +5,9 @@ beyond everyday arithmetic.
 
 ## The short version
 
-A few words first. An **intent** is a piece of work someone asks for. A **plan** is a proposed way to do it. The
-**flow** is the automated pipeline that plans the work, checks the plan and then runs it.
+A few words first. An **intent** is a piece of work someone asks for. A **plan** is a proposed way to do it. An
+**agent** is an AI program that does the work. The **flow** is the automated pipeline that plans the work, checks the
+plan and then runs it.
 
 Holon gives every plan two kinds of score before it runs. **Entropy** is a mess-and-risk score: how much disorder the
 plan is likely to cause. **Expected Value (EV)** is a worth-doing score: how much good the plan is likely to do once
@@ -49,7 +50,8 @@ EV is a single score for whether a plan is worth doing. It is built from five pa
 - **Impact:** the good it does if it works.
 - **Learning value:** what the system learns even if the plan fails. A failed experiment can still teach something.
 - **Entropy:** the mess it makes, as described above.
-- **Cost:** what it uses up, such as time, compute and tokens.
+- **Cost:** what it uses up, such as time, compute (computer processing time) and tokens (the chunks of text an AI model
+  reads and writes, which are paid for).
 
 Impact, learning value and cost are scores in the same consistent units, not real money, so they can be added and
 subtracted.

@@ -300,19 +300,19 @@ words, the planner and evaluator agree that the current best plan(s) are good en
 
 ## 7) Summary Table of Core Terms
 
-| Term                                     | Definition                                                                   | Role in System                                                                            |
-| ---------------------------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| Intent                                   | Unit of work or goal                                                         | Basic building block                                                                      |
-| Root Intent                              | Top-level intent requiring human review                                      | Human review boundary                                                                     |
-| Parent Intent                            | Immediate parent of a sub-intent                                             | Receives its sub-intents' PR merges                                                       |
-| Sub-Intent                               | Intent spawned from another intent by its deciding node (in practice a plan) | Runs autonomously; its PR is merged into its parent                                       |
-| $P(success)$                             | Probability intent will succeed                                              | Guides planning and merging decisions                                                     |
-| Impact                                   | Expected benefit delivered                                                   | Prioritisation metric                                                                     |
-| Cost                                     | Resources required                                                           | Balances benefit vs expenditure                                                           |
-| Learning Value                           | Epistemic gain delivered by executing an intent, independent of success      | Encourages bounded exploration, accelerates estimator calibration, and promotes KB growth |
-| Per-Intent Entropy ($\Delta S_{intent}$) | Measure of local disorder or risk introduced by a specific plan              | Evaluates planning risk and ranks plan variants                                           |
-| Expected Value ($EV$)                    | Combined metric for decision-making and selection                            | Drives autonomous agent behaviour                                                         |
-| Convergence                              | Condition when planning sufficiently explores and selects a best plan        | Signals planning termination and readiness for execution                                  |
+| Term                                     | Definition                                                              | Role in System                                                                            |
+| ---------------------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Intent                                   | Unit of work or goal                                                    | Basic building block                                                                      |
+| Root Intent                              | Top-level intent requiring human review                                 | Human review boundary                                                                     |
+| Parent Intent                            | Immediate parent of a sub-intent                                        | Receives its sub-intents' PR merges                                                       |
+| Sub-Intent                               | Intent spawned from another intent by its deciding plan                 | Runs autonomously; its PR is merged into its parent                                       |
+| $P(success)$                             | Probability intent will succeed                                         | Guides planning and merging decisions                                                     |
+| Impact                                   | Expected benefit delivered                                              | Prioritisation metric                                                                     |
+| Cost                                     | Resources required                                                      | Balances benefit vs expenditure                                                           |
+| Learning Value                           | Epistemic gain delivered by executing an intent, independent of success | Encourages bounded exploration, accelerates estimator calibration, and promotes KB growth |
+| Per-Intent Entropy ($\Delta S_{intent}$) | Measure of local disorder or risk introduced by a specific plan         | Evaluates planning risk and ranks plan variants                                           |
+| Expected Value ($EV$)                    | Combined metric for decision-making and selection                       | Drives autonomous agent behaviour                                                         |
+| Convergence                              | Condition when planning sufficiently explores and selects a best plan   | Signals planning termination and readiness for execution                                  |
 
 ---
 

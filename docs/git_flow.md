@@ -16,8 +16,9 @@ This document defines the **Git branching, rebasing, and merging discipline** fo
 ### 1.2 Fractal Intent Hierarchy
 
 - Intents can spawn sub-intents recursively
-- Each sub-intent gets its own intent branch, cut from its parent's intent branch and targeting it. The branch nests
-  under the node whose stage decided the split (sections 2.2-2.3 and 8), and its provenance records that node
+- Each sub-intent gets its own intent branch, nested under the node whose stage decided the split (the deciding node,
+  sections 2.2-2.3 and 8). The branch is cut from the deciding node's branch and merges back into it, and its provenance
+  records that node
 - In practice a split is decided by a plan: the planner writes a `## Sub-intent list` in its plan, and the flow runs
   each item as a sub-intent nested under that plan, which sits between the intent and its sub-intents in the hierarchy.
   This is what the flow does and what every worked example in this document shows. The model leaves other stages open --
@@ -30,17 +31,21 @@ This document defines the **Git branching, rebasing, and merging discipline** fo
 
 - **Root intents** (top-level intents) require human review before merging to `main`: the maintainer's PR merge is the
   only human step, and no stage before it waits for a human
-- **Sub-intents** merge only into their parent intent branch. In the current flow each child runs autonomously through
-  the full pipeline and opens a PR into its parent intent branch, which the maintainer merges; automatic,
-  evaluation-based merging of leaf sub-intents (sections 4.1, 5, 6, 7.4, 8, the sub-intent rows of section 12 and
-  sections 13.2-13.3) is the target model and is not yet automated; whether a nested parent's combined-diff PR also
-  stops for a human is open (section 4.2)
-- This applies recursively: sub-sub-intents merge to sub-intents, which merge to root intents
+- **Sub-intents** merge only into the branch of their deciding node (in practice the plan branch that listed them),
+  never directly into `main`. Below the root no human intervention is needed: the agent raises each sub-intent's PR
+  automatically and merges it automatically into the deciding plan or execution branch, for leaf sub-intents and nested
+  parents alike (sections 4.1, 4.2 and 13). Only the root intent's PR to `main` stops for a human. Until the
+  implementation follows, the current flow still leaves child PR merges to the maintainer (see Stage 3 under the flow
+  equivalence guarantee)
+- This applies recursively: sub-sub-intents merge into the deciding node inside their parent sub-intent, and the root
+  intent's whole tree reaches `main` only through the root PR
 
 ### 1.4 Terminology
 
 - **Root Intent**: Top-level intent that will eventually merge to `main` (requires human review)
 - **Parent Intent**: Immediate parent of a sub-intent in the tree (may itself be a sub-intent)
+- **Deciding Node**: The intent, plan or execution branch whose stage decided the split (in practice the plan). Its
+  branch is the sub-intent's branch base and merge target
 - **Sub-Intent**: Any intent spawned from another intent, in practice by the plan that decided the split (can have its
   own sub-intents)
 
@@ -50,6 +55,8 @@ This document defines the **Git branching, rebasing, and merging discipline** fo
 - Every ID (`I-`, `P-` and `E-`) is unique across the whole project: the timestamp plus the slug (intents), the agent
   and model (plans) or the action slug (executions). Ledgers key records on the bare ID, so a sub-intent's nested branch
   path only places it in the tree (section 2.2); it does not scope the ID.
+- Siblings under one deciding node always have different slugs, so their intent IDs (timestamp plus slug) cannot
+  collide, even when they are created in the same second.
 - Example: `I-1771422315-example-intent`, `P-1771422316-claude-code-claude-sonnet-4.6`, `E-1771422317-example-action`
 
 ---
@@ -78,12 +85,12 @@ A sub-intent's branch nests under the branch node whose stage decided the split,
 intent can have several competing plans (section 2.4), so a branch nested only under the intent would not say which plan
 spawned the sub-intent; nesting under the deciding node records it in the branch path itself.
 
-| Split decided by         | Sub-intent branch                                                                                       |
-| ------------------------ | ------------------------------------------------------------------------------------------------------- |
-| The intent stage         | `I-{timestamp}-{slug}/I-{timestamp}-{slug}/_`                                                           |
-| A plan (in practice)     | `I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/I-{timestamp}-{slug}/_`                             |
-| An execution             | `I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/E-{timestamp}-{action-slug}/I-{timestamp}-{slug}/_` |
-| A review of an execution | The reviewed execution's node, as for an execution (a review has no branch node of its own)             |
+| Split decided by     | Sub-intent branch                                                                                                        |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| The intent stage     | `I-{timestamp}-{slug}/I-{timestamp}-{slug}/_`                                                                            |
+| A plan (in practice) | `I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/I-{timestamp}-{slug}/_`                                              |
+| An execution         | `I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/E-{timestamp}-{action-slug}/I-{timestamp}-{slug}/_`                  |
+| A review             | The reviewed plan's node or the reviewed execution's node (either is acceptable; a review has no branch node of its own) |
 
 In practice, splits are decided by a plan: the planner writes a `## Sub-intent list` in its plan, the executor records
 it, and the flow runs each item as a sub-intent nested under that plan. Example:
@@ -107,17 +114,22 @@ I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-17718
 I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/E-1771890399-add-estimators/_
 ```
 
-Whichever node decided the split, the sub-intent branch is cut from its parent intent branch (`I-.../_`) and merges back
-into it (sections 3 and 4.1); the deciding node only fixes where the name sits. A sub-intent's flow checkpoint is keyed
-on its intent branch, so a child and a grandchild sharing a slug never overwrite each other's.
+Whichever node decided the split, the sub-intent branch is cut from the deciding node's branch and merges back into it
+(sections 3 and 4.1): a plan-decided sub-intent is cut from and merges into that plan branch (`I-.../P-.../_`), an
+execution-decided one is cut from and merges into that execution branch (`I-.../P-.../E-.../_`), and for an intent-stage
+split the deciding node is the intent branch itself (`I-.../_`). A sub-intent's flow checkpoint is keyed on its intent
+branch, so a child and a grandchild sharing a slug never overwrite each other's.
 
 **Provenance.** A sub-intent's `intents.jsonl` row and its plan header record the node that decided the split:
 
 - `parent_intent_id`: the parent intent.
 - `deciding_branch`: the deciding node's branch (`I-.../_`, `I-.../P-.../_` or `I-.../P-.../E-.../_`).
-- `parent_plan_id`: the deciding plan, when a plan, or an execution or review of that plan, decided the split.
-- `parent_execution_id`: the deciding execution, when an execution or a review of it decided the split.
-- `target_branch`: the parent intent branch the sub-intent merges into.
+- `parent_plan_id`: the deciding plan, when a plan, an execution of that plan or a review decided the split (a
+  review-decided split records the reviewed plan).
+- `parent_execution_id`: the deciding execution, when an execution decided the split, or when a review-decided split
+  nests under the reviewed execution.
+- `target_branch`: the branch the sub-intent merges into, which is the deciding node's branch (equal to
+  `deciding_branch`).
 
 The specific item of the deciding node's sub-intent list is identified by the sub-intent's own recorded goal and
 description.
@@ -128,7 +140,7 @@ description.
   "parent_intent_id": "I-1771890389-refactor-metrics",
   "deciding_branch": "I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_",
   "parent_plan_id": "P-1771890390-claude-code-claude-sonnet-4.6",
-  "target_branch": "I-1771890389-refactor-metrics/_"
+  "target_branch": "I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_"
 }
 ```
 
@@ -223,21 +235,21 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
 - **Explicit sub-intent list:** the executor records the parsed list on its `decomposed` summary row and writes no
   `intents.jsonl` rows. The flow then runs each item as a child intent, strictly one after another and never
   concurrently, through the full pipeline (intent, plan, execute, review, calibrate). Each child nests under the plan
-  that listed it and records it as its provenance (section 2.2), targets its immediate parent intent branch
-  (`target_branch`), never `main`, and stops at its own Stage 4 consensus halt. The first failing child fails the
-  parent's Stage 3; when all succeed, the parent's own Stage 4 and Stage 5 are skipped with reason `decomposed`, because
-  review and calibration ran per child. Nesting is bounded by `MAX_SUB_INTENT_DEPTH`, checked against the plan before
-  the executor is dispatched when the plan can be read.
+  that listed it, records it as its provenance (section 2.2) and is meant to target the deciding plan branch
+  (`target_branch`; see the current limitation below), never `main`. The first failing child fails the parent's Stage 3;
+  when all succeed, the parent's own Stage 4 and Stage 5 are skipped with reason `decomposed`, because review and
+  calibration ran per child. Nesting is bounded by `MAX_SUB_INTENT_DEPTH`, checked against the plan before the executor
+  is dispatched when the plan can be read.
 
-  **Current limitation:** decomposed children target the parent intent branch, and the flow stops there. Each child is
-  cut from the parent intent branch as it stood when that child started, so a later child does not see an earlier
-  child's unmerged changes; order dependent items accordingly. Aggregating the merged children and raising the parent
-  intent branch's PR to its own target (for a root intent, `main`) are not yet automated. The `holon flow` summary lists
-  each child's PR (or its execution branch when no PR was recorded), lists a child that itself decomposed as having no
-  PR of its own with its own children nested below it, and names this pending parent-to-target step, which the
-  maintainer performs after merging the child PRs. Those PR merges are the only human steps. Sections 4.1, 5, 6, 7.4, 8,
-  the sub-intent rows of section 12 and sections 13.2-13.3 describe the target model of automatic, evaluation-based leaf
-  sub-intent merges, which is not yet implemented (for a nested parent, see the open question in section 4.2).
+  **Current limitation (until the implementation follows):** the current flow still records the parent intent branch as
+  each decomposed child's `target_branch`, cuts each child from that branch, and stops each child at its own Stage 4
+  consensus halt, where the maintainer merges its PR; the decided rule (sections 2.2, 3.1 and 4.1) is that the child is
+  cut from and merged automatically into the deciding plan or execution branch, and only the root intent's PR to `main`
+  stops for a human. Each child is cut as the branch stood when that child started, so a later child does not see an
+  earlier child's unmerged changes; order dependent items accordingly. Aggregating the merged children and raising the
+  parent's PR to its own target (for a root intent, `main`) are not yet automated. The `holon flow` summary lists each
+  child's PR (or its execution branch when no PR was recorded), lists a child that itself decomposed as having no PR of
+  its own with its own children nested below it, and names this pending parent-to-target step.
 
 - **Over budget without a list:** the flow returns to Stage 2 automatically, asking for a smaller plan or an explicit
   sub-intent list (only a smaller plan when the intent is at the sub-intent depth limit), at most `MAX_REPLAN_ATTEMPTS`
@@ -328,17 +340,17 @@ waits for a human, and merging the PR is the only human step.
 
 ### 3.1 Dual Rebase Rule
 
-Every sub-intent **must rebase from its immediate parent**:
+Every sub-intent **must rebase from its deciding node's branch** (in practice the plan branch `I-.../P-.../_`), not the
+parent intent branch (section 2.2):
 
-1. **Before execution** (to get latest parent state)
+1. **Before execution** (to get that branch's latest state)
 2. **After execution** (to ensure clean merge)
 
-The immediate parent is the parent intent branch (`I-.../_`), not the node that decided the split (section 2.2).
-
-**Building on siblings (target model).** A sub-intent that depends on earlier siblings starts from, or rebases onto, the
-parent intent branch only after those siblings have merged into it, so no sub-intent is implemented blind to the work it
-depends on. The before-execution rebase of the dual rebase rule is that step. In the current flow each child is cut from
-the parent intent branch as it stood when that child started (see Stage 3 under the flow equivalence guarantee).
+**Building on siblings.** Siblings build on each other through the deciding node's branch: a sub-intent that depends on
+earlier siblings starts from, or rebases onto, that branch only after those siblings have merged into it, so no
+sub-intent is implemented blind to the work it depends on. The before-execution rebase of the dual rebase rule is that
+step. Until the implementation follows, the current flow cuts each child from the parent intent branch as it stood when
+that child started (see Stage 3 under the flow equivalence guarantee).
 
 ### 3.2 Rebase Commands
 
@@ -347,14 +359,14 @@ the parent intent branch as it stood when that child started (see Stage 3 under 
 ```bash
 $ git checkout I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_
 $ git fetch origin
-$ git rebase I-1771890389-refactor-metrics/_
+$ git rebase origin/I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
 ```
 
 **After execution:**
 
 ```bash
 $ git fetch origin
-$ git rebase I-1771890389-refactor-metrics/_
+$ git rebase origin/I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
 ```
 
 ### 3.3 Conflict Handling
@@ -369,18 +381,21 @@ If rebase fails:
 
 ## 4) Merge Rules
 
-### 4.1 Sub-Intent → Parent Merge (Automatic for Leaf Sub-Intents)
+### 4.1 Sub-Intent → Deciding Node Merge (Automatic)
 
-> [!NOTE] Target model. In the current flow, each child's PR into the parent intent branch is merged by the maintainer
-> (see Stage 3 under the flow equivalence guarantee).
+**Trigger:** Sub-intent execution completes successfully. The agent raises the sub-intent's PR into the deciding plan or
+execution branch automatically and merges it automatically, with no human intervention. This holds for a leaf sub-intent
+and for a nested parent alike; a nested parent merges once its own sub-intents have merged into their deciding node
+inside it, and its PR carries that deciding node's branch. (Until the implementation follows, the current flow leaves
+these merges to the maintainer; see Stage 3 under the flow equivalence guarantee.)
 
-**Trigger:** Sub-intent execution completes successfully. The merge is automatic for a leaf sub-intent; a nested parent
-merges the same way once its own sub-intents have merged into it, but whether its combined-diff PR also stops for a
-human is still open (section 4.2).
+In the worked commands a leaf sub-intent's merge source is written as its intent branch (`I-.../_`), shorthand for the
+branch that carries its work and that its PR carries; a nested parent's merge source is the branch of the deciding node
+inside it (the plan or execution that decided its own sub-intents), which its PR carries.
 
 **Process:**
 
-1. Evaluate all completed sub-intents under the same parent
+1. Evaluate all completed sub-intents under the same deciding node
 2. Compute `merge_value` for each:
    ```
    merge_value = impact_actual - conflict_risk - entropy_actual - redundancy_penalty
@@ -392,10 +407,11 @@ human is still open (section 4.2).
 **Example:**
 
 ```bash
-# Sub-intent completes
-$ git checkout I-1771890389-refactor-metrics/_
-$ git merge I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_
-# Automatic for a leaf sub-intent, no human review
+# Sub-intent completes: the agent merges it into the deciding plan branch
+$ git checkout I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
+$ git merge --no-ff I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_
+# Automatic for every sub-intent, no human review
+$ git push origin I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
 ```
 
 **Ledger event:**
@@ -406,7 +422,7 @@ $ git merge I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet
   "payload": {
     "intent_id": "I-1771890394-add-logging",
     "from_branch": "I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_",
-    "to_branch": "I-1771890389-refactor-metrics/_",
+    "to_branch": "I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_",
     "status": "success",
     "merge_type": "automatic_sub_intent",
     "human_review_required": false
@@ -418,11 +434,11 @@ $ git merge I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet
 
 **Trigger:** All sub-intents merged, root intent ready for promotion
 
-**Parent PR (target model):** once all sub-intents have merged into the root intent branch, the root intent's PR to
-`main` is raised, reviewed (Stage 4) and calibrated (Stage 5) on the combined diff, stopping at the human merge
-boundary. A nested parent (itself a sub-intent) merges into its own parent intent branch as described in section 4.1;
-whether its combined-diff PR also stops for a human is still an open design question. In the current flow this
-parent-to-target step is not yet automated (see Stage 3 under the flow equivalence guarantee).
+**Root PR:** once all sub-intents have merged into their deciding node's branch, the root intent's PR to `main` is
+raised, reviewed (Stage 4) and calibrated (Stage 5) on the combined diff, stopping at the human merge boundary. This is
+the only human stop in the tree. A nested parent is a sub-intent and merges automatically into its deciding node's
+branch as in section 4.1. Raising the root PR after decomposition is not yet automated in the current flow (see Stage 3
+under the flow equivalence guarantee).
 
 **Process:**
 
@@ -444,7 +460,8 @@ $ holon review approve I-1771890389-refactor-metrics
 
 # System merges
 $ git checkout main
-$ git merge I-1771890389-refactor-metrics/_
+# The root PR carries the deciding plan branch, into which every sub-intent merged
+$ git merge I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
 $ git push origin main
 ```
 
@@ -465,14 +482,15 @@ $ git push origin main
 
 **Forbidden:**
 
-- Sub-intent merging directly to `main` (must go through root intent)
+- Sub-intent merging directly to `main` or into any branch other than its deciding node's branch (the tree reaches
+  `main` only through the root intent's PR)
 - Merging without prior rebase
 - Merging failed intents (unless explicitly overridden by human)
 
 **Allowed:**
 
 - Discarding sub-intents (close branch without merging)
-- Multiple sub-intents merging to same parent
+- Multiple sub-intents merging into the same deciding node's branch
 - Recursive sub-intent trees up to `MAX_SUB_INTENT_DEPTH` levels below the root intent
 
 ---
@@ -526,14 +544,14 @@ def compute_redundancy_penalty(sub_intent):
 ### 6.1 Sequential Merge (Safe Default)
 
 ```python
-def sequential_merge(sub_intents, parent_branch):
+def sequential_merge(sub_intents, deciding_branch):
     # Sort by merge_value descending
     sorted_subs = sorted(sub_intents, key=lambda s: s.merge_value, reverse=True)
 
     for sub in sorted_subs:
-        rebase_from_parent(sub, parent_branch)
+        rebase_onto(sub, deciding_branch)
         if rebase_successful():
-            merge_to_parent(sub, parent_branch)
+            merge_into(sub, deciding_branch)
             log_merge(sub, "automatic_sequential")
         else:
             handle_conflict(sub)
@@ -542,7 +560,7 @@ def sequential_merge(sub_intents, parent_branch):
 ### 6.2 Parallel Merge (Optimised)
 
 ```python
-def parallel_merge(sub_intents, parent_branch):
+def parallel_merge(sub_intents, deciding_branch):
     # Cluster by file overlap
     clusters = cluster_by_file_overlap(sub_intents)
 
@@ -550,10 +568,10 @@ def parallel_merge(sub_intents, parent_branch):
         if cluster.no_internal_conflicts():
             # Merge all in parallel
             for sub in cluster:
-                rebase_and_merge(sub, parent_branch)
+                rebase_and_merge(sub, deciding_branch)
         else:
             # Fall back to sequential within cluster
-            sequential_merge(cluster, parent_branch)
+            sequential_merge(cluster, deciding_branch)
 ```
 
 ---
@@ -567,8 +585,12 @@ def parallel_merge(sub_intents, parent_branch):
 $ git checkout main
 $ git checkout -b I-1771890389-refactor-metrics/_
 
-# Sub-intent: nested under the plan that decided the split, cut from the parent intent branch, which it targets
-$ git checkout -b I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_ origin/I-1771890389-refactor-metrics/_
+# Deciding plan: cut from the root intent branch and pushed, so sub-intents can be cut from it
+$ git checkout -b I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_ I-1771890389-refactor-metrics/_
+$ git push origin I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
+
+# Sub-intent: nested under the plan that decided the split, cut from that plan branch, which it targets
+$ git checkout -b I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_ origin/I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
 ```
 
 ### 7.2 Execution
@@ -581,18 +603,19 @@ $ git checkout -b I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-
 ### 7.3 Rebase (Post-Execution)
 
 ```bash
-$ git rebase I-1771890389-refactor-metrics/_
+$ git rebase origin/I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
 ```
 
-### 7.4 Merge (Automatic for Leaf Sub-Intents)
+### 7.4 Merge (Automatic for Sub-Intents)
 
-Target model. In the current flow the maintainer merges the sub-intent's PR into the parent intent branch. For a nested
-parent, whether its combined-diff PR also stops for a human is open (section 4.2).
+The agent raises the sub-intent's PR and merges it automatically into the deciding plan branch, whether the sub-intent
+is a leaf or a nested parent (section 4.1).
 
 ```bash
-# Target model: the leaf sub-intent branch merges automatically
-$ git checkout I-1771890389-refactor-metrics/_
-$ git merge I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_
+# The sub-intent branch merges automatically into the deciding plan branch
+$ git checkout I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
+$ git merge --no-ff I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_
+$ git push origin I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
 ```
 
 ### 7.5 Promotion (Human Review for Root Intents)
@@ -600,7 +623,8 @@ $ git merge I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet
 ```bash
 $ holon review approve I-1771890389-refactor-metrics
 $ git checkout main
-$ git merge I-1771890389-refactor-metrics/_
+# The root PR carries the deciding plan branch, into which every sub-intent merged
+$ git merge I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
 $ git push origin main
 ```
 
@@ -609,6 +633,7 @@ $ git push origin main
 ```bash
 # Delete merged branches
 $ git branch -d I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_
+$ git branch -d I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
 $ git branch -d I-1771890389-refactor-metrics/_
 ```
 
@@ -665,27 +690,32 @@ main
 
 ### Merge Flow
 
-Sub-intents merge into their parent intent branch, never into the deciding plan branch.
+Sub-intents merge into the deciding plan branch, not the parent intent branch. Every merge below the root is raised and
+merged automatically by the agent.
 
-1. **Depth 2 → Depth 1** (automatic):
+1. **Depth 2 → deciding plan inside the sub-intent** (automatic):
    - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/I-1771890400-p-success/_`
-     → `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_`
+     →
+     `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/_`
    - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/I-1771890401-entropy/_`
-     → `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_`
+     →
+     `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/_`
    - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/I-1771890402-impact/_`
-     → `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_`
+     →
+     `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/_`
 
-2. **Depth 1 → Root**:
+2. **Depth 1 → root's deciding plan** (automatic):
    - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_` →
-     `I-1771890389-refactor-metrics/_` (automatic, leaf sub-intent)
+     `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_` (leaf sub-intent)
    - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890395-add-tests/_` →
-     `I-1771890389-refactor-metrics/_` (automatic, leaf sub-intent)
-   - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_` →
-     `I-1771890389-refactor-metrics/_` (nested parent, after step 1; whether its combined-diff PR also stops for a human
-     is open, see section 4.2)
+     `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_` (leaf sub-intent)
+   - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/_`
+     (the nested parent's PR, carrying the deciding plan branch inside it) →
+     `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_` (nested parent, after step 1)
 
-3. **Root → Main** (human review):
-   - `I-1771890389-refactor-metrics/_` → `main` (after human approval)
+3. **Root → Main** (human review, the only human step):
+   - The root intent's PR, carrying the combined diff of
+     `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_`, → `main` (after human approval)
 
 ---
 
@@ -694,10 +724,10 @@ Sub-intents merge into their parent intent branch, never into the deciding plan 
 ### 9.1 Automatic Resolution (Attempted First)
 
 ```python
-def auto_resolve_conflict(sub_intent, parent_branch):
+def auto_resolve_conflict(sub_intent, deciding_branch):
     # Try simple strategies
     if conflict_is_whitespace_only():
-        accept_parent_version()
+        accept_deciding_branch_version()
         return True
 
     if conflict_is_import_order():
@@ -713,8 +743,10 @@ def auto_resolve_conflict(sub_intent, parent_branch):
 
 ### 9.2 Reactive Intent (If Auto-Resolution Fails)
 
-The reactive intent is decided during the sub-intent's execution, so it nests under that execution (section 2.2). Like
-Example 3 in [Examples](examples.md), this illustrates the general rule only; the plan-decided split stays the practice.
+The reactive intent is decided during the sub-intent's execution, so it nests under that execution (section 2.2): its
+`deciding_branch` and `target_branch` are both that execution branch, which it is cut from and merges back into
+automatically. Like Example 3 in [Examples](examples.md), this illustrates the general rule only; the plan-decided split
+stays the practice.
 
 ```python
 import time
@@ -728,6 +760,7 @@ def handle_conflict(sub_intent):
             "deciding_branch": sub_intent.execution_branch,
             "parent_plan_id": sub_intent.plan_id,
             "parent_execution_id": sub_intent.execution_id,
+            "target_branch": sub_intent.execution_branch,
             "goal": f"Resolve rebase conflict in {sub_intent.conflict_files}",
             "intent_type": "reactive",
             "trigger": "rebase_conflict",
@@ -804,24 +837,25 @@ Even discarded intents provide value:
 
 ## 12) Summary Table
 
-| Operation                      | Automatic? | Human Review? | Rebase Required?       |
-| ------------------------------ | ---------- | ------------- | ---------------------- |
-| Leaf sub-intent → Parent merge | ✓ Yes      | ✗ No          | ✓ Yes (before & after) |
-| Root intent → Main merge       | ✗ No       | ✓ Yes         | ✓ Yes (before)         |
-| Branch creation                | ✓ Yes      | ✗ No          | N/A                    |
-| Conflict resolution            | Attempted  | If fails      | N/A                    |
-| Sub-intent discard             | ✓ Yes      | ✗ No          | N/A                    |
+| Operation                        | Automatic? | Human Review? | Rebase Required?       |
+| -------------------------------- | ---------- | ------------- | ---------------------- |
+| Sub-intent → Deciding node merge | ✓ Yes      | ✗ No          | ✓ Yes (before & after) |
+| Root intent → Main merge         | ✗ No       | ✓ Yes         | ✓ Yes (before)         |
+| Branch creation                  | ✓ Yes      | ✗ No          | N/A                    |
+| Conflict resolution              | Attempted  | If fails      | N/A                    |
+| Sub-intent discard               | ✓ Yes      | ✗ No          | N/A                    |
 
-**Key insight:** In the target model, human review is required at the root intent level and leaf sub-intent merges into
-their parent intent branch are automatic and evaluation-based; whether a nested parent's combined-diff PR also stops for
-a human is still open (see section 4.2). In the current flow, the maintainer also merges each child's PR into its parent
-intent branch; those PR merges are the only human steps, and no stage before them waits for a human.
+**Key insight:** Human review is required only at the root intent level: the root intent's PR to `main` is the only
+human stop. Every sub-intent merge, for leaf sub-intents and nested parents alike, is raised and merged automatically by
+the agent into the deciding node's branch, evaluation-based and with no human intervention. Until the implementation
+follows, the current flow leaves the child PR merges to the maintainer (see Stage 3 under the flow equivalence
+guarantee).
 
 ---
 
 ## 13) Edge Cases
 
-Sections 13.2 and 13.3 describe the target model. In the current flow the children of a sub-intent list run one at a
+Sections 13.2 and 13.3 describe the decided model. In the current flow the children of a sub-intent list run one at a
 time, and the first failing child fails the parent's Stage 3, so the remaining children do not run, nothing is merged
 automatically and no stage waits for a human.
 
@@ -844,7 +878,7 @@ If all sub-intents under a parent fail:
 
 If some sub-intents succeed and others fail:
 
-- Successful leaf sub-intents merge automatically (for a nested parent, see section 4.2)
+- Successful sub-intents, leaf or nested parent, merge automatically into their deciding node's branch
 - Failed sub-intents discarded
 - Parent intent continues with merged work
 
@@ -875,7 +909,7 @@ If a root intent remains open for extended period (e.g., weeks):
 ### 14.3 Rebase Frequently
 
 - Don't let branches diverge too far
-- Rebase from parent regularly, not just before/after execution
+- Rebase from the deciding node's branch regularly, not just before/after execution
 - Reduces conflict resolution cost
 
 ### 14.4 Prune Aggressively

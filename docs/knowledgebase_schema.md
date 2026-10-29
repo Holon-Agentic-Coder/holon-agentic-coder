@@ -256,9 +256,13 @@ Every KB entry MUST contain:
   "created_by": "agent-curator-05",
   "status": "active",
   "evidence": {
-    "ledger_refs": ["I-1771890505-implement-ev", "I-1771890602-add-caching", "I-1771891062-tune-entropy-weights"],
+    "ledger_refs": [
+      "I-1771891122-add-metric-caching",
+      "I-1771891131-add-metric-logging",
+      "I-1771891143-refactor-p-success"
+    ],
     "success_count": 0,
-    "failure_count": 7
+    "failure_count": 3
   },
   "tags": ["rebase", "conflict", "concurrent-work"],
   "human_approved": true,

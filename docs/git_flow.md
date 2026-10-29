@@ -15,14 +15,13 @@ This document defines the **Git branching, rebasing, and merging discipline** fo
 
 ### 1.2 Fractal Intent Hierarchy
 
-- Intents can spawn sub-intents recursively; in practice each split is decided by one of the intent's plans, which sits
-  between the intent and its sub-intents in the hierarchy
+- Intents can spawn sub-intents recursively
 - Each sub-intent gets its own intent branch, cut from its parent's intent branch and targeting it. The branch nests
   under the node whose stage decided the split (sections 2.2-2.3 and 8), and its provenance records that node
 - In practice a split is decided by a plan: the planner writes a `## Sub-intent list` in its plan, and the flow runs
-  each item as a sub-intent nested under that plan. This is what the flow does and what every example in this document
-  shows. The model leaves other stages open -- a split may also be decided at the intent, execution or review stage, as
-  long as the hierarchy is honoured (section 2.2)
+  each item as a sub-intent nested under that plan, which sits between the intent and its sub-intents in the hierarchy.
+  This is what the flow does and what every example in this document shows. The model leaves other stages open -- a
+  split may also be decided at the intent, execution or review stage, as long as the hierarchy is honoured (section 2.2)
 - Depth is capped: `holon flow` refuses to nest sub-intents more than `MAX_SUB_INTENT_DEPTH` levels below the root
   intent (see Stage 3 under the flow equivalence guarantee)
 
@@ -32,8 +31,9 @@ This document defines the **Git branching, rebasing, and merging discipline** fo
   only human step, and no stage before it waits for a human
 - **Sub-intents** merge only into their parent intent branch. In the current flow each child runs autonomously through
   the full pipeline and opens a PR into its parent intent branch, which the maintainer merges; automatic,
-  evaluation-based sub-intent merging (sections 4.1, 5, 6, 7.4, 8, the sub-intent rows of section 12 and sections
-  13.2-13.3) is the target model and is not yet automated
+  evaluation-based merging of leaf sub-intents (sections 4.1, 5, 6, 7.4, 8, the sub-intent rows of section 12 and
+  sections 13.2-13.3) is the target model and is not yet automated; whether a nested parent's combined-diff PR also
+  stops for a human is open (section 4.2)
 - This applies recursively: sub-sub-intents merge to sub-intents, which merge to root intents
 
 ### 1.4 Terminology
@@ -235,8 +235,8 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
   each child's PR (or its execution branch when no PR was recorded), lists a child that itself decomposed as having no
   PR of its own with its own children nested below it, and names this pending parent-to-target step, which the
   maintainer performs after merging the child PRs. Those PR merges are the only human steps. Sections 4.1, 5, 6, 7.4, 8,
-  the sub-intent rows of section 12 and sections 13.2-13.3 describe the target model of automatic, evaluation-based
-  sub-intent merges, which is not yet implemented.
+  the sub-intent rows of section 12 and sections 13.2-13.3 describe the target model of automatic, evaluation-based leaf
+  sub-intent merges, which is not yet implemented (for a nested parent, see the open question in section 4.2).
 
 - **Over budget without a list:** the flow returns to Stage 2 automatically, asking for a smaller plan or an explicit
   sub-intent list (only a smaller plan when the intent is at the sub-intent depth limit), at most `MAX_REPLAN_ATTEMPTS`
@@ -368,12 +368,14 @@ If rebase fails:
 
 ## 4) Merge Rules
 
-### 4.1 Sub-Intent → Parent Merge (Automatic)
+### 4.1 Sub-Intent → Parent Merge (Automatic for Leaf Sub-Intents)
 
 > [!NOTE] Target model. In the current flow, each child's PR into the parent intent branch is merged by the maintainer
 > (see Stage 3 under the flow equivalence guarantee).
 
-**Trigger:** Sub-intent execution completes successfully
+**Trigger:** Sub-intent execution completes successfully. The merge is automatic for a leaf sub-intent; a nested parent
+merges the same way once its own sub-intents have merged into it, but whether its combined-diff PR also stops for a
+human is still open (section 4.2).
 
 **Process:**
 
@@ -391,8 +393,8 @@ If rebase fails:
 ```bash
 # Sub-intent completes
 $ git checkout I-1771890389-refactor-metrics/_
-$ git merge I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_
-# Automatic, no human review
+$ git merge I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_
+# Automatic for a leaf sub-intent, no human review
 ```
 
 **Ledger event:**
@@ -401,8 +403,8 @@ $ git merge I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet
 {
   "event_type": "git_merge_attempted",
   "payload": {
-    "intent_id": "I-1771890392-improve-estimators",
-    "from_branch": "I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_",
+    "intent_id": "I-1771890394-add-logging",
+    "from_branch": "I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_",
     "to_branch": "I-1771890389-refactor-metrics/_",
     "status": "success",
     "merge_type": "automatic_sub_intent",
@@ -565,7 +567,7 @@ $ git checkout main
 $ git checkout -b I-1771890389-refactor-metrics/_
 
 # Sub-intent: nested under the plan that decided the split, cut from the parent intent branch, which it targets
-$ git checkout -b I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_ origin/I-1771890389-refactor-metrics/_
+$ git checkout -b I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_ origin/I-1771890389-refactor-metrics/_
 ```
 
 ### 7.2 Execution
@@ -581,14 +583,15 @@ $ git checkout -b I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-
 $ git rebase I-1771890389-refactor-metrics/_
 ```
 
-### 7.4 Merge (Automatic for Sub-Intents)
+### 7.4 Merge (Automatic for Leaf Sub-Intents)
 
-Target model. In the current flow the maintainer merges the sub-intent's PR into the parent intent branch.
+Target model. In the current flow the maintainer merges the sub-intent's PR into the parent intent branch. For a nested
+parent, whether its combined-diff PR also stops for a human is open (section 4.2).
 
 ```bash
-# Target model: the sub-intent branch merges automatically
+# Target model: the leaf sub-intent branch merges automatically
 $ git checkout I-1771890389-refactor-metrics/_
-$ git merge I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_
+$ git merge I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_
 ```
 
 ### 7.5 Promotion (Human Review for Root Intents)
@@ -604,7 +607,7 @@ $ git push origin main
 
 ```bash
 # Delete merged branches
-$ git branch -d I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_
+$ git branch -d I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_
 $ git branch -d I-1771890389-refactor-metrics/_
 ```
 
@@ -671,13 +674,14 @@ Sub-intents merge into their parent intent branch, never into the deciding plan 
    - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/I-1771890402-impact/_`
      → `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_`
 
-2. **Depth 1 → Root** (automatic):
-   - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_` →
-     `I-1771890389-refactor-metrics/_`
+2. **Depth 1 → Root**:
    - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_` →
-     `I-1771890389-refactor-metrics/_`
+     `I-1771890389-refactor-metrics/_` (automatic, leaf sub-intent)
    - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890395-add-tests/_` →
-     `I-1771890389-refactor-metrics/_`
+     `I-1771890389-refactor-metrics/_` (automatic, leaf sub-intent)
+   - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_` →
+     `I-1771890389-refactor-metrics/_` (nested parent, after step 1; whether its combined-diff PR also stops for a human
+     is open, see section 4.2)
 
 3. **Root → Main** (human review):
    - `I-1771890389-refactor-metrics/_` → `main` (after human approval)
@@ -836,7 +840,7 @@ If all sub-intents under a parent fail:
 
 If some sub-intents succeed and others fail:
 
-- Successful sub-intents merge automatically
+- Successful leaf sub-intents merge automatically (for a nested parent, see section 4.2)
 - Failed sub-intents discarded
 - Parent intent continues with merged work
 

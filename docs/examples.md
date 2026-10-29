@@ -638,9 +638,10 @@ Human creates a root intent to "Implement metrics module". Agent decomposes into
 nests under the plan that listed it (`P-1771890501-claude-code-claude-sonnet-4.6` for the root's sub-intents), so the
 branch path records which plan spawned it.
 
-> [!NOTE] The merge steps below show the target model of automatic sub-intent merges. In the current `holon flow`, the
-> children run one at a time, each through the full pipeline, and each opens a PR into its parent intent branch that the
-> maintainer merges; nesting stops at `MAX_SUB_INTENT_DEPTH`.
+> [!NOTE] The merge steps below show the target model of automatic merges for leaf sub-intents; whether a nested parent
+> such as `I-1771890503-implement-entropy` also stops for a human is still open (see [Git Flow](git_flow.md) section
+> 4.2). In the current `holon flow`, the children run one at a time, each through the full pipeline, and each opens a PR
+> into its parent intent branch that the maintainer merges; nesting stops at `MAX_SUB_INTENT_DEPTH`.
 
 ### Intent hierarchy
 
@@ -871,7 +872,8 @@ I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6
 3. Rebases from parent after execution
 4. Merges to parent (target model: no human review)
 
-**After both sub-sub-intents complete:**
+**After both sub-sub-intents complete**, the nested parent merges into the root intent branch (target model; whether its
+combined-diff PR also stops for a human is still open, see [Git Flow](git_flow.md) section 4.2):
 
 ```bash
 $ git checkout I-1771890500-implement-metrics-module/_
@@ -1655,11 +1657,10 @@ workflow when executing a sub-intent.
 
 - Root Intent: `I-1771890389-refactor-metrics`
   - Current Branch: `I-1771890389-refactor-metrics/_`
-- Deciding Plan: `P-1771890390-claude-code-claude-sonnet-4.6` (its `## Sub-intent list` names the sub-intent as item 1)
-- Sub-Intent: `I-1771890392-improve-estimators`
-  - Sub-Branch:
-    `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_` (nested
-    under the deciding plan, cut from the parent intent branch)
+- Deciding Plan: `P-1771890390-claude-code-claude-sonnet-4.6` (its `## Sub-intent list` names the sub-intent as item 2)
+- Sub-Intent: `I-1771890394-add-logging` (a leaf: it has no sub-intents of its own)
+  - Sub-Branch: `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_`
+    (nested under the deciding plan, cut from the parent intent branch)
 
 ### Git Command Sequence
 
@@ -1670,27 +1671,27 @@ workflow when executing a sub-intent.
 git fetch origin
 
 # Create and checkout the sub-branch rooted at the current parent branch tip
-git checkout -b I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_ origin/I-1771890389-refactor-metrics/_
+git checkout -b I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_ origin/I-1771890389-refactor-metrics/_
 ```
 
 #### 2) Write code and run tests inside the isolated sandbox
 
-The agent modifies the codebase (e.g., creating `holon/metrics/estimators.py`).
+The agent modifies the codebase (e.g., creating `holon/metrics/metrics_logging.py`).
 
 #### 3) Commit the changes within the sandbox
 
 ```bash
 # Stage the modified files
-git add holon/metrics/estimators.py tests/test_estimators.py
+git add holon/metrics/metrics_logging.py tests/test_metrics_logging.py
 
 # Commit with semantic message
-git commit -m "feat: improve metrics estimators"
+git commit -m "feat: add metrics logging"
 ```
 
 #### 4) Rebase onto the latest parent branch (handling concurrency)
 
-If a sibling sub-intent branch was merged into `I-1771890389-refactor-metrics/_` while `I-1771890392-improve-estimators`
-was executing, the harness pulls updates and rebases:
+If a sibling sub-intent branch was merged into `I-1771890389-refactor-metrics/_` while `I-1771890394-add-logging` was
+executing, the harness pulls updates and rebases:
 
 ```bash
 # Fetch latest parent commits
@@ -1707,13 +1708,13 @@ target model; in the current flow the child's PR into the parent intent branch i
 
 ```bash
 # Push branch to remote
-git push origin I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_
+git push origin I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_
 
 # Switch back to the parent branch
 git checkout I-1771890389-refactor-metrics/_
 
 # Merge the sub-intent branch with no-fast-forward to preserve history
-git merge --no-ff I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_ -m "merge: sub-intent I-1771890392-improve-estimators"
+git merge --no-ff I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_ -m "merge: sub-intent I-1771890394-add-logging"
 
 # Push the merged parent branch
 git push origin I-1771890389-refactor-metrics/_
@@ -1725,10 +1726,10 @@ The remote and local sub-branches are immediately pruned to maintain system clea
 
 ```bash
 # Delete local sub-branch
-git branch -d I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_
+git branch -d I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_
 
 # Delete remote sub-branch
-git push origin --delete I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_
+git push origin --delete I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_
 ```
 
 ---

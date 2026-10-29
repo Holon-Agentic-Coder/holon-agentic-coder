@@ -121,18 +121,21 @@ resolver falls back for them.
 
 Child intent rows: when Stage 3 runs a recorded sub-intent list, the flow creates each child through the same Stage 1
 intent creator, so each child appends an ordinary intent row on its own intent branch. Its payload carries `slug`,
-`description`, `goal`, `parent_intent_id` and `target_branch` (both the parent's intent branch, `I-.../_`), the parent
-plan's resolved `entropy_budget` when one was recorded, the parent's `labels` when present, and `sub_intent_depth`
-(integer, `>= 1`): the child's nesting level below the root intent. Root intent rows normally omit the field and are
-read as depth `0`; missing or non-numeric values are also read as `0`. The flow refuses to run a sub-intent list whose
-children would exceed `sandbox_executor.budgets.MAX_SUB_INTENT_DEPTH` (`2`).
+`description`, `goal`, `parent_intent_id`, `target_branch` (the deciding node's branch, equal to `deciding_branch`
+below; until the implementation follows, the current flow still records the parent intent branch `I-.../_` here, and
+historic rows are never rewritten), the parent plan's resolved `entropy_budget` when one was recorded, the parent's
+`labels` when present, and `sub_intent_depth` (integer, `>= 1`): the child's nesting level below the root intent. Root
+intent rows normally omit the field and are read as depth `0`; missing or non-numeric values are also read as `0`. The
+flow refuses to run a sub-intent list whose children would exceed `sandbox_executor.budgets.MAX_SUB_INTENT_DEPTH` (`2`).
 
 Child intent rows also record the node that decided the split, under which the child's branch nests (see
 [Git Flow](git_flow.md#22-sub-intent-branch-nested-under-the-deciding-node)): `deciding_branch` (the deciding node's
-branch, for a plan-decided split the plan branch `I-.../P-.../_`), `parent_plan_id` (the deciding plan, when a plan or
-an execution or review of that plan decided the split), and `parent_execution_id` (when an execution or a review of it
-decided the split); the list item it came from is identified by its own `goal` and `description`. A sub-intent promoted
-to its own root intent records its source plan (`parent_plan_id`), so its lineage is not lost.
+branch, for a plan-decided split the plan branch `I-.../P-.../_`), `parent_plan_id` (the deciding plan, when a plan, an
+execution of that plan or a review decided the split; a review-decided split may nest under the reviewed plan or the
+reviewed execution), and `parent_execution_id` (when an execution decided the split, or a review-decided split nests
+under the reviewed execution); the list item it came from is identified by its own `goal` and `description`. Siblings
+under one deciding node always have different slugs, so their ids cannot collide. A sub-intent promoted to its own root
+intent records its source plan (`parent_plan_id`), so its lineage is not lost.
 
 Stage 2 planner entrypoint rows: when a plan turn breached its turn, stall or stage budget and the plan was not
 recovered (the resume or re-prompt did not finish, or no stage time was left for one), one `ACT-BUDGET` action
@@ -715,7 +718,7 @@ These are invariants that validators should enforce:
    - `0 <= predicted.learning_value <= 10`
    - `predicted.entropy >= 0`
    - `actual.entropy >= 0`
-9. If intent merges into parent, parent branch must match hierarchy (no merges to `main` from sub-intents).
+9. If a sub-intent merges, the target must be its deciding node's branch (no merges to `main` from sub-intents).
 
 ---
 

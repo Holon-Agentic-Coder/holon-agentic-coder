@@ -50,3 +50,12 @@ cannot collide because siblings have different slugs) across `README.md`, `docs/
 - Principle 5 and 6, the git-flow key rules and the branch-naming paragraph now state the deciding-node branch base,
   merge target and rebase source, automatic sub-intent PR merges, the root-only human stop, decision 2 and the sibling
   invariant. Trust/autonomy sections untouched.
+
+### Step 4: `docs/core_concepts.md` and sub-intent sections of `docs/ledger_schema.md`
+
+- Core concepts 1.3, 1.4, 5.2 and the summary table: deciding-node base and merge target, automatic merges for leaf
+  sub-intents and nested parents, root-only human stop, sibling invariant; open-question pointers removed.
+- Ledger schema: child intent row `target_branch` is the deciding node's branch, with the framing-rule note that the
+  current flow still records the parent intent branch; decision 2 and the sibling invariant added; validation rule 9
+  reworded. `git diff` hunks fall only at the child-intent-row paragraphs (from line 121) and rule 9 (line 718); the
+  write-guarantee wording is untouched.

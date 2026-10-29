@@ -1,5 +1,9 @@
 # metrics.md
 
+New to these ideas? Read [Entropy and Expected Value, Explained Plainly](metrics-explained.md) first. It explains in
+everyday language, with a worked example, what entropy and EV mean, how they relate and what the entropy budget does.
+This page is the formal reference.
+
 This document defines the **bootstrap (day-zero) metrics** used by Holon to:
 
 - estimate **P(success)** and **entropy** _before execution_,
@@ -81,6 +85,9 @@ Where:
 - EV is used primarily for _ranking plan variants_.
 - EV does not need to be in “real dollars”; it just needs consistent units.
 
+Plain-language walkthrough with a worked example:
+[metrics-explained.md](metrics-explained.md#a-worked-example-from-this-repositorys-ledger).
+
 ---
 
 ### 1.3 Success: meaning and measurement
@@ -135,6 +142,8 @@ It is intentionally not “Shannon entropy”; it’s a **risk/complexity proxy*
 - comparable across plans.
 
 For detailed definitions of the constituent factors (SSA, IRR, CL, SER, NOV), see the [Appendix](appendix.md).
+
+Plain-language explanation: [metrics-explained.md](metrics-explained.md#what-entropy-means-here).
 
 ---
 
@@ -541,6 +550,8 @@ $$EV = P(success)\cdot Impact + \mu\cdot LearningValue - \lambda \cdot \Delta S_
 - `μ = 0.5`
 - `w = [0.30, 0.25, 0.20, 0.15, 0.10]`
 - `α=β=γ=δ=ε=1.0`
+
+Plain-language companion to this reference: [metrics-explained.md](metrics-explained.md).
 
 ---
 

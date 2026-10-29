@@ -50,6 +50,14 @@ You can filter tests by their pytest markers (such as `integration_test`) or by 
   ```
   This runs `pytest -n auto --dist worksteal -m "not integration_test and not stress"`. To debug serially, use
   `uv run task test -n 0`, or disable xdist with `uv run pytest -p no:xdist -m "not integration_test and not stress"`.
+- **Repeated runs:** by default, run the affected tests first with `uv run pytest <paths>`, then the full suite once
+  with `uv run task test`. Repeat runs only when the intent requires measuring performance or timing behaviour
+  (test-suite speed, a timing-sensitive or flaky test, a stated performance target). Take N from the intent, or state N
+  and the reason; never open-ended or "many" runs. Every repetition runs with `-n auto --dist worksteal`, including runs
+  under CPU load; run serially only when serial behaviour is itself the measurement, and then once. Report each run's
+  pass/fail count and pytest-reported time, plus the median, from real runs only, and never re-measure a commit that
+  already has a recorded figure. For scale: two test files took about 30 s per serial run under CPU load, against 16.97
+  s under `-n auto`.
 - **Run a specific test file:**
   ```bash
   uv run pytest apps/sandbox-executor/tests/test_planner.py

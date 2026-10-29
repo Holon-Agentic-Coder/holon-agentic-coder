@@ -34,12 +34,12 @@ Five ingredients feed into it:
 - **Sandbox Escape Risk (SER):** how likely the work is to break out of the safety sandbox it runs in.
 - **Novelty (NOV):** how unfamiliar the territory is. Work the system has done many times before is less risky.
 
-The documented weights say how much each ingredient counts: SSA 30 %, IRR 25 %, CL 20 %, SER 15 % and NOV 10 %. These
-weights are documented in `holon-config/metrics/entropy_config.json` but are not yet loaded by the runtime (the running
-software does not use them yet); today each plan's entropy number is the planner's own estimate, made with these five
-ingredients in mind.
+The documented weights say how much each ingredient counts: SSA 30%, IRR 25%, CL 20%, SER 15% and NOV 10%. These weights
+are documented in `holon-config/metrics/entropy_config.json` but are not yet loaded by the runtime (the running software
+does not use them yet); today each plan's entropy number is the planner's own estimate, made with these five ingredients
+in mind.
 
-A higher number means more mess. Zero is the floor: no plan has negative entropy.
+A higher number means more mess. Zero is the floor: a plan's entropy is never meant to be negative.
 
 ## What Expected Value (EV) means here
 
@@ -66,7 +66,9 @@ Think of deciding whether a weekend project is worth it. You weigh how likely yo
 enjoy the result and what you would pick up along the way, against the mess in the garage and the money and hours it
 takes.
 
-Precisely: when several plans compete for the same intent, the one with the higher EV is preferred.
+Precisely: EV adds the chance-weighted impact and half the learning value, then subtracts three tenths of the entropy
+and the cost. The flow calculates each plan's EV and records it in the plan ledger. The formal model intends EV as the
+score for ranking competing plans for the same intent, but today the flow does not choose between plans by it.
 
 ## How entropy and EV fit together
 

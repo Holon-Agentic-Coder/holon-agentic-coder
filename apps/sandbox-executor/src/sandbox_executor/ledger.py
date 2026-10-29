@@ -295,6 +295,41 @@ class LedgerLock:
                 self._file.close()
 
 
+class LedgerRewriteError(RuntimeError):
+    """Raised when a ledger write changed bytes that were already in the file instead of only appending."""
+
+
+def _read_ledger_bytes(path: str) -> bytes:
+    """Return the bytes of a ledger file, treating a missing file as empty."""
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except FileNotFoundError:
+        return b""
+
+
+def _first_divergence(before: bytes, after: bytes) -> int:
+    """Return the offset of the first byte at which ``after`` stops matching ``before``."""
+    limit = min(len(before), len(after))
+    return next((i for i in range(limit) if before[i] != after[i]), limit)
+
+
+def assert_ledger_prefix(path: str, before: bytes) -> None:
+    """Fail closed unless the ledger's pre-write bytes are a byte prefix of its current bytes.
+
+    Args:
+        path: Path to the ledger file.
+        before: Bytes of the ledger captured before the write.
+
+    Raises:
+        LedgerRewriteError: When the write rewrote, reordered or truncated existing bytes.
+    """
+    after = _read_ledger_bytes(path)
+    if not after.startswith(before):
+        offset = _first_divergence(before, after)
+        raise LedgerRewriteError(f"Ledger {path} was rewritten, not appended: first divergence at byte {offset}")
+
+
 @contextlib.contextmanager
 def atomic_ledger_append(
     filepath: str,
@@ -302,14 +337,36 @@ def atomic_ledger_append(
     initial_delay: float = 0.02,
     max_delay: float = 0.5,
 ) -> Iterator[TextIO]:
-    """Atomic context manager for appending records to a ledger file with advisory locking."""
+    """Atomic context manager for appending records to a ledger file with advisory locking.
+
+    The bytes present when the lock is taken must remain a byte prefix of the file once the caller's block has
+    written; otherwise ``LedgerRewriteError`` is raised.
+    """
     with LedgerLock(
         filepath=filepath,
         timeout=timeout,
         initial_delay=initial_delay,
         max_delay=max_delay,
     ) as f:
+        before = _read_ledger_bytes(filepath)
         yield f
+        f.flush()
+        assert_ledger_prefix(filepath, before)
+
+
+@contextlib.contextmanager
+def suppress_ledger_failures() -> Iterator[None]:
+    """Suppress a failed best-effort ledger write, except ``LedgerRewriteError``, which always propagates.
+
+    Use it in place of ``contextlib.suppress(Exception)`` around a ledger write, so a rewritten ledger stops the stage
+    instead of being committed and pushed.
+    """
+    try:
+        yield
+    except LedgerRewriteError:
+        raise
+    except Exception as exc:
+        logger.debug("Best-effort ledger write failed: %s", type(exc).__name__)
 
 
 def _prepare_shape_preserving_action(record: dict[str, Any]) -> dict[str, Any]:
@@ -380,7 +437,7 @@ def append_action_record(
         data = ActionRecord.from_dict(copy_rec).to_dict()
 
     line = json.dumps(data) + "\n"
-    with LedgerLock(ledger_path) as f:
+    with atomic_ledger_append(ledger_path) as f:
         f.write(line)
 
     return data
@@ -424,7 +481,8 @@ def try_append_action_record(
 
     A failed append is never silent: it is logged at WARNING level with the label, record
     identifier, ledger path and exception detail, and mirrored to ``log_fn`` when supplied.
-    No alternative ledger file is ever written.
+    No alternative ledger file is ever written. A ``LedgerRewriteError`` is never reported:
+    it propagates so a rewritten ledger always fails closed.
 
     Args:
         ledger_path: Path to the executions.jsonl ledger file.
@@ -447,6 +505,8 @@ def try_append_action_record(
         else:
             record = CredentialRedactor.redact_structure(dict(record))
         return append_action_record(ledger_path, record, preserve_shape=preserve_shape)
+    except LedgerRewriteError:
+        raise
     except Exception as exc:
         _report_ledger_failure(ledger_path, label, record_id, exc, log_fn)
         return None
@@ -462,7 +522,8 @@ def try_append_ledger_line(
     """Append an arbitrary JSON ledger row verbatim under LedgerLock, reporting failures.
 
     Intended for summary, intent and plan rows whose shape must stay unchanged. Follows the
-    same fail-loud contract as ``try_append_action_record``.
+    same fail-loud contract as ``try_append_action_record``, so a ``LedgerRewriteError``
+    propagates rather than being reported.
 
     Args:
         ledger_path: Path to the JSONL ledger file.
@@ -478,6 +539,8 @@ def try_append_ledger_line(
         with atomic_ledger_append(ledger_path) as f:
             f.write(line)
         return True
+    except LedgerRewriteError:
+        raise
     except Exception as exc:
         record_id = str(record.get("action_id") or record.get("execution_id") or record.get("plan_id") or "?")
         _report_ledger_failure(ledger_path, label, record_id, exc, log_fn)
@@ -500,7 +563,7 @@ def append_summary_record(ledger_path: str, record: SummaryRecord | dict[str, An
         data = dict(record)
         data["entry_type"] = "summary"
 
-    with LedgerLock(ledger_path) as f:
+    with atomic_ledger_append(ledger_path) as f:
         f.write(json.dumps(data) + "\n")
 
     return data

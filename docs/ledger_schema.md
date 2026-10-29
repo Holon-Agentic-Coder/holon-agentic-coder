@@ -94,6 +94,15 @@ ledger appends are guarded by `LedgerLock` (`sandbox_executor.ledger.LedgerLock`
   guaranteeing on-disk persistence without torn writes or interleaving.
 - **Graceful Fallback**: On platforms or filesystems without flock support, logs a warning and proceeds with
   uncoordinated appends.
+- **Pure-Append Guarantee**: Every ledger write holds `LedgerLock` and is a pure append, except resolving a ledger that
+  holds git conflict markers, which is rewritten in place under the same lock with one side's bytes kept as a byte
+  prefix. `assert_ledger_prefix` checks, inside every `atomic_ledger_append` window and after a conflict resolution
+  (whose kept side is also checked before the file is touched), that the bytes held before the write are a byte prefix
+  of the bytes afterwards, and fails closed with `LedgerRewriteError`, which every caller lets propagate so the stage
+  stops before a rewritten ledger is committed or pushed. The guard covers each write window; no code path rewrites a
+  ledger between appends. Conflict resolution only appends the other side's lines that the kept side lacks, in their
+  original order (an identical line is not repeated), and never sorts, deduplicates by key or re-serialises rows. Failed
+  and dry-run stages never stage a ledger.
 
 #### Flow Stage Record Matrix
 

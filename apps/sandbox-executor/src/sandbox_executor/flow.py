@@ -30,7 +30,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal, TextIO
 
 from sandbox_executor.agent_defaults import (
     DEFAULT_MODELS,
@@ -90,6 +90,9 @@ from sandbox_executor.knowledge import (
 )
 from sandbox_executor.ledger import (
     ActionRecord,
+    LedgerLock,
+    LedgerRewriteError,
+    assert_ledger_prefix,
     atomic_ledger_append,
     generate_action_id,
     parse_commit_trailers,
@@ -530,25 +533,23 @@ class ConflictResolutionError(RuntimeError):
     """Raised when an unresolvable merge conflict is encountered during a pipeline stage."""
 
 
-def _parse_ledger_timestamp(val: Any) -> datetime:
-    """Parse an ISO-8601 timestamp string into a timezone-aware UTC datetime.
+#: Git conflict markers. A real marker always starts a line; a JSON row starts with ``{``, so a marker that only
+#: appears inside a row's text (for example a description mentioning ``|||||||``) is never a conflict.
+_CONFLICT_MARKERS = ("<<<<<<<", "|||||||", "=======", ">>>>>>>")
+#: The conflict section that each marker opens: ours, the diff3 base, theirs, then back to lines both sides share.
+_SECTION_AFTER_MARKER = {"<<<<<<<": "ours", "|||||||": "base", "=======": "theirs", ">>>>>>>": "both"}
+#: The side of a conflicted ledger whose bytes stay an untouched prefix of the resolution.
+PrefixSide = Literal["ours", "theirs"]
+LEDGER_REL_PATHS = (
+    os.path.join("holon-knowledge", "ledger", "intents.jsonl"),
+    os.path.join("holon-knowledge", "ledger", "plans.jsonl"),
+    os.path.join("holon-knowledge", "ledger", "executions.jsonl"),
+)
 
-    Args:
-        val: Timestamp value (usually string).
 
-    Returns:
-        datetime: Parsed datetime object in UTC, or datetime.min in UTC if parsing fails.
-    """
-    if not val or not isinstance(val, str):
-        return datetime.min.replace(tzinfo=UTC)
-    try:
-        clean = val.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(clean)
-        if dt.tzinfo is None:
-            return dt.replace(tzinfo=UTC)
-        return dt
-    except Exception:
-        return datetime.min.replace(tzinfo=UTC)
+def _has_conflict_marker_lines(content: str) -> bool:
+    """Return True when any line of ``content`` starts with a git conflict marker."""
+    return any(line.startswith(_CONFLICT_MARKERS) for line in content.splitlines())
 
 
 def extract_valid_ledger_rows(content: str) -> list[dict[str, Any]]:
@@ -564,12 +565,9 @@ def extract_valid_ledger_rows(content: str) -> list[dict[str, Any]]:
         None: Malformed lines and git conflict markers are ignored.
     """
     rows: list[dict[str, Any]] = []
-    conflict_prefixes = ("<<<<<<<", "=======", ">>>>>>>", "|||||||")
     for line in content.splitlines():
         stripped = line.strip()
-        if not stripped:
-            continue
-        if any(stripped.startswith(prefix) for prefix in conflict_prefixes):
+        if not stripped or stripped.startswith(_CONFLICT_MARKERS):
             continue
         try:
             parsed = json.loads(stripped)
@@ -582,211 +580,154 @@ def extract_valid_ledger_rows(content: str) -> list[dict[str, Any]]:
     return rows
 
 
-def reconcile_ledger_rows(rows: list[dict[str, Any]], ledger_type: str) -> list[dict[str, Any]]:
-    """Deterministically deduplicate and chronologically order ledger entries.
+def _split_conflict_sides(content: str) -> tuple[list[str], list[str]]:
+    """Split conflicted content into the ours and theirs files, each keeping the shared lines in place.
 
-    For rows with matching primary keys:
-    - If `ledger_revision` is present, the entry with the higher revision is preferred.
-    - Otherwise, the entry with the later `created_at` timestamp is retained, or
-      the first entry is preserved if timestamps are identical.
-    All entries are returned sorted ascending by `created_at`.
+    Lines keep their exact text and line endings. The diff3 base section is dropped: on an append-only ledger each
+    side already holds every base row.
+    """
+    ours: list[str] = []
+    theirs: list[str] = []
+    section = "both"
+    for line in content.splitlines(keepends=True):
+        marker = line[:7]
+        if marker in _SECTION_AFTER_MARKER:
+            section = _SECTION_AFTER_MARKER[marker]
+            continue
+        if section in ("both", "ours"):
+            ours.append(line)
+        if section in ("both", "theirs"):
+            theirs.append(line)
+    return ours, theirs
 
-    Primary key mappings:
-    - intents: 'branch' then 'slug'
-    - plans: 'plan_id'
-    - executions: 'execution_id'
+
+def _append_only_union(prefix_lines: list[str], other_lines: list[str]) -> str:
+    """Return the prefix side unchanged, followed by the other side's lines it lacks, in their original order.
+
+    Lines are compared as exact text (ignoring only the line ending), so an identical line is not repeated; rows are
+    never parsed, deduplicated by key, sorted or re-serialised.
+    """
+    prefix = "".join(prefix_lines)
+    if prefix and not prefix.endswith("\n"):
+        prefix += "\n"
+    seen = {line.rstrip("\r\n") for line in prefix_lines}
+    missing = (line.rstrip("\r\n") for line in other_lines if line.strip())
+    extra = [line + "\n" for line in dict.fromkeys(missing) if line not in seen]
+    return prefix + "".join(extra)
+
+
+def resolve_append_only_conflict(content: str, prefix_side: PrefixSide = "ours") -> tuple[str, str]:
+    """Resolve conflicted ledger content by appending, keeping one side's bytes as an untouched prefix.
 
     Args:
-        rows: List of ledger entry dictionaries.
-        ledger_type: Type of ledger ('intents', 'plans', 'executions', or generic).
+        content: Ledger content containing line-anchored git conflict markers.
+        prefix_side: ``"ours"`` or ``"theirs"``: the side whose file must stay a byte prefix of the result.
 
     Returns:
-        list[dict[str, Any]]: Deduplicated, chronologically sorted list of ledger entry dictionaries.
+        tuple[str, str]: The prefix side's file and the resolved content, which starts with it.
 
     Raises:
-        None: Handles arbitrary schema rows safely.
+        ValueError: When ``prefix_side`` is neither ``"ours"`` nor ``"theirs"``.
     """
-    clean_type = str(ledger_type).lower().removesuffix(".jsonl").strip()
-
-    def get_pk(row: dict[str, Any]) -> str:
-        if "intent" in clean_type:
-            val = row.get("branch") or row.get("slug")
-            if val:
-                return str(val)
-        elif "plan" in clean_type:
-            val = row.get("plan_id")
-            if val:
-                return str(val)
-        elif "exec" in clean_type:
-            val = row.get("action_id") or row.get("execution_id")
-            if val:
-                return str(val)
-        # Fallback cascade for generic ledger types
-        for candidate in ("action_id", "execution_id", "plan_id", "branch", "slug"):
-            if row.get(candidate):
-                return str(row[candidate])
-        return json.dumps(row, sort_keys=True)
-
-    deduped: dict[str, dict[str, Any]] = {}
-
-    for row in rows:
-        pk = get_pk(row)
-        if pk not in deduped:
-            deduped[pk] = row
-            continue
-
-        existing = deduped[pk]
-        try:
-            cand_rev = int(row.get("ledger_revision") or 1)
-        except (ValueError, TypeError):
-            cand_rev = 1
-        try:
-            exist_rev = int(existing.get("ledger_revision") or 1)
-        except (ValueError, TypeError):
-            exist_rev = 1
-
-        if cand_rev > exist_rev:
-            deduped[pk] = row
-        elif cand_rev < exist_rev:
-            continue
-        else:
-            cand_ts = _parse_ledger_timestamp(row.get("created_at"))
-            exist_ts = _parse_ledger_timestamp(existing.get("created_at"))
-            if cand_ts > exist_ts:
-                deduped[pk] = row
-            # If timestamps are identical, retain existing entry
-
-    result = list(deduped.values())
-    result.sort(key=lambda r: (_parse_ledger_timestamp(r.get("created_at")), str(r.get("created_at", ""))))
-    return result
+    if prefix_side not in ("ours", "theirs"):
+        raise ValueError(f"prefix_side must be 'ours' or 'theirs', not {prefix_side!r}")
+    ours, theirs = _split_conflict_sides(content)
+    prefix_lines, other_lines = (theirs, ours) if prefix_side == "theirs" else (ours, theirs)
+    return "".join(prefix_lines), _append_only_union(prefix_lines, other_lines)
 
 
-def reconcile_jsonl_ledger_conflict(content: str, ledger_type: str) -> str:
-    """Parse, reconcile, and resolve JSONL ledger content containing standard or diff3 conflict markers.
+def reconcile_jsonl_ledger_conflict(content: str, prefix_side: PrefixSide = "ours") -> str:
+    """Resolve JSONL ledger content containing standard or diff3 conflict markers by pure append.
 
-    Handles diff3 conflict blocks:
-        <<<<<<< HEAD (ours)
-        ||||||| merged common ancestors (base)
-        ======= (theirs)
-        >>>>>>> branch
-
-    Section state flags are reset upon encountering ||||||| so ancestor blocks are processed cleanly.
-    Valid JSON dictionary rows are extracted and deduplicated, prioritising 'action_id' before 'execution_id'
-    in primary key resolution so discrete action records do not collide.
-    """
-    clean_type = str(ledger_type).lower().removesuffix(".jsonl").strip()
-
-    rows: list[dict[str, Any]] = []
-
-    for line in content.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if any(stripped.startswith(m) for m in ("<<<<<<<", "|||||||", "=======", ">>>>>>>")):
-            continue
-
-        try:
-            parsed = json.loads(stripped)
-            if isinstance(parsed, dict):
-                rows.append(parsed)
-            else:
-                logger.warning(f"Skipping non-dictionary JSON ledger line: {stripped[:100]}")
-        except Exception:
-            logger.debug(f"Skipping unparseable ledger line: {stripped[:100]}")
-
-    reconciled = reconcile_ledger_rows(rows, clean_type)
-    if not reconciled:
-        return ""
-    return "\n".join(json.dumps(r) for r in reconciled) + "\n"
-
-
-def reconcile_ledger_content(content: str, ledger_type: str) -> str:
-    """Parse, reconcile, and serialise ledger content by union.
+    Content without line-anchored conflict markers is returned unchanged. Otherwise the ``prefix_side`` file is kept
+    byte for byte and the other side's missing lines follow in their original order; rows are never deduplicated by
+    key, sorted by timestamp or re-serialised.
 
     Args:
-        content: Raw JSONL string content, potentially containing git conflict markers.
-        ledger_type: Ledger type name ('intents', 'plans', 'executions').
+        content: Raw JSONL ledger content.
+        prefix_side: ``"ours"`` or ``"theirs"``: the side whose file stays a byte prefix.
 
     Returns:
-        str: Formatted, reconciled JSONL content string ending with a newline.
-
-    Raises:
-        None: Malformed lines are dropped gracefully.
+        str: The resolved ledger content.
     """
-    return reconcile_jsonl_ledger_conflict(content, ledger_type)
+    if not _has_conflict_marker_lines(content):
+        return content
+    return resolve_append_only_conflict(content, prefix_side)[1]
 
 
-def reconcile_ledger_file(file_path: str, ledger_type: str | None = None) -> bool:
-    """Reconcile a single JSONL ledger file in place, resolving conflicts by union.
+def _write_resolved_ledger(locked: TextIO, file_path: str, prefix: str, resolved: str) -> None:
+    """Rewrite a conflicted ledger in place through its held ``LedgerLock``, then check the prefix side survived.
+
+    The file holds conflict markers, so it cannot be resolved by appending. Writing through the locked descriptor keeps
+    the inode, so an appender waiting on the lock appends after the resolution instead of to a replaced file; git still
+    holds both sides in the index if the write is interrupted. The prefix is checked before the file is touched and
+    again afterwards; either check fails closed with ``LedgerRewriteError`` if any byte of the kept side moved.
+    """
+    if not resolved.startswith(prefix):
+        raise LedgerRewriteError(f"Resolution of {file_path} does not keep the prefix side byte for byte")
+    locked.flush()
+    locked.buffer.truncate(0)
+    locked.buffer.write(resolved.encode("utf-8"))
+    locked.flush()
+    assert_ledger_prefix(file_path, prefix.encode("utf-8"))
+
+
+def _resolve_ledger_under_lock(file_path: str, prefix_side: PrefixSide) -> None:
+    """Under ``LedgerLock``, read the ledger and resolve any line-anchored conflict markers by pure append."""
+    with LedgerLock(file_path) as locked:
+        with open(file_path, encoding="utf-8", newline="") as f:
+            content = f.read()
+        if _has_conflict_marker_lines(content):
+            _write_resolved_ledger(locked, file_path, *resolve_append_only_conflict(content, prefix_side))
+
+
+def reconcile_ledger_file(file_path: str, prefix_side: PrefixSide = "ours") -> bool:
+    """Resolve git conflict markers in a ledger file by pure append; a file without markers is left untouched.
 
     Args:
         file_path: Absolute or relative path to the ledger file.
-        ledger_type: Optional ledger type name. Inferred from file basename if None.
+        prefix_side: ``"ours"`` or ``"theirs"``: the side whose file stays a byte prefix.
 
     Returns:
-        bool: True if reconciliation succeeded and file was written, False on IO or other failure.
+        bool: True if the file has no conflict or was resolved, False when it is missing or cannot be resolved.
 
     Raises:
-        None: Exceptions are caught, logged, and return False.
+        LedgerRewriteError: When the resolution would move or moved a byte of the kept side; never turned into False.
     """
     if not os.path.exists(file_path):
-        logger.warning(f"Ledger file does not exist: {file_path}")
+        logger.error(f"Failed to reconcile ledger file '{file_path}': it does not exist")
         return False
-
-    if ledger_type is None:
-        base = os.path.basename(file_path).lower()
-        if "intent" in base:
-            ledger_type = "intents"
-        elif "plan" in base:
-            ledger_type = "plans"
-        elif "exec" in base:
-            ledger_type = "executions"
-        else:
-            ledger_type = "generic"
-
     try:
-        with open(file_path, encoding="utf-8") as f:
-            content = f.read()
-        reconciled = reconcile_ledger_content(content, ledger_type)
-        dir_name = os.path.dirname(os.path.abspath(file_path))
-        temp_file = os.path.join(dir_name, f".{os.path.basename(file_path)}.tmp.{os.getpid()}")
-        try:
-            with open(temp_file, "w", encoding="utf-8") as f:
-                f.write(reconciled)
-            os.replace(temp_file, file_path)
-        finally:
-            if os.path.exists(temp_file):
-                with contextlib.suppress(OSError):
-                    os.remove(temp_file)
+        _resolve_ledger_under_lock(file_path, prefix_side)
         return True
+    except LedgerRewriteError:
+        raise
     except Exception as exc:
         logger.error(f"Failed to reconcile ledger file '{file_path}': {exc}")
         return False
 
 
-def reconcile_ledgers(repo_dir: str) -> list[str]:
-    """Reconcile all three Holon ledger files in a repository.
-
-    Args:
-        repo_dir: Path to repository root.
-
-    Returns:
-        list[str]: List of reconciled relative file paths.
-
-    Raises:
-        None: Non-existent files are skipped safely.
-    """
-    ledger_files = [
-        os.path.join("holon-knowledge", "ledger", "intents.jsonl"),
-        os.path.join("holon-knowledge", "ledger", "plans.jsonl"),
-        os.path.join("holon-knowledge", "ledger", "executions.jsonl"),
-    ]
-    reconciled_paths: list[str] = []
-    for rel_path in ledger_files:
+def _ledgers_with_conflict_markers(repo_dir: str) -> list[str]:
+    """Return the ledgers in the working tree that hold line-anchored git conflict markers."""
+    found: list[str] = []
+    for rel_path in LEDGER_REL_PATHS:
         full_path = os.path.join(repo_dir, rel_path)
-        if os.path.exists(full_path) and reconcile_ledger_file(full_path):
-            reconciled_paths.append(rel_path)
-    return reconciled_paths
+        with contextlib.suppress(OSError, UnicodeDecodeError), open(full_path, encoding="utf-8") as f:
+            if _has_conflict_marker_lines(f.read()):
+                found.append(rel_path)
+    return found
+
+
+def _resolve_conflicting_ledger(repo_dir: str, rel_path: str) -> bool:
+    """Resolve one conflicted working-tree ledger by pure append, without staging it.
+
+    Staging belongs to the commit step that owns the ledger append, so a failed or dry run never leaves a ledger
+    staged in the operator's checkout. ``ours`` (the checked-out HEAD's file) is kept as the prefix because this
+    pre-check cannot tell which side is published: the checkout already holds those bytes, and the pre-push sync,
+    which knows the target branch, keeps ``theirs`` instead. Either way every row of both sides is kept.
+    """
+    full_path = os.path.join(repo_dir, rel_path)
+    return os.path.exists(full_path) and reconcile_ledger_file(full_path)
 
 
 def check_and_resolve_stage_conflicts(
@@ -802,8 +743,8 @@ def check_and_resolve_stage_conflicts(
     - Inspects upstream mergeability of 'branch' against target_branch. The flow no longer checks its
       branches out, so each stage names the branch it works from; None skips this probe (Stage 1, whose
       branch does not exist yet).
-    - If conflicts exist in holon-knowledge/ledger/*.jsonl, applies reconcile_jsonl_ledger_conflict
-      to resolve them automatically and stages them.
+    - A ledger counts as conflicted only when git reports it unmerged or a line starts with a conflict
+      marker. Conflicted ledgers are resolved by pure append (``reconcile_ledger_file``) and never staged.
     - If non-ledger code conflicts exist and cannot be cleanly resolved, raises ConflictResolutionError.
 
     Args:
@@ -875,52 +816,25 @@ def check_and_resolve_stage_conflicts(
         except Exception as exc:
             logger.debug("Non-fatal upstream mergeability probe in check_and_resolve_stage_conflicts: %s", exc)
 
-    # Also check if any ledger files in the working directory contain conflict markers
-    ledger_files = [
-        os.path.join("holon-knowledge", "ledger", "intents.jsonl"),
-        os.path.join("holon-knowledge", "ledger", "plans.jsonl"),
-        os.path.join("holon-knowledge", "ledger", "executions.jsonl"),
-    ]
-    for rel_path in ledger_files:
-        full_path = os.path.join(repo_dir, rel_path)
-        if os.path.exists(full_path):
-            try:
-                with open(full_path, encoding="utf-8") as f:
-                    content = f.read()
-                if any(m in content for m in ("<<<<<<<", "|||||||", "=======", ">>>>>>>")) and (
-                    rel_path not in conflicting_files
-                ):
-                    conflicting_files.append(rel_path)
-            except Exception:
-                pass
+    # Also count ledgers whose working-tree copy holds line-anchored conflict markers
+    for rel_path in _ledgers_with_conflict_markers(repo_dir):
+        if rel_path not in conflicting_files:
+            conflicting_files.append(rel_path)
 
-    # 3. Resolve ledger conflicts
+    # 3. Resolve ledger conflicts by pure append; never stage them here
     non_ledger_conflicts: list[str] = []
     for f in conflicting_files:
         norm_f = f.replace("\\", "/")
-        if "holon-knowledge/ledger" in norm_f and norm_f.endswith(".jsonl"):
-            full_path = os.path.join(repo_dir, norm_f)
-            if probe_branch != "HEAD" and f in probed_files:
-                # The probed branch is not checked out, so the working-tree copy is not its ledger; append-only
-                # ledgers reconcile at merge time and must not be rewritten in the operator's checkout here.
-                continue
-            if os.path.exists(full_path):
-                try:
-                    with open(full_path, encoding="utf-8") as lf:
-                        raw_c = lf.read()
-                    base = os.path.basename(norm_f).removesuffix(".jsonl")
-                    reconciled = reconcile_jsonl_ledger_conflict(raw_c, base)
-                    with open(full_path, "w", encoding="utf-8") as lf:
-                        lf.write(reconciled)
-                    run_git(["add", norm_f], cwd=repo_dir, check=False)
-                    resolved_ledgers.append(norm_f)
-                except Exception as exc:
-                    logger.error("Failed to reconcile ledger conflict in %s: %s", norm_f, exc)
-                    non_ledger_conflicts.append(norm_f)
-            else:
-                non_ledger_conflicts.append(norm_f)
-        else:
+        if not ("holon-knowledge/ledger" in norm_f and norm_f.endswith(".jsonl")):
             non_ledger_conflicts.append(f)
+        elif probe_branch != "HEAD" and f in probed_files:
+            # The probed branch is not checked out, so the working-tree copy is not its ledger; append-only
+            # ledgers reconcile at merge time and must not be rewritten in the operator's checkout here.
+            continue
+        elif _resolve_conflicting_ledger(repo_dir, norm_f):
+            resolved_ledgers.append(norm_f)
+        else:
+            non_ledger_conflicts.append(norm_f)
 
     if non_ledger_conflicts:
         err_msg = (
@@ -2177,6 +2091,8 @@ def _append_superseding_execution_row(context: FlowContext, exec_branch: str, ro
         )
         pushed_sha = run_git(["rev-parse", "HEAD"], cwd=worktree).stdout.strip()
         run_git(["push", "origin", f"HEAD:refs/heads/{exec_branch}"], cwd=worktree, timeout=300)
+    except LedgerRewriteError:
+        raise
     except (RuntimeError, TimeoutError, OSError) as exc:
         return redact_agent_secrets(str(exc))
     finally:
@@ -4173,6 +4089,8 @@ def run_review_loop(
                 ledger_path=exec_file,
                 project_db_path=os.path.join(repo_dir, "holon-knowledge", ".index", "action_index.db"),
             )
+        except LedgerRewriteError:
+            raise
         except Exception as e:
             _warn_ledger_failure(context, "Stage 4 review action event", exec_file, e)
 
@@ -4683,6 +4601,8 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
         context.calibrated_branch = report.calibrated_branch
         report_dict = report.to_dict()
         calibration_succeeded = True
+    except LedgerRewriteError:
+        raise
     except Exception as e:
         context.log(
             f"Calibration run encountered exception: {CredentialRedactor.redact_text(str(e))}. "
@@ -4760,6 +4680,8 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
             )
             if promoted_candidates:
                 context.log(f"Stage 5 promoted {len(promoted_candidates)} knowledge/wisdom candidate(s).")
+    except LedgerRewriteError:
+        raise
     except Exception as e:
         _warn_ledger_failure(context, "Stage 5 ledger reconciliation", executions_file, e)
 

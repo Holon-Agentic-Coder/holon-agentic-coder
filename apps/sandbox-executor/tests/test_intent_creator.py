@@ -47,7 +47,9 @@ class TestIntentCreator(unittest.TestCase):
                 mock_file = MagicMock()
                 mock_file.write = MagicMock()
                 mock_file.__enter__.return_value = mock_file
-                file_contents[file_str] = mock_file
+                # Keep the handle opened for writing: the ledger prefix guard re-opens the file in 'rb' mode.
+                if "r" not in mode:
+                    file_contents[file_str] = mock_file
                 return mock_file
 
         mock_run_result = MagicMock()
@@ -101,7 +103,9 @@ class TestIntentCreator(unittest.TestCase):
                 mock_file = MagicMock()
                 mock_file.write = MagicMock()
                 mock_file.__enter__.return_value = mock_file
-                file_contents[file_str] = mock_file
+                # Keep the handle opened for writing: the ledger prefix guard re-opens the file in 'rb' mode.
+                if "r" not in mode:
+                    file_contents[file_str] = mock_file
                 return mock_file
 
         mock_run_result = MagicMock()
@@ -155,7 +159,9 @@ class TestIntentCreator(unittest.TestCase):
                 mock_file = MagicMock()
                 mock_file.write = MagicMock()
                 mock_file.__enter__.return_value = mock_file
-                file_contents[file_str] = mock_file
+                # Keep the handle opened for writing: the ledger prefix guard re-opens the file in 'rb' mode.
+                if "r" not in mode:
+                    file_contents[file_str] = mock_file
                 return mock_file
 
         mock_run_result = MagicMock()
@@ -204,7 +210,9 @@ class TestIntentCreator(unittest.TestCase):
                 mock_file = MagicMock()
                 mock_file.write = MagicMock()
                 mock_file.__enter__.return_value = mock_file
-                file_contents[file_str] = mock_file
+                # Keep the handle opened for writing: the ledger prefix guard re-opens the file in 'rb' mode.
+                if "r" not in mode:
+                    file_contents[file_str] = mock_file
                 return mock_file
 
         mock_run_result = MagicMock()
@@ -283,7 +291,9 @@ class TestIntentCreator(unittest.TestCase):
                 mock_file = MagicMock()
                 mock_file.write = MagicMock()
                 mock_file.__enter__.return_value = mock_file
-                file_contents[file_str] = mock_file
+                # Keep the handle opened for writing: the ledger prefix guard re-opens the file in 'rb' mode.
+                if "r" not in mode:
+                    file_contents[file_str] = mock_file
                 return mock_file
 
         mock_run_result = MagicMock()

@@ -116,3 +116,13 @@ a pure append, guarded by a byte-prefix check, and no stage pre-check rewrites o
   byte-prefix rule, `assert_ledger_prefix` and `LedgerRewriteError`, append-only conflict resolution and no staging on
   failed or dry runs. `docs/git_flow.md`, `docs/examples.md` and `README.md` are untouched.
 - `npx prettier --check docs/ledger_schema.md`: passes.
+
+### Step 6: Run lint, docs lint and the full test suite once (done)
+
+- The first affected-test run surfaced 4 failures in `test_intent_creator.py`. Those tests mock `builtins.open` and
+  kept only the last handle opened per path, so the guard's post-write `"rb"` read replaced the appending handle the
+  tests inspect. The fix is test bookkeeping only: record a handle only when it was opened for writing, with a comment.
+  The tests' semantics are unchanged. No other failures.
+- `uv run task lint`, `uv run task lint-docs` and `uv run task test` all exit 0 (figures under Tests Run).
+- The diff against the plan commit touches only `ledger.py`, `flow.py`, `entrypoint/executor.py`, their tests,
+  `docs/ledger_schema.md` and this record.

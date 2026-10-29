@@ -1701,7 +1701,7 @@ status.
 
 ### Scenario
 
-This walkthrough details the exact `git` commands executed by the orchestrator harness to manage a parent-centric branch
+This walkthrough details the exact `git` commands executed by the orchestrator harness to manage a hierarchical branch
 workflow when executing a sub-intent.
 
 **Intent Context:**

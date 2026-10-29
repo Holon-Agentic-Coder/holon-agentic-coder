@@ -5,6 +5,7 @@ on:
     branches:
       - main
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     branches:
       - main
   workflow_dispatch:
@@ -19,12 +20,18 @@ concurrency:
 jobs:
   unit:
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      actions: read
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
 
     steps:
+      - name: Record job start time
+        run: echo "CI_TIMING_START=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
@@ -39,4 +46,25 @@ jobs:
       - name: Run unit tests
         run: |
           uv sync --locked
-          uv run pytest -n auto --dist worksteal -v -l --tb=short -m "not integration_test and not stress"
+          uv run pytest -n auto --dist worksteal -v -l --tb=short -m "not integration_test and not stress" --junitxml=unit-report.xml
+
+      - name: Timing gate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TIMING_MODE: ${{ github.event_name == 'pull_request' && 'compare' || 'record' }}
+          TIMING_OVERRIDE: ${{ contains(github.event.pull_request.labels.*.name, 'timing-regression-accepted') }}
+        run: |
+          python3 scripts/ci_timing_gate.py "$TIMING_MODE" \
+            --workflow test-unit --job unit --os "${{ matrix.os }}" --start "$CI_TIMING_START" \
+            --runs 5 --tolerance 0.5 --min-delta 120 --ceiling 600 \
+            --junit unit-report.xml --repo "$GITHUB_REPOSITORY" --output ci-timing/record.json \
+            --override-label-present "$TIMING_OVERRIDE"
+
+      - name: Upload timing record
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-timing-test-unit-unit-${{ matrix.os }}
+          path: ci-timing/record.json
+          retention-days: 30
+          if-no-files-found: error

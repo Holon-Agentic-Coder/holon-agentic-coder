@@ -91,7 +91,8 @@ Each intent carries a mess allowance called `entropy_budget`, and its plan recor
 nor the intent sets one, the default is `15.0` (`DEFAULT_ENTROPY_BUDGET` in
 `apps/sandbox-executor/src/sandbox_executor/budgets.py`).
 
-- A plan predicted at or below its budget runs as one plan.
+- A plan predicted at or below its budget, with no sub-intent list, runs as one plan.
+- A plan that lists sub-intents is always split into them, whatever its entropy.
 - A plan predicted above its budget must list sub-intents (in a `## Sub-intent list` section) before it can execute.
   Without that list it is sent back for re-planning at most twice, and then it fails.
 - Each listed child then runs through the full pipeline, one at a time. A child may be split again, but only two levels

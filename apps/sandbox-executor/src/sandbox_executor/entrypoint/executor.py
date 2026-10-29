@@ -725,9 +725,32 @@ UNPUSHED_PATCH_END = "END UNPUSHED EXECUTION PATCH"
 # 96 KiB: large enough for a typical execution's patch, and below the redaction input limit, so redaction never cuts
 # the middle out of a patch that is still printed. The raw patch is checked against it before redaction.
 UNPUSHED_PATCH_MAX_BYTES = 96 * 1024
-# Env files, credential stores and secrets directories, matched case-insensitively at any depth. They are left out of
-# the unpushed patch and its diffstat, because pattern redaction cannot recognise every value they may hold.
-UNPUSHED_PATCH_EXCLUDED_GLOBS = ("**/.env", "**/.env.*", "**/*credential*", "**/.netrc", "**/secrets/**")
+# Env files, credential and token stores, private keys and secrets directories, matched case-insensitively at any
+# depth. They are left out of the unpushed patch and its diffstat, because pattern redaction cannot recognise every
+# value they may hold.
+UNPUSHED_PATCH_EXCLUDED_GLOBS = (
+    "**/.env",
+    "**/.env.*",
+    "**/*credential*",
+    "**/.netrc",
+    "**/.npmrc",
+    "**/.pypirc",
+    "**/.pgpass",
+    "**/secrets/**",
+    "**/*.pem",
+    "**/*.key",
+    "**/*.p12",
+    "**/*.pfx",
+    "**/id_rsa*",
+    "**/id_dsa*",
+    "**/id_ecdsa*",
+    "**/id_ed25519*",
+)
+# A PEM or OpenSSH private-key block in any file, whatever its name; an unterminated block runs to the end of the text.
+_PRIVATE_KEY_BLOCK_RE = re.compile(
+    r"(-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----)([\s\S]*?)(-----END [A-Z0-9 ]*PRIVATE KEY-----|\Z)"
+)
+_PRIVATE_KEY_MASK = "[REDACTED PRIVATE KEY]"
 
 # A resumable execution branch name (validated before it reaches a refspec) and a full commit sha.
 _PARTIAL_BRANCH_RE = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/E-\d+-[A-Za-z0-9._-]+/_$")
@@ -1269,11 +1292,28 @@ def _salvage_partial_work(
     return sha if sha and sha != diff_base else None
 
 
+def _mask_private_key_body(match: re.Match[str]) -> str:
+    """Mask a private-key block's body line by line, keeping its markers, line count and diff line prefixes."""
+    segments = match.group(2).split("\n")
+    masked = []
+    for index, segment in enumerate(segments):
+        prefix = segment[0] if index > 0 and segment[:1] in ("+", "-", " ") else ""
+        rest = segment[len(prefix) :]
+        masked.append(f"{prefix}{_PRIVATE_KEY_MASK}" if rest.strip() else segment)
+    return f"{match.group(1)}{chr(10).join(masked)}{match.group(3)}"
+
+
+def mask_private_keys(text: str) -> str:
+    """Mask the body of every PEM or OpenSSH private-key block in ``text``, whatever file it came from."""
+    return _PRIVATE_KEY_BLOCK_RE.sub(_mask_private_key_body, text)
+
+
 def _unpushed_patch_text(repo_dir: str, plan_tip: str) -> str:
     """The redacted patch block for ``<plan tip>..HEAD``, or a redacted diffstat when it exceeds the size cap.
 
     Paths matching ``UNPUSHED_PATCH_EXCLUDED_GLOBS`` are left out of both, and a line before the block names the
-    excluded paths that changed, so the reader knows the patch is incomplete.
+    excluded paths that changed, so the reader knows the patch is incomplete. Private-key blocks in any other file are
+    masked by content before the patch is redacted.
     """
     excluded = [f":(exclude,glob,icase){glob}" for glob in UNPUSHED_PATCH_EXCLUDED_GLOBS]
     pathspec = ["--", ".", *excluded]
@@ -1282,7 +1322,7 @@ def _unpushed_patch_text(repo_dir: str, plan_tip: str) -> str:
     left_out = run_cmd(["git", "diff", "--name-only", rev_range, "--", *matched], cwd=repo_dir, check=False)
     left_out_paths = (left_out.stdout or "").split()
     notice = (
-        f"Unpushed patch excludes env and credential files: {redact_agent_secrets(', '.join(left_out_paths))}\n"
+        f"Unpushed patch excludes env, credential and key files: {redact_agent_secrets(', '.join(left_out_paths))}\n"
         if left_out_paths
         else ""
     )
@@ -1290,7 +1330,7 @@ def _unpushed_patch_text(repo_dir: str, plan_tip: str) -> str:
     raw_patch = patch.stdout or ""
     # Checked raw first: redaction cuts any input over its limit, which would hide an oversized patch.
     if patch.returncode == 0 and len(raw_patch.encode("utf-8")) <= UNPUSHED_PATCH_MAX_BYTES:
-        patch_text = redact_agent_secrets(raw_patch)
+        patch_text = redact_agent_secrets(mask_private_keys(raw_patch))
         if len(patch_text.encode("utf-8")) <= UNPUSHED_PATCH_MAX_BYTES:
             return f"{notice}{UNPUSHED_PATCH_BEGIN}\n{patch_text.rstrip(chr(10))}\n{UNPUSHED_PATCH_END}"
     stat = run_cmd(["git", "diff", "--stat", rev_range, *pathspec], cwd=repo_dir, check=False)

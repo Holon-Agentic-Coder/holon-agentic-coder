@@ -4852,6 +4852,60 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         tree = self.git(self.workspace, "ls-tree", "-r", "--name-only", "HEAD").split()
         self.assertIn(".env", tree)
 
+    def test_unpushed_patch_excludes_key_files_and_masks_private_key_blocks(self):
+        self._reject_pushes()
+        body = "FAKE0TEST0KEY0BODY0not0a0real0key"
+        block = f"-----BEGIN OPENSSH PRIVATE KEY-----\n{body}\n{body}\n-----END OPENSSH PRIVATE KEY-----\n"
+
+        def key_turn(workspace, path):
+            self.dirty_turn(workspace, path)
+            for rel in ("deploy.pem", "src/fixture.txt", "keys/id_ed25519", "tls/Server.KEY"):
+                os.makedirs(os.path.dirname(os.path.join(workspace, rel)), exist_ok=True)
+                with open(os.path.join(workspace, rel), "w") as f:
+                    f.write(block)
+
+        code, stderr, _ = self.run_main(key_turn, returncode=1)
+        self.assertEqual(code, 1)
+        self.assertNotIn(body, stderr)
+        notice = next(line for line in stderr.splitlines() if line.startswith("Unpushed patch excludes"))
+        for rel in ("deploy.pem", "keys/id_ed25519", "tls/Server.KEY"):
+            self.assertIn(rel, notice)
+        self.assertNotIn("src/fixture.txt", notice)
+        patch_text = stderr.split(executor.UNPUSHED_PATCH_BEGIN, 1)[1].split(executor.UNPUSHED_PATCH_END, 1)[0]
+        self.assertIn("src/fixture.txt", patch_text)
+        self.assertIn(f"+{executor._PRIVATE_KEY_MASK}", patch_text)
+        self.assertIn("-----END OPENSSH PRIVATE KEY-----", patch_text)
+
+    def test_mask_private_keys_keeps_markers_line_count_and_diff_prefixes(self):
+        body = "FAKE0TEST0KEY0BODY"
+        text = (
+            "+keep me\n+-----BEGIN RSA PRIVATE KEY-----\n+" + body + "\n+" + body + "\n"
+            "+-----END RSA PRIVATE KEY-----\n+after\n"
+        )
+        masked = executor.mask_private_keys(text)
+        self.assertNotIn(body, masked)
+        self.assertEqual(masked.count("\n"), text.count("\n"))
+        self.assertEqual(
+            masked.splitlines(),
+            [
+                "+keep me",
+                "+-----BEGIN RSA PRIVATE KEY-----",
+                f"+{executor._PRIVATE_KEY_MASK}",
+                f"+{executor._PRIVATE_KEY_MASK}",
+                "+-----END RSA PRIVATE KEY-----",
+                "+after",
+            ],
+        )
+
+    def test_mask_private_keys_covers_inline_and_unterminated_blocks(self):
+        body = "FAKE0TEST0KEY0BODY"
+        inline = f'KEY = "-----BEGIN PRIVATE KEY-----\\n{body}\\n-----END PRIVATE KEY-----"\n'
+        self.assertNotIn(body, executor.mask_private_keys(inline))
+        unterminated = f"+-----BEGIN EC PRIVATE KEY-----\n+{body}\n"
+        self.assertNotIn(body, executor.mask_private_keys(unterminated))
+        public = f"-----BEGIN PUBLIC KEY-----\n{body}\n-----END PUBLIC KEY-----\n"
+        self.assertEqual(executor.mask_private_keys(public), public)
+
     def test_salvaged_commit_is_pushed_when_the_failure_commit_has_nothing_staged(self):
         def code_only(workspace, _path):
             with open(os.path.join(workspace, "src/codebase.py"), "a") as f:

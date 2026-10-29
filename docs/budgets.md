@@ -191,14 +191,16 @@ commit is pushed even when the failure commit has nothing to stage, for example 
 When the push of the execution branch is refused, the executor prints the branch, the local head sha and git's reason on
 stderr. It then prints `git format-patch --stdout <plan tip>..HEAD` between the `BEGIN UNPUSHED EXECUTION PATCH` and
 `END UNPUSHED EXECUTION PATCH` lines, and exits non-zero. Every line is redacted. Env files, credential stores and
-secrets directories (`UNPUSHED_PATCH_EXCLUDED_GLOBS`: `.env`, `.env.*`, any name containing `credential`, `.netrc` and
-anything under a `secrets/` directory, at any depth and in any case) are left out of the patch and the diffstat, and a
-line before the block names the ones that changed. The block is capped at `UNPUSHED_PATCH_MAX_BYTES` (96 KiB), which is
-below the redaction input limit, and the raw patch is measured before it is redacted. Above the cap,
-`git diff --stat <plan tip>..HEAD` is printed with a line saying the patch was omitted. A pre-push sync merge with
-`main` adds `main`'s commits to that range, so a large merge can push the patch past the cap. To recover the work, copy
-the lines between the markers from the captured container log into a file, then run `git am <file>` on a checkout of the
-plan branch.
+secrets directories (`UNPUSHED_PATCH_EXCLUDED_GLOBS`: `.env`, `.env.*`, any name containing `credential`, `.netrc`,
+`.npmrc`, `.pypirc`, `.pgpass`, private-key and keystore files (`*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`,
+`id_dsa*`, `id_ecdsa*`, `id_ed25519*`) and anything under a `secrets/` directory, at any depth and in any case) are left
+out of the patch and the diffstat, and a line before the block names the ones that changed. A PEM or OpenSSH private-key
+block in any other file has its body masked line by line before the patch is redacted, keeping its marker lines. The
+block is capped at `UNPUSHED_PATCH_MAX_BYTES` (96 KiB), which is below the redaction input limit, and the raw patch is
+measured before it is redacted. Above the cap, `git diff --stat <plan tip>..HEAD` is printed with a line saying the
+patch was omitted. A pre-push sync merge with `main` adds `main`'s commits to that range, so a large merge can push the
+patch past the cap. To recover the work, copy the lines between the markers from the captured container log into a file,
+then run `git am <file>` on a checkout of the plan branch.
 
 A `holon flow --checkpoint` or `holon flow --from-stage execute` resume at Stage 3 looks for the newest failed execution
 branch under the plan whose latest summary row carries a `partial_head`, and passes it to the executor as a fourth

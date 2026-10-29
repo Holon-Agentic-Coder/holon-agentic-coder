@@ -78,3 +78,34 @@ pure append, guarded by a byte-prefix check, and no stage pre-check rewrites or 
   prefix of the branch's file, which is the intent's acceptance condition. The stage pre-check keeps "ours".
 - Affected tests: `793` collected, `787 passed`, `6 failed`. All 6 are `TestLedgerReconciliation` cases that encode
   the old dedupe or sort contract, which is under the plan's 10-test discard limit. They are updated in Step 4.
+
+### Step 4: Add the pytest suite for the pure-append guarantee (done)
+
+- `apps/sandbox-executor/tests/test_ledger_append_only.py` (19 tests). The `intents.jsonl` seed has out-of-order
+  `created_at` values, a repeated `branch` key and a `|||||||` substring inside a JSON string. Each ledger is snapshot
+  as bytes.
+  - `TestIntentStageLedgers`: drives the real `run_intent_stage` against a local bare origin (no remote network). The
+    stand-in container runs the stage pre-check and then a guarded `atomic_ledger_append`, as `intent_creator` does.
+    - Success: on the intent branch every ledger starts with main's bytes, and `intents.jsonl` grows by exactly one
+      line.
+    - Failed Stage 1 (the stand-in exits 3): the ledgers are byte-identical, `git diff --cached --name-only` is empty
+      and tracked status is clean.
+    - Dry run: the same assertions, and no dispatch.
+  - `test_stage_precheck_leaves_ledgers_byte_identical`: the Step 1 reproduction, now green, with fake `run_git` and
+    no ledger `add` call.
+  - `TestAppendOnlyResolution`: marker-free input is returned unchanged, and a file without markers is not rewritten
+    (its mtime is unchanged). Real conflicts, in both standard and diff3 form, give the ours bytes and then the missing
+    theirs lines in their original order. A `theirs` prefix keeps the target's bytes first, and lines that are already
+    present are not repeated. A pre-check on a `UU` ledger resolves it without staging it.
+  - `TestPrePushMerge`: `sync_and_reconcile_pre_push` on a real local clone. After a ledger conflict the result is
+    main's bytes followed by the branch row. After a clean merge git's result is left as it is.
+  - `TestPrefixGuard` (from Step 2).
+- Hermeticity: git runs only against `tmp_path` repositories, and `check_pr_mergeability` is stubbed so `gh` is never
+  invoked. There is no Docker and no LLM runner. The suite-wide `conftest.py` guards stay active.
+- Updated 6 `TestLedgerReconciliation` tests in `test_flow.py`, with a comment on the append-only contract. They used to
+  assert key-based dedupe, a `ledger_revision` winner and a `created_at` sort. They now assert byte identity for
+  marker-free content, ours-then-theirs order for conflicts, and exact-repeat-only dedupe in `reconcile_ledger_rows`.
+- Revert check: with Step 3's `flow.py` and `executor.py` restored to the Step 2 commit, 13 of the 19 new tests fail.
+  The 6 that still pass are the guard tests and the dry run, which skips the pre-check on both versions.
+- `uv run pytest apps/sandbox-executor/tests/test_ledger_append_only.py apps/sandbox-executor/tests/test_ledger_lock.py apps/sandbox-executor/tests/test_flow.py -n auto --dist worksteal`:
+  `344 passed` (before the 2 pre-push tests were added).

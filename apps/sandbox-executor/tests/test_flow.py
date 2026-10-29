@@ -1091,46 +1091,31 @@ class TestLedgerReconciliation:
         assert rows[0]["slug"] == "s1"
         assert rows[1]["slug"] == "s2"
 
-    def test_reconcile_intents_ledger_deduplication_and_order(self):
+    # The ledgers are append-only: these cases used to assert key-based dedupe and a created_at sort. They now
+    # assert that marker-free content is returned byte for byte and that conflicts resolve by pure append.
+
+    def test_reconcile_intents_ledger_keeps_order_and_repeated_keys(self):
         content = (
             '{"slug": "intent-2", "branch": "I-intent-2", "created_at": "2026-10-06T12:00:00Z"}\n'
             '{"slug": "intent-1", "branch": "I-intent-1", "created_at": "2026-10-06T08:00:00Z"}\n'
             '{"slug": "intent-1", "branch": "I-intent-1", "created_at": "2026-10-06T09:00:00Z", "extra": "latest"}\n'
         )
-        result = reconcile_ledger_content(content, "intents")
-        lines = [json.loads(line) for line in result.splitlines() if line.strip()]
-        assert len(lines) == 2
-        # Ordered chronologically by created_at
-        assert lines[0]["slug"] == "intent-1"
-        assert lines[0]["extra"] == "latest"
-        assert lines[1]["slug"] == "intent-2"
+        assert reconcile_ledger_content(content, "intents") == content
 
-    def test_reconcile_plans_ledger_deduplication(self):
+    def test_reconcile_plans_ledger_keeps_every_revision(self):
         content = (
             '{"plan_id": "P-100", "created_at": "2026-10-06T10:00:00Z", "status": "proposed"}\n'
             '{"plan_id": "P-100", "created_at": "2026-10-06T10:00:00Z", "status": "superseded", "ledger_revision": 2}\n'
             '{"plan_id": "P-200", "created_at": "2026-10-06T11:00:00Z", "status": "proposed"}\n'
         )
-        result = reconcile_ledger_content(content, "plans")
-        lines = [json.loads(line) for line in result.splitlines() if line.strip()]
-        assert len(lines) == 2
-        assert lines[0]["plan_id"] == "P-100"
-        assert lines[0]["status"] == "superseded"
-        assert lines[0]["ledger_revision"] == 2
-        assert lines[1]["plan_id"] == "P-200"
+        assert reconcile_ledger_content(content, "plans") == content
 
-    def test_reconcile_executions_ledger_deduplication(self):
+    def test_reconcile_executions_ledger_keeps_bytes(self):
         content = (
             '{"execution_id": "E-2", "created_at": "2026-10-06T11:00:00Z", "status": "success"}\n'
-            '{"execution_id": "E-1", "created_at": "2026-10-06T09:00:00Z", "status": "failed"}\n'
-            '{"execution_id": "E-1", "created_at": "2026-10-06T09:30:00Z", "status": "success"}\n'
+            '{"execution_id":"E-1","created_at":"2026-10-06T09:00:00Z","status":"failed"}\n'
         )
-        result = reconcile_ledger_content(content, "executions")
-        lines = [json.loads(line) for line in result.splitlines() if line.strip()]
-        assert len(lines) == 2
-        assert lines[0]["execution_id"] == "E-1"
-        assert lines[0]["status"] == "success"
-        assert lines[1]["execution_id"] == "E-2"
+        assert reconcile_ledger_content(content, "executions") == content
 
     def test_reconcile_ledger_with_git_conflict_markers(self, tmp_path):
         ledger_path = tmp_path / "executions.jsonl"
@@ -1150,38 +1135,25 @@ class TestLedgerReconciliation:
         assert "=======" not in reconciled
         assert ">>>>>>>" not in reconciled
         lines = [json.loads(line) for line in reconciled.splitlines() if line.strip()]
-        assert len(lines) == 2
-        # Chronological order: E-main (09:00) before E-head (10:00)
-        assert lines[0]["execution_id"] == "E-main"
-        assert lines[1]["execution_id"] == "E-head"
+        # Ours stays the prefix and theirs is appended after it, never sorted by created_at.
+        assert [r["execution_id"] for r in lines] == ["E-head", "E-main"]
 
     def test_reconcile_ledger_rows_direct(self):
         raw_rows = [
             {"plan_id": "P-1", "created_at": "2026-10-06T10:00:00Z", "v": 1},
             {"plan_id": "P-1", "created_at": "2026-10-06T10:00:00Z", "v": 2, "ledger_revision": 2},
+            {"plan_id": "P-1", "created_at": "2026-10-06T10:00:00Z", "v": 1},
         ]
+        # Only the exact repeat is dropped; both revisions stay in their original order.
         reconciled = reconcile_ledger_rows(raw_rows, "plans")
-        assert len(reconciled) == 1
-        assert reconciled[0]["v"] == 2
+        assert [r["v"] for r in reconciled] == [1, 2]
 
-    def test_reconcile_ledger_rows_with_none_or_invalid_revision(self):
+    def test_reconcile_ledger_rows_never_sorts(self):
         raw_rows = [
-            {"plan_id": "P-1", "created_at": "2026-10-06T10:00:00Z", "v": 1, "ledger_revision": None},
-            {"plan_id": "P-1", "created_at": "2026-10-06T10:00:00Z", "v": 2, "ledger_revision": 2},
+            {"plan_id": "P-2", "created_at": "2026-10-06T12:00:00Z", "ledger_revision": None},
+            {"plan_id": "P-1", "created_at": "2026-10-06T10:00:00Z", "ledger_revision": "invalid"},
         ]
-        # Should not raise TypeError and higher revision should win
-        reconciled = reconcile_ledger_rows(raw_rows, "plans")
-        assert len(reconciled) == 1
-        assert reconciled[0]["v"] == 2
-
-        # Invalid string revision should fallback gracefully to 1
-        raw_rows_invalid = [
-            {"plan_id": "P-2", "created_at": "2026-10-06T10:00:00Z", "v": 1, "ledger_revision": "invalid"},
-            {"plan_id": "P-2", "created_at": "2026-10-06T10:00:00Z", "v": 2, "ledger_revision": 1},
-        ]
-        reconciled_invalid = reconcile_ledger_rows(raw_rows_invalid, "plans")
-        assert len(reconciled_invalid) == 1
-        assert reconciled_invalid[0]["v"] == 1
+        assert reconcile_ledger_rows(raw_rows, "plans") == raw_rows
 
     def test_reconcile_ledger_file_atomic(self, tmp_path):
         ledger_file = tmp_path / "plans.jsonl"

@@ -415,10 +415,11 @@ $ git merge I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet
 
 **Trigger:** All sub-intents merged, root intent ready for promotion
 
-**Parent PR (target model):** once all sub-intents have merged into the parent intent branch, the parent intent's PR to
-its own target is raised, reviewed (Stage 4) and calibrated (Stage 5) on the combined diff, stopping at the human merge
-boundary. In the current flow this parent-to-target step is not yet automated (see Stage 3 under the flow equivalence
-guarantee).
+**Parent PR (target model):** once all sub-intents have merged into the root intent branch, the root intent's PR to
+`main` is raised, reviewed (Stage 4) and calibrated (Stage 5) on the combined diff, stopping at the human merge
+boundary. A nested parent (itself a sub-intent) merges into its own parent intent branch as described in section 4.1;
+whether its combined-diff PR also stops for a human is still an open design question. In the current flow this
+parent-to-target step is not yet automated (see Stage 3 under the flow equivalence guarantee).
 
 **Process:**
 

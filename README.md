@@ -231,8 +231,9 @@ Holon uses a filesystem-like branch structure to represent the intent hierarchy.
 branch node whose stage decided the split -- by default the plan whose `## Sub-intent list` named it -- so the path
 records which of an intent's competing plans spawned it. The sub-intent is still cut from its parent intent branch and
 targets its PR at that branch. Its provenance records the parent intent, the deciding node (`deciding_branch`, plus
-`parent_plan_id` and, for an execution- or review-decided split, `parent_execution_id`); the list item it came from is
-identified by its own recorded goal and description (see [Git Flow](docs/git_flow.md) section 2.2).
+`parent_plan_id` when a plan, or an execution or review of that plan, decided the split, and `parent_execution_id`
+additionally for an execution- or review-decided split); the list item it came from is identified by its own recorded
+goal and description (see [Git Flow](docs/git_flow.md) section 2.2).
 
 #### Root Intent Branch
 

@@ -7,7 +7,9 @@ beyond everyday arithmetic.
 
 A few words first. An **intent** is a piece of work someone asks for. A **plan** is a proposed way to do it. An
 **agent** is an AI program that does the work. The **flow** is the automated pipeline that plans the work, checks the
-plan and then runs it.
+plan and then runs it. The **repository** (or **codebase**) is the shared collection of code and files the work changes.
+A **ledger** is a permanent record file that the flow only ever adds to. A **sandbox** is a locked-down space an agent
+works in.
 
 Holon gives every plan two kinds of score before it runs. **Entropy** is a mess-and-risk score: how much disorder the
 plan is likely to cause. **Expected Value (EV)** is a worth-doing score: how much good the plan is likely to do once
@@ -29,8 +31,9 @@ the work of other agents.
 
 Five ingredients feed into it:
 
-- **State Surface Area (SSA):** how much code and config the plan touches. More files, more mess.
-- **Irreversibility (IRR):** how hard the change is to undo. A new document is easy to remove; a data migration is not.
+- **State Surface Area (SSA):** how much code and config (settings files) the plan touches. More files, more mess.
+- **Irreversibility (IRR):** how hard the change is to undo. A new document is easy to remove; a data migration
+  (reshaping stored data into a new format) is not.
 - **Conflict Likelihood (CL):** how likely the change is to collide with other work going on at the same time.
 - **Sandbox Escape Risk (SER):** how likely the work is to break out of the safety sandbox it runs in.
 - **Novelty (NOV):** how unfamiliar the territory is. Work the system has done many times before is less risky.
@@ -51,7 +54,7 @@ EV is a single score for whether a plan is worth doing. It is built from five pa
 - **Learning value:** what the system learns even if the plan fails. A failed experiment can still teach something.
 - **Entropy:** the mess it makes, as described above.
 - **Cost:** what it uses up, such as time, compute (computer processing time) and tokens (the chunks of text an AI model
-  reads and writes, which are paid for).
+  reads and writes).
 
 Impact, learning value and cost are scores in the same consistent units, not real money, so they can be added and
 subtracted.

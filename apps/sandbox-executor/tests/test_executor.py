@@ -4573,7 +4573,7 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
     """An execution's code is never lost: salvage on failure, identity before dispatch, refused push, resume."""
 
     PLAN = "I-456/P-123/_"
-    SECRET = _fake_token("ghp_")
+    PROBE = make_gh_probe()
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(prefix="sandbox_salvage_test_")
@@ -4760,14 +4760,14 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
             f.write("#!/bin/sh\necho 'push refused by test hook' >&2\nexit 1\n")
         os.chmod(hook, 0o755)
 
-    def secret_turn(self, workspace, path):
+    def probe_turn(self, workspace, path):
         self.dirty_turn(workspace, path)
         with open(os.path.join(workspace, "src/settings.py"), "w") as f:
-            f.write(f'TOKEN = "{self.SECRET}"\n')
+            f.write(f'VALUE = "{self.PROBE}"\n')
 
     def test_refused_push_prints_redacted_patch_and_exits_non_zero(self):
         self._reject_pushes()
-        code, stderr, _ = self.run_main(self.secret_turn, breach=BudgetBreach("execute", "stage", 2700, 2700))
+        code, stderr, _ = self.run_main(self.probe_turn, breach=BudgetBreach("execute", "stage", 2700, 2700))
         self.assertEqual(code, 1)
         self.assertEqual(self.exec_branches(), [])
         head = self.git(self.workspace, "rev-parse", "HEAD").strip()
@@ -4781,7 +4781,7 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         # format-patch folds long subjects onto a continuation line.
         self.assertRegex(patch_text, r"Subject: \[PATCH 1/2\] execute: E-\S+\s+partial work \(failed\) for plan")
         self.assertIn("src/settings.py", patch_text)
-        self.assertNotIn(self.SECRET, stderr)
+        self.assertNotIn(self.PROBE, stderr)
 
     def test_refused_push_patch_applies_with_git_am(self):
         self._reject_pushes()
@@ -4797,13 +4797,13 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
     def test_oversized_unpushed_patch_falls_back_to_diffstat(self):
         self._reject_pushes()
         with patch.object(executor, "UNPUSHED_PATCH_MAX_BYTES", 16):
-            code, stderr, _ = self.run_main(self.secret_turn, returncode=1)
+            code, stderr, _ = self.run_main(self.probe_turn, returncode=1)
         self.assertEqual(code, 1)
         self.assertNotIn(executor.UNPUSHED_PATCH_BEGIN, stderr)
         self.assertIn("src/new_module.py", stderr)
         self.assertIn("Unpushed patch omitted", stderr)
         self.assertIn("UNPUSHED_PATCH_MAX_BYTES", stderr)
-        self.assertNotIn(self.SECRET, stderr)
+        self.assertNotIn(self.PROBE, stderr)
 
     def test_unpushed_patch_cap_is_below_the_redaction_input_limit(self):
         self.assertLessEqual(executor.UNPUSHED_PATCH_MAX_BYTES, executor._MAX_REDACT_INPUT_LEN)

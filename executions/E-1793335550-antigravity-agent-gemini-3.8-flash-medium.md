@@ -31,3 +31,8 @@ lines, implementing a ratchet test in `apps/sandbox-executor/tests/test_complexi
    `37` `PLR0915`). Placed inline `# noqa: <codes>` comments directly on the `def` lines of all 91 functions. Confirmed
    `uv run ruff check apps/sandbox-executor/src` passes with zero violations and `uv run ruff format --check` reports
    all files cleanly formatted.
+3. **Step 3 (Implement baseline ratchet pytest in apps/sandbox-executor/tests/test_complexity_gate.py): done.** Created
+   `apps/sandbox-executor/tests/test_complexity_gate.py` declaring baseline constants
+   (`BASELINE_COMPLEXITY_NOQA_COUNT = 187`, `BASELINE_ANNOTATED_FUNCTIONS_COUNT = 91`). Implemented helper
+   `scan_complexity_noqa`, ratchet test `test_complexity_noqa_baseline_ratchet`, rule filtering unit tests, and
+   failure-mode validation. All 4 tests pass.

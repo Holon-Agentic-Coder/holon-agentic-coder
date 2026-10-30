@@ -31,3 +31,9 @@ Stage 4 while preserving host ownership of mergeability verification, CI status 
    `run_docker_container` and `dispatch_role_agent` in `apps/sandbox-executor/src/sandbox_executor/cli.py` to mount
    `result_file` to `/tmp/review_result.json` and pass it through to the container. Updated `_AGENT_FLOW_STAGES`
    documentation comment. All 395 CLI tests and 5 complexity gate tests passed cleanly.
+3. **Step 3 (Flow Stage 4 container dispatch and result integration).** Replaced host refusal in
+   `apps/sandbox-executor/src/sandbox_executor/flow.py` with `_dispatch_review_ensemble()`, routing reviewer turns
+   through `_dispatch_role(context, "review-loop", ...)` when `not reviewers_sandboxed()`. Mounted a dedicated 0666
+   temporary result file and verified/deserialised reviewer results into host Stage 4 while preserving host ownership of
+   mergeability verification, CI status gating, official review comment posting, and canonical append-only ledger
+   logging. Added `skip_post` support to `run_review_loop` and `run_review_loop_cli`.

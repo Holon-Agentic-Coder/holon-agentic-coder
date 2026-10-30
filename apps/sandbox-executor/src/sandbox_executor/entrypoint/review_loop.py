@@ -192,18 +192,32 @@ def _record_preparation_failure(repo_dir: str, raw: str, stage: str, detail: str
     return written is not None
 
 
-def _fail_preparation(repo_dir: str, raw: str, error: ReviewPreparationError, json_output: bool) -> None:
+def _fail_preparation(
+    repo_dir: str,
+    raw: str,
+    error: ReviewPreparationError,
+    json_output: bool,
+    result_file: str | None = None,
+) -> None:
     """Record the failure, print a FAILED summary and exit 1 without computing or posting a consensus."""
     detail = _bounded_error_context(str(error))
     if not _record_preparation_failure(repo_dir, raw, error.stage, detail):
         print(f"Review preparation failed ({error.stage}): {detail}", file=sys.stderr)
         print("No ledger row was written: the workspace has no holon-knowledge/ledger/ directory.", file=sys.stderr)
+    result = {
+        "target": raw,
+        "consensus": {"approved": False, "status": "failed", "iterations": 0},
+        "ensemble_verdict": "FAILED",
+        "reviewers": [],
+        "error": f"Review preparation failed ({error.stage}): {detail}",
+    }
+    if result_file:
+        try:
+            with open(result_file, "w", encoding="utf-8") as f:
+                json.dump(result, f, indent=2)
+        except OSError as exc:
+            print(f"Warning: could not write result file '{result_file}': {exc}", file=sys.stderr)
     if json_output:
-        result = {
-            "target": raw,
-            "consensus": {"approved": False, "status": "failed", "iterations": 0},
-            "error": f"Review preparation failed ({error.stage}): {detail}",
-        }
         print(json.dumps(result, indent=2))
     else:
         print("\n================== Holon Review Loop Summary ==================")
@@ -269,6 +283,17 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         help="Skip pushing git commits or branches to remote.",
     )
     parser.add_argument(
+        "--skip-post",
+        action="store_true",
+        default=False,
+        help="Skip posting review consensus to GitHub.",
+    )
+    parser.add_argument(
+        "--result-file",
+        default=None,
+        help="Path to write structured review outcome JSON for host transport.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         default=False,
@@ -310,7 +335,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     try:
         review = _prepare_workspace(repo_dir, args.target)
     except ReviewPreparationError as exc:
-        _fail_preparation(repo_dir, args.target, exc, args.json)
+        _fail_preparation(repo_dir, args.target, exc, args.json, result_file=args.result_file)
         return
     # A PR stays the loop target so mergeability, CI and posting address the PR; ledger lookups use its head branch.
     loop_target = review.raw if review.is_pr else review.head_branch
@@ -391,7 +416,15 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         ensemble_size=args.ensemble_size,
         auto_pr=args.auto_pr,
         dry_run=args.dry_run,
+        skip_post=args.skip_post,
     )
+
+    if args.result_file:
+        try:
+            with open(args.result_file, "w", encoding="utf-8") as f:
+                json.dump(loop_res, f, indent=2)
+        except OSError as exc:
+            print(f"Warning: could not write result file '{args.result_file}': {exc}", file=sys.stderr)
 
     consensus = loop_res.get("consensus", {})
     # Exit 0 only for an APPROVED ensemble verdict whose consensus was approved and posted.

@@ -1803,20 +1803,26 @@ def _dispatch_role(
     role: str,
     positional_args: list[str],
     intent_file: str | None = None,
+    result_file: str | None = None,
 ) -> int:
     """Dispatch one role agent through the same function the per-stage commands use."""
     dispatcher = _get_dispatcher(context)
     context.log(f"Dispatching {role} agent (runner={context.agent}, model={context.model}).")
+    kwargs: dict[str, Any] = {
+        "repo_dir": context.repo_dir,
+        "intent_file": intent_file,
+        "token_reduce": bool(context.token_reduce),
+        "mitm_web": bool(context.mitm_web),
+    }
+    if result_file is not None:
+        kwargs["result_file"] = result_file
     return int(
         dispatcher(
             role,
             context.agent,
             context.model,
             positional_args,
-            repo_dir=context.repo_dir,
-            intent_file=intent_file,
-            token_reduce=bool(context.token_reduce),
-            mitm_web=bool(context.mitm_web),
+            **kwargs,
         )
     )
 
@@ -3380,6 +3386,9 @@ def _worst_severity(*severities: str) -> str:
 
 def _reviewer_summary(result: ReviewerResult) -> dict[str, Any]:
     """A JSON-safe per-reviewer summary; never the report text."""
+    findings_list = [
+        {"severity": f.severity, "file": f.path, "line": f.line, "summary": f.summary} for f in result.findings
+    ]
     return {
         "index": result.index,
         "agent": result.agent,
@@ -3387,6 +3396,7 @@ def _reviewer_summary(result: ReviewerResult) -> dict[str, Any]:
         "status": str(result.status),
         "verdict": str(result.verdict) if result.verdict else None,
         "counts": {"critical": result.counts.critical, "important": result.counts.important, "nit": result.counts.nit},
+        "findings": findings_list,
         "failure_reason": result.failure_reason,
     }
 
@@ -3553,6 +3563,67 @@ def _ensemble_iteration(  # noqa: PLR0913
     return list(results), None
 
 
+def _dispatch_review_ensemble(
+    context: FlowContext,
+    target: ReviewTarget,
+    iteration: int,
+    ensemble_size: int,
+) -> tuple[list[ReviewerResult], ConsensusVerdict | None, str | None]:
+    """Dispatch reviewer ensemble turns into the review-loop role container via _dispatch_role."""
+    from sandbox_executor.review_ensemble import deserialize_review_outcome
+
+    tmp_dir = os.path.expanduser("~/.holon/tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    fd, result_file = tempfile.mkstemp(prefix="holon-review-result-", suffix=".json", dir=tmp_dir)
+    try:
+        os.fchmod(fd, 0o666)
+    finally:
+        os.close(fd)
+
+    target_ref = target.raw or target.head_branch or "HEAD"
+    container_args = [
+        target_ref,
+        context.agent or FALLBACK_AGENT,
+        context.model or "inherit",
+        f"--max-iterations={iteration}",
+        f"--ensemble-size={ensemble_size}",
+        "--no-auto-pr",
+        "--skip-post",
+        "--result-file=/tmp/review_result.json",
+    ]
+    if context.skip_push:
+        container_args.append("--skip-push")
+
+    try:
+        exit_code = _dispatch_role(
+            context,
+            "review-loop",
+            container_args,
+            result_file=result_file,
+        )
+        if not os.path.exists(result_file) or os.path.getsize(result_file) == 0:
+            err = f"Reviewer ensemble container dispatch exited with code {exit_code} without writing results"
+            return [], None, err
+
+        with open(result_file, encoding="utf-8") as f:
+            data = json.load(f)
+
+        reviewers, verdict, outcome_err = deserialize_review_outcome(data)
+        if exit_code != 0 and not reviewers:
+            err = outcome_err or f"Reviewer ensemble container dispatch exited with code {exit_code}"
+            return [], None, err
+
+        for r in reviewers:
+            context.log(f"[Review Loop] {render_reviewer_summary_line(r)}")
+
+        return reviewers, verdict, outcome_err
+    except Exception as exc:
+        return [], None, f"Reviewer ensemble container dispatch failed: {redact_agent_secrets(str(exc))}"
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(result_file)
+
+
 def render_reviewer_summary_line(result: ReviewerResult | Mapping[str, Any]) -> str:
     """One plain-text summary line for a reviewer (a ``ReviewerResult`` or its serialised summary)."""
     data = _reviewer_summary(result) if isinstance(result, ReviewerResult) else result
@@ -3607,6 +3678,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     sleep: Callable[[float], None] | None = None,
     *,
     run_ensemble_fn: Callable[..., list[ReviewerResult]] | None = None,
+    skip_post: bool = False,
 ) -> dict[str, Any]:
     """Execute the native Stage 4 review loop (Bean 0118) with the real reviewer ensemble.
 
@@ -3709,9 +3781,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             pr_allowed = False
         else:
             context.log(f"[Review Loop] Empty-diff guard passed for '{review_target}': {diff_detail}.")
-        if pr_refusal_error is None and not reviewers_sandboxed():
-            infra_error = HOST_REVIEW_REFUSAL
-        elif pr_refusal_error is None:
+        if pr_refusal_error is None:
             resolved_target, infra_error = _resolve_reviewed_target(repo_dir, review_target)
         if infra_error:
             # Fail closed before any PR, iteration, reviewer row or post.
@@ -3817,9 +3887,14 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         # 3. Real reviewer ensemble on the resolved head (a dry run never dispatches reviewers)
         reviewers, ensemble_verdict = [], None
         if not effective_dry_run and resolved_target is not None:
-            reviewers, infra_error = _ensemble_iteration(
-                context, resolved_target, target_branch, iteration, pr_text, ensemble_fn, ensemble_size
-            )
+            if run_ensemble_fn is not None or reviewers_sandboxed():
+                reviewers, infra_error = _ensemble_iteration(
+                    context, resolved_target, target_branch, iteration, pr_text, ensemble_fn, ensemble_size
+                )
+            else:
+                reviewers, _container_verdict, infra_error = _dispatch_review_ensemble(
+                    context, resolved_target, iteration, ensemble_size
+                )
             ensemble_verdict = decide_consensus(
                 reviewers,
                 ensemble_size,
@@ -3969,7 +4044,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     # Dual-post review consensus to GitHub and handle self-approval restriction (Bean 0119)
     posting_res: dict[str, Any] = {}
     post_error: str | None = None
-    if effective_dry_run:
+    if effective_dry_run or skip_post:
         suppressed_ledger_records += 1
     elif pr_refusal_error or infra_error:
         # A refused diff, a refused host run or a failed target, diff or ensemble has no real review to post.
@@ -4475,6 +4550,7 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
         ensemble_size=ensemble_size,
         auto_pr=auto_pr,
         dry_run=dry_run,
+        skip_post=getattr(args, "skip_post", False),
     )
 
     consensus = loop_res.get("consensus", {})

@@ -271,3 +271,69 @@ def uv_available() -> bool:
     what made the original guard measure the wrong artifact.
     """
     return bool(shutil.which(UV))
+
+
+# ---------------------------------------------------------------------------------------------
+# Knowledge-index snapshot helpers for the checkout hermeticity guard
+#
+# The guard uses before/after snapshots of ``<root>/holon-knowledge/.index/`` to detect any test
+# that creates, modifies or deletes a file in the checkout's index.  A developer's pre-existing
+# index is never counted as a failure; only changes made during a test are.
+# ---------------------------------------------------------------------------------------------
+
+#: Subdirectory under the repository root that holds the action knowledge index.  The guard is
+#: deliberately limited to this directory: broader walks would include the append-only ledger files
+#: that other guards already protect, and a git-ignored directory cannot be committed by accident.
+KNOWLEDGE_INDEX_SUBDIR = os.path.join("holon-knowledge", ".index")
+
+#: Path to the checkout's knowledge index directory, derived from :data:`REPO_ROOT`.
+CHECKOUT_KNOWLEDGE_INDEX_DIR = os.path.join(REPO_ROOT, KNOWLEDGE_INDEX_SUBDIR)
+
+
+def _raise_walk_error(error: OSError) -> None:
+    """Re-raise directory-listing errors so :func:`knowledge_index_snapshot` fails closed.
+
+    ``os.walk`` defaults to ``onerror=None``, which silently swallows ``scandir`` errors (including
+    ``PermissionError``) and yields nothing -- an unreadable index directory would then produce an
+    empty snapshot on both sides and the guard would fail open. The absent-directory case is handled
+    by an explicit ``os.path.isdir`` check in the caller, so every error reaching here propagates.
+    """
+    raise error
+
+
+def knowledge_index_snapshot(root: str) -> dict[str, tuple[int, int]]:
+    """Return a mapping from POSIX-relative path to ``(size, mtime_ns)`` for the index directory.
+
+    Walks ``<root>/holon-knowledge/.index/``.  An absent directory returns an empty mapping.  Any
+    ``OSError`` other than ``FileNotFoundError`` propagates immediately -- the guard fails closed,
+    never silently.  SQLite WAL side-files (``-wal``, ``-shm``) are included because WAL mode
+    creates them on first open.
+    """
+    index_dir = os.path.join(root, KNOWLEDGE_INDEX_SUBDIR)
+    snapshot: dict[str, tuple[int, int]] = {}
+    if not os.path.isdir(index_dir):
+        return snapshot
+    for dirpath, _dirnames, filenames in os.walk(index_dir, onerror=_raise_walk_error):
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            st = os.stat(full)
+            rel = os.path.relpath(full, root).replace(os.sep, "/")
+            snapshot[rel] = (st.st_size, st.st_mtime_ns)
+    return snapshot
+
+
+def describe_index_changes(before: dict[str, tuple[int, int]], after: dict[str, tuple[int, int]]) -> list[str]:
+    """Return a sorted list of human-readable change descriptions between two snapshots.
+
+    Each entry is one of ``"created <path>"``, ``"modified <path>"`` or ``"deleted <path>"``.
+    An empty list means no change.
+    """
+    changes: list[str] = []
+    for path in sorted(set(before) | set(after)):
+        if path not in before:
+            changes.append(f"created {path}")
+        elif path not in after:
+            changes.append(f"deleted {path}")
+        elif before[path] != after[path]:
+            changes.append(f"modified {path}")
+    return changes

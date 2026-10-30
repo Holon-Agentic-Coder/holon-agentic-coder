@@ -337,13 +337,14 @@ Curate:
 
 #### Principle: merges flow up to the deciding node
 
-- A sub-intent branch nests under, is cut from and merges into the branch of its deciding node: the plan or execution
-  branch whose stage decided the split (`target_branch` equals `deciding_branch`).
+- A sub-intent branch nests under, is cut from and merges into the branch of its deciding node: the intent, plan or
+  execution branch whose stage decided the split (in practice the plan branch; `target_branch` equals
+  `deciding_branch`).
 - Any level (intent, plan, execution, review) may decide a split, but in practice the plan does. A split decided during
   review may nest under the reviewed plan or execution.
 - The deciding node's branch is the integration surface for its sub-intents.
 - Siblings under one deciding node always have different slugs, so their ids cannot collide.
-- Only the root intent branch merges into `main`.
+- Only the root intent's PR merges into `main`.
 - Until the implementation follows, the current flow still targets the parent intent branch (see [Git Flow](git_flow.md)
   Stage 3 under the flow equivalence guarantee).
 

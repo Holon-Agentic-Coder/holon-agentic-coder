@@ -109,8 +109,9 @@ the initial high cost is a necessary investment in the system's education.
 - **Mandatory Checkpointing:** Intents expected to take a long time are broken down into child intents representing
   logical milestones.
 - **Active Rebase Pulses:** If an execution branch remains open for a long period, the orchestrator periodically pushes
-  a background rebase onto the branch it was cut from (for a sub-intent, its deciding plan or execution branch) to catch
-  up with concurrent changes early, rather than waiting for a massive end-of-execution conflict.
+  a background rebase onto its rebase base (the branch its intent was cut from: for a sub-intent, its deciding node's
+  branch, in practice the plan branch) to catch up with concurrent changes early, rather than waiting for a massive
+  end-of-execution conflict.
 - **Budget Checks:** If a planner or executor turn exceeds its turn, stall or stage budget, one resume turn is attempted
   first, but only when the salvaged artefact is incomplete (not usable, or missing a required section) and the stage
   still has time left (so neither a stage-budget breach nor a breach that left a complete artefact gets one). A plan

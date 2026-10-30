@@ -7,7 +7,6 @@ from sandbox_executor import agent_defaults
 from sandbox_executor.agent_defaults import (
     AGENT_IMAGE_MAPPING,
     DEFAULT_MODELS,
-    FALLBACK_AGENT,
     LEGACY_DEFAULT_AGENT,
     LEGACY_DEFAULT_MODEL,
     MissingAgentRunnerError,

@@ -1221,7 +1221,9 @@ class TestDoctor(unittest.TestCase):
             output_excerpt="",
             hint="",
         )
-        args = argparse.Namespace(agent="antigravity-agent", model="gemini-3.8-flash-medium", json=as_json, timeout=None)
+        args = argparse.Namespace(
+            agent="antigravity-agent", model="gemini-3.8-flash-medium", json=as_json, timeout=None
+        )
         with (
             patch.dict(os.environ, env, clear=True),
             patch.object(local_llm, "host_models_json", return_value=host_config),

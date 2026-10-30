@@ -36,3 +36,8 @@ lines, implementing a ratchet test in `apps/sandbox-executor/tests/test_complexi
    (`BASELINE_COMPLEXITY_NOQA_COUNT = 187`, `BASELINE_ANNOTATED_FUNCTIONS_COUNT = 91`). Implemented helper
    `scan_complexity_noqa`, ratchet test `test_complexity_noqa_baseline_ratchet`, rule filtering unit tests, and
    failure-mode validation. All 4 tests pass.
+4. **Step 4 (Document complexity thresholds and ratchet mechanism in docs/architecture.md): done.** Added dedicated
+   section "Complexity Gate and Ratchet Baseline" in `docs/architecture.md` detailing the complexity rules (`C901` max
+   10, `PLR0911` max 6 returns, `PLR0912` max 12 branches, `PLR0913` max 5 args, `PLR0915` max 50 statements),
+   explaining the architectural rationale for inline `# noqa` baselines over blanket `per-file-ignores`, and specifying
+   the ratchet ratcheting policy. Verified clean formatting with Prettier.

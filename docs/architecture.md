@@ -506,3 +506,46 @@ This architecture is intentionally modular:
 - continuous improvement (calibration + selection pressure)
 - scalable delegation (fractal intent, authority boundaries)
 - efficient inference spend (routing as evolution)
+
+---
+
+### Complexity Gate and Ratchet Baseline
+
+To safeguard long-term maintainability and prevent structural decay across `apps/sandbox-executor/src`, function
+complexity is continuously gated via Ruff complexity lints and an automated test ratchet.
+
+#### Complexity Thresholds and Rules
+
+The following complexity rules and thresholds are enforced:
+
+- **McCabe Cyclomatic Complexity (`C901`)**: `max-complexity = 10`. Restricts cyclomatic path complexity within any
+  single function.
+- **Pylint Return Statements (`PLR0911`)**: Maximum `6` return statements per function (Ruff default).
+- **Pylint Branch Count (`PLR0912`)**: Maximum `12` branches per function (Ruff default).
+- **Pylint Argument Count (`PLR0913`)**: Maximum `5` arguments per function definition (Ruff default).
+- **Pylint Statement Count (`PLR0915`)**: Maximum `50` statements per function body (Ruff default).
+
+#### Architectural Rationale: Inline Baseline vs. Per-File Ignores
+
+Rather than configuring blanket `per-file-ignores` in `pyproject.toml`, existing legacy functions that exceed these
+limits are annotated with inline `# noqa: <codes>` comments directly on their `def` lines:
+
+1. **Function-Level Granularity**: `per-file-ignores` exempt whole files, allowing new or unannotated functions in those
+   files to accumulate unchecked complexity. Inline annotations localize suppressions strictly to offending functions.
+2. **Explicit Technical Debt Visibility**: Placing `# noqa` comments directly at the function declaration makes
+   complexity immediately visible during code reading and PR reviews, signaling to developers where refactoring is
+   needed.
+3. **Configuration Stability**: Keeping `pyproject.toml` declarative and minimal avoids configuration churn and merge
+   conflicts in project configuration files.
+
+#### Ratchet Enforcement
+
+The complexity gate is protected by an automated ratchet test at `apps/sandbox-executor/tests/test_complexity_gate.py`:
+
+- The test scans all Python files in `apps/sandbox-executor/src` and counts the inline complexity `# noqa` directives
+  (`C901`, `PLR0911`, `PLR0912`, `PLR0913`, `PLR0915`) on function definitions.
+- The total count cannot exceed the established baseline (`BASELINE_COMPLEXITY_NOQA_COUNT = 187`,
+  `BASELINE_ANNOTATED_FUNCTIONS_COUNT = 91`).
+- Any new complex code or unauthorized `# noqa` directive fails CI.
+- When legacy functions are simplified or refactored, the baseline constant must be ratcheted down, ensuring codebase
+  complexity only decreases over time.

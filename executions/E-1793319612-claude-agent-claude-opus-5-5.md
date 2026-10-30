@@ -45,3 +45,16 @@ any ledger append, `git add`, commit or push.
   branch) but now reports FAILED instead of SUCCESS.
 - The fallback path uses `format_calibration_report` (warning only, never committed or pushed); the `converge_prettier`
   import was removed from `flow.py`.
+
+### Step 4: Hermetic pytest coverage (done)
+
+- `test_calibration.py`: new `TestFormatCalibrationReport` (12 tests) with a fixture paragraph in the 3.8.4 wrap from
+  Step 1 that the fake `_run_prettier` rewrites to the repository style; argv and `cwd` assertions; a drift test that
+  reads `lint-docs` from the root `pyproject.toml` with `tomllib`; a parametrised fail-closed guard (check exits 1,
+  `TimeoutExpired`, `FileNotFoundError`, `npx` missing); credential redaction; `run_calibrate` raising before
+  `record_calibration_action`, `git add` or `git commit` with the ledger and HEAD unchanged; dry run only warns; a
+  passing report is committed. A `no_real_npx` fixture fails any test that reaches the real `subprocess.run` with `npx`.
+- `test_flow.py`: new Stage 5 tests: `CalibrationFormatError` gives a FAILED stage with no `add`, `commit`, `merge` or
+  `push`, and the happy path still pushes and fast-forwards.
+- Existing patches of `sandbox_executor.calibration.converge_prettier` and `sandbox_executor.flow.converge_prettier`
+  now target `format_calibration_report` (the old names no longer exist in those modules); assertions kept.

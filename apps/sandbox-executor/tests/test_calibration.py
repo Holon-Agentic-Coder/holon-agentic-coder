@@ -7,21 +7,25 @@ import json
 import os
 import subprocess
 import sys
+import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from sandbox_executor.calibration import (
+    LINT_DOCS_PRETTIER,
     ActualMetrics,
     CalibrationCommitError,
     CalibrationDeltas,
+    CalibrationFormatError,
     CalibrationReport,
     EntropyFactors,
     PredictedMetrics,
     compute_calibration_deltas,
     extract_branch_components,
     fetch_remote_ref_if_needed,
+    format_calibration_report,
     format_markdown_report,
     is_calibration_stale,
     load_metrics_physics,
@@ -695,7 +699,7 @@ class TestActualMetricsIntegrity(unittest.TestCase):
 class TestAppendOnlyCalibratedBranch(unittest.TestCase):
     """Test fast-forward and append-only commit logic on /calibrated branches."""
 
-    @patch("sandbox_executor.calibration.converge_prettier")
+    @patch("sandbox_executor.calibration.format_calibration_report")
     @patch("builtins.open", new_callable=unittest.mock.mock_open)
     @patch("os.makedirs")
     def test_run_calibrate_appends_to_existing_local_branch(self, mock_makedirs, mock_open, mock_prettier):
@@ -727,7 +731,7 @@ class TestAppendOnlyCalibratedBranch(unittest.TestCase):
         expected_co = ["git", "checkout", "I-1/P-2/E-3/calibrated"]
         self.assertIn(expected_co, called_cmds)
 
-    @patch("sandbox_executor.calibration.converge_prettier")
+    @patch("sandbox_executor.calibration.format_calibration_report")
     @patch("builtins.open", new_callable=unittest.mock.mock_open)
     @patch("os.makedirs")
     def test_run_calibrate_checks_out_remote_branch_when_local_absent(self, mock_makedirs, mock_open, mock_prettier):
@@ -750,7 +754,7 @@ class TestAppendOnlyCalibratedBranch(unittest.TestCase):
         expected_co = ["git", "checkout", "-b", "I-1/P-2/E-3/calibrated", "origin/I-1/P-2/E-3/calibrated"]
         self.assertIn(expected_co, called_cmds)
 
-    @patch("sandbox_executor.calibration.converge_prettier")
+    @patch("sandbox_executor.calibration.format_calibration_report")
     @patch("builtins.open", new_callable=unittest.mock.mock_open)
     @patch("os.makedirs")
     def test_run_calibrate_creates_new_branch_when_neither_exists(self, mock_makedirs, mock_open, mock_prettier):
@@ -774,7 +778,7 @@ class TestAppendOnlyCalibratedBranch(unittest.TestCase):
         matching_cmds = [cmd for cmd in called_cmds if isinstance(cmd, list) and cmd[:4] == expected_prefix]
         self.assertTrue(matching_cmds, "Expected checkout -b command was not executed")
 
-    @patch("sandbox_executor.calibration.converge_prettier")
+    @patch("sandbox_executor.calibration.format_calibration_report")
     @patch("builtins.open", new_callable=unittest.mock.mock_open)
     @patch("os.makedirs")
     def test_run_calibrate_remote_only_execution_branch_strips_origin(self, mock_makedirs, mock_open, mock_prettier):
@@ -898,7 +902,7 @@ class TestEvaluatedCommitShaAndStaleness(unittest.TestCase):
 class TestNoCommitMessagingAndJson(unittest.TestCase):
     """Test accurate logging and schema output for --no-commit."""
 
-    @patch("sandbox_executor.calibration.converge_prettier")
+    @patch("sandbox_executor.calibration.format_calibration_report")
     @patch("builtins.open", new_callable=unittest.mock.mock_open)
     @patch("os.makedirs")
     def test_no_commit_console_output(self, mock_makedirs, mock_open, mock_prettier):
@@ -914,7 +918,7 @@ class TestNoCommitMessagingAndJson(unittest.TestCase):
             self.assertTrue(any("(uncommitted)" in msg for msg in printed_msgs))
             self.assertFalse(any("Calibrated branch:" in msg for msg in printed_msgs))
 
-    @patch("sandbox_executor.calibration.converge_prettier")
+    @patch("sandbox_executor.calibration.format_calibration_report")
     @patch("builtins.open", new_callable=unittest.mock.mock_open)
     @patch("os.makedirs")
     def test_no_commit_json_output(self, mock_makedirs, mock_open, mock_prettier):
@@ -929,7 +933,7 @@ class TestNoCommitMessagingAndJson(unittest.TestCase):
             self.assertIsNone(parsed["calibrated_branch"])
             self.assertIn("evaluated_commit_sha", parsed)
 
-    @patch("sandbox_executor.calibration.converge_prettier")
+    @patch("sandbox_executor.calibration.format_calibration_report")
     @patch("builtins.open", new_callable=unittest.mock.mock_open)
     @patch("os.makedirs")
     def test_committed_json_output(self, mock_makedirs, mock_open, mock_prettier):
@@ -1181,7 +1185,7 @@ def test_run_calibrate_commit_failure_warning_redacts_credentials(calibration_re
     caplog.set_level("WARNING", logger="sandbox_executor.calibration")
     sample_value = "ghp_" + "C" * 36
     with (
-        patch("sandbox_executor.calibration.converge_prettier"),
+        patch("sandbox_executor.calibration.format_calibration_report"),
         patch(
             "sandbox_executor.calibration.calibration_commit_env",
             side_effect=RuntimeError(f"credential helper {sample_value}"),
@@ -1216,7 +1220,7 @@ def test_run_calibrate_rejected_report_commit_raises(calibration_repo, capsys):
     _install_rejecting_pre_commit_hook(repo, git)
     ledger_rel = "holon-knowledge/ledger/executions.jsonl"
     with (
-        patch("sandbox_executor.calibration.converge_prettier"),
+        patch("sandbox_executor.calibration.format_calibration_report"),
         pytest.raises(CalibrationCommitError) as excinfo,
     ):
         run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
@@ -1241,7 +1245,7 @@ def test_cli_calibrate_rejected_report_commit_exits_non_zero(calibration_repo, c
     _install_rejecting_pre_commit_hook(repo, git)
     test_args = ["holon", "calibrate", _EXEC_BRANCH, "--repo-dir", str(repo)]
     with (
-        patch("sandbox_executor.calibration.converge_prettier"),
+        patch("sandbox_executor.calibration.format_calibration_report"),
         patch.object(sys, "argv", test_args),
         pytest.raises(SystemExit) as excinfo,
     ):
@@ -1256,7 +1260,7 @@ def test_cli_calibrate_rejected_report_commit_exits_non_zero(calibration_repo, c
 
 def test_run_calibrate_appends_and_commits_act_cal(calibration_repo):
     repo, git = calibration_repo
-    with patch("sandbox_executor.calibration.converge_prettier"):
+    with patch("sandbox_executor.calibration.format_calibration_report"):
         report = run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
 
     ledger_rel = "holon-knowledge/ledger/executions.jsonl"
@@ -1310,7 +1314,7 @@ def test_run_calibrate_appends_and_commits_act_cal(calibration_repo):
 
 def test_run_calibrate_metrics_unaffected_by_act_cal_rows(calibration_repo):
     repo, _ = calibration_repo
-    with patch("sandbox_executor.calibration.converge_prettier"):
+    with patch("sandbox_executor.calibration.format_calibration_report"):
         first = run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=True)
         second = run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
         third = run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=True)
@@ -1322,7 +1326,7 @@ def test_run_calibrate_skip_commit_appends_nothing(calibration_repo):
     repo, _ = calibration_repo
     ledger = repo / "holon-knowledge" / "ledger" / "executions.jsonl"
     before = ledger.read_bytes()
-    with patch("sandbox_executor.calibration.converge_prettier"):
+    with patch("sandbox_executor.calibration.format_calibration_report"):
         run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=True)
     assert ledger.read_bytes() == before
 
@@ -1331,7 +1335,7 @@ def test_run_calibrate_ledger_failure_warns_and_still_commits_report(calibration
     repo, git = calibration_repo
     caplog.set_level("WARNING")
     with (
-        patch("sandbox_executor.calibration.converge_prettier"),
+        patch("sandbox_executor.calibration.format_calibration_report"),
         patch("sandbox_executor.ledger.LedgerLock.__enter__", side_effect=PermissionError("ledger denied")),
     ):
         run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
@@ -1347,7 +1351,7 @@ def test_run_calibrate_ledger_failure_reaches_operator_log_fn(calibration_repo):
     repo, git = calibration_repo
     logs: list[str] = []
     with (
-        patch("sandbox_executor.calibration.converge_prettier"),
+        patch("sandbox_executor.calibration.format_calibration_report"),
         patch("sandbox_executor.ledger.LedgerLock.__enter__", side_effect=PermissionError("ledger denied")),
     ):
         run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False, log_fn=logs.append)
@@ -1415,7 +1419,7 @@ def test_stage5_dry_run_leaves_executions_ledger_unchanged(calibration_repo):
     repo, _ = calibration_repo
     ledger = repo / "holon-knowledge" / "ledger" / "executions.jsonl"
     before = ledger.read_bytes()
-    with patch("sandbox_executor.calibration.converge_prettier"):
+    with patch("sandbox_executor.calibration.format_calibration_report"):
         res = run_calibrate_stage(_stage5_context(repo, dry_run=True))
     assert res.status == StageStatus.SUCCESS
     assert ledger.read_bytes() == before
@@ -1440,8 +1444,8 @@ def test_stage5_rejected_report_commit_takes_failure_path(calibration_repo):
         return real_run_git(args, *a, **kw)
 
     with (
-        patch("sandbox_executor.calibration.converge_prettier"),
-        patch("sandbox_executor.flow.converge_prettier"),
+        patch("sandbox_executor.calibration.format_calibration_report"),
+        patch("sandbox_executor.flow.format_calibration_report"),
         patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
         patch("sandbox_executor.flow.run_git", side_effect=recording_run_git),
     ):
@@ -1477,7 +1481,7 @@ def test_stage5_commits_reconciliation_row_on_calibrated_branch(calibration_repo
     ledger_rel = "holon-knowledge/ledger/executions.jsonl"
     ctx = _stage5_context(repo, dry_run=False)
     with (
-        patch("sandbox_executor.calibration.converge_prettier"),
+        patch("sandbox_executor.calibration.format_calibration_report"),
         patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
     ):
         res = run_calibrate_stage(ctx)
@@ -1500,3 +1504,176 @@ def test_stage5_commits_reconciliation_row_on_calibrated_branch(calibration_repo
         "chore(calibration): add calibration report for P-2",
     ]
     assert git("show", "--name-only", "--pretty=format:", calibrated).split() == [ledger_rel]
+
+
+# A calibration paragraph as the old pinned prettier@3.8.4 wrapped it (breaking inside inline maths), and the same
+# paragraph in the repository style that `npx prettier --check` (lint-docs, CI hygiene) accepts at width 120.
+_REPORT_REL = "plans/P-2_calibration.md"
+_PINNED_WRAP = (
+    "# Calibration Report\n\n"
+    "Plan `P-1793275710-claude-agent-claude-opus-5-5` executed with minimal error ($p\\_success\\_error = 0.20$,\n"
+    "$cost\\_error =\n"
+    "1.88$). The calibration step successfully completed the execution lifecycle and delivered verified\n"
+    "post-execution analysis.\n"
+)
+_REPOSITORY_STYLE = (
+    "# Calibration Report\n\n"
+    "Plan `P-1793275710-claude-agent-claude-opus-5-5` executed with minimal error ($p\\_success\\_error = 0.20$, "
+    "$cost\\_error =\n"
+    "1.88$). The calibration step successfully completed the execution lifecycle and delivered verified "
+    "post-execution\n"
+    "analysis.\n"
+)
+
+
+class _FakePrettier:
+    """Stand-in for calibration._run_prettier: records argv and rewrites the report like the repository Prettier."""
+
+    def __init__(self, check_returncode: int = 0, raises: Exception | None = None):
+        self.check_returncode = check_returncode
+        self.raises = raises
+        self.calls: list[tuple[list[str], str]] = []
+
+    def __call__(self, mode: str, report_rel: str, repo_dir: str) -> subprocess.CompletedProcess[str]:
+        argv = [*LINT_DOCS_PRETTIER, mode, report_rel]
+        self.calls.append((argv, repo_dir))
+        if self.raises is not None:
+            raise self.raises
+        if mode == "--write":
+            Path(repo_dir, report_rel).write_text(_REPOSITORY_STYLE, encoding="utf-8")
+            return subprocess.CompletedProcess(argv, 0, stdout=f"{report_rel} 5ms\n", stderr="")
+        stderr = "" if self.check_returncode == 0 else f"[warn] {report_rel}\n[warn] Code style issues found.\n"
+        stdout = "Checking formatting...\n"
+        return subprocess.CompletedProcess(argv, self.check_returncode, stdout=stdout, stderr=stderr)
+
+
+@pytest.fixture
+def no_real_npx(monkeypatch):
+    """Fail the test if anything reaches the real subprocess.run with npx (no network, no Node)."""
+    real_run = subprocess.run
+
+    def guarded_run(cmd, *args, **kwargs):
+        if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "npx":
+            raise AssertionError(f"real npx invoked: {cmd}")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", guarded_run)
+    monkeypatch.setattr("sandbox_executor.calibration.shutil.which", lambda name: f"/usr/bin/{name}")
+
+
+@pytest.mark.usefixtures("no_real_npx")
+class TestFormatCalibrationReport:
+    """The calibration report is formatted with the lint-docs Prettier invocation and fails closed."""
+
+    def _write_report(self, repo: Path) -> None:
+        (repo / "plans").mkdir(exist_ok=True)
+        (repo / _REPORT_REL).write_text(_PINNED_WRAP, encoding="utf-8")
+
+    def test_report_needing_rewrap_is_formatted_to_repository_style(self, tmp_path):
+        self._write_report(tmp_path)
+        fake = _FakePrettier()
+        with patch("sandbox_executor.calibration._run_prettier", side_effect=fake):
+            format_calibration_report(_REPORT_REL, str(tmp_path))
+
+        assert (tmp_path / _REPORT_REL).read_text(encoding="utf-8") == _REPOSITORY_STYLE
+        assert [argv[-2] for argv, _ in fake.calls] == ["--write", "--check"]
+        for argv, cwd in fake.calls:
+            assert argv[:3] == ["npx", "--yes", "prettier"]
+            assert argv[-1] == _REPORT_REL
+            assert cwd == str(tmp_path)
+
+    def test_run_prettier_uses_lint_docs_argv_and_repository_cwd(self, tmp_path):
+        with patch("sandbox_executor.calibration.subprocess.run") as mock_run:
+            from sandbox_executor.calibration import _run_prettier
+
+            _run_prettier("--check", _REPORT_REL, str(tmp_path))
+
+        assert mock_run.call_args.args[0] == ["npx", "--yes", "prettier", "--check", _REPORT_REL]
+        assert mock_run.call_args.kwargs["cwd"] == str(tmp_path)
+        assert mock_run.call_args.kwargs["timeout"] > 0
+
+    def test_invocation_matches_lint_docs_task(self):
+        """Drift guard: the calibration Prettier must be the one `uv run task lint-docs` runs."""
+        pyproject = Path(__file__).resolve().parents[3] / "pyproject.toml"
+        lint_docs = tomllib.loads(pyproject.read_text(encoding="utf-8"))["tool"]["taskipy"]["tasks"]["lint-docs"]
+        lint_docs_spec = lint_docs.split()[:2]
+        calibration_spec = [arg for arg in LINT_DOCS_PRETTIER if arg != "--yes"]
+        assert calibration_spec == lint_docs_spec == ["npx", "prettier"]
+
+    @pytest.mark.parametrize(
+        ("fake", "which", "reason"),
+        [
+            (_FakePrettier(check_returncode=1), "/usr/bin/npx", "check exited 1"),
+            (_FakePrettier(raises=subprocess.TimeoutExpired(["npx"], 120)), "/usr/bin/npx", "could not run"),
+            (_FakePrettier(raises=FileNotFoundError("npx")), "/usr/bin/npx", "could not run"),
+            (_FakePrettier(), None, "npx is not on PATH"),
+        ],
+        ids=["check-fails", "timeout", "npx-not-found", "npx-missing"],
+    )
+    def test_guard_fails_closed(self, tmp_path, fake, which, reason):
+        self._write_report(tmp_path)
+        with (
+            patch("sandbox_executor.calibration.shutil.which", return_value=which),
+            patch("sandbox_executor.calibration._run_prettier", side_effect=fake),
+            pytest.raises(CalibrationFormatError) as excinfo,
+        ):
+            format_calibration_report(_REPORT_REL, str(tmp_path))
+
+        message = str(excinfo.value)
+        assert reason in message
+        assert f"Calibration report {_REPORT_REL} failed the repository Prettier check" in message
+        assert f"npx prettier --check {_REPORT_REL}" in message
+        assert isinstance(excinfo.value, CalibrationCommitError)
+
+    def test_guard_message_redacts_credentials(self, tmp_path):
+        sample_value = "ghp_" + "F" * 36
+        fake = _FakePrettier(raises=OSError(f"npx auth {sample_value}"))
+        with (
+            patch("sandbox_executor.calibration._run_prettier", side_effect=fake),
+            pytest.raises(CalibrationFormatError) as excinfo,
+        ):
+            format_calibration_report(_REPORT_REL, str(tmp_path))
+        assert sample_value not in str(excinfo.value)
+        assert "[REDACTED_SECRET]" in str(excinfo.value)
+
+    def test_run_calibrate_fails_closed_before_ledger_and_git(self, calibration_repo):
+        repo, git = calibration_repo
+        ledger_rel = "holon-knowledge/ledger/executions.jsonl"
+        ledger_before = (repo / ledger_rel).read_bytes()
+        head_before = git("rev-parse", "HEAD").strip()
+        git_calls: list[list[str]] = []
+        from sandbox_executor.git import run_git as real_run_git
+
+        def recording_run_git(args, *a, **kw):
+            git_calls.append(list(args))
+            return real_run_git(args, *a, **kw)
+
+        with (
+            patch("sandbox_executor.calibration._run_prettier", side_effect=_FakePrettier(check_returncode=1)),
+            patch("sandbox_executor.calibration.run_git", side_effect=recording_run_git),
+            patch("sandbox_executor.calibration.record_calibration_action") as mock_record,
+            pytest.raises(CalibrationFormatError),
+        ):
+            run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
+
+        mock_record.assert_not_called()
+        assert not [c for c in git_calls if c[:1] in (["add"], ["commit"], ["push"])]
+        assert (repo / ledger_rel).read_bytes() == ledger_before
+        assert git("rev-parse", "HEAD").strip() == head_before
+
+    def test_run_calibrate_skip_commit_only_warns(self, calibration_repo, caplog):
+        repo, _ = calibration_repo
+        caplog.set_level("WARNING", logger="sandbox_executor.calibration")
+        with patch("sandbox_executor.calibration._run_prettier", side_effect=_FakePrettier(check_returncode=1)):
+            report = run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=True)
+
+        assert report.committed is False
+        assert (repo / _REPORT_REL).exists()
+        assert any("failed the repository Prettier check" in rec.getMessage() for rec in caplog.records)
+
+    def test_run_calibrate_commits_report_that_passes_check(self, calibration_repo):
+        repo, git = calibration_repo
+        with patch("sandbox_executor.calibration._run_prettier", side_effect=_FakePrettier()):
+            run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
+
+        assert git("show", f"HEAD:{_REPORT_REL}") == _REPOSITORY_STYLE

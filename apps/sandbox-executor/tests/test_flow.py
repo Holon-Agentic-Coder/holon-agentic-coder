@@ -562,7 +562,7 @@ class TestFlowStages:
         assert mock_run.call_args.kwargs["log_fn"] == ctx.log
         assert ctx.calibrated_branch == "I-100-intent/P-200-plan/E-300-exec/calibrated"
 
-    def test_stage5_calibrate_fallback_invokes_converge_prettier(self, tmp_path):
+    def test_stage5_calibrate_fallback_formats_report_with_lint_docs_prettier(self, tmp_path):
         ctx = FlowContext(
             repo_dir=str(tmp_path),
             execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
@@ -572,12 +572,12 @@ class TestFlowStages:
         with (
             patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
             patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError("calibration failed")),
-            patch("sandbox_executor.flow.converge_prettier") as mock_converge,
+            patch("sandbox_executor.flow.format_calibration_report") as mock_format,
         ):
             res = run_calibrate_stage(ctx)
 
         assert res.status == StageStatus.SUCCESS
-        mock_converge.assert_called_once_with(["plans/P-200-plan_calibration.md"], repo_dir=str(tmp_path))
+        mock_format.assert_called_once_with("plans/P-200-plan_calibration.md", str(tmp_path))
 
     def test_stage5_calibrate_fallback_appends_uncommitted_failure_act_cal(self, tmp_path):
         """A failed calibration run appends an ACT-CAL failure row that stays uncommitted, as documented."""
@@ -607,7 +607,7 @@ class TestFlowStages:
         )
         with (
             patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError("calibration failed")),
-            patch("sandbox_executor.flow.converge_prettier"),
+            patch("sandbox_executor.flow.format_calibration_report"),
         ):
             res = run_calibrate_stage(ctx)
 
@@ -666,7 +666,7 @@ class TestFlowStages:
         )
         with (
             patch("sandbox_executor.flow.run_calibrate", side_effect=failing_run_calibrate),
-            patch("sandbox_executor.flow.converge_prettier"),
+            patch("sandbox_executor.flow.format_calibration_report"),
         ):
             res = run_calibrate_stage(ctx)
 
@@ -700,7 +700,7 @@ class TestFlowStages:
         with (
             patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
             patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError("calibration failed")),
-            patch("sandbox_executor.flow.converge_prettier", side_effect=OSError("prettier missing")),
+            patch("sandbox_executor.flow.format_calibration_report", side_effect=OSError("prettier missing")),
         ):
             res = run_calibrate_stage(ctx)
 
@@ -727,7 +727,7 @@ class TestFlowStages:
         with (
             patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
             patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError(f"fetch failed {sample_value}")),
-            patch("sandbox_executor.flow.converge_prettier"),
+            patch("sandbox_executor.flow.format_calibration_report"),
         ):
             run_calibrate_stage(ctx)
 
@@ -759,7 +759,7 @@ class TestFlowStages:
         with (
             patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
             patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError(hook_output)),
-            patch("sandbox_executor.flow.converge_prettier"),
+            patch("sandbox_executor.flow.format_calibration_report"),
         ):
             run_calibrate_stage(ctx)
 
@@ -784,12 +784,69 @@ class TestFlowStages:
         )
         with (
             patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError("calibration failed")),
-            patch("sandbox_executor.flow.converge_prettier", side_effect=OSError(f"npx auth {sample_value}")),
+            patch("sandbox_executor.flow.format_calibration_report", side_effect=OSError(f"npx auth {sample_value}")),
         ):
             run_calibrate_stage(ctx)
 
         assert any("Prettier formatting failed" in line and "[REDACTED_SECRET]" in line for line in ctx.logs)
         assert all(sample_value not in line for line in ctx.logs)
+
+    @staticmethod
+    def _stage5_push_context(tmp_path):
+        return FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+            plan_branch="I-100-intent/P-200-plan/_",
+            dry_run=False,
+            skip_push=False,
+        )
+
+    def test_stage5_prettier_check_failure_fails_stage_and_never_pushes(self, tmp_path):
+        """A report that fails the repository Prettier check fails Stage 5 and is never pushed."""
+        from sandbox_executor.calibration import CalibrationFormatError
+
+        ctx = self._stage5_push_context(tmp_path)
+        error = CalibrationFormatError(
+            "Calibration report plans/P-200-plan_calibration.md failed the repository Prettier check "
+            "(check exited 1); reproduce with: npx prettier --check plans/P-200-plan_calibration.md"
+        )
+        with (
+            patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
+            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.run_calibrate", side_effect=error),
+            patch("sandbox_executor.flow.record_calibration_action") as mock_record,
+            patch("sandbox_executor.flow.run_git") as mock_git,
+        ):
+            res = run_calibrate_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        assert "Prettier check" in res.error
+        assert "nothing was committed or pushed" in res.error
+        assert "plans/P-200-plan_calibration.md" in res.error
+        assert ctx.stage_results["calibrate"] is res
+        git_verbs = [call.args[0][0] for call in mock_git.call_args_list]
+        assert not {"push", "merge", "commit", "add"} & set(git_verbs)
+        mock_record.assert_not_called()
+        assert not (tmp_path / "plans").exists()
+
+    def test_stage5_calibration_success_still_pushes(self, tmp_path):
+        """Regression guard: a report that passes the check is still pushed and fast-forwarded."""
+        ctx = self._stage5_push_context(tmp_path)
+        mock_report = MagicMock()
+        mock_report.calibrated_branch = "I-100-intent/P-200-plan/E-300-exec/calibrated"
+        mock_report.to_dict.return_value = {"calibrated_branch": mock_report.calibrated_branch}
+        with (
+            patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
+            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.run_calibrate", return_value=mock_report),
+            patch("sandbox_executor.flow.run_git") as mock_git,
+        ):
+            res = run_calibrate_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        git_calls = [call.args[0] for call in mock_git.call_args_list]
+        assert ["push", "-u", "origin", mock_report.calibrated_branch] in git_calls
+        assert ["merge", "--ff-only", mock_report.calibrated_branch] in git_calls
 
     def test_warn_ledger_failure_redacts_credentials(self, tmp_path, caplog):
         """Non-fatal ledger failure warnings redact the exception text in both logs."""
@@ -2578,11 +2635,11 @@ class TestFlowRoleDispatch:
         ctx = _dispatch_context(host, agents)
         assert run_intent_stage(ctx).status == StageStatus.SUCCESS
 
-        with patch("sandbox_executor.flow.converge_prettier") as mock_converge:
+        with patch("sandbox_executor.flow.format_calibration_report") as mock_format:
             res = run_plan_stage(ctx)
 
         assert res.status == StageStatus.SUCCESS
-        mock_converge.assert_not_called()  # The planner container owns formatting.
+        mock_format.assert_not_called()  # The planner container owns formatting.
         assert res.payload["plan_file"] == f"plans/{res.payload['plan_id']}.md"
         assert res.payload["plan_id"].endswith("-claude-agent-claude-opus-5-5")
         assert res.payload["metrics"]["ev"] == pytest.approx(35.4)

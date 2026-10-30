@@ -48,7 +48,7 @@ any ledger append, `git add`, commit or push.
 
 ### Step 4: Hermetic pytest coverage (done)
 
-- `test_calibration.py`: new `TestFormatCalibrationReport` (12 tests) with a fixture paragraph in the 3.8.4 wrap from
+- `test_calibration.py`: new `TestFormatCalibrationReport` (11 tests) with a fixture paragraph in the 3.8.4 wrap from
   Step 1 that the fake `_run_prettier` rewrites to the repository style; argv and `cwd` assertions; a drift test that
   reads `lint-docs` from the root `pyproject.toml` with `tomllib`; a parametrised fail-closed guard (check exits 1,
   `TimeoutExpired`, `FileNotFoundError`, `npx` missing); credential redaction; `run_calibrate` raising before
@@ -58,3 +58,13 @@ any ledger append, `git add`, commit or push.
   `push`, and the happy path still pushes and fast-forwards.
 - Existing patches of `sandbox_executor.calibration.converge_prettier` and `sandbox_executor.flow.converge_prettier`
   now target `format_calibration_report` (the old names no longer exist in those modules); assertions kept.
+
+### Step 5: Probe npx resolution of unversioned prettier (done, exploratory)
+
+- `npx --yes prettier --version` gives `3.9.10`; `npm view prettier version` gives `3.9.10`: the host resolves registry
+  latest, the same as fresh CI.
+- In a system temporary directory with `.prettierrc.json` and a 3.8.4-wrapped copy of a committed report,
+  `format_calibration_report` (via `uv run python -I -c`) succeeded and `npx prettier --check` then exited 0.
+- No repository change. Residual risk: a host with a stale npx cache could resolve an older Prettier; a follow-up intent
+  could pin Prettier in `pyproject.toml` (`lint-docs`, `format-docs`) and the `lint-md` Makefile target together. The
+  drift test would then flag `LINT_DOCS_PRETTIER` until it is pinned the same way.

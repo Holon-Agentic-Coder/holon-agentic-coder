@@ -9,6 +9,11 @@ from sandbox_executor import cli
 from sandbox_executor.agent_defaults import detected_harness_markers
 
 from tests.gh_write_guard import guarded_popen
+from tests.hermetic_fixtures import (
+    REPO_ROOT,
+    describe_index_changes,
+    knowledge_index_snapshot,
+)
 
 # Ambient variables that can carry a live credential or change which code path a test exercises.
 _AMBIENT_CREDENTIAL_NAMES = ("GITHUB_TOKEN", "GH_TOKEN")
@@ -130,6 +135,34 @@ def _isolate_agent_defaults(no_ambient_credentials, monkeypatch: pytest.MonkeyPa
     for name in ("HOLON_AGENT", "HOLON_MODEL", "HOLON_PREFLIGHT_TIMEOUT"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("HOLON_SKIP_PREFLIGHT", "1")
+
+
+@pytest.fixture(autouse=True)
+def checkout_knowledge_index_guard() -> Iterator[None]:
+    """Fail any test that creates, modifies or deletes a file under the checkout's knowledge index.
+
+    Takes a snapshot of ``holon-knowledge/.index/`` before and after each test.  On any difference
+    it calls ``pytest.fail`` with a message naming the offending paths and a remediation hint.
+
+    Fail-closed rule: if the snapshot itself raises (e.g. a permission error), the test fails with
+    that error and is never skipped.  A developer's pre-existing index is not counted as a failure
+    -- only changes made during the test are.
+
+    Note: under xdist, a change detected here may originate from a concurrent worker rather than
+    the test being torn down.  If you see unexpected failures, re-run the offending test in
+    isolation to confirm attribution.
+    """
+    before = knowledge_index_snapshot(REPO_ROOT)
+    yield
+    after = knowledge_index_snapshot(REPO_ROOT)
+    changes = describe_index_changes(before, after)
+    if changes:
+        pytest.fail(
+            "Test wrote the checkout's holon-knowledge/.index/: "
+            + ", ".join(changes)
+            + " -- pin repo_dir and the working directory to tmp_path to fix this.",
+            pytrace=False,
+        )
 
 
 @pytest.fixture(autouse=True)

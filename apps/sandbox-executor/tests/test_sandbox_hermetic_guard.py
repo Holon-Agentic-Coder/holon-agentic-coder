@@ -20,9 +20,14 @@ survival`` job (``.github/workflows/test-stress.yml``, ``-m stress``), which als
 skipped. The negative control below is a single short subprocess and stays in the unit job. The
 child's own selection (``not integration_test and not stress``) excludes the canary, and the
 ``HOLON_HERMETIC_GUARD_CHILD`` sentinel skips it in any child run, so it cannot recurse.
+
+The guard now also covers ``holon-knowledge/.index/``: the per-test autouse fixture in
+``conftest.py`` fires on any change to that directory, and the stress canary verifies that no
+test in the child run touches it either.
 """
 
 import os
+import pathlib
 import subprocess
 import tempfile
 import unittest
@@ -31,9 +36,12 @@ import pytest
 
 from tests.hermetic_fixtures import (
     CHILD_SUITE_SENTINEL,
+    KNOWLEDGE_INDEX_SUBDIR,
     REPO_ROOT,
     TESTS_DIR,
     UV,
+    describe_index_changes,
+    knowledge_index_snapshot,
     pytest_suite_command,
     simulated_container_env,
     uv_available,
@@ -94,6 +102,9 @@ class TestSandboxHermeticGuard(unittest.TestCase):
             dummy_git_dir = os.path.join(sim_sandbox_workspace, ".git")
             os.makedirs(dummy_git_dir, exist_ok=True)
 
+            # Snapshot the checkout's knowledge index before the child run.
+            index_before = knowledge_index_snapshot(REPO_ROOT)
+
             # Run the whole suite through the sanctioned runner and the unit job's selection, from
             # the repository root so the child inherits the root pytest configuration.
             cmd = pytest_suite_command()
@@ -111,6 +122,15 @@ class TestSandboxHermeticGuard(unittest.TestCase):
                 f"The suite failed under simulated sandbox environment!\n"
                 f"Command: {' '.join(cmd)}\n"
                 f"Stdout:\n{res.stdout}\nStderr:\n{res.stderr}",
+            )
+
+            # Assert the checkout's knowledge index was not touched by the child run.
+            index_after = knowledge_index_snapshot(REPO_ROOT)
+            index_changes = describe_index_changes(index_before, index_after)
+            self.assertEqual(
+                index_changes,
+                [],
+                "A test in the child suite wrote the checkout's holon-knowledge/.index/: " + ", ".join(index_changes),
             )
 
             # Assert canary workspace still exists
@@ -190,3 +210,79 @@ class TestSandboxHermeticGuard(unittest.TestCase):
                 os.path.exists(canary_marker),
                 "Negative control canary survived an unpatched cleanup_repo_dir() call.",
             )
+
+
+class TestKnowledgeIndexSnapshotHelpers:
+    """Unit tests for the knowledge_index_snapshot and describe_index_changes helpers.
+
+    These tests use a throwaway directory under tmp_path and never touch the real checkout.
+    """
+
+    def test_absent_directory_returns_empty_snapshot(self, tmp_path: pathlib.Path) -> None:
+        snap = knowledge_index_snapshot(str(tmp_path))
+        assert snap == {}
+
+    def test_created_file_is_reported(self, tmp_path: pathlib.Path) -> None:
+        before = knowledge_index_snapshot(str(tmp_path))
+        index_dir = tmp_path / KNOWLEDGE_INDEX_SUBDIR
+        index_dir.mkdir(parents=True)
+        db = index_dir / "action_index.db"
+        db.write_bytes(b"fake-db")
+        after = knowledge_index_snapshot(str(tmp_path))
+        changes = describe_index_changes(before, after)
+        assert len(changes) == 1
+        assert "created" in changes[0]
+        assert "holon-knowledge/.index/action_index.db" in changes[0]
+
+    def test_modified_file_is_reported(self, tmp_path: pathlib.Path) -> None:
+        index_dir = tmp_path / KNOWLEDGE_INDEX_SUBDIR
+        index_dir.mkdir(parents=True)
+        db = index_dir / "action_index.db"
+        db.write_bytes(b"v1")
+        before = knowledge_index_snapshot(str(tmp_path))
+        db.write_bytes(b"v2-longer")
+        after = knowledge_index_snapshot(str(tmp_path))
+        changes = describe_index_changes(before, after)
+        assert len(changes) == 1
+        assert "modified" in changes[0]
+        assert "holon-knowledge/.index/action_index.db" in changes[0]
+
+    def test_deleted_file_is_reported(self, tmp_path: pathlib.Path) -> None:
+        index_dir = tmp_path / KNOWLEDGE_INDEX_SUBDIR
+        index_dir.mkdir(parents=True)
+        db = index_dir / "action_index.db"
+        db.write_bytes(b"data")
+        before = knowledge_index_snapshot(str(tmp_path))
+        db.unlink()
+        after = knowledge_index_snapshot(str(tmp_path))
+        changes = describe_index_changes(before, after)
+        assert len(changes) == 1
+        assert "deleted" in changes[0]
+        assert "holon-knowledge/.index/action_index.db" in changes[0]
+
+    def test_unchanged_snapshot_reports_no_changes(self, tmp_path: pathlib.Path) -> None:
+        index_dir = tmp_path / KNOWLEDGE_INDEX_SUBDIR
+        index_dir.mkdir(parents=True)
+        (index_dir / "action_index.db").write_bytes(b"data")
+        before = knowledge_index_snapshot(str(tmp_path))
+        after = knowledge_index_snapshot(str(tmp_path))
+        assert describe_index_changes(before, after) == []
+
+    def test_unreadable_directory_propagates_error(self, tmp_path: pathlib.Path) -> None:
+        """An unreadable index directory must raise, never return an empty snapshot.
+
+        ``os.walk`` with its default ``onerror=None`` swallows directory-listing errors, which
+        would make the guard fail open on an unreadable ``.index/``. The snapshot helper passes an
+        ``onerror`` callback that re-raises, so the guard fails closed as documented.
+        """
+        if os.geteuid() == 0:
+            pytest.skip("running as root: permission bits are ignored, the directory stays readable")
+        index_dir = tmp_path / KNOWLEDGE_INDEX_SUBDIR
+        index_dir.mkdir(parents=True)
+        (index_dir / "action_index.db").write_bytes(b"data")
+        os.chmod(index_dir, 0o000)
+        try:
+            with pytest.raises(PermissionError):
+                knowledge_index_snapshot(str(tmp_path))
+        finally:
+            os.chmod(index_dir, 0o755)

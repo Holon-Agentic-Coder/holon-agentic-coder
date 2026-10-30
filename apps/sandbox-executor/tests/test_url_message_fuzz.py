@@ -219,7 +219,7 @@ def _doctor(value: str) -> list[str]:
             ):
                 cli.report_budgets_and_envelope(fetch=fetch)
                 for as_json in (False, True):
-                    cli.run_doctor(argparse.Namespace(agent=None, model=None, json=as_json, timeout=None), fetch=fetch)
+                    cli.run_doctor(argparse.Namespace(agent="antigravity-agent", model="gemini-3.8-flash-medium", json=as_json, timeout=None), fetch=fetch)
             texts.extend(out)
     return texts
 
@@ -606,7 +606,7 @@ def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, 
             for as_json in (False, True):
                 codes.append(
                     cli.run_doctor(
-                        argparse.Namespace(agent=None, model=None, json=as_json, timeout=None),
+                        argparse.Namespace(agent="antigravity-agent", model="gemini-3.8-flash-medium", json=as_json, timeout=None),
                         fetch=lambda url, timeout: b"{}",
                     )
                 )
@@ -695,7 +695,7 @@ def test_doctor_survives_unparseable_base_url(slot, monkeypatch):  # noqa: C901,
                     stdout = io.StringIO()
                     with contextlib.redirect_stdout(stdout):
                         code = cli.run_doctor(
-                            argparse.Namespace(agent=None, model=None, json=as_json, timeout=None), fetch=fetch
+                            argparse.Namespace(agent="antigravity-agent", model="gemini-3.8-flash-medium", json=as_json, timeout=None), fetch=fetch
                         )
                     results[as_json] = (code, stdout.getvalue())
                     out.append(stdout.getvalue())

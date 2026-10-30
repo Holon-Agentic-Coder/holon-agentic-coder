@@ -21,7 +21,7 @@ def prepare_role_execution(args: argparse.Namespace) -> dict[str, Any] | None:
     """
     try:
         agent_res, model_res = cli.resolve_runner_and_model(args.agent, args.model)
-    except cli.UnmappedAgentRunnerError as exc:
+    except (cli.UnmappedAgentRunnerError, cli.MissingAgentRunnerError, cli.MissingModelError) as exc:
         print(f"Error: {cli.redact_cli_error(exc)}", file=sys.stderr)
         sys.exit(1)
         return None

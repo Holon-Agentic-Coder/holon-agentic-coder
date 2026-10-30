@@ -91,6 +91,20 @@ class UnmappedAgentRunnerError(ValueError):
     """Raised when the resolved agent runner has no container image in :data:`AGENT_IMAGE_MAPPING`."""
 
 
+class MissingAgentRunnerError(ValueError):
+    """Raised when no agent runner could be resolved and no fallback default is in effect.
+
+    The caller must supply ``--agent`` or set ``HOLON_AGENT``, or run from a recognised agent harness.
+    """
+
+
+class MissingModelError(ValueError):
+    """Raised when no model could be resolved and no fallback default is in effect.
+
+    The caller must supply ``--model`` or set ``HOLON_MODEL``.
+    """
+
+
 @dataclass(frozen=True)
 class Resolution:
     """Outcome of a default resolution.
@@ -231,7 +245,10 @@ def resolve_agent_runner(
         reason = "no --agent, HOLON_AGENT or harness marker"
         if harness_detection_disabled(env):
             reason += "; harness detection is off inside the sandbox"
-        resolution = Resolution(FALLBACK_AGENT, "fallback", reason)
+        raise MissingAgentRunnerError(
+            f"Agent runner is mandatory ({reason}). "
+            "Provide --agent, set HOLON_AGENT, or run from a recognised agent harness."
+        )
     if log:
         logger.info(resolution.describe("Agent runner"))
     return resolution
@@ -265,7 +282,10 @@ def resolve_model(
     elif (env.get("HOLON_MODEL") or "").strip():
         resolution = Resolution(env["HOLON_MODEL"].strip(), "env", "HOLON_MODEL")
     else:
-        resolution = Resolution(default_model_for(agent), "table", f"default model for {canonical_agent_name(agent)}")
+        raise MissingModelError(
+            "Model is mandatory: no --model or HOLON_MODEL provided. "
+            f"Provide --model or set HOLON_MODEL (e.g. {default_model_for(agent)} for {canonical_agent_name(agent)})."
+        )
     if log:
         logger.info(resolution.describe("Model"))
     return resolution

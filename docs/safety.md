@@ -58,7 +58,10 @@ managed centrally.
 ### 5) Human review is the final gate
 
 - Agents can explore freely in branches.
-- Only **parent intents** (direct children of `main`) require human review to merge.
+- Only **root intents** (direct children of `main`) require human review to merge. Every merge below the root is raised
+  and merged automatically by the agent into the deciding plan or execution branch. Until the implementation follows,
+  the current flow still targets the parent intent branch and leaves each sub-intent PR merge to the maintainer (see
+  [Git Flow](git_flow.md) Stage 3 under the flow equivalence guarantee).
 - **Governance changes** (estimators, routing policies, core invariants) always require human approval.
 
 ---
@@ -303,11 +306,14 @@ If parent intent's entropy budget is exhausted:
 Human review is **required** for the items below. Only item 1, the PR merge, is on the flow's path; the others are
 out-of-band reviews and never pause a running flow before the merge.
 
-1. **Parent intent merge to `main`**
-   - All parent intents (direct children of `main`) require human approval before merge.
-   - Sub-intents run autonomously through the full flow and merge only into their parent intent branch; until sub-intent
-     aggregation is automated, the maintainer merges each child PR as well. These PR merges are the only human step: no
-     stage before them waits for a human.
+1. **Root intent merge to `main`**
+   - All root intents (direct children of `main`) require human approval before merge.
+   - Sub-intents run autonomously through the full flow and merge only into their deciding node's branch (the plan
+     branch that listed them, or the execution branch that decided the split), automatically, with no human step below
+     the root.
+   - The root intent's PR to `main` is the only human step: no stage before it waits for a human.
+   - Until the implementation follows, the current flow still targets the parent intent branch and leaves each
+     sub-intent PR merge to the maintainer (see [Git Flow](git_flow.md) Stage 3 under the flow equivalence guarantee).
 
 2. **Estimator proposals**
    - Any change to P(success), ΔS, Impact, Learning Value, or EV estimators.
@@ -336,20 +342,24 @@ out-of-band reviews and never pause a running flow before the merge.
 
 ### Human review workflow
 
+Sub-intent PRs never enter this workflow: the agent merges them automatically into their deciding node's branch, and
+only the root intent reaches it (until the implementation follows, the current flow still leaves each sub-intent PR
+merge to the maintainer; see item 1 above).
+
 ```
 
 1. Agent completes intent in branch
-2. Agent requests merge to parent (or main)
+2. Agent requests the root intent's merge to `main`
 3. System generates review package:
     - Intent goal and constraints
     - Plan selected (with alternatives considered)
     - Execution summary (predicted vs actual metrics)
-    - Git diff (from parent branch)
+    - Git diff (from `main`)
     - Test results
     - Ledger trace (all events for this intent)
 4. Human reviews package
 5. Human decision:
-    - **Approve:** Intent merges to parent/main
+    - **Approve:** Root intent merges to `main`
     - **Reject:** Intent branch abandoned, feedback recorded
     - **Request changes:** Agent spawns new intent to address feedback
 6. Decision logged to ledger (human_review_decision)
@@ -428,7 +438,8 @@ out-of-band reviews and never pause a running flow before the merge.
 
 - **Containment:** Conflict isolated to intent branch.
 - **Response:** Log conflict files, abort rebase, notify agent.
-- **Recovery:** Agent resolves conflict or requests parent to merge siblings sequentially.
+- **Recovery:** Agent resolves conflict or rebases onto the deciding node's branch after earlier siblings have merged
+  into it (see [Git Flow](git_flow.md) Stage 3 for the current implementation).
 - **Escalation:** If conflicts persist (> 3 attempts), human review.
 
 #### 3) **Entropy budget exceeded**
@@ -487,8 +498,10 @@ Holon is designed to **explore low-probability actions** for **learning value**.
 ### Invariant 1: Git discipline
 
 - Sub-intents **never merge directly to `main`**.
-- Sub-intents **always rebase from parent before and after execution**.
-- Only parent intents (direct children of `main`) merge to `main` after human review.
+- Sub-intents **always rebase from their deciding node's branch before and after execution**, and merge only into it
+  (see [Git Flow](git_flow.md) Stage 3 for the current implementation).
+- Siblings under one deciding node always have different slugs, so their ids cannot collide.
+- Only root intents (direct children of `main`) merge to `main` after human review.
 
 ### Invariant 2: Sandboxing
 
@@ -504,7 +517,8 @@ Holon is designed to **explore low-probability actions** for **learning value**.
 
 ### Invariant 4: Human review
 
-- Parent intents require human approval to merge to `main`.
+- Root intents require human approval to merge to `main` (the only human stop in the flow; see
+  [Human review is the final gate](#5-human-review-is-the-final-gate) for the current implementation).
 - Estimator changes require human approval.
 - Governance changes require human approval.
 

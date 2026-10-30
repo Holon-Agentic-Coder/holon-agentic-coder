@@ -660,3 +660,123 @@ def test_reviewer_paths_reject_non_integer_indices(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         reviewer_report_rel(1, True)
     assert not os.path.exists(tmp_path / ".holon")
+
+
+# --- Result Transport Serialisation Tests --------------------------------------------------------------------------
+
+
+def test_serialize_and_deserialize_reviewer_result_roundtrip() -> None:
+    parsed = ParsedTrailer(
+        verdict=ReviewerVerdict.CHANGES_REQUESTED,
+        counts=ReviewCounts(critical=1, important=0, nit=2),
+        findings=(
+            ReviewFinding("critical", "src/core.py", 42, "Buffer overflow"),
+            ReviewFinding("nit", "README.md", None, "Typo in header"),
+            ReviewFinding("nit", "tests/test_core.py", 10, "Style nit"),
+        ),
+    )
+    original = ReviewerResult.completed(1, "fake-agent", "fake-model", "report.md", "trailer text", parsed)
+    serialized = review_ensemble.serialize_reviewer_result(original)
+
+    assert serialized["index"] == 1
+    assert serialized["agent"] == "fake-agent"
+    assert serialized["model"] == "fake-model"
+    assert serialized["status"] == "COMPLETED"
+    assert serialized["verdict"] == "CHANGES_REQUESTED"
+    assert serialized["counts"] == {"critical": 1, "important": 0, "nit": 2}
+    assert len(serialized["findings"]) == 3
+
+    restored = review_ensemble.deserialize_reviewer_result(serialized)
+    assert restored.index == original.index
+    assert restored.agent == original.agent
+    assert restored.model == original.model
+    assert restored.status == ReviewerStatus.COMPLETED
+    assert restored.verdict == ReviewerVerdict.CHANGES_REQUESTED
+    assert restored.counts.critical == 1
+    assert restored.counts.important == 0
+    assert restored.counts.nit == 2
+    assert len(restored.findings) == 3
+    assert restored.findings[0] == ReviewFinding("critical", "src/core.py", 42, "Buffer overflow")
+    assert restored.findings[1] == ReviewFinding("nit", "README.md", None, "Typo in header")
+
+
+def test_serialize_and_deserialize_failed_reviewer_result_roundtrip() -> None:
+    original = ReviewerResult.failed(2, "agent-x", "model-y", "report2.md", "runner crashed with code 137")
+    serialized = review_ensemble.serialize_reviewer_result(original)
+
+    assert serialized["status"] == "FAILED"
+    assert serialized["verdict"] is None
+    assert serialized["failure_reason"] == "runner crashed with code 137"
+
+    restored = review_ensemble.deserialize_reviewer_result(serialized)
+    assert restored.index == 2
+    assert restored.status == ReviewerStatus.FAILED
+    assert restored.verdict is None
+    assert restored.failure_reason == "runner crashed with code 137"
+    assert restored.findings == ()
+
+
+def test_deserialize_reviewer_result_rejects_invalid_status() -> None:
+    with pytest.raises(ValueError, match="Invalid reviewer status"):
+        review_ensemble.deserialize_reviewer_result({"status": "RUNNING", "index": 1})
+
+
+def test_deserialize_reviewer_result_rejects_invalid_verdict() -> None:
+    with pytest.raises(ValueError, match="Invalid reviewer verdict"):
+        review_ensemble.deserialize_reviewer_result({"status": "COMPLETED", "verdict": "MAYBE", "index": 1})
+
+
+def test_deserialize_reviewer_result_rejects_completed_without_verdict() -> None:
+    with pytest.raises(ValueError, match="Completed reviewer result missing verdict"):
+        review_ensemble.deserialize_reviewer_result({"status": "COMPLETED", "index": 1})
+
+
+def test_deserialize_reviewer_result_rejects_invalid_severity() -> None:
+    payload = {
+        "status": "COMPLETED",
+        "verdict": "CHANGES_REQUESTED",
+        "index": 1,
+        "findings": [{"severity": "fatal", "file": "a.py", "summary": "oops"}],
+    }
+    with pytest.raises(ValueError, match="Invalid finding severity"):
+        review_ensemble.deserialize_reviewer_result(payload)
+
+
+def test_deserialize_reviewer_result_rejects_missing_file() -> None:
+    payload = {
+        "status": "COMPLETED",
+        "verdict": "CHANGES_REQUESTED",
+        "index": 1,
+        "findings": [{"severity": "critical", "summary": "missing file"}],
+    }
+    with pytest.raises(ValueError, match="Finding missing target file path"):
+        review_ensemble.deserialize_reviewer_result(payload)
+
+
+def test_review_outcome_roundtrip() -> None:
+    r1 = ReviewerResult.failed(1, "agent-1", "model-1", "", "timeout")
+    parsed2 = ParsedTrailer(ReviewerVerdict.APPROVED, ReviewCounts(0, 0, 0), ())
+    r2 = ReviewerResult.completed(2, "agent-2", "model-2", "rep2.md", "", parsed2)
+
+    outcome = review_ensemble.serialize_review_outcome([r1, r2], ConsensusVerdict.FAILED, "one reviewer failed")
+    assert outcome["ensemble_verdict"] == "FAILED"
+    assert outcome["error"] == "one reviewer failed"
+    assert len(outcome["reviewers"]) == 2
+
+    restored_reviewers, verdict, error = review_ensemble.deserialize_review_outcome(outcome)
+    assert len(restored_reviewers) == 2
+    assert verdict == ConsensusVerdict.FAILED
+    assert error == "one reviewer failed"
+    assert restored_reviewers[0].status == ReviewerStatus.FAILED
+    assert restored_reviewers[1].status == ReviewerStatus.COMPLETED
+
+
+def test_deserialize_review_outcome_fails_closed_on_corrupt_data() -> None:
+    bad_data = {
+        "ensemble_verdict": "APPROVED",
+        "reviewers": [{"status": "NOT_A_STATUS"}],
+    }
+    reviewers, verdict, error = review_ensemble.deserialize_review_outcome(bad_data)
+    assert reviewers == []
+    assert verdict == ConsensusVerdict.FAILED
+    assert "Malformed reviewer result" in (error or "")

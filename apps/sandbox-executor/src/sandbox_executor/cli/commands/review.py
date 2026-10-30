@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import os
+import sys
+from typing import Any
 
 from sandbox_executor import cli
 from sandbox_executor.cli.options import (
@@ -96,6 +99,82 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     parser.set_defaults(_run=run)
 
 
-def run(args: argparse.Namespace) -> int:
+def _validate_review_args(args: argparse.Namespace) -> bool:
+    if getattr(args, "max_iterations", 25) < 1:
+        print("Error: --max-iterations must be at least 1.", file=sys.stderr)
+        sys.exit(1)
+        return False
+    if getattr(args, "ensemble_size", 3) < 1:
+        print("Error: --ensemble-size must be at least 1.", file=sys.stderr)
+        sys.exit(1)
+        return False
+    return True
+
+
+def _run_local_review(args: argparse.Namespace, effective_token_reduce: bool) -> None:
+    from sandbox_executor.flow import run_review_loop_cli
+
+    exit_code = run_review_loop_cli(args, token_reduce=effective_token_reduce)
+    sys.exit(exit_code)
+
+
+def _build_container_review_args(args: argparse.Namespace) -> list[str]:
+    container_args = [args.target]
+    if getattr(args, "auto_pr", True) is False:
+        container_args.append("--no-auto-pr")
+    if getattr(args, "max_iterations", None) is not None:
+        container_args.extend(["--max-iterations", str(args.max_iterations)])
+    if getattr(args, "ensemble_size", None) is not None:
+        container_args.extend(["--ensemble-size", str(args.ensemble_size)])
+    if getattr(args, "skip_push", False):
+        container_args.append("--skip-push")
+    if getattr(args, "agent", None):
+        container_args.extend(["--agent", args.agent])
+    if getattr(args, "model", None):
+        container_args.extend(["--model", args.model])
+    return container_args
+
+
+def _run_container_review(args: argparse.Namespace, effective_token_reduce: bool) -> None:
+    agent_id = cli.normalise_agent_id(args.agent)
+    image_name = cli.image_for_agent(args.agent)
+    container_args = _build_container_review_args(args)
+    kwargs: dict[str, Any] = {
+        "agent_id": agent_id,
+        "token_reduce": effective_token_reduce,
+    }
+    if getattr(args, "mitm_web", False):
+        kwargs["mitm_web"] = True
+    if getattr(args, "repo_dir", None):
+        kwargs["repo_dir"] = args.repo_dir
+    sys.exit(cli.run_docker_container("review-loop", image_name, container_args, **kwargs))
+
+
+def run(args: argparse.Namespace) -> int | None:
     """Execute the review-loop command."""
-    return cli._dispatch_complex(args)
+    try:
+        if not _validate_review_args(args):
+            return None
+
+        effective_token_reduce = cli.detect_holon_coherence(
+            bool(getattr(args, "token_reduce", False) or getattr(args, "mitm_web", False))
+        )
+
+        is_local = (
+            getattr(args, "local", False)
+            or getattr(args, "dry_run", False)
+            or getattr(args, "json", False)
+            or bool(os.getenv("HOLON_ROLE"))
+            or bool(os.getenv("HOLON_IN_SANDBOX"))
+        )
+        agent_res, model_res = cli.resolve_runner_and_model(getattr(args, "agent", None), getattr(args, "model", None))
+        args.agent, args.model = agent_res.value, model_res.value
+
+        if is_local:
+            _run_local_review(args, effective_token_reduce)
+        else:
+            _run_container_review(args, effective_token_reduce)
+    except Exception as e:
+        print(f"Error during review-loop execution: {cli.redact_cli_error(e)}", file=sys.stderr)
+        sys.exit(1)
+    return None

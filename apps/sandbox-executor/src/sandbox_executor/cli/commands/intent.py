@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 from sandbox_executor import cli
-from sandbox_executor.cli.options import _TOKEN_REDUCE_HELP
+from sandbox_executor.cli.options import (
+    add_repo_dir_option,
+    add_token_reduction_options,
+)
 
 ORDER = 10
 
@@ -14,27 +18,22 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     """Register the intent subcommand parser."""
     parser = subparsers.add_parser("intent", help="Run Intent Creator to initialise a new intent branch.")
     parser.add_argument("intent_file", help="Path to local intent JSON/YAML file (e.g. intents/my-task.json)")
-    parser.add_argument(
-        "--repo-dir",
-        default=None,
-        help="Target repository directory path (default: current directory).",
-    )
-    parser.add_argument(
-        "--token-reduce",
-        action="store_true",
-        help=_TOKEN_REDUCE_HELP,
-    )
-    parser.add_argument(
-        "--mitm-web",
-        action="store_true",
-        help=(
-            "Launch mitmweb dashboard on port 8081 (or HOLON_MITM_WEB_PORT) for real-time traffic inspection. "
-            "For shared staging environments, pass HOLON_MITM_WEB_PASSWORD to restrict access."
-        ),
-    )
+    add_repo_dir_option(parser, default=None)
+    add_token_reduction_options(parser)
     parser.set_defaults(_run=run)
 
 
-def run(args: argparse.Namespace) -> int:
+def run(args: argparse.Namespace) -> int | None:
     """Execute the intent command."""
-    return cli._dispatch_complex(args)
+    exit_code = cli.dispatch_role_agent(
+        cli.INTENT_CREATOR_ROLE,
+        getattr(args, "agent", None),
+        getattr(args, "model", None),
+        [],
+        intent_file=args.intent_file,
+        repo_dir=getattr(args, "repo_dir", None),
+        token_reduce=bool(getattr(args, "token_reduce", False)),
+        mitm_web=bool(getattr(args, "mitm_web", False)),
+    )
+    sys.exit(exit_code)
+    return None

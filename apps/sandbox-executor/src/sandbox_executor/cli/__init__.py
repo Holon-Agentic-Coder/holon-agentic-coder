@@ -145,20 +145,22 @@ from sandbox_executor.cli.options import (  # noqa: E402
 __all__ = [
     "AGENT_IMAGE_MAPPING",
     "BLOCKED_METADATA_HOSTS",
+    "DEFAULT_ENSEMBLE_SIZE",
     "ENSEMBLE_SIZE_HELP",
     "GIT_CREDENTIAL_HELPER",
     "OVER_BUDGET_EXIT_CODE",
     "PACKAGE_LOGGER_NAME",
+    "SKIP_PUSH_DISPATCH_ERROR",
     "_AGENT_HELP",
     "_MODEL_HELP",
     "_SKIP_PREFLIGHT_HELP",
     "_TOKEN_REDUCE_HELP",
     "ActionIndexDatabase",
     "ConsultEngine",
+    "FlowContext",
     "TelemetryCollector",
     "_CurrentStderrHandler",
     "_attach_external_proxy",
-    "_dispatch_complex",
     "_find_git_root",
     "_proxy_host_port",
     "_sidecar_state",
@@ -175,6 +177,7 @@ __all__ = [
     "env_file_dir",
     "find_github_token",
     "format_consult_results_table",
+    "format_decomposition_summary",
     "format_query_results_table",
     "format_stats_dashboard",
     "get_agent_session_mounts",
@@ -1820,7 +1823,7 @@ def resolve_runner_and_model(agent: str | None, model: str | None) -> tuple[Reso
 # whose loop needs the runner for its reviewer turns (on a host, Stage 4 refuses them until routing into the
 # review-loop container lands). A flow resumed at review must preflight the runner too; only calibration (git and
 # local checks) has nothing for the probe to protect.
-_AGENT_FLOW_STAGES = ("intent", "plan", "execute", "review")
+_AGENT_FLOW_STAGES = tuple(s.value for s in FlowStage if s not in (FlowStage.CALIBRATE, FlowStage.COMPLETED))
 
 
 def flow_dispatches_agent(from_stage: str | None) -> bool:
@@ -1961,281 +1964,3 @@ def main(argv: list[str] | None = None) -> None:
         return
     sys.exit(0)
 
-
-def _dispatch_complex(args: argparse.Namespace) -> int | None:  # noqa: C901, PLR0911, PLR0912, PLR0915
-    """Temporary fallback dispatch for complex commands (intent, plan, execute, flow, review)."""
-
-    if args.command == "flow":
-        try:
-            if getattr(args, "max_review_iterations", None) is not None and args.max_review_iterations < 1:
-                print("Error: --max-review-iterations must be at least 1.", file=sys.stderr)
-                sys.exit(1)
-                return None
-            if getattr(args, "ensemble_size", None) is not None and args.ensemble_size < 1:
-                print("Error: --ensemble-size must be at least 1.", file=sys.stderr)
-                sys.exit(1)
-                return None
-
-            context = None
-            if args.checkpoint:
-                if not os.path.exists(args.checkpoint):
-                    print(f"Error: Checkpoint file '{args.checkpoint}' does not exist.", file=sys.stderr)
-                    sys.exit(1)
-                checkpoint = load_checkpoint(args.checkpoint)
-                context = checkpoint.context
-                if not args.from_stage and checkpoint.current_stage != FlowStage.COMPLETED:
-                    args.from_stage = checkpoint.current_stage.value
-
-            if context is None:
-                intent_data = {}
-                if args.intent_file:
-                    if not os.path.exists(args.intent_file):
-                        print(f"Error: Intent file '{args.intent_file}' does not exist.", file=sys.stderr)
-                        sys.exit(1)
-                    with open(args.intent_file, encoding="utf-8") as f:
-                        import json
-
-                        intent_data = json.load(f)
-                agent_res, model_res = resolve_runner_and_model(args.agent, args.model)
-                flow_agent, flow_model = agent_res.value, model_res.value
-            else:
-                # A resumed checkpoint keeps its recorded attribution; only explicit flags override it. Switching the
-                # runner with --agent alone resolves that runner's model (HOLON_MODEL, then its default), because the
-                # checkpoint's model belongs to the old runner. The resolvers log the values they decide; only the
-                # values kept from the checkpoint are logged here, so each decision is reported once with its source.
-                from_checkpoint = f"recorded in {args.checkpoint}"
-                if args.agent is not None:
-                    flow_agent = resolve_agent_runner(args.agent).value
-                else:
-                    flow_agent = context.agent
-                    logger.info(Resolution(flow_agent, "checkpoint", from_checkpoint).describe("Agent runner"))
-                if args.model is not None or (
-                    args.agent is not None and normalise_agent_id(flow_agent) != normalise_agent_id(context.agent)
-                ):
-                    flow_model = resolve_model(flow_agent, args.model).value
-                else:
-                    flow_model = context.model
-                    logger.info(Resolution(flow_model, "checkpoint", from_checkpoint).describe("Model"))
-
-            # --skip-push needs --dry-run on every run, including resumes from any stage; reject it before any side
-            # effect (pre-flight probe, checkpoint, branch or ledger write).
-            effective_dry_run = bool(args.dry_run or (context is not None and context.dry_run))
-            if (args.skip_push or (context is not None and context.skip_push)) and not effective_dry_run:
-                print(f"Error: {SKIP_PUSH_DISPATCH_ERROR}", file=sys.stderr)
-                sys.exit(1)
-                return None
-
-            # Readiness probe before Stage 1: nothing has been branched, pushed, checkpointed or recorded yet.
-            if effective_dry_run:
-                logger.info("Pre-flight probe skipped for a dry-run flow (no agent is called).")
-            elif not flow_dispatches_agent(args.from_stage):
-                logger.info(
-                    "Pre-flight probe skipped: no remaining stage from '%s' dispatches an agent runner.",
-                    args.from_stage,
-                )
-            else:
-                preflight = preflight_gate(flow_agent, flow_model, skip=args.skip_preflight)
-                if preflight is not None and not preflight.ok:
-                    sys.exit(1)
-                    return None
-
-            effective_token_reduce = detect_holon_coherence(bool(args.token_reduce or args.mitm_web))
-            if context is None:
-                context = FlowContext(
-                    repo_dir=args.repo_dir,
-                    intent_data=intent_data,
-                    agent=flow_agent,
-                    model=flow_model,
-                    dry_run=args.dry_run,
-                    skip_push=args.skip_push,
-                    skip_review=args.skip_review,
-                    skip_calibrate=args.skip_calibrate,
-                    auto_calibrate=not args.skip_calibrate,
-                    max_review_iterations=args.max_review_iterations,
-                    review_ensemble_size=args.ensemble_size or DEFAULT_ENSEMBLE_SIZE,
-                    token_reduce=effective_token_reduce,
-                    mitm_web=args.mitm_web,
-                )
-            else:
-                if args.repo_dir and args.repo_dir != ".":
-                    context.repo_dir = args.repo_dir
-                context.agent = flow_agent
-                context.model = flow_model
-                if args.dry_run:
-                    context.dry_run = True
-                if args.skip_push:
-                    context.skip_push = True
-                if args.skip_review:
-                    context.skip_review = True
-                if args.skip_calibrate:
-                    context.skip_calibrate = True
-                    context.auto_calibrate = False
-                if args.max_review_iterations is not None:
-                    context.max_review_iterations = args.max_review_iterations
-                if args.ensemble_size is not None:
-                    context.review_ensemble_size = args.ensemble_size
-                if effective_token_reduce:
-                    context.token_reduce = True
-                if args.mitm_web:
-                    context.mitm_web = True
-
-            result_dict = run_flow_pipeline(
-                context=context,
-                from_stage=args.from_stage,
-                checkpoint_path=args.checkpoint,
-            )
-
-            if args.json:
-                import json
-
-                print(json.dumps(result_dict, indent=2))
-            else:
-                print("\n================== Holon Flow Summary ==================")
-                stage_order = ["intent", "plan", "execute", "review", "calibrate"]
-                for st in stage_order:
-                    res = context.stage_results.get(st)
-                    # Elapsed against budget, e.g. "plan: ok (4.1 min / 35 min)" (Bean 0139).
-                    print(f"  {res.summary_line()}" if res else f"  {st}: not run")
-                    if res and res.status.value == "failed" and res.error:
-                        print(f"    -> Error: {redact_cli_error(res.error)}")
-                print("========================================================\n")
-                decomposition_lines = format_decomposition_summary(context.stage_results.get("execute"))
-                for line in decomposition_lines:
-                    print(line)
-                if decomposition_lines:
-                    print()
-                review_res = context.stage_results.get("review")
-                if review_res and review_res.payload.get("halted_for_human"):
-                    print(
-                        "[BEAN 0034 SAFETY HALT] Pipeline safely halted for human review (autonomous merge prohibited)."
-                    )
-                    if review_res.payload.get("human_approval_command"):
-                        print(f"To approve manually, run: {review_res.payload['human_approval_command']}\n")
-
-            has_failure = any(res.status.value == "failed" for res in context.stage_results.values())
-            sys.exit(1 if has_failure else 0)
-        except Exception as e:
-            print(f"Error during flow execution: {redact_cli_error(e)}", file=sys.stderr)
-            sys.exit(1)
-
-    if args.command in ("review-loop", "review", "pr-review-loop"):
-        try:
-            if getattr(args, "max_iterations", 25) < 1:
-                print("Error: --max-iterations must be at least 1.", file=sys.stderr)
-                sys.exit(1)
-                return None
-            if getattr(args, "ensemble_size", 3) < 1:
-                print("Error: --ensemble-size must be at least 1.", file=sys.stderr)
-                sys.exit(1)
-                return None
-
-            effective_token_reduce = detect_holon_coherence(
-                bool(getattr(args, "token_reduce", False) or getattr(args, "mitm_web", False))
-            )
-
-            # Routing deliberately ignores the resolved runner: --agent used to default to a literal, so a bare
-            # `holon review-loop` always went to a container, and resolving first must not change that.
-            is_local = (
-                getattr(args, "local", False)
-                or getattr(args, "dry_run", False)
-                or getattr(args, "json", False)
-                or bool(os.getenv("HOLON_ROLE"))
-                or bool(os.getenv("HOLON_IN_SANDBOX"))
-            )
-            # Resolution is for attribution and image selection only.
-            agent_res, model_res = resolve_runner_and_model(getattr(args, "agent", None), getattr(args, "model", None))
-            args.agent, args.model = agent_res.value, model_res.value
-
-            if is_local:
-                from sandbox_executor.flow import run_review_loop_cli
-
-                exit_code = run_review_loop_cli(args, token_reduce=effective_token_reduce)
-                sys.exit(exit_code)
-            else:
-                agent_id = normalise_agent_id(args.agent)
-                image_name = image_for_agent(args.agent)
-                container_args = [
-                    args.target,
-                    args.agent,
-                    args.model,
-                    f"--max-iterations={args.max_iterations}",
-                    f"--ensemble-size={args.ensemble_size}",
-                ]
-                if not getattr(args, "auto_pr", True):
-                    container_args.append("--no-auto-pr")
-                if getattr(args, "skip_push", False):
-                    container_args.append("--skip-push")
-                if getattr(args, "json", False):
-                    container_args.append("--json")
-                kwargs = {
-                    "agent_id": agent_id,
-                    "token_reduce": effective_token_reduce,
-                }
-                if getattr(args, "mitm_web", False):
-                    kwargs["mitm_web"] = True
-                if getattr(args, "repo_dir", None):
-                    kwargs["repo_dir"] = args.repo_dir
-                sys.exit(run_docker_container("review-loop", image_name, container_args, **kwargs))
-        except Exception as e:
-            print(f"Error during review-loop execution: {redact_cli_error(e)}", file=sys.stderr)
-            sys.exit(1)
-
-    if args.command in ("plan", "execute"):
-        try:
-            agent_res, model_res = resolve_runner_and_model(args.agent, args.model)
-        except UnmappedAgentRunnerError as exc:
-            print(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
-            sys.exit(1)
-            return None
-        args.agent, args.model = agent_res.value, model_res.value
-        preflight = preflight_gate(args.agent, args.model, skip=args.skip_preflight)
-        if preflight is not None and not preflight.ok:
-            sys.exit(1)
-            return None
-
-    common_kwargs: dict[str, Any] = {
-        "repo_dir": getattr(args, "repo_dir", None),
-        "token_reduce": bool(getattr(args, "token_reduce", False)),
-        "mitm_web": bool(getattr(args, "mitm_web", False)),
-    }
-
-    if args.command == "intent":
-        sys.exit(
-            dispatch_role_agent(
-                INTENT_CREATOR_ROLE,
-                getattr(args, "agent", None),
-                getattr(args, "model", None),
-                [],
-                intent_file=args.intent_file,
-                **common_kwargs,
-            )
-        )
-
-    elif args.command == "plan":
-        sys.exit(
-            dispatch_role_agent(
-                "planner",
-                args.agent,
-                args.model,
-                [args.intent_branch, args.agent, args.model],
-                **common_kwargs,
-            )
-        )
-
-    elif args.command == "execute":
-        exit_code = dispatch_role_agent(
-            "executor",
-            args.agent,
-            args.model,
-            [args.plan_branch, args.agent, args.model],
-            **common_kwargs,
-        )
-        if exit_code == OVER_BUDGET_EXIT_CODE:
-            print(
-                f"Error: plan {args.plan_branch} is over its entropy budget and was not executed (exit code "
-                f"{exit_code}); its execution branch records the over_budget row. Re-plan it within the budget, or "
-                "add an explicit sub-intent list.",
-                file=sys.stderr,
-            )
-        sys.exit(exit_code)
-    return None

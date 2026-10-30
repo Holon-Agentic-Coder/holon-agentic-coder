@@ -1,10 +1,12 @@
-"""Plan command module for generating markdown plans."""
+"""Plan command module for running Planner to generate a plan branch from an intent."""
 
 from __future__ import annotations
 
 import argparse
+import sys
 
 from sandbox_executor import cli
+from sandbox_executor.cli.commands._role import prepare_role_execution
 from sandbox_executor.cli.options import (
     add_preflight_option,
     add_repo_dir_option,
@@ -26,6 +28,17 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     parser.set_defaults(_run=run)
 
 
-def run(args: argparse.Namespace) -> int:
+def run(args: argparse.Namespace) -> int | None:
     """Execute the plan command."""
-    return cli._dispatch_complex(args)
+    common_kwargs = prepare_role_execution(args)
+    if common_kwargs is None:
+        return None
+    exit_code = cli.dispatch_role_agent(
+        "planner",
+        args.agent,
+        args.model,
+        [args.intent_branch, args.agent, args.model],
+        **common_kwargs,
+    )
+    sys.exit(exit_code)
+    return None

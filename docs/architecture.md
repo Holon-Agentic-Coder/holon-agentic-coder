@@ -205,7 +205,9 @@ flowchart TD
   - Initialised with `config_path` and `knowledge_path`.
   - Watches for new work, dispatches planner/executor jobs, enforces git discipline and budgets.
 - **Human Review Boundary**
-  - Where humans approve promotions (only the root intent's PR to `main`).
+  - Where humans approve promotions (only the root intent's PR to `main`; see
+    [Branch topology and authority boundaries](#branch-topology-and-authority-boundaries) for the current
+    implementation).
 
 ---
 
@@ -345,14 +347,15 @@ Curate:
 - The deciding node's branch is the integration surface for its sub-intents.
 - Siblings under one deciding node always have different slugs, so their ids cannot collide.
 - Only the root intent's PR merges into `main`.
-- Until the implementation follows, the current flow still targets the parent intent branch (see [Git Flow](git_flow.md)
-  Stage 3 under the flow equivalence guarantee).
+- Until the implementation follows, the current flow still cuts each child from and targets the parent intent branch and
+  leaves each sub-intent PR merge to the maintainer (see [Git Flow](git_flow.md) Stage 3 under the flow equivalence
+  guarantee).
 
 #### Human review boundary
 
 Human review occurs at:
 
-- root intent completion (its PR to `main`, the only human stop in the flow)
+- root intent completion (its PR to `main`, the only human stop in the flow; see the current-implementation note above)
 - estimator definition updates
 - trust/autonomy level changes
 - changes to “physics” or governance modules

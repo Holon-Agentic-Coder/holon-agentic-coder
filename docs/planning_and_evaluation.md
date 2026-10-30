@@ -312,7 +312,8 @@ All agents must:
 
 - Write plan artifacts and predicted metrics to ledger before execution.
 - Rebase from the branch they were cut from (for a sub-intent, its deciding node's branch, in practice the plan branch)
-  before execution and rebase again after execution per `git_flow.md`.
+  before execution and rebase again after execution per `git_flow.md` (see [Git Flow](git_flow.md) Stage 3 for the
+  current implementation).
 - Respect trust and entropy gates (refuse to execute if gates would be violated).
 
 ---

@@ -343,7 +343,8 @@ out-of-band reviews and never pause a running flow before the merge.
 ### Human review workflow
 
 Sub-intent PRs never enter this workflow: the agent merges them automatically into their deciding node's branch, and
-only the root intent reaches it.
+only the root intent reaches it (until the implementation follows, the current flow still leaves each sub-intent PR
+merge to the maintainer; see item 1 above).
 
 ```
 
@@ -438,7 +439,7 @@ only the root intent reaches it.
 - **Containment:** Conflict isolated to intent branch.
 - **Response:** Log conflict files, abort rebase, notify agent.
 - **Recovery:** Agent resolves conflict or rebases onto the deciding node's branch after earlier siblings have merged
-  into it.
+  into it (see [Git Flow](git_flow.md) Stage 3 for the current implementation).
 - **Escalation:** If conflicts persist (> 3 attempts), human review.
 
 #### 3) **Entropy budget exceeded**
@@ -497,7 +498,8 @@ Holon is designed to **explore low-probability actions** for **learning value**.
 ### Invariant 1: Git discipline
 
 - Sub-intents **never merge directly to `main`**.
-- Sub-intents **always rebase from their deciding node's branch before and after execution**, and merge only into it.
+- Sub-intents **always rebase from their deciding node's branch before and after execution**, and merge only into it
+  (see [Git Flow](git_flow.md) Stage 3 for the current implementation).
 - Siblings under one deciding node always have different slugs, so their ids cannot collide.
 - Only root intents (direct children of `main`) merge to `main` after human review.
 
@@ -515,7 +517,8 @@ Holon is designed to **explore low-probability actions** for **learning value**.
 
 ### Invariant 4: Human review
 
-- Root intents require human approval to merge to `main` (the only human stop in the flow).
+- Root intents require human approval to merge to `main` (the only human stop in the flow; see
+  [Human review is the final gate](#5-human-review-is-the-final-gate) for the current implementation).
 - Estimator changes require human approval.
 - Governance changes require human approval.
 

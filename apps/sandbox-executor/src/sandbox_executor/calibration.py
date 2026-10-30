@@ -1439,7 +1439,8 @@ def format_calibration_report(report_rel: str, repo_dir: str) -> None:
     """Format the calibration report exactly as ``uv run task lint-docs`` checks it, failing closed.
 
     Runs ``npx --yes prettier --write`` and then ``--check`` on the report with ``cwd=repo_dir``,
-    so the repository .prettierrc.json and the same Prettier version as lint-docs and CI apply.
+    so the repository .prettierrc.json applies and Prettier resolves exactly as it does for lint-docs and the CI
+    lint-md check (unpinned npx; a host with a stale npx cache can still resolve an older version than CI).
 
     Args:
         report_rel: Report path relative to ``repo_dir`` (for example ``plans/P-1_calibration.md``).

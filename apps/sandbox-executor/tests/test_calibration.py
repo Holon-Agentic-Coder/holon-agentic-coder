@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -1593,12 +1594,16 @@ class TestFormatCalibrationReport:
         assert mock_run.call_args.kwargs["timeout"] > 0
 
     def test_invocation_matches_lint_docs_task(self):
-        """Drift guard: the calibration Prettier must be the one `uv run task lint-docs` runs."""
-        pyproject = Path(__file__).resolve().parents[3] / "pyproject.toml"
+        """Drift guard: the calibration Prettier must be the one `uv run task lint-docs` and CI `lint-md` run."""
+        repo_root = Path(__file__).resolve().parents[3]
+        pyproject = repo_root / "pyproject.toml"
         lint_docs = tomllib.loads(pyproject.read_text(encoding="utf-8"))["tool"]["taskipy"]["tasks"]["lint-docs"]
         lint_docs_spec = lint_docs.split()[:2]
         calibration_spec = [arg for arg in LINT_DOCS_PRETTIER if arg != "--yes"]
         assert calibration_spec == lint_docs_spec == ["npx", "prettier"]
+        makefile = (repo_root / "Makefile").read_text(encoding="utf-8")
+        lint_md_specs = set(re.findall(r'(npx \S+) --check "\*\*/\*\.md"', makefile))
+        assert lint_md_specs == {" ".join(calibration_spec)}
 
     @pytest.mark.parametrize(
         ("fake", "which", "reason"),

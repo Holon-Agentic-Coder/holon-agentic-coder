@@ -311,7 +311,8 @@ Where thresholds `T_*` and budgets `B_*` are system-configurable.
 All agents must:
 
 - Write plan artifacts and predicted metrics to ledger before execution.
-- Rebase from parent branch before execution and rebase again after execution per `git_flow.md`.
+- Rebase from the branch they were cut from (for a sub-intent, its deciding node's branch, in practice the plan branch)
+  before execution and rebase again after execution per `git_flow.md`.
 - Respect trust and entropy gates (refuse to execute if gates would be violated).
 
 ---

@@ -70,3 +70,25 @@ provenance, review-decided splits, plan decides in practice, current-limitation 
 - §4 sub-intent list bullet: child is cut from and targets the deciding plan branch (its `deciding_branch`, R4), R6
   half-sentence, R7 pointer via `../git_flow.md`. No other merge-target or child-PR review text in §4.
 - `holon-config/prompts/planner.template.md` deliberately not touched (out of scope).
+
+### Step 7: Sweep of `docs/` (done)
+
+Patterns searched (case-insensitive, `docs/agent_selection/logs/` skipped): "parent intent branch", "parent branch",
+"parent-only", "merge(s) into (its/their/the) parent", "parent intent → ", "parent intents (direct", "open question",
+"maintainer merges", "nested parent", "collid", plus a second pass for "parent" near merge/rebase/human and child or
+sub-intent PRs near maintainer/human review.
+
+Classification:
+
+- (c) fixed: `docs/planning_and_evaluation.md` agent duties bullet, now "Rebase from the branch they were cut from (for a
+  sub-intent, its deciding node's branch, in practice the plan branch)". Worded this way so it stays correct for root
+  intents and executions too.
+- (a) correct R7 notes, kept: the new notes in `agent_design.md`, `architecture.md`, `safety.md` and the planner spec;
+  `git_flow.md` Stage 3 and 3.1; `core_concepts.md` 91; `ledger_schema.md` 134 and 731; `docs/metrics.md` 606 (target
+  model test with a current-flow note).
+- (b) generic or correct, kept: `docs/knowledgebase_schema.md` 224 and `docs/wisdombase_schema.md` 97 (sample generic
+  rebase skill / invariant strings); `git_flow.md` 222 (concurrent runs under one parent branch), and the `git_flow.md`,
+  `examples.md`, `core_concepts.md`, `ledger_schema.md` "nested parent" and "collide" hits, which already state the
+  rulings; `metrics-explained.md` 37 and `audit-report-2026-10.md` 57 (unrelated "collide").
+- No old-rule statement found in the five excluded files, so none was edited. No calibration-formatting text touched.
+- Final search: only (a) and (b) hits remain.

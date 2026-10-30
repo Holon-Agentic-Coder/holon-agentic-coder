@@ -40,7 +40,7 @@ def run_cmd(
     return result
 
 
-def main():
+def main():  # noqa: PLR0915
     intent_json_path = "/tmp/intent.json"
     if not os.path.exists(intent_json_path):
         print(f"Error: {intent_json_path} does not exist.")

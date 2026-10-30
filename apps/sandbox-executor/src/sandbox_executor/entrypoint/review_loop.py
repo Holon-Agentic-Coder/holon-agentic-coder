@@ -222,7 +222,7 @@ def _prepare_workspace(repo_dir: str, raw: str) -> ReviewTarget:
     return _verify_head(repo_dir, target)
 
 
-def main() -> None:
+def main() -> None:  # noqa: C901, PLR0912, PLR0915
     """Parse CLI arguments and execute containerised review loop."""
     parser = argparse.ArgumentParser(
         prog="review_loop",

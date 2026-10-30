@@ -189,7 +189,7 @@ _HOST_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
 _HOST_NAME_RE = re.compile(rf"{_HOST_LABEL}(?:\.{_HOST_LABEL})*\.?")
 
 
-def trusted_url_authority(value: str) -> str | None:
+def trusted_url_authority(value: str) -> str | None:  # noqa: PLR0911
     """Return the `host[:port]` of a configured URL when a message may show it, else None.
 
     The one rule for messages about URL-valued settings: a warning, error, exception or log line

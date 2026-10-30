@@ -326,7 +326,7 @@ class _StreamReader(threading.Thread):
             return b"".join(self._chunks).decode("utf-8", errors="replace")
 
 
-def _terminate_group(
+def _terminate_group(  # noqa: PLR0913
     proc: Any,
     *,
     sleeper: Sleeper,
@@ -371,7 +371,7 @@ def _terminate_group(
         logger.warning("Agent process %s did not exit after SIGKILL", getattr(proc, "pid", "?"))
 
 
-def run_turn(
+def run_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915
     cmd: list[str],
     *,
     turn_budgets: TurnBudgets | None = None,
@@ -577,7 +577,7 @@ class AuthoringOutcome:
 TurnRunner = Callable[..., TurnResult]
 
 
-def supervise_authoring_turn(
+def supervise_authoring_turn(  # noqa: PLR0913
     build_cmd: Callable[[str], list[str]],
     prompt: str,
     *,
@@ -656,7 +656,7 @@ def supervise_authoring_turn(
     return outcome
 
 
-def record_budget_failure(
+def record_budget_failure(  # noqa: PLR0913
     ledger_path: str,
     breach: BudgetBreach,
     *,

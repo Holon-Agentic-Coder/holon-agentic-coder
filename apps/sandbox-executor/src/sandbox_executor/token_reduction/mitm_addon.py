@@ -307,7 +307,7 @@ class MITMProxyInterceptor:
             self._cache_store = HybridCacheStore(cache_dir=self.cache_dir)
         return self._cache_store
 
-    def detect_provider(self, url_or_path: str, payload: dict[str, Any] | None = None) -> str:
+    def detect_provider(self, url_or_path: str, payload: dict[str, Any] | None = None) -> str:  # noqa: PLR0911
         """Determines the provider protocol family (anthropic, openai, gemini)
         based on target URL, path, or payload structure.
         """
@@ -459,7 +459,7 @@ class MITMProxyInterceptor:
                 logger.exception("Cache store put failed for endpoint %s.", endpoint)
 
 
-def find_nested_key(data: Any, target_keys: tuple[str, ...] | str, max_depth: int = 10) -> Any:
+def find_nested_key(data: Any, target_keys: tuple[str, ...] | str, max_depth: int = 10) -> Any:  # noqa: C901, PLR0912
     """Recursively searches nested dicts/lists to find the first occurrence of any key in target_keys.
 
     Evaluates target keys on the immediate node before recursively traversing child dictionaries
@@ -566,7 +566,7 @@ class TokenCounts(tuple):
         return inst
 
 
-def extract_sse_content(resp_text: str, provider: str) -> str:
+def extract_sse_content(resp_text: str, provider: str) -> str:  # noqa: C901, PLR0912, PLR0915
     """Extracts aggregated completion text from SSE lines."""
     accumulated_content: list[str] = []
     lines = resp_text.splitlines()
@@ -688,7 +688,7 @@ def extract_sse_cache_read_tokens(resp_text: str) -> int:
     return cache_read_tokens
 
 
-def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider: str) -> tuple[int, int, int]:
+def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider: str) -> tuple[int, int, int]:  # noqa: C901, PLR0912, PLR0915
     """Extracts (input_tokens, output_tokens, cache_read_tokens) from SSE stream text.
 
     Args:
@@ -883,7 +883,7 @@ def extract_sse_token_counts(resp_text: str, req_data: dict[str, Any], provider:
     )
 
 
-def extract_token_counts(
+def extract_token_counts(  # noqa: C901, PLR0912, PLR0915
     req_data: dict[str, Any], resp_data: dict[str, Any] | str, provider: str
 ) -> tuple[int, int, int]:
     """Extracts (input_tokens, output_tokens, cache_read_tokens) from request/response data.
@@ -984,7 +984,7 @@ class MitmproxyAddon:
         """Called when mitmproxy is shutting down to flush in-flight logs."""
         shutdown_wire_logs(wait=True, timeout=5.0)
 
-    def _dump_flow_transaction(
+    def _dump_flow_transaction(  # noqa: PLR0913
         self,
         flow: Any,
         resp_data: Any,
@@ -1080,7 +1080,7 @@ class MitmproxyAddon:
         except Exception as exc:
             logger.debug("Failed to record flow wire transaction: %s", exc)
 
-    def request(self, flow: Any) -> None:
+    def request(self, flow: Any) -> None:  # noqa: C901, PLR0912, PLR0915
         """Mitmproxy request callback."""
         if getattr(flow, "request", None) is None:
             return
@@ -1177,7 +1177,7 @@ class MitmproxyAddon:
             except Exception:
                 logger.exception("Mitmproxy request intercept error for endpoint: %s", url)
 
-    def responseheaders(self, flow: Any) -> None:
+    def responseheaders(self, flow: Any) -> None:  # noqa: C901
         """Mitmproxy response headers callback."""
         if getattr(flow, "provider", "unknown") != "unknown":
             flow.response_headers_time = time.perf_counter()  # float: timestamp from time.perf_counter()
@@ -1212,7 +1212,7 @@ class MitmproxyAddon:
 
                     response.stream = sse_stream_wrapper
 
-    def response(self, flow: Any) -> None:
+    def response(self, flow: Any) -> None:  # noqa: C901, PLR0912, PLR0915
         """Mitmproxy response callback."""
         if getattr(flow, "request", None) is None or getattr(flow, "response", None) is None:
             return

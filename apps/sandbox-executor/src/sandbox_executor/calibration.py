@@ -279,7 +279,7 @@ def resolve_commit_sha(ref: str, repo_dir: str = ".") -> str:
         raise RuntimeError(f"Error resolving commit SHA for '{ref}': {e}") from e
 
 
-def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:
+def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:  # noqa: C901, PLR0911, PLR0912, PLR0915
     """Resolve execution or plan ref across commit SHAs, local branches, and remote refs.
 
     Lookup order:
@@ -617,7 +617,7 @@ def load_metrics_physics(repo_dir: str = ".") -> tuple[float, float]:
     return default_lambda, default_mu
 
 
-def parse_predicted_metrics(plan_id: str, repo_dir: str = ".") -> tuple[PredictedMetrics, dict[str, Any]]:
+def parse_predicted_metrics(plan_id: str, repo_dir: str = ".") -> tuple[PredictedMetrics, dict[str, Any]]:  # noqa: C901, PLR0912, PLR0915
     """Parse predicted plan metrics from plans.jsonl or plans/P-{plan_id}.md."""
     plan_meta: dict[str, Any] = {}
     predicted = PredictedMetrics()
@@ -694,7 +694,7 @@ def parse_predicted_metrics(plan_id: str, repo_dir: str = ".") -> tuple[Predicte
     return predicted, plan_meta
 
 
-def parse_actual_metrics(
+def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
     execution_id: str,
     plan_branch: str,
     predicted: PredictedMetrics,
@@ -1135,7 +1135,7 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def generate_calibration(
+def generate_calibration(  # noqa: C901, PLR0912, PLR0915
     execution_branch: str,
     repo_dir: str = ".",
 ) -> CalibrationReport:
@@ -1315,7 +1315,7 @@ def calibration_commit_env() -> dict[str, str]:
     return commit_env
 
 
-def record_calibration_action(
+def record_calibration_action(  # noqa: PLR0913
     report: CalibrationReport | dict[str, Any],
     repo_dir: str,
     report_rel: str,
@@ -1504,7 +1504,7 @@ def format_calibration_report(report_rel: str, repo_dir: str) -> None:
     )
 
 
-def run_calibrate(
+def run_calibrate(  # noqa: C901, PLR0912, PLR0915
     execution_branch: str,
     repo_dir: str = ".",
     json_output: bool = False,

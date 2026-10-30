@@ -172,7 +172,7 @@ def append_action_event(
     return redacted_rec
 
 
-def reconcile_records(
+def reconcile_records(  # noqa: C901, PLR0912, PLR0913
     ledger_path: str = DEFAULT_ACTIONS_LEDGER,
     max_age_days: int = 14,
     target_action_id: str | None = None,

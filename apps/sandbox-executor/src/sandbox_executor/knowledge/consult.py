@@ -76,7 +76,7 @@ class ConsultEngine:
             except Exception as e:
                 logger.debug("Failed incremental sync for %s: %s", ledger_path, e)
 
-    def consult_records(
+    def consult_records(  # noqa: PLR0913, PLR0915
         self,
         all_labels: list[str] | None = None,
         any_labels: list[str] | None = None,

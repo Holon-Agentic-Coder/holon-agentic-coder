@@ -184,7 +184,7 @@ def _record_probe(seen):
     ("form", "separators"), [pytest.param(form, seps, id=case_id) for case_id, form, seps in url_userinfo_cases()]
 )
 @pytest.mark.parametrize("name", ["HOLON_PROXY_URL", "HOLON_LOCAL_BASE_URL", "HOLON_MIRROR_ENDPOINT"])
-def test_probe_keeps_url_userinfo_off_the_argv_in_every_shape(
+def test_probe_keeps_url_userinfo_off_the_argv_in_every_shape(  # noqa: PLR0913
     probe_env, monkeypatch, isolated_env_file_dir, name, form, separators
 ):
     """The pre-flight probe shares the main run's classifier: every userinfo shape goes to the env-file."""
@@ -665,7 +665,7 @@ _CHECKPOINT_SOURCE = "(source: checkpoint, recorded in "
         ([], ("antigravity-agent", "gemini-3.8-flash-medium"), _CHECKPOINT_SOURCE, _CHECKPOINT_SOURCE),
     ],
 )
-def test_resume_with_new_runner_resolves_its_default_model(
+def test_resume_with_new_runner_resolves_its_default_model(  # noqa: PLR0913
     flow_repo, monkeypatch, capsys, cli_logging, extra, expected, agent_source, model_source
 ):
     repo, _ = flow_repo

@@ -96,7 +96,7 @@ class FakeClock:
 class FakeProc:
     """A child that exits at ``exit_at`` fake seconds, or when signalled (unless it ignores SIGTERM)."""
 
-    def __init__(self, clock, exit_at=None, returncode=0, stdout=b"", stderr=b"", ignores_sigterm=False):
+    def __init__(self, clock, exit_at=None, returncode=0, stdout=b"", stderr=b"", ignores_sigterm=False):  # noqa: PLR0913
         self.clock = clock
         self.exit_at = exit_at
         self.final_returncode = returncode
@@ -158,7 +158,7 @@ class Harness:
     def getpgid(self, pid):
         return CHILD_PID if pid == CHILD_PID else OWN_PGID
 
-    def run(self, turn=300, stall=90, stage_timer=None, watch_path=None, getpgid=None, watch_tree=None):
+    def run(self, turn=300, stall=90, stage_timer=None, watch_path=None, getpgid=None, watch_tree=None):  # noqa: PLR0913
         return run_turn(
             ["agent", "-p", "prompt"],
             turn_budgets=TurnBudgets(turn_seconds=turn, stall_seconds=stall),

@@ -256,7 +256,7 @@ def reset_workspace_state(repo_root: Path, force: bool = False) -> None:
         print(f"Warning: git clean failed: {e}", file=sys.stderr)
 
 
-def parse_wire_logs_into_result(wire_log_dir: Path, iteration: int, test_exit_code: int) -> IterationResult:
+def parse_wire_logs_into_result(wire_log_dir: Path, iteration: int, test_exit_code: int) -> IterationResult:  # noqa: C901, PLR0912, PLR0915
     """Parses JSON transactions from wire_log_dir to compute benchmark metrics."""
     result = IterationResult(iteration=iteration, success=(test_exit_code == 0))
     jsonl_file = wire_log_dir / "transactions.jsonl"
@@ -390,7 +390,7 @@ def generate_synthetic_iteration(iteration: int, optimized: bool) -> IterationRe
         )
 
 
-def format_scorecard(
+def format_scorecard(  # noqa: PLR0915
     baseline: BenchmarkSummary,
     optimized: BenchmarkSummary,
     task_name: str = "Refactor auth middleware & add unit tests",
@@ -538,7 +538,7 @@ def format_scorecard(
     return "\n".join(lines)
 
 
-def main() -> int:
+def main() -> int:  # noqa: PLR0915
     parser = argparse.ArgumentParser(description="A/B Benchmark Token Reduction Measurement")
     parser.add_argument("--iterations", "-n", type=int, default=3, help="Number of benchmark iterations (N >= 3)")
     parser.add_argument("--wire-log-dir", type=str, default=os.getenv("WIRE_LOG_DIR", "todo/mitm_wire_logs"))

@@ -62,5 +62,15 @@ select = [
     "C4", # flake8-comprehensions
     "SIM", # flake8-simplify
     "RUF", # Ruff-specific rules
+    "PGH004", # Blanket noqa (a bare `# noqa` would silently suppress complexity rules and evade the ratchet)
+    "C901", # McCabe cyclomatic complexity
+    "PLR0911", # Too many return statements
+    "PLR0912", # Too many branches
+    "PLR0913", # Too many arguments
+    "PLR0915", # Too many statements
 ]
 ignore = []
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+

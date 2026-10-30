@@ -651,7 +651,7 @@ def _unparseable_cases() -> Iterator[tuple[str, str, str, bool]]:
 
 
 @pytest.mark.parametrize("slot", ["HOLON_LOCAL_BASE_URL", "host-baseUrl"])
-def test_doctor_survives_unparseable_base_url(slot, monkeypatch):
+def test_doctor_survives_unparseable_base_url(slot, monkeypatch):  # noqa: C901, PLR0915
     """C19-N1: an unparseable host-side base URL is skipped by the probe, never crashes `holon doctor`.
 
     Text and `--json` both exit 0 (the run path handles the same config), `--json` stays valid JSON with the problem

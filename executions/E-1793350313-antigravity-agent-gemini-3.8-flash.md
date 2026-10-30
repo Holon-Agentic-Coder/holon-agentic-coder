@@ -41,6 +41,14 @@ command module without changing behavior or weakening any test.
    Re-exported all constants and helpers in `cli/__init__.py`. Verified identical `--help` output for root and modified
    subparsers against baseline. All 395 CLI tests and repo checks pass cleanly.
 
+4. **Step 4 (Command discovery & move simple commands): done.** Created dynamic command discovery protocol in
+   `cli/commands/__init__.py` using `pkgutil.iter_modules` sorted by integer `ORDER` attribute. Extracted simple command
+   modules (`init.py`, `calibrate.py`, `doctor.py`, `ledger.py`, `consult.py`, `record.py`, `reconcile.py`,
+   `promote.py`, `veto.py`, `stats.py`) and initial bridges (`intent.py`, `plan.py`, `execute.py`, `flow.py`,
+   `review.py`). Re-anchored `main(argv)` to dispatch via `args._run(args)`. Preserved full monkeypatch and re-export
+   surface in `cli/__init__.py`. Verified all 21 `--help` snapshots match baseline byte-for-byte, and all 636 affected
+   tests pass.
+
 ## Tests Run
 
 | command                                                                                                           | result                        |

@@ -142,6 +142,74 @@ from sandbox_executor.cli.options import (  # noqa: E402
     add_token_reduction_options,
 )
 
+__all__ = [
+    "AGENT_IMAGE_MAPPING",
+    "BLOCKED_METADATA_HOSTS",
+    "ENSEMBLE_SIZE_HELP",
+    "GIT_CREDENTIAL_HELPER",
+    "OVER_BUDGET_EXIT_CODE",
+    "PACKAGE_LOGGER_NAME",
+    "_AGENT_HELP",
+    "_MODEL_HELP",
+    "_SKIP_PREFLIGHT_HELP",
+    "_TOKEN_REDUCE_HELP",
+    "ActionIndexDatabase",
+    "ConsultEngine",
+    "TelemetryCollector",
+    "_CurrentStderrHandler",
+    "_attach_external_proxy",
+    "_dispatch_complex",
+    "_find_git_root",
+    "_proxy_host_port",
+    "_sidecar_state",
+    "add_preflight_option",
+    "add_repo_dir_option",
+    "add_runner_options",
+    "add_token_reduction_options",
+    "append_action_event",
+    "build_parser",
+    "configure_cli_logging",
+    "credential_host",
+    "detect_holon_coherence",
+    "dispatch_role_agent",
+    "env_file_dir",
+    "find_github_token",
+    "format_consult_results_table",
+    "format_query_results_table",
+    "format_stats_dashboard",
+    "get_agent_session_mounts",
+    "get_host_proxy_envs",
+    "get_token_reduction_mounts_and_envs",
+    "init_project",
+    "is_secret_env_item",
+    "lift_veto",
+    "list_vetoes",
+    "load_checkpoint",
+    "main",
+    "normalise_agent_id",
+    "normalize_repo_remote",
+    "preflight_gate",
+    "print_encodable",
+    "promote_pending_candidates",
+    "query_ledger",
+    "reconcile_records",
+    "redact_cli_error",
+    "report_budgets_and_envelope",
+    "resolve_role_image",
+    "resolve_target_repo",
+    "run_calibrate",
+    "run_docker_container",
+    "run_doctor",
+    "run_flow_pipeline",
+    "run_preflight_probe",
+    "setup_token_reduction_proxy",
+    "strip_url_credentials",
+    "sweep_stale_env_files",
+    "teardown_token_reduction_proxy",
+    "url_userinfo_end",
+    "write_env_file",
+]
+
 
 @dataclass
 class _SidecarState:
@@ -1857,16 +1925,18 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
     return 0 if result.ok and env_code == 0 else 1
 
 
-def main() -> None:  # noqa: C901, PLR0912, PLR0915
-    configure_cli_logging()
-    parser = argparse.ArgumentParser(
-        prog="holon",
-        description="Holon CLI: Host wrapper for running containerized Holon AI agent roles.",
-    )
+def build_parser() -> argparse.ArgumentParser:
+    """Build the top-level argument parser and register all discovered subcommands."""
+    from sandbox_executor.cli.commands import discover
+
     try:
         pkg_version = importlib.metadata.version("holon")
     except importlib.metadata.PackageNotFoundError:
         pkg_version = "0.1.0"
+    parser = argparse.ArgumentParser(
+        prog="holon",
+        description="Holon CLI: Host wrapper for running containerized Holon AI agent roles.",
+    )
     parser.add_argument(
         "-v",
         "--version",
@@ -1874,618 +1944,37 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         version=f"%(prog)s {pkg_version}",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    for cmd in discover():
+        cmd.register(subparsers)
+    return parser
 
-    # Subcommand: intent
-    intent_parser = subparsers.add_parser("intent", help="Run Intent Creator to initialise a new intent branch.")
-    intent_parser.add_argument("intent_file", help="Path to local intent JSON/YAML file (e.g. intents/my-task.json)")
-    intent_parser.add_argument(
-        "--repo-dir",
-        default=None,
-        help="Target repository directory path (default: current directory).",
-    )
-    intent_parser.add_argument(
-        "--token-reduce",
-        action="store_true",
-        help=_TOKEN_REDUCE_HELP,
-    )
-    intent_parser.add_argument(
-        "--mitm-web",
-        action="store_true",
-        help=(
-            "Launch mitmweb dashboard on port 8081 (or HOLON_MITM_WEB_PORT) for real-time traffic inspection. "
-            "For shared staging environments, pass HOLON_MITM_WEB_PASSWORD to restrict access."
-        ),
-    )
 
-    # Subcommand: plan
-    plan_parser = subparsers.add_parser("plan", help="Run Plan Generator to create a detailed markdown plan branch.")
-    plan_parser.add_argument("intent_branch", help="Target intent branch name (e.g. I-1784983150-build-execution/_)")
-    add_runner_options(plan_parser)
-    add_preflight_option(plan_parser)
-    add_token_reduction_options(plan_parser)
-    add_repo_dir_option(plan_parser)
+def main(argv: list[str] | None = None) -> None:
+    """Run the Holon CLI."""
+    configure_cli_logging()
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if hasattr(args, "_run"):
+        ret = args._run(args)
+        if ret is not None:
+            sys.exit(ret)
+        return
+    sys.exit(0)
 
-    # Subcommand: execute
-    exec_parser = subparsers.add_parser("execute", help="Run Sandbox Executor to execute code changes for a plan.")
-    exec_parser.add_argument("plan_branch", help="Target plan branch name")
-    add_runner_options(exec_parser)
-    add_preflight_option(exec_parser)
-    add_token_reduction_options(exec_parser)
-    add_repo_dir_option(exec_parser)
 
-    # Subcommand: init
-    init_parser = subparsers.add_parser(
-        "init",
-        help="Scaffold Holon configuration and knowledge directories in a target project.",
-    )
-    init_parser.add_argument(
-        "target_dir",
-        nargs="?",
-        default=".",
-        help="Target directory to initialise (default: current directory).",
-    )
-    init_parser.add_argument(
-        "--template",
-        choices=["python", "generic"],
-        default="python",
-        help="Project template type (default: python).",
-    )
-    init_parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Overwrite existing configuration files (ledger files are never overwritten).",
-    )
-
-    # Subcommand: calibrate
-    calibrate_parser = subparsers.add_parser(
-        "calibrate",
-        help="Run post-execution plan calibration analysis on an execution branch.",
-    )
-    calibrate_parser.add_argument(
-        "execution_branch",
-        help="Target execution branch name (e.g. I-.../P-.../E-.../_)",
-    )
-    calibrate_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Output calibration metrics as JSON to stdout.",
-    )
-    calibrate_parser.add_argument(
-        "--repo-dir",
-        default=".",
-        help="Target repository directory path (default: current directory).",
-    )
-    calibrate_parser.add_argument(
-        "--no-commit",
-        dest="skip_commit",
-        action="store_true",
-        help="Generate report without creating a git branch or committing.",
-    )
-
-    # Subcommand: flow
-    flow_parser = subparsers.add_parser(
-        "flow",
-        help="Run the automated 5-stage Holon Flow lifecycle pipeline.",
-    )
-    flow_parser.add_argument(
-        "intent_file",
-        nargs="?",
-        default=None,
-        help="Path to local intent JSON file (e.g. intents/my-task.json)",
-    )
-    flow_parser.add_argument(
-        "--from-stage",
-        choices=["intent", "plan", "execute", "review", "calibrate"],
-        default=None,
-        help="Resume pipeline from a specific stage.",
-    )
-    flow_parser.add_argument(
-        "--checkpoint",
-        default=None,
-        help="Optional path to a flow checkpoint file.",
-    )
-    flow_parser.add_argument(
-        "--agent", default=None, help=f"{_AGENT_HELP} A --checkpoint resume keeps the checkpoint's runner by default."
-    )
-    flow_parser.add_argument(
-        "--model",
-        default=None,
-        help=f"{_MODEL_HELP} A --checkpoint resume keeps the checkpoint's model unless --agent switches the runner.",
-    )
-    flow_parser.add_argument("--skip-preflight", action="store_true", help=_SKIP_PREFLIGHT_HELP)
-    flow_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Validate stages and branches without executing external agents or git commits.",
-    )
-    flow_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Output pipeline status and stage results in structured JSON format to stdout.",
-    )
-    flow_parser.add_argument(
-        "--repo-dir",
-        default=".",
-        help="Target repository directory path (default: current directory).",
-    )
-    flow_parser.add_argument(
-        "--skip-push",
-        action="store_true",
-        help=(
-            "Skip pushing git branches to remote origin. Only valid with --dry-run: the intent, plan and "
-            "execute stages dispatch role agents that fetch from origin, the review stage reviews the origin "
-            "execution branch and the calibrate stage pushes to origin, so any non-dry run, including a "
-            "--from-stage or --checkpoint resume, is rejected before any stage runs."
-        ),
-    )
-    flow_parser.add_argument(
-        "--skip-review",
-        action="store_true",
-        help="Skip Stage 4 (PR review loop) and proceed to calibration.",
-    )
-    flow_parser.add_argument(
-        "--skip-calibrate",
-        action="store_true",
-        help="Skip Stage 5 (post-execution calibration report generation).",
-    )
-    flow_parser.add_argument(
-        "--max-review-iterations",
-        type=int,
-        default=25,
-        help="Maximum number of autonomous review loop iterations in Stage 4 (must be >= 1, default: 25).",
-    )
-    flow_parser.add_argument(
-        "--ensemble-size",
-        type=int,
-        default=None,
-        help=ENSEMBLE_SIZE_HELP,
-    )
-    flow_parser.add_argument(
-        "--token-reduce",
-        action="store_true",
-        help=_TOKEN_REDUCE_HELP,
-    )
-    flow_parser.add_argument(
-        "--mitm-web",
-        action="store_true",
-        help=(
-            "Launch mitmweb dashboard on port 8081 (configurable via HOLON_MITM_WEB_PORT) "
-            "for real-time traffic inspection. Automatically enables --token-reduce."
-        ),
-    )
-
-    # Subcommand: review-loop (Bean 0118)
-    review_parser = subparsers.add_parser(
-        "review-loop",
-        aliases=["review", "pr-review-loop"],
-        help=(
-            "Run autonomous native review loop on an execution branch or pull request (Bean 0118). "
-            "Fails closed: exits 1 unless the consensus is approved and posted."
-        ),
-    )
-    review_parser.add_argument(
-        "target",
-        help="Target execution branch name, PR number, or PR URL.",
-    )
-    review_parser.add_argument(
-        "--max-iterations",
-        type=int,
-        default=25,
-        help="Maximum number of review loop iterations (default: 25).",
-    )
-    review_parser.add_argument(
-        "--ensemble-size",
-        type=int,
-        default=3,
-        help=ENSEMBLE_SIZE_HELP,
-    )
-    review_parser.add_argument(
-        "--auto-pr",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help=(
-            "Automatically create PR if only a branch exists (default: True). "
-            "The empty-diff guard runs whatever this is."
-        ),
-    )
-    review_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Run review evaluation without applying changes or git commits.",
-    )
-    review_parser.add_argument(
-        "--repo-dir",
-        default=".",
-        help="Target repository directory path (default: current directory).",
-    )
-    review_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Output review loop results in JSON format.",
-    )
-    review_parser.add_argument(
-        "--token-reduce",
-        action="store_true",
-        help=_TOKEN_REDUCE_HELP,
-    )
-    review_parser.add_argument("--agent", default=None, help=_AGENT_HELP)
-    review_parser.add_argument("--model", default=None, help=_MODEL_HELP)
-    review_parser.add_argument(
-        "--local",
-        action="store_true",
-        help=(
-            "Run the review loop on the host rather than inside the Docker container; reviewer agent turns are "
-            "refused outside a sandbox, so only --dry-run is useful here."
-        ),
-    )
-    review_parser.add_argument(
-        "--skip-push",
-        action="store_true",
-        help="Skip pushing git commits or branches to remote.",
-    )
-    review_parser.add_argument(
-        "--mitm-web",
-        action="store_true",
-        help=(
-            "Launch mitmweb dashboard on port 8081 (or HOLON_MITM_WEB_PORT) for real-time traffic inspection. "
-            "For shared staging environments, pass HOLON_MITM_WEB_PASSWORD to restrict access."
-        ),
-    )
-
-    # Subcommand: doctor
-    doctor_parser = subparsers.add_parser(
-        "doctor",
-        help=(
-            "Check that the selected agent runner is ready (one minimal real model call in its container), and show "
-            "the effective budgets, the local-LLM model envelope and the local gateway state."
-        ),
-    )
-    doctor_parser.add_argument("--agent", default=None, help=_AGENT_HELP)
-    doctor_parser.add_argument("--model", default=None, help=_MODEL_HELP)
-    doctor_parser.add_argument("--json", action="store_true", help="Output the resolution and probe result as JSON.")
-    doctor_parser.add_argument(
-        "--timeout",
-        type=float,
-        default=None,
-        help="Probe timeout in seconds (default: HOLON_PREFLIGHT_TIMEOUT, then 60).",
-    )
-
-    # Subcommand: ledger
-    ledger_parser = subparsers.add_parser(
-        "ledger",
-        help="Query and inspect Holon ledgers.",
-    )
-    ledger_subparsers = ledger_parser.add_subparsers(
-        dest="ledger_command",
-        required=True,
-    )
-    query_parser = ledger_subparsers.add_parser(
-        "query",
-        help="Query action and summary records from execution ledger.",
-    )
-    query_parser.add_argument(
-        "--ledger-file",
-        default="holon-knowledge/ledger/executions.jsonl",
-        help="Path to execution ledger JSONL file (default: holon-knowledge/ledger/executions.jsonl).",
-    )
-    query_parser.add_argument(
-        "--entry-type",
-        choices=["action", "summary", "all"],
-        default="all",
-        help="Filter records by entry type (action, summary, or all; default: all).",
-    )
-    query_parser.add_argument(
-        "--category",
-        choices=["code", "doc", "config", "test", "build", "dependency"],
-        default=None,
-        help="Filter action records by category.",
-    )
-    query_parser.add_argument(
-        "--labels",
-        default=None,
-        help="Filter records by comma-separated labels (matches if any label exists).",
-    )
-    query_parser.add_argument(
-        "--target",
-        default=None,
-        help="Filter records by substring match on target or plan branch.",
-    )
-    query_parser.add_argument(
-        "--outcome",
-        choices=["success", "failure", "reverted", "blocked"],
-        default=None,
-        help="Filter records by outcome or status.",
-    )
-    query_parser.add_argument(
-        "--origin",
-        choices=["initial_implementation", "pr_review", "ci_fix", "calibration", "operator"],
-        default=None,
-        help="Filter records by action origin.",
-    )
-    query_parser.add_argument(
-        "--review-severity",
-        choices=["critical", "important", "nit"],
-        default=None,
-        help="Filter records by review severity.",
-    )
-    query_parser.add_argument(
-        "--query",
-        "-q",
-        dest="query",
-        default=None,
-        help="Case-insensitive substring search across action descriptions, summaries, and error contexts.",
-    )
-    query_parser.add_argument(
-        "--keyword",
-        dest="keyword",
-        default=None,
-        help="Alias for --query.",
-    )
-    query_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Output matching records in structured JSON format.",
-    )
-    query_parser.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help="Maximum number of records to return.",
-    )
-    query_parser.add_argument(
-        "--repo-dir",
-        default=".",
-        help="Target repository directory path (default: current directory).",
-    )
-
-    # Subcommand: consult
-    consult_parser = subparsers.add_parser(
-        "consult",
-        help="Consult knowledge records and wisdom using multi-label queries (Bean 0052).",
-    )
-    consult_parser.add_argument(
-        "--all",
-        dest="all_labels",
-        nargs="+",
-        default=None,
-        help="Conjunctive filter: records matching all specified labels.",
-    )
-    consult_parser.add_argument(
-        "--any",
-        dest="any_labels",
-        nargs="+",
-        default=None,
-        help="Disjunctive filter: records matching any specified labels.",
-    )
-    consult_parser.add_argument(
-        "--not",
-        dest="not_labels",
-        nargs="+",
-        default=None,
-        help="Negated filter: exclude records matching any of these labels.",
-    )
-    consult_parser.add_argument(
-        "--query",
-        "-q",
-        dest="query",
-        default=None,
-        help="Full-text FTS5 search query.",
-    )
-    consult_parser.add_argument(
-        "--top-k",
-        dest="top_k",
-        type=int,
-        default=6,
-        help="Maximum records to retrieve (ceiling 6).",
-    )
-    consult_parser.add_argument(
-        "--max-tokens",
-        dest="max_tokens",
-        type=int,
-        default=1200,
-        help="Maximum total payload tokens injected (default: 1200).",
-    )
-    consult_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Output structured JSON results.",
-    )
-    consult_parser.add_argument(
-        "--format",
-        choices=["table", "json"],
-        default="table",
-        help="Output format (table or json; default: table).",
-    )
-    consult_parser.add_argument(
-        "--repo-dir",
-        default=".",
-        help="Target repository directory path (default: current directory).",
-    )
-    consult_parser.add_argument(
-        "--db-path",
-        default=None,
-        help="Override SQLite index database path.",
-    )
-
-    # Subcommand: record
-    record_parser = subparsers.add_parser(
-        "record",
-        help="Record a discrete action event to the ledger with credential scrubbing (Bean 0052).",
-    )
-    record_parser.add_argument(
-        "--action",
-        required=True,
-        help="Description of the action performed.",
-    )
-    record_parser.add_argument(
-        "--category",
-        default="code",
-        help="Action category (code, doc, config, test, build, dependency).",
-    )
-    record_parser.add_argument(
-        "--target",
-        default="",
-        help="Action target or affected component.",
-    )
-    record_parser.add_argument(
-        "--verdict",
-        default="attempted",
-        help="Action outcome verdict (attempted, success, failure, unknown, inconclusive, abandoned).",
-    )
-    record_parser.add_argument(
-        "--labels",
-        default=None,
-        help="Comma-separated labels associated with this action.",
-    )
-    record_parser.add_argument(
-        "--context",
-        default=None,
-        help="Error context or execution details.",
-    )
-    record_parser.add_argument(
-        "--ledger-path",
-        default="holon-knowledge/ledger/executions.jsonl",
-        help="Path to actions ledger JSONL file.",
-    )
-    record_parser.add_argument(
-        "--repo-dir",
-        default=".",
-        help="Repository root directory.",
-    )
-
-    # Subcommand: reconcile
-    reconcile_parser = subparsers.add_parser(
-        "reconcile",
-        help="Reconcile pending action outcomes and expire stale unknown records (Bean 0052).",
-    )
-    reconcile_parser.add_argument(
-        "--action-id",
-        default=None,
-        help="Target action ID to reconcile.",
-    )
-    reconcile_parser.add_argument(
-        "--verdict",
-        default=None,
-        help="New terminal verdict (success, failure, superseded).",
-    )
-    reconcile_parser.add_argument(
-        "--reason",
-        default=None,
-        help="Reason for late verdict reconciliation.",
-    )
-    reconcile_parser.add_argument(
-        "--expire-ttl",
-        type=int,
-        default=14,
-        help="Days after which unknown actions expire to unresolved (default: 14).",
-    )
-    reconcile_parser.add_argument(
-        "--ledger-path",
-        default="holon-knowledge/ledger/executions.jsonl",
-        help="Path to actions ledger JSONL file.",
-    )
-    reconcile_parser.add_argument(
-        "--repo-dir",
-        default=".",
-        help="Repository root directory.",
-    )
-
-    # Subcommand: promote
-    promote_parser = subparsers.add_parser(
-        "promote",
-        help="Evaluate and promote qualified knowledge to KB and WB (Bean 0052).",
-    )
-    promote_parser.add_argument(
-        "--pending",
-        action="store_true",
-        help="Promote all qualified pending candidates.",
-    )
-    promote_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Simulate promotion without persisting files.",
-    )
-    promote_parser.add_argument(
-        "--min-trials",
-        type=int,
-        default=2,
-        help="Minimum execution trials required for promotion consideration (default: 2).",
-    )
-    promote_parser.add_argument(
-        "--repo-dir",
-        default=".",
-        help="Repository root directory.",
-    )
-
-    # Subcommand: veto
-    veto_parser = subparsers.add_parser(
-        "veto",
-        help="Inspect and manage deterministic failure vetoes (Bean 0052).",
-    )
-    veto_subparsers = veto_parser.add_subparsers(
-        dest="veto_command",
-        required=True,
-    )
-    veto_list_parser = veto_subparsers.add_parser(
-        "list",
-        help="List active and shadowed failure vetoes.",
-    )
-    veto_list_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Output in JSON format.",
-    )
-    veto_list_parser.add_argument(
-        "--repo-dir",
-        default=".",
-        help="Repository root directory.",
-    )
-    veto_lift_parser = veto_subparsers.add_parser(
-        "lift",
-        help="Manually lift an active or shadowed failure veto.",
-    )
-    veto_lift_parser.add_argument(
-        "--context",
-        required=True,
-        help="Context fingerprint to lift.",
-    )
-    veto_lift_parser.add_argument(
-        "--reason",
-        default="Manual operator override",
-        help="Audit reason for lifting veto.",
-    )
-    veto_lift_parser.add_argument(
-        "--repo-dir",
-        default=".",
-        help="Repository root directory.",
-    )
-
-    # Subcommand: stats
-    stats_parser = subparsers.add_parser(
-        "stats",
-        help="Display operational self-metrics and consult telemetry (Bean 0052).",
-    )
-    stats_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Output telemetry in JSON format.",
-    )
-    stats_parser.add_argument(
-        "--repo-dir",
-        default=".",
-        help="Repository root directory.",
-    )
-
-    args = parser.parse_args()
+def _dispatch_complex(args: argparse.Namespace) -> int | None:  # noqa: C901, PLR0911, PLR0912, PLR0915
+    """Temporary fallback dispatch for complex commands (intent, plan, execute, flow, review)."""
 
     if args.command == "flow":
         try:
             if getattr(args, "max_review_iterations", None) is not None and args.max_review_iterations < 1:
                 print("Error: --max-review-iterations must be at least 1.", file=sys.stderr)
                 sys.exit(1)
+                return None
             if getattr(args, "ensemble_size", None) is not None and args.ensemble_size < 1:
                 print("Error: --ensemble-size must be at least 1.", file=sys.stderr)
                 sys.exit(1)
+                return None
 
             context = None
             if args.checkpoint:
@@ -2534,7 +2023,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             if (args.skip_push or (context is not None and context.skip_push)) and not effective_dry_run:
                 print(f"Error: {SKIP_PUSH_DISPATCH_ERROR}", file=sys.stderr)
                 sys.exit(1)
-                return
+                return None
 
             # Readiness probe before Stage 1: nothing has been branched, pushed, checkpointed or recorded yet.
             if effective_dry_run:
@@ -2548,7 +2037,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 preflight = preflight_gate(flow_agent, flow_model, skip=args.skip_preflight)
                 if preflight is not None and not preflight.ok:
                     sys.exit(1)
-                    return
+                    return None
 
             effective_token_reduce = detect_holon_coherence(bool(args.token_reduce or args.mitm_web))
             if context is None:
@@ -2634,11 +2123,11 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             if getattr(args, "max_iterations", 25) < 1:
                 print("Error: --max-iterations must be at least 1.", file=sys.stderr)
                 sys.exit(1)
-                return
+                return None
             if getattr(args, "ensemble_size", 3) < 1:
                 print("Error: --ensemble-size must be at least 1.", file=sys.stderr)
                 sys.exit(1)
-                return
+                return None
 
             effective_token_reduce = detect_holon_coherence(
                 bool(getattr(args, "token_reduce", False) or getattr(args, "mitm_web", False))
@@ -2691,189 +2180,18 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             print(f"Error during review-loop execution: {redact_cli_error(e)}", file=sys.stderr)
             sys.exit(1)
 
-    if args.command == "calibrate":
-        try:
-            run_calibrate(
-                execution_branch=args.execution_branch,
-                repo_dir=args.repo_dir,
-                json_output=args.json,
-                skip_commit=args.skip_commit,
-            )
-            sys.exit(0)
-        except Exception as e:
-            print(f"Error during calibration: {redact_cli_error(e)}", file=sys.stderr)
-            sys.exit(1)
-
-    if args.command == "init":
-        sys.exit(
-            init_project(
-                target_dir=args.target_dir,
-                template=args.template,
-                force=args.force,
-            )
-        )
-
-    if args.command == "ledger" and args.ledger_command == "query":
-        ledger_file = args.ledger_file
-        if not os.path.isabs(ledger_file):
-            ledger_file = os.path.join(args.repo_dir, ledger_file)
-
-        if not os.path.exists(ledger_file):
-            print(f"Error: Ledger file '{ledger_file}' does not exist.", file=sys.stderr)
-            sys.exit(1)
-
-        search_query = args.query or args.keyword
-        results = query_ledger(
-            ledger_path=ledger_file,
-            entry_type=args.entry_type,
-            category=args.category,
-            labels=args.labels,
-            target=args.target,
-            outcome=args.outcome,
-            origin=args.origin,
-            review_severity=args.review_severity,
-            query=search_query,
-            limit=args.limit,
-        )
-
-        if args.json:
-            import json
-
-            print(json.dumps(results, indent=2))
-        else:
-            table = format_query_results_table(results)
-            print(table)
-        sys.exit(0)
-
-    if args.command == "consult":
-        db_path = args.db_path
-        if not db_path:
-            db_path = os.path.join(args.repo_dir, "holon-knowledge/.index/action_index.db")
-        engine = ConsultEngine(project_db_path=db_path)
-        result = engine.consult_records(
-            all_labels=args.all_labels,
-            any_labels=args.any_labels,
-            not_labels=args.not_labels,
-            query_text=args.query,
-            top_k=args.top_k,
-            max_tokens=args.max_tokens,
-        )
-        if args.json or args.format == "json":
-            import json
-
-            print(json.dumps(result.to_dict(), indent=2))
-        else:
-            print(format_consult_results_table(result))
-        sys.exit(0)
-
-    if args.command == "record":
-        ledger_path = args.ledger_path
-        if not os.path.isabs(ledger_path):
-            ledger_path = os.path.join(args.repo_dir, ledger_path)
-        labels_list = [lbl.strip() for lbl in args.labels.split(",") if lbl.strip()] if args.labels else []
-        record_data = {
-            "action": args.action,
-            "category": args.category,
-            "target": args.target,
-            "verdict": args.verdict,
-            "labels": labels_list,
-            "error_context": args.context,
-        }
-        res = append_action_event(record_data, ledger_path=ledger_path)
-        print(f"Recorded action: {res['action_id']} [{res['verdict']}]")
-        sys.exit(0)
-
-    if args.command == "reconcile":
-        ledger_path = args.ledger_path
-        if not os.path.isabs(ledger_path):
-            ledger_path = os.path.join(args.repo_dir, ledger_path)
-        rec_stats = reconcile_records(
-            ledger_path=ledger_path,
-            max_age_days=args.expire_ttl,
-            target_action_id=args.action_id,
-            verdict=args.verdict,
-            reason=args.reason,
-        )
-        print(
-            f"Reconciled: {rec_stats['reconciled']}, Expired: {rec_stats['expired']}, "
-            f"Scanned: {rec_stats['total_scanned']}"
-        )
-        sys.exit(0)
-
-    if args.command == "promote":
-        db_path = os.path.join(args.repo_dir, "holon-knowledge/.index/action_index.db")
-        db = ActionIndexDatabase(db_path=db_path)
-        promoted = promote_pending_candidates(
-            index_db=db,
-            kb_dir=os.path.join(args.repo_dir, "holon-knowledge/kb"),
-            wb_dir=os.path.join(args.repo_dir, "holon-knowledge/wisdom"),
-            min_trials=args.min_trials,
-            dry_run=args.dry_run,
-        )
-        mode = "Dry-run: candidate" if args.dry_run else "Promoted"
-        print(f"{mode} knowledge items: {len(promoted)}")
-        for item in promoted:
-            item_id = item.get("kb_id") or item.get("wb_id")
-            item_type = item.get("kb_type") or item.get("wb_type")
-            name = item.get("payload", {}).get("name", "")
-            print(f" - {item_id} [{item_type}]: {name}")
-        sys.exit(0)
-
-    if args.command == "veto":
-        db_path = os.path.join(args.repo_dir, "holon-knowledge/.index/action_index.db")
-        db = ActionIndexDatabase(db_path=db_path)
-        if args.veto_command == "list":
-            vetoes = list_vetoes(db)
-            if args.json:
-                import json
-
-                print(json.dumps(vetoes, indent=2))
-            else:
-                if not vetoes:
-                    print("No active or shadowed failure vetoes recorded.")
-                else:
-                    for v in vetoes:
-                        shadow_str = "SHADOW" if v.get("is_shadow") else "ENFORCED"
-                        print(
-                            f" - [{v.get('state')}/{shadow_str}] Fingerprint: {v.get('context_fingerprint')} "
-                            f"(reproductions: {v.get('reproduction_count')}, decay: {v.get('decay_weight'):.2f})"
-                        )
-            sys.exit(0)
-        elif args.veto_command == "lift":
-            lifted = lift_veto(db, context_fingerprint=args.context, reason=args.reason)
-            if lifted:
-                print(f"Successfully lifted veto for fingerprint: {args.context}")
-            else:
-                print(f"No active veto found for fingerprint: {args.context}", file=sys.stderr)
-            sys.exit(0)
-
-    if args.command == "stats":
-        db_path = os.path.join(args.repo_dir, "holon-knowledge/.index/action_index.db")
-        db = ActionIndexDatabase(db_path=db_path)
-        telemetry_stats = TelemetryCollector.get_telemetry_stats(db)
-        if args.json:
-            import json
-
-            print(json.dumps(telemetry_stats, indent=2))
-        else:
-            print(format_stats_dashboard(telemetry_stats))
-        sys.exit(0)
-
-    if args.command == "doctor":
-        sys.exit(run_doctor(args))
-
     if args.command in ("plan", "execute"):
         try:
             agent_res, model_res = resolve_runner_and_model(args.agent, args.model)
         except UnmappedAgentRunnerError as exc:
             print(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
             sys.exit(1)
-            return
+            return None
         args.agent, args.model = agent_res.value, model_res.value
         preflight = preflight_gate(args.agent, args.model, skip=args.skip_preflight)
         if preflight is not None and not preflight.ok:
             sys.exit(1)
-            return
+            return None
 
     common_kwargs: dict[str, Any] = {
         "repo_dir": getattr(args, "repo_dir", None),
@@ -2920,3 +2238,4 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 file=sys.stderr,
             )
         sys.exit(exit_code)
+    return None

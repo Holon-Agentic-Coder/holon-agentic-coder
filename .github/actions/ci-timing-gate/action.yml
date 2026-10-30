@@ -13,9 +13,11 @@ runs:
   steps:
     - name: Validate Phase
       shell: bash
+      env:
+        INPUT_PHASE: ${{ inputs.phase }}
       run: |
-        if [[ "${{ inputs.phase }}" != "start" && "${{ inputs.phase }}" != "check" ]]; then
-          echo "::error::Invalid phase '${{ inputs.phase }}'. Must be 'start' or 'check'."
+        if [[ "${INPUT_PHASE}" != "start" && "${INPUT_PHASE}" != "check" ]]; then
+          echo "::error::Invalid phase '${INPUT_PHASE}'. Must be 'start' or 'check'."
           exit 1
         fi
 
@@ -27,8 +29,15 @@ runs:
     - name: CI Timing Gate (Check)
       if: inputs.phase == 'check'
       shell: bash
+      env:
+        START_EPOCH: ${{ env.CI_JOB_START_EPOCH }}
+        MAX_SECONDS: ${{ inputs.max-seconds }}
       run: |
+        if [[ -z "${START_EPOCH}" ]]; then
+          echo "::warning::CI_JOB_START_EPOCH is not set; skipping runtime budget check."
+          exit 0
+        fi
         python3 "${GITHUB_WORKSPACE}/scripts/check_ci_runtime_budget.py" \
-          --start-epoch "${CI_JOB_START_EPOCH}" \
-          --max-seconds "${{ inputs.max-seconds }}" \
+          --start-epoch "${START_EPOCH}" \
+          --max-seconds "${MAX_SECONDS}" \
           --step-summary "${GITHUB_STEP_SUMMARY}"

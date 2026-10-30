@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.client
 import io
 import json
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -13,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts.check_ci_runtime_budget import main as budget_main
 from scripts.ci_timing_gate import (
     OVERRIDE_LABEL,
     Thresholds,
@@ -546,3 +548,38 @@ def test_every_workflow_wires_start_and_check_steps() -> None:
         "action.yml must invoke scripts/check_ci_runtime_budget.py"
     )
 
+    # Deprecated docker-pull composite action must be completely removed
+    assert not (repo_root / ".github" / "actions" / "docker-pull").exists()
+
+
+def test_check_ci_runtime_budget_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    summary = tmp_path / "summary.md"
+    now = time.time()
+    ret = budget_main(["--start-epoch", str(now - 10.0), "--max-seconds", "300.0", "--step-summary", str(summary)])
+    assert ret == 0
+    out = capsys.readouterr().out
+    assert "CI runtime budget check passed" in out
+    summary_text = summary.read_text(encoding="utf-8")
+    assert "### CI Runtime Budget Check: PASSED" in summary_text
+    record_data = json.loads((tmp_path / "ci-timing" / "record.json").read_text(encoding="utf-8"))
+    assert record_data["passed"] is True
+    assert record_data["max_seconds"] == 300.0
+
+
+def test_check_ci_runtime_budget_exceeded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    summary = tmp_path / "summary.md"
+    now = time.time()
+    ret = budget_main(["--start-epoch", str(now - 400.0), "--max-seconds", "300.0", "--step-summary", str(summary)])
+    assert ret == 1
+    out = capsys.readouterr().out
+    assert "::error::CI runtime budget exceeded" in out
+    summary_text = summary.read_text(encoding="utf-8")
+    assert "### CI Runtime Budget Check: FAILED" in summary_text
+    record_data = json.loads((tmp_path / "ci-timing" / "record.json").read_text(encoding="utf-8"))
+    assert record_data["passed"] is False

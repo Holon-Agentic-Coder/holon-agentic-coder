@@ -31,3 +31,14 @@ provenance, review-decided splits, plan decides in practice, current-limitation 
 
 - Rewrote the second half of the **Human Review Boundary** bullet with R1 and R2 and added the R7 pointer to
   `git_flow.md` Stage 3. First sentence and line 116 left unchanged.
+
+### Step 3: `docs/architecture.md` merge and review-boundary sections (done)
+
+- Section 4 heading renamed to "deciding-node-only merges"; bullets now state R1 and R2 with an R7 pointer. The "No
+  direct merges from sub-intents to `main`" bullet kept word for word.
+- Human Review Boundary component: "only the root intent's PR to `main`".
+- Branch topology principle rewritten as "merges flow up to the deciding node" with R1 (`target_branch` equals
+  `deciding_branch`), R6, R5, R3, root-only merge to `main` and an R7 pointer; review list item now names root intent
+  completion as the only human stop.
+- Medium-trust bullet: "deciding-node-only merge rules". "parent intent policy" and "parent intent constraints" left
+  (trust policy, not merge targets). The mermaid diagram has no merge labels, so it was skipped.

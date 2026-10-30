@@ -28,10 +28,19 @@ command module without changing behavior or weakening any test.
    `apps/sandbox-executor/tests/test_cli.py` (395 items, 385 assertions). Extracted complete re-export and monkeypatch
    symbol list. Verified test suite baseline passes cleanly (395 passed in `test_cli.py`).
 
+2. **Step 2 (Convert cli.py into cli/ package): done.** Executed `git mv` of `cli.py` to `cli/__init__.py` to preserve
+   file history. Anchored the three `__file__`-relative resolution paths (`_find_git_root`, `mitm_addon.py`, and
+   `src_dir`) to the package parent directory, retaining support for monkeypatched `cli.__file__`. Created
+   `cli/__main__.py` to support `python -m sandbox_executor.cli`. Updated `test_complexity_gate.py` snapshot paths to
+   `sandbox_executor/cli/__init__.py`. Verified identical `--help` output diff and verified all 395 CLI tests and 502
+   affected tests pass.
+
 ## Tests Run
 
-| command                                                 | result                        |
-| ------------------------------------------------------- | ----------------------------- |
-| `uv run pytest apps/sandbox-executor/tests/test_cli.py` | 395 passed, 0 failed in 1.89s |
-| `uv run task test`                                      | 2854 passed, 0 failed in 30s  |
-| `uv run task check`                                     | All checks passed cleanly     |
+| command                                                                                                           | result                        |
+| ----------------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| `uv run pytest apps/sandbox-executor/tests/test_cli.py`                                                           | 395 passed, 0 failed in 1.89s |
+| `uv run pytest apps/sandbox-executor/tests/test_complexity_gate.py`                                               | 5 passed, 0 failed in 0.10s   |
+| `uv run pytest apps/sandbox-executor/tests/test_token_reduction.py apps/sandbox-executor/tests/test_preflight.py` | 502 passed, 0 failed in 1.73s |
+| `uv run task test`                                                                                                | 2854 passed, 0 failed in 30s  |
+| `uv run task check`                                                                                               | All checks passed cleanly     |

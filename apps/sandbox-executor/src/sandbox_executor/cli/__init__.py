@@ -819,7 +819,7 @@ def _find_git_root(start_dir: str | None = None) -> str:
 
     Each walk ends at the filesystem root, so the search always terminates.
     """
-    for base in (start_dir, os.getcwd(), os.path.dirname(os.path.abspath(__file__))):
+    for base in (start_dir, os.getcwd(), os.path.dirname(os.path.dirname(os.path.abspath(__file__)))):
         if not base:
             continue
         cur = os.path.abspath(base)
@@ -847,7 +847,9 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
     container_name = f"holon-proxy-{run_suffix}"
     network_name = f"holon-net-{run_suffix}"
 
-    addon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "token_reduction", "mitm_addon.py")
+    addon_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "token_reduction", "mitm_addon.py"
+    )
     if not os.path.isfile(addon_path):
         raise FileNotFoundError(
             f"mitmproxy addon script not found at '{addon_path}'. Token reduction cannot start its proxy "
@@ -913,7 +915,7 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
     _sidecar_state.network_created = _ensure_network(network_name)
     _sidecar_state.container_name = container_name
 
-    src_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+    src_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".."))
 
     docker_run_proxy = [
         "docker",
@@ -2956,7 +2958,3 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 file=sys.stderr,
             )
         sys.exit(exit_code)
-
-
-if __name__ == "__main__":
-    main()

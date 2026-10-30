@@ -37,6 +37,8 @@ LEDGER_EXECUTIONS_REL = "holon-knowledge/ledger/executions.jsonl"
 LINT_DOCS_PRETTIER: tuple[str, ...] = ("npx", "--yes", "prettier")
 PRETTIER_TIMEOUT_SECONDS = 120
 PRETTIER_OUTPUT_LINES = 5
+# Bounded write/check passes: Markdown output is not always a fixpoint after a single Prettier write.
+PRETTIER_PASSES = 3
 
 
 class CalibrationCommitError(RuntimeError):
@@ -1408,6 +1410,49 @@ def _run_prettier(mode: str, report_rel: str, repo_dir: str) -> subprocess.Compl
     )
 
 
+def _summarise(label: str, proc: subprocess.CompletedProcess[str]) -> str:
+    """Summarise a failed Prettier pass as its exit code and the first lines of its output.
+
+    Args:
+        label: The pass that failed (``write`` or ``check``).
+        proc: The completed Prettier process.
+
+    Returns:
+        str: For example ``check exited 1: [warn] plans/P-1_calibration.md``.
+    """
+    output = (proc.stdout + proc.stderr).strip().splitlines()[:PRETTIER_OUTPUT_LINES]
+    return f"{label} exited {proc.returncode}: " + " | ".join(output)
+
+
+def _converge_report(report_rel: str, repo_dir: str) -> str | None:
+    """Run up to PRETTIER_PASSES write/check passes, stopping at the first passing check or failed write.
+
+    Args:
+        report_rel: Report path relative to ``repo_dir``.
+        repo_dir: Repository root used as Prettier's working directory.
+
+    Returns:
+        str | None: Why the last pass failed, or None once the check passes.
+
+    Raises:
+        OSError: If npx cannot be started.
+        subprocess.TimeoutExpired: If a Prettier pass times out.
+
+    Side Effects:
+        Rewrites the report in place through Prettier's write passes.
+    """
+    reason = None
+    for _ in range(PRETTIER_PASSES):
+        write = _run_prettier("--write", report_rel, repo_dir)
+        if write.returncode != 0:
+            return _summarise("write", write)
+        check = _run_prettier("--check", report_rel, repo_dir)
+        if check.returncode == 0:
+            return None
+        reason = _summarise("check", check)
+    return reason
+
+
 def _prettier_failure(report_rel: str, repo_dir: str) -> str | None:
     """Format the report then check it, returning why the check did not pass (None when it passed).
 
@@ -1416,29 +1461,24 @@ def _prettier_failure(report_rel: str, repo_dir: str) -> str | None:
         repo_dir: Repository root used as Prettier's working directory.
 
     Returns:
-        str | None: A short reason when npx is missing, Prettier cannot run or the check fails;
-            None when the report passes the check.
+        str | None: A short reason when npx is missing, Prettier cannot run, a write fails or the
+            check still fails after PRETTIER_PASSES passes; None when the report passes the check.
 
     Side Effects:
-        Rewrites the report in place through Prettier's write pass.
+        Rewrites the report in place through Prettier's write passes.
     """
     if shutil.which("npx") is None:
         return "npx is not on PATH"
     try:
-        _run_prettier("--write", report_rel, repo_dir)
-        check = _run_prettier("--check", report_rel, repo_dir)
+        return _converge_report(report_rel, repo_dir)
     except (OSError, subprocess.TimeoutExpired) as e:
         return f"Prettier could not run: {e}"
-    if check.returncode == 0:
-        return None
-    output = (check.stdout + check.stderr).strip().splitlines()[:PRETTIER_OUTPUT_LINES]
-    return f"check exited {check.returncode}: " + " | ".join(output)
 
 
 def format_calibration_report(report_rel: str, repo_dir: str) -> None:
     """Format the calibration report exactly as ``uv run task lint-docs`` checks it, failing closed.
 
-    Runs ``npx --yes prettier --write`` and then ``--check`` on the report with ``cwd=repo_dir``,
+    Runs up to PRETTIER_PASSES rounds of ``npx --yes prettier --write`` then ``--check`` with ``cwd=repo_dir``,
     so the repository .prettierrc.json applies and Prettier resolves exactly as it does for lint-docs and the CI
     lint-md check (unpinned npx; a host with a stale npx cache can still resolve an older version than CI).
 
@@ -1571,12 +1611,12 @@ def run_calibrate(
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report.markdown_content)
 
-    # Format and check the report after its final write, before any ledger append or git command
+    # Format and check the report after its final write, before the ACT-CAL append, git add or git commit
     if skip_commit:
         try:
             format_calibration_report(report_rel, repo_dir)
         except CalibrationFormatError as e:
-            logger.warning("%s", e)
+            (log_fn or logger.warning)(str(e))
     else:
         format_calibration_report(report_rel, repo_dir)
 

@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from sandbox_executor.calibration import (
     LINT_DOCS_PRETTIER,
+    PRETTIER_PASSES,
     ActualMetrics,
     CalibrationCommitError,
     CalibrationDeltas,
@@ -1507,8 +1508,9 @@ def test_stage5_commits_reconciliation_row_on_calibrated_branch(calibration_repo
     assert git("show", "--name-only", "--pretty=format:", calibrated).split() == [ledger_rel]
 
 
-# A calibration paragraph as the old pinned prettier@3.8.4 wrapped it (breaking inside inline maths), and the same
-# paragraph in the repository style that `npx prettier --check` (lint-docs, CI hygiene) accepts at width 120.
+# A calibration paragraph that the old pinned prettier@3.8.4 accepts as formatted (its `--check` passes) but the
+# repository `npx prettier --check` (lint-docs, CI hygiene) rejects, and the same paragraph in the repository style that
+# check accepts at width 120. Both are verbatim Prettier output.
 _REPORT_REL = "plans/P-2_calibration.md"
 _PINNED_WRAP = (
     "# Calibration Report\n\n"
@@ -1530,9 +1532,19 @@ _REPOSITORY_STYLE = (
 class _FakePrettier:
     """Stand-in for calibration._run_prettier: records argv and rewrites the report like the repository Prettier."""
 
-    def __init__(self, check_returncode: int = 0, raises: Exception | None = None):
+    def __init__(
+        self,
+        check_returncode: int = 0,
+        raises: Exception | None = None,
+        expect_input: str | None = None,
+        write_returncode: int = 0,
+        failing_checks: int = 0,
+    ):
         self.check_returncode = check_returncode
         self.raises = raises
+        self.expect_input = expect_input
+        self.write_returncode = write_returncode
+        self.failing_checks = failing_checks
         self.calls: list[tuple[list[str], str]] = []
 
     def __call__(self, mode: str, report_rel: str, repo_dir: str) -> subprocess.CompletedProcess[str]:
@@ -1541,11 +1553,23 @@ class _FakePrettier:
         if self.raises is not None:
             raise self.raises
         if mode == "--write":
-            Path(repo_dir, report_rel).write_text(_REPOSITORY_STYLE, encoding="utf-8")
-            return subprocess.CompletedProcess(argv, 0, stdout=f"{report_rel} 5ms\n", stderr="")
-        stderr = "" if self.check_returncode == 0 else f"[warn] {report_rel}\n[warn] Code style issues found.\n"
+            return self._write(argv, Path(repo_dir, report_rel))
+        returncode = self.check_returncode
+        if self.failing_checks > 0:
+            self.failing_checks -= 1
+            returncode = 1
+        stderr = "" if returncode == 0 else f"[warn] {report_rel}\n[warn] Code style issues found.\n"
         stdout = "Checking formatting...\n"
-        return subprocess.CompletedProcess(argv, self.check_returncode, stdout=stdout, stderr=stderr)
+        return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr=stderr)
+
+    def _write(self, argv: list[str], report: Path) -> subprocess.CompletedProcess[str]:
+        if self.write_returncode != 0:
+            return subprocess.CompletedProcess(argv, self.write_returncode, stdout="", stderr="[error] SyntaxError\n")
+        if self.expect_input is not None:
+            assert report.read_text(encoding="utf-8") == self.expect_input
+            self.expect_input = None
+        report.write_text(_REPOSITORY_STYLE, encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, stdout=f"{report.name} 5ms\n", stderr="")
 
 
 @pytest.fixture
@@ -1572,10 +1596,11 @@ class TestFormatCalibrationReport:
 
     def test_report_needing_rewrap_is_formatted_to_repository_style(self, tmp_path):
         self._write_report(tmp_path)
-        fake = _FakePrettier()
+        fake = _FakePrettier(expect_input=_PINNED_WRAP)
         with patch("sandbox_executor.calibration._run_prettier", side_effect=fake):
             format_calibration_report(_REPORT_REL, str(tmp_path))
 
+        assert fake.expect_input is None
         assert (tmp_path / _REPORT_REL).read_text(encoding="utf-8") == _REPOSITORY_STYLE
         assert [argv[-2] for argv, _ in fake.calls] == ["--write", "--check"]
         for argv, cwd in fake.calls:
@@ -1608,18 +1633,19 @@ class TestFormatCalibrationReport:
     @pytest.mark.parametrize(
         ("fake", "which", "reason"),
         [
-            (_FakePrettier(check_returncode=1), "/usr/bin/npx", "check exited 1"),
-            (_FakePrettier(raises=subprocess.TimeoutExpired(["npx"], 120)), "/usr/bin/npx", "could not run"),
-            (_FakePrettier(raises=FileNotFoundError("npx")), "/usr/bin/npx", "could not run"),
-            (_FakePrettier(), None, "npx is not on PATH"),
+            (lambda: _FakePrettier(check_returncode=1), "/usr/bin/npx", "check exited 1"),
+            (lambda: _FakePrettier(write_returncode=2), "/usr/bin/npx", "write exited 2: [error] SyntaxError"),
+            (lambda: _FakePrettier(raises=subprocess.TimeoutExpired(["npx"], 120)), "/usr/bin/npx", "could not run"),
+            (lambda: _FakePrettier(raises=FileNotFoundError("npx")), "/usr/bin/npx", "could not run"),
+            (_FakePrettier, None, "npx is not on PATH"),
         ],
-        ids=["check-fails", "timeout", "npx-not-found", "npx-missing"],
+        ids=["check-fails", "write-fails", "timeout", "npx-not-found", "npx-missing"],
     )
     def test_guard_fails_closed(self, tmp_path, fake, which, reason):
         self._write_report(tmp_path)
         with (
             patch("sandbox_executor.calibration.shutil.which", return_value=which),
-            patch("sandbox_executor.calibration._run_prettier", side_effect=fake),
+            patch("sandbox_executor.calibration._run_prettier", side_effect=fake()),
             pytest.raises(CalibrationFormatError) as excinfo,
         ):
             format_calibration_report(_REPORT_REL, str(tmp_path))
@@ -1629,6 +1655,33 @@ class TestFormatCalibrationReport:
         assert f"Calibration report {_REPORT_REL} failed the repository Prettier check" in message
         assert f"npx prettier --check {_REPORT_REL}" in message
         assert isinstance(excinfo.value, CalibrationCommitError)
+
+    def test_failed_write_skips_the_check(self, tmp_path):
+        self._write_report(tmp_path)
+        fake = _FakePrettier(write_returncode=2)
+        with (
+            patch("sandbox_executor.calibration._run_prettier", side_effect=fake),
+            pytest.raises(CalibrationFormatError),
+        ):
+            format_calibration_report(_REPORT_REL, str(tmp_path))
+        assert [argv[-2] for argv, _ in fake.calls] == ["--write"]
+
+    def test_check_converges_within_bounded_passes(self, tmp_path):
+        self._write_report(tmp_path)
+        fake = _FakePrettier(failing_checks=PRETTIER_PASSES - 1)
+        with patch("sandbox_executor.calibration._run_prettier", side_effect=fake):
+            format_calibration_report(_REPORT_REL, str(tmp_path))
+        assert [argv[-2] for argv, _ in fake.calls] == ["--write", "--check"] * PRETTIER_PASSES
+
+    def test_check_still_failing_after_bounded_passes_fails_closed(self, tmp_path):
+        self._write_report(tmp_path)
+        fake = _FakePrettier(check_returncode=1)
+        with (
+            patch("sandbox_executor.calibration._run_prettier", side_effect=fake),
+            pytest.raises(CalibrationFormatError, match="check exited 1"),
+        ):
+            format_calibration_report(_REPORT_REL, str(tmp_path))
+        assert len(fake.calls) == 2 * PRETTIER_PASSES
 
     def test_guard_message_redacts_credentials(self, tmp_path):
         sample_value = "ghp_" + "F" * 36
@@ -1675,6 +1728,14 @@ class TestFormatCalibrationReport:
         assert report.committed is False
         assert (repo / _REPORT_REL).exists()
         assert any("failed the repository Prettier check" in rec.getMessage() for rec in caplog.records)
+
+    def test_run_calibrate_skip_commit_warning_reaches_log_fn(self, calibration_repo):
+        repo, _ = calibration_repo
+        messages: list[str] = []
+        with patch("sandbox_executor.calibration._run_prettier", side_effect=_FakePrettier(check_returncode=1)):
+            run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=True, log_fn=messages.append)
+
+        assert any("failed the repository Prettier check" in m for m in messages)
 
     def test_run_calibrate_commits_report_that_passes_check(self, calibration_repo):
         repo, git = calibration_repo

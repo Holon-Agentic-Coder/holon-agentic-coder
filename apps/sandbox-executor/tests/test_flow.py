@@ -77,6 +77,25 @@ def _sandboxed_clean_reviewers(monkeypatch):
     install_fake_reviewers(monkeypatch)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_prettier(monkeypatch):
+    """Fake the Stage 5 report formatter and fail any test that would still start the real npx (no Node, no network).
+
+    The calibrate stage formats its report through ``calibration._prettier_failure``; faking that seam to report a
+    passing check keeps the flow tests independent of npx being installed. Tests of the formatter itself live in
+    test_calibration.py.
+    """
+    monkeypatch.setattr("sandbox_executor.calibration._prettier_failure", lambda report_rel, repo_dir: None)
+    real_run = subprocess.run
+
+    def guarded_run(cmd, *args, **kwargs):
+        if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "npx":
+            raise AssertionError(f"real npx invoked: {cmd}")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", guarded_run)
+
+
 def _verified_diff():
     """Patch the empty-diff guard to pass, for review-loop tests whose repository is not a real git checkout."""
     return patch(

@@ -1,0 +1,43 @@
+name: "CI Timing Gate"
+description: "Starts or checks runtime timing budget for CI jobs"
+inputs:
+  phase:
+    description: "Phase to execute: 'start' to record job start epoch, or 'check' to verify runtime budget"
+    required: true
+  max-seconds:
+    description: "Maximum allowable runtime budget in seconds"
+    required: false
+    default: "300"
+runs:
+  using: "composite"
+  steps:
+    - name: Validate Phase
+      shell: bash
+      env:
+        INPUT_PHASE: ${{ inputs.phase }}
+      run: |
+        if [[ "${INPUT_PHASE}" != "start" && "${INPUT_PHASE}" != "check" ]]; then
+          echo "::error::Invalid phase '${INPUT_PHASE}'. Must be 'start' or 'check'."
+          exit 1
+        fi
+
+    - name: CI Timing Gate (Start)
+      if: inputs.phase == 'start'
+      shell: bash
+      run: echo "CI_JOB_START_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
+
+    - name: CI Timing Gate (Check)
+      if: inputs.phase == 'check'
+      shell: bash
+      env:
+        START_EPOCH: ${{ env.CI_JOB_START_EPOCH }}
+        MAX_SECONDS: ${{ inputs.max-seconds }}
+      run: |
+        if [[ -z "${START_EPOCH}" ]]; then
+          echo "::warning::CI_JOB_START_EPOCH is not set; skipping runtime budget check."
+          exit 0
+        fi
+        python3 "${GITHUB_WORKSPACE}/scripts/check_ci_runtime_budget.py" \
+          --start-epoch "${START_EPOCH}" \
+          --max-seconds "${MAX_SECONDS}" \
+          --step-summary "${GITHUB_STEP_SUMMARY}"

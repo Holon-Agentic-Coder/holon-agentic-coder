@@ -504,3 +504,45 @@ def test_replay_682_second_unit_run_fails_ceiling() -> None:
 @pytest.mark.parametrize("duration", [132.0, 131.0, 153.0, 263.0, 278.0, 28.0, 46.0, 5.0, 10.0, 12.0])
 def test_replay_recent_main_durations_pass_ceiling(duration: float) -> None:
     assert evaluate(duration, [], DEFAULTS, override=False).passed
+
+
+def test_every_workflow_wires_start_and_check_steps() -> None:
+    """Assert all 5 workflows wire the local ci-timing-gate composite action correctly."""
+    repo_root = Path(__file__).resolve().parents[3]
+    workflows_dir = repo_root / ".github" / "workflows"
+    expected_workflows = [
+        "docker-build.yml",
+        "make.yml",
+        "test-hygiene.yml",
+        "test-integration.yml",
+        "test-unit.yml",
+    ]
+
+    for wf_name in expected_workflows:
+        wf_path = workflows_dir / wf_name
+        assert wf_path.is_file(), f"Workflow file {wf_name} missing"
+        content = wf_path.read_text(encoding="utf-8")
+
+        # Must reference local composite action
+        assert "./.github/actions/ci-timing-gate" in content, f"{wf_name} missing action reference"
+        assert "phase: start" in content, f"{wf_name} missing start phase"
+        assert "phase: check" in content, f"{wf_name} missing check phase"
+        assert "if: always()" in content, f"{wf_name} missing if: always() on check step"
+
+        # Checkout must appear before ci-timing-gate start
+        checkout_pos = content.find("actions/checkout@v7")
+        if checkout_pos == -1:
+            checkout_pos = content.find("actions/checkout")
+        assert checkout_pos != -1, f"{wf_name} missing checkout step"
+        start_pos = content.find("phase: start")
+        assert checkout_pos < start_pos, f"{wf_name} must checkout repo before running ci-timing-gate start"
+
+    # Verify action definition
+    action_path = repo_root / ".github" / "actions" / "ci-timing-gate" / "action.yml"
+    assert action_path.is_file(), "Composite action definition missing"
+    action_content = action_path.read_text(encoding="utf-8")
+    assert "CI_JOB_START_EPOCH" in action_content, "action.yml must define CI_JOB_START_EPOCH"
+    assert "scripts/check_ci_runtime_budget.py" in action_content, (
+        "action.yml must invoke scripts/check_ci_runtime_budget.py"
+    )
+

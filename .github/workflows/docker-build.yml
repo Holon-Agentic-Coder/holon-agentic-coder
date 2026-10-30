@@ -1,0 +1,49 @@
+name: Docker Build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: CI Timing Gate (Start)
+        uses: ./.github/actions/ci-timing-gate
+        with:
+          phase: start
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          keep-state: true
+
+      - name: Expose GitHub Runtime
+        uses: crazy-max/ghaction-github-runtime@v4
+
+      - name: Build all Docker images
+        run: |
+          ./apps/sandbox-executor/build_all_images.sh --output-log
+
+      - name: CI Timing Gate (Check <= 5 min)
+        if: always()
+        uses: ./.github/actions/ci-timing-gate
+        with:
+          phase: check

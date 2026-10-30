@@ -22,6 +22,7 @@ This directory contains the CI/CD workflows for the `holon-agentic-coder` projec
 - `test-integration.yml`: Runs on pushes to `main` and on pull requests on `ubuntu-latest`. It builds all sandbox Docker
   images via `./apps/sandbox-executor/build_all_images.sh --output-log` and executes integration tests that require
   Docker services. For why containerized tests run exclusively on Linux, see [macos-docker.md](../macos-docker.md).
+- `docker-build.yml`: Builds Docker images with multi-architecture Buildx caching, incorporating timing gate checks.
 - `build-images.yml`: Manual dispatch workflow to build and verify Docker container images with multi-architecture
   Buildx caching.
 
@@ -36,8 +37,9 @@ standard library only and runs on the runner's own `python3`.
 
 ### What is measured and where it is kept
 
-- Each job's first step, "Record job start time", writes `CI_TIMING_START` to `$GITHUB_ENV`. The "Timing gate" step near
-  the end of the job measures from that timestamp, so the duration covers the first step to the gate step.
+- Each job's first step, "Record job start time" or "CI Timing Gate (Start)", writes `CI_TIMING_START` or
+  `CI_JOB_START_EPOCH` to `$GITHUB_ENV`. The "Timing gate" or "CI Timing Gate (Check <= 5 min)" step near the end of the
+  job measures from that timestamp, so the duration covers the first step to the gate step.
 - On a push to `main` (and on a dispatch of `build-images.yml`) the gate runs in `record` mode: it writes the duration,
   job name, runner OS, commit and run id to `ci-timing/record.json`. Test jobs also record pytest's per-test durations
   from a JUnit report (`unit-report.xml`, `integration-report.xml`, `stress-report.xml`). The "Upload timing record"
@@ -104,11 +106,15 @@ Repository maintainers configuring branch protection rulesets on `main` should r
 
 ## Composite Actions
 
-- `.github/actions/docker-pull/`: Reusable GHCR pull-through caching composite action. It attempts to pull base or
-  dependency container images from GitHub Container Registry (GHCR) mirror cache first. If an image is not present in
-  GHCR, it falls back to pulling from the public registry source, pushes the image to the GHCR mirror cache (when
-  `packages: write` permissions are available), and retags it back to its original name. This minimizes upstream rate
-  limits and accelerates container build pipelines.
+- `.github/actions/ci-timing-gate/action.yml`: Encapsulates job timing gate initialization (`phase: start`) and runtime
+  budget enforcement (`phase: check`). It provides standardized execution timing across workflows:
+  - **Inputs:**
+    - `phase`: (required) Specifies execution phase, accepting strictly `start` or `check`.
+    - `max-seconds`: (optional, default: `300`) Maximum allowable runtime budget in seconds.
+  - **Prerequisites & Requirements:**
+    - Calling workflows must execute `actions/checkout` before invoking this local composite action.
+    - Check steps must specify `if: always()` to ensure budget enforcement and step summary recording occur even upon
+      prior step failure.
 
 ## Standards Alignment
 

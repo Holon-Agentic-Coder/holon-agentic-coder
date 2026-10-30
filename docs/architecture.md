@@ -545,7 +545,11 @@ The complexity gate is protected by an automated ratchet test at `apps/sandbox-e
 - The test scans all Python files in `apps/sandbox-executor/src` and counts the inline complexity `# noqa` directives
   (`C901`, `PLR0911`, `PLR0912`, `PLR0913`, `PLR0915`) on function definitions.
 - The total count cannot exceed the established baseline (`BASELINE_COMPLEXITY_NOQA_COUNT = 187`,
-  `BASELINE_ANNOTATED_FUNCTIONS_COUNT = 91`).
-- Any new complex code or unauthorized `# noqa` directive fails CI.
-- When legacy functions are simplified or refactored, the baseline constant must be ratcheted down, ensuring codebase
-  complexity only decreases over time.
+  `BASELINE_ANNOTATED_FUNCTIONS_COUNT = 91`), and every annotation must match an entry in the frozen identity snapshot
+  (`BASELINE_SNAPSHOT`, a multiset of `(relative path, rule codes)` pairs), so removing a legacy suppression never
+  licenses adding or relocating another one.
+- Within the ratchet's scope (`apps/sandbox-executor/src`), any new complex function or new complexity `# noqa`
+  directive fails CI. Code outside that tree (for example `tests/`) is not covered by the ratchet and is gated by
+  `ruff check` alone; bare `# noqa` directives without rule codes are rejected repo-wide via the `PGH004` lint.
+- When legacy functions are simplified or refactored, the baseline constants and snapshot must be ratcheted down,
+  ensuring codebase complexity only decreases over time.

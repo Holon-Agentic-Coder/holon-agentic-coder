@@ -39,7 +39,7 @@ Bottleneck steps (e.g., database schema changes, core module refactoring) carry 
 - **Decomposition via the Sub-intent List:** A bottleneck step is not decomposed automatically. To split it out, the
   planner lists it as an item of the plan's explicit `## Sub-intent list` (see §4); the flow then runs that item as a
   child intent with its own branch, sandbox and tests, nested under, cut from and merged automatically into the plan
-  branch that listed it, before that plan's work is raised to its own target.
+  branch that listed it, before that plan's work is raised to its own target (see §4 for the current implementation).
 
 ---
 
@@ -60,8 +60,9 @@ Entropy represents the disorder and complexity introduced by plans:
   nested bullets are details of the item above, never children of their own). The flow runs each item sequentially
   through the full pipeline as a child intent cut from and targeting the deciding plan branch (its `deciding_branch`);
   any level may decide a split, but in practice the plan does. Until the implementation follows, the current flow still
-  targets the parent intent branch (see [Git Flow](../git_flow.md) Stage 3 under the flow equivalence guarantee).
-  Per-step sub‑intent recommendations alone never trigger decomposition, and the executor never fabricates child work.
+  cuts each child from and targets the parent intent branch and leaves each child PR merge to the maintainer (see
+  [Git Flow](../git_flow.md) Stage 3 under the flow equivalence guarantee). Per-step sub‑intent recommendations alone
+  never trigger decomposition, and the executor never fabricates child work.
 - **Bounded Re-planning:** A plan above its budget without that list is sent back to the planner with a "Re-plan
   request" paragraph (passed through `HOLON_REPLAN_FEEDBACK`, never written to a ledger), at most `MAX_REPLAN_ATTEMPTS`
   (`2`) times, after which the Execute stage fails with a clear message.

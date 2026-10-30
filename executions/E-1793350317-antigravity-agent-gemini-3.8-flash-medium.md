@@ -42,3 +42,13 @@ Stage 4 while preserving host ownership of mergeability verification, CI status 
    container dispatch, error propagation, fail-closed handling, result file transport on success and preparation
    failure, host mergeability/CI gating integrity, and canonical execution ledger logging (`ACT-REV-*` and
    `ACT-POST-*`). Verified refusal updates in `test_review_loop.py` (73 tests passed, 7 dispatch tests passed).
+
+## Tests Run
+
+| command                                                                                                                                                                 | result                                                                                   |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `uv run pytest apps/sandbox-executor/tests/test_review_ensemble.py apps/sandbox-executor/tests/test_review_dispatch.py apps/sandbox-executor/tests/test_review_loop.py` | 172 passed, 0 failed in 0.69s                                                            |
+| `uv run task test` (`pytest -n auto --dist worksteal -m "not integration_test and not stress"`)                                                                         | 2873 passed, 0 failed, 8 warnings in 30.52s                                              |
+| `uv run task lint` (`uv lock --check && git diff --exit-code uv.lock && ruff check . && ruff format --check .`)                                                         | Passed with 0 violations, 89 files cleanly formatted                                     |
+| `uv run task lint-docs` (`npx prettier --check "**/*.md"`)                                                                                                              | Passed, all markdown files match Prettier code style                                     |
+| `uv run task check`                                                                                                                                                     | Passed, end-to-end lint, lock consistency, formatting, and markdown verification checked |

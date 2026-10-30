@@ -321,10 +321,10 @@ PR and green CI; zero or failed reviewers, any finding (a single nit) and unknow
 automatic resolver: the first iteration that is not approved stops the stage, its `ACT-FIND` rows are recorded in
 `executions.jsonl` and the command exits 1. The posted report contains only real reviewer data and is posted only when
 at least one reviewer completed. Reviewer turns run only inside the sandbox. `holon review-loop` runs the loop in the
-`review-loop` role container; `holon flow` Stage 4 runs the loop on the host, where it refuses with "Refusing to run
-reviewer agent turns on the host" before any PR, iteration or post, so a flow on a host currently stops at Stage 4 and
-the review is run with `holon review-loop <execution_branch>`. Routing Stage 4 reviewer turns into the role container
-needs a result transport for the container's ledger rows and is follow-up work. See the
+`review-loop` role container. When `holon flow` Stage 4 runs on the host, it dispatches reviewer turns into the
+`review-loop` role container via `_dispatch_role()` and retrieves verified reviewer outcomes across a structured result
+file transport, preserving host ownership of mergeability verification, CI gating, and official review posting. If
+container dispatch fails, it fails closed before any PR review is approved. See the
 [sandbox-executor README](../apps/sandbox-executor/README.md#reviewer-ensemble).
 
 #### Safety Halt & Merge Boundary (Bean 0034)

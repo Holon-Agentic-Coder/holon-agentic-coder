@@ -3624,7 +3624,6 @@ def _dispatch_review_ensemble(
             os.remove(result_file)
 
 
-
 def render_reviewer_summary_line(result: ReviewerResult | Mapping[str, Any]) -> str:
     """One plain-text summary line for a reviewer (a ``ReviewerResult`` or its serialised summary)."""
     data = _reviewer_summary(result) if isinstance(result, ReviewerResult) else result

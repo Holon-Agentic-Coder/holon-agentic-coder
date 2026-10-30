@@ -53,7 +53,9 @@ from sandbox_executor.budgets import (
 )
 from sandbox_executor.calibration import (
     LEDGER_EXECUTIONS_REL,
+    CalibrationFormatError,
     calibration_commit_env,
+    format_calibration_report,
     is_metadata_path,
     record_calibration_action,
     run_calibrate,
@@ -71,7 +73,6 @@ from sandbox_executor.entrypoint.planner import (
     load_metrics_config,
     parse_metrics,
 )
-from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.git import (
     EMPTY_DIFF_FAILURE_REASON,
     EMPTY_DIFF_STATUS,
@@ -4603,6 +4604,15 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
         calibration_succeeded = True
     except LedgerRewriteError:
         raise
+    except CalibrationFormatError as e:
+        # Fail closed: the report and ledger stay uncommitted and nothing is pushed or fast-forwarded.
+        return _stage_failure(
+            context,
+            FlowStage.CALIBRATE,
+            start_time,
+            "Calibrate stage failed: the calibration report did not pass the repository Prettier check, "
+            f"so nothing was committed or pushed. {e}",
+        )
     except Exception as e:
         context.log(
             f"Calibration run encountered exception: {CredentialRedactor.redact_text(str(e))}. "
@@ -4624,7 +4634,7 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
             with open(report_path, "w", encoding="utf-8") as f:
                 f.write(f"# Calibration Report for {plan_id}\n\nFallback calibration generated.\n")
         try:
-            converge_prettier([report_rel], repo_dir=repo_dir)
+            format_calibration_report(report_rel, repo_dir)
         except Exception as fmt_exc:
             fmt_detail = CredentialRedactor.redact_text(str(fmt_exc))
             context.log(f"Warning: Prettier formatting failed for fallback {report_rel}: {fmt_detail}")

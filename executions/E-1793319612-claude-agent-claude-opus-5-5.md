@@ -36,3 +36,12 @@ any ledger append, `git add`, commit or push.
 - Removed the `converge_prettier` import from `calibration.py`; `formatting.py` is untouched.
 - `uv` was not on the sandbox `PATH`; installed it user-locally with `pip install --user uv` (tooling only, no
   project dependency change). `uv run task lint` passes.
+
+### Step 3: Fail Stage 5 instead of pushing when the guard trips (done)
+
+- `run_calibrate_stage` catches `CalibrationFormatError` (after `LedgerRewriteError`, before the generic `Exception`)
+  and returns a FAILED Stage 5 via `_stage_failure`, skipping the fallback report, reconciliation commit and push block.
+  This mirrors what the existing `CalibrationCommitError` path leaves behind (uncommitted report on the `/calibrated`
+  branch) but now reports FAILED instead of SUCCESS.
+- The fallback path uses `format_calibration_report` (warning only, never committed or pushed); the `converge_prettier`
+  import was removed from `flow.py`.

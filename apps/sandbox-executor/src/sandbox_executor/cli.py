@@ -434,7 +434,7 @@ def get_ssh_auth_mounts() -> tuple[list[str], dict[str, str]]:
     return mounts, env_vars
 
 
-def get_agent_session_mounts(agent_id: str) -> list[str]:
+def get_agent_session_mounts(agent_id: str) -> list[str]:  # noqa: C901
     """Auto-detect and construct session mounts for supported agents."""
     mounts = []
     home = os.path.expanduser("~")
@@ -688,7 +688,7 @@ def redact_cli_error(message: object) -> str:
     return text
 
 
-def detect_holon_coherence(token_reduce: bool = False) -> bool:
+def detect_holon_coherence(token_reduce: bool = False) -> bool:  # noqa: C901, PLR0911, PLR0912
     """Detect whether holon-coherence proxy is available or explicitly requested.
 
     Evaluation hierarchy:
@@ -833,7 +833,7 @@ def _find_git_root(start_dir: str | None = None) -> str:
     return os.path.abspath(start_dir or os.getcwd())
 
 
-def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict[str, str]]:
+def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict[str, str]]:  # noqa: C901, PLR0912, PLR0915
     """Start this run's mitmproxy sidecar and return the sandbox mounts and env vars.
 
     Resources are named per run (pid + uuid suffix) and recorded in ``_sidecar_state`` so teardown
@@ -1298,7 +1298,7 @@ def is_secret_env_item(key: str, value: str) -> bool:
     return is_secret_env_name(key) or redact_command([item]) != item or carries_url_password(value)
 
 
-def run_docker_container(
+def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
     role: str,
     image_name: str,
     container_args: list[str],
@@ -1622,7 +1622,7 @@ def _report_budgets(env: Mapping[str, str], out: TextIO) -> None:
     )
 
 
-def _report_gateways(
+def _report_gateways(  # noqa: PLR0913
     host_config: dict | None,
     config: dict,
     envelopes: list[local_llm.ModelEnvelope],
@@ -1685,7 +1685,7 @@ def resolve_role_image(role: str, agent_id: str) -> str:
     return image_for_agent(agent_id)
 
 
-def dispatch_role_agent(
+def dispatch_role_agent(  # noqa: PLR0913
     role: str,
     runner: str | None,
     model: str | None,
@@ -1859,7 +1859,7 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
     return 0 if result.ok and env_code == 0 else 1
 
 
-def main() -> None:
+def main() -> None:  # noqa: C901, PLR0912, PLR0915
     configure_cli_logging()
     parser = argparse.ArgumentParser(
         prog="holon",

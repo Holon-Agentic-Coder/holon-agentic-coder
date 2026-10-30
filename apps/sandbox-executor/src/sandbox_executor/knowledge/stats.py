@@ -15,7 +15,7 @@ class TelemetryCollector:
     """Collects and aggregates operational self-metrics across consult and execution phases."""
 
     @classmethod
-    def record_consult(
+    def record_consult(  # noqa: PLR0913
         cls,
         query_labels: str,
         latency_ms: float,

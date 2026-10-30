@@ -305,7 +305,7 @@ def _reference_secret_args(runner_cmd: list[str], secret_env: Mapping[str, str])
     return ["sh", "-c", f"exec {script}"]
 
 
-def _result(
+def _result(  # noqa: PLR0913
     status: PreflightStatus,
     agent: str,
     model: str,
@@ -328,7 +328,7 @@ def _result(
     )
 
 
-def run_preflight_probe(
+def run_preflight_probe(  # noqa: PLR0911
     agent: str,
     model: str,
     timeout: float | None = None,
@@ -418,7 +418,7 @@ def run_preflight_probe(
                 os.remove(env_file)
 
 
-def _run_probe(
+def _run_probe(  # noqa: PLR0913
     run: Callable[..., subprocess.CompletedProcess[str]],
     docker_cmd: list[str],
     container_name: str,

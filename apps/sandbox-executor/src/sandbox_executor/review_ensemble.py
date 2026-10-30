@@ -202,7 +202,7 @@ class ReviewRequest:
     iteration: int
 
 
-def build_review_request(
+def build_review_request(  # noqa: PLR0913
     target: ReviewTarget, base_ref: str, iteration: int, pr_title: str, pr_body: str, repo_dir: str
 ) -> ReviewRequest:
     """Build the request every reviewer judges: the real diff between ``base_ref`` and the resolved head SHA.
@@ -251,7 +251,7 @@ class ReviewerResult:
     failure_reason: str | None = None
 
     @classmethod
-    def completed(
+    def completed(  # noqa: PLR0913
         cls, index: int, agent: str, model: str, report_path: str, report_text: str, parsed: ParsedTrailer
     ) -> ReviewerResult:
         """A reviewer whose report carried a valid trailer."""
@@ -580,7 +580,7 @@ def _read_report(path: str) -> str | None:
 RunnerFactory = Callable[[str], AgentRunner]
 
 
-def run_reviewer(
+def run_reviewer(  # noqa: PLR0913
     request: ReviewRequest,
     index: int,
     agent: str,
@@ -613,7 +613,7 @@ def run_reviewer(
     return _logged(_judged_report(outcome, request.repo_dir, report_rel, index, agent, model))
 
 
-def _supervise_reviewer_turn(
+def _supervise_reviewer_turn(  # noqa: PLR0913
     request: ReviewRequest,
     report_rel: str,
     agent: str,
@@ -666,7 +666,7 @@ def _turn_failure(outcome: AuthoringOutcome) -> str | None:
     return f"review turn cut short: {breach.describe()}" if breach is not None else None
 
 
-def _judged_report(
+def _judged_report(  # noqa: PLR0913
     outcome: AuthoringOutcome, repo_dir: str, report_rel: str, index: int, agent: str, model: str
 ) -> ReviewerResult:
     """:func:`_result_from_outcome`, but an unexpected error reading or parsing the report fails only this reviewer."""
@@ -677,7 +677,7 @@ def _judged_report(
         return ReviewerResult.failed(index, agent, model, report_rel, reason)
 
 
-def _result_from_outcome(
+def _result_from_outcome(  # noqa: PLR0913
     outcome: AuthoringOutcome, repo_dir: str, report_rel: str, index: int, agent: str, model: str
 ) -> ReviewerResult:
     """COMPLETED when the turn ran within budget and the report carries a valid trailer, otherwise FAILED."""

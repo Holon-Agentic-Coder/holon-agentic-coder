@@ -108,7 +108,7 @@ def _read_positive(
 ) -> float | None: ...
 
 
-def _read_positive(
+def _read_positive(  # noqa: PLR0913
     env: Mapping[str, str],
     name: str,
     default: float | None,

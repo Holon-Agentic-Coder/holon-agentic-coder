@@ -200,7 +200,7 @@ def _derive_context_fingerprint(data: dict[str, Any]) -> str:
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
-def sync_ledger_incremental(db_path: str, ledger_path: str) -> int:
+def sync_ledger_incremental(db_path: str, ledger_path: str) -> int:  # noqa: C901, PLR0912, PLR0915
     """Incrementally read new JSONL rows from ledger_path seeking from last byte offset.
 
     Returns the count of newly ingested rows.

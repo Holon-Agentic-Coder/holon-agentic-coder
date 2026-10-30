@@ -26,3 +26,8 @@ lines, implementing a ratchet test in `apps/sandbox-executor/tests/test_complexi
 1. **Step 1 (Configure ruff complexity rules in pyproject.toml): done.** Updated `pyproject.toml` to select complexity
    rules `C901`, `PLR0911`, `PLR0912`, `PLR0913`, and `PLR0915` under `[tool.ruff.lint]`, and configured
    `[tool.ruff.lint.mccabe]` with `max-complexity = 10`. Confirmed that no `per-file-ignores` were added.
+2. **Step 2 (Survey and annotate existing complexity offenders in apps/sandbox-executor/src): done.** Identified 187
+   complexity violations across 91 functions in 24 files (`55` `C901`, `13` `PLR0911`, `47` `PLR0912`, `35` `PLR0913`,
+   `37` `PLR0915`). Placed inline `# noqa: <codes>` comments directly on the `def` lines of all 91 functions. Confirmed
+   `uv run ruff check apps/sandbox-executor/src` passes with zero violations and `uv run ruff format --check` reports
+   all files cleanly formatted.

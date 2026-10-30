@@ -82,7 +82,7 @@ def _rmtree(path: str) -> None:
         shutil.rmtree(path, onerror=_handle_remove_readonly)
 
 
-def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:
+def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:  # noqa: C901
     """Clear all contents of a directory without removing the directory itself."""
     if not os.path.isdir(path):
         return
@@ -216,7 +216,7 @@ class AgentRunner:
 class StandardAgentRunner(AgentRunner):
     """Runner for agents that accept prompt strings directly via arguments."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         agent_id: str,
         binary_name: str,
@@ -285,7 +285,7 @@ class StandardAgentRunner(AgentRunner):
                 logger.warning(f"Failed to clean up ephemeral file {path}: {e}")
         self._ephemeral_files.clear()
 
-    def validate(self) -> None:
+    def validate(self) -> None:  # noqa: C901
         """Validates that required environment variables or credentials exist across the 3-Tier Fallback Contract."""
         self.resolve_credentials()
 

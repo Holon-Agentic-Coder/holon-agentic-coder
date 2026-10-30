@@ -72,7 +72,7 @@ class ActionRecord:
     budget_seconds: float | None = None
     elapsed_seconds: float | None = None
 
-    def validate(self) -> None:
+    def validate(self) -> None:  # noqa: C901
         """Validate constraints and enum values for action record."""
         if not self.action_id:
             raise ValueError("action_id must not be empty")
@@ -574,7 +574,7 @@ append_action_ledger = append_action_record
 append_execution_record = append_summary_record
 
 
-def parse_commit_trailers(commit_message: str) -> dict[str, Any]:
+def parse_commit_trailers(commit_message: str) -> dict[str, Any]:  # noqa: C901, PLR0912
     """Parse standardised action provenance trailers from commit message.
 
     Trailers parsed (case-insensitive):
@@ -673,7 +673,7 @@ def extract_action_provenance_from_commit(repo_dir: str = ".", commit_ref: str =
     return parse_commit_trailers(msg)
 
 
-def format_commit_trailers(
+def format_commit_trailers(  # noqa: PLR0913
     action_origin: str = "initial_implementation",
     review_severity: str | None = None,
     review_iteration: int | None = None,
@@ -702,7 +702,7 @@ def format_commit_trailers(
     return "\n".join(lines)
 
 
-def query_ledger(
+def query_ledger(  # noqa: C901, PLR0912, PLR0913, PLR0915
     ledger_path: str,
     *,
     entry_type: str | None = None,

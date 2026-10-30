@@ -24,7 +24,7 @@ def is_prettier_available() -> bool:
     return shutil.which("npx") is not None
 
 
-def converge_prettier(
+def converge_prettier(  # noqa: C901, PLR0911
     files: Sequence[str | Path] | str | Path,
     repo_dir: str | Path | None = None,
     max_passes: int = DEFAULT_MAX_PASSES,

@@ -731,7 +731,7 @@ def _resolve_conflicting_ledger(repo_dir: str, rel_path: str) -> bool:
     return os.path.exists(full_path) and reconcile_ledger_file(full_path)
 
 
-def check_and_resolve_stage_conflicts(
+def check_and_resolve_stage_conflicts(  # noqa: C901, PLR0912, PLR0915
     repo_dir: str,
     target_branch: str = "main",
     stage_name: str = "",
@@ -881,7 +881,7 @@ def _resolve_commit_ref(repo_dir: str, ref: str) -> tuple[str | None, str]:
     return (stdout or ref), stderr
 
 
-def check_pr_mergeability(
+def check_pr_mergeability(  # noqa: C901, PLR0912, PLR0915
     repo_dir: str,
     branch: str,
     target_branch: str = "main",
@@ -1200,7 +1200,7 @@ def format_review_git_trailers(
     return "\n".join(lines)
 
 
-def generate_semantic_pr_metadata(
+def generate_semantic_pr_metadata(  # noqa: C901, PLR0912, PLR0915
     intent_data: dict[str, Any],
     plan_metadata: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
@@ -1353,7 +1353,7 @@ def generate_semantic_pr_metadata(
     return full_title, "\n".join(body_lines)
 
 
-def create_or_update_pr(
+def create_or_update_pr(  # noqa: PLR0913
     repo_dir: str,
     branch: str,
     target_branch: str = "main",
@@ -1451,7 +1451,7 @@ def create_or_update_pr(
         return {"attempted": True, "success": False, "action": "error", "pr_number": None, "output": str(exc)}
 
 
-def post_pr_review_consensus(
+def post_pr_review_consensus(  # noqa: PLR0912, PLR0913, PLR0915
     repo_dir: str,
     target: str,
     consensus_data: dict[str, Any],
@@ -1639,7 +1639,7 @@ def post_pr_review_consensus(
     }
 
 
-def validate_intent_questions(intent_data: dict[str, Any]) -> tuple[bool, list[str]]:
+def validate_intent_questions(intent_data: dict[str, Any]) -> tuple[bool, list[str]]:  # noqa: C901, PLR0912, PLR0915
     """Validate that an intent payload has no unresolved open questions.
 
     Checks `questions`, `open_questions`, and `clarifications` fields in `intent_data`.
@@ -2204,7 +2204,7 @@ def _reused_intent_conflict(repo_dir: str, intent_branch: str, branch: str, inte
     )
 
 
-def run_intent_stage(context: FlowContext) -> StageResult:
+def run_intent_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911, PLR0912, PLR0915
     """Execute Stage 1: validate the intent payload and dispatch the intent-creator agent.
 
     The intent-creator container (the same one 'holon intent' launches) creates the intent branch,
@@ -2359,7 +2359,7 @@ def run_intent_stage(context: FlowContext) -> StageResult:
 # ---------------------------------------------------------------------------
 
 
-def run_plan_stage(context: FlowContext) -> StageResult:
+def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911, PLR0912, PLR0915
     """Execute Stage 2: dispatch the planner agent and adopt the plan branch it pushed.
 
     The planner container (the same one 'holon plan' launches) authors plans/P-*.md, appends
@@ -2832,7 +2832,7 @@ def _resumable_partial_branch(repo_dir: str, branches: set[str]) -> str | None:
     return None
 
 
-def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> StageResult:
+def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> StageResult:  # noqa: C901, PLR0911, PLR0912, PLR0915
     """Execute Stage 3: dispatch the executor agent, adopt its execution branch and apply the empty-diff guard.
 
     The executor container (the same one 'holon execute' launches) implements the plan, appends
@@ -3191,7 +3191,7 @@ def resolve_ci_registration_timeout(explicit: float | None = None, environ: Any 
     return value if value >= 0 else CI_REGISTRATION_TIMEOUT_SECONDS
 
 
-def _wait_for_ci_registration(
+def _wait_for_ci_registration(  # noqa: PLR0913
     context: FlowContext,
     repo_dir: str,
     review_target: str,
@@ -3222,7 +3222,7 @@ def _wait_for_ci_registration(
         sleep(max(0.0, min(poll_interval, remaining)))
 
 
-def _wait_for_pending_ci(
+def _wait_for_pending_ci(  # noqa: PLR0913
     context: FlowContext,
     repo_dir: str,
     review_target: str,
@@ -3396,7 +3396,7 @@ def _reviewer_finding_ids(result: ReviewerResult, iteration: int) -> list[str]:
     return [f"FIND-R{result.index}-{iteration:03d}-{n:02d}" for n in range(1, len(result.findings) + 1)]
 
 
-def _review_row(
+def _review_row(  # noqa: PLR0913
     prefix: str,
     review_target: str,
     iteration: int,
@@ -3482,7 +3482,7 @@ def _record_reviewer_rows(
             )
 
 
-def _record_infrastructure_findings(
+def _record_infrastructure_findings(  # noqa: PLR0913
     context: FlowContext, exec_file: str, review_target: str, iteration: int, finding_ids: list[str], note: str
 ) -> None:
     """Append one ACT-FIND row per mergeability or CI finding (``FIND-DIRTY``, ``FIND-REF``, ``FIND-CI``)."""
@@ -3529,7 +3529,7 @@ def _review_base_ref(repo_dir: str, target: ReviewTarget, target_branch: str) ->
     return _resolve_branch_ref(repo_dir, base, prefer_remote=True) or base
 
 
-def _ensemble_iteration(
+def _ensemble_iteration(  # noqa: PLR0913
     context: FlowContext,
     target: ReviewTarget,
     target_branch: str,
@@ -3594,7 +3594,7 @@ def _loop_status(
     return "rejected"
 
 
-def run_review_loop(
+def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     context: FlowContext,
     target: str | None = None,
     max_iterations: int = 25,
@@ -4160,7 +4160,7 @@ def _checkout_execution_branch(context: FlowContext) -> str | None:
     return redact_agent_secrets(stderr) or f"exit code {co_res.returncode}"
 
 
-def run_review_stage(context: FlowContext) -> StageResult:
+def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0912, PLR0915
     """Execute Stage 4: PR Review Loop.
 
     Evaluates diffs, test logs, and safety invariants. Enforces Bean 0034 (Human-Only PR Merging):
@@ -4556,7 +4556,7 @@ def _commit_stage5_reconciliation(context: FlowContext, repo_dir: str) -> None:
         context.log(msg)
 
 
-def run_calibrate_stage(context: FlowContext) -> StageResult:
+def run_calibrate_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0912, PLR0915
     """Execute Stage 5: Post-Execution Calibration (Bean 0038).
 
     Runs post-execution calibration analysis on the execution branch and creates
@@ -4840,7 +4840,7 @@ class PipelineEngine:
         """Lifecycle hook invoked before executing a stage."""
         self.context.log(f"--> [Flow Engine] Entering stage: {stage.value.upper()}")
 
-    def execute_stage(self, stage: FlowStage) -> StageResult:
+    def execute_stage(self, stage: FlowStage) -> StageResult:  # noqa: PLR0911
         """Dispatch stage execution to the appropriate handler."""
         if stage == FlowStage.INTENT:
             return run_intent_stage(self.context)
@@ -4967,7 +4967,7 @@ class PipelineEngine:
             self.save_checkpoint()
         return result
 
-    def run(self) -> dict[str, StageResult]:
+    def run(self) -> dict[str, StageResult]:  # noqa: C901, PLR0912, PLR0915
         """Execute the configured pipeline stages sequentially."""
         start_idx = 0
         if self.from_stage:

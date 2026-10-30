@@ -160,7 +160,7 @@ def format_non_imperative_advisory(
     )
 
 
-def evaluate_action_promotion(
+def evaluate_action_promotion(  # noqa: C901, PLR0912, PLR0915
     signature_hash: str,
     index_db: ActionIndexDatabase | None = None,
     enforce_veto: bool = False,

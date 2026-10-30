@@ -386,7 +386,7 @@ def _token_count_ok(value: Any) -> bool:
     return not isinstance(value, bool) and isinstance(value, int) and 0 < value <= MAX_TOKEN_COUNT
 
 
-def validate_models_config(data: Any, source: str = "models.json") -> ModelsConfig:
+def validate_models_config(data: Any, source: str = "models.json") -> ModelsConfig:  # noqa: C901, PLR0912
     """Check the shape of a pi ``models.json`` document and return it typed as :class:`ModelsConfig`.
 
     The single shape rule for every consumer (:func:`host_models_json`, :func:`build_container_config`,
@@ -838,7 +838,7 @@ class GatewayHealth:
 class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
     """Fail on any redirect: the probe may only reach the loopback or allow-listed authority it was given."""
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: PLR0913
         raise urllib.error.HTTPError(req.full_url, code, "redirect refused by health probe", headers, fp)
 
 

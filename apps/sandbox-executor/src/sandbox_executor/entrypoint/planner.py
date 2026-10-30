@@ -171,7 +171,7 @@ def load_metrics_config(repo_dir: str) -> dict:
     return config
 
 
-def _record_plan_budget_failure(
+def _record_plan_budget_failure(  # noqa: PLR0913
     breach: BudgetBreach,
     repo_dir: str,
     plan_id: str,
@@ -261,7 +261,7 @@ def _unique_temp_file(prefix: str, suffix: str) -> str:
     return path
 
 
-def main():
+def main():  # noqa: C901, PLR0912, PLR0915
     if len(sys.argv) < 4:
         print("Usage: planner.py <intent_branch> <agent_name> <model_name>")
         sys.exit(1)

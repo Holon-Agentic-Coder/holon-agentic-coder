@@ -842,3 +842,127 @@ def _any_reviewer_objects(results: Sequence[ReviewerResult]) -> bool:
     return any(
         result.verdict is not ReviewerVerdict.APPROVED or result.counts.total or result.findings for result in results
     )
+
+
+# --- Result Transport Serialisation & Deserialisation -------------------------------------------------------------
+
+
+def serialize_reviewer_result(result: ReviewerResult) -> dict[str, Any]:
+    """Convert ReviewerResult into a JSON-serialisable dictionary for transport."""
+    findings_list = [
+        {"severity": f.severity, "file": f.path, "line": f.line, "summary": f.summary} for f in result.findings
+    ]
+    return {
+        "index": result.index,
+        "agent": result.agent,
+        "model": result.model,
+        "status": str(result.status),
+        "verdict": str(result.verdict) if result.verdict else None,
+        "counts": {
+            "critical": result.counts.critical,
+            "important": result.counts.important,
+            "nit": result.counts.nit,
+        },
+        "findings": findings_list,
+        "report_path": result.report_path,
+        "failure_reason": result.failure_reason,
+    }
+
+
+def _deserialize_finding(item: Mapping[str, Any]) -> ReviewFinding:
+    """Parse and strictly validate one transported finding."""
+    sev = str(item.get("severity", "")).lower()
+    if sev not in ("critical", "important", "nit"):
+        raise ValueError(f"Invalid finding severity: {sev}")
+    file_path = str(item.get("file") or item.get("path") or "").strip()
+    if not file_path:
+        raise ValueError("Finding missing target file path")
+    raw_line = item.get("line")
+    line = int(raw_line) if raw_line is not None and not isinstance(raw_line, bool) else None
+    summary = str(item.get("summary") or "").strip()
+    return ReviewFinding(severity=sev, path=file_path, line=line, summary=summary)
+
+
+def _deserialize_counts(data: Mapping[str, Any]) -> ReviewCounts:
+    """Parse and validate finding counts."""
+
+    def _parse_cnt(val: Any) -> int:
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            return 0
+        return max(0, int(val))
+
+    return ReviewCounts(
+        critical=_parse_cnt(data.get("critical")),
+        important=_parse_cnt(data.get("important")),
+        nit=_parse_cnt(data.get("nit")),
+    )
+
+
+def deserialize_reviewer_result(data: Mapping[str, Any]) -> ReviewerResult:
+    """Reconstruct a verified ReviewerResult from transported data, failing closed on malformed schema."""
+    raw_status = str(data.get("status", "")).upper()
+    try:
+        status = ReviewerStatus(raw_status)
+    except ValueError as exc:
+        raise ValueError(f"Invalid reviewer status: {raw_status}") from exc
+
+    raw_verdict = data.get("verdict")
+    verdict: ReviewerVerdict | None = None
+    if raw_verdict:
+        try:
+            verdict = ReviewerVerdict(str(raw_verdict).upper())
+        except ValueError as exc:
+            raise ValueError(f"Invalid reviewer verdict: {raw_verdict}") from exc
+
+    findings = tuple(_deserialize_finding(f) for f in data.get("findings", []))
+    counts = _deserialize_counts(data.get("counts") or {})
+
+    index = int(data.get("index", 1))
+    agent = str(data.get("agent") or "unknown")
+    model = str(data.get("model") or "unknown")
+    report_path = str(data.get("report_path") or "")
+    failure_reason = str(data.get("failure_reason") or "") or None
+
+    if status is ReviewerStatus.COMPLETED:
+        if verdict is None:
+            raise ValueError("Completed reviewer result missing verdict")
+        parsed = ParsedTrailer(verdict=verdict, counts=counts, findings=findings)
+        return ReviewerResult.completed(index, agent, model, report_path, "", parsed)
+
+    return ReviewerResult.failed(index, agent, model, report_path, failure_reason or "unknown failure")
+
+
+def serialize_review_outcome(
+    reviewers: Sequence[ReviewerResult],
+    verdict: ConsensusVerdict | None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """Serialise ensemble results and consensus verdict for container-to-host transport."""
+    return {
+        "ensemble_verdict": str(verdict) if verdict else None,
+        "reviewers": [serialize_reviewer_result(r) for r in reviewers],
+        "error": error,
+    }
+
+
+def deserialize_review_outcome(
+    data: Mapping[str, Any],
+) -> tuple[list[ReviewerResult], ConsensusVerdict | None, str | None]:
+    """Deserialise review outcome from container transport, validating types and structure."""
+    error = data.get("error")
+    raw_verdict = data.get("ensemble_verdict")
+    verdict: ConsensusVerdict | None = None
+    if raw_verdict:
+        try:
+            verdict = ConsensusVerdict(str(raw_verdict).upper())
+        except ValueError:
+            verdict = ConsensusVerdict.FAILED
+
+    reviewers: list[ReviewerResult] = []
+    for item in data.get("reviewers", []):
+        try:
+            reviewers.append(deserialize_reviewer_result(item))
+        except (ValueError, TypeError, KeyError) as exc:
+            return [], ConsensusVerdict.FAILED, f"Malformed reviewer result in transport: {exc}"
+
+    return reviewers, verdict, str(error) if error else None

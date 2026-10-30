@@ -205,7 +205,8 @@ The review loop fails closed:
   (default `DEFAULT_ENSEMBLE_SIZE`, 3) one after another through `run_reviewer(...)` and returns one `ReviewerResult`
   per reviewer. `decide_consensus(results, configured_size, mergeable, ci_green)` returns `APPROVED`,
   `CHANGES_REQUESTED` or `FAILED`. `parse_review_trailer(text)` and `render_review_trailer(parsed)` read and write the
-  trailer; `build_reviewer_prompt(template_text, request, report_rel)` fills
+  trailer; `serialize_review_outcome(reviewers, consensus_verdict)` and `deserialize_review_outcome(data)` transport
+  verified outcomes across the container boundary; `build_reviewer_prompt(template_text, request, report_rel)` fills
   `holon-config/prompts/review_loop.template.md`.
 - **Reviewer turns.** Each reviewer runs in a fresh scratch directory `.holon/review/iter-<n>/reviewer-<i>/`
   (git-ignored) under the same turn supervision as the planner (`supervise_authoring_turn`), within one shared

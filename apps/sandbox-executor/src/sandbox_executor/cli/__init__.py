@@ -131,11 +131,15 @@ PROXY_CONNECT_TIMEOUT_SECONDS = 0.5
 _TRUTHY_ENV_VALUES = ("1", "true", "yes", "on")
 _EXPLICIT_OPT_OUT_VALUES = {"0", "false", "no", "off"}
 
-_TOKEN_REDUCE_HELP = (
-    "Cut agent token usage by routing sandbox egress through a locally-owned mitmproxy sidecar "
-    "(context deduplication, local caching, and provider prompt cache optimisation). "
-    "Requires 'docker' and 'openssl' and performs LOCAL TLS INTERCEPTION using an auto-generated "
-    "Holon Root CA. All wire transactions and credentials are sanitised prior to logging."
+from sandbox_executor.cli.options import (  # noqa: E402
+    _AGENT_HELP,
+    _MODEL_HELP,
+    _SKIP_PREFLIGHT_HELP,
+    _TOKEN_REDUCE_HELP,
+    add_preflight_option,
+    add_repo_dir_option,
+    add_runner_options,
+    add_token_reduction_options,
 )
 
 
@@ -156,14 +160,6 @@ BLOCKED_METADATA_HOSTS: list[str] = [
     "instance-data",
 ]
 SINKHOLE_IP: str = "127.0.0.1"
-_AGENT_HELP = (
-    "Agent runner to execute (e.g. antigravity-agent, pi-agent, claude-agent, codex-agent). "
-    "Default: HOLON_AGENT, then the detected harness agent, then antigravity-agent."
-)
-_MODEL_HELP = "Model name to pass to agent. Default: HOLON_MODEL, then the runner's default model."
-_SKIP_PREFLIGHT_HELP = (
-    "Skip the pre-flight readiness probe (one minimal real model call). HOLON_SKIP_PREFLIGHT=1 does the same."
-)
 
 
 def build_network_isolation_args(
@@ -1904,52 +1900,18 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     # Subcommand: plan
     plan_parser = subparsers.add_parser("plan", help="Run Plan Generator to create a detailed markdown plan branch.")
     plan_parser.add_argument("intent_branch", help="Target intent branch name (e.g. I-1784983150-build-execution/_)")
-    plan_parser.add_argument("--agent", default=None, help=_AGENT_HELP)
-    plan_parser.add_argument("--model", default=None, help=_MODEL_HELP)
-    plan_parser.add_argument("--skip-preflight", action="store_true", help=_SKIP_PREFLIGHT_HELP)
-    plan_parser.add_argument(
-        "--token-reduce",
-        action="store_true",
-        help=_TOKEN_REDUCE_HELP,
-    )
-    plan_parser.add_argument(
-        "--mitm-web",
-        action="store_true",
-        help=(
-            "Launch mitmweb dashboard on port 8081 (or HOLON_MITM_WEB_PORT) for real-time traffic inspection. "
-            "For shared staging environments, pass HOLON_MITM_WEB_PASSWORD to restrict access."
-        ),
-    )
-    plan_parser.add_argument(
-        "--repo-dir",
-        default=None,
-        help="Target repository directory path (default: current directory).",
-    )
+    add_runner_options(plan_parser)
+    add_preflight_option(plan_parser)
+    add_token_reduction_options(plan_parser)
+    add_repo_dir_option(plan_parser)
 
     # Subcommand: execute
     exec_parser = subparsers.add_parser("execute", help="Run Sandbox Executor to execute code changes for a plan.")
     exec_parser.add_argument("plan_branch", help="Target plan branch name")
-    exec_parser.add_argument("--agent", default=None, help=_AGENT_HELP)
-    exec_parser.add_argument("--model", default=None, help=_MODEL_HELP)
-    exec_parser.add_argument("--skip-preflight", action="store_true", help=_SKIP_PREFLIGHT_HELP)
-    exec_parser.add_argument(
-        "--token-reduce",
-        action="store_true",
-        help=_TOKEN_REDUCE_HELP,
-    )
-    exec_parser.add_argument(
-        "--mitm-web",
-        action="store_true",
-        help=(
-            "Launch mitmweb dashboard on port 8081 (or HOLON_MITM_WEB_PORT) for real-time traffic inspection. "
-            "For shared staging environments, pass HOLON_MITM_WEB_PASSWORD to restrict access."
-        ),
-    )
-    exec_parser.add_argument(
-        "--repo-dir",
-        default=None,
-        help="Target repository directory path (default: current directory).",
-    )
+    add_runner_options(exec_parser)
+    add_preflight_option(exec_parser)
+    add_token_reduction_options(exec_parser)
+    add_repo_dir_option(exec_parser)
 
     # Subcommand: init
     init_parser = subparsers.add_parser(

@@ -35,6 +35,12 @@ command module without changing behavior or weakening any test.
    `sandbox_executor/cli/__init__.py`. Verified identical `--help` output diff and verified all 395 CLI tests and 502
    affected tests pass.
 
+3. **Step 3 (Extract shared option groups into cli/options.py): done.** Created `cli/options.py` with typed, docstringed
+   helpers (`add_repo_dir_option`, `add_runner_options`, `add_preflight_option`, `add_token_reduction_options`) and
+   moved help-text constants (`_TOKEN_REDUCE_HELP`, `_AGENT_HELP`, `_MODEL_HELP`, `_SKIP_PREFLIGHT_HELP`) into it.
+   Re-exported all constants and helpers in `cli/__init__.py`. Verified identical `--help` output for root and modified
+   subparsers against baseline. All 395 CLI tests and repo checks pass cleanly.
+
 ## Tests Run
 
 | command                                                                                                           | result                        |

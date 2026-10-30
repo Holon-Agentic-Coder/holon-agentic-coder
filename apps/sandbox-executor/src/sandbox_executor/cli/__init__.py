@@ -1376,6 +1376,7 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
     token_reduce: bool = False,
     mitm_web: bool = False,
     repo_dir: str | None = None,
+    result_file: str | None = None,
 ) -> int:
     """Constructs docker run command with auto-discovered credentials and executes it."""
     if not shutil.which("docker"):
@@ -1546,6 +1547,11 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
                 print(f"Error: Intent file '{intent_file}' does not exist.", file=sys.stderr)
                 return 1
             docker_cmd.extend(["-v", f"{abs_intent}:/tmp/intent.json"])
+
+        # Result file mount for role containers (e.g. review-loop result transport)
+        if result_file:
+            abs_result = os.path.abspath(result_file)
+            docker_cmd.extend(["-v", f"{abs_result}:/tmp/review_result.json"])
 
         # Auto-detect Session Mounts
         session_mounts = get_agent_session_mounts(agent_id)
@@ -1762,6 +1768,7 @@ def dispatch_role_agent(  # noqa: PLR0913
     *,
     repo_dir: str | None = None,
     intent_file: str | None = None,
+    result_file: str | None = None,
     token_reduce: bool = False,
     mitm_web: bool = False,
 ) -> int:
@@ -1778,6 +1785,7 @@ def dispatch_role_agent(  # noqa: PLR0913
         positional_args: Container arguments (e.g. [plan_branch, runner, model] for the executor).
         repo_dir: Optional target repository directory used to resolve the origin URL.
         intent_file: Intent payload path, mandatory for the intent creator.
+        result_file: Structured outcome payload path for container-to-host result transport.
         token_reduce: Whether to route container traffic through the token reduction proxy.
         mitm_web: Whether to start the proxy with the mitmweb interface.
 
@@ -1795,6 +1803,8 @@ def dispatch_role_agent(  # noqa: PLR0913
         kwargs["mitm_web"] = True
     if repo_dir:
         kwargs["repo_dir"] = repo_dir
+    if result_file:
+        kwargs["result_file"] = result_file
     image_name = resolve_role_image(role, kwargs["agent_id"])
     return run_docker_container(role, image_name, list(positional_args), **kwargs)
 
@@ -1820,8 +1830,8 @@ def resolve_runner_and_model(agent: str | None, model: str | None) -> tuple[Reso
 
 
 # Resumption points from which a flow still reaches a stage that needs the agent runner: plan and execute, and review,
-# whose loop needs the runner for its reviewer turns (on a host, Stage 4 refuses them until routing into the
-# review-loop container lands). A flow resumed at review must preflight the runner too; only calibration (git and
+# whose loop needs the runner for its reviewer turns (Stage 4 dispatches reviewer turns through _dispatch_role into
+# the review-loop role container). A flow resumed at review must preflight the runner too; only calibration (git and
 # local checks) has nothing for the probe to protect.
 _AGENT_FLOW_STAGES = tuple(s.value for s in FlowStage if s not in (FlowStage.CALIBRATE, FlowStage.COMPLETED))
 

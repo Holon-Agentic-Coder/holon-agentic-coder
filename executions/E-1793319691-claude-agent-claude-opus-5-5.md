@@ -26,3 +26,8 @@ provenance, review-decided splits, plan decides in practice, current-limitation 
   (as used in `docs/core_concepts.md` and `docs/examples.md`).
 - Excluded files: `README.md`, `docs/git_flow.md`, `docs/examples.md`, `docs/core_concepts.md`,
   `docs/ledger_schema.md`. Stage 5 calibration-formatting text is off-limits in every file.
+
+### Step 2: `docs/agent_design.md` Human Review Boundary (done)
+
+- Rewrote the second half of the **Human Review Boundary** bullet with R1 and R2 and added the R7 pointer to
+  `git_flow.md` Stage 3. First sentence and line 116 left unchanged.

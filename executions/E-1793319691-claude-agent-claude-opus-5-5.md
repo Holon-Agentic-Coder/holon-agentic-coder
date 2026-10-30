@@ -62,3 +62,11 @@ provenance, review-decided splits, plan decides in practice, current-limitation 
   only human stop in the flow)".
 - Diff checked: every governance, estimator, routing and core-invariant human-approval line is unchanged. Budget
   inheritance "parent" lines and the review-package `"parent_branch": "main"` sample (correct for a root) left.
+
+### Step 6: `docs/planner/planning_architecture_specification.md` decomposition bullets (done)
+
+- §3 bottleneck bullet: the child is "nested under, cut from and merged automatically into the plan branch that listed
+  it" (R1, R2).
+- §4 sub-intent list bullet: child is cut from and targets the deciding plan branch (its `deciding_branch`, R4), R6
+  half-sentence, R7 pointer via `../git_flow.md`. No other merge-target or child-PR review text in §4.
+- `holon-config/prompts/planner.template.md` deliberately not touched (out of scope).

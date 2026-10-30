@@ -119,19 +119,19 @@ def _run_local_review(args: argparse.Namespace, effective_token_reduce: bool) ->
 
 
 def _build_container_review_args(args: argparse.Namespace) -> list[str]:
-    container_args = [args.target]
-    if getattr(args, "auto_pr", True) is False:
+    container_args = [
+        args.target,
+        args.agent,
+        args.model,
+        f"--max-iterations={args.max_iterations}",
+        f"--ensemble-size={args.ensemble_size}",
+    ]
+    if not getattr(args, "auto_pr", True):
         container_args.append("--no-auto-pr")
-    if getattr(args, "max_iterations", None) is not None:
-        container_args.extend(["--max-iterations", str(args.max_iterations)])
-    if getattr(args, "ensemble_size", None) is not None:
-        container_args.extend(["--ensemble-size", str(args.ensemble_size)])
     if getattr(args, "skip_push", False):
         container_args.append("--skip-push")
-    if getattr(args, "agent", None):
-        container_args.extend(["--agent", args.agent])
-    if getattr(args, "model", None):
-        container_args.extend(["--model", args.model])
+    if getattr(args, "json", False):
+        container_args.append("--json")
     return container_args
 
 

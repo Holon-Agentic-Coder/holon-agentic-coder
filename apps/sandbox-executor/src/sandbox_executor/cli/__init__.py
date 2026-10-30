@@ -1963,4 +1963,3 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(ret)
         return
     sys.exit(0)
-

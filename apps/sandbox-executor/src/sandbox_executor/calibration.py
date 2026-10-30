@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import time
 from collections.abc import Callable
@@ -21,7 +22,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.agent_defaults import LEGACY_DEFAULT_AGENT, LEGACY_DEFAULT_MODEL
-from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.git import EMPTY_DIFF_EXCLUDES, run_git
 from sandbox_executor.knowledge.records import CredentialRedactor
 from sandbox_executor.ledger import generate_action_id, try_append_action_record
@@ -30,6 +30,16 @@ logger = logging.getLogger(__name__)
 
 LEDGER_EXECUTIONS_REL = "holon-knowledge/ledger/executions.jsonl"
 
+# Prettier invocation for the calibration report. It mirrors ``lint-docs`` in the root pyproject.toml and the
+# ``lint-md`` Makefile target (``npx prettier``, unpinned, repository .prettierrc.json found from cwd). ``--yes`` only
+# suppresses npx's install prompt and does not change version resolution. The earlier pinned prettier@3.8.4 wrapped
+# prose around inline maths differently from the Prettier that CI resolves, so every calibrated head went red.
+LINT_DOCS_PRETTIER: tuple[str, ...] = ("npx", "--yes", "prettier")
+PRETTIER_TIMEOUT_SECONDS = 120
+PRETTIER_OUTPUT_LINES = 5
+# Bounded write/check passes: Markdown output is not always a fixpoint after a single Prettier write.
+PRETTIER_PASSES = 3
+
 
 class CalibrationCommitError(RuntimeError):
     """Raised when git rejects the calibration report commit (for example a hook or signing failure).
@@ -37,6 +47,15 @@ class CalibrationCommitError(RuntimeError):
     The message is credential-redacted. Callers treat it as a calibration failure: the report
     and the ACT-CAL row stay uncommitted and the ``/calibrated`` branch is neither pushed nor
     fast-forwarded.
+    """
+
+
+class CalibrationFormatError(CalibrationCommitError):
+    """Raised when the calibration report does not pass the repository Prettier check.
+
+    Subclassing CalibrationCommitError keeps callers that treat that error as "nothing committed,
+    nothing pushed" correct: the guard runs before the ACT-CAL ledger append, ``git add`` and
+    ``git commit``. The message is credential-redacted.
     """
 
 
@@ -1363,6 +1382,128 @@ def record_calibration_action(
     )
 
 
+def _run_prettier(mode: str, report_rel: str, repo_dir: str) -> subprocess.CompletedProcess[str]:
+    """Run the lint-docs Prettier invocation on one report (the single seam tests patch).
+
+    Args:
+        mode: Prettier mode flag, ``--write`` or ``--check``.
+        report_rel: Report path relative to ``repo_dir``.
+        repo_dir: Repository root; Prettier finds .prettierrc.json from here.
+
+    Returns:
+        subprocess.CompletedProcess[str]: The finished Prettier process with captured output.
+
+    Raises:
+        OSError: If npx cannot be started.
+        subprocess.TimeoutExpired: If Prettier runs longer than PRETTIER_TIMEOUT_SECONDS.
+
+    Side Effects:
+        ``--write`` rewrites the report in place.
+    """
+    return subprocess.run(
+        [*LINT_DOCS_PRETTIER, mode, report_rel],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+        timeout=PRETTIER_TIMEOUT_SECONDS,
+        check=False,
+    )
+
+
+def _summarise(label: str, proc: subprocess.CompletedProcess[str]) -> str:
+    """Summarise a failed Prettier pass as its exit code and the first lines of its output.
+
+    Args:
+        label: The pass that failed (``write`` or ``check``).
+        proc: The completed Prettier process.
+
+    Returns:
+        str: For example ``check exited 1: [warn] plans/P-1_calibration.md``.
+    """
+    output = (proc.stdout + proc.stderr).strip().splitlines()[:PRETTIER_OUTPUT_LINES]
+    return f"{label} exited {proc.returncode}: " + " | ".join(output)
+
+
+def _converge_report(report_rel: str, repo_dir: str) -> str | None:
+    """Run up to PRETTIER_PASSES write/check passes, stopping at the first passing check or failed write.
+
+    Args:
+        report_rel: Report path relative to ``repo_dir``.
+        repo_dir: Repository root used as Prettier's working directory.
+
+    Returns:
+        str | None: Why the last pass failed, or None once the check passes.
+
+    Raises:
+        OSError: If npx cannot be started.
+        subprocess.TimeoutExpired: If a Prettier pass times out.
+
+    Side Effects:
+        Rewrites the report in place through Prettier's write passes.
+    """
+    reason = None
+    for _ in range(PRETTIER_PASSES):
+        write = _run_prettier("--write", report_rel, repo_dir)
+        if write.returncode != 0:
+            return _summarise("write", write)
+        check = _run_prettier("--check", report_rel, repo_dir)
+        if check.returncode == 0:
+            return None
+        reason = _summarise("check", check)
+    return reason
+
+
+def _prettier_failure(report_rel: str, repo_dir: str) -> str | None:
+    """Format the report then check it, returning why the check did not pass (None when it passed).
+
+    Args:
+        report_rel: Report path relative to ``repo_dir``.
+        repo_dir: Repository root used as Prettier's working directory.
+
+    Returns:
+        str | None: A short reason when npx is missing, Prettier cannot run, a write fails or the
+            check still fails after PRETTIER_PASSES passes; None when the report passes the check.
+
+    Side Effects:
+        Rewrites the report in place through Prettier's write passes.
+    """
+    if shutil.which("npx") is None:
+        return "npx is not on PATH"
+    try:
+        return _converge_report(report_rel, repo_dir)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"Prettier could not run: {e}"
+
+
+def format_calibration_report(report_rel: str, repo_dir: str) -> None:
+    """Format the calibration report exactly as ``uv run task lint-docs`` checks it, failing closed.
+
+    Runs up to PRETTIER_PASSES rounds of ``npx --yes prettier --write`` then ``--check`` with ``cwd=repo_dir``,
+    so the repository .prettierrc.json applies and Prettier resolves exactly as it does for lint-docs and the CI
+    lint-md check (unpinned npx; a host with a stale npx cache can still resolve an older version than CI).
+
+    Args:
+        report_rel: Report path relative to ``repo_dir`` (for example ``plans/P-1_calibration.md``).
+        repo_dir: Repository root.
+
+    Raises:
+        CalibrationFormatError: If npx is missing, Prettier cannot run or times out, or the check
+            does not pass. The redacted message names the report and the command to reproduce.
+
+    Side Effects:
+        Rewrites the report in place; logs the outcome.
+    """
+    reason = _prettier_failure(report_rel, repo_dir)
+    if reason is None:
+        logger.info("Calibration report %s passes the repository Prettier check", report_rel)
+        return
+    detail = CredentialRedactor.redact_text(reason)
+    raise CalibrationFormatError(
+        f"Calibration report {report_rel} failed the repository Prettier check ({detail}); "
+        f"reproduce with: npx prettier --check {report_rel}"
+    )
+
+
 def run_calibrate(
     execution_branch: str,
     repo_dir: str = ".",
@@ -1389,6 +1530,9 @@ def run_calibrate(
         CalibrationCommitError: If git rejects the calibration report commit (hook, signing or
             other non-"nothing to commit" failure). The report and the ACT-CAL row are left
             uncommitted in the working tree.
+        CalibrationFormatError: If the report fails the repository Prettier check (or the check
+            cannot run) when ``skip_commit`` is False. Raised before the ACT-CAL ledger append and
+            any ``git add`` or ``git commit``, so nothing is recorded, committed or pushed.
     """
     report = generate_calibration(execution_branch, repo_dir=repo_dir)
     report.committed = not skip_commit
@@ -1467,11 +1611,14 @@ def run_calibrate(
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report.markdown_content)
 
-    # Format calibration report before git commit
-    try:
-        converge_prettier([report_rel], repo_dir=repo_dir)
-    except Exception as e:
-        logger.warning("Failed to converge prettier on %s: %s", report_rel, e)
+    # Format and check the report after its final write, before the ACT-CAL append, git add or git commit
+    if skip_commit:
+        try:
+            format_calibration_report(report_rel, repo_dir)
+        except CalibrationFormatError as e:
+            (log_fn or logger.warning)(str(e))
+    else:
+        format_calibration_report(report_rel, repo_dir)
 
     # 3. Record the Stage 5 ACT-CAL action and commit it with the report on the calibrated branch
     commit_paths = [report_rel]

@@ -405,7 +405,7 @@ class TestLauncherIntegration(unittest.TestCase):
         os.mkdir(self.default_agent_dir)
         os.mkdir(self.generated_agent_dir)
 
-    def _run(self, env, mounts=None, tr_envs=None, mkdtemp_dir=None, agent_id="pi", token_reduce=False):
+    def _run(self, env, mounts=None, tr_envs=None, mkdtemp_dir=None, agent_id="pi", token_reduce=False):  # noqa: PLR0913
         # Synthesised model entries declare no contextWindow; the envelope needs one (Bean 0140).
         merged_env = {
             "GITHUB_TOKEN": "mock-token",

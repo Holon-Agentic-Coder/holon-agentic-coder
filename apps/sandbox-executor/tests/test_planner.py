@@ -214,7 +214,7 @@ class _PlannerHarness:
     ``agent_turns`` is a list of callables ``(cmd, watch_path) -> TurnResult``; each supervised turn pops the next one.
     """
 
-    def __init__(self, testcase, agent_turns, model="gemini", env=None, build_cmd=None, intent=None, template=None):
+    def __init__(self, testcase, agent_turns, model="gemini", env=None, build_cmd=None, intent=None, template=None):  # noqa: PLR0913
         self.testcase = testcase
         self.intent = INTENT if intent is None else intent
         self.template = template or "Template {intent_json} {plan_id} {safe_model}"

@@ -41,3 +41,21 @@ lines, implementing a ratchet test in `apps/sandbox-executor/tests/test_complexi
    10, `PLR0911` max 6 returns, `PLR0912` max 12 branches, `PLR0913` max 5 args, `PLR0915` max 50 statements),
    explaining the architectural rationale for inline `# noqa` baselines over blanket `per-file-ignores`, and specifying
    the ratchet ratcheting policy. Verified clean formatting with Prettier.
+5. **Step 5 (Full test suite verification and repository hygiene checks): done.** Verified repository hygiene with
+   `uv run task check` (lock check, git diff uv.lock, ruff check across repo, ruff format check, and prettier markdown
+   check all passing cleanly). Ran targeted complexity test suite
+   `uv run pytest apps/sandbox-executor/tests/test_complexity_gate.py` (4 passed in 0.02s). Ran the full unit test suite
+   `uv run task test` (`pytest -n auto --dist worksteal -m "not integration_test and not stress"`) achieving 2854 passed
+   with zero failures in 30.21s.
+
+## Tests Run
+
+| command                                                                                         | result                                                                                   |
+| ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `uv run pytest apps/sandbox-executor/tests/test_complexity_gate.py`                             | 4 passed, 0 failed in 0.02s                                                              |
+| `uv run pytest -n auto --dist worksteal apps/sandbox-executor/tests/test_complexity_gate.py`    | 4 passed, 0 failed in 1.76s                                                              |
+| `uv run task test` (`pytest -n auto --dist worksteal -m "not integration_test and not stress"`) | 2854 passed, 0 failed, 8 warnings in 30.21s                                              |
+| `uv run ruff check .`                                                                           | Passed with 0 violations across repository                                               |
+| `uv run ruff format --check .`                                                                  | Passed, 88 files cleanly formatted                                                       |
+| `npx prettier --check "**/*.md"`                                                                | Passed, all markdown files match Prettier code style                                     |
+| `uv run task check`                                                                             | Passed, end-to-end lint, lock consistency, formatting, and markdown verification checked |

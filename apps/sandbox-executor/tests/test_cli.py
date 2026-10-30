@@ -1570,7 +1570,7 @@ _URL_ENV_NAMES = ["HOLON_PROXY_URL", "HOLON_LOCAL_BASE_URL", "HOLON_MIRROR_ENDPO
     ("form", "separators"), [pytest.param(form, seps, id=case_id) for case_id, form, seps in url_userinfo_cases()]
 )
 @pytest.mark.parametrize("name", _URL_ENV_NAMES)
-def test_url_userinfo_travels_only_in_the_env_file_in_every_shape(
+def test_url_userinfo_travels_only_in_the_env_file_in_every_shape(  # noqa: PLR0913
     leak_env, monkeypatch, capsys, name, form, separators
 ):
     """Any scheme / `//` / path / password shape of a forwarded HOLON_* URL keeps its userinfo off the docker argv."""

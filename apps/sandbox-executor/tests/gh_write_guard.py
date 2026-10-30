@@ -62,7 +62,7 @@ def _describe(argv: Sequence[str]) -> str:
     return text if len(text) <= 160 else f"{text[:157]}..."
 
 
-def gh_write_command(args: Any, shell: bool = False) -> str | None:
+def gh_write_command(args: Any, shell: bool = False) -> str | None:  # noqa: C901
     """Return a description of ``args`` when it is a ``gh`` write command, otherwise None."""
     try:
         argv = _argv(args, shell)

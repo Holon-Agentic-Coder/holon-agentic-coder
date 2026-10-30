@@ -64,7 +64,7 @@ def _wrong_values(credential: str) -> list:
     return [None, True, 0, -1, 1.5, 10**30, credential, "", [], [credential], {}, {"k": credential}]
 
 
-def _documents(credential: str) -> Iterator[tuple[str, bytes, bool]]:
+def _documents(credential: str) -> Iterator[tuple[str, bytes, bool]]:  # noqa: C901, PLR0912
     """``(case id, file bytes, must be rejected)``; ``False`` means the document may legitimately be accepted."""
 
     def dump(doc) -> bytes:

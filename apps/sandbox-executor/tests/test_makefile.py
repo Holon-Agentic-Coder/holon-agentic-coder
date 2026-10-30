@@ -253,7 +253,7 @@ def _create_mock_toolbelt(bin_dir: pathlib.Path) -> None:
     )
 
 
-def _setup_mock_env(
+def _setup_mock_env(  # noqa: PLR0913
     tmp_path: pathlib.Path,
     *,
     mock_gh: typing.Callable[[pathlib.Path], None] | None = None,

@@ -1298,7 +1298,7 @@ class TestReviewMergeabilityGuards:
             patch("sandbox_executor.flow.run_git") as mock_git,
         ):
 
-            def git_side_effect(args, **kwargs):
+            def git_side_effect(args, **kwargs):  # noqa: PLR0911
                 cmd = args[0]
                 if cmd == "rev-parse":
                     ref = args[-1]
@@ -2286,7 +2286,7 @@ class FakeRoleAgents:
     model a silent planner or an executor that produces no effective diff.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         root: Path,
         origin: Path,
@@ -4563,7 +4563,7 @@ class TestEntropyBudgetHandoffInFlow:
         ids=["normal", "over-budget", "decomposed"],
     )
     @pytest.mark.parametrize("precheck", [True, False], ids=["precheck", "container-row"])
-    def test_stage3_never_halts_for_a_human(self, flow_repos, tmp_path, entropy, extra, expected_status, precheck):
+    def test_stage3_never_halts_for_a_human(self, flow_repos, tmp_path, entropy, extra, expected_status, precheck):  # noqa: PLR0913
         host, origin = flow_repos
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(entropy, extra), (2.0, "")])
         ctx = _budget_context(host, agents, 5.0)

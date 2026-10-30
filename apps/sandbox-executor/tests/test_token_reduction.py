@@ -1515,7 +1515,7 @@ def test_detect_provider_schemeless_urls():
     assert interceptor.detect_provider("daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist") == "unknown"
 
 
-def test_mitm_addon_sse_telemetry(tmp_path, monkeypatch, caplog):
+def test_mitm_addon_sse_telemetry(tmp_path, monkeypatch, caplog):  # noqa: C901
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, time
 
     addon = MitmproxyAddon()
@@ -1602,7 +1602,7 @@ def test_mitm_addon_sse_telemetry(tmp_path, monkeypatch, caplog):
     assert "Total: 3000.0ms" in telemetry_logs[0]
 
 
-def test_mitm_addon_openai_sse_telemetry(tmp_path, monkeypatch, caplog):
+def test_mitm_addon_openai_sse_telemetry(tmp_path, monkeypatch, caplog):  # noqa: C901
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, time
 
     addon = MitmproxyAddon()
@@ -1685,7 +1685,7 @@ def test_mitm_addon_openai_sse_telemetry(tmp_path, monkeypatch, caplog):
     assert "Total: 6000.0ms" in telemetry_logs[0]
 
 
-def test_mitm_addon_openai_sse_telemetry_estimation_fallback(tmp_path, monkeypatch, caplog):
+def test_mitm_addon_openai_sse_telemetry_estimation_fallback(tmp_path, monkeypatch, caplog):  # noqa: C901
     from sandbox_executor.token_reduction.mitm_addon import MitmproxyAddon, time
 
     addon = MitmproxyAddon()
@@ -3680,7 +3680,7 @@ def test_detect_holon_coherence_digit_head_password_warning_withholds_value(monk
 
 @pytest.mark.parametrize("digits", [6, 12])
 @pytest.mark.parametrize("form", _DIGIT_HEAD_PROXY_FORMS)
-def test_attach_external_proxy_digit_head_password_messages_withhold_value(
+def test_attach_external_proxy_digit_head_password_messages_withhold_value(  # noqa: PLR0913
     host_paths, monkeypatch, caplog, capsys, form, digits
 ):
     """The token-reduce warning and error for an unparseable proxy URL never echo the value (R15-N1)."""

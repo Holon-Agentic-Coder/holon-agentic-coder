@@ -652,7 +652,7 @@ class TestExecutor(unittest.TestCase):
             self.assertTrue(any(cmd[:4] == ["git", "fetch", "--no-tags", "origin"] for cmd in called_cmds))
             self.assertTrue(any(cmd[:2] == ["git", "reset"] for cmd in called_cmds))
 
-    def _run_over_budget_main(
+    def _run_over_budget_main(  # noqa: PLR0913
         self, sync_result, *, staged=True, has_parent=True, skip_push=True, git_calls=None, stdout=None
     ):
         """Run executor.main() on an over-budget plan whose ledger row is staged; return its exit code and records.
@@ -779,7 +779,7 @@ class TestExecutor(unittest.TestCase):
         self.assertIn(self.NOT_RECORDED_LINE, stderr_lines)
         self.assertEqual([row["status"] for row in rows], ["over_budget"])
 
-    def _run_over_budget_main_against_local_origin(self, *, reject_push):
+    def _run_over_budget_main_against_local_origin(self, *, reject_push):  # noqa: PLR0915
         """Run executor.main() unmocked against a local bare origin holding an over-budget plan branch.
 
         Every git command is real and pushing stays enabled, as under ``holon flow``. Returns the exit code (or the
@@ -1003,7 +1003,7 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.agent_runner.os.path.lexists", return_value=True)
     @patch("sandbox_executor.agent_runner.os.path.ismount", return_value=False)
     @patch("sandbox_executor.agent_runner.os.path.islink", return_value=False)
-    def test_main_raises_runtime_error_on_cleanup_failure(
+    def test_main_raises_runtime_error_on_cleanup_failure(  # noqa: PLR0913
         self,
         mock_islink,
         mock_ismount,
@@ -1227,7 +1227,7 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
     @patch("sandbox_executor.agent_runner.os.path.expanduser")
-    def test_main_keep_workspace_existing_git(
+    def test_main_keep_workspace_existing_git(  # noqa: PLR0913
         self, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd, mock_cleanup, mock_exists
     ):
         mock_get_repo_url.return_value = "/mock/repo"
@@ -1296,7 +1296,7 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.agent_runner.os.path.expanduser")
     @patch("sandbox_executor.agent_runner._clear_dir_contents")
     @patch("sandbox_executor.agent_runner.os.path.ismount", return_value=True)
-    def test_main_mount_point_clears_contents(
+    def test_main_mount_point_clears_contents(  # noqa: PLR0913
         self, mock_ismount, mock_clear_dir_contents, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd
     ):
         mock_get_repo_url.return_value = "/mock/repo"
@@ -3434,7 +3434,7 @@ class TestExecutorPrePushSync(unittest.TestCase):
         # Verify shallow repository check and deepening behaviour via mocked run_cmd
         with patch("sandbox_executor.entrypoint.executor.run_cmd") as mock_run_cmd:
 
-            def side_effect(args, **kwargs):
+            def side_effect(args, **kwargs):  # noqa: PLR0911
                 cmd_str = " ".join(args)
                 if "remote get-url" in cmd_str:
                     return MagicMock(returncode=0, stdout="origin")
@@ -3465,7 +3465,7 @@ class TestExecutorPrePushSync(unittest.TestCase):
         # Verify unmerged status check recognises AU, UA, and DD prefixes
         with patch("sandbox_executor.entrypoint.executor.run_cmd") as mock_run_cmd:
 
-            def side_effect(args, **kwargs):
+            def side_effect(args, **kwargs):  # noqa: PLR0911
                 cmd_str = " ".join(args)
                 if "remote get-url" in cmd_str:
                     return MagicMock(returncode=0, stdout="origin")
@@ -3494,7 +3494,7 @@ class TestExecutorPrePushSync(unittest.TestCase):
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    def test_execution_run_records_action_and_summary_records_with_entry_type(
+    def test_execution_run_records_action_and_summary_records_with_entry_type(  # noqa: PLR0915
         self, mock_get_repo_url, mock_get_runner, mock_run_cmd
     ):
         """Test that execution run with action logging enabled records both action and summary records."""
@@ -3686,7 +3686,7 @@ class TestExecutorIncrementalNotes(unittest.TestCase):
         }
 
     @staticmethod
-    def write_notes(content, returncode=0, stop_reason=None, breach=None, stdout="", stderr=""):
+    def write_notes(content, returncode=0, stop_reason=None, breach=None, stdout="", stderr=""):  # noqa: PLR0913
         def turn(path):
             if content is not None:
                 os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -4524,7 +4524,7 @@ def test_main_plan_decomposition_action_outcome(tmp_path, monkeypatch, plan_md, 
     ],
     ids=["decomposed", "over-budget"],
 )
-def test_main_non_execute_row_summary_action_and_commit(tmp_path, monkeypatch, plan_md, summary, action, commit):
+def test_main_non_execute_row_summary_action_and_commit(tmp_path, monkeypatch, plan_md, summary, action, commit):  # noqa: PLR0913
     monkeypatch.setenv("HOLON_ACTION_LOGGING", "1")
     plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 12.6, "plan_file": "plans/P-123.md"}
     intent_row = {"branch": "I-456", "slug": "parent", "entropy_budget": 5.0}

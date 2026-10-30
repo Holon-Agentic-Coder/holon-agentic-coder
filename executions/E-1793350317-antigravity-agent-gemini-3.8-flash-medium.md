@@ -37,3 +37,8 @@ Stage 4 while preserving host ownership of mergeability verification, CI status 
    temporary result file and verified/deserialised reviewer results into host Stage 4 while preserving host ownership of
    mergeability verification, CI status gating, official review comment posting, and canonical append-only ledger
    logging. Added `skip_post` support to `run_review_loop` and `run_review_loop_cli`.
+4. **Step 4 (Unit and integration verification across seams).** Added unit and integration tests in
+   `apps/sandbox-executor/tests/test_review_dispatch.py` and `apps/sandbox-executor/tests/test_review_loop.py` verifying
+   container dispatch, error propagation, fail-closed handling, result file transport on success and preparation
+   failure, host mergeability/CI gating integrity, and canonical execution ledger logging (`ACT-REV-*` and
+   `ACT-POST-*`). Verified refusal updates in `test_review_loop.py` (73 tests passed, 7 dispatch tests passed).

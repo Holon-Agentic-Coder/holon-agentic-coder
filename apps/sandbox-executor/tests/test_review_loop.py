@@ -169,6 +169,67 @@ class TestReviewLoopEntrypoint:
             data = json.loads(captured.out)
             assert data["consensus"]["approved"] is True
 
+    def test_review_loop_main_writes_result_file(self, tmp_path: Path):
+        (tmp_path / ".git").mkdir()
+        result_file = tmp_path / "result.json"
+        test_args = [
+            "review_loop",
+            "I-100-test",
+            f"--repo-dir={tmp_path}",
+            f"--result-file={result_file}",
+            "--skip-post",
+            "--dry-run",
+        ]
+
+        with (
+            patch.object(sys, "argv", test_args),
+            patch("sandbox_executor.entrypoint.review_loop.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.entrypoint.review_loop.run_review_loop") as mock_loop,
+            _prepared("I-100-test"),
+        ):
+            mock_loop.return_value = {
+                "target": "I-100-test",
+                "consensus": {"approved": True, "iterations": 1},
+                "ensemble_verdict": "APPROVED",
+                "max_iterations": 25,
+            }
+
+            with pytest.raises(SystemExit) as exc_info:
+                review_loop_main()
+
+            assert exc_info.value.code == 0
+            assert result_file.exists()
+            data = json.loads(result_file.read_text())
+            assert data["consensus"]["approved"] is True
+
+    def test_review_loop_main_writes_result_file_on_prep_failure(self, tmp_path: Path):
+        from sandbox_executor.entrypoint.review_loop import ReviewPreparationError
+
+        (tmp_path / ".git").mkdir()
+        result_file = tmp_path / "result.json"
+        test_args = [
+            "review_loop",
+            "I-100-test",
+            f"--repo-dir={tmp_path}",
+            f"--result-file={result_file}",
+        ]
+
+        with (
+            patch.object(sys, "argv", test_args),
+            patch(
+                "sandbox_executor.entrypoint.review_loop._prepare_workspace",
+                side_effect=ReviewPreparationError("fetch", "Preparation failed: remote branch missing"),
+            ),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                review_loop_main()
+
+            assert exc_info.value.code == 1
+            assert result_file.exists()
+            data = json.loads(result_file.read_text())
+            assert "Preparation failed" in data["error"]
+            assert data["ensemble_verdict"] == "FAILED"
+
 
 class TestCLIDispatchReviewLoop:
     """Test CLI dispatch of review-loop (Bean 0118)."""
@@ -1275,31 +1336,57 @@ def test_clean_reviewers_never_approve_without_a_mergeable_pr_and_green_ci(tmp_p
     assert res["total_iterations"] == 1
 
 
-def test_host_run_refuses_before_any_reviewer_turn_row_or_post(tmp_path, monkeypatch):
-    from sandbox_executor.flow import HOST_REVIEW_REFUSAL
+def test_host_run_dispatches_review_loop_container_when_unsandboxed(tmp_path, monkeypatch):
+    from sandbox_executor.flow import run_review_loop
+    from sandbox_executor.review_ensemble import (
+        ConsensusVerdict,
+        ParsedTrailer,
+        ReviewCounts,
+        ReviewerResult,
+        ReviewerVerdict,
+        serialize_review_outcome,
+    )
 
     monkeypatch.delenv("HOLON_IN_SANDBOX", raising=False)
     monkeypatch.delenv("HOLON_ROLE", raising=False)
+
+    def fake_dispatch(role, runner, model, args, **kwargs):
+        assert role == "review-loop"
+        assert "--result-file=/tmp/review_result.json" in args
+        result_file = kwargs.get("result_file")
+        assert result_file is not None
+        p1 = ParsedTrailer(ReviewerVerdict.APPROVED, ReviewCounts(), ())
+        r1 = ReviewerResult.completed(1, "fake-agent", "fake-model", "r1.md", "", p1)
+        r2 = ReviewerResult.completed(2, "fake-agent", "fake-model", "r2.md", "", p1)
+        r3 = ReviewerResult.completed(3, "fake-agent", "fake-model", "r3.md", "", p1)
+        payload = serialize_review_outcome([r1, r2, r3], ConsensusVerdict.APPROVED)
+        with open(result_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        return 0
+
+    ctx = _ensemble_ctx(tmp_path, dispatcher=fake_dispatch)
     ensemble = MagicMock(side_effect=AssertionError("a reviewer turn ran on the host"))
-    with patch("sandbox_executor.review_ensemble.get_runner", side_effect=AssertionError("runner on the host")):
-        res, post, _ = _loop(tmp_path, ensemble)
+    with (
+        _LoopStubs() as stubs,
+        patch("sandbox_executor.flow.run_ensemble", ensemble),
+    ):
+        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=1)
 
-    assert res["consensus"]["status"] == "failed"
-    assert res["consensus"]["approved"] is False
-    assert res["error"] == HOST_REVIEW_REFUSAL
-    assert res["total_iterations"] == 0
+    assert res["consensus"]["status"] == "approved"
+    assert res["consensus"]["approved"] is True
+    assert res["total_iterations"] == 1
     ensemble.assert_not_called()
-    post.assert_not_called()
-    assert not _rows(tmp_path, "ACT-REV")
-    assert not _rows(tmp_path, "ACT-POST")
+    stubs.post.assert_called_once()
+    assert len(_rows(tmp_path, "ACT-REV")) >= 3
+    assert len(_rows(tmp_path, "ACT-POST")) == 1
 
 
-def test_stage4_on_the_host_fails_closed_without_dispatching_or_running_reviewers(tmp_path, monkeypatch):
+def test_stage4_on_the_host_fails_closed_when_container_dispatch_fails(tmp_path, monkeypatch):
     from sandbox_executor.flow import StageStatus, run_review_stage
 
     monkeypatch.delenv("HOLON_IN_SANDBOX", raising=False)
     monkeypatch.delenv("HOLON_ROLE", raising=False)
-    dispatcher = MagicMock(side_effect=AssertionError("no role container is dispatched under the fallback"))
+    dispatcher = MagicMock(return_value=1)
     ensemble = MagicMock(side_effect=AssertionError("a reviewer turn ran on the host"))
     ctx = _ensemble_ctx(tmp_path, plan_branch="I-100-intent/P-200-plan/_", dispatcher=dispatcher)
     with (
@@ -1312,8 +1399,9 @@ def test_stage4_on_the_host_fails_closed_without_dispatching_or_running_reviewer
         result = run_review_stage(ctx)
 
     assert result.status is StageStatus.FAILED
-    assert "Refusing to run reviewer agent turns on the host" in (result.error or "")
-    dispatcher.assert_not_called()
+    assert "Reviewer ensemble container dispatch exited with code 1" in (result.error or "")
+    dispatcher.assert_called_once()
+    assert dispatcher.call_args[0][0] == "review-loop"
     ensemble.assert_not_called()
     stubs.post.assert_not_called()
 

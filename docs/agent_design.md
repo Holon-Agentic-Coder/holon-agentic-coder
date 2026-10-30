@@ -71,8 +71,11 @@ Agents must adhere to the following immutable contracts unless explicitly overri
   planning and execution.
 - **No Core Invariant Modification:** Agents cannot autonomously change core system invariants or safety policies.
 - **Human Review Boundary:** Root intents require human approval before promotion, given by the maintainer's PR merge,
-  the only human step; no stage before it waits for a human. Sub-intents open PRs into their parent intent branch, which
-  the maintainer currently merges too (automatic, evaluation-based sub-intent merging is the target model).
+  the only human step; no stage before it waits for a human. Sub-intents merge only into the branch of their deciding
+  node (in practice the plan branch that listed them; an execution branch when an execution decided the split), and the
+  agent raises and merges each sub-intent's PR automatically, so only the root intent's PR to `main` stops for a human.
+  Until the implementation follows, the current flow still targets the parent intent branch and leaves each sub-intent
+  PR merge to the maintainer (see [Git Flow](git_flow.md) Stage 3 under the flow equivalence guarantee).
 - **Communication via Ledger:** All inter-agent communication and state changes are logged in the ledger; no direct
   agent-to-agent messaging.
 

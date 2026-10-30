@@ -30,14 +30,16 @@ multi-agent system that plans competitively, executes in sandboxes, and improves
 - Multiple plan variants compete as hypotheses.
 - Plans are scored using shared “physics” metrics (P(success), ΔS, EV, Cost, Impact, LearningValue).
 
-#### 4) Strict rebase discipline; parent-only merges
+#### 4) Strict rebase discipline; deciding-node-only merges
 
-- **Sub-intents rebase from parent before and after execution.**
-- **Sub-intents may merge ONLY into their parent intent branch.**
+- **Sub-intents rebase from their deciding node's branch (in practice the plan branch) before and after execution.**
+- **Sub-intents may merge ONLY into that branch** (the plan branch, or the execution branch when an execution decided
+  the split).
 - **No direct merges from sub-intents to `main`.**
-- Human involvement is limited to merging PRs: no stage before a merge waits for a human. The target model reviews only
-  at the **parent intent boundary**; until sub-intent aggregation is automated, the maintainer also merges each
-  sub-intent's PR into its parent intent branch.
+- Below the root no human intervention is needed: the agent raises and merges every sub-intent's PR automatically, and
+  only the root intent's PR to `main` stops for a human. Until the implementation follows, the current flow still
+  targets the parent intent branch and leaves each sub-intent PR merge to the maintainer (see [Git Flow](git_flow.md)
+  Stage 3 under the flow equivalence guarantee).
 
 #### 5) Sandboxed exploration is allowed (including risky)
 
@@ -203,7 +205,9 @@ flowchart TD
   - Initialised with `config_path` and `knowledge_path`.
   - Watches for new work, dispatches planner/executor jobs, enforces git discipline and budgets.
 - **Human Review Boundary**
-  - Where humans approve promotions (typically parent intent → `main`).
+  - Where humans approve promotions (only the root intent's PR to `main`; see
+    [Branch topology and authority boundaries](#branch-topology-and-authority-boundaries) for the current
+    implementation).
 
 ---
 
@@ -333,17 +337,25 @@ Curate:
 
 ### Branch topology and authority boundaries
 
-#### Principle: merges flow up the intent tree
+#### Principle: merges flow up to the deciding node
 
-- Sub-intent branches merge into parent intent branches only.
-- Parent intent branch is the integration surface.
-- Only parent intent branches (or designated promotion branches) can merge into `main`.
+- A sub-intent branch nests under, is cut from and merges into the branch of its deciding node: the intent, plan or
+  execution branch whose stage decided the split (in practice the plan branch; `target_branch` equals
+  `deciding_branch`).
+- Any level (intent, plan, execution, review) may decide a split, but in practice the plan does. A split decided during
+  review may nest under the reviewed plan or execution.
+- The deciding node's branch is the integration surface for its sub-intents.
+- Siblings under one deciding node always have different slugs, so their ids cannot collide.
+- Only the root intent's PR merges into `main`.
+- Until the implementation follows, the current flow still cuts each child from and targets the parent intent branch and
+  leaves each sub-intent PR merge to the maintainer (see [Git Flow](git_flow.md) Stage 3 under the flow equivalence
+  guarantee).
 
 #### Human review boundary
 
 Human review occurs at:
 
-- parent intent completion (promotion to `main`)
+- root intent completion (its PR to `main`, the only human stop in the flow; see the current-implementation note above)
 - estimator definition updates
 - trust/autonomy level changes
 - changes to “physics” or governance modules
@@ -388,7 +400,7 @@ Rationale: executing bounded work in a sandbox is safer than inventing new goals
 - Agent can spawn **sub-intents** during planning/execution, subject to:
   - parent intent constraints
   - entropy/cost budgets
-  - mandatory rebase + parent-only merge rules
+  - mandatory rebase + deciding-node-only merge rules
 - Agent still cannot propose new root intents.
 
 #### High trust (autonomous goal-setting)

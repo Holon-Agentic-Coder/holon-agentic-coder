@@ -5,17 +5,19 @@
 Implements plan `P-1793319521-claude-agent-claude-opus-5-5` for intent
 `I-1793319507-remaining-docs-follow-sub-intent-merge-rulings`: align the remaining docs with the maintainer's sub-intent
 rulings (deciding-node merge target and base, no human stop below the root, distinct sibling slugs, `deciding_branch`
-provenance, review-decided splits, plan decides in practice, current-limitation note). In progress.
+provenance, review-decided splits, plan decides in practice, current-limitation note). Done: five target docs updated,
+sweep fixed one more passage in `docs/planning_and_evaluation.md`, all changes under `docs/`; `uv` was not available, so
+tests could not be run (see Tests Run).
 
 ## Actual Metrics
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.0   |
-| entropy_actual        | 0.0   |
-| impact_actual         | 0.0   |
-| cost_actual           | 0.0   |
-| learning_value_actual | 0.0   |
+| success_actual        | 0.9   |
+| entropy_actual        | 2.6   |
+| impact_actual         | 55.0  |
+| cost_actual           | 6.0   |
+| learning_value_actual | 2.0   |
 
 ## Steps Executed
 
@@ -24,8 +26,8 @@ provenance, review-decided splits, plan decides in practice, current-limitation 
 - Re-read `docs/git_flow.md` sections 1.2-1.5, 2.2, 3.1 ("Building on siblings"), 4.1, 4.2 and the Stage 3 "Current
   limitation" note. Canonical cross-link form: `[Git Flow](git_flow.md) Stage 3 under the flow equivalence guarantee`
   (as used in `docs/core_concepts.md` and `docs/examples.md`).
-- Excluded files: `README.md`, `docs/git_flow.md`, `docs/examples.md`, `docs/core_concepts.md`,
-  `docs/ledger_schema.md`. Stage 5 calibration-formatting text is off-limits in every file.
+- Excluded files: `README.md`, `docs/git_flow.md`, `docs/examples.md`, `docs/core_concepts.md`, `docs/ledger_schema.md`.
+  Stage 5 calibration-formatting text is off-limits in every file.
 
 ### Step 2: `docs/agent_design.md` Human Review Boundary (done)
 
@@ -80,8 +82,8 @@ sub-intent PRs near maintainer/human review.
 
 Classification:
 
-- (c) fixed: `docs/planning_and_evaluation.md` agent duties bullet, now "Rebase from the branch they were cut from (for a
-  sub-intent, its deciding node's branch, in practice the plan branch)". Worded this way so it stays correct for root
+- (c) fixed: `docs/planning_and_evaluation.md` agent duties bullet, now "Rebase from the branch they were cut from (for
+  a sub-intent, its deciding node's branch, in practice the plan branch)". Worded this way so it stays correct for root
   intents and executions too.
 - (a) correct R7 notes, kept: the new notes in `agent_design.md`, `architecture.md`, `safety.md` and the planner spec;
   `git_flow.md` Stage 3 and 3.1; `core_concepts.md` 91; `ledger_schema.md` 134 and 731; `docs/metrics.md` 606 (target
@@ -92,3 +94,19 @@ Classification:
   rulings; `metrics-explained.md` 37 and `audit-report-2026-10.md` 57 (unrelated "collide").
 - No old-rule statement found in the five excluded files, so none was edited. No calibration-formatting text touched.
 - Final search: only (a) and (b) hits remain.
+
+### Step 8: Format, lint and verify (done)
+
+- `npx prettier --write` run on each touched file.
+- `git diff --name-only d7cc2fa`: only the six `docs/` files plus this record; no code, `holon-config/`, `apps/` or
+  ledger changes (`holon-knowledge/ledger/` still holds exactly `executions.jsonl`, `intents.jsonl`, `plans.jsonl`).
+- Added lines checked for American spellings (none) and for harness references (none).
+- Relative links resolve: `git_flow.md` from `docs/`, `../git_flow.md` from `docs/planner/`.
+
+## Tests Run
+
+- `uv run task lint-docs`: could not run, `uv: command not found` in this sandbox. Ran its underlying command directly,
+  `npx prettier --check "**/*.md"`: exit 0, "All matched files use Prettier code style!".
+- `uv run pytest <paths>` / `uv run task test`: not run. `uv` is not installed and `pytest` is not importable from the
+  system Python, so no pass/fail count or time can be recorded. The change is documentation only and touches no code or
+  test inputs. No repeated runs were needed (no timing measurement in scope).

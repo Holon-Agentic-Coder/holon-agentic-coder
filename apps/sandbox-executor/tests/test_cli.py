@@ -631,10 +631,13 @@ class TestHolonFlowCLI(unittest.TestCase):
     """Hermetic unit tests for 'holon flow' CLI argument parsing, flags, and dispatching."""
 
     def setUp(self):
-        self._env_patcher = patch.dict(os.environ, {
-            "HOLON_AGENT": "antigravity-agent",
-            "HOLON_MODEL": "gemini-3.8-flash-medium",
-        })
+        self._env_patcher = patch.dict(
+            os.environ,
+            {
+                "HOLON_AGENT": "antigravity-agent",
+                "HOLON_MODEL": "gemini-3.8-flash-medium",
+            },
+        )
         self._env_patcher.start()
         self.addCleanup(self._env_patcher.stop)
 

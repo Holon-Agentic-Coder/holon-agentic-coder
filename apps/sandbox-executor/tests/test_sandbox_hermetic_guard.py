@@ -268,12 +268,21 @@ class TestKnowledgeIndexSnapshotHelpers:
         after = knowledge_index_snapshot(str(tmp_path))
         assert describe_index_changes(before, after) == []
 
-    def test_fixture_failure_message_names_path(self, tmp_path: pathlib.Path) -> None:
-        """Confirm that describe_index_changes includes the relative path in its output."""
-        before = knowledge_index_snapshot(str(tmp_path))
+    def test_unreadable_directory_propagates_error(self, tmp_path: pathlib.Path) -> None:
+        """An unreadable index directory must raise, never return an empty snapshot.
+
+        ``os.walk`` with its default ``onerror=None`` swallows directory-listing errors, which
+        would make the guard fail open on an unreadable ``.index/``. The snapshot helper passes an
+        ``onerror`` callback that re-raises, so the guard fails closed as documented.
+        """
+        if os.geteuid() == 0:
+            pytest.skip("running as root: permission bits are ignored, the directory stays readable")
         index_dir = tmp_path / KNOWLEDGE_INDEX_SUBDIR
         index_dir.mkdir(parents=True)
-        (index_dir / "action_index.db").write_bytes(b"x")
-        after = knowledge_index_snapshot(str(tmp_path))
-        changes = describe_index_changes(before, after)
-        assert any("holon-knowledge/.index/" in c for c in changes)
+        (index_dir / "action_index.db").write_bytes(b"data")
+        os.chmod(index_dir, 0o000)
+        try:
+            with pytest.raises(PermissionError):
+                knowledge_index_snapshot(str(tmp_path))
+        finally:
+            os.chmod(index_dir, 0o755)

@@ -290,6 +290,17 @@ KNOWLEDGE_INDEX_SUBDIR = os.path.join("holon-knowledge", ".index")
 CHECKOUT_KNOWLEDGE_INDEX_DIR = os.path.join(REPO_ROOT, KNOWLEDGE_INDEX_SUBDIR)
 
 
+def _raise_walk_error(error: OSError) -> None:
+    """Re-raise directory-listing errors so :func:`knowledge_index_snapshot` fails closed.
+
+    ``os.walk`` defaults to ``onerror=None``, which silently swallows ``scandir`` errors (including
+    ``PermissionError``) and yields nothing -- an unreadable index directory would then produce an
+    empty snapshot on both sides and the guard would fail open. The absent-directory case is handled
+    by an explicit ``os.path.isdir`` check in the caller, so every error reaching here propagates.
+    """
+    raise error
+
+
 def knowledge_index_snapshot(root: str) -> dict[str, tuple[int, int]]:
     """Return a mapping from POSIX-relative path to ``(size, mtime_ns)`` for the index directory.
 
@@ -300,7 +311,9 @@ def knowledge_index_snapshot(root: str) -> dict[str, tuple[int, int]]:
     """
     index_dir = os.path.join(root, KNOWLEDGE_INDEX_SUBDIR)
     snapshot: dict[str, tuple[int, int]] = {}
-    for dirpath, _dirnames, filenames in os.walk(index_dir):
+    if not os.path.isdir(index_dir):
+        return snapshot
+    for dirpath, _dirnames, filenames in os.walk(index_dir, onerror=_raise_walk_error):
         for name in filenames:
             full = os.path.join(dirpath, name)
             st = os.stat(full)

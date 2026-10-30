@@ -42,3 +42,10 @@ provenance, review-decided splits, plan decides in practice, current-limitation 
   completion as the only human stop.
 - Medium-trust bullet: "deciding-node-only merge rules". "parent intent policy" and "parent intent constraints" left
   (trust policy, not merge targets). The mermaid diagram has no merge labels, so it was skipped.
+
+### Step 4: `docs/faq.md` rebase and merge references (done)
+
+- Q6: state is reconciled "before merging into the deciding node's branch (in practice the plan branch; the root intent
+  alone merges to `main`, after human review)".
+- Active Rebase Pulses: rebase "onto the branch it was cut from (for a sub-intent, its deciding plan or execution
+  branch)". No other FAQ entry covers human review of child PRs or sibling ids.

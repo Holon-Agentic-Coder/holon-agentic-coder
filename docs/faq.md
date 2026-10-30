@@ -46,8 +46,9 @@ the evolution of better, more granular planning.
 ## 6. Does the JSONL Ledger suffer from concurrency issues?
 
 No. We use **Git as the Transaction Manager**. Each agent operates on its own branch with its own local ledger. The "
-rebase at start, rebase at end" rule ensures that state is reconciled before merging into the parent intent. This
-provides isolation and atomic commits without a traditional database.
+rebase at start, rebase at end" rule ensures that state is reconciled before merging into the deciding node's branch (in
+practice the plan branch; the root intent alone merges to `main`, after human review). This provides isolation and
+atomic commits without a traditional database.
 
 ## 7. Why use fixed model tiers instead of dynamic routing?
 
@@ -108,8 +109,8 @@ the initial high cost is a necessary investment in the system's education.
 - **Mandatory Checkpointing:** Intents expected to take a long time are broken down into child intents representing
   logical milestones.
 - **Active Rebase Pulses:** If an execution branch remains open for a long period, the orchestrator periodically pushes
-  a background rebase onto the parent branch to catch up with concurrent changes early, rather than waiting for a
-  massive end-of-execution conflict.
+  a background rebase onto the branch it was cut from (for a sub-intent, its deciding plan or execution branch) to catch
+  up with concurrent changes early, rather than waiting for a massive end-of-execution conflict.
 - **Budget Checks:** If a planner or executor turn exceeds its turn, stall or stage budget, one resume turn is attempted
   first, but only when the salvaged artefact is incomplete (not usable, or missing a required section) and the stage
   still has time left (so neither a stage-budget breach nor a breach that left a complete artefact gets one). A plan

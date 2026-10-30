@@ -49,3 +49,16 @@ provenance, review-decided splits, plan decides in practice, current-limitation 
   alone merges to `main`, after human review)".
 - Active Rebase Pulses: rebase "onto the branch it was cut from (for a sub-intent, its deciding plan or execution
   branch)". No other FAQ entry covers human review of child PRs or sibling ids.
+
+### Step 5: `docs/safety.md` review boundaries and invariants (done)
+
+- Principle 5: "Only **root intents** (direct children of `main`)", plus automatic below-root merging (R2) and an R7
+  pointer. Principle 1 line ("Only **human-approved intents** merge to `main`") already correct, left.
+- Automatic human review trigger 1 renamed "Root intent merge to `main`"; R1, R2 and R7 bullets.
+- Human review workflow limited to the root intent (lead-in sentence for R2, step 2, "Git diff (from `main`)", approve
+  line). Code fence intact.
+- Rebase-conflict recovery now rebases onto the deciding node's branch after earlier siblings merged into it.
+- Invariant 1: deciding-node rebase and merge, R3 bullet, root-only merge to `main`. Invariant 4: "Root intents ... (the
+  only human stop in the flow)".
+- Diff checked: every governance, estimator, routing and core-invariant human-approval line is unchanged. Budget
+  inheritance "parent" lines and the review-package `"parent_branch": "main"` sample (correct for a root) left.

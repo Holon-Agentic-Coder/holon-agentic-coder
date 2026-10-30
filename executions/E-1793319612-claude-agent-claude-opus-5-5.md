@@ -10,11 +10,11 @@ any ledger append, `git add`, commit or push.
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.0   |
-| entropy_actual        | 0.0   |
-| impact_actual         | 0.0   |
-| cost_actual           | 0.0   |
-| learning_value_actual | 0.0   |
+| success_actual        | 1.0   |
+| entropy_actual        | 4.3   |
+| impact_actual         | 80.0  |
+| cost_actual           | 13.5  |
+| learning_value_actual | 4.0   |
 
 ## Steps Executed
 
@@ -34,8 +34,8 @@ any ledger append, `git add`, commit or push.
 - `run_calibrate` now calls `format_calibration_report` right after the final report write and before
   `record_calibration_action`, `git add` and `git commit`; with `skip_commit=True` a failure is only logged.
 - Removed the `converge_prettier` import from `calibration.py`; `formatting.py` is untouched.
-- `uv` was not on the sandbox `PATH`; installed it user-locally with `pip install --user uv` (tooling only, no
-  project dependency change). `uv run task lint` passes.
+- `uv` was not on the sandbox `PATH`; installed it user-locally with `pip install --user uv` (tooling only, no project
+  dependency change). `uv run task lint` passes.
 
 ### Step 3: Fail Stage 5 instead of pushing when the guard trips (done)
 
@@ -56,8 +56,8 @@ any ledger append, `git add`, commit or push.
   passing report is committed. A `no_real_npx` fixture fails any test that reaches the real `subprocess.run` with `npx`.
 - `test_flow.py`: new Stage 5 tests: `CalibrationFormatError` gives a FAILED stage with no `add`, `commit`, `merge` or
   `push`, and the happy path still pushes and fast-forwards.
-- Existing patches of `sandbox_executor.calibration.converge_prettier` and `sandbox_executor.flow.converge_prettier`
-  now target `format_calibration_report` (the old names no longer exist in those modules); assertions kept.
+- Existing patches of `sandbox_executor.calibration.converge_prettier` and `sandbox_executor.flow.converge_prettier` now
+  target `format_calibration_report` (the old names no longer exist in those modules); assertions kept.
 
 ### Step 5: Probe npx resolution of unversioned prettier (done, exploratory)
 
@@ -68,3 +68,26 @@ any ledger append, `git add`, commit or push.
 - No repository change. Residual risk: a host with a stale npx cache could resolve an older Prettier; a follow-up intent
   could pin Prettier in `pyproject.toml` (`lint-docs`, `format-docs`) and the `lint-md` Makefile target together. The
   drift test would then flag `LINT_DOCS_PRETTIER` until it is pinned the same way.
+
+### Step 6: Full suite, lint and lint-docs (done)
+
+- Full suite, `uv run task lint` and `uv run task lint-docs` all pass (see below).
+- `holon-knowledge/ledger/` still holds exactly `executions.jsonl`, `intents.jsonl` and `plans.jsonl`; no ledger file is
+  touched by this change.
+- The added lines contain no harness paths or tracker ids and no American spellings (`normalize`, `behavior`, `color`,
+  `serialize`).
+- No doc describes Stage 5 formatting, so no doc was edited; the behaviour is documented in the new docstrings.
+
+## Tests Run
+
+| command                                                                                                                                                                             | result                        | pytest time |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- | ----------- |
+| `uv run pytest apps/sandbox-executor/tests/test_flow.py -q -k "stage5 or stage2_adopts"`                                                                                            | 17 passed                     | 1.38s       |
+| `uv run pytest apps/sandbox-executor/tests/test_calibration.py apps/sandbox-executor/tests/test_flow.py apps/sandbox-executor/tests/test_formatting.py -n auto --dist worksteal -q` | 398 passed, 6 subtests passed | 5.72s       |
+| `uv run pytest apps/sandbox-executor/tests/test_calibration.py -q -k FormatCalibrationReport`                                                                                       | 11 passed                     | 0.16s       |
+| `uv run task test` (full suite, run once)                                                                                                                                           | 2842 passed, 8 warnings       | 31.37s      |
+| `uv run task lint`                                                                                                                                                                  | pass                          | n/a         |
+| `uv run task lint-docs`                                                                                                                                                             | pass (after formatting notes) | n/a         |
+
+No repeated runs: the intent has no timing goal, so there is no median to report beyond the single full-suite figure
+(`31.37s`).

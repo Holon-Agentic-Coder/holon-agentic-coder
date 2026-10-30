@@ -42,6 +42,17 @@ the ensemble consensus model, the `pr-review-loop` architecture, and the multi-r
     `holon review-loop`; callers without a `FlowContext` use the context-free
     `sandbox_executor.ledger.try_append_action_record(..., preserve_shape=True)`), never by writing to the file
     directly.
+11. **Mandatory Target-Branch Conflict Gate**: Prior to posting an approved consensus review to GitHub or executing
+    Stage 5 calibration, verify `gh pr view <pr> --json mergeable,mergeStateStatus`. If `mergeable == "CONFLICTING"` or
+    `mergeStateStatus == "DIRTY"`, immediately fetch `origin/main`, merge, and resolve conflicts.
+12. **Fast Ledger-Only Conflict Resolution**: When conflicts are strictly confined to `holon-knowledge/ledger/*.jsonl`,
+    interleave or append entries chronologically by `created_at`, verify valid JSON syntax, and skip test suite
+    execution.
+13. **Review the Increment (Bean 0170)**: The first complete ensemble reviews the whole PR and records `voted_head`.
+    Later iterations evaluate `git diff <voted_head>..HEAD`, reporting Critical/Important defects anywhere and raising
+    Nits only on lines the increment changed.
+14. **Stage 5 Pre-Merge Calibration**: Stage 5 calibration (`holon calibrate`) is executed prior to human merge,
+    producing the `/calibrated` branch and incorporating the calibration report into the PR head diff before merge.
 
 ---
 
@@ -179,55 +190,47 @@ which validate each record and serialise the append under `LedgerLock`.
 
 ## 📤 Standard Review Output Schema
 
-When posting review results to GitHub, adhere strictly to the following markdown structure:
+When posting review results to GitHub, adhere strictly to the skill's consensus review structure:
+
+### 1. Consensus Approval Format (0 Critical, 0 Important, 0 open Nits, CI green)
 
 ```markdown
-## 🔍 Multi-Agent Ensemble PR Review (Iteration {iteration})
+## ✅ Ensemble Consensus Review — APPROVED ({ensemble_size}/{ensemble_size})
 
-**Pull Request:** [{repo_name}#{pr_number}]({pr_url})  
-**Target Commit:** `{target_commit}`  
-**Base Branch:** `{target_branch}`  
-**Review Type:** {ensemble_size}-Agent Independent Ensemble Consensus Review
+Three independent blind review passes evaluated this PR at head `{target_commit}` and unanimously approve it with zero
+Critical, zero Important, and zero open Nit findings. All CI checks are green and the PR is mergeable/clean against
+`{target_branch}`.
 
----
+**Verified:**
 
-### 👥 Dynamic Persona Activation & Assessment Matrix
+- [Key architectural decomposition and modularisation achievements]
+- [Preserved backward compatibility, dynamic compatibility dispatch, and public API symbols]
+- [Added modular unit tests with 100% pass rate]
+- [Quality gates: lint clean, prettier clean, test suite passed]
+- [Complexity baseline ratchet ceiling and repository hygiene verified]
+- [Canonical 3-ledger provenance integrity strictly maintained]
 
-| Persona                            | Activation Justification  | Assessment                                           |
-| :--------------------------------- | :------------------------ | :--------------------------------------------------- |
-| **Principal Engineer / Tech Lead** | [Files changed in diff]   | **APPROVED**: [Technical assessment]                 |
-| **Solution Architect**             | [Files changed in diff]   | **APPROVED**: [Architectural assessment]             |
-| **QA & Test Engineer**             | [Test files changed]      | **APPROVED**: [Coverage and test pass assessment]    |
-| **Security Architect**             | [Security checks & files] | **APPROVED**: [Hygiene and vulnerability assessment] |
-| **DevOps & SRE**                   | [Build & CI configs]      | **APPROVED**: [Pipeline and container assessment]    |
+Stage 5 calibration will be added to this PR before merge. Merging remains with the human maintainer.
+```
 
----
+### 2. Changes Requested Format (Findings Identified)
 
-### 📋 Evaluation Summary & Verified Positive Findings
+```markdown
+## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration {iteration})
 
-1. **[Key Change / Feature Area 1]**:
-   - [Detailed verified achievement or implementation note]
-   - [Verification evidence from tests/diff]
+Three independent blind review passes evaluated this PR at head `{target_commit}`. Critical, Important, or open Nit
+findings were identified.
 
-2. **[Key Change / Feature Area 2]**:
-   - [Detailed verified achievement or implementation note]
+### Findings Requiring Resolution
 
----
-
-### 🗳️ Ensemble Review Breakdown
-
-- **Reviewer 1** (`{reviewer_1_id}`): `APPROVED` (Critical: 0, Important: 0, Nit: 0)
-- **Reviewer 2** (`{reviewer_2_id}`): `APPROVED` (Critical: 0, Important: 0, Nit: 0)
-- **Reviewer 3** (`{reviewer_3_id}`): `APPROVED` (Critical: 0, Important: 0, Nit: 0)
-- **Ensemble Consensus Verdict**: `APPROVED`
-- **GitHub Actions CI Status**: `{ci_passed}/{ci_total} PASS` ({ci_passed} successful, 0 failing, 0 pending)
-
-> 🤖 **Reviewed by**: `{agent}` ({ensemble_size}-Agent Ensemble) · **Model**: `{model}`
+| ID   | Severity | File:Line             | Description         | Recommendation       |
+| :--- | :------- | :-------------------- | :------------------ | :------------------- |
+| `F1` | Critical | `path/to/file.py:123` | [Issue description] | [Fix recommendation] |
+| `N1` | Nit      | `path/to/file.py:45`  | [Issue description] | [Fix recommendation] |
 
 ---
 
-> [!NOTE] **Bean 0034 Notice:** Under Bean 0034 (Human-Only PR Merging), autonomous merging to `main` is strictly
-> prohibited. Pipeline halts for manual human approval.
+Stage 4 review loop will resolve verified findings in the next iteration.
 ```
 
 ---

@@ -25,3 +25,14 @@ any ledger append, `git add`, commit or push.
   `npx prettier --check` on the same file exits 0.
 - A 3.8.4 `--write` on a temporary copy (with `.prettierrc.json`) breaks the line after `$p\_success\_error = 0.20$,`,
   splitting `$cost\_error = 1.88$` across lines. Root cause confirmed: Prettier version skew, not config or write order.
+
+### Step 2: Format and guard the report in `calibration.py` (done)
+
+- Added `LINT_DOCS_PRETTIER = ("npx", "--yes", "prettier")` (unpinned, mirrors `lint-docs` and `lint-md`),
+  `CalibrationFormatError(CalibrationCommitError)`, the `_run_prettier` subprocess seam, `_prettier_failure` (collects
+  the reason in one place) and the public `format_calibration_report`.
+- `run_calibrate` now calls `format_calibration_report` right after the final report write and before
+  `record_calibration_action`, `git add` and `git commit`; with `skip_commit=True` a failure is only logged.
+- Removed the `converge_prettier` import from `calibration.py`; `formatting.py` is untouched.
+- `uv` was not on the sandbox `PATH`; installed it user-locally with `pip install --user uv` (tooling only, no
+  project dependency change). `uv run task lint` passes.

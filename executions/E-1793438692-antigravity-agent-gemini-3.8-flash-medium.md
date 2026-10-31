@@ -14,10 +14,10 @@ across containerised execution, CLI flow, and harness tooling.
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.98  |
-| entropy_actual        | 0.60  |
+| success_actual        | 0.99  |
+| entropy_actual        | 0.75  |
 | impact_actual         | 82.0  |
-| cost_actual           | 3.00  |
+| cost_actual           | 3.80  |
 | learning_value_actual | 5.00  |
 
 ## Steps Executed
@@ -45,4 +45,11 @@ across containerised execution, CLI flow, and harness tooling.
   structured findings table).
 - Validated template placeholders via `uv run pytest apps/sandbox-executor/tests/test_prompt_templates.py` (8 passed) and
   verified formatting via prettier.
+
+### Step 3: Synchronise Project Scaffolding Template
+
+- Synchronised `REVIEW_LOOP_TEMPLATE` constant in `apps/sandbox-executor/src/sandbox_executor/scaffold.py` with
+  `holon-config/prompts/review_loop.template.md`, ensuring byte-for-byte fidelity with zero trailing whitespace.
+- Verified template synchronization and project scaffolding via `uv run pytest apps/sandbox-executor/tests/test_init.py`
+  (7 passed) and ruff code checks.
 

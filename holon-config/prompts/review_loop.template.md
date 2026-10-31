@@ -198,11 +198,11 @@ When posting review results to GitHub, adhere strictly to the following markdown
 ```markdown
 ## ✅ Ensemble Consensus Review — APPROVED ({configured}/{configured})
 
-**Pull Request:** [{repo_name}#{pr_number}]({pr_url})  
-**Target Commit:** `{target_commit}`  
-**Base Branch:** `{target_branch}`  
-**Iteration:** `{iteration}`  
-**Verdict:** `APPROVED`
+- **Pull Request:** [{repo_name}#{pr_number}]({pr_url})
+- **Target Commit:** `{target_commit}`
+- **Base Branch:** `{target_branch}`
+- **Iteration:** `{iteration}`
+- **Verdict:** `APPROVED`
 
 ---
 
@@ -238,11 +238,11 @@ When posting review results to GitHub, adhere strictly to the following markdown
 ```markdown
 ## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration {iteration})
 
-**Pull Request:** [{repo_name}#{pr_number}]({pr_url})  
-**Target Commit:** `{target_commit}`  
-**Base Branch:** `{target_branch}`  
-**Iteration:** `{iteration}`  
-**Verdict:** `CHANGES_REQUESTED`
+- **Pull Request:** [{repo_name}#{pr_number}]({pr_url})
+- **Target Commit:** `{target_commit}`
+- **Base Branch:** `{target_branch}`
+- **Iteration:** `{iteration}`
+- **Verdict:** `CHANGES_REQUESTED`
 
 ---
 

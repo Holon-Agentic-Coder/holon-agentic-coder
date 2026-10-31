@@ -27,3 +27,12 @@ and role prompts to be platform-agnostic (using terms like 'Review Loop', 'revie
 - Verified `apps/sandbox-executor/src/sandbox_executor/entrypoint/review_loop.py` argument parser descriptions.
 - Ran `uv run pytest apps/sandbox-executor/tests/test_cli.py` (396 tests passing).
 
+### Step 2: Standardize review consensus report generator and module docstrings
+
+- Standardized `apps/sandbox-executor/src/sandbox_executor/review_report.py` module docstring from `"The Stage 4 PR review consensus report..."` to `"The Stage 4 review consensus report..."`.
+- Updated report header format to `## Holon Review: <title> (iteration N)`.
+- Updated report prose to `"Approval needs every reviewer to approve with zero findings, plus a mergeable change branch and green CI."`.
+- Exported canonical function `build_review_consensus_report` alongside backward-compatible alias `build_pr_review_consensus_report`.
+- Updated test assertions in `apps/sandbox-executor/tests/test_review_report.py` and verified with `uv run pytest apps/sandbox-executor/tests/test_review_report.py` (13 tests passing).
+
+

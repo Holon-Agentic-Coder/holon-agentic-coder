@@ -14,10 +14,10 @@ across containerised execution, CLI flow, and harness tooling.
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.96  |
-| entropy_actual        | 0.35  |
+| success_actual        | 0.98  |
+| entropy_actual        | 0.60  |
 | impact_actual         | 82.0  |
-| cost_actual           | 1.80  |
+| cost_actual           | 3.00  |
 | learning_value_actual | 5.00  |
 
 ## Steps Executed
@@ -33,4 +33,16 @@ across containerised execution, CLI flow, and harness tooling.
   and checks.
 - Exported `render_findings_table` and preserved backward-compatible alias `build_pr_review_consensus_report`.
 - Verified formatting with `uv run ruff check` and `uv run ruff format`.
+
+### Step 2: Standardise Review Loop Prompt Template
+
+- Updated `holon-config/prompts/review_loop.template.md` under `## 👥 Comprehensive Dynamic Persona Registry & Focus Areas`
+  with explicit instructions directing personas to synthesize and verify architectural refactorings, backward
+  compatibility, test execution counts, quality gates, complexity baselines, and 3-ledger provenance integrity.
+- Standardised `## 📤 Standard Review Output Schema` to include schemas for both Approved reviews
+  (`## ✅ Ensemble Consensus Review — APPROVED ({configured}/{configured})` with structured `**Verified:**` bullets) and
+  Changes-Requested reviews (`## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration {iteration})` with
+  structured findings table).
+- Validated template placeholders via `uv run pytest apps/sandbox-executor/tests/test_prompt_templates.py` (8 passed) and
+  verified formatting via prettier.
 

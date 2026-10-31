@@ -1824,6 +1824,8 @@ def resolve_runner_and_model(agent: str | None, model: str | None) -> tuple[Reso
         ``(agent resolution, model resolution)``.
 
     Raises:
+        MissingAgentRunnerError: If no agent runner was provided, configured, or detected.
+        MissingModelError: If no model was provided or configured.
         UnmappedAgentRunnerError: If the selected runner has no container image.
     """
     agent_res = resolve_agent_runner(agent)

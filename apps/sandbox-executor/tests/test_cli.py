@@ -641,6 +641,34 @@ class TestHolonFlowCLI(unittest.TestCase):
         self._env_patcher.start()
         self.addCleanup(self._env_patcher.stop)
 
+    def test_flow_fails_fast_without_agent_or_model(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intent_file = os.path.join(tmp_dir, "intent.json")
+            with open(intent_file, "w", encoding="utf-8") as f:
+                json.dump({"slug": "test", "goal": "test"}, f)
+
+            # Fails fast when agent runner is omitted
+            with (
+                patch.dict(os.environ, {"HOLON_IN_SANDBOX": "1"}, clear=True),
+                patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
+                patch("sys.argv", ["holon", "flow", intent_file]),
+                self.assertRaises(SystemExit) as cm,
+            ):
+                main()
+            self.assertEqual(cm.exception.code, 1)
+            self.assertIn("Agent runner is mandatory", mock_stderr.getvalue())
+
+            # Fails fast when model is omitted
+            with (
+                patch.dict(os.environ, {"HOLON_IN_SANDBOX": "1"}, clear=True),
+                patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
+                patch("sys.argv", ["holon", "flow", intent_file, "--agent", "antigravity-agent"]),
+                self.assertRaises(SystemExit) as cm,
+            ):
+                main()
+            self.assertEqual(cm.exception.code, 1)
+            self.assertIn("Model is mandatory", mock_stderr.getvalue())
+
     def test_flow_skip_review_flag(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             intent_file = os.path.join(tmp_dir, "intent.json")

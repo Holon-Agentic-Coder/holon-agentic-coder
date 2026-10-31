@@ -42,5 +42,13 @@ and role prompts to be platform-agnostic (using terms like 'Review Loop', 'revie
 - Standardized `apps/sandbox-executor/src/sandbox_executor/scaffold.py` review loop prompt template to use 'change diff' and 'change description' terminology.
 - Ran template verification tests via `uv run pytest apps/sandbox-executor/tests/test_prompt_templates.py` (8 passed) and ensemble tests via `uv run pytest apps/sandbox-executor/tests/test_review_ensemble.py` (92 passed).
 
+### Step 4: Standardize flow engine logging, console outputs, and review loop action records
+
+- Standardized `apps/sandbox-executor/src/sandbox_executor/flow.py` logging, docstrings, console output, and discrete ledger action records to display "Stage 4: Review Loop" and "Review consensus" rather than "PR review loop" or "PR review consensus".
+- Preserved GitHub remote transport adapter execution paths (`gh pr comment`, `gh pr review`) when interacting with GitHub remotes.
+- Updated `apps/sandbox-executor/src/sandbox_executor/entrypoint/review_loop.py` preparation failure action records and Bean 0034 safety halt messages to platform-agnostic review loop phrasing.
+- Verified flow engine execution via `uv run pytest apps/sandbox-executor/tests/test_flow.py -k "test_pipeline_engine_skip_review or test_dual_post"` (2 passed).
+
+
 
 

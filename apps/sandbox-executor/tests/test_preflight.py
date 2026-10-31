@@ -365,21 +365,41 @@ def _run_main(argv: list[str]) -> int:
 @pytest.mark.parametrize(("status", "code"), [(PreflightStatus.OK, 0), (PreflightStatus.EXPIRED_KEY, 1)])
 def test_doctor_exit_codes_and_json(probe_env, capsys, status, code):
     with patch("sandbox_executor.cli.run_preflight_probe", return_value=_result(status)) as probe:
-        assert _run_main(["holon", "doctor", "--json", "--timeout", "3"]) == code
+        assert (
+            _run_main(
+                [
+                    "holon",
+                    "doctor",
+                    "--agent",
+                    "antigravity-agent",
+                    "--model",
+                    "gemini-3.8-flash-medium",
+                    "--json",
+                    "--timeout",
+                    "3",
+                ]
+            )
+            == code
+        )
     payload = json.loads(capsys.readouterr().out)
-    assert payload["agent"] == {
-        "value": "antigravity-agent",
-        "source": "fallback",
-        "reason": "no --agent, HOLON_AGENT or harness marker",
-    }
+    assert payload["agent"]["value"] == "antigravity-agent"
+    assert payload["agent"]["source"] == "flag"
     assert payload["model"]["value"] == "gemini-3.8-flash-medium"
-    assert payload["model"]["source"] == "table"
+    assert payload["model"]["source"] == "flag"
     assert payload["preflight"]["status"] == status.value
     assert probe.call_args[1]["timeout"] == 3
 
 
+def test_doctor_exits_with_error_without_agent(probe_env, capsys):
+    with patch("sandbox_executor.cli.run_preflight_probe") as probe:
+        assert _run_main(["holon", "doctor"]) == 1
+    probe.assert_not_called()
+    assert "mandatory" in capsys.readouterr().err
+
+
 def test_doctor_reports_harness_detection(probe_env, monkeypatch, capsys):
     monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("HOLON_MODEL", "claude-opus-5-5")
     with patch("sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.OK)) as probe:
         assert _run_main(["holon", "doctor"]) == 0
     out = capsys.readouterr().out
@@ -399,7 +419,9 @@ def test_doctor_unmapped_runner(probe_env, monkeypatch, capsys):
 
 
 @pytest.mark.parametrize(("command", "target"), [("plan", "I-1/_"), ("execute", "I-1/P-2/_")])
-def test_plan_and_execute_abort_before_container_on_failed_probe(probe_env, capsys, command, target):
+def test_plan_and_execute_abort_before_container_on_failed_probe(probe_env, monkeypatch, capsys, command, target):
+    monkeypatch.setenv("HOLON_AGENT", "antigravity-agent")
+    monkeypatch.setenv("HOLON_MODEL", "gemini-3.8-flash-medium")
     with (
         patch(
             "sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.QUOTA_EXHAUSTED)
@@ -414,6 +436,8 @@ def test_plan_and_execute_abort_before_container_on_failed_probe(probe_env, caps
 
 @pytest.mark.parametrize("bypass", ["flag", "env"])
 def test_skip_preflight_bypasses_probe(probe_env, monkeypatch, bypass):
+    monkeypatch.setenv("HOLON_AGENT", "antigravity-agent")
+    monkeypatch.setenv("HOLON_MODEL", "gemini-3.8-flash-medium")
     argv = ["holon", "plan", "I-1/_"]
     if bypass == "flag":
         argv.append("--skip-preflight")
@@ -443,6 +467,7 @@ def cli_logging():
 def test_cli_prints_harness_and_skipped_preflight_info_on_stderr(probe_env, monkeypatch, capsys, cli_logging):
     monkeypatch.setenv("PI_CODING_AGENT", "1")
     monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("HOLON_MODEL", "claude-opus-5-5")
     with (
         patch("sandbox_executor.cli.run_preflight_probe") as probe,
         patch("sandbox_executor.cli.run_docker_container", return_value=0),
@@ -460,6 +485,7 @@ def test_cli_prints_harness_and_skipped_preflight_info_on_stderr(probe_env, monk
 @pytest.mark.parametrize("as_json", [False, True])
 def test_doctor_reports_each_decision_once(probe_env, monkeypatch, capsys, cli_logging, as_json):
     monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("HOLON_MODEL", "claude-opus-5-5")
     argv = ["holon", "doctor", "--json"] if as_json else ["holon", "doctor"]
     with patch("sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.OK)):
         assert _run_main(argv) == 0
@@ -480,8 +506,9 @@ def test_configure_cli_logging_is_idempotent_and_scoped(cli_logging):
     assert not any(isinstance(h, _CurrentStderrHandler) for h in logging.getLogger().handlers)
 
 
-def test_plan_uses_harness_runner_and_its_default_model(probe_env, monkeypatch):
+def test_plan_uses_harness_runner_and_explicit_model(probe_env, monkeypatch):
     monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("HOLON_MODEL", "claude-opus-5-5")
     with (
         patch("sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.OK)),
         patch("sandbox_executor.cli.run_docker_container", return_value=0) as docker,
@@ -494,6 +521,14 @@ def test_plan_uses_harness_runner_and_its_default_model(probe_env, monkeypatch):
         agent_id="claude",
         token_reduce=False,
     )
+
+
+def test_plan_exits_with_error_without_model(probe_env, monkeypatch, capsys):
+    monkeypatch.setenv("HOLON_AGENT", "antigravity-agent")
+    with patch("sandbox_executor.cli.run_docker_container") as docker:
+        assert _run_main(["holon", "plan", "I-1/_", "--skip-preflight"]) == 1
+    docker.assert_not_called()
+    assert "mandatory" in capsys.readouterr().err
 
 
 def test_execute_with_unmapped_env_runner_fails_before_docker(probe_env, monkeypatch, capsys):
@@ -520,7 +555,9 @@ def test_run_docker_container_disables_nested_preflight(probe_env):
 # --- review-loop routing ------------------------------------------------------------------------------------------
 
 
-def test_bare_review_loop_still_runs_in_a_container(probe_env):
+def test_bare_review_loop_still_runs_in_a_container(probe_env, monkeypatch):
+    monkeypatch.setenv("HOLON_AGENT", "antigravity-agent")
+    monkeypatch.setenv("HOLON_MODEL", "gemini-3.8-flash-medium")
     with (
         patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
         patch("sandbox_executor.cli.run_docker_container", return_value=0) as docker,
@@ -535,6 +572,7 @@ def test_bare_review_loop_still_runs_in_a_container(probe_env):
 
 def test_local_review_loop_records_resolved_runner(probe_env, monkeypatch):
     monkeypatch.setenv("HOLON_AGENT", "pi-agent")
+    monkeypatch.setenv("HOLON_MODEL", "claude-opus-5-5")
     with (
         patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
         patch("sandbox_executor.flow.run_review_loop_cli", return_value=0) as local,
@@ -566,8 +604,10 @@ def flow_repo(probe_env):
     return repo, intent_file
 
 
-def test_quota_exhausted_probe_aborts_flow_before_stage_one(flow_repo, capsys):
+def test_quota_exhausted_probe_aborts_flow_before_stage_one(flow_repo, monkeypatch, capsys):
     repo, intent_file = flow_repo
+    monkeypatch.setenv("HOLON_AGENT", "antigravity-agent")
+    monkeypatch.setenv("HOLON_MODEL", "gemini-3.8-flash-medium")
     ledger_dir = repo / "holon-knowledge" / "ledger"
     before = {p.name: p.read_bytes() for p in ledger_dir.iterdir()}
     refs_before = _git(repo, "for-each-ref")
@@ -596,8 +636,10 @@ def test_quota_exhausted_probe_aborts_flow_before_stage_one(flow_repo, capsys):
     assert "Aborting before any branch" in capsys.readouterr().err
 
 
-def test_dry_run_flow_skips_probe(flow_repo):
+def test_dry_run_flow_skips_probe(flow_repo, monkeypatch):
     repo, intent_file = flow_repo
+    monkeypatch.setenv("HOLON_AGENT", "antigravity-agent")
+    monkeypatch.setenv("HOLON_MODEL", "gemini-3.8-flash-medium")
     with (
         patch("sandbox_executor.cli.run_preflight_probe") as probe,
         patch("sandbox_executor.cli.run_flow_pipeline", return_value={}) as pipeline,
@@ -645,10 +687,10 @@ _CHECKPOINT_SOURCE = "(source: checkpoint, recorded in "
     ("extra", "expected", "agent_source", "model_source"),
     [
         (
-            ["--agent", "claude-agent"],
+            ["--agent", "claude-agent", "--model", "claude-opus-5-5"],
             ("claude-agent", "claude-opus-5-5"),
             "(source: flag, --agent)",
-            "(source: table, default model for claude-agent)",
+            "(source: flag, --model)",
         ),
         (
             ["--agent", "claude-agent", "--model", "m-x"],

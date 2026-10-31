@@ -274,6 +274,7 @@ class TestCLIDispatchReviewLoop:
 
         with (
             patch.object(sys, "argv", test_args),
+            patch.dict(os.environ, {"HOLON_AGENT": "antigravity-agent", "HOLON_MODEL": "gemini-3.8-flash-medium"}),
             patch("sandbox_executor.flow.run_review_loop_cli", return_value=0) as mock_local,
             patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
         ):

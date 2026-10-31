@@ -1113,9 +1113,11 @@ class TestFlowCLI:
                 cli_main()
         assert exc_info.value.code == 0
 
-    def test_cli_flow_dry_run_dispatch(self, tmp_path):
+    def test_cli_flow_dry_run_dispatch(self, tmp_path, monkeypatch):
         intent_file = tmp_path / "intent.json"
         intent_file.write_text(json.dumps({"slug": "cli-test", "goal": "CLI flow test"}))
+        monkeypatch.setenv("HOLON_AGENT", "antigravity-agent")
+        monkeypatch.setenv("HOLON_MODEL", "gemini-3.8-flash-medium")
 
         with patch("sandbox_executor.cli.run_flow_pipeline") as mock_pipeline, patch("sys.exit") as mock_exit:
             mock_pipeline.return_value = {"status": "ok"}
@@ -3070,6 +3072,8 @@ class TestFlowRoleDispatch:
 
         monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
         monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
+        monkeypatch.setenv("HOLON_AGENT", "antigravity-agent")
+        monkeypatch.setenv("HOLON_MODEL", "gemini-3.8-flash-medium")
         with patch("sandbox_executor.cli.detect_holon_coherence", return_value=True):
             dispatcher = MagicMock(return_value=0)
             ctx = FlowContext(repo_dir=".", dispatcher=dispatcher)
@@ -3906,6 +3910,7 @@ class TestFlowDispatchMergeInteractions:
         intent_file = host.parent / "intent.json"
         intent_file.write_text(json.dumps({"slug": "resolved-runner", "goal": "g"}), encoding="utf-8")
         monkeypatch.setenv("HOLON_AGENT", "claude-agent")
+        monkeypatch.setenv("HOLON_MODEL", DEFAULT_MODELS["claude"])
         monkeypatch.delenv("HOLON_SKIP_PREFLIGHT", raising=False)
         order = MagicMock()
         order.probe.return_value = MagicMock(ok=True)

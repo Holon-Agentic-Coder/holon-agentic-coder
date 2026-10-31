@@ -4,8 +4,8 @@ Holon used to hard-code ``antigravity-agent`` and a model literal at every call 
 This module resolves both with a documented precedence and logs every decision together with its source:
 
 * Agent runner: explicit ``--agent``, then ``HOLON_AGENT``, then the harness agent detected from the runtime
-  environment, then :data:`FALLBACK_AGENT`.
-* Model: explicit ``--model``, then ``HOLON_MODEL``, then the per-runner :data:`DEFAULT_MODELS` table.
+  environment; raises :class:`MissingAgentRunnerError` if none is supplied.
+* Model: explicit ``--model``, then ``HOLON_MODEL``; raises :class:`MissingModelError` if none is supplied.
 
 Harness detection is disabled inside a Holon sandbox (``HOLON_ROLE`` or ``HOLON_IN_SANDBOX`` set), because there it
 would pick up the container's own agent rather than the operator's harness. It also ignores credential variables such
@@ -24,7 +24,7 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-# Runner used when no flag, environment variable or harness marker selects one.
+# Historical fallback identifier preserved for backfilling and default model lookup.
 FALLBACK_AGENT = "antigravity-agent"
 
 # Fixed values for back-filling provenance on historical records (old checkpoints, ledger rows without agent/model).
@@ -89,6 +89,20 @@ _FALSY_VALUES = frozenset({"", "0", "false", "no", "off"})
 
 class UnmappedAgentRunnerError(ValueError):
     """Raised when the resolved agent runner has no container image in :data:`AGENT_IMAGE_MAPPING`."""
+
+
+class MissingAgentRunnerError(ValueError):
+    """Raised when no agent runner could be resolved and no fallback default is in effect.
+
+    The caller must supply ``--agent`` or set ``HOLON_AGENT``, or run from a recognised agent harness.
+    """
+
+
+class MissingModelError(ValueError):
+    """Raised when no model could be resolved and no fallback default is in effect.
+
+    The caller must supply ``--model`` or set ``HOLON_MODEL``.
+    """
 
 
 @dataclass(frozen=True)
@@ -199,7 +213,7 @@ def _require_mapped(name: str, origin: str) -> None:
 def resolve_agent_runner(
     explicit: str | None, environ: Mapping[str, str] | None = None, *, log: bool = True
 ) -> Resolution:
-    """Resolve the agent runner: explicit flag, then ``HOLON_AGENT``, then harness detection, then the fallback.
+    """Resolve the agent runner: explicit flag, then ``HOLON_AGENT``, then harness detection.
 
     Args:
         explicit: Value of ``--agent`` (None or empty when not given).
@@ -210,6 +224,7 @@ def resolve_agent_runner(
         A :class:`Resolution` whose value is the canonical ``{id}-agent`` name.
 
     Raises:
+        MissingAgentRunnerError: If no agent runner was provided, configured, or detected.
         UnmappedAgentRunnerError: If the selected runner has no entry in :data:`AGENT_IMAGE_MAPPING`; the message lists
             the supported runners and names the flag or variable that supplied the value.
 
@@ -231,7 +246,10 @@ def resolve_agent_runner(
         reason = "no --agent, HOLON_AGENT or harness marker"
         if harness_detection_disabled(env):
             reason += "; harness detection is off inside the sandbox"
-        resolution = Resolution(FALLBACK_AGENT, "fallback", reason)
+        raise MissingAgentRunnerError(
+            f"Agent runner is mandatory ({reason}). "
+            "Provide --agent, set HOLON_AGENT, or run from a recognised agent harness."
+        )
     if log:
         logger.info(resolution.describe("Agent runner"))
     return resolution
@@ -245,7 +263,7 @@ def default_model_for(agent: str) -> str:
 def resolve_model(
     agent: str, explicit: str | None, environ: Mapping[str, str] | None = None, *, log: bool = True
 ) -> Resolution:
-    """Resolve the model: explicit flag, then ``HOLON_MODEL``, then the :data:`DEFAULT_MODELS` entry for ``agent``.
+    """Resolve the model: explicit flag, then ``HOLON_MODEL``; raises :class:`MissingModelError` if omitted.
 
     Args:
         agent: Resolved runner name (any form accepted by :func:`normalise_agent_id`).
@@ -256,6 +274,9 @@ def resolve_model(
     Returns:
         A :class:`Resolution` holding the model name.
 
+    Raises:
+        MissingModelError: If neither ``--model`` nor ``HOLON_MODEL`` was provided.
+
     Side effects:
         Logs the decision at INFO level unless ``log`` is False.
     """
@@ -265,7 +286,10 @@ def resolve_model(
     elif (env.get("HOLON_MODEL") or "").strip():
         resolution = Resolution(env["HOLON_MODEL"].strip(), "env", "HOLON_MODEL")
     else:
-        resolution = Resolution(default_model_for(agent), "table", f"default model for {canonical_agent_name(agent)}")
+        raise MissingModelError(
+            "Model is mandatory: no --model or HOLON_MODEL provided. "
+            f"Provide --model or set HOLON_MODEL (e.g. {default_model_for(agent)} for {canonical_agent_name(agent)})."
+        )
     if log:
         logger.info(resolution.describe("Model"))
     return resolution

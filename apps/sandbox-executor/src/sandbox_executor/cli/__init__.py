@@ -25,6 +25,8 @@ from sandbox_executor.agent_defaults import (
 )
 from sandbox_executor.agent_defaults import (
     FALLBACK_AGENT,
+    MissingAgentRunnerError,
+    MissingModelError,
     Resolution,
     UnmappedAgentRunnerError,
     image_for_agent,
@@ -1822,6 +1824,8 @@ def resolve_runner_and_model(agent: str | None, model: str | None) -> tuple[Reso
         ``(agent resolution, model resolution)``.
 
     Raises:
+        MissingAgentRunnerError: If no agent runner was provided, configured, or detected.
+        MissingModelError: If no model was provided or configured.
         UnmappedAgentRunnerError: If the selected runner has no container image.
     """
     agent_res = resolve_agent_runner(agent)
@@ -1912,7 +1916,7 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
         # The text report prints both decisions on stdout, so the resolvers' INFO log would show them twice.
         agent_res = resolve_agent_runner(args.agent, log=False)
         model_res = resolve_model(agent_res.value, args.model, log=False)
-    except UnmappedAgentRunnerError as exc:
+    except (UnmappedAgentRunnerError, MissingAgentRunnerError, MissingModelError) as exc:
         if args.json:
             print(json.dumps({"error": redact_cli_error(exc), "environment": environment}, indent=2))
         else:

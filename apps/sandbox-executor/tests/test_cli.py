@@ -630,6 +630,45 @@ class TestRepoUrlResolution(unittest.TestCase):
 class TestHolonFlowCLI(unittest.TestCase):
     """Hermetic unit tests for 'holon flow' CLI argument parsing, flags, and dispatching."""
 
+    def setUp(self):
+        self._env_patcher = patch.dict(
+            os.environ,
+            {
+                "HOLON_AGENT": "antigravity-agent",
+                "HOLON_MODEL": "gemini-3.8-flash-medium",
+            },
+        )
+        self._env_patcher.start()
+        self.addCleanup(self._env_patcher.stop)
+
+    def test_flow_fails_fast_without_agent_or_model(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            intent_file = os.path.join(tmp_dir, "intent.json")
+            with open(intent_file, "w", encoding="utf-8") as f:
+                json.dump({"slug": "test", "goal": "test"}, f)
+
+            # Fails fast when agent runner is omitted
+            with (
+                patch.dict(os.environ, {"HOLON_IN_SANDBOX": "1"}, clear=True),
+                patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
+                patch("sys.argv", ["holon", "flow", intent_file]),
+                self.assertRaises(SystemExit) as cm,
+            ):
+                main()
+            self.assertEqual(cm.exception.code, 1)
+            self.assertIn("Agent runner is mandatory", mock_stderr.getvalue())
+
+            # Fails fast when model is omitted
+            with (
+                patch.dict(os.environ, {"HOLON_IN_SANDBOX": "1"}, clear=True),
+                patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
+                patch("sys.argv", ["holon", "flow", intent_file, "--agent", "antigravity-agent"]),
+                self.assertRaises(SystemExit) as cm,
+            ):
+                main()
+            self.assertEqual(cm.exception.code, 1)
+            self.assertIn("Model is mandatory", mock_stderr.getvalue())
+
     def test_flow_skip_review_flag(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             intent_file = os.path.join(tmp_dir, "intent.json")
@@ -1213,7 +1252,9 @@ class TestDoctor(unittest.TestCase):
             output_excerpt="",
             hint="",
         )
-        args = argparse.Namespace(agent=None, model=None, json=as_json, timeout=None)
+        args = argparse.Namespace(
+            agent="antigravity-agent", model="gemini-3.8-flash-medium", json=as_json, timeout=None
+        )
         with (
             patch.dict(os.environ, env, clear=True),
             patch.object(local_llm, "host_models_json", return_value=host_config),

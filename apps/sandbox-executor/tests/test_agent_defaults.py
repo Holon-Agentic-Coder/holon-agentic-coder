@@ -7,9 +7,10 @@ from sandbox_executor import agent_defaults
 from sandbox_executor.agent_defaults import (
     AGENT_IMAGE_MAPPING,
     DEFAULT_MODELS,
-    FALLBACK_AGENT,
     LEGACY_DEFAULT_AGENT,
     LEGACY_DEFAULT_MODEL,
+    MissingAgentRunnerError,
+    MissingModelError,
     UnmappedAgentRunnerError,
     canonical_agent_name,
     detect_harness_agent,
@@ -27,7 +28,6 @@ from sandbox_executor.agent_defaults import (
         (None, {"HOLON_AGENT": "codex-agent", "CLAUDECODE": "1"}, "codex-agent", "env"),
         ("", {"HOLON_AGENT": "codex", "CLAUDECODE": "1"}, "codex-agent", "env"),
         (None, {"CLAUDECODE": "1"}, "claude-agent", "harness"),
-        (None, {}, FALLBACK_AGENT, "fallback"),
     ],
 )
 def test_agent_precedence(explicit, environ, expected, source):
@@ -35,14 +35,16 @@ def test_agent_precedence(explicit, environ, expected, source):
     assert (res.value, res.source) == (expected, source)
 
 
-def test_fallback_is_logged_at_info(caplog):
-    with caplog.at_level(logging.INFO, logger=agent_defaults.__name__):
-        res = resolve_agent_runner(None, {})
-    assert res.source == "fallback"
-    assert any(
-        r.levelno == logging.INFO and "antigravity-agent" in r.getMessage() and "source: fallback" in r.getMessage()
-        for r in caplog.records
-    )
+def test_missing_agent_raises_error():
+    with pytest.raises(MissingAgentRunnerError, match="mandatory"):
+        resolve_agent_runner(None, {})
+
+
+def test_missing_agent_error_mentions_how_to_fix():
+    with pytest.raises(MissingAgentRunnerError) as exc_info:
+        resolve_agent_runner(None, {})
+    msg = str(exc_info.value)
+    assert "--agent" in msg or "HOLON_AGENT" in msg
 
 
 @pytest.mark.parametrize(
@@ -79,9 +81,9 @@ def test_multiple_markers_use_documented_order_and_log_ignored(caplog):
 def test_sandbox_guard_disables_detection(guard):
     environ = {"CLAUDECODE": "1", **guard}
     assert detect_harness_agent(environ) is None
-    res = resolve_agent_runner(None, environ)
-    assert res.source == "fallback"
-    assert "sandbox" in res.reason
+    with pytest.raises(MissingAgentRunnerError) as exc_info:
+        resolve_agent_runner(None, environ)
+    assert "sandbox" in str(exc_info.value)
 
 
 def test_falsy_sandbox_guard_does_not_disable_detection():
@@ -146,7 +148,6 @@ def test_every_mapped_runner_has_a_default_model_and_image():
     [
         ("m-flag", {"HOLON_MODEL": "m-env"}, "m-flag", "flag"),
         (None, {"HOLON_MODEL": "m-env"}, "m-env", "env"),
-        (None, {}, DEFAULT_MODELS["claude"], "table"),
     ],
 )
 def test_model_precedence(explicit, environ, expected, source):
@@ -154,12 +155,23 @@ def test_model_precedence(explicit, environ, expected, source):
     assert (res.value, res.source) == (expected, source)
 
 
-def test_antigravity_default_model_is_accepted_by_agy():
-    default = resolve_model("antigravity-agent", None, {}).value
-    assert default == DEFAULT_MODELS["antigravity"]
-    assert default != "gemini-3.5-flash"
+def test_missing_model_raises_error():
+    with pytest.raises(MissingModelError, match="mandatory"):
+        resolve_model("claude-agent", None, {})
+
+
+def test_missing_model_error_mentions_how_to_fix():
+    with pytest.raises(MissingModelError) as exc_info:
+        resolve_model("antigravity-agent", None, {})
+    msg = str(exc_info.value)
+    assert "--model" in msg or "HOLON_MODEL" in msg
+    assert "gemini-3.8-flash-medium" in msg
+
+
+def test_antigravity_default_model_table_entry_is_accepted_by_agy():
+    assert DEFAULT_MODELS["antigravity"] != "gemini-3.5-flash"
     # The label carried by successful agy runs in the ledger, so calibration series stay continuous.
-    assert default == "gemini-3.8-flash-medium"
+    assert DEFAULT_MODELS["antigravity"] == "gemini-3.8-flash-medium"
 
 
 def test_legacy_constants_are_fixed():

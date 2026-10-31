@@ -47,7 +47,7 @@ the ensemble consensus model, the `pr-review-loop` architecture, and the multi-r
 
 ## 👥 Comprehensive Dynamic Persona Registry & Focus Areas
 
-Evaluate the Pull Request diff through activated specialist roles based exclusively on the files changed in the diff:
+Evaluate the change diff through activated specialist roles based exclusively on the files changed in the diff:
 
 ### 1. Technical Engineering & System Architecture Roles
 
@@ -182,7 +182,7 @@ which validate each record and serialise the append under `LedgerLock`.
 When posting review results to GitHub, adhere strictly to the following markdown structure:
 
 ```markdown
-## 🔍 Multi-Agent Ensemble PR Review (Iteration {iteration})
+## 🔍 Multi-Agent Ensemble Review (Iteration {iteration})
 
 **Pull Request:** [{repo_name}#{pr_number}]({pr_url})  
 **Target Commit:** `{target_commit}`  
@@ -254,7 +254,7 @@ FINDINGS: <int>
 When you run as one reviewer of the independent ensemble (one reviewer turn), these rules apply and take precedence over
 the loop instructions above:
 
-1. Review only the diff and PR description supplied in this prompt. Do not resolve findings, and do not run other review
+1. Review only the change diff and change description supplied in this prompt. Do not resolve findings, and do not run other review
    passes.
 2. Write the full report with your file-write tool to the report path given at the end of this prompt.
 3. End the report with the review trailer block as its final lines. Between the opening and closing marker lines sits
@@ -296,13 +296,13 @@ The final lines of a report with no findings:
 - **Current Iteration**: `{iteration}`
 - **PR Title**: `{pr_title}`
 
-### PR Description:
+### Change Description:
 
 ```markdown
 {pr_description}
 ```
 
-### Git Diff:
+### Change Diff:
 
 ```diff
 {diff}

@@ -35,4 +35,12 @@ and role prompts to be platform-agnostic (using terms like 'Review Loop', 'revie
 - Exported canonical function `build_review_consensus_report` alongside backward-compatible alias `build_pr_review_consensus_report`.
 - Updated test assertions in `apps/sandbox-executor/tests/test_review_report.py` and verified with `uv run pytest apps/sandbox-executor/tests/test_review_report.py` (13 tests passing).
 
+### Step 3: Update review ensemble prompt builders, scaffolding, and review loop template
+
+- Updated `holon-config/prompts/review_loop.template.md` headings, persona evaluation instructions, reviewer turn contract, and evaluation context sections to use platform-agnostic 'change diff' and 'change description' phrasing while retaining placeholder compatibility and Bean 0034 safety notices.
+- Updated `apps/sandbox-executor/src/sandbox_executor/review_ensemble.py` to support `change_description` and `change_diff` placeholders, modernized `_missing_inputs()` headers to `"Change description:"` and `"Change diff:"`, and updated `reviewer_contract()` instructions to `"review only the change diff and change description above"`.
+- Standardized `apps/sandbox-executor/src/sandbox_executor/scaffold.py` review loop prompt template to use 'change diff' and 'change description' terminology.
+- Ran template verification tests via `uv run pytest apps/sandbox-executor/tests/test_prompt_templates.py` (8 passed) and ensemble tests via `uv run pytest apps/sandbox-executor/tests/test_review_ensemble.py` (92 passed).
+
+
 

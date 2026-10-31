@@ -253,7 +253,7 @@ review persona registry.
 
 ## 👥 Dynamic Persona Registry & Focus Areas
 
-Evaluate the Pull Request diff through activated specialist roles based exclusively on the files changed in the diff:
+Evaluate the change diff through activated specialist roles based exclusively on the files changed in the diff:
 - **Principal Engineer / Tech Lead**: Code complexity, architectural fit, design patterns, readability.
 - **Solution Architect**: System boundaries, component coupling, integration patterns, API contracts, caching.
 - **QA & Test Engineer**: Test coverage, unit/integration test quality, edge cases, hermetic test isolation.
@@ -275,9 +275,9 @@ Review-Severity: {severity}
 - **Upstream Branch**: `{target_branch}`
 - **Ensemble Size**: `{ensemble_size}`
 - **Max Iterations**: `{max_iterations}`
-- **PR Title**: `{pr_title}`
-- **PR Description**: {pr_description}
-- **Git Diff**: {diff}
+- **Change Title**: `{pr_title}`
+- **Change Description**: {pr_description}
+- **Change Diff**: {diff}
 """
 
 PYTHON_GITIGNORE = [

@@ -241,6 +241,7 @@ def test_prompt_carries_diff_description_report_path_and_contract(tmp_path: Path
     assert "gh pr merge" in prompt
     assert all(rule in prompt for rule in REVIEWER_PROHIBITIONS)
     assert "{reviewer_1_id}" in prompt  # unknown placeholders are left alone
+    assert "review only the change diff and change description above" in prompt
 
 
 REVIEWER_PROHIBITIONS = (
@@ -267,7 +268,9 @@ def test_prompt_contract_forbids_writes_beyond_the_report(tmp_path: Path, rule: 
 def test_prompt_appends_diff_and_description_when_the_template_lacks_them(tmp_path: Path) -> None:
     prompt = build_reviewer_prompt("Review {target}.", make_request(tmp_path), "R/report.md")
     assert prompt.startswith("Review abc1234.")
-    assert "Prints a greeting." in prompt and "print('hi')" in prompt
+    assert "Change description:\n\n```markdown\nPrints a greeting.\n```" in prompt
+    assert "Change diff:\n\n```diff\n" in prompt and "print('hi')" in prompt
+    assert "review only the change diff and change description above" in prompt
 
 
 # --- Reviewer turns ------------------------------------------------------------------------------------------------

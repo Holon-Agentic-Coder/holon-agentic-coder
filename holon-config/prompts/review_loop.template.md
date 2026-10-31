@@ -254,8 +254,8 @@ FINDINGS: <int>
 When you run as one reviewer of the independent ensemble (one reviewer turn), these rules apply and take precedence over
 the loop instructions above:
 
-1. Review only the change diff and change description supplied in this prompt. Do not resolve findings, and do not run other review
-   passes.
+1. Review only the change diff and change description supplied in this prompt. Do not resolve findings, and do not run
+   other review passes.
 2. Write the full report with your file-write tool to the report path given at the end of this prompt.
 3. End the report with the review trailer block as its final lines. Between the opening and closing marker lines sits
    one JSON object with exactly the keys `verdict` (`APPROVED` or `CHANGES_REQUESTED`), `critical`, `important` and

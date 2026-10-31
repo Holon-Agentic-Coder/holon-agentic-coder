@@ -164,7 +164,7 @@ def _review_record(worker_id: int, seq: int) -> dict:
     return {
         "action_id": f"ACT-REV-{worker_id}-{seq:04d}",
         "execution_id": f"REV-ITR-{seq + 1}-{worker_id}",
-        "action": f"PR Review Loop iteration {seq + 1} evaluation for worker {worker_id}",
+        "action": f"Review Loop iteration {seq + 1} evaluation for worker {worker_id}",
         "category": "code",
         "target": "I-1/P-2/E-3/_",
         "outcome": "success",

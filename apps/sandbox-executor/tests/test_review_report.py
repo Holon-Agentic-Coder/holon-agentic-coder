@@ -55,10 +55,11 @@ def test_report_names_each_reviewers_real_agent_and_model():
     ]
     body = _report(reviewers)
 
+    assert body.startswith("## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration 1)")
     for agent, model in (("claude-agent", "model-one"), ("codex-agent", "model-two"), ("fake-agent", "fake-model")):
         assert f"agent `{agent}`, model `{model}`" in body
     assert "verdict `CHANGES_REQUESTED` (critical: 0, important: 1, nit: 0)" in body
-    assert "`important` `src/app.py:12` (reviewer 3): important problem in the handler" in body
+    assert "| `important` | `src/app.py:12` | Reviewer 3 | important problem in the handler |" in body
     assert "Reviewers: 3 configured, 3 completed." in body
     assert "**Verdict:** `CHANGES_REQUESTED`" in body
     assert "- **CI:** 2/2 passed, 0 failing, 0 pending (github_cli)" in body
@@ -90,10 +91,10 @@ def test_untrusted_finding_text_cannot_break_out_of_its_line():
     reviewer = ReviewerResult.completed(1, "a", "m", ".holon/review/iter-1/reviewer-1/report.md", "r", parsed)
     body = _report([reviewer])
 
-    line = next(line for line in body.splitlines() if line.startswith("- `nit`"))
+    line = next(line for line in body.splitlines() if line.startswith("| `nit`"))
     assert "\n## injected" not in body
     assert "<script>" not in body
-    assert line == "- `nit` `a'b.py` (reviewer 1): line one ## injected heading &lt;script&gt;'x'&lt;/script&gt;"
+    assert line == "| `nit` | `a'b.py` | Reviewer 1 | line one ## injected heading &lt;script&gt;'x'&lt;/script&gt; |"
 
 
 def test_unmeasured_ci_is_never_reported_as_a_pass():
@@ -123,12 +124,62 @@ def test_title_is_intent_then_pr_title_then_pr_number_or_branch(intent, target, 
 
 
 def test_report_uses_the_resolved_title_and_falls_back_to_the_target_without_one():
-    assert _report([], title="PR title").startswith("## Holon Review: PR title (iteration 1)")
-    assert _report([]).startswith("## Holon Review: 42 (iteration 1)")
+    approved = _report([], ensemble_verdict="APPROVED", approved=True)
+    assert approved.startswith("## ✅ Ensemble Consensus Review — APPROVED (3/3)")
+    changes_requested = _report([], title="PR title")
+    assert changes_requested.startswith("## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration 1)")
+    assert _report([]).startswith("## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration 1)")
     assert "No findings were reported." in _report([])
     assert build_review_consensus_report("/nonexistent", "42", _consensus(), []) == build_pr_review_consensus_report(
         "/nonexistent", "42", _consensus(), []
     )
+
+
+def test_approved_report_renders_consensus_header_verified_bullets_and_human_merge_notice():
+    reviewers = [
+        _reviewer(1, "claude-agent", "model-one"),
+        _reviewer(2, "codex-agent", "model-two"),
+        _reviewer(3, "antigravity-agent", "model-three"),
+    ]
+    body = _report(reviewers, approved=True, ensemble_verdict="APPROVED")
+
+    assert body.startswith("## ✅ Ensemble Consensus Review — APPROVED (3/3)")
+    assert "- **Verified:** Architectural refactorings and code hygiene verified." in body
+    assert (
+        "- **Verified:** Backward compatibility and API surface stability maintained "
+        "(including legacy function aliases)." in body
+    )
+    assert (
+        "- **Verified:** Test execution counts and passing assertions verified (CI checks and unit test pass rates)."
+        in body
+    )
+    assert "- **Verified:** Quality gates and complexity baselines fully satisfied." in body
+    assert (
+        "- **Verified:** 3-ledger provenance integrity maintained across "
+        "`intents.jsonl`, `plans.jsonl`, and `executions.jsonl`." in body
+    )
+    assert (
+        "> **Bean 0034 Notice:** Under Bean 0034 (Human-Only PR Merging), autonomous merging to `main` is strictly "
+        "prohibited. Pipeline halts for manual human approval." in body
+    )
+    assert "### Reviewers" in body
+    assert "Reviewers: 3 configured, 3 completed." in body
+
+
+def test_changes_requested_report_renders_header_and_findings_table():
+    reviewers = [
+        _reviewer(1, "claude-agent", "model-one"),
+        objecting_reviewer(2, "critical"),
+        objecting_reviewer(3, "important"),
+    ]
+    body = _report(reviewers, ensemble_verdict="CHANGES_REQUESTED", iterations=2)
+
+    assert body.startswith("## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration 2)")
+    assert "| Severity | Location | Reviewer | Summary |" in body
+    assert "| -------- | -------- | -------- | ------- |" in body
+    assert "| `critical` | `src/app.py:12` | Reviewer 2 | critical problem in the handler |" in body
+    assert "| `important` | `src/app.py:12` | Reviewer 3 | important problem in the handler |" in body
+    assert "Bean 0034 Notice" not in body
 
 
 @pytest.mark.parametrize("target", ["42", "feat/raw"])

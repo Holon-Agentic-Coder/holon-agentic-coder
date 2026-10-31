@@ -47,7 +47,19 @@ the ensemble consensus model, the `pr-review-loop` architecture, and the multi-r
 
 ## 👥 Comprehensive Dynamic Persona Registry & Focus Areas
 
-Evaluate the change diff through activated specialist roles based exclusively on the files changed in the diff:
+Evaluate the change diff through activated specialist roles based exclusively on the files changed in the diff. Reviewer
+personas must rigorously synthesize and verify the following holistic quality criteria:
+
+- **Architectural Refactorings & Simplification**: Clean modular boundaries, reduction of technical debt, avoidance of
+  over-engineering, and adherence to design patterns.
+- **Backward Compatibility & Surface Stability**: Strict preservation of public API interfaces, legacy parameter
+  aliases, and non-breaking contract deprecation paths.
+- **Test Execution Counts & Pass Rates**: Comprehensive coverage of positive, boundary, and error cases; green CI checks
+  and 100% test pass assertions.
+- **Quality Gates & Complexity Baselines**: Satisfied linting, strict formatting, type safety, and containment within
+  complexity baselines.
+- **3-Ledger Provenance Integrity**: Continuous traceability and append-only immutability across `intents.jsonl`,
+  `plans.jsonl`, and `executions.jsonl`.
 
 ### 1. Technical Engineering & System Architecture Roles
 
@@ -179,38 +191,29 @@ which validate each record and serialise the append under `LedgerLock`.
 
 ## 📤 Standard Review Output Schema
 
-When posting review results to GitHub, adhere strictly to the following markdown structure:
+When posting review results to GitHub, adhere strictly to the following markdown structure depending on the verdict:
+
+### Approved Consensus Review Schema
 
 ```markdown
-## 🔍 Multi-Agent Ensemble Review (Iteration {iteration})
+## ✅ Ensemble Consensus Review — APPROVED ({configured}/{configured})
 
-**Pull Request:** [{repo_name}#{pr_number}]({pr_url})  
-**Target Commit:** `{target_commit}`  
-**Base Branch:** `{target_branch}`  
-**Review Type:** {ensemble_size}-Agent Independent Ensemble Consensus Review
-
----
-
-### 👥 Dynamic Persona Activation & Assessment Matrix
-
-| Persona                            | Activation Justification  | Assessment                                           |
-| :--------------------------------- | :------------------------ | :--------------------------------------------------- |
-| **Principal Engineer / Tech Lead** | [Files changed in diff]   | **APPROVED**: [Technical assessment]                 |
-| **Solution Architect**             | [Files changed in diff]   | **APPROVED**: [Architectural assessment]             |
-| **QA & Test Engineer**             | [Test files changed]      | **APPROVED**: [Coverage and test pass assessment]    |
-| **Security Architect**             | [Security checks & files] | **APPROVED**: [Hygiene and vulnerability assessment] |
-| **DevOps & SRE**                   | [Build & CI configs]      | **APPROVED**: [Pipeline and container assessment]    |
+- **Pull Request:** [{repo_name}#{pr_number}]({pr_url})
+- **Target Commit:** `{target_commit}`
+- **Base Branch:** `{target_branch}`
+- **Iteration:** `{iteration}`
+- **Verdict:** `APPROVED`
 
 ---
 
-### 📋 Evaluation Summary & Verified Positive Findings
+### 📋 Evaluation Summary
 
-1. **[Key Change / Feature Area 1]**:
-   - [Detailed verified achievement or implementation note]
-   - [Verification evidence from tests/diff]
-
-2. **[Key Change / Feature Area 2]**:
-   - [Detailed verified achievement or implementation note]
+- **Verified:** Architectural refactorings and code simplification verified.
+- **Verified:** Backward compatibility guarantees and interface stability maintained (including legacy function
+  aliases).
+- **Verified:** Test execution counts and passing assertions verified ({ci_passed}/{ci_total} passing).
+- **Verified:** Quality gates and complexity baselines fully satisfied.
+- **Verified:** 3-ledger provenance integrity maintained across `intents.jsonl`, `plans.jsonl`, and `executions.jsonl`.
 
 ---
 
@@ -228,6 +231,43 @@ When posting review results to GitHub, adhere strictly to the following markdown
 
 > [!NOTE] **Bean 0034 Notice:** Under Bean 0034 (Human-Only PR Merging), autonomous merging to `main` is strictly
 > prohibited. Pipeline halts for manual human approval.
+```
+
+### Changes-Requested Review Schema
+
+```markdown
+## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration {iteration})
+
+- **Pull Request:** [{repo_name}#{pr_number}]({pr_url})
+- **Target Commit:** `{target_commit}`
+- **Base Branch:** `{target_branch}`
+- **Iteration:** `{iteration}`
+- **Verdict:** `CHANGES_REQUESTED`
+
+---
+
+### 👥 Reviewers
+
+Reviewers: {ensemble_size} configured, {completed} completed.
+
+- **Reviewer 1** (`{reviewer_1_id}`): `CHANGES_REQUESTED` (Critical: 1, Important: 0, Nit: 0)
+- **Reviewer 2** (`{reviewer_2_id}`): `APPROVED` (Critical: 0, Important: 0, Nit: 0)
+- **Reviewer 3** (`{reviewer_3_id}`): `APPROVED` (Critical: 0, Important: 0, Nit: 0)
+
+---
+
+### 📋 Findings
+
+| Severity   | Location            | Reviewer   | Summary                             |
+| ---------- | ------------------- | ---------- | ----------------------------------- |
+| `critical` | `src/example.py:42` | Reviewer 1 | Critical regression in auth handler |
+
+---
+
+### 🗳️ Checks
+
+- **Mergeability:** `CLEAN`
+- **CI:** `{ci_passed}/{ci_total} PASS` ({ci_passed} successful, 0 failing, 0 pending)
 ```
 
 ---

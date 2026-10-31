@@ -8,7 +8,7 @@ is equivalent to invoking the stages by hand; the flow orchestrates and validate
    fail (never fabricate a plan) when no planner produced one.
 3. Stage 3 (Plan Execution): Dispatch the executor agent, adopt its execution branch, and fail an execution
    whose diff against the plan branch is empty outside holon-knowledge/ledger/, plans/ and executions/.
-4. Stage 4 (PR Review Loop): Autonomous review loop evaluating diffs and test results, strictly enforcing
+4. Stage 4 (Review Loop): Autonomous review loop evaluating diffs and test results, strictly enforcing
    Bean 0034 (Human-Only PR Merging) by halting at consensus approval without merging to main.
 5. Stage 5 (Post-Execution Calibration): Run post-execution calibration engine (Bean 0038) on execution branch,
    producing calibration analysis report on the /calibrated branch.
@@ -1460,7 +1460,7 @@ def post_pr_review_consensus(  # noqa: PLR0912, PLR0913, PLR0915
     reviewers: list[ReviewerResult] | None = None,
     title: str | None = None,
 ) -> dict[str, Any]:
-    """Dual-post PR review consensus to GitHub and handle author self-approval HTTP 422 fallback (Bean 0119).
+    """Dual-post review consensus to GitHub and handle author self-approval HTTP 422 fallback (Bean 0119).
 
     Always posts a top-level discussion comment via 'gh pr comment' for conversation tab
     visibility, and submits an official review via 'gh pr review'. When GitHub returns
@@ -1494,7 +1494,7 @@ def post_pr_review_consensus(  # noqa: PLR0912, PLR0913, PLR0915
     gh_env = {**os.environ, **(proxy_env or {})} if proxy_env else None
 
     if not gh_available:
-        diag_msg = "GitHub CLI ('gh') is not available in PATH; skipping PR review dual-posting."
+        diag_msg = "GitHub CLI ('gh') is not available in PATH; skipping review consensus dual-posting."
         logger.warning(diag_msg)
         return {
             "target": clean_target,
@@ -3147,7 +3147,7 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
 
 
 # ---------------------------------------------------------------------------
-# Stage 4: PR Review Loop Stage (strictly enforcing Bean 0034)
+# Stage 4: Review Loop Stage (strictly enforcing Bean 0034)
 # ---------------------------------------------------------------------------
 
 
@@ -3457,7 +3457,7 @@ def _record_reviewer_rows(
                 "ACT-REV",
                 review_target,
                 iteration,
-                f"PR Review Loop iteration {iteration} reviewer {result.index} {summary['status'].lower()}",
+                f"Review Loop iteration {iteration} reviewer {result.index} {summary['status'].lower()}",
                 "success" if clean else "failure",
                 severity=None if worst == "clean" else worst,
                 finding_ids=finding_ids,
@@ -3479,7 +3479,7 @@ def _record_reviewer_rows(
                     "ACT-FIND",
                     review_target,
                     iteration,
-                    f"PR Review Loop iteration {iteration} finding detected: {finding_id}",
+                    f"Review Loop iteration {iteration} finding detected: {finding_id}",
                     "failure",
                     severity=finding.severity,
                     finding_ids=[finding_id],
@@ -3504,7 +3504,7 @@ def _record_infrastructure_findings(  # noqa: PLR0913
                 "ACT-FIND",
                 review_target,
                 iteration,
-                f"PR Review Loop iteration {iteration} finding detected: {finding_id}",
+                f"Review Loop iteration {iteration} finding detected: {finding_id}",
                 "failure",
                 severity="critical" if finding_id.startswith("FIND-DIRTY") else "important",
                 finding_ids=[finding_id],
@@ -3936,7 +3936,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         action_record = {
             "action_id": generate_action_id("ACT-REV"),
             "execution_id": f"REV-ITR-{iteration}-{int(time.time())}",
-            "action": f"PR Review Loop iteration {iteration} evaluation for {review_target}",
+            "action": f"Review Loop iteration {iteration} evaluation for {review_target}",
             "category": "code",
             "target": review_target,
             "outcome": "success" if ensemble_verdict is ConsensusVerdict.APPROVED else "failure",
@@ -4067,15 +4067,15 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             context.log(f"Warning: Posting review consensus for '{review_target}' failed: {safe_error}")
             posting_res = {"error": safe_error}
 
-        # Discrete Action 4: PR Review Posting Event (Bean 0113), recorded whether or not posting succeeded
+        # Discrete Action 4: Review Posting Event (Bean 0113), recorded whether or not posting succeeded
         posted = bool(posting_res.get("dual_posted") or (posting_res.get("official_review") or {}).get("success"))
         posting_action_record: dict[str, Any] = {
             "action_id": generate_action_id("ACT-POST"),
             "execution_id": f"REV-POST-{int(time.time())}",
             "action": (
-                f"PR Review consensus dual-posted to GitHub for {review_target}"
+                f"Review consensus dual-posted to GitHub for {review_target}"
                 if posted
-                else f"PR Review consensus posting to GitHub failed for {review_target}"
+                else f"Review consensus posting to GitHub failed for {review_target}"
             ),
             "category": "code",
             "target": review_target,
@@ -4120,9 +4120,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "status": "halted_for_human" if consensus_reached else "failed",
         "entry_type": "summary",
         "summary": (
-            f"PR Review Loop reached consensus approval after {iteration} iteration(s) (Bean 0034 safety halt)"
+            f"Review Loop reached consensus approval after {iteration} iteration(s) (Bean 0034 safety halt)"
             if consensus_reached
-            else f"PR Review Loop halted without consensus after {iteration} iteration(s)"
+            else f"Review Loop halted without consensus after {iteration} iteration(s)"
             + (f": {'; '.join(halt_reasons)}" if halt_reasons else "")
         ),
         "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
@@ -4145,7 +4145,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             append_action_event(
                 {
                     "execution_id": review_exec_id,
-                    "action": f"PR Review Loop executed for {review_target}",
+                    "action": f"Review Loop executed for {review_target}",
                     "category": "test",
                     "target": review_target,
                     "verdict": "success" if consensus_reached else "failure",
@@ -4236,14 +4236,14 @@ def _checkout_execution_branch(context: FlowContext) -> str | None:
 
 
 def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0912, PLR0915
-    """Execute Stage 4: PR Review Loop.
+    """Execute Stage 4: Review Loop.
 
     Evaluates diffs, test logs, and safety invariants. Enforces Bean 0034 (Human-Only PR Merging):
     Upon consensus approval, halts unconditionally with status HALTED_FOR_HUMAN and NEVER merges to main.
     Operates unattended: never prompts for interactive review questions.
     """
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    context.log("Starting Stage 4: PR Review Loop")
+    context.log("Starting Stage 4: Review Loop")
 
     if not context.execution_branch:
         err = "Cannot run Review stage without an active execution_branch in FlowContext."
@@ -4466,7 +4466,7 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
     halt_reason = (
         "Dry-run review loop finished; consensus not measured and not approved."
         if dry_run_simulation
-        else "PR Review Loop reached consensus approval."
+        else "Review Loop reached consensus approval."
     )
     context.log(
         f"[BEAN 0034 SAFETY HALT] {halt_reason} "
@@ -4572,12 +4572,12 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
         print(f"  Consensus      : {consensus.get('status', 'unknown').upper()}")
         print("===============================================================\n")
         if approved:
-            print("[BEAN 0034 SAFETY HALT] PR Review Loop reached consensus approval.")
+            print("[BEAN 0034 SAFETY HALT] Review Loop reached consensus approval.")
             print("Pipeline halted for human review (autonomous merge prohibited).")
             cmd = loop_res.get("human_approval_command", f"holon review approve {target}")
             print(f"To approve manually, run: {cmd}\n")
         else:
-            print(f"PR Review Loop did not reach consensus approval (status={consensus.get('status')}).")
+            print(f"Review Loop did not reach consensus approval (status={consensus.get('status')}).")
             if loop_res.get("error"):
                 print(f"Reason: {_bounded_error_context(str(loop_res['error']))}")
             print()

@@ -1,4 +1,4 @@
-"""The Stage 4 PR review consensus report, rendered only from real reviewer results.
+"""The Stage 4 review consensus report, rendered only from real reviewer results.
 
 Every line of the report comes from data the review actually produced: the :class:`ReviewerResult` objects returned
 by :func:`~sandbox_executor.review_ensemble.run_ensemble`, the ensemble verdict, the mergeability and CI probes, and the
@@ -25,6 +25,7 @@ from sandbox_executor.review_target import ReviewTarget
 
 __all__ = [
     "build_pr_review_consensus_report",
+    "build_review_consensus_report",
     "render_finding_lines",
     "render_reviewer_line",
     "resolve_report_title",
@@ -168,7 +169,7 @@ def _reviewer_section(reviewers: Sequence[ReviewerResult], configured: int) -> l
     return lines
 
 
-def build_pr_review_consensus_report(
+def build_review_consensus_report(
     repo_dir: str,
     target: str,
     consensus_data: Mapping[str, Any],
@@ -192,14 +193,14 @@ def build_pr_review_consensus_report(
     configured = int(consensus_data.get("ensemble_size") or len(reviewers))
     report_title = title or resolve_report_title(consensus_data.get("intent_data"), None, clean_target)
     lines = [
-        f"## Holon PR Review: {report_title} (iteration {consensus_data.get('iterations', 1)})",
+        f"## Holon Review: {report_title} (iteration {consensus_data.get('iterations', 1)})",
         "",
         f"**Pull Request:** {_pr_link(repo_dir, clean_target, consensus_data)}  ",
         f"**Target Commit:** `{_target_commit(repo_dir, consensus_data)}`  ",
         f"**Base Branch:** `{str(consensus_data.get('base_branch') or 'main').strip()}`  ",
         f"**Verdict:** `{verdict}`",
         "",
-        "Approval needs every reviewer to approve with zero findings, plus a mergeable PR and green CI.",
+        "Approval needs every reviewer to approve with zero findings, plus a mergeable change branch and green CI.",
         "",
         *_reviewer_section(reviewers, configured),
         "",
@@ -212,3 +213,6 @@ def build_pr_review_consensus_report(
         HUMAN_MERGE_NOTICE,
     ]
     return "\n".join(lines)
+
+
+build_pr_review_consensus_report = build_review_consensus_report

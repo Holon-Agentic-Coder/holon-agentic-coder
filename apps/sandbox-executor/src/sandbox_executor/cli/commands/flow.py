@@ -87,7 +87,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     parser.add_argument(
         "--skip-review",
         action="store_true",
-        help="Skip Stage 4 (PR review loop) and proceed to calibration.",
+        help="Skip Stage 4 (review loop) and proceed to calibration.",
     )
     parser.add_argument(
         "--skip-calibrate",

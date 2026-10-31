@@ -1945,8 +1945,8 @@ class TestSemanticPRAndConsensusReview:
         # 4. No resolver row: no automatic resolver exists
         assert not [r for r in action_records if str(r.get("action_id", "")).startswith("ACT-RES")]
 
-        # 5. PR review dual-posting action record
-        post_records = [r for r in action_records if "PR Review consensus dual-posted" in r.get("action", "")]
+        # 5. Review dual-posting action record
+        post_records = [r for r in action_records if "Review consensus dual-posted" in r.get("action", "")]
         assert len(post_records) == 1
         assert post_records[0]["outcome"] == "success"
         assert "dual-post" in post_records[0]["labels"]

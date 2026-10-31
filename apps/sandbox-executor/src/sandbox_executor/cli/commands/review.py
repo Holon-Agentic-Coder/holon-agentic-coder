@@ -1,4 +1,4 @@
-"""Review command module for running native review loop on execution branch or PR."""
+"""Review command module for running native review loop on execution branch or change branch."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "review-loop",
         aliases=["review", "pr-review-loop"],
         help=(
-            "Run autonomous native review loop on an execution branch or pull request (Bean 0118). "
+            "Run autonomous native review loop on an execution branch or change branch (Bean 0118). "
             "Fails closed: exits 1 unless the consensus is approved and posted."
         ),
     )

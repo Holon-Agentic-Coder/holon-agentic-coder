@@ -5,7 +5,11 @@ import re
 
 import pytest
 from sandbox_executor.review_ensemble import ParsedTrailer, ReviewCounts, ReviewerResult, ReviewerVerdict, ReviewFinding
-from sandbox_executor.review_report import build_pr_review_consensus_report, resolve_report_title
+from sandbox_executor.review_report import (
+    build_pr_review_consensus_report,
+    build_review_consensus_report,
+    resolve_report_title,
+)
 from sandbox_executor.review_target import ReviewTarget
 
 from tests.review_fakes import failed_reviewer, objecting_reviewer
@@ -119,9 +123,12 @@ def test_title_is_intent_then_pr_title_then_pr_number_or_branch(intent, target, 
 
 
 def test_report_uses_the_resolved_title_and_falls_back_to_the_target_without_one():
-    assert _report([], title="PR title").startswith("## Holon PR Review: PR title (iteration 1)")
-    assert _report([]).startswith("## Holon PR Review: 42 (iteration 1)")
+    assert _report([], title="PR title").startswith("## Holon Review: PR title (iteration 1)")
+    assert _report([]).startswith("## Holon Review: 42 (iteration 1)")
     assert "No findings were reported." in _report([])
+    assert build_review_consensus_report("/nonexistent", "42", _consensus(), []) == build_pr_review_consensus_report(
+        "/nonexistent", "42", _consensus(), []
+    )
 
 
 @pytest.mark.parametrize("target", ["42", "feat/raw"])

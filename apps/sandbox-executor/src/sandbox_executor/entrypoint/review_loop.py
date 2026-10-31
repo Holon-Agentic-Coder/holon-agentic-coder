@@ -173,7 +173,7 @@ def _record_preparation_failure(repo_dir: str, raw: str, stage: str, detail: str
     record = {
         "action_id": generate_action_id("ACT-REV"),
         "execution_id": f"REV-PREP-{stage}-{int(datetime.now(UTC).timestamp())}",
-        "action": f"PR Review Loop preparation ({stage}) failed for {raw}",
+        "action": f"Review Loop preparation ({stage}) failed for {raw}",
         "category": "code",
         "target": raw,
         "outcome": "failure",
@@ -451,7 +451,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             print(f"  Reason         : {_bounded_error_context(str(loop_res['error']))}")
         print("===============================================================\n")
         if approved:
-            print("[BEAN 0034 SAFETY HALT] PR Review Loop reached consensus approval.")
+            print("[BEAN 0034 SAFETY HALT] Review Loop reached consensus approval.")
             print("Pipeline halted for human review (autonomous merge prohibited).")
             cmd = loop_res.get("human_approval_command", f"holon review approve {args.target}")
             print(f"To approve manually, run: {cmd}\n")

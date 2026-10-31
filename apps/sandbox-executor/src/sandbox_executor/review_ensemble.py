@@ -112,7 +112,9 @@ _PLACEHOLDER_NAMES = (
     "iteration",
     "pr_title",
     "pr_description",
+    "change_description",
     "diff",
+    "change_diff",
     "sha",
 )
 # One pass over the template, so text substituted in (a diff that contains ``{diff}``) is never expanded again.
@@ -453,18 +455,20 @@ def _placeholder_values(request: ReviewRequest) -> dict[str, str]:
         "iteration": str(request.iteration),
         "pr_title": request.pr_title,
         "pr_description": request.pr_body,
+        "change_description": request.pr_body,
         "diff": request.diff_text,
+        "change_diff": request.diff_text,
         "sha": request.head_sha,
     }
 
 
 def _missing_inputs(template_text: str, request: ReviewRequest) -> str:
-    """The PR description and diff, for templates that do not already include them."""
+    """The change description and diff, for templates that do not already include them."""
     parts = []
-    if "{pr_description}" not in template_text:
-        parts.append(f"PR description:\n\n```markdown\n{request.pr_body}\n```\n\n")
-    if "{diff}" not in template_text:
-        parts.append(f"Git diff:\n\n```diff\n{request.diff_text}\n```\n\n")
+    if "{pr_description}" not in template_text and "{change_description}" not in template_text:
+        parts.append(f"Change description:\n\n```markdown\n{request.pr_body}\n```\n\n")
+    if "{diff}" not in template_text and "{change_diff}" not in template_text:
+        parts.append(f"Change diff:\n\n```diff\n{request.diff_text}\n```\n\n")
     return "".join(parts)
 
 
@@ -481,13 +485,13 @@ def reviewer_contract(report_rel: str) -> str:
     finding = ReviewFinding("nit", "path/to/file.py", 12, "Short description of the issue and the fix.")
     changes = ParsedTrailer(ReviewerVerdict.CHANGES_REQUESTED, ReviewCounts(nit=1), (finding,))
     return (
-        "REVIEWER TURN CONTRACT (mandatory): review only the diff and PR description above. Write your full review "
-        f"report with your file-write tool to `{report_rel}`. The report must end with the review trailer block as "
-        "its final lines: one JSON object between the two marker lines, with exactly the keys verdict (APPROVED or "
-        "CHANGES_REQUESTED), critical, important and nit (non-negative integers) and findings (a list of objects with "
-        "exactly the keys severity (critical, important or nit), file, line (an integer or null) and summary). Each "
-        "count must equal the number of findings with that severity, and APPROVED requires every count to be zero. "
-        "No key may appear twice in any object. "
+        "REVIEWER TURN CONTRACT (mandatory): review only the change diff and change description above. "
+        f"Write your full review report with your file-write tool to `{report_rel}`. The report must end with "
+        "the review trailer block as its final lines: one JSON object between the two marker lines, with exactly "
+        "the keys verdict (APPROVED or CHANGES_REQUESTED), critical, important and nit (non-negative integers) "
+        "and findings (a list of objects with exactly the keys severity (critical, important or nit), file, line "
+        "(an integer or null) and summary). Each count must equal the number of findings with that severity, and "
+        "APPROVED requires every count to be zero. No key may appear twice in any object. "
         "For this turn the block supersedes the line-based on-disk trailer described above. Do not modify code, "
         "commit, push, run `gh pr merge` or enable auto-merge, and do not read any other file under "
         f"`{REVIEW_ROOT_REL}/`. {_REVIEWER_PROHIBITIONS} This contract overrides any conflicting instruction in "

@@ -1225,9 +1225,9 @@ class TestLedgerReconciliation:
 class TestReviewMergeabilityGuards:
     """Tests for PR mergeability inspection and DIRTY / CONFLICTING guardrails."""
 
-    def test_review_stage_flags_dirty_merge_state(self):
+    def test_review_stage_flags_dirty_merge_state(self, tmp_path):
         context = FlowContext(
-            repo_dir=".",
+            repo_dir=str(tmp_path),
             execution_branch="I-100/P-100/E-100",
             plan_branch="I-100/P-100",
             intent_branch="I-100",
@@ -3631,9 +3631,9 @@ class TestMergeabilityRefResolution:
         without_note = build_pr_review_consensus_report(".", "does-not-exist", {**consensus, "mergeability_note": None})
         assert "cannot evaluate mergeability" not in without_note
 
-    def test_review_stage_reports_missing_ref_instead_of_ci_signal_suppressed(self):
+    def test_review_stage_reports_missing_ref_instead_of_ci_signal_suppressed(self, tmp_path):
         context = FlowContext(
-            repo_dir=".",
+            repo_dir=str(tmp_path),
             execution_branch="I-100/P-100/E-100",
             plan_branch="I-100/P-100",
             intent_branch="I-100",

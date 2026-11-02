@@ -42,24 +42,23 @@ the ensemble consensus model, the `pr-review-loop` architecture, and the multi-r
     `holon review-loop`; callers without a `FlowContext` use the context-free
     `sandbox_executor.ledger.try_append_action_record(..., preserve_shape=True)`), never by writing to the file
     directly.
+11. **Mandatory Target-Branch Conflict Gate**: Prior to posting an approved consensus review to GitHub or executing
+    Stage 5 calibration, verify `gh pr view <pr> --json mergeable,mergeStateStatus`. If `mergeable == "CONFLICTING"` or
+    `mergeStateStatus == "DIRTY"`, immediately fetch `origin/main`, merge, and resolve conflicts.
+12. **Fast Ledger-Only Conflict Resolution**: When conflicts are strictly confined to `holon-knowledge/ledger/*.jsonl`,
+    interleave or append entries chronologically by `created_at`, verify valid JSON syntax, and skip test suite
+    execution.
+13. **Review the Increment (Bean 0170)**: The first complete ensemble reviews the whole PR and records `voted_head`.
+    Later iterations evaluate `git diff <voted_head>..HEAD`, reporting Critical/Important defects anywhere and raising
+    Nits only on lines the increment changed.
+14. **Stage 5 Pre-Merge Calibration**: Stage 5 calibration (`holon calibrate`) is executed prior to human merge,
+    producing the `/calibrated` branch and incorporating the calibration report into the PR head diff before merge.
 
 ---
 
 ## 👥 Comprehensive Dynamic Persona Registry & Focus Areas
 
-Evaluate the change diff through activated specialist roles based exclusively on the files changed in the diff. Reviewer
-personas must rigorously synthesize and verify the following holistic quality criteria:
-
-- **Architectural Refactorings & Simplification**: Clean modular boundaries, reduction of technical debt, avoidance of
-  over-engineering, and adherence to design patterns.
-- **Backward Compatibility & Surface Stability**: Strict preservation of public API interfaces, legacy parameter
-  aliases, and non-breaking contract deprecation paths.
-- **Test Execution Counts & Pass Rates**: Comprehensive coverage of positive, boundary, and error cases; green CI checks
-  and 100% test pass assertions.
-- **Quality Gates & Complexity Baselines**: Satisfied linting, strict formatting, type safety, and containment within
-  complexity baselines.
-- **3-Ledger Provenance Integrity**: Continuous traceability and append-only immutability across `intents.jsonl`,
-  `plans.jsonl`, and `executions.jsonl`.
+Evaluate the change diff through activated specialist roles based exclusively on the files changed in the diff:
 
 ### 1. Technical Engineering & System Architecture Roles
 
@@ -191,39 +190,32 @@ which validate each record and serialise the append under `LedgerLock`.
 
 ## 📤 Standard Review Output Schema
 
-When posting review results to GitHub, adhere strictly to the following markdown structure depending on the verdict:
+When posting review results to GitHub, adhere strictly to the skill's consensus review structure:
 
-### Approved Consensus Review Schema
+### 1. Consensus Approval Format (0 Critical, 0 Important, 0 open Nits, CI green)
 
 ```markdown
-## ✅ Ensemble Consensus Review — APPROVED ({configured}/{configured})
+## ✅ Ensemble Consensus Review — APPROVED ({ensemble_size}/{ensemble_size})
 
-- **Pull Request:** [{repo_name}#{pr_number}]({pr_url})
-- **Target Commit:** `{target_commit}`
-- **Base Branch:** `{target_branch}`
-- **Iteration:** `{iteration}`
-- **Verdict:** `APPROVED`
+Three independent blind review passes evaluated this PR at head `{target_commit}` and unanimously approve it with zero
+Critical, zero Important, and zero open Nit findings. All CI checks are green and the PR is mergeable/clean against
+`{target_branch}`.
 
----
+**Verified:**
 
-### 📋 Evaluation Summary
-
-- **Verified:** Architectural refactorings and code simplification verified.
-- **Verified:** Backward compatibility guarantees and interface stability maintained (including legacy function
-  aliases).
-- **Verified:** Test execution counts and passing assertions verified ({ci_passed}/{ci_total} passing).
-- **Verified:** Quality gates and complexity baselines fully satisfied.
-- **Verified:** 3-ledger provenance integrity maintained across `intents.jsonl`, `plans.jsonl`, and `executions.jsonl`.
-
----
+- [Key architectural decomposition and modularisation achievements]
+- [Preserved backward compatibility, dynamic compatibility dispatch, and public API symbols]
+- [Added modular unit tests with 100% pass rate]
+- [Quality gates: lint clean, prettier clean, test suite passed]
+- [Complexity baseline ratchet ceiling and repository hygiene verified]
+- [Canonical 3-ledger provenance integrity strictly maintained]
 
 ### 🗳️ Ensemble Review Breakdown
 
-- **Reviewer 1** (`{reviewer_1_id}`): `APPROVED` (Critical: 0, Important: 0, Nit: 0)
-- **Reviewer 2** (`{reviewer_2_id}`): `APPROVED` (Critical: 0, Important: 0, Nit: 0)
-- **Reviewer 3** (`{reviewer_3_id}`): `APPROVED` (Critical: 0, Important: 0, Nit: 0)
+- **Reviewer 1** (`{reviewer_1_id}`): `APPROVED`
+- **Reviewer 2** (`{reviewer_2_id}`): `APPROVED`
+- **Reviewer 3** (`{reviewer_3_id}`): `APPROVED`
 - **Ensemble Consensus Verdict**: `APPROVED`
-- **GitHub Actions CI Status**: `{ci_passed}/{ci_total} PASS` ({ci_passed} successful, 0 failing, 0 pending)
 
 > 🤖 **Reviewed by**: `{agent}` ({ensemble_size}-Agent Ensemble) · **Model**: `{model}`
 
@@ -233,41 +225,31 @@ When posting review results to GitHub, adhere strictly to the following markdown
 > prohibited. Pipeline halts for manual human approval.
 ```
 
-### Changes-Requested Review Schema
+### 2. Changes Requested Format (Findings Identified)
 
 ```markdown
 ## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration {iteration})
 
-- **Pull Request:** [{repo_name}#{pr_number}]({pr_url})
-- **Target Commit:** `{target_commit}`
-- **Base Branch:** `{target_branch}`
-- **Iteration:** `{iteration}`
-- **Verdict:** `CHANGES_REQUESTED`
+Three independent blind review passes evaluated this PR at head `{target_commit}`. Critical, Important, or open Nit
+findings were identified.
+
+### 🗳️ Ensemble Review Breakdown
+
+- **Reviewer 1** (`{reviewer_1_id}`): `CHANGES_REQUESTED`
+- **Reviewer 2** (`{reviewer_2_id}`): `APPROVED`
+- **Reviewer 3** (`{reviewer_3_id}`): `APPROVED`
+- **Ensemble Consensus Verdict**: `CHANGES_REQUESTED`
+
+### Findings Requiring Resolution
+
+| ID   | Severity | File:Line             | Description         | Recommendation       |
+| :--- | :------- | :-------------------- | :------------------ | :------------------- |
+| `F1` | Critical | `path/to/file.py:123` | [Issue description] | [Fix recommendation] |
+| `N1` | Nit      | `path/to/file.py:45`  | [Issue description] | [Fix recommendation] |
 
 ---
 
-### 👥 Reviewers
-
-Reviewers: {ensemble_size} configured, {completed} completed.
-
-- **Reviewer 1** (`{reviewer_1_id}`): `CHANGES_REQUESTED` (Critical: 1, Important: 0, Nit: 0)
-- **Reviewer 2** (`{reviewer_2_id}`): `APPROVED` (Critical: 0, Important: 0, Nit: 0)
-- **Reviewer 3** (`{reviewer_3_id}`): `APPROVED` (Critical: 0, Important: 0, Nit: 0)
-
----
-
-### 📋 Findings
-
-| Severity   | Location            | Reviewer   | Summary                             |
-| ---------- | ------------------- | ---------- | ----------------------------------- |
-| `critical` | `src/example.py:42` | Reviewer 1 | Critical regression in auth handler |
-
----
-
-### 🗳️ Checks
-
-- **Mergeability:** `CLEAN`
-- **CI:** `{ci_passed}/{ci_total} PASS` ({ci_passed} successful, 0 failing, 0 pending)
+Stage 4 review loop will resolve verified findings in the next iteration.
 ```
 
 ---

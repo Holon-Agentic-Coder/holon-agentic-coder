@@ -27,7 +27,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, ClassVar, Literal, TextIO
@@ -111,7 +111,16 @@ from sandbox_executor.review_ensemble import (
     decide_consensus,
     run_ensemble,
 )
-from sandbox_executor.review_report import build_pr_review_consensus_report, resolve_report_title
+from sandbox_executor.review_report import (
+    build_pr_review_consensus_report,
+    details_from_mapping,
+    parse_reviewer_details,
+    render_reviewer_details,
+    resolve_report_title,
+)
+from sandbox_executor.review_report import (
+    finding_id as review_finding_id,
+)
 from sandbox_executor.review_target import (
     DiffVerdict,
     ReviewTarget,
@@ -1481,6 +1490,7 @@ def post_pr_review_consensus(  # noqa: PLR0912, PLR0913, PLR0915
     clean_target = str(target or "").strip()
     backed = consensus_data.get("ensemble_verdict") == str(ConsensusVerdict.APPROVED) and consensus_data.get("approved")
     approved = bool(backed) and any(r.status is ReviewerStatus.COMPLETED for r in reviewers or [])
+    # This only gates the --approve flag; the builder derives the heading from ensemble_verdict alone.
 
     report_text = build_pr_review_consensus_report(
         repo_dir=repo_dir,
@@ -3385,7 +3395,7 @@ def _worst_severity(*severities: str) -> str:
 
 
 def _reviewer_summary(result: ReviewerResult) -> dict[str, Any]:
-    """A JSON-safe per-reviewer summary; never the report text."""
+    """A JSON-safe per-reviewer summary; never the report text, only its sanitised details block."""
     findings_list = [
         {"severity": f.severity, "file": f.path, "line": f.line, "summary": f.summary} for f in result.findings
     ]
@@ -3398,12 +3408,26 @@ def _reviewer_summary(result: ReviewerResult) -> dict[str, Any]:
         "counts": {"critical": result.counts.critical, "important": result.counts.important, "nit": result.counts.nit},
         "findings": findings_list,
         "failure_reason": result.failure_reason,
+        "details": (
+            parse_reviewer_details(result.report_text).as_dict() if result.status is ReviewerStatus.COMPLETED else None
+        ),
     }
 
 
 def _reviewer_finding_ids(result: ReviewerResult, iteration: int) -> list[str]:
     """Stable ids for one reviewer's findings, numbered in report order."""
-    return [f"FIND-R{result.index}-{iteration:03d}-{n:02d}" for n in range(1, len(result.findings) + 1)]
+    return [review_finding_id(result.index, iteration, n) for n in range(1, len(result.findings) + 1)]
+
+
+def _with_transported_details(reviewers: list[ReviewerResult], data: Mapping[str, Any]) -> list[ReviewerResult]:
+    """Re-attach each transported reviewer's ``details`` as a details block, since transport drops the report text."""
+    raw = data.get("reviewers") or []
+    return [
+        replace(result, report_text=render_reviewer_details(details_from_mapping(item.get("details"))))
+        if result.status is ReviewerStatus.COMPLETED and isinstance(item, Mapping)
+        else result
+        for result, item in zip(reviewers, raw, strict=False)
+    ]
 
 
 def _review_row(  # noqa: PLR0913
@@ -3609,6 +3633,7 @@ def _dispatch_review_ensemble(
             data = json.load(f)
 
         reviewers, verdict, outcome_err = deserialize_review_outcome(data)
+        reviewers = _with_transported_details(reviewers, data)
         if exit_code != 0 and not reviewers:
             err = outcome_err or f"Reviewer ensemble container dispatch exited with code {exit_code}"
             return [], None, err

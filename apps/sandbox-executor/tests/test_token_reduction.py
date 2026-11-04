@@ -3732,3 +3732,86 @@ def test_proxy_unreachable_fallback_direct_egress(host_paths, monkeypatch, caplo
     assert mounts == []
     assert envs == {}
     assert "DIRECT egress fallback" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# _wait_for_proxy: readiness is an HTTP answer, not a TCP accept (Bug: docker-proxy
+# accepts on the published host port before mitmproxy binds inside the sidecar).
+# ---------------------------------------------------------------------------
+
+
+def _serve_once(behaviour):
+    """Start a loopback listener whose per-connection behaviour is `behaviour(conn)`."""
+    import contextlib
+    import socket as socket_mod
+    import threading
+
+    server = socket_mod.socket(socket_mod.AF_INET, socket_mod.SOCK_STREAM)
+    server.setsockopt(socket_mod.SOL_SOCKET, socket_mod.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    server.listen(8)
+    port = server.getsockname()[1]
+    stop = threading.Event()
+
+    def _loop():
+        while not stop.is_set():
+            try:
+                server.settimeout(0.2)
+                conn, _ = server.accept()
+            except OSError:
+                continue
+            with conn, contextlib.suppress(OSError):
+                behaviour(conn)
+
+    thread = threading.Thread(target=_loop, daemon=True)
+    thread.start()
+
+    def _shutdown():
+        stop.set()
+        server.close()
+        thread.join(timeout=2)
+
+    return port, _shutdown
+
+
+def test_wait_for_proxy_rejects_accept_without_http_response():
+    """A docker-proxy-style accept-then-silent-close must never count as ready."""
+
+    def _accept_and_close(conn):
+        conn.recv(1024)
+
+    port, shutdown = _serve_once(_accept_and_close)
+    try:
+        assert cli._wait_for_proxy("127.0.0.1", port, timeout=1.5) is False
+    finally:
+        shutdown()
+
+
+def test_wait_for_proxy_ready_when_http_response_arrives():
+    def _answer(conn):
+        conn.recv(1024)
+        conn.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+
+    port, shutdown = _serve_once(_answer)
+    try:
+        assert cli._wait_for_proxy("127.0.0.1", port, timeout=5.0) is True
+    finally:
+        shutdown()
+
+
+def test_wait_for_proxy_recovers_once_proxy_starts_answering():
+    """First connections are closed silently (proxy still booting); a later one answers."""
+    import itertools
+
+    attempts = itertools.count()
+
+    def _boot_then_answer(conn):
+        conn.recv(1024)
+        if next(attempts) >= 2:
+            conn.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+
+    port, shutdown = _serve_once(_boot_then_answer)
+    try:
+        assert cli._wait_for_proxy("127.0.0.1", port, timeout=10.0) is True
+    finally:
+        shutdown()

@@ -130,6 +130,17 @@ PROXY_READY_TIMEOUT_SECONDS = 15.0
 PROXY_ATTACH_TIMEOUT_SECONDS = 3.0
 PROXY_POLL_INTERVAL_SECONDS = 0.5
 PROXY_CONNECT_TIMEOUT_SECONDS = 0.5
+# Budget for mitmproxy to answer the readiness probe request once connected (covers the
+# upstream-DNS failure it reports as a 502 for the .invalid probe host).
+PROXY_PROBE_READ_TIMEOUT_SECONDS = 2.0
+# Proxy-style request whose only purpose is to elicit an HTTP response from mitmproxy; the
+# .invalid TLD can never resolve, so no real upstream traffic is ever attempted.
+_PROXY_PROBE_REQUEST = (
+    b"GET http://holon-proxy-readiness.invalid/ HTTP/1.1\r\n"
+    b"Host: holon-proxy-readiness.invalid\r\n"
+    b"Connection: close\r\n"
+    b"\r\n"
+)
 _TRUTHY_ENV_VALUES = ("1", "true", "yes", "on")
 _EXPLICIT_OPT_OUT_VALUES = {"0", "false", "no", "off"}
 
@@ -846,16 +857,26 @@ def _token_reduce_opt_in(token_reduce: bool = False) -> bool:
 
 
 def _wait_for_proxy(host: str, port: int, timeout: float = PROXY_READY_TIMEOUT_SECONDS) -> bool:
-    """Poll a TCP endpoint until it accepts a connection; return False if it never does."""
+    """Poll until the endpoint answers a proxy-style request with HTTP response bytes.
+
+    A bare TCP accept is not readiness: Docker's userland proxy accepts on the published host
+    port the moment the sidecar container starts, before mitmproxy inside has bound its
+    listener, and then closes the connection without sending a byte. Only an ``HTTP/`` status
+    line (mitmproxy answers even for an unresolvable upstream) proves the proxy is serving.
+    """
     deadline = time.monotonic() + timeout
     while True:
         try:
-            with socket.create_connection((host, port), timeout=PROXY_CONNECT_TIMEOUT_SECONDS):
-                return True
+            with socket.create_connection((host, port), timeout=PROXY_CONNECT_TIMEOUT_SECONDS) as conn:
+                conn.settimeout(PROXY_PROBE_READ_TIMEOUT_SECONDS)
+                conn.sendall(_PROXY_PROBE_REQUEST)
+                if conn.recv(12).startswith(b"HTTP/"):
+                    return True
         except OSError:
-            if time.monotonic() >= deadline:
-                return False
-            time.sleep(PROXY_POLL_INTERVAL_SECONDS)
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(PROXY_POLL_INTERVAL_SECONDS)
 
 
 def _ensure_network(network_name: str) -> bool:

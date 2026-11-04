@@ -33,3 +33,15 @@ Execution of plan `P-1793778433-claude-agent-claude-opus-5-5` for intent
 - In-scope assertions pinning the old format: every report assertion in `test_review_report.py`;
   `test_flow.py::test_consensus_report_renders_mergeability_note` (`**Mergeability:**`). `test_review_loop.py:1317`
   asserts `report_text` never appears in the loop outcome, so the new per-reviewer key is `details`.
+
+### Step 2: Prompt rewrite and scaffold twin
+
+- Rewrote `holon-config/prompts/review_loop.template.md` from 309 to 196 lines: one `## Loop invariants` list
+  (unanimity, zero Critical/Important/open Nit, green CI, mergeability before posting or calibration, increment review,
+  fresh context and never pausing, ledger API only, human-only merging, namespaced `.subagent/` artefacts), commit
+  trailers, the `holon-review-details` block contract, `## Posted review shape` with two fenced blocks (approved and
+  changes requested), the on-disk trailer, the reviewer turn contract and the evaluation context.
+- No persona registry, activation matrix, severity legend or Bean notice remain (grep returns 0).
+- `npx prettier --write` reformatted the embedded markdown tables and wrapped the `**Checks:**` example line; the
+  formatted text was then copied into `scaffold.REVIEW_LOOP_TEMPLATE`, which is byte-identical to the file.
+- `test_review_ensemble.py`, `test_init.py` and `test_prompt_templates.py`: 107 passed.

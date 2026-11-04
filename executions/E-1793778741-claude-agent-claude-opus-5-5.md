@@ -69,3 +69,41 @@ Execution of plan `P-1793778433-claude-agent-claude-opus-5-5` for intent
 - `HUMAN_MERGE_NOTICE`, `_ci_line`, `_mergeability_line`, `_reviewer_section` and `render_finding_lines` were removed;
   `render_reviewer_line` now renders the breakdown bullet. Configured reviewers with no result render as `FAILED`.
 - `ruff check` and `ruff format` clean on the module, with no `noqa`.
+
+### Step 5: Flow wiring
+
+- `flow._reviewer_finding_ids` now calls `review_report.finding_id` (imported as `review_finding_id`, because local
+  loop variables named `finding_id` would otherwise shadow it), so ledger `ACT-FIND` ids and posted ids share one
+  formula.
+- `_reviewer_summary` gains a `details` key (the sanitised `ReviewerDetails.as_dict()` for completed reviewers, `None`
+  for failed ones). The ledger row shapes are unchanged.
+- New `_with_transported_details()` re-attaches each transported reviewer's `details` as a rendered details block in
+  `report_text` after `deserialize_review_outcome`, which closes the container-path gap found in Step 1 without
+  touching `review_ensemble.py`.
+- `consensus_data` already carried `iterations`, `ensemble_size`, `ensemble_verdict`, `ci_checks`, `mergeability`,
+  `mergeability_note`, `target_commit`, `base_branch`, `agent` and `model`, and `reviewers=` was already the deciding
+  iteration's list; nothing was added. The `--approve` gate is unchanged, with a comment that the heading comes from
+  `ensemble_verdict` in the builder.
+
+### Step 6: Reviewer entrypoint
+
+- Verified, unchanged: `entrypoint/review_loop.py` writes and prints the loop outcome with `json.dump(loop_res)`
+  without filtering keys, so `reviewers[*].details` passes through. Its failure path has `"reviewers": []` and
+  `"ensemble_verdict": "FAILED"`, and the entrypoint never posts a body itself.
+
+### Step 7: Contract tests
+
+- `test_review_report.py` rewritten around one shared fixture (reviewers 1 and 3 raise the same finding; reviewer 3 has
+  no details block). It includes the template-derived drift guard (`assert_follows_shape`, parametrised over both
+  posted blocks), and tests for role activation, de-duplication, evidenced verification, verdict-only heading,
+  mergeability and CI probes, failed and missing reviewers, malformed and oversized details, injection, trailer
+  absence, the alias and the trailer-parser probe.
+- `test_prompt_templates.py`: twin parity, under 288 lines, banned phrases absent, invariant phrases present, exactly
+  two posted shapes.
+- `test_flow.py`: mergeability-note test moved to the Checks line; seam tests run the real `run_review_loop` with a
+  faked `gh` and assert role rows, recommendations, merged contributors, ledger ids equal to posted ids, and
+  `--approve` only for an APPROVED `ensemble_verdict`.
+- `test_review_loop.py`: the entrypoint's result file carries `reviewers[*].details`, and host-side
+  deserialisation plus `_with_transported_details` renders the role row and recommendation.
+- Mutation check by hand: moving the `**Checks:**` line after the breakdown in the builder made both parity tests fail
+  (`template line '### 🗳️ Ensemble Review Breakdown' is missing from the body or out of order`). Reverted afterwards.

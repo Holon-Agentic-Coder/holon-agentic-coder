@@ -1558,3 +1558,51 @@ def test_ensemble_size_help_text_and_validation(capsys):
         main()
     assert exc.value.code == 1
     assert "--ensemble-size must be at least 1" in capsys.readouterr().err
+
+
+def test_entrypoint_outcome_carries_reviewer_details_through_container_transport(tmp_path):
+    from sandbox_executor import flow
+    from sandbox_executor.review_ensemble import (
+        ParsedTrailer,
+        ReviewCounts,
+        ReviewerResult,
+        ReviewerVerdict,
+        deserialize_review_outcome,
+        render_review_trailer,
+        reviewer_report_rel,
+    )
+    from sandbox_executor.review_report import DETAILS_CLOSE, DETAILS_OPEN, build_review_consensus_report
+
+    from tests.review_fakes import FakeEnsemble, objecting_reviewer
+
+    details = {
+        "roles": [{"role": "QA & Test Engineer", "verdict": "CHANGES", "review": "The handler test is missing."}],
+        "recommendations": ["Add a test for the empty handler input."],
+    }
+    parsed = ParsedTrailer(ReviewerVerdict.CHANGES_REQUESTED, ReviewCounts(important=1), objecting_reviewer(1).findings)
+    text = f"{DETAILS_OPEN}\n{json.dumps(details)}\n{DETAILS_CLOSE}\n\n{render_review_trailer(parsed)}\n"
+    reviewer = ReviewerResult.completed(1, "fake-agent", "fake-model", reviewer_report_rel(1, 1), text, parsed)
+    res, _post, _ = _loop(tmp_path / "loop", FakeEnsemble([reviewer]), size=1)
+    assert res["reviewers"][0]["details"]["roles"][0]["role"] == "QA & Test Engineer"
+    assert "report_text" not in json.dumps(res)
+
+    result_file = tmp_path / "result.json"
+    (tmp_path / "repo" / ".git").mkdir(parents=True)
+    argv = ["review_loop", EXEC_TARGET, f"--repo-dir={tmp_path / 'repo'}", f"--result-file={result_file}"]
+    with (
+        patch.object(sys, "argv", [*argv, "--skip-post"]),
+        patch("sandbox_executor.entrypoint.review_loop.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.entrypoint.review_loop.run_review_loop", return_value=res),
+        _prepared(EXEC_TARGET),
+        pytest.raises(SystemExit),
+    ):
+        review_loop_main()
+
+    data = json.loads(result_file.read_text())
+    reviewers, _verdict, _error = deserialize_review_outcome(data)
+    transported = flow._with_transported_details(reviewers, data)
+    consensus = {"ensemble_verdict": data["ensemble_verdict"], "iterations": 1}
+    body = build_review_consensus_report("/nonexistent", EXEC_TARGET, consensus, transported)
+    assert transported[0].report_text and not reviewers[0].report_text
+    assert "| QA & Test Engineer | CHANGES | The handler test is missing. |" in body
+    assert "| Add a test for the empty handler input. |" in body

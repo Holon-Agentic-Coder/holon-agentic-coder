@@ -7,8 +7,10 @@ from collections.abc import Callable
 import pytest
 from sandbox_executor.entrypoint.executor import build_execution_prompt
 from sandbox_executor.entrypoint.planner import render_placeholders
+from sandbox_executor.scaffold import REVIEW_LOOP_TEMPLATE
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+REVIEW_TEMPLATE = REPO_ROOT / "holon-config" / "prompts" / "review_loop.template.md"
 TEMPLATES = sorted((REPO_ROOT / "holon-config" / "prompts").glob("*.template.md"))
 COMPLETE = re.compile(r"\{([a-z][a-z0-9_]*)\}")
 # Bare names the planner renders through render_placeholders.
@@ -34,6 +36,21 @@ TEST_RUN_RULE_PHRASES = (
     "-n auto --dist worksteal",
     "median",
 )
+
+# Lower-case loop invariants the shrunk review prompt must keep, each stated once.
+REVIEW_INVARIANT_PHRASES = (
+    "approval needs all `{ensemble_size}` independent reviewers to approve",
+    "zero critical, zero important and zero open nit findings",
+    "green ci",
+    "mergeability is checked before posting or calibration",
+    "increment review",
+    "sandbox_executor.flow.record_review_action()",
+    "sandbox_executor.ledger.try_append_action_record(..., preserve_shape=true)",
+    "never run `gh pr merge`",
+    "merging remains with the human maintainer",
+)
+# Remnants of the former persona registry, activation matrix and severity legend.
+REVIEW_BANNED_PHRASES = ("persona", "activation matrix", "critical / blocker", "important / improvement", "🔴", "🟡")
 
 
 def known_names(texts: list[str]) -> set[str]:
@@ -129,3 +146,32 @@ def test_rendered_executor_expands_every_placeholder() -> None:
     ]
     assert leftovers == []
     assert "executions/E-1-test.md" in text
+
+
+def review_prompt() -> str:
+    """Return the shipped review prompt."""
+    return REVIEW_TEMPLATE.read_text(encoding="utf-8")
+
+
+def test_review_prompt_equals_its_scaffold_twin() -> None:
+    assert review_prompt() == REVIEW_LOOP_TEMPLATE
+
+
+def test_review_prompt_is_shorter_and_has_no_persona_registry_matrix_or_legend() -> None:
+    text = review_prompt()
+    assert len(text.splitlines()) < 288
+    present = [phrase for phrase in REVIEW_BANNED_PHRASES if phrase in normalised(text)]
+    assert present == []
+
+
+def test_review_prompt_keeps_every_loop_invariant_once() -> None:
+    text = normalised(review_prompt())
+    counts = {phrase: text.count(phrase) for phrase in REVIEW_INVARIANT_PHRASES}
+    assert all(counts.values()), f"invariants missing: {[p for p, n in counts.items() if not n]}"
+    assert counts["sandbox_executor.flow.record_review_action()"] == 1
+
+
+def test_review_prompt_states_exactly_two_posted_review_shapes() -> None:
+    section = review_prompt().split("\n## Posted review shape\n", 1)[1].split("\n## On-disk trailer\n", 1)[0]
+    assert re.findall(r"^(\w[\w ]*):\n\n```markdown$", section, re.MULTILINE) == ["Approved", "Changes requested"]
+    assert section.count("```markdown") == 2

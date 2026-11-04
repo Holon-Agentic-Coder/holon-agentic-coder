@@ -3624,8 +3624,9 @@ class TestMergeabilityRefResolution:
             "mergeability_note": note,
         }
         body = build_pr_review_consensus_report(".", "does-not-exist", consensus)
-        # The report renders only real data: the mergeability note, never a fabricated per-finding remediation.
-        assert f"**Mergeability:** {note}" in body
+        # The report renders only real data: the mergeability note on the Checks line, never a fabricated remediation.
+        checks = next(line for line in body.splitlines() if line.startswith("**Checks:**"))
+        assert checks == f"**Checks:** mergeability `unmeasured` · CI `unmeasured` · {note}"
         assert "Actionable Remediations" not in body
 
         without_note = build_pr_review_consensus_report(".", "does-not-exist", {**consensus, "mergeability_note": None})
@@ -5817,3 +5818,123 @@ class TestStage3PartialResumeDispatch:
         with patch("sandbox_executor.flow._read_ledger_rows", side_effect=read_rows):
             branch = flow_module._resumable_partial_branch(str(tmp_path), {self.FAILED, self.OLDER})
         assert branch == self.FAILED
+
+
+# --------------------------------------------------------------------------------------
+# Reviewer details seam: report text -> flow -> posted body, with ledger ids equal to posted ids
+# --------------------------------------------------------------------------------------
+
+_SEAM_DETAILS = {
+    "roles": [{"role": "Security Architect", "verdict": "CHANGES", "review": "The token is logged in plain text."}],
+    "recommendations": ["Redact the token before logging."],
+    "verified": [{"claim": "The redactor masks GitHub tokens.", "evidence": "tests/test_redaction.py"}],
+}
+
+
+def _seam_reviewer(index: int, findings: tuple = ()) -> Any:
+    from sandbox_executor.review_ensemble import (
+        ParsedTrailer,
+        ReviewCounts,
+        ReviewerResult,
+        ReviewerVerdict,
+        render_review_trailer,
+        reviewer_report_rel,
+    )
+    from sandbox_executor.review_report import DETAILS_CLOSE, DETAILS_OPEN
+
+    verdict = ReviewerVerdict.CHANGES_REQUESTED if findings else ReviewerVerdict.APPROVED
+    parsed = ParsedTrailer(verdict, ReviewCounts(important=len(findings)), findings)
+    details = _SEAM_DETAILS if findings else {**_SEAM_DETAILS, "roles": [], "recommendations": []}
+    text = f"# Review\n\n{DETAILS_OPEN}\n{json.dumps(details)}\n{DETAILS_CLOSE}\n\n{render_review_trailer(parsed)}\n"
+    return ReviewerResult.completed(index, "fake-agent", "fake-model", reviewer_report_rel(1, index), text, parsed)
+
+
+def _run_seam_loop(tmp_path: Path, reviewers: list[Any]) -> tuple[dict[str, Any], list[list[str]]]:
+    """Run the real loop with fake reviewers and a faked ``gh`` that records every call."""
+    from tests.review_fakes import FakeEnsemble
+
+    (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+    ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="feature/x", agent="fake-agent", model="fake-model")
+    ctx.stage_results["execute"] = StageResult(
+        stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"test_pass_rate": 1.0, "exit_code": 0}
+    )
+    gh_calls: list[list[str]] = []
+    real_run = subprocess.run
+
+    def fake_run(args, *posargs, **kwargs):
+        if isinstance(args, list) and args[:1] == ["gh"]:
+            gh_calls.append(list(args))
+            return subprocess.CompletedProcess(args, 0, stdout="posted", stderr="")
+        return real_run(args, *posargs, **kwargs)
+
+    ci = {"all_passed": True, "passed": 2, "failed": 0, "pending": 0, "total": 2, "source": "github_cli"}
+    with (
+        patch("sandbox_executor.flow.shutil.which", return_value="/usr/bin/gh"),
+        patch("sandbox_executor.flow.subprocess.run", side_effect=fake_run),
+        patch(
+            "sandbox_executor.flow.check_pr_mergeability",
+            return_value={"is_dirty": False, "merge_state_status": "CLEAN"},
+        ),
+        patch("sandbox_executor.flow.probe_ci_checks", return_value=ci),
+        patch("sandbox_executor.flow._resolve_review_commit", return_value="abc1234"),
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
+    ):
+        res = run_review_loop(
+            ctx,
+            target="feature/x",
+            max_iterations=1,
+            ensemble_size=len(reviewers),
+            run_ensemble_fn=FakeEnsemble(reviewers),
+        )
+    return res, gh_calls
+
+
+def _posted_body(gh_calls: list[list[str]]) -> str:
+    comment = next(call for call in gh_calls if call[:3] == ["gh", "pr", "comment"])
+    return comment[comment.index("--body") + 1]
+
+
+def test_posted_body_carries_reviewer_roles_and_recommendations_with_ledger_finding_ids(tmp_path):
+    from sandbox_executor.review_ensemble import ReviewFinding
+
+    finding = ReviewFinding("important", "src/log.py", 7, "The token is logged.")
+    res, gh_calls = _run_seam_loop(tmp_path, [_seam_reviewer(1, (finding,)), _seam_reviewer(2, (finding,))])
+    body = _posted_body(gh_calls)
+
+    assert body.startswith("## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration 1)")
+    assert "| Security Architect | CHANGES | The token is logged in plain text. |" in body
+    posted_ids = re.findall(r"^\| (FIND-R[^ ]+) \|", body, re.MULTILINE)
+    assert posted_ids == ["FIND-R1-001-01"]
+    row = next(line for line in body.splitlines() if line.startswith("| FIND-R1-001-01 "))
+    assert row.endswith("(raised by Reviewer 1, Reviewer 2) | Redact the token before logging. |")
+    ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
+    rows = [json.loads(line) for line in ledger.read_text().splitlines() if line.strip()]
+    ledger_ids = {
+        fid for r in rows if r.get("action_id", "").startswith("ACT-FIND-") for fid in r["review_finding_ids"]
+    }
+    assert set(posted_ids) <= ledger_ids
+    assert {"FIND-R1-001-01", "FIND-R2-001-01"} <= ledger_ids
+    assert res["reviewers"][0]["details"]["roles"][0]["role"] == "Security Architect"
+    assert not any("--approve" in call for call in gh_calls)
+
+
+def test_approve_flag_is_used_only_for_an_approved_ensemble_verdict(tmp_path):
+    res, gh_calls = _run_seam_loop(tmp_path, [_seam_reviewer(1), _seam_reviewer(2)])
+    body = _posted_body(gh_calls)
+
+    assert res["ensemble_verdict"] == "APPROVED"
+    assert body.startswith("## ✅ Ensemble Consensus Review — APPROVED (2/2)")
+    assert "- The redactor masks GitHub tokens. (evidence: `tests/test_redaction.py`)" in body
+    review = next(call for call in gh_calls if call[:3] == ["gh", "pr", "review"])
+    assert review[4] == "--approve"
+
+
+def test_approve_flag_needs_the_ensemble_verdict_not_the_approved_flag():
+    with patch("shutil.which", return_value="/usr/bin/gh"), patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout="success", stderr="")
+        consensus = {"approved": True, "status": "approved", "ensemble_verdict": "CHANGES_REQUESTED", "iterations": 1}
+        res = post_pr_review_consensus("/tmp", "42", consensus, reviewers=[clean_reviewer(1)])
+
+    assert res["official_review"]["flag"] == "--comment"
+    body = mock_run.call_args_list[0][0][0][-1]
+    assert body.startswith("## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration 1)")

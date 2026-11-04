@@ -45,3 +45,27 @@ Execution of plan `P-1793778433-claude-agent-claude-opus-5-5` for intent
 - `npx prettier --write` reformatted the embedded markdown tables and wrapped the `**Checks:**` example line; the
   formatted text was then copied into `scaffold.REVIEW_LOOP_TEMPLATE`, which is byte-identical to the file.
 - `test_review_ensemble.py`, `test_init.py` and `test_prompt_templates.py`: 107 passed.
+
+### Step 3: Reviewer details seam (probe)
+
+- Probe result: a report carrying a `<!-- holon-review-details -->` JSON block before the trailer parses unchanged
+  through `review_ensemble.parse_review_trailer`, because `_extract_trailer_block` only reads from the last
+  `holon-review-trailer` opening marker to the final line. The first placement worked; no fallback was needed.
+- Added to `review_report.py`: `DETAILS_OPEN`/`DETAILS_CLOSE`, frozen `RoleReview`, `VerifiedItem` and
+  `ReviewerDetails` (with `as_dict()`), `parse_reviewer_details()` (last block, 64 KiB cap, empty details on any
+  error), `details_from_mapping()`, `render_reviewer_details()` and `finding_id()`. Every string goes through `_inline`
+  with bounds (role 60, review 160, recommendation 300, claim 200, evidence 200); verdicts outside `PASS`/`CHANGES`
+  and claims without path-like evidence are dropped.
+- Finding: `deserialize_reviewer_result` (out of scope) sets `report_text=""` on the container path, so the details
+  must travel as data in the loop outcome and be re-attached by `flow` (Step 5).
+
+### Step 4: Contract-shaped builder
+
+- `build_review_consensus_report()` now emits heading, evaluation paragraph, role table, verified bullets or findings
+  table, one `**Checks:**` line, breakdown footer and `CLOSING_NOTICE`, in template order. The heading follows
+  `ensemble_verdict == "APPROVED"` only; the `status` fallback is gone. `n` counts completed reviewers.
+- Findings are de-duplicated on `(severity, normalised path, line)` (or casefolded summary when `line` is null); the
+  first occurrence keeps its `FIND-R{index}-{iteration:03d}-{n:02d}` id and the Finding cell names every contributor.
+- `HUMAN_MERGE_NOTICE`, `_ci_line`, `_mergeability_line`, `_reviewer_section` and `render_finding_lines` were removed;
+  `render_reviewer_line` now renders the breakdown bullet. Configured reviewers with no result render as `FAILED`.
+- `ruff check` and `ruff format` clean on the module, with no `noqa`.

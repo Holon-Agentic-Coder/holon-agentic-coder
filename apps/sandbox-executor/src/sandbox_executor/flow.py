@@ -3731,8 +3731,7 @@ def _dispatch_review_resolver(
         "head_branch": target.head_branch,
         "head_sha": target.head_sha,
         "findings": [
-            serialize_finding_for_resolver(row, introduced_by_action_id=lookup.get(row.id))
-            for row in findings
+            serialize_finding_for_resolver(row, introduced_by_action_id=lookup.get(row.id)) for row in findings
         ],
         "rejected_findings": [serialize_finding_disposition(item) for item in resolver_input.rejected_findings],
     }
@@ -4508,9 +4507,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         if resolver_outcome.error and not head_changed and not rejected_now:
             suppressed_ledger_records += recorder.record(iteration, resolver_outcome.dispositions)
             pending_dispositions = ()
-            context.log(
-                f"[Review Loop] Halting review loop at iteration {iteration}: {resolver_outcome.error}"
-            )
+            context.log(f"[Review Loop] Halting review loop at iteration {iteration}: {resolver_outcome.error}")
             break
 
     if resolver_enabled and not effective_dry_run:

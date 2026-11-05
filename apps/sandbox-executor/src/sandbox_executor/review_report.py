@@ -463,9 +463,7 @@ def _disposition_from_mapping(
     if disposition == "rejected":
         reason = _normalise_rejection_reason(entry.get("rejection_reason") or entry.get("reason"))
     commit_sha = _inline(entry.get("commit_sha") or "", 40) or None
-    intro_id = (
-        _inline(entry.get("introduced_by_action_id") or action_ids.get(ident) or "", 64) or None
-    )
+    intro_id = _inline(entry.get("introduced_by_action_id") or action_ids.get(ident) or "", 64) or None
     return FindingDisposition(
         id=ident,
         severity=severity,

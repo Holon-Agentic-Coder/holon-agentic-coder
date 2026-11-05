@@ -14,9 +14,9 @@ Executing plan `P-1793921914-antigravity-agent-gemini-4-argon` for intent `I-179
 | metric                | value |
 | --------------------- | ----- |
 | success_actual        | 1.00  |
-| entropy_actual        | 1.80  |
+| entropy_actual        | 2.60  |
 | impact_actual         | 78.00 |
-| cost_actual           | 2.40  |
+| cost_actual           | 3.60  |
 | learning_value_actual | 2.50  |
 
 ## Steps Executed
@@ -31,4 +31,9 @@ Executing plan `P-1793921914-antigravity-agent-gemini-4-argon` for intent `I-179
 
 - Imported `DEFAULT_TURN_SECONDS` in `apps/sandbox-executor/tests/test_budgets.py` and asserted `DEFAULT_TURN_SECONDS == 3600.0` and `budgets.turn.turn_seconds == 3600` across `test_defaults`, `test_invalid_values_keep_defaults`, and `test_values_above_the_bound_keep_defaults_after_conversion`.
 - Updated `budgets turn=300s stall=90s` assertions to `budgets turn=3600s stall=90s` in `test_doctor_prints_envelope_and_cache_state` and `test_unified_doctor_reports_resolution_probe_and_envelope` in `apps/sandbox-executor/tests/test_cli.py`.
+
+### Step 3: Update turn budget default documentation in `docs/budgets.md` and `docs/ledger_schema.md`
+
+- Updated the `Turn` default in `docs/budgets.md` from `300 s` to `3600 s` in the `## Budgets and defaults` table, the `## Turn supervision` prose, and the silence-limit table.
+- Updated the `ACT-BUDGET` JSON example in `docs/ledger_schema.md` to reflect `3600 s` (`3600.0` / `3600.4` / `3612.0 s`).
 

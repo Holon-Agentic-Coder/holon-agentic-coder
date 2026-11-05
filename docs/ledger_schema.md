@@ -881,11 +881,11 @@ and the time used against it, whether or not anything fired. Example (standard f
   "target": "plans/P-1792790000-pi-agent-qwen3.md",
   "outcome": "failure",
   "labels": ["budget", "plan", "turn"],
-  "error_context": "plan turn budget of 300 s exceeded after 300.4 s; stage elapsed 612.0 s",
+  "error_context": "plan turn budget of 3600 s exceeded after 3600.4 s; stage elapsed 3612.0 s",
   "stage": "plan",
   "budget_name": "turn",
-  "budget_seconds": 300.0,
-  "elapsed_seconds": 300.4
+  "budget_seconds": 3600.0,
+  "elapsed_seconds": 3600.4
 }
 ```
 

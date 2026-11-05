@@ -17,7 +17,7 @@ data, and the tests that exercise them use injected clocks only to drive control
 
 | Budget                | Default | Variable                                      | Bounds                                                              |
 | --------------------- | ------- | --------------------------------------------- | ------------------------------------------------------------------- |
-| Turn                  | 300 s   | `HOLON_TURN_TIMEOUT_SECONDS`                  | One assistant response (see below), not a process.                  |
+| Turn                  | 3600 s  | `HOLON_TURN_TIMEOUT_SECONDS`                  | One assistant response (see below), not a process.                  |
 | Stall                 | 90 s    | `HOLON_TURN_STALL_SECONDS`                    | Silence within a streaming turn; `0` disables it.                   |
 | Intent stage          | 10 min  | `HOLON_STAGE_BUDGET_INTENT_MINUTES`           | The intent stage.                                                   |
 | Plan stage            | 35 min  | `HOLON_STAGE_BUDGET_PLAN_MINUTES`             | The plan stage, including the resume turn.                          |
@@ -95,15 +95,15 @@ budgets are checked as follows:
 The stall window only means something for a runner that can signal liveness mid-response. The default runners
 (`claude -p` and `pi -p` in text mode) print nothing until they exit, so for them the stall clock and the turn clock are
 the same clock; applying the 90 s stall window would make it the real per-response limit and kill a legitimate
-local-model response (Bean 0139 sizes the turn budget for one full 16,384-token response at 82 tok/s, about 5 min). The
-effective limits are therefore:
+local-model response or extended-thinking prefill (the 3600 s (1 hour) default accommodates extended-thinking and
+deep-reasoning prefill as well as full local-model responses). The effective limits are therefore:
 
-| Runner behaviour in the current response  | Watched artefact or tree | Silence limit                       |
-| ----------------------------------------- | ------------------------ | ----------------------------------- |
-| Silent (non-streaming runner, or prefill) | Yes (plan, execute)      | Turn budget, 300 s (`turn` fires)   |
-| Silent                                    | No                       | `max(stall, turn)`, 300 s (`stall`) |
-| Has streamed output                       | Either                   | Stall window, 90 s (`stall`)        |
-| Streams output but never writes           | Yes                      | Turn budget, 300 s (`turn` fires)   |
+| Runner behaviour in the current response  | Watched artefact or tree | Silence limit                        |
+| ----------------------------------------- | ------------------------ | ------------------------------------ |
+| Silent (non-streaming runner, or prefill) | Yes (plan, execute)      | Turn budget, 3600 s (`turn` fires)   |
+| Silent                                    | No                       | `max(stall, turn)`, 3600 s (`stall`) |
+| Has streamed output                       | Either                   | Stall window, 90 s (`stall`)         |
+| Streams output but never writes           | Yes                      | Turn budget, 3600 s (`turn` fires)   |
 
 A tool call that is still busy when the response clock would otherwise run out is the normal executor path: the prompt
 asks the agent to run the verification suite before its final `## Tests Run` write, and this repository's suite takes

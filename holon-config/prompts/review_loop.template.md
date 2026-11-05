@@ -10,18 +10,24 @@ consensus model and post one short consensus review built only from what the rev
 
 1. **Iterate to consensus**: review and resolve until the ensemble approves unanimously or the iteration budget
    (`{max_iterations}`) is reached. The loop never pauses or asks for guidance mid-flight; the only exits are a posted
-   consensus approval or a final review posted at the cap.
+   consensus approval or a final review posted at the cap. The flow engine owns the iteration counter, saves it in the
+   flow checkpoint (`review_iterations_done`), and on a resume from the review stage passes the continued count as the
+   `--iteration` label so ledger `review_iteration` values and posted `Iteration {iteration}` headings form one
+   monotonic sequence across halts and resumes; `--iteration` is never a loop limit and is never set by operators.
 2. **Fresh context**: every review pass and resolution pass runs in a newly spawned subagent with fresh context.
 3. **Unanimous approval**: the verdict is `APPROVED` only when all `{ensemble_size}` independent reviewers approve with
    zero Critical, zero Important and zero open Nit findings, and every CI check passes (`gh pr checks` or the local test
    suite, exit code `0`). Any objection, failed reviewer or failing check means `CHANGES_REQUESTED`. A reviewer that
    failed or left no parseable output is reported as failed, never counted as a vote.
 4. **Nits are actioned**: every Nit is adjudicated like any other finding and ends `applied` (fixed, verified,
-   committed) or `rejected` with a technical justification. An unadjudicated Nit blocks approval. A Nit-only set that
-   survives 3 iterations with no diff change is `rejected: no-convergence`.
+   committed) or `rejected` with a one-line reason (`not diff-grounded`, `inaccurate`, `out of scope`, or
+   `conflicting with a higher-severity finding`). An unadjudicated Nit blocks approval. A finding set that survives 3
+   consecutive iterations with no diff change is `rejected: no-convergence`. Rejected findings are passed to the next
+   iteration's reviewers as already adjudicated so they are not re-raised.
 5. **Mergeability first**: check mergeability (and re-sync drifted state: dirty tree, new commits, pending CI) before
    posting a review or adding calibration. Out-of-sync state is work, not a blocker.
-6. **Increment review**: after the first pass, review only the increment since the last reviewed commit.
+6. **Increment review**: after the first pass, review only the increment since the last reviewed commit; after a
+   resolver push, the next engine iteration reviews the new head in full and any push invalidates earlier votes.
 7. **Attrition absorption**: a single failed or timed-out pass never aborts the loop; relaunch or salvage it.
 8. **Namespaced artefacts**: every artefact under `.subagent/` is scoped by repository and pull request:
    `.subagent/<repo>_pr<N>_<purpose>_iter_<iteration>_{sha}.<ext>`, with state in `.subagent/<repo>_pr<N>_state.json`.
@@ -30,6 +36,9 @@ consensus model and post one short consensus review built only from what the rev
    `sandbox_executor.ledger.try_append_action_record(..., preserve_shape=True)`), never by writing to the file directly.
 10. **Human-only merging**: never run `gh pr merge`, enable auto-merge or add the PR to a merge queue. Merging remains
     with the human maintainer; on consensus approval, halt and request human review.
+11. **Resolver discipline**: when the resolver container runs on `CHANGES_REQUESTED`, it adjudicates every finding to
+    `applied` or `rejected`, runs `uv run task lint` and `uv run task test` before pushing, commits applied fixes with
+    the finding ids in the commit message, and never force-pushes or rewrites history.
 
 Review commits carry these RFC 2822 trailers:
 

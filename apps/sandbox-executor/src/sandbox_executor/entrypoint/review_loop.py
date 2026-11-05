@@ -19,6 +19,7 @@ a FAILED summary is printed and the process exits 1: no consensus is computed or
 """
 
 import argparse
+import contextlib
 import dataclasses
 import json
 import logging
@@ -29,7 +30,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.agent_defaults import FALLBACK_AGENT, default_model_for
-from sandbox_executor.agent_runner import get_repo_url, get_workspace_dir
+from sandbox_executor.agent_runner import get_repo_url, get_runner, get_workspace_dir
 from sandbox_executor.flow import (
     FlowContext,
     _bounded_error_context,
@@ -41,6 +42,13 @@ from sandbox_executor.flow import (
 from sandbox_executor.ledger import generate_action_id, try_append_action_record
 from sandbox_executor.redaction import redact_agent_secrets, redact_command
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
+from sandbox_executor.review_report import (
+    VALID_REJECTION_REASONS,
+    FindingDisposition,
+    FindingRow,
+    deserialize_finding_dispositions,
+    serialize_finding_disposition,
+)
 from sandbox_executor.review_target import (
     GH_TIMEOUT_SECONDS,
     ReviewTarget,
@@ -50,6 +58,7 @@ from sandbox_executor.review_target import (
     is_pr_reference,
     resolve_review_target,
 )
+from sandbox_executor.turns import run_turn
 
 logger = logging.getLogger("holon.entrypoint.review_loop")
 
@@ -236,6 +245,258 @@ def _prepare_workspace(repo_dir: str, raw: str) -> ReviewTarget:
     return _verify_head(repo_dir, target)
 
 
+_FORBIDDEN_GIT_FLAGS = frozenset({"--force", "-f", "--force-with-lease", "--amend", "rebase"})
+_SEVERITY_ORDER = {"clean": 0, "nit": 1, "important": 2, "critical": 3}
+
+
+def _assert_safe_git_args(args: list[str]) -> None:
+    """Refuse any git command that force-pushes or rewrites history."""
+    for token in args:
+        clean = token.strip()
+        if clean in _FORBIDDEN_GIT_FLAGS or clean.startswith("--force"):
+            raise ValueError(f"Forbidden history-rewriting or force-push git argument: {clean}")
+
+
+def _verify_before_push(repo_dir: str) -> tuple[bool, bool, str | None]:
+    """Run ``uv run task lint`` and ``uv run task test`` before committing or pushing resolver changes."""
+    lint_res = run_cmd(["uv", "run", "task", "lint"], cwd=repo_dir, check=False)
+    if lint_res.returncode != 0:
+        detail = _bounded_error_context((lint_res.stderr or lint_res.stdout or "").strip() or "lint failed")
+        return False, False, f"Resolver pre-push lint failed (exit code {lint_res.returncode}): {detail}"
+    test_res = run_cmd(["uv", "run", "task", "test"], cwd=repo_dir, check=False)
+    if test_res.returncode != 0:
+        detail = _bounded_error_context((test_res.stderr or test_res.stdout or "").strip() or "tests failed")
+        return True, False, f"Resolver pre-push test failed (exit code {test_res.returncode}): {detail}"
+    return True, True, None
+
+
+def _load_resolver_findings(findings_file: str | None) -> tuple[list[FindingRow], dict[str, str]]:
+    """Read input findings and their introducing action IDs from ``findings_file``."""
+    if not findings_file or not os.path.exists(findings_file):
+        return [], {}
+    try:
+        with open(findings_file, encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, ValueError):
+        return [], {}
+    raw_items = payload.get("findings", []) if isinstance(payload, dict) else payload
+    if not isinstance(raw_items, list):
+        return [], {}
+    rows: list[FindingRow] = []
+    action_ids: dict[str, str] = {}
+    for idx, item in enumerate(raw_items, start=1):
+        if not isinstance(item, dict):
+            continue
+        ident = str(item.get("id") or f"R1-F{idx}").strip()
+        raw_line = item.get("line")
+        line = raw_line if isinstance(raw_line, int) and not isinstance(raw_line, bool) and raw_line >= 1 else None
+        raw_revs = item.get("reviewers")
+        revs = tuple(int(r) for r in raw_revs if isinstance(r, int)) if isinstance(raw_revs, list) else (1,)
+        rows.append(
+            FindingRow(
+                id=ident,
+                severity=str(item.get("severity") or "nit").strip().lower(),
+                path=str(item.get("path") or item.get("file") or "").strip(),
+                line=line,
+                reviewers=revs or (1,),
+                summary=str(item.get("summary") or "").strip(),
+                recommendation=str(item.get("recommendation") or "not supplied").strip(),
+            )
+        )
+        intro_id = str(item.get("introduced_by_action_id") or "").strip()
+        if intro_id:
+            action_ids[ident] = intro_id
+    return rows, action_ids
+
+
+def _build_resolver_prompt(
+    repo_dir: str,
+    head_branch: str,
+    iteration: int,
+    findings: list[FindingRow],
+    dispositions_path: str,
+) -> str:
+    """Build the resolver turn prompt instructing the agent to adjudicate every finding."""
+    serialized = [
+        {
+            "id": row.id,
+            "severity": row.severity,
+            "path": row.path,
+            "line": row.line,
+            "summary": row.summary,
+            "recommendation": row.recommendation,
+        }
+        for row in findings
+    ]
+    reasons = ", ".join(f"`{r}`" for r in VALID_REJECTION_REASONS if r != "no-convergence")
+    return (
+        f"# Holon Stage 4 Resolver Pass (Iteration {iteration})\n\n"
+        f"You are operating in `{repo_dir}` on branch `{head_branch}`.\n"
+        "Adjudicate EVERY finding below (critical, important, and nit) to exactly one disposition:\n"
+        "- `applied`: fix the code in the working tree so `uv run task lint` and `uv run task test` pass.\n"
+        f"- `rejected`: provide a one-line `rejection_reason` from: {reasons}.\n"
+        "Never force-push or rewrite git history. Do not run `git push` yourself; write the JSON list of "
+        f"dispositions to `{dispositions_path}` with keys `id`, `disposition`, and `rejection_reason`.\n\n"
+        f"```json\n{json.dumps(serialized, indent=2)}\n```\n"
+    )
+
+
+def _run_resolver_agent(
+    repo_dir: str,
+    agent_name: str,
+    model_name: str,
+    prompt: str,
+    dispositions_path: str,
+) -> list[dict[str, Any]]:
+    """Run the resolver agent turn and parse its dispositions JSON file."""
+    os.makedirs(os.path.dirname(dispositions_path), exist_ok=True)
+    runner = get_runner(agent_name)
+    outcome = run_turn(runner, prompt, model_name, cwd=repo_dir)
+    if os.path.exists(dispositions_path):
+        try:
+            with open(dispositions_path, encoding="utf-8") as f:
+                parsed = json.load(f)
+            if isinstance(parsed, dict) and isinstance(parsed.get("dispositions"), list):
+                return parsed["dispositions"]
+            if isinstance(parsed, list):
+                return parsed
+        except (OSError, ValueError):
+            pass
+    if outcome.exit_code != 0:
+        raise RuntimeError(f"Resolver agent exited with code {outcome.exit_code}")
+    return []
+
+
+@dataclasses.dataclass(frozen=True)
+class CommitPushOptions:
+    """Options governing resolution commit and push behaviour."""
+
+    skip_push: bool = False
+    dry_run: bool = False
+
+
+def _commit_and_push_resolution(
+    repo_dir: str,
+    head_branch: str,
+    iteration: int,
+    dispositions: tuple[FindingDisposition, ...],
+    options: CommitPushOptions | None = None,
+) -> tuple[tuple[FindingDisposition, ...], str, bool, bool, bool, str | None]:
+    """Verify via lint and test, commit applied fixes with finding IDs, and fast-forward push."""
+    opts = options or CommitPushOptions()
+    initial_head = (_checked(["git", "rev-parse", "HEAD"], repo_dir, "resolve").stdout or "").strip()
+    status_proc = run_cmd(["git", "status", "--porcelain"], cwd=repo_dir, check=False)
+    has_worktree_changes = bool((status_proc.stdout or "").strip())
+    applied_items = [d for d in dispositions if d.disposition == "applied"]
+
+    if not applied_items or not has_worktree_changes:
+        return dispositions, initial_head, False, True, True, None
+
+    if opts.dry_run:
+        return dispositions, initial_head, False, True, True, None
+
+    lint_ok, tests_ok, verify_err = _verify_before_push(repo_dir)
+    if not lint_ok or not tests_ok:
+        return dispositions, initial_head, False, lint_ok, tests_ok, verify_err
+
+    run_cmd(["git", "add", "-A"], cwd=repo_dir, check=True)
+    finding_ids = [d.id for d in applied_items]
+    ids_csv = ", ".join(finding_ids) or f"ITER-{iteration}"
+    severities = [d.severity for d in applied_items] or ["nit"]
+    worst = max(severities, key=lambda s: _SEVERITY_ORDER.get(s, 1))
+    commit_msg = (
+        f"fix(review): resolve findings {ids_csv} (iteration {iteration})\n\n"
+        "Action-Origin: pr_review\n"
+        f"Review-Iteration: {iteration}\n"
+        f"Review-Finding-Ids: {ids_csv}\n"
+        f"Review-Severity: {worst}\n"
+    )
+    commit_cmd = ["git", "commit", "-m", commit_msg]
+    _assert_safe_git_args(commit_cmd)
+    commit_res = run_cmd(commit_cmd, cwd=repo_dir, check=False)
+    if commit_res.returncode != 0:
+        err = _bounded_error_context((commit_res.stderr or commit_res.stdout or "").strip() or "git commit failed")
+        return dispositions, initial_head, False, True, True, f"Resolver commit failed: {err}"
+
+    new_head = (_checked(["git", "rev-parse", "HEAD"], repo_dir, "resolve").stdout or "").strip()
+    updated = tuple(
+        dataclasses.replace(d, commit_sha=new_head) if d.disposition == "applied" else d for d in dispositions
+    )
+
+    pushed = False
+    if not opts.skip_push and new_head != initial_head:
+        push_cmd = ["git", "push", "origin", f"HEAD:refs/heads/{head_branch}"]
+        _assert_safe_git_args(push_cmd)
+        push_res = run_cmd(push_cmd, cwd=repo_dir, check=False)
+        if push_res.returncode != 0:
+            err = _bounded_error_context((push_res.stderr or push_res.stdout or "").strip() or "git push failed")
+            return updated, new_head, False, True, True, f"Resolver push failed: {err}"
+        pushed = True
+
+    return updated, new_head, pushed, True, True, None
+
+
+def _run_resolver_mode(
+    args: argparse.Namespace,
+    repo_dir: str,
+    head_branch: str,
+    agent_name: str,
+    model_name: str,
+) -> None:
+    """Execute the containerised resolver pass for ``--resolve`` and exit."""
+    findings_source = args.findings_file or args.result_file
+    findings, action_ids = _load_resolver_findings(findings_source)
+    dispositions_path = os.path.join(repo_dir, ".holon", "review", f"iter-{args.iteration}", "dispositions.json")
+    error: str | None = None
+    raw_dispositions: list[dict[str, Any]] = []
+    if findings and not args.dry_run:
+        prompt = _build_resolver_prompt(repo_dir, head_branch, args.iteration, findings, dispositions_path)
+        try:
+            raw_dispositions = _run_resolver_agent(repo_dir, agent_name, model_name, prompt, dispositions_path)
+        except Exception as exc:
+            error = f"Resolver turn failed: {_bounded_error_context(str(exc))}"
+        finally:
+            if os.path.exists(dispositions_path):
+                with contextlib.suppress(OSError):
+                    os.remove(dispositions_path)
+
+    dispositions = deserialize_finding_dispositions(raw_dispositions, findings, action_ids)
+    head_sha = (_checked(["git", "rev-parse", "HEAD"], repo_dir, "resolve").stdout or "").strip()
+    pushed = False
+    lint_ok = True
+    tests_ok = True
+    if error is None and findings:
+        dispositions, head_sha, pushed, lint_ok, tests_ok, error = _commit_and_push_resolution(
+            repo_dir,
+            head_branch,
+            args.iteration,
+            dispositions,
+            CommitPushOptions(skip_push=args.skip_push, dry_run=args.dry_run),
+        )
+
+    outcome = {
+        "resolver": True,
+        "target": args.target,
+        "head_branch": head_branch,
+        "iteration": args.iteration,
+        "dispositions": [serialize_finding_disposition(item) for item in dispositions],
+        "head_sha": head_sha,
+        "pushed": pushed,
+        "lint_passed": lint_ok,
+        "tests_passed": tests_ok,
+        "error": error,
+    }
+    if args.result_file:
+        try:
+            with open(args.result_file, "w", encoding="utf-8") as f:
+                json.dump(outcome, f, indent=2)
+        except OSError as exc:
+            print(f"Warning: could not write result file '{args.result_file}': {exc}", file=sys.stderr)
+    if args.json:
+        print(json.dumps(outcome, indent=2))
+    sys.exit(0 if error is None else 1)
+
+
 def main() -> None:  # noqa: C901, PLR0912, PLR0915
     """Parse CLI arguments and execute containerised review loop."""
     parser = argparse.ArgumentParser(
@@ -267,8 +528,25 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         default=1,
         help=(
             "Label of the first pass (default: 1), used for the ledger review_iteration fields and the posted "
-            "'Iteration {n}' heading; never a loop limit."
+            "'Iteration {n}' heading. The flow engine owns the counter, saves it in the flow checkpoint "
+            "(review_iterations_done), and on a resume from the review stage passes the continued count as this "
+            "label so ledger review_iteration values and posted 'Iteration {n}' headings form one monotonic sequence "
+            "across halts and resumes; it is never a loop limit and is never set by operators."
         ),
+    )
+    parser.add_argument(
+        "--resolve",
+        action="store_true",
+        default=False,
+        help=(
+            "Run in resolver mode: read findings from --findings-file (or --result-file), adjudicate every finding "
+            "to applied or rejected, verify with lint and tests before pushing, and write the resolver outcome JSON."
+        ),
+    )
+    parser.add_argument(
+        "--findings-file",
+        default=None,
+        help="Path to input findings JSON for --resolve mode (defaults to --result-file).",
     )
     parser.add_argument(
         "--ensemble-size",
@@ -367,6 +645,10 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     # Proactive conflict detection and resolution against target upstream branch (Bean 0121)
     target_branch = "main"
     check_and_resolve_stage_conflicts(repo_dir=repo_dir, target_branch=target_branch, stage_name="review")
+
+    if args.resolve:
+        _run_resolver_mode(args, repo_dir, head_branch, agent_name, model_name)
+        return
 
     # Read intent and plan metadata from ledger if available
     intent_data: dict[str, Any] = {}

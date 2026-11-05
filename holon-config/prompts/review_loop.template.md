@@ -68,10 +68,10 @@ appears once with its contributors named, and the trailer never appears in a pos
 Approved:
 
 ```markdown
-## ✅ Ensemble Consensus Review — APPROVED ({completed}/{ensemble_size})
+## ✅ Ensemble Consensus Review — APPROVED ({reviewers_completed}/{reviewers_configured})
 
-Evaluated {title} at head commit `{target_commit}` against base branch `{target_branch}`: {critical} Critical,
-{important} Important and {nit} Nit findings; CI {ci_state}; mergeability {mergeability}.
+Evaluated {title} at head commit `{target_commit}` against base branch `{base_branch}`: {critical} Critical, {important}
+Important and {nit} Nit findings; CI {ci_state}; mergeability {mergeability}.
 
 **Role reviews:**
 
@@ -99,10 +99,10 @@ Stage 5 calibration will be added to this PR before merge. Merging remains with 
 Changes requested:
 
 ```markdown
-## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration {iteration})
+## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration {iteration_number})
 
-Evaluated {title} at head commit `{target_commit}` against base branch `{target_branch}`: {critical} Critical,
-{important} Important and {nit} Nit findings; CI {ci_state}; mergeability {mergeability}.
+Evaluated {title} at head commit `{target_commit}` against base branch `{base_branch}`: {critical} Critical, {important}
+Important and {nit} Nit findings; CI {ci_state}; mergeability {mergeability}.
 
 **Role reviews:**
 

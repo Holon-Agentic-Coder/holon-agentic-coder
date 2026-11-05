@@ -25,11 +25,15 @@ from sandbox_executor.review_report import (
     CLOSING_NOTICE,
     DETAILS_CLOSE,
     DETAILS_OPEN,
+    MAX_RECOMMENDATION_ENTRIES,
+    MAX_ROLE_ENTRIES,
+    MAX_VERIFIED_ENTRIES,
     ReviewerDetails,
     RoleReview,
     VerifiedItem,
     build_pr_review_consensus_report,
     build_review_consensus_report,
+    details_from_mapping,
     finding_id,
     parse_reviewer_details,
     render_reviewer_details,
@@ -171,6 +175,15 @@ def test_role_table_lists_only_activated_roles_and_merges_their_verdicts():
     ]
     assert "Frontend" not in body and "Technical Writer" not in body
     assert body.count("| PASS |") == 0
+
+
+def test_merged_changes_row_prefers_a_changes_reviewers_review_over_a_pass_one():
+    pass_first = {"roles": [{"role": "QA & Test Engineer", "verdict": "PASS", "review": "The tests all pass."}]}
+    changes = {"roles": [{"role": "qa & test engineer", "verdict": "CHANGES", "review": "The empty case is untested."}]}
+    body = _report([_reviewer(1, [SHARED], pass_first), _reviewer(2, [NIT], changes)])
+
+    assert "| QA & Test Engineer | CHANGES | The empty case is untested. |" in body
+    assert "The tests all pass." not in body
 
 
 def test_no_reported_roles_render_one_none_reported_row_instead_of_a_pass():
@@ -328,6 +341,20 @@ def test_details_parse_keeps_valid_entries_and_round_trips():
     expected = VerifiedItem("The greeting handles an empty name.", "tests/test_app.py::test_greeting")
     assert details.verified == (expected,)
     assert parse_reviewer_details(render_reviewer_details(details)) == details
+
+
+def test_details_entry_counts_are_capped_even_for_transported_mappings():
+    bloated = {
+        "roles": [{"role": f"Role {n}", "verdict": "PASS", "review": "ok"} for n in range(MAX_ROLE_ENTRIES + 8)],
+        "recommendations": ["Fix it."] * (MAX_RECOMMENDATION_ENTRIES + 8),
+        "verified": [{"claim": f"Claim {n}", "evidence": "tests/test_x.py"} for n in range(MAX_VERIFIED_ENTRIES + 8)],
+    }
+    details = details_from_mapping(bloated)
+
+    assert len(details.roles) == MAX_ROLE_ENTRIES
+    assert len(details.recommendations) == MAX_RECOMMENDATION_ENTRIES
+    assert len(details.verified) == MAX_VERIFIED_ENTRIES
+    assert parse_reviewer_details(_reviewer(1, [SHARED], bloated).report_text) == details
 
 
 def test_trailer_parser_accepts_a_report_that_carries_a_details_block():

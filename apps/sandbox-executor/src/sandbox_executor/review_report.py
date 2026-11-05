@@ -66,6 +66,9 @@ MAX_ROLE_CHARS = 60
 MAX_REVIEW_CHARS = 160
 MAX_CLAIM_CHARS = 200
 MAX_DETAILS_CHARS = 64 * 1024
+MAX_ROLE_ENTRIES = 32
+MAX_RECOMMENDATION_ENTRIES = 64
+MAX_VERIFIED_ENTRIES = 32
 DETAILS_OPEN = "<!-- holon-review-details -->"
 DETAILS_CLOSE = "<!-- /holon-review-details -->"
 CLOSING_NOTICE = "Stage 5 calibration will be added to this PR before merge. Merging remains with the human maintainer."
@@ -150,13 +153,17 @@ def parse_reviewer_details(report_text: str | None) -> ReviewerDetails:
 
 
 def details_from_mapping(raw: Any) -> ReviewerDetails:
-    """Sanitised details from a decoded block (or a transported ``as_dict()``); malformed entries are dropped."""
+    """Sanitised details from a decoded block (or a transported ``as_dict()``); malformed entries are dropped.
+
+    Entry counts are capped alongside the per-string bounds, so a bloated or transported block cannot grow the posted
+    body past GitHub's comment size limit.
+    """
     if not isinstance(raw, Mapping):
         return ReviewerDetails()
-    roles = tuple(item for item in map(_role_review, _entries(raw.get("roles"))) if item)
-    verified = tuple(item for item in map(_verified_item, _entries(raw.get("verified"))) if item)
+    roles = tuple(item for item in map(_role_review, _entries(raw.get("roles"))) if item)[:MAX_ROLE_ENTRIES]
+    verified = tuple(item for item in map(_verified_item, _entries(raw.get("verified"))) if item)[:MAX_VERIFIED_ENTRIES]
     recommendations = tuple(_inline(_string(item), MAX_SUMMARY_CHARS) for item in _entries(raw.get("recommendations")))
-    return ReviewerDetails(roles, recommendations, verified)
+    return ReviewerDetails(roles, recommendations[:MAX_RECOMMENDATION_ENTRIES], verified)
 
 
 def render_reviewer_details(details: ReviewerDetails) -> str:
@@ -315,16 +322,21 @@ class _FindingRow:
 
 
 def _role_rows(details: Sequence[ReviewerDetails]) -> list[str]:
-    """One row per role any reviewer activated: ``CHANGES`` if any reviewer said so, the first non-empty review."""
-    merged: dict[str, RoleReview] = {}
+    """One row per role any reviewer activated: ``CHANGES`` if any reviewer said so, with a matching review preferred.
+
+    The review cell is the first non-empty review supplied by a reviewer whose own verdict for that role matches the
+    merged verdict, so a ``CHANGES`` row never wears another reviewer's approving justification; when no matching
+    reviewer supplied text, the first non-empty review of any verdict is kept.
+    """
+    merged: dict[str, list[RoleReview]] = {}
     for role in (role for entry in details for role in entry.roles):
-        seen = merged.setdefault(role.role.casefold(), role)
-        verdict = "CHANGES" if "CHANGES" in (seen.verdict, role.verdict) else "PASS"
-        merged[role.role.casefold()] = RoleReview(seen.role, verdict, seen.review or role.review)
-    rows = [
-        f"| {_cell(r.role, MAX_ROLE_CHARS)} | {r.verdict} | {_cell(r.review, MAX_REVIEW_CHARS)} |"
-        for r in merged.values()
-    ]
+        merged.setdefault(role.role.casefold(), []).append(role)
+    rows = []
+    for entries in merged.values():
+        verdict = "CHANGES" if any(entry.verdict == "CHANGES" for entry in entries) else "PASS"
+        matching = (entry.review for entry in entries if entry.verdict == verdict and entry.review)
+        review = next(matching, "") or next((entry.review for entry in entries if entry.review), "")
+        rows.append(f"| {_cell(entries[0].role, MAX_ROLE_CHARS)} | {verdict} | {_cell(review, MAX_REVIEW_CHARS)} |")
     return rows or [NO_ROLES_ROW]
 
 

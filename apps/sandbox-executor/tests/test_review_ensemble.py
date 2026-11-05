@@ -244,6 +244,15 @@ def test_prompt_carries_diff_description_report_path_and_contract(tmp_path: Path
     assert "review only the change diff and change description above" in prompt
 
 
+def test_prompt_keeps_the_posted_shape_examples_unsubstituted(tmp_path: Path) -> None:
+    # The fenced examples document the posted body, so their tokens must stay outside the substitution allow-list.
+    prompt = build_reviewer_prompt(TEMPLATE_PATH.read_text(encoding="utf-8"), make_request(tmp_path), "R/report.md")
+    section = prompt.split("\n## Posted review shape\n", 1)[1].split("\n## On-disk trailer\n", 1)[0]
+    assert "APPROVED ({reviewers_completed}/{reviewers_configured})" in section
+    assert "CHANGES REQUESTED (Iteration {iteration_number})" in section
+    assert section.count("base branch `{base_branch}`") == 2
+
+
 REVIEWER_PROHIBITIONS = (
     "Write no file other than the report path.",
     "`gh pr review`",

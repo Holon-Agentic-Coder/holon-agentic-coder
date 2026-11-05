@@ -112,11 +112,17 @@ from sandbox_executor.review_ensemble import (
     run_ensemble,
 )
 from sandbox_executor.review_report import (
+    FindingDisposition,
+    FindingRow,
     build_pr_review_consensus_report,
     collect_review_data,
+    deserialize_finding_dispositions,
+    finding_signature,
     resolve_report_title,
     review_data_summary,
     reviewer_detail_payload,
+    serialize_finding_disposition,
+    serialize_finding_for_resolver,
     with_reviewer_detail,
 )
 from sandbox_executor.review_target import (
@@ -3654,6 +3660,115 @@ def _dispatch_review_ensemble(
         return reviewers, verdict, outcome_err
     except Exception as exc:
         return [], None, f"Reviewer ensemble container dispatch failed: {redact_agent_secrets(str(exc))}"
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(result_file)
+
+
+@dataclass(frozen=True)
+class ResolverOutcome:
+    """Structured result of one resolver pass on an iteration's findings."""
+
+    dispositions: tuple[FindingDisposition, ...] = ()
+    head_sha: str = ""
+    pushed: bool = False
+    lint_passed: bool = True
+    tests_passed: bool = True
+    error: str | None = None
+
+
+def _dispatch_review_resolver(  # noqa: PLR0913
+    context: FlowContext,
+    target: ReviewTarget,
+    iteration: int,
+    findings: Sequence[FindingRow],
+    action_ids: Mapping[str, str] | None = None,
+    rejected_findings: Sequence[FindingDisposition] = (),
+) -> ResolverOutcome:
+    """Dispatch one resolver pass into the review-loop role container via ``_dispatch_role``."""
+    tmp_dir = os.path.expanduser("~/.holon/tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    fd, result_file = tempfile.mkstemp(prefix="holon-resolve-result-", suffix=".json", dir=tmp_dir)
+    try:
+        os.fchmod(fd, 0o666)
+    finally:
+        os.close(fd)
+
+    lookup = dict(action_ids or {})
+    input_payload = {
+        "iteration": iteration,
+        "target": target.raw,
+        "head_branch": target.head_branch,
+        "head_sha": target.head_sha,
+        "findings": [
+            serialize_finding_for_resolver(row, introduced_by_action_id=lookup.get(row.id)) for row in findings
+        ],
+        "rejected_findings": [serialize_finding_disposition(item) for item in rejected_findings],
+    }
+
+    target_ref = target.raw or target.head_branch or "HEAD"
+    container_args = [
+        target_ref,
+        context.agent or FALLBACK_AGENT,
+        context.model or "inherit",
+        "--resolve",
+        f"--max-iterations={_ENGINE_PASSES_PER_DISPATCH}",
+        f"--iteration={iteration}",
+        "--no-auto-pr",
+        "--skip-post",
+        "--findings-file=/tmp/review_result.json",
+        "--result-file=/tmp/review_result.json",
+        "--json",
+    ]
+    if context.skip_push:
+        container_args.append("--skip-push")
+    if context.dry_run:
+        container_args.append("--dry-run")
+
+    try:
+        with open(result_file, "w", encoding="utf-8") as f:
+            json.dump(input_payload, f, indent=2)
+
+        exit_code = _dispatch_role(
+            context,
+            "review-loop",
+            container_args,
+            result_file=result_file,
+        )
+        data: dict[str, Any] = {}
+        if os.path.exists(result_file) and os.path.getsize(result_file) > 0:
+            with contextlib.suppress(OSError, ValueError), open(result_file, encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    data = loaded
+
+        dispositions = deserialize_finding_dispositions(data.get("dispositions"), findings, lookup)
+        head_sha = str(data.get("head_sha") or target.head_sha or "").strip()
+        pushed = bool(data.get("pushed", False))
+        lint_ok = bool(data.get("lint_passed", True))
+        tests_ok = bool(data.get("tests_passed", True))
+        raw_err = data.get("error")
+        err = redact_agent_secrets(str(raw_err)) if raw_err else None
+        if exit_code != 0 and not err and "dispositions" not in data:
+            err = f"Resolver container dispatch exited with code {exit_code}"
+        return ResolverOutcome(
+            dispositions=dispositions,
+            head_sha=head_sha,
+            pushed=pushed,
+            lint_passed=lint_ok,
+            tests_passed=tests_ok,
+            error=err,
+        )
+    except Exception as exc:
+        dispositions = deserialize_finding_dispositions([], findings, lookup)
+        return ResolverOutcome(
+            dispositions=dispositions,
+            head_sha=target.head_sha,
+            pushed=False,
+            lint_passed=False,
+            tests_passed=False,
+            error=f"Resolver container dispatch failed: {redact_agent_secrets(str(exc))}",
+        )
     finally:
         with contextlib.suppress(OSError):
             os.remove(result_file)

@@ -240,7 +240,7 @@ def test_a_role_any_reviewer_marked_changes_renders_changes():
     second = {"roles": [{"role": "security", "verdict": "CHANGES", "review": "Token leaks."}]}
     data = collect_review_data([_reviewer(1, block=first), _reviewer(2, block=second)])
 
-    assert [(role.role, role.verdict, role.review) for role in data.roles] == [("Security", "CHANGES", "Fine.")]
+    assert [(role.role, role.verdict, role.review) for role in data.roles] == [("Security", "CHANGES", "Token leaks.")]
 
 
 def test_a_finding_several_reviewers_raised_renders_once_with_every_contributor():
@@ -252,6 +252,16 @@ def test_a_finding_several_reviewers_raised_renders_once_with_every_contributor(
         "| Return the error to the caller. |"
     ]
     assert "| DOC-1 | nit | docs/guide.md | 1 | Typo in the heading. | Fix the spelling. |" in body
+
+
+def test_distinct_findings_at_one_location_stay_distinct_rows():
+    other = ReviewFinding("important", "src/app.py", 12, "The retry loop never terminates.")
+    data = collect_review_data([_reviewer(1, APP_FINDING), _reviewer(2, other)])
+
+    assert [(row.summary, row.reviewers) for row in data.findings] == [
+        ("The handler drops the error.", (1,)),
+        ("The retry loop never terminates.", (2,)),
+    ]
 
 
 def test_a_reviewer_without_a_block_gets_generated_ids_and_no_recommendation():

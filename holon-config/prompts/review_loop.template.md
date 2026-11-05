@@ -189,12 +189,14 @@ The final lines of a report with no findings:
 
 ### Change Description:
 
-```markdown
+<!-- prettier-ignore -->
+````markdown
 {pr_description}
-```
+````
 
 ### Change Diff:
 
-```diff
+<!-- prettier-ignore -->
+````diff
 {diff}
-```
+````

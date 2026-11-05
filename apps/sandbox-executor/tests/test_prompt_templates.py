@@ -181,6 +181,15 @@ def test_review_prompt_and_scaffold_twin_share_one_posted_shape():
     )
 
 
+@pytest.mark.parametrize("name", sorted(REVIEW_TEMPLATES))
+def test_review_prompt_wraps_description_and_diff_in_four_backtick_fences(name):
+    text = REVIEW_TEMPLATES[name]
+    assert "````markdown\n{pr_description}\n````" in text
+    assert "````diff\n{diff}\n````" in text
+    assert "```markdown\n{pr_description}" not in text.replace("````markdown", "")
+    assert "```diff\n{diff}" not in text.replace("````diff", "")
+
+
 def test_review_prompt_is_shorter_and_has_no_registry_matrix_or_legend():
     assert len(MARKDOWN_TEMPLATE.splitlines()) < FORMER_REVIEW_PROMPT_LINES
     for text in REVIEW_TEMPLATES.values():

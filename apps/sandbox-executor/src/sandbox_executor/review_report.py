@@ -236,7 +236,7 @@ def parse_reviewer_detail(result: ReviewerResult) -> ReviewerDetail:
 
 
 def _merge_roles(roles: Iterable[RoleReview]) -> tuple[RoleReview, ...]:
-    """One role per case-insensitive name, first-seen order; CHANGES wins, the first non-empty review is kept."""
+    """One role per case-insensitive name, first-seen order; CHANGES wins and keeps the review that caused it."""
     merged: dict[str, RoleReview] = {}
     for role in roles:
         seen = merged.get(role.role.lower())
@@ -244,15 +244,20 @@ def _merge_roles(roles: Iterable[RoleReview]) -> tuple[RoleReview, ...]:
             merged[role.role.lower()] = role
             continue
         verdict = "CHANGES" if "CHANGES" in (seen.verdict, role.verdict) else "PASS"
-        merged[role.role.lower()] = RoleReview(seen.role, verdict, seen.review or role.review)
+        preferred, other = (seen, role) if seen.verdict == verdict else (role, seen)
+        merged[role.role.lower()] = RoleReview(seen.role, verdict, preferred.review or other.review)
     return tuple(merged.values())
 
 
 def _merge_findings(rows: Iterable[FindingRow]) -> tuple[FindingRow, ...]:
-    """One row per severity, path and line, naming every reviewer that raised it."""
-    merged: dict[tuple[str, str, int | None], FindingRow] = {}
+    """One row per severity, path, line and summary, naming every reviewer that raised it.
+
+    The summary is part of the key so distinct findings at the same location stay distinct rows and the rendered
+    counts reconcile with the reviewer trailers; only the same finding raised by several reviewers merges.
+    """
+    merged: dict[tuple[str, str, int | None, str], FindingRow] = {}
     for row in rows:
-        key = (row.severity, row.path, row.line)
+        key = (row.severity, row.path, row.line, row.summary)
         seen = merged.get(key)
         if seen is None:
             merged[key] = row

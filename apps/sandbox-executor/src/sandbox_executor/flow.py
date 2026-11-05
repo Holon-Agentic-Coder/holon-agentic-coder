@@ -3274,14 +3274,18 @@ def _wait_for_pending_ci(  # noqa: PLR0913
     return ci_status
 
 
-def _refused_review_result(review_target: str, label_budget: int, error: str) -> dict[str, Any]:
-    """Build the non-approved result for a target whose diff is empty: no PR, no iterations, no post."""
+def _refused_review_result(review_target: str, last_iteration: int, label_budget: int, error: str) -> dict[str, Any]:
+    """Build the non-approved result for a target whose diff is empty: no PR, no new passes, no post.
+
+    ``last_iteration`` is the label of the latest pass already run (``first_label - 1``; 0 on a fresh
+    run), so the refusal speaks the same label units as every other result.
+    """
     return {
         "target": review_target,
         "consensus": {
             "approved": False,
             "score": 0.0,
-            "iterations": 0,
+            "iterations": last_iteration,
             "passes": 0,
             "max_review_iterations": label_budget,
             "status": "rejected",
@@ -3291,7 +3295,7 @@ def _refused_review_result(review_target: str, label_budget: int, error: str) ->
         "mergeability": {},
         "ci_checks": {},
         "trailers": "",
-        "total_iterations": 0,
+        "total_iterations": last_iteration,
         "max_iterations": label_budget,
         "findings": [],
         "severity": "critical",
@@ -3809,7 +3813,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         if diff_verdict is DiffVerdict.EMPTY:
             err_msg = f"Refusing to create or update a PR for '{review_target}': {diff_detail}."
             context.log(f"[Review Loop] {err_msg}")
-            return _refused_review_result(review_target, last_label, err_msg)
+            return _refused_review_result(review_target, first_label - 1, last_label, err_msg)
         if diff_verdict is DiffVerdict.UNVERIFIED:
             pr_refusal_error = (
                 f"Refusing to create or update a PR for '{review_target}': "
@@ -4300,8 +4304,10 @@ def _run_engine_review_loop(context: FlowContext) -> dict[str, Any]:
             f"{context.review_iterations_done} iteration(s)."
         )
         context.log(f"[Review Loop] Not dispatching: {err}")
-        consensus = {"approved": False, "score": 0.0, "iterations": 0, "passes": 0, "status": "failed"}
-        return {"consensus": consensus, "total_iterations": 0, "error": err}
+        # iterations = label of the latest pass already run (the checkpointed count); passes = 0 dispatches here.
+        done = context.review_iterations_done
+        consensus = {"approved": False, "score": 0.0, "iterations": done, "passes": 0, "status": "failed"}
+        return {"consensus": consensus, "total_iterations": done, "error": err}
     loop_res = run_review_loop(
         context=context,
         target=context.execution_branch,

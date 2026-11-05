@@ -429,7 +429,7 @@ class TestReviewLoopEmptyDiffGuard:
         git("commit", "-q", "-m", "exec")
         return repo
 
-    def _run(self, repo: Path):
+    def _run(self, repo: Path, first_iteration: int = 1):
         from sandbox_executor.flow import FlowContext, run_review_loop
 
         ctx = FlowContext(repo_dir=str(repo), execution_branch=self.EXEC, token_reduce=False)
@@ -440,7 +440,9 @@ class TestReviewLoopEmptyDiffGuard:
             patch("sandbox_executor.flow.probe_ci_checks", return_value={"all_passed": True, "source": "github_cli"}),
             patch("sandbox_executor.flow.post_pr_review_consensus", return_value={"dual_posted": True}),
         ):
-            res = run_review_loop(ctx, target=self.EXEC, max_iterations=1, dry_run=False)
+            res = run_review_loop(
+                ctx, target=self.EXEC, max_iterations=1, dry_run=False, first_iteration=first_iteration
+            )
         return res, mock_pr
 
     def test_empty_execution_branch_gets_no_pr(self, tmp_path: Path):
@@ -453,6 +455,20 @@ class TestReviewLoopEmptyDiffGuard:
         assert res["consensus"]["max_review_iterations"] == 1
         assert res["max_iterations"] == 1
         assert "no changes outside holon-knowledge/ledger/, plans/ and executions/" in res["error"]
+        # Fresh run: no pass has run, so the label of the latest pass is 0.
+        assert res["consensus"]["iterations"] == 0
+        assert res["total_iterations"] == 0
+
+    def test_resumed_empty_diff_refusal_reports_the_checkpointed_label(self, tmp_path: Path):
+        """The refusal follows the 'iterations = label of latest pass' convention on a resumed engine run."""
+        res, mock_pr = self._run(self._repo(tmp_path, change_source=False), first_iteration=4)
+        mock_pr.assert_not_called()
+        assert res["consensus"]["approved"] is False
+        # first_iteration=4 means 3 passes already ran; the refusal reports that label, 0 passes, label budget 4.
+        assert res["consensus"]["iterations"] == 3
+        assert res["total_iterations"] == 3
+        assert res["consensus"]["passes"] == 0
+        assert res["max_iterations"] == 4
 
     def test_non_empty_execution_branch_still_gets_pr(self, tmp_path: Path):
         res, mock_pr = self._run(self._repo(tmp_path, change_source=True))

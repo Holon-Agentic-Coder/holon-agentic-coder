@@ -5978,6 +5978,9 @@ class TestEngineOwnedReviewLoop:
         assert result.status == StageStatus.FAILED
         assert "exhausted after 5 iteration(s)" in str(result.error)
         assert ctx.review_iterations_done == 5
+        # The synthetic consensus speaks label units: iterations = label of the latest pass run (the count), 0 passes.
+        assert result.payload["consensus"]["iterations"] == 5
+        assert result.payload["consensus"]["passes"] == 0
 
     def test_old_checkpoint_without_the_count_loads_as_zero(self):
         data = FlowContext(token_reduce=False).to_dict()

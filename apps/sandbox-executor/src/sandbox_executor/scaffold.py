@@ -252,8 +252,8 @@ consensus model and post one short consensus review built only from what the rev
 9. **Ledger API only**: append action records to `holon-knowledge/ledger/executions.jsonl` only through
    `sandbox_executor.flow.record_review_action()` (or, without a `FlowContext`, the context-free
    `sandbox_executor.ledger.try_append_action_record(..., preserve_shape=True)`), never by writing to the file directly.
-10. **Human-only merging (Bean 0034)**: never run `gh pr merge`, enable auto-merge or add the PR to a merge queue.
-    Merging remains with the human maintainer; on consensus approval, halt and request human review.
+10. **Human-only merging**: never run `gh pr merge`, enable auto-merge or add the PR to a merge queue. Merging remains
+    with the human maintainer; on consensus approval, halt and request human review.
 
 Review commits carry these RFC 2822 trailers:
 

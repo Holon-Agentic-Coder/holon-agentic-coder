@@ -40,8 +40,11 @@ from sandbox_executor.review_target import ReviewTarget
 
 __all__ = [
     "CLOSING_NOTICE",
+    "DISPOSITIONS",
     "ROLES_CLOSE",
     "ROLES_OPEN",
+    "VALID_REJECTION_REASONS",
+    "FindingDisposition",
     "FindingRow",
     "ReviewData",
     "ReviewerDetail",
@@ -51,12 +54,17 @@ __all__ = [
     "build_pr_review_consensus_report",
     "build_review_consensus_report",
     "collect_review_data",
+    "deserialize_finding_dispositions",
+    "finding_signature",
     "parse_reviewer_detail",
+    "render_dispositions_section",
     "render_on_disk_trailer",
     "render_reviewer_line",
     "resolve_report_title",
     "review_data_summary",
     "reviewer_detail_payload",
+    "serialize_finding_disposition",
+    "serialize_finding_for_resolver",
     "with_reviewer_detail",
 ]
 
@@ -69,6 +77,14 @@ MAX_BLOCK_ENTRIES = 50
 ROLES_OPEN = "<!-- holon-review-roles -->"
 ROLES_CLOSE = "<!-- /holon-review-roles -->"
 ROLE_VERDICTS = ("PASS", "CHANGES")
+DISPOSITIONS = ("applied", "rejected")
+VALID_REJECTION_REASONS = (
+    "not diff-grounded",
+    "inaccurate",
+    "out of scope",
+    "conflicting with a higher-severity finding",
+    "no-convergence",
+)
 NOT_SUPPLIED = "not supplied"
 CLOSING_NOTICE = "Stage 5 calibration will be added to this PR before merge. Merging remains with the human maintainer."
 _ID_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,23}")
@@ -118,12 +134,29 @@ class ReviewerDetail:
 
 
 @dataclass(frozen=True)
+class FindingDisposition:
+    """One adjudicated finding disposition from a resolver pass or convergence guard."""
+
+    id: str
+    severity: str
+    path: str
+    line: int | None
+    summary: str
+    recommendation: str = NOT_SUPPLIED
+    disposition: str = "rejected"
+    rejection_reason: str | None = None
+    commit_sha: str | None = None
+    introduced_by_action_id: str | None = None
+
+
+@dataclass(frozen=True)
 class ReviewData:
     """The merged review data of the deciding iteration, as the report renders it."""
 
     roles: tuple[RoleReview, ...] = ()
     findings: tuple[FindingRow, ...] = ()
     verified: tuple[VerifiedClaim, ...] = ()
+    dispositions: tuple[FindingDisposition, ...] = ()
 
 
 def _inline(text: Any, limit: int) -> str:
@@ -318,14 +351,169 @@ def with_reviewer_detail(result: ReviewerResult, payload: Any) -> ReviewerResult
     return dataclasses.replace(result, report_text=f"{ROLES_OPEN}\n{block}\n{ROLES_CLOSE}")
 
 
-def review_data_summary(data: ReviewData) -> dict[str, Any]:
+def finding_signature(severity: Any, path: Any, line: Any, summary: Any) -> tuple[str, str, int | None, str]:
+    """Normalised signature key for matching findings across iterations."""
+    sev = str(severity or "nit").strip().lower()
+    norm_sev = sev if sev in SEVERITIES else "nit"
+    norm_path = _inline(path, MAX_PATH_CHARS)
+    norm_line = line if isinstance(line, int) and not isinstance(line, bool) and line >= 1 else None
+    norm_summary = _inline(summary, MAX_SUMMARY_CHARS)
+    return (norm_sev, norm_path, norm_line, norm_summary)
+
+
+def serialize_finding_for_resolver(
+    row: FindingRow,
+    *,
+    introduced_by_action_id: str | None = None,
+) -> dict[str, Any]:
+    """Serialise one merged finding row for the resolver result-file transport."""
+    payload: dict[str, Any] = {
+        "id": row.id,
+        "severity": row.severity,
+        "path": row.path,
+        "line": row.line,
+        "file_line": row.path if row.line is None else f"{row.path}:{row.line}",
+        "reviewers": list(row.reviewers),
+        "summary": row.summary,
+        "recommendation": row.recommendation,
+    }
+    if introduced_by_action_id:
+        payload["introduced_by_action_id"] = introduced_by_action_id
+    return payload
+
+
+def serialize_finding_disposition(item: FindingDisposition) -> dict[str, Any]:
+    """Serialise a :class:`FindingDisposition` to a JSON-safe dictionary."""
+    data: dict[str, Any] = {
+        "id": item.id,
+        "severity": item.severity,
+        "path": item.path,
+        "line": item.line,
+        "summary": item.summary,
+        "recommendation": item.recommendation,
+        "disposition": item.disposition,
+        "rejection_reason": item.rejection_reason,
+    }
+    if item.commit_sha:
+        data["commit_sha"] = item.commit_sha
+    if item.introduced_by_action_id:
+        data["introduced_by_action_id"] = item.introduced_by_action_id
+    return data
+
+
+def _normalise_rejection_reason(raw_reason: Any) -> str:
+    """Validate and normalise a one-line rejection reason against the allowed vocabulary."""
+    clean = _inline(raw_reason, MAX_REASON_CHARS)
+    low = clean.lower()
+    for allowed in VALID_REJECTION_REASONS:
+        if low == allowed or low.startswith(allowed):
+            return allowed
+    return clean if clean in VALID_REJECTION_REASONS else "out of scope"
+
+
+def deserialize_finding_dispositions(
+    raw: Any,
+    expected_findings: Sequence[FindingRow] = (),
+    action_ids: Mapping[str, str] | None = None,
+) -> tuple[FindingDisposition, ...]:
+    """Deserialise resolver dispositions and ensure every expected finding has exactly one disposition."""
+    lookup = dict(action_ids or {})
+    by_id: dict[str, Mapping[str, Any]] = {}
+    ordered_raw: list[Mapping[str, Any]] = []
+    if isinstance(raw, list):
+        for entry in raw[:MAX_BLOCK_ENTRIES]:
+            if isinstance(entry, Mapping):
+                ordered_raw.append(entry)
+                ident = str(entry.get("id") or "").strip()
+                if ident and ident not in by_id:
+                    by_id[ident] = entry
+
+    if not expected_findings:
+        return tuple(_disposition_from_mapping(entry, None, lookup) for entry in ordered_raw)
+
+    results: list[FindingDisposition] = []
+    for idx, row in enumerate(expected_findings):
+        matched = by_id.get(row.id)
+        if matched is None and idx < len(ordered_raw) and not str(ordered_raw[idx].get("id") or "").strip():
+            matched = ordered_raw[idx]
+        results.append(_disposition_from_mapping(matched or {}, row, lookup))
+    return tuple(results)
+
+
+def _disposition_from_mapping(
+    entry: Mapping[str, Any],
+    fallback: FindingRow | None,
+    action_ids: Mapping[str, str],
+) -> FindingDisposition:
+    """Construct one validated :class:`FindingDisposition` from raw mapping and optional fallback row."""
+    ident = _inline(entry.get("id") or (fallback.id if fallback else "FIND-1"), 40) or "FIND-1"
+    raw_sev = str(entry.get("severity") or (fallback.severity if fallback else "nit")).strip().lower()
+    severity = raw_sev if raw_sev in SEVERITIES else (fallback.severity if fallback else "nit")
+    path = _inline(entry.get("path") or entry.get("file") or (fallback.path if fallback else ""), MAX_PATH_CHARS)
+    raw_line = entry.get("line", fallback.line if fallback else None)
+    line = raw_line if isinstance(raw_line, int) and not isinstance(raw_line, bool) and raw_line >= 1 else None
+    summary = _inline(entry.get("summary") or (fallback.summary if fallback else ""), MAX_SUMMARY_CHARS)
+    recommendation = (
+        _inline(entry.get("recommendation") or (fallback.recommendation if fallback else ""), MAX_SUMMARY_CHARS)
+        or NOT_SUPPLIED
+    )
+    raw_disp = str(entry.get("disposition") or entry.get("review_disposition") or "").strip().lower()
+    disposition = raw_disp if raw_disp in DISPOSITIONS else "rejected"
+    reason: str | None = None
+    if disposition == "rejected":
+        reason = _normalise_rejection_reason(entry.get("rejection_reason") or entry.get("reason"))
+    commit_sha = _inline(entry.get("commit_sha") or "", 40) or None
+    intro_id = (
+        _inline(entry.get("introduced_by_action_id") or action_ids.get(ident) or "", 64) or None
+    )
+    return FindingDisposition(
+        id=ident,
+        severity=severity,
+        path=path,
+        line=line,
+        summary=summary,
+        recommendation=recommendation,
+        disposition=disposition,
+        rejection_reason=reason,
+        commit_sha=commit_sha,
+        introduced_by_action_id=intro_id,
+    )
+
+
+def render_dispositions_section(dispositions: Sequence[FindingDisposition]) -> list[str]:
+    """Render a markdown table summarising adjudicated finding dispositions."""
+    if not dispositions:
+        return []
+    lines = [
+        "**Adjudicated dispositions:**",
+        "",
+        "| ID | Severity | File:Line | Disposition | Detail |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for item in dispositions:
+        location = item.path if item.line is None else f"{item.path}:{item.line}"
+        detail = item.commit_sha or "committed" if item.disposition == "applied" else (item.rejection_reason or "")
+        lines.append(
+            f"| {_cell(item.id)} | {item.severity} | {_cell(location)} | {item.disposition} | {_cell(detail)} |"
+        )
+    return lines
+
+
+def review_data_summary(
+    data: ReviewData,
+    dispositions: Sequence[FindingDisposition] = (),
+) -> dict[str, Any]:
     """A JSON-safe summary for the loop result: role names and verdicts, finding ids, severities and reviewers."""
-    return {
+    summary: dict[str, Any] = {
         "roles": [{"role": role.role, "verdict": role.verdict} for role in data.roles],
         "findings": [
             {"id": row.id, "severity": row.severity, "reviewers": list(row.reviewers)} for row in data.findings
         ],
     }
+    resolved = dispositions or data.dispositions
+    if resolved:
+        summary["dispositions"] = [serialize_finding_disposition(item) for item in resolved]
+    return summary
 
 
 # --- Probe wording -------------------------------------------------------------------------------------------------

@@ -267,8 +267,25 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         default=1,
         help=(
             "Label of the first pass (default: 1), used for the ledger review_iteration fields and the posted "
-            "'Iteration {n}' heading; never a loop limit."
+            "'Iteration {n}' heading. The flow engine owns the counter, saves it in the flow checkpoint "
+            "(review_iterations_done), and on a resume from the review stage passes the continued count as this "
+            "label so ledger review_iteration values and posted 'Iteration {n}' headings form one monotonic sequence "
+            "across halts and resumes; it is never a loop limit and is never set by operators."
         ),
+    )
+    parser.add_argument(
+        "--resolve",
+        action="store_true",
+        default=False,
+        help=(
+            "Run in resolver mode: read findings from --findings-file (or --result-file), adjudicate every finding "
+            "to applied or rejected, verify with lint and tests before pushing, and write the resolver outcome JSON."
+        ),
+    )
+    parser.add_argument(
+        "--findings-file",
+        default=None,
+        help="Path to input findings JSON for --resolve mode (defaults to --result-file).",
     )
     parser.add_argument(
         "--ensemble-size",

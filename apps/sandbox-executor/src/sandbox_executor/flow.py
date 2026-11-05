@@ -3274,7 +3274,7 @@ def _wait_for_pending_ci(  # noqa: PLR0913
     return ci_status
 
 
-def _refused_review_result(review_target: str, budget: int, error: str) -> dict[str, Any]:
+def _refused_review_result(review_target: str, label_budget: int, error: str) -> dict[str, Any]:
     """Build the non-approved result for a target whose diff is empty: no PR, no iterations, no post."""
     return {
         "target": review_target,
@@ -3282,7 +3282,8 @@ def _refused_review_result(review_target: str, budget: int, error: str) -> dict[
             "approved": False,
             "score": 0.0,
             "iterations": 0,
-            "max_review_iterations": budget,
+            "passes": 0,
+            "max_review_iterations": label_budget,
             "status": "rejected",
         },
         "halted_for_human": False,
@@ -3291,7 +3292,7 @@ def _refused_review_result(review_target: str, budget: int, error: str) -> dict[
         "ci_checks": {},
         "trailers": "",
         "total_iterations": 0,
-        "max_iterations": budget,
+        "max_iterations": label_budget,
         "findings": [],
         "severity": "critical",
         "posting": {},
@@ -3808,7 +3809,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         if diff_verdict is DiffVerdict.EMPTY:
             err_msg = f"Refusing to create or update a PR for '{review_target}': {diff_detail}."
             context.log(f"[Review Loop] {err_msg}")
-            return _refused_review_result(review_target, budget, err_msg)
+            return _refused_review_result(review_target, last_label, err_msg)
         if diff_verdict is DiffVerdict.UNVERIFIED:
             pr_refusal_error = (
                 f"Refusing to create or update a PR for '{review_target}': "
@@ -4496,7 +4497,8 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
         loop_breach = loop_res.get("budget_breach")
         summaries = "; ".join(render_reviewer_summary_line(r) for r in loop_res.get("reviewers") or [])
         if loop_res.get("error"):
-            # The empty-diff guard refused the PR (empty_diff / diff_unverified): no tests decided this outcome.
+            # A guard refusal (empty_diff / diff_unverified) or an exhausted engine review budget:
+            # no tests decided this outcome.
             err_msg = f"Autonomous review halted: {loop_res['error']}"
         elif loop_breach:
             # The per-iteration budget stopped the loop (Bean 0139): that, not the test result, ended the review.

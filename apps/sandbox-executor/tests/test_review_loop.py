@@ -448,6 +448,10 @@ class TestReviewLoopEmptyDiffGuard:
         mock_pr.assert_not_called()
         assert res["consensus"]["approved"] is False
         assert res["pr"]["reason"] == "empty_diff"
+        # The refusal speaks the same units as every other result: a passes key (0 dispatches) beside the label budget.
+        assert res["consensus"]["passes"] == 0
+        assert res["consensus"]["max_review_iterations"] == 1
+        assert res["max_iterations"] == 1
         assert "no changes outside holon-knowledge/ledger/, plans/ and executions/" in res["error"]
 
     def test_non_empty_execution_branch_still_gets_pr(self, tmp_path: Path):

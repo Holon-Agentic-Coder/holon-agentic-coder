@@ -429,7 +429,7 @@ class TestReviewLoopEmptyDiffGuard:
         git("commit", "-q", "-m", "exec")
         return repo
 
-    def _run(self, repo: Path):
+    def _run(self, repo: Path, first_iteration: int = 1):
         from sandbox_executor.flow import FlowContext, run_review_loop
 
         ctx = FlowContext(repo_dir=str(repo), execution_branch=self.EXEC, token_reduce=False)
@@ -440,7 +440,9 @@ class TestReviewLoopEmptyDiffGuard:
             patch("sandbox_executor.flow.probe_ci_checks", return_value={"all_passed": True, "source": "github_cli"}),
             patch("sandbox_executor.flow.post_pr_review_consensus", return_value={"dual_posted": True}),
         ):
-            res = run_review_loop(ctx, target=self.EXEC, max_iterations=1, dry_run=False)
+            res = run_review_loop(
+                ctx, target=self.EXEC, max_iterations=1, dry_run=False, first_iteration=first_iteration
+            )
         return res, mock_pr
 
     def test_empty_execution_branch_gets_no_pr(self, tmp_path: Path):
@@ -448,7 +450,25 @@ class TestReviewLoopEmptyDiffGuard:
         mock_pr.assert_not_called()
         assert res["consensus"]["approved"] is False
         assert res["pr"]["reason"] == "empty_diff"
+        # The refusal speaks the same units as every other result: a passes key (0 dispatches) beside the label budget.
+        assert res["consensus"]["passes"] == 0
+        assert res["consensus"]["max_review_iterations"] == 1
+        assert res["max_iterations"] == 1
         assert "no changes outside holon-knowledge/ledger/, plans/ and executions/" in res["error"]
+        # Fresh run: no pass has run, so the label of the latest pass is 0.
+        assert res["consensus"]["iterations"] == 0
+        assert res["total_iterations"] == 0
+
+    def test_resumed_empty_diff_refusal_reports_the_checkpointed_label(self, tmp_path: Path):
+        """The refusal follows the 'iterations = label of latest pass' convention on a resumed engine run."""
+        res, mock_pr = self._run(self._repo(tmp_path, change_source=False), first_iteration=4)
+        mock_pr.assert_not_called()
+        assert res["consensus"]["approved"] is False
+        # first_iteration=4 means 3 passes already ran; the refusal reports that label, 0 passes, label budget 4.
+        assert res["consensus"]["iterations"] == 3
+        assert res["total_iterations"] == 3
+        assert res["consensus"]["passes"] == 0
+        assert res["max_iterations"] == 4
 
     def test_non_empty_execution_branch_still_gets_pr(self, tmp_path: Path):
         res, mock_pr = self._run(self._repo(tmp_path, change_source=True))
@@ -1577,3 +1597,110 @@ def test_ensemble_size_help_text_and_validation(capsys):
         main()
     assert exc.value.code == 1
     assert "--ensemble-size must be at least 1" in capsys.readouterr().err
+
+
+# --- Engine-owned loop: the iteration label versus the pass limit --------------------------------------------------
+
+
+def test_host_dispatch_label_flows_into_ledger_rows_and_the_posted_heading(tmp_path, monkeypatch):
+    from sandbox_executor.flow import run_review_loop
+    from sandbox_executor.review_ensemble import ConsensusVerdict, serialize_review_outcome
+    from sandbox_executor.review_report import build_review_consensus_report
+
+    from tests.review_fakes import objecting_reviewer
+
+    monkeypatch.delenv("HOLON_IN_SANDBOX", raising=False)
+    monkeypatch.delenv("HOLON_ROLE", raising=False)
+    dispatched: list[list[str]] = []
+
+    def fake_dispatch(role, runner, model, args, **kwargs):
+        dispatched.append(list(args))
+        payload = serialize_review_outcome([objecting_reviewer(1)], ConsensusVerdict.CHANGES_REQUESTED)
+        Path(kwargs["result_file"]).write_text(json.dumps(payload), encoding="utf-8")
+        return 1
+
+    ctx = _ensemble_ctx(tmp_path, dispatcher=fake_dispatch)
+    with _LoopStubs() as stubs:
+        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=1, ensemble_size=1, first_iteration=4)
+
+    (args,) = dispatched
+    assert "--iteration=4" in args
+    assert "--max-iterations=1" in args
+    assert res["consensus"]["iterations"] == 4
+    assert res["consensus"]["passes"] == 1
+    # Label units stay paired: the label (4) reports against the label budget (4), not the remaining pass limit (1).
+    assert res["consensus"]["max_review_iterations"] == 4
+    assert res["total_iterations"] == 4
+    assert res["max_iterations"] == 4
+    rev_rows = _rows(tmp_path, "ACT-REV")
+    assert rev_rows
+    assert {r["review_iteration"] for r in rev_rows} == {4}
+    consensus_data = stubs.post.call_args.kwargs["consensus_data"]
+    assert consensus_data["iterations"] == 4
+    body = build_review_consensus_report(str(tmp_path), EXEC_TARGET, consensus_data, [objecting_reviewer(1)])
+    assert body.startswith("## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration 4)")
+
+
+def test_standalone_loop_labels_still_start_at_one(tmp_path):
+    from tests.review_fakes import FakeEnsemble, objecting_reviewer
+
+    res, _, _ = _loop(tmp_path, FakeEnsemble([objecting_reviewer(1)]), size=1)
+
+    assert res["total_iterations"] == 1
+    assert res["max_iterations"] == 5
+    assert {r["review_iteration"] for r in _rows(tmp_path, "ACT-REV")} == {1}
+
+
+def _entrypoint_loop_kwargs(tmp_path: Path, *extra: str) -> dict:
+    (tmp_path / ".git").mkdir(exist_ok=True)
+    argv = ["review_loop", EXEC_TARGET, "fake-agent", "fake-model", f"--repo-dir={tmp_path}", "--dry-run", *extra]
+    with (
+        patch.object(sys, "argv", argv),
+        patch("sandbox_executor.entrypoint.review_loop.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.entrypoint.review_loop.run_cmd"),
+        patch(
+            "sandbox_executor.entrypoint.review_loop.run_review_loop",
+            return_value={"consensus": {"approved": False, "iterations": 1}},
+        ) as mock_loop,
+        _prepared(EXEC_TARGET),
+        pytest.raises(SystemExit),
+    ):
+        review_loop_main()
+    return mock_loop.call_args.kwargs
+
+
+def test_entrypoint_passes_the_iteration_label_separately_from_the_pass_limit(tmp_path):
+    kwargs = _entrypoint_loop_kwargs(tmp_path, "--iteration=7", "--max-iterations=1")
+
+    assert kwargs["first_iteration"] == 7
+    assert kwargs["max_iterations"] == 1
+
+
+def test_entrypoint_defaults_keep_the_standalone_loop(tmp_path):
+    kwargs = _entrypoint_loop_kwargs(tmp_path)
+
+    assert kwargs["first_iteration"] == 1
+    assert kwargs["max_iterations"] == 25
+
+
+def test_entrypoint_rejects_an_iteration_label_below_one(tmp_path, capsys):
+    argv = ["review_loop", EXEC_TARGET, f"--repo-dir={tmp_path}", "--iteration=0"]
+    with patch.object(sys, "argv", argv), pytest.raises(SystemExit) as exc:
+        review_loop_main()
+
+    assert exc.value.code != 0
+    assert "--iteration must be at least 1" in capsys.readouterr().err
+
+
+def test_standalone_review_command_forwards_its_own_limit_and_no_label():
+    import argparse
+
+    from sandbox_executor.cli.commands.review import _build_container_review_args
+
+    args = argparse.Namespace(
+        target=EXEC_TARGET, agent="fake-agent", model="fake-model", max_iterations=5, ensemble_size=3
+    )
+    container_args = _build_container_review_args(args)
+
+    assert "--max-iterations=5" in container_args
+    assert not [a for a in container_args if a.startswith("--iteration")]

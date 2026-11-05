@@ -345,6 +345,8 @@ class FlowContext:
     schema_version: int = CURRENT_CONTEXT_SCHEMA_VERSION
     # Automatic returns to Stage 2 after an over-budget plan (bounded by budgets.MAX_REPLAN_ATTEMPTS).
     replan_attempts: int = 0
+    # Engine-owned Stage 4 count: the label of the last review pass run, checkpointed so a resume continues it.
+    review_iterations_done: int = 0
     # Role-agent dispatcher for Stages 1-3; None means cli.dispatch_role_agent. Never checkpointed.
     dispatcher: Callable[..., int] | None = field(default=None, repr=False, compare=False)
 
@@ -385,6 +387,7 @@ class FlowContext:
             "review_ensemble_size": self.review_ensemble_size,
             "mitm_web": self.mitm_web,
             "replan_attempts": self.replan_attempts,
+            "review_iterations_done": self.review_iterations_done,
             "stage_results": {k: v.to_dict() for k, v in self.stage_results.items()},
             "logs": self.logs,
         }
@@ -421,6 +424,7 @@ class FlowContext:
             review_ensemble_size=int(data.get("review_ensemble_size") or DEFAULT_ENSEMBLE_SIZE),
             mitm_web=data.get("mitm_web", False),
             replan_attempts=int(data.get("replan_attempts") or 0),
+            review_iterations_done=int(data.get("review_iterations_done") or 0),
             stage_results=parsed_results,
             logs=data.get("logs", []),
         )
@@ -3270,15 +3274,20 @@ def _wait_for_pending_ci(  # noqa: PLR0913
     return ci_status
 
 
-def _refused_review_result(review_target: str, budget: int, error: str) -> dict[str, Any]:
-    """Build the non-approved result for a target whose diff is empty: no PR, no iterations, no post."""
+def _refused_review_result(review_target: str, last_iteration: int, label_budget: int, error: str) -> dict[str, Any]:
+    """Build the non-approved result for a target whose diff is empty: no PR, no new passes, no post.
+
+    ``last_iteration`` is the label of the latest pass already run (``first_label - 1``; 0 on a fresh
+    run), so the refusal speaks the same label units as every other result.
+    """
     return {
         "target": review_target,
         "consensus": {
             "approved": False,
             "score": 0.0,
-            "iterations": 0,
-            "max_review_iterations": budget,
+            "iterations": last_iteration,
+            "passes": 0,
+            "max_review_iterations": label_budget,
             "status": "rejected",
         },
         "halted_for_human": False,
@@ -3286,8 +3295,8 @@ def _refused_review_result(review_target: str, budget: int, error: str) -> dict[
         "mergeability": {},
         "ci_checks": {},
         "trailers": "",
-        "total_iterations": 0,
-        "max_iterations": budget,
+        "total_iterations": last_iteration,
+        "max_iterations": label_budget,
         "findings": [],
         "severity": "critical",
         "posting": {},
@@ -3580,13 +3589,20 @@ def _ensemble_iteration(  # noqa: PLR0913
     return list(results), None
 
 
+# The engine owns the Stage 4 loop: each dispatch asks the container for one ensemble pass, labelled by --iteration.
+_ENGINE_PASSES_PER_DISPATCH = 1
+
+
 def _dispatch_review_ensemble(
     context: FlowContext,
     target: ReviewTarget,
     iteration: int,
     ensemble_size: int,
 ) -> tuple[list[ReviewerResult], ConsensusVerdict | None, str | None]:
-    """Dispatch reviewer ensemble turns into the review-loop role container via _dispatch_role."""
+    """Dispatch one reviewer ensemble pass into the review-loop role container via _dispatch_role.
+
+    ``iteration`` is the engine's pass label (``--iteration``), never the container's loop limit.
+    """
     from sandbox_executor.review_ensemble import deserialize_review_outcome
 
     tmp_dir = os.path.expanduser("~/.holon/tmp")
@@ -3602,7 +3618,8 @@ def _dispatch_review_ensemble(
         target_ref,
         context.agent or FALLBACK_AGENT,
         context.model or "inherit",
-        f"--max-iterations={iteration}",
+        f"--max-iterations={_ENGINE_PASSES_PER_DISPATCH}",
+        f"--iteration={iteration}",
         f"--ensemble-size={ensemble_size}",
         "--no-auto-pr",
         "--skip-post",
@@ -3697,6 +3714,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     *,
     run_ensemble_fn: Callable[..., list[ReviewerResult]] | None = None,
     skip_post: bool = False,
+    first_iteration: int = 1,
 ) -> dict[str, Any]:
     """Execute the native Stage 4 review loop (Bean 0118) with the real reviewer ensemble.
 
@@ -3719,6 +3737,10 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         clock: Monotonic clock for the per-iteration budget (Bean 0139) and the CI waits (default: time.monotonic).
         sleep: Sleep function used by the CI waits (default: time.sleep); injectable for tests.
         run_ensemble_fn: Reviewer ensemble seam (default: ``review_ensemble.run_ensemble``); tests inject a fake.
+        skip_post: If True, never post the consensus to GitHub (the engine's container dispatch posts on the host).
+        first_iteration: Label of the first pass (default 1). It is only a label: the ledger ``review_iteration``
+            fields, finding IDs, trailers and the posted ``Iteration {n}`` heading carry it, while ``max_iterations``
+            alone caps how many passes run. The engine passes its own continued count here.
 
     The empty-diff guard runs for every target whatever ``auto_pr`` is: an empty diff is rejected and an
     unverifiable one fails, before any PR, iteration or post. A dry run never measures anything, so it reports
@@ -3733,6 +3755,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     sleep = sleep or time.sleep
     review_target = str(target or context.execution_branch or context.intent_branch or "HEAD").strip()
     budget = max(1, max_iterations or context.max_review_iterations or 25)
+    # Labels run from first_label to last_label; the counter below always holds the label of the latest pass.
+    first_label = max(1, first_iteration)
+    last_label = first_label + budget - 1
     repo_dir = context.repo_dir
     target_branch = context.intent_data.get("target_branch", "main")
     effective_dry_run = bool(dry_run or context.dry_run)
@@ -3752,7 +3777,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     test_pass_rate, exit_code = _test_evidence(context.stage_results.get("execute"))
     tests_failed = exit_code != 0 or (test_pass_rate is not None and test_pass_rate < 1.0)
 
-    iteration = 0
+    iteration = first_label - 1
     consensus_reached = False
     last_ci_status: dict[str, Any] = {}
     last_trailers_str = ""
@@ -3788,7 +3813,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         if diff_verdict is DiffVerdict.EMPTY:
             err_msg = f"Refusing to create or update a PR for '{review_target}': {diff_detail}."
             context.log(f"[Review Loop] {err_msg}")
-            return _refused_review_result(review_target, budget, err_msg)
+            return _refused_review_result(review_target, first_label - 1, last_label, err_msg)
         if diff_verdict is DiffVerdict.UNVERIFIED:
             pr_refusal_error = (
                 f"Refusing to create or update a PR for '{review_target}': "
@@ -3845,9 +3870,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         # Fail closed: a PR the guard refused is never reviewed, so no evidence can turn the refusal into approval.
         context.log("[Review Loop] Halting review loop without consensus: the empty-diff guard refused the PR.")
 
-    while pr_refusal_error is None and infra_error is None and iteration < budget:
+    while pr_refusal_error is None and infra_error is None and iteration < last_label:
         iteration += 1
-        context.log(f"[Review Loop] Starting review iteration {iteration}/{budget} for target '{review_target}'.")
+        context.log(f"[Review Loop] Starting review iteration {iteration}/{last_label} for target '{review_target}'.")
         iteration_timer = StageTimer("review", iteration_budget_seconds, clock=clock)
 
         # 1. Mergeability inspection
@@ -4017,11 +4042,12 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         )
         break
 
-    if not consensus_reached and pr_refusal_error is None and infra_error is None and iteration >= budget:
+    if not consensus_reached and pr_refusal_error is None and infra_error is None and iteration >= last_label:
         context.log(f"[Review Loop] Iteration budget ({budget}) exhausted without consensus.")
 
     # A dry run measures nothing and dispatches no reviewer, so a clean simulation is reported as not measured.
-    not_measured = tests_not_measured or (effective_dry_run and iteration > 0 and not finding_ids)
+    passes = iteration - first_label + 1
+    not_measured = tests_not_measured or (effective_dry_run and passes > 0 and not finding_ids)
     consensus_status = _loop_status(
         consensus_reached, ensemble_verdict, bool(pr_refusal_error or infra_error), is_dirty, not_measured
     )
@@ -4039,7 +4065,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "approved": consensus_reached,
         "status": consensus_status,
         "iterations": iteration,
-        "max_review_iterations": budget,
+        # Label units: the last pass label pairs with the label budget, never with the remaining pass limit.
+        "max_review_iterations": last_label,
         "ci_checks": last_ci_status,
         "mergeability": last_mergeability,
         "mergeability_note": mergeability_note,
@@ -4146,8 +4173,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             + (f": {'; '.join(halt_reasons)}" if halt_reasons else "")
         ),
         "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+        # Label units: 'total_iterations' is the last pass label, so its ceiling is the label budget.
         "total_iterations": iteration,
-        "max_iterations": budget,
+        "max_iterations": last_label,
         "ci_checks_summary": last_ci_status,
         "trailers": last_trailers_dict,
     }
@@ -4196,7 +4224,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             "approved": consensus_reached,
             "score": approval_score,
             "iterations": iteration,
-            "max_review_iterations": budget,
+            "passes": passes,
+            "max_review_iterations": last_label,
             "status": consensus_status,
         },
         "halted_for_human": consensus_reached,
@@ -4205,8 +4234,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "mergeability": last_mergeability,
         "ci_checks": last_ci_status,
         "trailers": last_trailers_str,
+        # Label units, matching the summary ledger row and the console 'Iterations: {label} / {label budget}' line.
         "total_iterations": iteration,
-        "max_iterations": budget,
+        "max_iterations": last_label,
         "findings": finding_ids,
         "severity": severity,
         "posting": posting_res,
@@ -4254,6 +4284,40 @@ def _checkout_execution_branch(context: FlowContext) -> str | None:
         return None
     stderr = co_res.stderr.strip() if isinstance(co_res.stderr, str) else ""
     return redact_agent_secrets(stderr) or f"exit code {co_res.returncode}"
+
+
+def _review_window(context: FlowContext) -> tuple[int, int]:
+    """Return the next Stage 4 pass label and the engine's remaining pass budget."""
+    done = max(0, context.review_iterations_done)
+    return done + 1, context.max_review_iterations - done
+
+
+def _run_engine_review_loop(context: FlowContext) -> dict[str, Any]:
+    """Run the remaining engine passes of Stage 4, continuing the checkpointed count; dispatch nothing when spent.
+
+    The engine's checkpoint save after Stage 4 persists the updated count, whatever the stage outcome.
+    """
+    first_label, remaining = _review_window(context)
+    if remaining <= 0:
+        err = (
+            f"the review iteration budget ({context.max_review_iterations}) is exhausted after "
+            f"{context.review_iterations_done} iteration(s)."
+        )
+        context.log(f"[Review Loop] Not dispatching: {err}")
+        # iterations = label of the latest pass already run (the clamped checkpointed count); passes = 0 dispatches.
+        done = first_label - 1
+        consensus = {"approved": False, "score": 0.0, "iterations": done, "passes": 0, "status": "failed"}
+        return {"consensus": consensus, "total_iterations": done, "error": err}
+    loop_res = run_review_loop(
+        context=context,
+        target=context.execution_branch,
+        max_iterations=remaining,
+        ensemble_size=context.review_ensemble_size,
+        dry_run=context.dry_run,
+        first_iteration=first_label,
+    )
+    context.review_iterations_done = max(context.review_iterations_done, int(loop_res.get("total_iterations") or 0))
+    return loop_res
 
 
 def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0912, PLR0915
@@ -4339,15 +4403,10 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
                 "deletions": deletions,
             }
 
-    loop_res = run_review_loop(
-        context=context,
-        target=context.execution_branch,
-        max_iterations=context.max_review_iterations,
-        ensemble_size=context.review_ensemble_size,
-        dry_run=context.dry_run,
-    )
+    loop_res = _run_engine_review_loop(context)
+    # The payload reports the engine's configured budget, not the remaining passes of this run.
+    consensus_info = {**loop_res.get("consensus", {}), "max_review_iterations": context.max_review_iterations}
 
-    consensus_info = loop_res.get("consensus", {})
     consensus_reached = bool(consensus_info.get("approved"))
     mergeability = loop_res.get("mergeability", {})
     is_dirty = bool(mergeability.get("is_dirty"))
@@ -4444,7 +4503,8 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
         loop_breach = loop_res.get("budget_breach")
         summaries = "; ".join(render_reviewer_summary_line(r) for r in loop_res.get("reviewers") or [])
         if loop_res.get("error"):
-            # The empty-diff guard refused the PR (empty_diff / diff_unverified): no tests decided this outcome.
+            # A guard refusal (empty_diff / diff_unverified) or an exhausted engine review budget:
+            # no tests decided this outcome.
             err_msg = f"Autonomous review halted: {loop_res['error']}"
         elif loop_breach:
             # The per-iteration budget stopped the loop (Bean 0139): that, not the test result, ended the review.
@@ -4868,14 +4928,17 @@ class PipelineEngine:
         self._resume_partial_pending = False
 
     def stage_budget_seconds(self, stage: FlowStage, result: StageResult | None = None) -> float:
-        """Ceiling for ``stage``; the review stage gets one review-iteration budget per iteration it ran."""
+        """Ceiling for ``stage``; the review stage gets one review-iteration budget per pass it ran."""
         if stage == FlowStage.REVIEW:
             iterations = 1
             if result is not None:
                 consensus = result.payload.get("consensus") if isinstance(result.payload, dict) else None
                 if isinstance(consensus, dict):
                     try:
-                        iterations = max(1, int(consensus.get("iterations") or 1))
+                        # Passes run, not the last label: a resumed engine labels its single pass N. A present
+                        # "passes" wins even at 0 (a dispatchless run), falling back to the label only when absent.
+                        raw = consensus["passes"] if "passes" in consensus else consensus.get("iterations", 1)
+                        iterations = max(1, int(raw))
                     except (TypeError, ValueError):
                         iterations = 1
             # Same source as run_review_loop's per-iteration timer, so HOLON_STAGE_BUDGET_SECONDS applies to both.

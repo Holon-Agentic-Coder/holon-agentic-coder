@@ -5040,6 +5040,7 @@ class TestEntropyBudgetHandoffInFlow:
             # A non-current version, as FlowContext.from_dict accepts from a malformed checkpoint (e.g. -1).
             schema_version=-1,
             replan_attempts=1,
+            review_iterations_done=3,
             **parent_values,
         )
         child_intent = {"slug": "child", "goal": "Add the parser"}
@@ -5054,6 +5055,8 @@ class TestEntropyBudgetHandoffInFlow:
             "logs": [],
             "schema_version": flow_module.CURRENT_CONTEXT_SCHEMA_VERSION,
             "replan_attempts": 0,
+            # A child intent runs its own Stage 4, so its review count starts afresh.
+            "review_iterations_done": 0,
         }
         defaults = FlowContext(token_reduce=False)
         for name, value in parent_values.items():
@@ -5909,3 +5912,106 @@ class TestReviewDataSeam:
             flow_module.review_summary_lines(loop_res)[-1] == "  Roles          : Security (CHANGES); open findings: 1"
         )
         assert flow_module.review_summary_lines({})[-1] == "  Roles          : none reported; open findings: 0"
+
+
+class TestEngineOwnedReviewLoop:
+    """Stage 4: the engine owns the loop, dispatches one pass at a time and labels it with its own count."""
+
+    @pytest.mark.parametrize("iteration", [1, 4, 25])
+    def test_dispatch_requests_one_pass_and_labels_it_with_the_engine_iteration(self, tmp_path, monkeypatch, iteration):
+        from sandbox_executor.review_target import ReviewTarget
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        captured: list[list[str]] = []
+
+        def fake_dispatch(context, role, args, result_file=None, **_):
+            captured.append(list(args))
+            Path(result_file).write_text(json.dumps({"reviewers": [], "verdict": "FAILED"}), encoding="utf-8")
+            return 0
+
+        ctx = FlowContext(repo_dir=str(tmp_path), token_reduce=False)
+        target = ReviewTarget(raw="feature", head_branch="feature", head_sha="a" * 40)
+        with patch.object(flow_module, "_dispatch_role", fake_dispatch):
+            flow_module._dispatch_review_ensemble(ctx, target, iteration, 3)
+
+        (args,) = captured
+        limits = [a for a in args if a.startswith("--max-iterations")]
+        assert limits == ["--max-iterations=1"]
+        assert [a for a in args if a.startswith("--iteration")] == [f"--iteration={iteration}"]
+
+    @staticmethod
+    def _resumable_context(tmp_path: Path, done: int, budget: int) -> FlowContext:
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_data={"slug": "resume-review"},
+            execution_branch="I-1-resume-review/P-2-a-m/E-3-a-m/_",
+            dry_run=True,
+            token_reduce=False,
+            max_review_iterations=budget,
+            review_iterations_done=done,
+        )
+        path = save_checkpoint(ctx, str(tmp_path / "checkpoint.json"))
+        return load_checkpoint(path).context
+
+    def test_resume_continues_the_checkpointed_count(self, tmp_path):
+        ctx = self._resumable_context(tmp_path, done=3, budget=5)
+        assert ctx.review_iterations_done == 3
+        loop_res = {"consensus": {"iterations": 4, "passes": 1, "max_review_iterations": 2}, "total_iterations": 4}
+
+        with patch.object(flow_module, "run_review_loop", return_value=loop_res) as loop:
+            result = run_review_stage(ctx)
+
+        assert loop.call_args.kwargs["first_iteration"] == 4
+        assert loop.call_args.kwargs["max_iterations"] == 2
+        assert ctx.review_iterations_done == 4
+        assert result.payload["consensus"]["max_review_iterations"] == 5
+        saved = save_checkpoint(ctx, str(tmp_path / "after.json"))
+        assert load_checkpoint(saved).context.review_iterations_done == 4
+
+    def test_an_exhausted_engine_budget_fails_without_dispatching(self, tmp_path):
+        ctx = self._resumable_context(tmp_path, done=5, budget=5)
+
+        with patch.object(flow_module, "run_review_loop") as loop:
+            result = run_review_stage(ctx)
+
+        loop.assert_not_called()
+        assert result.status == StageStatus.FAILED
+        assert "exhausted after 5 iteration(s)" in str(result.error)
+        assert ctx.review_iterations_done == 5
+        # The synthetic consensus speaks label units: iterations = label of the latest pass run (the count), 0 passes.
+        assert result.payload["consensus"]["iterations"] == 5
+        assert result.payload["consensus"]["passes"] == 0
+
+    def test_an_exhausted_budget_clamps_a_malformed_negative_count(self, tmp_path):
+        ctx = self._resumable_context(tmp_path, done=-2, budget=0)
+
+        with patch.object(flow_module, "run_review_loop") as loop:
+            result = run_review_stage(ctx)
+
+        loop.assert_not_called()
+        assert result.status == StageStatus.FAILED
+        # The synthetic consensus never reports a negative label: the raw count is clamped like _review_window does.
+        assert result.payload["consensus"]["iterations"] == 0
+
+    def test_old_checkpoint_without_the_count_loads_as_zero(self):
+        data = FlowContext(token_reduce=False).to_dict()
+        data.pop("review_iterations_done")
+
+        assert FlowContext.from_dict(data).review_iterations_done == 0
+
+    def test_review_ceiling_counts_passes_not_the_label(self):
+        engine = PipelineEngine(FlowContext(token_reduce=False))
+        per_pass = engine.budgets.stage_seconds("review_iteration")
+        labelled = StageResult(stage=FlowStage.REVIEW, status=StageStatus.FAILED, payload={})
+        labelled.payload["consensus"] = {"iterations": 4, "passes": 1}
+
+        assert engine.stage_budget_seconds(FlowStage.REVIEW, labelled) == per_pass
+
+    def test_review_ceiling_honours_a_present_zero_passes_over_the_label(self):
+        """A resumed run that dispatched nothing records passes == 0; the label must not resize the ceiling."""
+        engine = PipelineEngine(FlowContext(token_reduce=False))
+        per_pass = engine.budgets.stage_seconds("review_iteration")
+        spent = StageResult(stage=FlowStage.REVIEW, status=StageStatus.FAILED, payload={})
+        spent.payload["consensus"] = {"iterations": 4, "passes": 0}
+
+        assert engine.stage_budget_seconds(FlowStage.REVIEW, spent) == per_pass

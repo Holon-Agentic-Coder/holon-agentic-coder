@@ -369,7 +369,7 @@ def _run_resolver_agent(
 
 @dataclasses.dataclass(frozen=True)
 class CommitPushOptions:
-    """Options governing resolution commit and push behavior."""
+    """Options governing resolution commit and push behaviour."""
 
     skip_push: bool = False
     dry_run: bool = False

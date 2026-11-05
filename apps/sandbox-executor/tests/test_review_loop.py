@@ -1704,3 +1704,286 @@ def test_standalone_review_command_forwards_its_own_limit_and_no_label():
 
     assert "--max-iterations=5" in container_args
     assert not [a for a in container_args if a.startswith("--iteration")]
+
+
+# --- Stage 4 resolver loop capabilities (FIND-R3-002-01) -------------------------------------------------------------
+
+
+def test_review_with_findings_dispatches_injected_resolver(tmp_path):
+    from sandbox_executor.flow import run_review_loop
+
+    from tests.review_fakes import FakeEnsemble, clean_reviewer, objecting_reviewer
+
+    resolver_invocations: list[dict] = []
+
+    def fake_resolver(target, iteration, findings, action_ids, rejected_findings):
+        resolver_invocations.append(
+            {
+                "target": target,
+                "iteration": iteration,
+                "findings": findings,
+                "action_ids": action_ids,
+            }
+        )
+        return {
+            "dispositions": [
+                {
+                    "id": f.id,
+                    "severity": f.severity,
+                    "path": f.path,
+                    "line": f.line,
+                    "summary": f.summary,
+                    "disposition": "applied",
+                }
+                for f in findings
+            ],
+            "head_sha": "new_sha_rev1",
+            "pushed": True,
+        }
+
+    calls = 0
+
+    def dynamic_ensemble(size):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return [objecting_reviewer(1)]
+        return [clean_reviewer(1)]
+
+    ctx = _ensemble_ctx(tmp_path)
+    with _LoopStubs():
+        res = run_review_loop(
+            ctx,
+            target=EXEC_TARGET,
+            max_iterations=2,
+            ensemble_size=1,
+            run_ensemble_fn=FakeEnsemble(dynamic_ensemble),
+            run_resolver_fn=fake_resolver,
+        )
+
+    assert len(resolver_invocations) == 1
+    assert resolver_invocations[0]["iteration"] == 1
+    assert len(resolver_invocations[0]["findings"]) == 1
+    assert resolver_invocations[0]["target"].raw == EXEC_TARGET
+    assert res["consensus"]["approved"] is True
+    assert res["consensus"]["iterations"] == 2
+
+
+def test_review_with_findings_dispatches_role_resolver_when_unspecified(tmp_path, monkeypatch):
+    from sandbox_executor.flow import ResolverOutcome, run_review_loop
+
+    from tests.review_fakes import FakeEnsemble, objecting_reviewer
+
+    monkeypatch.delenv("HOLON_IN_SANDBOX", raising=False)
+    monkeypatch.delenv("HOLON_ROLE", raising=False)
+    mock_dispatch = MagicMock(
+        return_value=ResolverOutcome(
+            dispositions=(),
+            head_sha="sha_unmodified",
+            pushed=False,
+            error="Resolver container dispatch simulated exit",
+        )
+    )
+    monkeypatch.setattr("sandbox_executor.flow._dispatch_review_resolver", mock_dispatch)
+
+    ensemble = FakeEnsemble([objecting_reviewer(1)])
+    ctx = _ensemble_ctx(tmp_path)
+    with _LoopStubs():
+        res = run_review_loop(
+            ctx,
+            target=EXEC_TARGET,
+            max_iterations=1,
+            ensemble_size=1,
+            run_ensemble_fn=ensemble,
+            run_resolver_fn=None,
+        )
+
+    mock_dispatch.assert_called_once()
+    call_args = mock_dispatch.call_args
+    assert call_args[0][1].raw == EXEC_TARGET
+    assert call_args[0][2] == 1
+    assert len(call_args[0][3].findings) == 1
+    assert res["consensus"]["approved"] is False
+
+
+def test_finding_dispositions_recorded_to_executions_ledger(tmp_path):
+    from sandbox_executor.flow import run_review_loop
+    from sandbox_executor.review_ensemble import (
+        ParsedTrailer,
+        ReviewCounts,
+        ReviewerResult,
+        ReviewerVerdict,
+        ReviewFinding,
+    )
+
+    from tests.review_fakes import FakeEnsemble, clean_reviewer
+
+    f1 = ReviewFinding("important", "src/fixable.py", 10, "problem to fix")
+    f2 = ReviewFinding("nit", "src/bydesign.py", 20, "nit by design")
+    parsed = ParsedTrailer(ReviewerVerdict.CHANGES_REQUESTED, ReviewCounts(important=1, nit=1), (f1, f2))
+    reviewer1 = ReviewerResult.completed(1, "fake-agent", "fake-model", "report1", "report", parsed)
+
+    calls = 0
+
+    def dynamic_ensemble(size):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return [reviewer1]
+        return [clean_reviewer(1)]
+
+    def fake_resolver(target, iteration, findings, action_ids, rejected_findings):
+        f1_item = next(f for f in findings if f.path == "src/fixable.py")
+        f2_item = next(f for f in findings if f.path == "src/bydesign.py")
+        return {
+            "dispositions": [
+                {
+                    "id": f1_item.id,
+                    "severity": f1_item.severity,
+                    "path": f1_item.path,
+                    "line": f1_item.line,
+                    "summary": f1_item.summary,
+                    "disposition": "applied",
+                },
+                {
+                    "id": f2_item.id,
+                    "severity": f2_item.severity,
+                    "path": f2_item.path,
+                    "line": f2_item.line,
+                    "summary": f2_item.summary,
+                    "disposition": "rejected",
+                    "rejection_reason": "out of scope",
+                },
+            ],
+            "head_sha": "new_sha_after_fix",
+            "pushed": True,
+        }
+
+    ctx = _ensemble_ctx(tmp_path)
+    with _LoopStubs():
+        res = run_review_loop(
+            ctx,
+            target=EXEC_TARGET,
+            max_iterations=2,
+            ensemble_size=1,
+            run_ensemble_fn=FakeEnsemble(dynamic_ensemble),
+            run_resolver_fn=fake_resolver,
+        )
+
+    assert res["consensus"]["approved"] is True
+    res_rows = _rows(tmp_path, "ACT-RES")
+    assert len(res_rows) == 2
+
+    applied_row = next(r for r in res_rows if r["review_disposition"] == "applied")
+    rejected_row = next(r for r in res_rows if r["review_disposition"] == "rejected")
+
+    assert applied_row["rejection_reason"] is None
+    assert applied_row["review_finding_ids"] == ["R1-F1"]
+    assert applied_row["introduced_by_action_id"] is not None
+    assert applied_row["introduced_by_action_id"].startswith("ACT-")
+    assert applied_row["outcome"] == "success"
+
+    assert rejected_row["rejection_reason"] == "out of scope"
+    assert rejected_row["review_finding_ids"] == ["R1-F2"]
+    assert rejected_row["introduced_by_action_id"] is not None
+    assert rejected_row["introduced_by_action_id"].startswith("ACT-")
+    assert rejected_row["outcome"] == "success"
+
+
+def test_three_iteration_identical_finding_guard_terminates_no_convergence(tmp_path):
+    from sandbox_executor.flow import run_review_loop
+
+    from tests.review_fakes import FAKE_HEAD_SHA, FakeEnsemble, objecting_reviewer
+
+    def fake_resolver(target, iteration, findings, action_ids, rejected_findings):
+        # Resolver reports applied but does not push a new commit (head_sha unchanged)
+        return {
+            "dispositions": [
+                {
+                    "id": f.id,
+                    "severity": f.severity,
+                    "path": f.path,
+                    "line": f.line,
+                    "summary": f.summary,
+                    "disposition": "applied",
+                }
+                for f in findings
+            ],
+            "head_sha": FAKE_HEAD_SHA,
+            "pushed": False,
+        }
+
+    ensemble = FakeEnsemble([objecting_reviewer(1)])
+    ctx = _ensemble_ctx(tmp_path)
+    with _LoopStubs():
+        res = run_review_loop(
+            ctx,
+            target=EXEC_TARGET,
+            max_iterations=10,
+            ensemble_size=1,
+            run_ensemble_fn=ensemble,
+            run_resolver_fn=fake_resolver,
+        )
+
+    assert res["total_iterations"] == 3
+    assert res["consensus"]["iterations"] == 3
+    assert res["consensus"]["approved"] is False
+    assert res["no_convergence"] is True
+
+    res_rows = _rows(tmp_path, "ACT-RES")
+    assert len(res_rows) == 1
+    assert res_rows[0]["review_disposition"] == "rejected"
+    assert res_rows[0]["rejection_reason"] == "no-convergence"
+    assert res_rows[0]["outcome"] == "failure"
+    assert res_rows[0]["review_iteration"] == 3
+    assert res_rows[0]["review_finding_ids"] == ["R1-F1"]
+    assert res_rows[0]["introduced_by_action_id"].startswith("ACT-")
+
+
+def test_post_pr_review_consensus_called_only_once_at_loop_exit(tmp_path):
+    from sandbox_executor.flow import run_review_loop
+
+    from tests.review_fakes import FakeEnsemble, clean_reviewer, objecting_reviewer
+
+    calls = 0
+
+    def dynamic_ensemble(size):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            return [objecting_reviewer(1)]
+        return [clean_reviewer(1)]
+
+    def fake_resolver(target, iteration, findings, action_ids, rejected_findings):
+        return {
+            "dispositions": [
+                {
+                    "id": f.id,
+                    "severity": f.severity,
+                    "path": f.path,
+                    "line": f.line,
+                    "summary": f.summary,
+                    "disposition": "applied",
+                }
+                for f in findings
+            ],
+            "head_sha": f"new_sha_iter_{iteration}",
+            "pushed": True,
+        }
+
+    ctx = _ensemble_ctx(tmp_path)
+    with _LoopStubs() as stubs:
+        res = run_review_loop(
+            ctx,
+            target=EXEC_TARGET,
+            max_iterations=5,
+            ensemble_size=1,
+            run_ensemble_fn=FakeEnsemble(dynamic_ensemble),
+            run_resolver_fn=fake_resolver,
+        )
+
+    assert res["consensus"]["iterations"] == 3
+    assert res["consensus"]["approved"] is True
+    assert stubs.post.call_count == 1
+    call_consensus_data = stubs.post.call_args.kwargs["consensus_data"]
+    assert call_consensus_data["iterations"] == 3

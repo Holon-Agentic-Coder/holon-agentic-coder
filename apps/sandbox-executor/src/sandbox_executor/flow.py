@@ -17,6 +17,7 @@ is equivalent to invoking the stages by hand; the flow orchestrates and validate
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import logging
 import math
@@ -3475,15 +3476,15 @@ def _review_row(  # noqa: PLR0913
     return row
 
 
-def _record_reviewer_rows(  # noqa: PLR0913
+def _record_reviewer_rows(
     context: FlowContext,
-    exec_file: str,
     review_target: str,
     iteration: int,
     results: list[ReviewerResult],
     finding_action_ids: dict[str, str] | None = None,
 ) -> None:
     """Append one ACT-REV row per reviewer and one ACT-FIND row per reviewer finding."""
+    exec_file = os.path.join(context.repo_dir, "holon-knowledge", "ledger", "executions.jsonl")
     for result in results:
         summary = _reviewer_summary(result)
         clean = summary["verdict"] == str(ReviewerVerdict.APPROVED) and not result.counts.total and not result.findings
@@ -3698,13 +3699,20 @@ class ResolverOutcome:
     error: str | None = None
 
 
-def _dispatch_review_resolver(  # noqa: PLR0913
+@dataclass(frozen=True)
+class ResolverInput:
+    """Input payload for a resolver pass."""
+
+    findings: Sequence[FindingRow]
+    action_ids: Mapping[str, str] = field(default_factory=dict)
+    rejected_findings: Sequence[FindingDisposition] = ()
+
+
+def _dispatch_review_resolver(
     context: FlowContext,
     target: ReviewTarget,
     iteration: int,
-    findings: Sequence[FindingRow],
-    action_ids: Mapping[str, str] | None = None,
-    rejected_findings: Sequence[FindingDisposition] = (),
+    resolver_input: ResolverInput,
 ) -> ResolverOutcome:
     """Dispatch one resolver pass into the review-loop role container via ``_dispatch_role``."""
     tmp_dir = os.path.expanduser("~/.holon/tmp")
@@ -3715,16 +3723,18 @@ def _dispatch_review_resolver(  # noqa: PLR0913
     finally:
         os.close(fd)
 
-    lookup = dict(action_ids or {})
+    findings = resolver_input.findings
+    lookup = dict(resolver_input.action_ids or {})
     input_payload = {
         "iteration": iteration,
         "target": target.raw,
         "head_branch": target.head_branch,
         "head_sha": target.head_sha,
         "findings": [
-            serialize_finding_for_resolver(row, introduced_by_action_id=lookup.get(row.id)) for row in findings
+            serialize_finding_for_resolver(row, introduced_by_action_id=lookup.get(row.id))
+            for row in findings
         ],
-        "rejected_findings": [serialize_finding_disposition(item) for item in rejected_findings],
+        "rejected_findings": [serialize_finding_disposition(item) for item in resolver_input.rejected_findings],
     }
 
     target_ref = target.raw or target.head_branch or "HEAD"
@@ -3878,7 +3888,9 @@ def _filter_adjudicated_findings(
                 continue
             kept_findings.append(finding)
             if idx < len(detail.findings):
-                kept_detail_findings.append({"id": detail.findings[idx].id, "recommendation": detail.findings[idx].recommendation})
+                kept_detail_findings.append(
+                    {"id": detail.findings[idx].id, "recommendation": detail.findings[idx].recommendation}
+                )
         if len(kept_findings) == len(result.findings):
             filtered_results.append(result)
             continue
@@ -3911,76 +3923,88 @@ def _lookup_introducing_action_id(row: FindingRow, action_ids: Mapping[str, str]
     return action_ids.get(row.id) or action_ids.get(sig_key)
 
 
-def _record_dispositions(  # noqa: PLR0913
-    context: FlowContext,
-    exec_file: str,
-    review_target: str,
-    iteration: int,
-    dispositions: Sequence[FindingDisposition],
-    finding_action_ids: Mapping[str, str],
-    recorded_keys: set[tuple[str, str, int | None, str]],
-    all_dispositions: list[FindingDisposition],
-    *,
-    effective_dry_run: bool = False,
-) -> int:
-    """Append one ACT-RES row per newly finalised finding disposition; returns count of suppressed rows in dry run."""
-    suppressed = 0
-    for disp in dispositions:
-        sig = finding_signature(disp.severity, disp.path, disp.line, disp.summary)
-        if sig in recorded_keys:
-            continue
-        recorded_keys.add(sig)
-        intro_id = disp.introduced_by_action_id or finding_action_ids.get(disp.id) or finding_action_ids.get(str(sig))
-        final_disp = dataclasses.replace(disp, introduced_by_action_id=intro_id)
-        all_dispositions.append(final_disp)
-        if effective_dry_run:
-            suppressed += 1
-            continue
-        outcome = "failure" if final_disp.rejection_reason == "no-convergence" else "success"
-        res_row: dict[str, Any] = {
-            "action_id": generate_action_id("ACT-RES"),
-            "execution_id": f"REV-RES-{iteration}-{int(time.time())}",
-            "action": (
-                f"Review Loop iteration {iteration} finding {final_disp.id} adjudicated: {final_disp.disposition}"
-            ),
-            "category": "code",
-            "target": review_target,
-            "outcome": outcome,
-            "entry_type": "action",
-            "action_origin": "pr_review",
-            "review_severity": final_disp.severity if final_disp.severity in ("critical", "important", "nit") else None,
-            "review_iteration": iteration,
-            "review_finding_ids": [final_disp.id],
-            "review_disposition": final_disp.disposition,
-            "rejection_reason": final_disp.rejection_reason,
-            "introduced_by_action_id": intro_id,
-            "labels": ["review", "resolver", f"iteration-{iteration}"],
-            "error_context": (
-                _bounded_error_context(final_disp.rejection_reason) if final_disp.rejection_reason else None
-            ),
-            "created_at": datetime.now(UTC).isoformat(),
-        }
-        record_review_action(context, exec_file, res_row)
-    return suppressed
+@dataclass
+class DispositionRecorder:
+    """Helper to record finding dispositions into executions.jsonl."""
+
+    context: FlowContext
+    exec_file: str
+    review_target: str
+    finding_action_ids: Mapping[str, str]
+    recorded_keys: set[tuple[str, str, int | None, str]]
+    all_dispositions: list[FindingDisposition]
+    effective_dry_run: bool = False
+
+    def record(self, iteration: int, dispositions: Sequence[FindingDisposition]) -> int:
+        """Append one ACT-RES row per newly finalised finding disposition.
+
+        Returns count of suppressed rows in dry run.
+        """
+        suppressed = 0
+        for disp in dispositions:
+            sig = finding_signature(disp.severity, disp.path, disp.line, disp.summary)
+            if sig in self.recorded_keys:
+                continue
+            self.recorded_keys.add(sig)
+            intro_id = (
+                disp.introduced_by_action_id
+                or self.finding_action_ids.get(disp.id)
+                or self.finding_action_ids.get(str(sig))
+            )
+            final_disp = dataclasses.replace(disp, introduced_by_action_id=intro_id)
+            self.all_dispositions.append(final_disp)
+            if self.effective_dry_run:
+                suppressed += 1
+                continue
+            outcome = "failure" if final_disp.rejection_reason == "no-convergence" else "success"
+            res_row: dict[str, Any] = {
+                "action_id": generate_action_id("ACT-RES"),
+                "execution_id": f"REV-RES-{iteration}-{int(time.time())}",
+                "action": (
+                    f"Review Loop iteration {iteration} finding {final_disp.id} adjudicated: {final_disp.disposition}"
+                ),
+                "category": "code",
+                "target": self.review_target,
+                "outcome": outcome,
+                "entry_type": "action",
+                "action_origin": "pr_review",
+                "review_severity": (
+                    final_disp.severity if final_disp.severity in ("critical", "important", "nit") else None
+                ),
+                "review_iteration": iteration,
+                "review_finding_ids": [final_disp.id],
+                "review_disposition": final_disp.disposition,
+                "rejection_reason": final_disp.rejection_reason,
+                "introduced_by_action_id": intro_id,
+                "labels": ["review", "resolver", f"iteration-{iteration}"],
+                "error_context": (
+                    _bounded_error_context(final_disp.rejection_reason) if final_disp.rejection_reason else None
+                ),
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+            record_review_action(self.context, self.exec_file, res_row)
+        return suppressed
 
 
-def _invoke_resolver_pass(  # noqa: PLR0913
+def _invoke_resolver_pass(
     context: FlowContext,
     target: ReviewTarget,
     iteration: int,
-    findings: Sequence[FindingRow],
-    action_ids: Mapping[str, str],
-    rejected_findings: Sequence[FindingDisposition],
+    resolver_input: ResolverInput,
     run_resolver_fn: Callable[..., Any] | None,
 ) -> ResolverOutcome:
     """Invoke the injected resolver seam or dispatch the resolver role container."""
+    findings = resolver_input.findings
+    action_ids = resolver_input.action_ids
+    rejected_findings = resolver_input.rejected_findings
     lookup = {
         **action_ids,
         **{row.id: _lookup_introducing_action_id(row, action_ids) or "" for row in findings},
     }
     lookup = {k: v for k, v in lookup.items() if v}
+    resolved_input = dataclasses.replace(resolver_input, action_ids=lookup)
     if run_resolver_fn is None:
-        return _dispatch_review_resolver(context, target, iteration, findings, lookup, rejected_findings)
+        return _dispatch_review_resolver(context, target, iteration, resolved_input)
     try:
         raw = run_resolver_fn(
             target=target,
@@ -4189,6 +4213,15 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     prev_head_sha = ""
     unchanged_streak = 0
     no_convergence = False
+    recorder = DispositionRecorder(
+        context,
+        exec_file,
+        review_target,
+        finding_action_ids,
+        recorded_disposition_keys,
+        all_dispositions,
+        effective_dry_run=effective_dry_run,
+    )
 
     # Without a recorded test result only CI can measure the tests: give checks triggered by the PR time to
     # register before the first iteration, so the wait burns no iteration budget and writes no ledger rows.
@@ -4340,7 +4373,6 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             record_review_action(context, exec_file, action_record)
             _record_reviewer_rows(
                 context,
-                exec_file,
                 review_target,
                 iteration,
                 reviewers,
@@ -4426,17 +4458,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 )
                 for row in iter_findings
             )
-            suppressed_ledger_records += _record_dispositions(
-                context,
-                exec_file,
-                review_target,
-                iteration,
-                nc_dispositions,
-                finding_action_ids,
-                recorded_disposition_keys,
-                all_dispositions,
-                effective_dry_run=effective_dry_run,
-            )
+            suppressed_ledger_records += recorder.record(iteration, nc_dispositions)
             pending_dispositions = ()
             context.log(
                 f"[Review Loop] Halting review loop at iteration {iteration}: finding set unchanged across 3 "
@@ -4448,25 +4470,17 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             context,
             resolved_target,
             iteration,
-            iter_findings,
-            finding_action_ids,
-            tuple(rejected_history.values()),
+            ResolverInput(
+                findings=iter_findings,
+                action_ids=finding_action_ids,
+                rejected_findings=tuple(rejected_history.values()),
+            ),
             run_resolver_fn,
         )
         rejected_now = [d for d in resolver_outcome.dispositions if d.disposition == "rejected"]
         applied_now = [d for d in resolver_outcome.dispositions if d.disposition == "applied"]
         if rejected_now:
-            suppressed_ledger_records += _record_dispositions(
-                context,
-                exec_file,
-                review_target,
-                iteration,
-                rejected_now,
-                finding_action_ids,
-                recorded_disposition_keys,
-                all_dispositions,
-                effective_dry_run=effective_dry_run,
-            )
+            suppressed_ledger_records += recorder.record(iteration, rejected_now)
             for disp in rejected_now:
                 rejected_history[finding_signature(disp.severity, disp.path, disp.line, disp.summary)] = disp
                 rejected_ids.add(disp.id)
@@ -4474,22 +4488,14 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         head_changed = bool(
             resolver_outcome.pushed or (resolver_outcome.head_sha and resolver_outcome.head_sha != current_sha)
         )
-        if applied_now:
+        if applied_now or (head_changed and pending_dispositions):
             if head_changed or iteration >= last_label:
-                suppressed_ledger_records += _record_dispositions(
-                    context,
-                    exec_file,
-                    review_target,
-                    iteration,
-                    applied_now,
-                    finding_action_ids,
-                    recorded_disposition_keys,
-                    all_dispositions,
-                    effective_dry_run=effective_dry_run,
-                )
+                to_record = (*pending_dispositions, *applied_now)
+                if to_record:
+                    suppressed_ledger_records += recorder.record(iteration, to_record)
                 pending_dispositions = ()
             else:
-                pending_dispositions = tuple(applied_now)
+                pending_dispositions = (*pending_dispositions, *applied_now)
 
         if head_changed and resolved_target is not None:
             new_sha = resolver_outcome.head_sha or f"{current_sha or '0' * 32}-iter{iteration}"
@@ -4500,17 +4506,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             )
 
         if resolver_outcome.error and not head_changed and not rejected_now:
-            suppressed_ledger_records += _record_dispositions(
-                context,
-                exec_file,
-                review_target,
-                iteration,
-                resolver_outcome.dispositions,
-                finding_action_ids,
-                recorded_disposition_keys,
-                all_dispositions,
-                effective_dry_run=effective_dry_run,
-            )
+            suppressed_ledger_records += recorder.record(iteration, resolver_outcome.dispositions)
             pending_dispositions = ()
             context.log(
                 f"[Review Loop] Halting review loop at iteration {iteration}: {resolver_outcome.error}"
@@ -4519,17 +4515,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
 
     if resolver_enabled and not effective_dry_run:
         if pending_dispositions:
-            suppressed_ledger_records += _record_dispositions(
-                context,
-                exec_file,
-                review_target,
-                iteration,
-                pending_dispositions,
-                finding_action_ids,
-                recorded_disposition_keys,
-                all_dispositions,
-                effective_dry_run=effective_dry_run,
-            )
+            suppressed_ledger_records += recorder.record(iteration, pending_dispositions)
         remaining_findings = [
             row
             for row in collect_review_data(reviewers).findings
@@ -4537,17 +4523,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         ]
         if remaining_findings:
             fallback_dispositions = deserialize_finding_dispositions([], remaining_findings, finding_action_ids)
-            suppressed_ledger_records += _record_dispositions(
-                context,
-                exec_file,
-                review_target,
-                iteration,
-                fallback_dispositions,
-                finding_action_ids,
-                recorded_disposition_keys,
-                all_dispositions,
-                effective_dry_run=effective_dry_run,
-            )
+            suppressed_ledger_records += recorder.record(iteration, fallback_dispositions)
 
     if not consensus_reached and pr_refusal_error is None and infra_error is None and iteration >= last_label:
         context.log(f"[Review Loop] Iteration budget ({budget}) exhausted without consensus.")
@@ -5035,7 +5011,7 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
         elif _reviewers_objected(loop_res):
             err_msg = (
                 f"Autonomous review requested changes: reviewers reported findings or did not approve ({summaries}). "
-                "Findings and dispositions are recorded in executions.jsonl."
+                "Findings and dispositions are recorded in executions.jsonl; no automatic resolver runs."
             )
         else:
             err_msg = "Autonomous review consensus failed: test suite reported failures."

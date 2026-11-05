@@ -19,6 +19,7 @@ a FAILED summary is printed and the process exits 1: no consensus is computed or
 """
 
 import argparse
+import contextlib
 import dataclasses
 import json
 import logging
@@ -42,7 +43,7 @@ from sandbox_executor.ledger import generate_action_id, try_append_action_record
 from sandbox_executor.redaction import redact_agent_secrets, redact_command
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 from sandbox_executor.review_report import (
-     VALID_REJECTION_REASONS,
+    VALID_REJECTION_REASONS,
     FindingDisposition,
     FindingRow,
     deserialize_finding_dispositions,
@@ -366,50 +367,56 @@ def _run_resolver_agent(
     return []
 
 
-def _commit_and_push_resolution(  # noqa: PLR0913
+@dataclasses.dataclass(frozen=True)
+class CommitPushOptions:
+    """Options governing resolution commit and push behavior."""
+
+    skip_push: bool = False
+    dry_run: bool = False
+
+
+def _commit_and_push_resolution(
     repo_dir: str,
     head_branch: str,
     iteration: int,
     dispositions: tuple[FindingDisposition, ...],
-    *,
-    skip_push: bool = False,
-    dry_run: bool = False,
+    options: CommitPushOptions | None = None,
 ) -> tuple[tuple[FindingDisposition, ...], str, bool, bool, bool, str | None]:
     """Verify via lint and test, commit applied fixes with finding IDs, and fast-forward push."""
+    opts = options or CommitPushOptions()
     initial_head = (_checked(["git", "rev-parse", "HEAD"], repo_dir, "resolve").stdout or "").strip()
     status_proc = run_cmd(["git", "status", "--porcelain"], cwd=repo_dir, check=False)
     has_worktree_changes = bool((status_proc.stdout or "").strip())
     applied_items = [d for d in dispositions if d.disposition == "applied"]
 
-    if not applied_items and not has_worktree_changes:
+    if not applied_items or not has_worktree_changes:
         return dispositions, initial_head, False, True, True, None
 
-    if dry_run:
+    if opts.dry_run:
         return dispositions, initial_head, False, True, True, None
 
     lint_ok, tests_ok, verify_err = _verify_before_push(repo_dir)
     if not lint_ok or not tests_ok:
         return dispositions, initial_head, False, lint_ok, tests_ok, verify_err
 
-    if has_worktree_changes:
-        run_cmd(["git", "add", "-A"], cwd=repo_dir, check=True)
-        finding_ids = [d.id for d in applied_items] or [d.id for d in dispositions]
-        ids_csv = ", ".join(finding_ids) or f"ITER-{iteration}"
-        severities = [d.severity for d in applied_items] or ["nit"]
-        worst = max(severities, key=lambda s: _SEVERITY_ORDER.get(s, 1))
-        commit_msg = (
-            f"fix(review): resolve findings {ids_csv} (iteration {iteration})\n\n"
-            "Action-Origin: pr_review\n"
-            f"Review-Iteration: {iteration}\n"
-            f"Review-Finding-Ids: {ids_csv}\n"
-            f"Review-Severity: {worst}\n"
-        )
-        commit_cmd = ["git", "commit", "-m", commit_msg]
-        _assert_safe_git_args(commit_cmd)
-        commit_res = run_cmd(commit_cmd, cwd=repo_dir, check=False)
-        if commit_res.returncode != 0:
-            err = _bounded_error_context((commit_res.stderr or commit_res.stdout or "").strip() or "git commit failed")
-            return dispositions, initial_head, False, True, True, f"Resolver commit failed: {err}"
+    run_cmd(["git", "add", "-A"], cwd=repo_dir, check=True)
+    finding_ids = [d.id for d in applied_items]
+    ids_csv = ", ".join(finding_ids) or f"ITER-{iteration}"
+    severities = [d.severity for d in applied_items] or ["nit"]
+    worst = max(severities, key=lambda s: _SEVERITY_ORDER.get(s, 1))
+    commit_msg = (
+        f"fix(review): resolve findings {ids_csv} (iteration {iteration})\n\n"
+        "Action-Origin: pr_review\n"
+        f"Review-Iteration: {iteration}\n"
+        f"Review-Finding-Ids: {ids_csv}\n"
+        f"Review-Severity: {worst}\n"
+    )
+    commit_cmd = ["git", "commit", "-m", commit_msg]
+    _assert_safe_git_args(commit_cmd)
+    commit_res = run_cmd(commit_cmd, cwd=repo_dir, check=False)
+    if commit_res.returncode != 0:
+        err = _bounded_error_context((commit_res.stderr or commit_res.stdout or "").strip() or "git commit failed")
+        return dispositions, initial_head, False, True, True, f"Resolver commit failed: {err}"
 
     new_head = (_checked(["git", "rev-parse", "HEAD"], repo_dir, "resolve").stdout or "").strip()
     updated = tuple(
@@ -417,7 +424,7 @@ def _commit_and_push_resolution(  # noqa: PLR0913
     )
 
     pushed = False
-    if not skip_push and new_head != initial_head:
+    if not opts.skip_push and new_head != initial_head:
         push_cmd = ["git", "push", "origin", f"HEAD:refs/heads/{head_branch}"]
         _assert_safe_git_args(push_cmd)
         push_res = run_cmd(push_cmd, cwd=repo_dir, check=False)
@@ -450,10 +457,8 @@ def _run_resolver_mode(
             error = f"Resolver turn failed: {_bounded_error_context(str(exc))}"
         finally:
             if os.path.exists(dispositions_path):
-                try:
+                with contextlib.suppress(OSError):
                     os.remove(dispositions_path)
-                except OSError:
-                    pass
 
     dispositions = deserialize_finding_dispositions(raw_dispositions, findings, action_ids)
     head_sha = (_checked(["git", "rev-parse", "HEAD"], repo_dir, "resolve").stdout or "").strip()
@@ -466,8 +471,7 @@ def _run_resolver_mode(
             head_branch,
             args.iteration,
             dispositions,
-            skip_push=args.skip_push,
-            dry_run=args.dry_run,
+            CommitPushOptions(skip_push=args.skip_push, dry_run=args.dry_run),
         )
 
     outcome = {

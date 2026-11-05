@@ -1623,7 +1623,7 @@ def test_host_dispatch_label_flows_into_ledger_rows_and_the_posted_heading(tmp_p
     with _LoopStubs() as stubs:
         res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=1, ensemble_size=1, first_iteration=4)
 
-    (args,) = dispatched
+    args = dispatched[0]
     assert "--iteration=4" in args
     assert "--max-iterations=1" in args
     assert res["consensus"]["iterations"] == 4

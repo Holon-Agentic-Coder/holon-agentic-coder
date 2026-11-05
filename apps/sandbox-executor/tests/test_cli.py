@@ -1132,7 +1132,7 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("reasoning=off source=default", output)
         self.assertIn("prefill_cache=warm", output)
         self.assertIn("WARNING: model=qwen3 max_tokens=8000 exceeds", output)
-        self.assertIn("budgets turn=300s stall=90s", output)
+        self.assertIn("budgets turn=3600s stall=90s", output)
 
     def test_doctor_without_mismatch_has_no_warning(self):
         env = {
@@ -1271,7 +1271,7 @@ class TestDoctor(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("Agent runner", output)
         self.assertIn("Model", output)
-        self.assertIn("budgets turn=300s stall=90s", output)
+        self.assertIn("budgets turn=3600s stall=90s", output)
         self.assertIn("model=qwen3 context=65536 max_tokens=8000 source=host", output)
         self.assertIn("prefill_cache=warm", output)
 

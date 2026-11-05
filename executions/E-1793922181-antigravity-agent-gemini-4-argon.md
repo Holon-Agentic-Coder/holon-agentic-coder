@@ -14,10 +14,10 @@ Executing plan `P-1793921914-antigravity-agent-gemini-4-argon` for intent `I-179
 | metric                | value |
 | --------------------- | ----- |
 | success_actual        | 1.00  |
-| entropy_actual        | 0.80  |
+| entropy_actual        | 1.80  |
 | impact_actual         | 78.00 |
-| cost_actual           | 1.00  |
-| learning_value_actual | 2.00  |
+| cost_actual           | 2.40  |
+| learning_value_actual | 2.50  |
 
 ## Steps Executed
 
@@ -26,4 +26,9 @@ Executing plan `P-1793921914-antigravity-agent-gemini-4-argon` for intent `I-179
 - Updated the module docstring in `apps/sandbox-executor/src/sandbox_executor/budgets.py` to specify `default 3600 s` for `HOLON_TURN_TIMEOUT_SECONDS`.
 - Updated `DEFAULT_TURN_SECONDS` from `300.0` to `3600.0` in `apps/sandbox-executor/src/sandbox_executor/budgets.py`.
 - Confirmed `TurnBudgets.turn_seconds` and `load_budgets()` reference `DEFAULT_TURN_SECONDS` directly.
+
+### Step 2: Update default turn timeout assertions in `test_budgets.py` and `test_cli.py`
+
+- Imported `DEFAULT_TURN_SECONDS` in `apps/sandbox-executor/tests/test_budgets.py` and asserted `DEFAULT_TURN_SECONDS == 3600.0` and `budgets.turn.turn_seconds == 3600` across `test_defaults`, `test_invalid_values_keep_defaults`, and `test_values_above_the_bound_keep_defaults_after_conversion`.
+- Updated `budgets turn=300s stall=90s` assertions to `budgets turn=3600s stall=90s` in `test_doctor_prints_envelope_and_cache_state` and `test_unified_doctor_reports_resolution_probe_and_envelope` in `apps/sandbox-executor/tests/test_cli.py`.
 

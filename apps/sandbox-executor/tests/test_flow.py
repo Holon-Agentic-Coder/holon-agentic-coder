@@ -5992,3 +5992,12 @@ class TestEngineOwnedReviewLoop:
         labelled.payload["consensus"] = {"iterations": 4, "passes": 1}
 
         assert engine.stage_budget_seconds(FlowStage.REVIEW, labelled) == per_pass
+
+    def test_review_ceiling_honours_a_present_zero_passes_over_the_label(self):
+        """A resumed run that dispatched nothing records passes == 0; the label must not resize the ceiling."""
+        engine = PipelineEngine(FlowContext(token_reduce=False))
+        per_pass = engine.budgets.stage_seconds("review_iteration")
+        spent = StageResult(stage=FlowStage.REVIEW, status=StageStatus.FAILED, payload={})
+        spent.payload["consensus"] = {"iterations": 4, "passes": 0}
+
+        assert engine.stage_budget_seconds(FlowStage.REVIEW, spent) == per_pass

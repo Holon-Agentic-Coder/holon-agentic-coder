@@ -4060,7 +4060,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "approved": consensus_reached,
         "status": consensus_status,
         "iterations": iteration,
-        "max_review_iterations": budget,
+        # Label units: the last pass label pairs with the label budget, never with the remaining pass limit.
+        "max_review_iterations": last_label,
         "ci_checks": last_ci_status,
         "mergeability": last_mergeability,
         "mergeability_note": mergeability_note,
@@ -4167,8 +4168,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             + (f": {'; '.join(halt_reasons)}" if halt_reasons else "")
         ),
         "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+        # Label units: 'total_iterations' is the last pass label, so its ceiling is the label budget.
         "total_iterations": iteration,
-        "max_iterations": budget,
+        "max_iterations": last_label,
         "ci_checks_summary": last_ci_status,
         "trailers": last_trailers_dict,
     }
@@ -4218,7 +4220,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             "score": approval_score,
             "iterations": iteration,
             "passes": passes,
-            "max_review_iterations": budget,
+            "max_review_iterations": last_label,
             "status": consensus_status,
         },
         "halted_for_human": consensus_reached,
@@ -4227,8 +4229,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "mergeability": last_mergeability,
         "ci_checks": last_ci_status,
         "trailers": last_trailers_str,
+        # Label units, matching the summary ledger row and the console 'Iterations: {label} / {label budget}' line.
         "total_iterations": iteration,
-        "max_iterations": budget,
+        "max_iterations": last_label,
         "findings": finding_ids,
         "severity": severity,
         "posting": posting_res,
@@ -4924,8 +4927,10 @@ class PipelineEngine:
                 consensus = result.payload.get("consensus") if isinstance(result.payload, dict) else None
                 if isinstance(consensus, dict):
                     try:
-                        # Passes run, not the last label: a resumed engine labels its single pass N.
-                        iterations = max(1, int(consensus.get("passes") or consensus.get("iterations") or 1))
+                        # Passes run, not the last label: a resumed engine labels its single pass N. A present
+                        # "passes" wins even at 0 (a dispatchless run), falling back to the label only when absent.
+                        raw = consensus["passes"] if "passes" in consensus else consensus.get("iterations", 1)
+                        iterations = max(1, int(raw))
                     except (TypeError, ValueError):
                         iterations = 1
             # Same source as run_review_loop's per-iteration timer, so HOLON_STAGE_BUDGET_SECONDS applies to both.

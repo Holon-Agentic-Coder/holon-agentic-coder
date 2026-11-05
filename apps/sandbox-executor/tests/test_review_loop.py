@@ -1608,6 +1608,10 @@ def test_host_dispatch_label_flows_into_ledger_rows_and_the_posted_heading(tmp_p
     assert "--max-iterations=1" in args
     assert res["consensus"]["iterations"] == 4
     assert res["consensus"]["passes"] == 1
+    # Label units stay paired: the label (4) reports against the label budget (4), not the remaining pass limit (1).
+    assert res["consensus"]["max_review_iterations"] == 4
+    assert res["total_iterations"] == 4
+    assert res["max_iterations"] == 4
     rev_rows = _rows(tmp_path, "ACT-REV")
     assert rev_rows
     assert {r["review_iteration"] for r in rev_rows} == {4}

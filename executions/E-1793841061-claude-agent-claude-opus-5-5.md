@@ -24,5 +24,21 @@ I-1793840798-render-review-consensus-comment-from-reviewer-data. In progress.
    optional reviewer data block (`<!-- holon-review-roles -->`). `scaffold.REVIEW_LOOP_TEMPLATE` is now
    character-identical to the markdown file. The breakdown example keeps `{reviewer_1_id}` because
    `tests/test_review_ensemble.py` (outside the touch set) asserts that an unknown placeholder survives substitution.
+2. **Step 2 (reviewer data seam).** Added `RoleReview`, `FindingRow`, `VerifiedClaim`, `ReviewerDetail` and
+   `ReviewData` plus `ROLES_OPEN`/`ROLES_CLOSE` to `review_report.py`. `parse_reviewer_detail()` reads only a block that
+   sits immediately before the trailer, caps it at 20 000 characters, decodes it inside a `try`, keeps well-typed
+   entries only and pairs block findings with the authoritative trailer findings by position (a length mismatch drops
+   the block's ids and recommendations: generated `R{index}-F{n}` ids and `not supplied`). Verified claims need an
+   evidence path (`/` or `.` in a single path-like token). `collect_review_data()` merges roles case-insensitively
+   (CHANGES wins), merges findings by severity, path and line naming every contributor, and deduplicates claims. Because
+   `serialize_reviewer_result()` drops `report_text` on the container-to-host hop, `reviewer_detail_payload()` and
+   `with_reviewer_detail()` carry the sanitised block across it without touching `review_ensemble.py`.
+3. **Step 3 (renderer).** `build_review_consensus_report()` now emits the seven-part posted shape. The heading follows
+   `ensemble_verdict` alone (the `status` fallback is gone); mergeability renders `CLEAN`, `DIRTY`, `CONFLICTING`,
+   `MISSING_REF` or `UNMEASURED`; CI renders `CI unmeasured` for an unmeasured, missing or empty probe. Role rows,
+   Verified bullets and finding rows come only from reviewer data; with none, one honest sentence replaces them.
+   `HUMAN_MERGE_NOTICE` (no importers outside the module) became `CLOSING_NOTICE`. Added `render_on_disk_trailer()` and
+   `build_on_disk_review_report()`; the posted builder never calls them. The `build_pr_review_consensus_report` alias and
+   its parameters are unchanged, with one new keyword-only `review_data`.
 
 ## Tests Run

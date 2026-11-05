@@ -4284,6 +4284,32 @@ def _review_window(context: FlowContext) -> tuple[int, int]:
     return done + 1, context.max_review_iterations - done
 
 
+def _run_engine_review_loop(context: FlowContext) -> dict[str, Any]:
+    """Run the remaining engine passes of Stage 4, continuing the checkpointed count; dispatch nothing when spent.
+
+    The engine's checkpoint save after Stage 4 persists the updated count, whatever the stage outcome.
+    """
+    first_label, remaining = _review_window(context)
+    if remaining <= 0:
+        err = (
+            f"the review iteration budget ({context.max_review_iterations}) is exhausted after "
+            f"{context.review_iterations_done} iteration(s)."
+        )
+        context.log(f"[Review Loop] Not dispatching: {err}")
+        consensus = {"approved": False, "score": 0.0, "iterations": 0, "passes": 0, "status": "failed"}
+        return {"consensus": consensus, "total_iterations": 0, "error": err}
+    loop_res = run_review_loop(
+        context=context,
+        target=context.execution_branch,
+        max_iterations=remaining,
+        ensemble_size=context.review_ensemble_size,
+        dry_run=context.dry_run,
+        first_iteration=first_label,
+    )
+    context.review_iterations_done = max(context.review_iterations_done, int(loop_res.get("total_iterations") or 0))
+    return loop_res
+
+
 def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0912, PLR0915
     """Execute Stage 4: Review Loop.
 
@@ -4367,25 +4393,7 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
                 "deletions": deletions,
             }
 
-    first_label, remaining = _review_window(context)
-    if remaining <= 0:
-        return _stage_failure(
-            context,
-            FlowStage.REVIEW,
-            start_time,
-            f"Review stage failed: the review iteration budget ({context.max_review_iterations}) is exhausted after "
-            f"{context.review_iterations_done} iteration(s).",
-        )
-    loop_res = run_review_loop(
-        context=context,
-        target=context.execution_branch,
-        max_iterations=remaining,
-        ensemble_size=context.review_ensemble_size,
-        dry_run=context.dry_run,
-        first_iteration=first_label,
-    )
-    # The engine's checkpoint save after Stage 4 persists the count, whatever the stage outcome.
-    context.review_iterations_done = max(context.review_iterations_done, int(loop_res.get("total_iterations") or 0))
+    loop_res = _run_engine_review_loop(context)
     # The payload reports the engine's configured budget, not the remaining passes of this run.
     consensus_info = {**loop_res.get("consensus", {}), "max_review_iterations": context.max_review_iterations}
 

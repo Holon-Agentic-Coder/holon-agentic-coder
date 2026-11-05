@@ -66,3 +66,26 @@ a label.
   does not shrink to the remaining passes on resume.
 - Declared test change: `test_child_context_inherits_or_resets_every_field` classifies the new field (child resets to
   0). 389 affected tests pass.
+
+### Step 5: Keep the standalone `review` command's loop untouched
+
+- No edit to `cli/commands/review.py`: `_build_container_review_args` still forwards the user's `--max-iterations`
+  and adds no `--iteration` (the container default of 1 applies). `run_review_loop_cli` does not pass
+  `first_iteration`. The help text already reads "Maximum number of review loop iterations", so it was left as is.
+
+### Step 6: Add focused pytest coverage
+
+- `tests/test_flow.py`, new `TestEngineOwnedReviewLoop`: parametrised single-shot dispatch (iterations 1, 4, 25 each
+  yield exactly `--max-iterations=1` and `--iteration=N`); checkpoint round-trip resume (`done=3`, budget 5 gives
+  `first_iteration=4`, `max_iterations=2`, saved count 4, payload budget stays 5); exhausted budget (`done=5`) fails
+  without calling the loop; an old checkpoint without the key loads as 0; the Stage 4 ceiling counts passes, not the
+  label.
+- `tests/test_review_loop.py`: host container dispatch with `first_iteration=4` writes ledger rows with
+  `review_iteration` 4 and posts a consensus rendering `Iteration 4`; the entrypoint passes `--iteration=7` as
+  `first_iteration` and defaults to 1 and 25; `--iteration=0` is rejected; the standalone loop still labels from 1;
+  `_build_container_review_args` forwards `--max-iterations=5` and no `--iteration`.
+- Against the pre-change source (`git checkout <Step 1 commit> -- apps/sandbox-executor/src`), 12 of the 14 new or
+  changed tests failed; the 2 that passed are the standalone regression pins, as intended.
+- Lint follow-up: `run_review_stage` hit `PLR0911`; rather than add a new `noqa`, the budget check and count update
+  moved into `_run_engine_review_loop`, which returns a failed loop result with an `error` that the existing
+  "Autonomous review halted" path turns into a FAILED stage.

@@ -426,7 +426,7 @@ def test_untrusted_finding_text_cannot_break_out_of_its_row():
 def test_the_on_disk_trailer_never_appears_in_a_posted_body():
     reviewers = changes_reviewers()
     body = _report(reviewers)
-    on_disk = build_on_disk_review_report("/nonexistent", "42", _consensus(), ".subagent/r.md", reviewers)
+    on_disk = build_on_disk_review_report(body, _consensus(), reviewers, ".subagent/r.md")
 
     for key in ("VERDICT:", "CI:", "REPORT:", "CRITICAL:", "IMPORTANT:", "NIT:", "FINDINGS:"):
         assert not [line for line in body.splitlines() if line.startswith(key)]
@@ -448,11 +448,8 @@ def test_the_alias_keeps_its_positional_and_keyword_parameters():
     keyword = build_pr_review_consensus_report(
         repo_dir="/nonexistent", target="42", consensus_data=_consensus(), reviewers=reviewers, title="T"
     )
-    collected = build_review_consensus_report(
-        "/nonexistent", "42", _consensus(), reviewers, "T", review_data=collect_review_data(reviewers)
-    )
 
-    assert positional == keyword == collected
+    assert positional == keyword == build_review_consensus_report("/nonexistent", "42", _consensus(), reviewers, "T")
     assert build_pr_review_consensus_report is build_review_consensus_report
 
 

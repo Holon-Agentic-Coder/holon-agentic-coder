@@ -112,7 +112,6 @@ from sandbox_executor.review_ensemble import (
     run_ensemble,
 )
 from sandbox_executor.review_report import (
-    ReviewData,
     build_pr_review_consensus_report,
     collect_review_data,
     resolve_report_title,
@@ -1467,7 +1466,6 @@ def post_pr_review_consensus(  # noqa: PLR0912, PLR0913, PLR0915
     *,
     reviewers: list[ReviewerResult] | None = None,
     title: str | None = None,
-    review_data: ReviewData | None = None,
 ) -> dict[str, Any]:
     """Dual-post review consensus to GitHub and handle author self-approval HTTP 422 fallback (Bean 0119).
 
@@ -1483,7 +1481,6 @@ def post_pr_review_consensus(  # noqa: PLR0912, PLR0913, PLR0915
         proxy_env: Optional proxy environment variables.
         reviewers: Reviewer results of the deciding iteration; the report renders only these.
         title: Resolved report title (intent title, else PR title, else PR number or branch).
-        review_data: Review data collected from ``reviewers``; collected here when omitted.
 
     Returns:
         dict[str, Any]: Posting outcome diagnostics.
@@ -1499,7 +1496,6 @@ def post_pr_review_consensus(  # noqa: PLR0912, PLR0913, PLR0915
         consensus_data=consensus_data,
         reviewers=reviewers or [],
         title=title,
-        review_data=review_data,
     )
 
     gh_available = bool(shutil.which("gh"))
@@ -4084,7 +4080,6 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 proxy_env=proxy_env,
                 reviewers=reviewers,
                 title=resolve_report_title(context.intent_data, resolved_target, review_target),
-                review_data=review_data,
             )
         except Exception as exc:
             safe_error = CredentialRedactor.redact_text(str(exc))

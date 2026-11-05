@@ -514,14 +514,12 @@ def _breakdown(reviewers: Sequence[ReviewerResult], consensus_data: Mapping[str,
     ]
 
 
-def build_review_consensus_report(  # noqa: PLR0913
+def build_review_consensus_report(
     repo_dir: str,
     target: str,
     consensus_data: Mapping[str, Any],
     reviewers: Sequence[ReviewerResult] = (),
     title: str | None = None,
-    *,
-    review_data: ReviewData | None = None,
 ) -> str:
     """Render the posted consensus review from real reviewer results, probe data and the resolved title.
 
@@ -531,13 +529,12 @@ def build_review_consensus_report(  # noqa: PLR0913
         consensus_data: Consensus diagnostics from ``run_review_loop()`` (verdict, CI, mergeability, iteration).
         reviewers: The reviewer results of the deciding iteration, in order.
         title: The resolved report title; when omitted, the intent title or the target is used.
-        review_data: Pre-collected review data; when omitted, it is collected from ``reviewers``.
 
     Returns:
         The markdown body in the template's "Posted review shape", without the on-disk trailer.
     """
     clean_target = str(target or "").strip()
-    data = review_data if review_data is not None else collect_review_data(reviewers)
+    data = collect_review_data(reviewers)
     configured = int(consensus_data.get("ensemble_size") or len(reviewers))
     report_title = title or resolve_report_title(consensus_data.get("intent_data"), None, clean_target)
     body = _verified_section(data.verified) if _is_approved(consensus_data) else _findings_section(data.findings)
@@ -586,15 +583,9 @@ def render_on_disk_trailer(consensus_data: Mapping[str, Any], review_data: Revie
     )
 
 
-def build_on_disk_review_report(  # noqa: PLR0913
-    repo_dir: str,
-    target: str,
-    consensus_data: Mapping[str, Any],
-    report_path: str,
-    reviewers: Sequence[ReviewerResult] = (),
-    title: str | None = None,
+def build_on_disk_review_report(
+    posted_body: str, consensus_data: Mapping[str, Any], reviewers: Sequence[ReviewerResult], report_path: str
 ) -> str:
-    """The posted body followed by the on-disk trailer as its final lines."""
-    data = collect_review_data(reviewers)
-    body = build_review_consensus_report(repo_dir, target, consensus_data, reviewers, title, review_data=data)
-    return f"{body}\n\n{render_on_disk_trailer(consensus_data, data, report_path)}\n"
+    """A posted body from :func:`build_review_consensus_report` followed by the on-disk trailer as its final lines."""
+    trailer = render_on_disk_trailer(consensus_data, collect_review_data(reviewers), report_path)
+    return f"{posted_body.rstrip()}\n\n{trailer}\n"

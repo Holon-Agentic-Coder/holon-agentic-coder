@@ -40,5 +40,14 @@ I-1793840798-render-review-consensus-comment-from-reviewer-data. In progress.
    `HUMAN_MERGE_NOTICE` (no importers outside the module) became `CLOSING_NOTICE`. Added `render_on_disk_trailer()` and
    `build_on_disk_review_report()`; the posted builder never calls them. The `build_pr_review_consensus_report` alias and
    its parameters are unchanged, with one new keyword-only `review_data`.
+4. **Step 4 (flow wiring).** `post_pr_review_consensus()` derives `--approve` from `ensemble_verdict == APPROVED` plus
+   one completed reviewer only (the `consensus_data["approved"]` promotion is gone) and takes an optional `review_data`.
+   `run_review_loop()` collects the review data once, passes it to the poster and adds a JSON-safe `review_data` summary
+   (role names and verdicts, finding ids, severities and reviewers) to `consensus_data` and the loop result.
+   `_reviewer_summary()` carries each reviewer's sanitised `review_data` payload, and `_dispatch_review_ensemble()`
+   re-attaches it after `deserialize_review_outcome()` so the host-side post sees the container reviewers' roles, ids
+   and recommendations. `review_summary_lines()` (printed by `entrypoint/review_loop.py`) gains a `Roles` line with the
+   open finding count, so the entrypoint itself needed no edit; its exit-code rule is unchanged. No ledger file or
+   record shape changed.
 
 ## Tests Run

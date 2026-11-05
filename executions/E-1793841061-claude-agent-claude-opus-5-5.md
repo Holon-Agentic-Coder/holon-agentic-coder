@@ -49,5 +49,17 @@ I-1793840798-render-review-consensus-comment-from-reviewer-data. In progress.
    and recommendations. `review_summary_lines()` (printed by `entrypoint/review_loop.py`) gains a `Roles` line with the
    open finding count, so the entrypoint itself needed no edit; its exit-code rule is unchanged. No ledger file or
    record shape changed.
+5. **Step 5 (contract tests).** `test_prompt_templates.py` extracts the "Posted review shape" block and the reviewer
+   data block section from the markdown prompt and from `REVIEW_LOOP_TEMPLATE` and asserts they are identical, that the
+   prompt is under 288 lines with no registry, matrix, legend or old schema, that every loop invariant phrase survives in
+   both surfaces, and that the prompt's own example report parses with the real trailer and data-block parsers.
+   `test_review_report.py` was rewritten: the ordered structural markers are derived from the template block at test
+   time and asserted against rendered approval and changes-requested reports from one fixture dataset (two completed
+   reviewers, one FAILED); plus seam, merge, misaligned or malformed block, FAILED reviewer, transport round-trip,
+   verdict, probe, sanitisation, on-disk trailer, alias and title tests. `test_flow.py` replaces the
+   `**Mergeability:**` assertion and adds `TestReviewDataSeam` (data block reaches the body passed to the fake `gh`;
+   container transport keeps it; summary line). `test_review_loop.py` adds a test that the `approved` flag alone yields
+   `--comment` and a CHANGES REQUESTED heading. Drift check by hand: changing `**Role reviews:**` in the template made 4
+   tests fail; the edit was reverted with `git checkout`.
 
 ## Tests Run

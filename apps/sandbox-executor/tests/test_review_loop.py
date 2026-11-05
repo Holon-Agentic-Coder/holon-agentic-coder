@@ -341,6 +341,25 @@ class TestReviewLoopGitHubCLIDiagnostics:
         assert review_call[:5] == ["gh", "pr", "review", "123", "--comment"]
         assert "--approve" not in review_call
 
+    @pytest.mark.parametrize("verdict", ["CHANGES_REQUESTED", None])
+    def test_post_pr_review_consensus_approved_flag_alone_never_approves(self, verdict):
+        from sandbox_executor.flow import post_pr_review_consensus
+
+        from tests.review_fakes import clean_reviewer
+
+        consensus_data = {"approved": True, "ensemble_verdict": verdict, "status": "approved", "ensemble_size": 1}
+        with patch("shutil.which", return_value="/usr/bin/gh"), patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="Success", stderr="")
+            post_pr_review_consensus(
+                repo_dir="/tmp", target="123", consensus_data=consensus_data, reviewers=[clean_reviewer(1)]
+            )
+
+        review_call = mock_run.call_args_list[1][0][0]
+        assert review_call[:5] == ["gh", "pr", "review", "123", "--comment"]
+        body = review_call[review_call.index("--body") + 1]
+        assert body.startswith("## ❌ Ensemble Consensus Review — CHANGES REQUESTED")
+        assert "APPROVED (" not in body
+
     def test_post_pr_review_consensus_diagnostics_when_gh_missing(self):
         from sandbox_executor.flow import post_pr_review_consensus
 

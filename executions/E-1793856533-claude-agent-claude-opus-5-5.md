@@ -1,0 +1,36 @@
+# Execution Record: E-1793856533-claude-agent-claude-opus-5-5
+
+## Summary
+
+Implementing plan `P-1793856357-claude-agent-claude-opus-5-5` for intent
+`I-1793856341-engine-owned-review-loop-single-shot-container`: the flow engine owns the Stage 4 review loop and
+dispatches the review container for exactly one ensemble pass per engine iteration, passing its iteration number only as
+a label.
+
+## Actual Metrics
+
+| metric                | value |
+| --------------------- | ----- |
+| success_actual        | 0.0   |
+| entropy_actual        | 0.0   |
+| impact_actual         | 0.0   |
+| cost_actual           | 0.0   |
+| learning_value_actual | 0.0   |
+
+## Steps Executed
+
+### Step 1: Confirm label destinations and checkpoint timing (read-only)
+
+- (a) The host consumes only `reviewers` and the verdict from the container result file
+  (`_dispatch_review_ensemble` in `flow.py` calls `deserialize_review_outcome` and `_attach_transported_detail`). The
+  container runs with `--skip-post`, so the posted body is built on the host from the host loop's own `iteration`
+  (`consensus_data["iterations"]` in `run_review_loop`). The container's own ledger rows use its own counter, so it
+  must receive the label too.
+- (b) `PipelineEngine.run` calls `self.save_checkpoint()` straight after `after_stage` for every stage result,
+  including a FAILED Stage 4, before deciding whether to halt. A count set on the context at the end of
+  `run_review_stage` is therefore persisted. One count update after the loop is enough.
+- `entrypoint/role_dispatcher.sh` forwards `review-loop` arguments verbatim (`"$@"`), so the new `--iteration` flag
+  needs no out-of-scope change.
+- Extra finding: `PipelineEngine.stage_budget_seconds` derives the Stage 4 ceiling from `consensus["iterations"]`.
+  With a label of N and one pass, that would grant N iteration budgets, so the loop now also reports `passes`
+  and the ceiling prefers it.

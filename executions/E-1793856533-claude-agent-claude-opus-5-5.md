@@ -11,29 +11,28 @@ a label.
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.0   |
-| entropy_actual        | 0.0   |
-| impact_actual         | 0.0   |
-| cost_actual           | 0.0   |
-| learning_value_actual | 0.0   |
+| success_actual        | 0.95  |
+| entropy_actual        | 5.4   |
+| impact_actual         | 70.0  |
+| cost_actual           | 12.0  |
+| learning_value_actual | 4.0   |
 
 ## Steps Executed
 
 ### Step 1: Confirm label destinations and checkpoint timing (read-only)
 
-- (a) The host consumes only `reviewers` and the verdict from the container result file
-  (`_dispatch_review_ensemble` in `flow.py` calls `deserialize_review_outcome` and `_attach_transported_detail`). The
-  container runs with `--skip-post`, so the posted body is built on the host from the host loop's own `iteration`
-  (`consensus_data["iterations"]` in `run_review_loop`). The container's own ledger rows use its own counter, so it
-  must receive the label too.
-- (b) `PipelineEngine.run` calls `self.save_checkpoint()` straight after `after_stage` for every stage result,
-  including a FAILED Stage 4, before deciding whether to halt. A count set on the context at the end of
-  `run_review_stage` is therefore persisted. One count update after the loop is enough.
+- (a) The host consumes only `reviewers` and the verdict from the container result file (`_dispatch_review_ensemble` in
+  `flow.py` calls `deserialize_review_outcome` and `_attach_transported_detail`). The container runs with `--skip-post`,
+  so the posted body is built on the host from the host loop's own `iteration` (`consensus_data["iterations"]` in
+  `run_review_loop`). The container's own ledger rows use its own counter, so it must receive the label too.
+- (b) `PipelineEngine.run` calls `self.save_checkpoint()` straight after `after_stage` for every stage result, including
+  a FAILED Stage 4, before deciding whether to halt. A count set on the context at the end of `run_review_stage` is
+  therefore persisted. One count update after the loop is enough.
 - `entrypoint/role_dispatcher.sh` forwards `review-loop` arguments verbatim (`"$@"`), so the new `--iteration` flag
   needs no out-of-scope change.
-- Extra finding: `PipelineEngine.stage_budget_seconds` derives the Stage 4 ceiling from `consensus["iterations"]`.
-  With a label of N and one pass, that would grant N iteration budgets, so the loop now also reports `passes`
-  and the ceiling prefers it.
+- Extra finding: `PipelineEngine.stage_budget_seconds` derives the Stage 4 ceiling from `consensus["iterations"]`. With
+  a label of N and one pass, that would grant N iteration budgets, so the loop now also reports `passes` and the ceiling
+  prefers it.
 
 ### Step 2: Add a labelling start (`first_iteration`) to `run_review_loop`
 
@@ -60,18 +59,18 @@ a label.
   `int(data.get(...) or 0)`: old checkpoints load as 0, no schema bump. Not copied by `_child_context`.
 - New helper `_review_window(context)` returns `(done + 1, max_review_iterations - done)`. `run_review_stage` fails
   through `_stage_failure` without dispatching when the remaining budget is 0 or less; otherwise it runs
-  `run_review_loop(max_iterations=remaining, first_iteration=first)` and records
-  `max(done, total_iterations)` back on the context, which the engine's post-stage checkpoint save persists.
-- The stage payload's `consensus["max_review_iterations"]` is overridden with the configured engine budget, so it
-  does not shrink to the remaining passes on resume.
+  `run_review_loop(max_iterations=remaining, first_iteration=first)` and records `max(done, total_iterations)` back on
+  the context, which the engine's post-stage checkpoint save persists.
+- The stage payload's `consensus["max_review_iterations"]` is overridden with the configured engine budget, so it does
+  not shrink to the remaining passes on resume.
 - Declared test change: `test_child_context_inherits_or_resets_every_field` classifies the new field (child resets to
   0). 389 affected tests pass.
 
 ### Step 5: Keep the standalone `review` command's loop untouched
 
-- No edit to `cli/commands/review.py`: `_build_container_review_args` still forwards the user's `--max-iterations`
-  and adds no `--iteration` (the container default of 1 applies). `run_review_loop_cli` does not pass
-  `first_iteration`. The help text already reads "Maximum number of review loop iterations", so it was left as is.
+- No edit to `cli/commands/review.py`: `_build_container_review_args` still forwards the user's `--max-iterations` and
+  adds no `--iteration` (the container default of 1 applies). `run_review_loop_cli` does not pass `first_iteration`. The
+  help text already reads "Maximum number of review loop iterations", so it was left as is.
 
 ### Step 6: Add focused pytest coverage
 
@@ -87,5 +86,28 @@ a label.
 - Against the pre-change source (`git checkout <Step 1 commit> -- apps/sandbox-executor/src`), 12 of the 14 new or
   changed tests failed; the 2 that passed are the standalone regression pins, as intended.
 - Lint follow-up: `run_review_stage` hit `PLR0911`; rather than add a new `noqa`, the budget check and count update
-  moved into `_run_engine_review_loop`, which returns a failed loop result with an `error` that the existing
-  "Autonomous review halted" path turns into a FAILED stage.
+  moved into `_run_engine_review_loop`, which returns a failed loop result with an `error` that the existing "Autonomous
+  review halted" path turns into a FAILED stage.
+
+### Step 7: Verify, lint and record the execution
+
+- All gates pass; see `## Tests Run`. No ledger line was edited; this record is the only new file under `executions/`.
+
+## Tests Run
+
+| command                                                                                                                                             | result                                                                                             | pytest time |
+| --------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | ----------- |
+| `uv run pytest apps/sandbox-executor/tests/test_flow.py apps/sandbox-executor/tests/test_review_loop.py -q -n auto --dist worksteal` (after Step 2) | 389 passed, 0 failed                                                                               | 5.24s       |
+| same (after Step 3)                                                                                                                                 | 389 passed, 0 failed                                                                               | 5.56s       |
+| same (after Step 4, before the child-context test update)                                                                                           | 388 passed, 1 failed (`test_child_context_inherits_or_resets_every_field`: unclassified new field) | 6.05s       |
+| same (after the declared test update)                                                                                                               | 389 passed, 0 failed                                                                               | 6.03s       |
+| new tests against pre-change source (`-k` selection of the 14 new or changed tests)                                                                 | 2 passed, 12 failed (expected)                                                                     | 1.94s       |
+| affected tests after Steps 5-6 and the lint refactor                                                                                                | 402 passed, 0 failed                                                                               | 5.08s       |
+| `uv run task test` (full suite, once)                                                                                                               | 2949 passed, 0 failed                                                                              | 30.30s      |
+| `uv run task lint`                                                                                                                                  | All checks passed; 108 files already formatted                                                     | n/a         |
+| `uv run task lint-docs`                                                                                                                             | passes after `npx prettier --write` on this record                                                 | n/a         |
+
+No repeated runs: the intent sets no timing target, so the full suite ran once (median of one run: `30.30s`).
+
+Metric notes: `entropy_actual = 5.4` (one extra lint-driven helper, one declared test update, but no out-of-scope
+change); `cost_actual = 12.0` (slightly under the predicted `13.5`; includes installing `uv` in the sandbox).

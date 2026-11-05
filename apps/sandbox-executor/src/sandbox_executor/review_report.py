@@ -265,7 +265,26 @@ def _merge_findings(rows: Iterable[FindingRow]) -> tuple[FindingRow, ...]:
         reviewers = seen.reviewers + tuple(i for i in row.reviewers if i not in seen.reviewers)
         recommendation = seen.recommendation if seen.recommendation != NOT_SUPPLIED else row.recommendation
         merged[key] = dataclasses.replace(seen, reviewers=reviewers, recommendation=recommendation)
-    return tuple(merged.values())
+    return _unique_ids(tuple(merged.values()))
+
+
+def _unique_ids(rows: tuple[FindingRow, ...]) -> tuple[FindingRow, ...]:
+    """Disambiguate block-supplied ids that collide across distinct rows.
+
+    Two reviewers can independently supply the same id (say ``F-1``) for different findings; the first row keeps it and
+    every later colliding row falls back to a generated ``R{reviewer}-F{n}`` id that no other row carries.
+    """
+    taken = {row.id for row in rows}
+    assigned: set[str] = set()
+    unique = []
+    for number, row in enumerate(rows, start=1):
+        ident = row.id
+        while ident in assigned or (ident != row.id and ident in taken):
+            ident = f"R{row.reviewers[0]}-F{number}"
+            number += 1
+        assigned.add(ident)
+        unique.append(row if ident == row.id else dataclasses.replace(row, id=ident))
+    return tuple(unique)
 
 
 def collect_review_data(reviewers: Sequence[ReviewerResult]) -> ReviewData:
@@ -579,7 +598,7 @@ def render_on_disk_trailer(consensus_data: Mapping[str, Any], review_data: Revie
     counts = {name: sum(1 for row in review_data.findings if row.severity == name) for name in SEVERITIES}
     return "\n".join(
         [
-            f"VERDICT: {verdict if verdict in known else 'COMMENT'}",
+            f"VERDICT: {verdict if verdict in known else str(ConsensusVerdict.CHANGES_REQUESTED)}",
             f"CI: {_ci_word(consensus_data.get('ci_checks') or {})}",
             f"REPORT: {_inline(report_path, MAX_PATH_CHARS)}",
             *(f"{name.upper()}: {count}" for name, count in counts.items()),

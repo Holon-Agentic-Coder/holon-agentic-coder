@@ -264,6 +264,23 @@ def test_distinct_findings_at_one_location_stay_distinct_rows():
     ]
 
 
+def test_colliding_block_ids_across_reviewers_are_disambiguated():
+    block = {"findings": [{"id": "F-1", "recommendation": "x"}]}
+    reviewers = [_reviewer(1, APP_FINDING, block=block), _reviewer(2, DOC_FINDING, block=block)]
+    data = collect_review_data(reviewers)
+
+    ids = [row.id for row in data.findings]
+    assert ids == ["F-1", "R2-F2"]
+    assert len(set(ids)) == len(ids)
+
+
+def test_the_same_finding_raised_by_several_reviewers_keeps_one_shared_id():
+    block = {"findings": [{"id": "F-1", "recommendation": "x"}]}
+    data = collect_review_data([_reviewer(1, APP_FINDING, block=block), _reviewer(2, APP_FINDING, block=block)])
+
+    assert [(row.id, row.reviewers) for row in data.findings] == [("F-1", (1, 2))]
+
+
 def test_a_reviewer_without_a_block_gets_generated_ids_and_no_recommendation():
     body = _report([_reviewer(2, APP_FINDING)])
 
@@ -450,6 +467,16 @@ def test_the_on_disk_trailer_never_appears_in_a_posted_body():
         "NIT: 1",
         "FINDINGS: 2",
     ]
+
+
+@pytest.mark.parametrize("verdict", ["FAILED", ""], ids=["failed", "missing"])
+def test_the_trailer_fails_closed_on_a_failed_or_missing_ensemble_verdict(verdict):
+    reviewers = changes_reviewers()
+    on_disk = build_on_disk_review_report("body", _consensus(ensemble_verdict=verdict), reviewers, ".subagent/r.md")
+
+    trailer_lines = on_disk.rstrip().splitlines()
+    assert "VERDICT: CHANGES_REQUESTED" in trailer_lines
+    assert not [line for line in trailer_lines if line.startswith("VERDICT: COMMENT")]
 
 
 def test_the_alias_keeps_its_positional_and_keyword_parameters():

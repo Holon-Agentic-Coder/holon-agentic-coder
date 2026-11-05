@@ -5982,6 +5982,17 @@ class TestEngineOwnedReviewLoop:
         assert result.payload["consensus"]["iterations"] == 5
         assert result.payload["consensus"]["passes"] == 0
 
+    def test_an_exhausted_budget_clamps_a_malformed_negative_count(self, tmp_path):
+        ctx = self._resumable_context(tmp_path, done=-2, budget=0)
+
+        with patch.object(flow_module, "run_review_loop") as loop:
+            result = run_review_stage(ctx)
+
+        loop.assert_not_called()
+        assert result.status == StageStatus.FAILED
+        # The synthetic consensus never reports a negative label: the raw count is clamped like _review_window does.
+        assert result.payload["consensus"]["iterations"] == 0
+
     def test_old_checkpoint_without_the_count_loads_as_zero(self):
         data = FlowContext(token_reduce=False).to_dict()
         data.pop("review_iterations_done")

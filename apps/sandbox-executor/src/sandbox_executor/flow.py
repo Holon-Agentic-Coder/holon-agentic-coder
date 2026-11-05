@@ -4304,8 +4304,8 @@ def _run_engine_review_loop(context: FlowContext) -> dict[str, Any]:
             f"{context.review_iterations_done} iteration(s)."
         )
         context.log(f"[Review Loop] Not dispatching: {err}")
-        # iterations = label of the latest pass already run (the checkpointed count); passes = 0 dispatches here.
-        done = context.review_iterations_done
+        # iterations = label of the latest pass already run (the clamped checkpointed count); passes = 0 dispatches.
+        done = first_label - 1
         consensus = {"approved": False, "score": 0.0, "iterations": done, "passes": 0, "status": "failed"}
         return {"consensus": consensus, "total_iterations": done, "error": err}
     loop_res = run_review_loop(

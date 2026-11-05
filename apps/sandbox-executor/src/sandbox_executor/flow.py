@@ -3697,6 +3697,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     *,
     run_ensemble_fn: Callable[..., list[ReviewerResult]] | None = None,
     skip_post: bool = False,
+    first_iteration: int = 1,
 ) -> dict[str, Any]:
     """Execute the native Stage 4 review loop (Bean 0118) with the real reviewer ensemble.
 
@@ -3719,6 +3720,10 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         clock: Monotonic clock for the per-iteration budget (Bean 0139) and the CI waits (default: time.monotonic).
         sleep: Sleep function used by the CI waits (default: time.sleep); injectable for tests.
         run_ensemble_fn: Reviewer ensemble seam (default: ``review_ensemble.run_ensemble``); tests inject a fake.
+        skip_post: If True, never post the consensus to GitHub (the engine's container dispatch posts on the host).
+        first_iteration: Label of the first pass (default 1). It is only a label: the ledger ``review_iteration``
+            fields, finding IDs, trailers and the posted ``Iteration {n}`` heading carry it, while ``max_iterations``
+            alone caps how many passes run. The engine passes its own continued count here.
 
     The empty-diff guard runs for every target whatever ``auto_pr`` is: an empty diff is rejected and an
     unverifiable one fails, before any PR, iteration or post. A dry run never measures anything, so it reports
@@ -3733,6 +3738,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     sleep = sleep or time.sleep
     review_target = str(target or context.execution_branch or context.intent_branch or "HEAD").strip()
     budget = max(1, max_iterations or context.max_review_iterations or 25)
+    # Labels run from first_label to last_label; the counter below always holds the label of the latest pass.
+    first_label = max(1, first_iteration)
+    last_label = first_label + budget - 1
     repo_dir = context.repo_dir
     target_branch = context.intent_data.get("target_branch", "main")
     effective_dry_run = bool(dry_run or context.dry_run)
@@ -3752,7 +3760,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     test_pass_rate, exit_code = _test_evidence(context.stage_results.get("execute"))
     tests_failed = exit_code != 0 or (test_pass_rate is not None and test_pass_rate < 1.0)
 
-    iteration = 0
+    iteration = first_label - 1
     consensus_reached = False
     last_ci_status: dict[str, Any] = {}
     last_trailers_str = ""
@@ -3845,9 +3853,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         # Fail closed: a PR the guard refused is never reviewed, so no evidence can turn the refusal into approval.
         context.log("[Review Loop] Halting review loop without consensus: the empty-diff guard refused the PR.")
 
-    while pr_refusal_error is None and infra_error is None and iteration < budget:
+    while pr_refusal_error is None and infra_error is None and iteration < last_label:
         iteration += 1
-        context.log(f"[Review Loop] Starting review iteration {iteration}/{budget} for target '{review_target}'.")
+        context.log(f"[Review Loop] Starting review iteration {iteration}/{last_label} for target '{review_target}'.")
         iteration_timer = StageTimer("review", iteration_budget_seconds, clock=clock)
 
         # 1. Mergeability inspection
@@ -4017,11 +4025,12 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         )
         break
 
-    if not consensus_reached and pr_refusal_error is None and infra_error is None and iteration >= budget:
+    if not consensus_reached and pr_refusal_error is None and infra_error is None and iteration >= last_label:
         context.log(f"[Review Loop] Iteration budget ({budget}) exhausted without consensus.")
 
     # A dry run measures nothing and dispatches no reviewer, so a clean simulation is reported as not measured.
-    not_measured = tests_not_measured or (effective_dry_run and iteration > 0 and not finding_ids)
+    passes = iteration - first_label + 1
+    not_measured = tests_not_measured or (effective_dry_run and passes > 0 and not finding_ids)
     consensus_status = _loop_status(
         consensus_reached, ensemble_verdict, bool(pr_refusal_error or infra_error), is_dirty, not_measured
     )
@@ -4196,6 +4205,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             "approved": consensus_reached,
             "score": approval_score,
             "iterations": iteration,
+            "passes": passes,
             "max_review_iterations": budget,
             "status": consensus_status,
         },
@@ -4868,14 +4878,15 @@ class PipelineEngine:
         self._resume_partial_pending = False
 
     def stage_budget_seconds(self, stage: FlowStage, result: StageResult | None = None) -> float:
-        """Ceiling for ``stage``; the review stage gets one review-iteration budget per iteration it ran."""
+        """Ceiling for ``stage``; the review stage gets one review-iteration budget per pass it ran."""
         if stage == FlowStage.REVIEW:
             iterations = 1
             if result is not None:
                 consensus = result.payload.get("consensus") if isinstance(result.payload, dict) else None
                 if isinstance(consensus, dict):
                     try:
-                        iterations = max(1, int(consensus.get("iterations") or 1))
+                        # Passes run, not the last label: a resumed engine labels its single pass N.
+                        iterations = max(1, int(consensus.get("passes") or consensus.get("iterations") or 1))
                     except (TypeError, ValueError):
                         iterations = 1
             # Same source as run_review_loop's per-iteration timer, so HOLON_STAGE_BUDGET_SECONDS applies to both.

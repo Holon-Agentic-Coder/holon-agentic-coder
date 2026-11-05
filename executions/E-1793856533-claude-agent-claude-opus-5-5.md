@@ -34,3 +34,14 @@ a label.
 - Extra finding: `PipelineEngine.stage_budget_seconds` derives the Stage 4 ceiling from `consensus["iterations"]`.
   With a label of N and one pass, that would grant N iteration budgets, so the loop now also reports `passes`
   and the ceiling prefers it.
+
+### Step 2: Add a labelling start (`first_iteration`) to `run_review_loop`
+
+- `run_review_loop` takes keyword-only `first_iteration: int = 1` (clamped to at least 1). The counter starts at
+  `first_label - 1` and runs while it is below `last_label = first_label + budget - 1`, so every label use inside the
+  loop (ledger `review_iteration`, finding IDs, trailers, `consensus["iterations"]`) carries the label unchanged.
+- The budget-exhausted log compares against `last_label`; the dry-run `not_measured` check uses `passes`.
+- The loop result's `consensus` gains `passes` (passes actually run); `PipelineEngine.stage_budget_seconds` prefers it
+  over `iterations`, so a single labelled pass keeps a one-pass ceiling.
+- `uv` was not on `PATH` in this sandbox; installed it with `pip install --user uv` (environment only, no project
+  dependency change). Existing flow and review-loop tests: 389 passed, unchanged.

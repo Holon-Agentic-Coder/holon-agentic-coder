@@ -53,3 +53,16 @@ a label.
 - `entrypoint/review_loop.py` gains `--iteration` (int, default 1), rejected through `parser.error` when below 1, and
   passes it to `run_review_loop` as `first_iteration`. `--max-iterations` keeps its standalone meaning and default 25.
 - `role_dispatcher.sh` forwards arguments verbatim, so no out-of-scope change was needed. 389 affected tests pass.
+
+### Step 4: Checkpoint the engine's review count and resume from it
+
+- `FlowContext.review_iterations_done: int = 0`, serialised in `to_dict` and read in `from_dict` with
+  `int(data.get(...) or 0)`: old checkpoints load as 0, no schema bump. Not copied by `_child_context`.
+- New helper `_review_window(context)` returns `(done + 1, max_review_iterations - done)`. `run_review_stage` fails
+  through `_stage_failure` without dispatching when the remaining budget is 0 or less; otherwise it runs
+  `run_review_loop(max_iterations=remaining, first_iteration=first)` and records
+  `max(done, total_iterations)` back on the context, which the engine's post-stage checkpoint save persists.
+- The stage payload's `consensus["max_review_iterations"]` is overridden with the configured engine budget, so it
+  does not shrink to the remaining passes on resume.
+- Declared test change: `test_child_context_inherits_or_resets_every_field` classifies the new field (child resets to
+  0). 389 affected tests pass.

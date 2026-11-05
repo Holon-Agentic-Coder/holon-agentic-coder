@@ -345,6 +345,8 @@ class FlowContext:
     schema_version: int = CURRENT_CONTEXT_SCHEMA_VERSION
     # Automatic returns to Stage 2 after an over-budget plan (bounded by budgets.MAX_REPLAN_ATTEMPTS).
     replan_attempts: int = 0
+    # Engine-owned Stage 4 count: the label of the last review pass run, checkpointed so a resume continues it.
+    review_iterations_done: int = 0
     # Role-agent dispatcher for Stages 1-3; None means cli.dispatch_role_agent. Never checkpointed.
     dispatcher: Callable[..., int] | None = field(default=None, repr=False, compare=False)
 
@@ -385,6 +387,7 @@ class FlowContext:
             "review_ensemble_size": self.review_ensemble_size,
             "mitm_web": self.mitm_web,
             "replan_attempts": self.replan_attempts,
+            "review_iterations_done": self.review_iterations_done,
             "stage_results": {k: v.to_dict() for k, v in self.stage_results.items()},
             "logs": self.logs,
         }
@@ -421,6 +424,7 @@ class FlowContext:
             review_ensemble_size=int(data.get("review_ensemble_size") or DEFAULT_ENSEMBLE_SIZE),
             mitm_web=data.get("mitm_web", False),
             replan_attempts=int(data.get("replan_attempts") or 0),
+            review_iterations_done=int(data.get("review_iterations_done") or 0),
             stage_results=parsed_results,
             logs=data.get("logs", []),
         )
@@ -4274,6 +4278,12 @@ def _checkout_execution_branch(context: FlowContext) -> str | None:
     return redact_agent_secrets(stderr) or f"exit code {co_res.returncode}"
 
 
+def _review_window(context: FlowContext) -> tuple[int, int]:
+    """Return the next Stage 4 pass label and the engine's remaining pass budget."""
+    done = max(0, context.review_iterations_done)
+    return done + 1, context.max_review_iterations - done
+
+
 def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0912, PLR0915
     """Execute Stage 4: Review Loop.
 
@@ -4357,15 +4367,28 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
                 "deletions": deletions,
             }
 
+    first_label, remaining = _review_window(context)
+    if remaining <= 0:
+        return _stage_failure(
+            context,
+            FlowStage.REVIEW,
+            start_time,
+            f"Review stage failed: the review iteration budget ({context.max_review_iterations}) is exhausted after "
+            f"{context.review_iterations_done} iteration(s).",
+        )
     loop_res = run_review_loop(
         context=context,
         target=context.execution_branch,
-        max_iterations=context.max_review_iterations,
+        max_iterations=remaining,
         ensemble_size=context.review_ensemble_size,
         dry_run=context.dry_run,
+        first_iteration=first_label,
     )
+    # The engine's checkpoint save after Stage 4 persists the count, whatever the stage outcome.
+    context.review_iterations_done = max(context.review_iterations_done, int(loop_res.get("total_iterations") or 0))
+    # The payload reports the engine's configured budget, not the remaining passes of this run.
+    consensus_info = {**loop_res.get("consensus", {}), "max_review_iterations": context.max_review_iterations}
 
-    consensus_info = loop_res.get("consensus", {})
     consensus_reached = bool(consensus_info.get("approved"))
     mergeability = loop_res.get("mergeability", {})
     is_dirty = bool(mergeability.get("is_dirty"))

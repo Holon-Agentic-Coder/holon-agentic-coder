@@ -45,3 +45,11 @@ a label.
   over `iterations`, so a single labelled pass keeps a one-pass ceiling.
 - `uv` was not on `PATH` in this sandbox; installed it with `pip install --user uv` (environment only, no project
   dependency change). Existing flow and review-loop tests: 389 passed, unchanged.
+
+### Step 3: Single-shot dispatch and the container's `--iteration` label flag
+
+- `_dispatch_review_ensemble` now sends `--max-iterations=1` (named constant `_ENGINE_PASSES_PER_DISPATCH`) and a
+  separate `--iteration={iteration}` label.
+- `entrypoint/review_loop.py` gains `--iteration` (int, default 1), rejected through `parser.error` when below 1, and
+  passes it to `run_review_loop` as `first_iteration`. `--max-iterations` keeps its standalone meaning and default 25.
+- `role_dispatcher.sh` forwards arguments verbatim, so no out-of-scope change was needed. 389 affected tests pass.

@@ -262,6 +262,15 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         help="Maximum review loop iterations (default: 25).",
     )
     parser.add_argument(
+        "--iteration",
+        type=int,
+        default=1,
+        help=(
+            "Label of the first pass (default: 1), used for the ledger review_iteration fields and the posted "
+            "'Iteration {n}' heading; never a loop limit."
+        ),
+    )
+    parser.add_argument(
         "--ensemble-size",
         type=int,
         default=DEFAULT_ENSEMBLE_SIZE,
@@ -324,6 +333,8 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     )
 
     args = parser.parse_args()
+    if args.iteration < 1:
+        parser.error(f"--iteration must be at least 1, got {args.iteration}.")
 
     # The host CLI always passes resolved values; no harness detection inside the container.
     agent_name = args.agent or args.pos_agent or FALLBACK_AGENT
@@ -417,6 +428,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         auto_pr=args.auto_pr,
         dry_run=args.dry_run,
         skip_post=args.skip_post,
+        first_iteration=args.iteration,
     )
 
     if args.result_file:

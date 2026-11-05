@@ -3580,13 +3580,20 @@ def _ensemble_iteration(  # noqa: PLR0913
     return list(results), None
 
 
+# The engine owns the Stage 4 loop: each dispatch asks the container for one ensemble pass, labelled by --iteration.
+_ENGINE_PASSES_PER_DISPATCH = 1
+
+
 def _dispatch_review_ensemble(
     context: FlowContext,
     target: ReviewTarget,
     iteration: int,
     ensemble_size: int,
 ) -> tuple[list[ReviewerResult], ConsensusVerdict | None, str | None]:
-    """Dispatch reviewer ensemble turns into the review-loop role container via _dispatch_role."""
+    """Dispatch one reviewer ensemble pass into the review-loop role container via _dispatch_role.
+
+    ``iteration`` is the engine's pass label (``--iteration``), never the container's loop limit.
+    """
     from sandbox_executor.review_ensemble import deserialize_review_outcome
 
     tmp_dir = os.path.expanduser("~/.holon/tmp")
@@ -3602,7 +3609,8 @@ def _dispatch_review_ensemble(
         target_ref,
         context.agent or FALLBACK_AGENT,
         context.model or "inherit",
-        f"--max-iterations={iteration}",
+        f"--max-iterations={_ENGINE_PASSES_PER_DISPATCH}",
+        f"--iteration={iteration}",
         f"--ensemble-size={ensemble_size}",
         "--no-auto-pr",
         "--skip-post",

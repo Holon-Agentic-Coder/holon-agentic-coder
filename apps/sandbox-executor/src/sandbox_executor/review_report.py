@@ -76,7 +76,7 @@ NOT_SUPPLIED = "not supplied"
 UNMEASURED = "unmeasured"
 _EVIDENCE_MARKERS = ("/", ".py", ".md", "test_", "::")
 _SEVERITY_LABELS = {"critical": "Critical", "important": "Important", "nit": "Nit"}
-_MERGE_STATES = ("CLEAN", "DIRTY", "MISSING_REF")
+_UNKNOWN_MERGE_STATE = "UNKNOWN"
 _GITHUB_SLUG = re.compile(r"github\.com[:/]([^/]+/[^/.]+?)(?:\.git)?$")
 _PR_URL_NUMBER = re.compile(r"/pull/(\d+)")
 
@@ -285,12 +285,12 @@ def _ci_state(ci_status: Mapping[str, Any]) -> str:
 
 
 def _merge_state(mergeability: Mapping[str, Any]) -> str:
-    """``CONFLICTING``, ``CLEAN``, ``DIRTY`` or ``MISSING_REF`` from the probe, else ``unmeasured``."""
+    """The probe's ``merge_state_status`` verbatim (``CONFLICTING`` wins); ``unmeasured`` when absent or UNKNOWN."""
     if str(mergeability.get("mergeable") or "").upper() == "CONFLICTING":
         return "CONFLICTING"
     state = str(mergeability.get("merge_state_status") or "").upper()
-    if state in _MERGE_STATES:
-        return state
+    if state and state != _UNKNOWN_MERGE_STATE:
+        return _inline(state, 40)
     return "DIRTY" if mergeability.get("is_dirty") else UNMEASURED
 
 
@@ -387,10 +387,10 @@ def _verified_section(details: Sequence[ReviewerDetails]) -> list[str]:
 # --- Heading, paragraph and breakdown ------------------------------------------------------------------------------
 
 
-def _heading(approved: bool, completed: int, iteration: int) -> str:
-    """The ✅ heading with ``(n/n)`` completed reviewers, or the ❌ heading with the iteration."""
+def _heading(approved: bool, completed: int, configured: int, iteration: int) -> str:
+    """The ✅ heading with ``(completed/configured)`` reviewers, or the ❌ heading with the iteration."""
     if approved:
-        return f"## ✅ Ensemble Consensus Review — APPROVED ({completed}/{completed})"
+        return f"## ✅ Ensemble Consensus Review — APPROVED ({completed}/{configured or completed})"
     return f"## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration {iteration})"
 
 
@@ -472,7 +472,7 @@ def build_review_consensus_report(
     commit = _target_commit(repo_dir, consensus_data)
     return "\n".join(
         [
-            _heading(approved, len(completed), iteration),
+            _heading(approved, len(completed), _count(consensus_data.get("ensemble_size")), iteration),
             "",
             _evaluation_paragraph(subject, commit, base, rows, f"CI {ci_state}; mergeability {merge}"),
             "",

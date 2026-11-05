@@ -68,7 +68,7 @@ appears once with its contributors named, and the trailer never appears in a pos
 Approved:
 
 ```markdown
-## ✅ Ensemble Consensus Review — APPROVED ({n}/{n})
+## ✅ Ensemble Consensus Review — APPROVED ({completed}/{ensemble_size})
 
 Evaluated {title} at head commit `{target_commit}` against base branch `{target_branch}`: {critical} Critical,
 {important} Important and {nit} Nit findings; CI {ci_state}; mergeability {mergeability}.

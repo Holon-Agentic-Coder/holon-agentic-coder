@@ -219,11 +219,14 @@ def test_heading_follows_the_ensemble_verdict_alone(verdict):
     assert "**Verified:**" not in body
 
 
-def test_approved_heading_counts_completed_reviewers_only():
+def test_approved_heading_counts_completed_over_configured_reviewers():
     reviewers = [_reviewer(1), failed_reviewer(2, "runner crashed"), _reviewer(3)]
     body = build_review_consensus_report("/nonexistent", "42", _approved(), reviewers)
 
-    assert body.startswith("## ✅ Ensemble Consensus Review — APPROVED (2/2)")
+    assert body.startswith("## ✅ Ensemble Consensus Review — APPROVED (2/3)")
+
+    short = build_review_consensus_report("/nonexistent", "42", _approved(ensemble_size=0), [_reviewer(1)])
+    assert short.startswith("## ✅ Ensemble Consensus Review — APPROVED (1/1)")
 
 
 @pytest.mark.parametrize(
@@ -233,8 +236,9 @@ def test_approved_heading_counts_completed_reviewers_only():
         ({"merge_state_status": "DIRTY", "is_dirty": True}, "DIRTY"),
         ({"mergeable": "CONFLICTING", "merge_state_status": "CLEAN"}, "CONFLICTING"),
         ({"merge_state_status": "MISSING_REF"}, "MISSING_REF"),
+        ({"merge_state_status": "BLOCKED"}, "BLOCKED"),
+        ({"merge_state_status": "BEHIND"}, "BEHIND"),
         ({"merge_state_status": "UNKNOWN"}, "unmeasured"),
-        ({"merge_state_status": "BLOCKED"}, "unmeasured"),
         ({}, "unmeasured"),
     ],
 )
@@ -273,7 +277,7 @@ def test_failed_reviewer_is_shown_failed_with_its_redacted_reason_and_never_as_a
     assert "- **Reviewer 2** (`fake-agent/fake-model`): `FAILED` (crashed with" in body
     assert "- **Reviewer 3**: `FAILED` (no result returned)" in body
     assert secret not in body
-    assert body.startswith("## ✅ Ensemble Consensus Review — APPROVED (1/1)")
+    assert body.startswith("## ✅ Ensemble Consensus Review — APPROVED (1/3)")
     assert "> 🤖 **Reviewed by**: `claude-agent, fake-agent` · **Model**: `model-one, fake-model`" in body
 
 

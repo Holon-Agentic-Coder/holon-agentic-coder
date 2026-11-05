@@ -1,4 +1,5 @@
-"""Template hygiene: no unmatched placeholder braces, and the shipped prompts carry the test-run and commit rules."""
+"""Template hygiene: no unmatched placeholder braces, the shipped prompts carry the test-run and commit rules, and the
+review prompt and its in-code twin carry one posted-review shape and the reviewer data block contract."""
 
 import pathlib
 import re
@@ -7,6 +8,9 @@ from collections.abc import Callable
 import pytest
 from sandbox_executor.entrypoint.executor import build_execution_prompt
 from sandbox_executor.entrypoint.planner import render_placeholders
+from sandbox_executor.review_ensemble import ReviewerResult, parse_review_trailer
+from sandbox_executor.review_report import ROLES_CLOSE, ROLES_OPEN, parse_reviewer_detail
+from sandbox_executor.scaffold import REVIEW_LOOP_TEMPLATE
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 TEMPLATES = sorted((REPO_ROOT / "holon-config" / "prompts").glob("*.template.md"))
@@ -26,6 +30,26 @@ PLANNER_KEYS = {
     "safe_model",
     "budget_from_intent",
 }
+REVIEW_TEMPLATE_PATH = REPO_ROOT / "holon-config" / "prompts" / "review_loop.template.md"
+MARKDOWN_TEMPLATE = REVIEW_TEMPLATE_PATH.read_text(encoding="utf-8")
+REVIEW_TEMPLATES = {"markdown": MARKDOWN_TEMPLATE, "scaffold": REVIEW_LOOP_TEMPLATE}
+# The review prompt's line count before the posted-shape rewrite; the prompt must stay shorter.
+FORMER_REVIEW_PROMPT_LINES = 288
+# Lower-case loop invariants every review prompt must state.
+REVIEW_INVARIANT_PHRASES = (
+    "approves unanimously",
+    "zero critical, zero important and zero open nit findings",
+    "every ci check passes",
+    "check mergeability",
+    "before posting a review or adding calibration",
+    "sandbox_executor.flow.record_review_action()",
+    "try_append_action_record(..., preserve_shape=true)",
+    "review only the increment since the last reviewed commit",
+    "fresh context",
+    "never pauses",
+    "never run `gh pr merge`",
+    "merging remains with the human maintainer",
+)
 # Lower-case test-run rule phrases both the planner and the executor prompt must carry.
 TEST_RUN_RULE_PHRASES = (
     "only when the intent requires measuring performance or timing behaviour",
@@ -129,3 +153,72 @@ def test_rendered_executor_expands_every_placeholder() -> None:
     ]
     assert leftovers == []
     assert "executions/E-1-test.md" in text
+
+
+def fenced_block(text: str, after: str) -> str:
+    """The body of the first fenced block that follows the heading ``after``."""
+    section = text.split(after, 1)[1]
+    match = re.search(r"^```[a-z]*\n(.*?)^```$", section, re.MULTILINE | re.DOTALL)
+    assert match, f"no fenced block after {after!r}"
+    return match.group(1)
+
+
+def posted_shape_block(text: str) -> str:
+    """The fenced "Posted review shape" block of a review template."""
+    return fenced_block(text, "## Posted review shape")
+
+
+def reviewer_data_section(text: str) -> str:
+    """The "Reviewer data block" section of a review template, up to the next rule."""
+    return text.split("### Reviewer data block", 1)[1].split("\n---\n", 1)[0]
+
+
+def test_review_prompt_and_scaffold_twin_share_one_posted_shape():
+    assert posted_shape_block(MARKDOWN_TEMPLATE) == posted_shape_block(REVIEW_LOOP_TEMPLATE)
+    assert reviewer_data_section(MARKDOWN_TEMPLATE) == reviewer_data_section(REVIEW_LOOP_TEMPLATE)
+    assert "Stage 5 calibration will be added to this PR before merge. Merging remains with the human maintainer." in (
+        posted_shape_block(MARKDOWN_TEMPLATE)
+    )
+
+
+@pytest.mark.parametrize("name", sorted(REVIEW_TEMPLATES))
+def test_review_prompt_wraps_description_and_diff_in_four_backtick_fences(name):
+    text = REVIEW_TEMPLATES[name]
+    assert "````markdown\n{pr_description}\n````" in text
+    assert "````diff\n{diff}\n````" in text
+    assert "```markdown\n{pr_description}" not in text.replace("````markdown", "")
+    assert "```diff\n{diff}" not in text.replace("````diff", "")
+
+
+def test_review_prompt_is_shorter_and_has_no_registry_matrix_or_legend():
+    assert len(MARKDOWN_TEMPLATE.splitlines()) < FORMER_REVIEW_PROMPT_LINES
+    for text in REVIEW_TEMPLATES.values():
+        for banned in ("Persona Registry", "Activation Matrix", "CRITICAL / BLOCKER", "Standard Review Output Schema"):
+            assert banned not in text
+
+
+@pytest.mark.parametrize("name", sorted(REVIEW_TEMPLATES))
+def test_review_prompt_keeps_every_loop_invariant(name):
+    text = normalised(REVIEW_TEMPLATES[name])
+    missing = [phrase for phrase in REVIEW_INVARIANT_PHRASES if phrase not in text]
+    assert missing == [], f"loop invariants missing from the {name} review prompt: {missing}"
+
+
+def test_review_prompt_says_the_on_disk_trailer_is_never_posted():
+    text = normalised(MARKDOWN_TEMPLATE)
+    assert "written to on-disk reports only and never posted to the pr" in text
+    assert "VERDICT: <APPROVED" not in posted_shape_block(MARKDOWN_TEMPLATE)
+
+
+def test_review_prompt_example_report_parses_with_the_real_parsers():
+    example = next(
+        block
+        for block in re.findall(r"^```text\n(.*?)^```$", MARKDOWN_TEMPLATE, re.MULTILINE | re.DOTALL)
+        if ROLES_OPEN in block
+    )
+    assert ROLES_OPEN in reviewer_data_section(MARKDOWN_TEMPLATE) and ROLES_CLOSE in example
+    parsed = parse_review_trailer(example)
+    detail = parse_reviewer_detail(ReviewerResult.completed(1, "a", "m", "r", example, parsed))
+
+    assert [(role.role, role.verdict) for role in detail.roles] == [("Testing", "PASS")]
+    assert [claim.evidence for claim in detail.verified] == ["tests/test_review_report.py"]

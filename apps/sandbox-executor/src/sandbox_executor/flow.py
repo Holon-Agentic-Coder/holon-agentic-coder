@@ -26,7 +26,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -111,7 +111,14 @@ from sandbox_executor.review_ensemble import (
     decide_consensus,
     run_ensemble,
 )
-from sandbox_executor.review_report import build_pr_review_consensus_report, resolve_report_title
+from sandbox_executor.review_report import (
+    build_pr_review_consensus_report,
+    collect_review_data,
+    resolve_report_title,
+    review_data_summary,
+    reviewer_detail_payload,
+    with_reviewer_detail,
+)
 from sandbox_executor.review_target import (
     DiffVerdict,
     ReviewTarget,
@@ -1479,8 +1486,9 @@ def post_pr_review_consensus(  # noqa: PLR0912, PLR0913, PLR0915
         dict[str, Any]: Posting outcome diagnostics.
     """
     clean_target = str(target or "").strip()
-    backed = consensus_data.get("ensemble_verdict") == str(ConsensusVerdict.APPROVED) and consensus_data.get("approved")
-    approved = bool(backed) and any(r.status is ReviewerStatus.COMPLETED for r in reviewers or [])
+    # The ensemble verdict alone decides an approval; no ``approved`` flag or status can promote any other value.
+    backed = consensus_data.get("ensemble_verdict") == str(ConsensusVerdict.APPROVED)
+    approved = backed and any(r.status is ReviewerStatus.COMPLETED for r in reviewers or [])
 
     report_text = build_pr_review_consensus_report(
         repo_dir=repo_dir,
@@ -3398,7 +3406,16 @@ def _reviewer_summary(result: ReviewerResult) -> dict[str, Any]:
         "counts": {"critical": result.counts.critical, "important": result.counts.important, "nit": result.counts.nit},
         "findings": findings_list,
         "failure_reason": result.failure_reason,
+        "review_data": reviewer_detail_payload(result),
     }
+
+
+def _attach_transported_detail(
+    reviewers: list[ReviewerResult], transported: Sequence[Any] | None
+) -> list[ReviewerResult]:
+    """Re-attach each reviewer's sanitised data block, which the container transport carries beside the result."""
+    payloads = {item.get("index"): item.get("review_data") for item in transported or [] if isinstance(item, Mapping)}
+    return [with_reviewer_detail(result, payloads.get(result.index)) for result in reviewers]
 
 
 def _reviewer_finding_ids(result: ReviewerResult, iteration: int) -> list[str]:
@@ -3609,6 +3626,7 @@ def _dispatch_review_ensemble(
             data = json.load(f)
 
         reviewers, verdict, outcome_err = deserialize_review_outcome(data)
+        reviewers = _attach_transported_detail(reviewers, data.get("reviewers"))
         if exit_code != 0 and not reviewers:
             err = outcome_err or f"Reviewer ensemble container dispatch exited with code {exit_code}"
             return [], None, err
@@ -4016,6 +4034,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     except Exception as exc:
         logger.debug("Could not resolve the reviewed commit for %s: %s", review_target, exc)
 
+    review_data = collect_review_data(reviewers)
     consensus_data = {
         "approved": consensus_reached,
         "status": consensus_status,
@@ -4032,6 +4051,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "ensemble_size": ensemble_size,
         "ensemble_verdict": str(ensemble_verdict) if ensemble_verdict else None,
         "reviewers": [_reviewer_summary(result) for result in reviewers],
+        "review_data": review_data_summary(review_data),
         "base_branch": (resolved_target.base_branch if resolved_target else None) or target_branch,
         "intent_data": context.intent_data,
         "target_commit": current_commit_sha,
@@ -4195,6 +4215,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "budget_breach": budget_breach,
         "ensemble_verdict": consensus_data["ensemble_verdict"],
         "reviewers": consensus_data["reviewers"],
+        "review_data": consensus_data["review_data"],
     }
     if pr_refusal_error or infra_error or post_error:
         loop_result["error"] = pr_refusal_error or infra_error or post_error
@@ -4506,6 +4527,11 @@ def review_summary_lines(loop_res: dict[str, Any]) -> list[str]:
     """Summary lines with the real per-reviewer verdicts of the deciding iteration."""
     lines = [f"  Ensemble       : {loop_res.get('ensemble_verdict') or 'NOT RUN'}"]
     lines.extend(f"    {render_reviewer_summary_line(r)}" for r in loop_res.get("reviewers") or [])
+    review_data = loop_res.get("review_data") or {}
+    roles = (
+        ", ".join(f"{r.get('role')} ({r.get('verdict')})" for r in review_data.get("roles") or []) or "none reported"
+    )
+    lines.append(f"  Roles          : {roles}; open findings: {len(review_data.get('findings') or [])}")
     return lines
 
 

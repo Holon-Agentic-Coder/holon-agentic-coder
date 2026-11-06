@@ -32,3 +32,15 @@ runner contracts for all registered runners without mocks, and eliminating free-
   invoke `runner.build_command(prompt, model_name)` if available, fall back to `runner.compose_cmd(model_name, prompt)`
   if `compose_cmd` is present, or raise an informative `AttributeError` when neither command construction method is
   satisfied.
+
+### Step 2: Test real runner contracts across registry in `test_agent_runner.py` without mocks
+
+- Added `test_real_registered_runners_build_command_contract()` in `apps/sandbox-executor/tests/test_agent_runner.py`
+  iterating through every registered runner in `runners.values()` directly without mocks, asserting strict equality
+  between `runner.build_command("test-prompt", "test-model")` and `runner.compose_cmd("test-model", "test-prompt")`.
+- Asserted command structure invariants across all real runner instances including binary name, model flag, model name,
+  and prompt arguments.
+- Verified all agent aliases (`pi`, `claude`, `gemini`, `opencode`, `codex`, `antigravity-agent`) via `get_runner()`, as
+  well as `AntigravityAgentRunner` class inheritance.
+- Verified that dynamic environment evaluation (`HOLON_AGENT_EFFORT` and `HOLON_AGENT_SKIP_PERMISSIONS`) operates
+  identically across both `build_command` and `compose_cmd`.

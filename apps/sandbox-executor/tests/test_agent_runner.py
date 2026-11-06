@@ -3,7 +3,13 @@ import subprocess
 import unittest
 
 import pytest
-from sandbox_executor.agent_runner import get_repo_url, get_runner, runners
+from sandbox_executor.agent_runner import (
+    AntigravityAgentRunner,
+    StandardAgentRunner,
+    get_repo_url,
+    get_runner,
+    runners,
+)
 
 
 def _docker_image_available(image_name: str) -> bool:
@@ -666,3 +672,55 @@ def test_claude_bypass_evaluated_at_build_time(claude_env: pytest.MonkeyPatch) -
 def test_other_runners_never_emit_claude_bypass(claude_env: pytest.MonkeyPatch, agent: str) -> None:
     cmd = runners[agent].compose_cmd("m", "p")
     assert not set(CLAUDE_BYPASS) & set(cmd)
+
+
+def test_real_registered_runners_build_command_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify that all real registered runners implement build_command identically to compose_cmd without mocks."""
+    # 1. Iterate over all registered runner instances in the runners dictionary directly without mocks
+    for runner in runners.values():
+        cmd_build = runner.build_command("test-prompt", "test-model")
+        cmd_compose = runner.compose_cmd("test-model", "test-prompt")
+
+        # Assert strict equality between build_command and compose_cmd
+        assert cmd_build == cmd_compose
+
+        # Assert command structure invariants
+        assert isinstance(cmd_build, list)
+        assert all(isinstance(arg, str) for arg in cmd_build)
+        assert cmd_build[0] == runner.binary_name
+        assert runner.model_flag in cmd_build
+        assert "test-model" in cmd_build
+        assert cmd_build[-1] == "test-prompt"
+
+    # 2. Specifically verify all supported agent aliases via get_runner()
+    agent_aliases = ["pi", "claude", "gemini", "opencode", "codex", "antigravity-agent"]
+    for alias in agent_aliases:
+        runner = get_runner(alias)
+        assert isinstance(runner, (StandardAgentRunner, AntigravityAgentRunner))
+        cmd_build = runner.build_command("test-prompt", "test-model")
+        cmd_compose = runner.compose_cmd("test-model", "test-prompt")
+        assert cmd_build == cmd_compose
+
+    # 3. Specifically verify AntigravityAgentRunner class hierarchy
+    antigravity_runner = get_runner("antigravity-agent")
+    assert isinstance(antigravity_runner, AntigravityAgentRunner)
+    assert isinstance(antigravity_runner, StandardAgentRunner)
+
+    # 4. Verify runtime environment evaluation operates identically across build_command and compose_cmd
+    monkeypatch.setenv("HOLON_AGENT_EFFORT", "high")
+    monkeypatch.setenv("HOLON_AGENT_SKIP_PERMISSIONS", "true")
+    cmd_build = antigravity_runner.build_command("eval-prompt", "eval-model")
+    cmd_compose = antigravity_runner.compose_cmd("eval-model", "eval-prompt")
+    assert cmd_build == cmd_compose
+    assert "--effort" in cmd_build
+    assert cmd_build[cmd_build.index("--effort") + 1] == "high"
+    assert "--dangerously-skip-permissions" in cmd_build
+
+    monkeypatch.setenv("HOLON_AGENT_EFFORT", "low")
+    monkeypatch.setenv("HOLON_AGENT_SKIP_PERMISSIONS", "false")
+    cmd_build = antigravity_runner.build_command("eval-prompt", "eval-model")
+    cmd_compose = antigravity_runner.compose_cmd("eval-model", "eval-prompt")
+    assert cmd_build == cmd_compose
+    assert "--effort" in cmd_build
+    assert cmd_build[cmd_build.index("--effort") + 1] == "low"
+    assert "--dangerously-skip-permissions" not in cmd_build

@@ -2,22 +2,22 @@
   "kb_id": "KB-pattern-565d240f",
   "kb_type": "pattern",
   "version": "1.0",
-  "created_ts": "2026-11-06T08:50:16.410802+00:00",
-  "updated_ts": "2026-11-06T08:50:16.410802+00:00",
+  "created_ts": "2026-11-06T09:30:00.886159+00:00",
+  "updated_ts": "2026-11-06T09:30:00.886159+00:00",
   "created_by": "holon-promotion-engine",
   "status": "active",
   "evidence": {
     "ledger_refs": [
+      "ACT-1793957400-78c69e4b",
+      "P-1793955693-antigravity-agent-gemini-3.8-flash-medium",
       "ACT-1793955016-7ff5eaaf",
       "P-1793953342-antigravity-agent-gemini-3.8-flash-medium",
-      "P-1793942508-antigravity-agent-gemini-3.8-flash-medium",
-      "ACT-1793941680-758ddbc6",
-      "P-1793939982-antigravity-agent-gemini-3.8-flash-medium"
+      "P-1793942508-antigravity-agent-gemini-3.8-flash-medium"
     ],
-    "success_count": 15,
+    "success_count": 17,
     "failure_count": 0,
-    "wilson_lower": 0.7961166989641603,
-    "posterior_mean": 0.9411764705882353,
+    "wilson_lower": 0.8156818649911564,
+    "posterior_mean": 0.9473684210526315,
     "ladder_state": "likely-success"
   },
   "tags": [
@@ -27,7 +27,7 @@
   "human_approved": false,
   "payload": {
     "name": "Proven approach for ",
-    "description": "Advisory (likely-success): Historical executions matching this context pattern succeeded in 15/15 (100.0%) trials (Wilson 95% lower bound: 0.80). Consider evaluating proven approach: ''.",
+    "description": "Advisory (likely-success): Historical executions matching this context pattern succeeded in 17/17 (100.0%) trials (Wilson 95% lower bound: 0.82). Consider evaluating proven approach: ''.",
     "action": ""
   }
 }

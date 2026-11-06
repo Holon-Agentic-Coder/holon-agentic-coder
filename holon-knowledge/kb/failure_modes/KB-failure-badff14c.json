@@ -2,8 +2,8 @@
   "kb_id": "KB-failure-badff14c",
   "kb_type": "failure_mode",
   "version": "1.0",
-  "created_ts": "2026-11-06T08:50:16.466137+00:00",
-  "updated_ts": "2026-11-06T08:50:16.466137+00:00",
+  "created_ts": "2026-11-06T09:30:00.998693+00:00",
+  "updated_ts": "2026-11-06T09:30:00.998693+00:00",
   "created_by": "holon-promotion-engine",
   "status": "active",
   "evidence": {

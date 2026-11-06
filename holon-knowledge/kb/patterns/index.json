@@ -1,13 +1,13 @@
 {
   "index_version": "1.0",
-  "updated_ts": "2026-11-06T08:50:16.524356+00:00",
+  "updated_ts": "2026-11-06T09:30:01.077530+00:00",
   "entries": [
     {
       "kb_id": "KB-pattern-33842d5b",
       "file": "KB-pattern-33842d5b.json",
       "kb_type": "pattern",
       "status": "active",
-      "created_ts": "2026-11-06T08:50:16.407626+00:00",
+      "created_ts": "2026-11-06T09:30:00.882154+00:00",
       "tags": [
         "code",
         "proven"
@@ -18,7 +18,7 @@
       "file": "KB-pattern-565d240f.json",
       "kb_type": "pattern",
       "status": "active",
-      "created_ts": "2026-11-06T08:50:16.410802+00:00",
+      "created_ts": "2026-11-06T09:30:00.886159+00:00",
       "tags": [
         "reconciliation",
         "proven"
@@ -29,7 +29,7 @@
       "file": "KB-pattern-cd5f817d.json",
       "kb_type": "pattern",
       "status": "active",
-      "created_ts": "2026-11-06T08:50:16.524264+00:00",
+      "created_ts": "2026-11-06T09:30:01.077414+00:00",
       "tags": [
         "code",
         "proven"

@@ -2,8 +2,8 @@
   "kb_id": "KB-failure-fa5c0674",
   "kb_type": "failure_mode",
   "version": "1.0",
-  "created_ts": "2026-11-06T08:50:16.507855+00:00",
-  "updated_ts": "2026-11-06T08:50:16.507855+00:00",
+  "created_ts": "2026-11-06T09:30:01.056823+00:00",
+  "updated_ts": "2026-11-06T09:30:01.056823+00:00",
   "created_by": "holon-promotion-engine",
   "status": "active",
   "evidence": {

@@ -48,3 +48,16 @@ tests in `apps/sandbox-executor/tests/test_review_loop.py`.
     JSON reports fail-closed `"lint_passed": False` and `"tests_passed": False`.
   - `test_run_resolver_mode_passes_verification_when_verify_succeeds`: Asserts that when verification and git resolution
     succeed, result JSON reports `"lint_passed": True`, `"tests_passed": True`, `"error": None`, and `"pushed": True`.
+
+## Tests Run
+
+- `uv run pytest apps/sandbox-executor/tests/test_review_loop.py`:
+  - Run 1: `98 passed in 0.67s`
+  - Median: `98 passed in 0.67s`
+- `uv run task test` (`pytest -n auto --dist worksteal -m "not integration_test and not stress"`):
+  - Run 1: `2973 passed, 8 warnings in 30.65s`
+  - Median: `2973 passed in 30.65s`
+- `uv run task lint` (`uv lock --check && git diff --exit-code uv.lock && ruff check . && ruff format --check .`):
+  - Passed cleanly with zero errors.
+- `uv run task lint-docs` (`npx prettier --check "**/*.md"`):
+  - Passed cleanly with all matched markdown files formatted according to Prettier style.

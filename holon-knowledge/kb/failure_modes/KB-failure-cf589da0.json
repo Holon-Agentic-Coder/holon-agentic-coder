@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-cf589da0",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-06T22:48:38.621720+00:00",
+  "updated_ts": "2026-11-06T22:48:38.621720+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1793964188-d347a517"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1793960332-treat-kb-wb-facts-as-immutable-append-only-records/P-1793960347-antigravity-agent-gemini-3.8-flash-medium/E-1793960623-antigravity-agent-gemini-3.8-flash-medium/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 14 finding detected: FIND-CI-014",
+    "symptoms": [
+      "Findings detected: ['FIND-CI-014']"
+    ]
+  }
+}

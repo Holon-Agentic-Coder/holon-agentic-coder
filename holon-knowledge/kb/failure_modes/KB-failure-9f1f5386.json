@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-9f1f5386",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-06T22:48:38.650785+00:00",
+  "updated_ts": "2026-11-06T22:48:38.650785+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1793966871-671fadde"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1793960332-treat-kb-wb-facts-as-immutable-append-only-records/P-1793960347-antigravity-agent-gemini-3.8-flash-medium/E-1793960623-antigravity-agent-gemini-3.8-flash-medium/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 25 evaluation for I-1793960332-treat-kb-wb-facts-as-immutable-append-only-records/P-1793960347-antigravity-agent-gemini-3.8-flash-medium/E-1793960623-antigravity-agent-gemini-3.8-flash-medium/_",
+    "symptoms": [
+      "Findings detected: ['FIND-CI-025']"
+    ]
+  }
+}

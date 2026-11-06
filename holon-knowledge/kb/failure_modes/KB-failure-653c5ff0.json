@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-653c5ff0",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-06T08:50:16.427561+00:00",
+  "updated_ts": "2026-11-06T08:50:16.427561+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1792372640-fcf74266"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in 85",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "PR Review Loop iteration 20 evaluation for 85",
+    "symptoms": [
+      "Findings detected: ['FIND-CI-020']"
+    ]
+  }
+}

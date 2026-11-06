@@ -359,7 +359,8 @@ def _run_resolver_agent(
     """Run the resolver agent turn and parse its dispositions JSON file."""
     os.makedirs(os.path.dirname(dispositions_path), exist_ok=True)
     runner = get_runner(agent_name)
-    outcome = run_turn(runner, prompt, model_name, cwd=repo_dir)
+    cmd = runner.build_command(prompt, model_name)
+    outcome = run_turn(cmd, cwd=repo_dir)
     if os.path.exists(dispositions_path):
         try:
             with open(dispositions_path, encoding="utf-8") as f:
@@ -370,8 +371,9 @@ def _run_resolver_agent(
                 return parsed
         except (OSError, ValueError):
             pass
-    if outcome.exit_code != 0:
-        raise RuntimeError(f"Resolver agent exited with code {outcome.exit_code}")
+    code = getattr(outcome, "returncode", getattr(outcome, "exit_code", 0))
+    if code != 0:
+        raise RuntimeError(f"Resolver agent exited with code {code}")
     return []
 
 
@@ -398,10 +400,10 @@ def _commit_and_push_resolution(
     applied_items = [d for d in dispositions if d.disposition == "applied"]
 
     if not applied_items or not has_worktree_changes:
-        return dispositions, initial_head, False, True, True, None
+        return dispositions, initial_head, False, False, False, None
 
     if opts.dry_run:
-        return dispositions, initial_head, False, True, True, None
+        return dispositions, initial_head, False, False, False, None
 
     lint_ok, tests_ok, verify_err = _verify_before_push(repo_dir)
     if not lint_ok or not tests_ok:
@@ -471,8 +473,8 @@ def _run_resolver_mode(
     dispositions = deserialize_finding_dispositions(raw_dispositions, findings, action_ids)
     head_sha = (_checked(["git", "rev-parse", "HEAD"], repo_dir, "resolve").stdout or "").strip()
     pushed = False
-    lint_ok = True
-    tests_ok = True
+    lint_ok = False
+    tests_ok = False
     if error is None and findings:
         dispositions, head_sha, pushed, lint_ok, tests_ok, error = _commit_and_push_resolution(
             repo_dir,

@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-7778432f",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-06T08:50:16.606073+00:00",
+  "updated_ts": "2026-11-06T08:50:16.606073+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1793926275-561741f0"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1793925076-increase-default-review-iteration-stage-budget-to-2-hours/P-1793925096-antigravity-agent-gemini-4-argon/E-1793925366-antigravity-agent-gemini-4-argon/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R3-001-01",
+    "symptoms": [
+      "docs/budgets.md was not updated per Goal 3: line 25 (defaults table) and line 227 (iteration summary example) still state '15 min' instead of '120 min' for the review_iteration budget."
+    ]
+  }
+}

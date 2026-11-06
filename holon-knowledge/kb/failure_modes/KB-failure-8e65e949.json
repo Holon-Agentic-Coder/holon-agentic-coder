@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-8e65e949",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-06T08:50:16.596761+00:00",
+  "updated_ts": "2026-11-06T08:50:16.596761+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1793888811-antigravity-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1793869839-stage-4-resolver-review-loop-converges/P-1793869856-antigravity-agent-gemini-4-argon/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop halted without consensus after 1 iteration(s)",
+    "symptoms": []
+  }
+}

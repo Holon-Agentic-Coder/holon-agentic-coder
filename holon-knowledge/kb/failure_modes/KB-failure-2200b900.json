@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-2200b900",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-06T08:50:16.493311+00:00",
+  "updated_ts": "2026-11-06T08:50:16.493311+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1792480617-dce79792"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1792480378-audit-and-remediate-documentation-gaps/P-1792480383-antigravity-agent-gemini-3.8-flash-medium/E-1792480387-antigravity-agent-gemini-3.8-flash-medium/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "PR Review Loop iteration 20 evaluation for I-1792480378-audit-and-remediate-documentation-gaps/P-1792480383-antigravity-agent-gemini-3.8-flash-medium/E-1792480387-antigravity-agent-gemini-3.8-flash-medium/_",
+    "symptoms": [
+      "Findings detected: ['FIND-CI-020']"
+    ]
+  }
+}

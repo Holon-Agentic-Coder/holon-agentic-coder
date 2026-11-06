@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-d25f1b01",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-06T08:50:16.410184+00:00",
+  "updated_ts": "2026-11-06T08:50:16.410184+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-POST-1792372426-0157fa5d"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1792372416-comprehensive-ecosystem-audit-and-bean-generation/P-1792372417-antigravity-agent-gemini-3.8-flash-medium/E-1792372418-antigravity-agent-gemini-3.8-flash-medium/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "PR Review consensus dual-posted to GitHub for I-1792372416-comprehensive-ecosystem-audit-and-bean-generation/P-1792372417-antigravity-agent-gemini-3.8-flash-medium/E-1792372418-antigravity-agent-gemini-3.8-flash-medium/_",
+    "symptoms": []
+  }
+}

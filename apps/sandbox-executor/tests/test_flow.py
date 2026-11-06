@@ -6296,4 +6296,3 @@ class TestStage5PromotedArtifactsCommit:
             "Stage 5 promoted knowledge/wisdom artifacts unchanged: zero modifications to commit." in msg
             for msg in ctx.logs
         )
-

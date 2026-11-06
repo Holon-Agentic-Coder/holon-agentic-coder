@@ -1987,3 +1987,144 @@ def test_post_pr_review_consensus_called_only_once_at_loop_exit(tmp_path):
     assert stubs.post.call_count == 1
     call_consensus_data = stubs.post.call_args.kwargs["consensus_data"]
     assert call_consensus_data["iterations"] == 3
+
+
+def test_review_findings_with_pending_ci_bypasses_wait_and_omits_find_ci(tmp_path):
+    from sandbox_executor.flow import run_review_loop
+
+    from tests.review_fakes import FakeEnsemble, objecting_reviewer
+
+    mock_sleep = MagicMock()
+    resolver_calls = []
+
+    def fake_resolver(target, iteration, findings, action_ids, rejected_findings):
+        resolver_calls.append({"findings": findings, "iteration": iteration})
+        return {"dispositions": [], "head_sha": target.head_sha, "pushed": False}
+
+    pending_ci = {
+        "source": "github_cli",
+        "pending": 1,
+        "failed": 0,
+        "passed": 0,
+        "total": 1,
+        "all_passed": False,
+    }
+    ctx = _ensemble_ctx(tmp_path)
+    with _LoopStubs(ci=pending_ci):
+        res = run_review_loop(
+            ctx,
+            target=EXEC_TARGET,
+            max_iterations=1,
+            ensemble_size=1,
+            run_ensemble_fn=FakeEnsemble([objecting_reviewer(1)]),
+            run_resolver_fn=fake_resolver,
+            sleep=mock_sleep,
+        )
+
+    mock_sleep.assert_not_called()
+    assert len(resolver_calls) == 1
+    passed_finding_ids = [f.id for f in resolver_calls[0]["findings"]]
+    assert not any("FIND-CI" in fid for fid in passed_finding_ids)
+    assert not any("FIND-CI" in fid for fid in res["findings"])
+
+
+def test_review_findings_with_failed_ci_includes_find_ci(tmp_path):
+    from sandbox_executor.flow import run_review_loop
+
+    from tests.review_fakes import FakeEnsemble, objecting_reviewer
+
+    resolver_calls = []
+
+    def fake_resolver(target, iteration, findings, action_ids, rejected_findings):
+        resolver_calls.append({"findings": findings, "iteration": iteration})
+        return {"dispositions": [], "head_sha": target.head_sha, "pushed": False}
+
+    failed_ci = {
+        "source": "github_cli",
+        "pending": 0,
+        "failed": 1,
+        "passed": 0,
+        "total": 1,
+        "all_passed": False,
+    }
+    ctx = _ensemble_ctx(tmp_path)
+    with _LoopStubs(ci=failed_ci):
+        res = run_review_loop(
+            ctx,
+            target=EXEC_TARGET,
+            max_iterations=1,
+            ensemble_size=1,
+            run_ensemble_fn=FakeEnsemble([objecting_reviewer(1)]),
+            run_resolver_fn=fake_resolver,
+        )
+
+    assert len(resolver_calls) == 1
+    passed_finding_ids = [f.id for f in resolver_calls[0]["findings"]]
+    assert "FIND-CI-001" in passed_finding_ids
+    assert "FIND-CI-001" in res["findings"]
+
+
+def test_clean_review_with_pending_ci_waits_for_settlement_and_approves_when_green(tmp_path):
+    from sandbox_executor.flow import run_review_loop
+
+    from tests.review_fakes import FakeEnsemble, clean_reviewer
+
+    mock_sleep = MagicMock()
+    ci_sequence = [
+        {"source": "github_cli", "pending": 1, "failed": 0, "passed": 0, "all_passed": False, "total": 1},
+        {"source": "github_cli", "pending": 0, "failed": 0, "passed": 1, "all_passed": True, "total": 1},
+    ]
+    probe_mock = MagicMock(side_effect=ci_sequence)
+
+    ctx = _ensemble_ctx(tmp_path)
+    with _LoopStubs(), patch("sandbox_executor.flow.probe_ci_checks", probe_mock):
+        res = run_review_loop(
+            ctx,
+            target=EXEC_TARGET,
+            max_iterations=1,
+            ensemble_size=1,
+            run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
+            sleep=mock_sleep,
+        )
+
+    assert mock_sleep.called
+    assert res["consensus"]["approved"] is True
+    assert res["consensus"]["status"] == "approved"
+    assert res["ensemble_verdict"] == "APPROVED"
+    assert res["ci_checks"]["all_passed"] is True
+
+
+def test_clean_review_with_pending_ci_dispatches_resolver_when_ci_fails(tmp_path):
+    from sandbox_executor.flow import run_review_loop
+
+    from tests.review_fakes import FakeEnsemble, clean_reviewer
+
+    resolver_calls = []
+
+    def fake_resolver(target, iteration, findings, action_ids, rejected_findings):
+        resolver_calls.append({"findings": findings, "iteration": iteration})
+        return {"dispositions": [], "head_sha": target.head_sha, "pushed": False}
+
+    ci_sequence = [
+        {"source": "github_cli", "pending": 1, "failed": 0, "passed": 0, "all_passed": False, "total": 1},
+        {"source": "github_cli", "pending": 0, "failed": 1, "passed": 0, "all_passed": False, "total": 1},
+    ]
+    probe_mock = MagicMock(side_effect=ci_sequence)
+
+    ctx = _ensemble_ctx(tmp_path)
+    with _LoopStubs(), patch("sandbox_executor.flow.probe_ci_checks", probe_mock):
+        res = run_review_loop(
+            ctx,
+            target=EXEC_TARGET,
+            max_iterations=1,
+            ensemble_size=1,
+            run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
+            run_resolver_fn=fake_resolver,
+            sleep=MagicMock(),
+        )
+
+    assert res["consensus"]["approved"] is False
+    assert len(resolver_calls) == 1
+    passed_finding_ids = [f.id for f in resolver_calls[0]["findings"]]
+    assert "FIND-CI-001" in passed_finding_ids
+    assert "FIND-CI-001" in res["findings"]

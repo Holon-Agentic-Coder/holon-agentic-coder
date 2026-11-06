@@ -47,6 +47,7 @@ ENV PYTHONPATH="/home/holon/src"
 
 # Provide a lightweight entry that delegates to role-specific scripts
 ENV LEDGER_PATH=/workspace/repo/holon/ledger
+ENV DOCKER_CLI_HINTS=false
 
 ENTRYPOINT ["/home/holon/entrypoint/role_dispatcher.sh"]
 

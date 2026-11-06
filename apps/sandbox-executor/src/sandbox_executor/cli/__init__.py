@@ -593,7 +593,13 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:  # noqa: C901
 def _run_docker(*args: str) -> subprocess.CompletedProcess[str]:
     """Run a docker command without raising, capturing stdout/stderr for diagnostics."""
     try:
-        return subprocess.run(["docker", *args], capture_output=True, text=True, check=False)
+        return subprocess.run(
+            ["docker", *args],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "DOCKER_CLI_HINTS": "false"},
+        )
     except OSError as e:
         return subprocess.CompletedProcess(args=["docker", *args], returncode=127, stdout="", stderr=str(e))
 
@@ -1393,6 +1399,7 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
 
     tty_flag = ["-it"] if sys.stdin.isatty() else ["-i"]
     docker_cmd = ["docker", "run", "--rm", *tty_flag]
+    docker_cmd.extend(["-e", "DOCKER_CLI_HINTS=false"])
 
     # Credentials never go on the docker command line, where `ps` and /proc/<pid>/cmdline can read
     # them: they are collected here and handed over in a 0600 --env-file just before the run. That
@@ -1585,7 +1592,7 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
 
         # A forwarded HOLON_* value may hold a non-UTF-8 byte (surrogateescape); it must not crash the run here.
         print_encodable(f"Executing: {redact_command(docker_cmd)}")
-        result = subprocess.run(docker_cmd)
+        result = subprocess.run(docker_cmd, env={**os.environ, "DOCKER_CLI_HINTS": "false"})
         return result.returncode
     finally:
         if env_file:

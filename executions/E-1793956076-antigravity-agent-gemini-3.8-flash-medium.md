@@ -31,3 +31,15 @@ hint suppression and environment propagation via hermetic unit tests.
   explicitly includes `"DOCKER_CLI_HINTS": "false"`.
 - Updated `commit_env` in `_record_empty_execution_failure` and `calibration_commit_env()` in `calibration.py` to ensure
   `DOCKER_CLI_HINTS` is suppressed across Git and calibration subprocesses.
+
+### Step 2: Configure CLI entrypoints, runner scripts, and container helpers
+
+- Updated `_run_docker(*args)` in `apps/sandbox-executor/src/sandbox_executor/cli/__init__.py` to pass
+  `env={**os.environ, "DOCKER_CLI_HINTS": "false"}` to `subprocess.run(["docker", *args], ...)`.
+- Updated `run_docker_container()` in `apps/sandbox-executor/src/sandbox_executor/cli/__init__.py` to:
+  - Append `["-e", "DOCKER_CLI_HINTS=false"]` to `docker_cmd` so containerised processes run with hints disabled.
+  - Pass `env={**os.environ, "DOCKER_CLI_HINTS": "false"}` when executing `subprocess.run(docker_cmd)`.
+- Updated root CLI wrapper `holon` to export `DOCKER_CLI_HINTS="false"`.
+- Updated container bootstrap script `apps/sandbox-executor/entrypoint/role_dispatcher.sh` to export
+  `DOCKER_CLI_HINTS="false"`.
+- Updated `apps/sandbox-executor/Dockerfile` base stage (`holon-base`) to declare `ENV DOCKER_CLI_HINTS=false`.

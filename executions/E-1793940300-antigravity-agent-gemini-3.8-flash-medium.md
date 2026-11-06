@@ -31,3 +31,13 @@ dispatching the resolver pass, and verifying convergence via hermetic unit tests
 - Updated `remaining_findings` at review loop exit to inspect `iter_findings` so unadjudicated synthetic CI findings are
   persisted to the execution ledger.
 - Extended `_invoke_resolver_pass` to deserialise `FindingDisposition` instances when returned inside a result mapping.
+
+### Step 2: Ensure resolver transport and prompt handling in entrypoint/review_loop.py
+
+- Verified that `_load_resolver_findings()` and `_build_resolver_prompt()` in
+  `apps/sandbox-executor/src/sandbox_executor/entrypoint/review_loop.py` correctly handle findings with empty `path` and
+  `None` line numbers.
+- Enhanced `_build_resolver_prompt()` to explicitly instruct the resolver agent to inspect failing linters or tests and
+  verify locally with `uv run task lint` and `uv run task test` before marking `FIND-CI` findings `applied`.
+- Verified that `_commit_and_push_resolution()` includes applied `FIND-CI` identifiers in the commit message and
+  `Review-Finding-Ids` trailer.

@@ -329,12 +329,20 @@ def _build_resolver_prompt(
         for row in findings
     ]
     reasons = ", ".join(f"`{r}`" for r in VALID_REJECTION_REASONS if r != "no-convergence")
+    has_ci = any(row.id.startswith("FIND-CI") for row in findings)
+    ci_instruction = (
+        "- For `FIND-CI` findings, inspect the failing linters or tests, fix the underlying errors, and verify "
+        "locally with `uv run task lint` and `uv run task test` before marking `applied`.\n"
+        if has_ci
+        else ""
+    )
     return (
         f"# Holon Stage 4 Resolver Pass (Iteration {iteration})\n\n"
         f"You are operating in `{repo_dir}` on branch `{head_branch}`.\n"
         "Adjudicate EVERY finding below (critical, important, and nit) to exactly one disposition:\n"
         "- `applied`: fix the code in the working tree so `uv run task lint` and `uv run task test` pass.\n"
         f"- `rejected`: provide a one-line `rejection_reason` from: {reasons}.\n"
+        f"{ci_instruction}"
         "Never force-push or rewrite git history. Do not run `git push` yourself; write the JSON list of "
         f"dispositions to `{dispositions_path}` with keys `id`, `disposition`, and `rejection_reason`.\n\n"
         f"```json\n{json.dumps(serialized, indent=2)}\n```\n"

@@ -18,7 +18,10 @@ DEFAULT_WB_DIR = "holon-knowledge/wisdom"
 
 
 def _update_directory_index(subfolder_path: str, entry_meta: dict[str, Any]) -> None:
-    """Update index.json in a KB or WB subfolder with the latest entry metadata."""
+    """Update index.json in a KB or WB subfolder with the latest entry metadata.
+
+    Avoids touching or rewriting index.json if the entry already exists and is substantively unchanged.
+    """
     index_file = os.path.join(subfolder_path, "index.json")
     index_data: dict[str, Any] = {
         "index_version": "1.0",
@@ -26,7 +29,8 @@ def _update_directory_index(subfolder_path: str, entry_meta: dict[str, Any]) -> 
         "entries": [],
     }
 
-    if os.path.exists(index_file):
+    exists = os.path.exists(index_file)
+    if exists:
         try:
             with open(index_file, encoding="utf-8") as f:
                 index_data = json.load(f)
@@ -36,17 +40,24 @@ def _update_directory_index(subfolder_path: str, entry_meta: dict[str, Any]) -> 
     entries: list[dict[str, Any]] = index_data.get("entries", [])
     entry_id = entry_meta.get("kb_id") or entry_meta.get("wb_id")
 
-    # Replace existing or append
-    updated = False
+    found = False
+    is_dirty = not exists
     for i, e in enumerate(entries):
         e_id = e.get("kb_id") or e.get("wb_id")
         if e_id == entry_id:
-            entries[i] = entry_meta
-            updated = True
+            found = True
+            if e != entry_meta:
+                entries[i] = entry_meta
+                is_dirty = True
             break
-    if not updated:
+    if not found:
         entries.append(entry_meta)
+        is_dirty = True
 
+    if not is_dirty:
+        return
+
+    os.makedirs(subfolder_path, exist_ok=True)
     index_data["entries"] = entries
     index_data["updated_ts"] = datetime.now(UTC).isoformat()
 
@@ -55,11 +66,14 @@ def _update_directory_index(subfolder_path: str, entry_meta: dict[str, Any]) -> 
 
 
 def persist_kb_fact(fact_data: dict[str, Any], kb_dir: str = DEFAULT_KB_DIR) -> str:
-    """Validate and persist descriptive fact or pattern to holon-knowledge/kb/."""
+    """Validate and persist descriptive fact or pattern to holon-knowledge/kb/.
+
+    Treats pre-existing fact files on disk as immutable append-only records and returns the
+    existing path immediately without modifying the file or index.
+    """
     data = dict(fact_data)
     kb_type = str(data.get("kb_type") or "pattern").lower()
     kb_id = str(data.get("kb_id") or f"KB-{kb_type}-{data.get('context_fingerprint', 'item')[:8]}")
-    now_iso = datetime.now(UTC).isoformat()
 
     subfolder = "patterns"
     if "failure" in kb_type:
@@ -68,7 +82,12 @@ def persist_kb_fact(fact_data: dict[str, Any], kb_dir: str = DEFAULT_KB_DIR) -> 
         subfolder = "tactics"
 
     target_dir = os.path.join(kb_dir, subfolder)
+    out_file = os.path.join(target_dir, f"{kb_id}.json")
+    if os.path.exists(out_file):
+        return out_file
+
     os.makedirs(target_dir, exist_ok=True)
+    now_iso = datetime.now(UTC).isoformat()
 
     envelope = {
         "kb_id": kb_id,
@@ -84,7 +103,6 @@ def persist_kb_fact(fact_data: dict[str, Any], kb_dir: str = DEFAULT_KB_DIR) -> 
         "payload": data.get("payload", {}),
     }
 
-    out_file = os.path.join(target_dir, f"{kb_id}.json")
     with open(out_file, "w", encoding="utf-8") as f:
         json.dump(envelope, f, indent=2)
 
@@ -104,18 +122,26 @@ def persist_kb_fact(fact_data: dict[str, Any], kb_dir: str = DEFAULT_KB_DIR) -> 
 
 
 def persist_wb_rule(rule_data: dict[str, Any], wb_dir: str = DEFAULT_WB_DIR) -> str:
-    """Validate and persist prescriptive rule or invariant to holon-knowledge/wisdom/."""
+    """Validate and persist prescriptive rule or invariant to holon-knowledge/wisdom/.
+
+    Treats pre-existing rule files on disk as immutable append-only records and returns the
+    existing path immediately without modifying the file or index.
+    """
     data = dict(rule_data)
     wb_type = str(data.get("wb_type") or "heuristic").lower()
     wb_id = str(data.get("wb_id") or f"WB-{wb_type}-{data.get('context_fingerprint', 'rule')[:8]}")
-    now_iso = datetime.now(UTC).isoformat()
 
     subfolder = "heuristics"
     if "invariant" in wb_type:
         subfolder = "invariants"
 
     target_dir = os.path.join(wb_dir, subfolder)
+    out_file = os.path.join(target_dir, f"{wb_id}.json")
+    if os.path.exists(out_file):
+        return out_file
+
     os.makedirs(target_dir, exist_ok=True)
+    now_iso = datetime.now(UTC).isoformat()
 
     envelope = {
         "wb_id": wb_id,
@@ -129,7 +155,6 @@ def persist_wb_rule(rule_data: dict[str, Any], wb_dir: str = DEFAULT_WB_DIR) -> 
         "payload": data.get("payload", {}),
     }
 
-    out_file = os.path.join(target_dir, f"{wb_id}.json")
     with open(out_file, "w", encoding="utf-8") as f:
         json.dump(envelope, f, indent=2)
 

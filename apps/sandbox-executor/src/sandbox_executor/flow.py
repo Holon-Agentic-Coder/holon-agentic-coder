@@ -5348,7 +5348,10 @@ def _commit_stage5_promoted_artifacts(context: FlowContext, repo_dir: str, promo
             return
         run_git(["add", *existing_paths], cwd=repo_dir, check=False)
         status_res = run_git(["status", "--porcelain", "--", *existing_paths], cwd=repo_dir, check=False)
-        if status_res.returncode != 0 or not status_res.stdout.strip():
+        if status_res.returncode != 0:
+            return
+        if not status_res.stdout.strip():
+            context.log("Stage 5 promoted knowledge/wisdom artifacts unchanged: zero modifications to commit.")
             return
         commit_res = run_git(
             [

@@ -18,7 +18,10 @@ DEFAULT_WB_DIR = "holon-knowledge/wisdom"
 
 
 def _update_directory_index(subfolder_path: str, entry_meta: dict[str, Any]) -> None:
-    """Update index.json in a KB or WB subfolder with the latest entry metadata."""
+    """Update index.json in a KB or WB subfolder with the latest entry metadata.
+
+    Avoids touching or rewriting index.json if the entry already exists and is substantively unchanged.
+    """
     index_file = os.path.join(subfolder_path, "index.json")
     index_data: dict[str, Any] = {
         "index_version": "1.0",
@@ -26,7 +29,8 @@ def _update_directory_index(subfolder_path: str, entry_meta: dict[str, Any]) -> 
         "entries": [],
     }
 
-    if os.path.exists(index_file):
+    exists = os.path.exists(index_file)
+    if exists:
         try:
             with open(index_file, encoding="utf-8") as f:
                 index_data = json.load(f)
@@ -36,17 +40,24 @@ def _update_directory_index(subfolder_path: str, entry_meta: dict[str, Any]) -> 
     entries: list[dict[str, Any]] = index_data.get("entries", [])
     entry_id = entry_meta.get("kb_id") or entry_meta.get("wb_id")
 
-    # Replace existing or append
-    updated = False
+    found = False
+    is_dirty = not exists
     for i, e in enumerate(entries):
         e_id = e.get("kb_id") or e.get("wb_id")
         if e_id == entry_id:
-            entries[i] = entry_meta
-            updated = True
+            found = True
+            if e != entry_meta:
+                entries[i] = entry_meta
+                is_dirty = True
             break
-    if not updated:
+    if not found:
         entries.append(entry_meta)
+        is_dirty = True
 
+    if not is_dirty:
+        return
+
+    os.makedirs(subfolder_path, exist_ok=True)
     index_data["entries"] = entries
     index_data["updated_ts"] = datetime.now(UTC).isoformat()
 
@@ -55,11 +66,14 @@ def _update_directory_index(subfolder_path: str, entry_meta: dict[str, Any]) -> 
 
 
 def persist_kb_fact(fact_data: dict[str, Any], kb_dir: str = DEFAULT_KB_DIR) -> str:
-    """Validate and persist descriptive fact or pattern to holon-knowledge/kb/."""
+    """Validate and persist descriptive fact or pattern to holon-knowledge/kb/.
+
+    Treats pre-existing fact files on disk as immutable append-only records and returns the
+    existing path immediately without modifying the file or index.
+    """
     data = dict(fact_data)
     kb_type = str(data.get("kb_type") or "pattern").lower()
     kb_id = str(data.get("kb_id") or f"KB-{kb_type}-{data.get('context_fingerprint', 'item')[:8]}")
-    now_iso = datetime.now(UTC).isoformat()
 
     subfolder = "patterns"
     if "failure" in kb_type:
@@ -68,7 +82,12 @@ def persist_kb_fact(fact_data: dict[str, Any], kb_dir: str = DEFAULT_KB_DIR) -> 
         subfolder = "tactics"
 
     target_dir = os.path.join(kb_dir, subfolder)
+    out_file = os.path.join(target_dir, f"{kb_id}.json")
+    if os.path.exists(out_file):
+        return out_file
+
     os.makedirs(target_dir, exist_ok=True)
+    now_iso = datetime.now(UTC).isoformat()
 
     envelope = {
         "kb_id": kb_id,
@@ -84,7 +103,6 @@ def persist_kb_fact(fact_data: dict[str, Any], kb_dir: str = DEFAULT_KB_DIR) -> 
         "payload": data.get("payload", {}),
     }
 
-    out_file = os.path.join(target_dir, f"{kb_id}.json")
     with open(out_file, "w", encoding="utf-8") as f:
         json.dump(envelope, f, indent=2)
 
@@ -104,18 +122,26 @@ def persist_kb_fact(fact_data: dict[str, Any], kb_dir: str = DEFAULT_KB_DIR) -> 
 
 
 def persist_wb_rule(rule_data: dict[str, Any], wb_dir: str = DEFAULT_WB_DIR) -> str:
-    """Validate and persist prescriptive rule or invariant to holon-knowledge/wisdom/."""
+    """Validate and persist prescriptive rule or invariant to holon-knowledge/wisdom/.
+
+    Treats pre-existing rule files on disk as immutable append-only records and returns the
+    existing path immediately without modifying the file or index.
+    """
     data = dict(rule_data)
     wb_type = str(data.get("wb_type") or "heuristic").lower()
     wb_id = str(data.get("wb_id") or f"WB-{wb_type}-{data.get('context_fingerprint', 'rule')[:8]}")
-    now_iso = datetime.now(UTC).isoformat()
 
     subfolder = "heuristics"
     if "invariant" in wb_type:
         subfolder = "invariants"
 
     target_dir = os.path.join(wb_dir, subfolder)
+    out_file = os.path.join(target_dir, f"{wb_id}.json")
+    if os.path.exists(out_file):
+        return out_file
+
     os.makedirs(target_dir, exist_ok=True)
+    now_iso = datetime.now(UTC).isoformat()
 
     envelope = {
         "wb_id": wb_id,
@@ -129,7 +155,6 @@ def persist_wb_rule(rule_data: dict[str, Any], wb_dir: str = DEFAULT_WB_DIR) -> 
         "payload": data.get("payload", {}),
     }
 
-    out_file = os.path.join(target_dir, f"{wb_id}.json")
     with open(out_file, "w", encoding="utf-8") as f:
         json.dump(envelope, f, indent=2)
 
@@ -145,6 +170,122 @@ def persist_wb_rule(rule_data: dict[str, Any], wb_dir: str = DEFAULT_WB_DIR) -> 
     )
 
     return out_file
+
+
+def _promote_failure_candidate(
+    eval_res: Any,
+    records: list[Any],
+    kb_dir: str,
+    dry_run: bool,
+) -> dict[str, Any] | None:
+    """Evaluate and promote a candidate failure mode."""
+    if eval_res.failure_ladder_state not in ("repeated", "proven-fail"):
+        return None
+
+    sample_act = records[0]["action"] if records else "unknown action"
+    sample_tgt = records[0]["target"] if records else "unknown target"
+    source_ids = [r["record_id"] for r in records]
+    kb_id = f"KB-failure-{eval_res.context_fingerprint[:8]}"
+    item = {
+        "kb_id": kb_id,
+        "kb_type": "failure_mode",
+        "context_fingerprint": eval_res.context_fingerprint,
+        "evidence": {
+            "ledger_refs": source_ids,
+            "success_count": eval_res.success_count,
+            "failure_count": eval_res.failure_count,
+            "ladder_state": eval_res.failure_ladder_state,
+        },
+        "tags": [records[0]["category"] if records else "failure", "veto"],
+        "payload": {
+            "name": f"Failure mode in {sample_tgt}",
+            "description": (f"Reproduced failure across {eval_res.failure_count} executions with identical context."),
+            "action": sample_act,
+            "symptoms": [records[0]["error_context"]] if records and records[0]["error_context"] else [],
+        },
+    }
+    if not dry_run:
+        expected_path = os.path.join(kb_dir, "failure_modes", f"{kb_id}.json")
+        if os.path.exists(expected_path):
+            item["persisted_path"] = expected_path
+        else:
+            path = persist_kb_fact(item, kb_dir=kb_dir)
+            item["persisted_path"] = path
+    return item
+
+
+def _promote_success_candidate(
+    eval_res: Any,
+    records: list[Any],
+    kb_dir: str,
+    wb_dir: str,
+    dry_run: bool,
+) -> list[dict[str, Any]]:
+    """Evaluate and promote candidate success patterns and wisdom heuristics."""
+    if eval_res.success_ladder_state not in ("likely-success", "proven-success"):
+        return []
+
+    items: list[dict[str, Any]] = []
+    sample_act = records[0]["action"] if records else "unknown action"
+    sample_tgt = records[0]["target"] if records else "unknown target"
+    source_ids = [r["record_id"] for r in records]
+    kb_id = f"KB-pattern-{eval_res.context_fingerprint[:8]}"
+    item = {
+        "kb_id": kb_id,
+        "kb_type": "pattern",
+        "context_fingerprint": eval_res.context_fingerprint,
+        "evidence": {
+            "ledger_refs": source_ids,
+            "success_count": eval_res.success_count,
+            "failure_count": eval_res.failure_count,
+            "wilson_lower": eval_res.wilson_lower,
+            "posterior_mean": eval_res.posterior_mean,
+            "ladder_state": eval_res.success_ladder_state,
+        },
+        "tags": [records[0]["category"] if records else "pattern", "proven"],
+        "payload": {
+            "name": f"Proven approach for {sample_tgt}",
+            "description": eval_res.advisory_text or f"Succeeded in {eval_res.success_count} executions.",
+            "action": sample_act,
+        },
+    }
+    if not dry_run:
+        expected_path = os.path.join(kb_dir, "patterns", f"{kb_id}.json")
+        if os.path.exists(expected_path):
+            item["persisted_path"] = expected_path
+        else:
+            path = persist_kb_fact(item, kb_dir=kb_dir)
+            item["persisted_path"] = path
+    items.append(item)
+
+    # Proven-success also ascends to Wisdom Base heuristic
+    if eval_res.success_ladder_state == "proven-success":
+        wb_id = f"WB-heuristic-{eval_res.context_fingerprint[:8]}"
+        wb_item = {
+            "wb_id": wb_id,
+            "wb_type": "heuristic",
+            "context_fingerprint": eval_res.context_fingerprint,
+            "ascension_evidence": {
+                "project_count": 1,
+                "total_executions": eval_res.total_trials,
+                "wilson_lower": eval_res.wilson_lower,
+                "provenance": [{"kb_id": item["kb_id"]}],
+            },
+            "payload": {
+                "name": f"Universal heuristic: {sample_tgt}",
+                "advisory": eval_res.advisory_text,
+            },
+        }
+        if not dry_run:
+            expected_wb_path = os.path.join(wb_dir, "heuristics", f"{wb_id}.json")
+            if os.path.exists(expected_wb_path):
+                wb_item["persisted_path"] = expected_wb_path
+            else:
+                wb_path = persist_wb_rule(wb_item, wb_dir=wb_dir)
+                wb_item["persisted_path"] = wb_path
+        items.append(wb_item)
+
+    return items
 
 
 def promote_pending_candidates(
@@ -188,84 +329,13 @@ def promote_pending_candidates(
                 (sig["context_fingerprint"],),
             )
             records = cur.fetchall()
-            sample_act = records[0]["action"] if records else "unknown action"
-            sample_tgt = records[0]["target"] if records else "unknown target"
-            source_ids = [r["record_id"] for r in records]
 
-            # 1. Promote failure modes
-            if eval_res.failure_ladder_state in ("repeated", "proven-fail"):
-                item = {
-                    "kb_id": f"KB-failure-{eval_res.context_fingerprint[:8]}",
-                    "kb_type": "failure_mode",
-                    "context_fingerprint": eval_res.context_fingerprint,
-                    "evidence": {
-                        "ledger_refs": source_ids,
-                        "success_count": eval_res.success_count,
-                        "failure_count": eval_res.failure_count,
-                        "ladder_state": eval_res.failure_ladder_state,
-                    },
-                    "tags": [records[0]["category"] if records else "failure", "veto"],
-                    "payload": {
-                        "name": f"Failure mode in {sample_tgt}",
-                        "description": (
-                            f"Reproduced failure across {eval_res.failure_count} executions with identical context."
-                        ),
-                        "action": sample_act,
-                        "symptoms": [records[0]["error_context"]] if records and records[0]["error_context"] else [],
-                    },
-                }
-                if not dry_run:
-                    path = persist_kb_fact(item, kb_dir=kb_dir)
-                    item["persisted_path"] = path
-                promoted_items.append(item)
-
-            # 2. Promote success patterns
-            elif eval_res.success_ladder_state in ("likely-success", "proven-success"):
-                item = {
-                    "kb_id": f"KB-pattern-{eval_res.context_fingerprint[:8]}",
-                    "kb_type": "pattern",
-                    "context_fingerprint": eval_res.context_fingerprint,
-                    "evidence": {
-                        "ledger_refs": source_ids,
-                        "success_count": eval_res.success_count,
-                        "failure_count": eval_res.failure_count,
-                        "wilson_lower": eval_res.wilson_lower,
-                        "posterior_mean": eval_res.posterior_mean,
-                        "ladder_state": eval_res.success_ladder_state,
-                    },
-                    "tags": [records[0]["category"] if records else "pattern", "proven"],
-                    "payload": {
-                        "name": f"Proven approach for {sample_tgt}",
-                        "description": eval_res.advisory_text or f"Succeeded in {eval_res.success_count} executions.",
-                        "action": sample_act,
-                    },
-                }
-                if not dry_run:
-                    path = persist_kb_fact(item, kb_dir=kb_dir)
-                    item["persisted_path"] = path
-                promoted_items.append(item)
-
-                # Proven-success also ascends to Wisdom Base heuristic
-                if eval_res.success_ladder_state == "proven-success":
-                    wb_item = {
-                        "wb_id": f"WB-heuristic-{eval_res.context_fingerprint[:8]}",
-                        "wb_type": "heuristic",
-                        "context_fingerprint": eval_res.context_fingerprint,
-                        "ascension_evidence": {
-                            "project_count": 1,
-                            "total_executions": eval_res.total_trials,
-                            "wilson_lower": eval_res.wilson_lower,
-                            "provenance": [{"kb_id": item["kb_id"]}],
-                        },
-                        "payload": {
-                            "name": f"Universal heuristic: {sample_tgt}",
-                            "advisory": eval_res.advisory_text,
-                        },
-                    }
-                    if not dry_run:
-                        wb_path = persist_wb_rule(wb_item, wb_dir=wb_dir)
-                        wb_item["persisted_path"] = wb_path
-                    promoted_items.append(wb_item)
+            failure_item = _promote_failure_candidate(eval_res, records, kb_dir, dry_run)
+            if failure_item:
+                promoted_items.append(failure_item)
+            else:
+                success_items = _promote_success_candidate(eval_res, records, kb_dir, wb_dir, dry_run)
+                promoted_items.extend(success_items)
 
         return promoted_items
     finally:

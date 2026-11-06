@@ -44,3 +44,19 @@ runner contracts for all registered runners without mocks, and eliminating free-
   well as `AntigravityAgentRunner` class inheritance.
 - Verified that dynamic environment evaluation (`HOLON_AGENT_EFFORT` and `HOLON_AGENT_SKIP_PERMISSIONS`) operates
   identically across both `build_command` and `compose_cmd`.
+
+### Step 3: Eliminate free-form runner mocks in `test_review_loop.py` and verify resolver agent real contracts
+
+- Refactored `TestResolverAgentExecution` in `apps/sandbox-executor/tests/test_review_loop.py` to eliminate free-form
+  unconstrained `MagicMock()` runner fixtures.
+- Updated `test_run_resolver_agent_builds_command_and_invokes_run_turn` to use the real runner instance returned by
+  `get_runner("antigravity-agent")`, verifying that `build_command` executes cleanly without `AttributeError` and
+  produces the exact command passed to `run_turn`.
+- Updated `test_run_resolver_agent_raises_on_non_zero_exit_code` to use the real `AntigravityAgentRunner` instance and
+  assert clean `RuntimeError` propagation on non-zero exit code.
+- Added `test_run_resolver_agent_with_autospec_agent_runner` asserting contract adherence when using
+  `create_autospec(AgentRunner, instance=True)`.
+- Added `test_run_resolver_agent_fallback_to_compose_cmd` verifying defensive fallback to `runner.compose_cmd()` when
+  `build_command` is absent on a runner.
+- Added `test_run_resolver_agent_raises_attribute_error_when_contracts_missing` verifying that objects satisfying
+  neither method fail closed with an informative `AttributeError`.

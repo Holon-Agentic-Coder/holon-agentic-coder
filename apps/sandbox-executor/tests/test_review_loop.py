@@ -6,9 +6,10 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, create_autospec, patch
 
 import pytest
+from sandbox_executor.agent_runner import AgentRunner, get_runner
 from sandbox_executor.entrypoint.review_loop import (
     _run_resolver_agent,
     _run_resolver_mode,
@@ -2256,10 +2257,10 @@ class TestResolverAgentExecution:
     def test_run_resolver_agent_builds_command_and_invokes_run_turn(self, tmp_path: Path) -> None:
         repo_dir = str(tmp_path)
         dispositions_path = str(tmp_path / "dispositions.json")
-        mock_runner = MagicMock()
-        mock_runner.build_command.return_value = ["my-agent", "-p", "prompt", "--model", "test-model"]
+        real_runner = get_runner("antigravity-agent")
         mock_turn_result = TurnResult(returncode=0)
         expected_dispositions = [{"id": "FIND-001", "disposition": "applied", "rejection_reason": None}]
+        expected_cmd = real_runner.build_command("prompt", "test-model")
 
         def fake_run_turn(cmd: list[str], cwd: str | None = None) -> TurnResult:
             with open(dispositions_path, "w", encoding="utf-8") as f:
@@ -2267,28 +2268,86 @@ class TestResolverAgentExecution:
             return mock_turn_result
 
         with (
-            patch("sandbox_executor.entrypoint.review_loop.get_runner", return_value=mock_runner),
+            patch("sandbox_executor.entrypoint.review_loop.get_runner", return_value=real_runner),
             patch("sandbox_executor.entrypoint.review_loop.run_turn", side_effect=fake_run_turn) as mock_run_turn,
         ):
-            res = _run_resolver_agent(repo_dir, "my-agent", "test-model", "prompt", dispositions_path)
+            res = _run_resolver_agent(repo_dir, "antigravity-agent", "test-model", "prompt", dispositions_path)
 
-        mock_runner.build_command.assert_called_once_with("prompt", "test-model")
-        mock_run_turn.assert_called_once_with(["my-agent", "-p", "prompt", "--model", "test-model"], cwd=repo_dir)
+        mock_run_turn.assert_called_once_with(expected_cmd, cwd=repo_dir)
         assert res == expected_dispositions
 
     def test_run_resolver_agent_raises_on_non_zero_exit_code(self, tmp_path: Path) -> None:
         repo_dir = str(tmp_path)
         dispositions_path = str(tmp_path / "dispositions.json")
-        mock_runner = MagicMock()
-        mock_runner.build_command.return_value = ["my-agent", "-p", "prompt", "--model", "test-model"]
+        real_runner = get_runner("antigravity-agent")
+        expected_cmd = real_runner.build_command("prompt", "test-model")
         mock_turn_result = TurnResult(returncode=42, stderr="agent failed")
 
         with (
-            patch("sandbox_executor.entrypoint.review_loop.get_runner", return_value=mock_runner),
-            patch("sandbox_executor.entrypoint.review_loop.run_turn", return_value=mock_turn_result),
+            patch("sandbox_executor.entrypoint.review_loop.get_runner", return_value=real_runner),
+            patch("sandbox_executor.entrypoint.review_loop.run_turn", return_value=mock_turn_result) as mock_run_turn,
             pytest.raises(RuntimeError, match="Resolver agent exited with code 42"),
         ):
-            _run_resolver_agent(repo_dir, "my-agent", "test-model", "prompt", dispositions_path)
+            _run_resolver_agent(repo_dir, "antigravity-agent", "test-model", "prompt", dispositions_path)
+
+        mock_run_turn.assert_called_once_with(expected_cmd, cwd=repo_dir)
+
+    def test_run_resolver_agent_with_autospec_agent_runner(self, tmp_path: Path) -> None:
+        """Verify _run_resolver_agent executes with an autospec of AgentRunner."""
+        repo_dir = str(tmp_path)
+        dispositions_path = str(tmp_path / "dispositions.json")
+        spec_runner = create_autospec(AgentRunner, instance=True)
+        spec_runner.build_command.return_value = ["spec-agent", "--model", "test-model", "prompt"]
+        mock_turn_result = TurnResult(returncode=0)
+
+        with (
+            patch("sandbox_executor.entrypoint.review_loop.get_runner", return_value=spec_runner),
+            patch("sandbox_executor.entrypoint.review_loop.run_turn", return_value=mock_turn_result) as mock_run_turn,
+        ):
+            res = _run_resolver_agent(repo_dir, "spec-agent", "test-model", "prompt", dispositions_path)
+
+        spec_runner.build_command.assert_called_once_with("prompt", "test-model")
+        mock_run_turn.assert_called_once_with(["spec-agent", "--model", "test-model", "prompt"], cwd=repo_dir)
+        assert res == []
+
+    def test_run_resolver_agent_fallback_to_compose_cmd(self, tmp_path: Path) -> None:
+        """Verify _run_resolver_agent falls back to compose_cmd when build_command is absent."""
+        repo_dir = str(tmp_path)
+        dispositions_path = str(tmp_path / "dispositions.json")
+
+        class FallbackOnlyRunner:
+            def compose_cmd(self, model_name: str, full_prompt: str) -> list[str]:
+                return ["fallback-agent", "--model", model_name, full_prompt]
+
+        fallback_runner = FallbackOnlyRunner()
+        assert not hasattr(fallback_runner, "build_command")
+        mock_turn_result = TurnResult(returncode=0)
+
+        with (
+            patch("sandbox_executor.entrypoint.review_loop.get_runner", return_value=fallback_runner),
+            patch("sandbox_executor.entrypoint.review_loop.run_turn", return_value=mock_turn_result) as mock_run_turn,
+        ):
+            res = _run_resolver_agent(repo_dir, "fallback-agent", "test-model", "prompt", dispositions_path)
+
+        mock_run_turn.assert_called_once_with(["fallback-agent", "--model", "test-model", "prompt"], cwd=repo_dir)
+        assert res == []
+
+    def test_run_resolver_agent_raises_attribute_error_when_contracts_missing(self, tmp_path: Path) -> None:
+        """Verify _run_resolver_agent raises an informative AttributeError when runner lacks both methods."""
+        repo_dir = str(tmp_path)
+        dispositions_path = str(tmp_path / "dispositions.json")
+
+        class IncompleteRunner:
+            pass
+
+        with (
+            patch("sandbox_executor.entrypoint.review_loop.get_runner", return_value=IncompleteRunner()),
+            pytest.raises(
+                AttributeError,
+                match="Runner for agent 'bad-agent' satisfies neither 'build_command' nor 'compose_cmd' contract",
+            ),
+        ):
+            _run_resolver_agent(repo_dir, "bad-agent", "test-model", "prompt", dispositions_path)
 
     def test_run_resolver_mode_fail_closed_defaults_on_failure(self, tmp_path: Path) -> None:
         repo_dir = str(tmp_path)

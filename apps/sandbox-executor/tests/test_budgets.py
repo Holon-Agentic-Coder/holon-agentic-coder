@@ -40,7 +40,8 @@ class TestBudgets(unittest.TestCase):
         self.assertEqual(budgets.stage_seconds("intent"), 600)
         self.assertEqual(budgets.stage_seconds("plan"), 2100)
         self.assertEqual(budgets.stage_seconds("execute"), 2700)
-        self.assertEqual(budgets.stage_seconds("review"), 900)
+        self.assertEqual(budgets.stage_seconds("review"), 7200)
+        self.assertEqual(budgets.stage_seconds("review_iteration"), 7200)
         self.assertEqual(budgets.stage_seconds("calibrate"), 600)
 
     def test_env_overrides(self):

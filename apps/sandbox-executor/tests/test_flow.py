@@ -2037,7 +2037,7 @@ class TestStageBudgets:
             repo_dir=str(tmp_path), intent_data={"slug": "budget", "goal": "Budgets"}, auto_calibrate=True, dry_run=True
         )
         results = PipelineEngine(ctx).run()
-        expected_budgets = {"intent": 600, "plan": 2100, "execute": 2700, "review": 900, "calibrate": 600}
+        expected_budgets = {"intent": 600, "plan": 2100, "execute": 2700, "review": 7200, "calibrate": 600}
         for stage, budget in expected_budgets.items():
             assert results[stage].budget_seconds == budget, stage
             assert results[stage].elapsed_seconds is not None, stage
@@ -2045,7 +2045,7 @@ class TestStageBudgets:
         assert re.search(r"intent: ok \(\d+\.\d min / 10 min\)", logs)
         assert re.search(r"plan: ok \(\d+\.\d min / 35 min\)", logs)
         assert re.search(r"execute: ok \(\d+\.\d min / 45 min\)", logs)
-        assert re.search(r"review: halted \(\d+\.\d min / 15 min\)", logs)
+        assert re.search(r"review: halted \(\d+\.\d min / 120 min\)", logs)
 
     def test_stage_breach_under_fake_clock_fails_the_stage(self, tmp_path):
         (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
@@ -2070,7 +2070,7 @@ class TestStageBudgets:
         assert "against 0 min" not in results["intent"].error
 
     def test_review_overrun_after_consensus_keeps_approval_and_runs_calibration(self, tmp_path):
-        # C3-I3: two review iterations each within budget plus PR/posting overhead exceed 2 x 15 min in total; the
+        # C3-I3: two review iterations each within budget plus PR/posting overhead exceed 2 x 120 min in total; the
         # approved review is not downgraded and calibration still runs.
         (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
         ctx = FlowContext(
@@ -2091,10 +2091,10 @@ class TestStageBudgets:
             patch("sandbox_executor.flow.run_review_stage", side_effect=fake_review),
             patch("sandbox_executor.flow.run_calibrate_stage", return_value=calibrate) as mock_cal,
         ):
-            engine = PipelineEngine(ctx, from_stage="review", clock=SteppingClock(step=30.5 * 60))
+            engine = PipelineEngine(ctx, from_stage="review", clock=SteppingClock(step=240.5 * 60))
             engine.run()
         assert review.status == StageStatus.HALTED_FOR_HUMAN
-        assert review.budget_seconds == 2 * 900
+        assert review.budget_seconds == 2 * 7200
         assert review.payload["budget_overrun"]["budget_name"] == "stage"
         assert "budget_breach" not in review.payload
         mock_cal.assert_called_once()
@@ -2239,10 +2239,10 @@ class TestStageBudgets:
         )
         with patch("sandbox_executor.flow.run_git") as mock_git:
             mock_git.return_value = MagicMock(returncode=0, stdout="")
-            res = run_review_loop(ctx, target="I-1-x/P-2-y/E-3-z/_", max_iterations=5, clock=SteppingClock(1000))
+            res = run_review_loop(ctx, target="I-1-x/P-2-y/E-3-z/_", max_iterations=5, clock=SteppingClock(8000))
         assert res["total_iterations"] == 1
         assert res["budget_breach"]["budget_name"] == "review_iteration"
-        assert res["iteration_summaries"] == ["iteration 1 review: failed (16.7 min / 15 min)"]
+        assert res["iteration_summaries"] == ["iteration 1 review: failed (133.3 min / 120 min)"]
 
 
 # ---------------------------------------------------------------------------

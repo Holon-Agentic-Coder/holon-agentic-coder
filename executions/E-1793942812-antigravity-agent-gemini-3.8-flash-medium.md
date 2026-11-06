@@ -37,4 +37,3 @@ in `apps/sandbox-executor/tests/test_flow.py`.
   - When candidates qualify, calibration succeeds, and `dry_run` is false, triggers the commit.
   - When calibration fails, logs that promoted candidate artifacts remain uncommitted in the working tree.
   - Propagates commits downstream via existing push and fast-forward `merge --ff-only` onto `context.execution_branch`.
-

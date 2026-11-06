@@ -5514,9 +5514,7 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR
                 if calibration_succeeded and not context.dry_run:
                     _commit_stage5_promoted_artifacts(context, repo_dir, len(promoted_candidates))
                 elif not calibration_succeeded:
-                    context.log(
-                        "Stage 5 promoted knowledge/wisdom artifacts left uncommitted: calibration failed."
-                    )
+                    context.log("Stage 5 promoted knowledge/wisdom artifacts left uncommitted: calibration failed.")
     except LedgerRewriteError:
         raise
     except Exception as e:

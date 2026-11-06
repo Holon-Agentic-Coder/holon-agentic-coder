@@ -3,4 +3,5 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PYTHONPATH="$SCRIPT_DIR/apps/sandbox-executor/src:${PYTHONPATH:-}"
+export DOCKER_CLI_HINTS="false"
 exec python3 -m sandbox_executor.cli "$@"

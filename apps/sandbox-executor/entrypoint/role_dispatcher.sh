@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export DOCKER_CLI_HINTS="false"
 
 # Extract key from ephemeral secret bundle if present
 SECRET_BUNDLE="${HOLON_SECRET_BUNDLE_PATH:-/run/secrets/holon_auth.json}"

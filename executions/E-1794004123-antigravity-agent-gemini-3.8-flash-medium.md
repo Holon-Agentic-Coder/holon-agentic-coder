@@ -13,13 +13,13 @@ runner contracts for all registered runners without mocks, and eliminating free-
 
 ## Actual Metrics
 
-| metric                | value |
-| --------------------- | ----- |
-| success_actual        | 0.00  |
-| entropy_actual        | 0.00  |
-| impact_actual         | 0.00  |
-| cost_actual           | 0.00  |
-| learning_value_actual | 0.00  |
+| metric                | value  |
+| --------------------- | ------ |
+| success_actual        | 1.00   |
+| entropy_actual        | 2.10   |
+| impact_actual         | 100.00 |
+| cost_actual           | 4.30   |
+| learning_value_actual | 6.00   |
 
 ## Steps Executed
 
@@ -60,3 +60,28 @@ runner contracts for all registered runners without mocks, and eliminating free-
   `build_command` is absent on a runner.
 - Added `test_run_resolver_agent_raises_attribute_error_when_contracts_missing` verifying that objects satisfying
   neither method fail closed with an informative `AttributeError`.
+
+### Step 4: Execute test suite and quality gates
+
+- Executed affected unit tests first with
+  `uv run pytest apps/sandbox-executor/tests/test_agent_runner.py apps/sandbox-executor/tests/test_review_loop.py`
+  confirming all 140 non-skipped tests passed.
+- Executed the complete test suite with `uv run task test`
+  (`pytest -n auto --dist worksteal -m "not integration_test and not stress"`) confirming all 2,989 unit tests passed
+  cleanly.
+- Verified workspace formatting and linting via `uv run task lint` (`uv lock --check`, `git diff uv.lock`,
+  `ruff check .`, `ruff format --check .`) and `uv run task lint-docs` (`npx prettier --check "**/*.md"`), ensuring zero
+  violations.
+
+## Tests Run
+
+- `uv run pytest apps/sandbox-executor/tests/test_agent_runner.py apps/sandbox-executor/tests/test_review_loop.py`:
+  - Run 1: `140 passed, 2 skipped in 0.86s`
+  - Median: `140 passed, 2 skipped in 0.86s`
+- `uv run task test` (`pytest -n auto --dist worksteal -m "not integration_test and not stress"`):
+  - Run 1: `2989 passed, 8 warnings in 30.08s`
+  - Median: `2989 passed, 8 warnings in 30.08s`
+- `uv run task lint` (`uv lock --check && git diff --exit-code uv.lock && ruff check . && ruff format --check .`):
+  - Passed cleanly with zero errors.
+- `uv run task lint-docs` (`npx prettier --check "**/*.md"`):
+  - Passed cleanly with all matched markdown files formatted according to Prettier style.

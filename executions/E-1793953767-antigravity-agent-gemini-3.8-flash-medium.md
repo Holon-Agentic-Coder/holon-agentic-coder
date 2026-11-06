@@ -33,3 +33,18 @@ tests in `apps/sandbox-executor/tests/test_review_loop.py`.
 - Enforced fail-closed defaults in `_run_resolver_mode` by initializing `lint_ok = False` and `tests_ok = False`.
 - Updated `_commit_and_push_resolution` to return `(dispositions, initial_head, False, False, False, None)` when
   verification is skipped due to no worktree changes, no applied findings, or dry-run execution.
+
+### Step 2: Add hermetic unit tests for resolver command generation, fail-closed defaults, and error logging in `test_review_loop.py`
+
+- Added test class `TestResolverAgentExecution` in `apps/sandbox-executor/tests/test_review_loop.py` containing 5
+  hermetic unit tests:
+  - `test_run_resolver_agent_builds_command_and_invokes_run_turn`: Asserts `_run_resolver_agent` calls
+    `runner.build_command(prompt, model_name)` and dispatches `run_turn(cmd, cwd=repo_dir)` with 1 positional argument.
+  - `test_run_resolver_agent_raises_on_non_zero_exit_code`: Asserts `_run_resolver_agent` raises `RuntimeError` on
+    non-zero exit code.
+  - `test_run_resolver_mode_fail_closed_defaults_on_failure`: Asserts that resolver turn failures cleanly report
+    `"lint_passed": False`, `"tests_passed": False`, and the error context in result JSON, exiting 1.
+  - `test_run_resolver_mode_fail_closed_defaults_on_skipped_execution`: Asserts that when execution is skipped, result
+    JSON reports fail-closed `"lint_passed": False` and `"tests_passed": False`.
+  - `test_run_resolver_mode_passes_verification_when_verify_succeeds`: Asserts that when verification and git resolution
+    succeed, result JSON reports `"lint_passed": True`, `"tests_passed": True`, `"error": None`, and `"pushed": True`.

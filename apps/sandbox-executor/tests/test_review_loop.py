@@ -1,5 +1,6 @@
 """Unit tests for containerised Holon Review Loop Agent (Bean 0118)."""
 
+import argparse
 import json
 import os
 import subprocess
@@ -8,8 +9,15 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sandbox_executor.entrypoint.review_loop import main as review_loop_main
-from sandbox_executor.entrypoint.review_loop import run_cmd
+from sandbox_executor.entrypoint.review_loop import (
+    _run_resolver_agent,
+    _run_resolver_mode,
+    run_cmd,
+)
+from sandbox_executor.entrypoint.review_loop import (
+    main as review_loop_main,
+)
+from sandbox_executor.turns import TurnResult
 
 from tests.leak_assertions import assert_no_fragment, make_gh_probe
 from tests.review_fakes import install_fake_reviewers
@@ -2240,3 +2248,174 @@ def test_review_resolver_adjudicates_ci_failure_and_converges_to_approval(tmp_pa
     assert any(
         r.get("review_finding_ids") == ["FIND-CI-001"] and r.get("review_disposition") == "applied" for r in res_rows
     )
+
+
+class TestResolverAgentExecution:
+    """Hermetic unit tests for resolver agent execution, fail-closed defaults, and error logging."""
+
+    def test_run_resolver_agent_builds_command_and_invokes_run_turn(self, tmp_path: Path) -> None:
+        repo_dir = str(tmp_path)
+        dispositions_path = str(tmp_path / "dispositions.json")
+        mock_runner = MagicMock()
+        mock_runner.build_command.return_value = ["my-agent", "-p", "prompt", "--model", "test-model"]
+        mock_turn_result = TurnResult(returncode=0)
+        expected_dispositions = [{"id": "FIND-001", "disposition": "applied", "rejection_reason": None}]
+
+        def fake_run_turn(cmd: list[str], cwd: str | None = None) -> TurnResult:
+            with open(dispositions_path, "w", encoding="utf-8") as f:
+                json.dump(expected_dispositions, f)
+            return mock_turn_result
+
+        with (
+            patch("sandbox_executor.entrypoint.review_loop.get_runner", return_value=mock_runner),
+            patch("sandbox_executor.entrypoint.review_loop.run_turn", side_effect=fake_run_turn) as mock_run_turn,
+        ):
+            res = _run_resolver_agent(repo_dir, "my-agent", "test-model", "prompt", dispositions_path)
+
+        mock_runner.build_command.assert_called_once_with("prompt", "test-model")
+        mock_run_turn.assert_called_once_with(["my-agent", "-p", "prompt", "--model", "test-model"], cwd=repo_dir)
+        assert res == expected_dispositions
+
+    def test_run_resolver_agent_raises_on_non_zero_exit_code(self, tmp_path: Path) -> None:
+        repo_dir = str(tmp_path)
+        dispositions_path = str(tmp_path / "dispositions.json")
+        mock_runner = MagicMock()
+        mock_runner.build_command.return_value = ["my-agent", "-p", "prompt", "--model", "test-model"]
+        mock_turn_result = TurnResult(returncode=42, stderr="agent failed")
+
+        with (
+            patch("sandbox_executor.entrypoint.review_loop.get_runner", return_value=mock_runner),
+            patch("sandbox_executor.entrypoint.review_loop.run_turn", return_value=mock_turn_result),
+            pytest.raises(RuntimeError, match="Resolver agent exited with code 42"),
+        ):
+            _run_resolver_agent(repo_dir, "my-agent", "test-model", "prompt", dispositions_path)
+
+    def test_run_resolver_mode_fail_closed_defaults_on_failure(self, tmp_path: Path) -> None:
+        repo_dir = str(tmp_path)
+        findings_file = tmp_path / "findings.json"
+        result_file = tmp_path / "result.json"
+        findings_data = [{"id": "FIND-001", "severity": "important", "path": "foo.py", "line": 10, "summary": "bug"}]
+        findings_file.write_text(json.dumps(findings_data), encoding="utf-8")
+
+        args = argparse.Namespace(
+            findings_file=str(findings_file),
+            result_file=str(result_file),
+            iteration=1,
+            dry_run=False,
+            skip_push=False,
+            target="my-branch",
+            json=False,
+        )
+
+        with (
+            patch(
+                "sandbox_executor.entrypoint.review_loop._run_resolver_agent",
+                side_effect=RuntimeError("Simulated agent turn failure"),
+            ),
+            patch(
+                "sandbox_executor.entrypoint.review_loop._checked",
+                return_value=subprocess.CompletedProcess([], 0, stdout="deadbeef"),
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            _run_resolver_mode(args, repo_dir, "my-branch", "my-agent", "test-model")
+
+        assert exc_info.value.code == 1
+        assert result_file.exists()
+        result_json = json.loads(result_file.read_text(encoding="utf-8"))
+        assert result_json["lint_passed"] is False
+        assert result_json["tests_passed"] is False
+        assert "Simulated agent turn failure" in (result_json["error"] or "")
+
+    def test_run_resolver_mode_fail_closed_defaults_on_skipped_execution(self, tmp_path: Path) -> None:
+        repo_dir = str(tmp_path)
+        findings_file = tmp_path / "findings.json"
+        result_file = tmp_path / "result.json"
+        findings_file.write_text(json.dumps([]), encoding="utf-8")
+
+        args = argparse.Namespace(
+            findings_file=str(findings_file),
+            result_file=str(result_file),
+            iteration=1,
+            dry_run=False,
+            skip_push=False,
+            target="my-branch",
+            json=False,
+        )
+
+        with (
+            patch(
+                "sandbox_executor.entrypoint.review_loop._checked",
+                return_value=subprocess.CompletedProcess([], 0, stdout="deadbeef"),
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            _run_resolver_mode(args, repo_dir, "my-branch", "my-agent", "test-model")
+
+        assert exc_info.value.code == 0
+        assert result_file.exists()
+        result_json = json.loads(result_file.read_text(encoding="utf-8"))
+        assert result_json["lint_passed"] is False
+        assert result_json["tests_passed"] is False
+        assert result_json["error"] is None
+
+    def test_run_resolver_mode_passes_verification_when_verify_succeeds(self, tmp_path: Path) -> None:
+        repo_dir = str(tmp_path)
+        findings_file = tmp_path / "findings.json"
+        result_file = tmp_path / "result.json"
+        findings_data = [{"id": "FIND-001", "severity": "important", "path": "foo.py", "line": 10, "summary": "bug"}]
+        findings_file.write_text(json.dumps(findings_data), encoding="utf-8")
+
+        args = argparse.Namespace(
+            findings_file=str(findings_file),
+            result_file=str(result_file),
+            iteration=1,
+            dry_run=False,
+            skip_push=False,
+            target="my-branch",
+            json=False,
+        )
+
+        applied_disposition = [{"id": "FIND-001", "disposition": "applied", "rejection_reason": None}]
+
+        def fake_run_cmd(
+            cmd: list[str],
+            cwd: str | None = None,
+            env: dict[str, str] | None = None,
+            check: bool = True,
+        ) -> subprocess.CompletedProcess[str]:
+            if cmd[:2] == ["git", "status"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout=" M foo.py\n")
+            if cmd[:2] == ["git", "add"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="")
+            if cmd[:2] == ["git", "commit"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="[my-branch 1234567] commit")
+            if cmd[:2] == ["git", "push"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="")
+
+        heads = [
+            subprocess.CompletedProcess([], 0, stdout="1111111111111111111111111111111111111111"),
+            subprocess.CompletedProcess([], 0, stdout="1111111111111111111111111111111111111111"),
+            subprocess.CompletedProcess([], 0, stdout="2222222222222222222222222222222222222222"),
+        ]
+
+        with (
+            patch("sandbox_executor.entrypoint.review_loop._run_resolver_agent", return_value=applied_disposition),
+            patch("sandbox_executor.entrypoint.review_loop._verify_before_push", return_value=(True, True, None)),
+            patch(
+                "sandbox_executor.entrypoint.review_loop._checked",
+                side_effect=heads,
+            ),
+            patch("sandbox_executor.entrypoint.review_loop.run_cmd", side_effect=fake_run_cmd),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            _run_resolver_mode(args, repo_dir, "my-branch", "my-agent", "test-model")
+
+        assert exc_info.value.code == 0
+        assert result_file.exists()
+        result_json = json.loads(result_file.read_text(encoding="utf-8"))
+        assert result_json["lint_passed"] is True
+        assert result_json["tests_passed"] is True
+        assert result_json["error"] is None
+        assert result_json["pushed"] is True

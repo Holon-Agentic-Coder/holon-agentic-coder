@@ -219,8 +219,9 @@ def promote_pending_candidates(
 
             # 1. Promote failure modes
             if eval_res.failure_ladder_state in ("repeated", "proven-fail"):
+                kb_id = f"KB-failure-{eval_res.context_fingerprint[:8]}"
                 item = {
-                    "kb_id": f"KB-failure-{eval_res.context_fingerprint[:8]}",
+                    "kb_id": kb_id,
                     "kb_type": "failure_mode",
                     "context_fingerprint": eval_res.context_fingerprint,
                     "evidence": {
@@ -240,14 +241,19 @@ def promote_pending_candidates(
                     },
                 }
                 if not dry_run:
-                    path = persist_kb_fact(item, kb_dir=kb_dir)
-                    item["persisted_path"] = path
+                    expected_path = os.path.join(kb_dir, "failure_modes", f"{kb_id}.json")
+                    if os.path.exists(expected_path):
+                        item["persisted_path"] = expected_path
+                    else:
+                        path = persist_kb_fact(item, kb_dir=kb_dir)
+                        item["persisted_path"] = path
                 promoted_items.append(item)
 
             # 2. Promote success patterns
             elif eval_res.success_ladder_state in ("likely-success", "proven-success"):
+                kb_id = f"KB-pattern-{eval_res.context_fingerprint[:8]}"
                 item = {
-                    "kb_id": f"KB-pattern-{eval_res.context_fingerprint[:8]}",
+                    "kb_id": kb_id,
                     "kb_type": "pattern",
                     "context_fingerprint": eval_res.context_fingerprint,
                     "evidence": {
@@ -266,14 +272,19 @@ def promote_pending_candidates(
                     },
                 }
                 if not dry_run:
-                    path = persist_kb_fact(item, kb_dir=kb_dir)
-                    item["persisted_path"] = path
+                    expected_path = os.path.join(kb_dir, "patterns", f"{kb_id}.json")
+                    if os.path.exists(expected_path):
+                        item["persisted_path"] = expected_path
+                    else:
+                        path = persist_kb_fact(item, kb_dir=kb_dir)
+                        item["persisted_path"] = path
                 promoted_items.append(item)
 
                 # Proven-success also ascends to Wisdom Base heuristic
                 if eval_res.success_ladder_state == "proven-success":
+                    wb_id = f"WB-heuristic-{eval_res.context_fingerprint[:8]}"
                     wb_item = {
-                        "wb_id": f"WB-heuristic-{eval_res.context_fingerprint[:8]}",
+                        "wb_id": wb_id,
                         "wb_type": "heuristic",
                         "context_fingerprint": eval_res.context_fingerprint,
                         "ascension_evidence": {
@@ -288,8 +299,12 @@ def promote_pending_candidates(
                         },
                     }
                     if not dry_run:
-                        wb_path = persist_wb_rule(wb_item, wb_dir=wb_dir)
-                        wb_item["persisted_path"] = wb_path
+                        expected_wb_path = os.path.join(wb_dir, "heuristics", f"{wb_id}.json")
+                        if os.path.exists(expected_wb_path):
+                            wb_item["persisted_path"] = expected_wb_path
+                        else:
+                            wb_path = persist_wb_rule(wb_item, wb_dir=wb_dir)
+                            wb_item["persisted_path"] = wb_path
                     promoted_items.append(wb_item)
 
         return promoted_items

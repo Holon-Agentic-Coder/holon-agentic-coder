@@ -31,3 +31,13 @@ verifying zero git churn during Stage 5 calibration with hermetic unit tests in 
 - Updated `_update_directory_index()` in `apps/sandbox-executor/src/sandbox_executor/knowledge/wisdom.py` to perform
   in-memory equality comparison between existing metadata and `entry_meta`, skipping file writes and keeping `index.json`
   untouched when the entry already exists and is substantively unchanged.
+
+### Step 2: Implement append-only candidate promotion and flow zero-churn verification in `wisdom.py` and `flow.py`
+
+- Updated `promote_pending_candidates()` in `apps/sandbox-executor/src/sandbox_executor/knowledge/wisdom.py` to
+  determine expected fact file paths for failure modes, patterns, and heuristics before persisting, recording the
+  existing path in `item["persisted_path"]` and skipping file write operations when the fact already exists on disk.
+- Updated `_commit_stage5_promoted_artifacts()` in `apps/sandbox-executor/src/sandbox_executor/flow.py` to verify that
+  when `git status --porcelain` reports no staged or unstaged changes across `holon-knowledge/kb` and
+  `holon-knowledge/wisdom`, an informative context log is emitted and the function no-ops cleanly without creating an
+  empty commit.

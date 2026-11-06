@@ -208,6 +208,10 @@ class AgentRunner:
         """Assemble the agent argv without validating credentials (see :class:`StandardAgentRunner`)."""
         raise NotImplementedError
 
+    def build_command(self, prompt: str, model_name: str) -> list[str]:
+        """Construct the execution command for a prompt and model, delegating to compose_cmd."""
+        return self.compose_cmd(model_name, prompt)
+
     def get_version(self) -> str:
         """Return agent version string, returning 'unknown' fallback if resolution fails."""
         raise NotImplementedError

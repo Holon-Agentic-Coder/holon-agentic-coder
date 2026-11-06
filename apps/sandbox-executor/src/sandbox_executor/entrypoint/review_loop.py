@@ -359,7 +359,14 @@ def _run_resolver_agent(
     """Run the resolver agent turn and parse its dispositions JSON file."""
     os.makedirs(os.path.dirname(dispositions_path), exist_ok=True)
     runner = get_runner(agent_name)
-    cmd = runner.build_command(prompt, model_name)
+    if hasattr(runner, "build_command") and callable(runner.build_command):
+        cmd = runner.build_command(prompt, model_name)
+    elif hasattr(runner, "compose_cmd") and callable(runner.compose_cmd):
+        cmd = runner.compose_cmd(model_name, prompt)
+    else:
+        raise AttributeError(
+            f"Runner for agent '{agent_name}' satisfies neither 'build_command' nor 'compose_cmd' contract"
+        )
     outcome = run_turn(cmd, cwd=repo_dir)
     if os.path.exists(dispositions_path):
         try:

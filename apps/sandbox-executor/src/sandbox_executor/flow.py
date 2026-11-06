@@ -3831,6 +3831,24 @@ def _ci_green(ci_status: dict[str, Any], tests_failed: bool) -> bool | None:
     return ci_status.get("all_passed") is True and not tests_failed
 
 
+def _extract_failed_ci_check_names(ci_status: dict[str, Any] | None, tests_failed: bool = False) -> list[str]:
+    """Extract unique names of failing CI checks or local tests."""
+    failing: list[str] = []
+    if ci_status and isinstance(ci_status.get("checks"), list):
+        for check in ci_status["checks"]:
+            if not isinstance(check, dict):
+                continue
+            bucket = str(check.get("bucket") or "").lower()
+            state = str(check.get("state") or "").upper()
+            if bucket == "fail" or state in ("FAILURE", "TIMED_OUT", "ACTION_REQUIRED"):
+                name = str(check.get("name") or "").strip()
+                if name and name not in failing:
+                    failing.append(name)
+    if tests_failed and "local_tests" not in failing:
+        failing.append("local_tests")
+    return failing
+
+
 def _loop_status(
     consensus_reached: bool,
     verdict: ConsensusVerdict | None,
@@ -4035,7 +4053,12 @@ def _invoke_resolver_pass(
         )
         return dataclasses.replace(raw, dispositions=dispositions, head_sha=raw.head_sha or target.head_sha)
     if isinstance(raw, Mapping):
-        dispositions = deserialize_finding_dispositions(raw.get("dispositions"), findings, lookup)
+        raw_disps = raw.get("dispositions")
+        if isinstance(raw_disps, Sequence):
+            raw_disps = [
+                serialize_finding_disposition(d) if isinstance(d, FindingDisposition) else d for d in raw_disps
+            ]
+        dispositions = deserialize_finding_dispositions(raw_disps, findings, lookup)
         head_sha = str(raw.get("head_sha") or target.head_sha or "").strip()
         pushed = bool(raw.get("pushed", head_sha != target.head_sha))
         err = redact_agent_secrets(str(raw["error"])) if raw.get("error") else None
@@ -4221,6 +4244,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     prev_head_sha = ""
     unchanged_streak = 0
     no_convergence = False
+    iter_findings: list[FindingRow] = []
     recorder = DispositionRecorder(
         context,
         exec_file,
@@ -4489,19 +4513,29 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
 
         iter_findings = list(collect_review_data(reviewers).findings)
         if ci_finding:
+            failing_names = _extract_failed_ci_check_names(last_ci_status, tests_failed)
+            if failing_names:
+                ci_summary = f"CI checks failed in iteration {iteration}: {', '.join(failing_names)}."
+            else:
+                ci_summary = f"CI checks failed in iteration {iteration}."
             ci_row = FindingRow(
                 id=f"FIND-CI-{iteration:03d}",
                 severity="important",
                 path="",
                 line=None,
                 reviewers=(),
-                summary=f"CI checks failed or unmeasured in iteration {iteration}.",
-                recommendation="Resolve CI failures or ensure all tests pass.",
+                summary=ci_summary,
+                recommendation="Run linters and tests locally, apply fixes, and commit the changes.",
             )
             iter_findings.append(ci_row)
-            if finding_action_ids is not None and f"FIND-CI-{iteration:03d}" in finding_action_ids:
+            if finding_action_ids is not None:
+                ci_id = f"FIND-CI-{iteration:03d}"
+                act_id = finding_action_ids.get(ci_id)
+                if not act_id:
+                    act_id = generate_action_id("ACT-FIND")
+                    finding_action_ids[ci_id] = act_id
                 sig_key = str(finding_signature(ci_row.severity, ci_row.path, ci_row.line, ci_row.summary))
-                finding_action_ids.setdefault(sig_key, finding_action_ids[f"FIND-CI-{iteration:03d}"])
+                finding_action_ids.setdefault(sig_key, act_id)
 
         if not resolver_enabled or not iter_findings or is_dirty or resolved_target is None:
             context.log(
@@ -4594,7 +4628,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             suppressed_ledger_records += recorder.record(iteration, pending_dispositions)
         remaining_findings = [
             row
-            for row in collect_review_data(reviewers).findings
+            for row in (iter_findings or collect_review_data(reviewers).findings)
             if finding_signature(row.severity, row.path, row.line, row.summary) not in recorded_disposition_keys
         ]
         if remaining_findings:

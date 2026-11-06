@@ -371,6 +371,24 @@ def _terminate_group(  # noqa: PLR0913
         logger.warning("Agent process %s did not exit after SIGKILL", getattr(proc, "pid", "?"))
 
 
+def build_turn_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Build an execution environment mapping for a turn subprocess.
+
+    Copies the provided environment mapping or ``os.environ`` if ``None``,
+    guaranteeing that ``DOCKER_CLI_HINTS`` is explicitly set to ``'false'`` so
+    promotional and diagnostic hints are suppressed in all spawned child processes.
+
+    Args:
+        env: Optional base environment mapping. If ``None``, ``os.environ`` is used.
+
+    Returns:
+        A normalised environment dictionary containing ``DOCKER_CLI_HINTS='false'``.
+    """
+    effective_env = dict(os.environ) if env is None else dict(env)
+    effective_env["DOCKER_CLI_HINTS"] = "false"
+    return effective_env
+
+
 def run_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915
     cmd: list[str],
     *,
@@ -424,11 +442,12 @@ def run_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915
     """
     budgets = turn_budgets or TurnBudgets()
     start = clock()
+    effective_env = build_turn_env(env)
     try:
         proc = popen_factory(
             cmd,
             cwd=cwd,
-            env=dict(env) if env is not None else None,
+            env=effective_env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,

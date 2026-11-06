@@ -1308,6 +1308,7 @@ def calibration_commit_env() -> dict[str, str]:
     caller's environment already sets them.
     """
     commit_env = os.environ.copy()
+    commit_env["DOCKER_CLI_HINTS"] = "false"
     commit_env.setdefault("GIT_AUTHOR_NAME", "Holon Calibrate Agent")
     commit_env.setdefault("GIT_AUTHOR_EMAIL", "calibrate-agent@holon-agentic-coder.com")
     commit_env.setdefault("GIT_COMMITTER_NAME", "Holon Calibrate Agent")

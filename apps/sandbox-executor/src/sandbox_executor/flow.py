@@ -948,7 +948,7 @@ def check_pr_mergeability(  # noqa: C901, PLR0912, PLR0915
 
     # 1. Attempt GitHub CLI inspection if gh is installed and available
     if shutil.which("gh") and clean_branch:
-        gh_env = {**os.environ, **(proxy_env or {})} if proxy_env else None
+        gh_env = {**os.environ, **(proxy_env or {}), "DOCKER_CLI_HINTS": "false"}
         for attempt in range(3):
             try:
                 gh_proc = subprocess.run(
@@ -1124,7 +1124,7 @@ def probe_ci_checks(
     """
     clean_target = str(branch_or_pr).strip()
     if shutil.which("gh") and clean_target:
-        gh_env = {**os.environ, **(proxy_env or {})} if proxy_env else None
+        gh_env = {**os.environ, **(proxy_env or {}), "DOCKER_CLI_HINTS": "false"}
         try:
             cmd = ["gh", "pr", "checks", clean_target, "--json", "bucket,name,state,event,workflow"]
             proc = subprocess.run(
@@ -1399,7 +1399,7 @@ def create_or_update_pr(  # noqa: PLR0913
     if not shutil.which("gh") or not clean_branch:
         return {"attempted": False, "success": False, "action": "none", "pr_number": None, "output": ""}
 
-    gh_env = {**os.environ, **(proxy_env or {})} if proxy_env else None
+    gh_env = {**os.environ, **(proxy_env or {}), "DOCKER_CLI_HINTS": "false"}
 
     try:
         view_proc = subprocess.run(
@@ -1513,7 +1513,7 @@ def post_pr_review_consensus(  # noqa: PLR0912, PLR0913, PLR0915
     )
 
     gh_available = bool(shutil.which("gh"))
-    gh_env = {**os.environ, **(proxy_env or {})} if proxy_env else None
+    gh_env = {**os.environ, **(proxy_env or {}), "DOCKER_CLI_HINTS": "false"}
 
     if not gh_available:
         diag_msg = "GitHub CLI ('gh') is not available in PATH; skipping review consensus dual-posting."
@@ -2111,6 +2111,7 @@ def _append_superseding_execution_row(context: FlowContext, exec_branch: str, ro
             f.write(json.dumps(row) + "\n")
         run_git(["add", "holon-knowledge/ledger/executions.jsonl"], cwd=worktree)
         commit_env = os.environ.copy()
+        commit_env["DOCKER_CLI_HINTS"] = "false"
         for key, value in EXECUTOR_GIT_ENV.items():
             commit_env.setdefault(key, value)
         run_git(

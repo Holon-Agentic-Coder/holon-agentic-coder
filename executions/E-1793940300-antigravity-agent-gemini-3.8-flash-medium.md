@@ -41,3 +41,14 @@ dispatching the resolver pass, and verifying convergence via hermetic unit tests
   verify locally with `uv run task lint` and `uv run task test` before marking `FIND-CI` findings `applied`.
 - Verified that `_commit_and_push_resolution()` includes applied `FIND-CI` identifiers in the commit message and
   `Review-Finding-Ids` trailer.
+
+### Step 3: Implement hermetic unit tests in apps/sandbox-executor/tests/test_review_loop.py
+
+- Implemented `test_review_approved_with_failed_ci_dispatches_resolver_with_finding_ci` in
+  `apps/sandbox-executor/tests/test_review_loop.py`, asserting that when reviewers approve but CI checks fail,
+  `run_resolver_fn` is dispatched with `FIND-CI-001`, containing failing check names in its summary and actionable
+  recommendation.
+- Implemented `test_review_resolver_adjudicates_ci_failure_and_converges_to_approval` in
+  `apps/sandbox-executor/tests/test_review_loop.py`, verifying multi-pass simulation where iteration 1 fails CI and
+  dispatches resolver, resolver adjudicates `FIND-CI-001` to `applied` and pushes fixes, iteration 2 CI checks pass, and
+  review loop converges to consensus approval with `ACT-RES` recorded in ledger.

@@ -2128,3 +2128,114 @@ def test_clean_review_with_pending_ci_dispatches_resolver_when_ci_fails(tmp_path
     passed_finding_ids = [f.id for f in resolver_calls[0]["findings"]]
     assert "FIND-CI-001" in passed_finding_ids
     assert "FIND-CI-001" in res["findings"]
+
+
+def test_review_approved_with_failed_ci_dispatches_resolver_with_finding_ci(tmp_path):
+    from sandbox_executor.flow import run_review_loop
+    from tests.review_fakes import FakeEnsemble, clean_reviewer
+
+    resolver_calls = []
+
+    def fake_resolver(target, iteration, findings, action_ids, rejected_findings):
+        resolver_calls.append({"findings": findings, "iteration": iteration})
+        return {"dispositions": [], "head_sha": target.head_sha, "pushed": False}
+
+    failed_ci = {
+        "source": "github_cli",
+        "pending": 0,
+        "failed": 1,
+        "passed": 0,
+        "total": 1,
+        "all_passed": False,
+        "checks": [{"name": "lint", "bucket": "fail", "state": "FAILURE"}],
+    }
+    ctx = _ensemble_ctx(tmp_path)
+    with _LoopStubs(ci=failed_ci):
+        res = run_review_loop(
+            ctx,
+            target=EXEC_TARGET,
+            max_iterations=1,
+            ensemble_size=1,
+            run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
+            run_resolver_fn=fake_resolver,
+        )
+
+    assert len(resolver_calls) == 1
+    passed_findings = resolver_calls[0]["findings"]
+    finding_ci = next((f for f in passed_findings if f.id == "FIND-CI-001"), None)
+    assert finding_ci is not None
+    assert "lint" in finding_ci.summary
+    assert "linters" in finding_ci.recommendation and "tests" in finding_ci.recommendation
+    assert "commit" in finding_ci.recommendation
+    assert "FIND-CI-001" in res["findings"]
+
+
+def test_review_resolver_adjudicates_ci_failure_and_converges_to_approval(tmp_path):
+    from sandbox_executor.flow import run_review_loop
+    from sandbox_executor.review_ensemble import ConsensusVerdict
+    from sandbox_executor.review_report import FindingDisposition
+    from tests.review_fakes import FakeEnsemble, clean_reviewer
+
+    resolver_calls = []
+
+    def fake_resolver(target, iteration, findings, action_ids, rejected_findings):
+        resolver_calls.append({"findings": findings, "iteration": iteration})
+        disps = [
+            FindingDisposition(
+                id=f.id,
+                severity=f.severity,
+                path=f.path,
+                line=f.line,
+                summary=f.summary,
+                recommendation=f.recommendation,
+                disposition="applied",
+            )
+            for f in findings
+        ]
+        return {
+            "dispositions": disps,
+            "head_sha": "head-v2",
+            "pushed": True,
+        }
+
+    ci_iteration_1 = {
+        "source": "github_cli",
+        "pending": 0,
+        "failed": 1,
+        "passed": 0,
+        "total": 1,
+        "all_passed": False,
+        "checks": [{"name": "lint", "bucket": "fail", "state": "FAILURE"}],
+    }
+    ci_iteration_2 = {
+        "source": "github_cli",
+        "pending": 0,
+        "failed": 0,
+        "passed": 1,
+        "total": 1,
+        "all_passed": True,
+        "checks": [{"name": "lint", "bucket": "pass", "state": "SUCCESS"}],
+    }
+
+    probe_mock = MagicMock(side_effect=[ci_iteration_1, ci_iteration_2])
+    ctx = _ensemble_ctx(tmp_path)
+    with _LoopStubs(), patch("sandbox_executor.flow.probe_ci_checks", probe_mock):
+        res = run_review_loop(
+            ctx,
+            target=EXEC_TARGET,
+            max_iterations=3,
+            ensemble_size=1,
+            run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
+            run_resolver_fn=fake_resolver,
+        )
+
+    assert res["consensus"]["approved"] is True
+    assert res["ensemble_verdict"] == ConsensusVerdict.APPROVED
+    assert len(resolver_calls) == 1
+    assert any(f.id == "FIND-CI-001" for f in resolver_calls[0]["findings"])
+
+    res_rows = _rows(tmp_path, "ACT-RES")
+    assert any(
+        r.get("review_finding_ids") == ["FIND-CI-001"] and r.get("review_disposition") == "applied"
+        for r in res_rows
+    )

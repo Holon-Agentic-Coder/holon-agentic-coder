@@ -109,6 +109,7 @@ from sandbox_executor.review_ensemble import (
     ReviewerResult,
     ReviewerStatus,
     ReviewerVerdict,
+    _any_reviewer_objects,
     build_review_request,
     decide_consensus,
     run_ensemble,
@@ -3230,7 +3231,7 @@ def _wait_for_ci_registration(  # noqa: PLR0913
 ) -> None:
     """Poll until GitHub CI checks register on ``review_target`` or ``timeout`` elapses.
 
-    The wait precedes the review iterations, so it consumes no iteration budget and writes no ledger rows.
+    When invoked during the post-review gate, the wait is bounded by the remaining iteration budget.
     """
     if timeout <= 0:
         return
@@ -3547,25 +3548,31 @@ def _record_reviewer_rows(
 
 
 def _record_infrastructure_findings(  # noqa: PLR0913
-    context: FlowContext, exec_file: str, review_target: str, iteration: int, finding_ids: list[str], note: str
+    context: FlowContext,
+    exec_file: str,
+    review_target: str,
+    iteration: int,
+    finding_ids: list[str],
+    note: str,
+    finding_action_ids: dict[str, str] | None = None,
 ) -> None:
     """Append one ACT-FIND row per mergeability or CI finding (``FIND-DIRTY``, ``FIND-REF``, ``FIND-CI``)."""
     for finding_id in finding_ids:
-        record_review_action(
-            context,
-            exec_file,
-            _review_row(
-                "ACT-FIND",
-                review_target,
-                iteration,
-                f"Review Loop iteration {iteration} finding detected: {finding_id}",
-                "failure",
-                severity="critical" if finding_id.startswith("FIND-DIRTY") else "important",
-                finding_ids=[finding_id],
-                labels=["review", "finding", f"iteration-{iteration}"],
-                error_context=note,
-            ),
+        row = _review_row(
+            "ACT-FIND",
+            review_target,
+            iteration,
+            f"Review Loop iteration {iteration} finding detected: {finding_id}",
+            "failure",
+            severity="critical" if finding_id.startswith("FIND-DIRTY") else "important",
+            finding_ids=[finding_id],
+            labels=["review", "finding", f"iteration-{iteration}"],
+            error_context=note,
         )
+        record_review_action(context, exec_file, row)
+        if finding_action_ids is not None:
+            act_id = str(row["action_id"])
+            finding_action_ids.setdefault(finding_id, act_id)
 
 
 def _resolve_reviewed_target(repo_dir: str, review_target: str) -> tuple[ReviewTarget | None, str | None]:
@@ -4069,11 +4076,13 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
 ) -> dict[str, Any]:
     """Execute the native Stage 4 review loop (Bean 0118) with the real reviewer ensemble.
 
-    Each iteration probes mergeability and CI, then runs ``ensemble_size`` independent reviewer agent turns on the
-    real diff between the base and the resolved head SHA and decides with ``decide_consensus()``: approval needs every
-    reviewer to approve with zero findings, a mergeable PR and green CI. There is no resolver, so the loop stops after
-    the first iteration that is not approved. Reviewers run only inside a sandbox: on the host the loop refuses before
-    any PR, iteration or post. It enforces Bean 0034 (Human-Only PR Merging) by halting at approval without merging.
+    Each iteration inspects PR mergeability and launches ``ensemble_size`` independent reviewer agent turns in parallel
+    with GitHub CI. Reviewers evaluate the real diff between the base and the resolved head SHA. If any reviewer
+    requests changes or reports open findings, pending CI checks are bypassed and findings are immediately dispatched to
+    the resolver. Only when all reviewers approve cleanly with zero open findings and mergeability is clean does the
+    loop wait for CI checks to settle as a post-review safety gate before calling ``decide_consensus()``. Reviewers run
+    only inside a sandbox: on the host the loop refuses before any PR, iteration or post. It enforces Bean 0034
+    (Human-Only PR Merging) by halting at approval without merging.
 
     Args:
         context: Active FlowContext carrying repository and pipeline state.
@@ -4222,21 +4231,6 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         effective_dry_run=effective_dry_run,
     )
 
-    # Without a recorded test result only CI can measure the tests: give checks triggered by the PR time to
-    # register before the first iteration, so the wait burns no iteration budget and writes no ledger rows.
-    # A PR the empty-diff guard refused triggers no CI, so there is nothing to wait for.
-    if pr_allowed and test_pass_rate is None and not tests_failed and not effective_dry_run and shutil.which("gh"):
-        _wait_for_ci_registration(
-            context,
-            repo_dir,
-            review_target,
-            proxy_env,
-            resolve_ci_registration_timeout(ci_registration_timeout),
-            ci_poll_interval,
-            clock=clock,
-            sleep=sleep,
-        )
-
     if pr_refusal_error:
         # Fail closed: a PR the guard refused is never reviewed, so no evidence can turn the refusal into approval.
         context.log("[Review Loop] Halting review loop without consensus: the empty-diff guard refused the PR.")
@@ -4262,43 +4256,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             )
             context.log(f"[Review Loop] {mergeability_note}")
 
-        # 2. CI status inspection
-        last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
-        if last_ci_status.get("source") == "local_tests" and tests_failed:
-            last_ci_status["all_passed"] = False
-            last_ci_status["passed"] = 0
-            last_ci_status["failed"] = 1
-            last_ci_status["checks"] = [{"name": "local_tests", "bucket": "fail", "state": "FAILURE"}]
-        elif last_ci_status.get("source") == "local_tests" and test_pass_rate is None and effective_dry_run:
-            # A dry run measures nothing and records nothing; its consensus is a simulation, flagged as unmeasured.
-            last_ci_status["measured"] = False
-        elif last_ci_status.get("source") == "local_tests" and test_pass_rate is None:
-            # No CI checks and no recorded test result: the tests were not measured, which is never a pass.
-            last_ci_status["all_passed"] = False
-            last_ci_status["passed"] = 0
-            last_ci_status["failed"] = 0
-            last_ci_status["skipped"] = 1
-            last_ci_status["measured"] = False
-            last_ci_status["checks"] = [{"name": "local_tests", "bucket": "skipping", "state": "NOT_MEASURED"}]
-            tests_not_measured = True
-        elif (
-            last_ci_status.get("source") == "github_cli"
-            and last_ci_status.get("pending", 0) > 0
-            and not effective_dry_run
-        ):
-            last_ci_status = _wait_for_pending_ci(
-                context,
-                repo_dir,
-                review_target,
-                proxy_env,
-                last_ci_status,
-                iteration_timer.remaining(),
-                ci_poll_interval,
-                clock=clock,
-                sleep=sleep,
-            )
-
-        # 3. Real reviewer ensemble on the resolved head (a dry run never dispatches reviewers)
+        # 2. Reviewer ensemble execution on the resolved head (a dry run never dispatches reviewers)
         reviewers, ensemble_verdict = [], None
         if not effective_dry_run and resolved_target is not None:
             iter_pr_text = _augment_pr_text_with_rejected(pr_text, tuple(rejected_history.values()))
@@ -4312,15 +4270,119 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 )
             if rejected_history or rejected_ids:
                 reviewers = _filter_adjudicated_findings(reviewers, rejected_history, frozenset(rejected_ids))
+
+        reviewer_findings = collect_review_data(reviewers).findings
+        reviewer_objected = _any_reviewer_objects(reviewers) or bool(reviewer_findings)
+
+        # 3. CI status inspection: post-review gate or fast-path probe
+        if reviewer_objected:
+            # Fast path on reviewer findings: probe CI once without waiting on pending checks.
+            last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
+            if last_ci_status.get("source") == "local_tests" and tests_failed:
+                last_ci_status["all_passed"] = False
+                last_ci_status["passed"] = 0
+                last_ci_status["failed"] = 1
+                last_ci_status["checks"] = [{"name": "local_tests", "bucket": "fail", "state": "FAILURE"}]
+            elif last_ci_status.get("source") == "local_tests" and test_pass_rate is None and effective_dry_run:
+                last_ci_status["measured"] = False
+
+            # Include FIND-CI only if CI has already failed or local tests failed; pending checks are omitted.
+            ci_failed = (
+                last_ci_status.get("failed", 0) > 0
+                or (last_ci_status.get("source") == "local_tests" and tests_failed)
+            )
+            ci_finding = ci_failed
             ensemble_verdict = decide_consensus(
                 reviewers,
                 ensemble_size,
                 mergeable=None if missing_ref else not is_dirty,
-                ci_green=_ci_green(last_ci_status, tests_failed),
+                ci_green=False if ci_failed else None,
             )
+        elif not is_dirty and not missing_ref and not effective_dry_run and infra_error is None:
+            # Post-review CI gate on clean review: wait for CI registration and pending checks to settle.
+            if pr_allowed and test_pass_rate is None and not tests_failed and shutil.which("gh"):
+                reg_timeout = min(
+                    resolve_ci_registration_timeout(ci_registration_timeout),
+                    max(0.0, iteration_timer.remaining()),
+                )
+                _wait_for_ci_registration(
+                    context,
+                    repo_dir,
+                    review_target,
+                    proxy_env,
+                    reg_timeout,
+                    ci_poll_interval,
+                    clock=clock,
+                    sleep=sleep,
+                )
+
+            last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
+            if last_ci_status.get("source") == "local_tests" and tests_failed:
+                last_ci_status["all_passed"] = False
+                last_ci_status["passed"] = 0
+                last_ci_status["failed"] = 1
+                last_ci_status["checks"] = [{"name": "local_tests", "bucket": "fail", "state": "FAILURE"}]
+            elif last_ci_status.get("source") == "local_tests" and test_pass_rate is None:
+                last_ci_status["all_passed"] = False
+                last_ci_status["passed"] = 0
+                last_ci_status["failed"] = 0
+                last_ci_status["skipped"] = 1
+                last_ci_status["measured"] = False
+                last_ci_status["checks"] = [{"name": "local_tests", "bucket": "skipping", "state": "NOT_MEASURED"}]
+                tests_not_measured = True
+            elif (
+                last_ci_status.get("source") == "github_cli"
+                and last_ci_status.get("pending", 0) > 0
+            ):
+                last_ci_status = _wait_for_pending_ci(
+                    context,
+                    repo_dir,
+                    review_target,
+                    proxy_env,
+                    last_ci_status,
+                    iteration_timer.remaining(),
+                    ci_poll_interval,
+                    clock=clock,
+                    sleep=sleep,
+                )
+
+            ci_green = _ci_green(last_ci_status, tests_failed)
+            ci_finding = not last_ci_status.get("all_passed", False) or tests_failed
+            ensemble_verdict = decide_consensus(
+                reviewers,
+                ensemble_size,
+                mergeable=True,
+                ci_green=ci_green,
+            )
+        else:
+            # Fallback for dry runs, dirty mergeability, or infra failures: probe once without waiting.
+            last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
+            if last_ci_status.get("source") == "local_tests" and tests_failed:
+                last_ci_status["all_passed"] = False
+                last_ci_status["passed"] = 0
+                last_ci_status["failed"] = 1
+                last_ci_status["checks"] = [{"name": "local_tests", "bucket": "fail", "state": "FAILURE"}]
+            elif last_ci_status.get("source") == "local_tests" and test_pass_rate is None and effective_dry_run:
+                last_ci_status["measured"] = False
+            elif last_ci_status.get("source") == "local_tests" and test_pass_rate is None:
+                last_ci_status["all_passed"] = False
+                last_ci_status["passed"] = 0
+                last_ci_status["failed"] = 0
+                last_ci_status["skipped"] = 1
+                last_ci_status["measured"] = False
+                last_ci_status["checks"] = [{"name": "local_tests", "bucket": "skipping", "state": "NOT_MEASURED"}]
+                tests_not_measured = True
+
+            ci_finding = not last_ci_status.get("all_passed", False) or tests_failed
+            if not effective_dry_run:
+                ensemble_verdict = decide_consensus(
+                    reviewers,
+                    ensemble_size,
+                    mergeable=None if missing_ref else not is_dirty,
+                    ci_green=_ci_green(last_ci_status, tests_failed),
+                )
 
         # 4. Findings: mergeability and CI infrastructure ids, then every reviewer finding
-        ci_finding = not last_ci_status.get("all_passed", False) or tests_failed
         finding_ids = [
             finding_id
             for finding_id, present in (
@@ -4378,7 +4440,13 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 finding_action_ids=finding_action_ids,
             )
             _record_infrastructure_findings(
-                context, exec_file, review_target, iteration, infra_ids, _bounded_error_context(findings_context)
+                context,
+                exec_file,
+                review_target,
+                iteration,
+                infra_ids,
+                _bounded_error_context(findings_context),
+                finding_action_ids=finding_action_ids,
             )
 
         iteration_timer.stop()
@@ -4423,7 +4491,22 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             )
             break
 
-        iter_findings = collect_review_data(reviewers).findings
+        iter_findings = list(collect_review_data(reviewers).findings)
+        if ci_finding:
+            ci_row = FindingRow(
+                id=f"FIND-CI-{iteration:03d}",
+                severity="important",
+                path="",
+                line=None,
+                reviewers=(),
+                summary=f"CI checks failed or unmeasured in iteration {iteration}.",
+                recommendation="Resolve CI failures or ensure all tests pass.",
+            )
+            iter_findings.append(ci_row)
+            if finding_action_ids is not None and f"FIND-CI-{iteration:03d}" in finding_action_ids:
+                sig_key = str(finding_signature(ci_row.severity, ci_row.path, ci_row.line, ci_row.summary))
+                finding_action_ids.setdefault(sig_key, finding_action_ids[f"FIND-CI-{iteration:03d}"])
+
         if not resolver_enabled or not iter_findings or is_dirty or resolved_target is None:
             context.log(
                 f"[Review Loop] Halting review loop at iteration {iteration}: verdict "

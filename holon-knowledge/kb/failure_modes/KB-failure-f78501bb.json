@@ -2,8 +2,8 @@
   "kb_id": "KB-failure-f78501bb",
   "kb_type": "failure_mode",
   "version": "1.0",
-  "created_ts": "2026-11-06T09:30:00.936021+00:00",
-  "updated_ts": "2026-11-06T09:30:00.936021+00:00",
+  "created_ts": "2026-11-06T08:50:16.431311+00:00",
+  "updated_ts": "2026-11-06T08:50:16.431311+00:00",
   "created_by": "holon-promotion-engine",
   "status": "active",
   "evidence": {

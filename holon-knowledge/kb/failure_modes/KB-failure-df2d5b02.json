@@ -2,8 +2,8 @@
   "kb_id": "KB-failure-df2d5b02",
   "kb_type": "failure_mode",
   "version": "1.0",
-  "created_ts": "2026-11-06T09:30:01.034845+00:00",
-  "updated_ts": "2026-11-06T09:30:01.034845+00:00",
+  "created_ts": "2026-11-06T08:50:16.490912+00:00",
+  "updated_ts": "2026-11-06T08:50:16.490912+00:00",
   "created_by": "holon-promotion-engine",
   "status": "active",
   "evidence": {

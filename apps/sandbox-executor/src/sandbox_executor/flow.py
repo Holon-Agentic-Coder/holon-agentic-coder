@@ -4287,9 +4287,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 last_ci_status["measured"] = False
 
             # Include FIND-CI only if CI has already failed or local tests failed; pending checks are omitted.
-            ci_failed = (
-                last_ci_status.get("failed", 0) > 0
-                or (last_ci_status.get("source") == "local_tests" and tests_failed)
+            ci_failed = last_ci_status.get("failed", 0) > 0 or (
+                last_ci_status.get("source") == "local_tests" and tests_failed
             )
             ci_finding = ci_failed
             ensemble_verdict = decide_consensus(
@@ -4330,10 +4329,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 last_ci_status["measured"] = False
                 last_ci_status["checks"] = [{"name": "local_tests", "bucket": "skipping", "state": "NOT_MEASURED"}]
                 tests_not_measured = True
-            elif (
-                last_ci_status.get("source") == "github_cli"
-                and last_ci_status.get("pending", 0) > 0
-            ):
+            elif last_ci_status.get("source") == "github_cli" and last_ci_status.get("pending", 0) > 0:
                 last_ci_status = _wait_for_pending_ci(
                     context,
                     repo_dir,

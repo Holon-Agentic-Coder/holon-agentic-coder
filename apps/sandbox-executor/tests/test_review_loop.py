@@ -1991,6 +1991,7 @@ def test_post_pr_review_consensus_called_only_once_at_loop_exit(tmp_path):
 
 def test_review_findings_with_pending_ci_bypasses_wait_and_omits_find_ci(tmp_path):
     from sandbox_executor.flow import run_review_loop
+
     from tests.review_fakes import FakeEnsemble, objecting_reviewer
 
     mock_sleep = MagicMock()
@@ -2029,6 +2030,7 @@ def test_review_findings_with_pending_ci_bypasses_wait_and_omits_find_ci(tmp_pat
 
 def test_review_findings_with_failed_ci_includes_find_ci(tmp_path):
     from sandbox_executor.flow import run_review_loop
+
     from tests.review_fakes import FakeEnsemble, objecting_reviewer
 
     resolver_calls = []
@@ -2064,6 +2066,7 @@ def test_review_findings_with_failed_ci_includes_find_ci(tmp_path):
 
 def test_clean_review_with_pending_ci_waits_for_settlement_and_approves_when_green(tmp_path):
     from sandbox_executor.flow import run_review_loop
+
     from tests.review_fakes import FakeEnsemble, clean_reviewer
 
     mock_sleep = MagicMock()
@@ -2074,16 +2077,15 @@ def test_clean_review_with_pending_ci_waits_for_settlement_and_approves_when_gre
     probe_mock = MagicMock(side_effect=ci_sequence)
 
     ctx = _ensemble_ctx(tmp_path)
-    with _LoopStubs():
-        with patch("sandbox_executor.flow.probe_ci_checks", probe_mock):
-            res = run_review_loop(
-                ctx,
-                target=EXEC_TARGET,
-                max_iterations=1,
-                ensemble_size=1,
-                run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
-                sleep=mock_sleep,
-            )
+    with _LoopStubs(), patch("sandbox_executor.flow.probe_ci_checks", probe_mock):
+        res = run_review_loop(
+            ctx,
+            target=EXEC_TARGET,
+            max_iterations=1,
+            ensemble_size=1,
+            run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
+            sleep=mock_sleep,
+        )
 
     assert mock_sleep.called
     assert res["consensus"]["approved"] is True
@@ -2094,6 +2096,7 @@ def test_clean_review_with_pending_ci_waits_for_settlement_and_approves_when_gre
 
 def test_clean_review_with_pending_ci_dispatches_resolver_when_ci_fails(tmp_path):
     from sandbox_executor.flow import run_review_loop
+
     from tests.review_fakes import FakeEnsemble, clean_reviewer
 
     resolver_calls = []
@@ -2109,17 +2112,16 @@ def test_clean_review_with_pending_ci_dispatches_resolver_when_ci_fails(tmp_path
     probe_mock = MagicMock(side_effect=ci_sequence)
 
     ctx = _ensemble_ctx(tmp_path)
-    with _LoopStubs():
-        with patch("sandbox_executor.flow.probe_ci_checks", probe_mock):
-            res = run_review_loop(
-                ctx,
-                target=EXEC_TARGET,
-                max_iterations=1,
-                ensemble_size=1,
-                run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
-                run_resolver_fn=fake_resolver,
-                sleep=MagicMock(),
-            )
+    with _LoopStubs(), patch("sandbox_executor.flow.probe_ci_checks", probe_mock):
+        res = run_review_loop(
+            ctx,
+            target=EXEC_TARGET,
+            max_iterations=1,
+            ensemble_size=1,
+            run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
+            run_resolver_fn=fake_resolver,
+            sleep=MagicMock(),
+        )
 
     assert res["consensus"]["approved"] is False
     assert len(resolver_calls) == 1

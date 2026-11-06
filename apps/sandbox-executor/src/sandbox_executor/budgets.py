@@ -9,7 +9,7 @@ the single source of truth for the limits and their configuration:
 - a *stall* budget (``HOLON_TURN_STALL_SECONDS``, default 90 s; ``0`` disables it) bounds silence, meaning no streamed
   output and no growth of the artefact being written, within a response that has streamed output; a non-streaming
   runner, which cannot signal liveness mid-response, is allowed ``max(stall, turn)`` of silence instead;
-- a *stage* budget bounds a whole stage (intent 10 min, plan 35, execute 45, each review iteration 15, calibration 10),
+- a *stage* budget bounds a whole stage (intent 10 min, plan 35, execute 45, each review iteration 120, calibration 10),
   and is the only wall-clock limit on a runner process as a whole.
 
 The defaults are the real measurements recorded in Beans 0138 to 0140; they are deliberately not re-derived here.
@@ -62,7 +62,7 @@ class StageBudgets:
     intent: float = 600.0
     plan: float = 2100.0
     execute: float = 2700.0
-    review_iteration: float = 900.0
+    review_iteration: float = 7200.0
     calibration: float = 600.0
 
     def for_stage(self, stage: str) -> float:

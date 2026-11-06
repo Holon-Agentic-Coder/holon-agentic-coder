@@ -3,7 +3,7 @@
 A single agent turn on a local model could previously run unbounded, and a stage had no ceiling at all. This module is
 the single source of truth for the limits and their configuration:
 
-- a *turn* budget (``HOLON_TURN_TIMEOUT_SECONDS``, default 300 s) bounds a single assistant response, observed as the
+- a *turn* budget (``HOLON_TURN_TIMEOUT_SECONDS``, default 3600 s) bounds a single assistant response, observed as the
   interval between artefact-progress events of a runner process (see :mod:`sandbox_executor.turns`), never the
   lifetime of the runner process itself;
 - a *stall* budget (``HOLON_TURN_STALL_SECONDS``, default 90 s; ``0`` disables it) bounds silence, meaning no streamed
@@ -44,7 +44,7 @@ ENV_STAGE_BUDGET_MINUTES = {
     "calibration": "HOLON_STAGE_BUDGET_CALIBRATION_MINUTES",
 }
 
-DEFAULT_TURN_SECONDS = 300.0
+DEFAULT_TURN_SECONDS = 3600.0
 DEFAULT_STALL_SECONDS = 90.0
 # Largest budget accepted from the environment, in seconds (7 days), checked after any minute -> second conversion.
 # A larger value is rejected like a non-finite one, so no budget can reach arithmetic or a container env as inf, and

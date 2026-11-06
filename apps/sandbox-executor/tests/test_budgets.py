@@ -4,6 +4,7 @@ import unittest
 import pytest
 from sandbox_executor.budgets import (
     DEFAULT_ENTROPY_BUDGET,
+    DEFAULT_TURN_SECONDS,
     ENV_STAGE_BUDGET_MINUTES,
     ENV_STAGE_BUDGET_SECONDS,
     ENV_TURN_STALL,
@@ -33,7 +34,8 @@ class FakeClock:
 class TestBudgets(unittest.TestCase):
     def test_defaults(self):
         budgets = load_budgets({})
-        self.assertEqual(budgets.turn.turn_seconds, 300)
+        self.assertEqual(DEFAULT_TURN_SECONDS, 3600.0)
+        self.assertEqual(budgets.turn.turn_seconds, 3600)
         self.assertEqual(budgets.turn.stall_seconds, 90)
         self.assertEqual(budgets.stage_seconds("intent"), 600)
         self.assertEqual(budgets.stage_seconds("plan"), 2100)
@@ -63,7 +65,7 @@ class TestBudgets(unittest.TestCase):
         for raw in ("abc", "-5", "0", "nan", "inf", ""):
             with self.subTest(raw=raw), self.assertNoLogs("sandbox_executor.budgets", level="ERROR"):
                 budgets = load_budgets({ENV_TURN_TIMEOUT: raw, ENV_STAGE_BUDGET_MINUTES["execute"]: raw})
-                self.assertEqual(budgets.turn.turn_seconds, 300)
+                self.assertEqual(budgets.turn.turn_seconds, 3600)
                 self.assertEqual(budgets.stage_seconds("execute"), 2700)
 
     def test_values_above_the_bound_keep_defaults_after_conversion(self):
@@ -82,7 +84,7 @@ class TestBudgets(unittest.TestCase):
             self.assertIn(next(iter(env)), logs.output[0])
             self.assertNotIn(next(iter(env.values())), logs.output[0])
             self.assertEqual(budgets.stage_seconds("plan"), 2100)
-            self.assertEqual(budgets.turn.turn_seconds, 300)
+            self.assertEqual(budgets.turn.turn_seconds, 3600)
             timer = StageTimer("plan", budgets.stage_seconds("plan"), clock=FakeClock())
             self.assertEqual(stage_budget_handdown_env(timer), {ENV_STAGE_BUDGET_SECONDS: "2040"})
         self.assertEqual(load_budgets({plan: str(MAX_BUDGET_SECONDS / 60)}).stage_seconds("plan"), MAX_BUDGET_SECONDS)

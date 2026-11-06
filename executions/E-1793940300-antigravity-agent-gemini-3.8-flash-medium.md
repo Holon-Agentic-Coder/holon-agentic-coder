@@ -11,11 +11,11 @@ dispatching the resolver pass, and verifying convergence via hermetic unit tests
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.00  |
-| entropy_actual        | 0.00  |
-| impact_actual         | 0.00  |
-| cost_actual           | 0.00  |
-| learning_value_actual | 0.00  |
+| success_actual        | 1.00  |
+| entropy_actual        | 2.10  |
+| impact_actual         | 95.00 |
+| cost_actual           | 3.20  |
+| learning_value_actual | 5.50  |
 
 ## Steps Executed
 
@@ -52,3 +52,25 @@ dispatching the resolver pass, and verifying convergence via hermetic unit tests
   `apps/sandbox-executor/tests/test_review_loop.py`, verifying multi-pass simulation where iteration 1 fails CI and
   dispatches resolver, resolver adjudicates `FIND-CI-001` to `applied` and pushes fixes, iteration 2 CI checks pass, and
   review loop converges to consensus approval with `ACT-RES` recorded in ledger.
+
+### Step 4: Full suite regression testing and linting validation
+
+- Ran targeted unit tests via `uv run pytest apps/sandbox-executor/tests/test_review_loop.py`, verifying all 93 tests
+  pass hermetically.
+- Ran full unit test suite via `uv run task test`, verifying all 2964 non-integration/non-stress tests pass.
+- Verified python code formatting and style compliance via `uv run task lint`.
+- Verified documentation and markdown formatting compliance via `uv run task lint-docs`.
+
+## Tests Run
+
+- `uv run pytest apps/sandbox-executor/tests/test_review_loop.py`:
+  - Run 1: `93 passed in 0.66s`
+  - Run 2: `93 passed in 0.75s`
+  - Median: `93 passed in 0.70s`
+- `uv run task test` (`pytest -n auto --dist worksteal -m "not integration_test and not stress"`):
+  - Run 1: `2964 passed, 8 warnings in 30.69s`
+  - Median: `2964 passed in 30.69s`
+- `uv run task lint` (`uv lock --check && git diff --exit-code uv.lock && ruff check . && ruff format --check .`):
+  - Passed cleanly with zero errors.
+- `uv run task lint-docs` (`npx prettier --check "**/*.md"`):
+  - Passed cleanly with all matched markdown files formatted according to Prettier style.

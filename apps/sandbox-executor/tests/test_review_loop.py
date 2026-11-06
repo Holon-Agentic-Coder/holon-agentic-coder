@@ -2132,6 +2132,7 @@ def test_clean_review_with_pending_ci_dispatches_resolver_when_ci_fails(tmp_path
 
 def test_review_approved_with_failed_ci_dispatches_resolver_with_finding_ci(tmp_path):
     from sandbox_executor.flow import run_review_loop
+
     from tests.review_fakes import FakeEnsemble, clean_reviewer
 
     resolver_calls = []
@@ -2174,6 +2175,7 @@ def test_review_resolver_adjudicates_ci_failure_and_converges_to_approval(tmp_pa
     from sandbox_executor.flow import run_review_loop
     from sandbox_executor.review_ensemble import ConsensusVerdict
     from sandbox_executor.review_report import FindingDisposition
+
     from tests.review_fakes import FakeEnsemble, clean_reviewer
 
     resolver_calls = []
@@ -2236,6 +2238,5 @@ def test_review_resolver_adjudicates_ci_failure_and_converges_to_approval(tmp_pa
 
     res_rows = _rows(tmp_path, "ACT-RES")
     assert any(
-        r.get("review_finding_ids") == ["FIND-CI-001"] and r.get("review_disposition") == "applied"
-        for r in res_rows
+        r.get("review_finding_ids") == ["FIND-CI-001"] and r.get("review_disposition") == "applied" for r in res_rows
     )

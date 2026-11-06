@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-3d1f9b09",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-06T08:50:16.597733+00:00",
+  "updated_ts": "2026-11-06T08:50:16.597733+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-1793888811-875d8dc6"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "test",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1793869839-stage-4-resolver-review-loop-converges/P-1793869856-antigravity-agent-gemini-4-argon/E-1793871414-antigravity-agent-gemini-4-argon/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop executed for I-1793869839-stage-4-resolver-review-loop-converges/P-1793869856-antigravity-agent-gemini-4-argon/E-1793871414-antigravity-agent-gemini-4-argon/_",
+    "symptoms": [
+      "Consensus failed: findings=['FIND-CI-001', 'FIND-R3-001-01', 'FIND-R3-001-02', 'FIND-R3-001-03']"
+    ]
+  }
+}

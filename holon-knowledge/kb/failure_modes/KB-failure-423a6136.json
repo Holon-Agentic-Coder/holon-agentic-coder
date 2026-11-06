@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-423a6136",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-06T08:50:16.434078+00:00",
+  "updated_ts": "2026-11-06T08:50:16.434078+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1792372654-antigravity-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in 85",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "PR Review Loop halted without consensus after 25 iteration(s)",
+    "symptoms": []
+  }
+}

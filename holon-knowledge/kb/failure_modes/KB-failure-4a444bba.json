@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-4a444bba",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-06T08:50:16.592594+00:00",
+  "updated_ts": "2026-11-06T08:50:16.592594+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1793888808-3a50479b"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1793869839-stage-4-resolver-review-loop-converges/P-1793869856-antigravity-agent-gemini-4-argon/E-1793871414-antigravity-agent-gemini-4-argon/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R3-001-01",
+    "symptoms": [
+      "_commit_and_push_resolution commits stray worktree changes when all findings are rejected and stamps initial_head onto applied findings when the worktree is clean."
+    ]
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-2f08c688",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-06T08:50:16.605074+00:00",
+  "updated_ts": "2026-11-06T08:50:16.605074+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1793926275-199eb3f1"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1793925076-increase-default-review-iteration-stage-budget-to-2-hours/P-1793925096-antigravity-agent-gemini-4-argon/E-1793925366-antigravity-agent-gemini-4-argon/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 reviewer 3 completed",
+    "symptoms": []
+  }
+}

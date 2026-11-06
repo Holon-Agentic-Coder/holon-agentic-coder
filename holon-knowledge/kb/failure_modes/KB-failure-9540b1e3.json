@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-9540b1e3",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-06T08:50:16.503682+00:00",
+  "updated_ts": "2026-11-06T08:50:16.503682+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1792480633-antigravity-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1792480378-audit-and-remediate-documentation-gaps/P-1792480383-antigravity-agent-gemini-3.8-flash-medium/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "PR Review Loop halted without consensus after 25 iteration(s)",
+    "symptoms": []
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-c26ee35c",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-06T08:50:16.585432+00:00",
+  "updated_ts": "2026-11-06T08:50:16.585432+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-BUDGET-1793353016-7e32ee00"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "budget",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in executions/E-1793350313-antigravity-agent-gemini-3.8-flash.md",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "execute stage stopped: stage budget exceeded and the implementation turn did not finish (partial code and execution notes salvaged)",
+    "symptoms": [
+      "execute stage budget of 2700 s exceeded after 2700.9 s; stage elapsed 2701.9 s"
+    ]
+  }
+}

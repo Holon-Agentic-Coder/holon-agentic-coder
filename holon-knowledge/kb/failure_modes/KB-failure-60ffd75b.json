@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-60ffd75b",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-06T08:50:16.583945+00:00",
+  "updated_ts": "2026-11-06T08:50:16.583945+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "E-1793350313-antigravity-agent-gemini-3.8-flash"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1793340032-split-cli-into-self-registering-command-modules/P-1793340046-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Plan execution stopped: execute stage budget of 2700 s exceeded after 2700.9 s; the implementation turn did not finish (partial code and execution notes salvaged)",
+    "symptoms": []
+  }
+}

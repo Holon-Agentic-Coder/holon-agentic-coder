@@ -6233,3 +6233,67 @@ class TestStage5PromotedArtifactsCommit:
         mock_promote.assert_called_once()
         assert mock_promote.call_args.kwargs["dry_run"] is True
         assert git("log", "-1", "--format=%s", execution_branch).strip() == "execution change"
+
+    def test_stage5_promoted_candidates_zero_churn_when_facts_exist(self, tmp_path):
+        """When promoted candidates correspond to pre-existing unchanged facts, 0 commits are created."""
+
+        def git(*args: str) -> str:
+            return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True).stdout
+
+        execution_branch = "I-100-intent/P-200-plan/E-300-exec/_"
+        calibrated_branch = "I-100-intent/P-200-plan/E-300-exec/calibrated"
+        self._setup_repo(tmp_path, execution_branch)
+
+        # Pre-create and commit KB and WB facts on execution branch
+        kb_file = tmp_path / "holon-knowledge" / "kb" / "patterns" / "KB-existing.json"
+        wb_file = tmp_path / "holon-knowledge" / "wisdom" / "heuristics" / "WB-existing.json"
+        kb_file.parent.mkdir(parents=True, exist_ok=True)
+        wb_file.parent.mkdir(parents=True, exist_ok=True)
+        kb_file.write_text('{"kb_id": "KB-existing"}\n', encoding="utf-8")
+        wb_file.write_text('{"wb_id": "WB-existing"}\n', encoding="utf-8")
+        git("add", "holon-knowledge")
+        git("commit", "-q", "-m", "pre-existing facts")
+
+        def fake_run_calibrate(**_kwargs):
+            git("checkout", "-q", "-b", calibrated_branch)
+            (tmp_path / "plans").mkdir(exist_ok=True)
+            (tmp_path / "plans" / "P-200-plan_calibration.md").write_text("# Calibration\n", encoding="utf-8")
+            git("add", "plans")
+            git("commit", "-q", "-m", "calibration report")
+            report = MagicMock()
+            report.calibrated_branch = calibrated_branch
+            report.to_dict.return_value = {"calibrated_branch": calibrated_branch}
+            return report
+
+        def fake_reconcile(**kwargs):
+            _append_jsonl(Path(kwargs["ledger_path"]), {"entry_type": "action", "action_id": "ACT-RECON-1"})
+
+        def fake_promote(index_db, kb_dir, wb_dir, min_trials=2, dry_run=False):
+            return [
+                {"kb_id": "KB-existing", "persisted_path": str(kb_file)},
+                {"wb_id": "WB-existing", "persisted_path": str(wb_file)},
+            ]
+
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch=execution_branch,
+            plan_branch="I-100-intent/P-200-plan/_",
+            dry_run=False,
+            skip_push=True,
+        )
+        with (
+            patch("sandbox_executor.flow.run_calibrate", side_effect=fake_run_calibrate),
+            patch("sandbox_executor.flow.reconcile_records", side_effect=fake_reconcile),
+            patch("sandbox_executor.flow.promote_pending_candidates", side_effect=fake_promote),
+        ):
+            res = run_calibrate_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        all_logs = git("log", "--format=%s", calibrated_branch)
+        assert "record stage 5 promoted knowledge and wisdom" not in all_logs
+        assert git("status", "--porcelain").strip() == ""
+        assert any(
+            "Stage 5 promoted knowledge/wisdom artifacts unchanged: zero modifications to commit." in msg
+            for msg in ctx.logs
+        )
+

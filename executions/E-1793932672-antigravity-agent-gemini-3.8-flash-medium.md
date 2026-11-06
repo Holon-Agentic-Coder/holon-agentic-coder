@@ -14,11 +14,11 @@ settle before deciding consensus.
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.98  |
-| entropy_actual        | 1.90  |
-| impact_actual         | 70.00 |
-| cost_actual           | 3.50  |
-| learning_value_actual | 4.50  |
+| success_actual        | 0.97  |
+| entropy_actual        | 2.50  |
+| impact_actual         | 88.00 |
+| cost_actual           | 4.70  |
+| learning_value_actual | 6.00  |
 
 ## Steps Executed
 
@@ -47,4 +47,12 @@ settle before deciding consensus.
   on during post-review gating and achieves consensus approval once green.
 - Added `test_clean_review_with_pending_ci_dispatches_resolver_when_ci_fails` verifying failed settled CI records
   `FIND-CI-001` and dispatches the resolver.
+
+### Step 3: Update existing flow tests in `test_flow.py`
+
+- Inspected existing registration delay and timeout tests in `apps/sandbox-executor/tests/test_flow.py`, confirming
+  `test_checks_registering_after_a_delay_burn_no_review_iterations` and
+  `test_guard_refusal_is_reported_as_its_own_reason_without_a_ci_wait` align with post-review CI gating.
+- Added `test_reviewer_findings_bypass_ci_registration_wait_even_when_tests_unmeasured` verifying that when reviewers
+  object, `_wait_for_ci_registration` is bypassed and zero sleep occurs even if tests were unmeasured.
 

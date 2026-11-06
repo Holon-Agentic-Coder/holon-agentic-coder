@@ -4236,6 +4236,23 @@ class TestUnmeasuredTestsStopEarly:
         sleep.assert_not_called()
         assert self._ledger_rows(tmp_path) == []
 
+    def test_reviewer_findings_bypass_ci_registration_wait_even_when_tests_unmeasured(self, tmp_path):
+        from tests.review_fakes import FakeEnsemble, objecting_reviewer
+
+        ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": None})
+
+        res, probe, sleep = self._loop(
+            ctx,
+            lambda *a, **k: dict(self.LOCAL),
+            ci_registration_timeout=600.0,
+            run_ensemble_fn=FakeEnsemble([objecting_reviewer(1)]),
+        )
+
+        assert res["consensus"]["approved"] is False
+        sleep.assert_not_called()
+        assert probe.call_count == 1
+        assert not any("FIND-CI" in fid for fid in res["findings"])
+
     @pytest.mark.parametrize(
         ("explicit", "env", "expected"),
         [

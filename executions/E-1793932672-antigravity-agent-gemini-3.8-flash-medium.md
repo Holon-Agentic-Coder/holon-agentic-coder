@@ -14,11 +14,11 @@ settle before deciding consensus.
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.95  |
-| entropy_actual        | 1.20  |
-| impact_actual         | 45.00 |
-| cost_actual           | 2.00  |
-| learning_value_actual | 2.50  |
+| success_actual        | 0.98  |
+| entropy_actual        | 1.90  |
+| impact_actual         | 70.00 |
+| cost_actual           | 3.50  |
+| learning_value_actual | 4.50  |
 
 ## Steps Executed
 
@@ -36,4 +36,15 @@ settle before deciding consensus.
 - Dispatches resolver immediately with reviewer findings and infrastructure findings (such as `FIND-CI` on settled
   failure).
 - Updated module docstrings following Australian English spelling conventions.
+
+### Step 2: Implement hermetic unit tests in `test_review_loop.py`
+
+- Added `test_review_findings_with_pending_ci_bypasses_wait_and_omits_find_ci` verifying zero CI wait sleep occurs,
+  the resolver is invoked immediately, and `FIND-CI` is omitted when checks are pending.
+- Added `test_review_findings_with_failed_ci_includes_find_ci` verifying `FIND-CI-001` is attached to findings passed
+  to the resolver when CI has failed.
+- Added `test_clean_review_with_pending_ci_waits_for_settlement_and_approves_when_green` verifying settled CI is waited
+  on during post-review gating and achieves consensus approval once green.
+- Added `test_clean_review_with_pending_ci_dispatches_resolver_when_ci_fails` verifying failed settled CI records
+  `FIND-CI-001` and dispatches the resolver.
 

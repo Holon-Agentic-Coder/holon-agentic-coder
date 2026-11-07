@@ -14,11 +14,11 @@ and adding comprehensive real CLI tests in `apps/sandbox-executor/tests/test_mod
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.00  |
-| entropy_actual        | 0.00  |
-| impact_actual         | 0.00  |
-| cost_actual           | 0.00  |
-| learning_value_actual | 0.00  |
+| success_actual        | 1.00  |
+| entropy_actual        | 2.80  |
+| impact_actual         | 88.00 |
+| cost_actual           | 9.50  |
+| learning_value_actual | 7.50  |
 
 ## Steps Executed
 
@@ -61,3 +61,32 @@ and adding comprehensive real CLI tests in `apps/sandbox-executor/tests/test_mod
 - Updated pre-flight unknown error hints in `apps/sandbox-executor/src/sandbox_executor/preflight.py` advising operators
   to run `holon models` to verify runner compatibility.
 - Verified that all 435 unit tests in `test_agent_defaults.py` and `test_cli.py` pass cleanly.
+
+### Step 4: Comprehensive Real Tests in test_models_cli.py & Test Suite Verification
+
+- Implemented comprehensive mock-free test suite `apps/sandbox-executor/tests/test_models_cli.py` covering 15 test
+  scenarios.
+- Tested real CLI dispatch and dynamic table rendering for `holon models` and `holon list-models`.
+- Verified `--agent` filtering across `antigravity`, `claude`, and `pi`, including case-insensitivity handling.
+- Validated `--json` machine-readable output conforming to required capability schema.
+- Asserted zero secret leakage by confirming credential values injected into environment variables never appear in CLI
+  table or JSON outputs.
+- Verified validation and informative diagnostic error reporting for unrecognised agent runners.
+- Verified doctor integration ensuring both text output and JSON diagnostics propose running `holon models`.
+- Confirmed suffix and effort coordination in `normalise_model_and_effort` and opaque presence detection values in
+  `detect_runner_auth_status`.
+- Executed unit tests, related test suites, the full repository test suite, and repo linting/docs quality gates.
+
+## Tests Run
+
+- `uv run pytest apps/sandbox-executor/tests/test_models_cli.py`:
+  - Run 1: `15 passed in 0.08s`
+  - Median: `15 passed in 0.08s`
+- `uv run pytest apps/sandbox-executor/tests/test_agent_defaults.py apps/sandbox-executor/tests/test_cli.py`:
+  - Run 1: `435 passed in 1.98s`
+  - Median: `435 passed in 1.98s`
+- `uv run task test` (`pytest -n auto --dist worksteal -m "not integration_test and not stress"`):
+  - Run 1: `3012 passed, 8 warnings, 651 subtests passed in 30.45s`
+  - Median: `3012 passed, 8 warnings, 651 subtests passed in 30.45s`
+- `uv run task check` (`task lint && task lint-docs`):
+  - Passed cleanly with exit code `0` (114 files formatted, zero errors).

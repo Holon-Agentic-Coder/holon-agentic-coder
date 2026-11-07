@@ -2521,7 +2521,7 @@ class TestFlowRoleDispatch:
         for call in agents.calls:
             assert call["runner"] == "claude-agent"
             assert call["model"] == "claude-opus-5-5"
-            assert call["repo_dir"] == str(host)
+            assert call["target_worktree"] == str(host)
         assert agents.calls[1]["args"] == [ctx.intent_branch, "claude-agent", "claude-opus-5-5"]
         assert agents.calls[2]["args"] == [ctx.plan_branch, "claude-agent", "claude-opus-5-5"]
         assert results["intent"].status == StageStatus.SUCCESS
@@ -5039,7 +5039,7 @@ class TestEntropyBudgetHandoffInFlow:
         """Table-driven: every FlowContext field is either inherited from the parent or reset for the new child."""
         dispatcher = MagicMock()
         parent_values: dict[str, Any] = {
-            "repo_dir": "/srv/parent-repo",
+            "target_worktree": "/srv/parent-repo",
             "agent": "codex",
             "model": "parent-only-model",
             "dry_run": True,

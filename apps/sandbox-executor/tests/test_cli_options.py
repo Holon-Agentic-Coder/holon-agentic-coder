@@ -1,7 +1,6 @@
 """Unit tests for CLI option parsing of --target-worktree and rejection of --repo-dir."""
 
 import pytest
-
 from sandbox_executor.cli import build_parser
 
 

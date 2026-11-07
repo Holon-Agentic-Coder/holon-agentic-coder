@@ -560,7 +560,9 @@ def verify_calibration_freshness(
     Returns:
         True if the report is fresh, False if stale or missing SHA.
     """
-    is_stale, _, _ = is_calibration_stale(report_path, current_head_ref=current_head_ref, target_worktree=target_worktree)
+    is_stale, _, _ = is_calibration_stale(
+        report_path, current_head_ref=current_head_ref, target_worktree=target_worktree
+    )
     return not is_stale
 
 
@@ -1601,7 +1603,9 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 )
         else:
             start_point = (
-                report.evaluated_commit_sha or resolve_git_ref(execution_branch, target_worktree=target_worktree) or execution_branch
+                report.evaluated_commit_sha
+                or resolve_git_ref(execution_branch, target_worktree=target_worktree)
+                or execution_branch
             )
             res_co = run_git(
                 ["checkout", "-b", calibrated_branch, start_point],

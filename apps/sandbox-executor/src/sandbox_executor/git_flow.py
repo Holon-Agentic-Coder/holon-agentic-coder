@@ -123,7 +123,9 @@ def _resolve_base_git_dir(target_worktree: str) -> str:
     Raises:
         RuntimeError: If no valid Git repository can be found.
     """
-    if os.path.exists(target_worktree) and (is_bare_repository(target_worktree) or (Path(target_worktree) / ".git").exists()):
+    if os.path.exists(target_worktree) and (
+        is_bare_repository(target_worktree) or (Path(target_worktree) / ".git").exists()
+    ):
         return os.path.abspath(target_worktree)
 
     curr = Path(target_worktree).resolve()

@@ -1662,7 +1662,15 @@ def test_standalone_loop_labels_still_start_at_one(tmp_path):
 
 def _entrypoint_loop_kwargs(tmp_path: Path, *extra: str) -> dict:
     (tmp_path / ".git").mkdir(exist_ok=True)
-    argv = ["review_loop", EXEC_TARGET, "fake-agent", "fake-model", f"--target-worktree={tmp_path}", "--dry-run", *extra]
+    argv = [
+        "review_loop",
+        EXEC_TARGET,
+        "fake-agent",
+        "fake-model",
+        f"--target-worktree={tmp_path}",
+        "--dry-run",
+        *extra,
+    ]
     with (
         patch.object(sys, "argv", argv),
         patch("sandbox_executor.entrypoint.review_loop.check_and_resolve_stage_conflicts"),

@@ -58,6 +58,13 @@ from sandbox_executor.flow import (
     save_checkpoint,
 )
 from sandbox_executor.git import EMPTY_DIFF_STATUS
+from sandbox_executor.git_flow import (
+    derive_worktree_layout,
+    ensure_worktree,
+    is_bare_repository,
+    is_working_tree,
+    prune_worktrees,
+)
 from sandbox_executor.ledger import parse_commit_trailers
 from sandbox_executor.review_ensemble import (
     ParsedTrailer,
@@ -6296,3 +6303,165 @@ class TestStage5PromotedArtifactsCommit:
             "Stage 5 promoted knowledge/wisdom artifacts unchanged: zero modifications to commit." in msg
             for msg in ctx.logs
         )
+
+
+class TestFlowWorktreeHermetic:
+    """Hermetic integration tests for git worktree provisioning, pruning, and reuse."""
+
+    @pytest.fixture
+    def hermetic_repos(self, tmp_path: Path) -> dict[str, Path]:
+        """Initialise real origin, bare, and worktree git repositories."""
+        root_dir = tmp_path / "hermetic_env"
+        root_dir.mkdir(parents=True, exist_ok=True)
+
+        src_dir = root_dir / "src_repo"
+        src_dir.mkdir()
+        subprocess.run(["git", "init"], cwd=str(src_dir), check=True, capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.name", "Hermetic Test"],
+            cwd=str(src_dir),
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.email", "test@hermetic.local"],
+            cwd=str(src_dir),
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(["git", "checkout", "-B", "main"], cwd=str(src_dir), check=True, capture_output=True)
+
+        readme = src_dir / "README.md"
+        readme.write_text("# Hermetic Repository\n", encoding="utf-8")
+        subprocess.run(["git", "add", "README.md"], cwd=str(src_dir), check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "Initial commit on main"],
+            cwd=str(src_dir),
+            check=True,
+            capture_output=True,
+        )
+
+        bare_dir = root_dir / "bare.git"
+        subprocess.run(["git", "clone", "--bare", str(src_dir), str(bare_dir)], check=True, capture_output=True)
+
+        return {"root": root_dir, "src": src_dir, "bare": bare_dir}
+
+    def test_is_bare_and_is_working_tree(self, hermetic_repos: dict[str, Path], tmp_path: Path) -> None:
+        """Verify is_bare_repository and is_working_tree on bare, worktree, and absent paths."""
+        assert is_bare_repository(str(hermetic_repos["bare"])) is True
+        assert is_working_tree(str(hermetic_repos["bare"])) is False
+
+        assert is_bare_repository(str(hermetic_repos["src"])) is False
+        assert is_working_tree(str(hermetic_repos["src"])) is True
+
+        absent_path = str(tmp_path / "does_not_exist")
+        assert is_bare_repository(absent_path) is False
+        assert is_working_tree(absent_path) is False
+
+    def test_derive_worktree_layout(self, hermetic_repos: dict[str, Path]) -> None:
+        """Verify canonical worktree path and branch derivations."""
+        wt_path, branch = derive_worktree_layout(str(hermetic_repos["bare"]), "my-task")
+        assert branch == "flow-my-task"
+        assert os.path.basename(wt_path) == "flow-my-task"
+        assert os.path.dirname(wt_path) == str(hermetic_repos["root"].resolve())
+
+    def test_auto_create_worktree_from_bare_repository(self, hermetic_repos: dict[str, Path]) -> None:
+        """Verify automatic worktree creation and file checkout when invoked on bare repository."""
+        bare_path = str(hermetic_repos["bare"])
+        wt_dir = ensure_worktree(bare_path, slug="test-auto-provision", target_branch="main")
+
+        assert os.path.isdir(wt_dir)
+        assert Path(wt_dir).name == "flow-test-auto-provision"
+        assert is_working_tree(wt_dir) is True
+        assert (Path(wt_dir) / "README.md").read_text(encoding="utf-8") == "# Hermetic Repository\n"
+
+        proc = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=wt_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert proc.stdout.strip() == "flow-test-auto-provision"
+
+    def test_self_heal_stale_worktree_records_after_directory_deletion(self, hermetic_repos: dict[str, Path]) -> None:
+        """Verify self-healing via prune_worktrees after deleting a worktree folder without git worktree remove."""
+        bare_path = str(hermetic_repos["bare"])
+        wt_dir = ensure_worktree(bare_path, slug="test-stale-heal", target_branch="main")
+        assert os.path.isdir(wt_dir)
+
+        shutil.rmtree(wt_dir)
+        assert not os.path.exists(wt_dir)
+
+        recreated_dir = ensure_worktree(bare_path, slug="test-stale-heal", target_branch="main")
+        assert os.path.isdir(recreated_dir)
+        assert is_working_tree(recreated_dir) is True
+        assert (Path(recreated_dir) / "README.md").read_text(encoding="utf-8") == "# Hermetic Repository\n"
+
+    def test_idempotent_attach_to_existing_branch(self, hermetic_repos: dict[str, Path]) -> None:
+        """Verify worktree attaches to pre-existing branch without collision errors."""
+        bare_path = str(hermetic_repos["bare"])
+        subprocess.run(
+            ["git", "branch", "flow-test-reuse", "main"],
+            cwd=bare_path,
+            check=True,
+            capture_output=True,
+        )
+
+        wt_dir = ensure_worktree(bare_path, slug="test-reuse", target_branch="main")
+        assert os.path.isdir(wt_dir)
+        assert is_working_tree(wt_dir) is True
+
+        wt_dir_again = ensure_worktree(bare_path, slug="test-reuse", target_branch="main")
+        assert wt_dir_again == wt_dir
+
+    def test_ensure_worktree_validates_empty_slug(self, hermetic_repos: dict[str, Path]) -> None:
+        """Verify ensure_worktree rejects blank slug with ValueError."""
+        with pytest.raises(ValueError, match="Intent slug must be non-empty"):
+            ensure_worktree(str(hermetic_repos["bare"]), slug="   ")
+
+    def test_prune_worktrees_directly(self, hermetic_repos: dict[str, Path]) -> None:
+        """Verify prune_worktrees executes cleanly on bare and missing paths."""
+        prune_worktrees(str(hermetic_repos["bare"]))
+        prune_worktrees("/non/existent/path")
+
+    def test_flow_cli_auto_creates_worktree_from_bare_repo(
+        self, hermetic_repos: dict[str, Path], tmp_path: Path
+    ) -> None:
+        """Verify holon flow CLI detects bare repo and provisions worktree in dry-run mode."""
+        intent_file = tmp_path / "test_intent.json"
+        intent_file.write_text(
+            json.dumps({"slug": "auto-bare-cli", "target_branch": "main"}),
+            encoding="utf-8",
+        )
+
+        with (
+            patch("sandbox_executor.cli.run_flow_pipeline") as mock_pipeline,
+            patch("sys.exit") as mock_exit,
+            patch(
+                "sys.argv",
+                [
+                    "holon",
+                    "flow",
+                    str(intent_file),
+                    "--agent",
+                    "antigravity-agent",
+                    "--model",
+                    "gemini-3.8-flash-medium",
+                    "--dry-run",
+                    "--json",
+                    "--repo-dir",
+                    str(hermetic_repos["bare"]),
+                ],
+            ),
+        ):
+            mock_pipeline.return_value = {"status": "ok"}
+            cli_main()
+
+        mock_pipeline.assert_called_once()
+        called_ctx = mock_pipeline.call_args[1]["context"]
+        assert called_ctx.dry_run is True
+        assert called_ctx.intent_data["slug"] == "auto-bare-cli"
+        assert is_working_tree(called_ctx.repo_dir) is True
+        assert Path(called_ctx.repo_dir).name == "flow-auto-bare-cli"
+        mock_exit.assert_called_with(0)

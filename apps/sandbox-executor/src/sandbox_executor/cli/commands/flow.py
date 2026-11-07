@@ -6,6 +6,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 from typing import Any
 
@@ -18,6 +19,7 @@ from sandbox_executor.cli.options import (
     _TOKEN_REDUCE_HELP,
 )
 from sandbox_executor.flow import FlowContext, FlowStage
+from sandbox_executor.git_flow import ensure_worktree, is_bare_repository, is_working_tree
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 
 logger = logging.getLogger(__name__)
@@ -288,6 +290,57 @@ def _report_flow_summary(context: Any, result_dict: dict[str, Any], json_output:
             print(f"To approve manually, run: {review_res.payload['human_approval_command']}\n")
 
 
+def _extract_flow_slug(
+    args: argparse.Namespace,
+    context: Any | None,
+    intent_data: dict[str, Any],
+) -> str:
+    """Extract or derive a sanitised slug identifier for flow worktree naming."""
+    slug: str | None = None
+    if intent_data and isinstance(intent_data, dict):
+        slug = intent_data.get("slug")
+    if not slug and context is not None:
+        slug = getattr(context, "slug", None)
+        if not slug and hasattr(context, "intent_data") and isinstance(context.intent_data, dict):
+            slug = context.intent_data.get("slug")
+    if not slug and getattr(args, "intent_file", None):
+        stem = os.path.splitext(os.path.basename(args.intent_file))[0]
+        slug = re.sub(r"[^a-zA-Z0-9_\-]+", "-", stem).strip("-")
+    if not slug:
+        repo_base = os.path.basename(os.path.abspath(getattr(args, "repo_dir", ".") or "."))
+        slug = re.sub(r"[^a-zA-Z0-9_\-]+", "-", repo_base).strip("-") or "task"
+    return slug
+
+
+def _ensure_flow_worktree(
+    args: argparse.Namespace,
+    context: Any | None,
+    intent_data: dict[str, Any],
+) -> None:
+    """Auto-provision or attach a dedicated Git worktree if repo_dir is bare or absent."""
+    repo_dir = getattr(args, "repo_dir", ".") or "."
+    if is_working_tree(repo_dir) and not is_bare_repository(repo_dir):
+        return
+
+    slug = _extract_flow_slug(args, context, intent_data)
+    target_branch = "origin/main"
+    if intent_data and isinstance(intent_data, dict) and intent_data.get("target_branch"):
+        target_branch = str(intent_data["target_branch"])
+    elif (
+        context is not None
+        and getattr(context, "intent_data", None)
+        and isinstance(context.intent_data, dict)
+        and context.intent_data.get("target_branch")
+    ):
+        target_branch = str(context.intent_data["target_branch"])
+
+    worktree_path = ensure_worktree(repo_dir, slug=slug, target_branch=target_branch)
+    logger.info("Provisioned or attached git worktree for flow '%s' at: %s", slug, worktree_path)
+    args.repo_dir = worktree_path
+    if context is not None:
+        context.repo_dir = worktree_path
+
+
 def run(args: argparse.Namespace) -> int | None:
     """Execute the flow command."""
     try:
@@ -298,6 +351,8 @@ def run(args: argparse.Namespace) -> int | None:
         if resolved is None:
             return None
         context, intent_data, flow_agent, flow_model = resolved
+
+        _ensure_flow_worktree(args, context, intent_data)
 
         if not _check_dry_run_and_preflight(args, context, flow_agent, flow_model):
             return None

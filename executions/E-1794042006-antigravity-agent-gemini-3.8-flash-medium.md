@@ -37,3 +37,15 @@ and adding comprehensive real CLI tests in `apps/sandbox-executor/tests/test_mod
   presence of Tier 1 secret bundle, Tier 2 API keys, Tier 3 session paths, Tier 4 harness markers, or local gateways
   without returning or logging sensitive tokens.
 - Validated clean passes for `uv run pytest apps/sandbox-executor/tests/test_agent_defaults.py` and `uv run ruff check`.
+
+### Step 2: CLI Command Implementation holon models and Alias in cli/commands/models.py & cli/main.py
+
+- Implemented `apps/sandbox-executor/src/sandbox_executor/cli/commands/models.py` with discovery `ORDER = 75`.
+- Registered `models` subcommand alongside its alias `list-models`, supporting `--agent` runner filtering and `--json`
+  output flags.
+- Implemented formatted dynamic table generation displaying `Runner`, `Canonical Model`, `Aliases`,
+  `Supported Effort Levels`, `Fallback Tier`, and `Auth / Session Detection`.
+- Added validation for unknown runners in `--agent` with informative error messaging listing supported runners.
+- Created `apps/sandbox-executor/src/sandbox_executor/cli/main.py` providing clean top-level CLI re-exports and
+  standalone entrypoint invocation.
+- Verified manual invocations of `uv run holon models`, `uv run holon list-models`, and `--json` filtering.

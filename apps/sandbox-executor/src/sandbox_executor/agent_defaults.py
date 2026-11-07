@@ -177,8 +177,7 @@ def get_model_capabilities(agent: str | None = None) -> list[ModelCapability]:
     return [
         cap
         for cap in RUNNER_CAPABILITIES
-        if normalise_agent_id(cap.runner) == norm
-        or (norm in ("local", "local-model") and cap.runner == "local-model")
+        if normalise_agent_id(cap.runner) == norm or (norm in ("local", "local-model") and cap.runner == "local-model")
     ]
 
 
@@ -212,9 +211,7 @@ def _coordinate_gemini_effort(canonical: str, effort: str | None) -> tuple[str, 
     return canonical, None
 
 
-def normalise_model_and_effort(
-    agent: str, model: str | None, effort: str | None = None
-) -> tuple[str, str | None]:
+def normalise_model_and_effort(agent: str, model: str | None, effort: str | None = None) -> tuple[str, str | None]:
     """Coordinate canonical model name and effort parameters without collision.
 
     Args:
@@ -323,6 +320,7 @@ def detect_runner_auth_status(agent: str, environ: Mapping[str, str] | None = No
         return "Detected (local gateway)"
 
     return "Missing / Not detected"
+
 
 # Variables whose presence means "running inside a Holon sandbox"; harness detection is off when any is set.
 SANDBOX_GUARD_VARS: tuple[str, ...] = ("HOLON_ROLE", "HOLON_IN_SANDBOX")

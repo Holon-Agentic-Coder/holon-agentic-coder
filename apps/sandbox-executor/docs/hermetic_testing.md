@@ -29,10 +29,10 @@ silence is no longer trusted.
 
 Under sandbox conditions (indicated by `HOLON_ROLE=executor`, `HOLON_IN_SANDBOX=1`, `/.dockerenv`, or `USER=holon`):
 
-1. `get_workspace_dir()` defaults to `~/.holon-sandbox/workspace` when `HOLON_REPO_DIR` is not explicitly set.
+1. `get_workspace_dir()` defaults to `~/.holon-sandbox/workspace` when `HOLON_TARGET_WORKTREE` is not explicitly set.
 2. Entrypoints (`intent_creator.main()`, `planner.main()`, `executor.main()`) invoke
    `cleanup_repo_dir(repo_dir, raise_on_error=True)` upon initialisation.
-3. If a unit test executes an entrypoint without setting `HOLON_REPO_DIR` or patching `get_workspace_dir()`,
+3. If a unit test executes an entrypoint without setting `HOLON_TARGET_WORKTREE` or patching `get_workspace_dir()`,
    `cleanup_repo_dir` deletes `~/.holon-sandbox/workspace`.
 4. As a result, subsequent git operations in the host executor fail (`fatal: not a git repository`), forcing the
    executor into fallback re-initialisation and pushing orphan commits.
@@ -41,13 +41,13 @@ Under sandbox conditions (indicated by `HOLON_ROLE=executor`, `HOLON_IN_SANDBOX=
 
 ## 2. Mandatory Rules for Tests
 
-### Rule 1: Every Role Entrypoint Test Must Pin `HOLON_REPO_DIR` to a Fixture
+### Rule 1: Every Role Entrypoint Test Must Pin `HOLON_TARGET_WORKTREE` to a Fixture
 
 Any unit test invoking `intent_creator.main()`, `planner.main()`, or `executor.main()` MUST:
 
 - Create an isolated temporary directory using `tempfile.TemporaryDirectory()`.
-- Pin the environment variable `HOLON_REPO_DIR` to that temporary directory using
-  `unittest.mock.patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir})`.
+- Pin the environment variable `HOLON_TARGET_WORKTREE` to that temporary directory using
+  `unittest.mock.patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir})`.
 - Patch `get_workspace_dir` to return `tmp_dir`.
 - Patch or scope `cleanup_repo_dir` to ensure cleanup only operates within the fixture.
 
@@ -56,7 +56,7 @@ Example pattern:
 ```python
 with tempfile.TemporaryDirectory() as tmp_dir:
     with (
-        patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
+        patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir}),
         patch("sandbox_executor.entrypoint.intent_creator.get_workspace_dir", return_value=tmp_dir),
         patch("sandbox_executor.entrypoint.intent_creator.cleanup_repo_dir") as mock_cleanup,
     ):
@@ -133,7 +133,7 @@ When verifying tests in an active container environment:
 - **NEVER** run full discovery (`uv run pytest`) directly inside `/home/holon/.holon-sandbox/workspace`.
 - Always verify from an isolated scratch copy:
   ```bash
-  export HOLON_REPO_DIR=/tmp/holon-test-fixture
+  export HOLON_TARGET_WORKTREE=/tmp/holon-test-fixture
   cp -r /home/holon/.holon-sandbox/workspace /tmp/holon-fixture
   cd /tmp/holon-fixture
   uv run task test

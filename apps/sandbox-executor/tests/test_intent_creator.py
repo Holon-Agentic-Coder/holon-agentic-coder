@@ -58,7 +58,7 @@ class TestIntentCreator(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             with (
-                patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
+                patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir}),
                 patch("sandbox_executor.entrypoint.intent_creator.get_workspace_dir", return_value=tmp_dir),
                 patch("builtins.open", side_effect=mock_open_impl),
             ):
@@ -114,7 +114,7 @@ class TestIntentCreator(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             with (
-                patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
+                patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir}),
                 patch("sandbox_executor.entrypoint.intent_creator.get_workspace_dir", return_value=tmp_dir),
                 patch("builtins.open", side_effect=mock_open_impl),
             ):
@@ -170,7 +170,7 @@ class TestIntentCreator(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             with (
-                patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
+                patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir}),
                 patch("sandbox_executor.entrypoint.intent_creator.get_workspace_dir", return_value=tmp_dir),
                 patch("builtins.open", side_effect=mock_open_impl),
             ):
@@ -221,7 +221,7 @@ class TestIntentCreator(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             with (
-                patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
+                patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir}),
                 patch("sandbox_executor.entrypoint.intent_creator.get_workspace_dir", return_value=tmp_dir),
                 patch("builtins.open", side_effect=mock_open_impl),
             ):
@@ -302,7 +302,7 @@ class TestIntentCreator(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as tmp_dir,
-            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir}),
             patch("sandbox_executor.entrypoint.intent_creator.get_workspace_dir", return_value=tmp_dir),
             patch("builtins.open", side_effect=mock_open_impl),
         ):

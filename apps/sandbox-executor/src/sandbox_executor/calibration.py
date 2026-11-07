@@ -430,17 +430,25 @@ def resolve_git_ref(ref_name: str, target_worktree: str = ".") -> str:  # noqa: 
     raise RuntimeError(f"Target git reference '{ref_name}' could not be resolved locally or remotely.")
 
 
-def read_git_file(ref: str, rel_path: str, target_worktree: str = ".") -> str | None:
+def read_git_file(
+    ref: str,
+    rel_path: str,
+    target_worktree: str = ".",
+    repo_dir: str | None = None,
+) -> str | None:
     """Read file content from a specific git ref using `git show <ref>:<path>`.
 
     Args:
         ref: Git reference (branch, tag, or commit SHA).
         rel_path: Relative path to the file within the repository.
         target_worktree: Path to the target git worktree directory.
+        repo_dir: Backward-compatible alias for target_worktree.
 
     Returns:
         File contents as string if successful, None if git show fails.
     """
+    if repo_dir is not None:
+        target_worktree = repo_dir
     clean_ref = ref.strip()
     if not clean_ref:
         return None
@@ -721,7 +729,7 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
     target_ref = execution_branch if execution_branch else "HEAD"
 
     # 1. Search holon-knowledge/ledger/executions.jsonl via git show first, then fallback to disk
-    jsonl_content = read_git_file(target_ref, "holon-knowledge/ledger/executions.jsonl", target_worktree=target_worktree)
+    jsonl_content = read_git_file(target_ref, "holon-knowledge/ledger/executions.jsonl", target_worktree)
     best_record: dict[str, Any] | None = None
     best_rev = -1
 
@@ -1505,12 +1513,13 @@ def format_calibration_report(report_rel: str, target_worktree: str) -> None:
     )
 
 
-def run_calibrate(  # noqa: C901, PLR0912, PLR0915
+def run_calibrate(  # noqa: C901, PLR0912, PLR0913, PLR0915
     execution_branch: str,
     target_worktree: str = ".",
     json_output: bool = False,
     skip_commit: bool = False,
     log_fn: Callable[[str], None] | None = None,
+    repo_dir: str | None = None,
 ) -> CalibrationReport:
     """Execute holon calibrate workflow: checkout calibrated branch, generate & commit report.
 
@@ -1522,6 +1531,7 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
         log_fn: Optional operator-facing log callable (for example ``FlowContext.log``) that
             receives a failed ACT-CAL ledger append warning. When None, the warning goes to the
             module logger only.
+        repo_dir: Backward-compatible alias for target_worktree.
 
     Returns:
         CalibrationReport: Generated calibration report.
@@ -1535,6 +1545,8 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
             cannot run) when ``skip_commit`` is False. Raised before the ACT-CAL ledger append and
             any ``git add`` or ``git commit``, so nothing is recorded, committed or pushed.
     """
+    if repo_dir is not None:
+        target_worktree = repo_dir
     report = generate_calibration(execution_branch, target_worktree=target_worktree)
     report.committed = not skip_commit
     if skip_commit:

@@ -328,6 +328,19 @@ def migrate_checkpoint_data(
     return current_data
 
 
+def _support_legacy_repo_dir(cls: type) -> type:
+    orig_init = cls.__init__
+
+    def __init__(self: Any, *args: Any, repo_dir: str | None = None, **kwargs: Any) -> None:
+        if repo_dir is not None and "target_worktree" not in kwargs and not args:
+            kwargs["target_worktree"] = repo_dir
+        orig_init(self, *args, **kwargs)
+
+    cls.__init__ = __init__
+    return cls
+
+
+@_support_legacy_repo_dir
 @dataclass
 class FlowContext:
     """Carries complete state and configuration across all pipeline stages."""
@@ -5219,7 +5232,7 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
         int: Process exit code: 0 only when the ensemble verdict is APPROVED and the consensus was approved and
         posted (human halt), otherwise 1.
     """
-    target_worktree = getattr(args, "target_worktree", ".")
+    target_worktree = getattr(args, "target_worktree", None) or getattr(args, "repo_dir", ".")
     target = getattr(args, "target", "")
     max_iterations = getattr(args, "max_iterations", 25)
     ensemble_size = getattr(args, "ensemble_size", 3)

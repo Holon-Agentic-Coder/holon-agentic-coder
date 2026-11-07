@@ -75,7 +75,7 @@ class TestReviewLoopEntrypoint:
             "antigravity-agent",
             "gemini-3.8-flash-medium",
             "--max-iterations=5",
-            f"--repo-dir={tmp_path}",
+            f"--target-worktree={tmp_path}",
             "--dry-run",
         ]
 
@@ -119,7 +119,7 @@ class TestReviewLoopEntrypoint:
             "I-100-test/P-200-test/E-300-exec/_",
             "--agent=claude-agent",
             "--model=claude-3-5-sonnet",
-            f"--repo-dir={tmp_path}",
+            f"--target-worktree={tmp_path}",
             "--dry-run",
         ]
 
@@ -152,7 +152,7 @@ class TestReviewLoopEntrypoint:
         test_args = [
             "review_loop",
             "I-100-test",
-            f"--repo-dir={tmp_path}",
+            f"--target-worktree={tmp_path}",
             "--json",
             "--dry-run",
         ]
@@ -184,7 +184,7 @@ class TestReviewLoopEntrypoint:
         test_args = [
             "review_loop",
             "I-100-test",
-            f"--repo-dir={tmp_path}",
+            f"--target-worktree={tmp_path}",
             f"--result-file={result_file}",
             "--skip-post",
             "--dry-run",
@@ -219,7 +219,7 @@ class TestReviewLoopEntrypoint:
         test_args = [
             "review_loop",
             "I-100-test",
-            f"--repo-dir={tmp_path}",
+            f"--target-worktree={tmp_path}",
             f"--result-file={result_file}",
         ]
 
@@ -644,7 +644,7 @@ def test_run_cmd_clone_echo_and_failure_carry_no_token_fragment(clone_leak_env, 
 def test_main_clone_banner_carries_no_token_fragment(clone_leak_env, monkeypatch, tmp_path, capsys):
     sample, argv, _ = clone_leak_env
     monkeypatch.setenv("HOLON_REPO_URL", argv[7])
-    test_args = ["review_loop", "I-100-test", f"--repo-dir={tmp_path}", "--json", "--dry-run"]
+    test_args = ["review_loop", "I-100-test", f"--target-worktree={tmp_path}", "--json", "--dry-run"]
     with (
         patch.object(sys, "argv", test_args),
         patch("sandbox_executor.entrypoint.review_loop.run_cmd"),
@@ -728,7 +728,7 @@ def _run_entrypoint(repo_dir: Path, target: str, fake_git: FakeGitCommands, *ext
         "ensemble_verdict": "APPROVED",
     }
     with (
-        patch.object(sys, "argv", ["review_loop", target, f"--repo-dir={repo_dir}", *extra]),
+        patch.object(sys, "argv", ["review_loop", target, f"--target-worktree={repo_dir}", *extra]),
         patch.dict(os.environ, {"HOLON_REPO_URL": "https://github.com/acme/widgets.git"}),
         patch(f"{ENTRYPOINT}._gh_runner", return_value=run_gh),
         patch(f"{ENTRYPOINT}.run_cmd", side_effect=fake_git),
@@ -823,7 +823,7 @@ def test_failing_resolution_exits_one_before_any_git_command(tmp_path, capsys):
         return subprocess.CompletedProcess(argv, 1, stdout="", stderr="no pull requests found")
 
     with (
-        patch.object(sys, "argv", ["review_loop", "90", f"--repo-dir={tmp_path}", "--json"]),
+        patch.object(sys, "argv", ["review_loop", "90", f"--target-worktree={tmp_path}", "--json"]),
         patch(f"{ENTRYPOINT}._gh_runner", return_value=_failing_gh),
         patch(f"{ENTRYPOINT}.run_cmd", side_effect=fake_git),
         patch(f"{ENTRYPOINT}.run_review_loop") as mock_loop,
@@ -1219,7 +1219,7 @@ def _cli(tmp_path: Path, ensemble, **stub_kwargs) -> int:
 
     _ensemble_ctx(tmp_path)
     args = argparse.Namespace(
-        repo_dir=str(tmp_path),
+        target_worktree=str(tmp_path),
         target=EXEC_TARGET,
         max_iterations=5,
         ensemble_size=3,
@@ -1546,7 +1546,7 @@ def test_entrypoint_exits_one_when_the_consensus_lacks_an_approved_ensemble_verd
     (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
     loop_result = {"target": "I-100-test", "consensus": {"approved": True, "iterations": 1}}
     with (
-        patch.object(sys, "argv", ["review_loop", "I-100-test", f"--repo-dir={tmp_path}"]),
+        patch.object(sys, "argv", ["review_loop", "I-100-test", f"--target-worktree={tmp_path}"]),
         patch("sandbox_executor.entrypoint.review_loop.check_and_resolve_stage_conflicts"),
         patch("sandbox_executor.entrypoint.review_loop.run_review_loop", return_value=loop_result),
         patch("sandbox_executor.entrypoint.review_loop.run_cmd"),
@@ -1662,7 +1662,7 @@ def test_standalone_loop_labels_still_start_at_one(tmp_path):
 
 def _entrypoint_loop_kwargs(tmp_path: Path, *extra: str) -> dict:
     (tmp_path / ".git").mkdir(exist_ok=True)
-    argv = ["review_loop", EXEC_TARGET, "fake-agent", "fake-model", f"--repo-dir={tmp_path}", "--dry-run", *extra]
+    argv = ["review_loop", EXEC_TARGET, "fake-agent", "fake-model", f"--target-worktree={tmp_path}", "--dry-run", *extra]
     with (
         patch.object(sys, "argv", argv),
         patch("sandbox_executor.entrypoint.review_loop.check_and_resolve_stage_conflicts"),
@@ -1693,7 +1693,7 @@ def test_entrypoint_defaults_keep_the_standalone_loop(tmp_path):
 
 
 def test_entrypoint_rejects_an_iteration_label_below_one(tmp_path, capsys):
-    argv = ["review_loop", EXEC_TARGET, f"--repo-dir={tmp_path}", "--iteration=0"]
+    argv = ["review_loop", EXEC_TARGET, f"--target-worktree={tmp_path}", "--iteration=0"]
     with patch.object(sys, "argv", argv), pytest.raises(SystemExit) as exc:
         review_loop_main()
 

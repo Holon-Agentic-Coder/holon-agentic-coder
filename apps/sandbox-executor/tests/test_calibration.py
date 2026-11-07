@@ -963,7 +963,7 @@ class TestCLICalibrateCommand(unittest.TestCase):
             self.assertEqual(cm.exception.code, 0)
             mock_run_calibrate.assert_called_once_with(
                 execution_branch="I-123/P-456/E-789/_",
-                repo_dir=".",
+                target_worktree=".",
                 json_output=False,
                 skip_commit=False,
             )
@@ -977,21 +977,21 @@ class TestCLICalibrateCommand(unittest.TestCase):
             self.assertEqual(cm.exception.code, 0)
             mock_run_calibrate.assert_called_once_with(
                 execution_branch="I-123/P-456/E-789/_",
-                repo_dir=".",
+                target_worktree=".",
                 json_output=True,
                 skip_commit=False,
             )
 
     @patch("sandbox_executor.cli.run_calibrate")
     def test_cli_calibrate_invocation_with_options(self, mock_run_calibrate):
-        test_args = ["holon", "calibrate", "I-123/P-456/E-789/_", "--repo-dir", "/tmp/repo", "--no-commit"]
+        test_args = ["holon", "calibrate", "I-123/P-456/E-789/_", "--target-worktree", "/tmp/repo", "--no-commit"]
         with patch.object(sys, "argv", test_args):
             with self.assertRaises(SystemExit) as cm:
                 cli_main()
             self.assertEqual(cm.exception.code, 0)
             mock_run_calibrate.assert_called_once_with(
                 execution_branch="I-123/P-456/E-789/_",
-                repo_dir="/tmp/repo",
+                target_worktree="/tmp/repo",
                 json_output=False,
                 skip_commit=True,
             )
@@ -1245,7 +1245,7 @@ def test_cli_calibrate_rejected_report_commit_exits_non_zero(calibration_repo, c
     """`holon calibrate` exits 1 with a redacted error when the report commit is rejected (C9-N1)."""
     repo, git = calibration_repo
     _install_rejecting_pre_commit_hook(repo, git)
-    test_args = ["holon", "calibrate", _EXEC_BRANCH, "--repo-dir", str(repo)]
+    test_args = ["holon", "calibrate", _EXEC_BRANCH, "--target-worktree", str(repo)]
     with (
         patch("sandbox_executor.calibration.format_calibration_report"),
         patch.object(sys, "argv", test_args),
@@ -1404,7 +1404,7 @@ def _stage5_context(repo: Path, *, dry_run: bool):
     from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
 
     ctx = FlowContext(
-        repo_dir=str(repo),
+        target_worktree=str(repo),
         execution_branch=_EXEC_BRANCH,
         plan_branch="I-1-cal/P-2/_",
         dry_run=dry_run,

@@ -257,7 +257,7 @@ class _PlannerHarness:
         self.repo_dir = self.tmp.name
         out, err = io.StringIO(), io.StringIO()
         with (
-            patch.dict(os.environ, {"HOLON_REPO_DIR": self.repo_dir, **self.env}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": self.repo_dir, **self.env}),
             patch("sys.argv", ["planner.py", "I-12345/_", "pi-agent", self.model]),
             patch.object(planner, "get_workspace_dir", return_value=self.repo_dir),
             patch.object(planner, "cleanup_repo_dir") as self.mock_cleanup,

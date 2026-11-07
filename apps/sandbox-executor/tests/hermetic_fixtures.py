@@ -227,7 +227,7 @@ def pytest_suite_command(*extra_args: str) -> list[str]:
 def simulated_container_env(sim_home: str, sentinel_var: str) -> dict[str, str]:
     """Build the environment of an executor container whose home is a throwaway directory.
 
-    ``HOLON_REPO_DIR`` is deliberately absent: the bean 0019 incident happened precisely because
+    ``HOLON_TARGET_WORKTREE`` is deliberately absent: the bean 0019 incident happened precisely because
     nothing pinned the workspace, so an unpatched ``get_workspace_dir()`` resolves into
     ``sim_home``. ``sentinel_var`` is set so a child can never recurse into its own guard.
     """
@@ -238,6 +238,7 @@ def simulated_container_env(sim_home: str, sentinel_var: str) -> dict[str, str]:
     env["HOLON_ROLE"] = "executor"
     env["HOLON_IN_SANDBOX"] = "1"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env.pop("HOLON_TARGET_WORKTREE", None)
     env.pop("HOLON_REPO_DIR", None)
     env[sentinel_var] = "1"
     env[CHILD_SUITE_SENTINEL] = "1"

@@ -510,7 +510,7 @@ def _run_executor_main(
     monkeypatch.setattr(executor_module, "run_turn", _turn_via_run_cmd)
     monkeypatch.setattr(executor_module, "get_runner", lambda *_a, **_k: runner)
     monkeypatch.setattr(executor_module, "get_repo_url", lambda *_a, **_k: "/fake/repo")
-    monkeypatch.setenv("HOLON_REPO_DIR", str(tmp_path))
+    monkeypatch.setenv("HOLON_TARGET_WORKTREE", str(tmp_path))
     monkeypatch.setenv("HOLON_SKIP_PUSH", "1")
     monkeypatch.setattr("sys.argv", ["executor.py", "I-456/P-123/_", "agent", "model"])
     with pytest.raises(LedgerRewriteError):

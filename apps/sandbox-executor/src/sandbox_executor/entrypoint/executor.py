@@ -5,7 +5,7 @@ Clones or reuses a workspace repository, runs the configured agent, captures
 execution results into the ledger, and commits/pushes the execution branch.
 
 Key environment variables:
-    HOLON_REPO_DIR: Override the default workspace directory.
+    HOLON_TARGET_WORKTREE: Override the default workspace directory.
     HOLON_KEEP_WORKSPACE: Set to '1' to skip cleanup and reuse the existing workspace.
     HOLON_IN_SANDBOX: Set to '1' to explicitly mark sandbox context.
     HOLON_SKIP_PUSH: Set to '1' to skip the git push step.
@@ -1494,7 +1494,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         or os.path.exists("/.dockerenv")
     )
     # Heuristic fallback: sandbox containers without HOLON_ROLE or /.dockerenv.
-    # Use HOLON_REPO_DIR to override in ambiguous environments (Linux/macOS/Windows).
+    # Use HOLON_TARGET_WORKTREE to override in ambiguous environments (Linux/macOS/Windows).
     in_sandbox_heuristic = os.getenv("USER") == "holon" or os.getenv("USERNAME") == "holon"
     if in_sandbox_heuristic and not in_sandbox_explicit:
         print(
@@ -1503,7 +1503,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         )
     in_sandbox = in_sandbox_explicit or in_sandbox_heuristic
 
-    is_default_repo = not os.getenv("HOLON_REPO_DIR")
+    is_default_repo = not os.getenv("HOLON_TARGET_WORKTREE")
     repo_dir = get_workspace_dir()
     if is_default_repo and not keep_workspace:
         if not in_sandbox:

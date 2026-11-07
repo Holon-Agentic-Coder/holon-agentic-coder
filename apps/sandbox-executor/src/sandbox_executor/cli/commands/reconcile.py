@@ -6,6 +6,7 @@ import argparse
 import os
 
 from sandbox_executor import cli
+from sandbox_executor.cli.options import add_target_worktree_option
 
 ORDER = 120
 
@@ -42,11 +43,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         default="holon-knowledge/ledger/executions.jsonl",
         help="Path to actions ledger JSONL file.",
     )
-    parser.add_argument(
-        "--repo-dir",
-        default=".",
-        help="Repository root directory.",
-    )
+    add_target_worktree_option(parser, default=".")
     parser.set_defaults(_run=run)
 
 
@@ -54,7 +51,7 @@ def run(args: argparse.Namespace) -> int:
     """Execute the reconcile command."""
     ledger_path = args.ledger_path
     if not os.path.isabs(ledger_path):
-        ledger_path = os.path.join(args.repo_dir, ledger_path)
+        ledger_path = os.path.join(args.target_worktree, ledger_path)
     rec_stats = cli.reconcile_records(
         ledger_path=ledger_path,
         max_age_days=args.expire_ttl,

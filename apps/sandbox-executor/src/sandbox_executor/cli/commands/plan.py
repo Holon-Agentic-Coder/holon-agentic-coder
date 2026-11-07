@@ -9,8 +9,8 @@ from sandbox_executor import cli
 from sandbox_executor.cli.commands._role import prepare_role_execution
 from sandbox_executor.cli.options import (
     add_preflight_option,
-    add_repo_dir_option,
     add_runner_options,
+    add_target_worktree_option,
     add_token_reduction_options,
 )
 
@@ -24,7 +24,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     add_runner_options(parser)
     add_preflight_option(parser)
     add_token_reduction_options(parser)
-    add_repo_dir_option(parser)
+    add_target_worktree_option(parser)
     parser.set_defaults(_run=run)
 
 

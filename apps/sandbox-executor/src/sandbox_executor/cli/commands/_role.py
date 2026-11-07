@@ -31,7 +31,7 @@ def prepare_role_execution(args: argparse.Namespace) -> dict[str, Any] | None:
         sys.exit(1)
         return None
     return {
-        "repo_dir": getattr(args, "repo_dir", None),
+        "target_worktree": getattr(args, "target_worktree", None),
         "token_reduce": bool(getattr(args, "token_reduce", False)),
         "mitm_web": bool(getattr(args, "mitm_web", False)),
     }

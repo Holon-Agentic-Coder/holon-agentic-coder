@@ -502,13 +502,13 @@ class TestGetRepoUrl(unittest.TestCase):
 
 class TestWorkspaceDirAndCleanup(unittest.TestCase):
     def test_get_workspace_dir_override(self):
-        """Test get_workspace_dir respects HOLON_REPO_DIR when set."""
+        """Test get_workspace_dir respects HOLON_TARGET_WORKTREE when set."""
         import os
         from unittest.mock import patch
 
         from sandbox_executor.agent_runner import get_workspace_dir
 
-        with patch.dict(os.environ, {"HOLON_REPO_DIR": "/custom/workspace/path"}):
+        with patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": "/custom/workspace/path"}):
             self.assertEqual(get_workspace_dir(), "/custom/workspace/path")
 
     def test_get_workspace_dir_sandbox(self):

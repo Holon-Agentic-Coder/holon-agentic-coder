@@ -263,7 +263,7 @@ def _migrate_v0_to_v1(data: dict[str, Any]) -> dict[str, Any]:
     raw_context = migrated.get("context")
     context = dict(raw_context) if isinstance(raw_context, dict) else {}
     context.setdefault("schema_version", CURRENT_CONTEXT_SCHEMA_VERSION)
-    context.setdefault("repo_dir", ".")
+    context.setdefault("target_worktree", ".")
     context.setdefault("intent_data", {})
     context.setdefault("intent_branch", None)
     context.setdefault("plan_branch", None)
@@ -328,11 +328,24 @@ def migrate_checkpoint_data(
     return current_data
 
 
+def _support_legacy_repo_dir(cls: type) -> type:
+    orig_init = cls.__init__
+
+    def __init__(self: Any, *args: Any, repo_dir: str | None = None, **kwargs: Any) -> None:
+        if repo_dir is not None and "target_worktree" not in kwargs and not args:
+            kwargs["target_worktree"] = repo_dir
+        orig_init(self, *args, **kwargs)
+
+    cls.__init__ = __init__
+    return cls
+
+
+@_support_legacy_repo_dir
 @dataclass
 class FlowContext:
     """Carries complete state and configuration across all pipeline stages."""
 
-    repo_dir: str = "."
+    target_worktree: str = "."
     intent_data: dict[str, Any] = field(default_factory=dict)
     intent_branch: str | None = None
     plan_branch: str | None = None
@@ -360,6 +373,15 @@ class FlowContext:
     # Role-agent dispatcher for Stages 1-3; None means cli.dispatch_role_agent. Never checkpointed.
     dispatcher: Callable[..., int] | None = field(default=None, repr=False, compare=False)
 
+    @property
+    def repo_dir(self) -> str:
+        """Alias for target_worktree."""
+        return self.target_worktree
+
+    @repo_dir.setter
+    def repo_dir(self, value: str) -> None:
+        self.target_worktree = value
+
     def __post_init__(self) -> None:
         """Resolve dynamic defaults such as proxy auto-detection."""
         if self.token_reduce is None:
@@ -379,7 +401,7 @@ class FlowContext:
         """Convert FlowContext to a JSON-serialisable dictionary."""
         return {
             "schema_version": self.schema_version,
-            "repo_dir": self.repo_dir,
+            "target_worktree": self.target_worktree,
             "intent_data": self.intent_data,
             "intent_branch": self.intent_branch,
             "plan_branch": self.plan_branch,
@@ -414,9 +436,10 @@ class FlowContext:
                 f"Unsupported context schema_version {schema_version}. "
                 f"Supported version is {CURRENT_CONTEXT_SCHEMA_VERSION}."
             )
+        target_worktree = data.get("target_worktree") or data.get("repo_dir", ".")
         return cls(
             schema_version=schema_version,
-            repo_dir=data.get("repo_dir", "."),
+            target_worktree=target_worktree,
             intent_data=data.get("intent_data", {}),
             intent_branch=data.get("intent_branch"),
             plan_branch=data.get("plan_branch"),
@@ -485,10 +508,10 @@ class FlowCheckpoint:
         )
 
 
-def get_default_checkpoint_path(repo_dir: str, slug: str) -> str:
+def get_default_checkpoint_path(target_worktree: str, slug: str) -> str:
     """Derive the canonical checkpoint file path for an intent slug."""
     clean_slug = re.sub(r"[^a-zA-Z0-9_-]", "-", slug).strip("-") or "default"
-    return os.path.join(repo_dir, ".holon", "flow", f"checkpoint-{clean_slug}.json")
+    return os.path.join(target_worktree, ".holon", "flow", f"checkpoint-{clean_slug}.json")
 
 
 def save_checkpoint(context: FlowContext, filepath: str | None = None) -> str:
@@ -504,7 +527,7 @@ def save_checkpoint(context: FlowContext, filepath: str | None = None) -> str:
         if context.intent_data.get("parent_intent_id") and context.intent_data.get("branch")
         else slug
     )
-    target_path = filepath or get_default_checkpoint_path(context.repo_dir, key)
+    target_path = filepath or get_default_checkpoint_path(context.target_worktree, key)
     target_dir = os.path.dirname(os.path.abspath(target_path))
     os.makedirs(target_dir, exist_ok=True)
 
@@ -1831,7 +1854,7 @@ def _dispatch_role(
     dispatcher = _get_dispatcher(context)
     context.log(f"Dispatching {role} agent (runner={context.agent}, model={context.model}).")
     kwargs: dict[str, Any] = {
-        "repo_dir": context.repo_dir,
+        "target_worktree": context.target_worktree,
         "intent_file": intent_file,
         "token_reduce": bool(context.token_reduce),
         "mitm_web": bool(context.mitm_web),
@@ -1954,7 +1977,7 @@ def _fast_forward_local_branch(context: FlowContext, branch: str, target_sha: st
     A local branch whose tip is not an ancestor of target_sha (ahead of or diverged from origin) is
     left untouched and reported. Returns True when the local branch now points at target_sha.
     """
-    repo_dir = context.repo_dir
+    repo_dir = context.target_worktree
     local = run_git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=repo_dir, check=False)
     local_sha = local.stdout.strip() if local.returncode == 0 and isinstance(local.stdout, str) else ""
     if local_sha:
@@ -1979,7 +2002,7 @@ def _track_local_branch(context: FlowContext, branch: str) -> None:
     """
     remote = run_git(
         ["rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}^{{commit}}"],
-        cwd=context.repo_dir,
+        cwd=context.target_worktree,
         check=False,
     )
     remote_sha = remote.stdout.strip() if remote.returncode == 0 and isinstance(remote.stdout, str) else ""
@@ -2100,7 +2123,7 @@ def _append_superseding_execution_row(context: FlowContext, exec_branch: str, ro
     Returns:
         str | None: None on success, otherwise a description of what failed.
     """
-    repo_dir = context.repo_dir
+    repo_dir = context.target_worktree
     tmp_root = tempfile.mkdtemp(prefix="holon-flow-guard-")
     worktree = os.path.join(tmp_root, "worktree")
     try:
@@ -2140,7 +2163,7 @@ def _sync_local_execution_refs(context: FlowContext, exec_branch: str, pushed_sh
     Keeps local readers (``holon calibrate``, ``git log``) on the same ledger state as origin. A local
     branch that has diverged from the pushed commit is left untouched and reported instead.
     """
-    repo_dir = context.repo_dir
+    repo_dir = context.target_worktree
     remote_ref = f"refs/remotes/origin/{exec_branch}"
     if run_git(["update-ref", remote_ref, pushed_sha], cwd=repo_dir, check=False).returncode != 0:
         context.log(f"Warning: could not update '{remote_ref}' to the pushed commit {pushed_sha[:12]}.")
@@ -2247,7 +2270,7 @@ def run_intent_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
     # Pre-action wisdom consult (Bean 0052)
     consulted_ids: list[str] = []
     try:
-        db_path = os.path.join(context.repo_dir, "holon-knowledge/.index/action_index.db")
+        db_path = os.path.join(context.target_worktree, "holon-knowledge/.index/action_index.db")
         consult_engine = ConsultEngine(project_db_path=db_path)
         intent_labels = intent_data.get("labels", [])
         if isinstance(intent_labels, str):
@@ -2302,7 +2325,7 @@ def run_intent_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
     if not context.dry_run:
         if context.skip_push:
             return _stage_failure(context, FlowStage.INTENT, start_time, SKIP_PUSH_DISPATCH_ERROR)
-        repo_dir = context.repo_dir
+        repo_dir = context.target_worktree
         check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="intent", branch=None)
         fetch_error = _fetch_branch_prefix_error(repo_dir, branch)
         if fetch_error is not None:
@@ -2405,7 +2428,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
 
     intent_prefix = context.intent_branch.removesuffix("/_").rstrip("/")
     safe_model = _sanitize_model_name(context.model)
-    repo_dir = context.repo_dir
+    repo_dir = context.target_worktree
 
     # Pre-planning wisdom consult (Bean 0052)
     consulted_ids: list[str] = []
@@ -2566,18 +2589,20 @@ def _plan_budget_decision(context: FlowContext) -> DecompositionDecision | None:
     """
     if not context.plan_branch:
         return None
-    plan_ref = _resolve_branch_ref(context.repo_dir, context.plan_branch)
+    plan_ref = _resolve_branch_ref(context.target_worktree, context.plan_branch)
     if not plan_ref:
         return None
     plan_id = context.plan_branch.removesuffix("/_").rsplit("/", 1)[-1]
-    rows = [r for r in _read_ledger_rows(context.repo_dir, plan_ref, "plans.jsonl") if r.get("plan_id") == plan_id]
+    rows = [
+        r for r in _read_ledger_rows(context.target_worktree, plan_ref, "plans.jsonl") if r.get("plan_id") == plan_id
+    ]
     if not rows:
         return None
     plan_row = rows[-1]
     plan_md_rel = str(plan_row.get("plan_file") or f"plans/{plan_id}.md")
     if not re.fullmatch(r"plans/P-[^/]+\.md", plan_md_rel):
         plan_md_rel = f"plans/{plan_id}.md"
-    plan_content = _git_show_text(context.repo_dir, plan_ref, plan_md_rel) or ""
+    plan_content = _git_show_text(context.target_worktree, plan_ref, plan_md_rel) or ""
     return should_decompose(plan_row, plan_content, context.intent_data)
 
 
@@ -2708,7 +2733,7 @@ def format_decomposition_summary(execute_result: StageResult | None) -> list[str
 def _child_context(context: FlowContext, intent_data: dict[str, Any]) -> FlowContext:
     """Build the FlowContext of one child intent, inheriting the parent's runner, flags and dispatcher."""
     return FlowContext(
-        repo_dir=context.repo_dir,
+        repo_dir=context.target_worktree,
         intent_data=intent_data,
         agent=context.agent,
         model=context.model,
@@ -2892,7 +2917,7 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
         return StageResult(stage=FlowStage.EXECUTE, status=StageStatus.FAILED, start_time=start_time, error=err)
 
     plan_prefix = context.plan_branch.removesuffix("/_").rstrip("/")
-    repo_dir = context.repo_dir
+    repo_dir = context.target_worktree
 
     # Deterministic failure veto check (Bean 0052 Goal 4)
     exec_fp = compute_context_fingerprint(
@@ -3486,7 +3511,7 @@ def _record_reviewer_rows(
     finding_action_ids: dict[str, str] | None = None,
 ) -> None:
     """Append one ACT-REV row per reviewer and one ACT-FIND row per reviewer finding."""
-    exec_file = os.path.join(context.repo_dir, "holon-knowledge", "ledger", "executions.jsonl")
+    exec_file = os.path.join(context.target_worktree, "holon-knowledge", "ledger", "executions.jsonl")
     for result in results:
         summary = _reviewer_summary(result)
         clean = summary["verdict"] == str(ReviewerVerdict.APPROVED) and not result.counts.total and not result.findings
@@ -3611,9 +3636,9 @@ def _ensemble_iteration(  # noqa: PLR0913
     ensemble_size: int,
 ) -> tuple[list[ReviewerResult], str | None]:
     """Build the request from the real diff and run the ensemble; ``([], error)`` on an infrastructure failure."""
-    base_ref = _review_base_ref(context.repo_dir, target, target_branch)
+    base_ref = _review_base_ref(context.target_worktree, target, target_branch)
     try:
-        request = build_review_request(target, base_ref, iteration, pr_text[0], pr_text[1], context.repo_dir)
+        request = build_review_request(target, base_ref, iteration, pr_text[0], pr_text[1], context.target_worktree)
     except (RuntimeError, OSError) as exc:
         return [], f"Could not build the review diff for '{target.head_branch}': {redact_agent_secrets(str(exc))}"
     try:
@@ -4142,7 +4167,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     # Labels run from first_label to last_label; the counter below always holds the label of the latest pass.
     first_label = max(1, first_iteration)
     last_label = first_label + budget - 1
-    repo_dir = context.repo_dir
+    repo_dir = context.target_worktree
     target_branch = context.intent_data.get("target_branch", "main")
     effective_dry_run = bool(dry_run or context.dry_run)
 
@@ -4872,7 +4897,7 @@ def _checkout_execution_branch(context: FlowContext) -> str | None:
     Returns:
         None when HEAD is (now) on the execution branch, otherwise the redacted reason the checkout failed.
     """
-    repo_dir = context.repo_dir
+    repo_dir = context.target_worktree
     current = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_dir, check=False)
     current_branch = current.stdout.strip() if current.returncode == 0 and isinstance(current.stdout, str) else ""
     if current_branch == context.execution_branch:
@@ -4933,7 +4958,7 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
         context.log(err)
         return StageResult(stage=FlowStage.REVIEW, status=StageStatus.FAILED, start_time=start_time, error=err)
 
-    repo_dir = context.repo_dir
+    repo_dir = context.target_worktree
     if not context.dry_run:
         checkout_err = _checkout_execution_branch(context)
         if checkout_err:
@@ -5209,7 +5234,7 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
         int: Process exit code: 0 only when the ensemble verdict is APPROVED and the consensus was approved and
         posted (human halt), otherwise 1.
     """
-    repo_dir = getattr(args, "repo_dir", ".")
+    target_worktree = getattr(args, "target_worktree", None) or getattr(args, "repo_dir", ".")
     target = getattr(args, "target", "")
     max_iterations = getattr(args, "max_iterations", 25)
     ensemble_size = getattr(args, "ensemble_size", 3)
@@ -5224,7 +5249,7 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
     if getattr(args, "model", None):
         context_kwargs["model"] = args.model
     context = FlowContext(
-        repo_dir=repo_dir,
+        target_worktree=target_worktree,
         execution_branch=target,
         dry_run=dry_run,
         max_review_iterations=max_iterations,
@@ -5396,7 +5421,7 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR
         context.log(err)
         return StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.FAILED, start_time=start_time, error=err)
 
-    repo_dir = context.repo_dir
+    repo_dir = context.target_worktree
     if not context.dry_run:
         checkout_err = _checkout_execution_branch(context)
         if checkout_err:
@@ -5419,7 +5444,7 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR
     try:
         report = run_calibrate(
             execution_branch=context.execution_branch,
-            repo_dir=repo_dir,
+            target_worktree=repo_dir,
             json_output=False,
             skip_commit=context.dry_run,
             log_fn=context.log,

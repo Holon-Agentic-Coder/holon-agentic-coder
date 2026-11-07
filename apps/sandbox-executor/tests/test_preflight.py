@@ -621,7 +621,7 @@ def test_quota_exhausted_probe_aborts_flow_before_stage_one(flow_repo, monkeypat
         patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
         patch("sandbox_executor.flow.run_git") as flow_git,
     ):
-        code = _run_main(["holon", "flow", str(intent_file), "--repo-dir", str(repo)])
+        code = _run_main(["holon", "flow", str(intent_file), "--target-worktree", str(repo)])
 
     assert code == 1
     probe.assert_called_once()
@@ -645,7 +645,7 @@ def test_dry_run_flow_skips_probe(flow_repo, monkeypatch):
         patch("sandbox_executor.cli.run_flow_pipeline", return_value={}) as pipeline,
         patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
     ):
-        assert _run_main(["holon", "flow", str(intent_file), "--repo-dir", str(repo), "--dry-run"]) == 0
+        assert _run_main(["holon", "flow", str(intent_file), "--target-worktree", str(repo), "--dry-run"]) == 0
     probe.assert_not_called()
     ctx = pipeline.call_args[1]["context"]
     assert (ctx.agent, ctx.model) == ("antigravity-agent", "gemini-3.8-flash-medium")
@@ -658,7 +658,7 @@ def test_flow_explicit_runner_provenance_is_unchanged(flow_repo):
         patch("sandbox_executor.cli.run_flow_pipeline", return_value={}) as pipeline,
         patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
     ):
-        argv = ["holon", "flow", str(intent_file), "--repo-dir", str(repo)]
+        argv = ["holon", "flow", str(intent_file), "--target-worktree", str(repo)]
         assert _run_main([*argv, "--agent", "antigravity-agent", "--model", "gemini-3.8-flash-medium"]) == 0
     assert probe.call_args[0][:2] == ("antigravity-agent", "gemini-3.8-flash-medium")
     ctx = pipeline.call_args[1]["context"]
@@ -669,7 +669,7 @@ def _write_checkpoint(repo, stage: str) -> str:
     from sandbox_executor.flow import FlowCheckpoint, FlowContext, FlowStage
 
     ctx = FlowContext(
-        repo_dir=str(repo),
+        target_worktree=str(repo),
         intent_data={"slug": "resume"},
         agent="antigravity-agent",
         model="gemini-3.8-flash-medium",
@@ -718,7 +718,7 @@ def test_resume_with_new_runner_resolves_its_default_model(  # noqa: PLR0913
         patch("sandbox_executor.cli.run_flow_pipeline", return_value={}) as pipeline,
         patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
     ):
-        assert _run_main(["holon", "flow", "--checkpoint", checkpoint, "--repo-dir", str(repo), *extra]) == 0
+        assert _run_main(["holon", "flow", "--checkpoint", checkpoint, "--target-worktree", str(repo), *extra]) == 0
     assert probe.call_args[0][:2] == expected
     ctx = pipeline.call_args[1]["context"]
     assert (ctx.agent, ctx.model) == expected
@@ -745,7 +745,7 @@ def test_resume_probes_only_when_an_agent_stage_remains(flow_repo, stage, probed
         patch("sandbox_executor.cli.run_flow_pipeline", return_value={}) as pipeline,
         patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
     ):
-        code = _run_main(["holon", "flow", "--checkpoint", checkpoint, "--repo-dir", str(repo)])
+        code = _run_main(["holon", "flow", "--checkpoint", checkpoint, "--target-worktree", str(repo)])
     assert probe.called is probed
     assert code == (1 if probed else 0)
     assert pipeline.called is not probed

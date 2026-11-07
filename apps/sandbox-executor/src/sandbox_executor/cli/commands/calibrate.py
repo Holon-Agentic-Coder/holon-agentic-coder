@@ -6,6 +6,7 @@ import argparse
 import sys
 
 from sandbox_executor import cli
+from sandbox_executor.cli.options import add_target_worktree_option
 
 ORDER = 50
 
@@ -25,11 +26,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         action="store_true",
         help="Output calibration metrics as JSON to stdout.",
     )
-    parser.add_argument(
-        "--repo-dir",
-        default=".",
-        help="Target repository directory path (default: current directory).",
-    )
+    add_target_worktree_option(parser, default=".")
     parser.add_argument(
         "--no-commit",
         dest="skip_commit",
@@ -44,7 +41,7 @@ def run(args: argparse.Namespace) -> int:
     try:
         cli.run_calibrate(
             execution_branch=args.execution_branch,
-            repo_dir=args.repo_dir,
+            target_worktree=args.target_worktree,
             json_output=args.json,
             skip_commit=args.skip_commit,
         )

@@ -649,6 +649,8 @@ def _supervise_reviewer_turn(  # noqa: PLR0913
             modify_code=False,
             context=prompt,
             cwd=request.repo_dir,
+            stdin_file=prompt_file if getattr(runner, "uses_stdin", False) else None,
+            prompt_file=prompt_file,
         )
     finally:
         if runner is not None:

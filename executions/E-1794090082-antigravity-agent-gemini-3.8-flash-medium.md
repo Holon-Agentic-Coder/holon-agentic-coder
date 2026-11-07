@@ -43,3 +43,18 @@ supported harnesses to prevent Linux `MAX_ARG_STRLEN` (128 KB) argument overflow
 - Created specialised subclasses `PiAgentRunner`, `ClaudeAgentRunner`, `GeminiAgentRunner`, `OpenCodeAgentRunner`, and
   `CodexAgentRunner` inheriting from `StandardAgentRunner` with `uses_stdin: bool = True`.
 - Updated `runners` registry to instantiate these respective runner subclasses.
+
+## Tests Run
+
+- `uv run pytest apps/sandbox-executor/tests/test_turns.py`:
+  - Run 1: `7 passed in 0.05s`
+  - Median: `7 passed in 0.05s`
+- `uv run pytest apps/sandbox-executor/tests/test_turn_supervisor.py`:
+  - Run 1: `47 passed in 5.95s`
+  - Median: `47 passed in 5.95s`
+- `uv run pytest apps/sandbox-executor/tests/test_turns.py apps/sandbox-executor/tests/test_turn_supervisor.py`:
+  - Run 1: `54 passed in 5.94s`
+  - Median: `54 passed in 5.94s`
+- `uv run pytest apps/sandbox-executor/tests/test_planner.py`:
+  - Run 1: `47 passed in 0.21s`
+  - Median: `47 passed in 0.21s`

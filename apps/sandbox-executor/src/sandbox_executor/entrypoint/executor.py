@@ -1751,6 +1751,8 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                     context=base_prompt,
                     watch_tree=repo_dir,
                     cwd=repo_dir,
+                    stdin_file=prompt_file if getattr(runner, "uses_stdin", False) else None,
+                    prompt_file=prompt_file,
                 )
                 exec_status, summary, budget_breach, budget_reason = classify_execution_outcome(outcome)
                 # The implementation turn is the one classify_execution_outcome judges; follow-ups only touch the

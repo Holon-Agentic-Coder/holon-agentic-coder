@@ -54,6 +54,291 @@ DEFAULT_MODELS: dict[str, str] = {
     "opencode": "anthropic/claude-opus-5-5",
 }
 
+
+@dataclass(frozen=True)
+class ModelCapability:
+    """Capability specification for a supported runner model.
+
+    Attributes:
+        runner: Canonical runner name (e.g. ``antigravity-agent``, ``claude-agent``).
+        canonical_model: Primary canonical model name (e.g. ``gemini-3.8-flash-medium``).
+        aliases: List of recognised model aliases.
+        effort_levels: List of supported effort settings (e.g. ``['low', 'medium', 'high']``).
+        fallback_tier: Tier classification string (e.g. ``Primary (Cloud/CLI)``).
+    """
+
+    runner: str
+    canonical_model: str
+    aliases: list[str]
+    effort_levels: list[str]
+    fallback_tier: str
+
+
+RUNNER_CAPABILITIES: tuple[ModelCapability, ...] = (
+    # Antigravity Runner
+    ModelCapability(
+        runner="antigravity-agent",
+        canonical_model="gemini-3.8-flash",
+        aliases=["flash"],
+        effort_levels=["low", "medium", "high"],
+        fallback_tier="Primary (Cloud/CLI)",
+    ),
+    ModelCapability(
+        runner="antigravity-agent",
+        canonical_model="gemini-3.8-flash-medium",
+        aliases=["flash-medium"],
+        effort_levels=["low", "medium", "high"],
+        fallback_tier="Primary (Cloud/CLI)",
+    ),
+    ModelCapability(
+        runner="antigravity-agent",
+        canonical_model="gemini-3.8-flash-high",
+        aliases=["flash-high"],
+        effort_levels=["low", "medium", "high"],
+        fallback_tier="Primary (Cloud/CLI)",
+    ),
+    # Claude Runner
+    ModelCapability(
+        runner="claude-agent",
+        canonical_model="claude-opus-5-5",
+        aliases=["opus", "claude-opus", "fable"],
+        effort_levels=[],
+        fallback_tier="Primary (Cloud/CLI)",
+    ),
+    ModelCapability(
+        runner="claude-agent",
+        canonical_model="claude-sonnet-4-6",
+        aliases=["sonnet", "claude-sonnet"],
+        effort_levels=[],
+        fallback_tier="Primary (Cloud/CLI)",
+    ),
+    ModelCapability(
+        runner="claude-agent",
+        canonical_model="claude-haiku-4-5",
+        aliases=["haiku", "claude-haiku"],
+        effort_levels=[],
+        fallback_tier="Primary (Cloud/CLI)",
+    ),
+    # Pi Runner
+    ModelCapability(
+        runner="pi-agent",
+        canonical_model="claude-opus-5-5",
+        aliases=["pi-default"],
+        effort_levels=[],
+        fallback_tier="Secondary (Cloud/CLI)",
+    ),
+    ModelCapability(
+        runner="pi-agent",
+        canonical_model="gpt-5-codex",
+        aliases=["codex"],
+        effort_levels=[],
+        fallback_tier="Secondary (Cloud/CLI)",
+    ),
+    # Codex Runner
+    ModelCapability(
+        runner="codex-agent",
+        canonical_model="gpt-5-codex",
+        aliases=["codex"],
+        effort_levels=[],
+        fallback_tier="Secondary (Cloud/CLI)",
+    ),
+    # Gemini Runner
+    ModelCapability(
+        runner="gemini-agent",
+        canonical_model="gemini-3.8-flash",
+        aliases=["gemini"],
+        effort_levels=[],
+        fallback_tier="Secondary (Cloud/CLI)",
+    ),
+    # OpenCode Runner
+    ModelCapability(
+        runner="opencode-agent",
+        canonical_model="anthropic/claude-opus-5-5",
+        aliases=["opencode"],
+        effort_levels=[],
+        fallback_tier="Secondary (Cloud/CLI)",
+    ),
+    # Host-local Runner
+    ModelCapability(
+        runner="local-model",
+        canonical_model="local-model",
+        aliases=["local"],
+        effort_levels=[],
+        fallback_tier="Local Fallback",
+    ),
+)
+
+
+def get_model_capabilities(agent: str | None = None) -> list[ModelCapability]:
+    """Retrieve supported model capability records, optionally filtered by agent runner."""
+    if agent is None:
+        return list(RUNNER_CAPABILITIES)
+    norm = normalise_agent_id(agent)
+    return [
+        cap
+        for cap in RUNNER_CAPABILITIES
+        if normalise_agent_id(cap.runner) == norm or (norm in ("local", "local-model") and cap.runner == "local-model")
+    ]
+
+
+def get_available_models_for_runner(agent: str) -> list[str]:
+    """Return the list of canonical model names supported by the specified runner."""
+    seen: set[str] = set()
+    models: list[str] = []
+    for cap in get_model_capabilities(agent):
+        if cap.canonical_model not in seen:
+            seen.add(cap.canonical_model)
+            models.append(cap.canonical_model)
+    return models
+
+
+def is_valid_model_for_runner(agent: str, model: str) -> bool:
+    """Check whether a given model identifier or alias is recognised for the runner."""
+    norm_runner = normalise_agent_id(agent)
+    matching_caps = get_model_capabilities(agent)
+    if not matching_caps:
+        return True
+    m_lower = model.strip().lower()
+    for cap in matching_caps:
+        if m_lower == cap.canonical_model.lower() or m_lower in [a.lower() for a in cap.aliases]:
+            return True
+        if norm_runner in ("antigravity", "gemini"):
+            for eff in ("low", "medium", "high"):
+                if m_lower == f"{cap.canonical_model.lower()}-{eff}":
+                    return True
+    return False
+
+
+def _coordinate_gemini_effort(canonical: str, effort: str | None) -> tuple[str, str | None]:
+    effort_suffixes = ("-low", "-medium", "-high")
+    eff = effort.strip().lower() if effort and effort.strip() else None
+
+    inferred_effort = None
+    base = canonical
+    for suffix in effort_suffixes:
+        if canonical.endswith(suffix):
+            inferred_effort = suffix[1:]
+            base = canonical[: -len(suffix)]
+            break
+
+    if eff in ("low", "medium", "high"):
+        return f"{base}-{eff}", eff
+    if inferred_effort:
+        return canonical, inferred_effort
+    return canonical, None
+
+
+def normalise_model_and_effort(agent: str, model: str | None, effort: str | None = None) -> tuple[str, str | None]:
+    """Coordinate canonical model name and effort parameters without collision.
+
+    Args:
+        agent: Runner name.
+        model: Model name, alias, or None to fall back to default model.
+        effort: Optional effort setting ('low', 'medium', 'high').
+
+    Returns:
+        A tuple of ``(canonical_model, coordinated_effort)``.
+    """
+    raw_model = (model or "").strip() or default_model_for(agent)
+    canonical = raw_model
+    for cap in get_model_capabilities(agent):
+        aliases = [a.lower() for a in cap.aliases]
+        if raw_model.lower() == cap.canonical_model.lower() or raw_model.lower() in aliases:
+            canonical = cap.canonical_model
+            break
+
+    if normalise_agent_id(agent) in ("antigravity", "gemini"):
+        return _coordinate_gemini_effort(canonical, effort)
+
+    return canonical, None
+
+
+def _detect_api_key_present(norm: str, env: Mapping[str, str]) -> bool:
+    bundle_path = env.get("HOLON_SECRET_BUNDLE_PATH") or "/run/secrets/holon_auth.json"
+    if os.path.isfile(bundle_path) or _is_set(env.get("HOLON_AGENT_KEY")):
+        return True
+
+    runner_env_keys: dict[str, tuple[str, ...]] = {
+        "antigravity": ("AGY_USER_TOKEN", "GOOGLE_API_KEY", "GEMINI_API_KEY"),
+        "claude": ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        "pi": ("PI_API_KEY",),
+        "codex": ("OPENAI_API_KEY", "CODEX_API_KEY"),
+        "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+        "opencode": ("OPENCODE_API_KEY",),
+    }
+    return any(_is_set(env.get(k)) for k in runner_env_keys.get(norm, ()))
+
+
+def _detect_session_dir_present(norm: str) -> bool:
+    home = os.path.expanduser("~")
+    runner_session_paths: dict[str, tuple[str, ...]] = {
+        "antigravity": (
+            os.path.join(home, ".gemini/antigravity-cli"),
+            os.path.join(home, ".gemini"),
+            os.path.join(home, ".holon/sessions/antigravity"),
+            "/home/holon/.gemini/antigravity-cli",
+            "/home/holon/.gemini",
+        ),
+        "claude": (
+            os.path.join(home, ".config/claude"),
+            os.path.join(home, ".claude"),
+            "/home/holon/.config/claude",
+        ),
+        "codex": (
+            os.path.join(home, ".codex"),
+            "/home/holon/.codex",
+        ),
+        "pi": (
+            os.path.join(home, ".config/pi/models.json"),
+            os.path.join(home, ".pi/agent/models.json"),
+            "/home/holon/.config/pi/models.json",
+            "/home/holon/.pi/agent/models.json",
+        ),
+        "gemini": (
+            os.path.join(home, ".config/gcloud"),
+            "/home/holon/.config/gcloud",
+        ),
+    }
+    return any(os.path.exists(p) for p in runner_session_paths.get(norm, ()))
+
+
+def _detect_harness_marker_present(norm: str, env: Mapping[str, str]) -> bool:
+    markers = detected_harness_markers(env)
+    return any(normalise_agent_id(m_runner) == norm for m_runner, _m_var in markers)
+
+
+def _detect_local_gateway_present(norm: str, env: Mapping[str, str]) -> bool:
+    if norm in ("local", "local-model"):
+        return True
+    return norm == "pi" and env.get("HOLON_LOCAL_LLM", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def detect_runner_auth_status(agent: str, environ: Mapping[str, str] | None = None) -> str:
+    """Safely detect authentication or session presence for an agent runner without leaking secrets.
+
+    Args:
+        agent: Runner name.
+        environ: Environment mapping to inspect (defaults to ``os.environ``).
+
+    Returns:
+        Descriptive status: 'Detected (session directory)', 'Detected (API key)',
+        'Detected (harness marker)', 'Detected (local gateway)', or 'Missing / Not detected'.
+    """
+    env = _env(environ)
+    norm = normalise_agent_id(agent)
+
+    if _detect_api_key_present(norm, env):
+        return "Detected (API key)"
+    if _detect_session_dir_present(norm):
+        return "Detected (session directory)"
+    if _detect_harness_marker_present(norm, env):
+        return "Detected (harness marker)"
+    if _detect_local_gateway_present(norm, env):
+        return "Detected (local gateway)"
+
+    return "Missing / Not detected"
+
+
 # Variables whose presence means "running inside a Holon sandbox"; harness detection is off when any is set.
 SANDBOX_GUARD_VARS: tuple[str, ...] = ("HOLON_ROLE", "HOLON_IN_SANDBOX")
 
@@ -261,7 +546,12 @@ def default_model_for(agent: str) -> str:
 
 
 def resolve_model(
-    agent: str, explicit: str | None, environ: Mapping[str, str] | None = None, *, log: bool = True
+    agent: str,
+    explicit: str | None,
+    environ: Mapping[str, str] | None = None,
+    *,
+    log: bool = True,
+    validate: bool = False,
 ) -> Resolution:
     """Resolve the model: explicit flag, then ``HOLON_MODEL``; raises :class:`MissingModelError` if omitted.
 
@@ -270,25 +560,43 @@ def resolve_model(
         explicit: Value of ``--model`` (None or empty when not given).
         environ: Environment mapping to inspect (defaults to ``os.environ``).
         log: False when the caller reports the decision itself (``holon doctor``), so it is not also logged.
+        validate: True to validate that the model is recognised for this runner.
 
     Returns:
         A :class:`Resolution` holding the model name.
 
     Raises:
-        MissingModelError: If neither ``--model`` nor ``HOLON_MODEL`` was provided.
+        MissingModelError: If neither ``--model`` nor ``HOLON_MODEL`` was provided, or if validation fails.
 
     Side effects:
         Logs the decision at INFO level unless ``log`` is False.
     """
     env = _env(environ)
+    norm_agent = normalise_agent_id(agent)
+    available_models = get_available_models_for_runner(agent)
+    models_list = ", ".join(available_models)
+    available_str = f" Supported models for {canonical_agent_name(agent)}: {models_list}." if available_models else ""
+    hint_str = f" Run 'holon models --agent {norm_agent}' to inspect supported models and effort levels."
+
     if explicit and explicit.strip():
-        resolution = Resolution(explicit.strip(), "flag", "--model")
+        model_name = explicit.strip()
+        if validate and not is_valid_model_for_runner(agent, model_name):
+            raise MissingModelError(
+                f"Unrecognised model '{model_name}' for {canonical_agent_name(agent)}.{available_str}{hint_str}"
+            )
+        resolution = Resolution(model_name, "flag", "--model")
     elif (env.get("HOLON_MODEL") or "").strip():
-        resolution = Resolution(env["HOLON_MODEL"].strip(), "env", "HOLON_MODEL")
+        model_name = env["HOLON_MODEL"].strip()
+        if validate and not is_valid_model_for_runner(agent, model_name):
+            raise MissingModelError(
+                f"Unrecognised model '{model_name}' for {canonical_agent_name(agent)}.{available_str}{hint_str}"
+            )
+        resolution = Resolution(model_name, "env", "HOLON_MODEL")
     else:
         raise MissingModelError(
             "Model is mandatory: no --model or HOLON_MODEL provided. "
             f"Provide --model or set HOLON_MODEL (e.g. {default_model_for(agent)} for {canonical_agent_name(agent)})."
+            f"{available_str}{hint_str}"
         )
     if log:
         logger.info(resolution.describe("Model"))

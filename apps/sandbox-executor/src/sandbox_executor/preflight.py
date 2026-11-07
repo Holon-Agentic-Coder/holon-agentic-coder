@@ -155,8 +155,8 @@ _HINTS: dict[PreflightStatus, str] = {
     ),
     PreflightStatus.UNKNOWN: (
         "The probe failed for an unrecognised reason; check the output below. Check that the model name is valid "
-        "for this runner (--model or HOLON_MODEL) and that the image exists (make build). Use --skip-preflight to "
-        "bypass this check."
+        "for this runner (--model or HOLON_MODEL; run 'holon models' to inspect supported models) and that the image "
+        "exists (make build). Use --skip-preflight to bypass this check."
     ),
 }
 

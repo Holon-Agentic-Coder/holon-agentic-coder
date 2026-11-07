@@ -1515,13 +1515,12 @@ def format_calibration_report(report_rel: str, target_worktree: str) -> None:
     )
 
 
-def run_calibrate(  # noqa: C901, PLR0912, PLR0913, PLR0915
+def run_calibrate(  # noqa: C901, PLR0912, PLR0915
     execution_branch: str,
     target_worktree: str = ".",
     json_output: bool = False,
     skip_commit: bool = False,
     log_fn: Callable[[str], None] | None = None,
-    repo_dir: str | None = None,
 ) -> CalibrationReport:
     """Execute holon calibrate workflow: checkout calibrated branch, generate & commit report.
 
@@ -1533,7 +1532,6 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0913, PLR0915
         log_fn: Optional operator-facing log callable (for example ``FlowContext.log``) that
             receives a failed ACT-CAL ledger append warning. When None, the warning goes to the
             module logger only.
-        repo_dir: Backward-compatible alias for target_worktree.
 
     Returns:
         CalibrationReport: Generated calibration report.
@@ -1547,8 +1545,6 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0913, PLR0915
             cannot run) when ``skip_commit`` is False. Raised before the ACT-CAL ledger append and
             any ``git add`` or ``git commit``, so nothing is recorded, committed or pushed.
     """
-    if repo_dir is not None:
-        target_worktree = repo_dir
     report = generate_calibration(execution_branch, target_worktree=target_worktree)
     report.committed = not skip_commit
     if skip_commit:

@@ -721,7 +721,7 @@ class TestAppendOnlyCalibratedBranch(unittest.TestCase):
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("subprocess.run", side_effect=mock_subp):
-            report = run_calibrate("I-1/P-2/E-3/_", repo_dir="/tmp/repo", skip_commit=False)
+            report = run_calibrate("I-1/P-2/E-3/_", target_worktree="/tmp/repo", skip_commit=False)
             self.assertEqual(report.calibrated_branch, "I-1/P-2/E-3/calibrated")
 
         # Verify no `checkout -B` command was run
@@ -751,7 +751,7 @@ class TestAppendOnlyCalibratedBranch(unittest.TestCase):
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("subprocess.run", side_effect=mock_subp):
-            run_calibrate("I-1/P-2/E-3/_", repo_dir="/tmp/repo", skip_commit=False)
+            run_calibrate("I-1/P-2/E-3/_", target_worktree="/tmp/repo", skip_commit=False)
 
         expected_co = ["git", "checkout", "-b", "I-1/P-2/E-3/calibrated", "origin/I-1/P-2/E-3/calibrated"]
         self.assertIn(expected_co, called_cmds)
@@ -774,7 +774,7 @@ class TestAppendOnlyCalibratedBranch(unittest.TestCase):
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("subprocess.run", side_effect=mock_subp):
-            run_calibrate("I-1/P-2/E-3/_", repo_dir="/tmp/repo", skip_commit=False)
+            run_calibrate("I-1/P-2/E-3/_", target_worktree="/tmp/repo", skip_commit=False)
 
         expected_prefix = ["git", "checkout", "-b", "I-1/P-2/E-3/calibrated"]
         matching_cmds = [cmd for cmd in called_cmds if isinstance(cmd, list) and cmd[:4] == expected_prefix]
@@ -795,7 +795,7 @@ class TestAppendOnlyCalibratedBranch(unittest.TestCase):
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("subprocess.run", side_effect=mock_subp):
-            report = run_calibrate("origin/I-1/P-2/E-3/_", repo_dir="/tmp/repo", skip_commit=False)
+            report = run_calibrate("origin/I-1/P-2/E-3/_", target_worktree="/tmp/repo", skip_commit=False)
 
         self.assertEqual(report.calibrated_branch, "I-1/P-2/E-3/calibrated")
 
@@ -912,7 +912,7 @@ class TestNoCommitMessagingAndJson(unittest.TestCase):
             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="")),
             patch("builtins.print") as mock_print,
         ):
-            report = run_calibrate("I-1/P-2/E-3/_", repo_dir="/tmp/repo", json_output=False, skip_commit=True)
+            report = run_calibrate("I-1/P-2/E-3/_", target_worktree="/tmp/repo", json_output=False, skip_commit=True)
             self.assertFalse(report.committed)
             self.assertIsNone(report.calibrated_branch)
 
@@ -928,7 +928,7 @@ class TestNoCommitMessagingAndJson(unittest.TestCase):
             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="")),
             patch("builtins.print") as mock_print,
         ):
-            run_calibrate("I-1/P-2/E-3/_", repo_dir="/tmp/repo", json_output=True, skip_commit=True)
+            run_calibrate("I-1/P-2/E-3/_", target_worktree="/tmp/repo", json_output=True, skip_commit=True)
             printed_arg = mock_print.call_args[0][0]
             parsed = json.loads(printed_arg)
             self.assertFalse(parsed["committed"])
@@ -943,7 +943,7 @@ class TestNoCommitMessagingAndJson(unittest.TestCase):
             patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="")),
             patch("builtins.print") as mock_print,
         ):
-            run_calibrate("I-1/P-2/E-3/_", repo_dir="/tmp/repo", json_output=True, skip_commit=False)
+            run_calibrate("I-1/P-2/E-3/_", target_worktree="/tmp/repo", json_output=True, skip_commit=False)
             printed_arg = mock_print.call_args[0][0]
             parsed = json.loads(printed_arg)
             self.assertTrue(parsed["committed"])
@@ -1194,7 +1194,7 @@ def test_run_calibrate_commit_failure_warning_redacts_credentials(calibration_re
         ),
         pytest.raises(CalibrationCommitError) as excinfo,
     ):
-        run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
+        run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
 
     messages = [rec.getMessage() for rec in caplog.records]
     assert any("Git commit of calibration report" in m and "[REDACTED_SECRET]" in m for m in messages)
@@ -1225,7 +1225,7 @@ def test_run_calibrate_rejected_report_commit_raises(calibration_repo, capsys):
         patch("sandbox_executor.calibration.format_calibration_report"),
         pytest.raises(CalibrationCommitError) as excinfo,
     ):
-        run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
+        run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
 
     message = str(excinfo.value)
     assert "plans/P-2_calibration.md" in message
@@ -1263,7 +1263,7 @@ def test_cli_calibrate_rejected_report_commit_exits_non_zero(calibration_repo, c
 def test_run_calibrate_appends_and_commits_act_cal(calibration_repo):
     repo, git = calibration_repo
     with patch("sandbox_executor.calibration.format_calibration_report"):
-        report = run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
+        report = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
 
     ledger_rel = "holon-knowledge/ledger/executions.jsonl"
     rows = _cal_rows((repo / ledger_rel).read_text(encoding="utf-8"))
@@ -1317,9 +1317,9 @@ def test_run_calibrate_appends_and_commits_act_cal(calibration_repo):
 def test_run_calibrate_metrics_unaffected_by_act_cal_rows(calibration_repo):
     repo, _ = calibration_repo
     with patch("sandbox_executor.calibration.format_calibration_report"):
-        first = run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=True)
-        second = run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
-        third = run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=True)
+        first = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=True)
+        second = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
+        third = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=True)
     assert first.actual.to_dict() == second.actual.to_dict() == third.actual.to_dict()
     assert first.predicted.to_dict() == third.predicted.to_dict()
 
@@ -1329,7 +1329,7 @@ def test_run_calibrate_skip_commit_appends_nothing(calibration_repo):
     ledger = repo / "holon-knowledge" / "ledger" / "executions.jsonl"
     before = ledger.read_bytes()
     with patch("sandbox_executor.calibration.format_calibration_report"):
-        run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=True)
+        run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=True)
     assert ledger.read_bytes() == before
 
 
@@ -1340,7 +1340,7 @@ def test_run_calibrate_ledger_failure_warns_and_still_commits_report(calibration
         patch("sandbox_executor.calibration.format_calibration_report"),
         patch("sandbox_executor.ledger.LedgerLock.__enter__", side_effect=PermissionError("ledger denied")),
     ):
-        run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
+        run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
 
     ledger_path = os.path.join(str(repo), "holon-knowledge", "ledger", "executions.jsonl")
     warnings = [rec.getMessage() for rec in caplog.records if rec.levelname == "WARNING"]
@@ -1356,7 +1356,7 @@ def test_run_calibrate_ledger_failure_reaches_operator_log_fn(calibration_repo):
         patch("sandbox_executor.calibration.format_calibration_report"),
         patch("sandbox_executor.ledger.LedgerLock.__enter__", side_effect=PermissionError("ledger denied")),
     ):
-        run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False, log_fn=logs.append)
+        run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False, log_fn=logs.append)
 
     ledger_path = os.path.join(str(repo), "holon-knowledge", "ledger", "executions.jsonl")
     assert any("ACT-CAL" in msg and ledger_path in msg and "ledger denied" in msg for msg in logs)
@@ -1712,7 +1712,7 @@ class TestFormatCalibrationReport:
             patch("sandbox_executor.calibration.record_calibration_action") as mock_record,
             pytest.raises(CalibrationFormatError),
         ):
-            run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
+            run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
 
         mock_record.assert_not_called()
         assert not [c for c in git_calls if c[:1] in (["add"], ["commit"], ["push"])]
@@ -1723,7 +1723,7 @@ class TestFormatCalibrationReport:
         repo, _ = calibration_repo
         caplog.set_level("WARNING", logger="sandbox_executor.calibration")
         with patch("sandbox_executor.calibration._run_prettier", side_effect=_FakePrettier(check_returncode=1)):
-            report = run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=True)
+            report = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=True)
 
         assert report.committed is False
         assert (repo / _REPORT_REL).exists()
@@ -1733,13 +1733,13 @@ class TestFormatCalibrationReport:
         repo, _ = calibration_repo
         messages: list[str] = []
         with patch("sandbox_executor.calibration._run_prettier", side_effect=_FakePrettier(check_returncode=1)):
-            run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=True, log_fn=messages.append)
+            run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=True, log_fn=messages.append)
 
         assert any("failed the repository Prettier check" in m for m in messages)
 
     def test_run_calibrate_commits_report_that_passes_check(self, calibration_repo):
         repo, git = calibration_repo
         with patch("sandbox_executor.calibration._run_prettier", side_effect=_FakePrettier()):
-            run_calibrate(_EXEC_BRANCH, repo_dir=str(repo), skip_commit=False)
+            run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
 
         assert git("show", f"HEAD:{_REPORT_REL}") == _REPOSITORY_STYLE

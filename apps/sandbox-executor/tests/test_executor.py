@@ -1025,7 +1025,7 @@ class TestExecutor(unittest.TestCase):
             ):
                 with self.assertRaises(RuntimeError) as ctx:
                     executor.main()
-                self.assertIn("Failed to clean up existing repo dir", str(ctx.exception))
+                self.assertIn("Failed to clean up existing target worktree", str(ctx.exception))
                 for call_args in mock_rmtree.call_args_list:
                     cleaned_path = os.path.abspath(call_args.args[0])
                     self.assertTrue(

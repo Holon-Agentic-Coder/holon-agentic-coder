@@ -5444,7 +5444,7 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR
     try:
         report = run_calibrate(
             execution_branch=context.execution_branch,
-            repo_dir=repo_dir,
+            target_worktree=repo_dir,
             json_output=False,
             skip_commit=context.dry_run,
             log_fn=context.log,

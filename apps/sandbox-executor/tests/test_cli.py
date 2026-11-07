@@ -499,7 +499,7 @@ class TestRepoUrlResolution(unittest.TestCase):
                 check=True,
             )
             with patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_mock_token_123"}, clear=True):
-                resolved = resolve_target_repo_url(repo_dir=tmp_dir)
+                resolved = resolve_target_repo_url(target_worktree=tmp_dir)
                 # Credential-free: the token reaches git through a runtime credential helper instead.
                 self.assertEqual(resolved, "https://github.com/myorg/myrepo.git")
 
@@ -513,7 +513,7 @@ class TestRepoUrlResolution(unittest.TestCase):
                 check=True,
             )
             with patch.dict(os.environ, {}, clear=True), patch("shutil.which", return_value=None):
-                resolved = resolve_target_repo_url(repo_dir=tmp_dir)
+                resolved = resolve_target_repo_url(target_worktree=tmp_dir)
                 self.assertEqual(resolved, "git@github.com:myorg/myrepo.git")
 
     def test_resolve_target_repo_url_https_with_token(self):
@@ -526,7 +526,7 @@ class TestRepoUrlResolution(unittest.TestCase):
                 check=True,
             )
             with patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_mock_token_456"}, clear=True):
-                resolved = resolve_target_repo_url(repo_dir=tmp_dir)
+                resolved = resolve_target_repo_url(target_worktree=tmp_dir)
                 self.assertEqual(resolved, "https://github.com/myorg/myrepo.git")
 
     def test_resolve_target_repo_url_worktree(self):
@@ -559,7 +559,7 @@ class TestRepoUrlResolution(unittest.TestCase):
             )
 
             with patch.dict(os.environ, {}, clear=True), patch("shutil.which", return_value=None):
-                resolved = resolve_target_repo_url(repo_dir=worktree_dir)
+                resolved = resolve_target_repo_url(target_worktree=worktree_dir)
                 self.assertEqual(resolved, "git@github.com:worktree/repo.git")
 
     def test_resolve_target_repo_url_missing_origin(self):
@@ -568,14 +568,14 @@ class TestRepoUrlResolution(unittest.TestCase):
             subprocess.run(["git", "init", "-b", "main", tmp_dir], capture_output=True, check=True)
             with patch.dict(os.environ, {}, clear=True):
                 with self.assertRaises(RuntimeError) as cm:
-                    resolve_target_repo_url(repo_dir=tmp_dir)
+                    resolve_target_repo_url(target_worktree=tmp_dir)
                 self.assertIn("Unable to resolve git remote 'origin'", str(cm.exception))
 
     def test_resolve_target_repo_url_non_git_dir(self):
         """Test that non-git directory raises RuntimeError."""
         with tempfile.TemporaryDirectory() as tmp_dir, patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(RuntimeError) as cm:
-                resolve_target_repo_url(repo_dir=tmp_dir)
+                resolve_target_repo_url(target_worktree=tmp_dir)
             self.assertIn("Unable to resolve git remote 'origin'", str(cm.exception))
 
     @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=[])
@@ -621,7 +621,7 @@ class TestRepoUrlResolution(unittest.TestCase):
                 "holon/agent-antigravity",
                 ["branch", "agent", "model"],
                 agent_id="antigravity",
-                repo_dir=empty_dir,
+                target_worktree=empty_dir,
             )
             self.assertEqual(code, 1)
             self.assertIn("Error: Unable to resolve git remote 'origin'", mock_stderr.getvalue())
@@ -724,7 +724,7 @@ class TestHolonFlowCLI(unittest.TestCase):
             with open(intent_file, "w", encoding="utf-8") as f:
                 json.dump({"slug": "test-skip-push", "goal": "g"}, f)
             checkpoint_file = os.path.join(tmp_dir, "checkpoint.json")
-            ckpt_ctx = FlowContext(repo_dir=tmp_dir, intent_data={"slug": "cp"}, skip_push=True)
+            ckpt_ctx = FlowContext(target_worktree=tmp_dir, intent_data={"slug": "cp"}, skip_push=True)
             with open(checkpoint_file, "w", encoding="utf-8") as f:
                 json.dump({"context": ckpt_ctx.to_dict(), "current_stage": "calibrate"}, f)
 
@@ -956,7 +956,7 @@ class TestHolonFlowCLI(unittest.TestCase):
 
             # Create existing context with default flags
             orig_ctx = FlowContext(
-                repo_dir=tmp_dir,
+                target_worktree=tmp_dir,
                 intent_data={"slug": "test-resume"},
                 skip_review=False,
                 skip_calibrate=False,
@@ -1443,7 +1443,7 @@ class TestSharedRoleDispatch(unittest.TestCase):
             "claude-agent",
             "claude-opus-5-5",
             ["I-1-x/P-1/_", "claude-agent", "claude-opus-5-5"],
-            repo_dir="/repo",
+            target_worktree="/repo",
             token_reduce=True,
             mitm_web=True,
         )
@@ -1455,7 +1455,7 @@ class TestSharedRoleDispatch(unittest.TestCase):
             agent_id="claude",
             token_reduce=True,
             mitm_web=True,
-            repo_dir="/repo",
+            target_worktree="/repo",
         )
 
 
@@ -1536,7 +1536,7 @@ class _RecordingDocker:
 
 def _run_planner(repo_dir: str) -> int:
     return run_docker_container(
-        "planner", "holon/agent-claude", [_BRANCH, "claude-agent", "opus"], agent_id="claude", repo_dir=repo_dir
+        "planner", "holon/agent-claude", [_BRANCH, "claude-agent", "opus"], agent_id="claude", target_worktree=repo_dir
     )
 
 
@@ -2187,7 +2187,7 @@ def test_intent_file_error_path_leaves_no_env_file(leak_env, monkeypatch, capsys
         "holon/agent-claude",
         ["claude-agent", "opus"],
         agent_id="claude",
-        repo_dir=leak_env["repo"],
+        target_worktree=leak_env["repo"],
         intent_file=os.path.join(leak_env["repo"], "missing-intent.json"),
     )
 

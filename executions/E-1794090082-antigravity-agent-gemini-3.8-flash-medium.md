@@ -29,3 +29,17 @@ supported harnesses to prevent Linux `MAX_ARG_STRLEN` (128 KB) argument overflow
 - Threaded `stdin_file` to `run(...)` invocations, and ensured follow-up instructions are written to `prompt_file` so
   follow-up turns stream the updated prompt payload.
 - Verified test suite compatibility across `test_turns.py` and `test_turn_supervisor.py` (54 passed).
+
+### Step 2: Refactor Agent Runner Class Hierarchy & Argument Protocols in `agent_runner.py`
+
+- Added `uses_stdin: bool = False` to `AgentRunner` base class.
+- Extended `AgentRunner.build_cmd` signature to accept optional `prompt_file: str | None = None`,
+  `intent_file: str | None = None`, and `full_prompt: str = ""`.
+- Added `uses_stdin: bool = True` to `StandardAgentRunner`, writing/syncing `full_prompt` to `prompt_file` and
+  constructing arguments without inlining `full_prompt` into argv when `prompt_file` is provided. Maintained backward
+  compatibility fallback to `compose_cmd` when `prompt_file` is absent.
+- Set `uses_stdin: bool = False` in `AntigravityAgentRunner`, syncing `full_prompt` to `prompt_file` and passing
+  `f"@{prompt_file}"` as prompt argument instead of raw string.
+- Created specialised subclasses `PiAgentRunner`, `ClaudeAgentRunner`, `GeminiAgentRunner`, `OpenCodeAgentRunner`, and
+  `CodexAgentRunner` inheriting from `StandardAgentRunner` with `uses_stdin: bool = True`.
+- Updated `runners` registry to instantiate these respective runner subclasses.

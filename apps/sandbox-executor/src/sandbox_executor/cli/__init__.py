@@ -140,8 +140,8 @@ from sandbox_executor.cli.options import (  # noqa: E402
     _SKIP_PREFLIGHT_HELP,
     _TOKEN_REDUCE_HELP,
     add_preflight_option,
-    add_repo_dir_option,
     add_runner_options,
+    add_target_worktree_option,
     add_token_reduction_options,
 )
 
@@ -168,8 +168,8 @@ __all__ = [
     "_proxy_host_port",
     "_sidecar_state",
     "add_preflight_option",
-    "add_repo_dir_option",
     "add_runner_options",
+    "add_target_worktree_option",
     "add_token_reduction_options",
     "append_action_event",
     "build_parser",
@@ -397,7 +397,7 @@ def credential_host(repo_url: str) -> str | None:
     return hostport or None
 
 
-def _resolve_target_repo(repo_dir: str | None = None) -> tuple[str, str | None, str | None]:
+def _resolve_target_repo(target_worktree: str | None = None) -> tuple[str, str | None, str | None]:
     """Resolve the credential-free target repository URL and any credential its source embedded.
 
     Returns:
@@ -412,7 +412,7 @@ def _resolve_target_repo(repo_dir: str | None = None) -> tuple[str, str | None, 
         clean_url, embedded = strip_url_credentials(override.strip())
         return clean_url, embedded, "HOLON_REPO_URL" if embedded else None
 
-    target_dir = os.path.abspath(repo_dir) if repo_dir else os.getcwd()
+    target_dir = os.path.abspath(target_worktree) if target_worktree else os.getcwd()
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     proc = subprocess.run(
         ["git", "-C", target_dir, "config", "--get", "remote.origin.url"],
@@ -437,11 +437,11 @@ def _resolve_target_repo(repo_dir: str | None = None) -> tuple[str, str | None, 
     return raw_url, embedded, source
 
 
-def resolve_target_repo(repo_dir: str | None = None) -> tuple[str, str | None]:
+def resolve_target_repo(target_worktree: str | None = None) -> tuple[str, str | None]:
     """Resolve the target git repository URL without credentials, and the credential it carried.
 
     Checks the HOLON_REPO_URL environment variable first. If unset, queries git remote.origin.url in
-    repo_dir (or cwd). Any HTTP(S) userinfo in either source is stripped. When it carries a
+    target_worktree (or cwd). Any HTTP(S) userinfo in either source is stripped. When it carries a
     credential (see `strip_url_credentials`; a plain user name does not), a warning names the source
     but never the value, and `run_docker_container` hands that credential to git inside the
     container through a runtime credential helper, in preference to an ambient host token. When a
@@ -456,7 +456,7 @@ def resolve_target_repo(repo_dir: str | None = None) -> tuple[str, str | None]:
     Raises:
         RuntimeError: If remote.origin.url cannot be resolved or is empty.
     """
-    clean_url, embedded, source = _resolve_target_repo(repo_dir)
+    clean_url, embedded, source = _resolve_target_repo(target_worktree)
     if source and credential_host(clean_url) is None:
         # Plain HTTP is never sent a credential, so no helper will use it: discard it rather than
         # forward an unused secret into the container.
@@ -475,7 +475,7 @@ def resolve_target_repo(repo_dir: str | None = None) -> tuple[str, str | None]:
     return clean_url, embedded
 
 
-def resolve_target_repo_url(repo_dir: str | None = None) -> str:
+def resolve_target_repo_url(target_worktree: str | None = None) -> str:
     """Resolve the target git repository URL, always without embedded credentials.
 
     See `resolve_target_repo`, which also returns the credential the URL carried.
@@ -483,7 +483,7 @@ def resolve_target_repo_url(repo_dir: str | None = None) -> str:
     Raises:
         RuntimeError: If remote.origin.url cannot be resolved or is empty.
     """
-    return resolve_target_repo(repo_dir)[0]
+    return resolve_target_repo(target_worktree)[0]
 
 
 def get_ssh_auth_mounts() -> tuple[list[str], dict[str, str]]:
@@ -1384,7 +1384,7 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
     intent_file: str | None = None,
     token_reduce: bool = False,
     mitm_web: bool = False,
-    repo_dir: str | None = None,
+    target_worktree: str | None = None,
     result_file: str | None = None,
 ) -> int:
     """Constructs docker run command with auto-discovered credentials and executes it."""
@@ -1393,7 +1393,7 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
         return 1
 
     try:
-        resolved_repo_url, embedded_token = resolve_target_repo(repo_dir)
+        resolved_repo_url, embedded_token = resolve_target_repo(target_worktree)
     except RuntimeError as exc:
         print(redact_cli_error(exc), file=sys.stderr)
         return 1
@@ -1776,7 +1776,7 @@ def dispatch_role_agent(  # noqa: PLR0913
     model: str | None,
     positional_args: list[str],
     *,
-    repo_dir: str | None = None,
+    target_worktree: str | None = None,
     intent_file: str | None = None,
     result_file: str | None = None,
     token_reduce: bool = False,
@@ -1793,7 +1793,7 @@ def dispatch_role_agent(  # noqa: PLR0913
         model: Resolved model name. Planner and executor receive it through positional_args; the
             intent creator does not run a model.
         positional_args: Container arguments (e.g. [plan_branch, runner, model] for the executor).
-        repo_dir: Optional target repository directory used to resolve the origin URL.
+        target_worktree: Optional target git worktree directory used to resolve the origin URL.
         intent_file: Intent payload path, mandatory for the intent creator.
         result_file: Structured outcome payload path for container-to-host result transport.
         token_reduce: Whether to route container traffic through the token reduction proxy.
@@ -1811,8 +1811,8 @@ def dispatch_role_agent(  # noqa: PLR0913
         kwargs = {"agent_id": normalise_agent_id(runner or FALLBACK_AGENT), "token_reduce": token_reduce}
     if mitm_web:
         kwargs["mitm_web"] = True
-    if repo_dir:
-        kwargs["repo_dir"] = repo_dir
+    if target_worktree:
+        kwargs["target_worktree"] = target_worktree
     if result_file:
         kwargs["result_file"] = result_file
     image_name = resolve_role_image(role, kwargs["agent_id"])

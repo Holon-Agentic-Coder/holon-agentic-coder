@@ -30,67 +30,67 @@ __all__ = [
 ]
 
 
-def is_bare_repository(repo_dir: str) -> bool:
+def is_bare_repository(target_worktree: str) -> bool:
     """Detect whether a repository directory is a bare Git repository.
 
     Args:
-        repo_dir: Path to directory to inspect.
+        target_worktree: Path to directory to inspect.
 
     Returns:
-        bool: True if repo_dir exists and represents a bare Git repository,
+        bool: True if target_worktree exists and represents a bare Git repository,
             False otherwise.
     """
-    if not repo_dir or not os.path.exists(repo_dir):
+    if not target_worktree or not os.path.exists(target_worktree):
         return False
 
-    res = run_git(["rev-parse", "--is-bare-repository"], cwd=repo_dir, check=False)
+    res = run_git(["rev-parse", "--is-bare-repository"], cwd=target_worktree, check=False)
     return res.returncode == 0 and res.stdout.strip().lower() == "true"
 
 
-def is_working_tree(repo_dir: str) -> bool:
+def is_working_tree(target_worktree: str) -> bool:
     """Check whether a directory is an active non-bare Git working tree.
 
     Args:
-        repo_dir: Path to directory to inspect.
+        target_worktree: Path to directory to inspect.
 
     Returns:
-        bool: True if repo_dir exists, is a valid Git repository, and is not
+        bool: True if target_worktree exists, is a valid Git repository, and is not
             a bare repository, False otherwise.
     """
-    if not repo_dir or not os.path.isdir(repo_dir):
+    if not target_worktree or not os.path.isdir(target_worktree):
         return False
 
-    res = run_git(["rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False)
+    res = run_git(["rev-parse", "--is-inside-work-tree"], cwd=target_worktree, check=False)
     if res.returncode != 0 or res.stdout.strip().lower() != "true":
         return False
 
-    return not is_bare_repository(repo_dir)
+    return not is_bare_repository(target_worktree)
 
 
-def prune_worktrees(repo_dir: str) -> None:
+def prune_worktrees(target_worktree: str) -> None:
     """Prune stale Git worktree records where linked directories were deleted.
 
     Args:
-        repo_dir: Path to Git repository or bare repository directory.
+        target_worktree: Path to Git repository or bare repository directory.
 
     Side-effects:
         Executes 'git worktree prune' to self-heal orphaned metadata under
         '.git/worktrees/' or repository administrative folders.
     """
-    if not repo_dir or not os.path.exists(repo_dir):
+    if not target_worktree or not os.path.exists(target_worktree):
         return
-    res = run_git(["worktree", "prune"], cwd=repo_dir, check=False)
+    res = run_git(["worktree", "prune"], cwd=target_worktree, check=False)
     if res.returncode == 0:
-        logger.debug("Pruned stale worktrees in %s", repo_dir)
+        logger.debug("Pruned stale worktrees in %s", target_worktree)
     else:
-        logger.warning("git worktree prune failed in %s: %s", repo_dir, res.stderr.strip())
+        logger.warning("git worktree prune failed in %s: %s", target_worktree, res.stderr.strip())
 
 
-def derive_worktree_layout(base_repo_dir: str, slug: str) -> tuple[str, str]:
+def derive_worktree_layout(base_target_worktree: str, slug: str) -> tuple[str, str]:
     """Derive canonical target worktree path and branch name for a flow task.
 
     Args:
-        base_repo_dir: Base repository path (working tree or bare clone).
+        base_target_worktree: Base repository path (working tree or bare clone).
         slug: Intent slug identifier.
 
     Returns:
@@ -101,8 +101,8 @@ def derive_worktree_layout(base_repo_dir: str, slug: str) -> tuple[str, str]:
         clean_slug = "flow"
     branch_name = f"flow-{clean_slug}"
 
-    resolved_base = Path(base_repo_dir).resolve()
-    if not os.path.exists(base_repo_dir) and resolved_base.name == branch_name:
+    resolved_base = Path(base_target_worktree).resolve()
+    if not os.path.exists(base_target_worktree) and resolved_base.name == branch_name:
         worktree_path = resolved_base
     else:
         parent_dir = resolved_base.parent
@@ -111,11 +111,11 @@ def derive_worktree_layout(base_repo_dir: str, slug: str) -> tuple[str, str]:
     return os.path.normpath(str(worktree_path)), branch_name
 
 
-def _resolve_base_git_dir(repo_dir: str) -> str:
-    """Resolve the root Git or bare repository directory associated with repo_dir.
+def _resolve_base_git_dir(target_worktree: str) -> str:
+    """Resolve the root Git or bare repository directory associated with target_worktree.
 
     Args:
-        repo_dir: Target path or repository directory.
+        target_worktree: Target path or repository directory.
 
     Returns:
         str: Absolute path to the resolved Git directory.
@@ -123,10 +123,10 @@ def _resolve_base_git_dir(repo_dir: str) -> str:
     Raises:
         RuntimeError: If no valid Git repository can be found.
     """
-    if os.path.exists(repo_dir) and (is_bare_repository(repo_dir) or (Path(repo_dir) / ".git").exists()):
-        return os.path.abspath(repo_dir)
+    if os.path.exists(target_worktree) and (is_bare_repository(target_worktree) or (Path(target_worktree) / ".git").exists()):
+        return os.path.abspath(target_worktree)
 
-    curr = Path(repo_dir).resolve()
+    curr = Path(target_worktree).resolve()
     while curr != curr.parent:
         if is_bare_repository(str(curr)) or (curr / ".git").exists():
             return str(curr)
@@ -139,7 +139,7 @@ def _resolve_base_git_dir(repo_dir: str) -> str:
             return os.path.abspath(top_res.stdout.strip())
         return os.path.abspath(res.stdout.strip())
 
-    raise RuntimeError(f"Unable to resolve a valid Git repository from directory: '{repo_dir}'")
+    raise RuntimeError(f"Unable to resolve a valid Git repository from directory: '{target_worktree}'")
 
 
 def _resolve_start_point(base_git_dir: str, target_branch: str) -> str:
@@ -159,16 +159,16 @@ def _resolve_start_point(base_git_dir: str, target_branch: str) -> str:
     return "HEAD"
 
 
-def ensure_worktree(repo_dir: str, slug: str, target_branch: str = "origin/main") -> str:
+def ensure_worktree(target_worktree: str, slug: str, target_branch: str = "origin/main") -> str:
     """Ensure a dedicated Git worktree is provisioned and active for a flow run.
 
-    Detects if repo_dir is already an active working tree. If not (or if bare),
+    Detects if target_worktree is already an active working tree. If not (or if bare),
     self-heals stale worktree registrations using 'git worktree prune', resolves
     the underlying Git directory, derives the worktree layout, and attaches to
     an existing branch or creates a new dedicated worktree branch.
 
     Args:
-        repo_dir: Target repository path or bare clone directory.
+        target_worktree: Target repository path or bare clone directory.
         slug: Intent slug identifier.
         target_branch: Target base branch to branch off if creating a new branch
             (default: 'origin/main').
@@ -184,13 +184,13 @@ def ensure_worktree(repo_dir: str, slug: str, target_branch: str = "origin/main"
     if not clean_slug:
         raise ValueError("Intent slug must be non-empty to ensure worktree.")
 
-    if os.path.exists(repo_dir) and is_working_tree(repo_dir):
-        return os.path.abspath(repo_dir)
+    if os.path.exists(target_worktree) and is_working_tree(target_worktree):
+        return os.path.abspath(target_worktree)
 
-    base_git_dir = _resolve_base_git_dir(repo_dir)
+    base_git_dir = _resolve_base_git_dir(target_worktree)
     prune_worktrees(base_git_dir)
 
-    worktree_path, branch_name = derive_worktree_layout(repo_dir, clean_slug)
+    worktree_path, branch_name = derive_worktree_layout(target_worktree, clean_slug)
     if os.path.exists(worktree_path) and is_working_tree(worktree_path):
         return os.path.abspath(worktree_path)
 

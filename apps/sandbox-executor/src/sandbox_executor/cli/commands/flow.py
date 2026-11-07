@@ -213,10 +213,7 @@ def _update_flow_context(
 ) -> None:
     target_worktree = getattr(args, "target_worktree", None)
     if target_worktree and target_worktree != ".":
-        if hasattr(context, "target_worktree"):
-            context.target_worktree = target_worktree
-        else:
-            context.repo_dir = target_worktree
+        context.target_worktree = target_worktree
     context.agent = flow_agent
     context.model = flow_model
     if args.dry_run:
@@ -247,11 +244,7 @@ def _build_flow_context(
 ) -> Any:
     effective_token_reduce = cli.detect_holon_coherence(bool(args.token_reduce or args.mitm_web))
     target_worktree = getattr(args, "target_worktree", ".")
-    kw = {}
-    if hasattr(FlowContext, "target_worktree"):
-        kw["target_worktree"] = target_worktree
-    else:
-        kw["repo_dir"] = target_worktree
+    kw = {"target_worktree": target_worktree}
     if context is None:
         return FlowContext(
             intent_data=intent_data,
@@ -345,10 +338,7 @@ def _ensure_flow_worktree(
     logger.info("Provisioned or attached git worktree for flow '%s' at: %s", slug, worktree_path)
     args.target_worktree = worktree_path
     if context is not None:
-        if hasattr(context, "target_worktree"):
-            context.target_worktree = worktree_path
-        else:
-            context.repo_dir = worktree_path
+        context.target_worktree = worktree_path
 
 
 def run(args: argparse.Namespace) -> int | None:

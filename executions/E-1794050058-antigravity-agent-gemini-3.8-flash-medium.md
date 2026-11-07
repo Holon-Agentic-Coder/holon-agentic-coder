@@ -10,10 +10,10 @@ The objective is to replace and completely remove `--repo-dir` with `--target-wo
 | metric | value |
 | --- | --- |
 | success_actual | 0.96 |
-| entropy_actual | 1.30 |
-| impact_actual | 40.00 |
-| cost_actual | 4.00 |
-| learning_value_actual | 2.50 |
+| entropy_actual | 2.20 |
+| impact_actual | 70.00 |
+| cost_actual | 7.00 |
+| learning_value_actual | 4.50 |
 
 ## Steps Executed
 
@@ -31,4 +31,12 @@ The objective is to replace and completely remove `--repo-dir` with `--target-wo
 - Updated dispatch handlers across all 11 subcommands to read `args.target_worktree`.
 - Completely eliminated `--repo-dir` registrations across all subcommands.
 - Verified that all 11 subcommands parse `--target-worktree` correctly and reject `--repo-dir` with an unrecognized argument error (`SystemExit` code 2).
+
+### Step 3: FlowContext, Engine Internals, and Environment Variable Migration
+
+- Refactored `FlowContext` in `apps/sandbox-executor/src/sandbox_executor/flow.py` with `target_worktree: str = "."` as primary field and serialisation key, preserving a compatibility property for `repo_dir`.
+- Updated `get_default_checkpoint_path`, checkpoint loading/migration, and execution dispatch in `flow.py` to use `target_worktree`.
+- Updated `agent_runner.py` and `executor.py` to inspect `HOLON_TARGET_WORKTREE` instead of `HOLON_REPO_DIR`, and updated `cleanup_target_worktree` with alias `cleanup_repo_dir`.
+- Renamed parameters and local variables from `repo_dir` to `target_worktree` across `git_flow.py` (`is_bare_repository`, `is_working_tree`, `prune_worktrees`, `derive_worktree_layout`, `_resolve_base_git_dir`, `ensure_worktree`) and `calibration.py` (`run_calibrate`, `format_calibration_report`, `load_metrics_physics`, `parse_actual_metrics`, `parse_predicted_metrics`, `is_calibration_stale`, `fetch_remote_ref_if_needed`, `resolve_commit_sha`).
+- Migrated `review_loop.py` entrypoint argument parser from `--repo-dir` to `--target-worktree`.
 

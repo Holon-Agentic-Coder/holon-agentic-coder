@@ -121,43 +121,46 @@ def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:  # noq
             print(f"Warning: Failed to remove {item_path}: {e}", file=sys.stderr)
 
 
-def cleanup_repo_dir(repo_dir: str, raise_on_error: bool = False) -> None:
-    """Clean up existing repo directory.
+def cleanup_target_worktree(target_worktree: str, raise_on_error: bool = False) -> None:
+    """Clean up existing target worktree directory.
 
     Clears contents if mount, unlinks if symlink, otherwise removes the tree with read-only chmod handling.
 
     Args:
-        repo_dir: Path to the repository directory.
+        target_worktree: Path to the target worktree directory.
         raise_on_error: If True, propagates exceptions. If False, prints a warning and continues.
     """
-    if not os.path.lexists(repo_dir):
+    if not os.path.lexists(target_worktree):
         return
     try:
-        _check_forbidden_root(repo_dir)
-        if os.path.ismount(repo_dir):
-            _clear_dir_contents(repo_dir, raise_on_error=raise_on_error)
-        elif os.path.islink(repo_dir):
-            os.unlink(repo_dir)
-        elif os.path.isdir(repo_dir):
-            _rmtree(repo_dir)
+        _check_forbidden_root(target_worktree)
+        if os.path.ismount(target_worktree):
+            _clear_dir_contents(target_worktree, raise_on_error=raise_on_error)
+        elif os.path.islink(target_worktree):
+            os.unlink(target_worktree)
+        elif os.path.isdir(target_worktree):
+            _rmtree(target_worktree)
         else:
-            os.remove(repo_dir)
+            os.remove(target_worktree)
     except Exception as e:
         if raise_on_error:
-            raise RuntimeError(f"Failed to clean up existing repo dir {repo_dir}: {e}") from e
-        print(f"Warning: Failed to clean up repo dir {repo_dir}: {e}", file=sys.stderr)
+            raise RuntimeError(f"Failed to clean up existing target worktree {target_worktree}: {e}") from e
+        print(f"Warning: Failed to clean up target worktree {target_worktree}: {e}", file=sys.stderr)
+
+
+cleanup_repo_dir = cleanup_target_worktree
 
 
 def get_workspace_dir() -> str:
     """Returns the workspace directory path based on environment or sandbox status.
 
-    Checks ``HOLON_REPO_DIR`` first, then determines if running in a sandbox environment
+    Checks ``HOLON_TARGET_WORKTREE`` first, then determines if running in a sandbox environment
     (via ``HOLON_IN_SANDBOX``, ``HOLON_ROLE``, ``/.dockerenv``, or user heuristic) and returns
     ``~/.holon-sandbox/workspace`` if in a sandbox or ``~/.holon/repo`` otherwise.
     """
-    repo_dir = os.getenv("HOLON_REPO_DIR")
-    if repo_dir:
-        return repo_dir
+    target_worktree = os.getenv("HOLON_TARGET_WORKTREE")
+    if target_worktree:
+        return target_worktree
 
     in_sandbox_explicit = (
         str(os.getenv("HOLON_IN_SANDBOX", "")).lower() in ("1", "true", "yes")

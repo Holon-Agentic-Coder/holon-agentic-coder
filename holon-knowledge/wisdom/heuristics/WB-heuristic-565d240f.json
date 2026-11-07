@@ -1,0 +1,23 @@
+{
+  "wb_id": "WB-heuristic-565d240f",
+  "wb_type": "heuristic",
+  "version": "1.0",
+  "created_ts": "2026-11-07T09:33:24.081439+00:00",
+  "scope": "global",
+  "status": "active",
+  "ascension_evidence": {
+    "project_count": 1,
+    "total_executions": 23,
+    "wilson_lower": 0.8568833815495798,
+    "provenance": [
+      {
+        "kb_id": "KB-pattern-565d240f"
+      }
+    ]
+  },
+  "human_approved": false,
+  "payload": {
+    "name": "Universal heuristic: ",
+    "advisory": "Advisory (proven-success): Historical executions matching this context pattern succeeded in 23/23 (100.0%) trials (Wilson 95% lower bound: 0.86). Consider evaluating proven approach: ''."
+  }
+}

@@ -49,3 +49,15 @@ and adding comprehensive real CLI tests in `apps/sandbox-executor/tests/test_mod
 - Created `apps/sandbox-executor/src/sandbox_executor/cli/main.py` providing clean top-level CLI re-exports and
   standalone entrypoint invocation.
 - Verified manual invocations of `uv run holon models`, `uv run holon list-models`, and `--json` filtering.
+
+### Step 3: Holon Doctor & Pre-flight Diagnostics Integration
+
+- Updated `MissingModelError` in `apps/sandbox-executor/src/sandbox_executor/agent_defaults.py` to enumerate supported
+  models for the resolved runner and append an actionable recommendation to run `holon models --agent <runner>`.
+- Updated `resolve_model` in `apps/sandbox-executor/src/sandbox_executor/agent_defaults.py` to support `validate=True`
+  checking whether requested models or aliases are recognised, failing with clear diagnostic lists and hints.
+- Updated `run_doctor` in `apps/sandbox-executor/src/sandbox_executor/cli/__init__.py` to enable model validation and,
+  in `--json` mode, populate `available_models` and diagnostic hints under the structured error payload.
+- Updated pre-flight unknown error hints in `apps/sandbox-executor/src/sandbox_executor/preflight.py` advising operators
+  to run `holon models` to verify runner compatibility.
+- Verified that all 435 unit tests in `test_agent_defaults.py` and `test_cli.py` pass cleanly.

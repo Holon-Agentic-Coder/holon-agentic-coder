@@ -29,6 +29,7 @@ from sandbox_executor.agent_defaults import (
     MissingModelError,
     Resolution,
     UnmappedAgentRunnerError,
+    get_available_models_for_runner,
     image_for_agent,
     normalise_agent_id,
     resolve_agent_runner,
@@ -1922,10 +1923,21 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
     try:
         # The text report prints both decisions on stdout, so the resolvers' INFO log would show them twice.
         agent_res = resolve_agent_runner(args.agent, log=False)
-        model_res = resolve_model(agent_res.value, args.model, log=False)
+        model_res = resolve_model(agent_res.value, args.model, log=False, validate=True)
     except (UnmappedAgentRunnerError, MissingAgentRunnerError, MissingModelError) as exc:
         if args.json:
-            print(json.dumps({"error": redact_cli_error(exc), "environment": environment}, indent=2))
+            error_payload: dict[str, Any] = {"error": redact_cli_error(exc)}
+            agent_id = getattr(args, "agent", None) or (agent_res.value if "agent_res" in locals() else None)
+            if agent_id:
+                norm_a = normalise_agent_id(agent_id)
+                avail = get_available_models_for_runner(norm_a)
+                if avail:
+                    error_payload["available_models"] = avail
+                    error_payload["hint"] = (
+                        f"Run 'holon models --agent {norm_a}' to inspect supported models and effort levels."
+                    )
+            error_payload["environment"] = environment
+            print(json.dumps(error_payload, indent=2))
         else:
             print_encodable(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
             print_encodable("\n".join(env_lines))

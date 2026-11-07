@@ -192,6 +192,23 @@ def get_available_models_for_runner(agent: str) -> list[str]:
     return models
 
 
+def is_valid_model_for_runner(agent: str, model: str) -> bool:
+    """Check whether a given model identifier or alias is recognised for the runner."""
+    norm_runner = normalise_agent_id(agent)
+    matching_caps = get_model_capabilities(agent)
+    if not matching_caps:
+        return True
+    m_lower = model.strip().lower()
+    for cap in matching_caps:
+        if m_lower == cap.canonical_model.lower() or m_lower in [a.lower() for a in cap.aliases]:
+            return True
+        if norm_runner in ("antigravity", "gemini"):
+            for eff in ("low", "medium", "high"):
+                if m_lower == f"{cap.canonical_model.lower()}-{eff}":
+                    return True
+    return False
+
+
 def _coordinate_gemini_effort(canonical: str, effort: str | None) -> tuple[str, str | None]:
     effort_suffixes = ("-low", "-medium", "-high")
     eff = effort.strip().lower() if effort and effort.strip() else None
@@ -529,7 +546,12 @@ def default_model_for(agent: str) -> str:
 
 
 def resolve_model(
-    agent: str, explicit: str | None, environ: Mapping[str, str] | None = None, *, log: bool = True
+    agent: str,
+    explicit: str | None,
+    environ: Mapping[str, str] | None = None,
+    *,
+    log: bool = True,
+    validate: bool = False,
 ) -> Resolution:
     """Resolve the model: explicit flag, then ``HOLON_MODEL``; raises :class:`MissingModelError` if omitted.
 
@@ -538,25 +560,43 @@ def resolve_model(
         explicit: Value of ``--model`` (None or empty when not given).
         environ: Environment mapping to inspect (defaults to ``os.environ``).
         log: False when the caller reports the decision itself (``holon doctor``), so it is not also logged.
+        validate: True to validate that the model is recognised for this runner.
 
     Returns:
         A :class:`Resolution` holding the model name.
 
     Raises:
-        MissingModelError: If neither ``--model`` nor ``HOLON_MODEL`` was provided.
+        MissingModelError: If neither ``--model`` nor ``HOLON_MODEL`` was provided, or if validation fails.
 
     Side effects:
         Logs the decision at INFO level unless ``log`` is False.
     """
     env = _env(environ)
+    norm_agent = normalise_agent_id(agent)
+    available_models = get_available_models_for_runner(agent)
+    models_list = ", ".join(available_models)
+    available_str = f" Supported models for {canonical_agent_name(agent)}: {models_list}." if available_models else ""
+    hint_str = f" Run 'holon models --agent {norm_agent}' to inspect supported models and effort levels."
+
     if explicit and explicit.strip():
-        resolution = Resolution(explicit.strip(), "flag", "--model")
+        model_name = explicit.strip()
+        if validate and not is_valid_model_for_runner(agent, model_name):
+            raise MissingModelError(
+                f"Unrecognised model '{model_name}' for {canonical_agent_name(agent)}.{available_str}{hint_str}"
+            )
+        resolution = Resolution(model_name, "flag", "--model")
     elif (env.get("HOLON_MODEL") or "").strip():
-        resolution = Resolution(env["HOLON_MODEL"].strip(), "env", "HOLON_MODEL")
+        model_name = env["HOLON_MODEL"].strip()
+        if validate and not is_valid_model_for_runner(agent, model_name):
+            raise MissingModelError(
+                f"Unrecognised model '{model_name}' for {canonical_agent_name(agent)}.{available_str}{hint_str}"
+            )
+        resolution = Resolution(model_name, "env", "HOLON_MODEL")
     else:
         raise MissingModelError(
             "Model is mandatory: no --model or HOLON_MODEL provided. "
             f"Provide --model or set HOLON_MODEL (e.g. {default_model_for(agent)} for {canonical_agent_name(agent)})."
+            f"{available_str}{hint_str}"
         )
     if log:
         logger.info(resolution.describe("Model"))

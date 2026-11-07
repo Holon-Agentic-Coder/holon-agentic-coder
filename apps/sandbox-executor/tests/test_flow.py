@@ -6384,9 +6384,7 @@ class TestFlowWorktreeHermetic:
         )
         assert proc.stdout.strip() == "flow-test-auto-provision"
 
-    def test_self_heal_stale_worktree_records_after_directory_deletion(
-        self, hermetic_repos: dict[str, Path]
-    ) -> None:
+    def test_self_heal_stale_worktree_records_after_directory_deletion(self, hermetic_repos: dict[str, Path]) -> None:
         """Verify self-healing via prune_worktrees after deleting a worktree folder without git worktree remove."""
         bare_path = str(hermetic_repos["bare"])
         wt_dir = ensure_worktree(bare_path, slug="test-stale-heal", target_branch="main")
@@ -6421,6 +6419,11 @@ class TestFlowWorktreeHermetic:
         """Verify ensure_worktree rejects blank slug with ValueError."""
         with pytest.raises(ValueError, match="Intent slug must be non-empty"):
             ensure_worktree(str(hermetic_repos["bare"]), slug="   ")
+
+    def test_prune_worktrees_directly(self, hermetic_repos: dict[str, Path]) -> None:
+        """Verify prune_worktrees executes cleanly on bare and missing paths."""
+        prune_worktrees(str(hermetic_repos["bare"]))
+        prune_worktrees("/non/existent/path")
 
     def test_flow_cli_auto_creates_worktree_from_bare_repo(
         self, hermetic_repos: dict[str, Path], tmp_path: Path

@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 
 from sandbox_executor import cli
-from sandbox_executor.cli.options import add_runner_options
+from sandbox_executor.cli.options import add_runner_options, add_target_worktree_option
 
 ORDER = 80
 
@@ -21,6 +21,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         ),
     )
     add_runner_options(parser)
+    add_target_worktree_option(parser, default=".")
     parser.add_argument("--json", action="store_true", help="Output the resolution and probe result as JSON.")
     parser.add_argument(
         "--timeout",

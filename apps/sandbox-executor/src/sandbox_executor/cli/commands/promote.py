@@ -6,6 +6,7 @@ import argparse
 import os
 
 from sandbox_executor import cli
+from sandbox_executor.cli.options import add_target_worktree_option
 
 ORDER = 130
 
@@ -32,22 +33,18 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         default=2,
         help="Minimum execution trials required for promotion consideration (default: 2).",
     )
-    parser.add_argument(
-        "--repo-dir",
-        default=".",
-        help="Repository root directory.",
-    )
+    add_target_worktree_option(parser, default=".")
     parser.set_defaults(_run=run)
 
 
 def run(args: argparse.Namespace) -> int:
     """Execute the promote command."""
-    db_path = os.path.join(args.repo_dir, "holon-knowledge/.index/action_index.db")
+    db_path = os.path.join(args.target_worktree, "holon-knowledge/.index/action_index.db")
     db = cli.ActionIndexDatabase(db_path=db_path)
     promoted = cli.promote_pending_candidates(
         index_db=db,
-        kb_dir=os.path.join(args.repo_dir, "holon-knowledge/kb"),
-        wb_dir=os.path.join(args.repo_dir, "holon-knowledge/wisdom"),
+        kb_dir=os.path.join(args.target_worktree, "holon-knowledge/kb"),
+        wb_dir=os.path.join(args.target_worktree, "holon-knowledge/wisdom"),
         min_trials=args.min_trials,
         dry_run=args.dry_run,
     )

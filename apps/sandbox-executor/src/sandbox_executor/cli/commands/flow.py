@@ -17,6 +17,7 @@ from sandbox_executor.cli.options import (
     _MODEL_HELP,
     _SKIP_PREFLIGHT_HELP,
     _TOKEN_REDUCE_HELP,
+    add_target_worktree_option,
 )
 from sandbox_executor.flow import FlowContext, FlowStage
 from sandbox_executor.git_flow import ensure_worktree, is_bare_repository, is_working_tree
@@ -71,11 +72,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         action="store_true",
         help="Output pipeline status and stage results in structured JSON format to stdout.",
     )
-    parser.add_argument(
-        "--repo-dir",
-        default=".",
-        help="Target repository directory path (default: current directory).",
-    )
+    add_target_worktree_option(parser, default=".")
     parser.add_argument(
         "--skip-push",
         action="store_true",
@@ -214,8 +211,12 @@ def _update_flow_context(
     flow_model: str,
     effective_token_reduce: bool,
 ) -> None:
-    if args.repo_dir and args.repo_dir != ".":
-        context.repo_dir = args.repo_dir
+    target_worktree = getattr(args, "target_worktree", None)
+    if target_worktree and target_worktree != ".":
+        if hasattr(context, "target_worktree"):
+            context.target_worktree = target_worktree
+        else:
+            context.repo_dir = target_worktree
     context.agent = flow_agent
     context.model = flow_model
     if args.dry_run:
@@ -245,9 +246,14 @@ def _build_flow_context(
     flow_model: str,
 ) -> Any:
     effective_token_reduce = cli.detect_holon_coherence(bool(args.token_reduce or args.mitm_web))
+    target_worktree = getattr(args, "target_worktree", ".")
+    kw = {}
+    if hasattr(FlowContext, "target_worktree"):
+        kw["target_worktree"] = target_worktree
+    else:
+        kw["repo_dir"] = target_worktree
     if context is None:
         return FlowContext(
-            repo_dir=args.repo_dir,
             intent_data=intent_data,
             agent=flow_agent,
             model=flow_model,
@@ -260,6 +266,7 @@ def _build_flow_context(
             review_ensemble_size=args.ensemble_size or DEFAULT_ENSEMBLE_SIZE,
             token_reduce=effective_token_reduce,
             mitm_web=args.mitm_web,
+            **kw,
         )
     _update_flow_context(context, args, flow_agent, flow_model, effective_token_reduce)
     return context
@@ -307,7 +314,7 @@ def _extract_flow_slug(
         stem = os.path.splitext(os.path.basename(args.intent_file))[0]
         slug = re.sub(r"[^a-zA-Z0-9_\-]+", "-", stem).strip("-")
     if not slug:
-        repo_base = os.path.basename(os.path.abspath(getattr(args, "repo_dir", ".") or "."))
+        repo_base = os.path.basename(os.path.abspath(getattr(args, "target_worktree", ".") or "."))
         slug = re.sub(r"[^a-zA-Z0-9_\-]+", "-", repo_base).strip("-") or "task"
     return slug
 
@@ -317,9 +324,9 @@ def _ensure_flow_worktree(
     context: Any | None,
     intent_data: dict[str, Any],
 ) -> None:
-    """Auto-provision or attach a dedicated Git worktree if repo_dir is bare or absent."""
-    repo_dir = getattr(args, "repo_dir", ".") or "."
-    if is_working_tree(repo_dir) and not is_bare_repository(repo_dir):
+    """Auto-provision or attach a dedicated Git worktree if target_worktree is bare or absent."""
+    target_worktree = getattr(args, "target_worktree", ".") or "."
+    if is_working_tree(target_worktree) and not is_bare_repository(target_worktree):
         return
 
     slug = _extract_flow_slug(args, context, intent_data)
@@ -334,11 +341,14 @@ def _ensure_flow_worktree(
     ):
         target_branch = str(context.intent_data["target_branch"])
 
-    worktree_path = ensure_worktree(repo_dir, slug=slug, target_branch=target_branch)
+    worktree_path = ensure_worktree(target_worktree, slug=slug, target_branch=target_branch)
     logger.info("Provisioned or attached git worktree for flow '%s' at: %s", slug, worktree_path)
-    args.repo_dir = worktree_path
+    args.target_worktree = worktree_path
     if context is not None:
-        context.repo_dir = worktree_path
+        if hasattr(context, "target_worktree"):
+            context.target_worktree = worktree_path
+        else:
+            context.repo_dir = worktree_path
 
 
 def run(args: argparse.Namespace) -> int | None:

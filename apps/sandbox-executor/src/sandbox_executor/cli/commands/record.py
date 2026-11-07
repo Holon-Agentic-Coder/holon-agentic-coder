@@ -6,6 +6,7 @@ import argparse
 import os
 
 from sandbox_executor import cli
+from sandbox_executor.cli.options import add_target_worktree_option
 
 ORDER = 110
 
@@ -51,11 +52,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         default="holon-knowledge/ledger/executions.jsonl",
         help="Path to actions ledger JSONL file.",
     )
-    parser.add_argument(
-        "--repo-dir",
-        default=".",
-        help="Repository root directory.",
-    )
+    add_target_worktree_option(parser, default=".")
     parser.set_defaults(_run=run)
 
 
@@ -63,7 +60,7 @@ def run(args: argparse.Namespace) -> int:
     """Execute the record command."""
     ledger_path = args.ledger_path
     if not os.path.isabs(ledger_path):
-        ledger_path = os.path.join(args.repo_dir, ledger_path)
+        ledger_path = os.path.join(args.target_worktree, ledger_path)
     labels_list = [lbl.strip() for lbl in args.labels.split(",") if lbl.strip()] if args.labels else []
     record_data = {
         "action": args.action,

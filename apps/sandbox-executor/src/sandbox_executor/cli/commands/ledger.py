@@ -8,6 +8,7 @@ import os
 import sys
 
 from sandbox_executor import cli
+from sandbox_executor.cli.options import add_target_worktree_option
 
 ORDER = 90
 
@@ -95,11 +96,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         default=None,
         help="Maximum number of records to return.",
     )
-    query_parser.add_argument(
-        "--repo-dir",
-        default=".",
-        help="Target repository directory path (default: current directory).",
-    )
+    add_target_worktree_option(query_parser, default=".")
     ledger_parser.set_defaults(_run=run)
 
 
@@ -108,7 +105,7 @@ def run(args: argparse.Namespace) -> int:
     if getattr(args, "ledger_command", None) == "query":
         ledger_file = args.ledger_file
         if not os.path.isabs(ledger_file):
-            ledger_file = os.path.join(args.repo_dir, ledger_file)
+            ledger_file = os.path.join(args.target_worktree, ledger_file)
 
         if not os.path.exists(ledger_file):
             print(f"Error: Ledger file '{ledger_file}' does not exist.", file=sys.stderr)

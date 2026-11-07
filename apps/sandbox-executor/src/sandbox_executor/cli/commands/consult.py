@@ -7,6 +7,7 @@ import json
 import os
 
 from sandbox_executor import cli
+from sandbox_executor.cli.options import add_target_worktree_option
 
 ORDER = 100
 
@@ -70,11 +71,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         default="table",
         help="Output format (table or json; default: table).",
     )
-    parser.add_argument(
-        "--repo-dir",
-        default=".",
-        help="Target repository directory path (default: current directory).",
-    )
+    add_target_worktree_option(parser, default=".")
     parser.add_argument(
         "--db-path",
         default=None,
@@ -87,7 +84,7 @@ def run(args: argparse.Namespace) -> int:
     """Execute the consult command."""
     db_path = args.db_path
     if not db_path:
-        db_path = os.path.join(args.repo_dir, "holon-knowledge/.index/action_index.db")
+        db_path = os.path.join(args.target_worktree, "holon-knowledge/.index/action_index.db")
     engine = cli.ConsultEngine(project_db_path=db_path)
     result = engine.consult_records(
         all_labels=args.all_labels,

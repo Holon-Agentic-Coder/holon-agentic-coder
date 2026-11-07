@@ -12,6 +12,7 @@ from sandbox_executor.cli.options import (
     _AGENT_HELP,
     _MODEL_HELP,
     _TOKEN_REDUCE_HELP,
+    add_target_worktree_option,
 )
 from sandbox_executor.review_ensemble import ENSEMBLE_SIZE_HELP
 
@@ -58,11 +59,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         action="store_true",
         help="Run review evaluation without applying changes or git commits.",
     )
-    parser.add_argument(
-        "--repo-dir",
-        default=".",
-        help="Target repository directory path (default: current directory).",
-    )
+    add_target_worktree_option(parser, default=".")
     parser.add_argument(
         "--json",
         action="store_true",
@@ -145,8 +142,8 @@ def _run_container_review(args: argparse.Namespace, effective_token_reduce: bool
     }
     if getattr(args, "mitm_web", False):
         kwargs["mitm_web"] = True
-    if getattr(args, "repo_dir", None):
-        kwargs["repo_dir"] = args.repo_dir
+    if getattr(args, "target_worktree", None):
+        kwargs["target_worktree"] = args.target_worktree
     sys.exit(cli.run_docker_container("review-loop", image_name, container_args, **kwargs))
 
 

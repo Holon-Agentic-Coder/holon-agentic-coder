@@ -9,11 +9,11 @@ The objective is to replace and completely remove `--repo-dir` with `--target-wo
 
 | metric | value |
 | --- | --- |
-| success_actual | 0.98 |
-| entropy_actual | 0.50 |
-| impact_actual | 15.00 |
-| cost_actual | 1.50 |
-| learning_value_actual | 1.00 |
+| success_actual | 0.96 |
+| entropy_actual | 1.30 |
+| impact_actual | 40.00 |
+| cost_actual | 4.00 |
+| learning_value_actual | 2.50 |
 
 ## Steps Executed
 
@@ -24,4 +24,11 @@ The objective is to replace and completely remove `--repo-dir` with `--target-wo
 - Updated `prepare_role_execution` in `apps/sandbox-executor/src/sandbox_executor/cli/commands/_role.py` to forward `"target_worktree": getattr(args, "target_worktree", None)`.
 - Updated role command modules `execute.py`, `plan.py`, and `intent.py` to register `--target-worktree` via `add_target_worktree_option` and forward `target_worktree`.
 - Verified import resolution and confirmed `add_repo_dir_option` is cleanly removed without aliases.
+
+### Step 2: Subcommand Option Registration and Dispatcher Migration across 11 Commands
+
+- Migrated all 11 subcommands (`flow`, `doctor`, `calibrate`, `review`, `ledger`, `promote`, `reconcile`, `record`, `stats`, `veto`, `consult`) to accept `--target-worktree` and store in `args.target_worktree`.
+- Updated dispatch handlers across all 11 subcommands to read `args.target_worktree`.
+- Completely eliminated `--repo-dir` registrations across all subcommands.
+- Verified that all 11 subcommands parse `--target-worktree` correctly and reject `--repo-dir` with an unrecognized argument error (`SystemExit` code 2).
 

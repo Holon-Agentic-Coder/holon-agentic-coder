@@ -8,6 +8,7 @@ import os
 import sys
 
 from sandbox_executor import cli
+from sandbox_executor.cli.options import add_target_worktree_option
 
 ORDER = 140
 
@@ -31,11 +32,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         action="store_true",
         help="Output in JSON format.",
     )
-    veto_list_parser.add_argument(
-        "--repo-dir",
-        default=".",
-        help="Repository root directory.",
-    )
+    add_target_worktree_option(veto_list_parser, default=".")
     veto_lift_parser = veto_subparsers.add_parser(
         "lift",
         help="Manually lift an active or shadowed failure veto.",
@@ -50,17 +47,13 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         default="Manual operator override",
         help="Audit reason for lifting veto.",
     )
-    veto_lift_parser.add_argument(
-        "--repo-dir",
-        default=".",
-        help="Repository root directory.",
-    )
+    add_target_worktree_option(veto_lift_parser, default=".")
     veto_parser.set_defaults(_run=run)
 
 
 def run(args: argparse.Namespace) -> int:
     """Execute the veto command."""
-    db_path = os.path.join(args.repo_dir, "holon-knowledge/.index/action_index.db")
+    db_path = os.path.join(args.target_worktree, "holon-knowledge/.index/action_index.db")
     db = cli.ActionIndexDatabase(db_path=db_path)
     if getattr(args, "veto_command", None) == "list":
         vetoes = cli.list_vetoes(db)

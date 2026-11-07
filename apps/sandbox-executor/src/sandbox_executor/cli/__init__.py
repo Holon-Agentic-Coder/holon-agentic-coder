@@ -1897,7 +1897,7 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
     as its report lines, with its ``WARNING:`` lines also listed under ``warnings``.
 
     Args:
-        args: Parsed namespace with ``agent``, ``model``, ``json`` and ``timeout``.
+        args: Parsed namespace with ``agent``, ``model``, ``json``, ``timeout`` and ``target_worktree``.
         fetch: Optional HTTP fetcher for the gateway probe (tests).
 
     Returns:
@@ -1909,6 +1909,9 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
     """
     import io
     import json
+
+    target_worktree = getattr(args, "target_worktree", ".")
+    del target_worktree  # Validated and available for future worktree-scoped environment probes.
 
     env_out = io.StringIO()
     try:

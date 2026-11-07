@@ -8,11 +8,11 @@ Executing plan `P-1794009796-antigravity-agent-gemini-3.8-flash-medium` for inte
 
 | metric                | value  |
 | --------------------- | ------ |
-| success_actual        | 0.95   |
-| entropy_actual        | 2.00   |
-| impact_actual         | 60.00  |
-| cost_actual           | 5.00   |
-| learning_value_actual | 3.50   |
+| success_actual        | 0.96   |
+| entropy_actual        | 3.40   |
+| impact_actual         | 90.00  |
+| cost_actual           | 8.50   |
+| learning_value_actual | 5.50   |
 
 ## Steps Executed
 
@@ -32,4 +32,15 @@ Executing plan `P-1794009796-antigravity-agent-gemini-3.8-flash-medium` for inte
 - Implemented `_extract_flow_slug(args, context, intent_data)` to inspect `intent_data`, `context`, intent file basename, or target directory fallback to reliably produce a sanitised worktree slug identifier.
 - Implemented `_ensure_flow_worktree(args, context, intent_data)` at the start of `run()` before preflight and context creation. When `args.repo_dir` is not a working tree or is a bare clone, it automatically provisions/attaches the isolated worktree via `ensure_worktree()`, updates `args.repo_dir`, and synchronises `context.repo_dir`.
 - Ensured all subsequent lifecycle stages (intent, planning, execution, review, calibration) execute inside the active provisioned worktree.
+
+### Step 3: Implement Real Hermetic Git Integration Tests Minimising Mocks
+
+- Added test class `TestFlowWorktreeHermetic` in `apps/sandbox-executor/tests/test_flow.py` utilising pytest's `tmp_path` fixture to construct real source and bare Git repositories hermetically on disk.
+- Implemented `test_is_bare_and_is_working_tree` testing bare repo, working tree, and missing path detection without mocks.
+- Implemented `test_derive_worktree_layout` validating layout derivation logic.
+- Implemented `test_auto_create_worktree_from_bare_repository` asserting worktree directory creation, automatic branch creation (`flow-{slug}`), and full working tree checkout from a bare repository.
+- Implemented `test_self_heal_stale_worktree_records_after_directory_deletion` verifying self-healing of stale Git administrative records via `git worktree prune` after sudden directory removal.
+- Implemented `test_idempotent_attach_to_existing_branch` verifying collision-free attachment to pre-existing branches.
+- Implemented `test_ensure_worktree_validates_empty_slug` validating fail-closed parameter validation.
+- Implemented `test_flow_cli_auto_creates_worktree_from_bare_repo` verifying that `holon flow` executed with `--repo-dir` pointing to a bare clone automatically resolves the worktree and delegates the provisioned worktree path to pipeline stages.
 

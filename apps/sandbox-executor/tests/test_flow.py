@@ -2521,7 +2521,7 @@ class TestFlowRoleDispatch:
         for call in agents.calls:
             assert call["runner"] == "claude-agent"
             assert call["model"] == "claude-opus-5-5"
-            assert call["repo_dir"] == str(host)
+            assert call["target_worktree"] == str(host)
         assert agents.calls[1]["args"] == [ctx.intent_branch, "claude-agent", "claude-opus-5-5"]
         assert agents.calls[2]["args"] == [ctx.plan_branch, "claude-agent", "claude-opus-5-5"]
         assert results["intent"].status == StageStatus.SUCCESS
@@ -3937,7 +3937,7 @@ class TestFlowDispatchMergeInteractions:
             patch("sandbox_executor.cli.run_preflight_probe", order.probe),
             patch("sandbox_executor.cli.dispatch_role_agent", order.dispatch),
             patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
-            patch("sys.argv", ["holon", "flow", str(intent_file), "--repo-dir", str(host), "--skip-review"]),
+            patch("sys.argv", ["holon", "flow", str(intent_file), "--target-worktree", str(host), "--skip-review"]),
             pytest.raises(SystemExit),
         ):
             cli_main()
@@ -5039,7 +5039,7 @@ class TestEntropyBudgetHandoffInFlow:
         """Table-driven: every FlowContext field is either inherited from the parent or reset for the new child."""
         dispatcher = MagicMock()
         parent_values: dict[str, Any] = {
-            "repo_dir": "/srv/parent-repo",
+            "target_worktree": "/srv/parent-repo",
             "agent": "codex",
             "model": "parent-only-model",
             "dry_run": True,
@@ -6450,7 +6450,7 @@ class TestFlowWorktreeHermetic:
                     "gemini-3.8-flash-medium",
                     "--dry-run",
                     "--json",
-                    "--repo-dir",
+                    "--target-worktree",
                     str(hermetic_repos["bare"]),
                 ],
             ),
@@ -6462,6 +6462,6 @@ class TestFlowWorktreeHermetic:
         called_ctx = mock_pipeline.call_args[1]["context"]
         assert called_ctx.dry_run is True
         assert called_ctx.intent_data["slug"] == "auto-bare-cli"
-        assert is_working_tree(called_ctx.repo_dir) is True
-        assert Path(called_ctx.repo_dir).name == "flow-auto-bare-cli"
+        assert is_working_tree(called_ctx.target_worktree) is True
+        assert Path(called_ctx.target_worktree).name == "flow-auto-bare-cli"
         mock_exit.assert_called_with(0)

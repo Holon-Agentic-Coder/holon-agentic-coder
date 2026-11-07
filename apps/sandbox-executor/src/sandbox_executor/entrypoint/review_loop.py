@@ -622,9 +622,9 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         help="Enable mitmweb proxy dashboard.",
     )
     parser.add_argument(
-        "--repo-dir",
+        "--target-worktree",
         default=None,
-        help="Repository root directory override.",
+        help="Target worktree directory override.",
     )
 
     args = parser.parse_args()
@@ -634,7 +634,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     # The host CLI always passes resolved values; no harness detection inside the container.
     agent_name = args.agent or args.pos_agent or FALLBACK_AGENT
     model_name = args.model or args.pos_model or default_model_for(agent_name)
-    repo_dir = args.repo_dir or get_workspace_dir()
+    repo_dir = args.target_worktree or get_workspace_dir()
     os.makedirs(repo_dir, exist_ok=True)
 
     # Git workspace preparation: fail closed before any consensus is computed.

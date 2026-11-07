@@ -209,12 +209,12 @@ class CalibrationReport:
         }
 
 
-def fetch_remote_ref_if_needed(ref_name: str, repo_dir: str = ".") -> bool:
+def fetch_remote_ref_if_needed(ref_name: str, target_worktree: str = ".") -> bool:
     """Attempt to fetch a git reference from the remote repository.
 
     Args:
         ref_name: Name of branch or git reference to fetch.
-        repo_dir: Path to the target repository directory.
+        target_worktree: Path to the target git worktree directory.
 
     Returns:
         True if fetch succeeded, False otherwise.
@@ -230,7 +230,7 @@ def fetch_remote_ref_if_needed(ref_name: str, repo_dir: str = ".") -> bool:
         try:
             res = run_git(
                 cmd,
-                cwd=repo_dir,
+                cwd=target_worktree,
                 check=False,
                 timeout=30,
             )
@@ -244,12 +244,12 @@ def fetch_remote_ref_if_needed(ref_name: str, repo_dir: str = ".") -> bool:
 fetch_ref_if_needed = fetch_remote_ref_if_needed
 
 
-def resolve_commit_sha(ref: str, repo_dir: str = ".") -> str:
+def resolve_commit_sha(ref: str, target_worktree: str = ".") -> str:
     """Resolve any git ref (branch, tag, SHA, HEAD) to a 40-character commit SHA.
 
     Args:
         ref: Git reference to resolve (branch name, commit SHA, HEAD, etc.)
-        repo_dir: Path to the target repository directory.
+        target_worktree: Path to the target git worktree directory.
 
     Returns:
         The 40-character hexadecimal commit SHA.
@@ -263,7 +263,7 @@ def resolve_commit_sha(ref: str, repo_dir: str = ".") -> str:
     try:
         res = run_git(
             ["rev-parse", "--verify", f"{clean_ref}^{{commit}}"],
-            cwd=repo_dir,
+            cwd=target_worktree,
             check=False,
             timeout=15,
         )
@@ -279,7 +279,7 @@ def resolve_commit_sha(ref: str, repo_dir: str = ".") -> str:
         raise RuntimeError(f"Error resolving commit SHA for '{ref}': {e}") from e
 
 
-def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:  # noqa: C901, PLR0911, PLR0912, PLR0915
+def resolve_git_ref(ref_name: str, target_worktree: str = ".") -> str:  # noqa: C901, PLR0911, PLR0912, PLR0915
     """Resolve execution or plan ref across commit SHAs, local branches, and remote refs.
 
     Lookup order:
@@ -291,7 +291,7 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:  # noqa: C901, P
 
     Args:
         ref_name: Target git reference string.
-        repo_dir: Path to the target repository directory.
+        target_worktree: Path to the target git worktree directory.
 
     Returns:
         The resolvable git ref string or canonical commit SHA.
@@ -308,7 +308,7 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:  # noqa: C901, P
         try:
             res = run_git(
                 ["rev-parse", "--verify", f"{clean_ref}^{{commit}}"],
-                cwd=repo_dir,
+                cwd=target_worktree,
                 check=False,
                 timeout=15,
             )
@@ -321,14 +321,14 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:  # noqa: C901, P
     try:
         res = run_git(
             ["rev-parse", "--verify", f"refs/heads/{clean_ref}"],
-            cwd=repo_dir,
+            cwd=target_worktree,
             check=False,
             timeout=30,
         )
         if res.returncode == 0:
             # Check if origin has an updated ref and fetch it if tracking exists
             with contextlib.suppress(Exception):
-                fetch_remote_ref_if_needed(clean_ref, repo_dir=repo_dir)
+                fetch_remote_ref_if_needed(clean_ref, target_worktree=target_worktree)
             return clean_ref
     except Exception as e:
         logger.debug("rev-parse local branch check failed: %s", e)
@@ -338,7 +338,7 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:  # noqa: C901, P
         try:
             res = run_git(
                 ["rev-parse", "--verify", clean_ref],
-                cwd=repo_dir,
+                cwd=target_worktree,
                 check=False,
                 timeout=30,
             )
@@ -352,7 +352,7 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:  # noqa: C901, P
         try:
             res = run_git(
                 ["rev-parse", "--verify", remote_candidate],
-                cwd=repo_dir,
+                cwd=target_worktree,
                 check=False,
                 timeout=30,
             )
@@ -362,11 +362,11 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:  # noqa: C901, P
             logger.debug("rev-parse remote tracking check failed: %s", e)
 
     # 4. Attempt remote fetch if not found locally
-    if fetch_remote_ref_if_needed(clean_ref, repo_dir=repo_dir):
+    if fetch_remote_ref_if_needed(clean_ref, target_worktree=target_worktree):
         try:
             res = run_git(
                 ["rev-parse", "--verify", f"refs/heads/{clean_ref}"],
-                cwd=repo_dir,
+                cwd=target_worktree,
                 check=False,
                 timeout=30,
             )
@@ -374,7 +374,7 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:  # noqa: C901, P
                 return clean_ref
             res_remote = run_git(
                 ["rev-parse", "--verify", f"origin/{clean_ref}"],
-                cwd=repo_dir,
+                cwd=target_worktree,
                 check=False,
                 timeout=30,
             )
@@ -391,7 +391,7 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:  # noqa: C901, P
         try:
             res = run_git(
                 ["fetch", "origin", f"+pull/{pr_num}/head:{pr_target}"],
-                cwd=repo_dir,
+                cwd=target_worktree,
                 check=False,
                 timeout=30,
             )
@@ -403,7 +403,7 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:  # noqa: C901, P
         try:
             res = subprocess.run(
                 ["gh", "pr", "view", pr_num, "--json", "headRefOid", "-q", ".headRefOid"],
-                cwd=repo_dir,
+                cwd=target_worktree,
                 capture_output=True,
                 text=True,
                 check=False,
@@ -418,7 +418,7 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:  # noqa: C901, P
     try:
         res = run_git(
             ["rev-parse", "--verify", clean_ref],
-            cwd=repo_dir,
+            cwd=target_worktree,
             check=False,
             timeout=15,
         )
@@ -430,24 +430,32 @@ def resolve_git_ref(ref_name: str, repo_dir: str = ".") -> str:  # noqa: C901, P
     raise RuntimeError(f"Target git reference '{ref_name}' could not be resolved locally or remotely.")
 
 
-def read_git_file(ref: str, rel_path: str, repo_dir: str = ".") -> str | None:
+def read_git_file(
+    ref: str,
+    rel_path: str,
+    target_worktree: str = ".",
+    repo_dir: str | None = None,
+) -> str | None:
     """Read file content from a specific git ref using `git show <ref>:<path>`.
 
     Args:
         ref: Git reference (branch, tag, or commit SHA).
         rel_path: Relative path to the file within the repository.
-        repo_dir: Path to the target repository directory.
+        target_worktree: Path to the target git worktree directory.
+        repo_dir: Backward-compatible alias for target_worktree.
 
     Returns:
         File contents as string if successful, None if git show fails.
     """
+    if repo_dir is not None:
+        target_worktree = repo_dir
     clean_ref = ref.strip()
     if not clean_ref:
         return None
     try:
         res = run_git(
             ["show", f"{clean_ref}:{rel_path}"],
-            cwd=repo_dir,
+            cwd=target_worktree,
             check=False,
             timeout=15,
         )
@@ -492,14 +500,14 @@ def parse_evaluated_commit_sha(report_content_or_path: str) -> str | None:
 def is_calibration_stale(
     report_path: str,
     current_head_ref: str | None = None,
-    repo_dir: str = ".",
+    target_worktree: str = ".",
 ) -> tuple[bool, str, str]:
     """Check whether a calibration report's evaluated SHA matches current HEAD.
 
     Args:
         report_path: Path to the calibration markdown report (or raw markdown content).
         current_head_ref: Optional git reference to compare against (defaults to HEAD).
-        repo_dir: Path to the target repository directory.
+        target_worktree: Path to the target git worktree directory.
 
     Returns:
         tuple[bool, str, str]: (is_stale, evaluated_sha, current_head_sha).
@@ -512,7 +520,7 @@ def is_calibration_stale(
         and not os.path.isabs(report_path)
         and not os.path.exists(report_path)
     ):
-        candidate = os.path.join(repo_dir, report_path)
+        candidate = os.path.join(target_worktree, report_path)
         if os.path.exists(candidate):
             full_path = candidate
     evaluated_sha = parse_evaluated_commit_sha(full_path)
@@ -521,7 +529,7 @@ def is_calibration_stale(
 
     target_head = current_head_ref or "HEAD"
     try:
-        current_head_sha = resolve_commit_sha(target_head, repo_dir=repo_dir).lower()
+        current_head_sha = resolve_commit_sha(target_head, target_worktree=target_worktree).lower()
     except Exception as e:
         logger.debug("Failed to resolve current head SHA for %s: %s", target_head, e)
         current_head_sha = ""
@@ -540,19 +548,21 @@ def is_calibration_stale(
 def verify_calibration_freshness(
     report_path: str,
     current_head_ref: str | None = None,
-    repo_dir: str = ".",
+    target_worktree: str = ".",
 ) -> bool:
     """Verify that a calibration report is fresh (evaluated SHA matches current HEAD).
 
     Args:
         report_path: Path to the calibration markdown report.
         current_head_ref: Optional git reference to compare against (defaults to HEAD).
-        repo_dir: Path to the target repository directory.
+        target_worktree: Path to the target git worktree directory.
 
     Returns:
         True if the report is fresh, False if stale or missing SHA.
     """
-    is_stale, _, _ = is_calibration_stale(report_path, current_head_ref=current_head_ref, repo_dir=repo_dir)
+    is_stale, _, _ = is_calibration_stale(
+        report_path, current_head_ref=current_head_ref, target_worktree=target_worktree
+    )
     return not is_stale
 
 
@@ -597,11 +607,11 @@ def extract_branch_components(branch_str: str) -> dict[str, str]:
     return components
 
 
-def load_metrics_physics(repo_dir: str = ".") -> tuple[float, float]:
+def load_metrics_physics(target_worktree: str = ".") -> tuple[float, float]:
     """Load lambda (entropy penalty) and mu (learning value weight) from config."""
     default_lambda = 0.3
     default_mu = 0.5
-    ev_config_path = os.path.join(repo_dir, "holon-config/metrics/ev_config.json")
+    ev_config_path = os.path.join(target_worktree, "holon-config/metrics/ev_config.json")
     if os.path.exists(ev_config_path):
         try:
             with open(ev_config_path, encoding="utf-8") as f:
@@ -617,13 +627,13 @@ def load_metrics_physics(repo_dir: str = ".") -> tuple[float, float]:
     return default_lambda, default_mu
 
 
-def parse_predicted_metrics(plan_id: str, repo_dir: str = ".") -> tuple[PredictedMetrics, dict[str, Any]]:  # noqa: C901, PLR0912, PLR0915
+def parse_predicted_metrics(plan_id: str, target_worktree: str = ".") -> tuple[PredictedMetrics, dict[str, Any]]:  # noqa: C901, PLR0912, PLR0915
     """Parse predicted plan metrics from plans.jsonl or plans/P-{plan_id}.md."""
     plan_meta: dict[str, Any] = {}
     predicted = PredictedMetrics()
 
     # 1. Primary: Search holon-knowledge/ledger/plans.jsonl
-    plans_jsonl = os.path.join(repo_dir, "holon-knowledge", "ledger", "plans.jsonl")
+    plans_jsonl = os.path.join(target_worktree, "holon-knowledge", "ledger", "plans.jsonl")
     if os.path.exists(plans_jsonl):
         try:
             with open(plans_jsonl, encoding="utf-8") as f:
@@ -648,8 +658,8 @@ def parse_predicted_metrics(plan_id: str, repo_dir: str = ".") -> tuple[Predicte
 
     # 2. Fallback: Parse markdown table from plans/P-{plan_id}.md
     plan_md_candidates = [
-        os.path.join(repo_dir, "plans", f"{plan_id}.md"),
-        os.path.join(repo_dir, f"{plan_id}.md"),
+        os.path.join(target_worktree, "plans", f"{plan_id}.md"),
+        os.path.join(target_worktree, f"{plan_id}.md"),
     ]
     for candidate in plan_md_candidates:
         if os.path.exists(candidate):
@@ -686,7 +696,7 @@ def parse_predicted_metrics(plan_id: str, repo_dir: str = ".") -> tuple[Predicte
                                     predicted.ev = val
                             except ValueError:
                                 continue
-                plan_meta["plan_file"] = os.path.relpath(candidate, repo_dir)
+                plan_meta["plan_file"] = os.path.relpath(candidate, target_worktree)
                 return predicted, plan_meta
             except Exception as e:
                 logger.debug("Error parsing %s: %s", candidate, e)
@@ -699,7 +709,7 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
     plan_branch: str,
     predicted: PredictedMetrics,
     execution_branch: str = "",
-    repo_dir: str = ".",
+    target_worktree: str = ".",
 ) -> tuple[ActualMetrics, dict[str, Any]]:
     """Ingest actual execution telemetry and metrics from ledger and git.
 
@@ -708,7 +718,7 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
         plan_branch: Plan branch reference (e.g. I-.../P-.../_).
         predicted: Predicted metrics model.
         execution_branch: Execution branch or commit reference.
-        repo_dir: Target repository directory.
+        target_worktree: Target git worktree directory.
 
     Returns:
         tuple[ActualMetrics, dict[str, Any]]: Actual metrics object and raw telemetry dict.
@@ -721,7 +731,7 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
     target_ref = execution_branch if execution_branch else "HEAD"
 
     # 1. Search holon-knowledge/ledger/executions.jsonl via git show first, then fallback to disk
-    jsonl_content = read_git_file(target_ref, "holon-knowledge/ledger/executions.jsonl", repo_dir=repo_dir)
+    jsonl_content = read_git_file(target_ref, "holon-knowledge/ledger/executions.jsonl", target_worktree)
     best_record: dict[str, Any] | None = None
     best_rev = -1
 
@@ -746,7 +756,7 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
                 continue
 
     if best_record is None:
-        executions_jsonl = os.path.join(repo_dir, "holon-knowledge", "ledger", "executions.jsonl")
+        executions_jsonl = os.path.join(target_worktree, "holon-knowledge", "ledger", "executions.jsonl")
         if os.path.exists(executions_jsonl):
             logger.info("Falling back to reading local executions.jsonl from disk at %s", executions_jsonl)
             try:
@@ -794,7 +804,7 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
 
     res = run_git(
         diff_args,
-        cwd=repo_dir,
+        cwd=target_worktree,
         check=False,
         timeout=30,
     )
@@ -807,7 +817,7 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
     if execution_branch and base_ref != target_ref:
         res_base = run_git(
             ["rev-parse", base_ref],
-            cwd=repo_dir,
+            cwd=target_worktree,
             check=False,
             timeout=30,
         )
@@ -820,7 +830,7 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
 
         res_mb = run_git(
             ["merge-base", base_ref, target_ref],
-            cwd=repo_dir,
+            cwd=target_worktree,
             check=False,
             timeout=30,
         )
@@ -834,7 +844,7 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
 
         res_merges = run_git(
             ["rev-list", "--count", "--merges", f"{base_ref}..{target_ref}"],
-            cwd=repo_dir,
+            cwd=target_worktree,
             check=False,
             timeout=30,
         )
@@ -913,7 +923,7 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
     )
     exec_meta["ssa_obs"] = ssa_obs
 
-    lambda_p, mu_p = load_metrics_physics(repo_dir)
+    lambda_p, mu_p = load_metrics_physics(target_worktree)
     actual.ev = round(
         (actual.p_success * actual.impact) + (mu_p * actual.learning_value) - (lambda_p * actual.entropy) - actual.cost,
         2,
@@ -1137,13 +1147,13 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
 
 def generate_calibration(  # noqa: C901, PLR0912, PLR0915
     execution_branch: str,
-    repo_dir: str = ".",
+    target_worktree: str = ".",
 ) -> CalibrationReport:
     """Run calibration calculation and return a complete CalibrationReport.
 
     Args:
         execution_branch: Execution branch, remote tracking ref, or commit SHA.
-        repo_dir: Path to the target repository directory.
+        target_worktree: Path to the target git worktree directory.
 
     Returns:
         CalibrationReport: Complete calibration report.
@@ -1156,7 +1166,7 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
 
     # If plan_id is missing (e.g. short execution ID), look it up in executions.jsonl
     if (not plan_id or plan_id == "P-unknown") and execution_id and execution_id != "E-unknown":
-        executions_jsonl = os.path.join(repo_dir, "holon-knowledge", "ledger", "executions.jsonl")
+        executions_jsonl = os.path.join(target_worktree, "holon-knowledge", "ledger", "executions.jsonl")
         if os.path.exists(executions_jsonl):
             with contextlib.suppress(Exception), open(executions_jsonl, encoding="utf-8") as f:
                 for line in f:
@@ -1174,7 +1184,7 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
 
     # Resolve execution reference and plan reference using resolve_git_ref
     try:
-        resolved_exec_ref = resolve_git_ref(execution_branch, repo_dir=repo_dir)
+        resolved_exec_ref = resolve_git_ref(execution_branch, target_worktree=target_worktree)
     except Exception as e:
         logger.debug("Could not resolve execution_branch '%s': %s", execution_branch, e)
         resolved_exec_ref = execution_branch
@@ -1182,7 +1192,7 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
     resolved_plan_ref = plan_branch
     if plan_branch:
         try:
-            resolved_plan_ref = resolve_git_ref(plan_branch, repo_dir=repo_dir)
+            resolved_plan_ref = resolve_git_ref(plan_branch, target_worktree=target_worktree)
         except Exception as e:
             logger.debug("Could not resolve plan_branch '%s': %s", plan_branch, e)
             resolved_plan_ref = plan_branch
@@ -1190,7 +1200,7 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
     # Resolve canonical commit SHA for execution ref
     evaluated_commit_sha: str | None = None
     try:
-        evaluated_commit_sha = resolve_commit_sha(resolved_exec_ref, repo_dir=repo_dir)
+        evaluated_commit_sha = resolve_commit_sha(resolved_exec_ref, target_worktree=target_worktree)
     except Exception as e:
         logger.debug("Could not resolve commit SHA for '%s': %s", resolved_exec_ref, e)
         if re.fullmatch(r"[0-9a-fA-F]{40}", execution_branch.strip()):
@@ -1215,13 +1225,13 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
         raw_branch = raw_branch[len("refs/heads/") :]
     calibrated_branch = f"{raw_branch}/calibrated"
 
-    predicted, plan_meta = parse_predicted_metrics(plan_id, repo_dir=repo_dir)
+    predicted, plan_meta = parse_predicted_metrics(plan_id, target_worktree=target_worktree)
     actual, exec_meta = parse_actual_metrics(
         execution_id,
         resolved_plan_ref,
         predicted,
         execution_branch=resolved_exec_ref,
-        repo_dir=repo_dir,
+        target_worktree=target_worktree,
     )
 
     deltas, ratings, biases = compute_calibration_deltas(predicted, actual)
@@ -1231,7 +1241,7 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
     model_name = exec_meta.get("model") or plan_meta.get("model") or LEGACY_DEFAULT_MODEL
     timestamp_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
-    lambda_val, mu_val = load_metrics_physics(repo_dir)
+    lambda_val, mu_val = load_metrics_physics(target_worktree)
 
     ssa_fallback = 0.0 if actual.files_changed == 0 else max(0.2, actual.files_changed * 0.1)
     ssa_obs = exec_meta.get("ssa_obs", round(ssa_fallback, 1))
@@ -1318,7 +1328,7 @@ def calibration_commit_env() -> dict[str, str]:
 
 def record_calibration_action(  # noqa: PLR0913
     report: CalibrationReport | dict[str, Any],
-    repo_dir: str,
+    target_worktree: str,
     report_rel: str,
     *,
     outcome: str = "success",
@@ -1336,7 +1346,7 @@ def record_calibration_action(  # noqa: PLR0913
 
     Args:
         report: Calibration report, or a dictionary in ``CalibrationReport.to_dict()`` form.
-        repo_dir: Target repository directory.
+        target_worktree: Target git worktree directory.
         report_rel: Repository-relative path of the calibration report.
         outcome: Action outcome, ``"success"`` or ``"failure"``.
         error_context: Optional failure detail.
@@ -1377,19 +1387,19 @@ def record_calibration_action(  # noqa: PLR0913
         "calibration_report_path": report_rel,
         "created_at": datetime.now(UTC).isoformat(),
     }
-    ledger_path = os.path.join(repo_dir, LEDGER_EXECUTIONS_REL)
+    ledger_path = os.path.join(target_worktree, LEDGER_EXECUTIONS_REL)
     return try_append_action_record(
         ledger_path, record, label="Stage 5 calibration action ACT-CAL", preserve_shape=True, log_fn=log_fn
     )
 
 
-def _run_prettier(mode: str, report_rel: str, repo_dir: str) -> subprocess.CompletedProcess[str]:
+def _run_prettier(mode: str, report_rel: str, target_worktree: str) -> subprocess.CompletedProcess[str]:
     """Run the lint-docs Prettier invocation on one report (the single seam tests patch).
 
     Args:
         mode: Prettier mode flag, ``--write`` or ``--check``.
-        report_rel: Report path relative to ``repo_dir``.
-        repo_dir: Repository root; Prettier finds .prettierrc.json from here.
+        report_rel: Report path relative to ``target_worktree``.
+        target_worktree: Worktree root; Prettier finds .prettierrc.json from here.
 
     Returns:
         subprocess.CompletedProcess[str]: The finished Prettier process with captured output.
@@ -1403,7 +1413,7 @@ def _run_prettier(mode: str, report_rel: str, repo_dir: str) -> subprocess.Compl
     """
     return subprocess.run(
         [*LINT_DOCS_PRETTIER, mode, report_rel],
-        cwd=repo_dir,
+        cwd=target_worktree,
         capture_output=True,
         text=True,
         timeout=PRETTIER_TIMEOUT_SECONDS,
@@ -1425,12 +1435,12 @@ def _summarise(label: str, proc: subprocess.CompletedProcess[str]) -> str:
     return f"{label} exited {proc.returncode}: " + " | ".join(output)
 
 
-def _converge_report(report_rel: str, repo_dir: str) -> str | None:
+def _converge_report(report_rel: str, target_worktree: str) -> str | None:
     """Run up to PRETTIER_PASSES write/check passes, stopping at the first passing check or failed write.
 
     Args:
-        report_rel: Report path relative to ``repo_dir``.
-        repo_dir: Repository root used as Prettier's working directory.
+        report_rel: Report path relative to ``target_worktree``.
+        target_worktree: Worktree root used as Prettier's working directory.
 
     Returns:
         str | None: Why the last pass failed, or None once the check passes.
@@ -1444,22 +1454,22 @@ def _converge_report(report_rel: str, repo_dir: str) -> str | None:
     """
     reason = None
     for _ in range(PRETTIER_PASSES):
-        write = _run_prettier("--write", report_rel, repo_dir)
+        write = _run_prettier("--write", report_rel, target_worktree)
         if write.returncode != 0:
             return _summarise("write", write)
-        check = _run_prettier("--check", report_rel, repo_dir)
+        check = _run_prettier("--check", report_rel, target_worktree)
         if check.returncode == 0:
             return None
         reason = _summarise("check", check)
     return reason
 
 
-def _prettier_failure(report_rel: str, repo_dir: str) -> str | None:
+def _prettier_failure(report_rel: str, target_worktree: str) -> str | None:
     """Format the report then check it, returning why the check did not pass (None when it passed).
 
     Args:
-        report_rel: Report path relative to ``repo_dir``.
-        repo_dir: Repository root used as Prettier's working directory.
+        report_rel: Report path relative to ``target_worktree``.
+        target_worktree: Worktree root used as Prettier's working directory.
 
     Returns:
         str | None: A short reason when npx is missing, Prettier cannot run, a write fails or the
@@ -1471,21 +1481,21 @@ def _prettier_failure(report_rel: str, repo_dir: str) -> str | None:
     if shutil.which("npx") is None:
         return "npx is not on PATH"
     try:
-        return _converge_report(report_rel, repo_dir)
+        return _converge_report(report_rel, target_worktree)
     except (OSError, subprocess.TimeoutExpired) as e:
         return f"Prettier could not run: {e}"
 
 
-def format_calibration_report(report_rel: str, repo_dir: str) -> None:
+def format_calibration_report(report_rel: str, target_worktree: str) -> None:
     """Format the calibration report exactly as ``uv run task lint-docs`` checks it, failing closed.
 
-    Runs up to PRETTIER_PASSES rounds of ``npx --yes prettier --write`` then ``--check`` with ``cwd=repo_dir``,
+    Runs up to PRETTIER_PASSES rounds of ``npx --yes prettier --write`` then ``--check`` with ``cwd=target_worktree``,
     so the repository .prettierrc.json applies and Prettier resolves exactly as it does for lint-docs and the CI
     lint-md check (unpinned npx; a host with a stale npx cache can still resolve an older version than CI).
 
     Args:
-        report_rel: Report path relative to ``repo_dir`` (for example ``plans/P-1_calibration.md``).
-        repo_dir: Repository root.
+        report_rel: Report path relative to ``target_worktree`` (for example ``plans/P-1_calibration.md``).
+        target_worktree: Worktree root.
 
     Raises:
         CalibrationFormatError: If npx is missing, Prettier cannot run or times out, or the check
@@ -1494,7 +1504,7 @@ def format_calibration_report(report_rel: str, repo_dir: str) -> None:
     Side Effects:
         Rewrites the report in place; logs the outcome.
     """
-    reason = _prettier_failure(report_rel, repo_dir)
+    reason = _prettier_failure(report_rel, target_worktree)
     if reason is None:
         logger.info("Calibration report %s passes the repository Prettier check", report_rel)
         return
@@ -1505,23 +1515,25 @@ def format_calibration_report(report_rel: str, repo_dir: str) -> None:
     )
 
 
-def run_calibrate(  # noqa: C901, PLR0912, PLR0915
+def run_calibrate(  # noqa: C901, PLR0912, PLR0913, PLR0915
     execution_branch: str,
-    repo_dir: str = ".",
+    target_worktree: str = ".",
     json_output: bool = False,
     skip_commit: bool = False,
     log_fn: Callable[[str], None] | None = None,
+    repo_dir: str | None = None,
 ) -> CalibrationReport:
     """Execute holon calibrate workflow: checkout calibrated branch, generate & commit report.
 
     Args:
         execution_branch: Target execution branch or commit reference.
-        repo_dir: Path to the target repository directory.
+        target_worktree: Path to the target git worktree directory.
         json_output: Whether to print report JSON to stdout.
         skip_commit: If True, writes report to working tree without creating a branch or commit.
         log_fn: Optional operator-facing log callable (for example ``FlowContext.log``) that
             receives a failed ACT-CAL ledger append warning. When None, the warning goes to the
             module logger only.
+        repo_dir: Backward-compatible alias for target_worktree.
 
     Returns:
         CalibrationReport: Generated calibration report.
@@ -1535,7 +1547,9 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
             cannot run) when ``skip_commit`` is False. Raised before the ACT-CAL ledger append and
             any ``git add`` or ``git commit``, so nothing is recorded, committed or pushed.
     """
-    report = generate_calibration(execution_branch, repo_dir=repo_dir)
+    if repo_dir is not None:
+        target_worktree = repo_dir
+    report = generate_calibration(execution_branch, target_worktree=target_worktree)
     report.committed = not skip_commit
     if skip_commit:
         report.calibrated_branch = None
@@ -1545,12 +1559,12 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
         calibrated_branch = report.calibrated_branch
         local_check = run_git(
             ["rev-parse", "--verify", f"refs/heads/{calibrated_branch}"],
-            cwd=repo_dir,
+            cwd=target_worktree,
             check=False,
         )
         remote_check = run_git(
             ["rev-parse", "--verify", f"refs/remotes/origin/{calibrated_branch}"],
-            cwd=repo_dir,
+            cwd=target_worktree,
             check=False,
         )
         local_exists = local_check.returncode == 0
@@ -1559,7 +1573,7 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
         if local_exists:
             res_co = run_git(
                 ["checkout", calibrated_branch],
-                cwd=repo_dir,
+                cwd=target_worktree,
                 check=False,
                 timeout=30,
             )
@@ -1570,7 +1584,7 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
             if remote_exists:
                 res_mg = run_git(
                     ["merge", "--ff-only", f"origin/{calibrated_branch}"],
-                    cwd=repo_dir,
+                    cwd=target_worktree,
                     check=False,
                     timeout=30,
                 )
@@ -1579,7 +1593,7 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
         elif remote_exists:
             res_co = run_git(
                 ["checkout", "-b", calibrated_branch, f"origin/{calibrated_branch}"],
-                cwd=repo_dir,
+                cwd=target_worktree,
                 check=False,
                 timeout=30,
             )
@@ -1589,11 +1603,13 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
                 )
         else:
             start_point = (
-                report.evaluated_commit_sha or resolve_git_ref(execution_branch, repo_dir=repo_dir) or execution_branch
+                report.evaluated_commit_sha
+                or resolve_git_ref(execution_branch, target_worktree=target_worktree)
+                or execution_branch
             )
             res_co = run_git(
                 ["checkout", "-b", calibrated_branch, start_point],
-                cwd=repo_dir,
+                cwd=target_worktree,
                 check=False,
                 timeout=30,
             )
@@ -1604,10 +1620,10 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
                 )
 
     # 2. Write calibration markdown report to plans/P-{plan_id}_calibration.md
-    plans_dir = os.path.join(repo_dir, "plans")
+    plans_dir = os.path.join(target_worktree, "plans")
     os.makedirs(plans_dir, exist_ok=True)
     report_rel = f"plans/{report.plan_id}_calibration.md"
-    report_path = os.path.join(repo_dir, report_rel)
+    report_path = os.path.join(target_worktree, report_rel)
 
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report.markdown_content)
@@ -1615,28 +1631,28 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
     # Format and check the report after its final write, before the ACT-CAL append, git add or git commit
     if skip_commit:
         try:
-            format_calibration_report(report_rel, repo_dir)
+            format_calibration_report(report_rel, target_worktree)
         except CalibrationFormatError as e:
             (log_fn or logger.warning)(str(e))
     else:
-        format_calibration_report(report_rel, repo_dir)
+        format_calibration_report(report_rel, target_worktree)
 
     # 3. Record the Stage 5 ACT-CAL action and commit it with the report on the calibrated branch
     commit_paths = [report_rel]
     if skip_commit:
         logger.info("Skipping ACT-CAL ledger record for %s: calibration is not being committed", report.plan_id)
-    elif record_calibration_action(report, repo_dir, report_rel, log_fn=log_fn) is not None:
+    elif record_calibration_action(report, target_worktree, report_rel, log_fn=log_fn) is not None:
         commit_paths.append(LEDGER_EXECUTIONS_REL)
 
     if not skip_commit:
         try:
-            run_git(["add", *commit_paths], cwd=repo_dir, check=False)
+            run_git(["add", *commit_paths], cwd=target_worktree, check=False)
             commit_env = calibration_commit_env()
 
             commit_msg = f"chore(calibration): add calibration report for {report.plan_id}"
             commit_res = run_git(
                 ["commit", "-m", commit_msg, "--", *commit_paths],
-                cwd=repo_dir,
+                cwd=target_worktree,
                 env=commit_env,
                 check=False,
             )

@@ -28,14 +28,15 @@ _DEFAULT_MITM_WEB_HELP = (
 )
 
 
-def add_repo_dir_option(
+def add_target_worktree_option(
     parser: argparse.ArgumentParser,
     default: str | None = None,
-    help: str = "Target repository directory path (default: current directory).",
+    help: str = "Target git worktree directory path (default: current directory).",
 ) -> None:
-    """Add standard --repo-dir argument to a parser."""
+    """Add standard --target-worktree argument to a parser."""
     parser.add_argument(
-        "--repo-dir",
+        "--target-worktree",
+        dest="target_worktree",
         default=default,
         help=help,
     )

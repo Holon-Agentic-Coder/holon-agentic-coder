@@ -521,7 +521,7 @@ def test_cli_knowledge_commands(temp_dir: str, monkeypatch: pytest.MonkeyPatch, 
         "api,fast",
         "--ledger-path",
         ledger_path,
-        "--repo-dir",
+        "--target-worktree",
         temp_dir,
     ]
     monkeypatch.setattr("sys.argv", test_args)
@@ -539,7 +539,7 @@ def test_cli_knowledge_commands(temp_dir: str, monkeypatch: pytest.MonkeyPatch, 
         "api",
         "--db-path",
         db_path,
-        "--repo-dir",
+        "--target-worktree",
         temp_dir,
         "--json",
     ]
@@ -556,7 +556,7 @@ def test_cli_knowledge_commands(temp_dir: str, monkeypatch: pytest.MonkeyPatch, 
         "reconcile",
         "--ledger-path",
         ledger_path,
-        "--repo-dir",
+        "--target-worktree",
         temp_dir,
     ]
     monkeypatch.setattr("sys.argv", reconcile_args)
@@ -570,7 +570,7 @@ def test_cli_knowledge_commands(temp_dir: str, monkeypatch: pytest.MonkeyPatch, 
     stats_args = [
         "holon",
         "stats",
-        "--repo-dir",
+        "--target-worktree",
         temp_dir,
     ]
     monkeypatch.setattr("sys.argv", stats_args)

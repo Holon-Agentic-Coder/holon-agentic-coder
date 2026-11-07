@@ -422,7 +422,7 @@ class TestExecutor(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as tmp_dir,
-            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
         ):
             ledger_dir = os.path.join(tmp_dir, "holon-knowledge/ledger")
 
@@ -465,7 +465,7 @@ class TestExecutor(unittest.TestCase):
             patch("sandbox_executor.entrypoint.executor.get_runner", return_value=mock_runner),
             patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value="/mock/repo"),
             tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as tmp_dir,
-            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
         ):
             executor.main()
@@ -554,7 +554,7 @@ class TestExecutor(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as tmp_dir,
-            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
         ):
             with patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]):
                 executor.main()
@@ -618,7 +618,7 @@ class TestExecutor(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as tmp_dir,
-            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
             patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
         ):
             # Create dummy .git directory to test removal/re-init
@@ -684,7 +684,7 @@ class TestExecutor(unittest.TestCase):
         stderr = io.StringIO()
         with (
             tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as tmp_dir,
-            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1" if skip_push else ""}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1" if skip_push else ""}),
             patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect),
             patch("sandbox_executor.entrypoint.executor.get_runner", return_value=mock_runner),
             patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value="/mock/repo"),
@@ -836,7 +836,7 @@ class TestExecutor(unittest.TestCase):
             stderr = io.StringIO()
             outcome: int | BaseException
             with (
-                patch.dict(os.environ, {"HOLON_REPO_DIR": workspace, "HOLON_SKIP_PUSH": ""}),
+                patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": workspace, "HOLON_SKIP_PUSH": ""}),
                 patch("sandbox_executor.entrypoint.executor.get_runner", return_value=mock_runner),
                 patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value=origin),
                 patch("sandbox_executor.entrypoint.executor.sync_and_reconcile_pre_push", return_value=(True, "ok")),
@@ -912,7 +912,7 @@ class TestExecutor(unittest.TestCase):
             custom_dir = os.path.join(tmp_dir, "custom_repo")
             os.makedirs(custom_dir, exist_ok=True)
             with (
-                patch.dict(os.environ, {"HOLON_REPO_DIR": custom_dir, "HOLON_SKIP_PUSH": "1"}),
+                patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": custom_dir, "HOLON_SKIP_PUSH": "1"}),
                 patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
             ):
                 executor.main()
@@ -953,8 +953,8 @@ class TestExecutor(unittest.TestCase):
             os.makedirs(default_dir, exist_ok=True)
 
             env = os.environ.copy()
-            if "HOLON_REPO_DIR" in env:
-                del env["HOLON_REPO_DIR"]
+            if "HOLON_TARGET_WORKTREE" in env:
+                del env["HOLON_TARGET_WORKTREE"]
             env["HOLON_SKIP_PUSH"] = "1"
 
             with (
@@ -987,7 +987,7 @@ class TestExecutor(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as tmp_dir,
-            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir}),
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
             patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
         ):
@@ -1018,7 +1018,7 @@ class TestExecutor(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             mock_expanduser.return_value = tmp_dir
             env = os.environ.copy()
-            env.pop("HOLON_REPO_DIR", None)
+            env.pop("HOLON_TARGET_WORKTREE", None)
             with (
                 patch.dict(os.environ, env, clear=True),
                 patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
@@ -1208,8 +1208,8 @@ class TestExecutor(unittest.TestCase):
             os.makedirs(default_dir, exist_ok=True)
 
             env = os.environ.copy()
-            if "HOLON_REPO_DIR" in env:
-                del env["HOLON_REPO_DIR"]
+            if "HOLON_TARGET_WORKTREE" in env:
+                del env["HOLON_TARGET_WORKTREE"]
             env["HOLON_SKIP_PUSH"] = "1"
             env["HOLON_KEEP_WORKSPACE"] = "true"
 
@@ -1255,8 +1255,8 @@ class TestExecutor(unittest.TestCase):
             os.makedirs(git_dir, exist_ok=True)
 
             env = os.environ.copy()
-            if "HOLON_REPO_DIR" in env:
-                del env["HOLON_REPO_DIR"]
+            if "HOLON_TARGET_WORKTREE" in env:
+                del env["HOLON_TARGET_WORKTREE"]
             if "HOLON_ROLE" in env:
                 del env["HOLON_ROLE"]
             if "HOLON_IN_SANDBOX" in env:
@@ -1314,8 +1314,8 @@ class TestExecutor(unittest.TestCase):
             os.makedirs(default_dir, exist_ok=True)
 
             env = os.environ.copy()
-            if "HOLON_REPO_DIR" in env:
-                del env["HOLON_REPO_DIR"]
+            if "HOLON_TARGET_WORKTREE" in env:
+                del env["HOLON_TARGET_WORKTREE"]
             env["HOLON_SKIP_PUSH"] = "1"
 
             with (
@@ -1374,7 +1374,7 @@ class TestExecutor(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as tmp_dir,
-            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
         ):
             with patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]):
                 executor.main()
@@ -1426,7 +1426,7 @@ class TestExecutor(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as tmp_dir,
-            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
             patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
             patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
@@ -1487,7 +1487,7 @@ class TestExecutor(unittest.TestCase):
             tempfile.TemporaryDirectory() as tmp_dir,
             patch.dict(
                 os.environ,
-                {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1", "HOLON_AGENT_LOG_BYTES": "1024"},
+                {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1", "HOLON_AGENT_LOG_BYTES": "1024"},
             ),
             patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
             patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
@@ -1554,7 +1554,7 @@ class TestExecutor(unittest.TestCase):
             patch.dict(
                 os.environ,
                 {
-                    "HOLON_REPO_DIR": tmp_dir,
+                    "HOLON_TARGET_WORKTREE": tmp_dir,
                     "HOLON_SKIP_PUSH": "1",
                     "GITHUB_TOKEN": secret_gh,
                     "GH_TOKEN": secret_gh_tok,
@@ -1640,7 +1640,7 @@ class TestExecutor(unittest.TestCase):
             patch.dict(
                 os.environ,
                 {
-                    "HOLON_REPO_DIR": tmp_dir,
+                    "HOLON_TARGET_WORKTREE": tmp_dir,
                     "HOLON_SKIP_PUSH": "1",
                     "HOLON_AGENT_LOG_BYTES": str(budget),
                     "GITHUB_TOKEN": straddle_value,
@@ -2079,7 +2079,7 @@ class TestExecutor(unittest.TestCase):
             patch.dict(
                 os.environ,
                 {
-                    "HOLON_REPO_DIR": tmp_dir,
+                    "HOLON_TARGET_WORKTREE": tmp_dir,
                     "HOLON_SKIP_PUSH": "1",
                     "HOLON_AGENT_LOG_BYTES": str(configured),
                     "GITHUB_TOKEN": "",
@@ -2317,7 +2317,7 @@ class TestExecutor(unittest.TestCase):
             tempfile.TemporaryDirectory() as tmp_dir,
             patch.dict(
                 os.environ,
-                {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1", "HOLON_AGENT_LOG_BYTES": str(budget)},
+                {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1", "HOLON_AGENT_LOG_BYTES": str(budget)},
             ),
             patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
             patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
@@ -2350,7 +2350,7 @@ class TestExecutor(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as tmp_dir,
-            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
             patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
             patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
@@ -2410,7 +2410,7 @@ class TestExecutor(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as tmp_dir,
-            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
             patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
             patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
@@ -2467,7 +2467,7 @@ class TestExecutor(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as tmp_dir,
-            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
             patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
             patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
@@ -2693,7 +2693,7 @@ class TestExecutor(unittest.TestCase):
             mock_get_runner.return_value = mock_runner
 
             with (
-                patch.dict(os.environ, {"HOLON_REPO_DIR": workspace_dir}),
+                patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": workspace_dir}),
                 patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=workspace_dir),
                 patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value=bare_dir),
                 patch("sys.argv", ["executor.py", plan_branch, "antigravity-agent", "gemini-3.5-flash"]),
@@ -2776,7 +2776,7 @@ class TestExecutor(unittest.TestCase):
                 return orig_run_cmd(cmd, cwd=cwd, **kwargs)
 
             with (
-                patch.dict(os.environ, {"HOLON_REPO_DIR": workspace_dir}),
+                patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": workspace_dir}),
                 patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=workspace_dir),
                 patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value=bare_dir),
                 patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=failing_run_cmd),
@@ -2861,7 +2861,7 @@ class TestExecutor(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as tmp_dir,
-            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
             patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect),
             patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
@@ -2932,7 +2932,7 @@ class TestExecutor(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as tmp_dir,
-            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
             patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect),
             patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
@@ -3135,7 +3135,7 @@ class TestExecutor(unittest.TestCase):
                 patch.dict(
                     os.environ,
                     {
-                        "HOLON_REPO_DIR": workspace_dir,
+                        "HOLON_TARGET_WORKTREE": workspace_dir,
                         "HOLON_SKIP_PUSH": "1",
                         "GIT_DIR": "/invalid/nonexistent/git/dir",
                     },
@@ -3223,7 +3223,7 @@ class TestExecutor(unittest.TestCase):
             mock_get_runner.return_value = mock_runner
 
             with (
-                patch.dict(os.environ, {"HOLON_REPO_DIR": workspace_dir, "HOLON_GIT_FETCH_RETRIES": "1"}),
+                patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": workspace_dir, "HOLON_GIT_FETCH_RETRIES": "1"}),
                 patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=workspace_dir),
                 patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value=bare_dir),
                 patch("sys.argv", ["executor.py", plan_branch, "antigravity-agent", "gemini-3.5-flash"]),
@@ -3272,7 +3272,7 @@ class TestExecutor(unittest.TestCase):
 
             captured = io.StringIO()
             with (
-                patch.dict(os.environ, {"HOLON_REPO_DIR": workspace_dir, "HOLON_GIT_FETCH_RETRIES": "1"}),
+                patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": workspace_dir, "HOLON_GIT_FETCH_RETRIES": "1"}),
                 patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=workspace_dir),
                 patch(
                     "sandbox_executor.entrypoint.executor.get_repo_url",
@@ -3552,7 +3552,7 @@ class TestExecutorPrePushSync(unittest.TestCase):
             patch.dict(
                 os.environ,
                 {
-                    "HOLON_REPO_DIR": tmp_dir,
+                    "HOLON_TARGET_WORKTREE": tmp_dir,
                     "HOLON_SKIP_PUSH": "1",
                     "HOLON_ACTION_LOGGING": "1",
                     "HOLON_ACTION_ORIGIN": "pr_review",
@@ -3661,7 +3661,7 @@ class TestExecutorIncrementalNotes(unittest.TestCase):
         exit_code = 0
         stdout, stderr = io.StringIO(), io.StringIO()
         with (
-            patch.dict(os.environ, {"HOLON_REPO_DIR": tmp.name, "HOLON_SKIP_PUSH": "1", **(env or {})}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp.name, "HOLON_SKIP_PUSH": "1", **(env or {})}),
             patch.object(executor, "run_cmd", side_effect=fake_run_cmd),
             patch.object(executor, "run_turn", side_effect=fake_run_turn),
             patch.object(executor, "get_runner", return_value=runner),
@@ -4368,7 +4368,7 @@ def _run_executor_main(
 
     repo = str(tmp_path / "repo")
     with (
-        patch.dict(os.environ, {"HOLON_REPO_DIR": repo, "HOLON_SKIP_PUSH": "1"}),
+        patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": repo, "HOLON_SKIP_PUSH": "1"}),
         patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect),
         patch("sandbox_executor.entrypoint.executor.get_runner", return_value=runner),
         patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value="/mock/repo"),
@@ -4644,7 +4644,7 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         stderr = io.StringIO()
         code = 0
         with (
-            patch.dict(os.environ, {"HOLON_REPO_DIR": workspace, "HOLON_SKIP_PUSH": ""}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": workspace, "HOLON_SKIP_PUSH": ""}),
             patch.object(executor, "run_turn", side_effect=fake_run_turn),
             patch.object(executor, "get_runner", return_value=runner),
             patch.object(executor, "get_repo_url", return_value=url or self.bare),

@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-pattern-bf794132",
+  "kb_type": "pattern",
+  "version": "1.0",
+  "created_ts": "2026-11-08T09:10:01.413433+00:00",
+  "updated_ts": "2026-11-08T09:10:01.413433+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-1793925665-dbceed1e",
+      "ACT-1793923025-025fbc26",
+      "ACT-1793872718-7cff9e03"
+    ],
+    "success_count": 9,
+    "failure_count": 0,
+    "wilson_lower": 0.7008549515804675,
+    "posterior_mean": 0.9090909090909091,
+    "ladder_state": "likely-success"
+  },
+  "tags": [
+    "code",
+    "proven"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Proven approach for antigravity-agent:gemini-4-argon",
+    "description": "Advisory (likely-success): Historical executions matching this context pattern succeeded in 9/9 (100.0%) trials (Wilson 95% lower bound: 0.70). Consider evaluating proven approach: 'Executed agent antigravity-agent with model gemini-4-argon'.",
+    "action": "Executed agent antigravity-agent with model gemini-4-argon"
+  }
+}

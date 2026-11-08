@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-ec20f7aa",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-08T09:10:01.478727+00:00",
+  "updated_ts": "2026-11-08T09:10:01.478727+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794093751-f20c367c"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794089603-pass-prompts-to-agent-runners-via-files/P-1794089619-antigravity-agent-gemini-3.8-flash-medium/E-1794090082-antigravity-agent-gemini-3.8-flash-medium/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 2 finding detected: FIND-CI-002",
+    "symptoms": [
+      "Findings detected: ['FIND-CI-002', 'FIND-R1-002-01', 'FIND-R1-002-02', 'FIND-R1-002-03', 'FIND-R1-002-04', 'FIND-R2-002-01', 'FIND-R2-002-02', 'FIND-R2-002-03', 'FIND-R2-002-04', 'FIND-R3-002-01', 'FIND-R3-002-02', 'FIND-R3-002-03', 'FIND-R3-002-04']"
+    ]
+  }
+}

@@ -20,6 +20,11 @@ codebase files.
 7. All generated or updated markdown documentation and execution records must use code spans (backticks) for formulas,
    arithmetic expressions, and metric notations (e.g., `EV = 0.90 * 95.0`) to avoid CommonMark emphasis parsing
    oscillations and maintain immediate single-pass prettier compatibility.
+8. Code placement: new behaviour goes in the module that owns the data (or a new module); maintain one module per stage,
+   command, runner or provider; functions stay within repository ruff complexity limits (`C901 <= 10`, `PLR0912 <= 12`,
+   `PLR0913 <= 5`, `PLR0915 <= 50`) without adding inline '# noqa' suppressions; use intention-revealing names in the
+   domain language (`intent`, `plan`, `execution`, `review`, `calibration`, `ledger`); add no new imports from
+   entrypoints into the host flow engine.
 
 **Write Protocol (incremental execution notes):**
 

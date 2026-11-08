@@ -89,6 +89,18 @@ You will be eliminated from the selection process if you:
   `EV = P(success) * Impact + mu * LearningValue - lambda * Delta_S_intent - Cost` and
   `EV = 0.91 * 95.0 + 0.5 * 5.2 - 0.3 * 1.8 - 12.0 = 86.45 + 2.60 - 0.54 - 12.0 = 76.51`.
 
+**Code Placement & Sizing:**
+
+- New behaviour goes in the module that owns the data (or a new module); maintain one module per stage, command, runner
+  or provider.
+- Functions stay within repository ruff complexity limits (`C901 <= 10`, `PLR0912 <= 12`, `PLR0913 <= 5`,
+  `PLR0915 <= 50`) without adding inline '# noqa' suppressions.
+- Use intention-revealing names in the domain language (`intent`, `plan`, `execution`, `review`, `calibration`,
+  `ledger`).
+- Add no new imports from entrypoints into the host flow engine.
+- The plan lists its touch set at module granularity and prefers adding focused modules over growing existing files past
+  ~400 lines.
+
 The plan format is as below.
 
 ```markdown

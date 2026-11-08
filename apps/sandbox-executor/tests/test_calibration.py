@@ -1059,7 +1059,7 @@ class TestCalibrationInterleavedActionLedger(unittest.TestCase):
         # C7-I1: execution notes are committed by every execution and are flow metadata, not code.
         self.assertTrue(is_metadata_path("executions/E-1792372417-claude-agent-claude-opus-5-5.md"))
         self.assertFalse(is_metadata_path("src/executions/runner.py"))
-        self.assertFalse(is_metadata_path(".beans/0001-task.md"))
+        self.assertFalse(is_metadata_path(".tasks/0001-task.md"))
         self.assertFalse(is_metadata_path("todo/scratch.py"))
 
         self.assertFalse(is_metadata_path("src/module.py"))

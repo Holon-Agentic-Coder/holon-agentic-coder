@@ -139,7 +139,7 @@ compacted before they are tokenized.
 
 ---
 
-## Incremental Execution Notes (Bean 0138)
+## Incremental Execution Notes
 
 The executor agent keeps its own notes incrementally instead of reporting everything in a final message:
 

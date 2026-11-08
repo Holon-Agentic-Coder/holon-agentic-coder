@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Containerised entrypoint for the Holon Review Loop Agent (Bean 0118).
+"""Containerised entrypoint for the Holon Review Loop Agent.
 
 Coordinates the multi-pass review loop within an isolated container:
 - Proactive conflict detection and resolution.
@@ -8,7 +8,7 @@ Coordinates the multi-pass review loop within an isolated container:
   status probing and mergeability inspection; the exit code is 0 only for an APPROVED ensemble verdict.
 - Automated PR creation or update via GitHub API / gh CLI.
 - RFC 2822 commit trailer formatting and discrete ledger recording.
-- Enforces Bean 0034 (Human-Only PR Merging) by halting unconditionally upon consensus approval.
+- Enforces the human-only PR merge rule by halting unconditionally upon consensus approval.
 
 Preparation fails closed. The target is resolved before any git operation (a PR number or URL becomes its
 head branch and head SHA through gh, never a raw 'git clone --branch 90'); the head branch is cloned or
@@ -659,7 +659,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         check=False,
     )
 
-    # Proactive conflict detection and resolution against target upstream branch (Bean 0121)
+    # Proactive conflict detection and resolution against target upstream branch
     target_branch = "main"
     check_and_resolve_stage_conflicts(repo_dir=repo_dir, target_branch=target_branch, stage_name="review")
 
@@ -762,7 +762,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             print(f"  Reason         : {_bounded_error_context(str(loop_res['error']))}")
         print("===============================================================\n")
         if approved:
-            print("[BEAN 0034 SAFETY HALT] Review Loop reached consensus approval.")
+            print("[SAFETY HALT] Review Loop reached consensus approval.")
             print("Pipeline halted for human review (autonomous merge prohibited).")
             cmd = loop_res.get("human_approval_command", f"holon review approve {args.target}")
             print(f"To approve manually, run: {cmd}\n")

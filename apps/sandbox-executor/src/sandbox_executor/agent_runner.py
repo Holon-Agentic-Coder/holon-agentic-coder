@@ -375,8 +375,8 @@ class StandardAgentRunner(AgentRunner):
             return
 
         if self.required_keys:
-            # A host-local inference server addressed through the Docker gateway needs no provider credential (Bean
-            # 0049). Only accepted for pi -- the generated artifact is a pi agent directory, so a pi-only gate keeps a
+            # A host-local inference server addressed through the Docker gateway needs no provider credential.
+            # Only accepted for pi -- the generated artifact is a pi agent directory, so a pi-only gate keeps a
             # stray opt-in from masking a missing cloud key for another runner -- and only when the local endpoint is
             # actually configured.
             if (

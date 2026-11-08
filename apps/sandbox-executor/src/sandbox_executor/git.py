@@ -1,4 +1,4 @@
-"""Centralised Git repository abstraction and helper operations (Bean 0124).
+"""Centralised Git repository abstraction and helper operations.
 
 Provides typed, robust Git interaction utilities:
 - run_git: Safe subprocess execution with credential redaction and configurable timeouts.

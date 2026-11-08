@@ -2,13 +2,14 @@
 
 A sandboxed agent cannot reach an inference server that listens on the host, because loopback and the host's own LAN
 address are not routable inside the container network namespace. The Docker gateway name (``host.docker.internal``) is
-the only address that works, and nothing in the host CLI ever told the agent about it (Bean 0049).
+the only address that works, and nothing in the host CLI ever told the agent about it.
 
-This module is the client-side counterpart of the ``server_connect`` rewrite Bean 0027 added to the
+This module is the client-side counterpart of the ``server_connect`` rewrite in the
 ``holon-coherence`` proxy: here the *authority in the configured base URL* is rewritten, so the agent connects to the
 gateway directly instead of having its request dropped by an unreachable upstream.
 
-Safety invariant inherited from Bean 0027: only loopback and explicitly allow-listed authorities are rewritten.
+Safety invariant inherited from the server-connect rewrite: only loopback and explicitly allow-listed
+authorities are rewritten.
 RFC1918 ranges are never blanket-rewritten, because a genuinely remote inference box on the same LAN would otherwise be
 silently redirected onto the host machine.
 """
@@ -40,12 +41,12 @@ ENV_LOCAL_PROVIDER = "HOLON_LOCAL_PROVIDER"
 ENV_LOCAL_MODELS = "HOLON_LOCAL_MODELS"
 # Provider selected for the runner; also the synthesised provider's name when HOLON_LOCAL_PROVIDER is unset.
 ENV_AGENT_PROVIDER = "HOLON_AGENT_PROVIDER"
-# Explicit, comma-separated allow list of host authorities that may be rewritten (Bean 0027 parity).
+# Explicit, comma-separated allow list of host authorities that may be rewritten.
 ENV_HOST_LOCAL_HOSTS = "HOLON_HOST_LOCAL_HOSTS"
 # Pi resolves its agent directory (and therefore models.json) from this variable.
 ENV_PI_AGENT_DIR = "PI_CODING_AGENT_DIR"
 
-# Model envelope (Bean 0140). Reasoning mode for the generated model entries; validated against REASONING_MODES.
+# Model envelope. Reasoning mode for the generated model entries; validated against REASONING_MODES.
 ENV_REASONING_MODE = "HOLON_REASONING_MODE"
 # Tokens kept free for the prompt when bounding maxTokens: maxTokens may not exceed contextWindow minus this reserve.
 ENV_CONTEXT_RESERVE_TOKENS = "HOLON_CONTEXT_RESERVE_TOKENS"
@@ -765,7 +766,7 @@ def prepare_agent_dir(dest_dir: str, host_config: dict | None = None, allow_list
     os.makedirs(dest_dir, mode=0o777, exist_ok=True)
     os.chmod(dest_dir, 0o777)
     _write_shared_json(os.path.join(dest_dir, "models.json"), config)
-    # pi reads its default thinking level from settings.json in the agent directory (Bean 0140).
+    # pi reads its default thinking level from settings.json in the agent directory.
     _write_shared_json(os.path.join(dest_dir, "settings.json"), {"defaultThinkingLevel": _thinking_level(envelopes)})
     return config
 
@@ -804,7 +805,7 @@ def container_env(dest_dir: str) -> dict[str, str]:
     return {ENV_PI_AGENT_DIR: CONTAINER_AGENT_DIR}
 
 
-# Gateway health probe (Bean 0140). Runs on the host only, against loopback or allow-listed authorities.
+# Gateway health probe. Runs on the host only, against loopback or allow-listed authorities.
 HEALTH_PATH = "/health"
 HEALTH_TIMEOUT_SECONDS = 2.0
 # Only these schemes are probed, and at most this many bytes of the response are read.

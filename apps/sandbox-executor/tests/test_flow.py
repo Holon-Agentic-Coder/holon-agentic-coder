@@ -476,8 +476,8 @@ class TestFlowStages:
         assert res.status == StageStatus.FAILED
         assert "without an active execution_branch" in (res.error or "")
 
-    def test_stage4_review_bean_0034_human_only_merge_halt(self, tmp_path):
-        """CRITICAL INVARIANT TEST: Bean 0034 Human-Only PR Merging rule.
+    def test_stage4_review_human_only_merge_halt(self, tmp_path):
+        """CRITICAL INVARIANT TEST: human-only PR merging rule.
 
         Ensures autonomous review loop halts unconditionally with HALTED_FOR_HUMAN
         upon reaching consensus approval, and strictly NEVER executes a git merge to main.
@@ -508,11 +508,11 @@ class TestFlowStages:
             # Assert git merge was NEVER called
             for call in mock_git.call_args_list:
                 args = call[0][0]
-                assert "merge" not in args, f"VIOLATION OF BEAN 0034: Autonomous merge detected with args {args}"
+                assert "merge" not in args, f"HUMAN-ONLY MERGE RULE VIOLATED: merge invoked with args {args}"
 
         assert res.status == StageStatus.HALTED_FOR_HUMAN
         assert res.payload["halted_for_human"] is True
-        assert res.payload["bean_0034_enforced"] is True
+        assert res.payload["human_merge_gate_enforced"] is True
         assert res.payload["consensus"]["approved"] is True
         assert "holon review approve" in res.payload["human_approval_command"]
 
@@ -560,7 +560,7 @@ class TestFlowStages:
         assert res.status == StageStatus.FAILED
         assert res.payload["consensus"]["approved"] is False
 
-    def test_stage5_calibrate_bean_0038(self, tmp_path):
+    def test_stage5_calibrate(self, tmp_path):
         """Test Stage 5 Post-Execution Calibration generating calibration report."""
         ctx = FlowContext(
             repo_dir=str(tmp_path),
@@ -575,7 +575,7 @@ class TestFlowStages:
         assert not ctx.calibrated_branch.endswith("/_/calibrated")
         assert "calibrated_branch" in res.payload
 
-    def test_stage5_calibrate_bean_0038_mocked(self, tmp_path):
+    def test_stage5_calibrate_mocked(self, tmp_path):
         """Test Stage 5 invoking run_calibrate successfully."""
         ctx = FlowContext(
             repo_dir=str(tmp_path),
@@ -1447,7 +1447,7 @@ class TestReviewMergeabilityGuards:
 
 
 class TestReviewLoopStage:
-    """Comprehensive tests for native multi-pass review loop, CI check probing, git trailers, and Bean 0034."""
+    """Comprehensive tests for the native multi-pass review loop, CI check probing, git trailers and merge halt."""
 
     def test_probe_ci_checks_github_cli_success(self):
         checks_json = json.dumps(
@@ -1512,7 +1512,7 @@ class TestReviewLoopStage:
         assert "Review-Finding-Ids: none" in clean_trailers
         assert "Review-Severity: clean" in clean_trailers
 
-    def test_review_loop_consensus_approval_halts_under_bean_0034(self, tmp_path):
+    def test_review_loop_consensus_approval_halts_without_merge(self, tmp_path):
         """Verify review loop halts with HALTED_FOR_HUMAN and never invokes git merge main."""
         ctx = FlowContext(
             repo_dir=str(tmp_path),
@@ -1533,14 +1533,14 @@ class TestReviewLoopStage:
             mock_git.return_value = MagicMock(returncode=0, stdout=" 1 file changed, 10 insertions(+)\n")
             res = run_review_loop(ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=5)
 
-            # Bean 0034 check: git merge main must never have been called
+            # Human-only merge check: git merge main must never have been called
             for call in mock_git.call_args_list:
                 args = call[0][0]
-                assert "merge" not in args, f"VIOLATION OF BEAN 0034: Autonomous merge detected with args {args}"
+                assert "merge" not in args, f"HUMAN-ONLY MERGE RULE VIOLATED: merge invoked with args {args}"
 
         assert res["consensus"]["approved"] is True
         assert res["halted_for_human"] is True
-        assert res["bean_0034_enforced"] is True
+        assert res["human_merge_gate_enforced"] is True
         assert "holon review approve" in res["human_approval_command"]
 
     def test_review_loop_stops_after_the_first_non_approved_iteration(self, tmp_path):
@@ -1626,7 +1626,7 @@ class TestReviewLoopStage:
             assert code == 0
             captured = capsys.readouterr().out
             assert "Holon Review Loop Summary" in captured
-            assert "BEAN 0034 SAFETY HALT" in captured
+            assert "[SAFETY HALT]" in captured
             assert "holon review approve" in captured
 
         # Test rejected exit code
@@ -1673,14 +1673,14 @@ class TestSemanticPRAndConsensusReview:
             assert title == expected_prefix, f"Expected '{expected_prefix}', got '{title}'"
 
     def test_generate_semantic_pr_metadata_markdown_structure(self):
-        """Verify structured markdown body includes Summary, Key Changes, Referenced Beans, and Plan Metadata."""
+        """Verify structured markdown body includes Summary, Key Changes, References, and Plan Metadata."""
         intent = {
             "category": "feature",
             "slug": "flow-enhancements",
             "title": "Enhance review loop and PR generation",
             "description": "Comprehensive flow pipeline enhancements.",
-            "goal": "1) MAKEFILE ALIGNMENT (Bean 0116)\n2) LEDGER ACTIONS (Bean 0113)\n3) PR CONSENSUS (Bean 0119)",
-            "beans": ["0116", "0113", "0119", "0109"],
+            "goal": "1) MAKEFILE ALIGNMENT\n2) LEDGER ACTIONS\n3) PR CONSENSUS",
+            "references": ["0116", "0113", "0119", "0109"],
             "labels": ["makefile", "flow"],
         }
         plan_meta = {
@@ -1695,11 +1695,11 @@ class TestSemanticPRAndConsensusReview:
         assert "## Summary" in body
         assert "Comprehensive flow pipeline enhancements." in body
         assert "## Key Changes" in body
-        assert "- MAKEFILE ALIGNMENT (Bean 0116)" in body
-        assert "- LEDGER ACTIONS (Bean 0113)" in body
-        assert "- PR CONSENSUS (Bean 0119)" in body
-        assert "## Referenced Beans" in body
-        assert "Closes Bean 0116, 0113, 0119, 0109" in body
+        assert "- MAKEFILE ALIGNMENT" in body
+        assert "- LEDGER ACTIONS" in body
+        assert "- PR CONSENSUS" in body
+        assert "## References" in body
+        assert "References: 0116, 0113, 0119, 0109" in body
         assert "## Plan & Validation Metadata" in body
         assert "- **Plan ID:** `P-1792243199-antigravity`" in body
         assert "- **Expected Value (EV):** `81.00`" in body
@@ -1713,7 +1713,7 @@ class TestSemanticPRAndConsensusReview:
         assert "## Summary" in body
         assert "No description provided." in body
         assert "## Key Changes" in body
-        assert "## Referenced Beans" in body
+        assert "## References" in body
         assert "None" in body
         assert "## Plan & Validation Metadata" in body
         assert "- **Plan ID:** `N/A`" in body
@@ -1984,7 +1984,7 @@ class TestSemanticPRAndConsensusReview:
 
 
 class TestProactiveConflictAndReviewLoop:
-    """Tests for Bean 0121 proactive conflict detection and Bean 0118 Review Loop Agent identity."""
+    """Tests for proactive conflict detection and Review Loop Agent identity."""
 
     def test_review_git_env(self):
         assert REVIEW_GIT_ENV["GIT_AUTHOR_NAME"] == "Holon Review Loop Agent"
@@ -2044,7 +2044,7 @@ class SteppingClock:
 
 
 class TestStageBudgets:
-    """Bean 0139: stage ceilings, elapsed-versus-budget summary lines and the execute budget hand-down."""
+    """Stage budgets: stage ceilings, elapsed-versus-budget summary lines and the execute budget hand-down."""
 
     def test_summary_line_format(self):
         res = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS, elapsed_seconds=246, budget_seconds=2100)
@@ -6058,7 +6058,7 @@ class TestEngineOwnedReviewLoop:
 
 
 class TestStage5PromotedArtifactsCommit:
-    """Hermetic unit tests for Stage 5 promoted knowledge base and wisdom commits (Bean 0052 Goal 6)."""
+    """Hermetic unit tests for Stage 5 promoted knowledge base and wisdom commits."""
 
     @staticmethod
     def _setup_repo(tmp_path: Path, execution_branch: str) -> None:

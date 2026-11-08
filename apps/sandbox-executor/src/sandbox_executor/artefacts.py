@@ -1,4 +1,4 @@
-"""Validation of the artefacts authoring agents write incrementally (Bean 0138).
+"""Validation of the artefacts authoring agents write incrementally.
 
 Planner and executor agents are asked to create their artefact (``plans/P-*.md`` or ``executions/E-*.md``) with their
 file-write tool straight away and extend it section by section, instead of emitting everything in one final stdout

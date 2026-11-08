@@ -1,7 +1,7 @@
 """Canary guard test simulating container conditions to prove the whole suite stays hermetic.
 
 Scope note: this guard runs the *entire* ``apps/sandbox-executor/tests`` directory, not a curated
-module list. The bean 0019 defect was suite-wide -- an unguarded test could resolve the live
+module list. The workspace-deletion defect was suite-wide -- an unguarded test could resolve the live
 workspace and delete it -- so a single-module or few-module canary cannot establish that the
 hazard is gone. A list of "the modules we remember" silently rots as the suite grows, which is
 exactly how the original guard ended up excluding ``test_agent_runner.py``, the one module that

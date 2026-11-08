@@ -15,7 +15,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     """Register the promote subcommand parser."""
     parser = subparsers.add_parser(
         "promote",
-        help="Evaluate and promote qualified knowledge to KB and WB (Bean 0052).",
+        help="Evaluate and promote qualified knowledge to KB and WB.",
     )
     parser.add_argument(
         "--pending",

@@ -1,4 +1,4 @@
-"""Tests for host-local LLM support in the sandbox launcher (Bean 0049).
+"""Tests for host-local LLM support in the sandbox launcher.
 
 Covers the authority rewrite decision table, the generated container-side agent directory, the gateway host mapping, and
 the keyless validation path for local providers.
@@ -48,7 +48,7 @@ class TestRewriteAuthority(unittest.TestCase):
         )
 
     def test_undeclared_lan_authority_is_untouched(self):
-        """Safety invariant inherited from Bean 0027: never blanket-rewrite RFC1918 ranges."""
+        """Safety invariant inherited from the server-connect rewrite: never blanket-rewrite RFC1918 ranges."""
         self.assertEqual(
             local_llm.rewrite_authority("http://192.168.2.13:8081/v1"),
             "http://192.168.2.13:8081/v1",
@@ -406,7 +406,7 @@ class TestLauncherIntegration(unittest.TestCase):
         os.mkdir(self.generated_agent_dir)
 
     def _run(self, env, mounts=None, tr_envs=None, mkdtemp_dir=None, agent_id="pi", token_reduce=False):  # noqa: PLR0913
-        # Synthesised model entries declare no contextWindow; the envelope needs one (Bean 0140).
+        # Synthesised model entries declare no contextWindow; the envelope needs one.
         merged_env = {
             "GITHUB_TOKEN": "mock-token",
             "HOLON_REPO_URL": "git@github.com:dummy/repo.git",
@@ -747,7 +747,7 @@ def _config(*models, base_url="http://localhost:8081/v1"):
 
 
 class TestModelEnvelope(unittest.TestCase):
-    """Bean 0140: explicit maxTokens and reasoning mode on every generated model entry."""
+    """Model envelope: explicit maxTokens and reasoning mode on every generated model entry."""
 
     def apply(self, config, env=None):
         return local_llm.apply_model_envelope(config, env or {})

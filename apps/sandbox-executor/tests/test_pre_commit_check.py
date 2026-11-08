@@ -1,4 +1,4 @@
-"""Unit tests for pre-commit credential and scratch file detection (Bean 0110)."""
+"""Unit tests for pre-commit credential and scratch file detection."""
 
 import shutil
 import subprocess
@@ -23,7 +23,7 @@ class TestPreCommitCheck:
     """Test suite for scripts/pre_commit_check.py."""
 
     def test_normalise_path_preserves_leading_dot(self):
-        # Critical Bean 0110 invariant: must preserve leading dot for hidden directories
+        # Critical invariant: must preserve leading dot for hidden directories
         assert normalise_path("./.index/action_index.db") == ".index/action_index.db"
         assert normalise_path("./.agents/AGENTS.md") == ".agents/AGENTS.md"
         assert normalise_path(".agents/AGENTS.md") == ".agents/AGENTS.md"
@@ -98,7 +98,7 @@ class TestPreCommitCheck:
         assert any("Behavior" in v for v in violations)
 
     def test_spelling_orthography_preserves_license_invariants(self, tmp_path: Path):
-        # Bean 0125 invariant: LICENSE files must NEVER be flagged or modified
+        # Spelling-guard invariant: LICENSE files must NEVER be flagged or modified
         license_file = tmp_path / "LICENSE"
         license_file.write_text(
             "Apache License, Version 2.0\n"

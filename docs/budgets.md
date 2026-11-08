@@ -1,4 +1,4 @@
-# Turn and Stage Budgets (Bean 0139)
+# Turn and Stage Budgets
 
 A single runner turn on a local model used to be able to run without any bound, and a pipeline stage had no ceiling at
 all. Holon now bounds both, preserves whatever partial work exists when a budget fires, and leaves an auditable ledger
@@ -7,13 +7,13 @@ action whenever a budget failure is not recovered.
 The implementation lives in `apps/sandbox-executor/src/sandbox_executor/budgets.py` (configuration, timers, summary
 lines) and `apps/sandbox-executor/src/sandbox_executor/turns.py` (turn supervision, salvage, resume and the ACT-BUDGET
 record). The incremental artefact protocol these budgets rely on is described in
-[Creating a Plan in Sandbox](sandbox/create_plan.md#incremental-plan-artefact-bean-0138) and
-[Running Execution via Docker](sandbox/execute_plan.md#incremental-execution-notes-bean-0138).
+[Creating a Plan in Sandbox](sandbox/create_plan.md#incremental-plan-artefact) and
+[Running Execution via Docker](sandbox/execute_plan.md#incremental-execution-notes).
 
 ## Budgets and defaults
 
-The defaults are the real measurements recorded in Beans 0138 to 0140. They are not derived from synthetic throughput
-data, and the tests that exercise them use injected clocks only to drive control flow.
+The defaults are the real measurements recorded during the artefact, turn and model-envelope work. They are not derived
+from synthetic throughput data, and the tests that exercise them use injected clocks only to drive control flow.
 
 | Budget                | Default | Variable                                      | Bounds                                                              |
 | --------------------- | ------- | --------------------------------------------- | ------------------------------------------------------------------- |
@@ -49,10 +49,10 @@ are rejected the same way above 2147483647, but as a configuration error that st
 cannot fall back to a safe default. All of these variables start with `HOLON_`, so the host CLI forwards them into the
 sandbox container automatically. `holon doctor` prints the effective values.
 
-> [!NOTE] A turn is a single assistant response (Bean 0139), not a runner process. One `claude -p` or `pi -p` invocation
-> performs a whole plan or execution as many responses and legitimately runs for tens of minutes (31.4 min for a real
-> planner run), so the runner process as a whole is bounded only by its stage ceiling and the stall window. The
-> process's own elapsed time is never compared with the turn budget.
+> [!NOTE] A turn is a single assistant response, not a runner process. One `claude -p` or `pi -p` invocation performs a
+> whole plan or execution as many responses and legitimately runs for tens of minutes (31.4 min for a real planner run),
+> so the runner process as a whole is bounded only by its stage ceiling and the stall window. The process's own elapsed
+> time is never compared with the turn budget.
 
 ## Turn supervision
 

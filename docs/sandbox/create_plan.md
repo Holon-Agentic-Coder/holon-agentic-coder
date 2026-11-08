@@ -188,7 +188,7 @@ During execution, the container performs the following operations:
 6. Appends a structured plan entry to `holon-knowledge/ledger/plans.jsonl`.
 7. Commits the changes, pushes the plan branch to origin and prints `plan: ok (elapsed min / 35 min)`.
 
-### Incremental plan artefact (Bean 0138)
+### Incremental plan artefact
 
 The plan used to arrive in one final stdout message, so a final message cut off by the output-token limit lost the whole
 plan. The file on disk is now the source of truth:

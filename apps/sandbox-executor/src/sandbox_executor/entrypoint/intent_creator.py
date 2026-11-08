@@ -49,7 +49,7 @@ def main():  # noqa: PLR0915
     with open(intent_json_path) as f:
         intent_data = json.load(f)
 
-    # Front-load clarifying questions validation (Bean 0085)
+    # Front-load clarifying questions validation
     from sandbox_executor.flow import validate_intent_questions
 
     valid_questions, unresolved = validate_intent_questions(intent_data)

@@ -1,4 +1,4 @@
-"""Telemetry collection and self-metrics reporting engine for holon stats (Bean 0052 Goal 6)."""
+"""Telemetry collection and self-metrics reporting engine for holon stats."""
 
 from __future__ import annotations
 

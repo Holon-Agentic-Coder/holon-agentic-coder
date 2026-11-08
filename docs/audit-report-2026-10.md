@@ -1,7 +1,6 @@
 # Holon Agentic Coder: Architecture, Safety, and Quality Audit Report (October 2026)
 
 - **Document Version:** 1.1.0
-- **Bean IDs:** 0118, 0121, 0110, 0105, 0106
 - **Date:** 2026-10-18
 - **Auditor:** Holon Agentic Platform Core Engineering
 - **Status:** Complete / Approved for Production Deployment
@@ -14,23 +13,22 @@
 This report provides a comprehensive architectural, security, reliability, and quality assessment of the
 `holon-agentic-coder` autonomous engineering repository following the October 2026 control plane enhancements.
 
-The audit evaluates four critical pillars delivered across Beans 0118, 0121, 0110, 0105, and 0106:
+The audit evaluates four critical pillars delivered by the October 2026 control plane work:
 
-1. **First-Class Containerised Review Loop Agent (Bean 0118):** Dispatching autonomous multi-pass review loops within
-   isolated Docker containers via `HOLON_ROLE='review-loop'`, enforcing the Bean 0034 Human-Only PR Merging safety
-   invariant.
-2. **Proactive Git Conflict Detection & Resolution (Bean 0121):** Automated diff3 conflict resolution for JSONL ledgers
+1. **First-Class Containerised Review Loop Agent:** Dispatching autonomous multi-pass review loops within isolated
+   Docker containers via `HOLON_ROLE='review-loop'`, enforcing the human-only PR merging safety invariant.
+2. **Proactive Git Conflict Detection & Resolution:** Automated diff3 conflict resolution for JSONL ledgers
    (`intents.jsonl`, `plans.jsonl`, `executions.jsonl`), eliminating merge stalls across all five pipeline stages.
-3. **Pre-Commit Credential & Scratch Guard (Bean 0110):** Deterministic scanning preventing accidental commits of API
-   keys, private tokens, and temporary scratch files using robust path normalisation (`.removeprefix('./')`).
-4. **Linguistic & Documentation Standardisation (Beans 0105 & 0106):** Complete alignment of repository documentation
-   with Australian English (`en-AU`) spelling conventions (`standardised`, `optimise`, `serialisation`, `behaviour`).
+3. **Pre-Commit Credential & Scratch Guard:** Deterministic scanning preventing accidental commits of API keys, private
+   tokens, and temporary scratch files using robust path normalisation (`.removeprefix('./')`).
+4. **Linguistic & Documentation Standardisation:** Complete alignment of repository documentation with Australian
+   English (`en-AU`) spelling conventions (`standardised`, `optimise`, `serialisation`, `behaviour`).
 
 ---
 
 ## 2. Audit Scope & Component Analysis
 
-### 2.1 Containerised Review Loop Dispatching (Bean 0118)
+### 2.1 Containerised Review Loop Dispatching
 
 - **Entrypoint:** `apps/sandbox-executor/src/sandbox_executor/entrypoint/review_loop.py`
 - **Dispatcher:** `apps/sandbox-executor/entrypoint/role_dispatcher.sh`
@@ -41,13 +39,13 @@ refinement. The agent clones the target execution branch into an isolated worksp
 resolution against `origin/main`, executes iterative verification suites (ruff, pytest, pre-commit-check), and formats
 RFC 2822 commit trailers (`Action-Origin`, `Review-Severity`, `Review-Iteration`, `Review-Finding-Ids`).
 
-#### Safety Invariant Verification (Bean 0034)
+#### Safety Invariant Verification
 
 Under all operating modes, consensus approval halts unconditionally with `StageStatus.HALTED_FOR_HUMAN`. Autonomous
 branch integration or merging into `main` is strictly prohibited. The system outputs manual approval instructions
 (`holon review approve <target>`), ensuring human operators retain exclusive merge authority.
 
-### 2.2 Proactive Git Conflict Resolution (Bean 0121)
+### 2.2 Proactive Git Conflict Resolution
 
 - **Module:** `apps/sandbox-executor/src/sandbox_executor/flow.py`
 - **Functions:** `check_and_resolve_stage_conflicts`, `reconcile_jsonl_ledger_conflict`, `reconcile_ledger_file`
@@ -57,7 +55,7 @@ archives, entries are deduplicated by primary key. In `executions.jsonl`, `actio
 `execution_id`, preventing discrete action events (`entry_type: "action"`) sharing an execution ID from colliding with
 summary records.
 
-### 2.3 Pre-Commit Security & Scratch Boundary (Bean 0110)
+### 2.3 Pre-Commit Security & Scratch Boundary
 
 - **Script:** `scripts/pre_commit_check.py`
 - **Integration:** `Makefile` target `pre-commit-check`
@@ -72,12 +70,12 @@ dots on legitimate system directories (`.index/`, `.agents/`, `.github/`) are ne
 
 ## 3. Findings & Resolution Summary
 
-| Item ID     | Category        | Description                                               | Status       | Resolution                                         |
-| :---------- | :-------------- | :-------------------------------------------------------- | :----------- | :------------------------------------------------- |
-| **REV-01**  | Safety          | Uncontrolled autonomous merge to main branch              | **Resolved** | Strictly enforced Bean 0034 human review halt gate |
-| **CONF-01** | Reliability     | JSONL ledger merge conflict stalls in pipeline stages     | **Resolved** | Proactive diff3 reconciliation with PK precedence  |
-| **SEC-04**  | Security        | Accidental commit of API keys or temporary scratch files  | **Resolved** | Pre-commit hook and path normalisation guard       |
-| **DOC-01**  | Standardisation | Inconsistent American/Australian English spelling in docs | **Resolved** | Complete standardisation to `en-AU` conventions    |
+| Item ID     | Category        | Description                                               | Status       | Resolution                                        |
+| :---------- | :-------------- | :-------------------------------------------------------- | :----------- | :------------------------------------------------ |
+| **REV-01**  | Safety          | Uncontrolled autonomous merge to main branch              | **Resolved** | Strictly enforced human-only review halt gate     |
+| **CONF-01** | Reliability     | JSONL ledger merge conflict stalls in pipeline stages     | **Resolved** | Proactive diff3 reconciliation with PK precedence |
+| **SEC-04**  | Security        | Accidental commit of API keys or temporary scratch files  | **Resolved** | Pre-commit hook and path normalisation guard      |
+| **DOC-01**  | Standardisation | Inconsistent American/Australian English spelling in docs | **Resolved** | Complete standardisation to `en-AU` conventions   |
 
 ---
 
@@ -96,6 +94,6 @@ All automated quality gates were executed and verified:
 ## 5. Audit Conclusion
 
 The October 2026 architectural upgrades successfully harden the `holon-agentic-coder` platform. The introduction of the
-containerised Holon Review Loop Agent provides autonomous refinement capability while preserving the Bean 0034 human
+containerised Holon Review Loop Agent provides autonomous refinement capability while preserving the human-only merge
 gate. Proactive conflict resolution eliminates JSONL merge bottlenecks, and pre-commit security guards safeguard
 credentials and repository hygiene.

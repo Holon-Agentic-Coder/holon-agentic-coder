@@ -16,7 +16,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     """Register the consult subcommand parser."""
     parser = subparsers.add_parser(
         "consult",
-        help="Consult knowledge records and wisdom using multi-label queries (Bean 0052).",
+        help="Consult knowledge records and wisdom using multi-label queries.",
     )
     parser.add_argument(
         "--all",

@@ -1,4 +1,4 @@
-"""Unit tests for centralised Git repository abstraction (Bean 0124)."""
+"""Unit tests for centralised Git repository abstraction."""
 
 import subprocess
 from pathlib import Path

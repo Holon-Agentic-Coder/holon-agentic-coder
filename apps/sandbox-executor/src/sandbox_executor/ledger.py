@@ -31,7 +31,7 @@ VALID_SEVERITIES: set[str] = {"critical", "important", "nit"}
 VALID_DISPOSITIONS: set[str] = {"applied", "rejected"}
 VALID_ENTRY_TYPES: set[str] = {"action", "summary"}
 # Optional ActionRecord fields that are omitted from the serialised record when unset, so records that do not use them
-# (everything except ACT-BUDGET actions, Bean 0139) keep their existing shape.
+# (everything except ACT-BUDGET actions) keep their existing shape.
 OPTIONAL_OMITTED_FIELDS: tuple[str, ...] = ("stage", "budget_name", "budget_seconds", "elapsed_seconds")
 
 
@@ -198,7 +198,7 @@ class SummaryRecord:
 
 
 class LedgerLock:
-    """Reusable advisory file locking context manager for ledger mutation safety (Bean 0127).
+    """Reusable advisory file locking context manager for ledger mutation safety.
 
     Guarantees atomic append semantics across concurrent processes and threads
     using POSIX advisory locking (fcntl.flock with LOCK_EX | LOCK_NB) with bounded
@@ -569,7 +569,7 @@ def append_summary_record(ledger_path: str, record: SummaryRecord | dict[str, An
     return data
 
 
-# Canonical Aliases (Bean 0127)
+# Canonical Aliases
 append_action_ledger = append_action_record
 append_execution_record = append_summary_record
 

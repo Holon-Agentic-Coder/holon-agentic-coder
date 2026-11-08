@@ -112,7 +112,7 @@ class TestBudgets(unittest.TestCase):
         with self.assertRaises(KeyError):
             StageBudgets().for_stage("deploy")
 
-    def test_summary_format_matches_the_bean_example(self):
+    def test_summary_format_matches_the_documented_example(self):
         self.assertEqual(format_stage_summary("plan", "ok", 246, 2100), "plan: ok (4.1 min / 35 min)")
         self.assertEqual(format_stage_summary("review", "failed", 0, 450), "review: failed (0.0 min / 7.5 min)")
 

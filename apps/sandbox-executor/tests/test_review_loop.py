@@ -1,4 +1,4 @@
-"""Unit tests for containerised Holon Review Loop Agent (Bean 0118)."""
+"""Unit tests for containerised Holon Review Loop Agent."""
 
 import argparse
 import json
@@ -56,7 +56,7 @@ class TestReviewLoopEntrypoint:
         with pytest.raises(SystemExit):
             run_cmd(["false"], check=True)
 
-    def test_review_loop_main_consensus_approval_bean_0034(self, tmp_path: Path):
+    def test_review_loop_main_consensus_approval_halts(self, tmp_path: Path):
         ledger_dir = tmp_path / "holon-knowledge" / "ledger"
         ledger_dir.mkdir(parents=True, exist_ok=True)
         (tmp_path / ".git").mkdir()
@@ -241,7 +241,7 @@ class TestReviewLoopEntrypoint:
 
 
 class TestCLIDispatchReviewLoop:
-    """Test CLI dispatch of review-loop (Bean 0118)."""
+    """Test CLI dispatch of review-loop."""
 
     def test_cli_dispatches_docker_container_by_default(self):
         from sandbox_executor.cli import main as cli_main
@@ -295,7 +295,7 @@ class TestCLIDispatchReviewLoop:
 
 
 class TestReviewLoopGitHubCLIDiagnostics:
-    """Test suite verifying GitHub CLI (gh) detection and diagnostics in review loop (Bean 0131)."""
+    """Test suite verifying GitHub CLI (gh) detection and diagnostics in review loop."""
 
     def test_post_pr_review_consensus_detects_gh_and_executes_commands(self):
         from sandbox_executor.flow import post_pr_review_consensus

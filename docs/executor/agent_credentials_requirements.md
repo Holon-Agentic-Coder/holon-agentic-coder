@@ -401,7 +401,7 @@ receives the generated configuration, so a bypass for them would only convert a 
 mid-run failure. The opt-in alone is not sufficient either: an actual endpoint (`PI_CODING_AGENT_DIR` or
 `HOLON_LOCAL_BASE_URL`) must be present, so a stray flag cannot mask a missing cloud key.
 
-#### Model Envelope (Bean 0140)
+#### Model Envelope
 
 Long authoring turns on local models used to stop at whatever output limit the agent assumed, because the generated
 `models.json` carried only bare model ids. `prepare_agent_dir()` now gives every model entry an explicit envelope after

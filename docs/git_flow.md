@@ -327,7 +327,7 @@ file transport, preserving host ownership of mergeability verification, CI gatin
 container dispatch fails, it fails closed before any PR review is approved. See the
 [sandbox-executor README](../apps/sandbox-executor/README.md#reviewer-ensemble).
 
-#### Safety Halt & Merge Boundary (Bean 0034)
+#### Safety Halt & Merge Boundary
 
 Merging to `main` is strictly reserved for the human maintainer. Upon successful consensus approval in Stage 4 and
 calibration report inclusion in Stage 5, the automated flow halts and requests human review and merge. Autonomous

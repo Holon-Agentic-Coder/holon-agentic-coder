@@ -25,7 +25,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "review-loop",
         aliases=["review", "pr-review-loop"],
         help=(
-            "Run autonomous native review loop on an execution branch or change branch (Bean 0118). "
+            "Run autonomous native review loop on an execution branch or change branch. "
             "Fails closed: exits 1 unless the consensus is approved and posted."
         ),
     )

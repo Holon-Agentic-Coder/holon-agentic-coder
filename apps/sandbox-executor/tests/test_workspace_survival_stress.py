@@ -1,6 +1,6 @@
 """Stress suite: prove the test suite survives a real run from inside a live executor workspace.
 
-The bean 0019 incident was not a unit test that failed. It was the *executor* losing its history:
+The workspace-deletion incident was not a unit test that failed. It was the *executor* losing its history:
 inside the container the suite was run from ``/home/holon/.holon-sandbox/workspace``, an
 un-hermetic test resolved that same path through ``get_workspace_dir()``, the cleanup whitelist
 accepted it because ``~/.holon-sandbox`` is an ``ALLOWED_PARENTS`` member, and the workspace was
@@ -119,7 +119,7 @@ class TestSuiteWorkspaceSurvival(unittest.TestCase):
             #    incident, and a failed return code alone would not say so
             self.assertTrue(
                 os.path.isdir(workspace),
-                "The executor workspace was deleted by a suite run -- the bean 0019 incident is "
+                "The executor workspace was deleted by a suite run -- the workspace-deletion incident is "
                 "back, and a real execution would now wipe its own commit history.\n"
                 f"Command: {' '.join(cmd)}\nStdout:\n{res.stdout}\nStderr:\n{res.stderr}",
             )

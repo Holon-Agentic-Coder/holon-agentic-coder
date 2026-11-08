@@ -1626,7 +1626,7 @@ class TestReviewLoopStage:
             assert code == 0
             captured = capsys.readouterr().out
             assert "Holon Review Loop Summary" in captured
-            assert "BEAN 0034 SAFETY HALT" in captured
+            assert "[SAFETY HALT]" in captured
             assert "holon review approve" in captured
 
         # Test rejected exit code

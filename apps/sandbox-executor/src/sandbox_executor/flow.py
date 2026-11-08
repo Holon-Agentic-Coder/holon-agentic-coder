@@ -9,8 +9,8 @@ is equivalent to invoking the stages by hand; the flow orchestrates and validate
 3. Stage 3 (Plan Execution): Dispatch the executor agent, adopt its execution branch, and fail an execution
    whose diff against the plan branch is empty outside holon-knowledge/ledger/, plans/ and executions/.
 4. Stage 4 (Review Loop): Autonomous review loop evaluating diffs and test results, strictly enforcing
-   Bean 0034 (Human-Only PR Merging) by halting at consensus approval without merging to main.
-5. Stage 5 (Post-Execution Calibration): Run post-execution calibration engine (Bean 0038) on execution branch,
+   the human-only PR merge rule by halting at consensus approval without merging to main.
+5. Stage 5 (Post-Execution Calibration): Run the post-execution calibration engine on the execution branch,
    producing calibration analysis report on the /calibrated branch.
 """
 
@@ -1512,8 +1512,8 @@ def post_pr_review_consensus(  # noqa: PLR0912, PLR0913, PLR0915
     own pull request' / 'PullRequestReviewAuthorError'), it falls back once to
     'gh pr review --comment'. Only when the review ladder ends without a successful
     submission does it post a last-resort top-level discussion comment via 'gh pr comment',
-    so the report is visible on the PR exactly once per exit. Strictly enforces Bean 0034
-    (Human-Only PR Merging).
+    so the report is visible on the PR exactly once per exit. Strictly enforces the
+    human-only PR merge rule.
 
     Args:
         repo_dir: Path to git repository.
@@ -3208,7 +3208,7 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
 
 
 # ---------------------------------------------------------------------------
-# Stage 4: Review Loop Stage (strictly enforcing Bean 0034)
+# Stage 4: Review Loop Stage (strictly enforcing the human-only PR merge rule)
 # ---------------------------------------------------------------------------
 
 
@@ -4143,8 +4143,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     requests changes or reports open findings, pending CI checks are bypassed and findings are immediately dispatched to
     the resolver. Only when all reviewers approve cleanly with zero open findings and mergeability is clean does the
     loop wait for CI checks to settle as a post-review safety gate before calling ``decide_consensus()``. Reviewers run
-    only inside a sandbox: on the host the loop refuses before any PR, iteration or post. It enforces Bean 0034
-    (Human-Only PR Merging) by halting at approval without merging.
+    only inside a sandbox: on the host the loop refuses before any PR, iteration or post. It enforces the
+    human-only PR merge rule by halting at approval without merging.
 
     Args:
         context: Active FlowContext carrying repository and pipeline state.
@@ -4801,7 +4801,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "status": "halted_for_human" if consensus_reached else "failed",
         "entry_type": "summary",
         "summary": (
-            f"Review Loop reached consensus approval after {iteration} iteration(s) (Bean 0034 safety halt)"
+            f"Review Loop reached consensus approval after {iteration} iteration(s) (human-only merge safety halt)"
             if consensus_reached
             else f"Review Loop halted without consensus after {iteration} iteration(s)"
             + (f": {'; '.join(halt_reasons)}" if halt_reasons else "")
@@ -4959,7 +4959,7 @@ def _run_engine_review_loop(context: FlowContext) -> dict[str, Any]:
 def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0912, PLR0915
     """Execute Stage 4: Review Loop.
 
-    Evaluates diffs, test logs, and safety invariants. Enforces Bean 0034 (Human-Only PR Merging):
+    Evaluates diffs, test logs, and safety invariants. Enforces the human-only PR merge rule:
     Upon consensus approval, halts unconditionally with status HALTED_FOR_HUMAN and NEVER merges to main.
     Operates unattended: never prompts for interactive review questions.
     """
@@ -5191,8 +5191,8 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
         else "Review Loop reached consensus approval."
     )
     context.log(
-        f"[BEAN 0034 SAFETY HALT] {halt_reason} "
-        "Under Bean 0034, autonomous merge to main is strictly prohibited. "
+        f"[SAFETY HALT] {halt_reason} "
+        "Autonomous merge to main is strictly prohibited. "
         f"Pipeline halted for human review. To approve manually, run: '{human_instruction}'"
     )
 
@@ -5299,7 +5299,7 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
         print(f"  Consensus      : {consensus.get('status', 'unknown').upper()}")
         print("===============================================================\n")
         if approved:
-            print("[BEAN 0034 SAFETY HALT] Review Loop reached consensus approval.")
+            print("[SAFETY HALT] Review Loop reached consensus approval.")
             print("Pipeline halted for human review (autonomous merge prohibited).")
             cmd = loop_res.get("human_approval_command", f"holon review approve {target}")
             print(f"To approve manually, run: {cmd}\n")

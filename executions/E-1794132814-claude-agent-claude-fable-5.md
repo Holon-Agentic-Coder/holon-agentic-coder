@@ -39,3 +39,16 @@ documentation prose) from `apps/sandbox-executor/` and `docs/`, excluding the im
 - Baseline:
   `uv run pytest apps/sandbox-executor/tests/test_flow.py apps/sandbox-executor/tests/test_review_loop.py apps/sandbox-executor/tests/test_cli.py -n auto --dist worksteal`
   → **834 passed, 53 subtests passed in 5.29s** (green).
+
+### Step 2: Runtime safety-halt strings (IMPLEMENTATION)
+
+- Replaced `[BEAN 0034 SAFETY HALT]` with `[SAFETY HALT]` at `cli/commands/flow.py:288`,
+  `entrypoint/review_loop.py:765`, `flow.py:5194` and `flow.py:5302`; the follow-on sentence
+  `Under Bean 0034, autonomous merge to main ...` became `Autonomous merge to main ...`.
+- Rewrote the ledger summary halt reason at `flow.py:4804` to `(human-only merge safety halt)`.
+- Rewrote the rule-identity docstrings/comments at `review_loop.py:11` and `flow.py:12, 1515, 3211, 4146,
+  4962` to name the human-only PR merge rule directly.
+- Retargeted the single marker assertion (`tests/test_flow.py:1629`) to `"[SAFETY HALT]" in captured` with
+  identical strictness (declared test change per ruleset.md §3).
+- Guardrail grep: zero `BEAN 0034` hits remain in `src/`.
+- Targeted tests: **834 passed, 53 subtests passed in 5.17s** (green).

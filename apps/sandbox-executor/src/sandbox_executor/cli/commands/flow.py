@@ -285,7 +285,7 @@ def _report_flow_summary(context: Any, result_dict: dict[str, Any], json_output:
         print()
     review_res = context.stage_results.get("review")
     if review_res and review_res.payload.get("halted_for_human"):
-        print("[BEAN 0034 SAFETY HALT] Pipeline safely halted for human review (autonomous merge prohibited).")
+        print("[SAFETY HALT] Pipeline safely halted for human review (autonomous merge prohibited).")
         if review_res.payload.get("human_approval_command"):
             print(f"To approve manually, run: {review_res.payload['human_approval_command']}\n")
 

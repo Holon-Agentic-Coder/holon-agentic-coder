@@ -40,7 +40,7 @@ class TestAgentRunner(unittest.TestCase):
         from unittest.mock import patch
 
         expected_commands = {
-            "pi": ["pi", "-p", "--model", "gemini-3.5-flash", "compiled prompt text"],
+            "pi": ["pi", "-p", "--model", "gemini-3.5-flash"],
             "claude": [
                 "claude",
                 "--allow-dangerously-skip-permissions",
@@ -49,11 +49,10 @@ class TestAgentRunner(unittest.TestCase):
                 "--model",
                 "gemini-3.5-flash",
                 "-p",
-                "compiled prompt text",
             ],
-            "gemini": ["gemini", "--model", "gemini-3.5-flash", "-p", "compiled prompt text"],
-            "opencode": ["opencode", "run", "--model", "gemini-3.5-flash", "compiled prompt text"],
-            "codex": ["codex", "exec", "-m", "gemini-3.5-flash", "compiled prompt text"],
+            "gemini": ["gemini", "--model", "gemini-3.5-flash", "-p"],
+            "opencode": ["opencode", "run", "--model", "gemini-3.5-flash"],
+            "codex": ["codex", "exec", "-m", "gemini-3.5-flash"],
             "antigravity": [
                 "agy",
                 "--dangerously-skip-permissions",
@@ -62,7 +61,7 @@ class TestAgentRunner(unittest.TestCase):
                 "--effort",
                 "medium",
                 "-p",
-                "compiled prompt text",
+                "@/tmp/prompt.md",
             ],
         }
         dummy_env = {
@@ -629,14 +628,14 @@ def claude_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
 
 def test_claude_bypass_on_by_default(claude_env: pytest.MonkeyPatch) -> None:
     cmd = get_runner("claude").build_cmd("m", "/tmp/p", "/tmp/i", "p")
-    assert cmd == ["claude", *CLAUDE_BYPASS, "--model", "m", "-p", "p"]
+    assert cmd == ["claude", *CLAUDE_BYPASS, "--model", "m", "-p"]
 
 
 @pytest.mark.parametrize("value", ["false", "0", "no", "off", "FALSE"])
 def test_claude_bypass_opt_out(claude_env: pytest.MonkeyPatch, value: str) -> None:
     claude_env.setenv("HOLON_AGENT_SKIP_PERMISSIONS", value)
     cmd = get_runner("claude").build_cmd("m", "/tmp/p", "/tmp/i", "p")
-    assert cmd == ["claude", "--model", "m", "-p", "p"]
+    assert cmd == ["claude", "--model", "m", "-p"]
     assert not set(CLAUDE_BYPASS) & set(cmd)
 
 

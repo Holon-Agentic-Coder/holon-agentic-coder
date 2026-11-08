@@ -242,8 +242,8 @@ def _sync_prompt_file(prompt_file: str, full_prompt: str) -> None:
             os.makedirs(prompt_dir, exist_ok=True)
         with open(prompt_file, "w", encoding="utf-8") as f:
             f.write(full_prompt)
-    except OSError:
-        pass
+    except OSError as err:
+        logger.warning("Failed to sync prompt file '%s': %s", prompt_file, err)
 
 
 class StandardAgentRunner(AgentRunner):
@@ -532,28 +532,25 @@ class AntigravityAgentRunner(StandardAgentRunner):
 
     uses_stdin: bool = False
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         agent_id: str = "antigravity",
         binary_name: str = "agy",
         model_flag: str = "--model",
-        prefix: list[str] | None = None,
-        suffix: list[str] | None = None,
-        env_mappings: list[EnvMapping] | None = None,
-        required_keys: list[str] | None = None,
         custom_validator: str | None = "antigravity",
-        bypass_flags: list[str] | None = None,
+        **kwargs: Any,
     ):
         super().__init__(
             agent_id=agent_id,
             binary_name=binary_name,
             model_flag=model_flag,
-            prefix=prefix,
-            suffix=suffix,
-            env_mappings=env_mappings,
-            required_keys=required_keys,
+            prefix=kwargs.pop("prefix", None),
+            suffix=kwargs.pop("suffix", None),
+            env_mappings=kwargs.pop("env_mappings", None),
+            required_keys=kwargs.pop("required_keys", None),
             custom_validator=custom_validator,
-            bypass_flags=bypass_flags,
+            bypass_flags=kwargs.pop("bypass_flags", None),
+            **kwargs,
         )
 
     def compose_cmd(self, model_name: str, full_prompt: str) -> list[str]:
@@ -579,16 +576,7 @@ class AntigravityAgentRunner(StandardAgentRunner):
         self.validate()
         if prompt_file:
             _sync_prompt_file(prompt_file, full_prompt)
-            prefix = list(self.prefix)
-            suffix = list(self.suffix)
-            if skip_permissions_enabled():
-                prefix.append("--dangerously-skip-permissions")
-            suffix.extend(["--effort", os.getenv("HOLON_AGENT_EFFORT", "medium"), "-p"])
-
-            cmd = [self.binary_name, *prefix, self.model_flag, model_name, *suffix]
-            self._append_env_mappings(cmd)
-            cmd.append(f"@{prompt_file}")
-            return cmd
+            return self.compose_cmd(model_name, f"@{prompt_file}")
         return self.compose_cmd(model_name, full_prompt)
 
 
@@ -597,28 +585,24 @@ class PiAgentRunner(StandardAgentRunner):
 
     uses_stdin: bool = True
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         agent_id: str = "pi",
         binary_name: str = "pi",
         model_flag: str = "--model",
-        prefix: list[str] | None = None,
-        suffix: list[str] | None = None,
-        env_mappings: list[EnvMapping] | None = None,
-        required_keys: list[str] | None = None,
-        custom_validator: str | None = None,
-        bypass_flags: list[str] | None = None,
+        **kwargs: Any,
     ):
         super().__init__(
             agent_id=agent_id,
             binary_name=binary_name,
             model_flag=model_flag,
-            prefix=["-p"] if prefix is None else prefix,
-            suffix=suffix,
-            env_mappings=[EnvMapping("HOLON_AGENT_PROVIDER", "--provider")] if env_mappings is None else env_mappings,
-            required_keys=["HOLON_AGENT_KEY"] if required_keys is None else required_keys,
-            custom_validator=custom_validator,
-            bypass_flags=bypass_flags,
+            prefix=kwargs.pop("prefix", ["-p"]),
+            suffix=kwargs.pop("suffix", None),
+            env_mappings=kwargs.pop("env_mappings", [EnvMapping("HOLON_AGENT_PROVIDER", "--provider")]),
+            required_keys=kwargs.pop("required_keys", ["HOLON_AGENT_KEY"]),
+            custom_validator=kwargs.pop("custom_validator", None),
+            bypass_flags=kwargs.pop("bypass_flags", None),
+            **kwargs,
         )
 
 
@@ -627,34 +611,31 @@ class ClaudeAgentRunner(StandardAgentRunner):
 
     uses_stdin: bool = True
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         agent_id: str = "claude",
         binary_name: str = "claude",
         model_flag: str = "--model",
-        prefix: list[str] | None = None,
-        suffix: list[str] | None = None,
-        env_mappings: list[EnvMapping] | None = None,
-        required_keys: list[str] | None = None,
-        custom_validator: str | None = None,
-        bypass_flags: list[str] | None = None,
+        **kwargs: Any,
     ):
         super().__init__(
             agent_id=agent_id,
             binary_name=binary_name,
             model_flag=model_flag,
-            prefix=prefix,
-            suffix=["-p"] if suffix is None else suffix,
-            bypass_flags=[
-                "--allow-dangerously-skip-permissions",
-                "--permission-mode",
-                "bypassPermissions",
-            ]
-            if bypass_flags is None
-            else bypass_flags,
-            env_mappings=[EnvMapping("HOLON_AGENT_SETTINGS", "--settings")] if env_mappings is None else env_mappings,
-            required_keys=["HOLON_AGENT_KEY"] if required_keys is None else required_keys,
-            custom_validator=custom_validator,
+            prefix=kwargs.pop("prefix", None),
+            suffix=kwargs.pop("suffix", ["-p"]),
+            bypass_flags=kwargs.pop(
+                "bypass_flags",
+                [
+                    "--allow-dangerously-skip-permissions",
+                    "--permission-mode",
+                    "bypassPermissions",
+                ],
+            ),
+            env_mappings=kwargs.pop("env_mappings", [EnvMapping("HOLON_AGENT_SETTINGS", "--settings")]),
+            required_keys=kwargs.pop("required_keys", ["HOLON_AGENT_KEY"]),
+            custom_validator=kwargs.pop("custom_validator", None),
+            **kwargs,
         )
 
 
@@ -663,28 +644,24 @@ class GeminiAgentRunner(StandardAgentRunner):
 
     uses_stdin: bool = True
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         agent_id: str = "gemini",
         binary_name: str = "gemini",
         model_flag: str = "--model",
-        prefix: list[str] | None = None,
-        suffix: list[str] | None = None,
-        env_mappings: list[EnvMapping] | None = None,
-        required_keys: list[str] | None = None,
-        custom_validator: str | None = None,
-        bypass_flags: list[str] | None = None,
+        **kwargs: Any,
     ):
         super().__init__(
             agent_id=agent_id,
             binary_name=binary_name,
             model_flag=model_flag,
-            prefix=prefix,
-            suffix=["-p"] if suffix is None else suffix,
-            env_mappings=env_mappings,
-            required_keys=required_keys,
-            custom_validator="gemini" if custom_validator is None else custom_validator,
-            bypass_flags=bypass_flags,
+            prefix=kwargs.pop("prefix", None),
+            suffix=kwargs.pop("suffix", ["-p"]),
+            env_mappings=kwargs.pop("env_mappings", None),
+            required_keys=kwargs.pop("required_keys", None),
+            custom_validator=kwargs.pop("custom_validator", "gemini"),
+            bypass_flags=kwargs.pop("bypass_flags", None),
+            **kwargs,
         )
 
 
@@ -693,28 +670,24 @@ class OpenCodeAgentRunner(StandardAgentRunner):
 
     uses_stdin: bool = True
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         agent_id: str = "opencode",
         binary_name: str = "opencode",
         model_flag: str = "--model",
-        prefix: list[str] | None = None,
-        suffix: list[str] | None = None,
-        env_mappings: list[EnvMapping] | None = None,
-        required_keys: list[str] | None = None,
-        custom_validator: str | None = None,
-        bypass_flags: list[str] | None = None,
+        **kwargs: Any,
     ):
         super().__init__(
             agent_id=agent_id,
             binary_name=binary_name,
             model_flag=model_flag,
-            prefix=["run"] if prefix is None else prefix,
-            suffix=suffix,
-            env_mappings=[EnvMapping("HOLON_AGENT_MODE", "--agent")] if env_mappings is None else env_mappings,
-            required_keys=["HOLON_AGENT_KEY"] if required_keys is None else required_keys,
-            custom_validator=custom_validator,
-            bypass_flags=bypass_flags,
+            prefix=kwargs.pop("prefix", ["run"]),
+            suffix=kwargs.pop("suffix", None),
+            env_mappings=kwargs.pop("env_mappings", [EnvMapping("HOLON_AGENT_MODE", "--agent")]),
+            required_keys=kwargs.pop("required_keys", ["HOLON_AGENT_KEY"]),
+            custom_validator=kwargs.pop("custom_validator", None),
+            bypass_flags=kwargs.pop("bypass_flags", None),
+            **kwargs,
         )
 
 
@@ -723,34 +696,31 @@ class CodexAgentRunner(StandardAgentRunner):
 
     uses_stdin: bool = True
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         agent_id: str = "codex",
         binary_name: str = "codex",
         model_flag: str = "-m",
-        prefix: list[str] | None = None,
-        suffix: list[str] | None = None,
-        env_mappings: list[EnvMapping] | None = None,
-        required_keys: list[str] | None = None,
-        custom_validator: str | None = None,
-        bypass_flags: list[str] | None = None,
+        **kwargs: Any,
     ):
         super().__init__(
             agent_id=agent_id,
             binary_name=binary_name,
             model_flag=model_flag,
-            prefix=["exec"] if prefix is None else prefix,
-            suffix=suffix,
-            env_mappings=[
-                EnvMapping("HOLON_AGENT_OSS_MODE", "--oss", is_boolean=True),
-                EnvMapping("HOLON_AGENT_LOCAL_PROVIDER", "--local-provider"),
-                EnvMapping("HOLON_AGENT_CONFIG", "-c"),
-            ]
-            if env_mappings is None
-            else env_mappings,
-            required_keys=required_keys,
-            custom_validator="codex" if custom_validator is None else custom_validator,
-            bypass_flags=bypass_flags,
+            prefix=kwargs.pop("prefix", ["exec"]),
+            suffix=kwargs.pop("suffix", None),
+            env_mappings=kwargs.pop(
+                "env_mappings",
+                [
+                    EnvMapping("HOLON_AGENT_OSS_MODE", "--oss", is_boolean=True),
+                    EnvMapping("HOLON_AGENT_LOCAL_PROVIDER", "--local-provider"),
+                    EnvMapping("HOLON_AGENT_CONFIG", "-c"),
+                ],
+            ),
+            required_keys=kwargs.pop("required_keys", None),
+            custom_validator=kwargs.pop("custom_validator", "codex"),
+            bypass_flags=kwargs.pop("bypass_flags", None),
+            **kwargs,
         )
 
 

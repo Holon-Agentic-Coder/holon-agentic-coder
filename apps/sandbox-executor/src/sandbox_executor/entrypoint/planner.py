@@ -394,6 +394,8 @@ Include metrics in this format:
         with open(intent_file) as f:
             intent_content = f.read()
         full_prompt = f"{prompt_content}\n\nIntent metadata:\n{intent_content}\n\n{plan_write_protocol(plan_md_rel)}"
+        with open(prompt_file, "w") as f:
+            f.write(full_prompt)
 
         runner = get_runner(agent_name)
 
@@ -419,6 +421,8 @@ Include metrics in this format:
                 run=run_turn,
                 context=f"{prompt_content}\n\nIntent metadata:\n{intent_content}",
                 cwd=repo_dir,
+                stdin_file=prompt_file if getattr(runner, "uses_stdin", False) else None,
+                prompt_file=prompt_file,
             )
         except Exception as e:
             print(f"Error: Exception running agent: {redact_agent_secrets(str(e))}", file=sys.stderr)

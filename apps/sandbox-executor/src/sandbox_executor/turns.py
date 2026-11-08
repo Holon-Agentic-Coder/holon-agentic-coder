@@ -392,6 +392,7 @@ def build_turn_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
 def run_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915
     cmd: list[str],
     *,
+    stdin_file: str | None = None,
     turn_budgets: TurnBudgets | None = None,
     stage_timer: StageTimer | None = None,
     stage: str = "turn",
@@ -412,6 +413,7 @@ def run_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915
 
     Args:
         cmd: Runner command line.
+        stdin_file: Optional path to a file streamed into child process stdin.
         turn_budgets: Turn and stall limits; defaults to :class:`TurnBudgets` defaults.
         stage_timer: Running stage timer; it bounds the whole runner process, which is stopped when the stage has no
             time left.
@@ -428,9 +430,6 @@ def run_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915
         tool_sampler: Returns ``{pid: cpu_seconds}`` for the runner's descendants (None when unavailable); sampled
             every ``TOOL_SCAN_INTERVAL_SECONDS``. ``None`` disables tool progress.
 
-    Returns:
-        A :class:`TurnResult`; ``breach`` is set when a budget fired and the turn was stopped.
-
     Budgets: ``turn`` fires when no artefact or tool progress (a response boundary) has been seen for ``turn_seconds``
     (only when ``watch_path`` or ``watch_tree`` is given); tool progress is at least ``TOOL_CPU_PROGRESS_SECONDS`` of
     CPU consumed by the runner's descendants between two samples, and also counts as activity for the stall window;
@@ -443,15 +442,19 @@ def run_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915
     budgets = turn_budgets or TurnBudgets()
     start = clock()
     effective_env = build_turn_env(env)
+    popen_kwargs: dict[str, Any] = {
+        "cwd": cwd,
+        "env": effective_env,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "start_new_session": True,
+    }
     try:
-        proc = popen_factory(
-            cmd,
-            cwd=cwd,
-            env=effective_env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
+        if stdin_file is not None and os.path.exists(stdin_file):
+            with open(stdin_file, "rb") as stdin_stream:
+                proc = popen_factory(cmd, stdin=stdin_stream, **popen_kwargs)
+        else:
+            proc = popen_factory(cmd, **popen_kwargs)
     except OSError as exc:
         return TurnResult(returncode=127, stderr=f"Failed to start agent: {exc}", elapsed_seconds=0.0)
 
@@ -612,6 +615,8 @@ def supervise_authoring_turn(  # noqa: PLR0913
     watch_tree: str | None = None,
     cwd: str | None = None,
     env: Mapping[str, str] | None = None,
+    stdin_file: str | None = None,
+    prompt_file: str | None = None,
 ) -> AuthoringOutcome:
     """Run an authoring turn and at most one follow-up, then report whether a budget failure must be recorded.
 
@@ -633,8 +638,15 @@ def supervise_authoring_turn(  # noqa: PLR0913
     outcome = AuthoringOutcome()
 
     def turn(text: str) -> TurnResult:
+        if prompt_file is not None:
+            prompt_dir = os.path.dirname(os.path.abspath(prompt_file))
+            if prompt_dir:
+                os.makedirs(prompt_dir, exist_ok=True)
+            with open(prompt_file, "w", encoding="utf-8") as pf:
+                pf.write(text)
         result = run(
             build_cmd(text),
+            stdin_file=stdin_file,
             turn_budgets=turn_budgets,
             stage_timer=stage_timer,
             stage=stage,

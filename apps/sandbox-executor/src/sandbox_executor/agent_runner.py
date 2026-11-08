@@ -198,13 +198,21 @@ class EnvMapping:
 class AgentRunner:
     """Base class for constructing and running agent CLI commands."""
 
+    uses_stdin: bool = False
+
     def __init__(self, agent_id: str, binary_name: str, model_flag: str):
         self.agent_id = agent_id
         self.binary_name = binary_name
         self.model_flag = model_flag
         self._resolved_version = None
 
-    def build_cmd(self, model_name: str, prompt_file: str, intent_file: str, full_prompt: str) -> list[str]:
+    def build_cmd(
+        self,
+        model_name: str,
+        prompt_file: str | None = None,
+        intent_file: str | None = None,
+        full_prompt: str = "",
+    ) -> list[str]:
         raise NotImplementedError
 
     def compose_cmd(self, model_name: str, full_prompt: str) -> list[str]:
@@ -220,8 +228,28 @@ class AgentRunner:
         raise NotImplementedError
 
 
+def _sync_prompt_file(prompt_file: str, full_prompt: str) -> None:
+    """Ensure full_prompt is written to prompt_file on disk if not already present or out of sync."""
+    if not prompt_file or not os.path.isabs(prompt_file):
+        return
+    try:
+        if os.path.exists(prompt_file):
+            with open(prompt_file, encoding="utf-8") as f:
+                if f.read() == full_prompt:
+                    return
+        prompt_dir = os.path.dirname(os.path.abspath(prompt_file))
+        if prompt_dir:
+            os.makedirs(prompt_dir, exist_ok=True)
+        with open(prompt_file, "w", encoding="utf-8") as f:
+            f.write(full_prompt)
+    except OSError as err:
+        logger.warning("Failed to sync prompt file '%s': %s", prompt_file, err)
+
+
 class StandardAgentRunner(AgentRunner):
     """Runner for agents that accept prompt strings directly via arguments."""
+
+    uses_stdin: bool = True
 
     def __init__(  # noqa: PLR0913
         self,
@@ -416,7 +444,13 @@ class StandardAgentRunner(AgentRunner):
             else:
                 cmd.extend([mapping.flag, val])
 
-    def build_cmd(self, model_name: str, prompt_file: str, intent_file: str, full_prompt: str) -> list[str]:
+    def build_cmd(
+        self,
+        model_name: str,
+        prompt_file: str | None = None,
+        intent_file: str | None = None,
+        full_prompt: str = "",
+    ) -> list[str]:
         self.validate()
 
         # Coherence with host-local model provider: default HOLON_AGENT_PROVIDER from HOLON_LOCAL_PROVIDER or "local"
@@ -442,6 +476,18 @@ class StandardAgentRunner(AgentRunner):
                         pass
             if local_prov:
                 os.environ["HOLON_AGENT_PROVIDER"] = local_prov
+
+        if prompt_file:
+            _sync_prompt_file(prompt_file, full_prompt)
+            if self.uses_stdin:
+                prefix = (
+                    [*self.prefix, *self.bypass_flags]
+                    if self.bypass_flags and skip_permissions_enabled()
+                    else self.prefix
+                )
+                cmd = [self.binary_name, *prefix, self.model_flag, model_name, *self.suffix]
+                self._append_env_mappings(cmd)
+                return cmd
 
         return self.compose_cmd(model_name, full_prompt)
 
@@ -484,6 +530,29 @@ class AntigravityAgentRunner(StandardAgentRunner):
     are always respected instead of being frozen at module import time.
     """
 
+    uses_stdin: bool = False
+
+    def __init__(
+        self,
+        agent_id: str = "antigravity",
+        binary_name: str = "agy",
+        model_flag: str = "--model",
+        custom_validator: str | None = "antigravity",
+        **kwargs: Any,
+    ):
+        super().__init__(
+            agent_id=agent_id,
+            binary_name=binary_name,
+            model_flag=model_flag,
+            prefix=kwargs.pop("prefix", None),
+            suffix=kwargs.pop("suffix", None),
+            env_mappings=kwargs.pop("env_mappings", None),
+            required_keys=kwargs.pop("required_keys", None),
+            custom_validator=custom_validator,
+            bypass_flags=kwargs.pop("bypass_flags", None),
+            **kwargs,
+        )
+
     def compose_cmd(self, model_name: str, full_prompt: str) -> list[str]:
         # Resolve HOLON_AGENT_EFFORT and optional permissions bypass at call time
         prefix = list(self.prefix)
@@ -497,9 +566,162 @@ class AntigravityAgentRunner(StandardAgentRunner):
         cmd.append(full_prompt)
         return cmd
 
-    def build_cmd(self, model_name: str, prompt_file: str, intent_file: str, full_prompt: str) -> list[str]:
+    def build_cmd(
+        self,
+        model_name: str,
+        prompt_file: str | None = None,
+        intent_file: str | None = None,
+        full_prompt: str = "",
+    ) -> list[str]:
         self.validate()
+        if prompt_file:
+            _sync_prompt_file(prompt_file, full_prompt)
+            return self.compose_cmd(model_name, f"@{prompt_file}")
         return self.compose_cmd(model_name, full_prompt)
+
+
+class PiAgentRunner(StandardAgentRunner):
+    """Runner for Pi agent."""
+
+    uses_stdin: bool = True
+
+    def __init__(
+        self,
+        agent_id: str = "pi",
+        binary_name: str = "pi",
+        model_flag: str = "--model",
+        **kwargs: Any,
+    ):
+        super().__init__(
+            agent_id=agent_id,
+            binary_name=binary_name,
+            model_flag=model_flag,
+            prefix=kwargs.pop("prefix", ["-p"]),
+            suffix=kwargs.pop("suffix", None),
+            env_mappings=kwargs.pop("env_mappings", [EnvMapping("HOLON_AGENT_PROVIDER", "--provider")]),
+            required_keys=kwargs.pop("required_keys", ["HOLON_AGENT_KEY"]),
+            custom_validator=kwargs.pop("custom_validator", None),
+            bypass_flags=kwargs.pop("bypass_flags", None),
+            **kwargs,
+        )
+
+
+class ClaudeAgentRunner(StandardAgentRunner):
+    """Runner for Claude agent."""
+
+    uses_stdin: bool = True
+
+    def __init__(
+        self,
+        agent_id: str = "claude",
+        binary_name: str = "claude",
+        model_flag: str = "--model",
+        **kwargs: Any,
+    ):
+        super().__init__(
+            agent_id=agent_id,
+            binary_name=binary_name,
+            model_flag=model_flag,
+            prefix=kwargs.pop("prefix", None),
+            suffix=kwargs.pop("suffix", ["-p"]),
+            bypass_flags=kwargs.pop(
+                "bypass_flags",
+                [
+                    "--allow-dangerously-skip-permissions",
+                    "--permission-mode",
+                    "bypassPermissions",
+                ],
+            ),
+            env_mappings=kwargs.pop("env_mappings", [EnvMapping("HOLON_AGENT_SETTINGS", "--settings")]),
+            required_keys=kwargs.pop("required_keys", ["HOLON_AGENT_KEY"]),
+            custom_validator=kwargs.pop("custom_validator", None),
+            **kwargs,
+        )
+
+
+class GeminiAgentRunner(StandardAgentRunner):
+    """Runner for Gemini agent."""
+
+    uses_stdin: bool = True
+
+    def __init__(
+        self,
+        agent_id: str = "gemini",
+        binary_name: str = "gemini",
+        model_flag: str = "--model",
+        **kwargs: Any,
+    ):
+        super().__init__(
+            agent_id=agent_id,
+            binary_name=binary_name,
+            model_flag=model_flag,
+            prefix=kwargs.pop("prefix", None),
+            suffix=kwargs.pop("suffix", ["-p"]),
+            env_mappings=kwargs.pop("env_mappings", None),
+            required_keys=kwargs.pop("required_keys", None),
+            custom_validator=kwargs.pop("custom_validator", "gemini"),
+            bypass_flags=kwargs.pop("bypass_flags", None),
+            **kwargs,
+        )
+
+
+class OpenCodeAgentRunner(StandardAgentRunner):
+    """Runner for OpenCode agent."""
+
+    uses_stdin: bool = True
+
+    def __init__(
+        self,
+        agent_id: str = "opencode",
+        binary_name: str = "opencode",
+        model_flag: str = "--model",
+        **kwargs: Any,
+    ):
+        super().__init__(
+            agent_id=agent_id,
+            binary_name=binary_name,
+            model_flag=model_flag,
+            prefix=kwargs.pop("prefix", ["run"]),
+            suffix=kwargs.pop("suffix", None),
+            env_mappings=kwargs.pop("env_mappings", [EnvMapping("HOLON_AGENT_MODE", "--agent")]),
+            required_keys=kwargs.pop("required_keys", ["HOLON_AGENT_KEY"]),
+            custom_validator=kwargs.pop("custom_validator", None),
+            bypass_flags=kwargs.pop("bypass_flags", None),
+            **kwargs,
+        )
+
+
+class CodexAgentRunner(StandardAgentRunner):
+    """Runner for Codex agent."""
+
+    uses_stdin: bool = True
+
+    def __init__(
+        self,
+        agent_id: str = "codex",
+        binary_name: str = "codex",
+        model_flag: str = "-m",
+        **kwargs: Any,
+    ):
+        super().__init__(
+            agent_id=agent_id,
+            binary_name=binary_name,
+            model_flag=model_flag,
+            prefix=kwargs.pop("prefix", ["exec"]),
+            suffix=kwargs.pop("suffix", None),
+            env_mappings=kwargs.pop(
+                "env_mappings",
+                [
+                    EnvMapping("HOLON_AGENT_OSS_MODE", "--oss", is_boolean=True),
+                    EnvMapping("HOLON_AGENT_LOCAL_PROVIDER", "--local-provider"),
+                    EnvMapping("HOLON_AGENT_CONFIG", "-c"),
+                ],
+            ),
+            required_keys=kwargs.pop("required_keys", None),
+            custom_validator=kwargs.pop("custom_validator", "codex"),
+            bypass_flags=kwargs.pop("bypass_flags", None),
+            **kwargs,
+        )
 
 
 # Runner registry: maps agent_id -> StandardAgentRunner instance.
@@ -510,68 +732,12 @@ class AntigravityAgentRunner(StandardAgentRunner):
 # value is always unambiguous at runtime. If multi-agent orchestration is ever needed,
 # per-agent provider overrides would need to be introduced.
 runners = {
-    "pi": StandardAgentRunner(
-        "pi",
-        "pi",
-        "--model",
-        prefix=["-p"],
-        env_mappings=[
-            # HOLON_AGENT_PROVIDER selects the backend provider (e.g. anthropic, openai).
-            # Auth is handled by HOLON_AGENT_KEY, which _apply_generic_token maps to PI_API_KEY
-            # internally so the pi CLI can authenticate via its native env var.
-            EnvMapping("HOLON_AGENT_PROVIDER", "--provider"),
-        ],
-        required_keys=["HOLON_AGENT_KEY"],
-    ),
-    "claude": StandardAgentRunner(
-        "claude",
-        "claude",
-        "--model",
-        suffix=["-p"],
-        # Print mode refuses every write unless bypass is both allowed and selected; both are plain CLI parameters.
-        bypass_flags=["--allow-dangerously-skip-permissions", "--permission-mode", "bypassPermissions"],
-        env_mappings=[
-            EnvMapping("HOLON_AGENT_SETTINGS", "--settings"),
-        ],
-        required_keys=["HOLON_AGENT_KEY"],
-    ),
-    "gemini": StandardAgentRunner(
-        "gemini",
-        "gemini",
-        "--model",
-        suffix=["-p"],
-        custom_validator="gemini",
-    ),
-    "opencode": StandardAgentRunner(
-        "opencode",
-        "opencode",
-        "--model",
-        prefix=["run"],
-        env_mappings=[
-            # HOLON_AGENT_MODE selects the opencode sub-agent (e.g. code, architect).
-            EnvMapping("HOLON_AGENT_MODE", "--agent"),
-        ],
-        required_keys=["HOLON_AGENT_KEY"],
-    ),
-    "codex": StandardAgentRunner(
-        "codex",
-        "codex",
-        "-m",
-        prefix=["exec"],
-        env_mappings=[
-            # HOLON_AGENT_OSS_MODE=true enables offline/open-source mode (no API key required).
-            EnvMapping("HOLON_AGENT_OSS_MODE", "--oss", is_boolean=True),
-            EnvMapping("HOLON_AGENT_LOCAL_PROVIDER", "--local-provider"),
-            EnvMapping("HOLON_AGENT_CONFIG", "-c"),
-        ],
-        custom_validator="codex",
-    ),
-    "antigravity": AntigravityAgentRunner(
-        "antigravity",
-        "agy",
-        "--model",
-        custom_validator="antigravity",
-    ),
+    "pi": PiAgentRunner(),
+    "claude": ClaudeAgentRunner(),
+    "gemini": GeminiAgentRunner(),
+    "opencode": OpenCodeAgentRunner(),
+    "codex": CodexAgentRunner(),
+    "antigravity": AntigravityAgentRunner(),
 }
 
 

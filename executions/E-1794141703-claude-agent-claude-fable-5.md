@@ -132,6 +132,21 @@ All additive; no existing assertion was deleted or loosened.
   `HOLON_TARGET_WORKTREE` env entry (removing those two pairs restores the baseline byte for byte, which
   guards every isolation flag); a forwarded host `HOLON_TARGET_WORKTREE` is overridden by the pin.
 
+### Step 6: Hermetic Docker integration test for multi-pass workspace reuse (TEST)
+
+Added `tests/test_review_workspace_integration.py` (marked `integration_test`): seeds a named-volume
+bare remote via `hermetic_fixtures.create_seeded_remote`, initialises a session workspace volume exactly
+as `ReviewWorkspaceSession` does (labelled create + one-shot root `chown` init), and drives only the
+entrypoint's preparation phase (`_prepare_workspace`) in two real `--network none` container runs. It
+asserts the three designed behaviours: a `.git` marker planted after run 1 survives run 2 (no re-clone),
+run 2's HEAD is the commit a helper container pushed between the runs (incremental fetch), and a planted
+junk file plus an uncommitted ledger row are gone (hermetic boundary). All volumes are reclaimed with
+`addCleanup`. No Docker daemon exists in this execution sandbox, so the test was verified to **skip
+gracefully** here (`1 skipped`) and to stay deselected from the unit suite
+(`-m "not integration_test and not stress"` → `1 deselected`); its full three-assertion run lands in
+Docker-capable environments, with the same logic covered hermetically at unit level by Step 5's
+real-git tests.
+
 ## Tests Run
 
 (pending)

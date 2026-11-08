@@ -672,21 +672,35 @@ PR_HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
 ENTRYPOINT = "sandbox_executor.entrypoint.review_loop"
 
 
+#: The HOLON_REPO_URL that ``_run_entrypoint`` exports; the fake answers ``git remote get-url origin``
+#: with it by default, so an existing checkout reads as belonging to the expected remote.
+FAKE_REPO_URL = "https://github.com/acme/widgets.git"
+
+
 class FakeGitCommands:
     """A fake ``run_cmd`` that records argv and answers git commands from a small rule table."""
 
-    def __init__(self, head_sha: str = PR_HEAD_SHA, fail_on: tuple[str, ...] = (), heads: list[str] | None = None):
+    def __init__(
+        self,
+        head_sha: str = PR_HEAD_SHA,
+        fail_on: tuple[str, ...] = (),
+        heads: list[str] | None = None,
+        origin_url: str = FAKE_REPO_URL,
+    ):
         self.calls: list[list[str]] = []
         self._head_sha = head_sha
         self._fail_on = fail_on
         # Successive answers for 'git rev-parse HEAD'; the last one repeats.
         self._heads = list(heads or [head_sha])
+        self._origin_url = origin_url
 
     def __call__(self, args, cwd=None, env=None, check=True):
         self.calls.append(list(args))
         verb = args[1] if len(args) > 1 else ""
         if verb in self._fail_on:
             return subprocess.CompletedProcess(args, 128, stdout="", stderr=f"fatal: {verb} failed")
+        if verb == "remote" and args[2:4] == ["get-url", "origin"]:
+            return subprocess.CompletedProcess(args, 0, stdout=f"{self._origin_url}\n", stderr="")
         if verb == "rev-parse" and args[-1].startswith("HEAD"):
             head = self._heads.pop(0) if len(self._heads) > 1 else self._heads[0]
             return subprocess.CompletedProcess(args, 0, stdout=f"{head}\n", stderr="")
@@ -730,7 +744,7 @@ def _run_entrypoint(repo_dir: Path, target: str, fake_git: FakeGitCommands, *ext
     }
     with (
         patch.object(sys, "argv", ["review_loop", target, f"--target-worktree={repo_dir}", *extra]),
-        patch.dict(os.environ, {"HOLON_REPO_URL": "https://github.com/acme/widgets.git"}),
+        patch.dict(os.environ, {"HOLON_REPO_URL": FAKE_REPO_URL}),
         patch(f"{ENTRYPOINT}._gh_runner", return_value=run_gh),
         patch(f"{ENTRYPOINT}.run_cmd", side_effect=fake_git),
         patch(f"{ENTRYPOINT}.check_and_resolve_stage_conflicts"),

@@ -58,6 +58,53 @@ mounted, the dispatcher also pins `HOLON_TARGET_WORKTREE` to that constant so th
 labelled `holon.review-session=1`, so a resumed flow derives the same name without checkpoint changes and
 a crashed loop's leaked volume is prunable by label and safely reusable (Step 4 makes reuse hermetic).
 
+### Step 2: Per-session review workspace lifecycle in the host Stage 4 loop (IMPLEMENTATION)
+
+- `agent_runner.py`: added the shared constants `SANDBOX_WORKSPACE_MOUNT`
+  (`/home/holon/.holon-sandbox/workspace`) and `SANDBOX_WORKSPACE_UID_GID` (`1000:1000`).
+- `flow.py`: added `review_persist_enabled()` (kill switch `HOLON_REVIEW_PERSIST`, truthy by default;
+  `0/false/no/off` disables persistence entirely), `review_session_volume_name()` (deterministic
+  `holon-review-ws-<digest>` name) and `ReviewWorkspaceSession` (lazy labelled `docker volume create` +
+  root `chown` init container on first dispatch, injectable docker runner seam, warn-only teardown via
+  `docker volume rm -f`; any creation failure disables the session and dispatches fall back to
+  clone-per-pass).
+- `run_review_loop` became a thin wrapper that owns the session lifecycle: it creates a session only when
+  the loop will genuinely dispatch role containers (not a dry run, not `reviewers_sandboxed()`, persist
+  enabled, no injected dispatcher or review seams) and tears it down in a `finally` covering refusals,
+  no-convergence, budget exhaustion and exceptions. The loop body moved unchanged to
+  `_run_review_loop_iterations` with a new keyword-only `workspace_session` parameter.
+- Threaded the volume name through `_dispatch_review_ensemble`, `_invoke_resolver_pass`,
+  `_dispatch_review_resolver` and `_dispatch_role` as an optional parameter passed only when set, so
+  every existing call site, injected dispatcher and test seam stays behaviour-identical.
+
+### Step 3: Workspace volume mount plumbing in the docker dispatch builder (IMPLEMENTATION)
+
+- `cli/__init__.py`: `dispatch_role_agent` and `run_docker_container` accept an optional
+  `review_workspace_volume`. When set, `run_docker_container` adds exactly one
+  `-v <volume>:<SANDBOX_WORKSPACE_MOUNT>` mount (named volume, never a host bind) and pins
+  `HOLON_TARGET_WORKTREE` to the same constant inside the container environment so the entrypoint's
+  `get_workspace_dir()` can never resolve outside the mounted volume (Step 1 decision). All isolation
+  flags (`--rm`, `--cap-drop=ALL`, `--security-opt=no-new-privileges`, metadata sinkholes, env-file
+  secrets, tmpfs/session mounts and teardown) are untouched; without a volume the argv is byte-identical
+  to before.
+
+### Step 4: Hermetic in-container incremental sync (`_clone_or_fetch`) (IMPLEMENTATION)
+
+- `entrypoint/review_loop.py`: the reuse branch now (1) adds a best-effort `safe.directory` entry
+  (Step 1's defensive fallback), (2) verifies the checkout's `origin` against `HOLON_REPO_URL` with
+  normalised comparison (trailing `/` and `.git` insensitive) — an unreadable or mismatched origin is
+  wiped (`_wipe_workspace`, contents only, since the directory is a volume mountpoint) and re-cloned,
+  never fetched from; with no `HOLON_REPO_URL` an operator-supplied checkout is trusted as before —
+  (3) enforces the hermetic boundary via `_reset_reused_checkout` (abort rebase/merge best effort, then
+  `git reset --hard HEAD` and `git clean -fdx`, discarding reviewer scratch, resolver leftovers and any
+  uncommitted in-container ledger rows), and (4) runs the existing incremental
+  `git fetch origin +refs/heads/<b>:refs/remotes/origin/<b>` + `git checkout -B <b> origin/<b>` +
+  `_verify_head` sequence unchanged. All git calls stay routed through `_checked`, so failures raise
+  `ReviewPreparationError` and take the existing one-failure-row, exit-1 path.
+- Declared test change: `tests/test_review_loop.py`'s `FakeGitCommands` gained an `origin_url` rule
+  (default matching `_run_entrypoint`'s `HOLON_REPO_URL`) so the existing reuse-path test keeps passing
+  with no assertion weakened.
+
 ## Tests Run
 
 (pending)

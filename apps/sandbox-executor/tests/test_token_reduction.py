@@ -3521,7 +3521,7 @@ def test_check_wire_log_disk_usage(tmp_path, capsys):
 
 
 # --------------------------------------------------------------------------------------
-# Bean 0089: Multi-tier Proxy Auto-Detection, Opt-Out Precedence, & Graceful Fallback
+# Multi-tier Proxy Auto-Detection, Opt-Out Precedence, & Graceful Fallback
 # --------------------------------------------------------------------------------------
 
 

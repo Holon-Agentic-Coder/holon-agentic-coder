@@ -476,8 +476,8 @@ class TestFlowStages:
         assert res.status == StageStatus.FAILED
         assert "without an active execution_branch" in (res.error or "")
 
-    def test_stage4_review_bean_0034_human_only_merge_halt(self, tmp_path):
-        """CRITICAL INVARIANT TEST: Bean 0034 Human-Only PR Merging rule.
+    def test_stage4_review_human_only_merge_halt(self, tmp_path):
+        """CRITICAL INVARIANT TEST: human-only PR merging rule.
 
         Ensures autonomous review loop halts unconditionally with HALTED_FOR_HUMAN
         upon reaching consensus approval, and strictly NEVER executes a git merge to main.
@@ -508,7 +508,7 @@ class TestFlowStages:
             # Assert git merge was NEVER called
             for call in mock_git.call_args_list:
                 args = call[0][0]
-                assert "merge" not in args, f"VIOLATION OF BEAN 0034: Autonomous merge detected with args {args}"
+                assert "merge" not in args, f"HUMAN-ONLY MERGE RULE VIOLATED: merge invoked with args {args}"
 
         assert res.status == StageStatus.HALTED_FOR_HUMAN
         assert res.payload["halted_for_human"] is True
@@ -560,7 +560,7 @@ class TestFlowStages:
         assert res.status == StageStatus.FAILED
         assert res.payload["consensus"]["approved"] is False
 
-    def test_stage5_calibrate_bean_0038(self, tmp_path):
+    def test_stage5_calibrate(self, tmp_path):
         """Test Stage 5 Post-Execution Calibration generating calibration report."""
         ctx = FlowContext(
             repo_dir=str(tmp_path),
@@ -575,7 +575,7 @@ class TestFlowStages:
         assert not ctx.calibrated_branch.endswith("/_/calibrated")
         assert "calibrated_branch" in res.payload
 
-    def test_stage5_calibrate_bean_0038_mocked(self, tmp_path):
+    def test_stage5_calibrate_mocked(self, tmp_path):
         """Test Stage 5 invoking run_calibrate successfully."""
         ctx = FlowContext(
             repo_dir=str(tmp_path),
@@ -1447,7 +1447,7 @@ class TestReviewMergeabilityGuards:
 
 
 class TestReviewLoopStage:
-    """Comprehensive tests for native multi-pass review loop, CI check probing, git trailers, and Bean 0034."""
+    """Comprehensive tests for the native multi-pass review loop, CI check probing, git trailers and merge halt."""
 
     def test_probe_ci_checks_github_cli_success(self):
         checks_json = json.dumps(
@@ -1512,7 +1512,7 @@ class TestReviewLoopStage:
         assert "Review-Finding-Ids: none" in clean_trailers
         assert "Review-Severity: clean" in clean_trailers
 
-    def test_review_loop_consensus_approval_halts_under_bean_0034(self, tmp_path):
+    def test_review_loop_consensus_approval_halts_without_merge(self, tmp_path):
         """Verify review loop halts with HALTED_FOR_HUMAN and never invokes git merge main."""
         ctx = FlowContext(
             repo_dir=str(tmp_path),
@@ -1533,10 +1533,10 @@ class TestReviewLoopStage:
             mock_git.return_value = MagicMock(returncode=0, stdout=" 1 file changed, 10 insertions(+)\n")
             res = run_review_loop(ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=5)
 
-            # Bean 0034 check: git merge main must never have been called
+            # Human-only merge check: git merge main must never have been called
             for call in mock_git.call_args_list:
                 args = call[0][0]
-                assert "merge" not in args, f"VIOLATION OF BEAN 0034: Autonomous merge detected with args {args}"
+                assert "merge" not in args, f"HUMAN-ONLY MERGE RULE VIOLATED: merge invoked with args {args}"
 
         assert res["consensus"]["approved"] is True
         assert res["halted_for_human"] is True
@@ -1984,7 +1984,7 @@ class TestSemanticPRAndConsensusReview:
 
 
 class TestProactiveConflictAndReviewLoop:
-    """Tests for Bean 0121 proactive conflict detection and Bean 0118 Review Loop Agent identity."""
+    """Tests for proactive conflict detection and Review Loop Agent identity."""
 
     def test_review_git_env(self):
         assert REVIEW_GIT_ENV["GIT_AUTHOR_NAME"] == "Holon Review Loop Agent"
@@ -2044,7 +2044,7 @@ class SteppingClock:
 
 
 class TestStageBudgets:
-    """Bean 0139: stage ceilings, elapsed-versus-budget summary lines and the execute budget hand-down."""
+    """Stage budgets: stage ceilings, elapsed-versus-budget summary lines and the execute budget hand-down."""
 
     def test_summary_line_format(self):
         res = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS, elapsed_seconds=246, budget_seconds=2100)
@@ -6058,7 +6058,7 @@ class TestEngineOwnedReviewLoop:
 
 
 class TestStage5PromotedArtifactsCommit:
-    """Hermetic unit tests for Stage 5 promoted knowledge base and wisdom commits (Bean 0052 Goal 6)."""
+    """Hermetic unit tests for Stage 5 promoted knowledge base and wisdom commits."""
 
     @staticmethod
     def _setup_repo(tmp_path: Path, execution_branch: str) -> None:

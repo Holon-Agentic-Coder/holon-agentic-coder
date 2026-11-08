@@ -1,4 +1,4 @@
-"""Unit and container availability tests verifying GitHub CLI (gh) in agent images (Bean 0131)."""
+"""Unit and container availability tests verifying GitHub CLI (gh) in agent images."""
 
 import pathlib
 import re
@@ -95,7 +95,7 @@ class TestContainerImageInspection:
 
 
 class TestContainerExecutionNonRoot:
-    """Container availability tests verifying gh execution under UID 1000 (Bean 0131)."""
+    """Container availability tests verifying gh execution under UID 1000."""
 
     @pytest.mark.integration_test
     @pytest.mark.skipif(not is_docker_available(), reason="Docker daemon unavailable in execution environment")

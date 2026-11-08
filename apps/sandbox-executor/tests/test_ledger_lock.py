@@ -1,4 +1,4 @@
-"""Unit and concurrency tests for LedgerLock advisory file locking (Bean 0127)."""
+"""Unit and concurrency tests for LedgerLock advisory file locking."""
 
 import concurrent.futures
 import json

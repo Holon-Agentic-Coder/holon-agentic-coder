@@ -84,3 +84,22 @@ documentation prose) from `apps/sandbox-executor/` and `docs/`, excluding the im
 - One `E501` long-line introduced in `local_llm.py` was wrapped; `uv run task lint` → **All checks passed!**
 - Guardrail grep: **0** bean hits remain in `apps/sandbox-executor/src/`. Only comments, docstrings and help
   strings changed; no code semantics touched.
+
+### Step 5: Test-suite sweep (TEST — declared test modifications per ruleset.md §3)
+
+- Renames (no collisions, pre-checked): `test_stage4_review_bean_0034_human_only_merge_halt` →
+  `test_stage4_review_human_only_merge_halt`; `test_review_loop_consensus_approval_halts_under_bean_0034` →
+  `test_review_loop_consensus_approval_halts_without_merge`;
+  `test_review_loop_main_consensus_approval_bean_0034` → `test_review_loop_main_consensus_approval_halts`;
+  `test_stage5_calibrate_bean_0038[_mocked]` → `test_stage5_calibrate[_mocked]`;
+  `test_summary_format_matches_the_bean_example` → `test_summary_format_matches_the_documented_example`.
+- Assertion messages `VIOLATION OF BEAN 0034: ...` → `HUMAN-ONLY MERGE RULE VIOLATED: merge invoked with
+  args ...` (×2, condition unchanged). Same constrained parenthetical sweep as Step 4 across 8 test files;
+  manual rewrites for the `bean 0019` incident prose (→ "the workspace-deletion incident"), `Bean 0064` /
+  `Bean 0138/0139` comments in `test_executor.py`, and `test_calibration.py`'s non-metadata fixture path
+  `.beans/0001-task.md` → `.tasks/0001-task.md` (verified against `METADATA_PATH_PREFIXES`: still False).
+- No test deleted; no assertion condition altered. Three `E501` long lines were shortened (message text
+  only).
+- Full app suite: `uv run pytest apps/sandbox-executor/tests/ -n auto --dist worksteal` →
+  **3053 passed, 13 skipped, 651 subtests passed in 45.21s**; `uv run task lint` → **All checks passed!**
+- Guardrail grep: **0** bean hits remain in `apps/sandbox-executor/tests/`.

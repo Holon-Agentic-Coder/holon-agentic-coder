@@ -547,7 +547,7 @@ class TestPlannerMain(unittest.TestCase):
         self.assertEqual(h.ledger_lines("plans.jsonl"), [])
 
     def test_step_table_before_overall_section_does_not_reach_the_ledger(self):
-        # C4-I1 (Bean 0146 / PR #91): the gate and the plans.jsonl row both read `## Overall Plan Metrics`.
+        # C4-I1: the gate and the plans.jsonl row both read `## Overall Plan Metrics`.
         step_first = VALID_PLAN.replace(
             "## Overall Plan Metrics",
             "## Step 0: Survey\n\n| metric | value |\n| --- | --- |\n| p_success_pred | 0.1 |\n"

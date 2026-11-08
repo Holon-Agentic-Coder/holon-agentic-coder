@@ -2746,7 +2746,7 @@ class TestExecutor(unittest.TestCase):
     def test_git_recovery_failure_superseding_row_carries_agent_output_accounting(
         self, mock_get_runner, mock_cleanup, mock_rmtree
     ):
-        """Regression test for Bean 0064: superseding ledger_revision: 2 row carries agent output accounting."""
+        """Regression test: superseding ledger_revision: 2 row carries agent output accounting."""
         with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
             plan_branch = "I-456/P-123/_"
             bare_dir, _plan_tip = self._create_bare_remote_with_plan(base_dir, plan_branch)
@@ -2805,8 +2805,8 @@ class TestExecutor(unittest.TestCase):
             self.assertEqual(rev2["agent_output_truncated"], rev1["agent_output_truncated"])
             self.assertEqual(rev2["agent_output_bytes"], rev1["agent_output_bytes"])
             self.assertGreater(rev2["agent_output_bytes"], 0)
-            # C4-I2: the superseding row repeats every authoritative field of revision 1, including the Bean 0138/0139
-            # notes and budget fields; only status, summary, created_at and ledger_revision may differ.
+            # C4-I2: the superseding row repeats every authoritative field of revision 1, including the notes and
+            # budget fields; only status, summary, created_at and ledger_revision may differ.
             _assert_supersedes(self, rev1, rev2)
 
     @patch("sandbox_executor.entrypoint.executor.sync_and_reconcile_pre_push")
@@ -2884,8 +2884,8 @@ class TestExecutor(unittest.TestCase):
             self.assertEqual(rev2["agent_output_truncated"], rev1["agent_output_truncated"])
             self.assertEqual(rev2["agent_output_bytes"], rev1["agent_output_bytes"])
             self.assertGreater(rev2["agent_output_bytes"], 0)
-            # C4-I2: the superseding row repeats every authoritative field of revision 1, including the Bean 0138/0139
-            # notes and budget fields; only status, summary, created_at and ledger_revision may differ.
+            # C4-I2: the superseding row repeats every authoritative field of revision 1, including the notes and
+            # budget fields; only status, summary, created_at and ledger_revision may differ.
             _assert_supersedes(self, rev1, rev2)
 
     @patch("sandbox_executor.entrypoint.executor.sync_and_reconcile_pre_push")
@@ -3622,7 +3622,7 @@ Implemented the plan. {filler}
 
 
 class TestExecutorIncrementalNotes(unittest.TestCase):
-    """Bean 0138/0139: execution notes written by the agent, truncation tolerance, re-prompt and budget failure."""
+    """Execution notes written by the agent, truncation tolerance, re-prompt and budget failure."""
 
     def run_executor(self, turns, env=None):
         scripted = list(turns)

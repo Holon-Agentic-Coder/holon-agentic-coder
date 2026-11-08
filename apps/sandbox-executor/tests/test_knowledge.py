@@ -1,4 +1,4 @@
-"""Exhaustive hermetic unit and benchmark test suite for knowledge, consult, and recording (Bean 0052 Goal 7)."""
+"""Exhaustive hermetic unit and benchmark test suite for knowledge, consult, and recording."""
 
 from __future__ import annotations
 

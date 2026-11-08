@@ -1,4 +1,4 @@
-"""Action outcome logging state machine, credential redactor, and late verdict reconciliation (Bean 0052 Goal 3)."""
+"""Action outcome logging state machine, credential redactor, and late verdict reconciliation."""
 
 from __future__ import annotations
 

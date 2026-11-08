@@ -15,7 +15,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     """Register the record subcommand parser."""
     parser = subparsers.add_parser(
         "record",
-        help="Record a discrete action event to the ledger with credential scrubbing (Bean 0052).",
+        help="Record a discrete action event to the ledger with credential scrubbing.",
     )
     parser.add_argument(
         "--action",

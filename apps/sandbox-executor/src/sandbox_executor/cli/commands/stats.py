@@ -16,7 +16,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     """Register the stats subcommand parser."""
     parser = subparsers.add_parser(
         "stats",
-        help="Display operational self-metrics and consult telemetry (Bean 0052).",
+        help="Display operational self-metrics and consult telemetry.",
     )
     parser.add_argument(
         "--json",

@@ -69,3 +69,18 @@ documentation prose) from `apps/sandbox-executor/` and `docs/`, excluding the im
 - Guardrail grep: zero `bean_0034_enforced`, `Referenced Beans`, `Closes Bean` or `bean_list` hits remain in
   `apps/`.
 - Targeted tests (`test_flow.py` + `test_cli.py`): **733 passed, 53 subtests passed in 5.13s** (green).
+
+### Step 4: Source comment/docstring sweep (REFACTOR)
+
+- Scripted removal of self-contained `(Bean NNNN[ Goal N| parity])` parentheticals across 26 `src/` files
+  (regex constrained to bean-only parentheticals; every changed line reviewed via `git diff --unified=0`).
+- Seven manual rewrites where the sentence leaned on the bean for meaning: `local_llm.py` (server-connect
+  rewrite provenance, twice), `ledger.py:34` (`ACT-BUDGET` parenthetical trimmed), `turns.py:8` ("A *turn*
+  is a single assistant response ..."), `entrypoint/executor.py:267` ("its own intent"),
+  `agent_runner.py:378` (multi-line parenthetical dropped), `budgets.py:15` ("recorded during the artefact,
+  turn and model-envelope work").
+- CLI help strings (`cli/commands/*`) had their `(Bean 0052)` / `(Bean 0118)` parentheticals dropped; a test
+  grep confirmed no test asserts those help strings verbatim, so no test run was needed in this step.
+- One `E501` long-line introduced in `local_llm.py` was wrapped; `uv run task lint` → **All checks passed!**
+- Guardrail grep: **0** bean hits remain in `apps/sandbox-executor/src/`. Only comments, docstrings and help
+  strings changed; no code semantics touched.

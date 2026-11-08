@@ -1,5 +1,5 @@
 """Asymmetric promotion engine: deterministic failure veto ladder and
-statistical Beta-Wilson success advisories (Bean 0052 Goal 4).
+statistical Beta-Wilson success advisories.
 """
 
 from __future__ import annotations

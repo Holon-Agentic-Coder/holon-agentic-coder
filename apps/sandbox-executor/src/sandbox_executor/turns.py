@@ -1,11 +1,11 @@
-"""Supervised runner turns: streamed output, stall detection, salvage and a single resume (Bean 0139).
+"""Supervised runner turns: streamed output, stall detection, salvage and a single resume.
 
 :func:`run_turn` replaces the blocking ``subprocess.run`` agent call. The agent is started in its own session so its
 whole process group can be stopped without signalling the entrypoint itself; stdout and stderr are drained by reader
 threads, so a chatty agent can never block on a full pipe. Liveness is "new output *or* growth of the artefact being
-written", which keeps agents that buffer their chat output but write the file incrementally (Bean 0138) alive.
+written", which keeps agents that buffer their chat output but write the file incrementally alive.
 
-Bean 0139 defines a *turn* as a single assistant response, not a runner process: one ``claude -p`` / ``pi -p``
+A *turn* is a single assistant response, not a runner process: one ``claude -p`` / ``pi -p``
 invocation performs a whole plan or execution as many responses. The process as a whole is therefore bounded only by the
 stage ceiling (and the stall window). The per-turn budget is applied to what is observable about a single response from
 outside a non-streaming CLI: the interval between *artefact progress* events (growth of the watched artefact, or a

@@ -1429,7 +1429,7 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
         env_to_forward["GITHUB_TOKEN"] = gh_token
 
     # Inside a timed host stage (holon flow), hand the container the time this stage has left so its own ceiling fires
-    # first (Bean 0139); this replaces any forwarded host HOLON_STAGE_BUDGET_SECONDS. Every role-container dispatch goes
+    # first; this replaces any forwarded host HOLON_STAGE_BUDGET_SECONDS. Every role-container dispatch goes
     # through here, so no caller has to pass it.
     env_to_forward.update(stage_budget_handdown_env())
 
@@ -1485,7 +1485,7 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
     try:
         docker_cmd.extend(tr_mounts)
 
-        # Host-local inference servers (Bean 0049): loopback and the host's own LAN address are unreachable from the
+        # Host-local inference servers: loopback and the host's own LAN address are unreachable from the
         # container namespace, so hand the agent a generated config whose authorities resolve via the gateway. The
         # artifact is a pi agent directory, so it is produced for pi only; other runners still need real credentials.
         if local_llm.local_llm_requested() and norm_agent_id != "pi" and role in ("planner", "executor"):
@@ -1567,7 +1567,7 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
         session_mounts = get_agent_session_mounts(agent_id)
         docker_cmd.extend(session_mounts)
 
-        # Network isolation and egress controls (Bean 0092)
+        # Network isolation and egress controls
         network_isolation_args = build_network_isolation_args(token_reduce=token_reduce)
         docker_cmd.extend(network_isolation_args)
 
@@ -1635,7 +1635,7 @@ def _doctor_section_failed(section: str, exc: BaseException) -> str:
 
 def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: TextIO | None = None) -> int:
     """``holon doctor`` environment section: print the effective budgets and the local-LLM model envelope, and probe
-    the local gateway (Bean 0140).
+    the local gateway.
 
     Prints ``model=<id> context=<n> max_tokens=<n> source=host|synthesised`` and
     ``reasoning=<mode> source=env|host|default`` per model, then ``prefill_cache=off|cold|warm`` with memory figures

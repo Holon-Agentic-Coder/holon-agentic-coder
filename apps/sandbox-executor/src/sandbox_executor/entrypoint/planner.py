@@ -464,7 +464,7 @@ Include metrics in this format:
     report = outcome.report
     if report is not None and report.usable:
         if result.returncode != 0 or result.truncated:
-            # The plan on disk is complete enough to commit; a cut-off final chat message does not matter (Bean 0138).
+            # The plan on disk is complete enough to commit; a cut-off final chat message does not matter.
             print(
                 f"Info: agent exited with code {result.returncode} (stop reason: {result.stop_reason or 'unknown'}) "
                 f"after writing a valid plan file; treating the exit status as informational."

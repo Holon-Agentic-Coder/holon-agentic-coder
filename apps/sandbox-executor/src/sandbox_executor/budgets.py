@@ -1,4 +1,4 @@
-"""Wall-clock budgets for runner turns and pipeline stages (Bean 0139).
+"""Wall-clock budgets for runner turns and pipeline stages.
 
 A single agent turn on a local model could previously run unbounded, and a stage had no ceiling at all. This module is
 the single source of truth for the limits and their configuration:
@@ -12,7 +12,8 @@ the single source of truth for the limits and their configuration:
 - a *stage* budget bounds a whole stage (intent 10 min, plan 35, execute 45, each review iteration 120, calibration 10),
   and is the only wall-clock limit on a runner process as a whole.
 
-The defaults are the real measurements recorded in Beans 0138 to 0140; they are deliberately not re-derived here.
+The defaults are the real measurements recorded during the artefact, turn and model-envelope work; they are
+deliberately not re-derived here.
 The module also holds the one shared *entropy* budget default and its resolver, used by both the planner and the
 executor, together with the bounds on automatic re-planning and sub-intent nesting.
 Clocks are injected so control flow can be tested without sleeping; tests never make performance claims.

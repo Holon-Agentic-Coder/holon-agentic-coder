@@ -1,4 +1,4 @@
-"""Knowledge indexing, wisdom consult, and outcome recording engine for Holon (Bean 0052)."""
+"""Knowledge indexing, wisdom consult, and outcome recording engine for Holon."""
 
 from sandbox_executor.knowledge.consult import ConsultEngine, ConsultResult
 from sandbox_executor.knowledge.index import ActionIndexDatabase, sync_ledger_incremental

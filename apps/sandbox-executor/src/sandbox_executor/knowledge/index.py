@@ -1,4 +1,4 @@
-"""Durable SQLite indexing engine with FTS5, inverted labels, and byte-offset incremental sync (Bean 0052 Goal 1)."""
+"""Durable SQLite indexing engine with FTS5, inverted labels, and byte-offset incremental sync."""
 
 from __future__ import annotations
 

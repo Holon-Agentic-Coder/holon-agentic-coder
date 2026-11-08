@@ -264,7 +264,7 @@ def prepare_agent_output_block(raw_output: str, max_bytes: int = 65536) -> tuple
     its value by non-whitespace text spanning lines, so a `=`-adjacent secret on the region's SECOND
     line can still be beyond this rule. Broadening `redact_text`'s key alternation and adding entropy
     heuristics are both rejected in the loop ledger as coverage regressions, so that gap is deferred
-    to its own bean rather than widened into this change.
+    to its own intent rather than widened into this change.
 
     Args:
         raw_output: Combined stdout/stderr of the agent process.
@@ -1183,7 +1183,7 @@ def classify_execution_outcome(outcome: AuthoringOutcome) -> tuple[str, str, Bud
     - a breach confined to the notes-only re-prompt after a clean implementation turn never fails the execution: the
       code is complete, the breach is only logged and ``execution_notes_valid`` reports the notes as they are;
     - a non-zero first-turn exit counts as success only when the runner reported a structured truncation of its final
-      message (``stopReason: length``) and the notes are complete (Bean 0138); a generic exit 1 (auth or API errors)
+      message (``stopReason: length``) and the notes are complete; a generic exit 1 (auth or API errors)
       never does.
     """
     first = outcome.first

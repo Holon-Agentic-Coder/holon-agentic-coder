@@ -15,7 +15,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     """Register the reconcile subcommand parser."""
     parser = subparsers.add_parser(
         "reconcile",
-        help="Reconcile pending action outcomes and expire stale unknown records (Bean 0052).",
+        help="Reconcile pending action outcomes and expire stale unknown records.",
     )
     parser.add_argument(
         "--action-id",

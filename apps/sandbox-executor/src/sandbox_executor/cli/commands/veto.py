@@ -17,7 +17,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     """Register the veto subcommand parser."""
     veto_parser = subparsers.add_parser(
         "veto",
-        help="Inspect and manage deterministic failure vetoes (Bean 0052).",
+        help="Inspect and manage deterministic failure vetoes.",
     )
     veto_subparsers = veto_parser.add_subparsers(
         dest="veto_command",

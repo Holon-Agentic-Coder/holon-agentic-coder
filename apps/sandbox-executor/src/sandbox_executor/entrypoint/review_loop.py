@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Containerised entrypoint for the Holon Review Loop Agent (Bean 0118).
+"""Containerised entrypoint for the Holon Review Loop Agent.
 
 Coordinates the multi-pass review loop within an isolated container:
 - Proactive conflict detection and resolution.
@@ -659,7 +659,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         check=False,
     )
 
-    # Proactive conflict detection and resolution against target upstream branch (Bean 0121)
+    # Proactive conflict detection and resolution against target upstream branch
     target_branch = "main"
     check_and_resolve_stage_conflicts(repo_dir=repo_dir, target_branch=target_branch, stage_name="review")
 

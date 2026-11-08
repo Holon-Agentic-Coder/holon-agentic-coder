@@ -195,7 +195,7 @@ class StageResult:
     end_time: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
-    # Wall-clock time the stage took and the ceiling it ran against (Bean 0139); None for stages not yet timed.
+    # Wall-clock time the stage took and the ceiling it ran against; None for stages not yet timed.
     elapsed_seconds: float | None = None
     budget_seconds: float | None = None
 
@@ -1504,7 +1504,7 @@ def post_pr_review_consensus(  # noqa: PLR0912, PLR0913, PLR0915
     reviewers: list[ReviewerResult] | None = None,
     title: str | None = None,
 ) -> dict[str, Any]:
-    """Post the review consensus to GitHub exactly once and handle the HTTP 422 fallback (Bean 0119).
+    """Post the review consensus to GitHub exactly once and handle the HTTP 422 fallback.
 
     Submits the consensus report a single time via 'gh pr review --approve' (when the
     ensemble approved) or 'gh pr review --comment' (when it did not). When GitHub rejects
@@ -2280,7 +2280,7 @@ def run_intent_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
 
     intent_data = dict(context.intent_data)
 
-    # Pre-action wisdom consult (Bean 0052)
+    # Pre-action wisdom consult
     consulted_ids: list[str] = []
     try:
         db_path = os.path.join(context.target_worktree, "holon-knowledge/.index/action_index.db")
@@ -2305,7 +2305,7 @@ def run_intent_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
         error_msg = "Validation failed: Intent must have at least 'goal' or 'description'."
         return _stage_failure(context, FlowStage.INTENT, start_time, error_msg)
 
-    # Front-load clarifying questions validation (Bean 0085)
+    # Front-load clarifying questions validation
     valid_questions, unresolved = validate_intent_questions(intent_data)
     if not valid_questions:
         unresolved_list_str = "; ".join(unresolved)
@@ -2443,7 +2443,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
     safe_model = _sanitize_model_name(context.model)
     repo_dir = context.target_worktree
 
-    # Pre-planning wisdom consult (Bean 0052)
+    # Pre-planning wisdom consult
     consulted_ids: list[str] = []
     try:
         db_path = os.path.join(repo_dir, "holon-knowledge/.index/action_index.db")
@@ -2932,7 +2932,7 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
     plan_prefix = context.plan_branch.removesuffix("/_").rstrip("/")
     repo_dir = context.target_worktree
 
-    # Deterministic failure veto check (Bean 0052 Goal 4)
+    # Deterministic failure veto check
     exec_fp = compute_context_fingerprint(
         target=context.plan_branch,
         tool=context.agent,
@@ -4136,7 +4136,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     skip_post: bool = False,
     first_iteration: int = 1,
 ) -> dict[str, Any]:
-    """Execute the native Stage 4 review loop (Bean 0118) with the real reviewer ensemble.
+    """Execute the native Stage 4 review loop with the real reviewer ensemble.
 
     Each iteration inspects PR mergeability and launches ``ensemble_size`` independent reviewer agent turns in parallel
     with GitHub CI. Reviewers evaluate the real diff between the base and the resolved head SHA. If any reviewer
@@ -4156,7 +4156,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         ci_registration_timeout: Seconds to wait for CI checks to register when Stage 3 recorded no test
             result (default: ``HOLON_CI_REGISTRATION_TIMEOUT``, then 180; ``0`` disables the wait).
         ci_poll_interval: Seconds between CI registration and pending-CI probes.
-        clock: Monotonic clock for the per-iteration budget (Bean 0139) and the CI waits (default: time.monotonic).
+        clock: Monotonic clock for the per-iteration budget and the CI waits (default: time.monotonic).
         sleep: Sleep function used by the CI waits (default: time.sleep); injectable for tests.
         run_ensemble_fn: Reviewer ensemble seam (default: ``review_ensemble.run_ensemble``); tests inject a fake.
         skip_post: If True, never post the consensus to GitHub (the engine's container dispatch posts on the host).
@@ -4222,7 +4222,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     # Ledger rows that a dry run would otherwise have written; reported once at the end.
     suppressed_ledger_records = 0
 
-    # Automate semantic PR generation if auto_pr is requested (Bean 0109)
+    # Automate semantic PR generation if auto_pr is requested
     pr_res: dict[str, Any] = {}
     pr_allowed = True
     # Why the empty-diff guard refused the PR; reported as the loop's error instead of a test outcome.
@@ -4470,7 +4470,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         if infra_error:
             findings_context += f"; {infra_error}"
 
-        # 6. Ledger rows (Bean 0113): the iteration evaluation, one row per reviewer, one row per finding
+        # 6. Ledger rows: the iteration evaluation, one row per reviewer, one row per finding
         action_record = {
             "action_id": generate_action_id("ACT-REV"),
             "execution_id": f"REV-ITR-{iteration}-{int(time.time())}",
@@ -4722,7 +4722,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "pr_number": pr_res.get("pr_number"),
     }
 
-    # Dual-post review consensus to GitHub and handle self-approval restriction (Bean 0119)
+    # Dual-post review consensus to GitHub and handle self-approval restriction
     posting_res: dict[str, Any] = {}
     post_error: str | None = None
     if effective_dry_run or skip_post:
@@ -4748,7 +4748,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             context.log(f"Warning: Posting review consensus for '{review_target}' failed: {safe_error}")
             posting_res = {"error": safe_error}
 
-        # Discrete Action 4: Review Posting Event (Bean 0113), recorded whether or not posting succeeded
+        # Discrete Action 4: Review Posting Event, recorded whether or not posting succeeded
         posted = bool(posting_res.get("dual_posted") or (posting_res.get("official_review") or {}).get("success"))
         posting_action_record: dict[str, Any] = {
             "action_id": generate_action_id("ACT-POST"),
@@ -4989,7 +4989,7 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
 
     exec_result = context.stage_results.get("execute")
 
-    # Consult review heuristics (Bean 0052 Goal 6)
+    # Consult review heuristics
     review_consulted_ids: list[str] = []
     try:
         db_path = os.path.join(repo_dir, "holon-knowledge/.index/action_index.db")
@@ -5143,7 +5143,7 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
             # no tests decided this outcome.
             err_msg = f"Autonomous review halted: {loop_res['error']}"
         elif loop_breach:
-            # The per-iteration budget stopped the loop (Bean 0139): that, not the test result, ended the review.
+            # The per-iteration budget stopped the loop: that, not the test result, ended the review.
             err_msg = (
                 f"Autonomous review stopped: iteration {loop_breach.get('iteration')} exceeded the review iteration "
                 f"budget of {format_minutes(loop_breach.get('budget_seconds', 0))} min."
@@ -5313,7 +5313,7 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Stage 5: Calibration Stage (Bean 0038)
+# Stage 5: Calibration Stage
 # ---------------------------------------------------------------------------
 
 
@@ -5420,14 +5420,14 @@ def _commit_stage5_promoted_artifacts(context: FlowContext, repo_dir: str, promo
 
 
 def run_calibrate_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0912, PLR0915
-    """Execute Stage 5: Post-Execution Calibration (Bean 0038).
+    """Execute Stage 5: Post-Execution Calibration.
 
     Runs post-execution calibration analysis on the execution branch and creates
     the calibration markdown report on the /calibrated branch.
     Operates unattended: applies conservative calibrated updates automatically.
     """
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    context.log("Starting Stage 5: Post-Execution Calibration (Bean 0038)")
+    context.log("Starting Stage 5: Post-Execution Calibration")
 
     if not context.execution_branch:
         err = "Cannot run Calibrate stage without an active execution_branch in FlowContext."
@@ -5518,7 +5518,7 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR
                 log_fn=context.log,
             )
 
-    # Reconcile pending action outcomes and promote knowledge candidates (Bean 0052 Goal 6)
+    # Reconcile pending action outcomes and promote knowledge candidates
     promoted_candidates: list[dict[str, Any]] = []
     try:
         executions_file = os.path.join(repo_dir, "holon-knowledge/ledger/executions.jsonl")

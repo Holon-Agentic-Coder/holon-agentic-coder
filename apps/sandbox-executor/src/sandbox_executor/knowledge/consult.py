@@ -1,4 +1,4 @@
-"""Multi-label retrieval engine for holon consult with token bounding and session deduplication (Bean 0052 Goal 2)."""
+"""Multi-label retrieval engine for holon consult with token bounding and session deduplication."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Knowledge Base (KB) and Wisdom Base (WB) persistence and promotion engine (Bean 0052 Goal 5)."""
+"""Knowledge Base (KB) and Wisdom Base (WB) persistence and promotion engine."""
 
 from __future__ import annotations
 

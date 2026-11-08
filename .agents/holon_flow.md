@@ -25,8 +25,8 @@ The Holon Flow pipeline executes sequentially through five distinct lifecycle st
 |                           |                      |                                |
 |                           |                      v                                |
 |                           |              +---------------+                        |
-|                           |              | Bean 0034     |                        |
-|                           |              | Human Halt    |                        |
+|                           |              | Human-Only    |                        |
+|                           |              | Merge Halt    |                        |
 |                           |              | (Merge Sign)  |                        |
 |                           |              +---------------+                        |
 |                           |                      |                                |
@@ -41,7 +41,7 @@ The Holon Flow pipeline executes sequentially through five distinct lifecycle st
   provenance records to the ledger.
 - **Git Branch**: `I-{timestamp}-{slug}/_` created from target base (usually `main`).
 - **Validation**: Schema validation on `slug`, `title`, `category`, `priority`, `labels`, and clarification questions
-  under Bean 0085.
+  under the front-loaded clarifying-questions check.
 - **Ledger Record**: Append-only row written to `holon-knowledge/ledger/intents.jsonl`.
 - **Prettier Convergence**: Enforces formatting on updated markdown and ledger structures.
 
@@ -72,7 +72,7 @@ The Holon Flow pipeline executes sequentially through five distinct lifecycle st
   branches.
 - **Mergeability Check**: Runs git merge-tree or GitHub CLI checks to detect merge conflicts early.
 - **Review Iterations**: Bounded by `max_review_iterations` (default: 3) to prevent unbounded loops.
-- **Bean 0034 Human-Only PR Merging Invariant**:
+- **Human-Only PR Merging Invariant**:
   > **SAFETY HALT**: When the review loop achieves consensus approval (100% test pass rate, no merge conflicts, clean
   > diffs), the pipeline unconditionally transitions to `HALTED_FOR_HUMAN`. Autonomous merging to `main` is strictly
   > prohibited. The system presents manual approval commands for operator sign-off.
@@ -80,7 +80,7 @@ The Holon Flow pipeline executes sequentially through five distinct lifecycle st
 
 ### Stage 5: Post-Execution Calibration (`FlowStage.CALIBRATE`)
 
-- **Purpose**: Run post-execution calibration analysis (Bean 0038) comparing predicted vs actual outcomes.
+- **Purpose**: Run post-execution calibration analysis comparing predicted vs actual outcomes.
 - **Git Branch**: Execution branch appended with `/calibrated` (e.g. `.../E-.../_/calibrated`).
 - **Artifacts**: Generates calibration report markdown in `plans/` containing variance analysis, Brier score
   calibration, and entropy deltas.
@@ -176,9 +176,9 @@ The pipeline provides crash resilience and state preservation via atomic checkpo
 
 ## 5. Safety Invariants & Troubleshooting
 
-1. **Human-Only Merging (Bean 0034)**:
+1. **Human-Only Merging**:
    - The flow runner will never execute `git merge` into `main`.
-   - On consensus, the pipeline outputs `[BEAN 0034 SAFETY HALT]` with instructions for human operator review.
+   - On consensus, the pipeline outputs `[SAFETY HALT]` with instructions for human operator review.
 2. **Rebase Collisions**:
    - If upstream changes conflict during execution branch rebase, the pipeline halts with `FAILED` in the execute stage
      and saves checkpoint state.

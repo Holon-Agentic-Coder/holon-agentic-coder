@@ -5,18 +5,32 @@
 Execution of plan `P-1794132519-claude-agent-claude-fable-5` for intent
 `I-1794132504-purge-harness-bean-references-from-code-and-docs`. Removes every harness bean reference (runtime strings,
 semantic identifiers, source comments and docstrings, test names and assertions, documentation prose) from
-`apps/sandbox-executor/` and `docs/`, excluding the immutable history paths (`plans/`, `executions/`,
-`holon-knowledge/`). In progress.
+`apps/sandbox-executor/`, `docs/`, and the repo-level files found during inventory (root `README.md`, `Makefile`,
+`scripts/pre_commit_check.py`, `.agents/holon_flow.md`), excluding the immutable history paths (`plans/`, `executions/`,
+`intents/`, `holon-knowledge/`). All seven plan steps completed: 205 inventoried occurrences removed,
+`[BEAN 0034 SAFETY HALT]` → `[SAFETY HALT]`, `bean_0034_enforced` → `human_merge_gate_enforced`, and the PR-body section
+`## Referenced Beans` → `## References` reading the intent `references` field. Final gate green: zero-hit sweep,
+`uv run task lint`, `uv run task lint-docs`, `uv run task check`, and `uv run task test` (3051 passed). No test weakened
+or deleted; ledgers untouched; merging stays with the human maintainer.
 
 ## Actual Metrics
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.0   |
-| entropy_actual        | 0.0   |
-| impact_actual         | 0.0   |
-| cost_actual           | 0.0   |
-| learning_value_actual | 0.0   |
+| success_actual        | 1.0   |
+| entropy_actual        | 5.8   |
+| impact_actual         | 62.0  |
+| cost_actual           | 8.5   |
+| learning_value_actual | 2.0   |
+
+Rationale: all three acceptance criteria met on the first gate pass with one small remediation cycle
+(`.agents/holon_flow.md`), so `success_actual = 1.0` against `p_success_pred = 0.93`. `entropy_actual = 5.8` sits just
+under the predicted `6.1`: the touched-file surface matched the plan (≈60 files, few lines each) plus one unplanned file
+and a user-level `uv` install, offset by zero failed test cycles. `cost_actual = 8.5` versus `cost_pred = 10.5` — the
+scripted-but-reviewed sweep in Steps 4–5 was cheaper than per-occurrence manual editing. `impact_actual = 62.0` as
+predicted (full Rule 12 compliance of the app). `learning_value_actual = 2.0`: confirmed the plan's hypothesis that
+harness IDs fossilise in payload keys and generated-artefact schemas, and added one audit lesson — inventory greps must
+include hidden top-level directories (`.agents/` was missed until the Step 7 marker sweep).
 
 ## Steps Executed
 
@@ -119,3 +133,38 @@ semantic identifiers, source comments and docstrings, test names and assertions,
 - Prettier reflow applied to exactly the eight files it flagged (no history files); `uv run task lint-docs` → **All
   matched files use Prettier code style!**
 - Guardrail grep: **0** bean hits remain across `docs/`, `apps/`, `README.md`, `Makefile` and `scripts/`.
+
+### Step 7: Verification gate (TEST)
+
+- Final sweep over `apps/`, `docs/`, `README.md`, `Makefile`, `scripts/`, `pyproject.toml`, `holon`, `holon-config/`,
+  `todo/`: **0** hits. A repo-wide marker grep (`[BEAN`, `bean_0034`, `Referenced Beans`) outside history paths surfaced
+  one file the Step 1 inventory had missed: `.agents/holon_flow.md` (developer architecture guide in a hidden directory,
+  not covered by the original grep path list). It still documented the old `[BEAN 0034 SAFETY HALT]` output, so it was
+  cleaned in this step (7 rewrites, prose and one diagram cell only) — both for the purge and for documentation accuracy
+  against the Step 2 string change. Re-sweep after the fix: **0** hits everywhere outside `plans/`, `executions/`,
+  `intents/` and `holon-knowledge/` (immutable history; this execution record's own prose quotes the old names as
+  history, which the gate's exclusion of `executions/` covers).
+- One remediation cycle was used (the `.agents/` file), within the two-cycle budget.
+- `uv run task check` exists and passed (it chains `task lint` and `task lint-docs`), so acceptance criterion 3's named
+  command was run directly; no discrepancy to record.
+
+## Tests Run
+
+All runs on this execution branch; no performance measurement was required, so targeted suites ran once per owning step
+and the full suite ran exactly once (single figures are their own median).
+
+| command                                                                                                                                                                                    | result                                       | pytest time |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------- | ----------- |
+| Step 1 baseline: `uv run pytest apps/sandbox-executor/tests/test_flow.py apps/sandbox-executor/tests/test_review_loop.py apps/sandbox-executor/tests/test_cli.py -n auto --dist worksteal` | 834 passed, 53 subtests passed               | 5.29s       |
+| Step 2: same three-file targeted command                                                                                                                                                   | 834 passed, 53 subtests passed               | 5.17s       |
+| Step 3: `uv run pytest apps/sandbox-executor/tests/test_flow.py apps/sandbox-executor/tests/test_cli.py -n auto --dist worksteal`                                                          | 733 passed, 53 subtests passed               | 5.13s       |
+| Step 5: `uv run pytest apps/sandbox-executor/tests/ -n auto --dist worksteal`                                                                                                              | 3053 passed, 13 skipped, 651 subtests passed | 45.21s      |
+| Step 5 post-lint-fix: `uv run pytest apps/sandbox-executor/tests/test_flow.py -n auto --dist worksteal`                                                                                    | 337 passed                                   | 5.23s       |
+| Step 7: `uv run task lint`                                                                                                                                                                 | All checks passed!                           | —           |
+| Step 7: `uv run task lint-docs`                                                                                                                                                            | All matched files use Prettier code style!   | —           |
+| Step 7: `uv run task check`                                                                                                                                                                | lint + lint-docs both passed                 | —           |
+| Step 7: `uv run task test` (full suite, once)                                                                                                                                              | 3051 passed, 8 warnings, exit 0              | 29.95s      |
+
+Baseline versus final: the full `task test` run deselects `integration_test` and `stress` markers by definition
+(`-m "not integration_test and not stress"`), hence 3051 collected-and-passed versus the 3053 passed + 13 skipped of the
+direct whole-directory run in Step 5. No test was deleted; pass status is green in both shapes.

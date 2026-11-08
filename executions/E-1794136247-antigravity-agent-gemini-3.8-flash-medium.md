@@ -32,3 +32,14 @@ suppressions as Important.
 - Synchronised `PLANNER_TEMPLATE` and `EXECUTOR_TEMPLATE` constants in
   `apps/sandbox-executor/src/sandbox_executor/scaffold.py` to match the markdown templates.
 - Verified Australian English throughout and confirmed all existing placeholder checks pass cleanly.
+
+### Step 2: Add File Growth and Complexity Review Gates to Review Loop Templates
+
+- Added directive item 11 to `Reviewer turn contract` in `holon-config/prompts/review_loop.template.md` instructing
+  reviewers to flag growth of any file over 1,000 lines as Important, flag new inline complexity suppressions as
+  Important, and check that new behaviour lives in the module that owns the data with no new entrypoint-to-engine
+  imports.
+- Synchronised `REVIEW_LOOP_TEMPLATE` in `apps/sandbox-executor/src/sandbox_executor/scaffold.py` with the identical
+  directive.
+- Verified line count (213 lines) remains well below `FORMER_REVIEW_PROMPT_LINES` (288 lines).
+- Confirmed all existing loop invariants, posted review shape blocks, and reviewer data sections remain intact.

@@ -336,14 +336,14 @@ first pass clones; every later pass verifies the checkout's `origin` against `HO
 unreadable origin is wiped and re-cloned, never fetched from), performs a hermetic reset (`git reset --hard` and
 `git clean -fdx`, discarding reviewer scratch, resolver leftovers and any uncommitted in-container ledger rows), and
 then synchronises incrementally with `git fetch` + `git checkout -B`, picking up resolver pushes without a full network
-clone or container cold-start per pass. A git failure anywhere on that reuse path (for example a crash-poisoned
-checkout with an unborn HEAD or stale `index.lock`) also falls back to wipe and re-clone rather than failing the pass.
-Canonical `ACT-REV`/`ACT-FIND`/`ACT-RES`/`ACT-POST` rows and the summary row
-remain host-written, so ledger provenance is unchanged. Each pass still runs in a fresh `--rm` container with every
-isolation flag intact — only the workspace persists. Set `HOLON_REVIEW_PERSIST=0` to disable persistence and restore the
-clone-per-pass behaviour; a volume leaked by a crashed loop is safe to reuse and prunable via
-`docker volume prune --filter label=holon.review-session` (the persisted `.git/config` keeps the clone's `origin` URL
-verbatim, so a leaked volume retains any credential embedded in `HOLON_REPO_URL` until it is pruned or re-cloned).
+clone or container cold-start per pass. A git failure anywhere on that reuse path (for example a crash-poisoned checkout
+with an unborn HEAD or stale `index.lock`) also falls back to wipe and re-clone rather than failing the pass. Canonical
+`ACT-REV`/`ACT-FIND`/`ACT-RES`/`ACT-POST` rows and the summary row remain host-written, so ledger provenance is
+unchanged. Each pass still runs in a fresh `--rm` container with every isolation flag intact — only the workspace
+persists. Set `HOLON_REVIEW_PERSIST=0` to disable persistence and restore the clone-per-pass behaviour; a volume leaked
+by a crashed loop is safe to reuse and prunable via `docker volume prune --filter label=holon.review-session` (the
+persisted `.git/config` keeps the clone's `origin` URL verbatim, so a leaked volume retains any credential embedded in
+`HOLON_REPO_URL` until it is pruned or re-cloned).
 
 #### Safety Halt & Merge Boundary
 

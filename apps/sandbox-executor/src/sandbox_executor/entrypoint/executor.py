@@ -48,6 +48,7 @@ from sandbox_executor.budgets import (
     resolve_entropy_budget,
 )
 from sandbox_executor.formatting import converge_prettier
+from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import (
     ActionRecord,
     LedgerRewriteError,
@@ -454,18 +455,23 @@ def run_cmd(  # noqa: C901
     return result
 
 
+def _get_repo(repo_dir: str) -> GitRepository:
+    """Return a GitRepository adapter bound to repo_dir and the executor run_cmd runner."""
+    return GitRepository(repo_dir, runner=run_cmd)
+
+
 def _probe_git_repo(repo_dir: str) -> tuple[bool, str]:
     """Probes the repository at repo_dir to verify if git is healthy and usable.
 
     Returns a tuple of (is_healthy, error_output).
     """
-    res = run_cmd(["git", "rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False)
+    repo = _get_repo(repo_dir)
+    res = repo.rev_parse("--is-inside-work-tree")
     if res.returncode != 0:
         err = (res.stderr or res.stdout).strip()
         if "detected dubious ownership" in err or "safe.directory" in err:
-            retry_res = run_cmd(
-                ["git", "-c", f"safe.directory={repo_dir}", "rev-parse", "--is-inside-work-tree"],
-                cwd=repo_dir,
+            retry_res = repo.run(
+                ["-c", f"safe.directory={repo_dir}", "rev-parse", "--is-inside-work-tree"],
                 check=False,
             )
             norm_repo = os.path.realpath(repo_dir)
@@ -486,7 +492,7 @@ def _probe_git_repo(repo_dir: str) -> tuple[bool, str]:
         return False, "stale .git/index.lock detected"
 
     # Check for dangling or missing HEAD symref
-    res_head = run_cmd(["git", "rev-parse", "--verify", "HEAD"], cwd=repo_dir, check=False)
+    res_head = repo.rev_parse("HEAD", verify=True)
     if res_head.returncode != 0:
         err = (res_head.stderr or res_head.stdout).strip()
         return False, f"dangling HEAD: {err}"
@@ -602,9 +608,8 @@ def _repair_git_repo(  # noqa: C901
     """
     # Case (a): Dubious ownership
     if "detected dubious ownership" in probe_err or "safe.directory" in probe_err:
-        res = run_cmd(
-            ["git", "-c", f"safe.directory={repo_dir}", "config", "--local", "--add", "safe.directory", repo_dir],
-            cwd=repo_dir,
+        res = _get_repo(repo_dir).run(
+            ["-c", f"safe.directory={repo_dir}", "config", "--local", "--add", "safe.directory", repo_dir],
             check=False,
         )
         if res.returncode != 0:
@@ -663,9 +668,10 @@ def _repair_git_repo(  # noqa: C901
                         rf.write(f"{tip_sha}\n")
                 with contextlib.suppress(Exception), open(head_path, "w") as f:
                     f.write(f"ref: refs/heads/{target_branch}\n")
-                verify = run_cmd(["git", "symbolic-ref", "HEAD"], cwd=repo_dir, check=False)
+                repo = _get_repo(repo_dir)
+                verify = repo.run(["symbolic-ref", "HEAD"], check=False)
                 if verify.returncode != 0 or verify.stdout.strip() != f"refs/heads/{target_branch}":
-                    run_cmd(["git", "symbolic-ref", "HEAD", f"refs/heads/{target_branch}"], cwd=repo_dir, check=False)
+                    repo.run(["symbolic-ref", "HEAD", f"refs/heads/{target_branch}"], check=False)
             else:
                 print(
                     f"Warning: cannot restore HEAD to '{target_branch}': no local ref for it or for "
@@ -679,9 +685,10 @@ def _repair_git_repo(  # noqa: C901
 
 def _entrypoint_git_runner(repo_dir: str) -> Callable[[list[str]], str]:
     """Adapt run_cmd (sandbox safe.directory and clean git environment) to the git.py runner interface."""
+    repo = _get_repo(repo_dir)
 
     def _run(args: list[str]) -> str:
-        res = run_cmd(["git", *args], cwd=repo_dir, check=False)
+        res = repo.run(args, check=False)
         if res.returncode != 0:
             raise RuntimeError(f"git {' '.join(args[:2])} failed: {redact_text((res.stderr or '').strip())}")
         return res.stdout if isinstance(res.stdout, str) else ""
@@ -1035,28 +1042,29 @@ def sync_and_reconcile_pre_push(repo_dir: str, target_branch: str = "main") -> t
     """
     from sandbox_executor.flow import reconcile_ledger_file
 
+    repo = _get_repo(repo_dir)
     # 1. Check if remote origin exists
-    remotes_res = run_cmd(["git", "remote", "get-url", "origin"], cwd=repo_dir, check=False)
+    remotes_res = repo.run(["remote", "get-url", "origin"], check=False)
     if remotes_res.returncode != 0:
         return True, "No remote origin configured"
 
     # 2. Fetch target branch tip
-    run_cmd(["git", "fetch", "origin", target_branch], cwd=repo_dir, check=False)
+    repo.fetch("origin", target_branch)
     target_ref = f"origin/{target_branch}"
-    ref_check = run_cmd(["git", "rev-parse", "--verify", target_ref], cwd=repo_dir, check=False)
+    ref_check = repo.rev_parse(target_ref, verify=True)
     if ref_check.returncode != 0:
         return True, f"Remote branch {target_ref} not found"
 
-    remote_tip = run_cmd(["git", "rev-parse", target_ref], cwd=repo_dir, check=False).stdout.strip()
+    remote_tip = repo.rev_parse(target_ref).stdout.strip()
 
     # 3. Check divergence with HEAD
-    mb_cmd = run_cmd(["git", "merge-base", "HEAD", target_ref], cwd=repo_dir, check=False)
+    mb_cmd = repo.merge_base("HEAD", target_ref)
     if mb_cmd.returncode != 0:
-        is_shallow = run_cmd(["git", "rev-parse", "--is-shallow-repository"], cwd=repo_dir, check=False)
+        is_shallow = repo.rev_parse("--is-shallow-repository")
         if is_shallow.stdout.strip().lower() == "true":
             print(f"Warning: Shallow repository detected. Deepening history for {target_ref}...", file=sys.stderr)
-            run_cmd(["git", "fetch", "--deepen=50", "origin", target_branch], cwd=repo_dir, check=False)
-            mb_cmd = run_cmd(["git", "merge-base", "HEAD", target_ref], cwd=repo_dir, check=False)
+            repo.fetch("origin", target_branch, "--deepen=50")
+            mb_cmd = repo.merge_base("HEAD", target_ref)
 
     if mb_cmd.returncode != 0:
         print(f"Warning: Unable to compute merge-base with {target_ref}; skipping pre-push sync.", file=sys.stderr)
@@ -1069,23 +1077,19 @@ def sync_and_reconcile_pre_push(repo_dir: str, target_branch: str = "main") -> t
     # 4. Divergence detected: Attempt merge
     _configure_executor_identity(repo_dir)
 
-    merge_res = run_cmd(["git", "merge", target_ref, "--no-commit", "--no-ff"], cwd=repo_dir, check=False)
+    merge_res = repo.merge(target_ref, no_commit=True, no_ff=True)
     if merge_res.returncode == 0:
         # A clean merge of append-only ledgers is already correct; rewriting them here would reorder rows.
-        staged = run_cmd(["git", "diff", "--cached", "--quiet"], cwd=repo_dir, check=False)
+        staged = repo.diff(cached=True, quiet=True)
         if staged.returncode != 0:
-            run_cmd(
-                ["git", "commit", "-m", f"chore(sync): sync target branch {target_branch} before push"],
-                cwd=repo_dir,
-                check=False,
-            )
+            repo.commit(f"chore(sync): sync target branch {target_branch} before push", check=False)
         return True, f"Cleanly merged {target_ref}"
 
     # Merge conflict detected
-    unmerged_res = run_cmd(["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_dir, check=False)
+    unmerged_res = repo.diff("--name-only", "--diff-filter=U")
     conflicted_files = [f.strip() for f in unmerged_res.stdout.splitlines() if f.strip()]
     if not conflicted_files:
-        status_res = run_cmd(["git", "status", "--porcelain"], cwd=repo_dir, check=False)
+        status_res = repo.run(["status", "--porcelain"], check=False)
         for line in status_res.stdout.splitlines():
             if any(line.startswith(c) for c in ("UU ", "AA ", "UD ", "DU ", "AU ", "UA ", "DD ")):
                 conflicted_files.append(line[3:].strip())
@@ -1094,7 +1098,7 @@ def sync_and_reconcile_pre_push(repo_dir: str, target_branch: str = "main") -> t
         f for f in conflicted_files if not (f.startswith("holon-knowledge/ledger/") and f.endswith(".jsonl"))
     ]
     if non_ledger_files:
-        run_cmd(["git", "merge", "--abort"], cwd=repo_dir, check=False)
+        repo.merge_abort()
         err_msg = (
             f"Non-ledger merge conflicts detected with {target_ref} in files: "
             f"{non_ledger_files}. Aborting auto-merge and refusing push."
@@ -1108,27 +1112,23 @@ def sync_and_reconcile_pre_push(repo_dir: str, target_branch: str = "main") -> t
             full_path = os.path.join(repo_dir, ledger_path)
             # The target branch is published history, so its ledger stays a byte prefix of the merge result.
             if not reconcile_ledger_file(full_path, prefix_side="theirs"):
-                run_cmd(["git", "merge", "--abort"], cwd=repo_dir, check=False)
+                repo.merge_abort()
                 return False, f"Failed to reconcile ledger file {ledger_path}"
-            run_cmd(["git", "add", ledger_path], cwd=repo_dir, check=True)
+            repo.add(ledger_path, check=True)
 
-        rem_unmerged = run_cmd(["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_dir, check=False)
+        rem_unmerged = repo.diff("--name-only", "--diff-filter=U")
         if rem_unmerged.stdout.strip():
             rem_paths = rem_unmerged.stdout.strip()
-            run_cmd(["git", "merge", "--abort"], cwd=repo_dir, check=False)
+            repo.merge_abort()
             return False, f"Unmerged paths remain after ledger reconciliation: {rem_paths}"
 
-        run_cmd(
-            ["git", "commit", "-m", f"chore(ledger): reconcile concurrent ledger updates with {target_ref}"],
-            cwd=repo_dir,
-            check=True,
-        )
+        repo.commit(f"chore(ledger): reconcile concurrent ledger updates with {target_ref}", check=True)
         return True, f"Successfully reconciled ledger conflicts and committed merge with {target_ref}"
     except LedgerRewriteError:
-        run_cmd(["git", "merge", "--abort"], cwd=repo_dir, check=False)
+        repo.merge_abort()
         raise
     except Exception as exc:
-        run_cmd(["git", "merge", "--abort"], cwd=repo_dir, check=False)
+        repo.merge_abort()
         return False, f"Exception during ledger reconciliation merge: {exc}"
 
 
@@ -1257,8 +1257,9 @@ def _configure_executor_identity(repo_dir: str) -> None:
     Called straight after the execution branch is created (before the agent runs) and again before the executor
     commits, because a git recovery re-initialises the repository and discards the local config.
     """
-    run_cmd(["git", "config", "--local", "user.email", EXECUTOR_GIT_EMAIL], cwd=repo_dir, check=False)
-    run_cmd(["git", "config", "--local", "user.name", EXECUTOR_GIT_NAME], cwd=repo_dir, check=False)
+    repo = _get_repo(repo_dir)
+    repo.config("user.email", EXECUTOR_GIT_EMAIL)
+    repo.config("user.name", EXECUTOR_GIT_NAME)
 
 
 def _salvage_pathspec(notes_rel: str) -> list[str]:
@@ -1276,17 +1277,14 @@ def _salvage_partial_work(
     reset. Returns the sha of HEAD when it differs from ``diff_base`` (the salvage commit or the agent's own last
     commit), else None: there was nothing to salvage.
     """
-    run_cmd(["git", "add", "-A", *_salvage_pathspec(notes_rel)], cwd=repo_dir, check=False)
-    staged = run_cmd(["git", "diff", "--cached", "--quiet"], cwd=repo_dir, check=False)
+    repo = _get_repo(repo_dir)
+    repo.add(_salvage_pathspec(notes_rel), all_files=True, check=False)
+    staged = repo.diff(cached=True, quiet=True)
     if staged.returncode != 0:
         _configure_executor_identity(repo_dir)
-        commit = run_cmd(
-            ["git", "commit", "-m", f"execute: {exec_id} partial work (failed) for plan {plan_branch}"],
-            cwd=repo_dir,
-            check=False,
-        )
+        commit = repo.commit(f"execute: {exec_id} partial work (failed) for plan {plan_branch}", check=False)
         if commit.returncode != 0:
-            left = run_cmd(["git", "diff", "--cached", "--name-only"], cwd=repo_dir, check=False).stdout or ""
+            left = repo.diff("--name-only", cached=True).stdout or ""
             print(
                 "Warning: could not commit the partial work; these files are left uncommitted: "
                 f"{redact_agent_secrets(', '.join(left.split()))}; reason: "
@@ -1294,8 +1292,8 @@ def _salvage_partial_work(
                 file=sys.stderr,
             )
             # Unstage them, so the failure commit still carries only the notes and the ledger row.
-            run_cmd(["git", "reset", "-q", *_salvage_pathspec(notes_rel)], cwd=repo_dir, check=False)
-    head = run_cmd(["git", "rev-parse", "HEAD"], cwd=repo_dir, check=False)
+            repo.reset(None, *_salvage_pathspec(notes_rel))
+    head = repo.rev_parse("HEAD")
     sha = (head.stdout or "").strip() if head.returncode == 0 else ""
     return sha if sha and sha != diff_base else None
 
@@ -1359,25 +1357,26 @@ def _unpushed_patch_text(repo_dir: str, plan_tip: str) -> str:
     excluded paths that changed, so the reader knows the patch is incomplete. Private-key blocks in any other file are
     masked by content before the patch is redacted.
     """
+    repo = _get_repo(repo_dir)
     excluded = [f":(exclude,glob,icase){glob}" for glob in UNPUSHED_PATCH_EXCLUDED_GLOBS]
     pathspec = ["--", ".", *excluded]
     rev_range = f"{plan_tip}..HEAD"
     matched = [f":(glob,icase){glob}" for glob in UNPUSHED_PATCH_EXCLUDED_GLOBS]
-    left_out = run_cmd(["git", "diff", "--name-only", rev_range, "--", *matched], cwd=repo_dir, check=False)
+    left_out = repo.diff("--name-only", rev_range, "--", *matched)
     left_out_paths = (left_out.stdout or "").split()
     notice = (
         f"Unpushed patch excludes env, credential and key files: {redact_agent_secrets(', '.join(left_out_paths))}\n"
         if left_out_paths
         else ""
     )
-    patch = run_cmd(["git", "format-patch", "--stdout", rev_range, *pathspec], cwd=repo_dir, check=False)
+    patch = repo.run(["format-patch", "--stdout", rev_range, *pathspec], check=False)
     raw_patch = patch.stdout or ""
     # Checked raw first: redaction cuts any input over its limit, which would hide an oversized patch.
     if patch.returncode == 0 and len(raw_patch.encode("utf-8")) <= UNPUSHED_PATCH_MAX_BYTES:
         patch_text = redact_agent_secrets(mask_private_keys(raw_patch))
         if len(patch_text.encode("utf-8")) <= UNPUSHED_PATCH_MAX_BYTES:
             return f"{notice}{UNPUSHED_PATCH_BEGIN}\n{patch_text.rstrip(chr(10))}\n{UNPUSHED_PATCH_END}"
-    stat = run_cmd(["git", "diff", "--stat", rev_range, *pathspec], cwd=repo_dir, check=False)
+    stat = repo.diff("--stat", rev_range, *pathspec)
     return (
         f"{notice}{redact_agent_secrets(stat.stdout or '').rstrip()}\n"
         f"Unpushed patch omitted: it could not be produced or exceeded UNPUSHED_PATCH_MAX_BYTES "
@@ -1391,7 +1390,7 @@ def _report_unpushed_work(repo_dir: str, exec_branch: str, plan_tip: str | None,
     The host captures the container's stderr, so the patch between the marker lines survives the ``--rm`` container
     without any new mount. Every line printed is redacted.
     """
-    head = run_cmd(["git", "rev-parse", "HEAD"], cwd=repo_dir, check=False)
+    head = _get_repo(repo_dir).rev_parse("HEAD")
     head_sha = (head.stdout or "").strip() or "unknown"
     print(
         f"Error: push of execution branch '{exec_branch}' was refused; local head {head_sha}: "
@@ -1409,9 +1408,8 @@ def _resume_refusal(repo_dir: str, repo_url: str, partial_branch: str, plan_bran
     shaped = _PARTIAL_BRANCH_RE.match(partial_branch) and ".." not in partial_branch
     if not shaped or not partial_branch.startswith(f"{plan_branch_prefix}/E-"):
         return f"'{partial_branch}' is not an execution branch of this plan"
-    fetch = run_cmd(
-        ["git", "fetch", "--no-tags", repo_url, f"+refs/heads/{partial_branch}:refs/remotes/origin/{partial_branch}"],
-        cwd=repo_dir,
+    fetch = _get_repo(repo_dir).run(
+        ["fetch", "--no-tags", repo_url, f"+refs/heads/{partial_branch}:refs/remotes/origin/{partial_branch}"],
         check=False,
     )
     return "fetch failed" if fetch.returncode != 0 else None
@@ -1432,20 +1430,20 @@ def _resolve_partial_head(  # noqa: PLR0911
         return None, refusal
     from sandbox_executor.flow import failed_partial_head
 
+    repo = _get_repo(repo_dir)
     ref = f"refs/remotes/origin/{partial_branch}"
     exec_id = partial_branch.removesuffix("/_").rsplit("/", 1)[-1]
     sha = failed_partial_head(repo_dir, ref, exec_id)
     if not sha or not _SHA_RE.match(sha):
         return None, "no partial_head"
-    if run_cmd(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=repo_dir, check=False).returncode != 0:
+    if repo.run(["cat-file", "-e", f"{sha}^{{commit}}"], check=False).returncode != 0:
         return None, "the partial head is not on the fetched branch"
-    ancestry = ["git", "merge-base", "--is-ancestor", plan_tip, sha]
-    if run_cmd(ancestry, cwd=repo_dir, check=False).returncode != 0:
-        shallow = run_cmd(["git", "rev-parse", "--is-shallow-repository"], cwd=repo_dir, check=False)
+    if repo.merge_base(plan_tip, sha, is_ancestor=True).returncode != 0:
+        shallow = repo.rev_parse("--is-shallow-repository")
         if (shallow.stdout or "").strip() != "true":
             return None, "not a descendant of the plan tip"
-        run_cmd(["git", "fetch", "--deepen=50", repo_url, f"refs/heads/{partial_branch}"], cwd=repo_dir, check=False)
-        if run_cmd(ancestry, cwd=repo_dir, check=False).returncode != 0:
+        repo.fetch(repo_url, f"refs/heads/{partial_branch}", "--deepen=50")
+        if repo.merge_base(plan_tip, sha, is_ancestor=True).returncode != 0:
             return None, "not a descendant of the plan tip"
     return sha, "resumed"
 
@@ -1516,11 +1514,9 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     os.makedirs(repo_dir, exist_ok=True)
     try:
         repo_url = get_repo_url()
+        repo = _get_repo(repo_dir)
         if not os.path.exists(os.path.join(repo_dir, ".git")):
-            run_cmd(
-                ["git", "clone", "--branch", plan_branch, "--single-branch", "--depth", "1", repo_url, "."],
-                cwd=repo_dir,
-            )
+            repo.run(["clone", "--branch", plan_branch, "--single-branch", "--depth", "1", repo_url, "."])
         else:
             # If the directory already contains a .git repository (e.g. workspace is preserved
             # via HOLON_KEEP_WORKSPACE=1), reuse the workspace with git fetch and force checkout.
@@ -1536,7 +1532,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             # A workspace cloned before HOLON_REPO_URL became credential-free stores the tokenised
             # URL as its origin, so it mismatches here and is re-cloned, which also purges that
             # persisted token from the preserved .git/config.
-            remote_result = run_cmd(["git", "remote", "get-url", "origin"], cwd=repo_dir, check=False)
+            remote_result = repo.run(["remote", "get-url", "origin"], check=False)
             if remote_result.returncode != 0 or remote_result.stdout.strip() != repo_url:
                 print(
                     f"Warning: Remote URL mismatch or unreadable at {repo_dir}. "
@@ -1545,14 +1541,11 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 )
                 cleanup_repo_dir(repo_dir, raise_on_error=True)
                 os.makedirs(repo_dir, exist_ok=True)
-                run_cmd(
-                    ["git", "clone", "--branch", plan_branch, "--single-branch", "--depth", "1", repo_url, "."],
-                    cwd=repo_dir,
-                )
+                repo.run(["clone", "--branch", plan_branch, "--single-branch", "--depth", "1", repo_url, "."])
             else:
-                run_cmd(["git", "fetch", repo_url, plan_branch], cwd=repo_dir)
+                repo.fetch(repo_url, plan_branch, check=True)
                 if in_sandbox or repo_dir == os.path.expanduser("~/.holon-sandbox/workspace"):
-                    run_cmd(["git", "clean", "-fd"], cwd=repo_dir)
+                    repo.clean(force=True, directories=True)
                 else:
                     # Deliberate trade-off: preserve local developer files (e.g. .env, local configs)
                     # when HOLON_KEEP_WORKSPACE=1 is used outside the sandbox. Untracked files from
@@ -1564,7 +1557,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                         "Unset HOLON_KEEP_WORKSPACE to ensure a clean workspace.",
                         file=sys.stderr,
                     )
-                run_cmd(["git", "checkout", "-f", "-B", plan_branch, "FETCH_HEAD"], cwd=repo_dir)
+                repo.run(["checkout", "-f", "-B", plan_branch, "FETCH_HEAD"])
 
         exec_seq = int(time.time())
         safe_agent = _sanitize_string(agent_name)
@@ -1573,7 +1566,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         exec_branch = f"{plan_branch_prefix}/E-{exec_seq}-{safe_agent}-{safe_model}/_"
 
         # Plan branch tip: the base the empty-diff guard compares the agent's work against, even on a resume.
-        plan_tip_res = run_cmd(["git", "rev-parse", "HEAD"], cwd=repo_dir, check=False)
+        plan_tip_res = repo.rev_parse("HEAD")
         plan_tip = plan_tip_res.stdout.strip() if plan_tip_res.returncode == 0 and plan_tip_res.stdout else None
         partial_head: str | None = None
         if partial_branch:
@@ -1587,7 +1580,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                     f"Starting from the plan tip of {plan_branch}: {redact_agent_secrets(resume_reason)}",
                     file=sys.stderr,
                 )
-        run_cmd(["git", "checkout", "-b", exec_branch, *([partial_head] if partial_head else [])], cwd=repo_dir)
+        repo.run(["checkout", "-b", exec_branch, *([partial_head] if partial_head else [])])
         # Before the agent runs, so the commits it makes step by step land on the execution branch.
         _configure_executor_identity(repo_dir)
 
@@ -1715,7 +1708,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                         ),
                     )
 
-            run_cmd(["git", "add", "holon-knowledge/ledger/executions.jsonl"], cwd=repo_dir)
+            repo.add("holon-knowledge/ledger/executions.jsonl")
         else:
             print(f"Executing plan {plan_branch} using agent {agent_name}...")
             prompt_file = os.path.join(tempfile.gettempdir(), f"exec_prompt-{exec_seq}.md")
@@ -1893,7 +1886,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                         shutil.move(git_dot, backup_path)
                         print(f"Warning: unrepairable git repository moved aside to {backup_path}", file=sys.stderr)
 
-                    run_cmd(["git", "init"], cwd=repo_dir)
+                    repo.run(["init"])
                     info_dir = os.path.join(repo_dir, ".git", "info")
                     os.makedirs(info_dir, exist_ok=True)
                     exclude_file = os.path.join(info_dir, "exclude")
@@ -1903,7 +1896,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                         ef.write(".git-unusable-*\n")
 
                     repo_url = get_repo_url()
-                    run_cmd(["git", "remote", "add", "origin", repo_url], cwd=repo_dir, check=False)
+                    repo.run(["remote", "add", "origin", repo_url], check=False)
 
                     fetch_retries = 3
                     try:
@@ -1914,11 +1907,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                     fetch_success = False
                     fetch_err = ""
                     for attempt in range(fetch_retries):
-                        fetch_res = run_cmd(
-                            ["git", "fetch", "--no-tags", "origin", plan_branch],
-                            cwd=repo_dir,
-                            check=False,
-                        )
+                        fetch_res = repo.run(["fetch", "--no-tags", "origin", plan_branch], check=False)
                         if fetch_res.returncode == 0:
                             fetch_success = True
                             break
@@ -1927,12 +1916,12 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                             time.sleep(1)
 
                     if fetch_success:
-                        tip_res = run_cmd(["git", "rev-parse", "FETCH_HEAD"], cwd=repo_dir, check=False)
+                        tip_res = repo.rev_parse("FETCH_HEAD")
                         if tip_res.returncode == 0 and tip_res.stdout.strip():
                             base_tip = tip_res.stdout.strip()
-                            run_cmd(["git", "update-ref", f"refs/heads/{exec_branch}", base_tip], cwd=repo_dir)
-                            run_cmd(["git", "symbolic-ref", "HEAD", f"refs/heads/{exec_branch}"], cwd=repo_dir)
-                            run_cmd(["git", "reset", base_tip], cwd=repo_dir)
+                            repo.run(["update-ref", f"refs/heads/{exec_branch}", base_tip])
+                            repo.run(["symbolic-ref", "HEAD", f"refs/heads/{exec_branch}"])
+                            repo.reset(base_tip)
 
                     if not base_tip:
                         exec_status = "failure"
@@ -1954,7 +1943,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                                     event_type="git_mutation",
                                     action="Re-initialised git repo due to corrupted repository",
                                     category="config",
-                                    labels=["git", "recovery"],
+                                    labels=["recovery", "git"],
                                     target=".git",
                                     outcome="success" if base_tip else "failure",
                                     action_origin=action_origin,
@@ -1966,7 +1955,6 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             # change is committed only as failed partial work. Fail closed when the diff cannot be computed.
             failure_reason: str | None = None
             if exec_status == "success":
-                # Imported here: sandbox_executor.git imports redact_text from this module.
                 from sandbox_executor.git import (
                     EMPTY_DIFF_FAILURE_REASON,
                     EMPTY_DIFF_STATUS,
@@ -1997,7 +1985,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             # Format modified/untracked markdown files with prettier
             try:
                 md_files: list[str] = []
-                status_res = run_cmd(["git", "status", "--porcelain"], cwd=repo_dir, check=False)
+                status_res = repo.run(["status", "--porcelain"], check=False)
                 if status_res.returncode == 0:
                     for line in status_res.stdout.splitlines():
                         line = line.strip()
@@ -2093,7 +2081,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                             event_type="git_mutation",
                             action=f"Committed execution changes: {commit_msg.splitlines()[0]}",
                             category="code",
-                            labels=["git", "commit"],
+                            labels=["commit", "git"],
                             target="HEAD",
                             outcome="success",
                             action_origin=action_origin,
@@ -2110,41 +2098,34 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 # The notes (partial or not) explain the failure; the code changes are already in the partial commit.
                 add_targets.append(notes_rel)
             if add_targets:
-                run_cmd(["git", "add", *add_targets], cwd=repo_dir, check=False)
+                repo.run(["add", *add_targets], check=False)
             if exec_status == "success":
-                run_cmd(["git", "add", "-A"], cwd=repo_dir)
+                repo.add(all_files=True)
 
             # Log staged changes to provide visibility
-            status_output = run_cmd(["git", "status", "--short"], cwd=repo_dir, check=False)
+            status_output = repo.run(["status", "--short"], check=False)
             print("Current git repository status:")
             print(redact_text(status_output.stdout))
 
         # Set once the commit is pushed (or kept locally when pushing is disabled), never when the push is refused.
         branch_recorded = False
-        staged_check = run_cmd(["git", "diff", "--cached", "--quiet"], cwd=repo_dir, check=False)
+        staged_check = repo.diff(cached=True, quiet=True)
         if staged_check.returncode != 0 or salvaged_head:
             if staged_check.returncode != 0:
                 _configure_executor_identity(repo_dir)
-                run_cmd(["git", "commit", "-m", commit_msg], cwd=repo_dir)
+                repo.commit(commit_msg)
 
             can_push = True
             if recovery_triggered:
                 if not base_tip:
                     can_push = False
                 else:
-                    ancestry_check = run_cmd(
-                        ["git", "merge-base", "--is-ancestor", base_tip, "HEAD"],
-                        cwd=repo_dir,
-                        check=False,
-                    )
-                    has_parent = (
-                        run_cmd(["git", "rev-parse", "--verify", "HEAD^"], cwd=repo_dir, check=False).returncode == 0
-                    )
-                    tree_check = run_cmd(["git", "ls-tree", "-r", "--name-only", "HEAD"], cwd=repo_dir, check=False)
+                    ancestry_check = repo.merge_base(base_tip, "HEAD", is_ancestor=True)
+                    has_parent = repo.rev_parse("HEAD^", verify=True).returncode == 0
+                    tree_check = repo.run(["ls-tree", "-r", "--name-only", "HEAD"], check=False)
                     head_files = set(tree_check.stdout.splitlines())
-                    base_tree_check = run_cmd(
-                        ["git", "ls-tree", "-r", "--name-only", base_tip],
-                        cwd=repo_dir,
+                    base_tree_check = repo.run(
+                        ["ls-tree", "-r", "--name-only", base_tip],
                         check=False,
                     )
                     base_files = set(base_tree_check.stdout.splitlines())
@@ -2171,19 +2152,11 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                         with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as ef:
                             ef.write(json.dumps(fail_ledger_entry) + "\n")
 
-                        run_cmd(
-                            ["git", "add", "holon-knowledge/ledger/executions.jsonl"],
-                            cwd=repo_dir,
-                            check=False,
-                        )
-                        run_cmd(
-                            ["git", "commit", "-m", f"execute: record failure for {exec_id}"],
-                            cwd=repo_dir,
-                            check=False,
-                        )
+                        repo.add("holon-knowledge/ledger/executions.jsonl", check=False)
+                        repo.commit(f"execute: record failure for {exec_id}", check=False)
 
             # Invariant: A branch with no parent must never be pushed, whatever the execution status.
-            parent_verify = run_cmd(["git", "rev-parse", "--verify", "HEAD^"], cwd=repo_dir, check=False)
+            parent_verify = repo.rev_parse("HEAD^", verify=True)
             if parent_verify.returncode != 0:
                 can_push = False
 
@@ -2202,16 +2175,8 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                     fail_ledger_entry = superseding_failure_row(exec_entry, sync_summary)
                     with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as ef:
                         ef.write(json.dumps(fail_ledger_entry) + "\n")
-                    run_cmd(
-                        ["git", "add", "holon-knowledge/ledger/executions.jsonl"],
-                        cwd=repo_dir,
-                        check=False,
-                    )
-                    run_cmd(
-                        ["git", "commit", "-m", f"execute: record sync failure for {exec_id}"],
-                        cwd=repo_dir,
-                        check=False,
-                    )
+                    repo.add("holon-knowledge/ledger/executions.jsonl", check=False)
+                    repo.commit(f"execute: record sync failure for {exec_id}", check=False)
 
             if not can_push:
                 print(
@@ -2221,7 +2186,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             else:
                 skip_push = os.getenv("HOLON_SKIP_PUSH")
                 if not (skip_push and skip_push.lower() in ("1", "true", "yes")):
-                    push = run_cmd(["git", "push", "-u", "origin", exec_branch], cwd=repo_dir, check=False)
+                    push = repo.push(branch=exec_branch, set_upstream=True, check=False)
                     if push.returncode != 0:
                         # The container is removed on exit, so the commits survive only as the patch on stderr.
                         _report_unpushed_work(repo_dir, exec_branch, plan_tip, push.stderr or push.stdout or "")

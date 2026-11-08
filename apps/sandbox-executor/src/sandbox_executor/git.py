@@ -1,6 +1,7 @@
 """Centralised Git repository abstraction and helper operations.
 
 Provides typed, robust Git interaction utilities:
+- GitRepository: Intention-revealing adapter bound to a repository directory with pluggable runner.
 - run_git: Safe subprocess execution with credential redaction and configurable timeouts.
 - get_diff_numstat: Parse git diff numstats into typed tuples (insertions, deletions, path).
 - resolve_ref: Resolve any Git revision or symbolic ref to a full commit SHA.
@@ -15,10 +16,13 @@ from __future__ import annotations
 import logging
 import subprocess
 from collections.abc import Callable
+from pathlib import Path
 
 from sandbox_executor.redaction import redact_agent_secrets, redact_command
 
 logger = logging.getLogger(__name__)
+
+GitRunnerCallable = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def run_git(
@@ -68,6 +72,283 @@ def run_git(
     return res
 
 
+class GitRepository:
+    """Intention-revealing adapter for Git repository operations.
+
+    Encapsulates subprocess invocations for a target repository directory, supporting
+    an injected runner callable (such as executor.run_cmd) for logging, credential
+    scrubbing, and safe.directory handling.
+    """
+
+    def __init__(
+        self,
+        repo_dir: str | Path,
+        runner: GitRunnerCallable | None = None,
+    ) -> None:
+        """Initialise the Git repository adapter.
+
+        Args:
+            repo_dir: Path to the target Git repository working tree or directory.
+            runner: Optional custom runner callable matching the run_cmd / run_git signature.
+        """
+        self.repo_dir = str(repo_dir)
+        self._runner = runner
+
+    def run(
+        self,
+        args: list[str],
+        check: bool = True,
+        timeout: int | None = 60,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        """Execute arbitrary git arguments bound to this repository.
+
+        Args:
+            args: Git command arguments (excluding the leading 'git').
+            check: Whether to raise on non-zero exit code.
+            timeout: Command timeout threshold in seconds.
+            env: Optional environment dictionary.
+
+        Returns:
+            subprocess.CompletedProcess[str]: Process execution outcome.
+        """
+        if self._runner is None or self._runner is run_git:
+            clean_args = args[1:] if args and args[0] == "git" else args
+            return run_git(clean_args, cwd=self.repo_dir, check=check, timeout=timeout, env=env)
+
+        cmd = ["git", *args] if not (args and args[0] == "git") else list(args)
+        try:
+            return self._runner(cmd, cwd=self.repo_dir, check=check, timeout=timeout, env=env)
+        except TypeError:
+            return self._runner(cmd, cwd=self.repo_dir, check=check, env=env)
+
+    def rev_parse(
+        self,
+        *args: str,
+        verify: bool = False,
+        check: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        """Execute git rev-parse with specific revision or flag arguments."""
+        cmd_args = ["rev-parse"]
+        if verify:
+            cmd_args.append("--verify")
+        if args:
+            cmd_args.extend(args)
+        else:
+            cmd_args.append("HEAD")
+        return self.run(cmd_args, check=check)
+
+    def current_branch(self) -> str | None:
+        """Query the current branch name, or None if in detached HEAD state."""
+        res = self.run(["symbolic-ref", "--short", "HEAD"], check=False)
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout.strip()
+        return None
+
+    def status_porcelain(self, untracked: str = "all") -> str:
+        """Execute git status --porcelain and return stripped stdout."""
+        args = ["status", "--porcelain"]
+        if untracked:
+            args.append(f"--untracked-files={untracked}")
+        res = self.run(args, check=False)
+        return res.stdout.strip()
+
+    def is_clean(self) -> bool:
+        """Return True when working tree and staging area have no modifications."""
+        return not bool(self.status_porcelain())
+
+    def add(
+        self,
+        paths: list[str] | str | None = None,
+        all_files: bool = False,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        """Stage specified paths or all changes."""
+        args = ["add"]
+        if all_files:
+            args.append("-A")
+        if paths:
+            path_list = [paths] if isinstance(paths, str) else list(paths)
+            args.extend(path_list)
+        return self.run(args, check=check)
+
+    def commit(
+        self,
+        message: str,
+        allow_empty: bool = False,
+        author: str | None = None,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        """Commit staged changes."""
+        args = ["commit", "-m", message]
+        if allow_empty:
+            args.append("--allow-empty")
+        if author:
+            args.extend(["--author", author])
+        return self.run(args, check=check)
+
+    def push(
+        self,
+        remote: str = "origin",
+        branch: str | None = None,
+        set_upstream: bool = False,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        """Push commits to a remote repository."""
+        args = ["push"]
+        if set_upstream:
+            args.append("-u")
+        args.append(remote)
+        if branch:
+            args.append(branch)
+        return self.run(args, check=check)
+
+    def fetch(
+        self,
+        remote: str = "origin",
+        branch: str | None = None,
+        *extra: str,
+        check: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        """Fetch revisions from a remote repository."""
+        args = ["fetch", *extra, remote]
+        if branch:
+            args.append(branch)
+        return self.run(args, check=check)
+
+    def checkout(
+        self,
+        target: str,
+        create: bool = False,
+        force: bool = False,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        """Switch branches or restore working tree files."""
+        args = ["checkout"]
+        if force:
+            args.append("-f")
+        if create:
+            args.extend(["-b", target])
+        else:
+            args.append(target)
+        return self.run(args, check=check)
+
+    def merge_base(
+        self,
+        ref1: str,
+        ref2: str,
+        is_ancestor: bool = False,
+        check: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        """Find common ancestors or check ancestry between revisions."""
+        args = ["merge-base"]
+        if is_ancestor:
+            args.extend(["--is-ancestor", ref1, ref2])
+        else:
+            args.extend([ref1, ref2])
+        return self.run(args, check=check)
+
+    def merge(
+        self,
+        target: str,
+        no_commit: bool = False,
+        no_ff: bool = False,
+        check: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        """Merge a branch or revision into the current branch."""
+        args = ["merge", target]
+        if no_commit:
+            args.append("--no-commit")
+        if no_ff:
+            args.append("--no-ff")
+        return self.run(args, check=check)
+
+    def merge_abort(self, check: bool = False) -> subprocess.CompletedProcess[str]:
+        """Abort an in-progress merge operation."""
+        return self.run(["merge", "--abort"], check=check)
+
+    def rebase_onto(
+        self,
+        newbase: str,
+        upstream: str,
+        branch: str | None = None,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        """Rebase commits onto a new base revision."""
+        args = ["rebase", "--onto", newbase, upstream]
+        if branch:
+            args.append(branch)
+        return self.run(args, check=check)
+
+    def config(
+        self,
+        key: str,
+        value: str | None = None,
+        local: bool = True,
+        check: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        """Get or set repository configuration."""
+        args = ["config"]
+        if local:
+            args.append("--local")
+        args.append(key)
+        if value is not None:
+            args.append(value)
+        return self.run(args, check=check)
+
+    def reset(
+        self,
+        target: str | None = None,
+        *paths: str,
+        hard: bool = False,
+        check: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        """Reset current HEAD or unstage paths."""
+        args = ["reset"]
+        if hard:
+            args.append("--hard")
+        else:
+            args.append("-q")
+        if target:
+            args.append(target)
+        if paths:
+            args.extend(paths)
+        return self.run(args, check=check)
+
+    def clean(
+        self,
+        force: bool = True,
+        directories: bool = True,
+        check: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        """Remove untracked files and directories from the working tree."""
+        args = ["clean"]
+        flags = ""
+        if force:
+            flags += "f"
+        if directories:
+            flags += "d"
+        if flags:
+            args.append(f"-{flags}")
+        return self.run(args, check=check)
+
+    def diff(
+        self,
+        *args: str,
+        cached: bool = False,
+        quiet: bool = False,
+        check: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        """Execute git diff with common options."""
+        cmd_args = ["diff"]
+        if cached:
+            cmd_args.append("--cached")
+        if quiet:
+            cmd_args.append("--quiet")
+        cmd_args.extend(args)
+        return self.run(cmd_args, check=check)
+
+
 def get_diff_numstat(
     repo_dir: str,
     base_ref: str,
@@ -84,11 +365,8 @@ def get_diff_numstat(
         list[tuple[int, int, str]]: List of (insertions, deletions, path) tuples.
             Binary files return (-1, -1, path).
     """
-    res = run_git(
-        ["diff", "--numstat", base_ref, head_ref],
-        cwd=repo_dir,
-        check=False,
-    )
+    repo = GitRepository(repo_dir)
+    res = repo.diff("--numstat", base_ref, head_ref, check=False)
     if res.returncode != 0:
         logger.debug(f"get_diff_numstat failed between {base_ref} and {head_ref}: {res.stderr}")
         return []
@@ -128,7 +406,7 @@ def resolve_ref(repo_dir: str, ref: str) -> str | None:
         return None
 
     clean_ref = ref.strip()
-    res = run_git(["rev-parse", "--verify", clean_ref], cwd=repo_dir, check=False)
+    res = GitRepository(repo_dir).rev_parse(clean_ref, verify=True, check=False)
     if res.returncode == 0 and res.stdout.strip():
         return res.stdout.strip()
     return None
@@ -246,7 +524,7 @@ def changed_paths(
     """
 
     def _default_runner(args: list[str]) -> str:
-        return run_git(args, cwd=repo_dir).stdout
+        return GitRepository(repo_dir).run(args).stdout
 
     git = git_runner or _default_runner
     if head:

@@ -1,0 +1,33 @@
+{
+  "kb_id": "KB-failure-9f1ebc8f",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-08T23:41:54.597358+00:00",
+  "updated_ts": "2026-11-08T23:41:54.597358+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-1794177371-e1199fdd",
+      "ACT-1794176556-3e83fbd6",
+      "ACT-1794175794-6da5c7b6",
+      "ACT-1794146083-bf81931f"
+    ],
+    "success_count": 0,
+    "failure_count": 4,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "test",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794136091-persist-review-loop-sandbox-across-iterations/P-1794136106-claude-agent-claude-fable-5/E-1794141703-claude-agent-claude-fable-5/_",
+    "description": "Reproduced failure across 4 executions with identical context.",
+    "action": "Review Loop executed for I-1794136091-persist-review-loop-sandbox-across-iterations/P-1794136106-claude-agent-claude-fable-5/E-1794141703-claude-agent-claude-fable-5/_",
+    "symptoms": [
+      "Consensus failed: findings=['FIND-CI-006', 'FIND-R1-006-01', 'FIND-R1-006-02', 'FIND-R1-006-03', 'FIND-R1-006-04', 'FIND-R2-006-01', 'FIND-R2-006-02', 'FIND-R2-006-03', 'FIND-R2-006-04', 'FIND-R2-006-05', 'FIND-R2-006-06', 'FIND-R3-006-01', 'FIND-R3-006-02']"
+    ]
+  }
+}

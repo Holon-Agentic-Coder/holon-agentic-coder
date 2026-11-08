@@ -2332,3 +2332,96 @@ def test_find_git_root_returns_the_nearest_git_ancestor(tmp_path, monkeypatch):
 
     assert finished, "_find_git_root did not return within its deadline"
     assert root == str(repo)
+
+
+# --------------------------------------------------------------------------------------
+# Persistent Stage 4 review workspace: the volume mount plumbing in run_docker_container
+# --------------------------------------------------------------------------------------
+
+
+def _remove_argv_pair(argv: list[str], pair: list[str]) -> list[str]:
+    """Return ``argv`` with the first adjacent occurrence of ``pair`` removed; fail if it is absent."""
+    for idx in range(len(argv) - 1):
+        if argv[idx : idx + 2] == pair:
+            return argv[:idx] + argv[idx + 2 :]
+    raise AssertionError(f"expected pair {pair} in docker argv: {argv}")
+
+
+def test_review_workspace_volume_adds_exactly_one_mount_and_pins_the_worktree():
+    """With a volume the argv gains one `-v` mount and the pinned worktree env; without one it is identical."""
+    from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
+
+    captured: list[list[str]] = []
+
+    def record_run(cmd, *args, **kwargs):
+        captured.append(list(cmd))
+        return MagicMock(returncode=0)
+
+    with (
+        patch("sandbox_executor.cli.resolve_target_repo", return_value=("git@github.com:test/repo.git", None)),
+        patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"]),
+        patch("subprocess.run", side_effect=record_run),
+        patch("shutil.which", return_value="/usr/bin/docker"),
+        patch.dict(os.environ, {}, clear=True),
+    ):
+        args = ["branch", "fake-agent", "fake-model"]
+        assert run_docker_container("review-loop", "holon/agent-claude", list(args), agent_id="claude") == 0
+        assert (
+            run_docker_container(
+                "review-loop",
+                "holon/agent-claude",
+                list(args),
+                agent_id="claude",
+                review_workspace_volume="holon-review-ws-abc123",
+            )
+            == 0
+        )
+
+    baseline, with_volume = captured
+    # Guard every isolation flag: removing the one mount and the pinned worktree variable restores the
+    # baseline argv byte for byte, so nothing else (``--rm``, ``--cap-drop=ALL``,
+    # ``--security-opt=no-new-privileges``, metadata sinkholes, mounts, env forwarding) changed.
+    reduced = _remove_argv_pair(with_volume, ["-v", f"holon-review-ws-abc123:{SANDBOX_WORKSPACE_MOUNT}"])
+    reduced = _remove_argv_pair(reduced, ["-e", f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"])
+    assert reduced == baseline
+    assert "--rm" in with_volume
+    assert "--cap-drop=ALL" in with_volume
+    assert "--security-opt=no-new-privileges" in with_volume
+    # A host HOLON_TARGET_WORKTREE cannot displace the pinned container workspace path.
+    assert [a for a in with_volume if a.startswith("HOLON_TARGET_WORKTREE=")] == [
+        f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"
+    ]
+
+
+def test_review_workspace_volume_overrides_a_forwarded_host_worktree():
+    """A forwarded host HOLON_TARGET_WORKTREE is replaced by the mountpoint when a volume is supplied."""
+    from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
+
+    captured: list[list[str]] = []
+
+    def record_run(cmd, *args, **kwargs):
+        captured.append(list(cmd))
+        return MagicMock(returncode=0)
+
+    with (
+        patch("sandbox_executor.cli.resolve_target_repo", return_value=("git@github.com:test/repo.git", None)),
+        patch("sandbox_executor.cli.get_agent_session_mounts", return_value=[]),
+        patch("subprocess.run", side_effect=record_run),
+        patch("shutil.which", return_value="/usr/bin/docker"),
+        patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": "/home/dev/own-checkout"}, clear=True),
+    ):
+        assert (
+            run_docker_container(
+                "review-loop",
+                "holon/agent-claude",
+                ["branch", "fake-agent", "fake-model"],
+                agent_id="claude",
+                review_workspace_volume="holon-review-ws-abc123",
+            )
+            == 0
+        )
+
+    (argv,) = captured
+    assert [a for a in argv if a.startswith("HOLON_TARGET_WORKTREE=")] == [
+        f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"
+    ]

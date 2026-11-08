@@ -1,6 +1,6 @@
 {
   "index_version": "1.0",
-  "updated_ts": "2026-11-08T09:10:01.526743+00:00",
+  "updated_ts": "2026-11-08T23:41:54.597949+00:00",
   "entries": [
     {
       "kb_id": "KB-failure-d25f1b01",
@@ -3948,6 +3948,17 @@
       "created_ts": "2026-11-08T09:10:01.526471+00:00",
       "tags": [
         "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-9f1ebc8f",
+      "file": "KB-failure-9f1ebc8f.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-08T23:41:54.597358+00:00",
+      "tags": [
+        "test",
         "veto"
       ]
     }

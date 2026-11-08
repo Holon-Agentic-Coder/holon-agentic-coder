@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import hashlib
+import inspect
 import json
 import logging
 import math
@@ -40,6 +42,10 @@ from sandbox_executor.agent_defaults import (
     LEGACY_DEFAULT_MODEL,
     harness_detection_disabled,
     normalise_agent_id,
+)
+from sandbox_executor.agent_runner import (
+    SANDBOX_WORKSPACE_MOUNT,
+    SANDBOX_WORKSPACE_UID_GID,
 )
 from sandbox_executor.budgets import (
     ENV_REPLAN_FEEDBACK,
@@ -1862,8 +1868,14 @@ def _dispatch_role(
     positional_args: list[str],
     intent_file: str | None = None,
     result_file: str | None = None,
+    **extra: Any,
 ) -> int:
-    """Dispatch one role agent through the same function the per-stage commands use."""
+    """Dispatch one role agent through the same function the per-stage commands use.
+
+    Non-None ``extra`` keywords (e.g. ``review_workspace_volume`` for Stage 4 dispatches) are forwarded
+    to the dispatcher; None values are dropped so injected dispatchers without those parameters keep
+    working unchanged.
+    """
     dispatcher = _get_dispatcher(context)
     context.log(f"Dispatching {role} agent (runner={context.agent}, model={context.model}).")
     kwargs: dict[str, Any] = {
@@ -1874,6 +1886,7 @@ def _dispatch_role(
     }
     if result_file is not None:
         kwargs["result_file"] = result_file
+    kwargs.update({key: value for key, value in extra.items() if value is not None})
     return int(
         dispatcher(
             role,
@@ -3445,6 +3458,142 @@ def reviewers_sandboxed(environ: Mapping[str, str] | None = None) -> bool:
     return harness_detection_disabled(environ)
 
 
+# Label carried by every persistent Stage 4 review workspace volume, so a volume leaked by a crashed
+# loop can be found and pruned: docker volume prune --filter label=holon.review-session.
+REVIEW_SESSION_VOLUME_LABEL = "holon.review-session"
+_REVIEW_PERSIST_DISABLED_VALUES = ("0", "false", "no", "off")
+_DOCKER_CLI_TIMEOUT_SECONDS = 120
+
+
+def review_persist_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """Return True unless ``HOLON_REVIEW_PERSIST`` disables the persistent Stage 4 review workspace.
+
+    The kill switch restores the historical clone-per-pass behaviour without a code revert: with
+    ``HOLON_REVIEW_PERSIST`` set to ``0``, ``false``, ``no`` or ``off`` no session volume is created and
+    the reviewer and resolver dispatch arguments are identical to the pre-persistence ones.
+    """
+    env = environ if environ is not None else os.environ
+    return str(env.get("HOLON_REVIEW_PERSIST", "")).strip().lower() not in _REVIEW_PERSIST_DISABLED_VALUES
+
+
+def review_session_volume_name(review_target: str) -> str:
+    """Deterministic Docker volume name for one Stage 4 session on ``review_target``.
+
+    Derived purely from the target so a resumed flow computes the same name without storing anything in
+    the checkpoint; a stale survivor is safe to reuse because the entrypoint makes every reused checkout
+    hermetically equivalent to a fresh clone before syncing.
+    """
+    digest = hashlib.sha256(review_target.encode("utf-8")).hexdigest()[:16]
+    return f"holon-review-ws-{digest}"
+
+
+class ReviewWorkspaceSession:
+    """One persistent review workspace volume shared by all dispatches of one Stage 4 session.
+
+    The labelled volume is created lazily on the first :meth:`volume_name` call (the first reviewer
+    dispatch) and mounted at the container workspace path by every reviewer-ensemble and resolver
+    dispatch of the session, so the first pass clones and every later pass fetches incrementally.
+    A freshly created named volume is root-owned (the image does not pre-create the workspace path), so
+    creation runs one root init container that chowns the mount to the image's unprivileged user — the
+    same pattern as the seeded-remote test fixtures. Any creation failure disables the session with a
+    warning and the dispatches fall back to the historical clone-per-pass behaviour; teardown failures
+    are warnings too (the volume is prunable by its label), never a stage failure.
+    """
+
+    def __init__(
+        self,
+        review_target: str,
+        *,
+        agent: str | None = None,
+        log: Callable[[str], None] | None = None,
+        docker_runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
+    ) -> None:
+        """Remember the session identity and seams; no Docker command runs until the first dispatch."""
+        self._review_target = review_target
+        self._agent = agent
+        self._log = log or (lambda message: None)
+        self._run = docker_runner or self._run_docker_cli
+        self._volume: str | None = None
+        self._disabled = False
+
+    @staticmethod
+    def _run_docker_cli(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        """Run one docker CLI command with captured output and a bounded timeout."""
+        return subprocess.run(argv, capture_output=True, text=True, check=False, timeout=_DOCKER_CLI_TIMEOUT_SECONDS)
+
+    def _init_image(self) -> str:
+        """The image whose root user initialises volume ownership: the session's own review-loop image."""
+        from sandbox_executor.cli import resolve_role_image
+
+        return resolve_role_image("review-loop", normalise_agent_id(self._agent or FALLBACK_AGENT))
+
+    def _checked_docker(self, argv: list[str], step: str) -> None:
+        """Run one docker command, raising ``RuntimeError`` with its redacted stderr when it fails."""
+        result = self._run(argv)
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip() or f"exit code {result.returncode}"
+            raise RuntimeError(f"{step} failed: {redact_agent_secrets(stderr)}")
+
+    def volume_name(self) -> str | None:
+        """Create the session volume on first use and return its name; None when persistence is unavailable."""
+        if self._volume is not None or self._disabled:
+            return self._volume
+        name = review_session_volume_name(self._review_target)
+        try:
+            self._checked_docker(
+                ["docker", "volume", "create", "--label", f"{REVIEW_SESSION_VOLUME_LABEL}=1", name],
+                "docker volume create",
+            )
+            try:
+                # Hand the root-owned volume to the image's unprivileged user before any pass writes to it.
+                self._checked_docker(
+                    [
+                        "docker",
+                        "run",
+                        "--rm",
+                        "--network",
+                        "none",
+                        "--user",
+                        "root",
+                        "-v",
+                        f"{name}:{SANDBOX_WORKSPACE_MOUNT}",
+                        "--entrypoint",
+                        "chown",
+                        self._init_image(),
+                        "-R",
+                        SANDBOX_WORKSPACE_UID_GID,
+                        SANDBOX_WORKSPACE_MOUNT,
+                    ],
+                    "review workspace ownership init",
+                )
+            except Exception:
+                self._run(["docker", "volume", "rm", "-f", name])
+                raise
+        except Exception as exc:
+            self._disabled = True
+            self._log(
+                "[Review Loop] Warning: persistent review workspace unavailable, falling back to a full "
+                f"clone per pass: {redact_agent_secrets(str(exc))}"
+            )
+            return None
+        self._volume = name
+        self._log(f"[Review Loop] Persistent review workspace volume '{name}' initialised for this session.")
+        return name
+
+    def teardown(self) -> None:
+        """Remove the session volume if one was created; failures warn and never fail the stage."""
+        if self._volume is None:
+            return
+        name, self._volume = self._volume, None
+        try:
+            self._checked_docker(["docker", "volume", "rm", "-f", name], "docker volume rm")
+        except Exception as exc:
+            self._log(
+                f"[Review Loop] Warning: could not remove review workspace volume '{name}' "
+                f"(prunable via its {REVIEW_SESSION_VOLUME_LABEL} label): {redact_agent_secrets(str(exc))}"
+            )
+
+
 def _worst_severity(*severities: str) -> str:
     """The most severe of ``severities`` (``clean`` when none is given)."""
     return max(severities, key=lambda value: _SEVERITY_RANK.get(value, 0), default="clean")
@@ -3672,10 +3821,13 @@ def _dispatch_review_ensemble(
     target: ReviewTarget,
     iteration: int,
     ensemble_size: int,
+    workspace_volume: str | None = None,
 ) -> tuple[list[ReviewerResult], ConsensusVerdict | None, str | None]:
     """Dispatch one reviewer ensemble pass into the review-loop role container via _dispatch_role.
 
     ``iteration`` is the engine's pass label (``--iteration``), never the container's loop limit.
+    ``workspace_volume`` names the session's persistent workspace volume, mounted so this pass reuses
+    the previous pass's checkout instead of cloning afresh; None preserves the clone-per-pass dispatch.
     """
     from sandbox_executor.review_ensemble import deserialize_review_outcome
 
@@ -3703,12 +3855,9 @@ def _dispatch_review_ensemble(
         container_args.append("--skip-push")
 
     try:
-        exit_code = _dispatch_role(
-            context,
-            "review-loop",
-            container_args,
-            result_file=result_file,
-        )
+        # The volume kwarg travels only when set, keeping injected _dispatch_role seams source-compatible.
+        volume_kwargs = {"review_workspace_volume": workspace_volume} if workspace_volume is not None else {}
+        exit_code = _dispatch_role(context, "review-loop", container_args, result_file=result_file, **volume_kwargs)
         if not os.path.exists(result_file) or os.path.getsize(result_file) == 0:
             err = f"Reviewer ensemble container dispatch exited with code {exit_code} without writing results"
             return [], None, err
@@ -3752,6 +3901,9 @@ class ResolverInput:
     findings: Sequence[FindingRow]
     action_ids: Mapping[str, str] = field(default_factory=dict)
     rejected_findings: Sequence[FindingDisposition] = ()
+    # Host-side dispatch context only: the session's persistent workspace volume for the container
+    # dispatch path. Never part of the serialised resolver payload.
+    workspace_volume: str | None = None
 
 
 def _dispatch_review_resolver(
@@ -3759,8 +3911,13 @@ def _dispatch_review_resolver(
     target: ReviewTarget,
     iteration: int,
     resolver_input: ResolverInput,
+    workspace_volume: str | None = None,
 ) -> ResolverOutcome:
-    """Dispatch one resolver pass into the review-loop role container via ``_dispatch_role``."""
+    """Dispatch one resolver pass into the review-loop role container via ``_dispatch_role``.
+
+    ``workspace_volume`` names the session's persistent workspace volume (see
+    :func:`_dispatch_review_ensemble`); None preserves the clone-per-pass dispatch.
+    """
     tmp_dir = os.path.expanduser("~/.holon/tmp")
     os.makedirs(tmp_dir, exist_ok=True)
     fd, result_file = tempfile.mkstemp(prefix="holon-resolve-result-", suffix=".json", dir=tmp_dir)
@@ -3805,12 +3962,9 @@ def _dispatch_review_resolver(
         with open(result_file, "w", encoding="utf-8") as f:
             json.dump(input_payload, f, indent=2)
 
-        exit_code = _dispatch_role(
-            context,
-            "review-loop",
-            container_args,
-            result_file=result_file,
-        )
+        # The volume kwarg travels only when set, keeping injected _dispatch_role seams source-compatible.
+        volume_kwargs = {"review_workspace_volume": workspace_volume} if workspace_volume is not None else {}
+        exit_code = _dispatch_role(context, "review-loop", container_args, result_file=result_file, **volume_kwargs)
         data: dict[str, Any] = {}
         if os.path.exists(result_file) and os.path.getsize(result_file) > 0:
             with contextlib.suppress(OSError, ValueError), open(result_file, encoding="utf-8") as f:
@@ -4067,7 +4221,7 @@ def _invoke_resolver_pass(
     lookup = {k: v for k, v in lookup.items() if v}
     resolved_input = dataclasses.replace(resolver_input, action_ids=lookup)
     if run_resolver_fn is None:
-        return _dispatch_review_resolver(context, target, iteration, resolved_input)
+        return _dispatch_review_resolver(context, target, iteration, resolved_input, resolver_input.workspace_volume)
     try:
         raw = run_resolver_fn(
             target=target,
@@ -4119,7 +4273,46 @@ def _invoke_resolver_pass(
     return ResolverOutcome(dispositions=dispositions, head_sha=target.head_sha, pushed=False)
 
 
-def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
+def run_review_loop(
+    context: FlowContext,
+    *args: Any,
+    workspace_session: ReviewWorkspaceSession | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Execute the native Stage 4 review loop, owning the session's persistent workspace lifecycle.
+
+    All arguments are forwarded verbatim to :func:`_run_review_loop_iterations`, which documents the
+    loop semantics and the full argument reference. This wrapper owns the per-session review workspace:
+    when the loop will genuinely dispatch role containers (host engine mode with no injected dispatcher
+    or review seams, not a dry run, and ``HOLON_REVIEW_PERSIST`` not disabled), it creates one
+    :class:`ReviewWorkspaceSession` whose labelled volume every reviewer-ensemble and resolver dispatch
+    of this loop mounts, and always tears the session down in a ``finally`` — covering refusals,
+    no-convergence, budget exhaustion and exceptions. In-container mode (``reviewers_sandboxed()``)
+    never creates a session. Tests may inject ``workspace_session`` to observe the lifecycle; an
+    injected session is torn down by this wrapper too.
+    """
+    supplied = inspect.signature(_run_review_loop_iterations).bind_partial(context, *args, **kwargs).arguments
+    effective_dry_run = bool(supplied.get("dry_run") or context.dry_run)
+    if effective_dry_run or reviewers_sandboxed() or not review_persist_enabled():
+        workspace_session = None
+    elif (
+        workspace_session is None
+        and context.dispatcher is None
+        and supplied.get("run_ensemble_fn") is None
+        and supplied.get("run_resolver_fn") is None
+    ):
+        review_target = str(
+            supplied.get("target") or context.execution_branch or context.intent_branch or "HEAD"
+        ).strip()
+        workspace_session = ReviewWorkspaceSession(review_target, agent=context.agent, log=context.log)
+    try:
+        return _run_review_loop_iterations(context, *args, workspace_session=workspace_session, **kwargs)
+    finally:
+        if workspace_session is not None:
+            workspace_session.teardown()
+
+
+def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
     context: FlowContext,
     target: str | None = None,
     max_iterations: int = 25,
@@ -4135,6 +4328,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     run_resolver_fn: Callable[..., Any] | None = None,
     skip_post: bool = False,
     first_iteration: int = 1,
+    workspace_session: ReviewWorkspaceSession | None = None,
 ) -> dict[str, Any]:
     """Execute the native Stage 4 review loop with the real reviewer ensemble.
 
@@ -4163,6 +4357,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         first_iteration: Label of the first pass (default 1). It is only a label: the ledger ``review_iteration``
             fields, finding IDs, trailers and the posted ``Iteration {n}`` heading carry it, while ``max_iterations``
             alone caps how many passes run. The engine passes its own continued count here.
+        workspace_session: Session owning the persistent review workspace volume that every reviewer and
+            resolver dispatch of this loop mounts; None dispatches with the historical clone-per-pass
+            behaviour. The :func:`run_review_loop` wrapper owns creation and teardown.
 
     The empty-diff guard runs for every target whatever ``auto_pr`` is: an empty diff is rejected and an
     unverifiable one fails, before any PR, iteration or post. A dry run never measures anything, so it reports
@@ -4329,7 +4526,11 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 )
             else:
                 reviewers, _container_verdict, infra_error = _dispatch_review_ensemble(
-                    context, resolved_target, iteration, ensemble_size
+                    context,
+                    resolved_target,
+                    iteration,
+                    ensemble_size,
+                    workspace_volume=workspace_session.volume_name() if workspace_session else None,
                 )
             if rejected_history or rejected_ids:
                 reviewers = _filter_adjudicated_findings(reviewers, rejected_history, frozenset(rejected_ids))
@@ -4625,6 +4826,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 findings=iter_findings,
                 action_ids=finding_action_ids,
                 rejected_findings=tuple(rejected_history.values()),
+                workspace_volume=workspace_session.volume_name() if workspace_session else None,
             ),
             run_resolver_fn,
         )

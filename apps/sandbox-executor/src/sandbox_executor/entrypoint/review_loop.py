@@ -12,8 +12,9 @@ Coordinates the multi-pass review loop within an isolated container:
 
 Preparation fails closed. The target is resolved before any git operation (a PR number or URL becomes its
 head branch and head SHA through gh, never a raw 'git clone --branch 90'); the head branch is cloned or
-fetched and checked out with every return code checked; and HEAD must equal the resolved head SHA. On any
-resolution, clone, fetch or checkout failure, one ACT-REV failure row is appended to
+fetched and checked out with every return code checked; and HEAD must equal the resolved head SHA. A git
+failure while syncing a reused checkout falls back to wipe and re-clone first. On any resolution, clone,
+or head-verification failure, one ACT-REV failure row is appended to
 holon-knowledge/ledger/executions.jsonl when that directory exists (otherwise the reason goes to stderr only),
 a FAILED summary is printed and the process exits 1: no consensus is computed or posted.
 """
@@ -24,6 +25,7 @@ import dataclasses
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -139,19 +141,96 @@ def _checked(args: list[str], repo_dir: str, stage: str) -> subprocess.Completed
     return result
 
 
-def _clone_or_fetch(repo_dir: str, target: ReviewTarget) -> None:
-    """Clone the head branch into a fresh workspace, or fetch and check it out in an existing one."""
-    branch = target.head_branch
-    if not _has_checkout(repo_dir):
+def _normalised_repo_url(url: str) -> str:
+    """Normalise a repository URL for origin comparison: trim whitespace, one trailing '/' and '.git'."""
+    clean = url.strip().removesuffix("/")
+    return clean.removesuffix(".git")
+
+
+def _reusable_origin(repo_dir: str) -> bool:
+    """Return True when the existing checkout's ``origin`` matches ``HOLON_REPO_URL``.
+
+    Fails safe: with no ``HOLON_REPO_URL`` to verify against, an operator-supplied checkout is trusted as
+    it always was; an unreadable or mismatched origin is never fetched from (the caller wipes and
+    re-clones instead). A ``safe.directory`` entry is added first (best effort, container-local
+    ``~/.gitconfig``) so a uid mismatch inside a reused volume reads as a mismatch, not a crash.
+    """
+    run_cmd(["git", "config", "--global", "--add", "safe.directory", repo_dir], check=False)
+    expected = os.getenv("HOLON_REPO_URL", "").strip()
+    if not expected:
+        return True
+    origin = run_cmd(["git", "remote", "get-url", "origin"], cwd=repo_dir, check=False)
+    if origin.returncode != 0:
+        return False
+    return _normalised_repo_url(origin.stdout or "") == _normalised_repo_url(expected)
+
+
+def _reset_reused_checkout(repo_dir: str) -> None:
+    """Make a reused checkout hermetically equivalent to a fresh clone of its current HEAD.
+
+    Aborts any in-progress rebase or merge (best effort), then discards every uncommitted and untracked
+    change — reviewer scratch under ``.holon/review/``, resolver leftovers and any in-container ledger
+    rows appended to the clone's copy of ``holon-knowledge/ledger/`` by a previous pass (the host loop's
+    rows are the canonical provenance), so each pass starts as a pure function of the fetched commit.
+    """
+    run_cmd(["git", "rebase", "--abort"], cwd=repo_dir, check=False)
+    run_cmd(["git", "merge", "--abort"], cwd=repo_dir, check=False)
+    _checked(["git", "reset", "--hard", "HEAD"], repo_dir, "reset")
+    _checked(["git", "clean", "-fdx"], repo_dir, "clean")
+
+
+def _wipe_workspace(repo_dir: str) -> None:
+    """Remove the contents of ``repo_dir`` without removing the directory itself (it may be a mountpoint)."""
+    for name in os.listdir(repo_dir):
+        path = os.path.join(repo_dir, name)
         try:
-            repo_url = get_repo_url()
-        except RuntimeError as exc:
-            raise ReviewPreparationError("clone", str(exc)) from exc
-        print(f"Cloning {branch} into {repo_dir} from {redact_command([repo_url])}...", file=sys.stderr)
-        _checked(["git", "clone", "--branch", branch, repo_url, "."], repo_dir, "clone")
-        return
-    _checked(["git", "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], repo_dir, "fetch")
-    _checked(["git", "checkout", "-B", branch, f"origin/{branch}"], repo_dir, "checkout")
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+        except OSError as exc:
+            raise ReviewPreparationError("clone", f"could not clear the stale workspace at {repo_dir}: {exc}") from exc
+
+
+def _clone_or_fetch(repo_dir: str, target: ReviewTarget) -> None:
+    """Clone the head branch into a fresh workspace, or sync an existing one incrementally.
+
+    A reused checkout (a persistent review workspace volume carrying the previous pass's clone) is first
+    verified against ``HOLON_REPO_URL`` — on mismatch it is wiped and re-cloned, never fetched from — and
+    then hermetically reset before the incremental ``git fetch`` + ``git checkout -B``, which picks up
+    exactly the new commits (for example a resolver push from the previous pass). Any git failure on that
+    reuse path (a crash-poisoned checkout: unborn HEAD, stale ``index.lock``, a corrupted object store)
+    also falls back to wipe and re-clone, so a leaked volume never wedges the session; only a failing
+    clone itself still fails the pass closed.
+    """
+    branch = target.head_branch
+    if _has_checkout(repo_dir):
+        if _reusable_origin(repo_dir):
+            try:
+                _reset_reused_checkout(repo_dir)
+                _checked(
+                    ["git", "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], repo_dir, "fetch"
+                )
+                _checked(["git", "checkout", "-B", branch, f"origin/{branch}"], repo_dir, "checkout")
+                return
+            except ReviewPreparationError as exc:
+                print(
+                    f"Incremental sync of the reused workspace at {repo_dir} failed ({exc.stage}): {exc}; "
+                    "wiping and re-cloning.",
+                    file=sys.stderr,
+                )
+        else:
+            print(
+                f"Origin mismatch or unreadable in the reused workspace at {repo_dir}; wiping and re-cloning.",
+                file=sys.stderr,
+            )
+        _wipe_workspace(repo_dir)
+    try:
+        repo_url = get_repo_url()
+    except RuntimeError as exc:
+        raise ReviewPreparationError("clone", str(exc)) from exc
+    print(f"Cloning {branch} into {repo_dir} from {redact_command([repo_url])}...", file=sys.stderr)
+    _checked(["git", "clone", "--branch", branch, repo_url, "."], repo_dir, "clone")
 
 
 def _rev_parse(repo_dir: str, rev: str, stage: str) -> str:

@@ -35,6 +35,7 @@ from sandbox_executor.agent_defaults import (
     resolve_agent_runner,
     resolve_model,
 )
+from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
 from sandbox_executor.budgets import stage_budget_handdown_env
 from sandbox_executor.calibration import run_calibrate
 from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
@@ -1386,8 +1387,15 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
     mitm_web: bool = False,
     target_worktree: str | None = None,
     result_file: str | None = None,
+    review_workspace_volume: str | None = None,
 ) -> int:
-    """Constructs docker run command with auto-discovered credentials and executes it."""
+    """Constructs docker run command with auto-discovered credentials and executes it.
+
+    ``review_workspace_volume`` names the persistent Stage 4 review workspace volume; when set, exactly
+    one ``-v`` mount at the sandbox workspace path is added (and ``HOLON_TARGET_WORKTREE`` pinned to the
+    same path so the entrypoint's workspace cannot drift from the mountpoint); the rest of the command,
+    including every isolation flag, is unchanged.
+    """
     if not shutil.which("docker"):
         print("Error: 'docker' CLI command not found. Please install Docker.", file=sys.stderr)
         return 1
@@ -1434,6 +1442,12 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
     env_to_forward.update(stage_budget_handdown_env())
 
     env_to_forward["HOLON_REPO_URL"] = resolved_repo_url
+
+    # With a persistent review workspace mounted, pin the container workspace to the mountpoint so the
+    # entrypoint's get_workspace_dir() (which honours a forwarded HOLON_TARGET_WORKTREE first) can never
+    # resolve to a path outside the volume.
+    if review_workspace_volume:
+        env_to_forward["HOLON_TARGET_WORKTREE"] = SANDBOX_WORKSPACE_MOUNT
 
     norm_agent_id = local_llm.normalize_agent_id(agent_id)
 
@@ -1562,6 +1576,12 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
         if result_file:
             abs_result = os.path.abspath(result_file)
             docker_cmd.extend(["-v", f"{abs_result}:/tmp/review_result.json"])
+
+        # Persistent Stage 4 review workspace: one named volume per review session, mounted at the
+        # sandbox workspace path so later passes of the same session reuse the first pass's checkout
+        # (never a host bind: the host filesystem exposure is unchanged).
+        if review_workspace_volume:
+            docker_cmd.extend(["-v", f"{review_workspace_volume}:{SANDBOX_WORKSPACE_MOUNT}"])
 
         # Auto-detect Session Mounts
         session_mounts = get_agent_session_mounts(agent_id)
@@ -1781,6 +1801,7 @@ def dispatch_role_agent(  # noqa: PLR0913
     result_file: str | None = None,
     token_reduce: bool = False,
     mitm_web: bool = False,
+    review_workspace_volume: str | None = None,
 ) -> int:
     """Launch the containerised role agent shared by 'holon intent|plan|execute' and 'holon flow'.
 
@@ -1798,6 +1819,8 @@ def dispatch_role_agent(  # noqa: PLR0913
         result_file: Structured outcome payload path for container-to-host result transport.
         token_reduce: Whether to route container traffic through the token reduction proxy.
         mitm_web: Whether to start the proxy with the mitmweb interface.
+        review_workspace_volume: Persistent Stage 4 review workspace volume to mount at the sandbox
+            workspace path; only the review-loop dispatches of one Stage 4 session pass this.
 
     Returns:
         int: Container exit code (non-zero on failure).
@@ -1815,6 +1838,8 @@ def dispatch_role_agent(  # noqa: PLR0913
         kwargs["target_worktree"] = target_worktree
     if result_file:
         kwargs["result_file"] = result_file
+    if review_workspace_volume:
+        kwargs["review_workspace_volume"] = review_workspace_volume
     image_name = resolve_role_image(role, kwargs["agent_id"])
     return run_docker_container(role, image_name, list(positional_args), **kwargs)
 

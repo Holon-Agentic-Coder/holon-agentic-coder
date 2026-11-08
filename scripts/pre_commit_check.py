@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pre-commit security guard and scratch file detector (Bean 0110).
+"""Pre-commit security guard and scratch file detector.
 
 Validates git staged files or explicit file paths to prevent accidental commits of:
 1. Hardcoded API keys, tokens, private keys, and sensitive credentials.
@@ -74,7 +74,7 @@ TEST_FILE_WHITELIST: list[re.Pattern[str]] = [
     re.compile(r"^apps/sandbox-executor/tests/.*\.py$"),
 ]
 
-# Australian English spelling enforcement patterns (Bean 0125)
+# Australian English spelling enforcement patterns
 # Maps American English variants to suggested Australian English equivalents
 US_SPELLING_VARIANTS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\b(initializ(?:e|es|ed|ing|ation|ations)?)\b", re.IGNORECASE), "initialis..."),
@@ -222,7 +222,7 @@ def find_github_credentials(files: Sequence[str]) -> list[tuple[str, int, str]]:
 
 
 def check_spelling_orthography(file_path: str) -> list[str]:
-    """Scan file content for non-conforming US spelling variants (Bean 0125).
+    """Scan file content for non-conforming US spelling variants.
 
     Strictly preserves all LICENSE files, license headers, and third-party vendor
     boilerplate word-for-word per the License Invariant.
@@ -310,7 +310,7 @@ def run_checks(files: Sequence[str]) -> int:
                 print(f"❌ [CREDENTIAL] {path}: {v}", file=sys.stderr)
                 total_violations += 1
 
-        # 3. Australian English orthography check (Bean 0125)
+        # 3. Australian English orthography check
         if os.path.exists(path):
             spelling_violations = check_spelling_orthography(path)
             for v in spelling_violations:

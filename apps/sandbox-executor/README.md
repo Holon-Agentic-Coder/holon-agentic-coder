@@ -14,17 +14,17 @@ apps/sandbox-executor/
 │   └── sandbox_executor/
 │       ├── flow.py              # 5-stage lifecycle pipeline engine & checkpointing
 │       ├── cli.py               # Unified CLI interface (holon subcommands)
-│       ├── git.py               # Centralised Git repository abstraction & operations (Bean 0124)
-│       ├── calibration.py       # Post-execution calibration engine (Bean 0038)
+│       ├── git.py               # Centralised Git repository abstraction & operations
+│       ├── calibration.py       # Post-execution calibration engine
 │       ├── agent_runner.py      # Docker container execution & runner lifecycle
-│       ├── ledger.py            # Canonical 3-ledger operations & LedgerLock concurrency (Bean 0127)
+│       ├── ledger.py            # Canonical 3-ledger operations & LedgerLock concurrency
 │       ├── formatting.py        # Prettier formatting convergence utilities
 │       ├── context_cleaner.py   # Context and git workspace sanitisation
 │       ├── entrypoint/          # Sandbox role entrypoints & Stage 4 review loop
 │       │   ├── planner.py       # Sandboxed plan generation entrypoint
 │       │   ├── executor.py      # Sandboxed execution entrypoint & credential scrubber
-│       │   └── review_loop.py   # Autonomous native PR review loop runner (Bean 0118)
-│       ├── knowledge/           # Knowledge & Wisdom consult engine (Bean 0052)
+│       │   └── review_loop.py   # Autonomous native PR review loop runner
+│       ├── knowledge/           # Knowledge & Wisdom consult engine
 │       │   ├── consult.py       # Multi-label consult engine & payload token budgeter
 │       │   ├── index.py         # SQLite FTS5 action index database & sync
 │       │   ├── records.py       # Knowledge record ingestion, validation & redaction
@@ -40,8 +40,8 @@ apps/sandbox-executor/
 - **`flow.py`**: Houses `PipelineEngine`, `FlowContext`, `FlowCheckpoint`, and stage runners (`run_intent_stage`,
   `run_plan_stage`, `run_execute_stage`, `run_review_stage`, `run_calibrate_stage`). Stages 1-3 dispatch the same role
   containers as the per-stage commands (through `cli.dispatch_role_agent`) and adopt the branches they push; the flow
-  never authors plans or code itself. Also manages atomic checkpointing, the empty-diff guard and Bean 0034 safety
-  halts.
+  never authors plans or code itself. Also manages atomic checkpointing, the empty-diff guard and the human-only merge
+  safety halts.
 - **`cli.py`**: Entrypoint for all `holon` commands (`flow`, `plan`, `execute`, `review-loop`, `calibrate`, `consult`,
   `record`, `reconcile`, `promote`, `veto`, `stats`, `ledger`). Handles argument parsing, proxy setup, and process
   dispatch.

@@ -148,20 +148,20 @@ or the plan is sent back to Stage 2 (see [Git Flow](../git_flow.md#flow-equivale
 
 A prompt payload file and an intent JSON file are generated in `/tmp`. The agent's CLI wrapper is executed under the
 turn supervisor (turn, stall and execute-stage budgets; see [Turn and Stage Budgets](../budgets.md)), forwarding the
-full prompt, which ends with the incremental execution-notes write protocol (Bean 0138). The outcome is decided from the
-first (implementation) turn: exit code 0 is success; a non-zero exit is treated as informational only when the runner
-reported a structured truncation of its final message (`stopReason: length`) and the execution notes are complete, so a
-generic exit 1 (auth or API errors) is always a failure. A budget breach of the implementation turn is a failure even if
-a notes-only resume made the notes usable, while a breach confined to the notes-only follow-up keeps the code changes.
+full prompt, which ends with the incremental execution-notes write protocol. The outcome is decided from the first
+(implementation) turn: exit code 0 is success; a non-zero exit is treated as informational only when the runner reported
+a structured truncation of its final message (`stopReason: length`) and the execution notes are complete, so a generic
+exit 1 (auth or API errors) is always a failure. A budget breach of the implementation turn is a failure even if a
+notes-only resume made the notes usable, while a breach confined to the notes-only follow-up keeps the code changes.
 
 ### 7. Result Recording & Ledger Updates
 
 Execution state and verdicts are recorded exclusively in `holon-knowledge/ledger/executions.jsonl`, which serves as the
 single authoritative append-only source of truth for execution telemetry. The executor itself never generates markdown
-files under `executions/`. The execution agent is asked to keep incremental notes at `executions/{execution_id}.md`
-(Bean 0138); they are validated report-only, committed with the agent's other changes, and their validity is recorded in
-the ledger summary row (`execution_notes_valid`). See
-[Running Execution via Docker](../sandbox/execute_plan.md#incremental-execution-notes-bean-0138).
+files under `executions/`. The execution agent is asked to keep incremental notes at `executions/{execution_id}.md`;
+they are validated report-only, committed with the agent's other changes, and their validity is recorded in the ledger
+summary row (`execution_notes_valid`). See
+[Running Execution via Docker](../sandbox/execute_plan.md#incremental-execution-notes).
 
 ### 8. Git Commit & Push
 

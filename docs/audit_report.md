@@ -1,7 +1,6 @@
 # Holon Agentic Coder: Comprehensive Architecture, Security, Bug, and Reliability Audit
 
 - **Document Version:** 1.0.0
-- **Bean ID:** 0044
 - **Date:** 2026-10-14
 - **Auditor:** Holon Agentic Platform Core Engineering
 - **Status:** Complete / Approved for Remediation
@@ -28,10 +27,10 @@ The audit evaluated all components across the system:
 ### High-Level Posture
 
 The platform displays strong core foundational designs: Git branches serve as immutable safety boundaries; the
-human-in-the-loop merge invariant (Bean 0034) is strictly enforced; ledger operations are append-only; and token
-optimisation sidecars leverage local CA generation with merged trust stores. However, the system exhibits critical
-architectural coupling, potential security isolation gaps under container host mounts, lack of inter-process file
-locking for ledger writes, and unversioned pipeline state checkpoints.
+human-in-the-loop merge invariant is strictly enforced; ledger operations are append-only; and token optimisation
+sidecars leverage local CA generation with merged trust stores. However, the system exhibits critical architectural
+coupling, potential security isolation gaps under container host mounts, lack of inter-process file locking for ledger
+writes, and unversioned pipeline state checkpoints.
 
 ---
 
@@ -66,18 +65,18 @@ four core pillars:
 
 ## 3. Findings Matrix
 
-| Finding ID  | Title                                                              | Pillar       | Severity   | Affected Component                    | Target Remediation    |
-| :---------- | :----------------------------------------------------------------- | :----------- | :--------- | :------------------------------------ | :-------------------- |
-| **SEC-01**  | Unrestricted Host Network Egress in Direct Fallback Mode           | Security     | **High**   | `cli.py`, `Dockerfile`                | Bean 0092             |
-| **BUG-01**  | Non-Atomic Concurrent Ledger Appending Without File Locking        | Reliability  | **High**   | `ledger.py`, `flow.py`                | Bean 0093             |
-| **ARC-01**  | Monorepo Split & Circular Coupling Between `cli.py` and `flow.py`  | Architecture | **Medium** | `cli.py`, `flow.py`                   | Architecture Refactor |
-| **SEC-02**  | Host D-Bus Session Socket Mounted into Container Sandbox           | Security     | **High**   | `cli.py` (`get_agent_session_mounts`) | Bean 0095             |
-| **BUG-02**  | Unversioned Flow Checkpoint Serialisation & Migration Hazard       | Reliability  | **Medium** | `flow.py` (`FlowCheckpoint`)          | Bean 0094             |
-| **SEC-03**  | Long-Lived Root CA Key Longevity Without Auto-Rotation Policy      | Security     | **Medium** | `ca_generator.py`                     | Security Hardening    |
-| **BUG-03**  | Silent Rebase Conflict Abort Masking Execution Divergence          | Bugs         | **Medium** | `flow.py` (`run_execute_stage`)       | Flow Logic Hardening  |
-| **PERF-01** | Synchronous Subprocess Test Runner Blocking Flow Engine            | Performance  | **Low**    | `flow.py` (`run_execute_stage`)       | Async Pipeline        |
-| **ARC-02**  | Overloaded 1500+ Line Modules (`cli.py`, `flow.py`, `executor.py`) | Architecture | **Medium** | Monorepo Structure                    | Modular Extraction    |
-| **PERF-02** | Ephemeral Container Cold-Start Latency on Multi-Stage Pipelines    | Performance  | **Low**    | `cli.py` (`run_docker_container`)     | Container Warm Pools  |
+| Finding ID  | Title                                                              | Pillar       | Severity   | Affected Component                    | Target Remediation       |
+| :---------- | :----------------------------------------------------------------- | :----------- | :--------- | :------------------------------------ | :----------------------- |
+| **SEC-01**  | Unrestricted Host Network Egress in Direct Fallback Mode           | Security     | **High**   | `cli.py`, `Dockerfile`                | Network Egress Hardening |
+| **BUG-01**  | Non-Atomic Concurrent Ledger Appending Without File Locking        | Reliability  | **High**   | `ledger.py`, `flow.py`                | Ledger File Locking      |
+| **ARC-01**  | Monorepo Split & Circular Coupling Between `cli.py` and `flow.py`  | Architecture | **Medium** | `cli.py`, `flow.py`                   | Architecture Refactor    |
+| **SEC-02**  | Host D-Bus Session Socket Mounted into Container Sandbox           | Security     | **High**   | `cli.py` (`get_agent_session_mounts`) | Mount Hardening          |
+| **BUG-02**  | Unversioned Flow Checkpoint Serialisation & Migration Hazard       | Reliability  | **Medium** | `flow.py` (`FlowCheckpoint`)          | Checkpoint Versioning    |
+| **SEC-03**  | Long-Lived Root CA Key Longevity Without Auto-Rotation Policy      | Security     | **Medium** | `ca_generator.py`                     | Security Hardening       |
+| **BUG-03**  | Silent Rebase Conflict Abort Masking Execution Divergence          | Bugs         | **Medium** | `flow.py` (`run_execute_stage`)       | Flow Logic Hardening     |
+| **PERF-01** | Synchronous Subprocess Test Runner Blocking Flow Engine            | Performance  | **Low**    | `flow.py` (`run_execute_stage`)       | Async Pipeline           |
+| **ARC-02**  | Overloaded 1500+ Line Modules (`cli.py`, `flow.py`, `executor.py`) | Architecture | **Medium** | Monorepo Structure                    | Modular Extraction       |
+| **PERF-02** | Ephemeral Container Cold-Start Latency on Multi-Stage Pipelines    | Performance  | **Low**    | `cli.py` (`run_docker_container`)     | Container Warm Pools     |
 
 ---
 
@@ -122,8 +121,8 @@ four core pillars:
 - **Impact:** While Git and repository modifications are contained within the sandbox branch, rogue or prompt-injected
   LLM outputs could attempt unauthorised network exfiltration of source code or credentials if direct egress is
   unmonitored.
-- **Remediation:** Tracked in **Bean 0092**. Introduce default egress whitelisting via Docker network iptables rules or
-  internal proxy routing when external proxy is offline.
+- **Remediation:** Tracked as network egress hardening follow-up work. Introduce default egress whitelisting via Docker
+  network iptables rules or internal proxy routing when external proxy is offline.
 
 #### SEC-02: Host D-Bus Session Socket Mounted into Container Sandbox
 
@@ -133,8 +132,8 @@ four core pillars:
 - **Impact:** D-Bus is an inter-process communication bus connecting to user-session services (such as GNOME Keyring,
   KWallet, Secret Service API, systemd user managers, and desktop notifications). An untrusted process in the container
   could query or interact with host session services.
-- **Remediation:** Tracked in **Bean 0095**. Deprecate and remove raw D-Bus socket passthrough. Replace with explicit
-  token mounting or headless dummy bus emulation.
+- **Remediation:** Tracked as mount hardening follow-up work. Deprecate and remove raw D-Bus socket passthrough. Replace
+  with explicit token mounting or headless dummy bus emulation.
 
 #### SEC-03: Root CA Private Key Storage and Permissions
 
@@ -157,8 +156,8 @@ four core pillars:
   `open(filepath, "a")` appends without advisory or POSIX file locks (`fcntl.flock`).
 - **Impact:** When concurrent flows, subagents, or background evaluations execute simultaneously, multi-line
   interleaving or corrupted JSON lines can occur.
-- **Remediation:** Tracked in **Bean 0093**. Implement atomic file locking (`fcntl.flock(fd, fcntl.LOCK_EX)`) with
-  timeout and exponential backoff.
+- **Remediation:** Tracked as ledger file locking follow-up work. Implement atomic file locking
+  (`fcntl.flock(fd, fcntl.LOCK_EX)`) with timeout and exponential backoff.
 
 #### BUG-02: Unversioned Flow Checkpoint Serialisation & Migration Hazard
 
@@ -167,8 +166,8 @@ four core pillars:
   `schema_version: 1`). Loading older checkpoints with missing fields relies on ad-hoc dict lookups.
 - **Impact:** New stage flags or changes to stage results can crash pipeline resumption (`KeyError` / `TypeError`) when
   upgrading holon versions mid-flight.
-- **Remediation:** Tracked in **Bean 0094**. Add `schema_version: int` to checkpoint schema and implement migration
-  handlers.
+- **Remediation:** Tracked as checkpoint versioning follow-up work. Add `schema_version: int` to checkpoint schema and
+  implement migration handlers.
 
 #### BUG-03: Silent Rebase Conflict Abort Masking Execution Divergence
 
@@ -205,12 +204,12 @@ four core pillars:
 
 ## 5. Concrete Remediation Proposals & Roadmap
 
-### Milestone 1: Immediate Control Plane Remediation (Tracked via Beans 0092–0095)
+### Milestone 1: Immediate Control Plane Remediation
 
-1. **Bean 0092:** Implement network isolation & egress filtering for sandbox containers.
-2. **Bean 0093:** Implement atomic ledger file locking (`fcntl.flock`) for all JSONL ledger updates.
-3. **Bean 0094:** Introduce schema versioning and migration layers for `FlowCheckpoint`.
-4. **Bean 0095:** Harden agent runner session directory mounts and eliminate raw D-Bus socket passthrough.
+1. Implement network isolation & egress filtering for sandbox containers.
+2. Implement atomic ledger file locking (`fcntl.flock`) for all JSONL ledger updates.
+3. Introduce schema versioning and migration layers for `FlowCheckpoint`.
+4. Harden agent runner session directory mounts and eliminate raw D-Bus socket passthrough.
 
 ### Milestone 2: Core Architecture Refactoring
 
@@ -224,6 +223,6 @@ four core pillars:
 ## 6. Audit Conclusion
 
 The `holon-agentic-coder` architecture provides a robust, safety-first platform for autonomous software engineering. The
-implementation of opportunistic proxy auto-routing (Bean 0089) successfully integrates token reduction while maintaining
-graceful fallback to direct egress. Enacting the proposed remediation beans (Beans 0092–0095) will resolve the remaining
-isolation, concurrency, and serialisation debt identified in this audit.
+implementation of opportunistic proxy auto-routing successfully integrates token reduction while maintaining graceful
+fallback to direct egress. Enacting the proposed remediation roadmap will resolve the remaining isolation, concurrency,
+and serialisation debt identified in this audit.

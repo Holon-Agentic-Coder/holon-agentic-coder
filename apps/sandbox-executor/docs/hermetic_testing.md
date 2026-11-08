@@ -4,7 +4,7 @@
 
 In previous versions, running the `apps/sandbox-executor` unit suite inside the executor container could delete the live
 workspace of the running executor (`~/.holon-sandbox/workspace`), which forced the orphan-commit fallback seen in the
-Bean 0019 incident.
+workspace-deletion incident.
 
 ### Corrected attribution
 
@@ -92,9 +92,9 @@ The suite is protected by `test_sandbox_hermetic_guard.py`. This canary guard ru
 
 Two properties make the guard worth keeping:
 
-- It runs the **whole** `apps/sandbox-executor/tests` directory. The bean 0019 hazard was suite-wide, so a curated
-  module list cannot prove it is gone -- and such a list is exactly how the earlier version of this guard ended up
-  excluding `test_agent_runner.py`, the module that exercises the real `cleanup_repo_dir`/`_rmtree`.
+- It runs the **whole** `apps/sandbox-executor/tests` directory. The workspace-deletion hazard was suite-wide, so a
+  curated module list cannot prove it is gone -- and such a list is exactly how the earlier version of this guard ended
+  up excluding `test_agent_runner.py`, the module that exercises the real `cleanup_repo_dir`/`_rmtree`.
 - It launches its child with `uv run pytest` and the unit job's marker selection
   (`-m "not integration_test and not stress"`) and parallel flags (`-n auto --dist worksteal`), through the shared
   helpers in `hermetic_fixtures.py` (`pytest_suite_command`, `simulated_container_env`). The child must run pytest

@@ -404,7 +404,7 @@ check-prerequisites:
 prerequisites: check-prerequisites
 
 ## ==============================================================================
-## OS Toolbelt & Linting Targets (Bean 0085)
+## OS Toolbelt & Linting Targets
 ## ==============================================================================
 
 # Inspect baked-in OS toolbelt paths and versions
@@ -490,7 +490,7 @@ lint: lint-json lint-yaml lint-shell lint-md
 	uv run task lint || { echo "$(COLOR_RED)❌ Python linting failed$(COLOR_RESET)"; exit 1; }; \
 	echo "$(COLOR_GREEN)✅ All lint checks passed successfully!$(COLOR_RESET)"
 
-# Run pre-commit checks for secrets and scratch files (Bean 0110)
+# Run pre-commit checks for secrets and scratch files
 pre-commit-check:
 	@if [ -n "$(DRY_RUN)" ]; then exit 0; fi; \
 	echo "$(COLOR_BOLD)Running pre-commit check for secrets and scratch files...$(COLOR_RESET)"; \

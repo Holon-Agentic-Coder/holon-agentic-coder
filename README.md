@@ -863,7 +863,7 @@ make install-homebrew    # Install Homebrew (macOS only)
 #### 6. Automated Lifecycle Orchestration (`holon flow`)
 
 The `holon flow` command orchestrates the complete 5-stage lifecycle, taking an intent specification from inception to
-post-execution calibration while strictly enforcing Bean 0034 human-in-the-loop safety boundaries and append-only ledger
+post-execution calibration while strictly enforcing human-in-the-loop safety boundaries and append-only ledger
 auditability.
 
 ```mermaid
@@ -878,7 +878,7 @@ flowchart TD
     H1 -- "No" --> F1["FAILED (Review Rejection)"]
     C2 -- "--skip-calibrate" --> S_SKIP["Stage 5: SKIPPED"]
     C2 -- "default" --> S5["Stage 5: Post-Execution Calibration (/calibrated branch)"]
-    S5 --> HALT["HALTED_FOR_HUMAN (Bean 0034 Safety Merge Boundary)"]
+    S5 --> HALT["HALTED_FOR_HUMAN (Safety Merge Boundary)"]
     S_SKIP --> HALT
     HALT --> DONE["Human Maintainer Merges PR"]
 ```

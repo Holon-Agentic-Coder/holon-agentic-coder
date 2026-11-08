@@ -804,8 +804,7 @@ budget:
 - `elapsed_seconds`: Wall-clock seconds the execute stage had used when the executor container wrote the summary (one
   decimal).
 - `budget_seconds`: The execute stage's wall-clock ceiling in force for the executor, in seconds (the handed-down
-  remaining stage time when the host set `HOLON_STAGE_BUDGET_SECONDS`; Bean 0139, see
-  [Turn and Stage Budgets](budgets.md)).
+  remaining stage time when the host set `HOLON_STAGE_BUDGET_SECONDS`; see [Turn and Stage Budgets](budgets.md)).
 - `entropy`: _(Only on `decomposed` and `over_budget` rows)_ The plan entropy compared against the budget.
 - `entropy_budget`: _(Only on `decomposed` and `over_budget` rows)_ The resolved entropy budget the plan was judged
   against (plan row, then intent row, then `DEFAULT_ENTROPY_BUDGET`).

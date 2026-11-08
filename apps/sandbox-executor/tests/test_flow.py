@@ -1641,7 +1641,7 @@ class TestReviewLoopStage:
 
 
 class TestSemanticPRAndConsensusReview:
-    """Hermetic unit tests for semantic PR generation, dual-posting review consensus,
+    """Hermetic unit tests for semantic PR generation, single-post review consensus,
     and granular ledger action logging."""
 
     def test_generate_semantic_pr_metadata_conventional_categories(self):
@@ -1729,8 +1729,8 @@ class TestSemanticPRAndConsensusReview:
         assert len(title) <= 100
         assert title.endswith("...")
 
-    def test_post_pr_review_consensus_dual_posting(self):
-        """Verify dual-posting runs both gh pr comment and gh pr review --approve."""
+    def test_post_pr_review_consensus_single_post(self):
+        """Verify the consensus report is posted exactly once via gh pr review --approve."""
         with patch("shutil.which", return_value="/usr/bin/gh"), patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="success", stderr="")
             consensus_data = {
@@ -1748,29 +1748,27 @@ class TestSemanticPRAndConsensusReview:
             )
 
             assert res["dual_posted"] is True
-            assert res["discussion_comment"]["success"] is True
+            assert res["discussion_comment"]["attempted"] is False
+            assert res["discussion_comment"]["success"] is False
             assert res["official_review"]["success"] is True
             assert res["official_review"]["self_approval_fallback"] is False
             assert res["official_review"]["flag"] == "--approve"
 
-            # Verify subprocess call args
-            assert mock_run.call_count == 2
-            comment_args = mock_run.call_args_list[0][0][0]
-            review_args = mock_run.call_args_list[1][0][0]
-            assert comment_args[:4] == ["gh", "pr", "comment", "42"]
+            # Exactly one visible post: the official review submission, never gh pr comment.
+            assert mock_run.call_count == 1
+            review_args = mock_run.call_args_list[0][0][0]
             assert review_args[:5] == ["gh", "pr", "review", "42", "--approve"]
 
     def test_post_pr_review_consensus_self_approval_422_fallback(self):
         """Verify HTTP 422 author self-approval restriction triggers graceful fallback to --comment."""
         with patch("shutil.which", return_value="/usr/bin/gh"), patch("subprocess.run") as mock_run:
-            mock_comment = MagicMock(returncode=0, stdout="comment posted", stderr="")
             mock_approve = MagicMock(
                 returncode=1,
                 stdout="",
                 stderr="GraphQL: Can not approve your own pull request (HTTP 422)",
             )
             mock_fallback = MagicMock(returncode=0, stdout="review comment posted", stderr="")
-            mock_run.side_effect = [mock_comment, mock_approve, mock_fallback]
+            mock_run.side_effect = [mock_approve, mock_fallback]
 
             consensus_data = {
                 "approved": True,
@@ -1784,43 +1782,59 @@ class TestSemanticPRAndConsensusReview:
             )
 
             assert res["dual_posted"] is True
-            assert res["discussion_comment"]["success"] is True
+            assert res["discussion_comment"]["attempted"] is False
             assert res["official_review"]["success"] is True
             assert res["official_review"]["self_approval_fallback"] is True
             assert res["official_review"]["flag"] == "--comment"
 
-            assert mock_run.call_count == 3
-            fallback_args = mock_run.call_args_list[2][0][0]
+            # Both calls belong to the gh pr review ladder; no gh pr comment is issued.
+            assert mock_run.call_count == 2
+            approve_args = mock_run.call_args_list[0][0][0]
+            fallback_args = mock_run.call_args_list[1][0][0]
+            assert approve_args[:5] == ["gh", "pr", "review", "42", "--approve"]
             assert fallback_args[:5] == ["gh", "pr", "review", "42", "--comment"]
 
-    def test_post_pr_review_consensus_comment_failure_proceeds_to_review(self):
-        """Verify failure in gh pr comment does not prevent official review submission."""
+    def test_post_pr_review_consensus_review_failure_falls_back_to_comment(self):
+        """Verify a failed gh pr review submission falls back to a last-resort gh pr comment."""
         with patch("shutil.which", return_value="/usr/bin/gh"), patch("subprocess.run") as mock_run:
-            mock_comment = MagicMock(returncode=1, stdout="", stderr="API rate limit")
-            mock_review = MagicMock(returncode=0, stdout="approved", stderr="")
-            mock_run.side_effect = [mock_comment, mock_review]
-
-            consensus_data = {"approved": True}
-            res = post_pr_review_consensus(repo_dir="/tmp", target="42", consensus_data=consensus_data)
-
-            assert res["discussion_comment"]["success"] is False
-            assert res["official_review"]["success"] is True
-            assert res["dual_posted"] is False
-            assert mock_run.call_count == 2
-
-    def test_post_pr_review_consensus_non_422_failure_no_fallback(self):
-        """Verify non-422 error does not trigger self-approval fallback."""
-        with patch("shutil.which", return_value="/usr/bin/gh"), patch("subprocess.run") as mock_run:
-            mock_comment = MagicMock(returncode=0, stdout="commented", stderr="")
-            mock_review = MagicMock(returncode=1, stdout="", stderr="Internal Server Error (HTTP 500)")
-            mock_run.side_effect = [mock_comment, mock_review]
+            mock_review = MagicMock(returncode=1, stdout="", stderr="API rate limit")
+            mock_comment = MagicMock(returncode=0, stdout="comment posted", stderr="")
+            mock_run.side_effect = [mock_review, mock_comment]
 
             consensus_data = {"approved": True}
             res = post_pr_review_consensus(repo_dir="/tmp", target="42", consensus_data=consensus_data)
 
             assert res["official_review"]["success"] is False
+            assert res["discussion_comment"]["attempted"] is True
+            assert res["discussion_comment"]["success"] is True
+            assert res["dual_posted"] is True
+            assert mock_run.call_count == 2
+            # The review submission runs first; gh pr comment only after it failed.
+            review_args = mock_run.call_args_list[0][0][0]
+            comment_args = mock_run.call_args_list[1][0][0]
+            assert review_args[:3] == ["gh", "pr", "review"]
+            assert comment_args[:4] == ["gh", "pr", "comment", "42"]
+
+    def test_post_pr_review_consensus_non_422_failure_no_fallback(self):
+        """Verify a non-422 --approve error skips the self-approval fallback and goes to gh pr comment."""
+        with patch("shutil.which", return_value="/usr/bin/gh"), patch("subprocess.run") as mock_run:
+            mock_review = MagicMock(returncode=1, stdout="", stderr="Internal Server Error (HTTP 500)")
+            mock_comment = MagicMock(returncode=0, stdout="commented", stderr="")
+            mock_run.side_effect = [mock_review, mock_comment]
+
+            consensus_data = {"approved": True, "ensemble_verdict": "APPROVED"}
+            res = post_pr_review_consensus(
+                repo_dir="/tmp", target="42", consensus_data=consensus_data, reviewers=[clean_reviewer(1)]
+            )
+
+            assert res["official_review"]["success"] is False
             assert res["official_review"]["self_approval_fallback"] is False
             assert mock_run.call_count == 2
+            # No gh pr review --comment retry: the failed --approve goes straight to the last resort.
+            review_args = mock_run.call_args_list[0][0][0]
+            comment_args = mock_run.call_args_list[1][0][0]
+            assert review_args[:5] == ["gh", "pr", "review", "42", "--approve"]
+            assert comment_args[:4] == ["gh", "pr", "comment", "42"]
 
     def test_post_pr_review_consensus_when_gh_missing_returns_diagnostics(self):
         """Verify post_pr_review_consensus returns clear diagnostics and handles gh absence cleanly."""
@@ -1841,22 +1855,23 @@ class TestSemanticPRAndConsensusReview:
     def test_post_pr_review_consensus_error_output_surfaces_diagnostic_context(self):
         """Verify non-zero gh failure captures and surfaces exit code and stderr diagnostics."""
         with patch("shutil.which", return_value="/usr/bin/gh"), patch("subprocess.run") as mock_run:
-            mock_comment = MagicMock(returncode=2, stdout="", stderr="GraphQL error: Network timeout")
             mock_review = MagicMock(returncode=2, stdout="", stderr="GraphQL error: Network timeout")
-            mock_run.side_effect = [mock_comment, mock_review]
+            mock_comment = MagicMock(returncode=2, stdout="", stderr="GraphQL error: Network timeout")
+            mock_run.side_effect = [mock_review, mock_comment]
 
             consensus_data = {"approved": True}
             res = post_pr_review_consensus(repo_dir="/tmp", target="42", consensus_data=consensus_data)
 
             assert res["gh_available"] is True
             assert res["dual_posted"] is False
-            assert res["discussion_comment"]["success"] is False
-            assert "exit code 2" in res["discussion_comment"]["output"]
-            assert "Network timeout" in res["discussion_comment"]["output"]
             assert res["official_review"]["success"] is False
             assert "exit code 2" in res["official_review"]["output"]
             assert "Network timeout" in res["official_review"]["output"]
-            assert "Review posting partial/failed" in res["diagnostics"]
+            assert res["discussion_comment"]["attempted"] is True
+            assert res["discussion_comment"]["success"] is False
+            assert "exit code 2" in res["discussion_comment"]["output"]
+            assert "Network timeout" in res["discussion_comment"]["output"]
+            assert "Review posting failed" in res["diagnostics"]
 
     def test_create_or_update_pr(self):
         """Verify create_or_update_pr handles creation when absent and edit when present."""
@@ -3382,7 +3397,7 @@ class TestStage4LedgerProvenance:
         sample_value = "ghp_" + "Z" * 36
         returned_failure = {
             "dual_posted": False,
-            "diagnostics": "Review posting partial/failed: comment=True, review=False.",
+            "diagnostics": "Review posting failed: review=False, comment=True.",
             "discussion_comment": {"attempted": True, "success": True, "output": "posted"},
             "official_review": {
                 "attempted": True,
@@ -3396,7 +3411,7 @@ class TestStage4LedgerProvenance:
         assert len(post_rows) == 1
         error_context = post_rows[0]["error_context"]
         assert post_rows[0]["outcome"] == "failure"
-        assert "Review posting partial/failed: comment=True, review=False." in error_context
+        assert "Review posting failed: review=False, comment=True." in error_context
         assert "official_review: Official review submission failed (exit code 1)" in error_context
         assert "[REDACTED_SECRET]" in error_context
         assert "discussion_comment" not in error_context
@@ -5896,14 +5911,15 @@ class TestReviewDataSeam:
             res = run_review_loop(ctx, auto_pr=False, ensemble_size=1)
 
         bodies = [entry["argv"][entry["argv"].index("--body") + 1] for entry in posted]
-        assert len(bodies) == 2 and bodies[0] == bodies[1]
+        assert len(bodies) == 1
         body = bodies[0]
         assert body.startswith("## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration 1)")
         assert "| Security | CHANGES | The error path leaks the token. |" in body
         assert "| SEC-7 | important | src/app.py:12 | 1 | The handler drops the error. |" in body
         assert "Redact the token before logging." in body
         assert "VERDICT:" not in body
-        assert posted[1]["argv"][4] == "--comment"
+        assert posted[0]["argv"][:3] == ["gh", "pr", "review"]
+        assert posted[0]["argv"][4] == "--comment"
         assert res["review_data"] == {
             "roles": [{"role": "Security", "verdict": "CHANGES"}],
             "findings": [{"id": "SEC-7", "severity": "important", "reviewers": [1]}],

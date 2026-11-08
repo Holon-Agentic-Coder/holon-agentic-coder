@@ -230,7 +230,7 @@ class AgentRunner:
 
 def _sync_prompt_file(prompt_file: str, full_prompt: str) -> None:
     """Ensure full_prompt is written to prompt_file on disk if not already present or out of sync."""
-    if not prompt_file:
+    if not prompt_file or not os.path.isabs(prompt_file):
         return
     try:
         if os.path.exists(prompt_file):

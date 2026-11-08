@@ -31,6 +31,7 @@ from sandbox_executor.review_ensemble import (
     TrailerError,
     build_reviewer_prompt,
     decide_consensus,
+    format_agent_cmd_for_display,
     parse_review_trailer,
     render_review_trailer,
     reviewer_report_rel,
@@ -127,6 +128,12 @@ class FakeTurnRunner:
         kind = action[0]
         if kind == "raise":
             raise action[1]
+        if kind == "exit":
+            return TurnResult(
+                returncode=action[1],
+                stderr=action[2] if len(action) > 2 else "",
+                stdout=action[3] if len(action) > 3 else "",
+            )
         if kind in ("write", "breach") and action[1] is not None:
             Path(watch_path).write_text(action[1], encoding="utf-8")
         breach = BudgetBreach("review", "turn", 300.0, 301.0) if kind == "breach" else None
@@ -334,6 +341,41 @@ def test_failed_constructor_never_carries_a_verdict() -> None:
     result = ReviewerResult.failed(1, "a", "m", "r", "x" * 2000)
     assert result.verdict is None and result.counts.total == 0
     assert len(result.failure_reason or "") <= 500
+
+
+def test_failed_turn_surfaces_exit_code_127_in_reason(tmp_path: Path) -> None:
+    result, _ = reviewer(tmp_path, [("exit", 127)])
+    assert result.status is ReviewerStatus.FAILED
+    assert result.verdict is None
+    assert "127" in (result.reason or "")
+    assert "exited with code 127" in (result.reason or "")
+    assert result.reason == result.failure_reason
+
+
+def test_failed_turn_surfaces_stderr_in_reason(tmp_path: Path) -> None:
+    result, _ = reviewer(tmp_path, [("exit", 1, "bash: /bin/agent: No such file or directory")])
+    assert result.status is ReviewerStatus.FAILED
+    assert result.verdict is None
+    assert "bash: /bin/agent: No such file or directory" in (result.reason or "")
+
+
+def test_failed_turn_redacts_secrets_in_stderr(tmp_path: Path) -> None:
+    result, _ = reviewer(tmp_path, [("exit", 1, f"error with token {SECRET}")])
+    assert result.status is ReviewerStatus.FAILED
+    assert result.verdict is None
+    assert SECRET not in (result.reason or "")
+    assert SECRET not in (result.failure_reason or "")
+    assert "*******" in (result.reason or "")
+
+
+def test_format_agent_cmd_for_display_in_review_ensemble() -> None:
+    long_arg = "y" * 150
+    secret_arg = f"--token={SECRET}"
+    cmd = ["agent", secret_arg, long_arg]
+    formatted = format_agent_cmd_for_display(cmd)
+    assert SECRET not in formatted
+    assert "*******" in formatted
+    assert "y" * 100 + "..." in formatted
 
 
 # --- Ensemble isolation --------------------------------------------------------------------------------------------

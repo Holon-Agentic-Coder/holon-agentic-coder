@@ -48,7 +48,7 @@ from sandbox_executor.agent_runner import AgentRunner, get_runner
 from sandbox_executor.artefacts import ArtefactSection, ArtefactSpec
 from sandbox_executor.budgets import Budgets, StageTimer, load_budgets
 from sandbox_executor.git import EMPTY_DIFF_EXCLUDES, run_git
-from sandbox_executor.redaction import redact_agent_secrets
+from sandbox_executor.redaction import redact_agent_secrets, redact_command_args
 from sandbox_executor.review_target import ReviewTarget
 from sandbox_executor.scaffold import REVIEW_LOOP_TEMPLATE
 from sandbox_executor.turns import AuthoringOutcome, TurnRunner, run_turn, supervise_authoring_turn
@@ -73,6 +73,7 @@ __all__ = [
     "build_review_request",
     "build_reviewer_prompt",
     "decide_consensus",
+    "format_agent_cmd_for_display",
     "parse_review_trailer",
     "render_review_trailer",
     "reviewer_report_rel",
@@ -98,6 +99,26 @@ TEMPLATE_REL = "holon-config/prompts/review_loop.template.md"
 REVIEW_ROOT_REL = ".holon/review"
 REPORT_NAME = "report.md"
 MAX_REASON_CHARS = 500
+_AGENT_ARG_DISPLAY_LEN = 100
+
+
+def format_agent_cmd_for_display(cmd: Sequence[str]) -> str:
+    """Render the agent command line for display with credentials masked and long args clamped.
+
+    Args:
+        cmd: The agent argv exactly as handed to `subprocess`.
+
+    Returns:
+        A single space-joined line that is safe to print.
+    """
+    print_cmd = []
+    for arg in redact_command_args(cmd):
+        if len(arg) > _AGENT_ARG_DISPLAY_LEN:
+            print_cmd.append(arg[:_AGENT_ARG_DISPLAY_LEN] + "...")
+        else:
+            print_cmd.append(arg)
+    return " ".join(print_cmd)
+
 
 _TRAILER_KEYS = frozenset({"verdict", *SEVERITIES, "findings"})
 _FINDING_KEYS = frozenset({"severity", "file", "line", "summary"})
@@ -641,7 +662,7 @@ def _supervise_reviewer_turn(  # noqa: PLR0913
     try:
         runner = runner_factory(agent)
         build_cmd = _command_builder(runner, model, prompt_file, intent_file)
-        return supervise_authoring_turn(
+        outcome = supervise_authoring_turn(
             build_cmd,
             prompt,
             artefact_path=os.path.join(scratch, REPORT_NAME),
@@ -657,6 +678,8 @@ def _supervise_reviewer_turn(  # noqa: PLR0913
             stdin_file=prompt_file if getattr(runner, "uses_stdin", False) else None,
             prompt_file=prompt_file,
         )
+        _log_turn_completion(outcome)
+        return outcome
     finally:
         if runner is not None:
             runner.cleanup_ephemeral_credentials()
@@ -666,9 +689,37 @@ def _command_builder(runner: AgentRunner, model: str, prompt_file: str, intent_f
     """``build_cmd`` callable for :func:`supervise_authoring_turn`."""
 
     def build_cmd(prompt_text: str) -> list[str]:
-        return runner.build_cmd(model, prompt_file, intent_file, prompt_text)
+        cmd = runner.build_cmd(model, prompt_file, intent_file, prompt_text)
+        formatted = format_agent_cmd_for_display(cmd)
+        logger.info("Running command: %s", formatted)
+        print(f"Running command: {formatted}")
+        return cmd
 
     return build_cmd
+
+
+def _log_turn_completion(outcome: AuthoringOutcome) -> None:
+    """Log process completion telemetry for a reviewer turn."""
+    if not outcome.turns:
+        return
+    result = outcome.last
+    report = outcome.report
+    if report is not None and report.usable:
+        if result.returncode != 0 or result.truncated:
+            logger.info(
+                "Info: reviewer agent exited with code %d (stop reason: %s) after writing a valid review report; "
+                "treating the exit status as informational.",
+                result.returncode,
+                result.stop_reason or "unknown",
+            )
+    elif result.returncode != 0:
+        logger.warning(
+            "Reviewer agent command failed with code %d (stop reason: %s).",
+            result.returncode,
+            result.stop_reason or "unknown",
+        )
+        if result.stderr:
+            logger.warning("Stderr: %s", redact_agent_secrets(result.stderr))
 
 
 def _missing_report_reason(outcome: AuthoringOutcome) -> str:

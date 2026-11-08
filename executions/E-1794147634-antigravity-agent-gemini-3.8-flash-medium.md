@@ -34,3 +34,13 @@ command literals remain in `executor.py` outside low-level runners.
   `branch_exists`, `changed_paths`, `has_effective_diff`, `empty_diff_summary`) as delegating wrappers.
 - Verified line count of `git.py` (563 lines <= 1,000 ceiling), zero new `# noqa` suppressions, strict Australian
   English spelling, and passing test suite (`uv run pytest apps/sandbox-executor/tests/test_git.py`).
+
+### Step 2: Route Executor Git Operations Through GitRepository and Compress Line Count in executor.py
+
+- Routed direct git command invocations across `apps/sandbox-executor/src/sandbox_executor/entrypoint/executor.py`
+  through `GitRepository(repo_dir, runner=run_cmd)`.
+- Replaced scattered `run_cmd(["git", ...])` calls with adapter methods (`rev_parse`, `current_branch`, `fetch`,
+  `checkout`, `merge_base`, `merge`, `merge_abort`, `commit`, `add`, `reset`, `clean`, `push`, `config`, and `diff`).
+- Reduced `executor.py` line count from 2,275 to 2,242 lines (well within the `<= 2,275` ceiling), with zero new inline
+  `# noqa` suppressions.
+- Preserved 100% backward compatibility with `test_executor.py` (all 293 tests passing).

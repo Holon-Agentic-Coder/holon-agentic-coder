@@ -1504,12 +1504,16 @@ def post_pr_review_consensus(  # noqa: PLR0912, PLR0913, PLR0915
     reviewers: list[ReviewerResult] | None = None,
     title: str | None = None,
 ) -> dict[str, Any]:
-    """Dual-post review consensus to GitHub and handle author self-approval HTTP 422 fallback (Bean 0119).
+    """Post the review consensus to GitHub exactly once and handle the HTTP 422 fallback (Bean 0119).
 
-    Always posts a top-level discussion comment via 'gh pr comment' for conversation tab
-    visibility, and submits an official review via 'gh pr review'. When GitHub returns
-    HTTP 422 ('Can not approve your own pull request'), it gracefully falls back to
-    'gh pr review --comment'. Strictly enforces Bean 0034 (Human-Only PR Merging).
+    Submits the consensus report a single time via 'gh pr review --approve' (when the
+    ensemble approved) or 'gh pr review --comment' (when it did not). When GitHub rejects
+    '--approve' with the HTTP 422 author self-approval restriction ('Can not approve your
+    own pull request' / 'PullRequestReviewAuthorError'), it falls back once to
+    'gh pr review --comment'. Only when the review ladder ends without a successful
+    submission does it post a last-resort top-level discussion comment via 'gh pr comment',
+    so the report is visible on the PR exactly once per exit. Strictly enforces Bean 0034
+    (Human-Only PR Merging).
 
     Args:
         repo_dir: Path to git repository.
@@ -1520,7 +1524,10 @@ def post_pr_review_consensus(  # noqa: PLR0912, PLR0913, PLR0915
         title: Resolved report title (intent title, else PR title, else PR number or branch).
 
     Returns:
-        dict[str, Any]: Posting outcome diagnostics.
+        dict[str, Any]: Posting outcome diagnostics. ``official_review`` describes the primary
+        'gh pr review' attempt, ``discussion_comment`` the last-resort 'gh pr comment' fallback
+        (normally unattempted), and ``dual_posted`` records that the report was posted exactly
+        once.
     """
     clean_target = str(target or "").strip()
     # The ensemble verdict alone decides an approval; no ``approved`` flag or status can promote any other value.
@@ -1539,7 +1546,7 @@ def post_pr_review_consensus(  # noqa: PLR0912, PLR0913, PLR0915
     gh_env = {**os.environ, **(proxy_env or {}), "DOCKER_CLI_HINTS": "false"}
 
     if not gh_available:
-        diag_msg = "GitHub CLI ('gh') is not available in PATH; skipping review consensus dual-posting."
+        diag_msg = "GitHub CLI ('gh') is not available in PATH; skipping review consensus posting."
         logger.warning(diag_msg)
         return {
             "target": clean_target,
@@ -1560,42 +1567,8 @@ def post_pr_review_consensus(  # noqa: PLR0912, PLR0913, PLR0915
             "dual_posted": False,
         }
 
-    # Action 1: Top-Level Discussion Comment
-    comment_attempted = gh_available and bool(clean_target)
-    comment_success = False
-    comment_output = ""
-
-    if comment_attempted:
-        try:
-            comment_proc = subprocess.run(
-                ["gh", "pr", "comment", clean_target, "--body", report_text],
-                cwd=repo_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=60,
-                env=gh_env,
-            )
-            raw_stdout = comment_proc.stdout or ""
-            raw_stderr = comment_proc.stderr or ""
-            if comment_proc.returncode == 0:
-                comment_success = True
-                comment_output = raw_stdout.strip() or "Discussion comment posted successfully."
-            else:
-                comment_output = (
-                    f"gh pr comment failed (exit code {comment_proc.returncode}): {raw_stderr or raw_stdout}".strip()
-                )
-                logger.warning(
-                    "gh pr comment failed with returncode %s: %s",
-                    comment_proc.returncode,
-                    comment_proc.stderr,
-                )
-        except Exception as exc:
-            comment_output = f"gh pr comment encountered exception: {exc}"
-            logger.warning("gh pr comment encountered exception: %s", exc)
-
-    # Action 2: Official Review Submission
-    review_attempted = gh_available and bool(clean_target)
+    # Primary action: a single official review submission carries the consensus report.
+    review_attempted = bool(clean_target)
     review_success = False
     review_output = ""
     self_approval_fallback = False
@@ -1660,13 +1633,53 @@ def post_pr_review_consensus(  # noqa: PLR0912, PLR0913, PLR0915
             review_output = f"gh pr review encountered exception: {exc}"
             logger.warning("gh pr review encountered exception: %s", exc)
 
+    # Last resort: only a failed review ladder posts a plain discussion comment, so the
+    # consensus report still lands on the PR without ever being posted twice.
+    comment_attempted = review_attempted and not review_success
+    comment_success = False
+    comment_output = (
+        "Discussion comment not attempted: the official review submission posted the report."
+        if review_attempted
+        else "Discussion comment not attempted: no posting target was resolved."
+    )
+
+    if comment_attempted:
+        try:
+            comment_proc = subprocess.run(
+                ["gh", "pr", "comment", clean_target, "--body", report_text],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+                env=gh_env,
+            )
+            raw_stdout = comment_proc.stdout or ""
+            raw_stderr = comment_proc.stderr or ""
+            if comment_proc.returncode == 0:
+                comment_success = True
+                comment_output = raw_stdout.strip() or "Discussion comment posted successfully."
+            else:
+                comment_output = (
+                    f"gh pr comment failed (exit code {comment_proc.returncode}): {raw_stderr or raw_stdout}".strip()
+                )
+                logger.warning(
+                    "gh pr comment failed with returncode %s: %s",
+                    comment_proc.returncode,
+                    comment_proc.stderr,
+                )
+        except Exception as exc:
+            comment_output = f"gh pr comment encountered exception: {exc}"
+            logger.warning("gh pr comment encountered exception: %s", exc)
+
+    posted_once = review_success or comment_success
     return {
         "target": clean_target,
         "gh_available": True,
         "diagnostics": (
-            "Review consensus posted successfully to GitHub."
-            if (comment_success and review_success)
-            else f"Review posting partial/failed: comment={comment_success}, review={review_success}."
+            "Review consensus posted once to GitHub."
+            if posted_once
+            else f"Review posting failed: review={review_success}, comment={comment_success}."
         ),
         "discussion_comment": {
             "attempted": comment_attempted,
@@ -1680,7 +1693,7 @@ def post_pr_review_consensus(  # noqa: PLR0912, PLR0913, PLR0915
             "self_approval_fallback": self_approval_fallback,
             "output": review_output.strip(),
         },
-        "dual_posted": comment_success and review_success,
+        "dual_posted": posted_once,
     }
 
 

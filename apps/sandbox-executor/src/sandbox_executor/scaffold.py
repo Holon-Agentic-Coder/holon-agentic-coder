@@ -193,6 +193,18 @@ backtick code spans to maintain single-pass prettier convergence.
 **Write Protocol:** create `plans/P-{timestamp}-{agent}-{safe_model}.md` with your file-write tool immediately, write
 the header and the `## Overall Plan Metrics` table first, append each step as it is finished, and keep your final chat
 message to one short confirmation line.
+
+**Code Placement & Sizing:**
+
+- New behaviour goes in the module that owns the data (or a new module); maintain one module per stage, command, runner
+  or provider.
+- Functions stay within repository ruff complexity limits (`C901 <= 10`, `PLR0912 <= 12`, `PLR0913 <= 5`,
+  `PLR0915 <= 50`) without adding inline '# noqa' suppressions.
+- Use intention-revealing names in the domain language (`intent`, `plan`, `execution`, `review`, `calibration`,
+  `ledger`).
+- Add no new imports from entrypoints into the host flow engine.
+- The plan lists its touch set at module granularity and prefers adding focused modules over growing existing files
+  past ~400 lines.
 """
 
 EXECUTOR_TEMPLATE = """You are an autonomous execution agent operating directly inside the repository workspace at
@@ -212,6 +224,11 @@ creating, and deleting codebase files.
 6. Create `{notes_path}` with your file-write tool before changing code, starting with a `## Summary` section and an
    `## Actual Metrics` table, append to `## Steps Executed` as each step completes, finish with `## Tests Run`, and keep
    your final chat message to one short confirmation line.
+7. Code placement: new behaviour goes in the module that owns the data (or a new module); maintain one module per stage,
+   command, runner or provider; functions stay within repository ruff complexity limits (`C901 <= 10`, `PLR0912 <= 12`,
+   `PLR0913 <= 5`, `PLR0915 <= 50`) without adding inline '# noqa' suppressions; use intention-revealing names in the
+   domain language (`intent`, `plan`, `execution`, `review`, `calibration`, `ledger`); add no new imports from
+   entrypoints into the host flow engine.
 
 **Plan Content:** {plan_content}
 

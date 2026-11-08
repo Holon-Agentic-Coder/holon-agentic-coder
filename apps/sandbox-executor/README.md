@@ -206,9 +206,13 @@ checkout's `origin` against `HOLON_REPO_URL` (on mismatch the contents are wiped
 makes the reused checkout hermetically equivalent to a fresh clone (`git reset --hard` plus `git clean -fdx`, which
 discards reviewer scratch under `.holon/review/`, resolver leftovers and any uncommitted in-container ledger rows — the
 host loop's rows are the canonical provenance), then fetches only the new commits with
-`git fetch origin +refs/heads/<branch>:refs/remotes/origin/<branch>` and `git checkout -B <branch> origin/<branch>`. The
+`git fetch origin +refs/heads/<branch>:refs/remotes/origin/<branch>` and `git checkout -B <branch> origin/<branch>`. Any
+git failure on that reuse path (a crash-poisoned checkout: unborn HEAD, stale `index.lock`, corrupted objects) likewise
+falls back to wipe and re-clone, so a leaked volume never wedges the session. The
 volume is removed in a `finally` teardown whatever way the loop ends; a teardown failure only warns, and a volume leaked
-by a crash is safe to reuse and prunable via `docker volume prune --filter label=holon.review-session`. Set
+by a crash is safe to reuse and prunable via `docker volume prune --filter label=holon.review-session`. Note that the
+checkout's `.git/config` persists the clone's `origin` URL verbatim, so when `HOLON_REPO_URL` embeds a credential a
+leaked volume retains that credential until the volume is pruned or the next pass re-clones with a rotated URL. Set
 `HOLON_REVIEW_PERSIST=0` (`false`/`no`/`off`) to disable persistence and restore the historical full-clone-per-pass
 dispatch. In-container runs and dry runs never create a session.
 

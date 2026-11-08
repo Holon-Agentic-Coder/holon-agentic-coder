@@ -12,8 +12,9 @@ Coordinates the multi-pass review loop within an isolated container:
 
 Preparation fails closed. The target is resolved before any git operation (a PR number or URL becomes its
 head branch and head SHA through gh, never a raw 'git clone --branch 90'); the head branch is cloned or
-fetched and checked out with every return code checked; and HEAD must equal the resolved head SHA. On any
-resolution, clone, fetch or checkout failure, one ACT-REV failure row is appended to
+fetched and checked out with every return code checked; and HEAD must equal the resolved head SHA. A git
+failure while syncing a reused checkout falls back to wipe and re-clone first. On any resolution, clone,
+or head-verification failure, one ACT-REV failure row is appended to
 holon-knowledge/ledger/executions.jsonl when that directory exists (otherwise the reason goes to stderr only),
 a FAILED summary is printed and the process exits 1: no consensus is computed or posted.
 """
@@ -197,21 +198,32 @@ def _clone_or_fetch(repo_dir: str, target: ReviewTarget) -> None:
     A reused checkout (a persistent review workspace volume carrying the previous pass's clone) is first
     verified against ``HOLON_REPO_URL`` — on mismatch it is wiped and re-cloned, never fetched from — and
     then hermetically reset before the incremental ``git fetch`` + ``git checkout -B``, which picks up
-    exactly the new commits (for example a resolver push from the previous pass).
+    exactly the new commits (for example a resolver push from the previous pass). Any git failure on that
+    reuse path (a crash-poisoned checkout: unborn HEAD, stale ``index.lock``, a corrupted object store)
+    also falls back to wipe and re-clone, so a leaked volume never wedges the session; only a failing
+    clone itself still fails the pass closed.
     """
     branch = target.head_branch
     if _has_checkout(repo_dir):
         if _reusable_origin(repo_dir):
-            _reset_reused_checkout(repo_dir)
-            _checked(
-                ["git", "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], repo_dir, "fetch"
+            try:
+                _reset_reused_checkout(repo_dir)
+                _checked(
+                    ["git", "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], repo_dir, "fetch"
+                )
+                _checked(["git", "checkout", "-B", branch, f"origin/{branch}"], repo_dir, "checkout")
+                return
+            except ReviewPreparationError as exc:
+                print(
+                    f"Incremental sync of the reused workspace at {repo_dir} failed ({exc.stage}): {exc}; "
+                    "wiping and re-cloning.",
+                    file=sys.stderr,
+                )
+        else:
+            print(
+                f"Origin mismatch or unreadable in the reused workspace at {repo_dir}; wiping and re-cloning.",
+                file=sys.stderr,
             )
-            _checked(["git", "checkout", "-B", branch, f"origin/{branch}"], repo_dir, "checkout")
-            return
-        print(
-            f"Origin mismatch or unreadable in the reused workspace at {repo_dir}; wiping and re-cloning.",
-            file=sys.stderr,
-        )
         _wipe_workspace(repo_dir)
     try:
         repo_url = get_repo_url()

@@ -2548,26 +2548,45 @@ def test_reused_checkout_with_a_mismatched_origin_is_wiped_and_recloned(tmp_path
     assert tmp_path.exists()
 
 
-def test_failing_hermetic_reset_exits_one_with_one_failure_row(tmp_path):
-    """A failure in the reuse path's reset or clean takes the usual fail-closed preparation path."""
+def test_failing_hermetic_reset_falls_back_to_wipe_and_reclone(tmp_path):
+    """A failure in the reuse path's reset or clean wipes the poisoned checkout and re-clones."""
     (tmp_path / ".git").mkdir()
-    (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+    (tmp_path / "stale-junk.txt").write_text("leftover", encoding="utf-8")
     fake_git = FakeGitCommands(fail_on=("clean",))
+
+    code, mock_loop, _post, _gh = _run_entrypoint(tmp_path, "feature/y", fake_git)
+
+    assert code == 0
+    mock_loop.assert_called_once()
+    clone = next(c for c in fake_git.calls if c[1] == "clone")
+    assert clone[:4] == ["git", "clone", "--branch", "feature/y"]
+    # The incremental branch fetch never ran against the poisoned checkout.
+    assert ["git", "fetch", "origin", "+refs/heads/feature/y:refs/remotes/origin/feature/y"] not in fake_git.calls
+    assert not (tmp_path / ".git").exists()
+    assert not (tmp_path / "stale-junk.txt").exists()
+
+
+def test_failing_reset_followed_by_failing_clone_exits_one(tmp_path):
+    """When the wipe-and-reclone fallback itself cannot clone, preparation still fails closed."""
+    (tmp_path / ".git").mkdir()
+    fake_git = FakeGitCommands(fail_on=("reset", "clone"))
 
     code, mock_loop, mock_post, _gh = _run_entrypoint(tmp_path, "feature/y", fake_git)
 
     assert code == 1
     mock_loop.assert_not_called()
     mock_post.assert_not_called()
-    rows = _ledger_rows(tmp_path)
-    assert len(rows) == 1
-    assert rows[0]["outcome"] == "failure"
-    assert "clean failed" in rows[0]["error_context"]
 
 
 def _real_git(cwd, *args) -> str:
     res = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True)
     return (res.stdout or "").strip()
+
+
+def _isolate_git_global_config(monkeypatch, tmp_path):
+    """Point git's global config at a throwaway file so the production ``safe.directory`` write and any
+    identity reads never touch the host's real ``~/.gitconfig``."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
 
 
 def _seed_local_remote(tmp_path):
@@ -2577,6 +2596,8 @@ def _seed_local_remote(tmp_path):
     seed.mkdir()
     _real_git(tmp_path, "init", "--bare", "-b", "main", str(remote))
     _real_git(tmp_path, "init", "-b", "main", str(seed))
+    _real_git(seed, "config", "user.email", "test@holon.com")
+    _real_git(seed, "config", "user.name", "Holon Test")
     ledger = seed / "holon-knowledge" / "ledger"
     ledger.mkdir(parents=True)
     (ledger / "executions.jsonl").write_text('{"execution_id": "E-1"}\n', encoding="utf-8")
@@ -2597,6 +2618,7 @@ def test_second_pass_reuses_the_clone_and_discards_leaked_state(tmp_path, monkey
     """
     from sandbox_executor.entrypoint.review_loop import _prepare_workspace
 
+    _isolate_git_global_config(monkeypatch, tmp_path)
     remote, seed = _seed_local_remote(tmp_path)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -2635,6 +2657,7 @@ def test_real_origin_mismatch_is_wiped_and_recloned_from_the_configured_remote(t
     """Real-git proof of the fail-safe: a foreign checkout is never fetched from, only replaced."""
     from sandbox_executor.entrypoint.review_loop import _prepare_workspace
 
+    _isolate_git_global_config(monkeypatch, tmp_path)
     remote, seed = _seed_local_remote(tmp_path)
     foreign_dir = tmp_path / "foreign"
     foreign_dir.mkdir()
@@ -2653,3 +2676,27 @@ def test_real_origin_mismatch_is_wiped_and_recloned_from_the_configured_remote(t
     assert result.head_sha == _real_git(seed, "rev-parse", "HEAD")
     assert _real_git(workspace, "remote", "get-url", "origin") == str(remote)
     assert not marker.exists(), "the foreign checkout was reused instead of wiped"
+
+
+def test_poisoned_reused_checkout_is_wiped_and_recloned(tmp_path, monkeypatch):
+    """Real-git proof of crash recovery: a leaked volume holding a partial clone (matching origin, unborn
+    HEAD, stale index.lock) cannot be hermetically reset, so the pass wipes it and re-clones instead of
+    failing every subsequent pass."""
+    from sandbox_executor.entrypoint.review_loop import _prepare_workspace
+
+    _isolate_git_global_config(monkeypatch, tmp_path)
+    remote, seed = _seed_local_remote(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("HOLON_REPO_URL", str(remote))
+
+    # Simulate a clone interrupted by a crash: origin already configured, but no commit and a stale lock.
+    _real_git(tmp_path, "init", "-b", "main", str(workspace))
+    _real_git(workspace, "remote", "add", "origin", str(remote))
+    (workspace / ".git" / "index.lock").write_text("", encoding="utf-8")
+
+    result = _prepare_workspace(str(workspace), "main")
+
+    assert result.head_sha == _real_git(seed, "rev-parse", "HEAD")
+    assert _real_git(workspace, "rev-parse", "HEAD") == result.head_sha
+    assert not (workspace / ".git" / "index.lock").exists()

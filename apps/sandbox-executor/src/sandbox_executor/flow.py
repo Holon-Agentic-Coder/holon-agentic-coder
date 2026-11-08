@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import hashlib
+import inspect
 import json
 import logging
 import math
@@ -4272,21 +4273,6 @@ def _invoke_resolver_pass(
     return ResolverOutcome(dispositions=dispositions, head_sha=target.head_sha, pushed=False)
 
 
-# Positional parameter order of _run_review_loop_iterations, used by the run_review_loop wrapper to
-# read gating values (target, dry_run) out of positionally supplied arguments before forwarding.
-_REVIEW_LOOP_POSITIONAL_PARAMS = (
-    "target",
-    "max_iterations",
-    "ensemble_size",
-    "auto_pr",
-    "dry_run",
-    "ci_registration_timeout",
-    "ci_poll_interval",
-    "clock",
-    "sleep",
-)
-
-
 def run_review_loop(
     context: FlowContext,
     *args: Any,
@@ -4305,7 +4291,7 @@ def run_review_loop(
     never creates a session. Tests may inject ``workspace_session`` to observe the lifecycle; an
     injected session is torn down by this wrapper too.
     """
-    supplied = dict(zip(_REVIEW_LOOP_POSITIONAL_PARAMS, args, strict=False)) | kwargs
+    supplied = inspect.signature(_run_review_loop_iterations).bind_partial(context, *args, **kwargs).arguments
     effective_dry_run = bool(supplied.get("dry_run") or context.dry_run)
     if effective_dry_run or reviewers_sandboxed() or not review_persist_enabled():
         workspace_session = None

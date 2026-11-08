@@ -105,6 +105,33 @@ a crashed loop's leaked volume is prunable by label and safely reusable (Step 4 
   (default matching `_run_entrypoint`'s `HOLON_REPO_URL`) so the existing reuse-path test keeps passing
   with no assertion weakened.
 
+### Step 5: Unit tests for session lifecycle, mount plumbing and hermetic sync (TEST)
+
+All additive; no existing assertion was deleted or loosened.
+
+- `tests/test_review_dispatch.py`: a 2-iteration convergence cycle (reviewers object → resolver applies
+  and pushes → reviewers approve) through the injected dispatcher seam passes the **same** deterministic
+  volume name to all three dispatches, creates the labelled volume once (plus its one root ownership
+  init run) and removes it exactly once; teardown also runs exactly once when the loop raises
+  mid-iteration; `HOLON_REVIEW_PERSIST=0` dispatches with no volume kwarg and no docker call;
+  in-container mode (`install_fake_reviewers`) never touches docker; a failing `docker volume create`
+  falls back to clone-per-pass dispatch; `review_persist_enabled` value table and deterministic volume
+  naming; `SANDBOX_WORKSPACE_MOUNT == get_workspace_dir()` under container env. The host-ledger
+  assertions confirm per-iteration ACT-REV rows, ACT-RES rows and the summary row stay host-written.
+- `tests/test_review_loop.py` (entrypoint layer, `FakeGitCommands`): matching checkout runs
+  `rebase --abort`/`merge --abort` then `reset --hard` → `clean -fdx` → `fetch` → `checkout -B` in order
+  with no clone; mismatched origin wipes the mountpoint contents (really deleted) and re-clones without
+  ever fetching the branch from the wrong remote; a failing hermetic reset takes the fail-closed path
+  (one ACT-REV failure row, exit 1). Two **real-git** tests against local bare remotes prove goals 2
+  and 3 end to end at the function level: the second `_prepare_workspace` keeps the clone (a `.git`
+  marker survives), picks up a resolver-style push incrementally, and discards a planted untracked file
+  and an uncommitted ledger row; and an origin mismatch wipes a foreign checkout and re-clones from the
+  configured remote.
+- `tests/test_cli.py`: with a review workspace volume, `run_docker_container`'s argv equals the baseline
+  plus exactly one `-v <volume>:<SANDBOX_WORKSPACE_MOUNT>` pair and the pinned
+  `HOLON_TARGET_WORKTREE` env entry (removing those two pairs restores the baseline byte for byte, which
+  guards every isolation flag); a forwarded host `HOLON_TARGET_WORKTREE` is overridden by the pin.
+
 ## Tests Run
 
 (pending)

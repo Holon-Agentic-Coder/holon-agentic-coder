@@ -2501,3 +2501,155 @@ class TestResolverAgentExecution:
         assert result_json["tests_passed"] is True
         assert result_json["error"] is None
         assert result_json["pushed"] is True
+
+
+# --------------------------------------------------------------------------------------
+# Persistent review workspace: hermetic reuse and incremental sync in _clone_or_fetch
+# --------------------------------------------------------------------------------------
+
+
+def test_reused_matching_checkout_resets_cleans_then_syncs_incrementally(tmp_path):
+    """A matching checkout is hermetically reset (reset -> clean) before fetch -> checkout; never cloned."""
+    (tmp_path / ".git").mkdir()
+    fake_git = FakeGitCommands()
+
+    code, _loop_mock, _post, _gh = _run_entrypoint(tmp_path, "feature/y", fake_git)
+
+    assert code == 0
+    assert not any(c[1] == "clone" for c in fake_git.calls)
+    assert ["git", "rebase", "--abort"] in fake_git.calls
+    assert ["git", "merge", "--abort"] in fake_git.calls
+    ordered = [
+        fake_git.calls.index(["git", "reset", "--hard", "HEAD"]),
+        fake_git.calls.index(["git", "clean", "-fdx"]),
+        fake_git.calls.index(["git", "fetch", "origin", "+refs/heads/feature/y:refs/remotes/origin/feature/y"]),
+        fake_git.calls.index(["git", "checkout", "-B", "feature/y", "origin/feature/y"]),
+    ]
+    assert ordered == sorted(ordered), f"hermetic reset must precede the incremental sync: {fake_git.calls}"
+
+
+def test_reused_checkout_with_a_mismatched_origin_is_wiped_and_recloned(tmp_path):
+    """A checkout whose origin does not match HOLON_REPO_URL is cleared and re-cloned, never fetched from."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("[remote]", encoding="utf-8")
+    (tmp_path / "stale-junk.txt").write_text("left by another repository", encoding="utf-8")
+    fake_git = FakeGitCommands(origin_url="https://github.com/other/stale.git")
+
+    code, _loop_mock, _post, _gh = _run_entrypoint(tmp_path, "feature/y", fake_git)
+
+    assert code == 0
+    clone = next(c for c in fake_git.calls if c[1] == "clone")
+    assert clone[:4] == ["git", "clone", "--branch", "feature/y"]
+    # The branch fetch of the reuse path never ran against the wrong remote.
+    assert ["git", "fetch", "origin", "+refs/heads/feature/y:refs/remotes/origin/feature/y"] not in fake_git.calls
+    # The stale contents really are gone from the mountpoint (the directory itself remains).
+    assert not (tmp_path / ".git").exists()
+    assert not (tmp_path / "stale-junk.txt").exists()
+    assert tmp_path.exists()
+
+
+def test_failing_hermetic_reset_exits_one_with_one_failure_row(tmp_path):
+    """A failure in the reuse path's reset or clean takes the usual fail-closed preparation path."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+    fake_git = FakeGitCommands(fail_on=("clean",))
+
+    code, mock_loop, mock_post, _gh = _run_entrypoint(tmp_path, "feature/y", fake_git)
+
+    assert code == 1
+    mock_loop.assert_not_called()
+    mock_post.assert_not_called()
+    rows = _ledger_rows(tmp_path)
+    assert len(rows) == 1
+    assert rows[0]["outcome"] == "failure"
+    assert "clean failed" in rows[0]["error_context"]
+
+
+def _real_git(cwd, *args) -> str:
+    res = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True)
+    return (res.stdout or "").strip()
+
+
+def _seed_local_remote(tmp_path):
+    """A bare local remote with one commit on main carrying a ledger file; returns (remote, seed) paths."""
+    remote = tmp_path / "remote.git"
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _real_git(tmp_path, "init", "--bare", "-b", "main", str(remote))
+    _real_git(tmp_path, "init", "-b", "main", str(seed))
+    ledger = seed / "holon-knowledge" / "ledger"
+    ledger.mkdir(parents=True)
+    (ledger / "executions.jsonl").write_text('{"execution_id": "E-1"}\n', encoding="utf-8")
+    _real_git(seed, "add", "-A")
+    _real_git(seed, "commit", "-qm", "seed")
+    _real_git(seed, "remote", "add", "origin", str(remote))
+    _real_git(seed, "push", "-q", "origin", "main")
+    return remote, seed
+
+
+def test_second_pass_reuses_the_clone_and_discards_leaked_state(tmp_path, monkeypatch):
+    """Real-git proof of goals 2 and 3: incremental fetch picks up the pushed commit; no state leaks.
+
+    Pass 1 clones into the (simulated) persistent workspace. Between passes, a resolver-style commit is
+    pushed to the remote and the workspace is polluted with an untracked file and an uncommitted ledger
+    row, as a previous pass could leave behind. Pass 2 must keep the clone (no re-clone), discard both
+    leaks and land exactly on the pushed commit.
+    """
+    from sandbox_executor.entrypoint.review_loop import _prepare_workspace
+
+    remote, seed = _seed_local_remote(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("HOLON_REPO_URL", str(remote))
+
+    first = _prepare_workspace(str(workspace), "main")
+    assert first.head_sha == _real_git(seed, "rev-parse", "HEAD")
+
+    # Pollute the workspace as a previous pass could, and mark the .git directory to detect a re-clone.
+    marker = workspace / ".git" / "holon-reuse-marker"
+    marker.write_text("pass 1", encoding="utf-8")
+    (workspace / "reviewer-scratch.txt").write_text("untracked leak", encoding="utf-8")
+    ledger_file = workspace / "holon-knowledge" / "ledger" / "executions.jsonl"
+    committed_ledger = ledger_file.read_text(encoding="utf-8")
+    with ledger_file.open("a", encoding="utf-8") as f:
+        f.write('{"execution_id": "IN-CONTAINER-LEAK"}\n')
+
+    # A resolver push lands on the remote between the two passes.
+    (seed / "fix.txt").write_text("resolver fix", encoding="utf-8")
+    _real_git(seed, "add", "-A")
+    _real_git(seed, "commit", "-qm", "resolver fix")
+    _real_git(seed, "push", "-q", "origin", "main")
+    pushed_sha = _real_git(seed, "rev-parse", "HEAD")
+
+    second = _prepare_workspace(str(workspace), "main")
+
+    assert second.head_sha == pushed_sha
+    assert _real_git(workspace, "rev-parse", "HEAD") == pushed_sha
+    assert marker.exists(), "the checkout was re-cloned instead of fetched incrementally"
+    assert not (workspace / "reviewer-scratch.txt").exists()
+    assert ledger_file.read_text(encoding="utf-8") == committed_ledger
+    assert (workspace / "fix.txt").read_text(encoding="utf-8") == "resolver fix"
+
+
+def test_real_origin_mismatch_is_wiped_and_recloned_from_the_configured_remote(tmp_path, monkeypatch):
+    """Real-git proof of the fail-safe: a foreign checkout is never fetched from, only replaced."""
+    from sandbox_executor.entrypoint.review_loop import _prepare_workspace
+
+    remote, seed = _seed_local_remote(tmp_path)
+    foreign_dir = tmp_path / "foreign"
+    foreign_dir.mkdir()
+    foreign_remote, _foreign_seed = _seed_local_remote(foreign_dir)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("HOLON_REPO_URL", str(foreign_remote))
+    _prepare_workspace(str(workspace), "main")
+    marker = workspace / ".git" / "holon-reuse-marker"
+    marker.write_text("foreign clone", encoding="utf-8")
+
+    monkeypatch.setenv("HOLON_REPO_URL", str(remote))
+    result = _prepare_workspace(str(workspace), "main")
+
+    assert result.head_sha == _real_git(seed, "rev-parse", "HEAD")
+    assert _real_git(workspace, "remote", "get-url", "origin") == str(remote)
+    assert not marker.exists(), "the foreign checkout was reused instead of wiped"

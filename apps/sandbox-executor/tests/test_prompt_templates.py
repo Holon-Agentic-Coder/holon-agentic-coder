@@ -10,7 +10,7 @@ from sandbox_executor.entrypoint.executor import build_execution_prompt
 from sandbox_executor.entrypoint.planner import render_placeholders
 from sandbox_executor.review_ensemble import ReviewerResult, parse_review_trailer
 from sandbox_executor.review_report import ROLES_CLOSE, ROLES_OPEN, parse_reviewer_detail
-from sandbox_executor.scaffold import REVIEW_LOOP_TEMPLATE
+from sandbox_executor.scaffold import EXECUTOR_TEMPLATE, PLANNER_TEMPLATE, REVIEW_LOOP_TEMPLATE
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 TEMPLATES = sorted((REPO_ROOT / "holon-config" / "prompts").glob("*.template.md"))
@@ -57,6 +57,18 @@ TEST_RUN_RULE_PHRASES = (
     'never open-ended or "many" runs',
     "-n auto --dist worksteal",
     "median",
+)
+# Lower-case code placement and complexity phrases both the planner and the executor prompt must carry.
+CODE_PLACEMENT_RULE_PHRASES = (
+    "module that owns the data",
+    "one module per stage, command, runner or provider",
+    "c901 <= 10",
+    "plr0912 <= 12",
+    "plr0913 <= 5",
+    "plr0915 <= 50",
+    "without adding inline '# noqa' suppressions",
+    "intention-revealing names in the domain language",
+    "no new imports from entrypoints into the host flow engine",
 )
 
 
@@ -222,3 +234,36 @@ def test_review_prompt_example_report_parses_with_the_real_parsers():
 
     assert [(role.role, role.verdict) for role in detail.roles] == [("Testing", "PASS")]
     assert [claim.evidence for claim in detail.verified] == ["tests/test_review_report.py"]
+
+
+@pytest.mark.parametrize("render", [rendered_planner, rendered_executor], ids=["planner", "executor"])
+def test_rendered_templates_carry_code_placement_rule(render: Callable[[], str]) -> None:
+    text = normalised(render())
+    missing = [phrase for phrase in CODE_PLACEMENT_RULE_PHRASES if phrase not in text]
+    assert missing == [], f"code placement rule phrases missing: {missing}"
+
+
+def test_rendered_planner_carries_touch_set_and_file_sizing_rules() -> None:
+    text = normalised(rendered_planner())
+    assert "touch set at module granularity" in text
+    assert "prefers adding focused modules over growing existing files past ~400 lines" in text
+
+
+@pytest.mark.parametrize("name", sorted(REVIEW_TEMPLATES))
+def test_review_templates_carry_file_growth_and_complexity_gates(name: str) -> None:
+    text = normalised(REVIEW_TEMPLATES[name])
+    assert "flag growth of any file over 1,000 lines as important" in text
+    assert "flag new inline complexity suppressions as important" in text
+    assert (
+        "check that new behaviour lives in the module that owns the data with no new entrypoint-to-engine imports"
+        in text
+    )
+
+
+def test_scaffold_templates_carry_code_placement_rule() -> None:
+    for template_name, template_text in [("planner", PLANNER_TEMPLATE), ("executor", EXECUTOR_TEMPLATE)]:
+        text = normalised(template_text)
+        missing = [phrase for phrase in CODE_PLACEMENT_RULE_PHRASES if phrase not in text]
+        assert missing == [], f"code placement rule phrases missing from scaffold {template_name}: {missing}"
+    assert "touch set at module granularity" in normalised(PLANNER_TEMPLATE)
+    assert "prefers adding focused modules over growing existing files past ~400 lines" in normalised(PLANNER_TEMPLATE)

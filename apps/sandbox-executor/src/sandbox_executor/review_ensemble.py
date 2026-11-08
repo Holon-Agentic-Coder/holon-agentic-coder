@@ -252,6 +252,11 @@ class ReviewerResult:
     report_text: str | None = None
     failure_reason: str | None = None
 
+    @property
+    def reason(self) -> str | None:
+        """Alias for failure_reason."""
+        return self.failure_reason
+
     @classmethod
     def completed(  # noqa: PLR0913
         cls, index: int, agent: str, model: str, report_path: str, report_text: str, parsed: ParsedTrailer
@@ -666,10 +671,34 @@ def _command_builder(runner: AgentRunner, model: str, prompt_file: str, intent_f
     return build_cmd
 
 
-def _turn_failure(outcome: AuthoringOutcome) -> str | None:
+def _missing_report_reason(outcome: AuthoringOutcome) -> str:
+    """Diagnostic failure reason when no report was written."""
+    if not outcome.turns:
+        return "the reviewer wrote no report"
+    turn = outcome.last
+    returncode = turn.returncode
+    stderr_raw = (turn.stderr or "").strip()
+    truncated_stderr = ""
+    if stderr_raw:
+        redacted = redact_agent_secrets(stderr_raw)
+        truncated_stderr = redacted[:300] + "..." if len(redacted) > 300 else redacted
+    if returncode != 0 and truncated_stderr:
+        return f"the reviewer exited with code {returncode}: {truncated_stderr}"
+    if returncode != 0:
+        return f"the reviewer exited with code {returncode}"
+    if truncated_stderr:
+        return f"the reviewer wrote no report (stderr: {truncated_stderr})"
+    return "the reviewer wrote no report"
+
+
+def _turn_failure(outcome: AuthoringOutcome, *, report_missing: bool = False) -> str | None:
     """Why a supervised turn cannot count, or None when the report may be judged."""
     breach = outcome.breach  # the last breach of any turn; it covers every unrecovered budget failure too
-    return f"review turn cut short: {breach.describe()}" if breach is not None else None
+    if breach is not None:
+        return f"review turn cut short: {breach.describe()}"
+    if report_missing:
+        return _missing_report_reason(outcome)
+    return None
 
 
 def _judged_report(  # noqa: PLR0913
@@ -692,7 +721,8 @@ def _result_from_outcome(  # noqa: PLR0913
         return ReviewerResult.failed(index, agent, model, report_rel, failure)
     text = _read_report(os.path.join(repo_dir, report_rel))
     if text is None:
-        return ReviewerResult.failed(index, agent, model, report_rel, "the reviewer wrote no report")
+        reason = _turn_failure(outcome, report_missing=True) or "the reviewer wrote no report"
+        return ReviewerResult.failed(index, agent, model, report_rel, reason)
     try:
         parsed = parse_review_trailer(text)
     except TrailerError as error:

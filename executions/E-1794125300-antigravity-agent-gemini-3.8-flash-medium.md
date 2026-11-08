@@ -1,0 +1,27 @@
+# Execution Record: E-1794125300-antigravity-agent-gemini-3.8-flash-medium
+
+## Summary
+
+Execution of plan `P-1794124920-antigravity-agent-gemini-3.8-flash-medium` for intent
+`I-1794124904-fix-review-loop-observability-blindspot`. Surface reviewer agent returncode, stderr diagnostics, and
+command lines in `review_ensemble.py` when reviewers fail instead of discarding errors into generic `"the reviewer wrote no report"`.
+
+## Actual Metrics
+
+| metric                | value |
+| --------------------- | ----- |
+| success_actual        | 1.0   |
+| entropy_actual        | 2.10  |
+| impact_actual         | 85.0  |
+| cost_actual           | 4.00  |
+| learning_value_actual | 4.00  |
+
+## Steps Executed
+
+### Step 1: Surface Process Errors and Sanitise Diagnostics in Review Ensemble
+
+- Added `@property def reason(self) -> str | None:` alias on `ReviewerResult` returning `self.failure_reason`.
+- Implemented `_missing_report_reason(outcome: AuthoringOutcome) -> str` to inspect the last turn result for non-zero returncodes and non-empty stderr streams, applying `redact_agent_secrets()` and 300-character clamping to stderr.
+- Updated `_turn_failure(outcome, *, report_missing: bool = False)` to delegate to `_missing_report_reason(outcome)` when `report_missing=True` and no budget breach occurred.
+- Updated `_result_from_outcome()` to call `_turn_failure(outcome, report_missing=True)` when the report file is absent, surfacing returncode and stderr diagnostics while preserving baseline `"the reviewer wrote no report"` for clean zero-exit runs.
+

@@ -317,12 +317,12 @@ class TestReviewLoopGitHubCLIDiagnostics:
 
             assert res["gh_available"] is True
             assert res["dual_posted"] is True
-            assert res["discussion_comment"]["success"] is True
+            assert res["discussion_comment"]["attempted"] is False
+            assert res["discussion_comment"]["success"] is False
             assert res["official_review"]["success"] is True
-            assert mock_run.call_count == 2
-            comment_call = mock_run.call_args_list[0][0][0]
-            review_call = mock_run.call_args_list[1][0][0]
-            assert comment_call[:4] == ["gh", "pr", "comment", "123"]
+            # Exactly one visible post: the official review submission, never gh pr comment.
+            assert mock_run.call_count == 1
+            review_call = mock_run.call_args_list[0][0][0]
             assert review_call[:5] == ["gh", "pr", "review", "123", "--approve"]
 
     @pytest.mark.parametrize(
@@ -346,7 +346,7 @@ class TestReviewLoopGitHubCLIDiagnostics:
             )
 
         assert res["official_review"]["flag"] == "--comment"
-        review_call = mock_run.call_args_list[1][0][0]
+        review_call = mock_run.call_args_list[0][0][0]
         assert review_call[:5] == ["gh", "pr", "review", "123", "--comment"]
         assert "--approve" not in review_call
 
@@ -363,7 +363,7 @@ class TestReviewLoopGitHubCLIDiagnostics:
                 repo_dir="/tmp", target="123", consensus_data=consensus_data, reviewers=[clean_reviewer(1)]
             )
 
-        review_call = mock_run.call_args_list[1][0][0]
+        review_call = mock_run.call_args_list[0][0][0]
         assert review_call[:5] == ["gh", "pr", "review", "123", "--comment"]
         body = review_call[review_call.index("--body") + 1]
         assert body.startswith("## ❌ Ensemble Consensus Review — CHANGES REQUESTED")
@@ -388,22 +388,23 @@ class TestReviewLoopGitHubCLIDiagnostics:
         from sandbox_executor.flow import post_pr_review_consensus
 
         with patch("shutil.which", return_value="/usr/bin/gh"), patch("subprocess.run") as mock_run:
-            mock_comment = MagicMock(returncode=1, stdout="", stderr="HTTP 502 Bad Gateway")
             mock_review = MagicMock(returncode=1, stdout="", stderr="HTTP 502 Bad Gateway")
-            mock_run.side_effect = [mock_comment, mock_review]
+            mock_comment = MagicMock(returncode=1, stdout="", stderr="HTTP 502 Bad Gateway")
+            mock_run.side_effect = [mock_review, mock_comment]
 
             consensus_data = {"approved": True}
             res = post_pr_review_consensus(repo_dir="/tmp", target="123", consensus_data=consensus_data)
 
             assert res["gh_available"] is True
             assert res["dual_posted"] is False
-            assert res["discussion_comment"]["success"] is False
-            assert "exit code 1" in res["discussion_comment"]["output"]
-            assert "HTTP 502 Bad Gateway" in res["discussion_comment"]["output"]
             assert res["official_review"]["success"] is False
             assert "exit code 1" in res["official_review"]["output"]
             assert "HTTP 502 Bad Gateway" in res["official_review"]["output"]
-            assert "Review posting partial/failed" in res["diagnostics"]
+            assert res["discussion_comment"]["attempted"] is True
+            assert res["discussion_comment"]["success"] is False
+            assert "exit code 1" in res["discussion_comment"]["output"]
+            assert "HTTP 502 Bad Gateway" in res["discussion_comment"]["output"]
+            assert "Review posting failed" in res["diagnostics"]
 
 
 class TestReviewLoopEmptyDiffGuard:

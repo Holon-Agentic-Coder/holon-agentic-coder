@@ -1861,15 +1861,20 @@ def _get_dispatcher(context: FlowContext) -> Callable[..., int]:
     return dispatch_role_agent
 
 
-def _dispatch_role(  # noqa: PLR0913
+def _dispatch_role(
     context: FlowContext,
     role: str,
     positional_args: list[str],
     intent_file: str | None = None,
     result_file: str | None = None,
-    review_workspace_volume: str | None = None,
+    **extra: Any,
 ) -> int:
-    """Dispatch one role agent through the same function the per-stage commands use."""
+    """Dispatch one role agent through the same function the per-stage commands use.
+
+    Non-None ``extra`` keywords (e.g. ``review_workspace_volume`` for Stage 4 dispatches) are forwarded
+    to the dispatcher; None values are dropped so injected dispatchers without those parameters keep
+    working unchanged.
+    """
     dispatcher = _get_dispatcher(context)
     context.log(f"Dispatching {role} agent (runner={context.agent}, model={context.model}).")
     kwargs: dict[str, Any] = {
@@ -1880,9 +1885,7 @@ def _dispatch_role(  # noqa: PLR0913
     }
     if result_file is not None:
         kwargs["result_file"] = result_file
-    # Passed only when set, so injected dispatchers without the parameter keep working unchanged.
-    if review_workspace_volume is not None:
-        kwargs["review_workspace_volume"] = review_workspace_volume
+    kwargs.update({key: value for key, value in extra.items() if value is not None})
     return int(
         dispatcher(
             role,
@@ -3515,9 +3518,7 @@ class ReviewWorkspaceSession:
     @staticmethod
     def _run_docker_cli(argv: list[str]) -> subprocess.CompletedProcess[str]:
         """Run one docker CLI command with captured output and a bounded timeout."""
-        return subprocess.run(
-            argv, capture_output=True, text=True, check=False, timeout=_DOCKER_CLI_TIMEOUT_SECONDS
-        )
+        return subprocess.run(argv, capture_output=True, text=True, check=False, timeout=_DOCKER_CLI_TIMEOUT_SECONDS)
 
     def _init_image(self) -> str:
         """The image whose root user initialises volume ownership: the session's own review-loop image."""
@@ -3853,10 +3854,9 @@ def _dispatch_review_ensemble(
         container_args.append("--skip-push")
 
     try:
-        dispatch_kwargs: dict[str, Any] = {"result_file": result_file}
-        if workspace_volume is not None:
-            dispatch_kwargs["review_workspace_volume"] = workspace_volume
-        exit_code = _dispatch_role(context, "review-loop", container_args, **dispatch_kwargs)
+        # The volume kwarg travels only when set, keeping injected _dispatch_role seams source-compatible.
+        volume_kwargs = {"review_workspace_volume": workspace_volume} if workspace_volume is not None else {}
+        exit_code = _dispatch_role(context, "review-loop", container_args, result_file=result_file, **volume_kwargs)
         if not os.path.exists(result_file) or os.path.getsize(result_file) == 0:
             err = f"Reviewer ensemble container dispatch exited with code {exit_code} without writing results"
             return [], None, err
@@ -3900,6 +3900,9 @@ class ResolverInput:
     findings: Sequence[FindingRow]
     action_ids: Mapping[str, str] = field(default_factory=dict)
     rejected_findings: Sequence[FindingDisposition] = ()
+    # Host-side dispatch context only: the session's persistent workspace volume for the container
+    # dispatch path. Never part of the serialised resolver payload.
+    workspace_volume: str | None = None
 
 
 def _dispatch_review_resolver(
@@ -3958,10 +3961,9 @@ def _dispatch_review_resolver(
         with open(result_file, "w", encoding="utf-8") as f:
             json.dump(input_payload, f, indent=2)
 
-        dispatch_kwargs: dict[str, Any] = {"result_file": result_file}
-        if workspace_volume is not None:
-            dispatch_kwargs["review_workspace_volume"] = workspace_volume
-        exit_code = _dispatch_role(context, "review-loop", container_args, **dispatch_kwargs)
+        # The volume kwarg travels only when set, keeping injected _dispatch_role seams source-compatible.
+        volume_kwargs = {"review_workspace_volume": workspace_volume} if workspace_volume is not None else {}
+        exit_code = _dispatch_role(context, "review-loop", container_args, result_file=result_file, **volume_kwargs)
         data: dict[str, Any] = {}
         if os.path.exists(result_file) and os.path.getsize(result_file) > 0:
             with contextlib.suppress(OSError, ValueError), open(result_file, encoding="utf-8") as f:
@@ -4200,13 +4202,12 @@ class DispositionRecorder:
         return suppressed
 
 
-def _invoke_resolver_pass(  # noqa: PLR0913
+def _invoke_resolver_pass(
     context: FlowContext,
     target: ReviewTarget,
     iteration: int,
     resolver_input: ResolverInput,
     run_resolver_fn: Callable[..., Any] | None,
-    workspace_volume: str | None = None,
 ) -> ResolverOutcome:
     """Invoke the injected resolver seam or dispatch the resolver role container."""
     findings = resolver_input.findings
@@ -4219,7 +4220,7 @@ def _invoke_resolver_pass(  # noqa: PLR0913
     lookup = {k: v for k, v in lookup.items() if v}
     resolved_input = dataclasses.replace(resolver_input, action_ids=lookup)
     if run_resolver_fn is None:
-        return _dispatch_review_resolver(context, target, iteration, resolved_input, workspace_volume)
+        return _dispatch_review_resolver(context, target, iteration, resolved_input, resolver_input.workspace_volume)
     try:
         raw = run_resolver_fn(
             target=target,
@@ -4271,64 +4272,55 @@ def _invoke_resolver_pass(  # noqa: PLR0913
     return ResolverOutcome(dispositions=dispositions, head_sha=target.head_sha, pushed=False)
 
 
-def run_review_loop(  # noqa: PLR0913
+# Positional parameter order of _run_review_loop_iterations, used by the run_review_loop wrapper to
+# read gating values (target, dry_run) out of positionally supplied arguments before forwarding.
+_REVIEW_LOOP_POSITIONAL_PARAMS = (
+    "target",
+    "max_iterations",
+    "ensemble_size",
+    "auto_pr",
+    "dry_run",
+    "ci_registration_timeout",
+    "ci_poll_interval",
+    "clock",
+    "sleep",
+)
+
+
+def run_review_loop(
     context: FlowContext,
-    target: str | None = None,
-    max_iterations: int = 25,
-    ensemble_size: int = 3,
-    auto_pr: bool = True,
-    dry_run: bool = False,
-    ci_registration_timeout: float | None = None,
-    ci_poll_interval: float = CI_REGISTRATION_POLL_SECONDS,
-    clock: Callable[[], float] | None = None,
-    sleep: Callable[[float], None] | None = None,
-    *,
-    run_ensemble_fn: Callable[..., list[ReviewerResult]] | None = None,
-    run_resolver_fn: Callable[..., Any] | None = None,
-    skip_post: bool = False,
-    first_iteration: int = 1,
+    *args: Any,
     workspace_session: ReviewWorkspaceSession | None = None,
+    **kwargs: Any,
 ) -> dict[str, Any]:
     """Execute the native Stage 4 review loop, owning the session's persistent workspace lifecycle.
 
-    See :func:`_run_review_loop_iterations` for the loop semantics and the argument reference. This
-    wrapper owns the per-session review workspace: when the loop will genuinely dispatch role containers
-    (host engine mode with no injected dispatcher or review seams, not a dry run, and
-    ``HOLON_REVIEW_PERSIST`` not disabled), it creates one :class:`ReviewWorkspaceSession` whose labelled
-    volume every reviewer-ensemble and resolver dispatch of this loop mounts, and always tears the
-    session down in a ``finally`` — covering refusals, no-convergence, budget exhaustion and exceptions.
-    In-container mode (``reviewers_sandboxed()``) never creates a session. Tests may inject
-    ``workspace_session`` to observe the lifecycle; an injected session is torn down by this wrapper too.
+    All arguments are forwarded verbatim to :func:`_run_review_loop_iterations`, which documents the
+    loop semantics and the full argument reference. This wrapper owns the per-session review workspace:
+    when the loop will genuinely dispatch role containers (host engine mode with no injected dispatcher
+    or review seams, not a dry run, and ``HOLON_REVIEW_PERSIST`` not disabled), it creates one
+    :class:`ReviewWorkspaceSession` whose labelled volume every reviewer-ensemble and resolver dispatch
+    of this loop mounts, and always tears the session down in a ``finally`` — covering refusals,
+    no-convergence, budget exhaustion and exceptions. In-container mode (``reviewers_sandboxed()``)
+    never creates a session. Tests may inject ``workspace_session`` to observe the lifecycle; an
+    injected session is torn down by this wrapper too.
     """
-    effective_dry_run = bool(dry_run or context.dry_run)
+    supplied = dict(zip(_REVIEW_LOOP_POSITIONAL_PARAMS, args, strict=False)) | kwargs
+    effective_dry_run = bool(supplied.get("dry_run") or context.dry_run)
     if effective_dry_run or reviewers_sandboxed() or not review_persist_enabled():
         workspace_session = None
     elif (
         workspace_session is None
         and context.dispatcher is None
-        and run_ensemble_fn is None
-        and run_resolver_fn is None
+        and supplied.get("run_ensemble_fn") is None
+        and supplied.get("run_resolver_fn") is None
     ):
-        review_target = str(target or context.execution_branch or context.intent_branch or "HEAD").strip()
+        review_target = str(
+            supplied.get("target") or context.execution_branch or context.intent_branch or "HEAD"
+        ).strip()
         workspace_session = ReviewWorkspaceSession(review_target, agent=context.agent, log=context.log)
     try:
-        return _run_review_loop_iterations(
-            context,
-            target=target,
-            max_iterations=max_iterations,
-            ensemble_size=ensemble_size,
-            auto_pr=auto_pr,
-            dry_run=dry_run,
-            ci_registration_timeout=ci_registration_timeout,
-            ci_poll_interval=ci_poll_interval,
-            clock=clock,
-            sleep=sleep,
-            run_ensemble_fn=run_ensemble_fn,
-            run_resolver_fn=run_resolver_fn,
-            skip_post=skip_post,
-            first_iteration=first_iteration,
-            workspace_session=workspace_session,
-        )
+        return _run_review_loop_iterations(context, *args, workspace_session=workspace_session, **kwargs)
     finally:
         if workspace_session is not None:
             workspace_session.teardown()
@@ -4848,9 +4840,9 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 findings=iter_findings,
                 action_ids=finding_action_ids,
                 rejected_findings=tuple(rejected_history.values()),
+                workspace_volume=workspace_session.volume_name() if workspace_session else None,
             ),
             run_resolver_fn,
-            workspace_volume=workspace_session.volume_name() if workspace_session else None,
         )
         rejected_now = [d for d in resolver_outcome.dispositions if d.disposition == "rejected"]
         applied_now = [d for d in resolver_outcome.dispositions if d.disposition == "applied"]

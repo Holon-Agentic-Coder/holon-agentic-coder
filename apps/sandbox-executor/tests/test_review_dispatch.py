@@ -354,8 +354,7 @@ def _objecting_then_approving_dispatcher(calls: list[dict]):
             outcome = {
                 "resolver": True,
                 "dispositions": [
-                    {**item, "disposition": "applied", "rejection_reason": None}
-                    for item in payload.get("findings", [])
+                    {**item, "disposition": "applied", "rejection_reason": None} for item in payload.get("findings", [])
                 ],
                 "head_sha": "b" * 40,
                 "pushed": True,
@@ -374,9 +373,7 @@ def _objecting_then_approving_dispatcher(calls: list[dict]):
         else:
             parsed = ParsedTrailer(ReviewerVerdict.APPROVED, ReviewCounts(), ())
             verdict = ConsensusVerdict.APPROVED
-        reviewers = [
-            ReviewerResult.completed(i, "test-agent", "test-model", f"r{i}.md", "", parsed) for i in (1, 2, 3)
-        ]
+        reviewers = [ReviewerResult.completed(i, "test-agent", "test-model", f"r{i}.md", "", parsed) for i in (1, 2, 3)]
         payload = serialize_review_outcome(reviewers, verdict)
         Path(result_file).write_text(json.dumps(payload), encoding="utf-8")
         return 0 if verdict is ConsensusVerdict.APPROVED else 1
@@ -427,9 +424,7 @@ def test_one_session_volume_is_shared_by_every_dispatch_and_removed_once(tmp_pat
     ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
     records = [json.loads(line) for line in ledger.read_text().splitlines() if line.strip()]
     iteration_rows = [
-        r
-        for r in records
-        if str(r.get("action_id", "")).startswith("ACT-REV-") and "review_reviewer_index" not in r
+        r for r in records if str(r.get("action_id", "")).startswith("ACT-REV-") and "review_reviewer_index" not in r
     ]
     assert [r["review_iteration"] for r in iteration_rows] == [1, 2]
     assert [r for r in records if str(r.get("action_id", "")).startswith("ACT-RES-")]
@@ -439,7 +434,6 @@ def test_one_session_volume_is_shared_by_every_dispatch_and_removed_once(tmp_pat
 def test_session_volume_is_removed_when_the_loop_raises_mid_iteration(tmp_path: Path, monkeypatch) -> None:
     """An exception after the first dispatch still tears the created volume down exactly once."""
     import pytest
-
     from sandbox_executor.flow import run_review_loop
 
     monkeypatch.delenv("HOLON_IN_SANDBOX", raising=False)

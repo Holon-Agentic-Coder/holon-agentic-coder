@@ -14,8 +14,8 @@ import unittest
 import uuid
 
 import pytest
-
 from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT, SANDBOX_WORKSPACE_UID_GID
+
 from tests.hermetic_fixtures import (
     DEFAULT_FIXTURE_IMAGE,
     create_seeded_remote,
@@ -52,8 +52,7 @@ class TestPersistentReviewWorkspaceIntegration(unittest.TestCase):
         self.assertEqual(
             result.returncode,
             0,
-            f"command {cmd} failed with code {result.returncode}.\n"
-            f"Stdout:\n{result.stdout}\nStderr:\n{result.stderr}",
+            f"command {cmd} failed with code {result.returncode}.\nStdout:\n{result.stdout}\nStderr:\n{result.stderr}",
         )
         return result
 
@@ -131,7 +130,7 @@ class TestPersistentReviewWorkspaceIntegration(unittest.TestCase):
             f"set -eu\n"
             f"touch {SANDBOX_WORKSPACE_MOUNT}/.git/holon-reuse-marker\n"
             f"echo junk > {SANDBOX_WORKSPACE_MOUNT}/junk.txt\n"
-            f'echo \'{{"leak": 1}}\' >> {SANDBOX_WORKSPACE_MOUNT}/holon-knowledge/ledger/intents.jsonl\n',
+            f"echo '{{\"leak\": 1}}' >> {SANDBOX_WORKSPACE_MOUNT}/holon-knowledge/ledger/intents.jsonl\n",
         )
 
         # A resolver-style push lands on the seeded remote between the two passes.

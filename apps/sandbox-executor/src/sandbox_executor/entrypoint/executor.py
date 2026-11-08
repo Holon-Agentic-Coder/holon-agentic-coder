@@ -1943,7 +1943,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                                     event_type="git_mutation",
                                     action="Re-initialised git repo due to corrupted repository",
                                     category="config",
-                                    labels=["git", "recovery"],
+                                    labels=["recovery", "git"],
                                     target=".git",
                                     outcome="success" if base_tip else "failure",
                                     action_origin=action_origin,
@@ -2081,7 +2081,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                             event_type="git_mutation",
                             action=f"Committed execution changes: {commit_msg.splitlines()[0]}",
                             category="code",
-                            labels=["git", "commit"],
+                            labels=["commit", "git"],
                             target="HEAD",
                             outcome="success",
                             action_origin=action_origin,
@@ -2121,9 +2121,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                     can_push = False
                 else:
                     ancestry_check = repo.merge_base(base_tip, "HEAD", is_ancestor=True)
-                    has_parent = (
-                        repo.rev_parse("HEAD^", verify=True).returncode == 0
-                    )
+                    has_parent = repo.rev_parse("HEAD^", verify=True).returncode == 0
                     tree_check = repo.run(["ls-tree", "-r", "--name-only", "HEAD"], check=False)
                     head_files = set(tree_check.stdout.splitlines())
                     base_tree_check = repo.run(

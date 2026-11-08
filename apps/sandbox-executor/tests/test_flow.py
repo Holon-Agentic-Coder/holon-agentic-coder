@@ -512,7 +512,7 @@ class TestFlowStages:
 
         assert res.status == StageStatus.HALTED_FOR_HUMAN
         assert res.payload["halted_for_human"] is True
-        assert res.payload["bean_0034_enforced"] is True
+        assert res.payload["human_merge_gate_enforced"] is True
         assert res.payload["consensus"]["approved"] is True
         assert "holon review approve" in res.payload["human_approval_command"]
 
@@ -1540,7 +1540,7 @@ class TestReviewLoopStage:
 
         assert res["consensus"]["approved"] is True
         assert res["halted_for_human"] is True
-        assert res["bean_0034_enforced"] is True
+        assert res["human_merge_gate_enforced"] is True
         assert "holon review approve" in res["human_approval_command"]
 
     def test_review_loop_stops_after_the_first_non_approved_iteration(self, tmp_path):
@@ -1673,14 +1673,14 @@ class TestSemanticPRAndConsensusReview:
             assert title == expected_prefix, f"Expected '{expected_prefix}', got '{title}'"
 
     def test_generate_semantic_pr_metadata_markdown_structure(self):
-        """Verify structured markdown body includes Summary, Key Changes, Referenced Beans, and Plan Metadata."""
+        """Verify structured markdown body includes Summary, Key Changes, References, and Plan Metadata."""
         intent = {
             "category": "feature",
             "slug": "flow-enhancements",
             "title": "Enhance review loop and PR generation",
             "description": "Comprehensive flow pipeline enhancements.",
-            "goal": "1) MAKEFILE ALIGNMENT (Bean 0116)\n2) LEDGER ACTIONS (Bean 0113)\n3) PR CONSENSUS (Bean 0119)",
-            "beans": ["0116", "0113", "0119", "0109"],
+            "goal": "1) MAKEFILE ALIGNMENT\n2) LEDGER ACTIONS\n3) PR CONSENSUS",
+            "references": ["0116", "0113", "0119", "0109"],
             "labels": ["makefile", "flow"],
         }
         plan_meta = {
@@ -1695,11 +1695,11 @@ class TestSemanticPRAndConsensusReview:
         assert "## Summary" in body
         assert "Comprehensive flow pipeline enhancements." in body
         assert "## Key Changes" in body
-        assert "- MAKEFILE ALIGNMENT (Bean 0116)" in body
-        assert "- LEDGER ACTIONS (Bean 0113)" in body
-        assert "- PR CONSENSUS (Bean 0119)" in body
-        assert "## Referenced Beans" in body
-        assert "Closes Bean 0116, 0113, 0119, 0109" in body
+        assert "- MAKEFILE ALIGNMENT" in body
+        assert "- LEDGER ACTIONS" in body
+        assert "- PR CONSENSUS" in body
+        assert "## References" in body
+        assert "References: 0116, 0113, 0119, 0109" in body
         assert "## Plan & Validation Metadata" in body
         assert "- **Plan ID:** `P-1792243199-antigravity`" in body
         assert "- **Expected Value (EV):** `81.00`" in body
@@ -1713,7 +1713,7 @@ class TestSemanticPRAndConsensusReview:
         assert "## Summary" in body
         assert "No description provided." in body
         assert "## Key Changes" in body
-        assert "## Referenced Beans" in body
+        assert "## References" in body
         assert "None" in body
         assert "## Plan & Validation Metadata" in body
         assert "- **Plan ID:** `N/A`" in body

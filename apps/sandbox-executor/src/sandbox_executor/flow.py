@@ -1248,14 +1248,14 @@ def generate_semantic_pr_metadata(  # noqa: C901, PLR0912, PLR0915
     intent_data: dict[str, Any],
     plan_metadata: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
-    """Generate conventional commit PR title and structured markdown description (Bean 0109).
+    """Generate a conventional commit PR title and structured markdown description.
 
     Transforms intent data and optional plan metadata into Conventional Commits
     title format (e.g. 'feat(scope): title') and a structured markdown PR body
-    containing Summary, Key Changes, Referenced Beans, and Plan & Validation Metadata.
+    containing Summary, Key Changes, References, and Plan & Validation Metadata.
 
     Args:
-        intent_data: Dictionary containing intent fields (category, slug, title, description, goal, beans, labels).
+        intent_data: Dictionary containing intent fields (category, slug, title, description, goal, references, labels).
         plan_metadata: Optional dictionary containing plan fields (plan_id, ev, agent, model).
 
     Returns:
@@ -1360,18 +1360,18 @@ def generate_semantic_pr_metadata(  # noqa: C901, PLR0912, PLR0915
         body_lines.append(f"- Implement {raw_title}")
     body_lines.append("")
 
-    # Referenced Beans section
-    body_lines.append("## Referenced Beans")
-    beans = intent_data.get("beans")
-    if beans:
-        if isinstance(beans, list):
-            bean_list = [str(b).strip() for b in beans if str(b).strip()]
-        elif isinstance(beans, str):
-            bean_list = [b.strip() for b in beans.split(",") if b.strip()]
+    # References section
+    body_lines.append("## References")
+    references = intent_data.get("references")
+    if references:
+        if isinstance(references, list):
+            reference_list = [str(r).strip() for r in references if str(r).strip()]
+        elif isinstance(references, str):
+            reference_list = [r.strip() for r in references.split(",") if r.strip()]
         else:
-            bean_list = []
-        if bean_list:
-            body_lines.append(f"Closes Bean {', '.join(bean_list)}")
+            reference_list = []
+        if reference_list:
+            body_lines.append(f"References: {', '.join(reference_list)}")
         else:
             body_lines.append("None")
     else:
@@ -3340,7 +3340,7 @@ def _refused_review_result(review_target: str, last_iteration: int, label_budget
             "status": "rejected",
         },
         "halted_for_human": False,
-        "bean_0034_enforced": False,
+        "human_merge_gate_enforced": False,
         "mergeability": {},
         "ci_checks": {},
         "trailers": "",
@@ -4863,7 +4863,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             "status": consensus_status,
         },
         "halted_for_human": consensus_reached,
-        "bean_0034_enforced": consensus_reached,
+        "human_merge_gate_enforced": consensus_reached,
         "human_approval_command": f"holon review approve {review_target}",
         "mergeability": last_mergeability,
         "ci_checks": last_ci_status,
@@ -5094,7 +5094,7 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
                 "review_package": review_package,
                 "consensus": consensus_info,
                 "halted_for_human": False,
-                "bean_0034_enforced": False,
+                "human_merge_gate_enforced": False,
                 "mergeability": mergeability,
                 "posting": loop_res.get("posting"),
                 "pr": loop_res.get("pr"),
@@ -5122,7 +5122,7 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
                 "review_package": review_package,
                 "consensus": consensus_info,
                 "halted_for_human": False,
-                "bean_0034_enforced": False,
+                "human_merge_gate_enforced": False,
                 "mergeability": mergeability,
                 "posting": loop_res.get("posting"),
                 "pr": loop_res.get("pr"),
@@ -5174,7 +5174,7 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
                 "review_package": review_package,
                 "consensus": consensus_info,
                 "halted_for_human": False,
-                "bean_0034_enforced": False,
+                "human_merge_gate_enforced": False,
                 "mergeability": mergeability,
                 "posting": loop_res.get("posting"),
                 "pr": loop_res.get("pr"),
@@ -5205,7 +5205,7 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
             "review_package": review_package,
             "consensus": consensus_info,
             "halted_for_human": True,
-            "bean_0034_enforced": True,
+            "human_merge_gate_enforced": True,
             "human_approval_command": human_instruction,
             "mergeability": mergeability,
             "posting": loop_res.get("posting"),

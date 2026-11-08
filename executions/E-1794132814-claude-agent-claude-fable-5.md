@@ -52,3 +52,20 @@ documentation prose) from `apps/sandbox-executor/` and `docs/`, excluding the im
   identical strictness (declared test change per ruleset.md §3).
 - Guardrail grep: zero `BEAN 0034` hits remain in `src/`.
 - Targeted tests: **834 passed, 53 subtests passed in 5.17s** (green).
+
+### Step 3: Semantic identifier renames (IMPLEMENTATION)
+
+- Renamed the payload key `bean_0034_enforced` → `human_merge_gate_enforced` at the six `flow.py` sites and
+  retargeted the assertions at `tests/test_flow.py:515`, `:1543` and the fixture at `tests/test_cli.py:1078`
+  (declared test changes per ruleset.md §3). Step 1 consumer grep confirmed no other consumer; historical
+  ledger rows keep the old key untouched (append-only).
+- PR-body generator (`flow.py`): section heading `## Referenced Beans` → `## References`, closing line
+  `Closes Bean <list>` → `References: <list>`, locals `beans` → `references` and `bean_list` →
+  `reference_list`, intent field read `beans` → `references`; the `None` fallback branch is unchanged under
+  the new heading. Generator docstring updated to match.
+- PR-body tests (`tests/test_flow.py:1676–1716`): fixture key `beans` → `references`, goal-text bean
+  decorations replaced with plain numbered items, heading/closing assertions retargeted with identical
+  strictness.
+- Guardrail grep: zero `bean_0034_enforced`, `Referenced Beans`, `Closes Bean` or `bean_list` hits remain in
+  `apps/`.
+- Targeted tests (`test_flow.py` + `test_cli.py`): **733 passed, 53 subtests passed in 5.13s** (green).

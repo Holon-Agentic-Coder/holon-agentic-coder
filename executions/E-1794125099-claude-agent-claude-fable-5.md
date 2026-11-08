@@ -42,4 +42,25 @@ to assert exactly-once posting.
   `uv run pytest apps/sandbox-executor/tests/test_flow.py apps/sandbox-executor/tests/test_review_loop.py -n auto --dist worksteal`
   → `438 passed in 5.22s`.
 
+### Step 2: Rewrite `post_pr_review_consensus()` as a single-post fallback ladder
+
+- Deleted the unconditional "Action 1: Top-Level Discussion Comment" block; the
+  `gh pr review <target> {--approve|--comment} --body <report>` submission is now the primary
+  and normally only post (timeout 60, `cwd=repo_dir`, `gh_env`, `check=False` unchanged).
+- Kept the `approved` derivation (ensemble verdict plus completed-reviewer guard) and the 422
+  self-approval predicate byte-identical; the 422 fallback to `gh pr review --comment` still
+  sets `self_approval_fallback = True` and `flag = "--comment"`.
+- Added the last-resort `gh pr comment` that runs only when the review ladder ends without a
+  successful submission (non-422 `--approve` failure, failed `--comment` submission, failed 422
+  retry, or a subprocess exception); it is recorded under the preserved `discussion_comment`
+  key with `attempted: True` only in that branch.
+- Preserved every return key; `dual_posted` now means "the report was posted exactly once"
+  (`review_success or comment_success`), keeping the ACT-POST `posted` expression at
+  flow.py:4739 and `_posting_failure_context()` untouched and truthful.
+- Rewrote the docstring in Australian English for single-post semantics; updated the
+  `diagnostics` strings (`Review consensus posted once to GitHub.` /
+  `Review posting failed: review=..., comment=...` / gh-missing message now says "posting").
+- `uv run ruff check` confirms the existing `noqa: PLR0912, PLR0913, PLR0915` codes are all
+  still exercised (RUF100 is enabled and reports no unused suppressions); formatting clean.
+
 ## Tests Run

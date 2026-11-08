@@ -1,11 +1,13 @@
 """Unit tests for centralised Git repository abstraction."""
 
+import ast
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from sandbox_executor.git import (
+    GitRepository,
     branch_exists,
     changed_paths,
     empty_diff_summary,
@@ -256,3 +258,149 @@ def test_suite_git_config_is_the_hermetic_test_config(hermetic_git_config: str, 
     )
     origins = {line.split("\t", 1)[0] for line in listing.stdout.splitlines()}
     assert origins == {f"file:{config_file.as_posix()}"}
+
+
+def test_git_repository_init_and_custom_runner(tmp_path: Path) -> None:
+    """Verify GitRepository initialisation with default runner and custom injected runner."""
+    repo_default = GitRepository(tmp_path)
+    assert repo_default.repo_dir == str(tmp_path)
+
+    called_commands: list[list[str]] = []
+
+    def custom_runner(
+        args: list[str],
+        cwd: str | None = None,
+        check: bool = True,
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        called_commands.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="custom_runner_output\n", stderr="")
+
+    repo_custom = GitRepository(tmp_path, runner=custom_runner)
+    res = repo_custom.run(["status", "--porcelain"])
+    assert res.stdout == "custom_runner_output\n"
+    assert called_commands == [["git", "status", "--porcelain"]]
+
+
+def test_git_repository_rev_parse(plan_repo: Path) -> None:
+    """Verify GitRepository.rev_parse with commit resolution and flag queries."""
+    repo = GitRepository(plan_repo)
+    head_res = repo.rev_parse("HEAD")
+    assert head_res.returncode == 0
+    assert len(head_res.stdout.strip()) == 40
+
+    verify_res = repo.rev_parse("refs/heads/plan", verify=True)
+    assert verify_res.returncode == 0
+    assert len(verify_res.stdout.strip()) == 40
+
+    missing_res = repo.rev_parse("refs/heads/nonexistent_ref_9999", verify=True, check=False)
+    assert missing_res.returncode != 0
+
+    worktree_res = repo.rev_parse("--is-inside-work-tree")
+    assert worktree_res.returncode == 0
+    assert worktree_res.stdout.strip() == "true"
+
+
+def test_git_repository_current_branch(plan_repo: Path) -> None:
+    """Verify GitRepository.current_branch detects current branch and detached HEAD states."""
+    repo = GitRepository(plan_repo)
+    assert repo.current_branch() == "exec"
+
+    _git(plan_repo, "checkout", "-q", "--detach", "HEAD")
+    assert repo.current_branch() is None
+
+
+def test_git_repository_status_porcelain_and_is_clean(tmp_path: Path) -> None:
+    """Verify GitRepository.is_clean and status_porcelain across filesystem lifecycle."""
+    repo_dir = tmp_path / "lifecycle_repo"
+    repo_dir.mkdir()
+    _git(repo_dir, "init", "-q")
+    _git(repo_dir, "config", "user.email", "test@holon.com")
+    _git(repo_dir, "config", "user.name", "Holon Test")
+
+    repo = GitRepository(repo_dir)
+    assert repo.is_clean() is True
+    assert repo.status_porcelain() == ""
+
+    _write(repo_dir, "sample.txt", "content\n")
+    assert repo.is_clean() is False
+    assert "sample.txt" in repo.status_porcelain()
+
+    repo.add("sample.txt")
+    assert repo.is_clean() is False
+    assert "sample.txt" in repo.status_porcelain()
+
+    repo.commit("initial commit")
+    assert repo.is_clean() is True
+    assert repo.status_porcelain() == ""
+
+
+def test_git_repository_operations(tmp_path: Path) -> None:
+    """Verify GitRepository intention-revealing operations: config, add, commit, checkout, clean, reset."""
+    repo_dir = tmp_path / "ops_repo"
+    repo_dir.mkdir()
+    _git(repo_dir, "init", "-q")
+
+    repo = GitRepository(repo_dir)
+    repo.config("user.email", "ops@holon.com")
+    repo.config("user.name", "Ops Bot")
+
+    _write(repo_dir, "file1.txt", "first\n")
+    repo.add(all_files=True)
+    repo.commit("first commit")
+
+    repo.checkout("feature", create=True)
+    assert repo.current_branch() == "feature"
+
+    _write(repo_dir, "temp.junk", "discard\n")
+    assert (repo_dir / "temp.junk").exists()
+    repo.clean(force=True, directories=True)
+    assert not (repo_dir / "temp.junk").exists()
+
+
+def test_git_repository_run_failure_raises(plan_repo: Path) -> None:
+    """Verify GitRepository.run raises RuntimeError with redacted output on failure when check=True."""
+    repo = GitRepository(plan_repo)
+    with pytest.raises(RuntimeError) as exc_info:
+        repo.run(["checkout", "nonexistent_branch_that_fails_404"], check=True)
+    assert "Git command failed with exit code" in str(exc_info.value)
+
+
+def test_executor_contains_no_raw_git_literals() -> None:
+    """Assert that entrypoint/executor.py contains no raw ['git', ...] literals outside allowed helpers."""
+    executor_path = Path(__file__).resolve().parent.parent / "src" / "sandbox_executor" / "entrypoint" / "executor.py"
+    source = executor_path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(executor_path))
+
+    allowed_functions = {"run_cmd", "_get_local_safe_directories"}
+    violations: list[str] = []
+
+    class ScopeVisitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.current_function: str | None = None
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            prev = self.current_function
+            self.current_function = node.name
+            self.generic_visit(node)
+            self.current_function = prev
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            prev = self.current_function
+            self.current_function = node.name
+            self.generic_visit(node)
+            self.current_function = prev
+
+        def visit_List(self, node: ast.List) -> None:
+            if (
+                node.elts
+                and isinstance(node.elts[0], ast.Constant)
+                and node.elts[0].value == "git"
+                and self.current_function not in allowed_functions
+            ):
+                func_name = self.current_function or "<module>"
+                violations.append(f"Line {node.lineno} in {func_name}: raw ['git', ...] list literal")
+            self.generic_visit(node)
+
+    ScopeVisitor().visit(tree)
+    assert not violations, "Raw git command literals found in executor.py:\n" + "\n".join(violations)

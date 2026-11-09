@@ -79,6 +79,7 @@ from sandbox_executor.entrypoint.planner import (
     load_metrics_config,
     parse_metrics,
 )
+from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR, pre_run_guard_error
 from sandbox_executor.git import (
     EMPTY_DIFF_FAILURE_REASON,
     EMPTY_DIFF_STATUS,
@@ -86,6 +87,7 @@ from sandbox_executor.git import (
     empty_diff_summary,
     run_git,
 )
+from sandbox_executor.git_flow import target_worktree_problem
 from sandbox_executor.knowledge import (
     ActionIndexDatabase,
     ConsultEngine,
@@ -1813,10 +1815,6 @@ def validate_intent_questions(intent_data: dict[str, Any]) -> tuple[bool, list[s
 # Role-agent dispatch shared with 'holon intent', 'holon plan' and 'holon execute'
 # ---------------------------------------------------------------------------
 
-SKIP_PUSH_DISPATCH_ERROR: str = (
-    "holon flow dispatches containerised role agents that fetch from origin, reviews the origin execution branch and "
-    "pushes the calibrated branch to origin; --skip-push is only valid with --dry-run."
-)
 EXECUTOR_GIT_ENV: dict[str, str] = {
     "GIT_AUTHOR_NAME": "Holon Executor Agent",
     "GIT_AUTHOR_EMAIL": "executor-agent@holon-agentic-coder.com",
@@ -5832,6 +5830,7 @@ class PipelineEngine:
         self.clock = clock
         # True only while the first stage of a run resumed at Stage 3 is pending; deliberately not checkpointed.
         self._resume_partial_pending = False
+        self.worktree_validator: Callable[[str], str | None] | None = None
 
     def stage_budget_seconds(self, stage: FlowStage, result: StageResult | None = None) -> float:
         """Ceiling for ``stage``; the review stage gets one review-iteration budget per pass it ran."""
@@ -6055,13 +6054,12 @@ class PipelineEngine:
             f"(dry_run={self.context.dry_run}, auto_calibrate={self.context.auto_calibrate})"
         )
 
-        # --skip-push is only valid with --dry-run, whichever stage the run starts or resumes from. Reject it before
-        # any stage runs or a checkpoint is written, so a non-dry resume never half-runs Stage 4 or Stage 5.
-        if self.context.skip_push and not self.context.dry_run:
+        # Reject an invalid run before any stage runs or a checkpoint is written, so a non-dry resume never half-runs
+        # Stage 4 or Stage 5 (see flow_guard.pre_run_guard_error).
+        guard_error = pre_run_guard_error(self.context, self.worktree_validator)
+        if guard_error is not None:
             first_stage = self.STAGE_ORDER[start_idx]
-            _stage_failure(
-                self.context, first_stage, datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"), SKIP_PUSH_DISPATCH_ERROR
-            )
+            _stage_failure(self.context, first_stage, datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"), guard_error)
             self.context.log(f"Pipeline halted due to failure in stage '{first_stage.value}'.")
             return self.context.stage_results
 
@@ -6148,6 +6146,7 @@ def run_flow_pipeline(
     """Top-level invocation wrapper for running the Holon Flow pipeline."""
     try:
         engine = PipelineEngine(context, from_stage=from_stage, checkpoint_path=checkpoint_path)
+        engine.worktree_validator = target_worktree_problem
         engine.run()
         return context.to_dict()
     finally:

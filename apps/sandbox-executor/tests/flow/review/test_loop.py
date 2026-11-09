@@ -225,6 +225,58 @@ class TestReviewLoopStage:
             code = run_review_loop_cli(args)
             assert code == 1
 
+    def test_review_loop_requires_pushed_true_to_log_and_advance_head(self, tmp_path, monkeypatch):
+        """Review loop requires resolver_outcome.pushed to be True before logging new head and advancing target."""
+        from sandbox_executor.flow import ResolverOutcome, run_review_loop
+        from sandbox_executor.review_report import FindingDisposition
+
+        from tests.review_fakes import FakeEnsemble, install_fake_reviewers, objecting_reviewer
+        from tests.test_review_dispatch import EXEC_TARGET
+        from tests.test_review_loop import _ensemble_ctx, _LoopStubs
+
+        disp = FindingDisposition(
+            id="R1-F1",
+            severity="important",
+            path="src/app.py",
+            line=12,
+            summary="important problem in the handler",
+            disposition="applied",
+        )
+
+        # 1. When pushed is False: context.log must NOT log that a new head was pushed
+        tmp1 = tmp_path / "case_unpushed"
+        ensemble1 = FakeEnsemble([objecting_reviewer(1)])
+        install_fake_reviewers(monkeypatch, ensemble1)
+        ctx1 = _ensemble_ctx(tmp1)
+        outcome_unpushed = ResolverOutcome(dispositions=(disp,), head_sha="unpushed_sha_123", pushed=False)
+        with _LoopStubs():
+            run_review_loop(
+                ctx1,
+                target=EXEC_TARGET,
+                max_iterations=2,
+                ensemble_size=1,
+                run_ensemble_fn=ensemble1,
+                run_resolver_fn=lambda *args, **kwargs: outcome_unpushed,
+            )
+        assert not any("Resolver pushed new head" in log for log in ctx1.logs)
+
+        # 2. When pushed is True: context.log MUST log that resolver pushed new head
+        tmp2 = tmp_path / "case_pushed"
+        ensemble2 = FakeEnsemble([objecting_reviewer(1)])
+        install_fake_reviewers(monkeypatch, ensemble2)
+        ctx2 = _ensemble_ctx(tmp2)
+        outcome_pushed = ResolverOutcome(dispositions=(disp,), head_sha="pushed_sha_456", pushed=True)
+        with _LoopStubs():
+            run_review_loop(
+                ctx2,
+                target=EXEC_TARGET,
+                max_iterations=2,
+                ensemble_size=1,
+                run_ensemble_fn=ensemble2,
+                run_resolver_fn=lambda *args, **kwargs: outcome_pushed,
+            )
+        assert any("Resolver pushed new head 'pushed_sha_456'" in log for log in ctx2.logs)
+
 
 class TestEngineOwnedReviewLoop:
     """Stage 4: the engine owns the loop, dispatches one pass at a time and labels it with its own count."""

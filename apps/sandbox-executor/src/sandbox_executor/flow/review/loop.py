@@ -666,9 +666,7 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 rejected_history[finding_signature(disp.severity, disp.path, disp.line, disp.summary)] = disp
                 rejected_ids.add(disp.id)
 
-        head_changed = bool(
-            resolver_outcome.pushed or (resolver_outcome.head_sha and resolver_outcome.head_sha != current_sha)
-        )
+        head_changed = bool(resolver_outcome.pushed)
         if applied_now or (head_changed and pending_dispositions):
             if head_changed or iteration >= last_label:
                 to_record = (*pending_dispositions, *applied_now)

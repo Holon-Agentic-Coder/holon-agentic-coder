@@ -432,8 +432,10 @@ def _build_resolver_prompt(
         "- `applied`: fix the code in the working tree so `uv run task lint` and `uv run task test` pass.\n"
         f"- `rejected`: provide a one-line `rejection_reason` from: {reasons}.\n"
         f"{ci_instruction}"
-        "Never force-push or rewrite git history. Do not run `git push` yourself; write the JSON list of "
-        f"dispositions to `{dispositions_path}` with keys `id`, `disposition`, and `rejection_reason`.\n\n"
+        "Never force-push or rewrite git history. Do not run git commit or git push yourself; leave your edits "
+        "in the working tree so the harness can verify, attach review trailers, commit, and push. "
+        f"Write the JSON list of dispositions to `{dispositions_path}` "
+        "with keys `id`, `disposition`, and `rejection_reason`.\n\n"
         f"```json\n{json.dumps(serialized, indent=2)}\n```\n"
     )
 
@@ -488,6 +490,7 @@ class CommitPushOptions:
 
     skip_push: bool = False
     dry_run: bool = False
+    pre_resolver_head: str | None = None
 
 
 def _commit_and_push_resolution(
@@ -496,10 +499,17 @@ def _commit_and_push_resolution(
     iteration: int,
     dispositions: tuple[FindingDisposition, ...],
     options: CommitPushOptions | None = None,
+    **kwargs: Any,
 ) -> tuple[tuple[FindingDisposition, ...], str, bool, bool, bool, str | None]:
     """Verify via lint and test, commit applied fixes with finding IDs, and fast-forward push."""
     opts = options or CommitPushOptions()
-    initial_head = (_checked(["git", "rev-parse", "HEAD"], repo_dir, "resolve").stdout or "").strip()
+    pre_resolver_head: str | None = kwargs.get("pre_resolver_head", opts.pre_resolver_head)
+    current_head = (_checked(["git", "rev-parse", "HEAD"], repo_dir, "resolve").stdout or "").strip()
+    if pre_resolver_head and current_head != pre_resolver_head:
+        reset_cmd = ["git", "reset", "--soft", pre_resolver_head]
+        _assert_safe_git_args(reset_cmd)
+        run_cmd(reset_cmd, cwd=repo_dir, check=True)
+    initial_head = pre_resolver_head or current_head
     status_proc = run_cmd(["git", "status", "--porcelain"], cwd=repo_dir, check=False)
     has_worktree_changes = bool((status_proc.stdout or "").strip())
     applied_items = [d for d in dispositions if d.disposition == "applied"]
@@ -566,6 +576,7 @@ def _run_resolver_mode(
     error: str | None = None
     output_tail = ""
     raw_dispositions: list[dict[str, Any]] = []
+    pre_resolver_head = (_checked(["git", "rev-parse", "HEAD"], repo_dir, "resolve").stdout or "").strip()
     if findings and not args.dry_run:
         prompt = _build_resolver_prompt(repo_dir, head_branch, args.iteration, findings, dispositions_path)
         try:
@@ -579,19 +590,23 @@ def _run_resolver_mode(
                     os.remove(dispositions_path)
 
     dispositions = deserialize_finding_dispositions(raw_dispositions, findings, action_ids)
-    head_sha = ""
+    head_sha = pre_resolver_head
     pushed = False
     lint_ok = False
     tests_ok = False
     try:
-        head_sha = (_checked(["git", "rev-parse", "HEAD"], repo_dir, "resolve").stdout or "").strip()
         if error is None and findings:
             dispositions, head_sha, pushed, lint_ok, tests_ok, error = _commit_and_push_resolution(
                 repo_dir,
                 head_branch,
                 args.iteration,
                 dispositions,
-                CommitPushOptions(skip_push=args.skip_push, dry_run=args.dry_run),
+                CommitPushOptions(
+                    skip_push=args.skip_push,
+                    dry_run=args.dry_run,
+                    pre_resolver_head=pre_resolver_head,
+                ),
+                pre_resolver_head=pre_resolver_head,
             )
     except Exception as exc:
         # Whatever escapes verification, commit or push, the host still gets a result with the error preserved.

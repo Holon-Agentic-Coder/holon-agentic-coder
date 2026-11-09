@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-34e871bf",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-09T08:07:17.248599+00:00",
+  "updated_ts": "2026-11-09T08:07:17.248599+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794194363-918a0e1c"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794192030-split-flow-py-into-flow-package/P-1794192045-c23d4516-claude-agent-claude-opus-5-5/E-1794192393-7928976a-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 3 finding detected: FIND-R2-003-01",
+    "symptoms": [
+      "The import-direction rule says review/* sits below stages/* with only the decomposition back-edge, but review/loop.py imports _warn_ledger_failure from stages/execute.py; document that edge or reword the layer order."
+    ]
+  }
+}

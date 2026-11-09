@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-37f83d8e",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-09T08:07:17.144067+00:00",
+  "updated_ts": "2026-11-09T08:07:17.144067+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794182977-b9ef8822"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794182121-validate-target-worktree-is-git-worktree/P-1794182135-claude-agent-claude-opus-5-5/E-1794182372-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R1-001-04",
+    "symptoms": [
+      "The hermetic repository fixture is duplicated between test_cli.py and test_flow.py and bare-provisioning CLI coverage is repeated; share one fixture and keep one test."
+    ]
+  }
+}

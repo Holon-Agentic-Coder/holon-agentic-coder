@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-4a27311e",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-09T08:07:17.261711+00:00",
+  "updated_ts": "2026-11-09T08:07:17.261711+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794198534-eb475c21"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794196901-resolver-uv-available-and-fail-loudly/P-1794196917-8bed7894-claude-agent-claude-opus-5-5/E-1794197319-7ead078e-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R2-001-01",
+    "symptoms": [
+      "The review-loop template (and scaffold.py:313) still documents the old CHANGES REQUESTED heading without the approval fraction and says approvals show only the Verified list; update both to match the new renderer."
+    ]
+  }
+}

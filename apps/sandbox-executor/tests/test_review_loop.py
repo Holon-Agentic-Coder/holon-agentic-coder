@@ -2741,3 +2741,140 @@ def test_poisoned_reused_checkout_is_wiped_and_recloned(tmp_path, monkeypatch):
     assert result.head_sha == _real_git(seed, "rev-parse", "HEAD")
     assert _real_git(workspace, "rev-parse", "HEAD") == result.head_sha
     assert not (workspace / ".git" / "index.lock").exists()
+
+
+def test_resolver_mode_soft_resets_local_commit_and_commits_with_trailers(tmp_path, monkeypatch):
+    """When the resolver agent commits locally, _commit_and_push_resolution soft-resets to pre_resolver_head,
+
+    runs verification, re-commits with review trailers, and pushes with pushed=True.
+    """
+    from sandbox_executor.entrypoint.review_loop import _commit_and_push_resolution
+    from sandbox_executor.review_report import FindingDisposition
+
+    _isolate_git_global_config(monkeypatch, tmp_path)
+    remote, seed = _seed_local_remote(tmp_path)
+    pre_resolver_head = _real_git(seed, "rev-parse", "HEAD")
+
+    # Simulate resolver agent committing locally without trailers
+    (seed / "fix.py").write_text("fixed code\n", encoding="utf-8")
+    _real_git(seed, "add", "-A")
+    _real_git(seed, "commit", "-m", "agent local commit")
+    agent_commit = _real_git(seed, "rev-parse", "HEAD")
+    assert agent_commit != pre_resolver_head
+
+    dispositions = (
+        FindingDisposition(
+            id="FIND-R1-001",
+            severity="important",
+            path="fix.py",
+            line=1,
+            summary="syntax error",
+            disposition="applied",
+        ),
+    )
+
+    with patch(
+        "sandbox_executor.entrypoint.review_loop._verify_before_push", return_value=(True, True, None)
+    ) as mock_verify:
+        updated, new_head, pushed, lint_ok, tests_ok, err = _commit_and_push_resolution(
+            str(seed),
+            "main",
+            1,
+            dispositions,
+            pre_resolver_head=pre_resolver_head,
+        )
+
+    mock_verify.assert_called_once_with(str(seed))
+    assert pushed is True
+    assert lint_ok is True
+    assert tests_ok is True
+    assert err is None
+    assert new_head != agent_commit
+    assert updated[0].commit_sha == new_head
+
+    # Final commit's parent must be pre_resolver_head
+    parent = _real_git(seed, "rev-parse", "HEAD~1")
+    assert parent == pre_resolver_head
+
+    # Commit message has canonical review trailers
+    msg = _real_git(seed, "log", "-1", "--pretty=%B")
+    assert "Review-Iteration: 1" in msg
+    assert "Review-Finding-Ids: FIND-R1-001" in msg
+    assert "Action-Origin: pr_review" in msg
+    assert "Review-Severity: important" in msg
+
+    # Pushed to remote
+    remote_head = _real_git(remote, "rev-parse", "refs/heads/main")
+    assert remote_head == new_head
+
+
+def test_build_resolver_prompt_forbids_both_git_commit_and_push(tmp_path):
+    """The resolver prompt explicitly instructs agents not to run git commit or git push."""
+    from sandbox_executor.entrypoint.review_loop import _build_resolver_prompt
+    from sandbox_executor.review_report import FindingRow
+
+    findings = [
+        FindingRow(
+            id="FIND-001",
+            severity="important",
+            path="main.py",
+            line=10,
+            summary="test summary",
+            recommendation="test rec",
+            reviewers=(1,),
+        )
+    ]
+    prompt = _build_resolver_prompt(
+        str(tmp_path),
+        "feature",
+        1,
+        findings,
+        str(tmp_path / "dispositions.json"),
+    )
+    assert (
+        "Do not run git commit or git push yourself; leave your edits in the working tree so the harness can verify, "
+        "attach review trailers, commit, and push."
+    ) in prompt
+    assert "Never force-push or rewrite git history" in prompt
+
+
+def test_review_loop_does_not_advance_head_when_pushed_is_false(tmp_path, monkeypatch):
+    """The review loop does not advance head or re-review when resolver outcome has pushed=False."""
+    from sandbox_executor.flow import ResolverOutcome, run_review_loop
+    from sandbox_executor.review_report import FindingDisposition
+
+    from tests.review_fakes import FakeEnsemble, install_fake_reviewers, objecting_reviewer
+    from tests.test_review_dispatch import EXEC_TARGET
+    from tests.test_review_loop import _ensemble_ctx, _LoopStubs
+
+    ensemble = FakeEnsemble([objecting_reviewer(1)])
+    install_fake_reviewers(monkeypatch, ensemble)
+    ctx = _ensemble_ctx(tmp_path)
+
+    disp = FindingDisposition(
+        id="R1-F1",
+        severity="important",
+        path="src/app.py",
+        line=12,
+        summary="important problem in the handler",
+        disposition="applied",
+    )
+    resolver_outcome = ResolverOutcome(
+        dispositions=(disp,),
+        head_sha="new_unpushed_sha_9999",
+        pushed=False,
+    )
+
+    with _LoopStubs():
+        res = run_review_loop(
+            ctx,
+            target=EXEC_TARGET,
+            max_iterations=2,
+            ensemble_size=1,
+            run_ensemble_fn=ensemble,
+            run_resolver_fn=lambda *args, **kwargs: resolver_outcome,
+        )
+
+    assert res["consensus"]["approved"] is False
+    assert not any("Resolver pushed new head" in log for log in ctx.logs)
+    assert res.get("head_sha") != "new_unpushed_sha_9999"

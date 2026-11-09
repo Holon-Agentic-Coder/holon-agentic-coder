@@ -28,11 +28,11 @@ In progress.
   redaction re-exports); `OVER_BUDGET_EXIT_CODE` and `_safe_float` stay in the executor. A private `_as_float` mirrors
   `_safe_float` in the new module.
 - Deviation: `tests/test_complexity_gate.py` freezes the `(path, rule codes)` multiset of complexity `# noqa`
-  annotations and explicitly forbids relocating one ("Refactor the function instead"), so moving
-  `parse_sub_intent_list` with its `# noqa: C901, PLR0912, PLR0915` failed the gate. The function was refactored
-  instead into a `_SubIntentScan` dataclass (one method per concern: fences, headings, item collection) plus
-  `_sub_intent_dicts`, with no suppression at all. The line-level logic and comments are unchanged; the full
-  decomposition regression corpus in `tests/test_executor.py` passes without any edit (`293 passed`).
+  annotations and explicitly forbids relocating one ("Refactor the function instead"), so moving `parse_sub_intent_list`
+  with its `# noqa: C901, PLR0912, PLR0915` failed the gate. The function was refactored instead into a `_SubIntentScan`
+  dataclass (one method per concern: fences, headings, item collection) plus `_sub_intent_dicts`, with no suppression at
+  all. The line-level logic and comments are unchanged; the full decomposition regression corpus in
+  `tests/test_executor.py` passes without any edit (`293 passed`).
 - Added `InvalidPlanDecisionError`, `DecompositionDecision.to_plan_fields()` and `DecompositionDecision.from_plan_row()`
   with a strict shape check of recorded `sub_intents`; `tests/test_decomposition_rule.py` covers the round trip, the
   older-row `None`, corrupt records, the entrypoint-free imports and the re-export identity.
@@ -42,8 +42,7 @@ In progress.
 - `entrypoint/planner.py`: `converge_prettier` now runs before the ledger append (it only touches the plan markdown),
   and a new `_plan_decision_fields(plan_entry, plan_md_path, intent_data)` helper reads the formatted plan back and
   returns `should_decompose(...).to_plan_fields()`, merged into the row before the single `atomic_ledger_append`.
-  `main()` keeps its existing suppressions and gains no branch; over-budget plans are still appended (as
-  `over_budget`).
+  `main()` keeps its existing suppressions and gains no branch; over-budget plans are still appended (as `over_budget`).
 - `tests/test_planner.py`: four tests (in-budget `execute` without `sub_intents`; listed plan `decomposed` with the list
   equal to `parse_sub_intent_list` of the committed file; a prettier re-wrap is reflected in the recorded description;
   over budget recorded). The harness gained an optional `converge_side_effect`. `test_planner_integration.py` needed no
@@ -55,7 +54,7 @@ In progress.
   before) and returns `DecompositionDecision.from_plan_row(row)` when the row records a decision; an
   `InvalidPlanDecisionError` becomes `PlanDecisionError` (Stage 3 fails before dispatch). An older-image row is decided
   with `should_decompose` and `_backfill_plan_decision` appends one superseding row (planner row plus
-  `to_plan_fields()`, `ledger_revision` + 1, fresh `created_at`, `decision_recorded_by: "flow"`) through
+  `to_plan_fields()`, `ledger_revision + 1`, fresh `created_at`, `decision_recorded_by: "flow"`) through
   `_append_superseding_plan_row`: a temporary detached worktree on `refs/remotes/origin/<plan_branch>`,
   `atomic_ledger_append`, `validate_ledger_file_unique_ids`, commit, push to the plan branch only, then
   `_sync_local_execution_refs`. A failed write is logged, a `LedgerRewriteError` propagates.
@@ -63,8 +62,8 @@ In progress.
   `{sub_intents, entropy_budget, plan_branch}` contract of `_run_decomposed_plan`.
 - `stages/plan.py` lost the two functions and the entrypoint import (it no longer imports
   `sandbox_executor.entrypoint.executor`); `_format_entropy` stays for `pipeline.py`. `flow/__init__.py` and
-  `stages/execute.py` import the moved names from `plan_decision`. Flow tests that patched helpers at
-  `stages.plan` are re-pointed in Step 5.
+  `stages/execute.py` import the moved names from `plan_decision`. Flow tests that patched helpers at `stages.plan` are
+  re-pointed in Step 5.
 
 ### Step 4: The executor container reads the decision from the plan row
 
@@ -73,13 +72,13 @@ In progress.
   `should_decompose` only for a row without the field; an `InvalidPlanDecisionError` prints a clear error and exits 1
   before any row is written. `main()` gains no branch.
 - The `decomposed` summary writes `plan_decision` (`plan_id`, `plan_branch`, `decision`, `sub_intent_count`) and no
-  `sub_intents`; summary, action and commit texts now read "the plan records N sub-intent(s)". The `over_budget` row
-  and `OVER_BUDGET_EXIT_CODE` are unchanged. `grep sub_intents entrypoint/executor.py` shows one read
+  `sub_intents`; summary, action and commit texts now read "the plan records N sub-intent(s)". The `over_budget` row and
+  `OVER_BUDGET_EXIT_CODE` are unchanged. `grep sub_intents entrypoint/executor.py` shows one read
   (`len(decision.sub_intents)`).
-- `tests/test_executor.py`: four old-contract assertions updated (two summary/stdout texts, the decomposed row shape
-  and the pre-push superseding row); new tests for goal 8 (a) on the container, a recorded `over_budget` winning over
-  a list in the markdown (the recorded `execute` variant would dispatch an agent turn, so the skip-agent path is used
-  to prove the record wins), newest-row reads and the corrupt-record exit. `297 passed`.
+- `tests/test_executor.py`: four old-contract assertions updated (two summary/stdout texts, the decomposed row shape and
+  the pre-push superseding row); new tests for goal 8 (a) on the container, a recorded `over_budget` winning over a list
+  in the markdown (the recorded `execute` variant would dispatch an agent turn, so the skip-agent path is used to prove
+  the record wins), newest-row reads and the corrupt-record exit. `297 passed`.
 
 ### Step 5: Stage 3 executes only the recorded decision; package proofs stay green
 
@@ -87,14 +86,14 @@ In progress.
   `sandbox_executor.decomposition_rule` (no new entrypoint import; only `OVER_BUDGET_EXIT_CODE` and `_sanitize_string`
   remain from the executor); a corrupt recorded decision fails the stage before dispatch; a `decomposed` executor
   summary runs `_run_decomposed_plan` with `{**precheck.to_plan_fields(), "plan_branch": ...}` (the unchanged
-  `sub_intents`/`entropy_budget`/`plan_branch` contract) and fails with "the executor reported 'decomposed' but the
-  plan row records '<decision>'" when the plan row does not record `decomposed`. Docstring rewritten with no growth.
+  `sub_intents`/`entropy_budget`/`plan_branch` contract) and fails with "the executor reported 'decomposed' but the plan
+  row records '<decision>'" when the plan row does not record `decomposed`. Docstring rewritten with no growth.
 - Deviation from the plan's helper names: `tests/flow/test_package_exports.py` requires every move-proof key to be
   re-exported from `flow/__init__.py`, whose budget (`362`) left room for exactly one new name on the existing import
-  line. So `plan_decision.py` defines one new function, `_backfill_plan_row` (row building, worktree append, push,
-  ref sync and logging), the plan's `PlanDecisionError` became a re-raised `InvalidPlanDecisionError` carrying the
-  Stage 3 message, and the record dict is built inline in `execute.py` instead of `_decomposition_record`.
-  `plan_decision.py` is `150` lines.
+  line. So `plan_decision.py` defines one new function, `_backfill_plan_row` (row building, worktree append, push, ref
+  sync and logging), the plan's `PlanDecisionError` became a re-raised `InvalidPlanDecisionError` carrying the Stage 3
+  message, and the record dict is built inline in `execute.py` instead of `_decomposition_record`. `plan_decision.py` is
+  `150` lines.
 - `flow/__init__.py`: `359` lines (budget `362`, unchanged); `_backfill_plan_row` added to the import and `__all__`.
 - `flow_module_budgets.json`: `stages/plan.py` lowered `247 -> 200`, `stages/plan_decision.py` added at `150`; nothing
   raised.
@@ -115,8 +114,8 @@ In progress.
 
 ### Step 6: Hermetic tests for goal 8 (a) and (g)
 
-- `tests/test_decomposition_rule.py` (added in Step 1): round trip of all three decisions, `None` for older rows,
-  eleven corrupt-record cases, entrypoint-free imports (AST), re-export identity.
+- `tests/test_decomposition_rule.py` (added in Step 1): round trip of all three decisions, `None` for older rows, eleven
+  corrupt-record cases, entrypoint-free imports (AST), re-export identity.
 - `tests/flow/stages/test_plan_decision.py` (new, bare origin plus host clone via `flow_repos` and `BudgetRoleAgents`):
   a recorded `decomposed` row is returned as is and the plan branch tip is unchanged (goal 8 a, flow side); a recorded
   `execute` is never re-decided from a plan file that lists sub-intents; a corrupt record raises, fails Stage 3 before
@@ -133,3 +132,18 @@ In progress.
 - Mutation check (once, local, not committed): re-adding `exec_entry["sub_intents"]` in the executor and removing the
   `return recorded` read-first branch in `plan_decision.py` made `8` of the new and updated tests fail
   (`8 failed, 387 passed`); both files were restored from backups and `git diff` on `src/` was clean afterwards.
+
+### Step 7: Document the new plan-row fields in `docs/ledger_schema.md`
+
+- Stage record matrix: the Stage 2 row lists `entropy`, `entropy_budget`, `decomposition_decision` and `sub_intents` and
+  replaces "never writes one" with the one-time flow back-fill (`ledger_revision + 1`, `decision_recorded_by: "flow"`,
+  temporary worktree, plan branch only, newest row wins); the Stages 1-3 sentence names the back-fill next to the
+  empty-diff row.
+- New "Plan row decomposition decision" paragraph after the `entropy_budget` paragraph (types,
+  `{slug, description, goal}` items, `sandbox_executor/decomposition_rule.py`, the shared serialisation, historic rows
+  never rewritten).
+- Stage 3 executor rows and the summary field list: `decomposed` summaries carry `plan_decision` (`plan_id`,
+  `plan_branch`, `decision`, `sub_intent_count`) and no `sub_intents`; historic summaries with `sub_intents` stay valid
+  and are no longer read. `plans.jsonl` field list gained `decomposition_decision`, `sub_intents`, `ledger_revision` and
+  `decision_recorded_by`.
+- `npx prettier --write` then `--check` on both markdown files: the second pass is a no-op.

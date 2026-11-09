@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-73fd6f03",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-09T08:07:17.181164+00:00",
+  "updated_ts": "2026-11-09T08:07:17.181164+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794187281-2f8b7b83"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794182541-unique-plan-and-execution-ids/P-1794182557-antigravity-agent-gemini-3.8-flash-medium/E-1794182857-antigravity-agent-gemini-3.8-flash-medium/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 3 finding detected: FIND-R1-003-01",
+    "symptoms": [
+      "Mandated test file apps/sandbox-executor/tests/test_unique_stage_ids.py is missing; new ID builders and ledger validation functions lack unit test coverage."
+    ]
+  }
+}

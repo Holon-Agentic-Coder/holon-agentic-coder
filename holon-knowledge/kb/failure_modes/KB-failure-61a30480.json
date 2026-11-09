@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-61a30480",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-09T08:07:17.196200+00:00",
+  "updated_ts": "2026-11-09T08:07:17.196200+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794187281-5a645a78"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794182541-unique-plan-and-execution-ids/P-1794182557-antigravity-agent-gemini-3.8-flash-medium/E-1794182857-antigravity-agent-gemini-3.8-flash-medium/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 3 finding detected: FIND-R3-003-01",
+    "symptoms": [
+      "Mandated test suite 'apps/sandbox-executor/tests/test_unique_stage_ids.py' was not created; unit tests covering stage ID builders (build_plan_id, build_execution_id, build_stage_disambiguator) and ledger collision validation (validate_ledger_unique_ids) are missing."
+    ]
+  }
+}

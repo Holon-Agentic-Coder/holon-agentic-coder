@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-51149212",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-09T08:07:17.267519+00:00",
+  "updated_ts": "2026-11-09T08:07:17.267519+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794198534-6e69ba63"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794196901-resolver-uv-available-and-fail-loudly/P-1794196917-8bed7894-claude-agent-claude-opus-5-5/E-1794197319-7ead078e-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R3-001-01",
+    "symptoms": [
+      "CHANGES REQUESTED heading now appends the approval fraction, but review_loop.template.md:72 and scaffold.py:313 still document the old heading; update them."
+    ]
+  }
+}

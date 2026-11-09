@@ -19,7 +19,8 @@ from sandbox_executor.redaction import redact_agent_secrets
 
 # Key the resolver entrypoint sets to True in every result it writes; the host's input payload never carries it.
 RESOLVER_RESULT_MARKER = "resolver"
-OUTPUT_TAIL_MAX_CHARS = 2000
+# Half the 2,000-character error context bound, so a short error plus its tail survives the loop's halt reason intact.
+OUTPUT_TAIL_MAX_CHARS = 1000
 
 
 def bounded_output_tail(text: str | None, limit: int = OUTPUT_TAIL_MAX_CHARS) -> str:
@@ -51,7 +52,7 @@ def resolver_error_text(error: Any, exit_code: Any = None, output_tail: Any = No
     if code and f"code {code}" not in message:
         message += f" (resolver exit code {code})"
     tail = bounded_output_tail(str(output_tail)) if output_tail else ""
-    if tail and tail not in message:
+    if tail and tail.removeprefix("…") not in message:
         message += f"; output tail: {tail}"
     return message
 

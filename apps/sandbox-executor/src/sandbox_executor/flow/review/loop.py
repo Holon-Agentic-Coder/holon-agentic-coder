@@ -73,6 +73,7 @@ from sandbox_executor.review_ensemble import (
 from sandbox_executor.review_report import (
     FindingDisposition,
     FindingRow,
+    ci_failure_finding,
     collect_review_data,
     deserialize_finding_dispositions,
     finding_signature,
@@ -245,6 +246,7 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
     ensemble_verdict: ConsensusVerdict | None = None
     # Why the review failed before or outside the ensemble (sandbox refusal, target, diff); never posted.
     infra_error: str | None = None
+    resolver_error: str | None = None  # Why a resolver pass failed; the loop halts on it before any adjudication.
     resolved_target: ReviewTarget | None = None
 
     ledger_dir = os.path.join(repo_dir, "holon-knowledge", "ledger")
@@ -586,27 +588,11 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
 
         iter_findings = list(collect_review_data(reviewers).findings)
         if ci_finding:
-            failing_names = _extract_failed_ci_check_names(last_ci_status, tests_failed)
-            if failing_names:
-                ci_summary = f"CI checks failed in iteration {iteration}: {', '.join(failing_names)}."
-            else:
-                ci_summary = f"CI checks failed in iteration {iteration}."
-            ci_row = FindingRow(
-                id=f"FIND-CI-{iteration:03d}",
-                severity="important",
-                path="",
-                line=None,
-                reviewers=(),
-                summary=ci_summary,
-                recommendation="Run linters and tests locally, apply fixes, and commit the changes.",
-            )
+            ci_row = ci_failure_finding(iteration, _extract_failed_ci_check_names(last_ci_status, tests_failed))
             iter_findings.append(ci_row)
             if finding_action_ids is not None:
-                ci_id = f"FIND-CI-{iteration:03d}"
-                act_id = finding_action_ids.get(ci_id)
-                if not act_id:
-                    act_id = generate_action_id("ACT-FIND")
-                    finding_action_ids[ci_id] = act_id
+                act_id = finding_action_ids.get(ci_row.id) or generate_action_id("ACT-FIND")
+                finding_action_ids[ci_row.id] = act_id
                 sig_key = str(finding_signature(ci_row.severity, ci_row.path, ci_row.line, ci_row.summary))
                 finding_action_ids.setdefault(sig_key, act_id)
 
@@ -663,6 +649,15 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
             ),
             run_resolver_fn,
         )
+        if resolver_outcome.error:
+            # Halt before adjudication: a failed pass's fallback dispositions are no rejections to filter on, and a
+            # head it committed but did not push is never re-reviewed. Open findings are recorded once after the loop.
+            resolver_error = _bounded_error_context(resolver_outcome.error)
+            pending_dispositions = ()
+            context.log(
+                f"[Review Loop] Halting review loop at iteration {iteration}: resolver failed: {resolver_error}"
+            )
+            break
         rejected_now = [d for d in resolver_outcome.dispositions if d.disposition == "rejected"]
         applied_now = [d for d in resolver_outcome.dispositions if d.disposition == "applied"]
         if rejected_now:
@@ -691,12 +686,6 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 "proceeding to re-review in full."
             )
 
-        if resolver_outcome.error and not head_changed and not rejected_now:
-            suppressed_ledger_records += recorder.record(iteration, resolver_outcome.dispositions)
-            pending_dispositions = ()
-            context.log(f"[Review Loop] Halting review loop at iteration {iteration}: {resolver_outcome.error}")
-            break
-
     if resolver_enabled and not effective_dry_run:
         if pending_dispositions:
             suppressed_ledger_records += recorder.record(iteration, pending_dispositions)
@@ -716,7 +705,11 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
     passes = iteration - first_label + 1
     not_measured = tests_not_measured or (effective_dry_run and passes > 0 and not finding_ids)
     consensus_status = _loop_status(
-        consensus_reached, ensemble_verdict, bool(pr_refusal_error or infra_error), is_dirty, not_measured
+        consensus_reached,
+        ensemble_verdict,
+        bool(pr_refusal_error or infra_error or resolver_error),
+        is_dirty,
+        not_measured,
     )
     approval_score = 1.0 if consensus_reached else 0.0
 
@@ -819,6 +812,8 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
     halt_reasons: list[str] = []
     if pr_refusal_error or infra_error:
         halt_reasons.append(_bounded_error_context(str(pr_refusal_error or infra_error)))
+    if resolver_error:
+        halt_reasons.append(f"resolver failed: {resolver_error}")
     if post_error:
         halt_reasons.append("consensus post failed")
     if tests_not_measured:
@@ -917,9 +912,10 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "review_data": consensus_data["review_data"],
         "dispositions": consensus_data["dispositions"],
         "no_convergence": no_convergence,
+        "resolver_error": resolver_error,
     }
-    if pr_refusal_error or infra_error or post_error:
-        loop_result["error"] = pr_refusal_error or infra_error or post_error
+    if pr_refusal_error or infra_error or post_error or resolver_error:
+        loop_result["error"] = pr_refusal_error or infra_error or post_error or f"resolver failed: {resolver_error}"
     return loop_result
 
 

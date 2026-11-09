@@ -17,7 +17,7 @@
     "review/__init__.py": 1,
     "review/cli.py": 106,
     "review/ensemble.py": 141,
-    "review/loop.py": 966,
+    "review/loop.py": 962,
     "review/records.py": 316,
     "review/resolver.py": 362,
     "review/workspace.py": 168,

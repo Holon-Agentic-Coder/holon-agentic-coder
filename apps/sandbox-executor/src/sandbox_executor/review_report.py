@@ -53,6 +53,7 @@ __all__ = [
     "build_on_disk_review_report",
     "build_pr_review_consensus_report",
     "build_review_consensus_report",
+    "ci_failure_finding",
     "collect_review_data",
     "deserialize_finding_dispositions",
     "finding_signature",
@@ -113,6 +114,20 @@ class FindingRow:
     reviewers: tuple[int, ...]
     summary: str
     recommendation: str
+
+
+def ci_failure_finding(iteration: int, failing_names: Sequence[str]) -> FindingRow:
+    """The ``FIND-CI-<iteration>`` finding the review loop hands the resolver when CI failed in ``iteration``."""
+    names = f": {', '.join(failing_names)}" if failing_names else ""
+    return FindingRow(
+        id=f"FIND-CI-{iteration:03d}",
+        severity="important",
+        path="",
+        line=None,
+        reviewers=(),
+        summary=f"CI checks failed in iteration {iteration}{names}.",
+        recommendation="Run linters and tests locally, apply fixes, and commit the changes.",
+    )
 
 
 @dataclass(frozen=True)

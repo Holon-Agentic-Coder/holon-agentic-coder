@@ -93,3 +93,30 @@ post.
 - Full suite after the step: 3287 passed, 21 skipped.
 - Learning target: the output tail reaches the host through the result file, so host-side capture in `cli/__init__.py`
   is needed only for hard kills, which now report "exited with code N and produced no resolver result".
+
+### Step 5: Halt the review loop on any resolver failure, before adjudication
+
+- `_run_review_loop_iterations`: directly after `_invoke_resolver_pass`, `if resolver_outcome.error:` sets the new
+  loop-local `resolver_error` (bounded), drops `pending_dispositions` as the old error branch did, logs
+  `[Review Loop] Halting review loop at iteration N: resolver failed: ...` and breaks, before `rejected_now`,
+  `rejected_history`, `rejected_ids`, the applied recording or the `resolved_target` move. The old
+  `error and not head_changed and not rejected_now` branch is removed, which also closes the "committed but push failed"
+  path. The still-open findings are recorded once by the existing post-loop fallback.
+- `resolver_error` makes the status `failed` (through the existing `failed` flag of `_loop_status`), is appended to
+  `halt_reasons` as `resolver failed: ...`, and is returned as `resolver_error` and as `error` in the loop result, so
+  Stage 4 reports "Autonomous review halted: resolver failed: ...". The consensus post is unchanged: the deciding
+  iteration's genuine verdicts are still posted (never `--approve`, since consensus was not reached).
+- Budget: the `FIND-CI-<n>` row construction moved to `review_report.ci_failure_finding` (the module that owns
+  `FindingRow`), with identical action-id bookkeeping. `review/loop.py` `966 -> 962` lines; budget lowered to 962. The
+  function's `noqa` list is unchanged and no suppression was added.
+- `resolver_result.OUTPUT_TAIL_MAX_CHARS` lowered from 2,000 to 1,000 so a short error plus its tail fits in the loop's
+  2,000-character bounded halt reason; a tail already contained in the error is not repeated.
+- Declared test change (1 of the plan's threshold of 3): `test_review_dispatch.py`
+  `test_stage4_host_integrity_failed_ci_blocks_approval`. Its single fake dispatcher wrote a review payload with exit 0
+  for the resolver dispatch too, which is exactly a container that leaves no resolver result; the old loop treated that
+  as a pass. The fake now writes a minimal resolver result (`resolver: true`, no dispositions, no change) for
+  `--resolve` calls, so the test keeps asserting what it is for (failed CI blocks approval, the post is not approved).
+  The `test_sandbox_hermetic_guard` canary failed only because it re-runs that test in a subprocess.
+- Declared fixture change: the move-proof digest of `_run_review_loop_iterations` was refreshed and listed in
+  `amended_definitions`.
+- Full suite after the step: 3287 passed, 21 skipped.

@@ -182,6 +182,9 @@ def test_stage4_host_integrity_failed_ci_blocks_approval(tmp_path: Path, monkeyp
     def fake_dispatcher(_role, _runner, _model, _args, **kwargs):
         result_file = kwargs.get("result_file")
         payload = serialize_review_outcome(_three_approved_reviewers(), ConsensusVerdict.APPROVED)
+        if "--resolve" in _args:
+            # A resolver pass that changed nothing still writes a resolver result; one that leaves none halts the loop.
+            payload = {"resolver": True, "dispositions": [], "head_sha": "abc1234", "pushed": False, "error": None}
         Path(result_file).write_text(json.dumps(payload), encoding="utf-8")
         return 0
 

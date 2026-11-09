@@ -128,17 +128,14 @@ planning agent and the executor enforces. New rows always carry it. It is resolv
 `entropy_budget`, else `DEFAULT_ENTROPY_BUDGET` (`15.0`). Historic rows without the field are never rewritten; the
 resolver falls back for them.
 
-Plan row decomposition decision (optional on historic rows): the planner records the outcome of the decomposition rule
-(`sandbox_executor/decomposition_rule.py`, `should_decompose`) on the plan row, applied to the plan file as committed
-(after prettier), so Stage 3 executes only that recorded decision and never re-decides it. The fields are
-`decomposition_decision` (string: `"execute"`, `"decomposed"` or `"over_budget"`), `entropy` (number, the plan entropy
-compared), `entropy_budget` (the resolved budget, see above) and, only when `decomposed`, `sub_intents` (a non-empty
-list of `{slug, description, goal}` string objects, the plan's explicit sub-intent list as parsed). Writer and readers
-share one serialisation (`DecompositionDecision.to_plan_fields()` and `DecompositionDecision.from_plan_row()`); a
-recorded value outside those shapes fails Stage 3 before dispatch. Historic rows are never rewritten: a row without
-`decomposition_decision` is decided by the same rule and, in a flow run, superseded once by a row the flow appends with
-`ledger_revision + 1` and `decision_recorded_by: "flow"` (every planner field repeated unchanged). A direct
-`holon execute` of such a row decides it in the executor with the same rule.
+Plan row decomposition decision (optional on historic rows): the planner records the outcome of `should_decompose`
+(`sandbox_executor/decomposition_rule.py`), applied to the committed plan file, so Stage 3 executes only that decision:
+`decomposition_decision` (`"execute"`, `"decomposed"` or `"over_budget"`), `entropy`, `entropy_budget` and, only when
+`decomposed`, `sub_intents` (the parsed `{slug, description, goal}` list). Writer and readers share
+`DecompositionDecision.to_plan_fields()`/`from_plan_row()`; any other recorded shape fails Stage 3 before dispatch. A
+historic row without the field is decided by the same rule and, in a flow run, superseded once by a flow row (the
+planner's fields plus the decision, a fresh `created_at`, `ledger_revision + 1`, `decision_recorded_by: "flow"`); a
+direct `holon execute` decides it in the executor.
 
 Child intent rows: when Stage 3 runs a recorded sub-intent list, the flow creates each child through the same Stage 1
 intent creator, so each child appends an ordinary intent row on its own intent branch. Its payload carries `slug`,
@@ -782,15 +779,10 @@ Appended when a plan is proposed by the planner:
 - `entropy_budget`: The resolved entropy budget the planner showed the planning agent and the executor enforces (number,
   `>= 0`; the intent row's `entropy_budget`, else `DEFAULT_ENTROPY_BUDGET` `15.0`). Always written on new rows; optional
   on historic rows (see the plan row `entropy_budget` paragraph under the stage matrix).
-- `decomposition_decision`: The recorded outcome of the decomposition rule, `execute`, `decomposed` or `over_budget`
-  (see the plan row decomposition decision paragraph under the stage matrix). Written on new rows; optional on historic
-  rows.
-- `sub_intents`: _(Only when `decomposition_decision` is `decomposed`)_ The plan's explicit sub-intent list as parsed,
-  each `{slug, description, goal}`; Stage 3 runs one child intent per item.
-- `ledger_revision`: _(Only on a superseding row)_ Integer revision; the flow's back-fill writes the superseded row's
-  revision (default `1`) plus one. Readers take the newest matching row.
-- `decision_recorded_by`: _(Only on a superseding row)_ `"flow"` when the flow back-filled the decision of an older
-  planner image's row.
+- `decomposition_decision`, `sub_intents` (only when `decomposed`): the recorded decision (see the plan row
+  decomposition decision paragraph under the stage matrix); optional on historic rows.
+- `ledger_revision`, `decision_recorded_by: "flow"`: _(Only on the flow's superseding back-fill row)_ the superseded
+  row's revision (default `1`) plus one. Readers take the newest matching row.
 
 #### Execution Ledger (`executions.jsonl`)
 

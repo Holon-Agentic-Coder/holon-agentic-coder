@@ -35,6 +35,7 @@ from sandbox_executor.review_ensemble import (
     ConsensusVerdict,
     ReviewerResult,
     ReviewerStatus,
+    ReviewerVerdict,
 )
 from sandbox_executor.review_target import ReviewTarget
 
@@ -53,6 +54,7 @@ __all__ = [
     "build_on_disk_review_report",
     "build_pr_review_consensus_report",
     "build_review_consensus_report",
+    "ci_failure_finding",
     "collect_review_data",
     "deserialize_finding_dispositions",
     "finding_signature",
@@ -113,6 +115,20 @@ class FindingRow:
     reviewers: tuple[int, ...]
     summary: str
     recommendation: str
+
+
+def ci_failure_finding(iteration: int, failing_names: Sequence[str]) -> FindingRow:
+    """The ``FIND-CI-<iteration>`` finding the review loop hands the resolver when CI failed in ``iteration``."""
+    names = f": {', '.join(failing_names)}" if failing_names else ""
+    return FindingRow(
+        id=f"FIND-CI-{iteration:03d}",
+        severity="important",
+        path="",
+        line=None,
+        reviewers=(),
+        summary=f"CI checks failed in iteration {iteration}{names}.",
+        recommendation="Run linters and tests locally, apply fixes, and commit the changes.",
+    )
 
 
 @dataclass(frozen=True)
@@ -625,11 +641,18 @@ def _pr_link(repo_dir: str, target: str, consensus_data: Mapping[str, Any]) -> s
 # --- Sections -------------------------------------------------------------------------------------------------------
 
 
-def _heading(consensus_data: Mapping[str, Any], configured: int) -> str:
-    """The verdict heading, driven by the ensemble verdict alone."""
+def _approvals(reviewers: Sequence[ReviewerResult]) -> int:
+    """The number of reviewers that completed and recorded an ``APPROVED`` verdict."""
+    return sum(1 for r in reviewers if r.status is ReviewerStatus.COMPLETED and r.verdict is ReviewerVerdict.APPROVED)
+
+
+def _heading(consensus_data: Mapping[str, Any], approvals: int, configured: int) -> str:
+    """The verdict heading: the ensemble verdict decides the word, the recorded approvals the fraction."""
     if _is_approved(consensus_data):
-        return f"## ✅ Ensemble Consensus Review — APPROVED ({configured}/{configured})"
-    return f"## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration {consensus_data.get('iterations', 1)})"
+        return f"## ✅ Ensemble Consensus Review — APPROVED ({approvals}/{configured})"
+    iteration = consensus_data.get("iterations", 1)
+    fraction = f"{approvals}/{configured} approved"
+    return f"## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration {iteration}) — {fraction}"
 
 
 def _severity_counts(findings: Sequence[FindingRow]) -> str:
@@ -747,9 +770,12 @@ def build_review_consensus_report(
     data = collect_review_data(reviewers)
     configured = int(consensus_data.get("ensemble_size") or len(reviewers))
     report_title = title or resolve_report_title(consensus_data.get("intent_data"), None, clean_target)
-    body = _verified_section(data.verified) if _is_approved(consensus_data) else _findings_section(data.findings)
+    # Open findings are always listed; an approved report shows them after its Verified list.
+    body = _findings_section(data.findings)
+    if _is_approved(consensus_data):
+        body = _verified_section(data.verified) + (["", *body] if data.findings else [])
     lines = [
-        _heading(consensus_data, configured),
+        _heading(consensus_data, _approvals(reviewers), configured),
         "",
         _evaluation(repo_dir, clean_target, consensus_data, data, report_title),
         "",

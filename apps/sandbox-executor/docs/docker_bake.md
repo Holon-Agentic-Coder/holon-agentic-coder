@@ -109,6 +109,16 @@ cold build (`--no-cache`) and an incremental cached build:
 | `holon/agent-antigravity` | ~29s                      | ~0.4s                    | Antigravity CLI installer execution                 |
 | **Total Build & Load**    | **~118s (concurrent)**    | **~2.8s (DAG eval)**     | Local daemon export & layer loading                 |
 
+### Base Image Contents: Pinned uv
+
+`holon/base`, and so every agent image and the orchestrator, ships `uv` and `uvx` in `/usr/local/bin`, on the `PATH` of
+the `holon` user. The Stage 4 resolver needs them for its pre-push verification (`uv run task lint` and
+`uv run task test`). The version is pinned once, by the global `UV_VERSION` build argument at the top of the
+`Dockerfile`, and the binaries are copied from the official `ghcr.io/astral-sh/uv:${UV_VERSION}` image through the
+`uv-bin` source stage (not a build target). The base stage runs `uv --version` as the `holon` user, so an image without
+a working uv fails to build. To build with another release, override the argument:
+`docker buildx bake -f docker-bake.hcl --set '*.args.UV_VERSION=x.y.z'`.
+
 ---
 
 ## Layer Caching & BuildKit Mount Scoping

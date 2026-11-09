@@ -22,7 +22,8 @@ def test_snapshot_was_taken_with_this_python_minor_version():
 def test_snapshot_covers_every_flow_py_definition():
     definitions = load_snapshot()["definitions"]
     top_level = [key for key in definitions if "." not in key and not key.startswith("<const>:")]
-    assert len(top_level) >= 124
+    # 124 at the split; 120 after E-1794222712-a56d947e deleted the Stage 4 named-volume session definitions.
+    assert len(top_level) >= 120
 
 
 def test_every_definition_moved_unchanged():

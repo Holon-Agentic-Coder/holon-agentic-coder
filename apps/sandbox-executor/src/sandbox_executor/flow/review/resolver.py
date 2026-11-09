@@ -35,6 +35,7 @@ from sandbox_executor.review_report import (
     with_reviewer_detail,
 )
 from sandbox_executor.review_target import ReviewTarget
+from sandbox_executor.worktree_mount import WorktreeMount
 
 
 @dataclass(frozen=True)
@@ -56,9 +57,8 @@ class ResolverInput:
     findings: Sequence[FindingRow]
     action_ids: Mapping[str, str] = field(default_factory=dict)
     rejected_findings: Sequence[FindingDisposition] = ()
-    # Host-side dispatch context only: the session's persistent workspace volume for the container
-    # dispatch path. Never part of the serialised resolver payload.
-    workspace_volume: str | None = None
+    # Host-side dispatch context only, never serialised: the host worktree to bind-mount into the container.
+    workspace_mount: WorktreeMount | None = None
 
 
 def _dispatch_review_resolver(
@@ -66,12 +66,11 @@ def _dispatch_review_resolver(
     target: ReviewTarget,
     iteration: int,
     resolver_input: ResolverInput,
-    workspace_volume: str | None = None,
+    workspace_mount: WorktreeMount | None = None,
 ) -> ResolverOutcome:
     """Dispatch one resolver pass into the review-loop role container via ``_dispatch_role``.
 
-    ``workspace_volume`` names the session's persistent workspace volume (see
-    :func:`_dispatch_review_ensemble`); None preserves the clone-per-pass dispatch.
+    ``workspace_mount`` is the host worktree to bind-mount; None keeps the container's own ephemeral checkout.
     """
     tmp_dir = os.path.expanduser("~/.holon/tmp")
     os.makedirs(tmp_dir, exist_ok=True)
@@ -117,9 +116,9 @@ def _dispatch_review_resolver(
         with open(result_file, "w", encoding="utf-8") as f:
             json.dump(input_payload, f, indent=2)
 
-        # The volume kwarg travels only when set, keeping injected _dispatch_role seams source-compatible.
-        volume_kwargs = {"review_workspace_volume": workspace_volume} if workspace_volume is not None else {}
-        exit_code = _dispatch_role(context, "review-loop", container_args, result_file=result_file, **volume_kwargs)
+        # The mount kwarg travels only when set, keeping injected _dispatch_role seams source-compatible.
+        mount_kwargs = {"workspace_mount": workspace_mount} if workspace_mount is not None else {}
+        exit_code = _dispatch_role(context, "review-loop", container_args, result_file=result_file, **mount_kwargs)
         data: dict[str, Any] = {}
         if os.path.exists(result_file) and os.path.getsize(result_file) > 0:
             with contextlib.suppress(OSError, ValueError), open(result_file, encoding="utf-8") as f:
@@ -310,7 +309,7 @@ def _invoke_resolver_pass(
     lookup = {k: v for k, v in lookup.items() if v}
     resolved_input = dataclasses.replace(resolver_input, action_ids=lookup)
     if run_resolver_fn is None:
-        return _dispatch_review_resolver(context, target, iteration, resolved_input, resolver_input.workspace_volume)
+        return _dispatch_review_resolver(context, target, iteration, resolved_input, resolver_input.workspace_mount)
     try:
         raw = run_resolver_fn(
             target=target,

@@ -59,3 +59,22 @@ In progress.
 - The module is 469 lines, above the plan's ~360 estimate (it is not in the flow budget file); the extra lines are
   docstrings required by `ruleset.md` §2.
 - `tests/test_flow_target_worktree.py` and `tests/test_git.py`: 50 passed, unchanged.
+
+### Step 3: `cli/commands/_flow_worktree.py`, redirect and checkpoint refusal
+
+- Moved `_CHECKPOINT_TARGET_HINT`, `_extract_flow_slug`, `_flow_target_branch`, `_effective_flow_target`,
+  `_nearest_existing_parent`, `_should_provision`, `_provision_flow_worktree` and `_ensure_flow_worktree` (renamed
+  `_ensure_attached_worktree`, body unchanged) into the new module. `flow.py` went from 482 to 333 lines; the new module
+  is 282 lines.
+- Deviation from the plan: the redirect runs after the pre-flight probe, not before it.
+  `tests/test_preflight.py::test_quota_exhausted_probe_aborts_flow_before_stage_one` pins the contract "Aborting before
+  any branch, checkpoint or ledger write" on a fixture repository on `main`, and provisioning `flow-<slug>` before the
+  probe broke it. `ensure_flow_worktree` (before preflight) now refuses default-branch checkpoints and accepts a
+  default-branch CLI target; `redirect_default_branch_target` (after preflight, before `_build_flow_context` and
+  `run_flow_pipeline`) provisions or reuses the sibling and rewrites `args.target_worktree` and a resumed context's
+  `target_worktree`. No stage runs before either.
+- Run summary prints `target worktree: <path>` and the JSON result always carries `target_worktree`.
+- `--target-worktree` help for `holon flow` comes from `TARGET_WORKTREE_HELP`.
+- Declared test change: the patch target in `tests/test_flow_target_worktree.py:259` now names
+  `sandbox_executor.cli.commands._flow_worktree.ensure_worktree`.
+- `tests/test_flow_target_worktree.py`, `tests/test_preflight.py`, `tests/flow`: 808 passed.

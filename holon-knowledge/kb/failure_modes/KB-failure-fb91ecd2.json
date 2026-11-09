@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-fb91ecd2",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-09T00:26:16.074232+00:00",
+  "updated_ts": "2026-11-09T00:26:16.074232+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794179113-981ad7be",
+      "ACT-FIND-1794179109-147eaeac"
+    ],
+    "success_count": 0,
+    "failure_count": 3,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794136091-persist-review-loop-sandbox-across-iterations/P-1794136106-claude-agent-claude-fable-5/E-1794141703-claude-agent-claude-fable-5/_",
+    "description": "Reproduced failure across 3 executions with identical context.",
+    "action": "Review Loop iteration 8 finding detected: FIND-CI-008",
+    "symptoms": [
+      "Findings detected: ['FIND-CI-008']"
+    ]
+  }
+}

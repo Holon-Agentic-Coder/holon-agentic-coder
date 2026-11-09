@@ -23,7 +23,8 @@ post.
 
 - The branch was already on top of the plan commit `fe34e88`, so no rebase was needed.
 - The sandbox had no `uv`. Installed `uv==0.13.7` (the newest PyPI release) with `pip install --user`. `uv lock --check`
-  passes against the repository's `uv.lock` (`version = 1`, `revision = 3`) with no lock change. Pin: `UV_VERSION=0.13.7`.
+  passes against the repository's `uv.lock` (`version = 1`, `revision = 3`) with no lock change. Pin:
+  `UV_VERSION=0.13.7`.
 - Baseline: `uv run pytest tests/test_review_loop.py tests/test_review_report.py tests/test_container_images.py` gave
   176 passed, 7 skipped in `2.05s`. `uv run task lint` passed; the budgets check reported 28 modules within budget.
 - Budgets: `review/loop.py` 966/966, `review/resolver.py` 368/368, `github/review_post.py` 216/216.
@@ -38,3 +39,16 @@ post.
   package (next to `review_report.py`, which the flow already imports), so the flow package gains no definitions and no
   budget entry; only the digests of the flow definitions that this intent deliberately changes are refreshed in the
   snapshot, with each key and reason declared in an `amended_definitions` map in that fixture.
+
+### Step 2: Pinned uv in holon-base with a build-time smoke check
+
+- `Dockerfile`: global `ARG UV_VERSION=0.13.7` before the first `FROM`; a `uv-bin` source stage
+  (`FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-bin`); `COPY --from=uv-bin /uv /uvx /usr/local/bin/` in `holon-base`
+  after the Node.js layer, while still root; `RUN uv --version` after `USER holon` and the `ENV PATH` line. No uv
+  environment variables were set; the agent stages' cache mounts are unchanged. `docker-bake.hcl` is unchanged.
+- `docs/docker_bake.md`: new "Base Image Contents: Pinned uv" note with the override command.
+- Test (e): `TestDockerfileUvInstallation` (4 hermetic tests) plus an `integration_test`-marked
+  `TestContainerUvExecutionNonRoot` mirroring the `gh` check.
+- Docker is not available in this sandbox, so the image was not built and the `uv-bin` tag was not pulled. The
+  maintainer should run `docker buildx bake -f apps/sandbox-executor/docker-bake.hcl base` once; the smoke check makes a
+  wrong tag a loud build failure.

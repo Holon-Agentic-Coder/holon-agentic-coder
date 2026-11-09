@@ -256,7 +256,10 @@ def test_flow_provisions_absent_target_under_a_repo(repos: dict[str, Path]) -> N
 
 
 def test_flow_reports_the_provisioning_error_for_a_bare_target(repos: dict[str, Path]) -> None:
-    with patch("sandbox_executor.cli.commands.flow.ensure_worktree", side_effect=RuntimeError("worktree add exploded")):
+    with patch(
+        "sandbox_executor.cli.commands._flow_worktree.ensure_worktree",
+        side_effect=RuntimeError("worktree add exploded"),
+    ):
         pipeline, exit_mock, stderr = _run_flow(
             [str(repos["intent"]), *_FLOW_RUNNER_ARGS, "--target-worktree", str(repos["bare"])]
         )

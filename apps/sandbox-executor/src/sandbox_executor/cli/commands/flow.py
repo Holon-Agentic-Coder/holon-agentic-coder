@@ -6,12 +6,16 @@ import argparse
 import json
 import logging
 import os
-import re
 import sys
 from typing import Any
 
 from sandbox_executor import cli
 from sandbox_executor.agent_defaults import Resolution
+from sandbox_executor.cli.commands._flow_worktree import (
+    TARGET_WORKTREE_HELP,
+    ensure_flow_worktree,
+    redirect_default_branch_target,
+)
 from sandbox_executor.cli.options import (
     _AGENT_HELP,
     _MODEL_HELP,
@@ -20,13 +24,6 @@ from sandbox_executor.cli.options import (
     add_target_worktree_option,
 )
 from sandbox_executor.flow import FlowContext, FlowStage
-from sandbox_executor.git_flow import (
-    derive_worktree_layout,
-    ensure_worktree,
-    is_bare_repository,
-    is_working_tree,
-    target_worktree_problem,
-)
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 
 logger = logging.getLogger(__name__)
@@ -34,8 +31,6 @@ logger = logging.getLogger(__name__)
 ORDER = 60
 
 _FROM_STAGE_CHOICES = [s.value for s in FlowStage if s != FlowStage.COMPLETED]
-
-_CHECKPOINT_TARGET_HINT = ", or pass --target-worktree to resume against a different attached worktree"
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -80,7 +75,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         action="store_true",
         help="Output pipeline status and stage results in structured JSON format to stdout.",
     )
-    add_target_worktree_option(parser, default=".")
+    add_target_worktree_option(parser, default=".", help=TARGET_WORKTREE_HELP)
     parser.add_argument(
         "--skip-push",
         action="store_true",
@@ -279,11 +274,13 @@ def _build_flow_context(
 
 
 def _report_flow_summary(context: Any, result_dict: dict[str, Any], json_output: bool) -> None:
+    result_dict.setdefault("target_worktree", context.target_worktree)
     if json_output:
         print(json.dumps(result_dict, indent=2))
         return
 
     print("\n================== Holon Flow Summary ==================")
+    print(f"  target worktree: {context.target_worktree}")
     stage_order = ["intent", "plan", "execute", "review", "calibrate"]
     for st in stage_order:
         res = context.stage_results.get(st)
@@ -303,152 +300,6 @@ def _report_flow_summary(context: Any, result_dict: dict[str, Any], json_output:
             print(f"To approve manually, run: {review_res.payload['human_approval_command']}\n")
 
 
-def _extract_flow_slug(
-    args: argparse.Namespace,
-    context: Any | None,
-    intent_data: dict[str, Any],
-) -> str:
-    """Extract or derive a sanitised slug identifier for flow worktree naming."""
-    slug: str | None = None
-    if intent_data and isinstance(intent_data, dict):
-        slug = intent_data.get("slug")
-    if not slug and context is not None:
-        slug = getattr(context, "slug", None)
-        if not slug and hasattr(context, "intent_data") and isinstance(context.intent_data, dict):
-            slug = context.intent_data.get("slug")
-    if not slug and getattr(args, "intent_file", None):
-        stem = os.path.splitext(os.path.basename(args.intent_file))[0]
-        slug = re.sub(r"[^a-zA-Z0-9_\-]+", "-", stem).strip("-")
-    if not slug:
-        repo_base = os.path.basename(os.path.abspath(getattr(args, "target_worktree", ".") or "."))
-        slug = re.sub(r"[^a-zA-Z0-9_\-]+", "-", repo_base).strip("-") or "task"
-    return slug
-
-
-def _flow_target_branch(intent_data: dict[str, Any], context: Any | None) -> str:
-    """Return the base branch a newly provisioned flow worktree branches from (default: 'origin/main')."""
-    if intent_data and isinstance(intent_data, dict) and intent_data.get("target_branch"):
-        return str(intent_data["target_branch"])
-    if (
-        context is not None
-        and getattr(context, "intent_data", None)
-        and isinstance(context.intent_data, dict)
-        and context.intent_data.get("target_branch")
-    ):
-        return str(context.intent_data["target_branch"])
-    return "origin/main"
-
-
-def _effective_flow_target(args: argparse.Namespace, context: Any | None) -> tuple[str, bool]:
-    """Return the target worktree the run will use and whether it was restored from a checkpoint.
-
-    Mirrors ``_update_flow_context``: an explicit --target-worktree other than '.' wins, otherwise a checkpoint
-    resume keeps the checkpoint's recorded target_worktree.
-    """
-    explicit = getattr(args, "target_worktree", None)
-    if explicit and explicit != ".":
-        return explicit, False
-    if context is not None:
-        return getattr(context, "target_worktree", None) or ".", True
-    return explicit or ".", False
-
-
-def _nearest_existing_parent(path: str) -> str:
-    """Return the closest existing ancestor directory of path."""
-    current = os.path.dirname(os.path.abspath(path))
-    while not os.path.exists(current) and os.path.dirname(current) != current:
-        current = os.path.dirname(current)
-    return current
-
-
-def _should_provision(target_worktree: str, from_checkpoint: bool, slug: str) -> bool:
-    """Return True for the auto-provisioned cases: a bare clone, or an absent CLI target that is safe to provision.
-
-    A plain non-git directory is never provisioned, because the base repository lookup would otherwise fall back to
-    the current working directory's repository. For the same reason an absent CLI target is provisioned only when it
-    is the derived ``flow-<slug>`` path or its nearest existing parent lies inside a git repository, so a deleted or
-    mistyped path fails fast instead. An absent checkpoint target is not re-provisioned either, so that a removed run
-    worktree is reported rather than silently replaced.
-    """
-    if is_bare_repository(target_worktree):
-        return True
-    if from_checkpoint or os.path.exists(target_worktree):
-        return False
-    derived_path, _ = derive_worktree_layout(target_worktree, slug)
-    if derived_path == os.path.normpath(os.path.realpath(target_worktree)):
-        return True
-    parent = _nearest_existing_parent(target_worktree)
-    return is_working_tree(parent) or is_bare_repository(parent)
-
-
-def _provision_flow_worktree(
-    args: argparse.Namespace,
-    context: Any | None,
-    intent_data: dict[str, Any],
-    target_worktree: str,
-    from_checkpoint: bool,
-) -> tuple[str, str]:
-    """Auto-provision or attach a flow worktree.
-
-    Returns:
-        tuple[str, str]: The worktree path and an empty hint, or target_worktree and a hint naming the redacted
-            provisioning error when provisioning fails.
-    """
-    slug = _extract_flow_slug(args, context, intent_data)
-    try:
-        worktree_path = ensure_worktree(
-            target_worktree, slug=slug, target_branch=_flow_target_branch(intent_data, context)
-        )
-    except (RuntimeError, ValueError) as e:
-        error = cli.redact_cli_error(e)
-        logger.warning("Could not auto-provision a git worktree from '%s': %s", target_worktree, error)
-        return target_worktree, f" (auto-provisioning from this target failed: {error})"
-    logger.info("Provisioned or attached git worktree for flow '%s' at: %s", slug, worktree_path)
-    if not from_checkpoint:
-        args.target_worktree = worktree_path
-    if context is not None:
-        context.target_worktree = worktree_path
-    return worktree_path, ""
-
-
-def _ensure_flow_worktree(
-    args: argparse.Namespace,
-    context: Any | None,
-    intent_data: dict[str, Any],
-) -> bool:
-    """Ensure the run's target worktree is an attached, non-bare git working tree before any stage runs.
-
-    A bare or absent target is auto-provisioned as before (a checkpoint-restored target only when bare). Any other
-    target that is not a working tree, or one provisioning could not fix, prints an actionable error and exits 1.
-
-    Returns:
-        bool: True when the target is usable, False after the failure exit (for a patched ``sys.exit``).
-    """
-    target_worktree, from_checkpoint = _effective_flow_target(args, context)
-    if is_working_tree(target_worktree):
-        return True
-
-    resolved, provision_hint = target_worktree, ""
-    if _should_provision(target_worktree, from_checkpoint, _extract_flow_slug(args, context, intent_data)):
-        resolved, provision_hint = _provision_flow_worktree(
-            args, context, intent_data, target_worktree, from_checkpoint
-        )
-
-    if from_checkpoint:
-        problem = target_worktree_problem(
-            resolved,
-            subject=f"Checkpoint '{args.checkpoint}' target_worktree",
-            hint=provision_hint + _CHECKPOINT_TARGET_HINT,
-        )
-    else:
-        problem = target_worktree_problem(resolved, hint=provision_hint)
-    if problem is not None:
-        print(f"Error: {problem}", file=sys.stderr)
-        sys.exit(1)
-        return False
-    return True
-
-
 def run(args: argparse.Namespace) -> int | None:
     """Execute the flow command."""
     try:
@@ -460,10 +311,12 @@ def run(args: argparse.Namespace) -> int | None:
             return None
         context, intent_data, flow_agent, flow_model = resolved
 
-        if not _check_skip_push(args, context) or not _ensure_flow_worktree(args, context, intent_data):
+        if not _check_skip_push(args, context) or not ensure_flow_worktree(args, context, intent_data):
             return None
 
         if not _check_dry_run_and_preflight(args, context, flow_agent, flow_model):
+            return None
+        if not redirect_default_branch_target(args, context, intent_data):
             return None
 
         context = _build_flow_context(args, context, intent_data, flow_agent, flow_model)

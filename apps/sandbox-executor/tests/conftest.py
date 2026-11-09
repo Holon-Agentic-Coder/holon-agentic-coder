@@ -14,6 +14,7 @@ from tests.hermetic_fixtures import (
     describe_index_changes,
     knowledge_index_snapshot,
 )
+from tests.worktree_fixtures import init_feature_worktree
 
 # Ambient variables that can carry a live credential or change which code path a test exercises.
 _AMBIENT_CREDENTIAL_NAMES = ("GITHUB_TOKEN", "GH_TOKEN")
@@ -178,3 +179,44 @@ def gh_write_guard(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
     yield blocked
     if blocked:
         pytest.fail("Unmocked gh write command(s) ran in this test: " + "; ".join(blocked), pytrace=False)
+
+
+#: Tests (path under tests/, then a class, function or ``Class.method`` qualname) that run from `feature_worktree_cwd`.
+#: Listed here rather than marked in place so the long CLI test modules do not grow.
+_FEATURE_WORKTREE_CWD_TESTS = frozenset(
+    {
+        ("test_cli.py", "TestHolonFlowCLI"),
+        ("test_cli.py", "test_review_loop_handler_masks_a_quoted_password_head"),
+        ("test_cli.py", "test_calibrate_handler_masks_a_quoted_password_head"),
+        ("test_calibration.py", "TestCLICalibrateCommand"),
+        ("test_review_loop.py", "TestCLIDispatchReviewLoop"),
+        ("flow/test_pipeline.py", "TestFlowCLI.test_cli_flow_dry_run_dispatch"),
+    }
+)
+
+
+@pytest.fixture(autouse=True)
+def _listed_feature_worktree_cwd(request: pytest.FixtureRequest) -> None:
+    """Apply `feature_worktree_cwd` to the tests in `_FEATURE_WORKTREE_CWD_TESTS`."""
+    try:
+        rel_path = request.node.path.relative_to(os.path.dirname(__file__)).as_posix()
+    except ValueError:
+        return
+    name = request.node.originalname
+    cls = request.node.cls
+    if {(rel_path, name), (rel_path, cls and cls.__name__), (rel_path, cls and f"{cls.__name__}.{name}")} & (
+        _FEATURE_WORKTREE_CWD_TESTS
+    ):
+        request.getfixturevalue("feature_worktree_cwd")
+
+
+@pytest.fixture
+def feature_worktree_cwd(tmp_path_factory, monkeypatch) -> str:
+    """Run the test from a fixture worktree on a non-default branch instead of the real repository.
+
+    The default ``--target-worktree .`` then means the same thing whichever branch the developer's or CI's checkout is
+    on: ``holon flow`` does not redirect it and ``holon review`` and ``holon calibrate`` do not refuse it.
+    """
+    path = init_feature_worktree(tmp_path_factory.mktemp("feature-worktree"))
+    monkeypatch.chdir(path)
+    return path

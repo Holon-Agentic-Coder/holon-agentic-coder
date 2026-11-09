@@ -209,6 +209,31 @@ The evolution pipeline traverses five deterministic stages, representing a singl
 | **4. Review Loop** | PR Review Loop        | `holon review-loop <execution_branch>` | PR raised + sandboxed reviewer ensemble (unanimity) + micro-actions in `executions.jsonl` |
 | **5. Calibrate**   | Calibration Analysis  | `holon calibrate <execution_branch>`   | `/calibrated` branch + `plans/P-*_calibration.md` (included in PR diff)                   |
 
+#### Target Worktree and the Default Branch
+
+`holon flow` runs host git operations (checkouts, commits, pushes) in its target worktree, so it never uses a worktree
+that has the default branch checked out. Naming the main worktree as `--target-worktree`, or running from it with the
+default `.`, selects the repository and the base branch only:
+
+- **Redirect:** when the target worktree has the intent's `target_branch` checked out (`origin/main` and `main` are the
+  same branch here), the run happens in the sibling worktree `flow-<slug>` next to the repository's top-level directory,
+  on branch `flow-<slug>` branched off `origin/<target_branch>`. An existing `flow-<slug>` worktree is reused as it is.
+  The redirect is logged at info level and happens after the pre-flight probe and before any stage, so every stage, the
+  checkpoint and the run summary (`target worktree: <path>`, and `target_worktree` in `--json` output) use the flow
+  worktree. The main worktree's `HEAD`, branch and `git status` are never changed.
+- **Other branches:** a target worktree on any other branch is used as it is. A detached `HEAD` is not a default-branch
+  checkout. Bare and absent targets keep the existing auto-provisioning.
+- **Checkpoints:** a new checkpoint records the flow worktree. Resuming from a checkpoint whose recorded
+  `target_worktree` has the default branch checked out fails before any stage runs, with an error naming the
+  `flow-<slug>` worktree to pass as `--target-worktree` (passing the main worktree explicitly redirects the resume as
+  above). Nothing is created by the refusal.
+- **Engine guard:** `run_flow_pipeline` also fails the first stage, before any stage or checkpoint, when the context's
+  target worktree has the base branch checked out, so callers that bypass the CLI are protected too.
+- **Direct commands:** `holon review` (and its `review-loop` and `pr-review-loop` aliases) and `holon calibrate` commit
+  review and calibration records to the branch they run on, so they refuse a worktree that has the repository's default
+  branch (the branch `origin/HEAD` points at, otherwise `main`) checked out, with an error naming the path and how to
+  create a dedicated worktree. Run them in the `flow-<slug>` worktree of the run instead.
+
 #### Flow Equivalence Guarantee
 
 `holon flow <intent.json>` is equivalent to running the five commands above by hand, in order. Stages 1-3 call the same

@@ -6,6 +6,7 @@ import argparse
 import sys
 
 from sandbox_executor import cli
+from sandbox_executor.cli.commands._worktree_guard import DEFAULT_BRANCH_GUARD_HELP, default_branch_worktree_allowed
 from sandbox_executor.cli.options import add_target_worktree_option
 
 ORDER = 50
@@ -26,7 +27,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         action="store_true",
         help="Output calibration metrics as JSON to stdout.",
     )
-    add_target_worktree_option(parser, default=".")
+    add_target_worktree_option(parser, default=".", help=DEFAULT_BRANCH_GUARD_HELP)
     parser.add_argument(
         "--no-commit",
         dest="skip_commit",
@@ -39,6 +40,8 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 def run(args: argparse.Namespace) -> int:
     """Execute the calibrate command."""
     try:
+        if not default_branch_worktree_allowed(args.target_worktree, "holon calibrate"):
+            return 1
         cli.run_calibrate(
             execution_branch=args.execution_branch,
             target_worktree=args.target_worktree,

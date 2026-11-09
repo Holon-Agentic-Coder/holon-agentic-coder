@@ -64,3 +64,19 @@ Implementation of plan `P-1794192045-c23d4516-claude-agent-claude-opus-5-5`: spl
 - Checks: imports of `sandbox_executor.flow`, `sandbox_executor.cli`, `sandbox_executor.entrypoint.review_loop` and
   `sandbox_executor.review_target` succeed. `ruff check .` and `ruff format --check .` are clean, and
   `test_complexity_gate.py` passes (5 passed). A preview AST comparison found 0 missing and 0 differing statements.
+
+### Step 3: AST move proof, committed snapshot and re-export tests
+
+- `tests/flow/move_proof.py` holds `definition_digests` (sha256 of `ast.dump` without attributes, keyed by qualified
+  name: top-level definitions, class members as `Class.member`, assignments as `<const>:target`), the package parser
+  and the snapshot loader. `/tmp/flowsplit/make_snapshot.py` (scratch, not committed) ran that same function on
+  `git cat-file -p aa8d5f19…` to write `tests/flow/fixtures/flow_py_definitions.json`: 180 keys, Python `3.13`.
+- `tests/flow/test_move_proof.py` parses the package from disk and does not import it. It asserts that the minor
+  Python version matches, that the snapshot has at least 124 top-level definitions, and that the missing, extra,
+  duplicated and differing sets are empty. It also asserts that the plumbing (`logger`, `__all__`, the late binding)
+  appears only in its allowed form and place.
+- `tests/flow/test_package_exports.py` checks each snapshot definition and constant: it is in `flow.__all__`, and
+  `flow.<name>` is the defining submodule's object. It also checks the five re-exported imports, and that
+  `stages.decomposition.PipelineEngine is pipeline.PipelineEngine`.
+- Result: 158 passed. Mutation check: changing `CI_REGISTRATION_TIMEOUT_SECONDS` to `181.0` failed with
+  `definitions whose body changed: ['<const>:CI_REGISTRATION_TIMEOUT_SECONDS (github/ci.py)']`. The change was reverted.

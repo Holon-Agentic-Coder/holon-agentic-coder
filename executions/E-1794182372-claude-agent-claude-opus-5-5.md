@@ -15,11 +15,17 @@ Adds fail-fast validation that the resolved `--target-worktree` of `holon flow` 
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.0   |
-| entropy_actual        | 0.0   |
-| impact_actual         | 0.0   |
-| cost_actual           | 0.0   |
-| learning_value_actual | 0.0   |
+| success_actual        | 0.95  |
+| entropy_actual        | 6.0   |
+| impact_actual         | 70.0  |
+| cost_actual           | 11.0  |
+| learning_value_actual | 4.0   |
+
+Rationale: all five intent goals and acceptance criteria are delivered and verified. `success_actual = 0.95`, not 1.0,
+because of three small, documented deviations: the `--skip-push` check was reordered, one existing test fixture (not its
+assertions) was changed, and the engine validator is an attribute instead of a constructor keyword. Entropy stayed under
+the predicted `7.0`. The only surprises were the two pre-existing tests whose checkpoints recorded plain directories,
+and the `PLR0913` probe. `EV_actual = 0.95 * 70.0 + 0.5 * 4.0 - 0.3 * 6.0 - 11.0 = 66.50 + 2.00 - 1.80 - 11.00 = 55.70`.
 
 ## Steps Executed
 
@@ -38,8 +44,8 @@ In `cli/commands/flow.py`, `_ensure_flow_worktree()` now returns `bool`. Branch 
 `_flow_target_branch()`, and provisioning (with `RuntimeError`/`ValueError` caught and logged, redacted) moved to
 `_provision_flow_worktree()`. `_should_provision()` limits auto-provisioning to a bare clone or an absent CLI target, so
 a plain non-git directory is never handed to `ensure_worktree()` and its cwd fallback. After that, the final path goes
-through `target_worktree_problem()`. On a problem the command prints `Error: <message>`, calls `sys.exit(1)` and
-returns `False`, and `run()` returns before the preflight gate.
+through `target_worktree_problem()`. On a problem the command prints `Error: <message>`, calls `sys.exit(1)` and returns
+`False`, and `run()` returns before the preflight gate.
 
 Deviation: the `--skip-push` outside `--dry-run` rejection was moved out of `_check_dry_run_and_preflight()` into a new
 `_check_skip_push()` that runs _before_ the worktree check. Without this, the existing
@@ -63,9 +69,9 @@ were committed together.
 
 `PipelineEngine` gained a `worktree_validator` attribute (default `None`) and a `_pre_run_guard_error()` helper that
 returns the existing `SKIP_PUSH_DISPATCH_ERROR` first, then the validator's message for `context.target_worktree`. The
-inline skip-push block in `run()` now calls the helper and keeps the same `_stage_failure()`, halt log and
-no-checkpoint return, with no new `# noqa`. `run_flow_pipeline()` sets `engine.worktree_validator =
-target_worktree_problem`, imported from `sandbox_executor.git_flow`. No entrypoint import was added.
+inline skip-push block in `run()` now calls the helper and keeps the same `_stage_failure()`, halt log and no-checkpoint
+return, with no new `# noqa`. `run_flow_pipeline()` sets `engine.worktree_validator = target_worktree_problem`, imported
+from `sandbox_executor.git_flow`. No entrypoint import was added.
 
 Deviation: the validator is an attribute, not a constructor keyword. A probe confirmed that ruff's `PLR0913` counts
 keyword-only parameters too (`6 > 5`), so the plan's documented class-attribute fallback was used. Direct
@@ -79,8 +85,8 @@ Every fixture builds real repositories under `tmp_path` and pins the cwd to a no
 - `tests/test_cli.py` (local `flow_target_env` fixture, 10 tests): a plain directory and a deleted path are rejected
   with exit 1, the pipeline is not called, and no `flow-*` sibling is created. An attached worktree is accepted. A
   checkpoint recording a plain or deleted path is rejected with and without `--from-stage review` (4 parametrised
-  cases), checked with the checkpoint-prefixed message. An explicit valid `--target-worktree` overrides a bad
-  checkpoint target. A checkpoint recording a bare clone still provisions `flow-wt-check`.
+  cases), checked with the checkpoint-prefixed message. An explicit valid `--target-worktree` overrides a bad checkpoint
+  target. A checkpoint recording a bare clone still provisions `flow-wt-check`.
 - `tests/test_flow.py` (`TestTargetWorktreeValidation`, 11 tests): `target_worktree_problem()` returns `None` for a
   source repository, an attached worktree and a worktree subdirectory. It gives the expected reason, absolute path and
   `git worktree add` fix for a bare clone, a plain directory, a file and a missing path, and honours the caller's
@@ -88,3 +94,19 @@ Every fixture builds real repositories under `tmp_path` and pins the cwd to a no
   engine without a validator keeps arbitrary targets. `run_flow_pipeline()` wires the validator (it rejects a plain
   directory and accepts an attached worktree). The CLI still provisions a bare target after validation. The existing
   `test_flow_cli_auto_creates_worktree_from_bare_repo` is unchanged.
+
+### Step 6: Lint and test gates
+
+All gates passed once each; see below. The intent has no timing target, so no repeated runs were made.
+
+## Tests Run
+
+| command                                                                                                                   | result                                 | pytest time |
+| ------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- | ----------- |
+| `uv run pytest apps/sandbox-executor/tests/test_cli.py apps/sandbox-executor/tests/test_flow.py -n auto --dist worksteal` | 755 passed, 0 failed (53 subtests)     | 5.23s       |
+| `uv run task test` (full suite, once)                                                                                     | 3100 passed, 0 failed                  | 30.20s      |
+| `uv run task lint`                                                                                                        | exit 0                                 | n/a         |
+| `uv run task lint-docs`                                                                                                   | exit 0 (after prettier on this record) | n/a         |
+
+Median of the single full-suite run: 30.20s. Before the full run, an intermediate run of the whole test directory with
+`-x` at the Step 4 commit gave 3082 passed, 14 skipped in 46.63s (before the Step 5 tests were added).

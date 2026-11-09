@@ -36,3 +36,15 @@ In progress.
 - Added `InvalidPlanDecisionError`, `DecompositionDecision.to_plan_fields()` and `DecompositionDecision.from_plan_row()`
   with a strict shape check of recorded `sub_intents`; `tests/test_decomposition_rule.py` covers the round trip, the
   older-row `None`, corrupt records, the entrypoint-free imports and the re-export identity.
+
+### Step 2: The planner records the decision on the plan row
+
+- `entrypoint/planner.py`: `converge_prettier` now runs before the ledger append (it only touches the plan markdown),
+  and a new `_plan_decision_fields(plan_entry, plan_md_path, intent_data)` helper reads the formatted plan back and
+  returns `should_decompose(...).to_plan_fields()`, merged into the row before the single `atomic_ledger_append`.
+  `main()` keeps its existing suppressions and gains no branch; over-budget plans are still appended (as
+  `over_budget`).
+- `tests/test_planner.py`: four tests (in-budget `execute` without `sub_intents`; listed plan `decomposed` with the list
+  equal to `parse_sub_intent_list` of the committed file; a prettier re-wrap is reflected in the recorded description;
+  over budget recorded). The harness gained an optional `converge_side_effect`. `test_planner_integration.py` needed no
+  change.

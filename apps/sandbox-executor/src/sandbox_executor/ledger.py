@@ -1013,3 +1013,16 @@ def validate_ledger_file_unique_ids(
             except json.JSONDecodeError:
                 continue
     validate_ledger_unique_ids(records, id_key=id_key, parent_key=parent_key)
+
+
+def validate_stage_ledger(repo_dir: str | None, stage: Any) -> None:
+    """Validate stage ledger uniqueness for a completed stage (e.g., plan or execute)."""
+    base_dir = repo_dir or "."
+    stage_val = getattr(stage, "value", stage)
+    stage_name = str(stage_val).lower()
+    if stage_name == "plan":
+        ledger_path = os.path.join(base_dir, "holon-knowledge", "ledger", "plans.jsonl")
+        validate_ledger_file_unique_ids(ledger_path, id_key="plan_id", parent_key="intent_branch")
+    elif stage_name == "execute":
+        ledger_path = os.path.join(base_dir, "holon-knowledge", "ledger", "executions.jsonl")
+        validate_ledger_file_unique_ids(ledger_path, id_key="execution_id", parent_key="plan_branch")

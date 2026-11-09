@@ -72,11 +72,7 @@ from sandbox_executor.entrypoint.executor import (
     _sanitize_string,
     should_decompose,
 )
-from sandbox_executor.entrypoint.planner import (
-    _sanitize_model_name,
-    load_metrics_config,
-    parse_metrics,
-)
+from sandbox_executor.entrypoint.planner import _sanitize_model_name, load_metrics_config, parse_metrics
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR, pre_run_guard_error
 from sandbox_executor.git import (
     EMPTY_DIFF_FAILURE_REASON,
@@ -107,7 +103,7 @@ from sandbox_executor.ledger import (
     parse_commit_trailers,
     try_append_action_record,
     try_append_ledger_line,
-    validate_ledger_file_unique_ids,
+    validate_stage_ledger,
 )
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.review_ensemble import (
@@ -5956,15 +5952,8 @@ class PipelineEngine:
         self.context.log(f"<-- [Flow Engine] Exited stage: {stage.value.upper()} (status={result.status.value})")
         self.context.log(result.summary_line())
 
-        repo_dir = getattr(self.context, "target_worktree", None) or getattr(self.context, "repo_dir", None) or "."
-        if stage == FlowStage.PLAN:
-            plans_ledger = os.path.join(repo_dir, "holon-knowledge", "ledger", "plans.jsonl")
-            if os.path.exists(plans_ledger):
-                validate_ledger_file_unique_ids(plans_ledger, id_key="plan_id", parent_key="intent_branch")
-        elif stage == FlowStage.EXECUTE:
-            executions_ledger = os.path.join(repo_dir, "holon-knowledge", "ledger", "executions.jsonl")
-            if os.path.exists(executions_ledger):
-                validate_ledger_file_unique_ids(executions_ledger, id_key="execution_id", parent_key="plan_branch")
+        repo_dir = getattr(self.context, "target_worktree", None) or getattr(self.context, "repo_dir", None)
+        validate_stage_ledger(repo_dir, stage)
 
     def handle_stage_failure(self, stage: FlowStage, error: Exception) -> StageResult:
         """Handle unexpected exceptions during stage execution."""

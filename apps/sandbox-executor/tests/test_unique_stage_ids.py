@@ -13,6 +13,7 @@ from sandbox_executor.ledger import (
     build_stage_disambiguator,
     validate_ledger_file_unique_ids,
     validate_ledger_unique_ids,
+    validate_stage_ledger,
 )
 
 
@@ -154,6 +155,56 @@ class TestUniqueStageIDs(unittest.TestCase):
             )
             with self.assertRaises(ValueError):
                 validate_ledger_file_unique_ids(str(ledger_file), id_key="plan_id", parent_key="intent_branch")
+
+    def test_validate_stage_ledger_success_and_collision(self):
+        """validate_stage_ledger validates plan and execution stage ledgers correctly."""
+        # Non-existent files/directories do not raise
+        validate_stage_ledger("/non/existent/path", "plan")
+        validate_stage_ledger("/non/existent/path", "execute")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ledger_dir = Path(tmp_dir) / "holon-knowledge" / "ledger"
+            ledger_dir.mkdir(parents=True, exist_ok=True)
+
+            # Valid plans ledger
+            plans_file = ledger_dir / "plans.jsonl"
+            plans_file.write_text(
+                json.dumps({"plan_id": "P-1", "intent_branch": "I-100/_"})
+                + "\n"
+                + json.dumps({"plan_id": "P-2", "intent_branch": "I-200/_"})
+                + "\n"
+            )
+            validate_stage_ledger(tmp_dir, "plan")
+
+            # Duplicate plan_id across distinct intents raises
+            plans_file.write_text(
+                json.dumps({"plan_id": "P-dup", "intent_branch": "I-100/_"})
+                + "\n"
+                + json.dumps({"plan_id": "P-dup", "intent_branch": "I-200/_"})
+                + "\n"
+            )
+            with self.assertRaises(ValueError):
+                validate_stage_ledger(tmp_dir, "plan")
+
+            # Valid executions ledger
+            execs_file = ledger_dir / "executions.jsonl"
+            execs_file.write_text(
+                json.dumps({"execution_id": "E-1", "plan_branch": "I-100/P-1/_"})
+                + "\n"
+                + json.dumps({"execution_id": "E-2", "plan_branch": "I-100/P-2/_"})
+                + "\n"
+            )
+            validate_stage_ledger(tmp_dir, "execute")
+
+            # Duplicate execution_id across distinct plans raises
+            execs_file.write_text(
+                json.dumps({"execution_id": "E-dup", "plan_branch": "I-100/P-1/_"})
+                + "\n"
+                + json.dumps({"execution_id": "E-dup", "plan_branch": "I-100/P-2/_"})
+                + "\n"
+            )
+            with self.assertRaises(ValueError):
+                validate_stage_ledger(tmp_dir, "execute")
 
 
 if __name__ == "__main__":

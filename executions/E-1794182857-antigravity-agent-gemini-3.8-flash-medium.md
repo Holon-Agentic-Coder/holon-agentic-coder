@@ -37,3 +37,13 @@ ledger uniqueness validation enforces identifier uniqueness across distinct pare
 - Verified existing test suites via
   `uv run pytest apps/sandbox-executor/tests/test_planner.py apps/sandbox-executor/tests/test_ledger_query.py apps/sandbox-executor/tests/test_ledger_lock.py apps/sandbox-executor/tests/test_ledger_append_only.py`
   (141 passed in 3.40s).
+
+### Step 2: Encapsulate Post-Stage Ledger Validation and Enforce Strict Net Line Delta <= 0
+
+- Encapsulated post-stage ledger validation into `validate_stage_ledger` in
+  `apps/sandbox-executor/src/sandbox_executor/ledger.py` supporting both plan and execution stages.
+- Invoked `validate_stage_ledger` compactly in `PipelineEngine._after_stage` in
+  `apps/sandbox-executor/src/sandbox_executor/flow.py` and collapsed existing multi-line imports, reducing `flow.py`
+  line count below `origin/main` baseline (6,159 vs 6,160 lines; net delta: -1).
+- Added comprehensive unit tests in `apps/sandbox-executor/tests/test_unique_stage_ids.py` covering
+  `validate_stage_ledger` success paths and collision detection.

@@ -11,12 +11,8 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
-from sandbox_executor.entrypoint.executor import (
-    DECISION_DECOMPOSED,
-    DECISION_OVER_BUDGET,
-    OVER_BUDGET_EXIT_CODE,
-    _sanitize_string,
-)
+from sandbox_executor.decomposition_rule import DECISION_DECOMPOSED, DECISION_OVER_BUDGET, InvalidPlanDecisionError
+from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE, _sanitize_string
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _dispatch_role, _stage_failure, recorded_test_pass_rate
 from sandbox_executor.flow.git_refs import (
@@ -87,16 +83,12 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
     With ``resume_partial`` (a Stage 3 resume), the newest failed execution branch under the plan whose latest summary
     row carries a ``partial_head`` is passed to the executor as a fourth argument, so it continues that partial work.
 
-    The stage never halts for a human. The plan is judged against the entropy budget the planner persisted (see
-    ``entrypoint.executor.should_decompose``), with one of three outcomes:
+    The stage never halts for a human. It executes only the decision the plan row records (``stages.plan_decision``):
 
     - *execute*: the executor implements the plan as described above;
-    - *decomposed*: the plan lists an explicit sub-intent list, which the executor records on its summary row; each
-      item then runs, one at a time, through the full pipeline as a child intent targeting this intent's branch, and
-      the stage succeeds only when every child does;
-    - *over budget*: the plan exceeds its budget without such a list; the stage fails with ``payload["over_budget"]``
-      (before dispatch when the plan can be read, or from the executor's ``over_budget`` row), and the pipeline engine
-      returns to Stage 2 a bounded number of times before failing for good.
+    - *decomposed*: each item of the plan row's sub-intent list (never the executor's row, which only refers to it, and
+      a disagreement is an error) runs through the full pipeline as a child intent; all children must succeed;
+    - *over budget* (above the budget, no list): fails with ``payload["over_budget"]``; the engine re-plans (bounded).
     """
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log("Starting Stage 3: Plan Execution")
@@ -172,7 +164,10 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
         repo_dir, target_branch=target_branch, stage_name="execute", branch=context.plan_branch
     )
 
-    precheck = _plan_budget_decision(context)
+    try:
+        precheck = _plan_budget_decision(context)
+    except InvalidPlanDecisionError as exc:
+        return _stage_failure(context, FlowStage.EXECUTE, start_time, str(exc), dispatched=False)
     if precheck is not None and precheck.decision == DECISION_OVER_BUDGET:
         return _over_budget_failure(context, start_time, precheck.entropy, precheck.entropy_budget, dispatched=False)
     if precheck is not None and precheck.decision == DECISION_DECOMPOSED:
@@ -272,7 +267,12 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
         )
 
     if summary_row is not None and container_status == DECISION_DECOMPOSED:
-        return _run_decomposed_plan(context, start_time, summary_row, base_payload)
+        if precheck is None or precheck.decision != DECISION_DECOMPOSED:
+            recorded = precheck.decision if precheck is not None else "no readable decision"
+            msg = f"Execute stage failed: the executor reported 'decomposed' but the plan row records '{recorded}'."
+            return _stage_failure(context, FlowStage.EXECUTE, start_time, msg, **base_payload)
+        record = {**precheck.to_plan_fields(), "plan_branch": context.plan_branch}
+        return _run_decomposed_plan(context, start_time, record, base_payload)
 
     # Empty-diff guard: shared definition with the executor entrypoint and the review loop.
     plan_ref = _resolve_branch_ref(repo_dir, context.plan_branch)

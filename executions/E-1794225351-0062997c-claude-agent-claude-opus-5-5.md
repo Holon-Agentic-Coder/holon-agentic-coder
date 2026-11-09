@@ -80,3 +80,35 @@ In progress.
   and the pre-push superseding row); new tests for goal 8 (a) on the container, a recorded `over_budget` winning over
   a list in the markdown (the recorded `execute` variant would dispatch an agent turn, so the skip-agent path is used
   to prove the record wins), newest-row reads and the corrupt-record exit. `297 passed`.
+
+### Step 5: Stage 3 executes only the recorded decision; package proofs stay green
+
+- `stages/execute.py` (still `396` lines, its budget): `DECISION_*` and `InvalidPlanDecisionError` come from
+  `sandbox_executor.decomposition_rule` (no new entrypoint import; only `OVER_BUDGET_EXIT_CODE` and `_sanitize_string`
+  remain from the executor); a corrupt recorded decision fails the stage before dispatch; a `decomposed` executor
+  summary runs `_run_decomposed_plan` with `{**precheck.to_plan_fields(), "plan_branch": ...}` (the unchanged
+  `sub_intents`/`entropy_budget`/`plan_branch` contract) and fails with "the executor reported 'decomposed' but the
+  plan row records '<decision>'" when the plan row does not record `decomposed`. Docstring rewritten with no growth.
+- Deviation from the plan's helper names: `tests/flow/test_package_exports.py` requires every move-proof key to be
+  re-exported from `flow/__init__.py`, whose budget (`362`) left room for exactly one new name on the existing import
+  line. So `plan_decision.py` defines one new function, `_backfill_plan_row` (row building, worktree append, push,
+  ref sync and logging), the plan's `PlanDecisionError` became a re-raised `InvalidPlanDecisionError` carrying the
+  Stage 3 message, and the record dict is built inline in `execute.py` instead of `_decomposition_record`.
+  `plan_decision.py` is `150` lines.
+- `flow/__init__.py`: `359` lines (budget `362`, unchanged); `_backfill_plan_row` added to the import and `__all__`.
+- `flow_module_budgets.json`: `stages/plan.py` lowered `247 -> 200`, `stages/plan_decision.py` added at `150`; nothing
+  raised.
+- `tests/flow/fixtures/flow_py_definitions.json`: digests computed with `tests/flow/move_proof.py`'s
+  `package_definitions()`; `_backfill_plan_row` added and `_plan_budget_decision` and `run_execute_stage` refreshed,
+  each listed in `amended_definitions` with the reason; `_over_budget_failure` keeps its digest.
+- `tests/flow/helpers.py`: the fake planners record `to_plan_fields()` on their rows (switch
+  `planner_records_decision=False` models an older image); `BudgetRoleAgents`' executor reads `from_plan_row` (rule
+  fallback), writes `plan_decision` instead of `sub_intents`, and can be forced to report a decision
+  (`executor_decision`) to model a disagreement.
+- Re-pointed patches of `_resolve_branch_ref`, `_read_ledger_rows` and `_git_show_text` from `stages.plan` to
+  `stages.plan_decision` in `test_decomposition.py` and `test_pipeline.py`. Two container-row decomposition tests now
+  assert the new contract: with no readable plan-row decision a `decomposed` executor report fails Stage 3 and no child
+  runs (the depth bound holds trivially).
+- `git diff --stat` against the plan commit shows no change to `stages/decomposition.py`, `pipeline.py`,
+  `checkpoint.py`, `flow/github/`, `docs/architecture.md`, `docs/git_flow.md` or `docs/safety.md`. Flow suite:
+  `505 passed`.

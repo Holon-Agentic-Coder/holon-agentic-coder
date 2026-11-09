@@ -27,7 +27,8 @@
     "stages/decomposition.py": 242,
     "stages/execute.py": 396,
     "stages/intent.py": 204,
-    "stages/plan.py": 247,
+    "stages/plan.py": 200,
+    "stages/plan_decision.py": 150,
     "stages/review.py": 322
   }
 }

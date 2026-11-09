@@ -54,6 +54,12 @@ class TestEntropyBudgetHandoffInFlow:
                 res = run_execute_stage(ctx)
 
         assert res.status != StageStatus.HALTED_FOR_HUMAN
+        if extra and not precheck:
+            # The children come only from the plan row's record: with none read, a decomposed report is an error.
+            assert res.status == StageStatus.FAILED
+            assert "the plan row records 'no readable decision'" in (res.error or "")
+            assert agents.roles() == ["intent-creator", "planner", "executor"]
+            return
         assert res.status == expected_status
         if expected_status == StageStatus.FAILED:
             assert res.payload["over_budget"] is True
@@ -359,17 +365,15 @@ class TestEntropyBudgetHandoffInFlow:
         assert run_intent_stage(ctx).status == StageStatus.SUCCESS
         assert run_plan_stage(ctx).status == StageStatus.SUCCESS
 
-        # With no pre-dispatch decision, the executor's decomposed row is the only signal: the depth bound must hold.
+        # With no pre-dispatch decision the executor's decomposed row carries no list (the plan row is the only
+        # record), so the stage fails without running any child: the depth bound holds trivially.
         with patch("sandbox_executor.flow.stages.execute._plan_budget_decision", return_value=None):
             res = run_execute_stage(ctx)
 
         assert res.status == StageStatus.FAILED
-        assert "deeper than the limit" in (res.error or "")
-        assert res.payload["decomposed"] is True
-        assert res.payload["children"] == []
-        assert flow_module.format_decomposition_summary(res) == [
-            "Decomposed into 2 sub-intent(s); 0 of 2 ran before Stage 3 failed, so no child PR is ready to merge:"
-        ]
+        assert "the plan row records 'no readable decision'" in (res.error or "")
+        assert "children" not in res.payload
+        assert flow_module.format_decomposition_summary(res) == []
         # The executor ran once and no child intent was created.
         assert agents.roles() == ["intent-creator", "planner", "executor"]
         assert len(agents.intent_payloads) == 1
@@ -543,12 +547,17 @@ class TestEntropyBudgetHandoffInFlow:
         ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent", "entropy_budget": 5.0})
         ctx.plan_branch = "I-1-parent/P-2-agent-model/_"
         with (
-            patch("sandbox_executor.flow.stages.plan._resolve_branch_ref", return_value="refs/remotes/origin/plan"),
-            patch("sandbox_executor.flow.stages.plan._read_ledger_rows", return_value=rows),
             patch(
-                "sandbox_executor.flow.stages.plan._git_show_text",
+                "sandbox_executor.flow.stages.plan_decision._resolve_branch_ref",
+                return_value="refs/remotes/origin/plan",
+            ),
+            patch("sandbox_executor.flow.stages.plan_decision._read_ledger_rows", return_value=rows),
+            patch(
+                "sandbox_executor.flow.stages.plan_decision._git_show_text",
                 side_effect=lambda _repo, _ref, path: files.get(path),
             ),
+            # These rows predate the recorded decision; the back-fill write is covered in test_plan_decision.py.
+            patch("sandbox_executor.flow.stages.plan_decision._backfill_plan_row", return_value=None),
         ):
             return flow_module._plan_budget_decision(ctx)
 
@@ -900,7 +909,7 @@ class TestEntropyBudgetHandoffInFlow:
             "sandbox_executor.flow.review.ensemble._resolve_branch_ref",
             "sandbox_executor.flow.stage_conflicts._resolve_branch_ref",
             "sandbox_executor.flow.stages.execute._resolve_branch_ref",
-            "sandbox_executor.flow.stages.plan._resolve_branch_ref",
+            "sandbox_executor.flow.stages.plan_decision._resolve_branch_ref",
         ) as resolve:
             assert flow_module._plan_budget_decision(ctx) is None
         resolve.assert_not_called()
@@ -909,11 +918,12 @@ class TestEntropyBudgetHandoffInFlow:
         ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"})
         ctx.plan_branch = "I-1-parent/P-2-agent-model/_"
         with (
-            patch("sandbox_executor.flow.stages.plan._resolve_branch_ref", return_value=None),
+            patch("sandbox_executor.flow.stages.plan_decision._resolve_branch_ref", return_value=None),
             patch_lookup_sites(
                 "sandbox_executor.flow.stages.execute._read_ledger_rows",
                 "sandbox_executor.flow.stages.intent._read_ledger_rows",
                 "sandbox_executor.flow.stages.plan._read_ledger_rows",
+                "sandbox_executor.flow.stages.plan_decision._read_ledger_rows",
             ) as read_rows,
         ):
             assert flow_module._plan_budget_decision(ctx) is None

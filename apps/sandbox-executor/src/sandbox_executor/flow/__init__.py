@@ -186,7 +186,7 @@ from sandbox_executor.flow.stages.execute import (
 )
 from sandbox_executor.flow.stages.intent import _reused_intent_conflict, run_intent_stage
 from sandbox_executor.flow.stages.plan import _format_entropy, run_plan_stage
-from sandbox_executor.flow.stages.plan_decision import _over_budget_failure, _plan_budget_decision
+from sandbox_executor.flow.stages.plan_decision import _backfill_plan_row, _over_budget_failure, _plan_budget_decision
 from sandbox_executor.flow.stages.review import (
     REVIEW_GIT_ENV,
     TESTS_NOT_MEASURED_ERROR,
@@ -242,6 +242,7 @@ __all__ = [
     "_append_superseding_execution_row",
     "_attach_transported_detail",
     "_augment_pr_text_with_rejected",
+    "_backfill_plan_row",
     "_bounded_error_context",
     "_checkout_execution_branch",
     "_child_context",

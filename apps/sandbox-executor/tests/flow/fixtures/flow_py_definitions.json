@@ -110,7 +110,7 @@
     "_migrate_v0_to_v1": "03a87da0de1db4b95ae57e9cc6e8ec9b6298e6ad8f3e9499c2848212a45422d4",
     "_origin_has_branch": "1aea4e9b057400006b89dbff7c1accb6d93e72f3df1292b757a94162af606ee0",
     "_over_budget_failure": "afafaab50f7e91460df913fb8421f825388f52a63d054a049e63413708771972",
-    "_plan_budget_decision": "f8e6ec4a17cb916802e867ad74ee6f0cc283df4e850c27c8d77536e69b73b325",
+    "_plan_budget_decision": "b2d27d050272824f84ccf2415eeaef2ce606a16a5a895ed40927236fdb7fb56f",
     "_posting_failure_context": "d5365f517146c6efd4ff246a4a1eb77974132fe30c398acc78550d12daef5f2b",
     "_read_ledger_rows": "53065ed77f225abff22f0a497ad21cb1b4706707072bc56472e99251a0ad027e",
     "_record_infrastructure_findings": "7fd492cb4f99f386a835971a4855c5377f5ff708ff3eaf9cbd3080798a88abec",
@@ -174,7 +174,7 @@
     "review_summary_lines": "695785e479462667fffb0e721d815fd0c27dcf3bb77eedeb6a54b715738b19fa",
     "reviewers_sandboxed": "2493c5509b14e20d9240b59cd3fce7f0d9afea3d0be8eac7df9b2abe1700ac2a",
     "run_calibrate_stage": "9d3bdd0eedab36af64f16bd10e5e27b16a240a52182f4e1ad00acbaecb1fdd3d",
-    "run_execute_stage": "cf3914f0224ee8f96267a33618532687c93193ec33acfb5f9f76fc4a1fa0d233",
+    "run_execute_stage": "d163ef16ecf859c23fcfdf2df16d913f5051dec5ff638f52af63ff6ff20eb5b4",
     "run_flow_pipeline": "9eb839dedca4e077107119097d1f0e61fb840a39de8c051e09175d8e86e4e0ef",
     "run_intent_stage": "e1c5953def9707b953b5180bdee943df817b8f2634ad7aaac20a15eb2ca09205",
     "run_plan_stage": "3b410746b3caea63cd0ad2496fcfcf7250093bb528121fba7c808c3b0728b397",
@@ -182,11 +182,15 @@
     "run_review_loop_cli": "35ab628bc65b642a6ffc984febe193e5f0b7471797e0e44462af8754da82ae07",
     "run_review_stage": "ec102f9b7bb40601cec1a96fb65da40eca19945b2fbf75dd3fa9b9e3087dbc4e",
     "save_checkpoint": "d7aebe896012df99b7ad9969f35fd9c20f0c3a53af9d8e4dbec6451d48d4c21b",
-    "validate_intent_questions": "b192729b0c7fe8ee7d45f5755506481059b5f893cbb90a77c991640444abae06"
+    "validate_intent_questions": "b192729b0c7fe8ee7d45f5755506481059b5f893cbb90a77c991640444abae06",
+    "_backfill_plan_row": "2983ee6d06fb5ce44c1e3364e1b0a1c34ebd956bbbf9f2ac7883edb8218351fd"
   },
   "amended_definitions": {
     "_dispatch_review_resolver": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result",
     "_invoke_resolver_pass": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result",
-    "_run_review_loop_iterations": "E-1794206943-d5c00585 (I-1794205862-resolver-commits-locally-skip-push-fix): verify resolver_outcome.pushed is True before advancing review target and recording applied dispositions"
+    "_run_review_loop_iterations": "E-1794206943-d5c00585 (I-1794205862-resolver-commits-locally-skip-push-fix): verify resolver_outcome.pushed is True before advancing review target and recording applied dispositions",
+    "_backfill_plan_row": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan row records the decomposition decision; the flow reads it and back-fills older rows",
+    "_plan_budget_decision": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan row records the decomposition decision; the flow reads it and back-fills older rows",
+    "run_execute_stage": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan row records the decomposition decision; the flow reads it and back-fills older rows"
   }
 }

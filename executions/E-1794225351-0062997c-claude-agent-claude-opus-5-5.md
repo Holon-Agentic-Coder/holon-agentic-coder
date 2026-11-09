@@ -112,3 +112,24 @@ In progress.
 - `git diff --stat` against the plan commit shows no change to `stages/decomposition.py`, `pipeline.py`,
   `checkpoint.py`, `flow/github/`, `docs/architecture.md`, `docs/git_flow.md` or `docs/safety.md`. Flow suite:
   `505 passed`.
+
+### Step 6: Hermetic tests for goal 8 (a) and (g)
+
+- `tests/test_decomposition_rule.py` (added in Step 1): round trip of all three decisions, `None` for older rows,
+  eleven corrupt-record cases, entrypoint-free imports (AST), re-export identity.
+- `tests/flow/stages/test_plan_decision.py` (new, bare origin plus host clone via `flow_repos` and `BudgetRoleAgents`):
+  a recorded `decomposed` row is returned as is and the plan branch tip is unchanged (goal 8 a, flow side); a recorded
+  `execute` is never re-decided from a plan file that lists sub-intents; a corrupt record raises, fails Stage 3 before
+  dispatch and writes nothing; an older row gains exactly one superseding row (`ledger_revision` 2,
+  `decision_recorded_by: "flow"`, planner fields unchanged, planner ledger a byte prefix, second read writes nothing,
+  local branch fast-forwarded, no worktree left); a refused push is logged and the decision still applies; a recorded
+  `ledger_revision` is incremented.
+- `tests/flow/stages/test_decomposition.py` (new class `TestStage3ExecutesThePlanRowsDecision`): goal 8 (a) end to end
+  (children equal the plan row's list, the record handed to `_run_decomposed_plan` is the plan row's, the execution
+  summary has `plan_decision` and no `sub_intents`, no plan row written); an executor disagreeing with the plan row
+  fails Stage 3 with the mismatch message and runs no child; goal 8 (g) for an in-budget plan (`entropy` equal to the
+  budget) with a recorded and an older-image row: same Stage 3 payload keys as before, summary without
+  `plan_decision`/`sub_intents`, and the only difference for the older image is one back-filled row.
+- Mutation check (once, local, not committed): re-adding `exec_entry["sub_intents"]` in the executor and removing the
+  `return recorded` read-first branch in `plan_decision.py` made `8` of the new and updated tests fail
+  (`8 failed, 387 passed`); both files were restored from backups and `git diff` on `src/` was clean afterwards.

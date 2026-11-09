@@ -17,7 +17,7 @@ from unittest.mock import patch
 import pytest
 from sandbox_executor.entrypoint.review_loop import _run_resolver_mode, _verify_before_push, run_cmd
 from sandbox_executor.entrypoint.review_verification import missing_tool_result, verification_error
-from sandbox_executor.flow import ResolverInput, run_review_loop
+from sandbox_executor.flow import ResolverInput, _bounded_error_context, run_review_loop
 from sandbox_executor.flow.review.resolver import _dispatch_review_resolver
 from sandbox_executor.resolver_result import (
     OUTPUT_TAIL_MAX_CHARS,
@@ -34,7 +34,9 @@ from tests.test_review_dispatch import EXEC_TARGET, _host_loop_patches, _make_co
 from tests.test_review_loop import _ensemble_ctx, _LoopStubs, _rows
 
 UV_MISSING_ERROR = verification_error(
-    "lint", missing_tool_result(["uv", "run", "task", "lint"], FileNotFoundError(2, "No such file", "uv"))
+    "lint",
+    missing_tool_result(["uv", "run", "task", "lint"], FileNotFoundError(2, "No such file", "uv")),
+    _bounded_error_context,
 )
 
 

@@ -352,10 +352,10 @@ def _verify_before_push(repo_dir: str) -> tuple[bool, bool, str | None]:
     """
     lint_res = run_cmd(["uv", "run", "task", "lint"], cwd=repo_dir, check=False)
     if lint_res.returncode != 0:
-        return False, False, verification_error("lint", lint_res)
+        return False, False, verification_error("lint", lint_res, _bounded_error_context)
     test_res = run_cmd(["uv", "run", "task", "test"], cwd=repo_dir, check=False)
     if test_res.returncode != 0:
-        return True, False, verification_error("test", test_res)
+        return True, False, verification_error("test", test_res, _bounded_error_context)
     return True, True, None
 
 

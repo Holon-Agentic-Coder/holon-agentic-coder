@@ -65,3 +65,18 @@ In progress.
   `sandbox_executor.entrypoint.executor`); `_format_entropy` stays for `pipeline.py`. `flow/__init__.py` and
   `stages/execute.py` import the moved names from `plan_decision`. Flow tests that patched helpers at
   `stages.plan` are re-pointed in Step 5.
+
+### Step 4: The executor container reads the decision from the plan row
+
+- The `plans.jsonl` lookup keeps the newest matching row (the `break` is gone), so a back-filled row wins.
+- New `_recorded_decision(plan_data, plan_content, intent_data)` helper: `from_plan_row`, falling back to
+  `should_decompose` only for a row without the field; an `InvalidPlanDecisionError` prints a clear error and exits 1
+  before any row is written. `main()` gains no branch.
+- The `decomposed` summary writes `plan_decision` (`plan_id`, `plan_branch`, `decision`, `sub_intent_count`) and no
+  `sub_intents`; summary, action and commit texts now read "the plan records N sub-intent(s)". The `over_budget` row
+  and `OVER_BUDGET_EXIT_CODE` are unchanged. `grep sub_intents entrypoint/executor.py` shows one read
+  (`len(decision.sub_intents)`).
+- `tests/test_executor.py`: four old-contract assertions updated (two summary/stdout texts, the decomposed row shape
+  and the pre-push superseding row); new tests for goal 8 (a) on the container, a recorded `over_budget` winning over
+  a list in the markdown (the recorded `execute` variant would dispatch an agent turn, so the skip-agent path is used
+  to prove the record wins), newest-row reads and the corrupt-record exit. `297 passed`.

@@ -41,6 +41,7 @@ from sandbox_executor.decomposition_rule import DECISION_DECOMPOSED as DECISION_
 from sandbox_executor.decomposition_rule import DECISION_EXECUTE as DECISION_EXECUTE
 from sandbox_executor.decomposition_rule import DECISION_OVER_BUDGET as DECISION_OVER_BUDGET
 from sandbox_executor.decomposition_rule import DecompositionDecision as DecompositionDecision
+from sandbox_executor.decomposition_rule import InvalidPlanDecisionError
 from sandbox_executor.decomposition_rule import is_placeholder_item as is_placeholder_item
 from sandbox_executor.decomposition_rule import parse_sub_intent_list as parse_sub_intent_list
 from sandbox_executor.decomposition_rule import should_decompose as should_decompose
@@ -771,6 +772,26 @@ _PARTIAL_BRANCH_RE = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/E-\d+-[A
 _SHA_RE = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 
 
+def _recorded_decision(
+    plan_data: dict[str, Any], plan_content: str, intent_data: dict[str, Any] | None
+) -> DecompositionDecision:
+    """Return the decomposition decision the plan row records.
+
+    Only a row that predates the record (an older planner image, run outside the flow by a direct 'holon execute') is
+    decided here, by the same rule. A corrupt record exits 1 before any row is written; the flow fails such a plan
+    before dispatch.
+    """
+    try:
+        recorded = DecompositionDecision.from_plan_row(plan_data)
+    except InvalidPlanDecisionError as exc:
+        print(
+            f"Error: the plan row of {plan_data.get('plan_id')} records an invalid decomposition decision: {exc}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return recorded if recorded is not None else should_decompose(plan_data, plan_content, intent_data)
+
+
 def sync_and_reconcile_pre_push(repo_dir: str, target_branch: str = "main") -> tuple[bool, str]:  # noqa: C901, PLR0911, PLR0912, PLR0915
     """Inspect whether remote target branch has advanced, merge it, and reconcile ledger conflicts.
 
@@ -1354,8 +1375,8 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                         if isinstance(plan_id, str) and (
                             plan_branch_prefix.split("/")[-1] == plan_id or plan_branch_prefix.endswith("/" + plan_id)
                         ):
+                            # The newest matching row wins, so a superseding row the flow back-filled is read.
                             plan_data = data
-                            break
                     except Exception as e:
                         print(f"Warning: skipping line {line_no} in plans.jsonl: {e}", file=sys.stderr)
 
@@ -1401,7 +1422,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         ledger_dir = os.path.join(repo_dir, "holon-knowledge/ledger")
         os.makedirs(ledger_dir, exist_ok=True)
 
-        decision = should_decompose(plan_data, plan_content, intent_data)
+        decision = _recorded_decision(plan_data, plan_content, intent_data)
         # Both non-execute outcomes record one summary row, commit and push it for the flow to read, and skip the agent.
         skip_agent = decision.decision != DECISION_EXECUTE
         # Set when a failed execution's code is salvaged; that commit is pushed even when nothing else is staged.
@@ -1421,16 +1442,21 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 "created_at": timestamp_str,
             }
             if decision.decision == DECISION_DECOMPOSED:
-                print(f"Plan lists an explicit sub-intent list of {len(decision.sub_intents)} item(s); recording it.")
-                exec_entry["sub_intents"] = decision.sub_intents
+                count = len(decision.sub_intents)
+                print(f"The plan records an explicit sub-intent list of {count} item(s); referring to it.")
+                # The plan row is the only record of the list; this summary refers to it and never copies it.
+                exec_entry["plan_decision"] = {
+                    "plan_id": plan_data.get("plan_id"),
+                    "plan_branch": plan_branch,
+                    "decision": DECISION_DECOMPOSED,
+                    "sub_intent_count": count,
+                }
                 exec_entry["summary"] = (
-                    f"Plan {plan_branch} lists {len(decision.sub_intents)} sub-intent(s); the flow runs each one "
-                    "through the full pipeline."
+                    f"The plan {plan_branch} records {count} sub-intent(s); the flow runs each one through the full "
+                    "pipeline."
                 )
-                action_text = f"Recorded the sub-intent list of {plan_branch} ({len(decision.sub_intents)} item(s))"
-                commit_msg = (
-                    f"execute: recorded the sub-intent list of {plan_branch} ({len(decision.sub_intents)} item(s))"
-                )
+                action_text = f"The plan {plan_branch} records {count} sub-intent(s)"
+                commit_msg = f"execute: the plan {plan_branch} records {count} sub-intent(s)"
             else:
                 exec_entry["summary"] = (
                     f"Plan entropy {decision.entropy} exceeds the entropy budget {decision.entropy_budget} and the "

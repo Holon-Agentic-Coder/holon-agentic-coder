@@ -2,18 +2,25 @@
 
 ## Summary
 
-Implementation of plan `P-1794192045-c23d4516-claude-agent-claude-opus-5-5`: split
-`apps/sandbox-executor/src/sandbox_executor/flow.py` into the `sandbox_executor.flow` package (move only). In progress.
+Implementation of plan `P-1794192045-c23d4516-claude-agent-claude-opus-5-5`. The 6,159-line
+`apps/sandbox-executor/src/sandbox_executor/flow.py` is now the `sandbox_executor.flow` package: 23 focused modules plus
+four `__init__.py` files. It was a pure move, generated from the original blob. An AST snapshot test proves 0 missing, 0
+extra and 0 changed definitions (180 keys). All 100 `from sandbox_executor.flow import ...` statements in `src` and
+`tests` resolve unchanged. Every test patch now targets the submodule that looks the name up: 318 sites, mapped by a
+measured lookup record and guarded by a new test. `tests/test_flow.py` is split into 17 files under `tests/flow/`, with
+all 337 node IDs kept. A per-module size ratchet runs in `task lint` and in pytest, and `docs/architecture.md` has the
+module map. The full suite gave 3281 passed and 0 failed. `task lint` and `task lint-docs` pass, and the ledgers are
+untouched.
 
 ## Actual Metrics
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.0   |
-| entropy_actual        | 0.0   |
-| impact_actual         | 0.0   |
-| cost_actual           | 0.0   |
-| learning_value_actual | 0.0   |
+| success_actual        | 1.0   |
+| entropy_actual        | 13.9  |
+| impact_actual         | 82.0  |
+| cost_actual           | 30.0  |
+| learning_value_actual | 6.5   |
 
 ## Steps Executed
 
@@ -189,3 +196,74 @@ Implementation of plan `P-1794192045-c23d4516-claude-agent-claude-opus-5-5`: spl
   `apps/sandbox-executor/README.md:357` (`uv run pytest apps/sandbox-executor/tests/test_flow.py`) and docstrings in
   `tests/test_turns.py` and `tests/test_unique_stage_ids.py`.
 - `uv run task lint-docs` passed after `npx prettier --write` on the doc and on these notes.
+
+### Step 8: Validate the whole change
+
+- Not rebased: the execution protocol forbids rebasing here, and the entrypoint handles pushing and the PR. No PR was
+  opened from this sandbox. The draft PR description is below.
+- Acceptance criteria:
+  - `flow.py` is gone and `flow/` is a package. All 100 `from sandbox_executor.flow import ...` statements in
+    `apps/sandbox-executor` resolve: an AST scan checked `hasattr` on the package, and the full suite imports them.
+  - The move proof reports 0 missing, 0 extra, 0 duplicated and 0 differing definitions.
+  - Test count: all 337 `test_flow.py` node IDs are kept under `tests/flow/`. Full collection grew from 3,131 to 3,297
+    (166 new tests).
+  - `uv run task lint` (including the new ratchet) and `uv run task lint-docs` pass.
+  - `git diff --stat 2158bd4 HEAD -- holon-knowledge/ledger` is empty, so the three ledgers are untouched.
+- The temporary base worktree `/tmp/flowsplit/base` was removed. Scratch generators stay in `/tmp/flowsplit` and were
+  never committed.
+
+### Draft PR description
+
+Split `sandbox_executor/flow.py` (6,159 lines) into the `sandbox_executor.flow` package, moving code only.
+
+- **Module map:** see `docs/architecture.md` under `### Flow engine module map`.
+- **Proof:** `tests/flow/test_move_proof.py` compares `ast.dump` digests of every definition against a snapshot of the
+  original blob `aa8d5f19…` and reports 0 missing, 0 extra and 0 changed. `tests/flow/test_package_exports.py` checks
+  that every re-export is the defining module's object.
+- **Tests:** before, 3,131 collected and 280 test functions (337 node IDs) in `test_flow.py`. After, 3,297 collected,
+  with all 337 node IDs under `tests/flow/`. Outcomes are identical by node ID, and the full suite gave 3281 passed.
+- **Module sizes over about 400 lines** (candidates for later behaviour-preserving splits): `review/loop.py` (1,065,
+  mostly `_run_review_loop_iterations`) and `github/pr.py` (515). `stages/execute.py` (396), `pipeline.py` (394) and
+  `__init__.py` (364, mostly the `__all__` list) are close.
+- **Logger names:** each module logs through `logging.getLogger(__name__)`, so record names are now
+  `sandbox_executor.flow.<module>`. They are children of `sandbox_executor.flow`, so levels and propagation set on the
+  parent logger still apply.
+- **Late binding:** `flow/__init__.py` sets `stages.decomposition.PipelineEngine` after importing `pipeline`. This
+  breaks the one import cycle without editing a body.
+- **Patch targets:** tests patch `sandbox_executor.flow.<module>.<name>`, using `tests/flow/lookup_patch.py`
+  `patch_lookup_sites` for one shared mock across several modules. `tests/flow/test_patch_targets.py` rejects
+  package-level targets, except names that `src` code imports lazily from the package.
+- **Follow-ups (out of scope):**
+  - `apps/sandbox-executor/README.md:357` still names `tests/test_flow.py`.
+  - Docstrings in `tests/test_turns.py` and `tests/test_unique_stage_ids.py` still say `flow.py`.
+  - `docs/architecture.md` quotes the complexity baseline as `187`/`91`, but the test holds `184`/`90`. This discrepancy
+    predates this change.
+
+## Tests Run
+
+All runs used `uv run` from the repository root with `PYTHONPATH` unset, and `-n auto --dist worksteal`, except the
+small serial runs 2, 3, 4, 8, 9 and 13. Each command ran once (`N = 1`), because the intent sets no timing target, so
+each median equals its single run. The failing runs were intermediate states, fixed before the next run.
+
+| #   | Command (scope)                                                                    | Result                                                  | Time     |
+| --- | ---------------------------------------------------------------------------------- | ------------------------------------------------------- | -------- |
+| 1   | base worktree, 15 affected files (baseline)                                        | 1774 passed, 0 failed                                   | `6.48s`  |
+| 2   | `pytest tests/test_complexity_gate.py` (Step 2)                                    | 5 passed                                                | `0.04s`  |
+| 3   | `pytest tests/flow` (Step 3 proof and export tests)                                | 158 passed                                              | `0.15s`  |
+| 4   | Step 3 mutation check (constant changed on purpose, then reverted)                 | 1 failed, 3 passed (expected)                           | `0.08s`  |
+| 5   | instrumented recorder run, 10 patched files (Step 4)                               | 1380 passed, 1 failed (known source-reading test)       | `6.02s`  |
+| 6   | 15 affected files after the first rewrite                                          | 1328 passed, 1 failed, 445 errors (`run_ensemble` site) | `4.58s`  |
+| 7   | 15 affected files after the `run_ensemble` fix                                     | 1774 passed, 0 failed                                   | `6.40s`  |
+| 8   | guard mutation check (planted package-level target, then removed)                  | 1 failed, 2 passed (expected)                           | `0.27s`  |
+| 9   | `pytest tests/flow` (Step 4 end)                                                   | 161 passed                                              | `0.40s`  |
+| 10  | `tests/flow` plus `test_ledger_append_only.py` (Step 5, before the export fix)     | 537 passed, 1 failed                                    | `5.28s`  |
+| 11  | base worktree `test_flow.py` plus `test_ledger_append_only.py` (timing comparison) | 377 passed                                              | `5.55s`  |
+| 12  | `tests/flow` plus `test_ledger_append_only.py` (Step 5 final)                      | 538 passed, 0 failed                                    | `5.33s`  |
+| 13  | `pytest tests/flow/test_module_budgets.py` (Step 6)                                | 5 passed                                                | `0.02s`  |
+| 14  | Step 8 affected set (plan Step 8 list, with `tests/flow`)                          | 1559 passed, 0 failed, 74 subtests passed               | `6.33s`  |
+| 15  | `uv run task test` (full suite)                                                    | 3281 passed, 0 failed, 8 warnings                       | `31.59s` |
+
+- Full-suite median (`N = 1`): `31.59s`, 3281 passed and 0 failed.
+- `uv run task lint`: passed (ruff check, ruff format check, lock check and
+  `Flow module budgets passed: 27 modules within their recorded line counts`).
+- `uv run task lint-docs`: passed (`All matched files use Prettier code style!`).

@@ -34,9 +34,8 @@ This document defines the **Git branching, rebasing, and merging discipline** fo
 - **Sub-intents** merge only into the branch of their deciding node (in practice the plan branch that listed them),
   never directly into `main`. Below the root no human intervention is needed: the agent raises each sub-intent's PR
   automatically and merges it automatically into the deciding plan or execution branch, for leaf sub-intents and nested
-  parents alike (sections 4.1, 4.2 and 13). Only the root intent's PR to `main` stops for a human. Until the
-  implementation follows, the current flow still leaves child PR merges to the maintainer (see Stage 3 under the flow
-  equivalence guarantee)
+  parents alike (sections 4.1, 4.2 and 13). Only the root intent's PR to `main` stops for a human (the flow behaviour is
+  specified once, in Stage 3 under the flow equivalence guarantee)
 - This applies recursively: sub-sub-intents merge into the deciding node inside their parent sub-intent, and the root
   intent's whole tree reaches `main` only through the root PR
 

@@ -117,7 +117,7 @@ def test_unsafe_bases_and_a_failed_lookup_are_refused_before_any_git_write(repos
 
 
 @pytest.mark.parametrize(
-    ("head", "default", "expected_head", "fragment"),
+    "case",
     [
         ("main", "main", None, "the PR head 'main' is empty, main, master or the repository default branch"),
         ("master", "main", None, "the PR head 'master'"),
@@ -128,9 +128,8 @@ def test_unsafe_bases_and_a_failed_lookup_are_refused_before_any_git_write(repos
     ],
     ids=["head-main", "head-master", "head-default", "recorded-main", "other-branch", "nothing-recorded"],
 )
-def test_a_protected_or_unexpected_pr_head_is_refused_before_any_push(  # noqa: PLR0913
-    repos, tmp_path, head, default, expected_head, fragment
-):
+def test_a_protected_or_unexpected_pr_head_is_refused_before_any_push(repos, tmp_path, case):
+    head, default, expected_head, fragment = case
     origin, host, _ = repos
     gh = FakeGitHub(origin, tmp_path, default_branch=default)
     if head in ("master", "trunk"):

@@ -234,6 +234,9 @@ def _advance_child(context: FlowContext, start_time: str, payload: dict[str, Any
     """Take one child from wherever its progress says it is to merged; return why it stopped, or None."""
     action = next_child_action(entry, checkpoint_exists(context, entry))
     if action == "skip":
+        # A child promoted to merged by origin reconciliation has no merged summary yet; record it.
+        merged = {"index": entry["index"], "merged": True, "merge_commit": entry.get("merge_commit")}
+        _set_child_summary(payload, merged)
         return None
     if action in ("dispatch", "resume"):
         entry["status"] = IN_PROGRESS

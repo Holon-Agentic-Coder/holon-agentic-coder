@@ -20,6 +20,7 @@ from sandbox_executor.flow import FlowContext, FlowStage, PipelineEngine, StageR
 from sandbox_executor.flow.checkpoint import get_default_checkpoint_path, load_checkpoint
 from sandbox_executor.flow.child_progress import child_checkpoint_path, next_child_action
 from sandbox_executor.flow.github.merge import MergeResult
+from sandbox_executor.flow.stages.children import resume_children
 
 from tests.flow.decomposition_fakes import decomposed_flow, halted_review
 from tests.flow.helpers import SUB_INTENT_LIST, BudgetRoleAgents, _budget_context, _git
@@ -412,3 +413,36 @@ class TestChildLoopWithStubbedPipelines:
         assert children == []
         # The recorded decomposition survives for a resume without the flag.
         assert [e["status"] for e in res.payload["children_progress"]] == ["pending"]
+
+
+def test_a_child_promoted_to_merged_on_resume_is_summarised_as_merged():
+    entry = {"index": 1, "slug": "first", "intent_branch": "I-1-parent--first/_", "status": "review_done"}
+    payload = {
+        "decomposed": True,
+        "plan_branch": "I-1-parent/P-2-agent-model/_",
+        "children_progress": [entry],
+        "children": [{"index": 1, "slug": "first", "status": "halted_for_human"}],
+    }
+
+    def promote(_repo: str, progress: list[dict[str, Any]], *_args: Any) -> list[str]:
+        progress[0].update(status="merged", merge_commit="m9", pr_number=7)
+        return []
+
+    def integrated(context: FlowContext, start_time: str, payload: dict[str, Any]) -> StageResult:
+        return StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload=payload)
+
+    stages = "sandbox_executor.flow.stages.children"
+    with (
+        patch(f"{stages}.reconcile_with_origin", side_effect=promote),
+        patch(f"{stages}.integrate_children", side_effect=integrated),
+        patch(f"{stages}.merge_child_pr") as merge,
+    ):
+        res = resume_children(
+            FlowContext(token_reduce=False, intent_data={"slug": "parent"}),
+            StageResult(stage=FlowStage.EXECUTE, status=StageStatus.RUNNING, payload=payload),
+        )
+
+    merge.assert_not_called()
+    assert res.payload["children"] == [
+        {"index": 1, "slug": "first", "status": "halted_for_human", "merged": True, "merge_commit": "m9"}
+    ]

@@ -38,8 +38,8 @@ no checks, and the Stage 4 review loop halted with `test results not measured` e
 `apps/sandbox-executor/tests/test_workflow_triggers.py` fails if a base-branch filter returns to any `pull_request`
 trigger or if `push` widens beyond `main`.
 
-Every job of every workflow ends with the CI timing regression gate described below. The six pull-request workflows
-also trigger on the `labeled` and `unlabeled` activity types, so adding or removing the override label re-runs them, and
+Every job of every workflow ends with the CI timing regression gate described below. The six pull-request workflows also
+trigger on the `labeled` and `unlabeled` activity types, so adding or removing the override label re-runs them, and
 grant their job `actions: read` so it can read the baseline artefacts.
 
 ## CI Timing Regression Gate

@@ -834,14 +834,14 @@ class TestStageBudgets:
             patch("sandbox_executor.flow.stages.execute._track_local_branch"),
             patch_lookup_sites(
                 "sandbox_executor.flow.stages.execute._read_ledger_rows",
-                "sandbox_executor.flow.stages.plan._read_ledger_rows",
+                "sandbox_executor.flow.stages.plan_decision._read_ledger_rows",
                 return_value=[
                     {"entry_type": "summary", "execution_id": "E-3-claude-agent-claude-opus-5-5", "status": "success"}
                 ],
             ),
             patch_lookup_sites(
                 "sandbox_executor.flow.stages.execute._resolve_branch_ref",
-                "sandbox_executor.flow.stages.plan._resolve_branch_ref",
+                "sandbox_executor.flow.stages.plan_decision._resolve_branch_ref",
                 return_value="refs/remotes/origin/I-1-x/P-2-y/_",
             ),
             patch("sandbox_executor.flow.stages.execute.changed_paths", return_value=["src/app.py"]),

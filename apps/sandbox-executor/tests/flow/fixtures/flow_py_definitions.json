@@ -1,5 +1,5 @@
 {
-  "description": "ast.dump digests (sha256, without attributes) of every definition in the original apps/sandbox-executor/src/sandbox_executor/flow.py, keyed by qualified name; checked by test_move_proof.py. Keys in 'amended_definitions' were refreshed after a later, deliberate behaviour change; the value names the execution and the reason. Keys in 'added_definitions' are definitions created after the split, each with the module that must define it and the execution and reason; they are excluded from the 'extra' check. Keys in 'removed_definitions' were deleted deliberately and are no longer expected.",
+  "description": "ast.dump digests (sha256, without attributes) of every definition in the original apps/sandbox-executor/src/sandbox_executor/flow.py, keyed by qualified name; checked by test_move_proof.py. Keys in 'amended_definitions' were refreshed after a later, deliberate behaviour change; the value names the execution and the reason.",
   "source_blob": "aa8d5f19a171ce97e8dd5ecf598a57fe86f976c3",
   "python": "3.13",
   "definitions": {
@@ -70,7 +70,7 @@
     "StageStatus": "cb6ae0d8edc9458eae8bd44388bae5362c52d61a883d0f5e09abc366877e9ad4",
     "StageStatus.from_str": "8dc8624948685cecdcd826cb44b68af1c1dd4f9ba8f90ac3953d8411102b2060",
     "_append_only_union": "ac65ad61cdc9f228d9d77213ead5c15d58d05206ce9c19bd44e617150cf4b6c1",
-    "_append_superseding_execution_row": "7c8f7ee37fadf8985fb89a8e0a43443bbece807d5226df14b995a282db460bc9",
+    "_append_superseding_execution_row": "7715278e5bd14c2de17fbe3e32c17f65ed15b8f4f6a893e0bf06383a3180f36e",
     "_attach_transported_detail": "59662a829a72996674404c298b23e5f7f32dca7008822d999b8ff6252c681ba9",
     "_augment_pr_text_with_rejected": "ad2114ed8800a876e67bf30dd12dcee43783f1cebc2658160171206fbb81f582",
     "_bounded_error_context": "92cb41f9dce5122986fca7e4b105d489e702c736d1a7f3520c21844f0baf9c20",
@@ -109,7 +109,7 @@
     "_migrate_v0_to_v1": "03a87da0de1db4b95ae57e9cc6e8ec9b6298e6ad8f3e9499c2848212a45422d4",
     "_origin_has_branch": "1aea4e9b057400006b89dbff7c1accb6d93e72f3df1292b757a94162af606ee0",
     "_over_budget_failure": "afafaab50f7e91460df913fb8421f825388f52a63d054a049e63413708771972",
-    "_plan_budget_decision": "f8e6ec4a17cb916802e867ad74ee6f0cc283df4e850c27c8d77536e69b73b325",
+    "_plan_budget_decision": "b2d27d050272824f84ccf2415eeaef2ce606a16a5a895ed40927236fdb7fb56f",
     "_posting_failure_context": "d5365f517146c6efd4ff246a4a1eb77974132fe30c398acc78550d12daef5f2b",
     "_read_ledger_rows": "53065ed77f225abff22f0a497ad21cb1b4706707072bc56472e99251a0ad027e",
     "_record_infrastructure_findings": "7fd492cb4f99f386a835971a4855c5377f5ff708ff3eaf9cbd3080798a88abec",
@@ -173,7 +173,7 @@
     "review_summary_lines": "695785e479462667fffb0e721d815fd0c27dcf3bb77eedeb6a54b715738b19fa",
     "reviewers_sandboxed": "2493c5509b14e20d9240b59cd3fce7f0d9afea3d0be8eac7df9b2abe1700ac2a",
     "run_calibrate_stage": "9d3bdd0eedab36af64f16bd10e5e27b16a240a52182f4e1ad00acbaecb1fdd3d",
-    "run_execute_stage": "cf3914f0224ee8f96267a33618532687c93193ec33acfb5f9f76fc4a1fa0d233",
+    "run_execute_stage": "d163ef16ecf859c23fcfdf2df16d913f5051dec5ff638f52af63ff6ff20eb5b4",
     "run_flow_pipeline": "9eb839dedca4e077107119097d1f0e61fb840a39de8c051e09175d8e86e4e0ef",
     "run_intent_stage": "e1c5953def9707b953b5180bdee943df817b8f2634ad7aaac20a15eb2ca09205",
     "run_plan_stage": "3b410746b3caea63cd0ad2496fcfcf7250093bb528121fba7c808c3b0728b397",
@@ -184,16 +184,18 @@
     "validate_intent_questions": "b192729b0c7fe8ee7d45f5755506481059b5f893cbb90a77c991640444abae06"
   },
   "amended_definitions": {
-    "_dispatch_review_resolver": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result",
-    "_invoke_resolver_pass": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result",
-    "_run_review_loop_iterations": "E-1794206943-d5c00585 (I-1794205862-resolver-commits-locally-skip-push-fix): verify resolver_outcome.pushed is True before advancing review target and recording applied dispositions",
     "PipelineEngine": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): a decomposed Stage 3 no longer skips Stage 4 and Stage 5 (they raise and review the combined PR), and a checkpointed decomposed Stage 3 resumes its children instead of re-dispatching the parent executor",
     "PipelineEngine.execute_stage": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): a decomposed Stage 3 no longer skips Stage 4 and Stage 5 (they raise and review the combined PR), and a checkpointed decomposed Stage 3 resumes its children instead of re-dispatching the parent executor",
     "PipelineEngine.run": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): a decomposed Stage 3 no longer skips Stage 4 and Stage 5 (they raise and review the combined PR), and a checkpointed decomposed Stage 3 resumes its children instead of re-dispatching the parent executor",
-    "_append_superseding_execution_row": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the superseding-row commit message names the row's status, since the row now also records integrated children, not only an empty-diff failure",
+    "_append_superseding_execution_row": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the superseding-row commit message names the row's status, since the row now also records integrated children, not only an empty-diff failure | E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan-row back-fill and the superseding execution row share one temporary-worktree ledger append (_append_ledger_row)",
     "_decomposition_child_lines": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): children are nested under and merged into the plan branch; the summary lists each child PR as merged into it and names the combined PR that Stage 4 raises",
+    "_dispatch_review_resolver": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result",
+    "_invoke_resolver_pass": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result",
+    "_plan_budget_decision": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan row records the decomposition decision; the flow reads it and back-fills older rows",
+    "_run_decomposed_plan": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): validates the items and the depth, nests the children under the plan branch (never the intent branch) and delegates the loop to stages/children.py",
+    "_run_review_loop_iterations": "E-1794206943-d5c00585 (I-1794205862-resolver-commits-locally-skip-push-fix): verify resolver_outcome.pushed is True before advancing review target and recording applied dispositions",
     "format_decomposition_summary": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): children are nested under and merged into the plan branch; the summary lists each child PR as merged into it and names the combined PR that Stage 4 raises",
-    "_run_decomposed_plan": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): validates the items and the depth, nests the children under the plan branch (never the intent branch) and delegates the loop to stages/children.py"
+    "run_execute_stage": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan row records the decomposition decision; the flow reads it and back-fills older rows"
   },
   "added_definitions": {
     "<const>:CHILD_ROW_KEYS": {
@@ -256,6 +258,10 @@
       "module": "stages/children.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the decomposed Stage 3 child loop: each child nested under the plan branch, run one after another, merged into it after its consensus and calibration, with per-child progress checkpointed and resumed"
     },
+    "_append_ledger_row": {
+      "module": "git_refs.py",
+      "reason": "introduced by the merged decomposed-flow rework"
+    },
     "_appended_tail": {
       "module": "ledger_interleave.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): ledger-only merge conflicts are resolved by interleaving both sides' appended rows on created_at behind the untouched merge-base prefix"
@@ -267,6 +273,10 @@
     "_await_ready": {
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
+    },
+    "_backfill_plan_row": {
+      "module": "stages/plan_decision.py",
+      "reason": "introduced by the merged decomposed-flow rework"
     },
     "_bare_branch": {
       "module": "github/merge.py",
@@ -440,8 +450,5 @@
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
     }
-  },
-  "removed_definitions": {
-    "PipelineEngine._parent_was_decomposed": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the decomposed Stage 4/5 skip was removed: Stage 4 and Stage 5 now raise, review and calibrate the combined PR"
   }
 }

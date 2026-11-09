@@ -19,6 +19,7 @@ from typing import Any
 
 from sandbox_executor import cli
 from sandbox_executor.git_flow import (
+    checked_out_branch,
     default_branch_worktree_problem,
     derive_worktree_layout,
     ensure_flow_worktree_off_default,
@@ -279,7 +280,7 @@ def redirect_default_branch_target(
         os.path.abspath(target_worktree),
         base,
         flow_worktree,
-        os.path.basename(flow_worktree),
+        checked_out_branch(flow_worktree) or "detached HEAD",
         base,
     )
     args.target_worktree = flow_worktree

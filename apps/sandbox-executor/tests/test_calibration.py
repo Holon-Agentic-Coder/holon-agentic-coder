@@ -951,7 +951,6 @@ class TestNoCommitMessagingAndJson(unittest.TestCase):
             self.assertIn("evaluated_commit_sha", parsed)
 
 
-@pytest.mark.usefixtures("feature_worktree_cwd")
 class TestCLICalibrateCommand(unittest.TestCase):
     """Test CLI dispatch for `holon calibrate`."""
 

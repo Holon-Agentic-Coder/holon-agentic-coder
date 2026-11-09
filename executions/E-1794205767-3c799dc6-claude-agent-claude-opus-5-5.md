@@ -90,3 +90,16 @@ In progress.
   is pinned in Step 7). Direct `PipelineEngine` use keeps its validator-free behaviour.
 - Learning: invariants can be added to the budgeted flow package without growth when the engine already delegates to a
   hook that receives the context; the hook's module is the right home.
+
+### Step 5: Guard for `holon review`, `review-loop`, `pr-review-loop` and `calibrate`
+
+- New `cli/commands/_worktree_guard.py` (`_flow_worktree.py` was already 282 lines) with
+  `default_branch_worktree_allowed(target_worktree, command)`: a working tree whose branch is the one
+  `refs/remotes/origin/HEAD` points at (fallback `main`) prints `Error: ...` naming the absolute path, the branch, why it
+  is refused and the remedy (`git worktree add ...`, `--target-worktree <path>`).
+- `review.py` calls it right after `_validate_review_args`, before runner resolution and before local or container
+  dispatch, naming the alias actually used (`args.command`); `calibrate.py` calls it before `cli.run_calibrate`
+  (with `--no-commit` too). Both `--target-worktree` helps now say a default-branch worktree is refused.
+- The generic remedy in `default_branch_worktree_problem` names the run's `flow-<slug>` worktree.
+- `tests/test_calibration.py`, `tests/test_review_loop.py`, `tests/test_preflight.py`, `tests/test_cli.py`,
+  `tests/test_cli_options.py`: 903 passed, 1 failed (the Step 3 checkpoint fixture on `main`, pinned in Step 7).

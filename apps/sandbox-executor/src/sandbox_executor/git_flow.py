@@ -459,8 +459,9 @@ def default_branch_worktree_problem(
         remedy = f"Use the flow worktree instead: pass --target-worktree {flow_worktree}"
     else:
         remedy = (
-            f"Run it in a dedicated worktree instead: create one with 'git worktree add <path> <branch>' (or "
-            f"'git worktree add <path> -b <branch> origin/{base}' for a new branch) and pass --target-worktree <path>"
+            f"Run it in the run's flow-<slug> worktree or another dedicated worktree instead: create one with "
+            f"'git worktree add <path> <branch>' (or 'git worktree add <path> -b <branch> origin/{base}' for a new "
+            f"branch) and pass --target-worktree <path>"
         )
     return (
         f"{subject} '{os.path.abspath(worktree)}' has the default branch '{base}' checked out. {command} checks out "

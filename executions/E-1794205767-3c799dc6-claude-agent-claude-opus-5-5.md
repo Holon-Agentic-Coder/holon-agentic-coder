@@ -78,3 +78,15 @@ In progress.
 - Declared test change: the patch target in `tests/test_flow_target_worktree.py:259` now names
   `sandbox_executor.cli.commands._flow_worktree.ensure_worktree`.
 - `tests/test_flow_target_worktree.py`, `tests/test_preflight.py`, `tests/flow`: 808 passed.
+
+### Step 4: Engine-level guard (exploratory)
+
+- Hypothesis adjusted after Step 1: `pipeline.py` cannot change at all (the move proof pins `run_flow_pipeline`), but
+  `flow_guard.pre_run_guard_error` lives outside the budgeted package and already receives the whole context. When a
+  `worktree_validator` is given (the `run_flow_pipeline` path), it now also returns
+  `default_branch_worktree_problem(context.target_worktree, intent target_branch)`.
+- Result: kept. `pipeline.py` is unchanged (zero lines), the budget and move proof are untouched, and the full suite
+  showed no failure caused by the stricter guard (the only failure in that run came from Step 3's checkpoint refusal and
+  is pinned in Step 7). Direct `PipelineEngine` use keeps its validator-free behaviour.
+- Learning: invariants can be added to the budgeted flow package without growth when the engine already delegates to a
+  hook that receives the context; the hook's module is the right home.

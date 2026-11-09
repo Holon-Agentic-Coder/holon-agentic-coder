@@ -1,5 +1,5 @@
 {
-  "description": "ast.dump digests (sha256, without attributes) of every definition in the original apps/sandbox-executor/src/sandbox_executor/flow.py, keyed by qualified name; checked by test_move_proof.py.",
+  "description": "ast.dump digests (sha256, without attributes) of every definition in the original apps/sandbox-executor/src/sandbox_executor/flow.py, keyed by qualified name; checked by test_move_proof.py. Keys in 'amended_definitions' were refreshed after a later, deliberate behaviour change; the value names the execution and the reason.",
   "source_blob": "aa8d5f19a171ce97e8dd5ecf598a57fe86f976c3",
   "python": "3.13",
   "definitions": {
@@ -85,7 +85,7 @@
     "_decomposition_child_lines": "ad6b833ee75d2166db98bd2048719dbcb789e647d92f5ab1fea617a61021acf9",
     "_discover_child_branch": "64cd430a6764fec00fc5c7a745b7e1fcc0ef34976a7d59b2ba22918486e81638",
     "_dispatch_review_ensemble": "6d542b482c186a7412509ff4fb865d70f479af15655f05db7092cdc2652fd28b",
-    "_dispatch_review_resolver": "06ab661ad26fce86e6bd1ef01320508f5b621320b7b8890b495e5563852aa903",
+    "_dispatch_review_resolver": "33c7c178761ebe962949725a89e92f2648ff4a89932731907dfda9049e337784",
     "_dispatch_role": "752a81495783aca7f6e4e24a73d70e7b184d5bd0713dd5a608f0cc734af6420e",
     "_ensemble_iteration": "51bd505a7784ce4013c4ea31aa4e2473e8adda9cc9393da56319cb52b5157dfe",
     "_execution_effective_diff": "769adbfde3c0fcbb4912a060a86df4c1d49624f7dc09a74d518c108b85108b2b",
@@ -101,7 +101,7 @@
     "_git_show_text": "a42530a744f118b9e02ca809f5b9d008cd4aa02e276e20fadac4ed67b13a9679",
     "_has_conflict_marker_lines": "e7a70e944e5f29430000839f44918266faaf0e26317f5d745e18d94ba42efee1",
     "_has_origin_remote": "785187574235801a2370c30e3c47dbdd059ce5ec45cacd2edca0f3890359a6b5",
-    "_invoke_resolver_pass": "c8234f36191462c8c0821037d9a059645e752b6bcb1109f19055427579e951be",
+    "_invoke_resolver_pass": "aaca27ae668ebe07fbccac9ea9e0d734f4a009aa724e0184ebb8bbaf4f1611b3",
     "_latest_execution_summary": "ec3aa5db91dd4c5e71b95040c9dd24412d6c89ad7a09c978e754a93b63780a01",
     "_ledgers_with_conflict_markers": "63284f13f15771b068b1bf42c140226e5f3316f9607edef47f44200af6cf9bee",
     "_list_child_branches": "6c5c1af35bbf4c03b2a1b09537cdf537866d5dddaaf73602b07cba66e681470f",
@@ -132,7 +132,7 @@
     "_reviewers_objected": "8c2c517800d0fbc073b2339aa7b343dfc7747110d2bf4611cb2200a0ffd1584e",
     "_run_decomposed_plan": "46a179747e9f4afb618e4d782ae6ec827d59fb24225cf61d934cd6c908fb77c9",
     "_run_engine_review_loop": "a66253ec273612bf14e31d17b57b0933cb8c880502f610ab14dc74d06877c469",
-    "_run_review_loop_iterations": "94f438747f104d4c974e8d0505afe6505e3cd1d6f5fd70bc7d0f0bbfe439745e",
+    "_run_review_loop_iterations": "2065069f21af7ad25a01db776a9f03ecc04fc82bbde8ebc6fee5e098762b11e1",
     "_semantic_pr_text": "e3da288e06f6e0761ac3e6e2394d5a36fddf7f18a6b2d1a352d476f6a7139c24",
     "_snapshot_child_branches": "fb0605b286d10ab17ec55f6b002d79e3f544f2937ac3b7fd37a1c562d66c2e70",
     "_split_conflict_sides": "5e551bf5339cd1ec67b7a5c401ebab40d03c78afa7b5bae60c08139f5e447c34",
@@ -183,5 +183,10 @@
     "run_review_stage": "ec102f9b7bb40601cec1a96fb65da40eca19945b2fbf75dd3fa9b9e3087dbc4e",
     "save_checkpoint": "d7aebe896012df99b7ad9969f35fd9c20f0c3a53af9d8e4dbec6451d48d4c21b",
     "validate_intent_questions": "b192729b0c7fe8ee7d45f5755506481059b5f893cbb90a77c991640444abae06"
+  },
+  "amended_definitions": {
+    "_dispatch_review_resolver": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result",
+    "_invoke_resolver_pass": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result",
+    "_run_review_loop_iterations": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): halt the loop on any resolver failure before its dispositions are adjudicated; the FIND-CI row is built by review_report.ci_failure_finding"
   }
 }

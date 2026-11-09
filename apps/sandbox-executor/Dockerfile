@@ -5,6 +5,12 @@
 # TODO: if we choose the agent at runtime we can choose certain version or latest at runtime
 # Build targets: holon-base, agent-claude, agent-gemini, agent-opencode, agent-codex, agent-pi, agent-antigravity, holon-orchestrator
 
+# The single uv pin for every image built from holon-base; override with --set *.args.UV_VERSION=<x.y.z>.
+ARG UV_VERSION=0.13.7
+
+# --- uv source (not a build target): the official distroless uv image, multi-arch and pinned ---
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-bin
+
 # --- Base Layer ---
 FROM python:3.13-slim AS holon-base
 RUN apt-get update && \
@@ -34,6 +40,9 @@ RUN dpkgArch="$(dpkg --print-architecture)" && \
     curl -fsSL "https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-${ARCH}.tar.gz" | tar -xz --strip-components=1 -C /usr/local && \
     npm install -g npm@11.18.0
 
+# Install the pinned uv on the PATH of every user; the resolver's pre-push verification runs 'uv run task ...'
+COPY --from=uv-bin /uv /uvx /usr/local/bin/
+
 # Create non-root user
 RUN useradd -m holon
 WORKDIR /home/holon
@@ -54,6 +63,8 @@ ENTRYPOINT ["/home/holon/entrypoint/role_dispatcher.sh"]
 USER holon
 ENV PATH="/home/holon/.local/bin:/home/holon/.local/node_modules/.bin:${PATH}"
 RUN mkdir -p /home/holon/.cache
+# Build-time smoke check as the holon user: an image without a working uv fails to build
+RUN uv --version
 
 # --- Claude Agent Layer ---
 FROM holon-base AS agent-claude

@@ -1,0 +1,224 @@
+# Execution Record: E-1794197319-7ead078e-claude-agent-claude-opus-5-5
+
+## Summary
+
+Execution of plan `P-1794196917-8bed7894-claude-agent-claude-opus-5-5` for intent
+`I-1794196901-resolver-uv-available-and-fail-loudly`: ship a pinned uv in `holon-base`, make missing verification
+tooling a structured resolver failure, halt the review loop on any resolver failure, and render an honest consensus
+post.
+
+Outcome: all eight steps done, all five acceptance criteria met in code and tests, and the full suite, lint and
+lint-docs pass. The one unverified item is the image build itself (no Docker in the sandbox). `success_actual` is 0.9
+rather than 1.0 for that reason. `entropy_actual` is below the predicted 12.4: the only surprise was the move-proof
+snapshot, which changed where new code goes, and only one pre-existing test pinned the silent-continue behaviour.
+
+## Actual Metrics
+
+| metric                | value |
+| --------------------- | ----- |
+| success_actual        | 0.9   |
+| entropy_actual        | 11.2  |
+| impact_actual         | 85.0  |
+| cost_actual           | 30.0  |
+| learning_value_actual | 6.0   |
+
+## Steps Executed
+
+### Step 1: Baseline and pinned facts
+
+- The branch was already on top of the plan commit `fe34e88`, so no rebase was needed.
+- The sandbox had no `uv`. Installed `uv==0.13.7` (the newest PyPI release) with `pip install --user`. `uv lock --check`
+  passes against the repository's `uv.lock` (`version = 1`, `revision = 3`) with no lock change. Pin:
+  `UV_VERSION=0.13.7`.
+- Baseline: `uv run pytest tests/test_review_loop.py tests/test_review_report.py tests/test_container_images.py` gave
+  176 passed, 7 skipped in `2.05s`. `uv run task lint` passed; the budgets check reported 28 modules within budget.
+- Budgets: `review/loop.py` 966/966, `review/resolver.py` 368/368, `github/review_post.py` 216/216.
+- `turns.run_turn` returns `TurnResult` with `returncode`, `stdout` and `stderr`, so the output tail can come from the
+  resolver agent turn itself.
+- No stage-name or `ARG` assertion conflicts in `test_build_all_images.py` or `test_container_images.py`
+  (`test_unique_stage_ids.py` is about flow stage IDs, not Dockerfile stages).
+- Unplanned constraint found: `tests/flow/test_move_proof.py` pins the `ast.dump` digest of every flow-package
+  definition against `tests/flow/fixtures/flow_py_definitions.json`, and fails on any new definition in the package
+  ("extra"); `tests/flow/test_package_exports.py` also requires every snapshot definition in `flow.__all__` (and
+  `flow/__init__.py` is at budget). Consequence for placement: new helpers go in top-level modules outside the flow
+  package (next to `review_report.py`, which the flow already imports), so the flow package gains no definitions and no
+  budget entry; only the digests of the flow definitions that this intent deliberately changes are refreshed in the
+  snapshot, with each key and reason declared in an `amended_definitions` map in that fixture.
+
+### Step 2: Pinned uv in holon-base with a build-time smoke check
+
+- `Dockerfile`: global `ARG UV_VERSION=0.13.7` before the first `FROM`; a `uv-bin` source stage
+  (`FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-bin`); `COPY --from=uv-bin /uv /uvx /usr/local/bin/` in `holon-base`
+  after the Node.js layer, while still root; `RUN uv --version` after `USER holon` and the `ENV PATH` line. No uv
+  environment variables were set; the agent stages' cache mounts are unchanged. `docker-bake.hcl` is unchanged.
+- `docs/docker_bake.md`: new "Base Image Contents: Pinned uv" note with the override command.
+- Test (e): `TestDockerfileUvInstallation` (4 hermetic tests) plus an `integration_test`-marked
+  `TestContainerUvExecutionNonRoot` mirroring the `gh` check.
+- Docker is not available in this sandbox, so the image was not built and the `uv-bin` tag was not pulled. The
+  maintainer should run `docker buildx bake -f apps/sandbox-executor/docker-bake.hcl base` once; the smoke check makes a
+  wrong tag a loud build failure.
+
+### Step 3: Missing verification tool is a structured resolver failure (entrypoint)
+
+- New shared contract module `src/sandbox_executor/resolver_result.py` (top level, outside the flow package; see Step
+  1): `RESOLVER_RESULT_MARKER`, `bounded_output_tail` (redact, then keep the last 2,000 characters),
+  `resolver_error_text`, `ContainerResolverResult` and `read_container_resolver_result` (used by Step 4).
+- New `entrypoint/review_verification.py` (the entrypoint grew past the plan's 40-line threshold, so the helpers moved
+  out): `missing_tool_result` turns an `OSError` from starting a command into a `CompletedProcess` with exit code 127
+  and a stderr naming the tool ("required tool 'uv' was not found on PATH; it ships in the holon-base image
+  (UV_VERSION): rebuild the agent image or install uv"); `verification_error` keeps "could not run" apart from a real
+  lint or test failure.
+- `entrypoint/review_loop.py` (`853 -> 883` lines): `run_cmd` catches `OSError` around `subprocess.run` and keeps its
+  `check` semantics (a missing `git` with `check=True` now exits 127 instead of raising); `_verify_before_push` returns
+  `(False, False, "Resolver pre-push verification could not run: required tool 'uv' ...")`; a comment in
+  `_commit_and_push_resolution` records that verification failures never stage, commit or push; `_run_resolver_agent`
+  raises `ResolverTurnError` (a `RuntimeError`, same message) carrying the turn's bounded output tail;
+  `_run_resolver_mode` guards the `git rev-parse` and `_commit_and_push_resolution` with `try`/`except`, so a result
+  file is always written, and adds the `exit_code` and `output_tail` keys.
+
+### Step 4: Container resolver result read fail-closed
+
+- Placement deviation from the plan: the parser lives in the shared top-level `sandbox_executor/resolver_result.py`
+  (written in Step 3), not in a new `flow/review/resolver_result.py`, because any new flow-package definition fails the
+  move proof and would need a `flow.__all__` entry in an `__init__.py` at budget (Step 1). `ResolverOutcome` stays in
+  `flow/review/resolver.py` (moving it would make the move proof report it missing). No budget entry is added.
+- `read_container_resolver_result`: no resolver marker and either a non-zero exit or no `dispositions` gives "Resolver
+  container exited with code N and produced no resolver result" ("exited cleanly" for 0), with nothing pushed or
+  verified. A marked result from a non-zero exit always fails: the entrypoint's error, or "Resolver container exited
+  with code N", plus "(resolver exit code N)" when the code is not already named, plus the redacted, bounded output
+  tail. This replaces the old `exit_code != 0 and not err and "dispositions" not in data` guard. A clean exit keeps
+  today's reading.
+- `_dispatch_review_resolver` calls the reader; the injected-seam `Mapping` branch of `_invoke_resolver_pass` uses
+  `resolver_error_text`, so it passes `exit_code` and `output_tail` through when present (unchanged when absent).
+- `review/resolver.py` `368 -> 362` lines; its budget is lowered to 362.
+- Declared fixture change: the move-proof digests of `_dispatch_review_resolver` and `_invoke_resolver_pass` were
+  refreshed in `tests/flow/fixtures/flow_py_definitions.json`, each listed with this execution and the reason in a new
+  `amended_definitions` map; the fixture's description says what that map means. No other digest changed. The scratch
+  script (not committed) recomputes digests with the test's own `package_definitions`.
+- Full suite after the step: 3287 passed, 21 skipped.
+- Learning target: the output tail reaches the host through the result file, so host-side capture in `cli/__init__.py`
+  is needed only for hard kills, which now report "exited with code N and produced no resolver result".
+
+### Step 5: Halt the review loop on any resolver failure, before adjudication
+
+- `_run_review_loop_iterations`: directly after `_invoke_resolver_pass`, `if resolver_outcome.error:` sets the new
+  loop-local `resolver_error` (bounded), drops `pending_dispositions` as the old error branch did, logs
+  `[Review Loop] Halting review loop at iteration N: resolver failed: ...` and breaks, before `rejected_now`,
+  `rejected_history`, `rejected_ids`, the applied recording or the `resolved_target` move. The old
+  `error and not head_changed and not rejected_now` branch is removed, which also closes the "committed but push failed"
+  path. The still-open findings are recorded once by the existing post-loop fallback.
+- `resolver_error` makes the status `failed` (through the existing `failed` flag of `_loop_status`), is appended to
+  `halt_reasons` as `resolver failed: ...`, and is returned as `resolver_error` and as `error` in the loop result, so
+  Stage 4 reports "Autonomous review halted: resolver failed: ...". The consensus post is unchanged: the deciding
+  iteration's genuine verdicts are still posted (never `--approve`, since consensus was not reached).
+- Budget: the `FIND-CI-<n>` row construction moved to `review_report.ci_failure_finding` (the module that owns
+  `FindingRow`), with identical action-id bookkeeping. `review/loop.py` `966 -> 962` lines; budget lowered to 962. The
+  function's `noqa` list is unchanged and no suppression was added.
+- `resolver_result.OUTPUT_TAIL_MAX_CHARS` lowered from 2,000 to 1,000 so a short error plus its tail fits in the loop's
+  2,000-character bounded halt reason; a tail already contained in the error is not repeated.
+- Declared test change (1 of the plan's threshold of 3): `test_review_dispatch.py`
+  `test_stage4_host_integrity_failed_ci_blocks_approval`. Its single fake dispatcher wrote a review payload with exit 0
+  for the resolver dispatch too, which is exactly a container that leaves no resolver result; the old loop treated that
+  as a pass. The fake now writes a minimal resolver result (`resolver: true`, no dispositions, no change) for
+  `--resolve` calls, so the test keeps asserting what it is for (failed CI blocks approval, the post is not approved).
+  The `test_sandbox_hermetic_guard` canary failed only because it re-runs that test in a subprocess.
+- Declared fixture change: the move-proof digest of `_run_review_loop_iterations` was refreshed and listed in
+  `amended_definitions`.
+- Full suite after the step: 3287 passed, 21 skipped.
+
+### Step 6: Honest consensus heading and open findings
+
+- `review_report.py`: new `_approvals(reviewers)` counts completed reviewers whose recorded verdict is `APPROVED`.
+  `_heading` takes it: approved renders `APPROVED ({approvals}/{configured})` (still `3/3` for a genuine unanimous
+  approval); not approved renders `CHANGES REQUESTED (Iteration N) — {approvals}/{configured} approved`.
+- Deviation (the plan's discard path): the shipped template's "Posted review shape" (out of scope, asserted by
+  `test_review_report.py`) pins `CHANGES REQUESTED (Iteration ` as the heading prefix, so the fraction follows the
+  iteration in the same heading line instead of preceding it. Lower-case `approved` keeps `"APPROVED ("` out of
+  non-approved bodies.
+- The findings table is rendered whenever the deciding iteration has findings; an approved report shows it after the
+  Verified list. Per-reviewer lines, severity counts, the Checks line and the closing notice are unchanged.
+- `flow/github/review_post.py` unchanged: it forwards the deciding iteration's `reviewers` (reassigned each iteration in
+  the loop) straight to `build_review_consensus_report`.
+
+### Step 7: Hermetic tests (a) to (e) and the incident regression
+
+- New `tests/test_review_resolver_failure.py` (14 tests):
+  - (a) `_verify_before_push` with PATH set to an empty directory returns
+    `(False, False, "... could not run: required tool 'uv' was not found on PATH ...")` without raising; a
+    `PermissionError` from `subprocess.run` gives "required tool 'uv' could not be started (PermissionError ...";
+    `run_cmd(check=True)` exits 127 naming the tool.
+  - (b, entrypoint half) a real temporary checkout with a bare `origin` and PATH holding only a `git` symlink:
+    `_run_resolver_mode` (findings and result in one file, as in the container) exits 1, writes `resolver: true`,
+    `pushed: false`, `exit_code: 1`, an `output_tail` and an error naming uv; HEAD, the commit count, the index and the
+    origin ref are unchanged. A second test shows a result is still written when `_commit_and_push_resolution` raises.
+  - (b, loop half) an injected resolver returning the entrypoint-shaped failure: one ensemble call, one resolver call,
+    status `failed`, `resolver_error` names uv, `error` and the summary ledger row say "resolver failed: ...", the
+    reviewer verdict stays `CHANGES_REQUESTED`, no `applied` ACT-RES row, the post is not approved.
+  - Incident regression: reviewers 1 and 2 approve, reviewer 3 flags a nit, the resolver raises
+    `FileNotFoundError: 'uv'`; the loop stops after one ensemble call and the posted body has
+    `CHANGES REQUESTED ... — 2/3 approved`, `1 nit findings` and the nit, never `APPROVED (3/3)`.
+  - (c) host-mode container path through `context.dispatcher`: exit 2 with the input payload untouched halts with
+    "Resolver container exited with code 2 and produced no resolver result"; exit 1 with a marked result carrying
+    dispositions and an `output_tail` halts with the exit code and the tail. A direct `_dispatch_review_resolver` test
+    covers the untouched payload.
+  - Contract unit tests for `resolver_result.py`: clean marked result kept, clean exit without a result fails, tail
+    redacted then bounded to its end, exit code named once and a repeated tail skipped.
+- (d) in `tests/test_review_report.py`: two approvals and one `CHANGES_REQUESTED` with one nit render
+  `CHANGES REQUESTED (Iteration 2) — 2/3 approved`, `0 critical, 0 important and 1 nit findings`, the nit's table row
+  and reviewer 3's `CHANGES_REQUESTED` line with `nit: 1`; a failed reviewer does not count as an approval; an approved
+  report still lists an open finding after Verified.
+- (e) was added in Step 2 and is collected in the default run.
+- Checked against the old code: with `loop.py` and `review_report.py` restored from before Steps 5 and 6, 4 of the 14
+  new tests fail, including the incident regression (the old loop ran a second ensemble iteration).
+- No pre-existing test assertion was changed in this step. Pre-existing test changes across the execution: the one fake
+  in `test_review_dispatch.py` (Step 5) and the move-proof fixture digests (Steps 4 and 5).
+- Affected files (`test_review_loop.py`, `test_review_report.py`, `test_container_images.py`, `test_review_dispatch.py`,
+  `test_review_workspace_integration.py`, `test_artefacts.py`, the new file and `tests/flow`): 733 passed, 15 skipped in
+  `5.75s`.
+
+### Step 8: Full validation
+
+- `uv run task lint`: passed (`uv lock --check` with `uv.lock` untouched, ruff check, ruff format check, and the flow
+  budgets: 28 modules within their recorded line counts).
+- `uv run task lint-docs`: passed.
+- `uv run task test`: passed once (figures in Tests Run).
+- Diff audit against the plan commit `fe34e88` (no local `main` ref exists in this checkout): no `.jsonl` ledger changed
+  or added; `flow_module_budgets.json` only lowers two budgets (`review/loop.py` `966 -> 962`, `review/resolver.py`
+  `368 -> 362`) and adds none; no American spellings in added lines.
+- Touch-set deviations, declared: two new modules outside the intent's scope list,
+  `src/sandbox_executor/resolver_result.py` (the shared resolver result contract) and
+  `src/sandbox_executor/entrypoint/review_verification.py` (the missing-tool helpers), placed there because of the
+  move-proof constraint (Step 1) and the plan's 40-line entrypoint threshold (Step 3). `docker-bake.hcl` and
+  `flow/github/review_post.py` are unchanged.
+
+## Notes for the Reviewer
+
+- The `holon-base` image was not built here (no Docker in the sandbox). Run
+  `docker buildx bake -f apps/sandbox-executor/docker-bake.hcl base` once to prove the `ghcr.io/astral-sh/uv:0.13.7` tag
+  resolves; the `RUN uv --version` smoke check turns a wrong tag into a build failure.
+- Behaviour changes beyond the uv path, all intended: a missing executable in `run_cmd` exits 127 (with `check=True`)
+  instead of raising a traceback; a resolver container that exits 0 but leaves no resolver result now halts the loop;
+  the non-approved heading gains `— {approvals}/{configured} approved` after `(Iteration N)`.
+- Follow-up candidate (Step 4 learning target): hard container kills still report only "exited with code N and produced
+  no resolver result"; a tail for those needs host-side capture in `cli/__init__.py`, out of this scope.
+
+## Tests Run
+
+| command                                                                                                       | result                         | pytest time |
+| ------------------------------------------------------------------------------------------------------------- | ------------------------------ | ----------- |
+| baseline `uv run pytest tests/test_review_loop.py tests/test_review_report.py tests/test_container_images.py` | 176 passed, 7 skipped          | `2.05s`     |
+| baseline `uv run task lint`                                                                                   | passed                         | n/a         |
+| `uv run pytest tests/test_container_images.py tests/test_build_all_images.py` (Step 2)                        | 25 passed, 14 skipped          | `0.10s`     |
+| `uv run pytest apps/sandbox-executor/tests -n auto` (after Step 4)                                            | 3287 passed, 21 skipped        | `46.82s`    |
+| `uv run pytest apps/sandbox-executor/tests -n auto` (after Step 5)                                            | 3287 passed, 21 skipped        | `47.31s`    |
+| `uv run pytest apps/sandbox-executor/tests -n auto` (after Step 6)                                            | 3287 passed, 21 skipped        | `45.72s`    |
+| `uv run pytest tests/test_review_resolver_failure.py`                                                         | 14 passed                      | `0.14s`     |
+| same file against the pre-fix `loop.py` and `review_report.py` (sanity check, then restored)                  | 4 failed, 10 passed (expected) | `0.15s`     |
+| `uv run pytest tests/test_review_report.py`                                                                   | 56 passed                      | `0.07s`     |
+| affected set (plan Step 7.8 files, the new file and `tests/flow`), `-n auto --dist worksteal`                 | 733 passed, 15 skipped         | `5.75s`     |
+| `uv run task lint`                                                                                            | passed                         | n/a         |
+| `uv run task lint-docs`                                                                                       | passed                         | n/a         |
+| `uv run task test` (full suite, once)                                                                         | 3302 passed, 0 failed          | `30.89s`    |
+
+No repeated runs: the intent has no timing or performance target, so there is no median to report. Test paths in the
+table are relative to `apps/sandbox-executor/` unless they start with `apps/`.

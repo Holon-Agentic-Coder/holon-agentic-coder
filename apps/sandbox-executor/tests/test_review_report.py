@@ -360,6 +360,34 @@ def test_heading_follows_the_ensemble_verdict_alone(verdict):
     assert "APPROVED (" not in body
 
 
+def test_two_approvals_and_one_open_nit_render_as_two_of_three_with_the_nit_listed():
+    reviewers = [_reviewer(1), _reviewer(2), _reviewer(3, DOC_FINDING)]
+    (nit_row,) = collect_review_data(reviewers).findings
+
+    body = _report(reviewers)
+    heading = body.splitlines()[0]
+
+    assert heading == "## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration 2) — 2/3 approved"
+    assert "APPROVED (" not in body
+    assert "0 critical, 0 important and 1 nit findings" in body
+    assert f"| {nit_row.id} | nit | docs/guide.md | 3 | Typo in the heading. |" in body
+    assert "- **Reviewer 3** (`agent-3 / model-3`): `CHANGES_REQUESTED` (critical: 0, important: 0, nit: 1)" in body
+
+
+def test_approval_fraction_counts_only_completed_approving_reviewers():
+    body = _report([_reviewer(1), failed_reviewer(2), _reviewer(3, APP_FINDING)])
+
+    assert body.splitlines()[0].endswith("— 1/3 approved")
+
+
+def test_an_approved_report_still_lists_any_open_finding():
+    body = build_review_consensus_report("/nonexistent", "42", _approved(), [_reviewer(1), _reviewer(2, DOC_FINDING)])
+
+    assert body.startswith("## ✅ Ensemble Consensus Review — APPROVED (1/3)")
+    assert body.index("**Verified:**") < body.index("| ID | Severity |")
+    assert "Typo in the heading." in body
+
+
 def test_an_approval_asserts_only_evidenced_claims():
     body = build_review_consensus_report("/nonexistent", "42", _approved(), approved_reviewers())
 

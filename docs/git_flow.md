@@ -328,7 +328,9 @@ The guarantee has five deliberate limits:
   `test results not measured: no recorded Stage 3 test result and no CI checks`, and the pipeline halts before Stage 5
   calibration runs. Checks that registered but are still pending are re-probed every `CI_REGISTRATION_POLL_SECONDS` (15
   s) until they settle or the iteration's `review_iteration` budget runs out; checks still pending then count as a CI
-  finding. `--dry-run` does not wait, and its simulated consensus reports `not_measured`.
+  finding. `--dry-run` does not wait, and its simulated consensus reports `not_measured`. Stacked sub-intent pull
+  requests, whose base is their parent intent branch, receive the same checks as pull requests into `main`, because
+  every CI workflow runs for pull requests into any base branch (see `.github/workflows/README.md`).
 - **Token reduction is auto-detected.** `holon flow` (like `holon review-loop`) resolves token reduction with
   `detect_holon_coherence`: unless `HOLON_TOKEN_REDUCE` opts out (`0`, `false`, `no`, `off`), it is enabled by
   `--token-reduce`, `--mitm-web`, a truthy `HOLON_TOKEN_REDUCE` or `HOLON_PASSIVE_MONITORING`, a reachable proxy port, a

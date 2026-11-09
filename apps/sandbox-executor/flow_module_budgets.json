@@ -27,7 +27,7 @@
     "stage_conflicts.py": 142,
     "stages/__init__.py": 1,
     "stages/calibrate.py": 315,
-    "stages/children.py": 322,
+    "stages/children.py": 327,
     "stages/decomposition.py": 124,
     "stages/execute.py": 396,
     "stages/integration.py": 95,

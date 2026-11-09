@@ -301,8 +301,13 @@ def run_children(context: FlowContext, start_time: str, payload: dict[str, Any])
             context.log(f"Stage 3: {note} (origin wins).")
         return _drive_children(context, start_time, payload)
     except Exception as exc:
-        _save_progress(context, start_time, payload)
-        error = redact_agent_secrets(f"Execute stage failed: the sub-intent loop raised {type(exc).__name__}: {exc}")
+        error = f"Execute stage failed: the sub-intent loop raised {type(exc).__name__}: {exc}"
+        try:
+            _save_progress(context, start_time, payload)
+        except Exception as save_exc:
+            # A failing save never replaces the original failure: it is reported next to it.
+            error += f" (the progress checkpoint could not be saved either: {type(save_exc).__name__}: {save_exc})"
+        error = redact_agent_secrets(error)
         return _stage_failure(context, FlowStage.EXECUTE, start_time, error, **payload)
 
 

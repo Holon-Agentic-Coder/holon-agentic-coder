@@ -453,6 +453,40 @@ class TestChildLoopWithStubbedPipelines:
         assert "origin down" not in (res.error or "")
         assert children == []
 
+    def test_a_failing_checkpoint_save_in_the_exception_path_keeps_the_original_failure(self):
+        with (
+            patch(
+                "sandbox_executor.flow.stages.children.reconcile_with_origin", side_effect=RuntimeError("origin down")
+            ),
+            patch("sandbox_executor.flow.stages.children.save_checkpoint", side_effect=OSError("disk full")),
+        ):
+            ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, intent_branch="I-1-parent/_")
+            res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", self._ROW, {"execution_id": "E-1"})
+
+        assert res.status == StageStatus.FAILED
+        assert "raised RuntimeError: origin down" in (res.error or "")
+        assert "could not be saved either: OSError: disk full" in (res.error or "")
+        assert [e["status"] for e in res.payload["children_progress"]] == ["pending"]
+
+    @pytest.mark.parametrize("flag", ["dry_run", "skip_push"])
+    def test_dry_run_and_skip_push_fail_at_the_first_child_and_start_no_later_one(self, flag):
+        row = {**self._ROW, "sub_intents": [{"slug": "first", "goal": "One"}, {"slug": "second", "goal": "Two"}]}
+        # Without a real push there is no PR and no consensus approval: Stage 4 records neither.
+        no_pr = {
+            **self._READY,
+            "review": StageResult(stage=FlowStage.REVIEW, status=StageStatus.SUCCESS, payload={}),
+        }
+        res, _ctx, children = self._run_children(
+            {"slug": "parent"}, row, child_results=no_pr, intent_branch="I-1-parent/_", **{flag: True}
+        )
+
+        assert res.status == StageStatus.FAILED
+        assert "sub-intent 1/2 'first' is not ready to merge" in (res.error or "")
+        assert "its Stage 4 did not halt at consensus" in (res.error or "")
+        assert [c.intent_data["slug"] for c in children] == ["first"]
+        assert getattr(children[0], flag) is True
+        assert [e["status"] for e in res.payload["children_progress"]] == ["failed", "pending"]
+
 
 def test_a_child_promoted_to_merged_on_resume_is_summarised_as_merged():
     entry = {"index": 1, "slug": "first", "intent_branch": "I-1-parent--first/_", "status": "review_done"}

@@ -440,7 +440,7 @@
     },
     "run_children": {
       "module": "stages/children.py",
-      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the decomposed Stage 3 child loop: each child nested under the plan branch, run one after another, merged into it after its consensus and calibration, with per-child progress checkpointed and resumed"
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the decomposed Stage 3 child loop: each child nested under the plan branch, run one after another, merged into it after its consensus and calibration, with per-child progress checkpointed and resumed | review iteration 5 (PR 158): a failing checkpoint save inside the exception handler no longer replaces the original failure; it is reported next to it"
     },
     "run_gh": {
       "module": "github/merge.py",

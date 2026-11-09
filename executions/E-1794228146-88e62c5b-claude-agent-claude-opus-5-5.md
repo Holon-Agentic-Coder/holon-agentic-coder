@@ -172,3 +172,33 @@ alone leaves the package unimportable or the suite red.
   `tests/flow/test_move_proof.py` and `tests/test_cli.py`. New `tests/flow/decomposition_fakes.py`.
 - `uv run pytest apps/sandbox-executor/tests -n auto --dist worksteal`: 3434 passed, 21 skipped in `42.55s`; ruff and
   the budget script pass.
+
+### Step 8: hermetic end-to-end tests for goal 8 b, c, d, e and f
+
+- Fixtures: the existing `flow_repos` bare origin and host clone with `BudgetRoleAgents` (fake intent creator, planner
+  and executor containers pushing real branches), plus `tests/flow/decomposition_fakes.py`: `ChildReviews` replaces
+  `run_review_stage` in `sandbox_executor.flow.pipeline` (opens or reuses a PR in `FakeGitHub` from the execution
+  branch into the intent's `target_branch`, or an overridden base per slug, and halts at consensus; optionally fails
+  one review once, keeping its PR in the payload like the real stage), and `decomposed_flow` patches it in together
+  with `sandbox_executor.flow.github.merge.run_gh`. Deviation: the plan proposed patching the child `PipelineEngine`;
+  running the real child pipelines with fake containers and a fake Stage 4 exercises Stage 1 cutting from
+  `origin/{target_branch}` for real, so it was preferred.
+- `tests/flow/stages/test_children.py`: (b) each child intent branch starts with `{plan}--` and its PR base is the plan
+  branch; child 1 is cut from the original plan tip; (c) child 2 is cut from child 1's merge commit and its execution
+  branch holds child 1's per-plan file; (d) the plan branch gains exactly one two-parent merge commit per child with the
+  child head as second parent, and only `--merge` merges ran; a child whose PR base is `main` is refused, `gh pr merge`
+  is never called, `main` and the plan branch are unchanged, the second child never starts and Stage 3 fails naming the
+  child; (f) after child 2's review fails, a resume from the parent checkpoint dispatches no container at all (not the
+  parent executor, not any child role), resumes child 2 from its own checkpoint at Stage 4 reusing its PR (the only new
+  PR is the parent's combined PR into `main`), leaves child 1's checkpoint byte-identical and merges child 1 once only;
+  a resume after a crash between a child's review and its recorded merge reconciles the merged PR from origin and
+  merges nothing twice.
+- `tests/flow/stages/test_integration.py`: (e) the parent execution branch holds the parent plan file, both child plan
+  files, both children's execution rows, the executor's `decomposed` row and one superseding `integrated` row listing
+  the children with PR numbers and merge commits; the plan branch is its ancestor; Stage 4 raised the combined PR with
+  base `main` and the pipeline halted for the human; integration is idempotent on a resume; a failed merge and a
+  missing execution branch fail Stage 3 with the reason.
+- Updated in Steps 5 to 7: `tests/flow/stages/test_decomposition.py`, `tests/test_cli.py`,
+  `tests/flow/test_package_exports.py`.
+- `uv run pytest apps/sandbox-executor/tests/flow -n auto --dist worksteal`: 575 passed in `6.03s` (before the last
+  formatting-only edit); `ruff check` and `ruff format --check` pass.

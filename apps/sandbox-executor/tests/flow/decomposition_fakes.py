@@ -35,36 +35,41 @@ def halted_review(number: int | None, url: str | None) -> StageResult:
 class ChildReviews:
     """Fake ``run_review_stage``: open or reuse the PR, then halt at consensus (or fail for a chosen slug, once)."""
 
-    def __init__(self, gh: FakeGitHub, fail_once_for: str | None = None):
+    def __init__(self, gh: FakeGitHub, fail_once_for: str | None = None, bases: dict[str, str] | None = None):
         self.gh = gh
         self.fail_once_for = fail_once_for
+        # PR base per slug, overriding the intent's target_branch (models a mis-recorded or edited base).
+        self.bases = bases or {}
         self.reviewed: list[dict[str, Any]] = []
         self.created: list[int] = []
 
     def __call__(self, ctx: FlowContext) -> StageResult:
         head = str(ctx.execution_branch)
-        base = str(ctx.intent_data.get("target_branch") or "main")
+        slug = str(ctx.intent_data.get("slug"))
+        base = self.bases.get(slug) or str(ctx.intent_data.get("target_branch") or "main")
         existing = next((pr for pr in self.gh.prs.values() if pr["head"] == head), None)
         if existing is None:
             number = self.gh.open_pr(head, base)
             self.created.append(number)
         else:
             number = existing["number"]
-        self.reviewed.append({"slug": ctx.intent_data.get("slug"), "head": head, "base": base, "number": number})
-        if self.fail_once_for and ctx.intent_data.get("slug") == self.fail_once_for:
+        self.reviewed.append({"slug": slug, "head": head, "base": base, "number": number})
+        if self.fail_once_for and slug == self.fail_once_for:
             self.fail_once_for = None
-            return StageResult(
-                stage=FlowStage.REVIEW, status=StageStatus.FAILED, error="Autonomous review requested changes."
-            )
+            # Like the real stage, a failed review still records the PR it opened.
+            failed = halted_review(number, self.gh.prs[number]["url"])
+            failed.status, failed.error = StageStatus.FAILED, "Autonomous review requested changes."
+            failed.payload.update(halted_for_human=False, consensus={**APPROVED, "approved": False})
+            return failed
         return halted_review(number, self.gh.prs[number]["url"])
 
 
 @contextlib.contextmanager
-def decomposed_flow(origin: Path, tmp_path: Path, fail_once_for: str | None = None) -> Iterator[ChildReviews]:
+def decomposed_flow(origin: Path, tmp_path: Path, **review_options: Any) -> Iterator[ChildReviews]:
     """Patch in ``ChildReviews`` as Stage 4 and a ``FakeGitHub`` over ``origin`` as the merge's ``gh`` runner."""
     scratch = tmp_path / "fake-gh"
     scratch.mkdir(exist_ok=True)
-    reviews = ChildReviews(FakeGitHub(origin, scratch), fail_once_for=fail_once_for)
+    reviews = ChildReviews(FakeGitHub(origin, scratch), **review_options)
     with (
         patch("sandbox_executor.flow.pipeline.run_review_stage", side_effect=reviews),
         patch("sandbox_executor.flow.github.merge.run_gh", reviews.gh),

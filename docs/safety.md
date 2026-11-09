@@ -103,6 +103,20 @@ return result
 - No network access (unless explicitly allowed for specific intent).
 - Filesystem mounted read-only except for intent workspace.
 - Resource limits (CPU, memory, disk).
+- A host-provisioned worktree (`sandbox_executor.worktree_mount`) is bind-mounted with exactly: the worktree at the
+  sandbox workspace path, a linked worktree's common git directory at its own host path, and that common directory's
+  `hooks/` and `config` overlaid **read-only**. The host's git later runs hooks and honours `core.hooksPath` /
+  `core.fsmonitor` from that config, so the container must not be able to plant them; consequently in-container
+  `git config --local` writes fail on a mounted worktree (use `git -c` or environment variables instead). Paths
+  containing `,` are refused because they would break the `--mount` field list.
+- The overlay alone is not sufficient: the writable worktree and common directory still let a container re-point the
+  worktree's `.git` file or a `worktrees/<name>/commondir`, plant a `config.worktree`, or swap the git directory out
+  from under the overlay. So the host fingerprints that metadata before the run (the `.git` entry, the common directory,
+  and every `config`, `config.worktree`, `commondir`, `gitdir` and `hooks` entry beneath it, excluding `objects/`,
+  `refs/`, `logs/` and `lfs/`) and fails the run when any of it changed, before the host runs git there again.
+  Consequently in-container `git worktree add`, `git submodule update --init` and `git config --worktree` also fail the
+  run. Residual risk: nested repositories created elsewhere inside the worktree are not fingerprinted, so host git must
+  not be run inside them.
 
 **Use case:** Medium-entropy intents (10-30), moderate complexity, external dependencies.
 

@@ -2335,7 +2335,7 @@ def test_find_git_root_returns_the_nearest_git_ancestor(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------------------
-# Persistent Stage 4 review workspace: the volume mount plumbing in run_docker_container
+# Host-provisioned worktree bind mount: the workspace_mount plumbing in run_docker_container
 # --------------------------------------------------------------------------------------
 
 
@@ -2347,10 +2347,15 @@ def _remove_argv_pair(argv: list[str], pair: list[str]) -> list[str]:
     raise AssertionError(f"expected pair {pair} in docker argv: {argv}")
 
 
-def test_review_workspace_volume_adds_exactly_one_mount_and_pins_the_worktree():
-    """With a volume the argv gains one `-v` mount and the pinned worktree env; without one it is identical."""
-    from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
+_LINKED_MOUNT_KWARGS = {"host_worktree": "/host/flow-x", "git_common_dir": "/host/repo/.git"}
 
+
+def test_workspace_mount_bind_mounts_worktree_and_git_dir_and_pins_the_workspace():
+    """A mount adds exactly its binds and the pinned workspace env, over a forwarded host value; nothing else."""
+    from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
+    from sandbox_executor.worktree_mount import WorkspaceMount, workspace_mount_args
+
+    mount = WorkspaceMount(**_LINKED_MOUNT_KWARGS)
     captured: list[list[str]] = []
 
     def record_run(cmd, *args, **kwargs):
@@ -2362,66 +2367,53 @@ def test_review_workspace_volume_adds_exactly_one_mount_and_pins_the_worktree():
         patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"]),
         patch("subprocess.run", side_effect=record_run),
         patch("shutil.which", return_value="/usr/bin/docker"),
-        patch.dict(os.environ, {}, clear=True),
+        patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": "/home/dev/own-checkout"}, clear=True),
     ):
         args = ["branch", "fake-agent", "fake-model"]
         assert run_docker_container("review-loop", "holon/agent-claude", list(args), agent_id="claude") == 0
         assert (
             run_docker_container(
-                "review-loop",
-                "holon/agent-claude",
-                list(args),
-                agent_id="claude",
-                review_workspace_volume="holon-review-ws-abc123",
+                "review-loop", "holon/agent-claude", list(args), agent_id="claude", workspace_mount=mount
             )
             == 0
         )
 
-    baseline, with_volume = captured
-    # Guard every isolation flag: removing the one mount and the pinned worktree variable restores the
-    # baseline argv byte for byte, so nothing else (``--rm``, ``--cap-drop=ALL``,
-    # ``--security-opt=no-new-privileges``, metadata sinkholes, mounts, env forwarding) changed.
-    reduced = _remove_argv_pair(with_volume, ["-v", f"holon-review-ws-abc123:{SANDBOX_WORKSPACE_MOUNT}"])
-    reduced = _remove_argv_pair(reduced, ["-e", f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"])
-    assert reduced == baseline
-    assert "--rm" in with_volume
-    assert "--cap-drop=ALL" in with_volume
-    assert "--security-opt=no-new-privileges" in with_volume
-    # A host HOLON_TARGET_WORKTREE cannot displace the pinned container workspace path.
-    assert [a for a in with_volume if a.startswith("HOLON_TARGET_WORKTREE=")] == [
-        f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"
+    baseline, mounted = captured
+    binds = workspace_mount_args(mount)
+    assert binds == [
+        "-v",
+        f"/host/flow-x:{SANDBOX_WORKSPACE_MOUNT}",
+        "-v",
+        "/host/repo/.git:/host/repo/.git",
     ]
+    # Guard every isolation flag: removing the binds and swapping the pinned worktree variable back restores the
+    # baseline argv byte for byte, so nothing else (``--rm``, ``--cap-drop=ALL``, metadata sinkholes, env) changed.
+    reduced = _remove_argv_pair(mounted, binds[:2])
+    reduced = _remove_argv_pair(reduced, binds[2:])
+    pinned = f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"
+    assert [a for a in mounted if a.startswith("HOLON_TARGET_WORKTREE=")] == [pinned]
+    assert [a if a != pinned else "HOLON_TARGET_WORKTREE=/home/dev/own-checkout" for a in reduced] == baseline
+    assert "--rm" in mounted
+    assert "--cap-drop=ALL" in mounted
+    assert "--security-opt=no-new-privileges" in mounted
+    # No named volume: no `docker volume` subcommand ran and no bind source is a bare volume name.
+    assert all(cmd[:2] != ["docker", "volume"] for cmd in captured)
+    sources = [mounted[i + 1].split(":", 1)[0] for i, a in enumerate(mounted) if a == "-v"]
+    assert all(os.path.isabs(source) for source in sources), sources
 
 
-def test_review_workspace_volume_overrides_a_forwarded_host_worktree():
-    """A forwarded host HOLON_TARGET_WORKTREE is replaced by the mountpoint when a volume is supplied."""
-    from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
+@patch("sandbox_executor.cli.run_docker_container", return_value=0)
+def test_dispatch_role_agent_forwards_the_workspace_mount(mock_run_container):
+    """dispatch_role_agent hands the mount to run_docker_container unchanged and never derives one itself."""
+    from sandbox_executor.cli import dispatch_role_agent
+    from sandbox_executor.worktree_mount import WorkspaceMount
 
-    captured: list[list[str]] = []
+    mount = WorkspaceMount(**_LINKED_MOUNT_KWARGS)
+    positional = ["I-1-x/P-1/E-1/_", "claude-agent", "claude-opus-5-5"]
 
-    def record_run(cmd, *args, **kwargs):
-        captured.append(list(cmd))
-        return MagicMock(returncode=0)
+    assert dispatch_role_agent("review-loop", "claude-agent", None, positional, workspace_mount=mount) == 0
+    assert dispatch_role_agent("review-loop", "claude-agent", None, positional, target_worktree="/repo") == 0
 
-    with (
-        patch("sandbox_executor.cli.resolve_target_repo", return_value=("git@github.com:test/repo.git", None)),
-        patch("sandbox_executor.cli.get_agent_session_mounts", return_value=[]),
-        patch("subprocess.run", side_effect=record_run),
-        patch("shutil.which", return_value="/usr/bin/docker"),
-        patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": "/home/dev/own-checkout"}, clear=True),
-    ):
-        assert (
-            run_docker_container(
-                "review-loop",
-                "holon/agent-claude",
-                ["branch", "fake-agent", "fake-model"],
-                agent_id="claude",
-                review_workspace_volume="holon-review-ws-abc123",
-            )
-            == 0
-        )
-
-    (argv,) = captured
-    assert [a for a in argv if a.startswith("HOLON_TARGET_WORKTREE=")] == [
-        f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"
-    ]
+    with_mount, without_mount = mock_run_container.call_args_list
+    assert with_mount.kwargs["workspace_mount"] is mount
+    assert "workspace_mount" not in without_mount.kwargs

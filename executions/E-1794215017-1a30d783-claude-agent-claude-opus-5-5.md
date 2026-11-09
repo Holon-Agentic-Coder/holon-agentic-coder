@@ -52,3 +52,23 @@ In progress.
   fallback can never reach the real repository.
 - Ruff is clean with no `noqa`. `uv run pytest apps/sandbox-executor/tests/test_worktree_mount.py -q` gave 10 passed
   in 0.11s.
+
+### Step 3: `run_docker_container` and `dispatch_role_agent` take `workspace_mount`
+
+- `cli/__init__.py`: `review_workspace_volume: str | None` became `workspace_mount: WorkspaceMount | None` in both
+  functions. The parameter count is unchanged and no `noqa` was added. Each of the two old `if` blocks was replaced
+  one-for-one: `env_to_forward.update(workspace_mount_env(...))` and `docker_cmd.extend(workspace_mount_args(...))`,
+  at the same argv position (after the result-file mount, before the session mounts). The `SANDBOX_WORKSPACE_MOUNT`
+  import in `cli` is gone, since `worktree_mount` now owns the mountpoint. `dispatch_role_agent` forwards the mount
+  only when it is not None and never derives one from `target_worktree`.
+- `flow/dispatch.py`: only the `_dispatch_role` docstring example changed. Its move-proof digest is refreshed in
+  Step 5.
+- `tests/test_cli.py`: the two `review_workspace_volume` tests were replaced by
+  `test_workspace_mount_bind_mounts_worktree_and_git_dir_and_pins_the_workspace` and
+  `test_dispatch_role_agent_forwards_the_workspace_mount`. The first checks exactly the two binds, that the pin
+  overrides a forwarded host `HOLON_TARGET_WORKTREE`, that the argv is otherwise byte-identical, and that there is no
+  `docker volume` call and no named-volume source. The second checks that the mount is forwarded unchanged.
+- `uv run pytest apps/sandbox-executor/tests/test_cli.py apps/sandbox-executor/tests/test_worktree_mount.py apps/sandbox-executor/tests/test_review_dispatch.py -q -n auto --dist worksteal`
+  gave 422 passed and 53 subtests passed in 2.17s.
+- At this commit the flow review modules still pass `review_workspace_volume` through `_dispatch_role`. Their tests
+  stay green because they use injected dispatchers. Step 4 removes those call sites.

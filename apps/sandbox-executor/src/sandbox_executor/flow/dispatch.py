@@ -58,7 +58,7 @@ def _dispatch_role(
 ) -> int:
     """Dispatch one role agent through the same function the per-stage commands use.
 
-    Non-None ``extra`` keywords (e.g. ``review_workspace_volume`` for Stage 4 dispatches) are forwarded
+    Non-None ``extra`` keywords (e.g. ``workspace_mount`` for a host-provisioned worktree) are forwarded
     to the dispatcher; None values are dropped so injected dispatchers without those parameters keep
     working unchanged.
     """

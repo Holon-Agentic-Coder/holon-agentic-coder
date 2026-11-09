@@ -7,15 +7,20 @@ Execution of plan `P-1794196917-8bed7894-claude-agent-claude-opus-5-5` for inten
 tooling a structured resolver failure, halt the review loop on any resolver failure, and render an honest consensus
 post.
 
+Outcome: all eight steps done, all five acceptance criteria met in code and tests, and the full suite, lint and
+lint-docs pass. The one unverified item is the image build itself (no Docker in the sandbox). `success_actual` is 0.9
+rather than 1.0 for that reason. `entropy_actual` is below the predicted 12.4: the only surprise was the move-proof
+snapshot, which changed where new code goes, and only one pre-existing test pinned the silent-continue behaviour.
+
 ## Actual Metrics
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.0   |
-| entropy_actual        | 0.0   |
-| impact_actual         | 0.0   |
-| cost_actual           | 0.0   |
-| learning_value_actual | 0.0   |
+| success_actual        | 0.9   |
+| entropy_actual        | 11.2  |
+| impact_actual         | 85.0  |
+| cost_actual           | 30.0  |
+| learning_value_actual | 6.0   |
 
 ## Steps Executed
 
@@ -170,3 +175,50 @@ post.
 - Affected files (`test_review_loop.py`, `test_review_report.py`, `test_container_images.py`, `test_review_dispatch.py`,
   `test_review_workspace_integration.py`, `test_artefacts.py`, the new file and `tests/flow`): 733 passed, 15 skipped in
   `5.75s`.
+
+### Step 8: Full validation
+
+- `uv run task lint`: passed (`uv lock --check` with `uv.lock` untouched, ruff check, ruff format check, and the flow
+  budgets: 28 modules within their recorded line counts).
+- `uv run task lint-docs`: passed.
+- `uv run task test`: passed once (figures in Tests Run).
+- Diff audit against the plan commit `fe34e88` (no local `main` ref exists in this checkout): no `.jsonl` ledger changed
+  or added; `flow_module_budgets.json` only lowers two budgets (`review/loop.py` `966 -> 962`, `review/resolver.py`
+  `368 -> 362`) and adds none; no American spellings in added lines.
+- Touch-set deviations, declared: two new modules outside the intent's scope list,
+  `src/sandbox_executor/resolver_result.py` (the shared resolver result contract) and
+  `src/sandbox_executor/entrypoint/review_verification.py` (the missing-tool helpers), placed there because of the
+  move-proof constraint (Step 1) and the plan's 40-line entrypoint threshold (Step 3). `docker-bake.hcl` and
+  `flow/github/review_post.py` are unchanged.
+
+## Notes for the Reviewer
+
+- The `holon-base` image was not built here (no Docker in the sandbox). Run
+  `docker buildx bake -f apps/sandbox-executor/docker-bake.hcl base` once to prove the `ghcr.io/astral-sh/uv:0.13.7` tag
+  resolves; the `RUN uv --version` smoke check turns a wrong tag into a build failure.
+- Behaviour changes beyond the uv path, all intended: a missing executable in `run_cmd` exits 127 (with `check=True`)
+  instead of raising a traceback; a resolver container that exits 0 but leaves no resolver result now halts the loop;
+  the non-approved heading gains `— {approvals}/{configured} approved` after `(Iteration N)`.
+- Follow-up candidate (Step 4 learning target): hard container kills still report only "exited with code N and produced
+  no resolver result"; a tail for those needs host-side capture in `cli/__init__.py`, out of this scope.
+
+## Tests Run
+
+| command                                                                                                       | result                         | pytest time |
+| ------------------------------------------------------------------------------------------------------------- | ------------------------------ | ----------- |
+| baseline `uv run pytest tests/test_review_loop.py tests/test_review_report.py tests/test_container_images.py` | 176 passed, 7 skipped          | `2.05s`     |
+| baseline `uv run task lint`                                                                                   | passed                         | n/a         |
+| `uv run pytest tests/test_container_images.py tests/test_build_all_images.py` (Step 2)                        | 25 passed, 14 skipped          | `0.10s`     |
+| `uv run pytest apps/sandbox-executor/tests -n auto` (after Step 4)                                            | 3287 passed, 21 skipped        | `46.82s`    |
+| `uv run pytest apps/sandbox-executor/tests -n auto` (after Step 5)                                            | 3287 passed, 21 skipped        | `47.31s`    |
+| `uv run pytest apps/sandbox-executor/tests -n auto` (after Step 6)                                            | 3287 passed, 21 skipped        | `45.72s`    |
+| `uv run pytest tests/test_review_resolver_failure.py`                                                         | 14 passed                      | `0.14s`     |
+| same file against the pre-fix `loop.py` and `review_report.py` (sanity check, then restored)                  | 4 failed, 10 passed (expected) | `0.15s`     |
+| `uv run pytest tests/test_review_report.py`                                                                   | 56 passed                      | `0.07s`     |
+| affected set (plan Step 7.8 files, the new file and `tests/flow`), `-n auto --dist worksteal`                 | 733 passed, 15 skipped         | `5.75s`     |
+| `uv run task lint`                                                                                            | passed                         | n/a         |
+| `uv run task lint-docs`                                                                                       | passed                         | n/a         |
+| `uv run task test` (full suite, once)                                                                         | 3302 passed, 0 failed          | `30.89s`    |
+
+No repeated runs: the intent has no timing or performance target, so there is no median to report. Test paths in the
+table are relative to `apps/sandbox-executor/` unless they start with `apps/`.

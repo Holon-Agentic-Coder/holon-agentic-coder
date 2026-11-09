@@ -2,6 +2,8 @@
 
 ## Summary
 
+Outcome: all ten plan steps completed and the validation gate passes.
+
 Implements plan `P-1794227872-152246bc-claude-agent-claude-opus-5-5`: nest decomposed children under the plan branch,
 merge each child PR into it with a guarded merge commit, integrate the plan branch into the parent execution branch so
 the normal Stage 4 and Stage 5 raise and review the combined PR, and resume decomposed runs without re-dispatching the
@@ -11,11 +13,11 @@ parent executor or a child.
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0     |
-| entropy_actual        | 0     |
-| impact_actual         | 0     |
-| cost_actual           | 0     |
-| learning_value_actual | 0     |
+| success_actual        | 1     |
+| entropy_actual        | 13.6  |
+| impact_actual         | 88    |
+| cost_actual           | 34    |
+| learning_value_actual | 6.5   |
 
 ## Steps Executed
 
@@ -226,3 +228,42 @@ alone leaves the package unimportable or the suite red.
 - `grep` for "not yet automated" and "Until the implementation follows" finds nothing outside `docs/ledger_schema.md`;
   the two remaining "parent intent branch" mentions in `docs/git_flow.md` say sub-intents do not merge into it.
 - `npx prettier --check "**/*.md"` passes (the touched files were re-wrapped with `prettier --write`).
+
+### Step 10: budgets registered and the gate validated
+
+- `flow_module_budgets.json`: new entries at delivered size (`ledger_interleave.py: 112`, `github/merge.py: 271`,
+  `child_progress.py: 190`, `stages/children.py: 286`, `stages/integration.py: 96`); lowered `stages/decomposition.py`
+  (242 to 124), `pipeline.py` (394 to 387) and `__init__.py` (362 to 359). No budget was raised and no `noqa` was added
+  to source; one existing suppression narrowed.
+- A ruff `E501` in the `tests/test_workflow_triggers.py` docstring (re-worded in Step 9) was found by `uv run task lint`
+  after the full suite run and fixed by re-wrapping the docstring; lint and that file's tests were re-run.
+
+## Tests Run
+
+No repetition: the intent sets no performance target, so each command ran once on the final code (the plan's N is 1).
+
+| command                                                                                   | result                                                       | pytest time |
+| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ----------- |
+| `uv run pytest apps/sandbox-executor/tests/flow -n auto --dist worksteal` (final)         | 575 passed, 0 failed                                         | `5.99s`     |
+| `uv run task test` (`-n auto --dist worksteal`, once)                                     | 3440 passed, 0 failed, 8 warnings                            | `29.16s`    |
+| `uv run task lint` (`uv lock --check`, ruff check, ruff format check, budgets)            | passed after the docstring re-wrap; 33 modules within budget | n/a         |
+| `uv run task lint-docs` (`npx prettier --check "**/*.md"`)                                | passed                                                       | n/a         |
+| `uv run pytest apps/sandbox-executor/tests/test_workflow_triggers.py` (after the re-wrap) | 23 passed                                                    | `0.03s`     |
+
+Median of the single full-suite run: `29.16s`. Intermediate runs recorded in the steps above: flow tests 504 passed
+(`5.15s`, baseline), 515 (`5.05s`), 545 (`5.34s`), 565 (`5.87s`), 575 (`6.03s`); full suite after Steps 5 to 7: 3434
+passed, 21 skipped (`42.55s`, run with `pytest apps/sandbox-executor/tests` rather than the task, so integration and
+stress markers were collected and skipped).
+
+## Residual risks and follow-ups
+
+- The real GitHub merge path (branch protection, required reviews, merge queues, the time GitHub takes to recompute
+  `mergeable` after the child head moves) is exercised only against `FakeGitHub`; every unexpected answer refuses the
+  merge and fails Stage 3 with the reason, and `MERGE_SETTLE_SECONDS` bounds the wait at 15 minutes.
+- Intermediate child-loop checkpoints are written with `save_checkpoint(context)` to the default checkpoint path; a run
+  started with an explicit `--checkpoint` path gets the final Stage 3 result there through the pipeline, but the in-loop
+  progress snapshots go to the default path.
+- `docs/ledger_schema.md` (lines 134 and 731) still says the flow records the parent intent branch as a child's target;
+  the intent forbids editing it, so it needs a follow-up.
+- Stage 5 calibration of a decomposed parent now runs on the combined execution branch; its metrics come from the
+  parent's ledger rows, which describe a decomposition rather than an implementation.

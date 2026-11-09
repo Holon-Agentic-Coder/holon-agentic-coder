@@ -299,6 +299,6 @@ def resume_children(context: FlowContext, previous: StageResult) -> StageResult:
     context.log("Stage 3 resume: the plan was already decomposed; continuing its children, not the parent executor.")
     if payload.get("execution_branch"):
         context.execution_branch = str(payload["execution_branch"])
-    for note in reconcile_with_origin(context.target_worktree, payload[PROGRESS_KEY]):
+    for note in reconcile_with_origin(context.target_worktree, payload[PROGRESS_KEY], str(payload["plan_branch"])):
         context.log(f"Stage 3 resume: {note} (origin wins).")
     return run_children(context, start_time, payload)

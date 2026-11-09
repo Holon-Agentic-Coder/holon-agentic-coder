@@ -17,7 +17,7 @@ from typing import Any
 from sandbox_executor.flow.checkpoint import get_default_checkpoint_path
 from sandbox_executor.flow.context import FlowContext, StageResult
 from sandbox_executor.flow.git_refs import _fetch_branch_prefix_error, _list_child_branches, _origin_has_branch
-from sandbox_executor.flow.github.merge import GhRunner, gh_runner
+from sandbox_executor.flow.github.merge import GhRunner, _merged_result, gh_runner
 
 PROGRESS_KEY = "children_progress"
 PENDING = "pending"
@@ -139,8 +139,8 @@ def _apply_fact(entry: dict[str, Any], key: str, value: Any, notes: list[str]) -
     entry[key] = value
 
 
-def _reconcile_entry(repo_dir: str, entry: dict[str, Any], runner: GhRunner, notes: list[str]) -> None:
-    """Fill one entry's facts from origin and GitHub, promoting it to ``merged`` when its PR merged."""
+def _reconcile_entry(repo_dir: str, entry: dict[str, Any], plan: str, runner: GhRunner, notes: list[str]) -> None:
+    """Fill one entry's facts from origin and GitHub, promoting it to ``merged`` when its PR merged into ``plan``."""
     intent_branch = str(entry.get("intent_branch") or "")
     branches = _execution_branches(repo_dir, intent_branch)
     if branches is None:
@@ -154,24 +154,28 @@ def _reconcile_entry(repo_dir: str, entry: dict[str, Any], runner: GhRunner, not
     pr, ok = _child_pr(repo_dir, str(entry["execution_branch"]), runner)
     if not ok:
         entry["origin_lookup_failed"] = True
-        return
-    if pr is None:
+    if not ok or pr is None:
         return
     _apply_fact(entry, "pr_number", pr.get("number"), notes)
     _apply_fact(entry, "pr_url", pr.get("url"), notes)
-    if str(pr.get("state") or "").upper() == "MERGED":
-        commit = pr.get("mergeCommit")
-        _apply_fact(entry, "merge_commit", commit.get("oid") if isinstance(commit, dict) else None, notes)
-        _apply_fact(entry, "status", MERGED, notes)
+    if str(pr.get("state") or "").upper() != "MERGED":
+        return
+    result = _merged_result(pr, plan, already_merged=True)
+    if not result.merged:  # merged into another base: only noted, so the guarded merge refuses it later
+        notes.append(f"sub-intent '{entry.get('slug')}': PR #{pr.get('number')} not promoted: {result.reason}")
+        return
+    _apply_fact(entry, "merge_commit", result.merge_commit, notes)
+    _apply_fact(entry, "status", MERGED, notes)
 
 
-def reconcile_with_origin(repo_dir: str, progress: list[dict[str, Any]], runner: GhRunner | None = None) -> list[str]:
+def reconcile_with_origin(repo_dir: str, progress: list[dict[str, Any]], plan: str, runner: GhRunner | None = None):
     """Reconcile checkpointed progress with origin before a resume, in place.
 
     For every child not yet merged, its execution branches are discovered under its intent branch on origin and its
-    PR is read with ``gh pr list --head <execution branch> --state all``. Missing facts are filled in, a merged PR makes
-    the entry ``merged``, and where origin and the checkpoint disagree origin wins. A failed fetch or ``gh`` lookup
-    marks the entry ``origin_lookup_failed``, which makes :func:`next_child_action` resume it, never dispatch it.
+    PR is read with ``gh pr list --head <execution branch> --state all``. Missing facts are filled in, a PR merged into
+    ``plan`` makes the entry ``merged`` (one merged into another base is only noted), and where origin and the
+    checkpoint disagree origin wins. A failed fetch or ``gh`` lookup marks the entry ``origin_lookup_failed``, which
+    makes :func:`next_child_action` resume it, never dispatch it.
 
     Returns:
         list[str]: One note per disagreement between origin and the checkpoint, for the flow log.
@@ -181,7 +185,7 @@ def reconcile_with_origin(repo_dir: str, progress: list[dict[str, Any]], runner:
     for entry in progress:
         entry.pop("origin_lookup_failed", None)
         if entry.get("status") != MERGED:
-            _reconcile_entry(repo_dir, entry, gh, notes)
+            _reconcile_entry(repo_dir, entry, plan, gh, notes)
     return notes
 
 

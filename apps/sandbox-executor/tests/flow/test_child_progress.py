@@ -137,7 +137,7 @@ def test_reconcile_fills_in_the_execution_branch_and_pr_from_origin(origin_with_
     number = gh.open_pr(execution, PLAN)
     progress = [_entry(status=IN_PROGRESS)]
 
-    notes = reconcile_with_origin(str(host), progress, runner=gh)
+    notes = reconcile_with_origin(str(host), progress, PLAN, runner=gh)
 
     assert notes == []
     assert progress[0]["execution_branch"] == execution
@@ -153,7 +153,7 @@ def test_reconcile_promotes_a_merged_pr_and_origin_overrides_a_stale_checkpoint(
     gh.prs[number].update(state="MERGED", oid="abc123")
     progress = [_entry(status=REVIEW_DONE, execution_branch="I-1-root/stale/E-1-a-b/_", pr_number=99)]
 
-    notes = reconcile_with_origin(str(host), progress, runner=gh)
+    notes = reconcile_with_origin(str(host), progress, PLAN, runner=gh)
 
     assert progress[0]["status"] == MERGED
     assert progress[0]["merge_commit"] == "abc123"
@@ -164,12 +164,28 @@ def test_reconcile_promotes_a_merged_pr_and_origin_overrides_a_stale_checkpoint(
     assert next_child_action(progress[0]) == "skip"
 
 
+def test_a_pr_merged_into_another_base_is_not_promoted(origin_with_child, tmp_path):
+    origin, host, execution = origin_with_child
+    gh = FakeGitHub(origin, tmp_path)
+    number = gh.open_pr(execution, "main")
+    gh.prs[number].update(state="MERGED", oid="abc123")
+    progress = [_entry(status=REVIEW_DONE)]
+
+    notes = reconcile_with_origin(str(host), progress, PLAN, runner=gh)
+
+    assert progress[0]["status"] == REVIEW_DONE
+    assert progress[0]["pr_number"] == number
+    assert progress[0].get("merge_commit") is None
+    assert any("not promoted" in note and "'main'" in note for note in notes)
+    assert next_child_action(progress[0]) == "merge"
+
+
 def test_an_execution_branch_without_a_pr_resumes_and_a_failed_lookup_never_dispatches(origin_with_child, tmp_path):
     origin, host, execution = origin_with_child
     gh = FakeGitHub(origin, tmp_path)
     progress = [_entry()]
 
-    reconcile_with_origin(str(host), progress, runner=gh)
+    reconcile_with_origin(str(host), progress, PLAN, runner=gh)
     assert progress[0]["execution_branch"] == execution and progress[0]["pr_number"] is None
     assert next_child_action(progress[0]) == "resume"
 
@@ -177,7 +193,7 @@ def test_an_execution_branch_without_a_pr_resumes_and_a_failed_lookup_never_disp
         return subprocess.CompletedProcess(["gh", *args], 1, "", "HTTP 502")
 
     fresh = [_entry()]
-    reconcile_with_origin(str(host), fresh, runner=gh_down)
+    reconcile_with_origin(str(host), fresh, PLAN, runner=gh_down)
     assert fresh[0]["origin_lookup_failed"] is True
     assert next_child_action(fresh[0]) == "resume"
 
@@ -188,7 +204,7 @@ def test_a_child_with_nothing_on_origin_is_dispatched_and_a_merged_entry_is_not_
     nothing = initial_progress([{"slug": "x"}, {"slug": "never-started"}], PLAN)[1]
     merged = _entry(status=MERGED, pr_number=5)
 
-    reconcile_with_origin(str(host), [nothing, merged], runner=gh)
+    reconcile_with_origin(str(host), [nothing, merged], PLAN, runner=gh)
 
     assert next_child_action(nothing) == "dispatch"
     assert nothing["intent_branch_on_origin"] is False
@@ -198,6 +214,6 @@ def test_a_child_with_nothing_on_origin_is_dispatched_and_a_merged_entry_is_not_
 
 def test_a_failed_origin_fetch_marks_the_entry_for_resume(tmp_path):
     progress = [_entry()]
-    reconcile_with_origin(str(tmp_path), progress, runner=FakeGitHub(tmp_path, tmp_path))
+    reconcile_with_origin(str(tmp_path), progress, PLAN, runner=FakeGitHub(tmp_path, tmp_path))
     assert progress[0]["origin_lookup_failed"] is True
     assert next_child_action(progress[0]) == "resume"

@@ -61,7 +61,7 @@ def interleave_ledger_rows(base_lines: list[str], ours_lines: list[str], theirs_
 
     Returns:
         list[str]: The merge-base rows unchanged, then both sides' appended rows interleaved on ``created_at`` (each
-        side's own order kept, ours first on a tie), with a row already kept never repeated.
+        side's own order kept, ours first on a tie); only a row both sides appended collapses to one.
 
     Raises:
         ConflictResolutionError: When either side does not start with the merge-base rows, so the conflict is not a
@@ -70,13 +70,12 @@ def interleave_ledger_rows(base_lines: list[str], ours_lines: list[str], theirs_
     ours = _appended_tail(base_lines, ours_lines, "ours")
     theirs = _appended_tail(base_lines, theirs_lines, "theirs")
     merged = list(base_lines)
-    seen = set(base_lines)
     while ours or theirs:
         take_ours = bool(ours) and (not theirs or _precedes(ours[0], theirs[0]))
-        line = ours.pop(0) if take_ours else theirs.pop(0)
-        if line not in seen:
-            seen.add(line)
-            merged.append(line)
+        line, other = (ours.pop(0), theirs) if take_ours else (theirs.pop(0), ours)
+        if line in other:
+            other.remove(line)
+        merged.append(line)
     return merged
 
 

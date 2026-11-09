@@ -60,6 +60,17 @@ def test_a_row_both_sides_appended_is_kept_once():
     assert len(merged) == 4
 
 
+def test_a_row_appended_by_one_side_is_kept_even_when_it_repeats_a_base_or_own_row():
+    again = _row("again", "2026-11-03T00:00:00Z")
+    ours = [*BASE, BASE[0], again, again]
+    theirs = [*BASE, again]
+
+    merged = interleave_ledger_rows(BASE, ours, theirs)
+
+    assert merged[:2] == BASE
+    assert merged[2:] == [BASE[0], again, again]
+
+
 @pytest.mark.parametrize(
     "rewritten",
     [[BASE[1], BASE[0]], [BASE[0]], [BASE[0], _row("b2", "2026-11-02T00:00:01Z")]],

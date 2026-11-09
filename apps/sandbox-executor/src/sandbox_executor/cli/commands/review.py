@@ -8,6 +8,7 @@ import sys
 from typing import Any
 
 from sandbox_executor import cli
+from sandbox_executor.cli.commands._worktree_guard import DEFAULT_BRANCH_GUARD_HELP, default_branch_worktree_allowed
 from sandbox_executor.cli.options import (
     _AGENT_HELP,
     _MODEL_HELP,
@@ -59,7 +60,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         action="store_true",
         help="Run review evaluation without applying changes or git commits.",
     )
-    add_target_worktree_option(parser, default=".")
+    add_target_worktree_option(parser, default=".", help=DEFAULT_BRANCH_GUARD_HELP)
     parser.add_argument(
         "--json",
         action="store_true",
@@ -151,6 +152,10 @@ def run(args: argparse.Namespace) -> int | None:
     """Execute the review-loop command."""
     try:
         if not _validate_review_args(args):
+            return None
+        command = f"holon {getattr(args, 'command', None) or 'review-loop'}"
+        if not default_branch_worktree_allowed(getattr(args, "target_worktree", None), command):
+            sys.exit(1)
             return None
 
         effective_token_reduce = cli.detect_holon_coherence(

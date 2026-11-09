@@ -954,7 +954,7 @@ class TestHolonFlowCLI(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             from sandbox_executor.flow import FlowContext
 
-            subprocess.run(["git", "init", "-q", tmp_dir], check=True, capture_output=True)  # resume needs a worktree
+            subprocess.run(["git", "init", "-q", "-b", "feature-x", tmp_dir], check=True, capture_output=True)
             orig_ctx = FlowContext(
                 target_worktree=tmp_dir,
                 intent_data={"slug": "test-resume"},

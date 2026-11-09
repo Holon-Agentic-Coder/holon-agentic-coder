@@ -29,7 +29,7 @@ from sandbox_executor.ledger import (
     try_append_ledger_line,
 )
 
-from tests.test_flow import FakeRoleAgents, _dispatch_context, _git
+from tests.flow.helpers import FakeRoleAgents, _dispatch_context, _git
 
 LEDGER_NAMES = ("intents", "plans", "executions")
 

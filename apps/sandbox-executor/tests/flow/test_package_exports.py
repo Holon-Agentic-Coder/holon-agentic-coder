@@ -20,6 +20,13 @@ REEXPORTED_IMPORTS = (
     "run_git",
 )
 
+# Namespaces captured at import (collection) time, before any fixture patches a submodule binding.
+FLOW_NAMESPACES = {
+    name: dict(vars(module))
+    for name, module in list(sys.modules.items())
+    if name == "sandbox_executor.flow" or name.startswith("sandbox_executor.flow.")
+}
+
 
 def _reexported_keys() -> list[str]:
     """Snapshot keys of top-level definitions and named constants (methods and subscript registrations excluded)."""
@@ -32,7 +39,7 @@ def test_package_reexports_each_definition_from_its_module(key):
     (module_path,) = {path for path, _ in package_definitions()[key]}
     module_name = "sandbox_executor.flow." + module_path.removesuffix(".py").replace("/", ".")
     assert name in flow.__all__
-    assert getattr(flow, name) is getattr(sys.modules[module_name], name)
+    assert FLOW_NAMESPACES["sandbox_executor.flow"][name] is FLOW_NAMESPACES[module_name][name]
 
 
 @pytest.mark.parametrize("name", REEXPORTED_IMPORTS)

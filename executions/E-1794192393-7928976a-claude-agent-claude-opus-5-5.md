@@ -114,3 +114,46 @@ Implementation of plan `P-1794192045-c23d4516-claude-agent-claude-opus-5-5`: spl
 - Result: the 15 affected files gave 1774 passed in 6.40s. The per-test outcomes are identical to the Step 1 baseline
   (diffed by node ID). The only difference in the `-rA` output is the log record name
   `sandbox_executor.flow.ledger_reconcile` in place of `sandbox_executor.flow`.
+
+### Step 5: Split `tests/test_flow.py` into `tests/flow/`
+
+- The scratch generator `/tmp/flowsplit/gen_tests.py` moved whole classes as exact source slices (with their preceding
+  comments). Then `ruff --fix F401,I001` and `ruff format` pruned the copied import header.
+- `tests/flow/conftest.py` holds the two autouse fixtures (`_sandboxed_clean_reviewers`, `_no_real_prettier`), the
+  session `_flow_repos_template` and `flow_repos`. `tests/flow/helpers.py` holds the 29 non-fixture helpers and constants
+  (`FakeRoleAgents`, `BudgetRoleAgents`, `_dispatch_context`, `_git`, `_verified_diff`, `_review_loop_gh_stubs` and the
+  rest), with their names unchanged.
+- Class placement, confirmed by reading each class's docstring and entry points. Where it differs from the plan's
+  tentative mapping, the reason is given:
+  - `test_context.py`: `TestFlowDataModels`
+  - `test_checkpoint.py`: `TestFlowResumptionAndErrorHandling`
+  - `test_ledger_reconcile.py`: `TestLedgerReconciliation`
+  - `test_stage_conflicts.py`: `TestProactiveConflictAndReviewLoop`
+  - `test_dispatch.py`: `TestFlowRoleDispatch` and `TestFlowDispatchMergeInteractions`
+  - `test_git_refs.py`: `TestStageTargetsIgnoreOperatorHead`
+  - `test_pipeline.py`: `TestFlowStages`, `TestFlowCLI`, `TestSkipPushRejectedOnEveryNonDryRun`,
+    `TestFlowWorktreeHermetic` and `TestStageBudgets`. The last covers ceilings across all stages, run by the engine,
+    so it is not a plan-stage test.
+  - `github/test_pr.py`: `TestReviewMergeabilityGuards` and `TestMergeabilityRefResolution`
+  - `github/test_ci.py`: `TestUnmeasuredTestsStopEarly`, the bounded wait for CI registration (the plan said
+    `stages/test_execute.py`)
+  - `github/test_review_post.py`: `TestSemanticPRAndConsensusReview`
+  - `review/test_loop.py`: `TestReviewLoopStage` and `TestEngineOwnedReviewLoop`
+  - `review/test_records.py`: `TestStage4LedgerProvenance`, the Stage 4 `ACT-*` rows (the plan said
+    `test_ledger_reconcile.py`)
+  - `review/test_ensemble.py`: `TestReviewDataSeam`
+  - `stages/test_review.py`: `TestStage4TestEvidence`, a Stage 4 rule (the plan said `stages/test_execute.py`)
+  - `stages/test_execute.py`: `TestStage3PartialResumeDispatch`
+  - `stages/test_decomposition.py`: `TestEntropyBudgetHandoffInFlow`, which is mostly about decomposition and child
+    flows (the plan said `stages/test_plan.py`)
+  - `stages/test_calibrate.py`: `TestStage5PromotedArtifactsCommit`
+- `tests/test_ledger_append_only.py` now imports `FakeRoleAgents`, `_dispatch_context` and `_git` from
+  `tests.flow.helpers`. `tests/test_flow.py` was removed with `git rm`.
+- The autouse fake-reviewer fixture now also applies to the Step 3 tests. `test_package_exports.py` therefore compares
+  the namespaces captured at import time, before any fixture patches a binding.
+- Parity: all 337 `test_flow.py` node IDs (280 test functions) are present under `tests/flow/`, matched by
+  `Class::test[param]`. 161 node IDs are new (the proof, export and guard tests). Node IDs in other files are unchanged.
+  Full collection grew from 3,131 to 3,292.
+- Outcomes and timing (one run each, `-n auto --dist worksteal`): `tests/flow` plus `test_ledger_append_only.py` gave
+  538 passed in 5.33s. The base worktree's `test_flow.py` plus `test_ledger_append_only.py` gave 377 passed in 5.55s.
+  All 377 shared node IDs have identical outcomes, so the session fixture scope is intact.

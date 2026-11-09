@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal, TextIO
@@ -867,3 +867,72 @@ def format_query_results_table(records: list[dict[str, Any]]) -> str:
         output_lines.append(format_row(row))
 
     return "\n".join(output_lines)
+
+
+def _extract_parent_ref(record: dict[str, Any], parent_key: str) -> str | None:
+    """Extract and normalise the root parent intent or branch identifier from a record."""
+    parent_raw = record.get(parent_key)
+    if not isinstance(parent_raw, str):
+        fallback_key = "intent_id" if parent_key == "intent_branch" else "intent_branch"
+        parent_raw = record.get(fallback_key)
+    if not isinstance(parent_raw, str) or not parent_raw.strip():
+        return None
+    cleaned = parent_raw.removesuffix("/_").strip("/")
+    parts = cleaned.split("/")
+    for part in parts:
+        if part.startswith("I-"):
+            return part
+    return parts[0] if parts else None
+
+
+def validate_ledger_unique_ids(
+    records: Iterable[dict[str, Any]],
+    id_key: str = "plan_id",
+    parent_key: str = "intent_branch",
+) -> None:
+    """Validate that identifier values do not collide across distinct intents or parent branches.
+
+    Args:
+        records: An iterable of ledger record dictionaries.
+        id_key: The dictionary key for the identifier (e.g. 'plan_id' or 'execution_id').
+        parent_key: The dictionary key for the parent reference (e.g. 'intent_branch' or 'plan_branch').
+
+    Raises:
+        ValueError: If a duplicate identifier is detected across distinct parent branches/intents.
+    """
+    seen: dict[str, str] = {}
+    for record in records:
+        id_val = record.get(id_key)
+        if not isinstance(id_val, str) or not id_val.strip():
+            continue
+        parent_ref = _extract_parent_ref(record, parent_key)
+        if not parent_ref:
+            continue
+        if id_val in seen and seen[id_val] != parent_ref:
+            raise ValueError(
+                f"Duplicate {id_key} '{id_val}' collision detected across distinct intents/branches: "
+                f"'{seen[id_val]}' vs '{parent_ref}'"
+            )
+        seen[id_val] = parent_ref
+
+
+def validate_ledger_file_unique_ids(
+    ledger_path: str,
+    id_key: str = "plan_id",
+    parent_key: str = "intent_branch",
+) -> None:
+    """Validate uniqueness of identifiers in a jsonl ledger file if the file exists."""
+    if not os.path.exists(ledger_path):
+        return
+    records: list[dict[str, Any]] = []
+    with open(ledger_path, encoding="utf-8") as f:
+        for line in f:
+            line_str = line.strip()
+            if not line_str:
+                continue
+            try:
+                records.append(json.loads(line_str))
+            except json.JSONDecodeError:
+                continue
+    validate_ledger_unique_ids(records, id_key=id_key, parent_key=parent_key)
+

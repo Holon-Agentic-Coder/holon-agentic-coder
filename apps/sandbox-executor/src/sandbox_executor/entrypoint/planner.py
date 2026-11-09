@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import hashlib
+import itertools
 import json
 import os
 import re
@@ -73,25 +75,67 @@ def run_cmd(
     return result
 
 
-def _sanitize_model_name(model_name: str) -> str:
-    """Sanitise a model name so it is safe for use in git branch names and filenames.
+_disambiguator_counter = itertools.count()
 
-    Steps:
-    1. Replace path separators (/) with underscores.
-    2. Collapse any run of whitespace into a single hyphen.
-    3. Strip all characters not in [a-zA-Z0-9_.-].
-    4. Collapse consecutive hyphens.
-    5. Collapse consecutive dots.
-    6. Strip leading/trailing hyphens and dots.
-    7. Enforce a maximum length of 64 characters to prevent excessively long branch/filename strings.
-    8. Fall back to 'unknown-model' if the result is empty.
-    """
-    s = re.sub(r"\s+", "-", model_name.replace("/", "_"))
+
+def _sanitize_string(name: str, fallback: str = "unknown") -> str:
+    """Sanitise an identifier component for safe use in branch names and filenames."""
+    s = re.sub(r"\s+", "-", name.replace("/", "_"))
     s = re.sub(r"[^a-zA-Z0-9_.-]", "", s)
     s = re.sub(r"-+", "-", s)
     s = re.sub(r"\.+", ".", s)
     s = s[:64].strip(".-")
-    return s or "unknown-model"
+    return s or fallback
+
+
+def _sanitize_model_name(model_name: str) -> str:
+    """Sanitise a model name so it is safe for use in git branch names and filenames."""
+    return _sanitize_string(model_name, fallback="unknown-model")
+
+
+def build_stage_disambiguator(parent_ref: str) -> str:
+    """Generate a deterministic 8-character lowercase hex disambiguator.
+
+    Derived from the parent branch/intent, high-resolution nanosecond timestamp,
+    and process ID.
+    """
+    clean_ref = parent_ref.removesuffix("/_").rstrip("/")
+    seed = f"{clean_ref}:{time.time_ns()}:{time.perf_counter_ns()}:{os.getpid()}:{next(_disambiguator_counter)}"
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
+
+
+def build_plan_id(
+    plan_seq: int,
+    parent_branch: str,
+    agent: str,
+    model: str,
+    disambiguator: str | None = None,
+) -> str:
+    """Build a deterministic, collision-resistant plan identifier.
+
+    Format: P-{plan_seq}-{disambiguator}-{safe_agent}-{safe_model}
+    """
+    safe_agent = _sanitize_string(agent, fallback="unknown-agent")
+    safe_model = _sanitize_model_name(model)
+    dis = disambiguator or build_stage_disambiguator(parent_branch)
+    return f"P-{plan_seq}-{dis}-{safe_agent}-{safe_model}"
+
+
+def build_execution_id(
+    exec_seq: int,
+    parent_branch: str,
+    agent: str,
+    model: str,
+    disambiguator: str | None = None,
+) -> str:
+    """Build a deterministic, collision-resistant execution identifier.
+
+    Format: E-{exec_seq}-{disambiguator}-{safe_agent}-{safe_model}
+    """
+    safe_agent = _sanitize_string(agent, fallback="unknown-agent")
+    safe_model = _sanitize_model_name(model)
+    dis = disambiguator or build_stage_disambiguator(parent_branch)
+    return f"E-{exec_seq}-{dis}-{safe_agent}-{safe_model}"
 
 
 def get_file_structure(root_dir, max_depth=3):

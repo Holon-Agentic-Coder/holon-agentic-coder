@@ -70,3 +70,21 @@ target_worktree_problem`, imported from `sandbox_executor.git_flow`. No entrypoi
 Deviation: the validator is an attribute, not a constructor keyword. A probe confirmed that ruff's `PLR0913` counts
 keyword-only parameters too (`6 > 5`), so the plan's documented class-attribute fallback was used. Direct
 `PipelineEngine(...)` tests are unaffected.
+
+### Step 5: Hermetic tests
+
+Every fixture builds real repositories under `tmp_path` and pins the cwd to a non-git `tmp_path/outside` with
+`monkeypatch.chdir`. No network, remote or Docker is used.
+
+- `tests/test_cli.py` (local `flow_target_env` fixture, 10 tests): a plain directory and a deleted path are rejected
+  with exit 1, the pipeline is not called, and no `flow-*` sibling is created. An attached worktree is accepted. A
+  checkpoint recording a plain or deleted path is rejected with and without `--from-stage review` (4 parametrised
+  cases), checked with the checkpoint-prefixed message. An explicit valid `--target-worktree` overrides a bad
+  checkpoint target. A checkpoint recording a bare clone still provisions `flow-wt-check`.
+- `tests/test_flow.py` (`TestTargetWorktreeValidation`, 11 tests): `target_worktree_problem()` returns `None` for a
+  source repository, an attached worktree and a worktree subdirectory. It gives the expected reason, absolute path and
+  `git worktree add` fix for a bare clone, a plain directory, a file and a missing path, and honours the caller's
+  subject and hint. The engine guard fails the first stage with the message, runs no stage and writes no checkpoint. An
+  engine without a validator keeps arbitrary targets. `run_flow_pipeline()` wires the validator (it rejects a plain
+  directory and accepts an attached worktree). The CLI still provisions a bare target after validation. The existing
+  `test_flow_cli_auto_creates_worktree_from_bare_repo` is unchanged.

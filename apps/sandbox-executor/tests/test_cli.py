@@ -26,7 +26,8 @@ from sandbox_executor.cli import (
     run_docker_container,
     strip_url_credentials,
 )
-from sandbox_executor.flow import SKIP_PUSH_DISPATCH_ERROR, FlowContext
+from sandbox_executor.flow import SKIP_PUSH_DISPATCH_ERROR, FlowContext, save_checkpoint
+from sandbox_executor.git_flow import is_working_tree
 
 from tests.leak_assertions import (
     CREDENTIAL_FREE_URLS,
@@ -2427,3 +2428,156 @@ def test_review_workspace_volume_overrides_a_forwarded_host_worktree():
     assert [a for a in argv if a.startswith("HOLON_TARGET_WORKTREE=")] == [
         f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"
     ]
+
+
+# ---------------------------------------------------------------------------
+# holon flow: fail fast when the resolved --target-worktree is not an attached git worktree
+# ---------------------------------------------------------------------------
+
+
+def _git(*args: str, cwd: str | None = None) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+@pytest.fixture
+def flow_target_env(tmp_path, monkeypatch):
+    """Hermetic source repository, bare clone and attached worktree, with the cwd pinned to a non-git directory.
+
+    Pinning the cwd means the base repository lookup in ``ensure_worktree`` can never fall back to the developer's
+    real repository.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+    src = tmp_path / "src_repo"
+    src.mkdir()
+    _git("init", "-q", cwd=str(src))
+    _git("config", "user.name", "Hermetic Test", cwd=str(src))
+    _git("config", "user.email", "test@hermetic.local", cwd=str(src))
+    _git("checkout", "-q", "-B", "main", cwd=str(src))
+    (src / "README.md").write_text("# Hermetic\n", encoding="utf-8")
+    _git("add", "README.md", cwd=str(src))
+    _git("commit", "-q", "-m", "Initial commit", cwd=str(src))
+    bare = tmp_path / "bare.git"
+    _git("clone", "-q", "--bare", str(src), str(bare))
+    attached = tmp_path / "attached"
+    _git("worktree", "add", "-q", "-b", "attached-branch", str(attached), "main", cwd=str(src))
+    intent_file = tmp_path / "intent.json"
+    intent_file.write_text(json.dumps({"slug": "wt-check", "target_branch": "main"}), encoding="utf-8")
+    return {"root": tmp_path, "outside": outside, "bare": bare, "attached": attached, "intent": intent_file}
+
+
+_FLOW_RUNNER_ARGS = ["--agent", "antigravity-agent", "--model", "gemini-3.8-flash-medium", "--dry-run", "--json"]
+
+
+def _run_flow(argv):
+    """Run ``holon flow`` with a patched pipeline and ``sys.exit``; return (pipeline mock, exit mock, stderr)."""
+    with (
+        patch("sandbox_executor.cli.run_flow_pipeline") as mock_pipeline,
+        patch("sys.exit") as mock_exit,
+        patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
+        patch("sys.argv", ["holon", "flow", *argv]),
+    ):
+        mock_pipeline.return_value = {"status": "ok"}
+        main()
+    return mock_pipeline, mock_exit, mock_stderr.getvalue()
+
+
+def _flow_siblings(path):
+    return sorted(p.name for p in path.parent.iterdir() if p.name.startswith("flow-"))
+
+
+def test_flow_rejects_plain_non_git_target_worktree(flow_target_env):
+    plain = flow_target_env["root"] / "plain"
+    plain.mkdir()
+
+    pipeline, exit_mock, stderr = _run_flow(
+        [str(flow_target_env["intent"]), *_FLOW_RUNNER_ARGS, "--target-worktree", str(plain)]
+    )
+
+    exit_mock.assert_called_once_with(1)
+    pipeline.assert_not_called()
+    assert f"Target worktree '{plain}' is not inside a git working tree" in stderr
+    assert "git worktree add" in stderr
+    assert _flow_siblings(plain) == []
+
+
+def test_flow_rejects_deleted_target_worktree(flow_target_env):
+    deleted = flow_target_env["root"] / "deleted"
+    deleted.mkdir()
+    deleted.rmdir()
+
+    pipeline, exit_mock, stderr = _run_flow(
+        [str(flow_target_env["intent"]), *_FLOW_RUNNER_ARGS, "--target-worktree", str(deleted)]
+    )
+
+    exit_mock.assert_called_once_with(1)
+    pipeline.assert_not_called()
+    assert "does not exist" in stderr
+    assert "git worktree add" in stderr
+    assert _flow_siblings(deleted) == []
+
+
+def test_flow_accepts_attached_worktree(flow_target_env):
+    attached = str(flow_target_env["attached"])
+
+    pipeline, exit_mock, stderr = _run_flow(
+        [str(flow_target_env["intent"]), *_FLOW_RUNNER_ARGS, "--target-worktree", attached]
+    )
+
+    pipeline.assert_called_once()
+    assert pipeline.call_args[1]["context"].target_worktree == attached
+    exit_mock.assert_called_with(0)
+    assert "Error:" not in stderr
+
+
+def _write_checkpoint(env, target_worktree):
+    checkpoint = env["root"] / "checkpoint.json"
+    ctx = FlowContext(target_worktree=str(target_worktree), intent_data={"slug": "wt-check", "target_branch": "main"})
+    save_checkpoint(ctx, str(checkpoint))
+    return checkpoint
+
+
+@pytest.mark.parametrize("from_stage", [[], ["--from-stage", "review"]])
+@pytest.mark.parametrize("recorded", ["plain", "deleted"])
+def test_flow_checkpoint_resume_rejects_non_worktree_target(flow_target_env, recorded, from_stage):
+    target = flow_target_env["root"] / recorded
+    target.mkdir()
+    if recorded == "deleted":
+        target.rmdir()
+    checkpoint = _write_checkpoint(flow_target_env, target)
+
+    pipeline, exit_mock, stderr = _run_flow(["--checkpoint", str(checkpoint), *_FLOW_RUNNER_ARGS, *from_stage])
+
+    exit_mock.assert_called_once_with(1)
+    pipeline.assert_not_called()
+    assert f"Checkpoint '{checkpoint}' target_worktree '{target}'" in stderr
+    assert "pass --target-worktree to resume against a different attached worktree" in stderr
+    assert _flow_siblings(target) == []
+
+
+def test_flow_checkpoint_resume_accepts_explicit_valid_target_worktree(flow_target_env):
+    plain = flow_target_env["root"] / "plain"
+    plain.mkdir()
+    checkpoint = _write_checkpoint(flow_target_env, plain)
+    attached = str(flow_target_env["attached"])
+
+    pipeline, exit_mock, _ = _run_flow(
+        ["--checkpoint", str(checkpoint), *_FLOW_RUNNER_ARGS, "--target-worktree", attached]
+    )
+
+    pipeline.assert_called_once()
+    assert pipeline.call_args[1]["context"].target_worktree == attached
+    exit_mock.assert_called_with(0)
+
+
+def test_flow_checkpoint_resume_provisions_recorded_bare_target(flow_target_env):
+    checkpoint = _write_checkpoint(flow_target_env, flow_target_env["bare"])
+
+    pipeline, exit_mock, _ = _run_flow(["--checkpoint", str(checkpoint), *_FLOW_RUNNER_ARGS])
+
+    pipeline.assert_called_once()
+    target = pipeline.call_args[1]["context"].target_worktree
+    assert os.path.basename(target) == "flow-wt-check"
+    assert is_working_tree(target)
+    exit_mock.assert_called_with(0)

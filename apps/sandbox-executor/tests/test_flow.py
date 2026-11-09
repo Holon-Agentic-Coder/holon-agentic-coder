@@ -64,6 +64,7 @@ from sandbox_executor.git_flow import (
     is_bare_repository,
     is_working_tree,
     prune_worktrees,
+    target_worktree_problem,
 )
 from sandbox_executor.ledger import parse_commit_trailers
 from sandbox_executor.review_ensemble import (
@@ -6480,4 +6481,143 @@ class TestFlowWorktreeHermetic:
         assert called_ctx.intent_data["slug"] == "auto-bare-cli"
         assert is_working_tree(called_ctx.target_worktree) is True
         assert Path(called_ctx.target_worktree).name == "flow-auto-bare-cli"
+        mock_exit.assert_called_with(0)
+
+
+class TestTargetWorktreeValidation:
+    """Fail fast when the flow target worktree is not an attached, non-bare git working tree."""
+
+    @pytest.fixture
+    def repos(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
+        """Hermetic source repository, bare clone and attached worktree; the cwd is pinned to a non-git directory."""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        monkeypatch.chdir(outside)
+        src = tmp_path / "src_repo"
+        src.mkdir()
+        for args in (
+            ["init", "-q"],
+            ["config", "user.name", "Hermetic Test"],
+            ["config", "user.email", "test@hermetic.local"],
+            ["checkout", "-q", "-B", "main"],
+        ):
+            subprocess.run(["git", *args], cwd=str(src), check=True, capture_output=True)
+        (src / "README.md").write_text("# Hermetic\n", encoding="utf-8")
+        (src / "pkg").mkdir()
+        (src / "pkg" / "mod.py").write_text("", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=str(src), check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "Initial"], cwd=str(src), check=True, capture_output=True)
+        bare = tmp_path / "bare.git"
+        subprocess.run(["git", "clone", "-q", "--bare", str(src), str(bare)], check=True, capture_output=True)
+        attached = tmp_path / "attached"
+        subprocess.run(
+            ["git", "worktree", "add", "-q", "-b", "attached", str(attached), "main"],
+            cwd=str(src),
+            check=True,
+            capture_output=True,
+        )
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        return {"root": tmp_path, "src": src, "bare": bare, "attached": attached, "plain": plain}
+
+    def test_problem_is_none_for_working_trees_and_their_subdirectories(self, repos: dict[str, Path]) -> None:
+        assert target_worktree_problem(str(repos["src"])) is None
+        assert target_worktree_problem(str(repos["attached"])) is None
+        assert target_worktree_problem(str(repos["src"] / "pkg")) is None
+
+    @pytest.mark.parametrize(
+        ("name", "reason"),
+        [
+            ("bare", "is a bare repository with no working tree"),
+            ("plain", "is not inside a git working tree"),
+            ("file", "is not a directory"),
+            ("missing", "does not exist (it may have been deleted)"),
+        ],
+    )
+    def test_problem_names_path_reason_and_fix(self, repos: dict[str, Path], name: str, reason: str) -> None:
+        target = repos.get(name, repos["root"] / name)
+        if name == "file":
+            target.write_text("x", encoding="utf-8")
+
+        problem = target_worktree_problem(str(target))
+
+        assert problem is not None
+        assert problem.startswith(f"Target worktree '{os.path.abspath(target)}' {reason}.")
+        assert "git worktree add <path> <branch>" in problem
+        assert "attached, non-bare git worktree" in problem
+
+    def test_problem_uses_caller_subject_and_hint(self, repos: dict[str, Path]) -> None:
+        problem = target_worktree_problem(
+            str(repos["plain"]), subject="Checkpoint 'c.json' target_worktree", hint=", or x"
+        )
+
+        assert problem is not None
+        assert problem.startswith(f"Checkpoint 'c.json' target_worktree '{repos['plain']}' is not inside")
+        assert problem.endswith(", or x.")
+
+    def test_engine_guard_fails_first_stage_before_any_stage_or_checkpoint(self, repos: dict[str, Path]) -> None:
+        checkpoint = repos["root"] / "checkpoint.json"
+        ctx = FlowContext(target_worktree=str(repos["plain"]), dry_run=True)
+        engine = PipelineEngine(ctx, from_stage="review", checkpoint_path=str(checkpoint))
+        engine.worktree_validator = target_worktree_problem
+
+        with patch.object(PipelineEngine, "execute_stage") as execute_stage:
+            results = engine.run()
+
+        assert list(results) == ["review"]
+        assert results["review"].status == StageStatus.FAILED
+        assert results["review"].error == target_worktree_problem(str(repos["plain"]))
+        execute_stage.assert_not_called()
+        assert not checkpoint.exists()
+
+    def test_engine_without_validator_keeps_arbitrary_targets(self, repos: dict[str, Path]) -> None:
+        ctx = FlowContext(target_worktree=str(repos["plain"]), dry_run=True)
+        passed = StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS)
+
+        with patch.object(PipelineEngine, "execute_stage", return_value=passed) as execute_stage:
+            results = PipelineEngine(ctx, from_stage="calibrate").run()
+
+        execute_stage.assert_called_once_with(FlowStage.CALIBRATE)
+        assert results["calibrate"].status == StageStatus.SUCCESS
+
+    def test_run_flow_pipeline_wires_the_worktree_validator(self, repos: dict[str, Path]) -> None:
+        checkpoint = repos["root"] / "checkpoint.json"
+        ctx = FlowContext(target_worktree=str(repos["plain"]), dry_run=True)
+
+        with patch.object(PipelineEngine, "execute_stage") as execute_stage:
+            flow_module.run_flow_pipeline(ctx, from_stage="plan", checkpoint_path=str(checkpoint))
+
+        assert ctx.stage_results["plan"].status == StageStatus.FAILED
+        assert "is not inside a git working tree" in (ctx.stage_results["plan"].error or "")
+        execute_stage.assert_not_called()
+        assert not checkpoint.exists()
+
+    def test_run_flow_pipeline_accepts_an_attached_worktree(self, repos: dict[str, Path]) -> None:
+        ctx = FlowContext(target_worktree=str(repos["attached"]), dry_run=True)
+        passed = StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS)
+
+        with patch.object(PipelineEngine, "execute_stage", return_value=passed) as execute_stage:
+            flow_module.run_flow_pipeline(ctx, from_stage="calibrate", checkpoint_path=str(repos["root"] / "c.json"))
+
+        execute_stage.assert_called_once_with(FlowStage.CALIBRATE)
+        assert ctx.stage_results["calibrate"].status == StageStatus.SUCCESS
+
+    def test_flow_cli_still_provisions_bare_target_after_validation(self, repos: dict[str, Path]) -> None:
+        intent_file = repos["root"] / "intent.json"
+        intent_file.write_text(json.dumps({"slug": "bare-validated", "target_branch": "main"}), encoding="utf-8")
+        argv = ["holon", "flow", str(intent_file), "--agent", "antigravity-agent", "--model", "gemini-3.8-flash-medium"]
+        argv += ["--dry-run", "--json", "--target-worktree", str(repos["bare"])]
+
+        with (
+            patch("sandbox_executor.cli.run_flow_pipeline") as mock_pipeline,
+            patch("sys.exit") as mock_exit,
+            patch("sys.argv", argv),
+        ):
+            mock_pipeline.return_value = {"status": "ok"}
+            cli_main()
+
+        mock_pipeline.assert_called_once()
+        target = mock_pipeline.call_args[1]["context"].target_worktree
+        assert Path(target).name == "flow-bare-validated"
+        assert target_worktree_problem(target) is None
         mock_exit.assert_called_with(0)

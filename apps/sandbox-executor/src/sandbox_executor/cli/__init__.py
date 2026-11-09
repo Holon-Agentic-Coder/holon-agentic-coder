@@ -1391,11 +1391,10 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
 ) -> int:
     """Constructs docker run command with auto-discovered credentials and executes it.
 
-    ``workspace_mount`` describes a host-provisioned worktree to bind-mount; when set, exactly the binds from
-    :func:`~sandbox_executor.worktree_mount.workspace_mount_args` are added (the worktree at the sandbox workspace
-    path, plus a linked worktree's common git directory at its own path) and ``HOLON_TARGET_WORKTREE`` is pinned to
-    the mountpoint so the entrypoint's workspace cannot drift from it; the rest of the command, including every
-    isolation flag, is unchanged.
+    ``workspace_mount`` names a host worktree to bind-mount; when set, exactly the binds from
+    :func:`~sandbox_executor.worktree_mount.workspace_mount_args` are added and ``HOLON_TARGET_WORKTREE`` is
+    pinned to the mountpoint so the entrypoint's workspace cannot drift from it; the rest of the command,
+    including every isolation flag, is unchanged.
     """
     if not shutil.which("docker"):
         print("Error: 'docker' CLI command not found. Please install Docker.", file=sys.stderr)

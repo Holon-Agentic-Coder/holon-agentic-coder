@@ -2381,15 +2381,20 @@ def test_workspace_mount_bind_mounts_worktree_and_git_dir_and_pins_the_workspace
     baseline, mounted = captured
     binds = workspace_mount_args(mount)
     assert binds == [
-        "-v",
-        f"/host/flow-x:{SANDBOX_WORKSPACE_MOUNT}",
-        "-v",
-        "/host/repo/.git:/host/repo/.git",
+        "--mount",
+        f"type=bind,source=/host/flow-x,target={SANDBOX_WORKSPACE_MOUNT}",
+        "--mount",
+        "type=bind,source=/host/repo/.git,target=/host/repo/.git",
+        "--mount",
+        "type=bind,source=/host/repo/.git/hooks,target=/host/repo/.git/hooks,readonly",
+        "--mount",
+        "type=bind,source=/host/repo/.git/config,target=/host/repo/.git/config,readonly",
     ]
     # Guard every isolation flag: removing the binds and swapping the pinned worktree variable back restores the
     # baseline argv byte for byte, so nothing else (``--rm``, ``--cap-drop=ALL``, metadata sinkholes, env) changed.
-    reduced = _remove_argv_pair(mounted, binds[:2])
-    reduced = _remove_argv_pair(reduced, binds[2:])
+    reduced = mounted
+    for idx in range(0, len(binds), 2):
+        reduced = _remove_argv_pair(reduced, binds[idx : idx + 2])
     pinned = f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"
     assert [a for a in mounted if a.startswith("HOLON_TARGET_WORKTREE=")] == [pinned]
     assert [a if a != pinned else "HOLON_TARGET_WORKTREE=/home/dev/own-checkout" for a in reduced] == baseline
@@ -2399,6 +2404,7 @@ def test_workspace_mount_bind_mounts_worktree_and_git_dir_and_pins_the_workspace
     # No named volume: no `docker volume` subcommand ran and no bind source is a bare volume name.
     assert all(cmd[:2] != ["docker", "volume"] for cmd in captured)
     sources = [mounted[i + 1].split(":", 1)[0] for i, a in enumerate(mounted) if a == "-v"]
+    sources += [mounted[i + 1].split(",")[1].removeprefix("source=") for i, a in enumerate(mounted) if a == "--mount"]
     assert all(os.path.isabs(source) for source in sources), sources
 
 

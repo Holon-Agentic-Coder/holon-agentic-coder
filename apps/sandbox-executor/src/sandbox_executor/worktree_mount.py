@@ -7,8 +7,9 @@ own host path, so a linked worktree's ``.git`` pointer file (``gitdir: <common>/
 ``commondir`` inside it resolve without a clone or network access.
 
 The mount set is deliberately minimal (docs/safety.md, container sandbox): exactly the worktree top level plus, for a
-linked worktree, its common git directory. Nothing here decides *whether* a stage mounts a worktree; callers opt in
-by passing the resolved :class:`WorkspaceMount` to the dispatcher.
+linked worktree, its common git directory, with the common directory's ``hooks`` and ``config`` overlaid read-only.
+Nothing here decides *whether* a stage mounts a worktree; callers opt in by passing the resolved
+:class:`WorkspaceMount` to the dispatcher.
 """
 
 from __future__ import annotations
@@ -126,7 +127,32 @@ def resolve_workspace_mount(
     worktree = _provisioned_worktree(target_worktree, slug, base_branch)
     toplevel = _rev_parse_path(worktree, "--show-toplevel")
     _refuse_unsafe_toplevel(toplevel)
-    return WorkspaceMount(host_worktree=toplevel, git_common_dir=_checked_common_dir(toplevel))
+    common_dir = _checked_common_dir(toplevel)
+    os.makedirs(os.path.join(common_dir, "hooks"), exist_ok=True)
+    return WorkspaceMount(host_worktree=toplevel, git_common_dir=common_dir)
+
+
+def _bind(source: str, target: str, *, readonly: bool = False) -> list[str]:
+    """Return one ``--mount type=bind`` argument pair (``--mount`` never splits a path on ``:`` like ``-v``)."""
+    if "," in source or "," in target:
+        raise WorkspaceMountError(f"Refusing to bind-mount '{source}': a ',' would break the --mount field list")
+    spec = f"type=bind,source={source},target={target}"
+    return ["--mount", f"{spec},readonly" if readonly else spec]
+
+
+def _protected_paths(mount: WorkspaceMount) -> list[tuple[str, str]]:
+    """Return ``(host, container)`` pairs of the common git dir's ``hooks`` and ``config``.
+
+    Both are run or read by the host's git after the container exits (hooks, ``core.hooksPath``,
+    ``core.fsmonitor``), so they are overlaid read-only. :func:`resolve_workspace_mount` creates a missing ``hooks``
+    directory so the overlay always has a source and the container cannot create it under the writable common dir.
+    """
+    if _is_within(mount.git_common_dir, mount.host_worktree):
+        rel = os.path.relpath(mount.git_common_dir, mount.host_worktree)
+        container_common = os.path.normpath(os.path.join(mount.container_workspace, rel))
+    else:
+        container_common = mount.git_common_dir
+    return [(os.path.join(mount.git_common_dir, n), os.path.join(container_common, n)) for n in ("hooks", "config")]
 
 
 def workspace_mount_args(mount: WorkspaceMount) -> list[str]:
@@ -134,11 +160,14 @@ def workspace_mount_args(mount: WorkspaceMount) -> list[str]:
 
     The worktree is mounted at the container workspace. A linked worktree's common git directory is mounted at its
     identity path so the worktree's ``.git`` pointer resolves inside the container; a main worktree's common
-    directory already lies inside the worktree, so it needs no second bind.
+    directory already lies inside the worktree, so it needs no second bind. Either way the common directory's
+    ``hooks`` and ``config`` are then overlaid read-only (see :func:`_protected_paths`).
     """
-    args = ["-v", f"{mount.host_worktree}:{mount.container_workspace}"]
+    args = _bind(mount.host_worktree, mount.container_workspace)
     if not _is_within(mount.git_common_dir, mount.host_worktree):
-        args.extend(["-v", f"{mount.git_common_dir}:{mount.git_common_dir}"])
+        args.extend(_bind(mount.git_common_dir, mount.git_common_dir))
+    for host_path, container_path in _protected_paths(mount):
+        args.extend(_bind(host_path, container_path, readonly=True))
     return args
 
 

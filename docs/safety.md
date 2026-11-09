@@ -103,6 +103,12 @@ return result
 - No network access (unless explicitly allowed for specific intent).
 - Filesystem mounted read-only except for intent workspace.
 - Resource limits (CPU, memory, disk).
+- A host-provisioned worktree (`sandbox_executor.worktree_mount`) is bind-mounted with exactly: the worktree at the
+  sandbox workspace path, a linked worktree's common git directory at its own host path, and that common directory's
+  `hooks/` and `config` overlaid **read-only**. The host's git later runs hooks and honours `core.hooksPath` /
+  `core.fsmonitor` from that config, so the container must not be able to plant them; consequently in-container
+  `git config --local` writes fail on a mounted worktree (use `git -c` or environment variables instead). Paths
+  containing `,` are refused because they would break the `--mount` field list.
 
 **Use case:** Medium-entropy intents (10-30), moderate complexity, external dependencies.
 

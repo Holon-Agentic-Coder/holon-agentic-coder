@@ -6,17 +6,36 @@ Execution of plan `P-1794214810-8b2770b7-claude-agent-claude-opus-5-5` for inten
 `I-1794214501-mount-host-worktree-into-sandbox-containers--1-add-host-provisioned-worktree-bind-mount-dispatc`: add
 host-provisioned worktree bind-mount dispatch for role containers and delete the Stage 4 named-volume machinery.
 
-In progress.
+Outcome: all six steps are done. The new `worktree_mount.py` resolves and validates a host worktree, and can provision
+one. It also builds the minimal bind-mount arguments: the worktree, plus a linked worktree's common git directory at its
+identity path. `run_docker_container` and `dispatch_role_agent` now take `workspace_mount` in place of
+`review_workspace_volume`. The Stage 4 named-volume machinery is deleted with its tests, with no fallback left behind:
+`ReviewWorkspaceSession`, `review_session_volume_name`, `HOLON_REVIEW_PERSIST`, the root `chown` init container and
+`SANDBOX_WORKSPACE_UID_GID`. Following the plan's guardrail, no production caller passes a mount yet, and test (f)
+checks this.
+
+The full suite passes, as do `uv run task lint` and `uv run task lint-docs`. Every touched flow module budget went down.
+There are two deviations. First, the move-proof snapshot refresh moved from Step 5 into Step 4, so every commit stays
+green. Its top-level floor went from 124 to 120 because four definitions were deleted. Second, `docs/architecture.md`
+also needed a one-row edit.
+
+Follow-ups for the sibling sub-intent that activates the mount:
+
+- UID mismatch for the image's `holon` user (uid 1000) on hosts with another uid.
+- Git `safe.directory` (dubious ownership).
+- `worktrees/<name>/gitdir` points at the host worktree path, which does not exist in the container. A
+  `git worktree prune` run inside the container would treat the registration as stale. Either avoid pruning in the
+  container or also mount the worktree at its identity path.
 
 ## Actual Metrics
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.0   |
-| entropy_actual        | 0.0   |
-| impact_actual         | 0.0   |
-| cost_actual           | 0.0   |
-| learning_value_actual | 0.0   |
+| success_actual        | 0.95  |
+| entropy_actual        | 8.5   |
+| impact_actual         | 78.0  |
+| cost_actual           | 14.0  |
+| learning_value_actual | 4.0   |
 
 ## Steps Executed
 
@@ -127,3 +146,30 @@ In progress.
   still mention a reused checkout, and their tests in `tests/test_review_loop.py`.
 - `uv run task lint` passed: ruff clean, 185 files formatted, flow module budgets passed for 28 modules.
   `uv run task lint-docs` passed.
+
+### Step 6: Validate
+
+- The affected tests and the full suite are green, and lint and lint-docs are green. See `## Tests Run`.
+- Final grep of `apps/sandbox-executor/src`, `apps/sandbox-executor/tests`, `docs` and the README for the deleted
+  symbols and `docker volume create`: 3 hits. Two are test (f)'s absence assertions in `tests/test_review_dispatch.py`,
+  and one is the out-of-scope seeded-remote fixture in `tests/hermetic_fixtures.py`.
+
+## Tests Run
+
+No timing measurement is involved, so the suite has no repeat count. Every run used `-n auto --dist worksteal`.
+
+| command                                                                                                                                                                                                                                  | result                                                     | pytest time |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ----------- |
+| Step 1 baseline: `uv run pytest apps/sandbox-executor/tests/test_cli.py apps/sandbox-executor/tests/test_review_dispatch.py apps/sandbox-executor/tests/flow -q -n auto --dist worksteal`                                                | 916 passed, 53 subtests passed                             | `5.32s`     |
+| Step 2: `uv run pytest apps/sandbox-executor/tests/test_worktree_mount.py -q`                                                                                                                                                            | 10 passed                                                  | `0.11s`     |
+| Step 3: `uv run pytest .../test_cli.py .../test_worktree_mount.py .../test_review_dispatch.py -q -n auto --dist worksteal`                                                                                                               | 422 passed, 53 subtests passed                             | `2.17s`     |
+| Step 4, before the snapshot refresh: review tests plus `tests/flow`                                                                                                                                                                      | 8 failed (snapshot and re-export keys), 727 passed         | `5.31s`     |
+| Step 4, after the snapshot refresh: review, cli, worktree_mount and `tests/flow`                                                                                                                                                         | 1 failed (snapshot floor), 1135 passed, 53 subtests passed | `5.79s`     |
+| Step 4, after the floor fix: `uv run pytest apps/sandbox-executor/tests/flow -q -n auto --dist worksteal`                                                                                                                                | 497 passed                                                 | `5.96s`     |
+| Step 6 affected: `uv run pytest` on `test_worktree_mount.py`, `test_cli.py`, `test_review_dispatch.py`, `test_review_loop.py`, `test_review_ensemble.py`, `test_review_resolver_failure.py` and `tests/flow`, `-n auto --dist worksteal` | 1136 passed, 53 subtests passed                            | `5.76s`     |
+| Step 6 full suite: `uv run task test`                                                                                                                                                                                                    | 3341 passed, 8 warnings, 0 failed                          | `68.37s`    |
+| `uv run task lint`                                                                                                                                                                                                                       | passed (ruff, format, 28 flow module budgets)              | n/a         |
+| `uv run task lint-docs`                                                                                                                                                                                                                  | passed                                                     | n/a         |
+
+Median of the full-suite runs: `68.37s` (one recorded run). A second `uv run task test` was started by mistake, piped
+into a command that dropped its output. Its result is not recorded and was not used.

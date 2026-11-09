@@ -370,7 +370,7 @@ def _fake_origin(
     from sandbox_executor import flow
 
     fake = FakeOriginGit(flow.run_git, fetch_returncode, fetch_stderr, failing_branch)
-    monkeypatch.setattr(flow, "run_git", fake)
+    monkeypatch.setattr("sandbox_executor.flow.git_refs.run_git", fake)
     return fake
 
 
@@ -420,7 +420,7 @@ def test_pr_base_without_origin_uses_the_local_branch(tmp_path, monkeypatch):
         calls.append(args)
         return real(args, *a, **kw)
 
-    monkeypatch.setattr(flow, "run_git", recording)
+    monkeypatch.setattr("sandbox_executor.flow.git_refs.run_git", recording)
     target = ReviewTarget(raw="90", head_branch="feature/x", head_sha=head, pr_number=90, base_branch="main")
 
     verdict, detail = verify_review_diff(str(repo), target)
@@ -477,7 +477,7 @@ def test_plain_branch_head_without_origin_uses_the_local_branch_and_never_fetche
         calls.append(args)
         return real(args, *a, **kw)
 
-    monkeypatch.setattr(flow, "run_git", recording)
+    monkeypatch.setattr("sandbox_executor.flow.git_refs.run_git", recording)
 
     verdict, detail = verify_review_diff(str(repo), "feature/x")
 
@@ -488,7 +488,6 @@ def test_plain_branch_head_without_origin_uses_the_local_branch_and_never_fetche
 
 @pytest.mark.parametrize("raised", ["helper", "subprocess"])
 def test_git_timeout_during_the_diff_check_is_unverified_and_redacted(tmp_path, monkeypatch, raised):
-    from sandbox_executor import flow
 
     repo = _repo(tmp_path)
     secret = "ghp_" + "A" * 36
@@ -500,7 +499,7 @@ def test_git_timeout_during_the_diff_check_is_unverified_and_redacted(tmp_path, 
             raise TimeoutError(f"Git command timed out after 300s: git fetch https://x:{secret}@github.com/a/b")
         raise subprocess.TimeoutExpired(["git", "fetch", f"https://x:{secret}@github.com/a/b"], 300)
 
-    monkeypatch.setattr(flow, "run_git", timing_out)
+    monkeypatch.setattr("sandbox_executor.flow.git_refs.run_git", timing_out)
 
     verdict, detail = verify_review_diff(str(repo), "feature/x")
 

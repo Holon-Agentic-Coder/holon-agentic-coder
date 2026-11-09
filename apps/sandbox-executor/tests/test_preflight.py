@@ -20,6 +20,7 @@ from sandbox_executor.preflight import (
     run_preflight_probe,
 )
 
+from tests.flow.lookup_patch import patch_lookup_sites
 from tests.leak_assertions import CREDENTIAL_FREE_URLS, assert_no_leak, make_probe, make_url_probe, url_userinfo_cases
 
 
@@ -616,10 +617,16 @@ def test_quota_exhausted_probe_aborts_flow_before_stage_one(flow_repo, monkeypat
         patch(
             "sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.QUOTA_EXHAUSTED)
         ) as probe,
-        patch("sandbox_executor.flow.run_intent_stage") as intent_stage,
+        patch("sandbox_executor.flow.pipeline.run_intent_stage") as intent_stage,
         patch("sandbox_executor.cli.run_flow_pipeline") as pipeline,
         patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
-        patch("sandbox_executor.flow.run_git") as flow_git,
+        patch_lookup_sites(
+            "sandbox_executor.flow.git_refs.run_git",
+            "sandbox_executor.flow.github.pr.run_git",
+            "sandbox_executor.flow.stage_conflicts.run_git",
+            "sandbox_executor.flow.stages.calibrate.run_git",
+            "sandbox_executor.flow.stages.review.run_git",
+        ) as flow_git,
     ):
         code = _run_main(["holon", "flow", str(intent_file), "--target-worktree", str(repo)])
 

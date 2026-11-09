@@ -80,3 +80,37 @@ Implementation of plan `P-1794192045-c23d4516-claude-agent-claude-opus-5-5`: spl
   `stages.decomposition.PipelineEngine is pipeline.PipelineEngine`.
 - Result: 158 passed. Mutation check: changing `CI_REGISTRATION_TIMEOUT_SECONDS` to `181.0` failed with
   `definitions whose body changed: ['<const>:CI_REGISTRATION_TIMEOUT_SECONDS (github/ci.py)']`. The change was reverted.
+
+### Step 4: Retarget every test patch to the submodule that looks the name up
+
+- Lookup map, measured rather than guessed. A temporary recorder (`tests/_flowrec.py`, deleted, never committed)
+  replaced each of the 318 patch sites (292 `"sandbox_executor.flow.<name>"` strings plus 26 `setattr`/`patch.object`
+  calls, across 11 files) with one shared mock patched at every module that binds the name. A proxy recorded the
+  calling module. The affected files then ran once: 1381 tests, with only the known source-reading test failing. Each
+  recorded site was cross-checked against a static import map. The one mismatch, `run_ensemble` (called from
+  `review.ensemble` but looked up in `review.loop`, which passes it on as a value), was corrected to the lookup site.
+- Rewrite rules (scratch `/tmp/flowsplit/rewrite.py`):
+  - One recorded site: plain `patch("sandbox_executor.flow.<sub>.<name>", ...)`.
+  - Several recorded sites: the new `tests/flow/lookup_patch.py` `patch_lookup_sites(target, ..., **kwargs)` patches
+    every target with one shared mock. This applies to 34 call sites over 9 names: `run_git`, `check_pr_mergeability`,
+    `probe_ci_checks`, `check_and_resolve_stage_conflicts`, `_dispatch_role`, `_read_ledger_rows`,
+    `_resolve_branch_ref`, `_fetch_branch_prefix_error` and `_warn_ledger_failure`.
+  - Never called during the test (for example `assert_not_called` guards): every static lookup site, so the test keeps
+    the same protection it had under the monolith.
+  - Looked up only through the package by a lazy caller outside it (`review_target` for `_execution_effective_diff`,
+    `cli.commands.review` for `run_review_loop_cli`, `entrypoint.planner` for `check_and_resolve_stage_conflicts`):
+    the package target stays, because that caller really does read the package attribute at call time (13 sites).
+  - stdlib attributes (`shutil.which`, `time.sleep`, `time.monotonic`, `time.time`, `subprocess.run`): anchored on the
+    flow submodule whose code calls them.
+- Deviation from the Step 4 discard rule: 9 of about 52 distinct patched names (about 17%) need more than one site,
+  just over the plan's 15% tripwire. I re-ran Step 1 point 6 as the rule asks: the static map and the recording agree,
+  so the map is right. These names are shared across clusters by design (for example `run_git` is used in 5 modules).
+- The one assertion-free body change: `test_only_the_review_stage_constructs_a_halt` read `flow_module.__file__`,
+  which is now `__init__.py`. It now reads every module of the package joined together. Its assertions are unchanged.
+- Guard: `tests/flow/test_patch_targets.py` fails on any `"sandbox_executor.flow.<name>"` string whose first segment
+  is not a submodule, unless the name is imported lazily from the package by `src` code (computed from the AST). It
+  also fails on any `setattr`/`patch.object` of the `flow` or `flow_module` object. Mutation check: a planted
+  `"sandbox_executor.flow.run_git"` string failed the guard.
+- Result: the 15 affected files gave 1774 passed in 6.40s. The per-test outcomes are identical to the Step 1 baseline
+  (diffed by node ID). The only difference in the `-rA` output is the log record name
+  `sandbox_executor.flow.ledger_reconcile` in place of `sandbox_executor.flow`.

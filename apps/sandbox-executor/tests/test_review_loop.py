@@ -20,6 +20,7 @@ from sandbox_executor.entrypoint.review_loop import (
 )
 from sandbox_executor.turns import TurnResult
 
+from tests.flow.lookup_patch import patch_lookup_sites
 from tests.leak_assertions import assert_no_fragment, make_gh_probe
 from tests.review_fakes import install_fake_reviewers
 
@@ -445,10 +446,14 @@ class TestReviewLoopEmptyDiffGuard:
         ctx = FlowContext(repo_dir=str(repo), execution_branch=self.EXEC, token_reduce=False)
         with (
             patch("shutil.which", return_value="/usr/bin/gh"),
-            patch("sandbox_executor.flow.create_or_update_pr", return_value={"success": True}) as mock_pr,
-            patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
-            patch("sandbox_executor.flow.probe_ci_checks", return_value={"all_passed": True, "source": "github_cli"}),
-            patch("sandbox_executor.flow.post_pr_review_consensus", return_value={"dual_posted": True}),
+            patch("sandbox_executor.flow.review.loop.create_or_update_pr", return_value={"success": True}) as mock_pr,
+            patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
+            patch_lookup_sites(
+                "sandbox_executor.flow.github.ci.probe_ci_checks",
+                "sandbox_executor.flow.review.loop.probe_ci_checks",
+                return_value={"all_passed": True, "source": "github_cli"},
+            ),
+            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
         ):
             res = run_review_loop(
                 ctx, target=self.EXEC, max_iterations=1, dry_run=False, first_iteration=first_iteration
@@ -545,10 +550,14 @@ class TestReviewLoopEmptyDiffGuardOrigin:
         ctx = FlowContext(repo_dir=str(host), execution_branch=self.EXEC, token_reduce=False)
         with (
             patch("shutil.which", return_value="/usr/bin/gh"),
-            patch("sandbox_executor.flow.create_or_update_pr", return_value={"success": True}) as mock_pr,
-            patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
-            patch("sandbox_executor.flow.probe_ci_checks", return_value={"all_passed": True, "source": "github_cli"}),
-            patch("sandbox_executor.flow.post_pr_review_consensus", return_value={"dual_posted": True}),
+            patch("sandbox_executor.flow.review.loop.create_or_update_pr", return_value={"success": True}) as mock_pr,
+            patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
+            patch_lookup_sites(
+                "sandbox_executor.flow.github.ci.probe_ci_checks",
+                "sandbox_executor.flow.review.loop.probe_ci_checks",
+                return_value={"all_passed": True, "source": "github_cli"},
+            ),
+            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
         ):
             res = run_review_loop(ctx, target=self.EXEC, max_iterations=1, dry_run=False)
         return res, mock_pr
@@ -749,7 +758,7 @@ def _run_entrypoint(repo_dir: Path, target: str, fake_git: FakeGitCommands, *ext
         patch(f"{ENTRYPOINT}.run_cmd", side_effect=fake_git),
         patch(f"{ENTRYPOINT}.check_and_resolve_stage_conflicts"),
         patch(f"{ENTRYPOINT}.run_review_loop", return_value=loop_result) as mock_loop,
-        patch("sandbox_executor.flow.post_pr_review_consensus") as mock_post,
+        patch("sandbox_executor.flow.review.loop.post_pr_review_consensus") as mock_post,
         pytest.raises(SystemExit) as exit_info,
     ):
         review_loop_main()
@@ -920,14 +929,22 @@ def _green_loop_patches(verdict=None, post=None, which=None):
             return_value=(verdict or DiffVerdict.VERIFIED, "guard detail"),
         )
     )
-    stack.enter_context(patch("sandbox_executor.flow.shutil.which", return_value=which))
-    stack.enter_context(patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}))
+    stack.enter_context(patch("sandbox_executor.flow.review.loop.shutil.which", return_value=which))
     stack.enter_context(
-        patch("sandbox_executor.flow.probe_ci_checks", return_value={"all_passed": True, "source": "local_tests"})
+        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False})
     )
-    stack.enter_context(patch("sandbox_executor.flow._resolve_review_commit", return_value="abc123"))
+    stack.enter_context(
+        patch(
+            "sandbox_executor.flow.review.loop.probe_ci_checks",
+            return_value={"all_passed": True, "source": "local_tests"},
+        )
+    )
+    stack.enter_context(patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123"))
     mock_post = stack.enter_context(
-        patch("sandbox_executor.flow.post_pr_review_consensus", **(post or {"return_value": {"dual_posted": True}}))
+        patch(
+            "sandbox_executor.flow.review.loop.post_pr_review_consensus",
+            **(post or {"return_value": {"dual_posted": True}}),
+        )
     )
     return stack, verify, mock_post
 
@@ -1056,12 +1073,15 @@ def test_approved_loop_never_merges(tmp_path, gh_write_guard):
 
     with (
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "ok")),
-        patch("sandbox_executor.flow.shutil.which", return_value="/usr/bin/gh"),
-        patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
-        patch("sandbox_executor.flow.probe_ci_checks", return_value={"all_passed": True, "source": "github_cli"}),
-        patch("sandbox_executor.flow.create_or_update_pr", return_value={"success": True}),
-        patch("sandbox_executor.flow._resolve_review_commit", return_value="abc123"),
-        patch("sandbox_executor.flow.subprocess.run", side_effect=_recording_run),
+        patch("sandbox_executor.flow.review.loop.shutil.which", return_value="/usr/bin/gh"),
+        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
+        patch(
+            "sandbox_executor.flow.review.loop.probe_ci_checks",
+            return_value={"all_passed": True, "source": "github_cli"},
+        ),
+        patch("sandbox_executor.flow.review.loop.create_or_update_pr", return_value={"success": True}),
+        patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123"),
+        patch("sandbox_executor.flow.github.review_post.subprocess.run", side_effect=_recording_run),
     ):
         res = run_review_loop(_loop_ctx(tmp_path), target="feature/x", max_iterations=1)
 
@@ -1085,7 +1105,7 @@ def test_pending_ci_wait_honours_its_deadline(tmp_path):
 
     pending = {"source": "github_cli", "pending": 2, "all_passed": False}
     probe = MagicMock(return_value=dict(pending))
-    with patch("sandbox_executor.flow.probe_ci_checks", probe):
+    with patch("sandbox_executor.flow.github.ci.probe_ci_checks", probe):
         res = _wait_for_pending_ci(
             FlowContext(repo_dir=str(tmp_path)),
             str(tmp_path),
@@ -1110,7 +1130,7 @@ def test_pending_ci_wait_returns_once_checks_settle(tmp_path):
     sleeps: list[float] = []
     settled = {"source": "github_cli", "pending": 0, "all_passed": True}
     probe = MagicMock(return_value=dict(settled))
-    with patch("sandbox_executor.flow.probe_ci_checks", probe):
+    with patch("sandbox_executor.flow.github.ci.probe_ci_checks", probe):
         res = _wait_for_pending_ci(
             FlowContext(repo_dir=str(tmp_path)),
             str(tmp_path),
@@ -1140,9 +1160,9 @@ def test_mergeability_probe_is_bounded_by_a_subprocess_timeout(tmp_path):
         return subprocess.CompletedProcess(argv, 1, stdout="", stderr="")
 
     with (
-        patch("sandbox_executor.flow.shutil.which", return_value="/usr/bin/gh"),
-        patch("sandbox_executor.flow.subprocess.run", side_effect=_timing_out),
-        patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=1, stdout="", stderr="")),
+        patch("sandbox_executor.flow.github.pr.shutil.which", return_value="/usr/bin/gh"),
+        patch("sandbox_executor.flow.github.pr.subprocess.run", side_effect=_timing_out),
+        patch("sandbox_executor.flow.github.pr.run_git", return_value=MagicMock(returncode=1, stdout="", stderr="")),
     ):
         res = check_pr_mergeability(str(tmp_path), "feature/x", "main")
 
@@ -1202,11 +1222,13 @@ class _LoopStubs:
         from sandbox_executor.review_target import DiffVerdict
 
         self._patches = [
-            patch("sandbox_executor.flow.shutil.which", return_value=None),
-            patch("sandbox_executor.flow.check_pr_mergeability", side_effect=lambda *a, **k: dict(self.merge)),
-            patch("sandbox_executor.flow.probe_ci_checks", side_effect=lambda *a, **k: dict(self.ci)),
-            patch("sandbox_executor.flow.post_pr_review_consensus", self.post),
-            patch("sandbox_executor.flow._resolve_review_commit", return_value="abc1234"),
+            patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+            patch(
+                "sandbox_executor.flow.review.loop.check_pr_mergeability", side_effect=lambda *a, **k: dict(self.merge)
+            ),
+            patch("sandbox_executor.flow.review.loop.probe_ci_checks", side_effect=lambda *a, **k: dict(self.ci)),
+            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", self.post),
+            patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc1234"),
             patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
         ]
         for p in self._patches:
@@ -1244,7 +1266,7 @@ def _cli(tmp_path: Path, ensemble, **stub_kwargs) -> int:
         agent="fake-agent",
         model="fake-model",
     )
-    with _LoopStubs(**stub_kwargs), patch("sandbox_executor.flow.run_ensemble", ensemble):
+    with _LoopStubs(**stub_kwargs), patch("sandbox_executor.flow.review.loop.run_ensemble", ensemble):
         return run_review_loop_cli(args)
 
 
@@ -1279,8 +1301,11 @@ def test_stage4_action_event_rewrite_propagates_instead_of_warning(tmp_path):
 
     rewrite = LedgerRewriteError("executions.jsonl was rewritten, not appended")
     with (
-        patch("sandbox_executor.flow.append_action_event", side_effect=rewrite),
-        patch("sandbox_executor.flow._warn_ledger_failure") as warn,
+        patch("sandbox_executor.flow.review.loop.append_action_event", side_effect=rewrite),
+        patch_lookup_sites(
+            "sandbox_executor.flow.review.loop._warn_ledger_failure",
+            "sandbox_executor.flow.stages.calibrate._warn_ledger_failure",
+        ) as warn,
         pytest.raises(LedgerRewriteError),
     ):
         _loop(tmp_path, FakeEnsemble())
@@ -1432,7 +1457,7 @@ def test_host_run_dispatches_review_loop_container_when_unsandboxed(tmp_path, mo
     ensemble = MagicMock(side_effect=AssertionError("a reviewer turn ran on the host"))
     with (
         _LoopStubs() as stubs,
-        patch("sandbox_executor.flow.run_ensemble", ensemble),
+        patch("sandbox_executor.flow.review.loop.run_ensemble", ensemble),
     ):
         res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=1)
 
@@ -1455,10 +1480,12 @@ def test_stage4_on_the_host_fails_closed_when_container_dispatch_fails(tmp_path,
     ctx = _ensemble_ctx(tmp_path, plan_branch="I-100-intent/P-200-plan/_", dispatcher=dispatcher)
     with (
         _LoopStubs() as stubs,
-        patch("sandbox_executor.flow.run_ensemble", ensemble),
-        patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
-        patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
-        patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=1, stdout="", stderr="")),
+        patch("sandbox_executor.flow.review.loop.run_ensemble", ensemble),
+        patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
+        patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+        patch(
+            "sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=1, stdout="", stderr="")
+        ),
     ):
         result = run_review_stage(ctx)
 
@@ -1479,9 +1506,9 @@ def test_stage4_threads_the_flow_ensemble_size_and_reports_reviewer_objections(t
     ctx = _ensemble_ctx(tmp_path, review_ensemble_size=2)
     with (
         _LoopStubs(),
-        patch("sandbox_executor.flow.run_ensemble", ensemble),
-        patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
-        patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.review.loop.run_ensemble", ensemble),
+        patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
+        patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
     ):
         result = run_review_stage(ctx)
 
@@ -1500,9 +1527,9 @@ def test_stage4_reports_an_incomplete_ensemble_rather_than_failed_tests(tmp_path
     ctx = _ensemble_ctx(tmp_path, review_ensemble_size=2)
     with (
         _LoopStubs(),
-        patch("sandbox_executor.flow.run_ensemble", ensemble),
-        patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
-        patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.review.loop.run_ensemble", ensemble),
+        patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
+        patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
     ):
         result = run_review_stage(ctx)
 
@@ -1516,9 +1543,10 @@ def test_stage4_reports_an_incomplete_ensemble_rather_than_failed_tests(tmp_path
 
 
 def test_unresolvable_target_fails_closed_without_reviewers_or_post(tmp_path, monkeypatch):
-    from sandbox_executor import flow
 
-    monkeypatch.setattr(flow, "_resolve_reviewed_target", lambda repo, target: (None, "Could not resolve x"))
+    monkeypatch.setattr(
+        "sandbox_executor.flow.review.loop._resolve_reviewed_target", lambda repo, target: (None, "Could not resolve x")
+    )
     ensemble = MagicMock()
     res, post, _ = _loop(tmp_path, ensemble)
 
@@ -1529,12 +1557,11 @@ def test_unresolvable_target_fails_closed_without_reviewers_or_post(tmp_path, mo
 
 
 def test_a_failing_diff_fails_the_iteration_and_posts_nothing(tmp_path, monkeypatch):
-    from sandbox_executor import flow
 
     def _broken(*_args, **_kwargs):
         raise RuntimeError("git diff exited 128")
 
-    monkeypatch.setattr(flow, "build_review_request", _broken)
+    monkeypatch.setattr("sandbox_executor.flow.review.ensemble.build_review_request", _broken)
     ensemble = MagicMock()
     res, post, _ = _loop(tmp_path, ensemble)
 
@@ -1816,7 +1843,7 @@ def test_review_with_findings_dispatches_role_resolver_when_unspecified(tmp_path
             error="Resolver container dispatch simulated exit",
         )
     )
-    monkeypatch.setattr("sandbox_executor.flow._dispatch_review_resolver", mock_dispatch)
+    monkeypatch.setattr("sandbox_executor.flow.review.resolver._dispatch_review_resolver", mock_dispatch)
 
     ensemble = FakeEnsemble([objecting_reviewer(1)])
     ctx = _ensemble_ctx(tmp_path)
@@ -2109,7 +2136,14 @@ def test_clean_review_with_pending_ci_waits_for_settlement_and_approves_when_gre
     probe_mock = MagicMock(side_effect=ci_sequence)
 
     ctx = _ensemble_ctx(tmp_path)
-    with _LoopStubs(), patch("sandbox_executor.flow.probe_ci_checks", probe_mock):
+    with (
+        _LoopStubs(),
+        patch_lookup_sites(
+            "sandbox_executor.flow.github.ci.probe_ci_checks",
+            "sandbox_executor.flow.review.loop.probe_ci_checks",
+            probe_mock,
+        ),
+    ):
         res = run_review_loop(
             ctx,
             target=EXEC_TARGET,
@@ -2144,7 +2178,14 @@ def test_clean_review_with_pending_ci_dispatches_resolver_when_ci_fails(tmp_path
     probe_mock = MagicMock(side_effect=ci_sequence)
 
     ctx = _ensemble_ctx(tmp_path)
-    with _LoopStubs(), patch("sandbox_executor.flow.probe_ci_checks", probe_mock):
+    with (
+        _LoopStubs(),
+        patch_lookup_sites(
+            "sandbox_executor.flow.github.ci.probe_ci_checks",
+            "sandbox_executor.flow.review.loop.probe_ci_checks",
+            probe_mock,
+        ),
+    ):
         res = run_review_loop(
             ctx,
             target=EXEC_TARGET,
@@ -2253,7 +2294,7 @@ def test_review_resolver_adjudicates_ci_failure_and_converges_to_approval(tmp_pa
 
     probe_mock = MagicMock(side_effect=[ci_iteration_1, ci_iteration_2])
     ctx = _ensemble_ctx(tmp_path)
-    with _LoopStubs(), patch("sandbox_executor.flow.probe_ci_checks", probe_mock):
+    with _LoopStubs(), patch("sandbox_executor.flow.review.loop.probe_ci_checks", probe_mock):
         res = run_review_loop(
             ctx,
             target=EXEC_TARGET,

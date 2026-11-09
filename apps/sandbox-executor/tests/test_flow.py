@@ -77,6 +77,7 @@ from sandbox_executor.review_ensemble import (
 from sandbox_executor.review_report import ROLES_CLOSE, ROLES_OPEN, collect_review_data
 from sandbox_executor.review_target import DiffVerdict, ReviewTarget
 
+from tests.flow.lookup_patch import patch_lookup_sites
 from tests.leak_assertions import make_gh_probe, make_probe
 from tests.review_fakes import FakeEnsemble, clean_reviewer, install_fake_reviewers
 
@@ -134,10 +135,17 @@ def _review_loop_gh_stubs() -> Iterator[None]:
         "checks": [{"name": "local_tests", "bucket": "pass", "state": "SUCCESS"}],
     }
     with (
-        patch("sandbox_executor.flow.check_pr_mergeability", side_effect=lambda *a, **k: dict(clean_merge)),
-        patch("sandbox_executor.flow.probe_ci_checks", side_effect=lambda *a, **k: json.loads(json.dumps(local_ci))),
+        patch_lookup_sites(
+            "sandbox_executor.flow.review.loop.check_pr_mergeability",
+            "sandbox_executor.flow.stage_conflicts.check_pr_mergeability",
+            side_effect=lambda *a, **k: dict(clean_merge),
+        ),
         patch(
-            "sandbox_executor.flow.post_pr_review_consensus",
+            "sandbox_executor.flow.review.loop.probe_ci_checks",
+            side_effect=lambda *a, **k: json.loads(json.dumps(local_ci)),
+        ),
+        patch(
+            "sandbox_executor.flow.review.loop.post_pr_review_consensus",
             return_value={"dual_posted": True, "official_review": {"success": True}},
         ) as mock_post,
     ):
@@ -497,9 +505,11 @@ class TestFlowStages:
 
         # The empty-diff guard allows the PR: only an allowed diff can reach consensus (C15-N1).
         with (
-            patch("sandbox_executor.flow.run_git") as mock_git,
+            patch_lookup_sites(
+                "sandbox_executor.flow.stage_conflicts.run_git", "sandbox_executor.flow.stages.review.run_git"
+            ) as mock_git,
             patch("sandbox_executor.flow._execution_effective_diff", return_value=(True, "1 file changed")),
-            patch("sandbox_executor.flow.create_or_update_pr", return_value={"success": True}),
+            patch("sandbox_executor.flow.review.loop.create_or_update_pr", return_value={"success": True}),
             _review_loop_gh_stubs(),
         ):
             mock_git.return_value = MagicMock(returncode=0, stdout=" 1 file changed, 5 insertions(+)\n")
@@ -538,8 +548,13 @@ class TestFlowStages:
 
         loop_res = {"consensus": {"approved": True}, "mergeability": {}}
         with (
-            patch("sandbox_executor.flow.run_git", side_effect=fake_git),
-            patch("sandbox_executor.flow.run_review_loop", return_value=loop_res),
+            patch_lookup_sites(
+                "sandbox_executor.flow.github.pr.run_git",
+                "sandbox_executor.flow.stage_conflicts.run_git",
+                "sandbox_executor.flow.stages.review.run_git",
+                side_effect=fake_git,
+            ),
+            patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res),
         ):
             res = run_review_stage(ctx)
         assert res.payload["review_package"]["diff_summary"] == {"files_changed": 1, "insertions": 7, "deletions": 2}
@@ -587,8 +602,8 @@ class TestFlowStages:
         mock_report.to_dict.return_value = {"calibrated_branch": mock_report.calibrated_branch, "accuracy_score": 0.95}
 
         with (
-            patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
-            patch("sandbox_executor.flow.run_calibrate", return_value=mock_report) as mock_run,
+            patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
+            patch("sandbox_executor.flow.stages.calibrate.run_calibrate", return_value=mock_report) as mock_run,
         ):
             res = run_calibrate_stage(ctx)
 
@@ -605,9 +620,11 @@ class TestFlowStages:
         )
 
         with (
-            patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
-            patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError("calibration failed")),
-            patch("sandbox_executor.flow.format_calibration_report") as mock_format,
+            patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
+            patch(
+                "sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=RuntimeError("calibration failed")
+            ),
+            patch("sandbox_executor.flow.stages.calibrate.format_calibration_report") as mock_format,
         ):
             res = run_calibrate_stage(ctx)
 
@@ -641,8 +658,10 @@ class TestFlowStages:
             skip_push=True,
         )
         with (
-            patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError("calibration failed")),
-            patch("sandbox_executor.flow.format_calibration_report"),
+            patch(
+                "sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=RuntimeError("calibration failed")
+            ),
+            patch("sandbox_executor.flow.stages.calibrate.format_calibration_report"),
         ):
             res = run_calibrate_stage(ctx)
 
@@ -700,8 +719,8 @@ class TestFlowStages:
             skip_push=True,
         )
         with (
-            patch("sandbox_executor.flow.run_calibrate", side_effect=failing_run_calibrate),
-            patch("sandbox_executor.flow.format_calibration_report"),
+            patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=failing_run_calibrate),
+            patch("sandbox_executor.flow.stages.calibrate.format_calibration_report"),
         ):
             res = run_calibrate_stage(ctx)
 
@@ -733,9 +752,14 @@ class TestFlowStages:
             skip_push=True,
         )
         with (
-            patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
-            patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError("calibration failed")),
-            patch("sandbox_executor.flow.format_calibration_report", side_effect=OSError("prettier missing")),
+            patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
+            patch(
+                "sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=RuntimeError("calibration failed")
+            ),
+            patch(
+                "sandbox_executor.flow.stages.calibrate.format_calibration_report",
+                side_effect=OSError("prettier missing"),
+            ),
         ):
             res = run_calibrate_stage(ctx)
 
@@ -760,9 +784,12 @@ class TestFlowStages:
             skip_push=True,
         )
         with (
-            patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
-            patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError(f"fetch failed {sample_value}")),
-            patch("sandbox_executor.flow.format_calibration_report"),
+            patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
+            patch(
+                "sandbox_executor.flow.stages.calibrate.run_calibrate",
+                side_effect=RuntimeError(f"fetch failed {sample_value}"),
+            ),
+            patch("sandbox_executor.flow.stages.calibrate.format_calibration_report"),
         ):
             run_calibrate_stage(ctx)
 
@@ -792,9 +819,9 @@ class TestFlowStages:
             skip_push=True,
         )
         with (
-            patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
-            patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError(hook_output)),
-            patch("sandbox_executor.flow.format_calibration_report"),
+            patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
+            patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=RuntimeError(hook_output)),
+            patch("sandbox_executor.flow.stages.calibrate.format_calibration_report"),
         ):
             run_calibrate_stage(ctx)
 
@@ -818,8 +845,13 @@ class TestFlowStages:
             skip_push=True,
         )
         with (
-            patch("sandbox_executor.flow.run_calibrate", side_effect=RuntimeError("calibration failed")),
-            patch("sandbox_executor.flow.format_calibration_report", side_effect=OSError(f"npx auth {sample_value}")),
+            patch(
+                "sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=RuntimeError("calibration failed")
+            ),
+            patch(
+                "sandbox_executor.flow.stages.calibrate.format_calibration_report",
+                side_effect=OSError(f"npx auth {sample_value}"),
+            ),
         ):
             run_calibrate_stage(ctx)
 
@@ -846,11 +878,17 @@ class TestFlowStages:
             "(check exited 1); reproduce with: npx prettier --check plans/P-200-plan_calibration.md"
         )
         with (
-            patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
-            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
-            patch("sandbox_executor.flow.run_calibrate", side_effect=error),
-            patch("sandbox_executor.flow.record_calibration_action") as mock_record,
-            patch("sandbox_executor.flow.run_git") as mock_git,
+            patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
+            patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=error),
+            patch("sandbox_executor.flow.stages.calibrate.record_calibration_action") as mock_record,
+            patch_lookup_sites(
+                "sandbox_executor.flow.git_refs.run_git",
+                "sandbox_executor.flow.github.pr.run_git",
+                "sandbox_executor.flow.stage_conflicts.run_git",
+                "sandbox_executor.flow.stages.calibrate.run_git",
+                "sandbox_executor.flow.stages.review.run_git",
+            ) as mock_git,
         ):
             res = run_calibrate_stage(ctx)
 
@@ -871,10 +909,10 @@ class TestFlowStages:
         mock_report.calibrated_branch = "I-100-intent/P-200-plan/E-300-exec/calibrated"
         mock_report.to_dict.return_value = {"calibrated_branch": mock_report.calibrated_branch}
         with (
-            patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
-            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
-            patch("sandbox_executor.flow.run_calibrate", return_value=mock_report),
-            patch("sandbox_executor.flow.run_git") as mock_git,
+            patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
+            patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stages.calibrate.run_calibrate", return_value=mock_report),
+            patch("sandbox_executor.flow.stages.calibrate.run_git") as mock_git,
         ):
             res = run_calibrate_stage(ctx)
 
@@ -920,7 +958,7 @@ class TestFlowStages:
                 return MagicMock(returncode=1, stdout="", stderr=f"remote rejected {sample_value}")
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        with patch("sandbox_executor.flow.run_git", side_effect=fake_run_git):
+        with patch("sandbox_executor.flow.stages.calibrate.run_git", side_effect=fake_run_git):
             _commit_stage5_reconciliation(ctx, str(tmp_path))
 
         assert any("[REDACTED_SECRET]" in line for line in ctx.logs)
@@ -1262,7 +1300,7 @@ class TestReviewMergeabilityGuards:
             "source": "github_cli",
         }
 
-        with patch("sandbox_executor.flow.check_pr_mergeability", return_value=mock_mergeability):
+        with patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=mock_mergeability):
             result = run_review_stage(context)
 
         assert result.status == StageStatus.FAILED
@@ -1299,7 +1337,7 @@ class TestReviewMergeabilityGuards:
         with (
             patch("shutil.which", return_value="/usr/bin/gh"),
             patch("subprocess.run") as mock_subproc,
-            patch("sandbox_executor.flow.run_git") as mock_git,
+            patch("sandbox_executor.flow.github.pr.run_git") as mock_git,
         ):
             # gh pr view returns error (e.g. no PR found)
             mock_subproc.return_value = MagicMock(returncode=1, stdout="", stderr="no pull requests found")
@@ -1313,7 +1351,7 @@ class TestReviewMergeabilityGuards:
     def test_check_pr_mergeability_local_git_fallback_with_remote_tracking_ref(self):
         with (
             patch("shutil.which", return_value=None),
-            patch("sandbox_executor.flow.run_git") as mock_git,
+            patch("sandbox_executor.flow.github.pr.run_git") as mock_git,
         ):
 
             def git_side_effect(args, **kwargs):  # noqa: PLR0911
@@ -1382,7 +1420,11 @@ class TestReviewMergeabilityGuards:
             dry_run=False,
             dispatcher=dispatcher,
         )
-        with patch("sandbox_executor.flow.run_git") as mock_git:
+        with patch_lookup_sites(
+            "sandbox_executor.flow.git_refs.run_git",
+            "sandbox_executor.flow.github.pr.run_git",
+            "sandbox_executor.flow.stage_conflicts.run_git",
+        ) as mock_git:
             mock_git.return_value = MagicMock(returncode=0, stdout="")
             res = run_execute_stage(ctx)
         dispatcher.assert_called_once()
@@ -1406,7 +1448,7 @@ class TestReviewMergeabilityGuards:
         )
         with (
             patch("shutil.which", return_value="/usr/bin/gh"),
-            patch("sandbox_executor.flow.run_git") as mock_git,
+            patch("sandbox_executor.flow.git_refs.run_git") as mock_git,
             patch("subprocess.run") as mock_subproc,
         ):
             mock_git.return_value = MagicMock(returncode=0, stdout="")
@@ -1525,9 +1567,15 @@ class TestReviewLoopStage:
             payload={"test_pass_rate": 1.0, "exit_code": 0},
         )
         with (
-            patch("sandbox_executor.flow.run_git") as mock_git,
+            patch_lookup_sites(
+                "sandbox_executor.flow.git_refs.run_git",
+                "sandbox_executor.flow.github.pr.run_git",
+                "sandbox_executor.flow.stage_conflicts.run_git",
+                "sandbox_executor.flow.stages.calibrate.run_git",
+                "sandbox_executor.flow.stages.review.run_git",
+            ) as mock_git,
             patch("sandbox_executor.flow._execution_effective_diff", return_value=(True, "1 file changed")),
-            patch("sandbox_executor.flow.create_or_update_pr", return_value={"success": True}),
+            patch("sandbox_executor.flow.review.loop.create_or_update_pr", return_value={"success": True}),
             _review_loop_gh_stubs(),
         ):
             mock_git.return_value = MagicMock(returncode=0, stdout=" 1 file changed, 10 insertions(+)\n")
@@ -1577,10 +1625,10 @@ class TestReviewLoopStage:
         )
 
         with (
-            patch("sandbox_executor.flow.run_git") as mock_git,
-            patch("sandbox_executor.flow.post_pr_review_consensus") as mock_post,
+            patch("sandbox_executor.flow.github.pr.run_git") as mock_git,
+            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus") as mock_post,
             patch("sandbox_executor.flow._execution_effective_diff", return_value=(True, "1 file changed")),
-            patch("sandbox_executor.flow.create_or_update_pr", return_value={"success": True}),
+            patch("sandbox_executor.flow.review.loop.create_or_update_pr", return_value={"success": True}),
         ):
             mock_git.return_value = MagicMock(returncode=0, stdout=" 1 file changed, 10 insertions(+)\n")
             mock_post.return_value = {"dual_posted": True, "official_review": {"success": True}}
@@ -1614,7 +1662,7 @@ class TestReviewLoopStage:
             json=False,
             token_reduce=False,
         )
-        with patch("sandbox_executor.flow.run_review_loop") as mock_loop:
+        with patch("sandbox_executor.flow.review.loop.run_review_loop") as mock_loop:
             mock_loop.return_value = {
                 "consensus": {"approved": True, "status": "approved", "iterations": 1},
                 "ensemble_verdict": "APPROVED",
@@ -1630,7 +1678,7 @@ class TestReviewLoopStage:
             assert "holon review approve" in captured
 
         # Test rejected exit code
-        with patch("sandbox_executor.flow.run_review_loop") as mock_loop:
+        with patch("sandbox_executor.flow.review.loop.run_review_loop") as mock_loop:
             mock_loop.return_value = {
                 "consensus": {"approved": False, "status": "rejected", "iterations": 2},
                 "max_iterations": 2,
@@ -1917,11 +1965,11 @@ class TestSemanticPRAndConsensusReview:
         )
 
         with (
-            patch("sandbox_executor.flow.check_pr_mergeability") as mock_merge,
-            patch("sandbox_executor.flow.probe_ci_checks") as mock_ci,
-            patch("sandbox_executor.flow.post_pr_review_consensus") as mock_post,
+            patch("sandbox_executor.flow.review.loop.check_pr_mergeability") as mock_merge,
+            patch("sandbox_executor.flow.review.loop.probe_ci_checks") as mock_ci,
+            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus") as mock_post,
             patch("sandbox_executor.flow._execution_effective_diff", return_value=(True, "1 file changed")),
-            patch("sandbox_executor.flow.create_or_update_pr", return_value={"success": True}),
+            patch("sandbox_executor.flow.review.loop.create_or_update_pr", return_value={"success": True}),
         ):
             # Iteration 1: finding detected (dirty conflict). There is no resolver, so the loop stops there and the
             # clean second probe is never reached.
@@ -2010,7 +2058,9 @@ class TestProactiveConflictAndReviewLoop:
 
     def test_check_and_resolve_stage_conflicts_magicmock_safety(self, tmp_path: Path):
         # Ensure isinstance(..., str) guards prevent MagicMock stdout crashes
-        with patch("sandbox_executor.flow.run_git") as mock_git:
+        with patch_lookup_sites(
+            "sandbox_executor.flow.github.pr.run_git", "sandbox_executor.flow.stage_conflicts.run_git"
+        ) as mock_git:
             mock_proc = MagicMock()
             mock_proc.returncode = 0
             mock_proc.stdout = MagicMock()  # Non-string object mock
@@ -2021,7 +2071,7 @@ class TestProactiveConflictAndReviewLoop:
             assert res["resolved"] is True
 
     def test_check_and_resolve_stage_conflicts_unresolvable_raises(self, tmp_path: Path):
-        with patch("sandbox_executor.flow.run_git") as mock_git:
+        with patch("sandbox_executor.flow.stage_conflicts.run_git") as mock_git:
             mock_status = MagicMock()
             mock_status.returncode = 0
             mock_status.stdout = "UU src/main.py\n"
@@ -2110,8 +2160,8 @@ class TestStageBudgets:
             return review
 
         with (
-            patch("sandbox_executor.flow.run_review_stage", side_effect=fake_review),
-            patch("sandbox_executor.flow.run_calibrate_stage", return_value=calibrate) as mock_cal,
+            patch("sandbox_executor.flow.pipeline.run_review_stage", side_effect=fake_review),
+            patch("sandbox_executor.flow.pipeline.run_calibrate_stage", return_value=calibrate) as mock_cal,
         ):
             engine = PipelineEngine(ctx, from_stage="review", clock=SteppingClock(step=240.5 * 60))
             engine.run()
@@ -2124,7 +2174,7 @@ class TestStageBudgets:
     def test_calibration_overrun_keeps_success(self, tmp_path):
         ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "cal", "goal": "Cal"}, dry_run=True)
         calibrate = StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS)
-        with patch("sandbox_executor.flow.run_calibrate_stage", return_value=calibrate):
+        with patch("sandbox_executor.flow.pipeline.run_calibrate_stage", return_value=calibrate):
             result = PipelineEngine(ctx, clock=SteppingClock(step=3000)).timed_execute_stage(FlowStage.CALIBRATE)
         assert result.status == StageStatus.SUCCESS
         assert result.payload["budget_overrun"]["budget_seconds"] == 600
@@ -2133,7 +2183,7 @@ class TestStageBudgets:
         # A decomposed Stage 3 spans whole child pipelines, so its overrun is recorded, never a stage failure.
         ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "dec", "goal": "Dec"}, dry_run=True)
         decomposed = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"decomposed": True})
-        with patch("sandbox_executor.flow.run_execute_stage", return_value=decomposed):
+        with patch("sandbox_executor.flow.pipeline.run_execute_stage", return_value=decomposed):
             result = PipelineEngine(ctx, clock=SteppingClock(step=3000)).timed_execute_stage(FlowStage.EXECUTE)
         assert result.status == StageStatus.SUCCESS
         assert result.payload["budget_overrun"] == {
@@ -2146,7 +2196,7 @@ class TestStageBudgets:
     def test_undecomposed_execute_overrun_fails_the_stage(self, tmp_path):
         ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "plain", "goal": "Plain"}, dry_run=True)
         plain = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={})
-        with patch("sandbox_executor.flow.run_execute_stage", return_value=plain):
+        with patch("sandbox_executor.flow.pipeline.run_execute_stage", return_value=plain):
             result = PipelineEngine(ctx, clock=SteppingClock(step=3000)).timed_execute_stage(FlowStage.EXECUTE)
         assert result.status == StageStatus.FAILED
         assert "exceeded its stage budget" in result.error
@@ -2168,8 +2218,8 @@ class TestStageBudgets:
 
         engine = PipelineEngine(ctx, clock=lambda: 0.0)
         with (
-            patch("sandbox_executor.flow.run_plan_stage", side_effect=fake_stage("plan")),
-            patch("sandbox_executor.flow.run_review_stage", side_effect=fake_stage("review")),
+            patch("sandbox_executor.flow.pipeline.run_plan_stage", side_effect=fake_stage("plan")),
+            patch("sandbox_executor.flow.pipeline.run_review_stage", side_effect=fake_stage("review")),
         ):
             engine.timed_execute_stage(FlowStage.PLAN)
             engine.timed_execute_stage(FlowStage.REVIEW)
@@ -2214,20 +2264,25 @@ class TestStageBudgets:
         exec_branch = "I-1-x/P-2-y/E-3-claude-agent-claude-opus-5-5/_"
         with (
             patch.dict(os.environ, env),
-            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
-            patch("sandbox_executor.flow._snapshot_child_branches", return_value=set()),
+            patch("sandbox_executor.flow.stages.execute.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stages.execute._snapshot_child_branches", return_value=set()),
             patch("sandbox_executor.cli.run_docker_container", side_effect=fake_container),
-            patch("sandbox_executor.flow._fetch_branch_prefix_error", return_value=None),
-            patch("sandbox_executor.flow._discover_child_branch", return_value=(exec_branch, None)),
-            patch("sandbox_executor.flow._track_local_branch"),
-            patch(
-                "sandbox_executor.flow._read_ledger_rows",
+            patch("sandbox_executor.flow.stages.execute._fetch_branch_prefix_error", return_value=None),
+            patch("sandbox_executor.flow.stages.execute._discover_child_branch", return_value=(exec_branch, None)),
+            patch("sandbox_executor.flow.stages.execute._track_local_branch"),
+            patch_lookup_sites(
+                "sandbox_executor.flow.stages.execute._read_ledger_rows",
+                "sandbox_executor.flow.stages.plan._read_ledger_rows",
                 return_value=[
                     {"entry_type": "summary", "execution_id": "E-3-claude-agent-claude-opus-5-5", "status": "success"}
                 ],
             ),
-            patch("sandbox_executor.flow._resolve_branch_ref", return_value="refs/remotes/origin/I-1-x/P-2-y/_"),
-            patch("sandbox_executor.flow.changed_paths", return_value=["src/app.py"]),
+            patch_lookup_sites(
+                "sandbox_executor.flow.stages.execute._resolve_branch_ref",
+                "sandbox_executor.flow.stages.plan._resolve_branch_ref",
+                return_value="refs/remotes/origin/I-1-x/P-2-y/_",
+            ),
+            patch("sandbox_executor.flow.stages.execute.changed_paths", return_value=["src/app.py"]),
         ):
             now = [0.0]
             result = PipelineEngine(ctx, clock=lambda: now[0]).timed_execute_stage(FlowStage.EXECUTE)
@@ -2259,7 +2314,9 @@ class TestStageBudgets:
         ctx.stage_results["execute"] = StageResult(
             stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"test_pass_rate": 0.0, "exit_code": 1}
         )
-        with patch("sandbox_executor.flow.run_git") as mock_git:
+        with patch_lookup_sites(
+            "sandbox_executor.flow.git_refs.run_git", "sandbox_executor.flow.github.pr.run_git"
+        ) as mock_git:
             mock_git.return_value = MagicMock(returncode=0, stdout="")
             res = run_review_loop(ctx, target="I-1-x/P-2-y/E-3-z/_", max_iterations=5, clock=SteppingClock(8000))
         assert res["total_iterations"] == 1
@@ -2687,7 +2744,7 @@ class TestFlowRoleDispatch:
         ctx = _dispatch_context(host, agents)
         assert run_intent_stage(ctx).status == StageStatus.SUCCESS
 
-        with patch("sandbox_executor.flow.format_calibration_report") as mock_format:
+        with patch("sandbox_executor.flow.stages.calibrate.format_calibration_report") as mock_format:
             res = run_plan_stage(ctx)
 
         assert res.status == StageStatus.SUCCESS
@@ -2817,7 +2874,7 @@ class TestFlowRoleDispatch:
         ctx = _dispatch_context(host, agents)
         assert run_intent_stage(ctx).status == StageStatus.SUCCESS
 
-        with patch("sandbox_executor.flow._fetch_branch_prefix", return_value=False):
+        with patch("sandbox_executor.flow.git_refs._fetch_branch_prefix", return_value=False):
             res = run_plan_stage(ctx)
 
         assert res.status == StageStatus.FAILED
@@ -2855,7 +2912,11 @@ class TestFlowRoleDispatch:
                 )
             return real_run_git(args, *a, **kw)
 
-        with patch("sandbox_executor.flow.run_git", side_effect=fake_run_git):
+        with patch_lookup_sites(
+            "sandbox_executor.flow.git_refs.run_git",
+            "sandbox_executor.flow.stage_conflicts.run_git",
+            side_effect=fake_run_git,
+        ):
             res = run_intent_stage(ctx)
 
         assert res.status == StageStatus.FAILED
@@ -2868,7 +2929,11 @@ class TestFlowRoleDispatch:
         agents = FakeRoleAgents(tmp_path, origin)
         ctx = _dispatch_context(host, agents)
 
-        with patch("sandbox_executor.flow.run_git", side_effect=self._fail_fetch_after(agents, "intent-creator")):
+        with patch_lookup_sites(
+            "sandbox_executor.flow.git_refs.run_git",
+            "sandbox_executor.flow.stage_conflicts.run_git",
+            side_effect=self._fail_fetch_after(agents, "intent-creator"),
+        ):
             res = run_intent_stage(ctx)
 
         assert res.status == StageStatus.FAILED
@@ -2884,7 +2949,12 @@ class TestFlowRoleDispatch:
         ctx = _dispatch_context(host, agents)
         assert run_intent_stage(ctx).status == StageStatus.SUCCESS
 
-        with patch("sandbox_executor.flow.run_git", side_effect=self._fail_fetch_after(agents, "planner")):
+        with patch_lookup_sites(
+            "sandbox_executor.flow.git_refs.run_git",
+            "sandbox_executor.flow.github.pr.run_git",
+            "sandbox_executor.flow.stage_conflicts.run_git",
+            side_effect=self._fail_fetch_after(agents, "planner"),
+        ):
             res = run_plan_stage(ctx)
 
         assert res.status == StageStatus.FAILED
@@ -2901,7 +2971,12 @@ class TestFlowRoleDispatch:
         assert run_intent_stage(ctx).status == StageStatus.SUCCESS
         assert run_plan_stage(ctx).status == StageStatus.SUCCESS
 
-        with patch("sandbox_executor.flow.run_git", side_effect=self._fail_fetch_after(agents, "executor")):
+        with patch_lookup_sites(
+            "sandbox_executor.flow.git_refs.run_git",
+            "sandbox_executor.flow.github.pr.run_git",
+            "sandbox_executor.flow.stage_conflicts.run_git",
+            side_effect=self._fail_fetch_after(agents, "executor"),
+        ):
             res = run_execute_stage(ctx)
 
         assert res.status == StageStatus.FAILED
@@ -2927,7 +3002,7 @@ class TestFlowRoleDispatch:
         with (
             patch("shutil.which", return_value="/usr/bin/gh"),
             patch("subprocess.run", side_effect=fake_run),
-            patch("sandbox_executor.flow.create_or_update_pr") as mock_pr,
+            patch("sandbox_executor.flow.review.loop.create_or_update_pr") as mock_pr,
         ):
             results = PipelineEngine(ctx).run()
 
@@ -3018,7 +3093,12 @@ class TestFlowRoleDispatch:
                 raise RuntimeError("push rejected: token=ghp_supersecret123 expired")
             return real_run_git(args, *a, **kw)
 
-        with patch("sandbox_executor.flow.run_git", side_effect=fake_run_git):
+        with patch_lookup_sites(
+            "sandbox_executor.flow.git_refs.run_git",
+            "sandbox_executor.flow.github.pr.run_git",
+            "sandbox_executor.flow.stage_conflicts.run_git",
+            side_effect=fake_run_git,
+        ):
             res = run_execute_stage(ctx)
 
         assert res.status == StageStatus.FAILED
@@ -3049,7 +3129,7 @@ class TestFlowRoleDispatch:
                 commit = _git(host, "commit-tree", tree, "-p", branch, "-m", "local operator commit")
                 _git(host, "update-ref", f"refs/heads/{branch}", commit)
 
-        with patch("sandbox_executor.flow._track_local_branch", side_effect=diverge_local):
+        with patch("sandbox_executor.flow.stages.execute._track_local_branch", side_effect=diverge_local):
             res = run_execute_stage(ctx)
 
         assert res.status == StageStatus.FAILED
@@ -3308,13 +3388,16 @@ class TestStage4LedgerProvenance:
         else:
             posting = {"return_value": {"dual_posted": True, "official_review": {"success": True}}}
         with (
-            patch("sandbox_executor.flow.shutil.which", return_value=None),
-            patch("sandbox_executor.flow.check_pr_mergeability", side_effect=lambda *a, **k: next(mergeability)),
+            patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
             patch(
-                "sandbox_executor.flow.probe_ci_checks",
+                "sandbox_executor.flow.review.loop.check_pr_mergeability",
+                side_effect=lambda *a, **k: next(mergeability),
+            ),
+            patch(
+                "sandbox_executor.flow.review.loop.probe_ci_checks",
                 return_value={"all_passed": True, "source": "local_tests"},
             ),
-            patch("sandbox_executor.flow.post_pr_review_consensus", **posting),
+            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", **posting),
             _verified_diff(),
         ):
             result = run_review_loop(ctx, auto_pr=False)
@@ -3436,10 +3519,10 @@ class TestStage4LedgerProvenance:
     def test_dry_run_suppresses_appends_visibly(self, tmp_path):
         ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1/P-2/E-3/_", dry_run=True)
         with (
-            patch("sandbox_executor.flow.shutil.which", return_value=None),
-            patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
+            patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+            patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
             patch(
-                "sandbox_executor.flow.probe_ci_checks",
+                "sandbox_executor.flow.review.loop.probe_ci_checks",
                 return_value={"all_passed": True, "source": "local_tests"},
             ),
         ):
@@ -3456,13 +3539,13 @@ class TestStage4LedgerProvenance:
         )
         ledger_path = str(tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl")
         with (
-            patch("sandbox_executor.flow.shutil.which", return_value=None),
-            patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
+            patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+            patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
             patch(
-                "sandbox_executor.flow.probe_ci_checks",
+                "sandbox_executor.flow.review.loop.probe_ci_checks",
                 return_value={"all_passed": True, "source": "local_tests"},
             ),
-            patch("sandbox_executor.flow.post_pr_review_consensus", return_value={"dual_posted": True}),
+            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
             patch("sandbox_executor.ledger.LedgerLock.__enter__", side_effect=PermissionError("ledger denied")),
             _verified_diff(),
             patch("sandbox_executor.knowledge.records.atomic_ledger_append", side_effect=PermissionError("denied")),
@@ -3487,13 +3570,18 @@ class TestStage4LedgerProvenance:
         ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1/P-2/E-3/_", dry_run=False)
         try:
             with (
-                patch("sandbox_executor.flow.shutil.which", return_value=None),
-                patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
-                patch(
-                    "sandbox_executor.flow.probe_ci_checks",
+                patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+                patch_lookup_sites(
+                    "sandbox_executor.flow.review.loop.check_pr_mergeability",
+                    "sandbox_executor.flow.stage_conflicts.check_pr_mergeability",
+                    return_value={"is_dirty": False},
+                ),
+                patch_lookup_sites(
+                    "sandbox_executor.flow.github.ci.probe_ci_checks",
+                    "sandbox_executor.flow.review.loop.probe_ci_checks",
                     return_value={"all_passed": True, "source": "local_tests"},
                 ),
-                patch("sandbox_executor.flow.post_pr_review_consensus", return_value={"dual_posted": True}),
+                patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
             ):
                 run_review_loop(ctx, auto_pr=False)
         finally:
@@ -3626,7 +3714,7 @@ class TestMergeabilityRefResolution:
     def test_review_loop_reports_missing_ref_without_find_dirty(self, repo: Path):
         ctx = FlowContext(repo_dir=str(repo), intent_data={"target_branch": "main"}, dry_run=True, token_reduce=False)
         ci_passed = {"source": "local_tests", "all_passed": True, "passed": 1, "failed": 0, "pending": 0}
-        with patch("sandbox_executor.flow.probe_ci_checks", return_value=ci_passed):
+        with patch("sandbox_executor.flow.review.loop.probe_ci_checks", return_value=ci_passed):
             res = run_review_loop(ctx, target="does-not-exist", max_iterations=3, dry_run=True)
 
         assert not any(fid.startswith("FIND-DIRTY") for fid in res["findings"])
@@ -3692,7 +3780,7 @@ class TestMergeabilityRefResolution:
                 "message": "cannot evaluate mergeability for ref origin/I-100/P-100/E-100",
             },
         }
-        with patch("sandbox_executor.flow.check_pr_mergeability", return_value=missing_ref):
+        with patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=missing_ref):
             result = run_review_stage(context)
 
         assert result.status == StageStatus.FAILED
@@ -3774,9 +3862,9 @@ class TestStageTargetsIgnoreOperatorHead:
 
         # Resolve the reviewed target with real git, so the reported commit is the one the reviewers' diff names.
         with (
-            patch("sandbox_executor.flow._resolve_reviewed_target", _REAL_RESOLVE_REVIEWED_TARGET),
-            patch("sandbox_executor.flow.post_pr_review_consensus", side_effect=_capture),
-            patch("sandbox_executor.flow.probe_ci_checks", return_value={"all_passed": True}),
+            patch("sandbox_executor.flow.review.loop._resolve_reviewed_target", _REAL_RESOLVE_REVIEWED_TARGET),
+            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", side_effect=_capture),
+            patch("sandbox_executor.flow.review.loop.probe_ci_checks", return_value={"all_passed": True}),
             _verified_diff(),
         ):
             run_review_loop(ctx, target=target, max_iterations=1, auto_pr=False)
@@ -3826,8 +3914,8 @@ class TestStageTargetsIgnoreOperatorHead:
         loop_res = {"consensus": {"approved": True}, "mergeability": {}, "halted_for_human": True}
 
         with (
-            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts") as mock_probe,
-            patch("sandbox_executor.flow.run_review_loop", return_value=loop_res) as mock_loop,
+            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts") as mock_probe,
+            patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res) as mock_loop,
         ):
             res = run_review_stage(ctx)
 
@@ -3842,7 +3930,7 @@ class TestStageTargetsIgnoreOperatorHead:
         ctx = self._run_stages_1_to_3(host, origin, tmp_path)
         ctx.execution_branch = ctx.execution_branch.replace("/E-", "/E-missing-")
 
-        with patch("sandbox_executor.flow.run_review_loop") as mock_loop:
+        with patch("sandbox_executor.flow.review.loop.run_review_loop") as mock_loop:
             res = run_review_stage(ctx)
 
         assert res.status == StageStatus.FAILED
@@ -3864,7 +3952,7 @@ class TestStageTargetsIgnoreOperatorHead:
             heads.append(_git(host, "rev-parse", "--abbrev-ref", "HEAD"))
             raise RuntimeError("boom")
 
-        with patch("sandbox_executor.flow.run_calibrate", side_effect=_boom):
+        with patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=_boom):
             res = run_calibrate_stage(ctx)
 
         assert res.status == StageStatus.SUCCESS
@@ -3879,7 +3967,7 @@ class TestStageTargetsIgnoreOperatorHead:
         ctx.execution_branch = ctx.execution_branch.replace("/E-", "/E-missing-")
         status_before = _git(host, "status", "--porcelain")
 
-        with patch("sandbox_executor.flow.run_calibrate") as mock_calibrate:
+        with patch("sandbox_executor.flow.stages.calibrate.run_calibrate") as mock_calibrate:
             res = run_calibrate_stage(ctx)
 
         assert res.status == StageStatus.FAILED
@@ -3902,8 +3990,10 @@ class TestStageTargetsIgnoreOperatorHead:
     def test_stage_conflict_probes_name_each_stage_branch(self, flow_repos, tmp_path):
         host, origin = flow_repos
         ctx = _dispatch_context(host, FakeRoleAgents(tmp_path, origin))
-        with patch(
-            "sandbox_executor.flow.check_and_resolve_stage_conflicts",
+        with patch_lookup_sites(
+            "sandbox_executor.flow.stages.execute.check_and_resolve_stage_conflicts",
+            "sandbox_executor.flow.stages.intent.check_and_resolve_stage_conflicts",
+            "sandbox_executor.flow.stages.plan.check_and_resolve_stage_conflicts",
             wraps=check_and_resolve_stage_conflicts,
         ) as probe:
             results = PipelineEngine(ctx).run()
@@ -4011,8 +4101,8 @@ class TestFlowDispatchMergeInteractions:
             skip_push=True,
         )
         with (
-            patch("sandbox_executor.flow.run_calibrate", side_effect=fake_run_calibrate),
-            patch("sandbox_executor.flow.reconcile_records", side_effect=fake_reconcile),
+            patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=fake_run_calibrate),
+            patch("sandbox_executor.flow.stages.calibrate.reconcile_records", side_effect=fake_reconcile),
         ):
             res = run_calibrate_stage(ctx)
 
@@ -4046,9 +4136,9 @@ class TestStage4TestEvidence:
 
     def _loop(self, ctx: FlowContext) -> dict[str, Any]:
         with (
-            patch("sandbox_executor.flow.shutil.which", return_value=None),
-            patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
-            patch("sandbox_executor.flow.post_pr_review_consensus", return_value={"dual_posted": True}),
+            patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+            patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
+            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
             _verified_diff(),
         ):
             return run_review_loop(ctx, auto_pr=False, max_iterations=1)
@@ -4110,9 +4200,9 @@ class TestStage4TestEvidence:
         ctx = self._ctx(tmp_path, payload)
         loop_res = {"consensus": {"approved": False}, "mergeability": {"is_dirty": False}}
         with (
-            patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=0, stdout="")),
-            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
-            patch("sandbox_executor.flow.run_review_loop", return_value=loop_res),
+            patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
+            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res),
         ):
             res = run_review_stage(ctx)
 
@@ -4175,12 +4265,16 @@ class TestUnmeasuredTestsStopEarly:
         probe = MagicMock(side_effect=probe_side_effect)
         sleep = MagicMock()
         with (
-            patch("sandbox_executor.flow.shutil.which", return_value=gh),
-            patch("sandbox_executor.flow.probe_ci_checks", probe),
-            patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
-            patch("sandbox_executor.flow.post_pr_review_consensus", return_value={"dual_posted": True}),
-            patch("sandbox_executor.flow._resolve_review_commit", return_value="abc123"),
-            patch("sandbox_executor.flow.time.sleep", sleep),
+            patch("sandbox_executor.flow.review.loop.shutil.which", return_value=gh),
+            patch_lookup_sites(
+                "sandbox_executor.flow.github.ci.probe_ci_checks",
+                "sandbox_executor.flow.review.loop.probe_ci_checks",
+                probe,
+            ),
+            patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
+            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
+            patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123"),
+            patch("sandbox_executor.flow.github.ci.time.sleep", sleep),
             _verified_diff(),
         ):
             res = run_review_loop(ctx, auto_pr=False, max_iterations=25, **kwargs)
@@ -4208,7 +4302,7 @@ class TestUnmeasuredTestsStopEarly:
         ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": None})
         clock = iter(float(t) for t in range(0, 1000, 5))
 
-        with patch("sandbox_executor.flow.time.monotonic", side_effect=lambda: next(clock)):
+        with patch("sandbox_executor.flow.github.ci.time.monotonic", side_effect=lambda: next(clock)):
             res, _probe, sleep = self._loop(
                 ctx, lambda *a, **k: dict(self.LOCAL), ci_registration_timeout=20.0, ci_poll_interval=5.0
             )
@@ -4297,9 +4391,9 @@ class TestUnmeasuredTestsStopEarly:
             "ci_checks": {"source": "local_tests", "measured": False, "all_passed": False},
         }
         with (
-            patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=0, stdout="")),
-            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
-            patch("sandbox_executor.flow.run_review_loop", return_value=loop_res),
+            patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
+            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res),
         ):
             res = run_review_stage(ctx)
 
@@ -4315,9 +4409,9 @@ class TestUnmeasuredTestsStopEarly:
             "ci_checks": {"source": "local_tests", "all_passed": False},
         }
         with (
-            patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=0, stdout="")),
-            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
-            patch("sandbox_executor.flow.run_review_loop", return_value=loop_res),
+            patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
+            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res),
         ):
             res = run_review_stage(ctx)
 
@@ -4341,17 +4435,25 @@ class TestUnmeasuredTestsStopEarly:
         sleep = MagicMock()
         wait = MagicMock(wraps=flow_module._wait_for_ci_registration)
         with (
-            patch("sandbox_executor.flow.shutil.which", return_value="/usr/bin/gh"),
-            patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=0, stdout="")),
-            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.review.loop.shutil.which", return_value="/usr/bin/gh"),
+            patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
+            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
             patch("sandbox_executor.flow._execution_effective_diff", return_value=(has_diff, detail)),
-            patch("sandbox_executor.flow.create_or_update_pr") as mock_pr,
-            patch("sandbox_executor.flow.probe_ci_checks", probe),
-            patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
-            patch("sandbox_executor.flow.post_pr_review_consensus", return_value={"dual_posted": True}),
-            patch("sandbox_executor.flow._resolve_review_commit", return_value="abc123"),
-            patch("sandbox_executor.flow.time.sleep", sleep),
-            patch("sandbox_executor.flow._wait_for_ci_registration", wait),
+            patch("sandbox_executor.flow.review.loop.create_or_update_pr") as mock_pr,
+            patch_lookup_sites(
+                "sandbox_executor.flow.github.ci.probe_ci_checks",
+                "sandbox_executor.flow.review.loop.probe_ci_checks",
+                probe,
+            ),
+            patch_lookup_sites(
+                "sandbox_executor.flow.review.loop.check_pr_mergeability",
+                "sandbox_executor.flow.stage_conflicts.check_pr_mergeability",
+                return_value={"is_dirty": False},
+            ),
+            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
+            patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123"),
+            patch("sandbox_executor.flow.review.loop.time.sleep", sleep),
+            patch("sandbox_executor.flow.review.loop._wait_for_ci_registration", wait),
         ):
             res = run_review_stage(ctx)
 
@@ -4390,17 +4492,25 @@ class TestUnmeasuredTestsStopEarly:
         probe = MagicMock(return_value=dict(ci or self.LOCAL))
         post = MagicMock(return_value={"dual_posted": True})
         with (
-            patch("sandbox_executor.flow.shutil.which", return_value="/usr/bin/gh"),
-            patch("sandbox_executor.flow.run_git", return_value=MagicMock(returncode=0, stdout="")),
-            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.review.loop.shutil.which", return_value="/usr/bin/gh"),
+            patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
+            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
             patch("sandbox_executor.flow._execution_effective_diff", return_value=(None, "fetch failed")),
-            patch("sandbox_executor.flow.create_or_update_pr") as mock_pr,
-            patch("sandbox_executor.flow.probe_ci_checks", probe),
-            patch("sandbox_executor.flow.check_pr_mergeability", return_value={"is_dirty": False}),
-            patch("sandbox_executor.flow.post_pr_review_consensus", post),
-            patch("sandbox_executor.flow._resolve_review_commit", return_value="abc123"),
-            patch("sandbox_executor.flow.time.sleep"),
-            patch("sandbox_executor.flow._wait_for_ci_registration"),
+            patch("sandbox_executor.flow.review.loop.create_or_update_pr") as mock_pr,
+            patch_lookup_sites(
+                "sandbox_executor.flow.github.ci.probe_ci_checks",
+                "sandbox_executor.flow.review.loop.probe_ci_checks",
+                probe,
+            ),
+            patch_lookup_sites(
+                "sandbox_executor.flow.review.loop.check_pr_mergeability",
+                "sandbox_executor.flow.stage_conflicts.check_pr_mergeability",
+                return_value={"is_dirty": False},
+            ),
+            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", post),
+            patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123"),
+            patch("sandbox_executor.flow.review.loop.time.sleep"),
+            patch("sandbox_executor.flow.review.loop._wait_for_ci_registration"),
         ):
             res = call(ctx)
         mock_pr.assert_not_called()
@@ -4449,9 +4559,15 @@ class TestSkipPushRejectedOnEveryNonDryRun:
             skip_push=True,
         )
         with (
-            patch("sandbox_executor.flow.run_review_stage") as review,
-            patch("sandbox_executor.flow.run_calibrate_stage") as calibrate,
-            patch("sandbox_executor.flow.run_git") as git,
+            patch("sandbox_executor.flow.pipeline.run_review_stage") as review,
+            patch("sandbox_executor.flow.pipeline.run_calibrate_stage") as calibrate,
+            patch_lookup_sites(
+                "sandbox_executor.flow.git_refs.run_git",
+                "sandbox_executor.flow.github.pr.run_git",
+                "sandbox_executor.flow.stage_conflicts.run_git",
+                "sandbox_executor.flow.stages.calibrate.run_git",
+                "sandbox_executor.flow.stages.review.run_git",
+            ) as git,
         ):
             results = PipelineEngine(ctx, from_stage=from_stage, checkpoint_path=str(checkpoint)).run()
 
@@ -4628,7 +4744,7 @@ class TestEntropyBudgetHandoffInFlow:
             res = run_execute_stage(ctx)
         else:
             # Model a plan the flow could not read before dispatch: the executor's own row decides.
-            with patch("sandbox_executor.flow._plan_budget_decision", return_value=None):
+            with patch("sandbox_executor.flow.stages.execute._plan_budget_decision", return_value=None):
                 res = run_execute_stage(ctx)
 
         assert res.status != StageStatus.HALTED_FOR_HUMAN
@@ -4806,7 +4922,7 @@ class TestEntropyBudgetHandoffInFlow:
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (9.0, SUB_INTENT_LIST), (2.0, "")])
         ctx = _budget_context(host, agents, 5.0)
 
-        with patch.object(flow_module.time, "time", return_value=1793098938.0):
+        with patch("sandbox_executor.flow.stages.intent.time.time", return_value=1793098938.0):
             results = PipelineEngine(ctx).run()
 
         # Every intent was dispatched to the intent creator on a branch of its own: none reused another's.
@@ -4852,7 +4968,7 @@ class TestEntropyBudgetHandoffInFlow:
                 },
             )
 
-        with patch("sandbox_executor.flow.run_review_stage", side_effect=fake_review):
+        with patch("sandbox_executor.flow.pipeline.run_review_stage", side_effect=fake_review):
             results = PipelineEngine(ctx).run()
 
         execute = results["execute"]
@@ -4882,7 +4998,7 @@ class TestEntropyBudgetHandoffInFlow:
                 return real_plan_stage(plan_ctx)
             return StageResult(stage=FlowStage.PLAN, status=StageStatus.FAILED, error="Plan stage failed: no plan")
 
-        with patch("sandbox_executor.flow.run_plan_stage", side_effect=plan_then_fail):
+        with patch("sandbox_executor.flow.pipeline.run_plan_stage", side_effect=plan_then_fail):
             results = PipelineEngine(ctx).run()
 
         assert ctx.replan_attempts == 1
@@ -4938,7 +5054,7 @@ class TestEntropyBudgetHandoffInFlow:
         assert run_plan_stage(ctx).status == StageStatus.SUCCESS
 
         # With no pre-dispatch decision, the executor's decomposed row is the only signal: the depth bound must hold.
-        with patch("sandbox_executor.flow._plan_budget_decision", return_value=None):
+        with patch("sandbox_executor.flow.stages.execute._plan_budget_decision", return_value=None):
             res = run_execute_stage(ctx)
 
         assert res.status == StageStatus.FAILED
@@ -4959,7 +5075,13 @@ class TestEntropyBudgetHandoffInFlow:
         if sub_intents is not None:
             row["sub_intents"] = sub_intents
 
-        with patch("sandbox_executor.flow._dispatch_role") as dispatch:
+        with patch_lookup_sites(
+            "sandbox_executor.flow.review.ensemble._dispatch_role",
+            "sandbox_executor.flow.review.resolver._dispatch_role",
+            "sandbox_executor.flow.stages.execute._dispatch_role",
+            "sandbox_executor.flow.stages.intent._dispatch_role",
+            "sandbox_executor.flow.stages.plan._dispatch_role",
+        ) as dispatch:
             res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", row, {"execution_id": "E-1"})
 
         assert res.status == StageStatus.FAILED
@@ -5115,9 +5237,12 @@ class TestEntropyBudgetHandoffInFlow:
         ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent", "entropy_budget": 5.0})
         ctx.plan_branch = "I-1-parent/P-2-agent-model/_"
         with (
-            patch("sandbox_executor.flow._resolve_branch_ref", return_value="refs/remotes/origin/plan"),
-            patch("sandbox_executor.flow._read_ledger_rows", return_value=rows),
-            patch("sandbox_executor.flow._git_show_text", side_effect=lambda _repo, _ref, path: files.get(path)),
+            patch("sandbox_executor.flow.stages.plan._resolve_branch_ref", return_value="refs/remotes/origin/plan"),
+            patch("sandbox_executor.flow.stages.plan._read_ledger_rows", return_value=rows),
+            patch(
+                "sandbox_executor.flow.stages.plan._git_show_text",
+                side_effect=lambda _repo, _ref, path: files.get(path),
+            ),
         ):
             return flow_module._plan_budget_decision(ctx)
 
@@ -5148,7 +5273,8 @@ class TestEntropyBudgetHandoffInFlow:
         assert [i["goal"] for i in decision.sub_intents] == ["Add the parser", "Add the CLI flag"]
 
     def test_only_the_review_stage_constructs_a_halt(self):
-        source = Path(flow_module.__file__).read_text(encoding="utf-8")
+        package_dir = Path(flow_module.__file__).parent
+        source = "\n".join(path.read_text(encoding="utf-8") for path in sorted(package_dir.rglob("*.py")))
         execute_body = source.split("def run_execute_stage(", 1)[1].split("\ndef ", 1)[0]
         assert "HALTED_FOR_HUMAN" not in execute_body
         assert source.count("status=StageStatus.HALTED_FOR_HUMAN") == 1
@@ -5463,7 +5589,13 @@ class TestEntropyBudgetHandoffInFlow:
 
     def test_budget_precheck_without_a_plan_branch_reads_nothing(self):
         ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"})
-        with patch("sandbox_executor.flow._resolve_branch_ref") as resolve:
+        with patch_lookup_sites(
+            "sandbox_executor.flow.git_refs._resolve_branch_ref",
+            "sandbox_executor.flow.review.ensemble._resolve_branch_ref",
+            "sandbox_executor.flow.stage_conflicts._resolve_branch_ref",
+            "sandbox_executor.flow.stages.execute._resolve_branch_ref",
+            "sandbox_executor.flow.stages.plan._resolve_branch_ref",
+        ) as resolve:
             assert flow_module._plan_budget_decision(ctx) is None
         resolve.assert_not_called()
 
@@ -5471,8 +5603,12 @@ class TestEntropyBudgetHandoffInFlow:
         ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"})
         ctx.plan_branch = "I-1-parent/P-2-agent-model/_"
         with (
-            patch("sandbox_executor.flow._resolve_branch_ref", return_value=None),
-            patch("sandbox_executor.flow._read_ledger_rows") as read_rows,
+            patch("sandbox_executor.flow.stages.plan._resolve_branch_ref", return_value=None),
+            patch_lookup_sites(
+                "sandbox_executor.flow.stages.execute._read_ledger_rows",
+                "sandbox_executor.flow.stages.intent._read_ledger_rows",
+                "sandbox_executor.flow.stages.plan._read_ledger_rows",
+            ) as read_rows,
         ):
             assert flow_module._plan_budget_decision(ctx) is None
         read_rows.assert_not_called()
@@ -5526,10 +5662,10 @@ class TestEntropyBudgetHandoffInFlow:
 
         intent = StageResult(stage=FlowStage.INTENT, status=StageStatus.SUCCESS)
         with (
-            patch("sandbox_executor.flow.run_intent_stage", return_value=intent),
-            patch("sandbox_executor.flow.run_plan_stage", side_effect=plan),
-            patch("sandbox_executor.flow.run_execute_stage", side_effect=lambda _c: next(exec_iter)),
-            patch("sandbox_executor.flow.save_checkpoint", side_effect=snapshot),
+            patch("sandbox_executor.flow.pipeline.run_intent_stage", return_value=intent),
+            patch("sandbox_executor.flow.pipeline.run_plan_stage", side_effect=plan),
+            patch("sandbox_executor.flow.pipeline.run_execute_stage", side_effect=lambda _c: next(exec_iter)),
+            patch("sandbox_executor.flow.pipeline.save_checkpoint", side_effect=snapshot),
         ):
             results = PipelineEngine(ctx).run()
         return results, saved
@@ -5628,9 +5764,9 @@ class TestEntropyBudgetHandoffInFlow:
             return 1
 
         with (
-            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
-            patch("sandbox_executor.flow._snapshot_child_branches", return_value=set()),
-            patch("sandbox_executor.flow._dispatch_role", side_effect=dispatch),
+            patch("sandbox_executor.flow.stages.plan.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stages.plan._snapshot_child_branches", return_value=set()),
+            patch("sandbox_executor.flow.stages.plan._dispatch_role", side_effect=dispatch),
         ):
             res = run_plan_stage(ctx)
 
@@ -5727,7 +5863,7 @@ class TestEntropyBudgetHandoffInFlow:
             seen.append(os.environ.get("HOLON_REPLAN_FEEDBACK"))
             raise RuntimeError("docker crashed")
 
-        with patch("sandbox_executor.flow._dispatch_role", side_effect=crash), pytest.raises(RuntimeError):
+        with patch("sandbox_executor.flow.stages.plan._dispatch_role", side_effect=crash), pytest.raises(RuntimeError):
             run_plan_stage(ctx)
 
         assert seen == ["smaller please"]
@@ -5768,8 +5904,12 @@ class TestEntropyBudgetHandoffInFlow:
             return "network down" if "executor" in agents.roles() else real_fetch(repo_dir, prefix)
 
         with (
-            patch("sandbox_executor.flow._plan_budget_decision", return_value=None),
-            patch("sandbox_executor.flow._fetch_branch_prefix_error", side_effect=fetch_fails_after_dispatch),
+            patch("sandbox_executor.flow.stages.execute._plan_budget_decision", return_value=None),
+            patch_lookup_sites(
+                "sandbox_executor.flow.git_refs._fetch_branch_prefix_error",
+                "sandbox_executor.flow.stages.execute._fetch_branch_prefix_error",
+                side_effect=fetch_fails_after_dispatch,
+            ),
         ):
             res = run_execute_stage(ctx)
 
@@ -5813,11 +5953,13 @@ class TestStage3PartialResumeDispatch:
             return 1  # ends the stage before any new branch must be adopted
 
         with (
-            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
-            patch("sandbox_executor.flow._plan_budget_decision", return_value=None),
-            patch("sandbox_executor.flow._snapshot_child_branches", return_value={self.FAILED, self.OLDER}),
-            patch("sandbox_executor.flow._read_ledger_rows", side_effect=self._rows(with_partial_head)),
-            patch("sandbox_executor.flow._dispatch_role", side_effect=dispatch),
+            patch("sandbox_executor.flow.stages.execute.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stages.execute._plan_budget_decision", return_value=None),
+            patch(
+                "sandbox_executor.flow.stages.execute._snapshot_child_branches", return_value={self.FAILED, self.OLDER}
+            ),
+            patch("sandbox_executor.flow.stages.execute._read_ledger_rows", side_effect=self._rows(with_partial_head)),
+            patch("sandbox_executor.flow.stages.execute._dispatch_role", side_effect=dispatch),
         ):
             if from_stage is None:
                 run_execute_stage(ctx)
@@ -5844,14 +5986,14 @@ class TestStage3PartialResumeDispatch:
             status = "success" if exec_id.startswith("E-100") else "failure"
             return [{"entry_type": "summary", "execution_id": exec_id, "status": status, "partial_head": "b" * 40}]
 
-        with patch("sandbox_executor.flow._read_ledger_rows", side_effect=read_rows):
+        with patch("sandbox_executor.flow.stages.execute._read_ledger_rows", side_effect=read_rows):
             branch = flow_module._resumable_partial_branch(str(tmp_path), {self.FAILED, self.OLDER})
         assert branch == self.OLDER
 
     @pytest.mark.parametrize("status", ["failure", EMPTY_DIFF_STATUS])
     def test_failed_partial_head_accepts_both_failure_statuses(self, tmp_path, status):
         row = {"entry_type": "summary", "execution_id": "E-100", "status": status, "partial_head": "c" * 40}
-        with patch("sandbox_executor.flow._read_ledger_rows", return_value=[row]):
+        with patch("sandbox_executor.flow.stages.execute._read_ledger_rows", return_value=[row]):
             assert flow_module.failed_partial_head(str(tmp_path), "refs/remotes/origin/x", "E-100") == "c" * 40
 
     def test_resumable_partial_branch_resumes_an_empty_diff_failed_row(self, tmp_path):
@@ -5866,7 +6008,7 @@ class TestStage3PartialResumeDispatch:
                 }
             ]
 
-        with patch("sandbox_executor.flow._read_ledger_rows", side_effect=read_rows):
+        with patch("sandbox_executor.flow.stages.execute._read_ledger_rows", side_effect=read_rows):
             branch = flow_module._resumable_partial_branch(str(tmp_path), {self.FAILED, self.OLDER})
         assert branch == self.FAILED
 
@@ -5903,9 +6045,14 @@ class TestReviewDataSeam:
             return result
 
         with (
-            patch("sandbox_executor.flow.check_pr_mergeability", return_value={"merge_state_status": "CLEAN"}),
-            patch("sandbox_executor.flow.probe_ci_checks", return_value={"all_passed": True, "source": "local_tests"}),
-            patch("sandbox_executor.flow.post_pr_review_consensus", side_effect=capture_post),
+            patch(
+                "sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"merge_state_status": "CLEAN"}
+            ),
+            patch(
+                "sandbox_executor.flow.review.loop.probe_ci_checks",
+                return_value={"all_passed": True, "source": "local_tests"},
+            ),
+            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", side_effect=capture_post),
             _verified_diff(),
         ):
             res = run_review_loop(ctx, auto_pr=False, ensemble_size=1)
@@ -5935,7 +6082,7 @@ class TestReviewDataSeam:
             Path(result_file).write_text(json.dumps(outcome), encoding="utf-8")
             return 1
 
-        with patch("sandbox_executor.flow._dispatch_role", side_effect=dispatch):
+        with patch("sandbox_executor.flow.review.ensemble._dispatch_role", side_effect=dispatch):
             reviewers, _verdict, error = flow_module._dispatch_review_ensemble(ctx, target, 1, 1)
 
         assert error is None
@@ -5971,7 +6118,7 @@ class TestEngineOwnedReviewLoop:
 
         ctx = FlowContext(repo_dir=str(tmp_path), token_reduce=False)
         target = ReviewTarget(raw="feature", head_branch="feature", head_sha="a" * 40)
-        with patch.object(flow_module, "_dispatch_role", fake_dispatch):
+        with patch("sandbox_executor.flow.review.ensemble._dispatch_role", fake_dispatch):
             flow_module._dispatch_review_ensemble(ctx, target, iteration, 3)
 
         (args,) = captured
@@ -5998,7 +6145,7 @@ class TestEngineOwnedReviewLoop:
         assert ctx.review_iterations_done == 3
         loop_res = {"consensus": {"iterations": 4, "passes": 1, "max_review_iterations": 2}, "total_iterations": 4}
 
-        with patch.object(flow_module, "run_review_loop", return_value=loop_res) as loop:
+        with patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res) as loop:
             result = run_review_stage(ctx)
 
         assert loop.call_args.kwargs["first_iteration"] == 4
@@ -6011,7 +6158,7 @@ class TestEngineOwnedReviewLoop:
     def test_an_exhausted_engine_budget_fails_without_dispatching(self, tmp_path):
         ctx = self._resumable_context(tmp_path, done=5, budget=5)
 
-        with patch.object(flow_module, "run_review_loop") as loop:
+        with patch("sandbox_executor.flow.review.loop.run_review_loop") as loop:
             result = run_review_stage(ctx)
 
         loop.assert_not_called()
@@ -6025,7 +6172,7 @@ class TestEngineOwnedReviewLoop:
     def test_an_exhausted_budget_clamps_a_malformed_negative_count(self, tmp_path):
         ctx = self._resumable_context(tmp_path, done=-2, budget=0)
 
-        with patch.object(flow_module, "run_review_loop") as loop:
+        with patch("sandbox_executor.flow.review.loop.run_review_loop") as loop:
             result = run_review_stage(ctx)
 
         loop.assert_not_called()
@@ -6121,9 +6268,9 @@ class TestStage5PromotedArtifactsCommit:
             skip_push=True,
         )
         with (
-            patch("sandbox_executor.flow.run_calibrate", side_effect=fake_run_calibrate),
-            patch("sandbox_executor.flow.reconcile_records", side_effect=fake_reconcile),
-            patch("sandbox_executor.flow.promote_pending_candidates", side_effect=fake_promote),
+            patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=fake_run_calibrate),
+            patch("sandbox_executor.flow.stages.calibrate.reconcile_records", side_effect=fake_reconcile),
+            patch("sandbox_executor.flow.stages.calibrate.promote_pending_candidates", side_effect=fake_promote),
         ):
             res = run_calibrate_stage(ctx)
 
@@ -6170,9 +6317,9 @@ class TestStage5PromotedArtifactsCommit:
             skip_push=True,
         )
         with (
-            patch("sandbox_executor.flow.run_calibrate", side_effect=fake_run_calibrate),
-            patch("sandbox_executor.flow.reconcile_records", side_effect=fake_reconcile),
-            patch("sandbox_executor.flow.promote_pending_candidates", return_value=[]),
+            patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=fake_run_calibrate),
+            patch("sandbox_executor.flow.stages.calibrate.reconcile_records", side_effect=fake_reconcile),
+            patch("sandbox_executor.flow.stages.calibrate.promote_pending_candidates", return_value=[]),
         ):
             res = run_calibrate_stage(ctx)
 
@@ -6215,9 +6362,9 @@ class TestStage5PromotedArtifactsCommit:
             skip_push=True,
         )
         with (
-            patch("sandbox_executor.flow.run_calibrate", side_effect=fake_run_calibrate),
-            patch("sandbox_executor.flow.reconcile_records", side_effect=fake_reconcile),
-            patch("sandbox_executor.flow.promote_pending_candidates", side_effect=fake_promote),
+            patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=fake_run_calibrate),
+            patch("sandbox_executor.flow.stages.calibrate.reconcile_records", side_effect=fake_reconcile),
+            patch("sandbox_executor.flow.stages.calibrate.promote_pending_candidates", side_effect=fake_promote),
         ):
             res = run_calibrate_stage(ctx)
 
@@ -6249,7 +6396,7 @@ class TestStage5PromotedArtifactsCommit:
             dry_run=True,
             skip_push=True,
         )
-        with patch("sandbox_executor.flow.promote_pending_candidates", mock_promote):
+        with patch("sandbox_executor.flow.stages.calibrate.promote_pending_candidates", mock_promote):
             res = run_calibrate_stage(ctx)
 
         assert res.status == StageStatus.SUCCESS
@@ -6305,9 +6452,9 @@ class TestStage5PromotedArtifactsCommit:
             skip_push=True,
         )
         with (
-            patch("sandbox_executor.flow.run_calibrate", side_effect=fake_run_calibrate),
-            patch("sandbox_executor.flow.reconcile_records", side_effect=fake_reconcile),
-            patch("sandbox_executor.flow.promote_pending_candidates", side_effect=fake_promote),
+            patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=fake_run_calibrate),
+            patch("sandbox_executor.flow.stages.calibrate.reconcile_records", side_effect=fake_reconcile),
+            patch("sandbox_executor.flow.stages.calibrate.promote_pending_candidates", side_effect=fake_promote),
         ):
             res = run_calibrate_stage(ctx)
 

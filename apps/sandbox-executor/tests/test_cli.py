@@ -1058,7 +1058,7 @@ class TestHolonFlowCLI(unittest.TestCase):
             "error": "Posting the review consensus for 'my-branch' failed: HTTP 502",
         }
         with (
-            patch("sandbox_executor.flow.run_review_loop", return_value=fake_result),
+            patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=fake_result),
             patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
             patch("sys.stdout", new_callable=io.StringIO) as mock_stdout,
             patch("sys.exit") as mock_exit,
@@ -1079,7 +1079,7 @@ class TestHolonFlowCLI(unittest.TestCase):
             "human_approval_command": "holon review approve my-branch",
         }
         with (
-            patch("sandbox_executor.flow.run_review_loop", return_value=fake_result),
+            patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=fake_result),
             patch("sys.stdout", new_callable=io.StringIO) as mock_stdout,
             patch("sys.exit") as mock_exit,
         ):

@@ -11,7 +11,6 @@ from collections.abc import Callable, Iterator, Sequence
 from typing import Any
 
 import pytest
-from sandbox_executor import flow
 from sandbox_executor.review_ensemble import (
     ParsedTrailer,
     ReviewCounts,
@@ -82,10 +81,13 @@ def install_fake_reviewers(monkeypatch: pytest.MonkeyPatch, ensemble: FakeEnsemb
     """Mark the process as sandboxed and replace target resolution, the diff and the ensemble with fakes."""
     ensemble = ensemble or FakeEnsemble()
     monkeypatch.setenv("HOLON_IN_SANDBOX", "1")
-    monkeypatch.setattr(flow, "_resolve_reviewed_target", fake_resolved_target)
-    monkeypatch.setattr(flow, "_review_base_ref", lambda repo_dir, target, target_branch: f"origin/{target_branch}")
-    monkeypatch.setattr(flow, "build_review_request", fake_review_request)
-    monkeypatch.setattr(flow, "run_ensemble", ensemble)
+    monkeypatch.setattr("sandbox_executor.flow.review.loop._resolve_reviewed_target", fake_resolved_target)
+    monkeypatch.setattr(
+        "sandbox_executor.flow.review.ensemble._review_base_ref",
+        lambda repo_dir, target, target_branch: f"origin/{target_branch}",
+    )
+    monkeypatch.setattr("sandbox_executor.flow.review.ensemble.build_review_request", fake_review_request)
+    monkeypatch.setattr("sandbox_executor.flow.review.loop.run_ensemble", ensemble)
     return ensemble
 
 

@@ -70,3 +70,26 @@ post.
   raises `ResolverTurnError` (a `RuntimeError`, same message) carrying the turn's bounded output tail;
   `_run_resolver_mode` guards the `git rev-parse` and `_commit_and_push_resolution` with `try`/`except`, so a result
   file is always written, and adds the `exit_code` and `output_tail` keys.
+
+### Step 4: Container resolver result read fail-closed
+
+- Placement deviation from the plan: the parser lives in the shared top-level `sandbox_executor/resolver_result.py`
+  (written in Step 3), not in a new `flow/review/resolver_result.py`, because any new flow-package definition fails the
+  move proof and would need a `flow.__all__` entry in an `__init__.py` at budget (Step 1). `ResolverOutcome` stays in
+  `flow/review/resolver.py` (moving it would make the move proof report it missing). No budget entry is added.
+- `read_container_resolver_result`: no resolver marker and either a non-zero exit or no `dispositions` gives "Resolver
+  container exited with code N and produced no resolver result" ("exited cleanly" for 0), with nothing pushed or
+  verified. A marked result from a non-zero exit always fails: the entrypoint's error, or "Resolver container exited
+  with code N", plus "(resolver exit code N)" when the code is not already named, plus the redacted, bounded output
+  tail. This replaces the old `exit_code != 0 and not err and "dispositions" not in data` guard. A clean exit keeps
+  today's reading.
+- `_dispatch_review_resolver` calls the reader; the injected-seam `Mapping` branch of `_invoke_resolver_pass` uses
+  `resolver_error_text`, so it passes `exit_code` and `output_tail` through when present (unchanged when absent).
+- `review/resolver.py` `368 -> 362` lines; its budget is lowered to 362.
+- Declared fixture change: the move-proof digests of `_dispatch_review_resolver` and `_invoke_resolver_pass` were
+  refreshed in `tests/flow/fixtures/flow_py_definitions.json`, each listed with this execution and the reason in a new
+  `amended_definitions` map; the fixture's description says what that map means. No other digest changed. The scratch
+  script (not committed) recomputes digests with the test's own `package_definitions`.
+- Full suite after the step: 3287 passed, 21 skipped.
+- Learning target: the output tail reaches the host through the result file, so host-side capture in `cli/__init__.py`
+  is needed only for hard kills, which now report "exited with code N and produced no resolver result".

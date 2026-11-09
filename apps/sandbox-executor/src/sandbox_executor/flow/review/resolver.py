@@ -22,6 +22,7 @@ from sandbox_executor.flow.review.ensemble import _ENGINE_PASSES_PER_DISPATCH
 from sandbox_executor.flow.review.records import _bounded_error_context, record_review_action
 from sandbox_executor.ledger import generate_action_id
 from sandbox_executor.redaction import redact_agent_secrets
+from sandbox_executor.resolver_result import read_container_resolver_result, resolver_error_text
 from sandbox_executor.review_ensemble import ReviewCounts, ReviewerResult, ReviewerStatus, ReviewerVerdict
 from sandbox_executor.review_report import (
     FindingDisposition,
@@ -126,22 +127,15 @@ def _dispatch_review_resolver(
                 if isinstance(loaded, dict):
                     data = loaded
 
-        dispositions = deserialize_finding_dispositions(data.get("dispositions"), findings, lookup)
-        head_sha = str(data.get("head_sha") or target.head_sha or "").strip()
-        pushed = bool(data.get("pushed", False))
-        lint_ok = bool(data.get("lint_passed", True))
-        tests_ok = bool(data.get("tests_passed", True))
-        raw_err = data.get("error")
-        err = redact_agent_secrets(str(raw_err)) if raw_err else None
-        if exit_code != 0 and not err and "dispositions" not in data:
-            err = f"Resolver container dispatch exited with code {exit_code}"
+        # Fails closed: a non-zero exit, or a file still holding the input payload, is a failed pass.
+        parsed = read_container_resolver_result(data, exit_code, target.head_sha)
         return ResolverOutcome(
-            dispositions=dispositions,
-            head_sha=head_sha,
-            pushed=pushed,
-            lint_passed=lint_ok,
-            tests_passed=tests_ok,
-            error=err,
+            dispositions=deserialize_finding_dispositions(parsed.raw_dispositions, findings, lookup),
+            head_sha=parsed.head_sha,
+            pushed=parsed.pushed,
+            lint_passed=parsed.lint_passed,
+            tests_passed=parsed.tests_passed,
+            error=parsed.error,
         )
     except Exception as exc:
         dispositions = deserialize_finding_dispositions([], findings, lookup)
@@ -349,7 +343,7 @@ def _invoke_resolver_pass(
         dispositions = deserialize_finding_dispositions(raw_disps, findings, lookup)
         head_sha = str(raw.get("head_sha") or target.head_sha or "").strip()
         pushed = bool(raw.get("pushed", head_sha != target.head_sha))
-        err = redact_agent_secrets(str(raw["error"])) if raw.get("error") else None
+        err = resolver_error_text(raw.get("error"), raw.get("exit_code"), raw.get("output_tail"))
         return ResolverOutcome(
             dispositions=dispositions,
             head_sha=head_sha,

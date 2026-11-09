@@ -157,3 +157,19 @@ Implementation of plan `P-1794192045-c23d4516-claude-agent-claude-opus-5-5`: spl
 - Outcomes and timing (one run each, `-n auto --dist worksteal`): `tests/flow` plus `test_ledger_append_only.py` gave
   538 passed in 5.33s. The base worktree's `test_flow.py` plus `test_ledger_append_only.py` gave 377 passed in 5.55s.
   All 377 shared node IDs have identical outcomes, so the session fixture scope is intact.
+
+### Step 6: Per-module size ratchet in the lint task
+
+- `apps/sandbox-executor/flow_module_budgets.json` records the line count of all 27 `.py` files under `flow/` (23
+  modules plus four `__init__.py`), measured after the final ruff format, together with a `description` of the rule.
+  It sits outside the package, so it never ships in the wheel.
+- `scripts/check_flow_module_budgets.py` is stdlib only, with `main(argv) -> int`, in the style of
+  `scripts/check_ci_runtime_budget.py`. It prints one `::error::` line per violation and exits 1 when a module is over
+  budget, a module has no entry, or an entry names a missing module. There is no update flag.
+- The root `pyproject.toml` `lint` task now ends with `&& python scripts/check_flow_module_budgets.py`, and `uv.lock`
+  is unchanged.
+- `tests/flow/test_module_budgets.py` (5 tests) uses the `from scripts.<module> import main` pattern. It checks that
+  the live tree passes, that a module within budget passes, and that each of the three failure kinds fails, so CI's
+  hygiene job (ruff plus pytest) enforces the ratchet too.
+- Result: `uv run task lint` passed (`Flow module budgets passed: 27 modules within their recorded line counts`), and
+  the budget tests gave 5 passed in 0.02s.

@@ -777,9 +777,9 @@ def _recorded_decision(
 ) -> DecompositionDecision:
     """Return the decomposition decision the plan row records.
 
-    Only a row that predates the record (an older planner image, run outside the flow by a direct 'holon execute') is
-    decided here, by the same rule. A corrupt record exits 1 before any row is written; the flow fails such a plan
-    before dispatch.
+    Only a row that predates the record (an older planner image) is decided here, by the same rule: in a direct
+    'holon execute', or in a flow run whose back-fill write failed. A corrupt record exits 1 before any row is written;
+    the flow fails such a plan before dispatch.
     """
     try:
         recorded = DecompositionDecision.from_plan_row(plan_data)

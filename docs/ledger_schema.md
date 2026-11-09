@@ -135,7 +135,7 @@ Plan row decomposition decision (optional on historic rows): the planner records
 `DecompositionDecision.to_plan_fields()`/`from_plan_row()`; any other recorded shape fails Stage 3 before dispatch. A
 historic row without the field is decided by the same rule and, in a flow run, superseded once by a flow row (the
 planner's fields plus the decision, a fresh `created_at`, `ledger_revision + 1`, `decision_recorded_by: "flow"`); a
-direct `holon execute` decides it in the executor.
+direct `holon execute`, or a flow run whose back-fill write failed, decides it in the executor.
 
 Child intent rows: when Stage 3 runs a recorded sub-intent list, the flow creates each child through the same Stage 1
 intent creator, so each child appends an ordinary intent row on its own intent branch. Its payload carries `slug`,

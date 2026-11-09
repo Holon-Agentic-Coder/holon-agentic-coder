@@ -287,30 +287,8 @@ def test_stage4_canonical_ledger_records_verified_results(tmp_path: Path, monkey
 
 
 # --------------------------------------------------------------------------------------
-# Persistent Stage 4 review workspace: session lifecycle across engine-owned iterations
+# Stage 4 dispatch without a review workspace volume: clone per pass, no host mount yet
 # --------------------------------------------------------------------------------------
-
-
-class _FakeDockerCli:
-    """Records the docker CLI commands a ReviewWorkspaceSession runs and answers them all with success."""
-
-    def __init__(self) -> None:
-        self.calls: list[list[str]] = []
-
-    def __call__(self, argv: list[str]):
-        import subprocess
-
-        self.calls.append(list(argv))
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
-
-    def commands(self, *verbs: str) -> list[list[str]]:
-        return [c for c in self.calls if c[: len(verbs)] == list(verbs)]
-
-
-def _session(docker: _FakeDockerCli):
-    from sandbox_executor.flow import ReviewWorkspaceSession
-
-    return ReviewWorkspaceSession(EXEC_TARGET, agent="claude-agent", docker_runner=docker)
 
 
 def _host_loop_patches():
@@ -384,178 +362,78 @@ def _objecting_then_approving_dispatcher(calls: list[dict]):
     return fake_dispatcher
 
 
-def test_one_session_volume_is_shared_by_every_dispatch_and_removed_once(tmp_path: Path, monkeypatch) -> None:
-    """A 2-iteration convergence cycle mounts one volume in all three dispatches and tears it down once."""
-    from sandbox_executor.flow import review_session_volume_name, run_review_loop
+def test_review_loop_dispatches_without_volumes_root_init_or_workspace_mount(tmp_path: Path, monkeypatch) -> None:
+    """Through the real dispatch_role_agent, a Stage 4 cycle runs no docker volume, chown init or worktree mount.
 
-    monkeypatch.delenv("HOLON_IN_SANDBOX", raising=False)
-    monkeypatch.delenv("HOLON_ROLE", raising=False)
+    The dormancy guardrail: no production caller passes ``workspace_mount`` until the container-side purge of the
+    workspace wipe lands, so no review dispatch carries a mount or the removed named volume.
+    """
+    import subprocess
 
-    calls: list[dict] = []
-    ctx = _make_context(tmp_path, dispatcher=_objecting_then_approving_dispatcher(calls))
-    docker = _FakeDockerCli()
-
-    patches = _host_loop_patches()
-    for p in patches:
-        p.start()
-    try:
-        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=5, workspace_session=_session(docker))
-    finally:
-        for p in reversed(patches):
-            p.stop()
-
-    assert res["consensus"]["approved"] is True
-    assert res["consensus"]["iterations"] == 2
-
-    expected_volume = review_session_volume_name(EXEC_TARGET)
-    assert [c["role"] for c in calls] == ["review-loop", "review-loop", "review-loop"]
-    assert ["--resolve" in c["args"] for c in calls] == [False, True, False]
-    assert [c.get("review_workspace_volume") for c in calls] == [expected_volume] * 3
-
-    # The volume is created once (plus its one root ownership init) and removed exactly once.
-    assert len(docker.commands("docker", "volume", "create")) == 1
-    create = docker.commands("docker", "volume", "create")[0]
-    assert "--label" in create and "holon.review-session=1" in create
-    assert create[-1] == expected_volume
-    init_runs = docker.commands("docker", "run")
-    assert len(init_runs) == 1
-    assert "--user" in init_runs[0] and "root" in init_runs[0]
-    assert ["docker", "volume", "rm", "-f", expected_volume] in docker.calls
-    assert len(docker.commands("docker", "volume", "rm")) == 1
-
-    # Canonical Stage 4 provenance stays host-written: per-iteration ACT-REV rows and one summary row.
-    ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
-    records = [json.loads(line) for line in ledger.read_text().splitlines() if line.strip()]
-    iteration_rows = [
-        r for r in records if str(r.get("action_id", "")).startswith("ACT-REV-") and "review_reviewer_index" not in r
-    ]
-    assert [r["review_iteration"] for r in iteration_rows] == [1, 2]
-    assert [r for r in records if str(r.get("action_id", "")).startswith("ACT-RES-")]
-    assert [r for r in records if r.get("entry_type") == "summary"]
-
-
-def test_session_volume_is_removed_when_the_loop_raises_mid_iteration(tmp_path: Path, monkeypatch) -> None:
-    """An exception after the first dispatch still tears the created volume down exactly once."""
-    import pytest
+    import sandbox_executor.flow as flow_package
+    from sandbox_executor import cli
     from sandbox_executor.flow import run_review_loop
 
     monkeypatch.delenv("HOLON_IN_SANDBOX", raising=False)
     monkeypatch.delenv("HOLON_ROLE", raising=False)
 
-    calls: list[dict] = []
-    ctx = _make_context(tmp_path, dispatcher=_objecting_then_approving_dispatcher(calls))
-    docker = _FakeDockerCli()
+    dispatched: list[dict] = []
+    fake_dispatcher = _objecting_then_approving_dispatcher(dispatched)
+    container_kwargs: list[dict] = []
+
+    def fake_run_docker_container(role, image_name, container_args, **kwargs):
+        container_kwargs.append(dict(kwargs))
+        return fake_dispatcher(role, None, None, container_args, **kwargs)
+
+    subprocess_argv: list[list[str]] = []
+    real_run = subprocess.run
+
+    def recording_run(argv, *args, **kwargs):
+        subprocess_argv.append([str(a) for a in argv] if isinstance(argv, list | tuple) else [str(argv)])
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(cli, "run_docker_container", fake_run_docker_container)
+    monkeypatch.setattr(subprocess, "run", recording_run)
+    ctx = _make_context(tmp_path)
+    ctx.agent = "claude-agent"
 
     patches = _host_loop_patches()
     for p in patches:
         p.start()
     try:
-        with (
-            patch("sandbox_executor.flow.review.loop.probe_ci_checks", side_effect=RuntimeError("gh exploded")),
-            pytest.raises(RuntimeError, match="gh exploded"),
-        ):
-            run_review_loop(ctx, target=EXEC_TARGET, max_iterations=5, workspace_session=_session(docker))
-    finally:
-        for p in reversed(patches):
-            p.stop()
-
-    assert len(calls) == 1  # The first ensemble dispatch ran, then the loop raised.
-    assert len(docker.commands("docker", "volume", "create")) == 1
-    assert len(docker.commands("docker", "volume", "rm")) == 1
-
-
-def test_kill_switch_disables_the_session_and_passes_no_volume(tmp_path: Path, monkeypatch) -> None:
-    """HOLON_REVIEW_PERSIST=0 restores clone-per-pass dispatch arguments: no volume kwarg, no docker call."""
-    from sandbox_executor.flow import run_review_loop
-
-    monkeypatch.delenv("HOLON_IN_SANDBOX", raising=False)
-    monkeypatch.delenv("HOLON_ROLE", raising=False)
-    monkeypatch.setenv("HOLON_REVIEW_PERSIST", "0")
-
-    calls: list[dict] = []
-    ctx = _make_context(tmp_path, dispatcher=_objecting_then_approving_dispatcher(calls))
-    docker = _FakeDockerCli()
-
-    patches = _host_loop_patches()
-    for p in patches:
-        p.start()
-    try:
-        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=5, workspace_session=_session(docker))
+        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=5)
     finally:
         for p in reversed(patches):
             p.stop()
 
     assert res["consensus"]["approved"] is True
-    assert calls, "the loop dispatched nothing"
-    assert all("review_workspace_volume" not in c for c in calls)
-    assert docker.calls == []
+    assert ["--resolve" in c["args"] for c in dispatched] == [False, True, False]
+    assert all(argv[:2] != ["docker", "volume"] for argv in subprocess_argv)
+    assert not [argv for argv in subprocess_argv if "--user" in argv and "root" in argv]
+    assert not [argv for argv in subprocess_argv if "--entrypoint" in argv and "chown" in argv]
+    assert all("review_workspace_volume" not in kw and "workspace_mount" not in kw for kw in container_kwargs)
+    assert not hasattr(flow_package, "ReviewWorkspaceSession")
 
 
-def test_in_container_mode_never_creates_a_session(tmp_path: Path, monkeypatch) -> None:
-    """With reviewers sandboxed, the loop runs the in-container ensemble and touches no docker volume."""
+def test_in_container_mode_runs_the_ensemble_without_dispatching(tmp_path: Path, monkeypatch) -> None:
+    """With reviewers sandboxed, the loop runs the in-container ensemble and launches no role container."""
     from sandbox_executor.flow import run_review_loop
 
     from tests.review_fakes import install_fake_reviewers
 
     install_fake_reviewers(monkeypatch)
     ctx = _make_context(tmp_path)
-    docker = _FakeDockerCli()
 
     patches = _host_loop_patches()
     for p in patches:
         p.start()
     try:
-        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=2, workspace_session=_session(docker))
+        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=2)
     finally:
         for p in reversed(patches):
             p.stop()
 
     assert res["consensus"]["approved"] is True
-    assert docker.calls == []
-
-
-def test_session_creation_failure_falls_back_to_clone_per_pass(tmp_path: Path, monkeypatch) -> None:
-    """A failing `docker volume create` disables persistence; dispatch continues without a volume."""
-    import subprocess as _subprocess
-
-    from sandbox_executor.flow import ReviewWorkspaceSession, run_review_loop
-
-    monkeypatch.delenv("HOLON_IN_SANDBOX", raising=False)
-    monkeypatch.delenv("HOLON_ROLE", raising=False)
-
-    def failing_docker(argv: list[str]):
-        return _subprocess.CompletedProcess(argv, 1, stdout="", stderr="no docker daemon")
-
-    session = ReviewWorkspaceSession(EXEC_TARGET, agent="claude-agent", docker_runner=failing_docker)
-    calls: list[dict] = []
-    ctx = _make_context(tmp_path, dispatcher=_objecting_then_approving_dispatcher(calls))
-
-    patches = _host_loop_patches()
-    for p in patches:
-        p.start()
-    try:
-        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=5, workspace_session=session)
-    finally:
-        for p in reversed(patches):
-            p.stop()
-
-    assert res["consensus"]["approved"] is True
-    assert calls and all("review_workspace_volume" not in c for c in calls)
-
-
-def test_review_persist_toggle_and_deterministic_volume_names() -> None:
-    """The kill switch recognises the documented falsy values; volume names are deterministic per target."""
-    from sandbox_executor.flow import review_persist_enabled, review_session_volume_name
-
-    assert review_persist_enabled({}) is True
-    assert review_persist_enabled({"HOLON_REVIEW_PERSIST": "1"}) is True
-    for value in ("0", "false", "No", "OFF"):
-        assert review_persist_enabled({"HOLON_REVIEW_PERSIST": value}) is False
-
-    name = review_session_volume_name(EXEC_TARGET)
-    assert name == review_session_volume_name(EXEC_TARGET)
-    assert name.startswith("holon-review-ws-")
-    assert name != review_session_volume_name("another/target")
 
 
 def test_sandbox_workspace_mount_matches_the_container_workspace_default(monkeypatch) -> None:

@@ -22,7 +22,8 @@ def test_snapshot_was_taken_with_this_python_minor_version():
 def test_snapshot_covers_every_flow_py_definition():
     definitions = load_snapshot()["definitions"]
     top_level = [key for key in definitions if "." not in key and not key.startswith("<const>:")]
-    assert len(top_level) >= 124
+    # 120 after the Stage 4 review volume session's four top-level definitions were deleted, not moved.
+    assert len(top_level) >= 120
 
 
 def test_every_definition_moved_unchanged():

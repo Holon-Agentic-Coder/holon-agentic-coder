@@ -80,13 +80,10 @@ def _dispatch_review_ensemble(
     target: ReviewTarget,
     iteration: int,
     ensemble_size: int,
-    workspace_volume: str | None = None,
 ) -> tuple[list[ReviewerResult], ConsensusVerdict | None, str | None]:
     """Dispatch one reviewer ensemble pass into the review-loop role container via _dispatch_role.
 
     ``iteration`` is the engine's pass label (``--iteration``), never the container's loop limit.
-    ``workspace_volume`` names the session's persistent workspace volume, mounted so this pass reuses
-    the previous pass's checkout instead of cloning afresh; None preserves the clone-per-pass dispatch.
     """
     from sandbox_executor.review_ensemble import deserialize_review_outcome
 
@@ -114,9 +111,7 @@ def _dispatch_review_ensemble(
         container_args.append("--skip-push")
 
     try:
-        # The volume kwarg travels only when set, keeping injected _dispatch_role seams source-compatible.
-        volume_kwargs = {"review_workspace_volume": workspace_volume} if workspace_volume is not None else {}
-        exit_code = _dispatch_role(context, "review-loop", container_args, result_file=result_file, **volume_kwargs)
+        exit_code = _dispatch_role(context, "review-loop", container_args, result_file=result_file)
         if not os.path.exists(result_file) or os.path.getsize(result_file) == 0:
             err = f"Reviewer ensemble container dispatch exited with code {exit_code} without writing results"
             return [], None, err

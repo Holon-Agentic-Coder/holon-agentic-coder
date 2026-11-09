@@ -72,3 +72,41 @@ In progress.
   gave 422 passed and 53 subtests passed in 2.17s.
 - At this commit the flow review modules still pass `review_workspace_volume` through `_dispatch_role`. Their tests
   stay green because they use injected dispatchers. Step 4 removes those call sites.
+
+### Step 4: Delete the Stage 4 named-volume machinery and its tests; add test (f)
+
+- `flow/review/workspace.py` keeps only `HOST_REVIEW_REFUSAL` and `reviewers_sandboxed` and is retitled "the sandbox
+  guard for reviewer turns". The following are deleted: `ReviewWorkspaceSession`, `review_session_volume_name`,
+  `review_persist_enabled` and `HOLON_REVIEW_PERSIST`, `REVIEW_SESSION_VOLUME_LABEL`,
+  `_REVIEW_PERSIST_DISABLED_VALUES`, `_DOCKER_CLI_TIMEOUT_SECONDS`, the root `chown` init container and the now-unused
+  imports.
+- `flow/review/loop.py`: the session-owning wrapper is deleted, and `_run_review_loop_iterations` is renamed back to
+  `run_review_loop`, with no alias. The `workspace_session` parameter and its docstring, both `workspace_volume=`
+  arguments and the `inspect` import are removed. A grep showed no caller passing `workspace_session` outside the
+  deleted tests. Every existing `run_review_loop(...)` call binds the same parameters as before.
+- `flow/review/ensemble.py` and `flow/review/resolver.py`: the `workspace_volume` parameters, the
+  `ResolverInput.workspace_volume` field, the docstrings and the `volume_kwargs` spreading are deleted.
+  `_invoke_resolver_pass` calls `_dispatch_review_resolver` with four arguments.
+- `flow/__init__.py`: the deleted symbols and `_run_review_loop_iterations` are removed from the imports and from
+  `__all__`. `agent_runner.py`: `SANDBOX_WORKSPACE_UID_GID` and its comment are deleted, and the
+  `SANDBOX_WORKSPACE_MOUNT` comment now names the worktree bind mount.
+- Tests: `tests/test_review_workspace_integration.py` is deleted. In `tests/test_review_dispatch.py`, `_FakeDockerCli`,
+  `_session` and the session, volume, kill-switch and failing-create tests are deleted. The in-container test is kept
+  as `test_in_container_mode_runs_the_ensemble_without_dispatching`, minus its docker assertions. Test (f),
+  `test_review_loop_dispatches_without_volumes_root_init_or_workspace_mount`, runs a 2-iteration objecting-then-approving
+  cycle through the real `dispatch_role_agent`, with `cli.run_docker_container` and `subprocess.run` recorded. It
+  checks for no `docker volume` call, no `--user root` or `--entrypoint chown` container, no `review_workspace_volume`
+  or `workspace_mount` kwarg, and no `sandbox_executor.flow.ReviewWorkspaceSession`.
+- `tests/hermetic_fixtures.py`'s seeded-remote volume is test infrastructure for remote fixtures, not Stage 4
+  machinery, and is left unchanged.
+- Deviation: the move-proof snapshot refresh was pulled forward from Step 5 into this commit, so that this commit stays
+  green. The 13 deleted keys were removed. The 6 changed definitions (`_dispatch_role`, `_dispatch_review_ensemble`,
+  `run_review_loop`, `ResolverInput`, `_dispatch_review_resolver`, `_invoke_resolver_pass`) got fresh digests and an
+  `amended_definitions` note naming this execution. The amendment note for `_run_review_loop_iterations` went with its
+  key. `test_snapshot_covers_every_flow_py_definition` pinned the floor at exactly the old top-level count (124). It now
+  reads 120, with a comment, because four top-level definitions were deleted rather than moved.
+- The listed review tests plus `test_cli.py`, `test_worktree_mount.py` and `tests/flow` gave 1136 passed and 53
+  subtests passed in 5.79s before the floor fix. The only failure was the floor, and after the fix `tests/flow` gave 497
+  passed in 5.96s.
+- Side effect, cleaned up: running `uv run python` from `apps/sandbox-executor` created a stray `.venv` and `uv.lock`
+  there. Both were deleted, and neither was committed.

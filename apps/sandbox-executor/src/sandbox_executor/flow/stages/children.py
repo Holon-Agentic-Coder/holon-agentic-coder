@@ -259,15 +259,8 @@ def _drive_children(context: FlowContext, start_time: str, payload: dict[str, An
 
     The first child that fails or is not ready to merge is marked ``failed``; one refused only by the merge guard stays
     ``review_done`` with a ``merge_error`` so a resume retries just the merge. The parent checkpoint is saved, and
-    Stage 3 fails naming the child; later children do not start. Under ``--skip-review`` no child could reach its
-    consensus halt and merge, so the stage fails before any child is dispatched.
+    Stage 3 fails naming the child; later children do not start.
     """
-    if context.skip_review:
-        error = (
-            "Execute stage failed: the plan was decomposed, but --skip-review skips each sub-intent's Stage 4, so no "
-            "child could reach consensus and be merged into the plan branch; re-run without --skip-review."
-        )
-        return _stage_failure(context, FlowStage.EXECUTE, start_time, error, **payload)
     progress = payload[PROGRESS_KEY]
     total = len(progress)
     for entry in progress:
@@ -293,8 +286,16 @@ def run_children(context: FlowContext, start_time: str, payload: dict[str, Any])
     Reconciling first (origin wins) means even a fresh Stage 3 entered without the parent checkpoint
     (``--from-stage execute``) never re-dispatches a child that already has an execution branch or PR. An exception
     that escaped to the pipeline would store a payload-less failure and overwrite the checkpointed
-    ``children_progress``, so it is turned into a Stage 3 failure that keeps the entries' last status instead.
+    ``children_progress``, so it is turned into a Stage 3 failure that keeps the entries' last status instead. Under
+    ``--skip-review`` no child could reach its consensus halt and merge, so the stage is refused first, before any
+    origin lookup or progress change, and keeps its own message.
     """
+    if context.skip_review:
+        error = (
+            "Execute stage failed: the plan was decomposed, but --skip-review skips each sub-intent's Stage 4, so no "
+            "child could reach consensus and be merged into the plan branch; re-run without --skip-review."
+        )
+        return _stage_failure(context, FlowStage.EXECUTE, start_time, error, **payload)
     try:
         for note in reconcile_with_origin(context.target_worktree, payload[PROGRESS_KEY], str(payload["plan_branch"])):
             context.log(f"Stage 3: {note} (origin wins).")

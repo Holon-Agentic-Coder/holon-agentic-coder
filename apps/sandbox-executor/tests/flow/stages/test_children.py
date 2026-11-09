@@ -439,6 +439,20 @@ class TestChildLoopWithStubbedPipelines:
         # The recorded decomposition survives for a resume without the flag.
         assert [e["status"] for e in res.payload["children_progress"]] == ["pending"]
 
+    def test_skip_review_refusal_does_no_origin_lookup_and_keeps_its_message(self):
+        with patch(
+            "sandbox_executor.flow.stages.children.reconcile_with_origin", side_effect=RuntimeError("origin down")
+        ) as reconcile:
+            res, _ctx, children = self._run_children(
+                {"slug": "parent"}, self._ROW, intent_branch="I-1-parent/_", skip_review=True
+            )
+
+        reconcile.assert_not_called()
+        assert res.status == StageStatus.FAILED
+        assert "--skip-review skips each sub-intent's Stage 4" in (res.error or "")
+        assert "origin down" not in (res.error or "")
+        assert children == []
+
 
 def test_a_child_promoted_to_merged_on_resume_is_summarised_as_merged():
     entry = {"index": 1, "slug": "first", "intent_branch": "I-1-parent--first/_", "status": "review_done"}

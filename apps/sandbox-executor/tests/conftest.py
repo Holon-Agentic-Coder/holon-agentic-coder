@@ -14,6 +14,7 @@ from tests.hermetic_fixtures import (
     describe_index_changes,
     knowledge_index_snapshot,
 )
+from tests.worktree_fixtures import init_feature_worktree
 
 # Ambient variables that can carry a live credential or change which code path a test exercises.
 _AMBIENT_CREDENTIAL_NAMES = ("GITHUB_TOKEN", "GH_TOKEN")
@@ -178,3 +179,15 @@ def gh_write_guard(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
     yield blocked
     if blocked:
         pytest.fail("Unmocked gh write command(s) ran in this test: " + "; ".join(blocked), pytrace=False)
+
+
+@pytest.fixture
+def feature_worktree_cwd(tmp_path_factory, monkeypatch) -> str:
+    """Run the test from a fixture worktree on a non-default branch instead of the real repository.
+
+    The default ``--target-worktree .`` then means the same thing whichever branch the developer's or CI's checkout is
+    on: ``holon flow`` does not redirect it and ``holon review`` and ``holon calibrate`` do not refuse it.
+    """
+    path = init_feature_worktree(tmp_path_factory.mktemp("feature-worktree"))
+    monkeypatch.chdir(path)
+    return path

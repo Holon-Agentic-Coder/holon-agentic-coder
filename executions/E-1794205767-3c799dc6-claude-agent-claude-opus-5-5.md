@@ -103,3 +103,39 @@ In progress.
 - The generic remedy in `default_branch_worktree_problem` names the run's `flow-<slug>` worktree.
 - `tests/test_calibration.py`, `tests/test_review_loop.py`, `tests/test_preflight.py`, `tests/test_cli.py`,
   `tests/test_cli_options.py`: 903 passed, 1 failed (the Step 3 checkpoint fixture on `main`, pinned in Step 7).
+
+### Step 7: Hermetic tests and pinned environment-sensitive tests
+
+- New `tests/test_flow_default_branch_worktree.py` (29 tests). Fixture: bare `origin.git`, `checkout/` cloned on
+  `main`, and `origin/main` one commit ahead of local `main` (pushed from a second clone and fetched), cwd pinned to a
+  non-git directory.
+  - (a) explicit `--target-worktree <checkout>` and the implicit `.` from inside `checkout/`: the context's
+    `target_worktree` is `<tmp>/flow-redirect-me`, its branch is `flow-redirect-me`, its HEAD is `origin/main` (not
+    local `main`), the default checkpoint path lies inside it and the info log names both paths. A second variant runs
+    the real `run_flow_pipeline` with `PipelineEngine.execute_stage` recording `engine.context.target_worktree`: all
+    five stages saw the flow path and the checkpoint was written inside it, nothing under `checkout/.holon`.
+  - (b) `checkout/` HEAD, branch and porcelain status are identical before and after; `git worktree list --porcelain`
+    still shows it on `refs/heads/main`.
+  - (c) a pre-created `flow-redirect-me` with a marker commit is reused (marker still HEAD, no other `flow-*`).
+  - (d) a `feature-x` worktree is used as it is, no `flow-*` sibling.
+  - (e) a checkpoint recording `checkout/` is refused (with and without `--from-stage review`): exit 1, pipeline not
+    called, the message names the `flow-redirect-me` path and `--target-worktree`, nothing provisioned, `checkout/`
+    unchanged; with `--target-worktree <checkout>` or `--target-worktree <flow path>` it resumes in the flow worktree.
+  - (f) `review-loop`, `review`, `pr-review-loop`, `calibrate` and `calibrate --no-commit` exit 1 with the actionable
+    `Error:` and none of `run_review_loop_cli`, `run_docker_container`, `run_calibrate` is called; on `feature-x` each
+    reaches exactly one callee.
+  - Unit tests for `normalise_base_branch`, detached HEAD, `repository_default_branch` (with and without `origin/HEAD`),
+    and `ensure_flow_worktree_off_default` refusing a non-worktree path and a flow worktree on `main`; engine test that
+    `run_flow_pipeline` fails the first stage for a default-branch target before any stage or checkpoint (Step 4).
+- Mutation check: disabling the redirect made 5 of the new tests fail.
+- Pinned existing tests (declared changes; assertions unchanged): a new `feature_worktree_cwd` fixture in
+  `tests/conftest.py` (helper `tests/worktree_fixtures.py`) runs the test from an empty repository on `feature-x`. Applied
+  to `TestHolonFlowCLI` (`tests/test_cli.py`), `test_review_loop_handler_masks_a_quoted_password_head` and
+  `test_calibrate_handler_masks_a_quoted_password_head` (`tests/test_cli.py`), `test_bare_review_loop_still_runs_in_a_container`
+  and `test_local_review_loop_records_resolved_runner` (`tests/test_preflight.py`), `TestCLICalibrateCommand`
+  (`tests/test_calibration.py`), `TestCLIDispatchReviewLoop` (`tests/test_review_loop.py`) and
+  `test_cli_flow_dry_run_dispatch` (`tests/flow/test_pipeline.py`). `test_flow_checkpoint_resumption_flag_overrides`
+  now initialises its checkpoint repository on `feature-x`.
+- Environment independence: the set above came from running `uv run task test` in a copy of the workspace committed on
+  a fresh `main` branch (10 failures before pinning, and a stray `/tmp/flow-cli-test` was provisioned). After pinning,
+  the same simulation gave `3338 passed` in `30.70s` and no `flow-*` directory appeared.

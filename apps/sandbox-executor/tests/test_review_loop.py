@@ -241,6 +241,7 @@ class TestReviewLoopEntrypoint:
             assert data["ensemble_verdict"] == "FAILED"
 
 
+@pytest.mark.usefixtures("feature_worktree_cwd")
 class TestCLIDispatchReviewLoop:
     """Test CLI dispatch of review-loop."""
 

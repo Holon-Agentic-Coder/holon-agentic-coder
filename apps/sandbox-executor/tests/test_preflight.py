@@ -556,6 +556,7 @@ def test_run_docker_container_disables_nested_preflight(probe_env):
 # --- review-loop routing ------------------------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("feature_worktree_cwd")
 def test_bare_review_loop_still_runs_in_a_container(probe_env, monkeypatch):
     monkeypatch.setenv("HOLON_AGENT", "antigravity-agent")
     monkeypatch.setenv("HOLON_MODEL", "gemini-3.8-flash-medium")
@@ -571,6 +572,7 @@ def test_bare_review_loop_still_runs_in_a_container(probe_env, monkeypatch):
     assert container_args[:3] == ["I-1/P-2/E-3/_", "antigravity-agent", "gemini-3.8-flash-medium"]
 
 
+@pytest.mark.usefixtures("feature_worktree_cwd")
 def test_local_review_loop_records_resolved_runner(probe_env, monkeypatch):
     monkeypatch.setenv("HOLON_AGENT", "pi-agent")
     monkeypatch.setenv("HOLON_MODEL", "claude-opus-5-5")

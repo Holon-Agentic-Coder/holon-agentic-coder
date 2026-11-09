@@ -620,6 +620,7 @@ class TestFlowCLI:
                 cli_main()
         assert exc_info.value.code == 0
 
+    @pytest.mark.usefixtures("feature_worktree_cwd")
     def test_cli_flow_dry_run_dispatch(self, tmp_path, monkeypatch):
         intent_file = tmp_path / "intent.json"
         intent_file.write_text(json.dumps({"slug": "cli-test", "goal": "CLI flow test"}))

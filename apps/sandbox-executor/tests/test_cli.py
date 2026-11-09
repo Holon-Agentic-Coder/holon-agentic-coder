@@ -39,6 +39,7 @@ from tests.leak_assertions import (
     url_userinfo_cases,
 )
 from tests.test_local_llm import HEALTH_COLD, HEALTH_OFF, HEALTH_SMALL_PROMPT, HEALTH_WARM, _config, _fetcher
+from tests.worktree_fixtures import init_feature_worktree
 
 # Captured at import, before the suite-wide `isolated_env_file_dir` fixture (conftest.py) replaces it.
 _REAL_ENV_FILE_DIR = cli.env_file_dir
@@ -627,6 +628,7 @@ class TestRepoUrlResolution(unittest.TestCase):
             self.assertIn("Error: Unable to resolve git remote 'origin'", mock_stderr.getvalue())
 
 
+@pytest.mark.usefixtures("feature_worktree_cwd")
 class TestHolonFlowCLI(unittest.TestCase):
     """Hermetic unit tests for 'holon flow' CLI argument parsing, flags, and dispatching."""
 
@@ -954,7 +956,7 @@ class TestHolonFlowCLI(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             from sandbox_executor.flow import FlowContext
 
-            subprocess.run(["git", "init", "-q", tmp_dir], check=True, capture_output=True)  # resume needs a worktree
+            init_feature_worktree(tmp_dir)  # resume needs a worktree, not on the default branch
             orig_ctx = FlowContext(
                 target_worktree=tmp_dir,
                 intent_data={"slug": "test-resume"},
@@ -2214,6 +2216,7 @@ def _password_head_error(head: str) -> ValueError:
     return ValueError(f"Port could not be cast to integer value as '{head}'")
 
 
+@pytest.mark.usefixtures("feature_worktree_cwd")
 @pytest.mark.parametrize("delim", ["/", "?", "#"])
 def test_review_loop_handler_masks_a_quoted_password_head(monkeypatch, capsys, delim):
     """The review-loop top-level handler never prints a password piece quoted by an exception."""
@@ -2254,6 +2257,7 @@ def test_flow_handler_masks_a_quoted_password_head(monkeypatch, capsys, tmp_path
         assert_no_fragment(text, head)
 
 
+@pytest.mark.usefixtures("feature_worktree_cwd")
 def test_calibrate_handler_masks_a_quoted_password_head(monkeypatch, capsys):
     """The calibrate top-level handler never prints a password piece quoted by an exception."""
     head, tail = make_probe("a"), make_probe("b")

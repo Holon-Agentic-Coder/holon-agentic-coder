@@ -190,13 +190,25 @@
     "_run_review_loop_iterations": "E-1794206943-d5c00585 (I-1794205862-resolver-commits-locally-skip-push-fix): verify resolver_outcome.pushed is True before advancing review target and recording applied dispositions"
   },
   "added_definitions": {
+    "<const>:FAILED": {
+      "module": "child_progress.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
+    },
     "<const>:GhRunner": {
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
     },
+    "<const>:IN_PROGRESS": {
+      "module": "child_progress.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
+    },
     "<const>:LEDGER_DIR_PREFIX": {
       "module": "ledger_interleave.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): ledger-only merge conflicts are resolved by interleaving both sides' appended rows on created_at behind the untouched merge-base prefix"
+    },
+    "<const>:MERGED": {
+      "module": "child_progress.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
     },
     "<const>:MERGE_POLL_SECONDS": {
       "module": "github/merge.py",
@@ -206,6 +218,14 @@
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
     },
+    "<const>:PENDING": {
+      "module": "child_progress.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
+    },
+    "<const>:PROGRESS_KEY": {
+      "module": "child_progress.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
+    },
     "<const>:PROTECTED_BRANCHES": {
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
@@ -213,6 +233,10 @@
     "<const>:PR_VIEW_FIELDS": {
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
+    },
+    "<const>:REVIEW_DONE": {
+      "module": "child_progress.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
     },
     "MergeResult": {
       "module": "github/merge.py",
@@ -222,6 +246,10 @@
       "module": "ledger_interleave.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): ledger-only merge conflicts are resolved by interleaving both sides' appended rows on created_at behind the untouched merge-base prefix"
     },
+    "_apply_fact": {
+      "module": "child_progress.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
+    },
     "_await_ready": {
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
@@ -229,6 +257,10 @@
     "_bare_branch": {
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
+    },
+    "_child_pr": {
+      "module": "child_progress.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
     },
     "_ci_state": {
       "module": "github/merge.py",
@@ -241,6 +273,10 @@
     "_created_at_key": {
       "module": "ledger_interleave.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): ledger-only merge conflicts are resolved by interleaving both sides' appended rows on created_at behind the untouched merge-base prefix"
+    },
+    "_execution_branches": {
+      "module": "child_progress.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
     },
     "_gh_json": {
       "module": "github/merge.py",
@@ -262,6 +298,10 @@
       "module": "ledger_interleave.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): ledger-only merge conflicts are resolved by interleaving both sides' appended rows on created_at behind the untouched merge-base prefix"
     },
+    "_reconcile_entry": {
+      "module": "child_progress.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
+    },
     "_settle_reason": {
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
@@ -274,9 +314,25 @@
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
     },
+    "checkpoint_exists": {
+      "module": "child_progress.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
+    },
+    "child_checkpoint_path": {
+      "module": "child_progress.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
+    },
     "gh_runner": {
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
+    },
+    "has_recorded_decomposition": {
+      "module": "child_progress.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
+    },
+    "initial_progress": {
+      "module": "child_progress.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
     },
     "interleave_ledger_rows": {
       "module": "ledger_interleave.py",
@@ -297,6 +353,14 @@
     "merge_refusal_reason": {
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
+    },
+    "next_child_action": {
+      "module": "child_progress.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
+    },
+    "reconcile_with_origin": {
+      "module": "child_progress.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
     },
     "resolve_ledger_only_conflicts": {
       "module": "ledger_interleave.py",

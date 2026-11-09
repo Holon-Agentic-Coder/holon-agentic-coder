@@ -30,6 +30,7 @@ from sandbox_executor.flow.checkpoint import (
     migrate_checkpoint_data,
     save_checkpoint,
 )
+from sandbox_executor.flow.child_progress import _child_intent_branch, _sub_intent_depth
 from sandbox_executor.flow.constants import CI_REGISTRATION_POLL_SECONDS, CURRENT_CONTEXT_SCHEMA_VERSION
 from sandbox_executor.flow.context import (
     _SUMMARY_STATUS_WORDS,
@@ -169,11 +170,9 @@ from sandbox_executor.flow.stages.calibrate import (
 from sandbox_executor.flow.stages.decomposition import (
     _PR_URL_RE,
     _child_context,
-    _child_intent_branch,
     _child_review_pr,
     _decomposition_child_lines,
     _run_decomposed_plan,
-    _sub_intent_depth,
     _sub_intent_depth_error,
     format_decomposition_summary,
 )

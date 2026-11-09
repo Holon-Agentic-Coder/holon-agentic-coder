@@ -9,20 +9,13 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from sandbox_executor.budgets import MAX_SUB_INTENT_DEPTH
+from sandbox_executor.flow.child_progress import _child_intent_branch, _sub_intent_depth
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _stage_failure
 
 if TYPE_CHECKING:
     # Bound at runtime by the package __init__, because pipeline imports this module.
     from sandbox_executor.flow.pipeline import PipelineEngine
-
-
-def _sub_intent_depth(intent_data: dict[str, Any]) -> int:
-    """Return the nesting depth recorded on an intent payload (0 for a root intent)."""
-    try:
-        return max(0, int(intent_data.get("sub_intent_depth") or 0))
-    except (TypeError, ValueError):
-        return 0
 
 
 def _sub_intent_depth_error(context: FlowContext) -> str | None:
@@ -135,17 +128,6 @@ def _child_context(context: FlowContext, intent_data: dict[str, Any]) -> FlowCon
         mitm_web=context.mitm_web,
         dispatcher=context.dispatcher,
     )
-
-
-def _child_intent_branch(parent_branch: str, index: int, slug: str) -> str:
-    """Return the bare intent branch of the ``index``-th (1-based) child of ``parent_branch``: ``{parent}--{n}-{slug}``.
-
-    The name is derived from the parent's branch and the item's position, never from the clock. A sanitised slug never
-    contains ``--``, so the name cannot collide with the parent, a sibling or any other intent, even one created in the
-    same second with the same slug; re-running the same parent's list derives the same name for the same child.
-    """
-    child_slug = re.sub(r"[^a-zA-Z0-9]+", "-", slug).strip("-").lower() or f"sub-intent-{index}"
-    return f"{parent_branch.removesuffix('/_')}--{index}-{child_slug}"
 
 
 def _run_decomposed_plan(

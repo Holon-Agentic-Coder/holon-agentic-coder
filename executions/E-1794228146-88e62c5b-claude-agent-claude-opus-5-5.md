@@ -95,3 +95,28 @@ parent executor or a child.
 - Move proof: 24 definitions declared in `added_definitions`; budget entry `github/merge.py: 271`.
 - `uv run pytest apps/sandbox-executor/tests/flow -n auto --dist worksteal`: 545 passed in `5.34s`; lint and budgets
   pass.
+
+### Step 4: `flow/child_progress.py` for per-child progress and origin reconciliation
+
+- Progress entries (`index`, `slug`, `intent_branch`, `execution_branch`, `pr_number`, `pr_url`, `status`,
+  `merge_commit`) live under `children_progress` in the parent Stage 3 payload; `initial_progress(items, plan_branch)`
+  builds `pending` entries named `{plan}--{n}-{slug}/_`.
+- Deviation (import direction): `_child_intent_branch` and `_sub_intent_depth` moved unchanged from
+  `stages/decomposition.py` into `child_progress.py` (same move-proof digests). `decomposition` will delegate to
+  `children`, which needs both names, so keeping them in `decomposition` would create a
+  `decomposition -> children -> decomposition` import cycle. `decomposition` and `flow/__init__.py` now import them from
+  `child_progress`.
+- `next_child_action(entry, checkpoint_exists)` is pure: `skip` (merged), `merge` (`review_done` with a PR), `resume`
+  (an execution branch, a PR, the intent branch on origin, a checkpoint, a failed origin lookup or any status past
+  `pending`) and `dispatch` only when nothing exists anywhere.
+- `reconcile_with_origin(repo_dir, progress, runner)` discovers each unmerged child's execution branches under its
+  intent branch on origin and its PR via `gh pr list --head <exec> --state all`; origin wins over the checkpoint and
+  each disagreement is returned as a log note; a merged PR promotes the entry to `merged`; a failed fetch or `gh`
+  lookup sets `origin_lookup_failed` (so `resume`, never `dispatch`).
+- `child_checkpoint_path` matches `save_checkpoint`'s child keying (asserted by a test); `has_recorded_decomposition`
+  needs both `decomposed` and a non-empty `children_progress`.
+- Tests: `tests/flow/test_child_progress.py` (20 tests: the full decision table, reconciliation against a real bare
+  origin with `FakeGitHub`, origin overriding a stale checkpoint, failed lookups, distinct checkpoint paths).
+- Move proof: 15 definitions declared; budget entry `child_progress.py: 193`.
+- `uv run pytest apps/sandbox-executor/tests/flow -n auto --dist worksteal`: 565 passed in `5.87s`; lint and budgets
+  pass.

@@ -4752,7 +4752,7 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         self.run_main(probe)
         self.assertEqual(seen["email"], executor.EXECUTOR_GIT_EMAIL)
         self.assertEqual(seen["name"], executor.EXECUTOR_GIT_NAME)
-        self.assertRegex(seen["branch"], r"^I-456/P-123/E-\d+-antigravity-agent-gemini-3\.5-flash/_$")
+        self.assertRegex(seen["branch"], r"^I-456/P-123/E-\d+-(?:[0-9a-f]{8}-)?antigravity-agent-gemini-3\.5-flash/_$")
 
     def _reject_pushes(self):
         hook = os.path.join(self.bare, "hooks", "pre-receive")

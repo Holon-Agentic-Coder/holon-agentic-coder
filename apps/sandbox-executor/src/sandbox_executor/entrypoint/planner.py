@@ -332,8 +332,8 @@ def main():  # noqa: C901, PLR0912, PLR0915
 
     plan_seq = int(time.time())
     safe_model = _sanitize_model_name(model_name)
-    plan_id = f"P-{plan_seq}-{agent_name}-{safe_model}"
-    plan_branch = f"{intent_branch_prefix}/P-{plan_seq}-{agent_name}-{safe_model}/_"
+    plan_id = build_plan_id(plan_seq, intent_branch_prefix, agent_name, safe_model)
+    plan_branch = f"{intent_branch_prefix}/{plan_id}/_"
 
     # Checkout plan branch
     run_cmd(["git", "checkout", "-b", plan_branch], cwd=repo_dir)

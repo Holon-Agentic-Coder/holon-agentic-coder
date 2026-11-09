@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-cf8f5352",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-09T02:08:53.981173+00:00",
+  "updated_ts": "2026-11-09T02:08:53.981173+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794176805-23b0fdea"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794136091-persist-review-loop-sandbox-across-iterations/P-1794136106-claude-agent-claude-fable-5/E-1794141703-claude-agent-claude-fable-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 6 finding detected: FIND-R2-006-04",
+    "symptoms": [
+      "reset --hard, clean -fdx and the full wipe now run on any existing checkout, including operator-supplied worktrees (an SSH-vs-HTTPS origin mismatch erases the directory); gate them on an explicit session-volume signal."
+    ]
+  }
+}

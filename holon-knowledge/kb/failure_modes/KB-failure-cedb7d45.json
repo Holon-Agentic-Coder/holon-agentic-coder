@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-cedb7d45",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-09T02:08:54.038547+00:00",
+  "updated_ts": "2026-11-09T02:08:54.038547+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794186394-a3366232"
+    ],
+    "success_count": 0,
+    "failure_count": 3,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794182541-unique-plan-and-execution-ids/P-1794182557-antigravity-agent-gemini-3.8-flash-medium/E-1794182857-antigravity-agent-gemini-3.8-flash-medium/_",
+    "description": "Reproduced failure across 3 executions with identical context.",
+    "action": "Review Loop iteration 2 finding detected: FIND-R3-002-02",
+    "symptoms": [
+      "Core engine module flow.py introduces new entrypoint-to-engine imports from sandbox_executor.entrypoint.planner."
+    ]
+  }
+}

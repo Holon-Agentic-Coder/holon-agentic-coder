@@ -1,0 +1,33 @@
+{
+  "kb_id": "KB-pattern-e1ddfc89",
+  "kb_type": "pattern",
+  "version": "1.0",
+  "created_ts": "2026-11-09T02:08:53.939295+00:00",
+  "updated_ts": "2026-11-09T02:08:53.939295+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-POST-1794181304-fced6448",
+      "ACT-POST-1794180818-61197a17",
+      "ACT-POST-1794177371-263c5832",
+      "ACT-POST-1794176556-913e10b8",
+      "ACT-POST-1794175794-06b55256"
+    ],
+    "success_count": 10,
+    "failure_count": 0,
+    "wilson_lower": 0.7224672001371217,
+    "posterior_mean": 0.9166666666666666,
+    "ladder_state": "likely-success"
+  },
+  "tags": [
+    "code",
+    "proven"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Proven approach for I-1794136091-persist-review-loop-sandbox-across-iterations/P-1794136106-claude-agent-claude-fable-5/E-1794141703-claude-agent-claude-fable-5/_",
+    "description": "Advisory (likely-success): Historical executions matching this context pattern succeeded in 10/10 (100.0%) trials (Wilson 95% lower bound: 0.72). Consider evaluating proven approach: 'Review consensus dual-posted to GitHub for I-1794136091-persist-review-loop-sandbox-across-iterations/P-1794136106-claude-agent-claude-fable-5/E-1794141703-claude-agent-claude-fable-5/_'.",
+    "action": "Review consensus dual-posted to GitHub for I-1794136091-persist-review-loop-sandbox-across-iterations/P-1794136106-claude-agent-claude-fable-5/E-1794141703-claude-agent-claude-fable-5/_"
+  }
+}

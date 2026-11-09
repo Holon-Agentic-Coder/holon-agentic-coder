@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-53381c1c",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-09T02:08:53.898430+00:00",
+  "updated_ts": "2026-11-09T02:08:53.898430+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794145426-02c171bd"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794136091-persist-review-loop-sandbox-across-iterations/P-1794136106-claude-agent-claude-fable-5/E-1794141703-claude-agent-claude-fable-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 2 finding detected: FIND-R3-002-01",
+    "symptoms": [
+      "_clone_or_fetch now applies git reset --hard, git clean -fdx and a wipe-and-reclone fallback to every pre-existing checkout, including operator-supplied worktrees trusted without HOLON_REPO_URL; the old path only fetched and failed closed, so uncommitted operator work can now be silently destroyed and a transient fetch failure deletes the whole checkout. Gate the destructive reuse handling to the persistent sandbox workspace."
+    ]
+  }
+}

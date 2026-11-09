@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-f7121bb5",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-09T02:08:53.988293+00:00",
+  "updated_ts": "2026-11-09T02:08:53.988293+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794176805-fc297abd"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794136091-persist-review-loop-sandbox-across-iterations/P-1794136106-claude-agent-claude-fable-5/E-1794141703-claude-agent-claude-fable-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 6 finding detected: FIND-R3-006-01",
+    "symptoms": [
+      "flow.py (already 5,959 lines) grows by 202 lines with Docker volume lifecycle code it does not own; move ReviewWorkspaceSession and helpers to a dedicated module."
+    ]
+  }
+}

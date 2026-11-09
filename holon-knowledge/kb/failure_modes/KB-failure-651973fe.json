@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-651973fe",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-09T02:08:53.958608+00:00",
+  "updated_ts": "2026-11-09T02:08:53.958608+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794176026-e8ff9bd5"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794136091-persist-review-loop-sandbox-across-iterations/P-1794136106-claude-agent-claude-fable-5/E-1794141703-claude-agent-claude-fable-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 5 finding detected: FIND-R3-005-02",
+    "symptoms": [
+      "The deterministic per-target volume name lets concurrent Stage 4 sessions on one target share one checkout and reset it under each other; add a per-session nonce or document that this is unsupported."
+    ]
+  }
+}

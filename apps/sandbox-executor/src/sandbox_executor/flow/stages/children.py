@@ -191,7 +191,9 @@ def _run_one_child(context: FlowContext, payload: dict[str, Any], entry: dict[st
         return error
     plan_branch = str(payload["plan_branch"])
     # Stage 1 cuts the child from origin's plan branch tip; refresh the local view of it first.
-    _fetch_refspecs_error(context.target_worktree, [f"+refs/heads/{plan_branch}:refs/remotes/origin/{plan_branch}"])
+    refspec = f"+refs/heads/{plan_branch}:refs/remotes/origin/{plan_branch}"
+    if fetch_error := _fetch_refspecs_error(context.target_worktree, [refspec]):
+        return f"could not refresh plan branch '{plan_branch}' before cutting it: {fetch_error}"
     context.log(f"Stage 3: {'resuming' if resume else 'running'} sub-intent {entry['index']} '{entry['slug']}'.")
     try:
         if from_stage == FlowStage.COMPLETED:

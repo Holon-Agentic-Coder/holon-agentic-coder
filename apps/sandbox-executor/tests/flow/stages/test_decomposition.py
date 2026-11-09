@@ -479,13 +479,37 @@ class TestEntropyBudgetHandoffInFlow:
             "sub_intents": [{"slug": "first", "goal": "Add the parser"}, {"slug": "second", "goal": "Add the flag"}],
         }
 
-        with patch.object(PipelineEngine, "run", return_value={}) as run:
+        with (
+            patch.object(PipelineEngine, "run", return_value={}) as run,
+            patch("sandbox_executor.flow.stages.children._fetch_refspecs_error", return_value=None),
+        ):
             res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", row, {"execution_id": "E-1"})
 
         assert res.status == StageStatus.FAILED
         assert res.error == "Execute stage failed: sub-intent 1/2 'first' failed at stage 'none': no stage ran"
         assert [c["slug"] for c in res.payload["children"]] == ["first"]
         assert run.call_count == 1
+
+    def test_plan_branch_refresh_failure_fails_the_child_before_it_is_cut(self):
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent", "goal": "Change the application"})
+        ctx.intent_branch = "I-1-parent/_"
+        row = {
+            "status": "decomposed",
+            "plan_branch": "I-1-parent/P-2-agent-model/_",
+            "sub_intents": [{"slug": "first", "goal": "Add the parser"}],
+        }
+
+        with (
+            patch.object(PipelineEngine, "run", return_value={}) as run,
+            patch("sandbox_executor.flow.stages.children._fetch_refspecs_error", return_value="fetch timed out"),
+        ):
+            res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", row, {"execution_id": "E-1"})
+
+        assert res.status == StageStatus.FAILED
+        assert "could not refresh plan branch 'I-1-parent/P-2-agent-model/_' before cutting it: fetch timed out" in (
+            res.error or ""
+        )
+        assert run.call_count == 0
 
     def test_child_context_inherits_or_resets_every_field(self):
         """Table-driven: every FlowContext field is either inherited from the parent or reset for the new child."""

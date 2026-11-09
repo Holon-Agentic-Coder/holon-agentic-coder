@@ -394,6 +394,7 @@ class TestChildLoopWithStubbedPipelines:
 
         with (
             patch.object(PipelineEngine, "run", autospec=True, side_effect=boom),
+            patch("sandbox_executor.flow.stages.children._fetch_refspecs_error", return_value=None),
             pytest.raises(RuntimeError, match="child crashed"),
         ):
             flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", self._ROW, {"execution_id": "E-1"})

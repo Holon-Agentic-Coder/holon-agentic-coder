@@ -8,8 +8,9 @@ Stage 4 review loop then halts with ``test results not measured``. These tests f
 
 No YAML parser is a project dependency, so the reader below is a small, indentation-aware scan of the top-level ``on:``
 block only. It understands the shapes the workflows use: the block mapping of events, block and flow lists of values,
-the flow forms ``on: pull_request`` and ``on: [push, pull_request]``, the quoted ``"on":`` key and the YAML 1.1
-``true:`` alias. Its own behaviour is pinned by the snippet tests at the end of the module.
+flow mappings of an event's keys (``pull_request: {branches: [main]}``), the flow forms ``on: pull_request`` and
+``on: [push, pull_request]``, the quoted ``"on":`` key and the YAML 1.1 ``true:`` alias. Its own behaviour is pinned
+by the snippet tests at the end of the module.
 """
 
 import re
@@ -47,6 +48,37 @@ def _flow_items(value: str) -> list[str]:
     return [item.strip().strip("'\"") for item in value.split(",") if item.strip()]
 
 
+def _split_top_level(value: str) -> list[str]:
+    """Split on commas that are not nested inside ``[...]`` or ``{...}``."""
+    parts: list[str] = []
+    depth = start = 0
+    for index, char in enumerate(value):
+        if char in "[{":
+            depth += 1
+        elif char in "]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(value[start:index])
+            start = index + 1
+    parts.append(value[start:])
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _flow_mapping(value: str) -> dict[str, list[str]]:
+    """Map each key of a flow mapping (``{branches: [main], types: [opened]}``) to its unquoted items."""
+    mapping: dict[str, list[str]] = {}
+    for entry in _split_top_level(value.strip()[1:-1]):
+        key, _, item = entry.partition(":")
+        mapping[key.strip().strip("'\"")] = _flow_items(item)
+    return mapping
+
+
+def _event_keys(value: str) -> dict[str, list[str]]:
+    """Return an event's keys when its value is given inline as a flow mapping, else none."""
+    value = value.strip()
+    return _flow_mapping(value) if value.startswith("{") and value.endswith("}") else {}
+
+
 def _on_block(text: str) -> tuple[str, list[str]]:
     """Return the inline value after the top-level ``on:`` key and the indented lines below it."""
     lines = [_COMMENT.sub("", line).rstrip() for line in text.splitlines()]
@@ -80,8 +112,11 @@ def parse_triggers(text: str) -> Triggers:
     for line in body:
         stripped = line.strip()
         if _indent(line) == event_indent:
-            event = _flow_items(stripped[2:])[0] if stripped.startswith("- ") else stripped.split(":", 1)[0]
-            triggers[event] = {}
+            if stripped.startswith("- "):
+                event, triggers[event] = _flow_items(stripped[2:])[0], {}
+            else:
+                event, _, value = stripped.partition(":")
+                triggers[event] = _event_keys(value)
             key, key_indent = "", 0
         elif stripped.startswith("- ") and key:
             triggers[event][key].extend(_flow_items(stripped[2:]))
@@ -171,9 +206,13 @@ jobs: {}
             {"pull_request_target": {"branches-ignore": ["main"]}},
         ),
         ("on:\n  - push\n  - pull_request\n", {"push": {}, "pull_request": {}}),
+        (
+            "on:\n  pull_request: {branches: [main, 'release'], types: [opened]}\n  push: {}\n",
+            {"pull_request": {"branches": ["main", "release"], "types": ["opened"]}, "push": {}},
+        ),
         ("name: none\njobs: {}\n", {}),
     ],
-    ids=["filtered", "flow-lists", "scalar", "quoted-flow", "yaml11-alias", "block-list", "no-on"],
+    ids=["filtered", "flow-lists", "scalar", "quoted-flow", "yaml11-alias", "block-list", "flow-mapping", "no-on"],
 )
 def test_parse_triggers_reads_on_block(text: str, expected: Triggers) -> None:
     assert parse_triggers(text) == expected

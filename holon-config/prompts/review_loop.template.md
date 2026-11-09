@@ -67,9 +67,9 @@ The consensus review posted to the PR has exactly this shape, in this order. Eve
 reviewer data; nothing is filled in from a fixed list.
 
 ```markdown
-## ✅ Ensemble Consensus Review — APPROVED ({n}/{n})
+## ✅ Ensemble Consensus Review — APPROVED ({approvals}/{configured})
 
-## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration {iteration})
+## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration {iteration}) — {approvals}/{configured} approved
 
 Reviewed {title} at `{head_commit}` against `{base_branch}`: {critical} critical, {important} important and {nit} nit
 findings; CI {ci_state}; mergeability {mergeability}.

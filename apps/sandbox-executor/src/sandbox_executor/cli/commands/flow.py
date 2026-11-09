@@ -370,24 +370,28 @@ def _provision_flow_worktree(
     intent_data: dict[str, Any],
     target_worktree: str,
     from_checkpoint: bool,
-) -> str:
-    """Auto-provision or attach a flow worktree, returning its path or target_worktree when provisioning fails."""
+) -> tuple[str, str]:
+    """Auto-provision or attach a flow worktree.
+
+    Returns:
+        tuple[str, str]: The worktree path and an empty hint, or target_worktree and a hint naming the redacted
+            provisioning error when provisioning fails.
+    """
     slug = _extract_flow_slug(args, context, intent_data)
     try:
         worktree_path = ensure_worktree(
             target_worktree, slug=slug, target_branch=_flow_target_branch(intent_data, context)
         )
     except (RuntimeError, ValueError) as e:
-        logger.warning(
-            "Could not auto-provision a git worktree from '%s': %s", target_worktree, cli.redact_cli_error(e)
-        )
-        return target_worktree
+        error = cli.redact_cli_error(e)
+        logger.warning("Could not auto-provision a git worktree from '%s': %s", target_worktree, error)
+        return target_worktree, f" (auto-provisioning from this target failed: {error})"
     logger.info("Provisioned or attached git worktree for flow '%s' at: %s", slug, worktree_path)
     if not from_checkpoint:
         args.target_worktree = worktree_path
     if context is not None:
         context.target_worktree = worktree_path
-    return worktree_path
+    return worktree_path, ""
 
 
 def _ensure_flow_worktree(
@@ -407,16 +411,20 @@ def _ensure_flow_worktree(
     if is_working_tree(target_worktree):
         return True
 
-    resolved = target_worktree
+    resolved, provision_hint = target_worktree, ""
     if _should_provision(target_worktree, from_checkpoint):
-        resolved = _provision_flow_worktree(args, context, intent_data, target_worktree, from_checkpoint)
+        resolved, provision_hint = _provision_flow_worktree(
+            args, context, intent_data, target_worktree, from_checkpoint
+        )
 
     if from_checkpoint:
         problem = target_worktree_problem(
-            resolved, subject=f"Checkpoint '{args.checkpoint}' target_worktree", hint=_CHECKPOINT_TARGET_HINT
+            resolved,
+            subject=f"Checkpoint '{args.checkpoint}' target_worktree",
+            hint=provision_hint + _CHECKPOINT_TARGET_HINT,
         )
     else:
-        problem = target_worktree_problem(resolved)
+        problem = target_worktree_problem(resolved, hint=provision_hint)
     if problem is not None:
         print(f"Error: {problem}", file=sys.stderr)
         sys.exit(1)

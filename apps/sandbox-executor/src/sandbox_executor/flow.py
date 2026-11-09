@@ -80,6 +80,7 @@ from sandbox_executor.entrypoint.planner import (
     load_metrics_config,
     parse_metrics,
 )
+from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR, pre_run_guard_error
 from sandbox_executor.git import (
     EMPTY_DIFF_FAILURE_REASON,
     EMPTY_DIFF_STATUS,
@@ -1815,10 +1816,6 @@ def validate_intent_questions(intent_data: dict[str, Any]) -> tuple[bool, list[s
 # Role-agent dispatch shared with 'holon intent', 'holon plan' and 'holon execute'
 # ---------------------------------------------------------------------------
 
-SKIP_PUSH_DISPATCH_ERROR: str = (
-    "holon flow dispatches containerised role agents that fetch from origin, reviews the origin execution branch and "
-    "pushes the calibrated branch to origin; --skip-push is only valid with --dry-run."
-)
 EXECUTOR_GIT_ENV: dict[str, str] = {
     "GIT_AUTHOR_NAME": "Holon Executor Agent",
     "GIT_AUTHOR_EMAIL": "executor-agent@holon-agentic-coder.com",
@@ -5806,14 +5803,7 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR
 
 
 class PipelineEngine:
-    """Orchestrates the lifecycle stages of the Holon Flow pipeline.
-
-    ``worktree_validator`` is an optional pre-run guard: a callable that takes ``context.target_worktree`` and
-    returns an actionable error message when the path is unusable, or None. When set, a failing target fails the
-    first stage before any stage runs or a checkpoint is written. It defaults to None so direct engine use keeps
-    arbitrary ``target_worktree`` values; :func:`run_flow_pipeline` sets it to
-    :func:`sandbox_executor.git_flow.target_worktree_problem`.
-    """
+    """Orchestrates the lifecycle stages of the Holon Flow pipeline."""
 
     STAGE_ORDER: ClassVar[list[FlowStage]] = [
         FlowStage.INTENT,
@@ -6048,19 +6038,6 @@ class PipelineEngine:
             self.save_checkpoint()
         return result
 
-    def _pre_run_guard_error(self) -> str | None:
-        """Return why the run must not start, or None.
-
-        --skip-push is only valid with --dry-run, whichever stage the run starts or resumes from. When a
-        ``worktree_validator`` is set, ``context.target_worktree`` must also pass it, so Stages 4 and 5 never meet a
-        target that is not an attached git working tree.
-        """
-        if self.context.skip_push and not self.context.dry_run:
-            return SKIP_PUSH_DISPATCH_ERROR
-        if self.worktree_validator is not None:
-            return self.worktree_validator(self.context.target_worktree)
-        return None
-
     def run(self) -> dict[str, StageResult]:  # noqa: C901, PLR0912, PLR0915
         """Execute the configured pipeline stages sequentially."""
         start_idx = 0
@@ -6079,8 +6056,8 @@ class PipelineEngine:
         )
 
         # Reject an invalid run before any stage runs or a checkpoint is written, so a non-dry resume never half-runs
-        # Stage 4 or Stage 5 (see _pre_run_guard_error).
-        guard_error = self._pre_run_guard_error()
+        # Stage 4 or Stage 5 (see flow_guard.pre_run_guard_error).
+        guard_error = pre_run_guard_error(self.context, self.worktree_validator)
         if guard_error is not None:
             first_stage = self.STAGE_ORDER[start_idx]
             _stage_failure(self.context, first_stage, datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"), guard_error)

@@ -48,6 +48,7 @@ from sandbox_executor.flow.dispatch import (
 )
 from sandbox_executor.flow.git_refs import (
     EXECUTOR_GIT_ENV,
+    _append_ledger_row,
     _append_superseding_execution_row,
     _discover_child_branch,
     _execution_effective_diff,
@@ -238,6 +239,7 @@ __all__ = [
     "ReviewWorkspaceSession",
     "StageResult",
     "StageStatus",
+    "_append_ledger_row",
     "_append_only_union",
     "_append_superseding_execution_row",
     "_attach_transported_detail",

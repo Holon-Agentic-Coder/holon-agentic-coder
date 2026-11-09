@@ -71,7 +71,7 @@
     "StageStatus": "cb6ae0d8edc9458eae8bd44388bae5362c52d61a883d0f5e09abc366877e9ad4",
     "StageStatus.from_str": "8dc8624948685cecdcd826cb44b68af1c1dd4f9ba8f90ac3953d8411102b2060",
     "_append_only_union": "ac65ad61cdc9f228d9d77213ead5c15d58d05206ce9c19bd44e617150cf4b6c1",
-    "_append_superseding_execution_row": "384cd3285b4c08db5ee1131a347435b7aabd39368bbd2e155656a76f30ac865c",
+    "_append_superseding_execution_row": "7715278e5bd14c2de17fbe3e32c17f65ed15b8f4f6a893e0bf06383a3180f36e",
     "_attach_transported_detail": "59662a829a72996674404c298b23e5f7f32dca7008822d999b8ff6252c681ba9",
     "_augment_pr_text_with_rejected": "ad2114ed8800a876e67bf30dd12dcee43783f1cebc2658160171206fbb81f582",
     "_bounded_error_context": "92cb41f9dce5122986fca7e4b105d489e702c736d1a7f3520c21844f0baf9c20",
@@ -183,7 +183,8 @@
     "run_review_stage": "ec102f9b7bb40601cec1a96fb65da40eca19945b2fbf75dd3fa9b9e3087dbc4e",
     "save_checkpoint": "d7aebe896012df99b7ad9969f35fd9c20f0c3a53af9d8e4dbec6451d48d4c21b",
     "validate_intent_questions": "b192729b0c7fe8ee7d45f5755506481059b5f893cbb90a77c991640444abae06",
-    "_backfill_plan_row": "2983ee6d06fb5ce44c1e3364e1b0a1c34ebd956bbbf9f2ac7883edb8218351fd"
+    "_backfill_plan_row": "58f8cdddd0398907f63c4f1b20839b81e8fc1331d70dfe8b7530644f8a0ef545",
+    "_append_ledger_row": "2a865d4228c5972c07411aa84dac25f1c6eb9735b18bd807942576e5cc6563a7"
   },
   "amended_definitions": {
     "_dispatch_review_resolver": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result",
@@ -191,6 +192,8 @@
     "_run_review_loop_iterations": "E-1794206943-d5c00585 (I-1794205862-resolver-commits-locally-skip-push-fix): verify resolver_outcome.pushed is True before advancing review target and recording applied dispositions",
     "_backfill_plan_row": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan row records the decomposition decision; the flow reads it and back-fills older rows",
     "_plan_budget_decision": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan row records the decomposition decision; the flow reads it and back-fills older rows",
-    "run_execute_stage": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan row records the decomposition decision; the flow reads it and back-fills older rows"
+    "run_execute_stage": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan row records the decomposition decision; the flow reads it and back-fills older rows",
+    "_append_superseding_execution_row": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan-row back-fill and the superseding execution row share one temporary-worktree ledger append (_append_ledger_row)",
+    "_append_ledger_row": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan-row back-fill and the superseding execution row share one temporary-worktree ledger append (_append_ledger_row)"
   }
 }

@@ -54,11 +54,7 @@ class TestEntropyBudgetHandoffInFlow:
                 res = run_execute_stage(ctx)
 
         assert res.status != StageStatus.HALTED_FOR_HUMAN
-        if extra and not precheck:
-            # The children come only from the plan row's record: with none read, a decomposed report is an error.
-            assert res.status == StageStatus.FAILED
-            assert "the plan row records 'no readable decision'" in (res.error or "")
-            assert agents.roles() == ["intent-creator", "planner", "executor"]
+        if extra and not precheck:  # No plan row read: covered in test_plan_decision.py.
             return
         assert res.status == expected_status
         if expected_status == StageStatus.FAILED:
@@ -358,26 +354,6 @@ class TestEntropyBudgetHandoffInFlow:
         assert results["execute"].payload["dispatched"] is False
         assert agents.roles() == ["intent-creator", "planner"]
 
-    def test_sub_intent_depth_is_bounded_when_the_precheck_cannot_read_the_plan(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        agents = BudgetRoleAgents(tmp_path, origin, plans=[(2.0, SUB_INTENT_LIST)])
-        ctx = _budget_context(host, agents, 5.0, sub_intent_depth=MAX_SUB_INTENT_DEPTH)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
-        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
-
-        # With no pre-dispatch decision the executor's decomposed row carries no list (the plan row is the only
-        # record), so the stage fails without running any child: the depth bound holds trivially.
-        with patch("sandbox_executor.flow.stages.execute._plan_budget_decision", return_value=None):
-            res = run_execute_stage(ctx)
-
-        assert res.status == StageStatus.FAILED
-        assert "the plan row records 'no readable decision'" in (res.error or "")
-        assert "children" not in res.payload
-        assert flow_module.format_decomposition_summary(res) == []
-        # The executor ran once and no child intent was created.
-        assert agents.roles() == ["intent-creator", "planner", "executor"]
-        assert len(agents.intent_payloads) == 1
-
     @pytest.mark.parametrize("sub_intents", [[], None, ["not-a-dict"]], ids=["empty", "missing", "no-dict-items"])
     def test_decomposed_row_without_sub_intent_items_fails_stage(self, sub_intents):
         ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent", "goal": "Change the application"})
@@ -545,19 +521,12 @@ class TestEntropyBudgetHandoffInFlow:
     @staticmethod
     def _decide(rows: list[dict[str, Any]], files: dict[str, str]) -> Any:
         ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent", "entropy_budget": 5.0})
-        ctx.plan_branch = "I-1-parent/P-2-agent-model/_"
+        ctx.plan_branch, site = "I-1-parent/P-2-agent-model/_", "sandbox_executor.flow.stages.plan_decision"
         with (
-            patch(
-                "sandbox_executor.flow.stages.plan_decision._resolve_branch_ref",
-                return_value="refs/remotes/origin/plan",
-            ),
-            patch("sandbox_executor.flow.stages.plan_decision._read_ledger_rows", return_value=rows),
-            patch(
-                "sandbox_executor.flow.stages.plan_decision._git_show_text",
-                side_effect=lambda _repo, _ref, path: files.get(path),
-            ),
-            # These rows predate the recorded decision; the back-fill write is covered in test_plan_decision.py.
-            patch("sandbox_executor.flow.stages.plan_decision._backfill_plan_row", return_value=None),
+            patch(f"{site}._resolve_branch_ref", return_value="refs/remotes/origin/plan"),
+            patch(f"{site}._read_ledger_rows", return_value=rows),
+            patch(f"{site}._git_show_text", side_effect=lambda _repo, _ref, path: files.get(path)),
+            patch(f"{site}._backfill_plan_row", return_value=None),  # The write is covered in test_plan_decision.py.
         ):
             return flow_module._plan_budget_decision(ctx)
 

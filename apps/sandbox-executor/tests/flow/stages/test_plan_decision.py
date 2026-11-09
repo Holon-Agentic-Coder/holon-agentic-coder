@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 from sandbox_executor import flow as flow_module
+from sandbox_executor.budgets import MAX_SUB_INTENT_DEPTH
 from sandbox_executor.decomposition_rule import DecompositionDecision, InvalidPlanDecisionError, should_decompose
 from sandbox_executor.flow import FlowContext, StageStatus, run_execute_stage, run_intent_stage, run_plan_stage
 from sandbox_executor.flow.stages import plan_decision
@@ -139,7 +140,7 @@ class TestPlanDecisionBackfill:
                 raise RuntimeError("push refused by the fixture")
             return run_git(args, **kwargs)
 
-        with patch.object(plan_decision, "run_git", side_effect=refuse_push):
+        with patch("sandbox_executor.flow.git_refs.run_git", side_effect=refuse_push):
             decision = plan_decision._plan_budget_decision(ctx)
 
         assert decision is not None and decision.decision == "over_budget"
@@ -237,6 +238,27 @@ class TestStage3ExecutesThePlanRowsDecision:
             "Execute stage failed: the executor reported 'decomposed' but the plan row records 'execute'."
         )
         assert "children" not in res.payload
+        assert agents.roles() == ["intent-creator", "planner", "executor"]
+        assert len(agents.intent_payloads) == 1
+
+    @pytest.mark.parametrize("depth", [0, MAX_SUB_INTENT_DEPTH], ids=["top-level", "at-the-depth-limit"])
+    def test_decomposed_report_without_a_readable_plan_row_runs_no_child(self, flow_repos, tmp_path, depth):
+        host, origin = flow_repos
+        agents = BudgetRoleAgents(tmp_path, origin, plans=[(2.0, SUB_INTENT_LIST)])
+        ctx = _budget_context(host, agents, 5.0, sub_intent_depth=depth)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+
+        # With no pre-dispatch decision the executor's decomposed row carries no list (the plan row is the only
+        # record), so the stage fails without running any child: the depth bound holds trivially.
+        with patch("sandbox_executor.flow.stages.execute._plan_budget_decision", return_value=None):
+            res = run_execute_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        assert "the plan row records 'no readable decision'" in (res.error or "")
+        assert "children" not in res.payload
+        assert flow_module.format_decomposition_summary(res) == []
+        # The executor ran once and no child intent was created.
         assert agents.roles() == ["intent-creator", "planner", "executor"]
         assert len(agents.intent_payloads) == 1
 

@@ -9,28 +9,15 @@ to the plan branch, so the branch is self-describing and the second read finds t
 
 from __future__ import annotations
 
-import json
-import os
 import re
-import shutil
-import tempfile
 from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.decomposition_rule import DecompositionDecision, InvalidPlanDecisionError, should_decompose
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
 from sandbox_executor.flow.dispatch import _stage_failure
-from sandbox_executor.flow.git_refs import (
-    EXECUTOR_GIT_ENV,
-    _git_show_text,
-    _read_ledger_rows,
-    _resolve_branch_ref,
-    _sync_local_execution_refs,
-)
+from sandbox_executor.flow.git_refs import _append_ledger_row, _git_show_text, _read_ledger_rows, _resolve_branch_ref
 from sandbox_executor.flow.stages.plan import _format_entropy
-from sandbox_executor.git import run_git
-from sandbox_executor.ledger import LedgerRewriteError, atomic_ledger_append, validate_ledger_file_unique_ids
-from sandbox_executor.redaction import redact_agent_secrets
 
 
 def _plan_budget_decision(context: FlowContext) -> DecompositionDecision | None:
@@ -78,11 +65,9 @@ def _backfill_plan_row(context: FlowContext, plan_row: dict[str, Any], decision:
     """Append one superseding plans.jsonl row recording ``decision`` on the plan branch, and push that branch only.
 
     The row is the planner's row plus ``decision.to_plan_fields()``, ``ledger_revision`` + 1, a fresh ``created_at``
-    and ``decision_recorded_by: "flow"``; the planner's row is never rewritten. The append runs in a temporary detached
-    worktree on ``refs/remotes/origin/<plan_branch>`` (the operator's checkout is never disturbed), guarded by
-    ``atomic_ledger_append`` and the plan-id uniqueness check; afterwards origin/<branch> and the local branch are
-    fast-forwarded to the pushed commit. A failed write is only logged: the decision is still the one rule applied to
-    the same inputs.
+    and ``decision_recorded_by: "flow"``; the planner's row is never rewritten. The append goes through
+    ``_append_ledger_row`` with the plan-id uniqueness check. A failed write is only logged: the decision is still the
+    one rule applied to the same inputs.
 
     Returns:
         str | None: None on success, otherwise a secret-redacted description of what failed.
@@ -98,37 +83,12 @@ def _backfill_plan_row(context: FlowContext, plan_row: dict[str, Any], decision:
         "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
         "decision_recorded_by": "flow",
     }
-    plan_branch, ledger_rel = str(context.plan_branch), "holon-knowledge/ledger/plans.jsonl"
-    repo_dir = context.target_worktree
-    tmp_root = tempfile.mkdtemp(prefix="holon-flow-plan-decision-")
-    worktree = os.path.join(tmp_root, "worktree")
-    try:
-        run_git(["worktree", "add", "--detach", worktree, f"refs/remotes/origin/{plan_branch}"], cwd=repo_dir)
-        ledger_path = os.path.join(worktree, ledger_rel)
-        os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
-        with atomic_ledger_append(ledger_path) as f:
-            f.write(json.dumps(row) + "\n")
-        validate_ledger_file_unique_ids(ledger_path, id_key="plan_id", parent_key="intent_branch")
-        run_git(["add", ledger_rel], cwd=worktree)
-        commit_env = {**os.environ, "DOCKER_CLI_HINTS": "false"}
-        for key, value in EXECUTOR_GIT_ENV.items():
-            commit_env.setdefault(key, value)
-        commit_msg = f"plan: record the decomposition decision of {row.get('plan_id')}"
-        run_git(["commit", "-m", commit_msg], cwd=worktree, env=commit_env)
-        pushed_sha = run_git(["rev-parse", "HEAD"], cwd=worktree).stdout.strip()
-        run_git(["push", "origin", f"HEAD:refs/heads/{plan_branch}"], cwd=worktree, timeout=300)
-    except LedgerRewriteError:
-        raise
-    except (RuntimeError, TimeoutError, OSError, ValueError) as exc:
-        error = redact_agent_secrets(str(exc))
+    plan_branch = str(context.plan_branch)
+    commit_msg = f"plan: record the decomposition decision of {row.get('plan_id')}"
+    error = _append_ledger_row(context, plan_branch, "plans.jsonl", row, commit_msg)
+    if error is not None:
         context.log(f"Warning: could not record the decomposition decision on '{plan_branch}': {error}")
         return error
-    finally:
-        run_git(["worktree", "remove", "--force", worktree], cwd=repo_dir, check=False)
-        run_git(["worktree", "prune"], cwd=repo_dir, check=False)
-        shutil.rmtree(tmp_root, ignore_errors=True)
-    # The row is on origin now: aligning local refs is best-effort and never reported as a failed write.
-    _sync_local_execution_refs(context, plan_branch, pushed_sha)
     context.log(f"Recorded the decomposition decision '{decision.decision}' on '{plan_branch}'.")
     return None
 

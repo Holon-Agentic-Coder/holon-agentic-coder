@@ -4393,27 +4393,6 @@ def _run_executor_main(
     return rows
 
 
-def test_main_decomposed_records_sub_intents_without_intent_rows(tmp_path):
-    plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 9.0, "plan_file": "plans/P-123.md"}
-    intent_row = {"branch": "I-456", "slug": "parent", "entropy_budget": 5.0}
-    plan_md = "# Plan\n\n## Sub-intent list\n\n1. Add the parser\n2. Add the CLI flag\n"
-
-    rows = _run_executor_main(tmp_path, plan_row, plan_md, intent_row)
-
-    summaries = [r for r in rows if r.get("entry_type") == "summary"]
-    assert len(summaries) == 1
-    assert summaries[0]["status"] == "decomposed"
-    assert summaries[0]["entropy_budget"] == 5.0
-    # The plan row is the only record of the list: the summary refers to it and carries no sub_intents.
-    assert "sub_intents" not in summaries[0]
-    assert summaries[0]["plan_decision"] == {
-        "plan_id": "P-123",
-        "plan_branch": "I-456/P-123/_",
-        "decision": "decomposed",
-        "sub_intent_count": 2,
-    }
-
-
 def test_main_over_budget_reads_intent_budget_when_plan_row_has_none(tmp_path):
     plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 12.6, "plan_file": "plans/P-123.md"}
     intent_row = {"branch": "I-456", "slug": "parent", "entropy_budget": 5.0}

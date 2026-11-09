@@ -6,7 +6,7 @@
     "constants.py": 8,
     "context.py": 266,
     "dispatch.py": 99,
-    "git_refs.py": 367,
+    "git_refs.py": 365,
     "github/__init__.py": 1,
     "github/ci.py": 228,
     "github/pr.py": 515,
@@ -28,7 +28,7 @@
     "stages/execute.py": 396,
     "stages/intent.py": 204,
     "stages/plan.py": 200,
-    "stages/plan_decision.py": 150,
+    "stages/plan_decision.py": 110,
     "stages/review.py": 322
   }
 }

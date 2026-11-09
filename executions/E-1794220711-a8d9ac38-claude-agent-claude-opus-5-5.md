@@ -28,3 +28,14 @@ In progress.
 - `git diff --stat .github/workflows`: six files changed, `12` deletions, no insertions (`-2/+0` per file).
   `push: branches: [main]`, `types`, `workflow_dispatch`, `permissions` and `concurrency` are byte-for-byte unchanged;
   `docker-build.yml` gained no `concurrency`; `build-images.yml` untouched.
+
+### Step 2: Standard-library guard test for workflow triggers
+
+- New `apps/sandbox-executor/tests/test_workflow_triggers.py` (only `pathlib`, `re`, `pytest`; no marker, hermetic).
+  It locates `.github/workflows` by walking up from the test file, asserts the file list is non-empty, and reads the
+  top-level `on:` block with a small indentation-aware reader (block and flow lists, `on: pull_request`,
+  `on: [push, pull_request]`, quoted `"on":`, YAML 1.1 `true:`, comments).
+- Guards: no `branches`/`branches-ignore` under `pull_request` or `pull_request_target`; when `push` has `branches`, it
+  is exactly `main`. Seven in-memory snippet cases pin the reader itself.
+- Fail-first check: with the six pre-change workflow files restored from `HEAD~1`, the run gave `6 failed, 16 passed`,
+  failing exactly the six files' `pull_request` guard; after restoring Step 1, `22 passed in 0.02s`.

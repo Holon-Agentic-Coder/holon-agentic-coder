@@ -352,23 +352,13 @@ file transport, preserving host ownership of mergeability verification, CI gatin
 container dispatch fails, it fails closed before any PR review is approved. See the
 [sandbox-executor README](../apps/sandbox-executor/README.md#reviewer-ensemble).
 
-**Persistent review workspace.** One Stage 4 session (one `run_review_loop` invocation on the host) reuses a single
-labelled Docker volume (`holon.review-session=1`, named deterministically from the review target) across all of its
-reviewer-ensemble and resolver dispatches: the volume is created lazily on the first dispatch, initialised for the
-image's unprivileged user by a one-shot root container, mounted at the container workspace path by every dispatch of the
-session, and removed in a `finally` teardown covering refusals, no-convergence, budget exhaustion and exceptions. The
-first pass clones; every later pass verifies the checkout's `origin` against `HOLON_REPO_URL` (a mismatched or
-unreadable origin is wiped and re-cloned, never fetched from), performs a hermetic reset (`git reset --hard` and
-`git clean -fdx`, discarding reviewer scratch, resolver leftovers and any uncommitted in-container ledger rows), and
-then synchronises incrementally with `git fetch` + `git checkout -B`, picking up resolver pushes without a full network
-clone or container cold-start per pass. A git failure anywhere on that reuse path (for example a crash-poisoned checkout
-with an unborn HEAD or stale `index.lock`) also falls back to wipe and re-clone rather than failing the pass. Canonical
-`ACT-REV`/`ACT-FIND`/`ACT-RES`/`ACT-POST` rows and the summary row remain host-written, so ledger provenance is
-unchanged. Each pass still runs in a fresh `--rm` container with every isolation flag intact — only the workspace
-persists. Set `HOLON_REVIEW_PERSIST=0` to disable persistence and restore the clone-per-pass behaviour; a volume leaked
-by a crashed loop is safe to reuse and prunable via `docker volume prune --filter label=holon.review-session` (the
-persisted `.git/config` keeps the clone's `origin` URL verbatim, so a leaked volume retains any credential embedded in
-`HOLON_REPO_URL` until it is pruned or re-cloned).
+**Review workspace.** Each Stage 4 reviewer-ensemble and resolver pass runs in a fresh `--rm` container that clones the
+review target, with every isolation flag intact. There is no persistent review volume and no persistence switch.
+Canonical `ACT-REV`/`ACT-FIND`/`ACT-RES`/`ACT-POST` rows and the summary row remain host-written. Role dispatch can
+bind-mount a host-provisioned worktree instead (`worktree_mount.resolve_workspace_mount()`, passed as
+`workspace_mount`): the worktree is mounted at the container workspace path and a linked worktree's common git directory
+at its identity path. No stage passes a mount yet, because the container entrypoints still clear and re-clone their
+workspace; Stage 4 keeps cloning per pass until the container-side purge lands.
 
 #### Safety Halt & Merge Boundary
 

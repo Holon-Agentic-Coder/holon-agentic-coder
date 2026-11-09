@@ -472,7 +472,7 @@ every definition against a committed snapshot of the original file (`tests/flow/
 | `flow/github/pr.py`            | Mergeability checks, review git trailers, semantic PR metadata and creating the PR.                         |
 | `flow/github/ci.py`            | Probes CI checks and waits for them to register and settle.                                                 |
 | `flow/github/review_post.py`   | Posts the Stage 4 consensus review to the pull request.                                                     |
-| `flow/review/workspace.py`     | The sandbox guard for reviewer turns and the persistent review session volume.                              |
+| `flow/review/workspace.py`     | The sandbox guard for reviewer turns.                                                                       |
 | `flow/review/records.py`       | Refused-review results, review action rows in the ledger and the reviewer summary line.                     |
 | `flow/review/ensemble.py`      | Dispatches the reviewer ensemble for one review iteration.                                                  |
 | `flow/review/resolver.py`      | The resolver pass: filters adjudicated findings and records finding dispositions.                           |

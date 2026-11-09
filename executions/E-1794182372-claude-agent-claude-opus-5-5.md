@@ -58,3 +58,15 @@ Deviation (fixture only): `test_flow_checkpoint_resumption_flag_overrides` recor
 checkpoint's `target_worktree`. Under acceptance criterion 2 that resume is now correctly rejected, so the fixture runs
 `git init -q` on the directory first. None of the test's assertions changed. Steps 2 and 3 share one function, so they
 were committed together.
+
+### Step 4: Injectable worktree guard on `PipelineEngine`
+
+`PipelineEngine` gained a `worktree_validator` attribute (default `None`) and a `_pre_run_guard_error()` helper that
+returns the existing `SKIP_PUSH_DISPATCH_ERROR` first, then the validator's message for `context.target_worktree`. The
+inline skip-push block in `run()` now calls the helper and keeps the same `_stage_failure()`, halt log and
+no-checkpoint return, with no new `# noqa`. `run_flow_pipeline()` sets `engine.worktree_validator =
+target_worktree_problem`, imported from `sandbox_executor.git_flow`. No entrypoint import was added.
+
+Deviation: the validator is an attribute, not a constructor keyword. A probe confirmed that ruff's `PLR0913` counts
+keyword-only parameters too (`6 > 5`), so the plan's documented class-attribute fallback was used. Direct
+`PipelineEngine(...)` tests are unaffected.

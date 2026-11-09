@@ -7,17 +7,25 @@ Execution of plan `P-1794220535-37b66e75-claude-agent-claude-opus-5-5` for inten
 stacked sub-intent pull requests receive checks, guard the rule with a test, and pin Stage 4 check and mergeability
 resolution for a stacked pull request.
 
-In progress.
+Outcome: all five steps done and all five acceptance criteria met as far as the sandbox can show. The six CI workflows
+no longer filter `pull_request` by base branch, `push` stays on `main`, a guard test pins both rules, and a new test
+module pins Stage 4 check and mergeability resolution for a pull request whose base is a parent intent branch. The audit
+confirmed the planning finding: nothing on the Stage 4 path falls back to `main`, so no source module changed and the
+flow module budgets are untouched. Live GitHub trigger behaviour can only be observed after merge, on the next
+decomposed flow.
+
+Follow-up candidate (out of scope, unchanged): `entrypoint/review_loop.py` and `entrypoint/planner.py` pass
+`target_branch="main"` to `check_and_resolve_stage_conflicts`.
 
 ## Actual Metrics
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.0   |
-| entropy_actual        | 0.0   |
-| impact_actual         | 0.0   |
-| cost_actual           | 0.0   |
-| learning_value_actual | 0.0   |
+| success_actual        | 0.95  |
+| entropy_actual        | 4.5   |
+| impact_actual         | 85.0  |
+| cost_actual           | 12.0  |
+| learning_value_actual | 4.0   |
 
 ## Steps Executed
 
@@ -31,8 +39,8 @@ In progress.
 
 ### Step 2: Standard-library guard test for workflow triggers
 
-- New `apps/sandbox-executor/tests/test_workflow_triggers.py` (only `pathlib`, `re`, `pytest`; no marker, hermetic).
-  It locates `.github/workflows` by walking up from the test file, asserts the file list is non-empty, and reads the
+- New `apps/sandbox-executor/tests/test_workflow_triggers.py` (only `pathlib`, `re`, `pytest`; no marker, hermetic). It
+  locates `.github/workflows` by walking up from the test file, asserts the file list is non-empty, and reads the
   top-level `on:` block with a small indentation-aware reader (block and flow lists, `on: pull_request`,
   `on: [push, pull_request]`, quoted `"on":`, YAML 1.1 `true:`, comments).
 - Guards: no `branches`/`branches-ignore` under `pull_request` or `pull_request_target`; when `push` has `branches`, it
@@ -42,27 +50,26 @@ In progress.
 
 ### Step 3: Confirm and pin Stage 4 check and mergeability resolution for a stacked pull request
 
-- Audit (grep for `main` in `flow/github/ci.py`, `flow/github/pr.py`, `flow/review/*.py`, `flow/stages/review.py`):
-  the planning audit holds. `flow/review/loop.py:215` reads `target_branch` from `context.intent_data` and threads it
-  into `classify_review_diff`, `create_or_update_pr` (`--base`), `check_pr_mergeability` and the ensemble's base ref.
-  The `"main"` literals in `flow/github/pr.py:48,423` are parameter defaults the loop always overrides; `ci.py` probes
-  `gh pr checks <head>` and never names a base. The `"main"` fallbacks for a missing `target_branch` key
-  (`loop.py:215`, `stages/review.py:90,185,213`) apply only when the intent records no target, which decomposition
-  always sets. No source change was needed, so the contingency path was not taken and the flow module budgets are
-  unchanged.
+- Audit (grep for `main` in `flow/github/ci.py`, `flow/github/pr.py`, `flow/review/*.py`, `flow/stages/review.py`): the
+  planning audit holds. `flow/review/loop.py:215` reads `target_branch` from `context.intent_data` and threads it into
+  `classify_review_diff`, `create_or_update_pr` (`--base`), `check_pr_mergeability` and the ensemble's base ref. The
+  `"main"` literals in `flow/github/pr.py:48,423` are parameter defaults the loop always overrides; `ci.py` probes
+  `gh pr checks <head>` and never names a base. The `"main"` fallbacks for a missing `target_branch` key (`loop.py:215`,
+  `stages/review.py:90,185,213`) apply only when the intent records no target, which decomposition always sets. No
+  source change was needed, so the contingency path was not taken and the flow module budgets are unchanged.
 - New `apps/sandbox-executor/tests/test_review_stacked_pr.py` (4 tests):
-  - Test A drives `run_review_loop` end to end with a fake `gh` (`subprocess.run` dispatcher; git calls still run
-    for real), `shutil.which` reporting `gh`, a fake clock and sleep. `gh pr view` first reports no PR, so
+  - Test A drives `run_review_loop` end to end with a fake `gh` (`subprocess.run` dispatcher; git calls still run for
+    real), `shutil.which` reporting `gh`, a fake clock and sleep. `gh pr view` first reports no PR, so
     `gh pr create --base I-1700000000-parent/_` runs; `gh pr checks` fails (not registered), then reports one pending
     check, then all passing. Asserts the `--base`, the empty-diff guard base and the reviewers' base ref are the parent
-    intent branch, no `gh` argument is `main`, at least three check probes, approval with `github_cli` CI, and the
-    Stage 4 summary row in the temporary ledger carries the checks.
-  - Test B builds a real git repository with only the parent intent branch and a stacked child (no `main`), `gh`
-    absent: `MERGEABLE`/`CLEAN`, then after a conflicting parent commit `CONFLICTING`/`DIRTY`.
-  - Test C (parametrised on `main` and the parent branch) shows `probe_ci_checks` returns the same summary whatever
-    the pull request's base.
-- Mutation check: temporarily passing `target_branch="main"` to `create_or_update_pr` in `loop.py` made Test A fail;
-  the source was restored byte-for-byte. Result: `4 passed in 0.08s`.
+    intent branch, no `gh` argument is `main`, at least three check probes, approval with `github_cli` CI, and the Stage
+    4 summary row in the temporary ledger carries the checks.
+  - Test B builds a real git repository with only the parent intent branch and a stacked child (no `main`), `gh` absent:
+    `MERGEABLE`/`CLEAN`, then after a conflicting parent commit `CONFLICTING`/`DIRTY`.
+  - Test C (parametrised on `main` and the parent branch) shows `probe_ci_checks` returns the same summary whatever the
+    pull request's base.
+- Mutation check: temporarily passing `target_branch="main"` to `create_or_update_pr` in `loop.py` made Test A fail; the
+  source was restored byte-for-byte. Result: `4 passed in 0.08s`.
 
 ### Step 4: Document that pull requests into any branch run the CI checks
 
@@ -70,7 +77,30 @@ In progress.
   `docker-build.yml` gained the same trigger statement, and a new "Pull requests into any branch" subsection explains
   stacked sub-intent pull requests, the former `test results not measured` halt, why `push` stays on `main` (no commit
   checked twice), that the timing gate still compares against `main` baselines, and the guard test.
-- `docs/git_flow.md`: the Stage 4 "Unmeasured tests are never a pass" paragraph now states that stacked sub-intent
-  pull requests receive the same checks because every CI workflow runs for pull requests into any base branch.
-- Grep of `docs/` for other "CI runs only on pull requests into `main`" statements found none. Both files formatted
-  with `npx prettier --write`.
+- `docs/git_flow.md`: the Stage 4 "Unmeasured tests are never a pass" paragraph now states that stacked sub-intent pull
+  requests receive the same checks because every CI workflow runs for pull requests into any base branch.
+- Grep of `docs/` for other "CI runs only on pull requests into `main`" statements found none. Both files formatted with
+  `npx prettier --write`.
+
+### Step 5: Verify
+
+- Affected tests, full suite, `lint` and `lint-docs` all pass (see Tests Run). `git diff --stat 3aafec6..HEAD` matches
+  the touch set plus this record; `uv.lock`, `pyproject.toml`, `holon-knowledge/`, `flow_module_budgets.json` and
+  everything under `apps/sandbox-executor/src` are unchanged.
+
+## Tests Run
+
+No repeated runs: the intent states no timing or performance target, so each command ran once on the final commit.
+
+| command                                                                                                                                         | result                                                                  | pytest time |
+| ----------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | ----------- |
+| `uv run pytest apps/sandbox-executor/tests/test_workflow_triggers.py` (pre-change workflows, fail-first)                                        | `6 failed, 16 passed`                                                   | `0.03s`     |
+| `uv run pytest apps/sandbox-executor/tests/test_workflow_triggers.py`                                                                           | `22 passed`                                                             | `0.02s`     |
+| `uv run pytest apps/sandbox-executor/tests/test_review_stacked_pr.py`                                                                           | `4 passed`                                                              | `0.08s`     |
+| `uv run pytest apps/sandbox-executor/tests/test_review_stacked_pr.py` (mutation: `create_or_update_pr` given `main`)                            | `1 failed, 3 passed`                                                    | `0.08s`     |
+| `uv run pytest <stacked, triggers, test_review_loop.py, test_ci_timing_gate.py, tests/flow/github, tests/flow/review> -n auto --dist worksteal` | `283 passed`                                                            | `2.19s`     |
+| `uv run task test` (full unit suite, once)                                                                                                      | `3368 passed`, 8 warnings                                               | `30.80s`    |
+| `uv run task lint`                                                                                                                              | pass (lockfile, ruff check, ruff format, 28 flow modules within budget) | n/a         |
+| `uv run task lint-docs`                                                                                                                         | pass after formatting this record                                       | n/a         |
+
+Median of the single full-suite run: `30.80s`.

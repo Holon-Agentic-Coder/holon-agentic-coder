@@ -8,6 +8,7 @@ provisioning for autonomous pipeline runs:
 - prune_worktrees: Prune stale worktree administrative records.
 - derive_worktree_layout: Determine target worktree path and branch name from a slug.
 - ensure_worktree: Provision or attach an isolated worktree directory for a flow run.
+- target_worktree_problem: Explain, actionably, why a path is not a usable flow target worktree.
 """
 
 from __future__ import annotations
@@ -27,7 +28,14 @@ __all__ = [
     "is_bare_repository",
     "is_working_tree",
     "prune_worktrees",
+    "target_worktree_problem",
 ]
+
+TARGET_WORKTREE_PROBLEM_TEMPLATE: str = (
+    "{subject} '{path}' {reason}. holon flow needs --target-worktree to be an attached, non-bare git worktree "
+    "because Stages 4 and 5 run host git operations in it. Create one with 'git worktree add <path> <branch>' "
+    "from your repository, or pass a bare clone as --target-worktree to auto-provision one{hint}."
+)
 
 
 def is_bare_repository(target_worktree: str) -> bool:
@@ -216,3 +224,45 @@ def ensure_worktree(target_worktree: str, slug: str, target_branch: str = "origi
         logger.info("Attached worktree at '%s' to existing branch '%s'", worktree_path, branch_name)
 
     return os.path.abspath(worktree_path)
+
+
+def _target_worktree_reason(target_worktree: str) -> str | None:
+    """Return why target_worktree is not an attached, non-bare git working tree, or None when it is."""
+    if not target_worktree or not os.path.exists(target_worktree):
+        return "does not exist (it may have been deleted)"
+    if not os.path.isdir(target_worktree):
+        return "is not a directory"
+    if is_bare_repository(target_worktree):
+        return "is a bare repository with no working tree"
+    if not is_working_tree(target_worktree):
+        return "is not inside a git working tree"
+    return None
+
+
+def target_worktree_problem(
+    target_worktree: str,
+    subject: str = "Target worktree",
+    hint: str = "",
+) -> str | None:
+    """Explain why a path cannot serve as the target worktree of a flow run.
+
+    Only read-only 'git rev-parse' queries are issued; nothing is created, pruned or modified.
+
+    Args:
+        target_worktree: Path to validate (a subdirectory of a worktree is accepted).
+        subject: Leading noun phrase naming where the path came from (default: 'Target worktree').
+        hint: Optional extra remedy appended to the message, starting with a conjunction (e.g. ', or ...').
+
+    Returns:
+        str | None: None when the path is an attached, non-bare git working tree, otherwise one actionable
+            error message naming the absolute path, the reason and how to fix it.
+    """
+    reason = _target_worktree_reason(target_worktree)
+    if reason is None:
+        return None
+    return TARGET_WORKTREE_PROBLEM_TEMPLATE.format(
+        subject=subject,
+        path=os.path.abspath(target_worktree) if target_worktree else "",
+        reason=reason,
+        hint=hint,
+    )

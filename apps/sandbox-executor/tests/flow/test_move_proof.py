@@ -66,6 +66,19 @@ def test_each_declared_addition_is_defined_once_in_its_declared_module():
     assert all(entry.get("reason") for entry in added.values())
 
 
+def test_amended_and_removed_declarations_match_the_package():
+    """Amendments name live definitions with a reason; a removal names a definition that is really gone."""
+    snapshot = load_snapshot()
+    found = package_definitions()
+    amended: dict[str, str] = snapshot.get("amended_definitions", {})
+    removed: dict[str, str] = snapshot.get("removed_definitions", {})
+
+    assert sorted(set(amended) - set(snapshot["definitions"]) - set(found)) == []
+    assert sorted(key for key in removed if key in found) == [], "a declared removal is still defined"
+    assert sorted(set(removed) & set(snapshot["definitions"])) == [], "a removed definition keeps its digest"
+    assert all(amended.values()) and all(removed.values())
+
+
 def test_package_plumbing_is_only_loggers_reexports_and_the_late_binding():
     for module_path, tree in package_modules().items():
         for node in tree.body:

@@ -1,6 +1,6 @@
-"""Stage 4 check and mergeability resolution for a stacked pull request whose base is a parent intent branch.
+"""Stage 4 check and mergeability resolution for a stacked pull request whose base is a plan branch.
 
-A decomposed plan runs child intents whose pull requests target the parent intent branch, not ``main``. These tests pin
+A decomposed plan runs child intents whose pull requests target the plan branch, not ``main``. These tests pin
 that the review loop opens the pull request against that branch, evaluates mergeability against it (through ``gh`` and
 through the local git fallback, in a repository with no ``main`` at all), waits for CI checks to register and settle,
 and records them, without ever naming ``main``. No real ``gh``, network or clock is used.

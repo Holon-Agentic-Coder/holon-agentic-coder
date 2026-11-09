@@ -1383,7 +1383,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         if not plan_data:
             plan_data = {
                 "plan_id": plan_branch_prefix.split("/")[-1],
-                "intent_branch": plan_branch_prefix.split("/P-")[0] + "/_",
+                "intent_branch": plan_branch_prefix.rsplit("/", 1)[0] + "/_",
                 "agent": agent_name,
                 "model": model_name,
                 "entropy": 3.0,

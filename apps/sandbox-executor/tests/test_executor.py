@@ -4337,8 +4337,13 @@ def test_should_decompose_ignores_per_step_recommendation_bullets():
     assert decision.sub_intents == []
 
 
-def _run_executor_main(
-    tmp_path, plan_row: dict, plan_md: str | None, intent_row: dict, commands: list | None = None
+def _run_executor_main(  # noqa: PLR0913
+    tmp_path,
+    plan_row: dict,
+    plan_md: str | None,
+    intent_row: dict,
+    commands: list | None = None,
+    plan_branch: str = "I-456/P-123/_",
 ) -> list[dict]:
     """Run executor.main() with mocked git and runner; return the executions.jsonl rows it wrote.
 
@@ -4375,7 +4380,7 @@ def _run_executor_main(
         patch("sandbox_executor.entrypoint.executor.get_runner", return_value=runner),
         patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value="/mock/repo"),
         patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
-        patch("sys.argv", ["executor.py", "I-456/P-123/_", "claude-agent", "claude-opus-5-5"]),
+        patch("sys.argv", ["executor.py", plan_branch, "claude-agent", "claude-opus-5-5"]),
     ):
         exit_code = 0
         try:
@@ -4415,6 +4420,17 @@ def test_main_over_budget_without_a_plan_row_judges_the_fallback_entropy_against
 
     (summary,) = [r for r in rows if r.get("entry_type") == "summary"]
     assert (summary["status"], summary["entropy"], summary["entropy_budget"]) == ("over_budget", 3.0, 2.0)
+
+
+def test_main_fallback_plan_of_a_nested_child_derives_the_child_intent_branch(tmp_path):
+    # A child's plan branch is I-456/P-9--1-child/P-999/_, so its intent branch is I-456/P-9--1-child, not I-456.
+    plan_row = {"plan_id": "P-000", "intent_branch": "I-456/_", "entropy": 1.0}
+    intent_row = {"branch": "I-456/P-9--1-child", "slug": "child", "entropy_budget": 2.0}
+
+    rows = _run_executor_main(tmp_path, plan_row, None, intent_row, plan_branch="I-456/P-9--1-child/P-999/_")
+
+    (summary,) = [r for r in rows if r.get("entry_type") == "summary"]
+    assert (summary["status"], summary["entropy_budget"]) == ("over_budget", 2.0)
 
 
 @pytest.mark.parametrize(

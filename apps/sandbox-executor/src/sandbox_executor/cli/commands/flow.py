@@ -21,6 +21,7 @@ from sandbox_executor.cli.options import (
 )
 from sandbox_executor.flow import FlowContext, FlowStage
 from sandbox_executor.git_flow import (
+    derive_worktree_layout,
     ensure_worktree,
     is_bare_repository,
     is_working_tree,
@@ -352,16 +353,32 @@ def _effective_flow_target(args: argparse.Namespace, context: Any | None) -> tup
     return explicit or ".", False
 
 
-def _should_provision(target_worktree: str, from_checkpoint: bool) -> bool:
-    """Return True for the auto-provisioned cases: a bare clone, or an absent CLI target.
+def _nearest_existing_parent(path: str) -> str:
+    """Return the closest existing ancestor directory of path."""
+    current = os.path.dirname(os.path.abspath(path))
+    while not os.path.exists(current) and os.path.dirname(current) != current:
+        current = os.path.dirname(current)
+    return current
+
+
+def _should_provision(target_worktree: str, from_checkpoint: bool, slug: str) -> bool:
+    """Return True for the auto-provisioned cases: a bare clone, or an absent CLI target that is safe to provision.
 
     A plain non-git directory is never provisioned, because the base repository lookup would otherwise fall back to
-    the current working directory's repository. An absent checkpoint target is not re-provisioned either, so that a
-    removed run worktree is reported rather than silently replaced.
+    the current working directory's repository. For the same reason an absent CLI target is provisioned only when it
+    is the derived ``flow-<slug>`` path or its nearest existing parent lies inside a git repository, so a deleted or
+    mistyped path fails fast instead. An absent checkpoint target is not re-provisioned either, so that a removed run
+    worktree is reported rather than silently replaced.
     """
     if is_bare_repository(target_worktree):
         return True
-    return not from_checkpoint and not os.path.exists(target_worktree)
+    if from_checkpoint or os.path.exists(target_worktree):
+        return False
+    derived_path, _ = derive_worktree_layout(target_worktree, slug)
+    if derived_path == os.path.normpath(os.path.realpath(target_worktree)):
+        return True
+    parent = _nearest_existing_parent(target_worktree)
+    return is_working_tree(parent) or is_bare_repository(parent)
 
 
 def _provision_flow_worktree(
@@ -412,7 +429,7 @@ def _ensure_flow_worktree(
         return True
 
     resolved, provision_hint = target_worktree, ""
-    if _should_provision(target_worktree, from_checkpoint):
+    if _should_provision(target_worktree, from_checkpoint, _extract_flow_slug(args, context, intent_data)):
         resolved, provision_hint = _provision_flow_worktree(
             args, context, intent_data, target_worktree, from_checkpoint
         )

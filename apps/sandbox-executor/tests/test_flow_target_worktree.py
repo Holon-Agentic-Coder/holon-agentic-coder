@@ -204,6 +204,57 @@ def test_flow_rejects_deleted_target_worktree(repos: dict[str, Path]) -> None:
     assert _flow_siblings(deleted) == []
 
 
+def _worktree_names(repo: Path) -> list[str]:
+    out = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=str(repo), check=True, capture_output=True)
+    lines = out.stdout.decode().splitlines()
+    return sorted(os.path.basename(line.split(" ", 1)[1]) for line in lines if line.startswith("worktree "))
+
+
+def test_flow_rejects_deleted_target_worktree_with_cwd_inside_a_repo(
+    repos: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(repos["src"])
+    before = _worktree_names(repos["src"])
+    deleted = repos["root"] / "deleted"
+
+    pipeline, exit_mock, stderr = _run_flow(
+        [str(repos["intent"]), *_FLOW_RUNNER_ARGS, "--target-worktree", str(deleted)]
+    )
+
+    exit_mock.assert_called_once_with(1)
+    pipeline.assert_not_called()
+    assert f"Target worktree '{deleted}' does not exist" in stderr
+    assert _flow_siblings(deleted) == []
+    assert _worktree_names(repos["src"]) == before
+
+
+def test_flow_provisions_absent_derived_flow_target(repos: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(repos["src"])
+    derived = repos["root"] / "flow-wt-check"
+
+    pipeline, exit_mock, stderr = _run_flow(
+        [str(repos["intent"]), *_FLOW_RUNNER_ARGS, "--target-worktree", str(derived)]
+    )
+
+    pipeline.assert_called_once()
+    assert os.path.realpath(pipeline.call_args[1]["context"].target_worktree) == os.path.realpath(derived)
+    assert is_working_tree(str(derived))
+    exit_mock.assert_called_with(0)
+    assert "Error:" not in stderr
+
+
+def test_flow_provisions_absent_target_under_a_repo(repos: dict[str, Path]) -> None:
+    missing = repos["src"] / "missing"
+
+    pipeline, exit_mock, _ = _run_flow([str(repos["intent"]), *_FLOW_RUNNER_ARGS, "--target-worktree", str(missing)])
+
+    pipeline.assert_called_once()
+    target = pipeline.call_args[1]["context"].target_worktree
+    assert os.path.basename(target) == "flow-wt-check"
+    assert is_working_tree(target)
+    exit_mock.assert_called_with(0)
+
+
 def test_flow_reports_the_provisioning_error_for_a_bare_target(repos: dict[str, Path]) -> None:
     with patch("sandbox_executor.cli.commands.flow.ensure_worktree", side_effect=RuntimeError("worktree add exploded")):
         pipeline, exit_mock, stderr = _run_flow(

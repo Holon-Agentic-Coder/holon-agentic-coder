@@ -185,12 +185,8 @@ from sandbox_executor.flow.stages.execute import (
     run_execute_stage,
 )
 from sandbox_executor.flow.stages.intent import _reused_intent_conflict, run_intent_stage
-from sandbox_executor.flow.stages.plan import (
-    _format_entropy,
-    _over_budget_failure,
-    _plan_budget_decision,
-    run_plan_stage,
-)
+from sandbox_executor.flow.stages.plan import _format_entropy, run_plan_stage
+from sandbox_executor.flow.stages.plan_decision import _over_budget_failure, _plan_budget_decision
 from sandbox_executor.flow.stages.review import (
     REVIEW_GIT_ENV,
     TESTS_NOT_MEASURED_ERROR,

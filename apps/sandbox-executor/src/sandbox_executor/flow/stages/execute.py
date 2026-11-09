@@ -31,7 +31,7 @@ from sandbox_executor.flow.git_refs import (
 )
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.stages.decomposition import _run_decomposed_plan, _sub_intent_depth_error
-from sandbox_executor.flow.stages.plan import _over_budget_failure, _plan_budget_decision
+from sandbox_executor.flow.stages.plan_decision import _over_budget_failure, _plan_budget_decision
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.git import EMPTY_DIFF_FAILURE_REASON, EMPTY_DIFF_STATUS, changed_paths, empty_diff_summary
 from sandbox_executor.knowledge import ActionIndexDatabase, CredentialRedactor, compute_context_fingerprint

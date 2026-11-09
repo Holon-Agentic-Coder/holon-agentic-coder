@@ -48,3 +48,20 @@ In progress.
   equal to `parse_sub_intent_list` of the committed file; a prettier re-wrap is reflected in the recorded description;
   over budget recorded). The harness gained an optional `converge_side_effect`. `test_planner_integration.py` needed no
   change.
+
+### Step 3: `flow/stages/plan_decision.py` reads the recorded decision and back-fills older rows once
+
+- New module (`177` lines before final formatting): `_plan_budget_decision` reads the newest matching plan row (as
+  before) and returns `DecompositionDecision.from_plan_row(row)` when the row records a decision; an
+  `InvalidPlanDecisionError` becomes `PlanDecisionError` (Stage 3 fails before dispatch). An older-image row is decided
+  with `should_decompose` and `_backfill_plan_decision` appends one superseding row (planner row plus
+  `to_plan_fields()`, `ledger_revision` + 1, fresh `created_at`, `decision_recorded_by: "flow"`) through
+  `_append_superseding_plan_row`: a temporary detached worktree on `refs/remotes/origin/<plan_branch>`,
+  `atomic_ledger_append`, `validate_ledger_file_unique_ids`, commit, push to the plan branch only, then
+  `_sync_local_execution_refs`. A failed write is logged, a `LedgerRewriteError` propagates.
+- `_over_budget_failure` moved verbatim (same AST); `_decomposition_record` returns the unchanged
+  `{sub_intents, entropy_budget, plan_branch}` contract of `_run_decomposed_plan`.
+- `stages/plan.py` lost the two functions and the entrypoint import (it no longer imports
+  `sandbox_executor.entrypoint.executor`); `_format_entropy` stays for `pipeline.py`. `flow/__init__.py` and
+  `stages/execute.py` import the moved names from `plan_decision`. Flow tests that patched helpers at
+  `stages.plan` are re-pointed in Step 5.

@@ -1,5 +1,5 @@
 {
-  "description": "ast.dump digests (sha256, without attributes) of every definition in the original apps/sandbox-executor/src/sandbox_executor/flow.py, keyed by qualified name; checked by test_move_proof.py. Keys in 'amended_definitions' were refreshed after a later, deliberate behaviour change; the value names the execution and the reason.",
+  "description": "ast.dump digests (sha256, without attributes) of every definition in the original apps/sandbox-executor/src/sandbox_executor/flow.py, keyed by qualified name; checked by test_move_proof.py. Keys in 'amended_definitions' were refreshed after a later, deliberate behaviour change; the value names the execution and the reason. Keys in 'added_definitions' are definitions created after the split, each with the module that must define it and the execution and reason; they are excluded from the 'extra' check. Keys in 'removed_definitions' were deleted deliberately and are no longer expected.",
   "source_blob": "aa8d5f19a171ce97e8dd5ecf598a57fe86f976c3",
   "python": "3.13",
   "definitions": {
@@ -188,5 +188,35 @@
     "_dispatch_review_resolver": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result",
     "_invoke_resolver_pass": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result",
     "_run_review_loop_iterations": "E-1794206943-d5c00585 (I-1794205862-resolver-commits-locally-skip-push-fix): verify resolver_outcome.pushed is True before advancing review target and recording applied dispositions"
+  },
+  "added_definitions": {
+    "<const>:LEDGER_DIR_PREFIX": {
+      "module": "ledger_interleave.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): ledger-only merge conflicts are resolved by interleaving both sides' appended rows on created_at behind the untouched merge-base prefix"
+    },
+    "_appended_tail": {
+      "module": "ledger_interleave.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): ledger-only merge conflicts are resolved by interleaving both sides' appended rows on created_at behind the untouched merge-base prefix"
+    },
+    "_created_at_key": {
+      "module": "ledger_interleave.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): ledger-only merge conflicts are resolved by interleaving both sides' appended rows on created_at behind the untouched merge-base prefix"
+    },
+    "_precedes": {
+      "module": "ledger_interleave.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): ledger-only merge conflicts are resolved by interleaving both sides' appended rows on created_at behind the untouched merge-base prefix"
+    },
+    "_staged_lines": {
+      "module": "ledger_interleave.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): ledger-only merge conflicts are resolved by interleaving both sides' appended rows on created_at behind the untouched merge-base prefix"
+    },
+    "interleave_ledger_rows": {
+      "module": "ledger_interleave.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): ledger-only merge conflicts are resolved by interleaving both sides' appended rows on created_at behind the untouched merge-base prefix"
+    },
+    "resolve_ledger_only_conflicts": {
+      "module": "ledger_interleave.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): ledger-only merge conflicts are resolved by interleaving both sides' appended rows on created_at behind the untouched merge-base prefix"
+    }
   }
 }

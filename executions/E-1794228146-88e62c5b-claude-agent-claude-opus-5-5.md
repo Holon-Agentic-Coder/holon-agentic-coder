@@ -48,3 +48,21 @@ parent executor or a child.
   `tests/flow/test_package_exports.py` (late binding on `decomposition`), `tests/test_cli.py` (decomposed summary
   wording) and `tests/flow/fixtures/flow_py_definitions.json` with `tests/flow/move_proof.py`.
 - Abort criteria not met: Stage 4 targets any branch and the hook fits the freed lines, so the plan continues.
+
+### Step 2: `flow/ledger_interleave.py` for ledger-only merge conflicts
+
+- `interleave_ledger_rows(base, ours, theirs)`: refuses (with `ConflictResolutionError` from `ledger_reconcile`) a side
+  that does not start with the merge-base rows; keeps the base rows as a byte-identical prefix; merges the two appended
+  tails like a merge step, so each side keeps its own order (a deviation from a full stable sort, which could reorder
+  rows within one side's tail), the earlier `created_at` goes first, ours wins a tie, and a row without a parsable
+  `created_at` waits for the other side's timed rows; a row already kept is never repeated.
+- `resolve_ledger_only_conflicts(repo_dir)`: returns False when nothing conflicts, when any unmerged path is outside
+  `holon-knowledge/ledger/*.jsonl` or when a ledger conflict is not a pure append; otherwise writes the interleaved
+  rows from index stages 1, 2 and 3 and stages them.
+- Tests: `tests/flow/test_ledger_interleave.py` (10 tests, including a real two-branch repository with a conflicting
+  `executions.jsonl`, and a non-ledger conflict left unresolved for the caller).
+- Move proof: `tests/flow/test_move_proof.py` now reads an `added_definitions` map from the fixture (excluded from
+  "extra"; a new test checks each declared addition is defined once in its declared module and carries a reason);
+  this module's seven definitions are declared there. Budget entry `ledger_interleave.py: 112`.
+- `uv run pytest apps/sandbox-executor/tests/flow -n auto --dist worksteal`: 515 passed in `5.05s`; `ruff check`,
+  `ruff format --check` and the budget script pass.

@@ -27,10 +27,13 @@ def test_snapshot_covers_every_flow_py_definition():
 
 def test_every_definition_moved_unchanged():
     expected: dict[str, str] = load_snapshot()["definitions"]
+    added = load_snapshot().get("added_definitions", {})
     found = package_definitions()
 
     missing = sorted(set(expected) - set(found))
-    extra = sorted(f"{key} ({', '.join(path for path, _ in found[key])})" for key in set(found) - set(expected))
+    extra = sorted(
+        f"{key} ({', '.join(path for path, _ in found[key])})" for key in set(found) - set(expected) - set(added)
+    )
     duplicated = sorted(
         f"{key} ({', '.join(path for path, _ in sites)})" for key, sites in found.items() if len(sites) > 1
     )
@@ -48,6 +51,21 @@ def test_every_definition_moved_unchanged():
     assert differing == [], f"definitions whose body changed: {differing}"
 
 
+def test_each_declared_addition_is_defined_once_in_its_declared_module():
+    """A definition added after the split is declared with its module, so a stale or misplaced entry fails."""
+    added: dict[str, dict[str, str]] = load_snapshot().get("added_definitions", {})
+    found = package_definitions()
+
+    misplaced = sorted(
+        key for key, entry in added.items() if [path for path, _ in found.get(key, [])] != [entry["module"]]
+    )
+    overlapping = sorted(set(added) & set(load_snapshot()["definitions"]))
+
+    assert misplaced == [], f"declared additions missing or not in their declared module: {misplaced}"
+    assert overlapping == [], f"declared additions that are also original flow.py definitions: {overlapping}"
+    assert all(entry.get("reason") for entry in added.values())
+
+
 def test_package_plumbing_is_only_loggers_reexports_and_the_late_binding():
     for module_path, tree in package_modules().items():
         for node in tree.body:
@@ -55,6 +73,7 @@ def test_package_plumbing_is_only_loggers_reexports_and_the_late_binding():
                 assert ast.unparse(node) == LOGGER_SOURCE, module_path
             if isinstance(node, ast.Assign | ast.AnnAssign) and assign_key(node) in {
                 "<const>:__all__",
+                "<const>:_children.PipelineEngine",
                 "<const>:_decomposition.PipelineEngine",
             }:
                 assert module_path == "__init__.py", module_path

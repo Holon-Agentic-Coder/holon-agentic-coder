@@ -48,3 +48,15 @@ refuses relative paths, commas, paths under `/home/holon` and image system direc
 directories, worktree subdirectories, detached heads, the default-branch worktree and unregistered git directories,
 and warns on Linux when the worktree owner uid is not 1000. `tests/test_worktree_mount.py` covers test (a) with 16
 hermetic cases.
+
+### Step 3: `workspace_mount` on `run_docker_container` and `dispatch_role_agent`
+
+`review_workspace_volume: str | None` became `workspace_mount: WorktreeMount | None` on both functions. A mount adds
+the `docker_mount_args` bind mounts, pins `HOLON_TARGET_WORKTREE` to `mount.container_workspace` and appends
+`git_config_entries` after the credential entries. The `GIT_CONFIG_*` block now goes through a new
+`cli.git_config_env(entries)` helper, which emits the same variables in the same order as before, so no credential
+test changed and the existing `noqa` on `run_docker_container` was not widened. The unused `SANDBOX_WORKSPACE_MOUNT`
+import left `cli/__init__.py`. In `tests/test_cli.py` the two `review_workspace_volume` tests were replaced by four
+`workspace_mount` tests: byte-identical argv for `None`, each bind mount exactly once with the isolation argv otherwise
+unchanged and no `volume`/`chown`, a forwarded host `HOLON_TARGET_WORKTREE` overridden, and contiguous
+`GIT_CONFIG_COUNT=6` with entries 0 and 1 still the scoped credential helper when a token is present.

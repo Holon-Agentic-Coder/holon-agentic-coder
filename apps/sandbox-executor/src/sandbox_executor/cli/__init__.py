@@ -35,7 +35,6 @@ from sandbox_executor.agent_defaults import (
     resolve_agent_runner,
     resolve_model,
 )
-from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
 from sandbox_executor.budgets import stage_budget_handdown_env
 from sandbox_executor.calibration import run_calibrate
 from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
@@ -80,6 +79,7 @@ from sandbox_executor.redaction import (
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 from sandbox_executor.scaffold import init_project
 from sandbox_executor.token_reduction import generate_root_ca
+from sandbox_executor.worktree_mount import WorktreeMount, docker_mount_args, git_config_entries
 
 logger = logging.getLogger(__name__)
 
@@ -1377,6 +1377,24 @@ def is_secret_env_item(key: str, value: str) -> bool:
     return is_secret_env_name(key) or redact_command([item]) != item or carries_url_password(value)
 
 
+def git_config_env(entries: list[tuple[str, str]]) -> dict[str, str]:
+    """Return ``GIT_CONFIG_COUNT``/``GIT_CONFIG_KEY_<n>``/``GIT_CONFIG_VALUE_<n>`` for runtime-only git config.
+
+    Args:
+        entries: ``(key, value)`` pairs in the order git should apply them.
+
+    Returns:
+        dict[str, str]: The variables in insertion order (count first), with contiguous indices; empty for no entries.
+    """
+    if not entries:
+        return {}
+    env = {"GIT_CONFIG_COUNT": str(len(entries))}
+    for index, (key, value) in enumerate(entries):
+        env[f"GIT_CONFIG_KEY_{index}"] = key
+        env[f"GIT_CONFIG_VALUE_{index}"] = value
+    return env
+
+
 def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
     role: str,
     image_name: str,
@@ -1387,14 +1405,14 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
     mitm_web: bool = False,
     target_worktree: str | None = None,
     result_file: str | None = None,
-    review_workspace_volume: str | None = None,
+    workspace_mount: WorktreeMount | None = None,
 ) -> int:
     """Constructs docker run command with auto-discovered credentials and executes it.
 
-    ``review_workspace_volume`` names the persistent Stage 4 review workspace volume; when set, exactly
-    one ``-v`` mount at the sandbox workspace path is added (and ``HOLON_TARGET_WORKTREE`` pinned to the
-    same path so the entrypoint's workspace cannot drift from the mountpoint); the rest of the command,
-    including every isolation flag, is unchanged.
+    ``workspace_mount`` is a validated host worktree; when set, its ``--mount type=bind`` arguments are added,
+    ``HOLON_TARGET_WORKTREE`` is pinned to the container workspace (so the entrypoint's disposable-workspace cleanup
+    can never run on the bind mount) and its protective git config follows the credential entries in
+    ``GIT_CONFIG_COUNT``; the rest of the command, including every isolation flag, is unchanged.
     """
     if not shutil.which("docker"):
         print("Error: 'docker' CLI command not found. Please install Docker.", file=sys.stderr)
@@ -1443,11 +1461,11 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
 
     env_to_forward["HOLON_REPO_URL"] = resolved_repo_url
 
-    # With a persistent review workspace mounted, pin the container workspace to the mountpoint so the
-    # entrypoint's get_workspace_dir() (which honours a forwarded HOLON_TARGET_WORKTREE first) can never
-    # resolve to a path outside the volume.
-    if review_workspace_volume:
-        env_to_forward["HOLON_TARGET_WORKTREE"] = SANDBOX_WORKSPACE_MOUNT
+    # With a host worktree mounted, pin the container workspace to the mountpoint so the entrypoint's
+    # get_workspace_dir() (which honours a forwarded HOLON_TARGET_WORKTREE first) can never resolve to a path
+    # outside the mount, and the executor's cleanup of an unpinned workspace never fires on it.
+    if workspace_mount is not None:
+        env_to_forward["HOLON_TARGET_WORKTREE"] = workspace_mount.container_workspace
 
     norm_agent_id = local_llm.normalize_agent_id(agent_id)
 
@@ -1470,15 +1488,16 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
     # for: a remote built from origin, or an override URL that carried it. Entry 0 resets any
     # inherited helpers for that host. The entries go through the same classifier as every other
     # variable: the helper's literal `password=` text sends it to the env-file, although it holds only
-    # the `$GITHUB_TOKEN` reference.
+    # the `$GITHUB_TOKEN` reference. A mounted worktree's protective entries follow the credential ones.
     helper_host = credential_host(resolved_repo_url)
+    config_entries: list[tuple[str, str]] = []
     if gh_token and helper_host and (not override_url or embedded_token):
         helper_key = f"credential.https://{helper_host}.helper"
-        add_env("GIT_CONFIG_COUNT", "2")
-        add_env("GIT_CONFIG_KEY_0", helper_key)
-        add_env("GIT_CONFIG_VALUE_0", "")
-        add_env("GIT_CONFIG_KEY_1", helper_key)
-        add_env("GIT_CONFIG_VALUE_1", GIT_CREDENTIAL_HELPER)
+        config_entries += [(helper_key, ""), (helper_key, GIT_CREDENTIAL_HELPER)]
+    if workspace_mount is not None:
+        config_entries += git_config_entries(workspace_mount)
+    for key, value in git_config_env(config_entries).items():
+        add_env(key, value)
 
     # SSH Agent Socket Mounts
     ssh_mounts, ssh_envs = get_ssh_auth_mounts()
@@ -1577,11 +1596,10 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
             abs_result = os.path.abspath(result_file)
             docker_cmd.extend(["-v", f"{abs_result}:/tmp/review_result.json"])
 
-        # Persistent Stage 4 review workspace: one named volume per review session, mounted at the
-        # sandbox workspace path so later passes of the same session reuse the first pass's checkout
-        # (never a host bind: the host filesystem exposure is unchanged).
-        if review_workspace_volume:
-            docker_cmd.extend(["-v", f"{review_workspace_volume}:{SANDBOX_WORKSPACE_MOUNT}"])
+        # Host-provisioned worktree: bind mounts at the container workspace and at the host paths its git
+        # plumbing points to (see sandbox_executor.worktree_mount).
+        if workspace_mount is not None:
+            docker_cmd.extend(docker_mount_args(workspace_mount))
 
         # Auto-detect Session Mounts
         session_mounts = get_agent_session_mounts(agent_id)
@@ -1801,7 +1819,7 @@ def dispatch_role_agent(  # noqa: PLR0913
     result_file: str | None = None,
     token_reduce: bool = False,
     mitm_web: bool = False,
-    review_workspace_volume: str | None = None,
+    workspace_mount: WorktreeMount | None = None,
 ) -> int:
     """Launch the containerised role agent shared by 'holon intent|plan|execute' and 'holon flow'.
 
@@ -1819,8 +1837,8 @@ def dispatch_role_agent(  # noqa: PLR0913
         result_file: Structured outcome payload path for container-to-host result transport.
         token_reduce: Whether to route container traffic through the token reduction proxy.
         mitm_web: Whether to start the proxy with the mitmweb interface.
-        review_workspace_volume: Persistent Stage 4 review workspace volume to mount at the sandbox
-            workspace path; only the review-loop dispatches of one Stage 4 session pass this.
+        workspace_mount: Validated host worktree to bind-mount at the sandbox workspace path; None keeps the
+            container's own ephemeral workspace.
 
     Returns:
         int: Container exit code (non-zero on failure).
@@ -1838,8 +1856,8 @@ def dispatch_role_agent(  # noqa: PLR0913
         kwargs["target_worktree"] = target_worktree
     if result_file:
         kwargs["result_file"] = result_file
-    if review_workspace_volume:
-        kwargs["review_workspace_volume"] = review_workspace_volume
+    if workspace_mount is not None:
+        kwargs["workspace_mount"] = workspace_mount
     image_name = resolve_role_image(role, kwargs["agent_id"])
     return run_docker_container(role, image_name, list(positional_args), **kwargs)
 

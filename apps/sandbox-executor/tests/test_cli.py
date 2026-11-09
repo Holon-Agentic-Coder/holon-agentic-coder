@@ -2,6 +2,7 @@ import argparse
 import copy
 import importlib.metadata
 import io
+import itertools
 import json
 import os
 import secrets
@@ -27,6 +28,7 @@ from sandbox_executor.cli import (
     strip_url_credentials,
 )
 from sandbox_executor.flow import SKIP_PUSH_DISPATCH_ERROR, FlowContext
+from sandbox_executor.worktree_mount import WorktreeMount, git_config_entries
 
 from tests.leak_assertions import (
     CREDENTIAL_FREE_URLS,
@@ -2347,10 +2349,11 @@ def _remove_argv_pair(argv: list[str], pair: list[str]) -> list[str]:
     raise AssertionError(f"expected pair {pair} in docker argv: {argv}")
 
 
-def test_review_workspace_volume_adds_exactly_one_mount_and_pins_the_worktree():
-    """With a volume the argv gains one `-v` mount and the pinned worktree env; without one it is identical."""
-    from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
+_MOUNT = WorktreeMount(host_worktree="/srv/wt/flow-x", git_common_dir="/srv/wt/main/.git")
 
+
+def _record_docker_runs(**run_kwargs) -> list[list[str]]:
+    """Run a review-loop container once per kwargs set with docker recorded, and return each argv."""
     captured: list[list[str]] = []
 
     def record_run(cmd, *args, **kwargs):
@@ -2362,66 +2365,98 @@ def test_review_workspace_volume_adds_exactly_one_mount_and_pins_the_worktree():
         patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"]),
         patch("subprocess.run", side_effect=record_run),
         patch("shutil.which", return_value="/usr/bin/docker"),
-        patch.dict(os.environ, {}, clear=True),
+        patch.dict(os.environ, run_kwargs.pop("environ", {}), clear=True),
     ):
-        args = ["branch", "fake-agent", "fake-model"]
-        assert run_docker_container("review-loop", "holon/agent-claude", list(args), agent_id="claude") == 0
-        assert (
-            run_docker_container(
-                "review-loop",
-                "holon/agent-claude",
-                list(args),
-                agent_id="claude",
-                review_workspace_volume="holon-review-ws-abc123",
-            )
-            == 0
-        )
-
-    baseline, with_volume = captured
-    # Guard every isolation flag: removing the one mount and the pinned worktree variable restores the
-    # baseline argv byte for byte, so nothing else (``--rm``, ``--cap-drop=ALL``,
-    # ``--security-opt=no-new-privileges``, metadata sinkholes, mounts, env forwarding) changed.
-    reduced = _remove_argv_pair(with_volume, ["-v", f"holon-review-ws-abc123:{SANDBOX_WORKSPACE_MOUNT}"])
-    reduced = _remove_argv_pair(reduced, ["-e", f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"])
-    assert reduced == baseline
-    assert "--rm" in with_volume
-    assert "--cap-drop=ALL" in with_volume
-    assert "--security-opt=no-new-privileges" in with_volume
-    # A host HOLON_TARGET_WORKTREE cannot displace the pinned container workspace path.
-    assert [a for a in with_volume if a.startswith("HOLON_TARGET_WORKTREE=")] == [
-        f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"
-    ]
+        for kwargs in run_kwargs.pop("runs"):
+            args = ["branch", "fake-agent", "fake-model"]
+            assert run_docker_container("review-loop", "holon/agent-claude", args, agent_id="claude", **kwargs) == 0
+    return captured
 
 
-def test_review_workspace_volume_overrides_a_forwarded_host_worktree():
-    """A forwarded host HOLON_TARGET_WORKTREE is replaced by the mountpoint when a volume is supplied."""
+def _argv_env(argv: list[str]) -> dict[str, str]:
+    """The variables passed with `-e KEY=VALUE` on a docker command line."""
+    return dict(item.split("=", 1) for flag, item in itertools.pairwise(argv) if flag == "-e" and "=" in item)
+
+
+def test_workspace_none_keeps_the_command_byte_identical():
+    """Without a mount the argv has no bind mount, no pinned worktree and no git config from the mount."""
+    plain, explicit_none = _record_docker_runs(runs=[{}, {"workspace_mount": None}])
+
+    assert plain == explicit_none
+    assert not any(a.startswith("GIT_CONFIG_") or a.startswith("HOLON_TARGET_WORKTREE=") for a in plain)
+    assert "--mount" not in plain
+
+
+def test_workspace_mount_adds_bind_mounts_and_pins_the_worktree():
+    """With a mount the argv gains the bind mounts, the pinned worktree and contiguous protective git config only."""
     from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
 
-    captured: list[list[str]] = []
+    baseline, with_mount = _record_docker_runs(runs=[{}, {"workspace_mount": _MOUNT}])
 
-    def record_run(cmd, *args, **kwargs):
-        captured.append(list(cmd))
-        return MagicMock(returncode=0)
+    mount_pairs = [
+        ["--mount", f"type=bind,source=/srv/wt/flow-x,target={SANDBOX_WORKSPACE_MOUNT}"],
+        ["--mount", "type=bind,source=/srv/wt/flow-x,target=/srv/wt/flow-x"],
+        ["--mount", "type=bind,source=/srv/wt/main/.git,target=/srv/wt/main/.git"],
+    ]
+    for pair in mount_pairs:
+        assert sum(with_mount[i : i + 2] == pair for i in range(len(with_mount) - 1)) == 1
+    env = _argv_env(with_mount)
+    assert env["GIT_CONFIG_COUNT"] == "4"
+    assert [(env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"]) for i in range(4)] == git_config_entries(_MOUNT)
+    # Guard every isolation flag: removing the mounts, the pinned worktree and the mount's git config restores the
+    # baseline argv byte for byte, so nothing else (``--rm``, ``--cap-drop=ALL``,
+    # ``--security-opt=no-new-privileges``, metadata sinkholes, session mounts, env forwarding) changed.
+    reduced = with_mount
+    for pair in mount_pairs:
+        reduced = _remove_argv_pair(reduced, pair)
+    reduced = _remove_argv_pair(reduced, ["-e", f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"])
+    for item in [a for a in reduced if a.startswith("GIT_CONFIG_")]:
+        reduced = _remove_argv_pair(reduced, ["-e", item])
+    assert reduced == baseline
+    for flag in ("--rm", "--cap-drop=ALL", "--security-opt=no-new-privileges"):
+        assert flag in with_mount
+    assert not any("volume" in a or "chown" in a for a in with_mount)
+    assert "-v" not in [with_mount[i] for i in range(len(with_mount) - 1) if "/srv/wt" in with_mount[i + 1]]
 
-    with (
-        patch("sandbox_executor.cli.resolve_target_repo", return_value=("git@github.com:test/repo.git", None)),
-        patch("sandbox_executor.cli.get_agent_session_mounts", return_value=[]),
-        patch("subprocess.run", side_effect=record_run),
-        patch("shutil.which", return_value="/usr/bin/docker"),
-        patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": "/home/dev/own-checkout"}, clear=True),
-    ):
-        assert (
-            run_docker_container(
-                "review-loop",
-                "holon/agent-claude",
-                ["branch", "fake-agent", "fake-model"],
-                agent_id="claude",
-                review_workspace_volume="holon-review-ws-abc123",
-            )
-            == 0
-        )
 
-    (argv,) = captured
+def test_workspace_mount_overrides_a_forwarded_host_worktree():
+    """A forwarded host HOLON_TARGET_WORKTREE is replaced by the container workspace when a mount is supplied."""
+    from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
+
+    (argv,) = _record_docker_runs(
+        environ={"HOLON_TARGET_WORKTREE": "/home/dev/own-checkout"}, runs=[{"workspace_mount": _MOUNT}]
+    )
+
     assert [a for a in argv if a.startswith("HOLON_TARGET_WORKTREE=")] == [
         f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"
     ]
+
+
+def test_workspace_mount_git_config_follows_the_credential_entries(leak_env, monkeypatch):
+    """With a token, entries 0 and 1 stay the scoped credential helper and the mount's entries follow contiguously."""
+    docker = _RecordingDocker()
+    monkeypatch.setattr(cli.subprocess, "run", docker)
+
+    assert (
+        run_docker_container(
+            "planner",
+            "holon/agent-claude",
+            [_BRANCH, "claude-agent", "opus"],
+            agent_id="claude",
+            target_worktree=leak_env["repo"],
+            workspace_mount=_MOUNT,
+        )
+        == 0
+    )
+
+    env = docker.container_env
+    assert env["GIT_CONFIG_COUNT"] == "6"
+    assert env["GIT_CONFIG_KEY_0"] == "credential.https://github.com.helper"
+    assert env["GIT_CONFIG_VALUE_0"] == ""
+    assert env["GIT_CONFIG_KEY_1"] == "credential.https://github.com.helper"
+    assert env["GIT_CONFIG_VALUE_1"] == cli.GIT_CREDENTIAL_HELPER
+    assert "GIT_CONFIG_VALUE_1" not in docker.argv_env
+    assert [(env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"]) for i in range(2, 6)] == git_config_entries(
+        _MOUNT
+    )
+    assert "GIT_CONFIG_KEY_6" not in env

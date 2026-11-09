@@ -19,6 +19,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
+import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
@@ -28,6 +31,7 @@ from sandbox_executor.git_flow import ensure_worktree, is_bare_repository, is_wo
 __all__ = [
     "WorkspaceMount",
     "WorkspaceMountError",
+    "guarded_run",
     "resolve_workspace_mount",
     "snapshot_git_metadata",
     "verify_git_metadata",
@@ -194,17 +198,46 @@ _UNTRUSTED_BULK_DIRS = frozenset({"objects", "refs", "logs", "lfs"})
 
 
 def _fingerprint(path: str) -> str:
-    """Return an identity for ``path`` that changes when it is rewritten, replaced, re-pointed or removed."""
+    """Return an identity for ``path`` that changes when it is rewritten, replaced, re-pointed or removed.
+
+    Only a regular file is read (in bounded chunks, opened non-blocking without following a link), so a planted
+    FIFO or device is recorded by its type instead of hanging the host; an unreadable entry gets its own identity
+    rather than raising.
+    """
     try:
         st = os.lstat(path)
+        if stat.S_ISLNK(st.st_mode):
+            return f"link:{os.readlink(path)}"
+        if stat.S_ISDIR(st.st_mode):
+            return f"dir:{st.st_dev}:{st.st_ino}"
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "rb") as fh:
+            mode = os.fstat(fh.fileno()).st_mode
+            if not stat.S_ISREG(mode):
+                return f"special:{stat.S_IFMT(mode):o}"
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: fh.read(1 << 16), b""):
+                digest.update(chunk)
+            return f"file:{digest.hexdigest()}"
     except FileNotFoundError:
         return "absent"
-    if os.path.islink(path):
-        return f"link:{os.readlink(path)}"
-    if os.path.isdir(path):
-        return f"dir:{st.st_dev}:{st.st_ino}"
-    with open(path, "rb") as fh:
-        return f"file:{hashlib.sha256(fh.read()).hexdigest()}"
+    except OSError as exc:
+        return f"unreadable:{exc.errno}"
+
+
+def _in_hooks(common_dir: str, root: str) -> bool:
+    """Return True when ``root`` is (beneath) a real hooks directory of the common dir or a submodule git dir.
+
+    Only the top-level ``hooks`` and a ``hooks`` directly inside a ``modules/**`` git dir (one holding ``HEAD``)
+    count, so a linked worktree or submodule merely *named* ``hooks`` is not treated as one.
+    """
+    parts = os.path.relpath(root, common_dir).split(os.sep)
+    for idx, part in enumerate(parts):
+        if part != "hooks":
+            continue
+        if idx == 0 or (parts[0] == "modules" and os.path.isfile(os.path.join(common_dir, *parts[:idx], "HEAD"))):
+            return True
+    return False
 
 
 def snapshot_git_metadata(mount: WorkspaceMount) -> dict[str, str]:
@@ -220,7 +253,7 @@ def snapshot_git_metadata(mount: WorkspaceMount) -> dict[str, str]:
     }
     for root, dirs, files in os.walk(mount.git_common_dir):
         dirs[:] = [d for d in dirs if d not in _UNTRUSTED_BULK_DIRS]
-        in_hooks = "hooks" in os.path.relpath(root, mount.git_common_dir).split(os.sep)
+        in_hooks = _in_hooks(mount.git_common_dir, root)
         tracked = [f for f in files if in_hooks or f in _TRUSTED_GIT_FILES]
         tracked += [d for d in dirs if in_hooks or d == "hooks"]
         for name in tracked:
@@ -244,3 +277,22 @@ def verify_git_metadata(mount: WorkspaceMount, baseline: dict[str, str]) -> None
             f"Refusing to continue: the container changed git metadata the host trusts ({', '.join(changed)}); "
             f"inspect '{mount.host_worktree}' before running git in it"
         )
+
+
+def guarded_run(mount: WorkspaceMount | None, run: Callable[[], int]) -> int:
+    """Return ``run()``'s exit code, or 1 when the container changed the git metadata of ``mount``.
+
+    With a mount, the git metadata is fingerprinted before ``run`` and verified after it, so a planted fsmonitor,
+    hook, ``config.worktree`` or re-pointed ``.git`` fails the run (docs/safety.md); without one ``run`` is called
+    unguarded.
+    """
+    if mount is None:
+        return run()
+    baseline = snapshot_git_metadata(mount)
+    returncode = run()
+    try:
+        verify_git_metadata(mount, baseline)
+    except WorkspaceMountError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    return returncode

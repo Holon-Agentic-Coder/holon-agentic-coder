@@ -12,6 +12,7 @@ from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
 from sandbox_executor.worktree_mount import (
     WorkspaceMount,
     WorkspaceMountError,
+    guarded_run,
     resolve_workspace_mount,
     snapshot_git_metadata,
     verify_git_metadata,
@@ -162,6 +163,7 @@ def _gitdir(worktree: Path) -> Path:
         "plant_config_worktree",
         "plant_common_config_worktree",
         "plant_hook",
+        "plant_fifo_config_worktree",
         "swap_common_dir",
     ],
 )
@@ -181,6 +183,9 @@ def test_container_tampering_with_git_metadata_is_refused(main_repo, linked_work
         (common / "config.worktree").write_text(evil, encoding="utf-8")
     elif tamper == "plant_hook":
         (common / "hooks" / "post-checkout").write_text("#!/bin/sh\n", encoding="utf-8")
+    elif tamper == "plant_fifo_config_worktree":
+        # A FIFO must be recorded by its type, never opened for reading (that would hang the host).
+        os.mkfifo(_gitdir(linked_worktree) / "config.worktree")
     else:
         shutil.copytree(common, common.with_name(".git-new"))
         common.rename(common.with_name(".git-old"))
@@ -199,3 +204,26 @@ def test_ordinary_git_work_in_the_container_passes_verification(main_repo, linke
     _git(linked_worktree, "commit", "-q", "-m", "work")
 
     verify_git_metadata(mount, baseline)
+
+
+def test_ordinary_commits_in_a_linked_worktree_named_hooks_pass_verification(main_repo):
+    hooks_named = main_repo.parent / "hooks"
+    _git(main_repo, "worktree", "add", "-q", "-b", "feature-hooks", str(hooks_named))
+    mount = resolve_workspace_mount(str(hooks_named))
+    baseline = snapshot_git_metadata(mount)
+
+    (hooks_named / "new.txt").write_text("x\n", encoding="utf-8")
+    _git(hooks_named, "add", "new.txt")
+    _git(hooks_named, "commit", "-q", "-m", "work")
+
+    verify_git_metadata(mount, baseline)
+
+
+def test_guarded_run_returns_the_run_exit_code_or_fails_on_tampering(linked_worktree, capsys):
+    mount = resolve_workspace_mount(str(linked_worktree))
+    hook = Path(mount.git_common_dir) / "hooks" / "post-checkout"
+
+    assert guarded_run(None, lambda: 7) == 7
+    assert guarded_run(mount, lambda: 3) == 3
+    assert guarded_run(mount, lambda: hook.write_text("#!/bin/sh\n", encoding="utf-8") and 0) == 1
+    assert "changed git metadata" in capsys.readouterr().err

@@ -31,11 +31,11 @@ In progress.
   (`flow/checkpoint.py:152-171`); `.holon/` is gitignored (`.gitignore:14`), so a user-supplied checkpoint inside the
   main worktree does not dirty `git status`.
 - The engine guard is `flow_guard.pre_run_guard_error(context, worktree_validator)` (`flow_guard.py:17`), called from
-  `flow/pipeline.py:294`; `run_flow_pipeline` assigns `target_worktree_problem` (`flow/pipeline.py:384`). The
-  validator receives only the path, but `pre_run_guard_error` itself receives the whole context.
+  `flow/pipeline.py:294`; `run_flow_pipeline` assigns `target_worktree_problem` (`flow/pipeline.py:384`). The validator
+  receives only the path, but `pre_run_guard_error` itself receives the whole context.
 - Unplanned constraint: `tests/flow/test_move_proof.py` pins the `ast.dump` digest of every flow-package definition, so
-  any edit to `run_flow_pipeline` (even line-neutral) fails that proof. Step 4 therefore probes `flow_guard.py`
-  (outside the budgeted package) instead of `pipeline.py`.
+  any edit to `run_flow_pipeline` (even line-neutral) fails that proof. Step 4 therefore probes `flow_guard.py` (outside
+  the budgeted package) instead of `pipeline.py`.
 - `cli/commands/__init__.py:15` skips modules whose name starts with `_`, so `_flow_worktree.py` is not a subcommand.
 - Patch target to update: `tests/test_flow_target_worktree.py:259` patches
   `sandbox_executor.cli.commands.flow.ensure_worktree`.
@@ -64,7 +64,7 @@ In progress.
 
 - Moved `_CHECKPOINT_TARGET_HINT`, `_extract_flow_slug`, `_flow_target_branch`, `_effective_flow_target`,
   `_nearest_existing_parent`, `_should_provision`, `_provision_flow_worktree` and `_ensure_flow_worktree` (renamed
-  `_ensure_attached_worktree`, body unchanged) into the new module. `flow.py` went from 482 to 333 lines; the new module
+  `_ensure_attached_worktree`, body unchanged) into the new module. `flow.py` went from 482 to 335 lines; the new module
   is 282 lines.
 - Deviation from the plan: the redirect runs after the pre-flight probe, not before it.
   `tests/test_preflight.py::test_quota_exhausted_probe_aborts_flow_before_stage_one` pins the contract "Aborting before
@@ -95,20 +95,20 @@ In progress.
 
 - New `cli/commands/_worktree_guard.py` (`_flow_worktree.py` was already 282 lines) with
   `default_branch_worktree_allowed(target_worktree, command)`: a working tree whose branch is the one
-  `refs/remotes/origin/HEAD` points at (fallback `main`) prints `Error: ...` naming the absolute path, the branch, why it
-  is refused and the remedy (`git worktree add ...`, `--target-worktree <path>`).
+  `refs/remotes/origin/HEAD` points at (fallback `main`) prints `Error: ...` naming the absolute path, the branch, why
+  it is refused and the remedy (`git worktree add ...`, `--target-worktree <path>`).
 - `review.py` calls it right after `_validate_review_args`, before runner resolution and before local or container
-  dispatch, naming the alias actually used (`args.command`); `calibrate.py` calls it before `cli.run_calibrate`
-  (with `--no-commit` too). Both `--target-worktree` helps now say a default-branch worktree is refused.
+  dispatch, naming the alias actually used (`args.command`); `calibrate.py` calls it before `cli.run_calibrate` (with
+  `--no-commit` too). Both `--target-worktree` helps now say a default-branch worktree is refused.
 - The generic remedy in `default_branch_worktree_problem` names the run's `flow-<slug>` worktree.
 - `tests/test_calibration.py`, `tests/test_review_loop.py`, `tests/test_preflight.py`, `tests/test_cli.py`,
   `tests/test_cli_options.py`: 903 passed, 1 failed (the Step 3 checkpoint fixture on `main`, pinned in Step 7).
 
 ### Step 7: Hermetic tests and pinned environment-sensitive tests
 
-- New `tests/test_flow_default_branch_worktree.py` (29 tests). Fixture: bare `origin.git`, `checkout/` cloned on
-  `main`, and `origin/main` one commit ahead of local `main` (pushed from a second clone and fetched), cwd pinned to a
-  non-git directory.
+- New `tests/test_flow_default_branch_worktree.py` (29 tests). Fixture: bare `origin.git`, `checkout/` cloned on `main`,
+  and `origin/main` one commit ahead of local `main` (pushed from a second clone and fetched), cwd pinned to a non-git
+  directory.
   - (a) explicit `--target-worktree <checkout>` and the implicit `.` from inside `checkout/`: the context's
     `target_worktree` is `<tmp>/flow-redirect-me`, its branch is `flow-redirect-me`, its HEAD is `origin/main` (not
     local `main`), the default checkpoint path lies inside it and the info log names both paths. A second variant runs
@@ -129,13 +129,23 @@ In progress.
     `run_flow_pipeline` fails the first stage for a default-branch target before any stage or checkpoint (Step 4).
 - Mutation check: disabling the redirect made 5 of the new tests fail.
 - Pinned existing tests (declared changes; assertions unchanged): a new `feature_worktree_cwd` fixture in
-  `tests/conftest.py` (helper `tests/worktree_fixtures.py`) runs the test from an empty repository on `feature-x`. Applied
-  to `TestHolonFlowCLI` (`tests/test_cli.py`), `test_review_loop_handler_masks_a_quoted_password_head` and
-  `test_calibrate_handler_masks_a_quoted_password_head` (`tests/test_cli.py`), `test_bare_review_loop_still_runs_in_a_container`
-  and `test_local_review_loop_records_resolved_runner` (`tests/test_preflight.py`), `TestCLICalibrateCommand`
-  (`tests/test_calibration.py`), `TestCLIDispatchReviewLoop` (`tests/test_review_loop.py`) and
-  `test_cli_flow_dry_run_dispatch` (`tests/flow/test_pipeline.py`). `test_flow_checkpoint_resumption_flag_overrides`
-  now initialises its checkpoint repository on `feature-x`.
-- Environment independence: the set above came from running `uv run task test` in a copy of the workspace committed on
-  a fresh `main` branch (10 failures before pinning, and a stray `/tmp/flow-cli-test` was provisioned). After pinning,
-  the same simulation gave `3338 passed` in `30.70s` and no `flow-*` directory appeared.
+  `tests/conftest.py` (helper `tests/worktree_fixtures.py`) runs the test from an empty repository on `feature-x`.
+  Applied to `TestHolonFlowCLI` (`tests/test_cli.py`), `test_review_loop_handler_masks_a_quoted_password_head` and
+  `test_calibrate_handler_masks_a_quoted_password_head` (`tests/test_cli.py`),
+  `test_bare_review_loop_still_runs_in_a_container` and `test_local_review_loop_records_resolved_runner`
+  (`tests/test_preflight.py`), `TestCLICalibrateCommand` (`tests/test_calibration.py`), `TestCLIDispatchReviewLoop`
+  (`tests/test_review_loop.py`) and `test_cli_flow_dry_run_dispatch` (`tests/flow/test_pipeline.py`).
+  `test_flow_checkpoint_resumption_flag_overrides` now initialises its checkpoint repository on `feature-x`.
+- Environment independence: the set above came from running `uv run task test` in a copy of the workspace committed on a
+  fresh `main` branch (10 failures before pinning, and a stray `/tmp/flow-cli-test` was provisioned). After pinning, the
+  same simulation gave `3338 passed` in `30.70s` and no `flow-*` directory appeared.
+
+### Step 6: Documentation
+
+- `docs/git_flow.md` §2.7: new "Target Worktree and the Default Branch" subsection (redirect, other branches,
+  checkpoints, engine guard, direct commands).
+- `docs/faq.md` §14: "Why did `holon flow` create a `flow-<slug>` directory next to my checkout?".
+- `README.md`: the `holon flow` options table listed a non-existent `--repo-dir`; replaced it with `--target-worktree`
+  and the redirect wording used by the help text.
+- Help texts: `holon flow` uses `TARGET_WORKTREE_HELP`; `holon review*` and `holon calibrate` use
+  `DEFAULT_BRANCH_GUARD_HELP`.

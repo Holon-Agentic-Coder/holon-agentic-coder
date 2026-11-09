@@ -121,6 +121,15 @@ the initial high cost is a necessary investment in the system's education.
   than pausing for a human. A host-side `holon flow` stage ceiling also fails the stage, but writes no `ACT-BUDGET`
   record (see [Turn and Stage Budgets](budgets.md)).
 
+### Why Did `holon flow` Create a `flow-<slug>` Directory Next to My Checkout?
+
+- **The main worktree stays on `main`:** the installed `holon` command runs the code in the main worktree and people use
+  it as their reference checkout, so it must stay identical to `origin/main`. When `--target-worktree` (or the default
+  `.`) has the intent's target branch checked out, `holon flow` treats it as naming the repository and base branch only
+  and runs in a dedicated `flow-<slug>` worktree branched off `origin/<target_branch>`, reusing it on later runs. Remove
+  it with `git worktree remove ../flow-<slug>` once the run's pull request is merged. See
+  [Git Flow](git_flow.md#target-worktree-and-the-default-branch).
+
 ### Niche or Unsupported Languages and Frameworks
 
 - **Language-Agnostic Core:** The engine relies on standard shell execution, Git files, and JSON payloads, making it

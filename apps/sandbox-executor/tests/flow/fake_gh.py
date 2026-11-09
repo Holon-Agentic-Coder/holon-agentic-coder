@@ -28,6 +28,8 @@ class FakeGitHub:
         # Bucket every check reports ("pass", "fail", "pending"), or None for a PR with no checks at all.
         self.checks_bucket: str | None = "pass"
         self.mergeable = "MERGEABLE"
+        # How many ``gh pr checks`` calls report no checks before they register (CI not yet started on a new head).
+        self.unregistered_checks_calls = 0
 
     def open_pr(self, head: str, base: str) -> int:
         """Record an open PR from ``head`` into ``base`` and return its number (101, 102, ...)."""
@@ -90,6 +92,9 @@ class FakeGitHub:
         return self._done(args, 0, found)
 
     def _pr_checks(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        if self.unregistered_checks_calls > 0:
+            self.unregistered_checks_calls -= 1
+            return self._done(args, 1, err="no checks reported on the branch")
         if self.checks_bucket is None:
             return self._done(args, 1, err="no checks reported on the branch")
         return self._done(args, 0, [{"bucket": self.checks_bucket, "name": "test", "state": "COMPLETED"}])

@@ -248,8 +248,15 @@ def run_children(context: FlowContext, start_time: str, payload: dict[str, Any])
     """Drive every child of ``payload["children_progress"]`` to merged, in order, then integrate the plan branch.
 
     The first child that fails, is not ready to merge or is refused by the merge guard is marked ``failed``, the parent
-    checkpoint is saved, and Stage 3 fails naming the child; later children do not start.
+    checkpoint is saved, and Stage 3 fails naming the child; later children do not start. Under ``--skip-review`` no
+    child could reach its consensus halt and merge, so the stage fails before any child is dispatched.
     """
+    if context.skip_review:
+        error = (
+            "Execute stage failed: the plan was decomposed, but --skip-review skips each sub-intent's Stage 4, so no "
+            "child could reach consensus and be merged into the plan branch; re-run without --skip-review."
+        )
+        return _stage_failure(context, FlowStage.EXECUTE, start_time, error, **payload)
     progress = payload[PROGRESS_KEY]
     total = len(progress)
     for entry in progress:

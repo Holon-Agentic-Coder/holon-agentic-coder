@@ -354,7 +354,7 @@ the plan branch that listed it, and only when every rule holds:
 - **Ready to merge.** The child's Stage 4 halted at consensus approval and its Stage 5 completed; the PR is open,
   `MERGEABLE`, and its checks are green on the exact head that is merged (no checks counts as not green).
 - **Up to date.** When the plan branch moved after the child was cut, it is merged into the child head first; the merge
-  waits, bounded, for mergeability and CI on that new head.
+  waits, bounded, for mergeability and CI on that new head, including for checks that have not registered on it yet.
 - **Ledgers stay append-only.** A merge conflict confined to `holon-knowledge/ledger/*.jsonl` is resolved by keeping the
   merge-base rows as a byte-identical prefix and interleaving both sides' appended rows on `created_at` (each side's
   order kept, a row both sides appended kept once); a side that changed a base row, or any conflict outside the ledgers,

@@ -68,9 +68,8 @@ def integrate_children(context: FlowContext, start_time: str, payload: dict[str,
     """
     plan_branch, exec_branch = str(payload["plan_branch"]), str(payload.get("execution_branch") or "")
     if not exec_branch:
-        return _stage_failure(
-            context, FlowStage.EXECUTE, start_time, "Execute stage failed: no parent execution branch to integrate."
-        )
+        error = "Execute stage failed: no parent execution branch to integrate."
+        return _stage_failure(context, FlowStage.EXECUTE, start_time, error, **payload)
     slugs = ", ".join(str(e.get("slug")) for e in payload["children_progress"])
     message = f"integrate: merge {plan_branch} ({slugs}) into {exec_branch}"
     merged_sha, error = merge_into_branch(context.target_worktree, plan_branch, exec_branch, message)

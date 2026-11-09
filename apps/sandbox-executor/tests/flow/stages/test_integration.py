@@ -105,3 +105,5 @@ def test_integration_without_a_parent_execution_branch_fails(tmp_path):
     res = integrate_children(ctx, "2026-11-09T00:00:00Z", {"plan_branch": "P/_", "children_progress": []})
     assert res.status == StageStatus.FAILED
     assert res.error == "Execute stage failed: no parent execution branch to integrate."
+    # The recorded decomposition survives, so a resume continues the children instead of re-dispatching the executor.
+    assert res.payload == {"plan_branch": "P/_", "children_progress": []}

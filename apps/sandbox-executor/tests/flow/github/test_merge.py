@@ -187,6 +187,21 @@ def test_a_stale_child_gets_the_plan_branch_merged_in_before_it_is_merged(repos,
     assert gh.merge_calls()[0][-1] == child_head
 
 
+def test_checks_that_register_late_on_the_pushed_child_head_are_waited_for(repos, tmp_path, monkeypatch):
+    monkeypatch.setattr(merge_module, "MERGE_POLL_SECONDS", 0.0)
+    origin, host, work = repos
+    _commit(work, PLAN, f"origin/{PLAN}", "src/sibling.py", "SIBLING = 1\n")
+    gh, number = _fake(tmp_path, origin)
+    # CI on the head that brought the plan branch in has not registered for the first two polls.
+    gh.unregistered_checks_calls = 2
+
+    result = merge_child_pr(str(host), number, PLAN, runner=gh)
+
+    assert result.merged is True
+    assert [c[:2] for c in gh.calls].count(["pr", "checks"]) == 3
+    assert gh.merge_calls()[0][-1] == gh.sha(CHILD_EXEC)
+
+
 def test_a_non_ledger_conflict_with_the_plan_branch_is_refused(repos, tmp_path):
     origin, host, work = repos
     _commit(work, PLAN, f"origin/{PLAN}", "src/parser.py", "PARSER = 2\n")

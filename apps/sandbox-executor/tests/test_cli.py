@@ -894,15 +894,9 @@ class TestHolonFlowCLI(unittest.TestCase):
                         "execution_branch": "I-1-parent/P-2/E-3/_",
                         "parent_target_branch": "main",
                         "children": [
-                            {
-                                "slug": "add-the-parser",
-                                "pr_url": "https://example.test/pull/7",
-                                "status": "halted_for_human",
-                                "merged": True,
-                            },
+                            {"slug": "add-the-parser", "pr_url": "https://example.test/pull/7", "merged": True},
                             {
                                 "slug": "add-the-cli-flag",
-                                "pr_url": None,
                                 "execution_branch": "I-2-add-the-cli-flag/P-2/E-2/_",
                                 "status": "skipped",
                             },

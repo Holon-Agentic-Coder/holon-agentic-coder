@@ -133,7 +133,8 @@ def _settle_reason(repo_dir: str, pr_number: int | str, head_sha: str, runner: G
         return f"the PR is not mergeable (mergeable={mergeable})", mergeable == "UNKNOWN"
     ci = _ci_state(repo_dir, pr_number, runner)
     if ci != "green":
-        return f"CI is not green on the PR head (checks {ci})", ci == "pending"
+        # Checks on a freshly pushed head may not be registered yet, so "unmeasured" is waited on like "pending".
+        return f"CI is not green on the PR head (checks {ci})", ci in ("pending", "unmeasured")
     return None, False
 
 

@@ -120,3 +120,17 @@ post.
 - Declared fixture change: the move-proof digest of `_run_review_loop_iterations` was refreshed and listed in
   `amended_definitions`.
 - Full suite after the step: 3287 passed, 21 skipped.
+
+### Step 6: Honest consensus heading and open findings
+
+- `review_report.py`: new `_approvals(reviewers)` counts completed reviewers whose recorded verdict is `APPROVED`.
+  `_heading` takes it: approved renders `APPROVED ({approvals}/{configured})` (still `3/3` for a genuine unanimous
+  approval); not approved renders `CHANGES REQUESTED (Iteration N) — {approvals}/{configured} approved`.
+- Deviation (the plan's discard path): the shipped template's "Posted review shape" (out of scope, asserted by
+  `test_review_report.py`) pins `CHANGES REQUESTED (Iteration ` as the heading prefix, so the fraction follows the
+  iteration in the same heading line instead of preceding it. Lower-case `approved` keeps `"APPROVED ("` out of
+  non-approved bodies.
+- The findings table is rendered whenever the deciding iteration has findings; an approved report shows it after the
+  Verified list. Per-reviewer lines, severity counts, the Checks line and the closing notice are unchanged.
+- `flow/github/review_post.py` unchanged: it forwards the deciding iteration's `reviewers` (reassigned each iteration in
+  the loop) straight to `build_review_consensus_report`.

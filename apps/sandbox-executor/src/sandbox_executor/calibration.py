@@ -130,18 +130,14 @@ class ActualMetrics:
     bug_ev_drag: float = 0.0
 
     def __post_init__(self) -> None:
-        if self.ev_clean == 0.0 and self.ev != 0.0:
-            self.ev_clean = self.ev
-        if self.p_success_clean == 0.0 and self.p_success != 0.0:
-            self.p_success_clean = self.p_success
-        if self.impact_clean == 0.0 and self.impact != 0.0:
-            self.impact_clean = self.impact
-        if self.ev_with_bugs == 0.0 and self.ev_clean != 0.0 and self.bug_ev_drag == 0.0:
-            self.ev_with_bugs = self.ev_clean
-        if self.p_success_with_bugs == 0.0 and self.p_success_clean != 0.0 and self.bug_ev_drag == 0.0:
-            self.p_success_with_bugs = self.p_success_clean
-        if self.impact_with_bugs == 0.0 and self.impact_clean != 0.0 and self.bug_ev_drag == 0.0:
-            self.impact_with_bugs = self.impact_clean
+        if self.ev != 0.0:
+            self.ev_clean = self.ev_clean or self.ev
+            self.p_success_clean = self.p_success_clean or self.p_success
+            self.impact_clean = self.impact_clean or self.impact
+        if self.bug_ev_drag == 0.0:
+            self.ev_with_bugs = self.ev_with_bugs or self.ev_clean
+            self.p_success_with_bugs = self.p_success_with_bugs or self.p_success_clean
+            self.impact_with_bugs = self.impact_with_bugs or self.impact_clean
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -657,68 +653,67 @@ def load_metrics_physics(target_worktree: str = ".") -> tuple[float, float]:
     return default_lambda, default_mu
 
 
-def parse_predicted_metrics(plan_id: str, target_worktree: str = ".") -> tuple[PredictedMetrics, dict[str, Any]]:  # noqa: C901, PLR0912
-    """Parse predicted plan metrics from plans.jsonl or plans/P-{plan_id}.md."""
-    plan_meta: dict[str, Any] = {}
-    predicted = PredictedMetrics()
+def _parse_plan_markdown_content(content: str, predicted: PredictedMetrics) -> None:
+    row_pat = re.compile(r"\|\s*([a-zA-Z_0-9]+)\s*\|\s*([0-9\.\-]+)\s*\|")
+    in_overall = found_overall = False
+    for line in content.splitlines():
+        if "## Overall Plan Metrics" in line:
+            in_overall = found_overall = True
+        elif in_overall and line.startswith("## "):
+            break
+        elif (in_overall or not found_overall) and (m := row_pat.search(line)):
+            name = m.group(1).replace("_pred", "").strip()
+            if hasattr(predicted, name):
+                with contextlib.suppress(ValueError):
+                    setattr(predicted, name, float(m.group(2).strip()))
 
-    # 1. Primary: Search holon-knowledge/ledger/plans.jsonl
+
+def _parse_predicted_from_plans_ledger(
+    plan_id: str, target_worktree: str
+) -> tuple[PredictedMetrics, dict[str, Any]] | None:
     plans_jsonl = os.path.join(target_worktree, "holon-knowledge", "ledger", "plans.jsonl")
-    if os.path.exists(plans_jsonl):
-        try:
-            with open(plans_jsonl, encoding="utf-8") as f:
-                for line in f:
-                    if not line.strip():
-                        continue
-                    try:
-                        record = json.loads(line)
-                        if record.get("plan_id") == plan_id or plan_id in record.get("plan_branch", ""):
-                            plan_meta = record
-                            for field in ("p_success", "entropy", "impact", "cost", "learning_value", "ev"):
-                                if field in record:
-                                    setattr(predicted, field, float(record[field]))
-                            return predicted, plan_meta
-                    except (json.JSONDecodeError, ValueError):
-                        continue
-        except Exception as e:
-            logger.debug("Error reading plans.jsonl: %s", e)
+    if not os.path.exists(plans_jsonl):
+        return None
+    with contextlib.suppress(Exception), open(plans_jsonl, encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            with contextlib.suppress(json.JSONDecodeError, ValueError):
+                record = json.loads(line)
+                if record.get("plan_id") == plan_id or plan_id in record.get("plan_branch", ""):
+                    predicted = PredictedMetrics()
+                    for field in ("p_success", "entropy", "impact", "cost", "learning_value", "ev"):
+                        if field in record:
+                            setattr(predicted, field, float(record[field]))
+                    return predicted, record
+    return None
 
-    # 2. Fallback: Parse markdown table from plans/P-{plan_id}.md
-    plan_md_candidates = [
+
+def _parse_predicted_from_plan_markdown(
+    plan_id: str, target_worktree: str
+) -> tuple[PredictedMetrics, dict[str, Any]] | None:
+    candidates = [
         os.path.join(target_worktree, "plans", f"{plan_id}.md"),
         os.path.join(target_worktree, f"{plan_id}.md"),
     ]
-    for candidate in plan_md_candidates:
-        if os.path.exists(candidate):
-            try:
-                with open(candidate, encoding="utf-8") as f:
-                    content = f.read()
-                row_pat = re.compile(r"\|\s*([a-zA-Z_0-9]+)\s*\|\s*([0-9\.\-]+)\s*\|")
-                in_overall = False
-                found_overall = False
-                for line in content.splitlines():
-                    if "## Overall Plan Metrics" in line:
-                        in_overall = True
-                        found_overall = True
-                        continue
-                    if in_overall and line.startswith("## "):
-                        break
-                    if in_overall or not found_overall:
-                        m = row_pat.search(line)
-                        if m:
-                            name = m.group(1).replace("_pred", "").strip()
-                            try:
-                                val = float(m.group(2).strip())
-                                if hasattr(predicted, name):
-                                    setattr(predicted, name, val)
-                            except ValueError:
-                                continue
-                plan_meta["plan_file"] = os.path.relpath(candidate, target_worktree)
-                return predicted, plan_meta
-            except Exception as e:
-                logger.debug("Error parsing %s: %s", candidate, e)
+    for candidate in candidates:
+        if not os.path.exists(candidate):
+            continue
+        with contextlib.suppress(Exception), open(candidate, encoding="utf-8") as f:
+            content = f.read()
+            predicted = PredictedMetrics()
+            _parse_plan_markdown_content(content, predicted)
+            return predicted, {"plan_file": os.path.relpath(candidate, target_worktree)}
+    return None
 
-    return predicted, plan_meta
+
+def parse_predicted_metrics(plan_id: str, target_worktree: str = ".") -> tuple[PredictedMetrics, dict[str, Any]]:
+    """Parse predicted plan metrics from plans.jsonl or plans/P-{plan_id}.md."""
+    return (
+        _parse_predicted_from_plans_ledger(plan_id, target_worktree)
+        or _parse_predicted_from_plan_markdown(plan_id, target_worktree)
+        or (PredictedMetrics(), {})
+    )
 
 
 def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915

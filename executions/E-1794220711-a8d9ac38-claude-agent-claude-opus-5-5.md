@@ -63,3 +63,14 @@ In progress.
     the pull request's base.
 - Mutation check: temporarily passing `target_branch="main"` to `create_or_update_pr` in `loop.py` made Test A fail;
   the source was restored byte-for-byte. Result: `4 passed in 0.08s`.
+
+### Step 4: Document that pull requests into any branch run the CI checks
+
+- `.github/workflows/README.md`: the five workflow entries now read "on pull requests into any base branch",
+  `docker-build.yml` gained the same trigger statement, and a new "Pull requests into any branch" subsection explains
+  stacked sub-intent pull requests, the former `test results not measured` halt, why `push` stays on `main` (no commit
+  checked twice), that the timing gate still compares against `main` baselines, and the guard test.
+- `docs/git_flow.md`: the Stage 4 "Unmeasured tests are never a pass" paragraph now states that stacked sub-intent
+  pull requests receive the same checks because every CI workflow runs for pull requests into any base branch.
+- Grep of `docs/` for other "CI runs only on pull requests into `main`" statements found none. Both files formatted
+  with `npx prettier --write`.

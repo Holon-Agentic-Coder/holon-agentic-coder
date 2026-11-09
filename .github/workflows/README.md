@@ -4,27 +4,39 @@ This directory contains the CI/CD workflows for the `holon-agentic-coder` projec
 
 ## Workflows
 
-- `make.yml`: Runs on pushes to `main` and on pull requests across both `ubuntu-latest` and `macos-latest`. It verifies
-  `uname -m`, `make help`, and default `make`.
-- `test-hygiene.yml`: Runs on pushes to `main` and on pull requests on `ubuntu-latest`. It executes fast repository
-  hygiene in an isolated job:
+- `make.yml`: Runs on pushes to `main` and on pull requests into any base branch across both `ubuntu-latest` and
+  `macos-latest`. It verifies `uname -m`, `make help`, and default `make`.
+- `test-hygiene.yml`: Runs on pushes to `main` and on pull requests into any base branch on `ubuntu-latest`. It executes
+  fast repository hygiene in an isolated job:
   - Verifying lockfile currency with `uv lock --check` and `git diff --exit-code uv.lock`.
   - Running static linting with `uv run ruff check .`.
   - Checking formatting with `uv run ruff format --check .`.
   - Checking markdown formatting with Prettier (`npx prettier --check "**/*.md"`).
   - Validating repository cleanup via `uv run task clean`.
-- `test-unit.yml`: Runs on pushes to `main` and on pull requests across both `ubuntu-latest` and `macos-latest`. It
-  executes unit tests (`uv run pytest -m "not integration_test and not stress" --junitxml=unit-report.xml`) using cached
-  `uv` dependencies.
-- `test-stress.yml`: Runs on pushes to `main` and on pull requests on `ubuntu-latest`. It runs the stress suite
-  (`uv run pytest -m stress`) -- the workspace-survival test and the hermetic canary guard, both of which re-run the
-  unit suite in a child process -- measuring the execution time explicitly in its own workflow.
-- `test-integration.yml`: Runs on pushes to `main` and on pull requests on `ubuntu-latest`. It builds all sandbox Docker
-  images via `./apps/sandbox-executor/build_all_images.sh --output-log` and executes integration tests that require
-  Docker services. For why containerized tests run exclusively on Linux, see [macos-docker.md](../macos-docker.md).
-- `docker-build.yml`: Builds Docker images with multi-architecture Buildx caching, incorporating timing gate checks.
+- `test-unit.yml`: Runs on pushes to `main` and on pull requests into any base branch across both `ubuntu-latest` and
+  `macos-latest`. It executes unit tests
+  (`uv run pytest -m "not integration_test and not stress" --junitxml=unit-report.xml`) using cached `uv` dependencies.
+- `test-stress.yml`: Runs on pushes to `main` and on pull requests into any base branch on `ubuntu-latest`. It runs the
+  stress suite (`uv run pytest -m stress`) -- the workspace-survival test and the hermetic canary guard, both of which
+  re-run the unit suite in a child process -- measuring the execution time explicitly in its own workflow.
+- `test-integration.yml`: Runs on pushes to `main` and on pull requests into any base branch on `ubuntu-latest`. It
+  builds all sandbox Docker images via `./apps/sandbox-executor/build_all_images.sh --output-log` and executes
+  integration tests that require Docker services. For why containerized tests run exclusively on Linux, see
+  [macos-docker.md](../macos-docker.md).
+- `docker-build.yml`: Runs on pushes to `main` and on pull requests into any base branch. It builds Docker images with
+  multi-architecture Buildx caching, incorporating timing gate checks.
 - `build-images.yml`: Manual dispatch workflow to build and verify Docker container images with multi-architecture
   Buildx caching.
+
+### Pull requests into any branch
+
+None of the six pull-request workflows filters the `pull_request` trigger by base branch. A decomposed plan runs child
+intents whose pull requests are stacked on the parent intent branch, not `main`; with a `main`-only filter they received
+no checks, and the Stage 4 review loop halted with `test results not measured` even when every reviewer approved. The
+`push` trigger stays on `main`, so a commit on an intent branch is checked once, by its pull request, and a push to
+`main` once, by `push`. The timing gate on a stacked pull request still compares against the `main` baselines.
+`apps/sandbox-executor/tests/test_workflow_triggers.py` fails if a base-branch filter returns to any `pull_request`
+trigger or if `push` widens beyond `main`.
 
 Every job of every workflow ends with the CI timing regression gate described below. The five pull-request workflows
 also trigger on the `labeled` and `unlabeled` activity types, so adding or removing the override label re-runs them, and

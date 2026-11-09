@@ -39,8 +39,9 @@ no checks, and the Stage 4 review loop halted with `test results not measured` e
 trigger or if `push` widens beyond `main`.
 
 Every job of every workflow ends with the CI timing regression gate described below. The six pull-request workflows also
-trigger on the `labeled` and `unlabeled` activity types, so adding or removing the override label re-runs them, and
-grant their job `actions: read` so it can read the baseline artefacts.
+trigger on the `labeled` and `unlabeled` activity types, so adding or removing the override label re-runs them. All of
+them except `docker-build.yml`, which declares only `contents: read`, grant their job `actions: read` so it can read the
+baseline artefacts.
 
 ## CI Timing Regression Gate
 

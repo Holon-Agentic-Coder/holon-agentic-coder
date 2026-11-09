@@ -140,11 +140,11 @@ direct `holon execute`, or a flow run whose back-fill write failed, decides it i
 Child intent rows: when Stage 3 runs a recorded sub-intent list, the flow creates each child through the same Stage 1
 intent creator, so each child appends an ordinary intent row on its own intent branch. Its payload carries `slug`,
 `description`, `goal`, `parent_intent_id`, `target_branch` (the deciding node's branch, equal to `deciding_branch`
-below; until the implementation follows, the current flow still records the parent intent branch `I-.../_` here, and
-historic rows are never rewritten), the parent plan's resolved `entropy_budget` when one was recorded, the parent's
-`labels` when present, and `sub_intent_depth` (integer, `>= 1`): the child's nesting level below the root intent. Root
-intent rows normally omit the field and are read as depth `0`; missing or non-numeric values are also read as `0`. The
-flow refuses to run a sub-intent list whose children would exceed `sandbox_executor.budgets.MAX_SUB_INTENT_DEPTH` (`2`).
+below, in practice the plan branch; historic rows are never rewritten), the parent plan's resolved `entropy_budget` when
+one was recorded, the parent's `labels` when present, and `sub_intent_depth` (integer, `>= 1`): the child's nesting
+level below the root intent. Root intent rows normally omit the field and are read as depth `0`; missing or non-numeric
+values are also read as `0`. The flow refuses to run a sub-intent list whose children would exceed
+`sandbox_executor.budgets.MAX_SUB_INTENT_DEPTH` (`2`).
 
 Child intent rows also record the node that decided the split, under which the child's branch nests (see
 [Git Flow](git_flow.md#22-sub-intent-branch-nested-under-the-deciding-node)): `deciding_branch` (the deciding node's
@@ -738,8 +738,7 @@ These are invariants that validators should enforce:
    - `0 <= predicted.learning_value <= 10`
    - `predicted.entropy >= 0`
    - `actual.entropy >= 0`
-9. If a sub-intent merges, the target must be its deciding node's branch (no merges to `main` from sub-intents); until
-   the implementation follows, the current flow still records the parent intent branch `I-.../_` as the target, and
+9. If a sub-intent merges, the target must be its deciding node's branch (no merges to `main` from sub-intents);
    historic rows are never rewritten.
 
 ---

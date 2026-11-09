@@ -200,8 +200,8 @@ Holon enforces a strict Git discipline to ensure isolation, reproducibility, and
 - Sub-intents must rebase from the deciding node's branch **before** and **after** execution
 - Only root intents are reviewed by humans: the root intent's PR to `main` is the only human stop
 
-Until the implementation follows, the current `holon flow` still targets the parent intent branch and leaves each
-sub-intent PR merge to the maintainer (see [`docs/git_flow.md`](docs/git_flow.md) Stage 3).
+`holon flow` targets each sub-intent at its plan branch and merges it there automatically after consensus and
+calibration (see [`docs/git_flow.md`](docs/git_flow.md) Stage 3).
 
 **For complete details**, see [`docs/git_flow.md`](docs/git_flow.md).
 

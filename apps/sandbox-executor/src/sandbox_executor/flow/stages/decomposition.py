@@ -105,7 +105,7 @@ def _run_decomposed_plan(
             context,
             FlowStage.EXECUTE,
             start_time,
-            "Execute stage failed: the executor recorded a decomposed plan without any sub-intent list items.",
+            "Execute stage failed: the plan row records a decomposed decision without any sub-intent list items.",
             **payload,
         )
     plan_branch = str(context.plan_branch or summary_row.get("plan_branch") or "")

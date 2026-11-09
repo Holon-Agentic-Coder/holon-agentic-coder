@@ -9,6 +9,7 @@
     "git_refs.py": 367,
     "github/__init__.py": 1,
     "github/ci.py": 228,
+    "github/merge.py": 271,
     "github/pr.py": 515,
     "github/review_post.py": 216,
     "intent_questions.py": 112,

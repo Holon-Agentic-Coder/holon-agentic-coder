@@ -66,3 +66,32 @@ parent executor or a child.
   this module's seven definitions are declared there. Budget entry `ledger_interleave.py: 112`.
 - `uv run pytest apps/sandbox-executor/tests/flow -n auto --dist worksteal`: 515 passed in `5.05s`; `ruff check`,
   `ruff format --check` and the budget script pass.
+
+### Step 3: `flow/github/merge.py` with the guarded `merge_child_pr` and the pure refusal check
+
+- `merge_refusal_reason(base, expected, default)`: pure and fail-closed. It normalises `refs/heads/`, `refs/remotes/`
+  and `origin/` prefixes and refuses a failed or blank default-branch lookup, an empty base or expected base, `main`,
+  `master` or the default branch on either side, and any base other than the expected plan branch.
+- `lookup_default_branch` reads `gh repo view --json defaultBranchRef` and returns None on any failure (no `main`
+  fallback). `run_gh` is the single `gh` seam (`gh_runner(runner)` resolves it at call time); a missing binary or a
+  timeout is a failed process, never a raise.
+- `merge_child_pr(repo_dir, pr_number, plan_branch, runner=None)` returns a `MergeResult` (`merged`, `merge_commit`,
+  `reason`, `already_merged`): an already merged PR into the plan branch is an idempotent success; otherwise the
+  refusal check runs, `merge_into_branch` brings `origin/{plan}` into the child head when it is not an ancestor (in a
+  temporary worktree, ledger-only conflicts interleaved, anything else aborted and refused), a bounded wait
+  (`MERGE_SETTLE_SECONDS`) requires `headRefOid` to match, `mergeable == MERGEABLE` and green checks (no checks is
+  `unmeasured`, never green), the PR is re-read and the refusal check runs again, then only
+  `gh pr merge <n> --merge --match-head-commit <sha>` runs and the PR must report `MERGED`.
+- Deviation: CI is read with `gh pr checks` through the injected runner instead of `probe_ci_checks`, because
+  `probe_ci_checks` calls `subprocess` directly and falls back to a passing `local_tests` result without `gh`, which is
+  not fail-closed (the plan's discard clause allows keeping the logic in `merge.py`).
+- `merge_into_branch` is public so Stage 3 integration (Step 6) reuses it for the plan-branch-into-execution merge.
+- Tests: new `tests/flow/fake_gh.py` (`FakeGitHub`: PRs over a real bare origin; `gh pr merge --merge` performs a real
+  `git merge --no-ff`; every call recorded) and `tests/flow/github/test_merge.py` (30 tests): base `main` refused with
+  no `pr merge` call and `main` unchanged; `master`, the default branch, an unexpected base and a failed lookup refused
+  before any git write; red, pending and missing CI, `CONFLICTING` and `UNKNOWN` refused; the merge is a two-parent
+  commit made only with `--merge --match-head-commit`; idempotent re-merge; a stale child gets the plan branch merged
+  in first; non-ledger conflicts refused; ledger-only conflicts interleaved.
+- Move proof: 24 definitions declared in `added_definitions`; budget entry `github/merge.py: 271`.
+- `uv run pytest apps/sandbox-executor/tests/flow -n auto --dist worksteal`: 545 passed in `5.34s`; lint and budgets
+  pass.

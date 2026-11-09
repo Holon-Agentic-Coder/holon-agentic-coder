@@ -59,10 +59,10 @@ Entropy represents the disorder and complexity introduced by plans:
   `## Sub-intent list` followed by top-level bullet or numbered items, one concrete child intent per item (indented
   nested bullets are details of the item above, never children of their own). The flow runs each item sequentially
   through the full pipeline as a child intent cut from and targeting the deciding plan branch (its `deciding_branch`);
-  any level may decide a split, but in practice the plan does. Until the implementation follows, the current flow still
-  cuts each child from and targets the parent intent branch and leaves each child PR merge to the maintainer (see
-  [Git Flow](../git_flow.md) Stage 3 under the flow equivalence guarantee). Per-step sub‑intent recommendations alone
-  never trigger decomposition, and the executor never fabricates child work.
+  any level may decide a split, but in practice the plan does. Each child is merged into the plan branch after its own
+  review consensus and calibration, before the next child starts (see [Git Flow](../git_flow.md) Stage 3 under the flow
+  equivalence guarantee). Per-step sub‑intent recommendations alone never trigger decomposition, and the executor never
+  fabricates child work.
 - **Bounded Re-planning:** A plan above its budget without that list is sent back to the planner with a "Re-plan
   request" paragraph (passed through `HOLON_REPLAN_FEEDBACK`, never written to a ledger), at most `MAX_REPLAN_ATTEMPTS`
   (`2`) times, after which the Execute stage fails with a clear message.

@@ -2951,8 +2951,10 @@ class TestExecutor(unittest.TestCase):
         decomposed, failure = summaries
         self.assertEqual(failure["ledger_revision"], 2)
         self.assertIn("Pre-push sync failure", failure["summary"])
-        self.assertEqual(failure["sub_intents"], decomposed["sub_intents"])
-        self.assertEqual([item["slug"] for item in decomposed["sub_intents"]], ["create-db-schema", "build-api-routes"])
+        # The decomposed summary refers to the plan row's list (never copies it); the superseding row repeats it.
+        self.assertEqual(failure["plan_decision"], decomposed["plan_decision"])
+        self.assertEqual(decomposed["plan_decision"]["sub_intent_count"], 2)
+        self.assertNotIn("sub_intents", decomposed)
         self.assertEqual(failure["execution_id"], decomposed["execution_id"])
 
     def _clone_workspace(self, base_dir: str, bare_dir: str, plan_branch: str) -> str:
@@ -4335,8 +4337,13 @@ def test_should_decompose_ignores_per_step_recommendation_bullets():
     assert decision.sub_intents == []
 
 
-def _run_executor_main(
-    tmp_path, plan_row: dict, plan_md: str | None, intent_row: dict, commands: list | None = None
+def _run_executor_main(  # noqa: PLR0913
+    tmp_path,
+    plan_row: dict,
+    plan_md: str | None,
+    intent_row: dict,
+    commands: list | None = None,
+    plan_branch: str = "I-456/P-123/_",
 ) -> list[dict]:
     """Run executor.main() with mocked git and runner; return the executions.jsonl rows it wrote.
 
@@ -4373,7 +4380,7 @@ def _run_executor_main(
         patch("sandbox_executor.entrypoint.executor.get_runner", return_value=runner),
         patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value="/mock/repo"),
         patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
-        patch("sys.argv", ["executor.py", "I-456/P-123/_", "claude-agent", "claude-opus-5-5"]),
+        patch("sys.argv", ["executor.py", plan_branch, "claude-agent", "claude-opus-5-5"]),
     ):
         exit_code = 0
         try:
@@ -4389,20 +4396,6 @@ def _run_executor_main(
     statuses = [r.get("status") for r in rows if r.get("entry_type") == "summary"]
     assert exit_code == (executor.OVER_BUDGET_EXIT_CODE if statuses == ["over_budget"] else 0)
     return rows
-
-
-def test_main_decomposed_records_sub_intents_without_intent_rows(tmp_path):
-    plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 9.0, "plan_file": "plans/P-123.md"}
-    intent_row = {"branch": "I-456", "slug": "parent", "entropy_budget": 5.0}
-    plan_md = "# Plan\n\n## Sub-intent list\n\n1. Add the parser\n2. Add the CLI flag\n"
-
-    rows = _run_executor_main(tmp_path, plan_row, plan_md, intent_row)
-
-    summaries = [r for r in rows if r.get("entry_type") == "summary"]
-    assert len(summaries) == 1
-    assert summaries[0]["status"] == "decomposed"
-    assert summaries[0]["entropy_budget"] == 5.0
-    assert [s["slug"] for s in summaries[0]["sub_intents"]] == ["add-the-parser", "add-the-cli-flag"]
 
 
 def test_main_over_budget_reads_intent_budget_when_plan_row_has_none(tmp_path):
@@ -4429,12 +4422,23 @@ def test_main_over_budget_without_a_plan_row_judges_the_fallback_entropy_against
     assert (summary["status"], summary["entropy"], summary["entropy_budget"]) == ("over_budget", 3.0, 2.0)
 
 
+def test_main_fallback_plan_of_a_nested_child_derives_the_child_intent_branch(tmp_path):
+    # A child's plan branch is I-456/P-9--1-child/P-999/_, so its intent branch is I-456/P-9--1-child, not I-456.
+    plan_row = {"plan_id": "P-000", "intent_branch": "I-456/_", "entropy": 1.0}
+    intent_row = {"branch": "I-456/P-9--1-child", "slug": "child", "entropy_budget": 2.0}
+
+    rows = _run_executor_main(tmp_path, plan_row, None, intent_row, plan_branch="I-456/P-9--1-child/P-999/_")
+
+    (summary,) = [r for r in rows if r.get("entry_type") == "summary"]
+    assert (summary["status"], summary["entropy_budget"]) == ("over_budget", 2.0)
+
+
 @pytest.mark.parametrize(
     ("plan_md", "stdout_line", "stderr_line"),
     [
         (
             "# Plan\n\n## Sub-intent list\n\n1. Add the parser\n2. Add the CLI flag\n",
-            "Plan lists an explicit sub-intent list of 2 item(s); recording it.",
+            "The plan records an explicit sub-intent list of 2 item(s); referring to it.",
             None,
         ),
         (
@@ -4510,9 +4514,9 @@ def test_main_plan_decomposition_action_outcome(tmp_path, monkeypatch, plan_md, 
     [
         (
             "# Plan\n\n## Sub-intent list\n\n1. Add the parser\n2. Add the CLI flag\n",
-            "Plan I-456/P-123/_ lists 2 sub-intent(s); the flow runs each one through the full pipeline.",
-            "Recorded the sub-intent list of I-456/P-123/_ (2 item(s))",
-            "execute: recorded the sub-intent list of I-456/P-123/_ (2 item(s))",
+            "The plan I-456/P-123/_ records 2 sub-intent(s); the flow runs each one through the full pipeline.",
+            "The plan I-456/P-123/_ records 2 sub-intent(s)",
+            "execute: the plan I-456/P-123/_ records 2 sub-intent(s)",
         ),
         (
             "# Plan\n",

@@ -13,7 +13,8 @@ from unittest.mock import patch
 
 from sandbox_executor import flow as flow_module
 from sandbox_executor.budgets import resolve_entropy_budget
-from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE, _sanitize_string, should_decompose
+from sandbox_executor.decomposition_rule import DecompositionDecision, should_decompose
+from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE, _sanitize_string
 from sandbox_executor.entrypoint.planner import _sanitize_model_name
 from sandbox_executor.flow import FlowContext
 from sandbox_executor.review_ensemble import (
@@ -143,8 +144,11 @@ class FakeRoleAgents:
         clock_offset: int = 0,
         during_dispatch: Callable[[str, list[str]], None] | None = None,
         recorded_test_pass_rate: Any = None,
+        planner_records_decision: bool = True,
     ):
         self.root = root
+        # The current planner image records the decomposition decision on its plan row; False models an older image.
+        self.planner_records_decision = planner_records_decision
         # Written onto the executor's summary row as 'test_pass_rate' when not None (models a container test run).
         self.recorded_test_pass_rate = recorded_test_pass_rate
         self.origin = origin
@@ -195,26 +199,33 @@ class FakeRoleAgents:
         _git(work, "checkout", "-q", "-B", plan_branch, "FETCH_HEAD")
         plan_rel = f"plans/{plan_id}.md"
         (work / "plans").mkdir(exist_ok=True)
-        (work / plan_rel).write_text(PLAN_MARKDOWN.format(intent=intent_branch, plan_id=plan_id), encoding="utf-8")
-        _append_jsonl(
-            work / "holon-knowledge/ledger/plans.jsonl",
-            {
-                "plan_id": plan_id,
-                "intent_branch": intent_branch,
-                "agent": agent,
-                "model": model,
-                "p_success": 0.8,
-                "entropy": 2.0,
-                "impact": 50.0,
-                "cost": 5.0,
-                "learning_value": 2.0,
-                "ev": 35.4,
-                "plan_file": plan_rel,
-                "status": "proposed",
-            },
-        )
+        plan_content = PLAN_MARKDOWN.format(intent=intent_branch, plan_id=plan_id)
+        (work / plan_rel).write_text(plan_content, encoding="utf-8")
+        row = {
+            "plan_id": plan_id,
+            "intent_branch": intent_branch,
+            "agent": agent,
+            "model": model,
+            "p_success": 0.8,
+            "entropy": 2.0,
+            "impact": 50.0,
+            "cost": 5.0,
+            "learning_value": 2.0,
+            "ev": 35.4,
+            "plan_file": plan_rel,
+            "status": "proposed",
+        }
+        _append_jsonl(work / "holon-knowledge/ledger/plans.jsonl", self._recorded(work, row, plan_content))
         self._push(work, plan_branch, f"plan: {plan_id} created by {agent} ({model})")
         return 0
+
+    def _recorded(self, work: Path, row: dict[str, Any], plan_content: str) -> dict[str, Any]:
+        """Return the plan row as the planner image writes it: with the recorded decision unless it is an older one."""
+        if not self.planner_records_decision:
+            return row
+        intents_path = work / "holon-knowledge/ledger/intents.jsonl"
+        intents = [json.loads(line) for line in intents_path.read_text().splitlines() if line.strip()]
+        return {**row, **should_decompose(row, plan_content, intents[-1] if intents else None).to_plan_fields()}
 
     def _execute(self, work: Path, args: list[str], _kwargs: dict[str, Any]) -> int:
         plan_branch, agent, model = args
@@ -442,8 +453,8 @@ def _init_mergeability_repo(repo: Path) -> Path:
 # Entropy budget handoff: Stage 3 never halts for a human, re-plans, and drives explicit sub-intent lists
 # ---------------------------------------------------------------------------
 class BudgetRoleAgents(FakeRoleAgents):
-    """FakeRoleAgents whose planner writes chosen entropies and sections, and whose executor judges plans like the
-    real entrypoint (``should_decompose``), recording ``decomposed`` and ``over_budget`` rows instead of running.
+    """FakeRoleAgents whose planner writes chosen entropies and sections, and whose executor reads the plan row's
+    recorded decision like the real entrypoint, recording ``decomposed`` and ``over_budget`` rows instead of running.
 
     ``plans`` is consumed one item per planner call: ``(entropy, extra_markdown)``; the last item repeats. A plan for
     an intent branch containing ``fail_planning_for`` writes nothing, so that child's Stage 2 fails.
@@ -465,6 +476,8 @@ class BudgetRoleAgents(FakeRoleAgents):
         self.replan_feedback_seen: list[str | None] = []
         self.in_progress = False
         self.overlaps = 0
+        # When set, the fake executor reports this decision whatever the plan row records (models a disagreement).
+        self.executor_decision: DecompositionDecision | None = None
 
     def __call__(self, role: str, runner: str, model: str, positional_args: list[str], **kwargs: Any) -> int:
         if self.in_progress:
@@ -490,9 +503,8 @@ class BudgetRoleAgents(FakeRoleAgents):
         _git(work, "checkout", "-q", "-B", plan_branch, "FETCH_HEAD")
         plan_rel = f"plans/{plan_id}.md"
         (work / "plans").mkdir(exist_ok=True)
-        (work / plan_rel).write_text(
-            PLAN_MARKDOWN.format(intent=intent_branch, plan_id=plan_id) + extra, encoding="utf-8"
-        )
+        plan_content = PLAN_MARKDOWN.format(intent=intent_branch, plan_id=plan_id) + extra
+        (work / plan_rel).write_text(plan_content, encoding="utf-8")
         row: dict[str, Any] = {
             "plan_id": plan_id,
             "intent_branch": intent_branch,
@@ -509,7 +521,7 @@ class BudgetRoleAgents(FakeRoleAgents):
                 if line.strip()
             ]
             row["entropy_budget"] = resolve_entropy_budget({}, intents[-1] if intents else None)
-        _append_jsonl(work / "holon-knowledge/ledger/plans.jsonl", row)
+        _append_jsonl(work / "holon-knowledge/ledger/plans.jsonl", self._recorded(work, row, plan_content))
         self._push(work, plan_branch, f"plan: {plan_id} created by {agent} ({model})")
         return 0
 
@@ -521,8 +533,13 @@ class BudgetRoleAgents(FakeRoleAgents):
         plan_row = next(r for r in reversed(plans) if r.get("plan_id") == plan_id)
         intent_rows = _ledger_rows(work, "FETCH_HEAD", "intents.jsonl")
         content = _git(work, "show", f"FETCH_HEAD:{plan_row['plan_file']}")
-        decision = should_decompose(plan_row, content, intent_rows[-1] if intent_rows else None)
+        # Like the real executor: the newest plan row's recorded decision, the rule only for an older row.
+        decision = self.executor_decision or DecompositionDecision.from_plan_row(plan_row)
+        if decision is None:
+            decision = should_decompose(plan_row, content, intent_rows[-1] if intent_rows else None)
         if decision.decision == "execute":
+            # A file of its own per plan, so a child cut after an earlier sibling merged still has an effective diff.
+            (work / "src" / f"{plan_id.replace('-', '_')}.py").write_text(f"PLAN = {plan_id!r}\n", encoding="utf-8")
             return super()._execute(work, args, kwargs)
         agent, model = args[1], args[2]
         exec_id = f"E-{self.now()}-{_sanitize_string(agent)}-{_sanitize_string(model)}"
@@ -537,8 +554,14 @@ class BudgetRoleAgents(FakeRoleAgents):
             "entropy_budget": decision.entropy_budget,
             "ledger_revision": 1,
         }
-        if decision.sub_intents:
-            row["sub_intents"] = decision.sub_intents
+        if decision.decision == "decomposed":
+            # The summary refers to the plan row's list and never copies it.
+            row["plan_decision"] = {
+                "plan_id": plan_id,
+                "plan_branch": plan_branch,
+                "decision": "decomposed",
+                "sub_intent_count": len(decision.sub_intents),
+            }
         _append_jsonl(work / "holon-knowledge/ledger/executions.jsonl", row)
         self._push(work, exec_branch, f"execute: {exec_id} recorded {decision.decision}")
         # Like the real executor: a refused plan exits non-zero after pushing its row.

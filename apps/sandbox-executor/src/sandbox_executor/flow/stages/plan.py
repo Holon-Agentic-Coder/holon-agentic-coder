@@ -1,6 +1,4 @@
-"""Stage 2 (Plan Generation): dispatch the planner and adopt its plan, and the entropy budget decision
-that Stage 3 applies.
-"""
+"""Stage 2 (Plan Generation): dispatch the planner and adopt its plan."""
 
 from __future__ import annotations
 
@@ -12,7 +10,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.budgets import ENV_REPLAN_FEEDBACK
-from sandbox_executor.entrypoint.executor import DecompositionDecision, should_decompose
 from sandbox_executor.entrypoint.planner import _sanitize_model_name, load_metrics_config, parse_metrics
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _dispatch_role, _stage_failure
@@ -21,7 +18,6 @@ from sandbox_executor.flow.git_refs import (
     _fetch_branch_prefix_error,
     _git_show_text,
     _read_ledger_rows,
-    _resolve_branch_ref,
     _snapshot_child_branches,
     _track_local_branch,
 )
@@ -197,51 +193,8 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
     return result
 
 
-def _plan_budget_decision(context: FlowContext) -> DecompositionDecision | None:
-    """Judge the active plan against its entropy budget before the executor is dispatched.
-
-    Reads the plan row and plan file from the plan branch (origin first, then local) and calls the executor's own
-    ``should_decompose`` with the intent payload, so the flow and the container apply one rule. Returns ``None`` when
-    the plan row cannot be read, leaving the decision to the executor container.
-    """
-    if not context.plan_branch:
-        return None
-    plan_ref = _resolve_branch_ref(context.target_worktree, context.plan_branch)
-    if not plan_ref:
-        return None
-    plan_id = context.plan_branch.removesuffix("/_").rsplit("/", 1)[-1]
-    rows = [
-        r for r in _read_ledger_rows(context.target_worktree, plan_ref, "plans.jsonl") if r.get("plan_id") == plan_id
-    ]
-    if not rows:
-        return None
-    plan_row = rows[-1]
-    plan_md_rel = str(plan_row.get("plan_file") or f"plans/{plan_id}.md")
-    if not re.fullmatch(r"plans/P-[^/]+\.md", plan_md_rel):
-        plan_md_rel = f"plans/{plan_id}.md"
-    plan_content = _git_show_text(context.target_worktree, plan_ref, plan_md_rel) or ""
-    return should_decompose(plan_row, plan_content, context.intent_data)
-
-
 def _format_entropy(value: Any) -> str:
     """Render an entropy value for messages, tolerating missing or non-numeric values."""
     if isinstance(value, int | float) and not isinstance(value, bool):
         return f"{float(value):g}"
     return str(value) if value is not None else "unknown"
-
-
-def _over_budget_failure(
-    context: FlowContext, start_time: str, entropy: Any, entropy_budget: Any, *, dispatched: bool, **payload: Any
-) -> StageResult:
-    """Fail Stage 3 for a plan above its entropy budget that lists no sub-intent list (re-planned by the engine)."""
-    payload.update(
-        {"over_budget": True, "entropy": entropy, "entropy_budget": entropy_budget, "dispatched": dispatched}
-    )
-    return _stage_failure(
-        context,
-        FlowStage.EXECUTE,
-        start_time,
-        f"Execute stage failed: plan entropy {_format_entropy(entropy)} exceeds the entropy budget "
-        f"{_format_entropy(entropy_budget)} and the plan lists no sub-intent list.",
-        **payload,
-    )

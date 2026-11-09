@@ -203,12 +203,14 @@ def test_resolve_entropy_budget_invalid_values_fall_through(bad):
 
 
 def test_default_entropy_budget_is_the_single_shared_constant():
-    from sandbox_executor.entrypoint import executor, planner
+    # The decomposition rule (and so its budget inputs) moved from entrypoint.executor to decomposition_rule.
+    from sandbox_executor import decomposition_rule
+    from sandbox_executor.entrypoint import planner
 
     assert DEFAULT_ENTROPY_BUDGET == 15.0
-    assert executor.DEFAULT_ENTROPY_BUDGET is DEFAULT_ENTROPY_BUDGET
+    assert decomposition_rule.DEFAULT_ENTROPY_BUDGET is DEFAULT_ENTROPY_BUDGET
     assert planner.resolve_entropy_budget is resolve_entropy_budget
-    assert executor.resolve_entropy_budget is resolve_entropy_budget
+    assert decomposition_rule.resolve_entropy_budget is resolve_entropy_budget
 
 
 def test_replan_and_depth_bounds_are_pinned_to_the_documented_values():

@@ -31,10 +31,10 @@ This directory contains the CI/CD workflows for the `holon-agentic-coder` projec
 ### Pull requests into any branch
 
 None of the six pull-request workflows filters the `pull_request` trigger by base branch. A decomposed plan runs child
-intents whose pull requests are stacked on the parent intent branch, not `main`; with a `main`-only filter they received
-no checks, and the Stage 4 review loop halted with `test results not measured` even when every reviewer approved. The
-`push` trigger stays on `main`, so a commit on an intent branch is checked once, by its pull request, and a push to
-`main` once, by `push`. The timing gate on a stacked pull request still compares against the `main` baselines.
+intents whose pull requests are stacked on the plan branch that listed them, not `main`; with a `main`-only filter they
+received no checks, and the Stage 4 review loop halted with `test results not measured` even when every reviewer
+approved. The `push` trigger stays on `main`, so a commit on an intent branch is checked once, by its pull request, and
+a push to `main` once, by `push`. The timing gate on a stacked pull request still compares against the `main` baselines.
 `apps/sandbox-executor/tests/test_workflow_triggers.py` fails if a base-branch filter returns to any `pull_request`
 trigger or if `push` widens beyond `main`.
 

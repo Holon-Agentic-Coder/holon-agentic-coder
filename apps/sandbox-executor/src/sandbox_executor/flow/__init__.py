@@ -30,6 +30,7 @@ from sandbox_executor.flow.checkpoint import (
     migrate_checkpoint_data,
     save_checkpoint,
 )
+from sandbox_executor.flow.child_progress import _child_intent_branch, _sub_intent_depth
 from sandbox_executor.flow.constants import CI_REGISTRATION_POLL_SECONDS, CURRENT_CONTEXT_SCHEMA_VERSION
 from sandbox_executor.flow.context import (
     _SUMMARY_STATUS_WORDS,
@@ -48,6 +49,7 @@ from sandbox_executor.flow.dispatch import (
 )
 from sandbox_executor.flow.git_refs import (
     EXECUTOR_GIT_ENV,
+    _append_ledger_row,
     _append_superseding_execution_row,
     _discover_child_branch,
     _execution_effective_diff,
@@ -160,20 +162,16 @@ from sandbox_executor.flow.review.workspace import (
     reviewers_sandboxed,
 )
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
-from sandbox_executor.flow.stages import decomposition as _decomposition
+from sandbox_executor.flow.stages import children as _children
 from sandbox_executor.flow.stages.calibrate import (
     _commit_stage5_promoted_artifacts,
     _commit_stage5_reconciliation,
     run_calibrate_stage,
 )
+from sandbox_executor.flow.stages.children import _PR_URL_RE, _child_context, _child_review_pr
 from sandbox_executor.flow.stages.decomposition import (
-    _PR_URL_RE,
-    _child_context,
-    _child_intent_branch,
-    _child_review_pr,
     _decomposition_child_lines,
     _run_decomposed_plan,
-    _sub_intent_depth,
     _sub_intent_depth_error,
     format_decomposition_summary,
 )
@@ -185,12 +183,8 @@ from sandbox_executor.flow.stages.execute import (
     run_execute_stage,
 )
 from sandbox_executor.flow.stages.intent import _reused_intent_conflict, run_intent_stage
-from sandbox_executor.flow.stages.plan import (
-    _format_entropy,
-    _over_budget_failure,
-    _plan_budget_decision,
-    run_plan_stage,
-)
+from sandbox_executor.flow.stages.plan import _format_entropy, run_plan_stage
+from sandbox_executor.flow.stages.plan_decision import _backfill_plan_row, _over_budget_failure, _plan_budget_decision
 from sandbox_executor.flow.stages.review import (
     REVIEW_GIT_ENV,
     TESTS_NOT_MEASURED_ERROR,
@@ -202,8 +196,8 @@ from sandbox_executor.git import run_git
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.review_report import build_pr_review_consensus_report
 
-# stages.decomposition runs child flows through PipelineEngine, but pipeline imports the stages; bind it late.
-_decomposition.PipelineEngine = PipelineEngine
+# stages.children runs child flows through PipelineEngine, but pipeline imports the stages; bind it late.
+_children.PipelineEngine = PipelineEngine
 
 __all__ = [
     "CHECKPOINT_MIGRATION_REGISTRY",
@@ -242,10 +236,12 @@ __all__ = [
     "ReviewWorkspaceSession",
     "StageResult",
     "StageStatus",
+    "_append_ledger_row",
     "_append_only_union",
     "_append_superseding_execution_row",
     "_attach_transported_detail",
     "_augment_pr_text_with_rejected",
+    "_backfill_plan_row",
     "_bounded_error_context",
     "_checkout_execution_branch",
     "_child_context",

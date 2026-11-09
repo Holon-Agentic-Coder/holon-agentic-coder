@@ -72,6 +72,54 @@ class TestCalibrationDualEV(unittest.TestCase):
         self.assertEqual(metrics.ev_with_bugs, 31.5)
         self.assertEqual(metrics.bug_ev_drag, 0.0)
 
+    def test_integrated_decomposed_parent_is_scored_as_success(self) -> None:
+        """The superseding integration row (status decomposed, integrated, no exit_code) is a converged success."""
+        predicted = PredictedMetrics(p_success=0.95, entropy=1.0, impact=50.0, cost=4.0, learning_value=2.0, ev=46.0)
+        jsonl = (
+            '{"entry_type": "summary", "execution_id": "E-dec-1", "plan_branch": "I-t/P-t/_", '
+            '"status": "decomposed", "ledger_revision": 1, "created_at": "2026-11-09T01:00:00Z"}\n'
+            '{"entry_type": "summary", "execution_id": "E-dec-1", "plan_branch": "I-t/P-t/_", '
+            '"status": "decomposed", "integrated": true, "ledger_revision": 2, "created_at": "2026-11-09T02:00:00Z"}\n'
+        )
+
+        def mock_subp(cmd: list[str], **kwargs: object) -> MagicMock:
+            if "diff" in cmd:
+                return MagicMock(returncode=0, stdout="1 file changed, 10 insertions(+), 2 deletions(-)\n")
+            return MagicMock(returncode=0, stdout="")
+
+        with (
+            patch("sandbox_executor.calibration.read_git_file", return_value=jsonl),
+            patch("subprocess.run", side_effect=mock_subp),
+        ):
+            actual, _meta = parse_actual_metrics("E-dec-1", "I-t/P-t/_", predicted)
+        self.assertEqual(actual.exit_code, 0)
+        self.assertEqual(actual.p_success, 1.0)
+        self.assertEqual(actual.p_success_clean, 1.0)
+        self.assertEqual(actual.p_success_with_bugs, 1.0)
+        self.assertEqual(actual.bug_ev_drag, 0.0)
+
+    def test_non_integrated_final_decomposed_row_is_not_a_converged_success(self) -> None:
+        """A final decomposed row without ``integrated: true`` (absent or false) is not scored as success."""
+        predicted = PredictedMetrics(p_success=0.95, entropy=1.0, impact=50.0, cost=4.0, learning_value=2.0, ev=46.0)
+        for marker in ("", '"integrated": false, '):
+            jsonl = (
+                '{"entry_type": "summary", "execution_id": "E-dec-2", "plan_branch": "I-t/P-t/_", '
+                f'"status": "decomposed", {marker}"ledger_revision": 1, "created_at": "2026-11-09T01:00:00Z"}}\n'
+            )
+
+            def mock_subp(cmd: list[str], **kwargs: object) -> MagicMock:
+                if "diff" in cmd:
+                    return MagicMock(returncode=0, stdout="1 file changed, 10 insertions(+), 2 deletions(-)\n")
+                return MagicMock(returncode=0, stdout="")
+
+            with (
+                patch("sandbox_executor.calibration.read_git_file", return_value=jsonl),
+                patch("subprocess.run", side_effect=mock_subp),
+            ):
+                actual, _meta = parse_actual_metrics("E-dec-2", "I-t/P-t/_", predicted)
+            self.assertEqual(actual.p_success, 0.0, marker)
+            self.assertEqual(actual.p_success_clean, 0.0, marker)
+
     def test_intermediate_failure_with_converged_recovery(self) -> None:
         """Intermediate failed summary row followed by converged recovery produces positive bug drag."""
         records = [

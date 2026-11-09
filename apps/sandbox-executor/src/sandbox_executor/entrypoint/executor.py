@@ -28,20 +28,23 @@ import tempfile
 import time
 import traceback
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.agent_defaults import FALLBACK_AGENT, default_model_for
 from sandbox_executor.agent_runner import cleanup_repo_dir, get_repo_url, get_runner, get_workspace_dir
 from sandbox_executor.artefacts import EXECUTION_SPEC, ArtefactReport, execution_write_protocol
-from sandbox_executor.budgets import (
-    DEFAULT_ENTROPY_BUDGET,
-    BudgetBreach,
-    StageTimer,
-    load_budgets,
-    resolve_entropy_budget,
-)
+from sandbox_executor.budgets import BudgetBreach, StageTimer, load_budgets
+
+# The decomposition rule lives in the neutral module; it is re-exported here so existing importers keep working.
+from sandbox_executor.decomposition_rule import DECISION_DECOMPOSED as DECISION_DECOMPOSED
+from sandbox_executor.decomposition_rule import DECISION_EXECUTE as DECISION_EXECUTE
+from sandbox_executor.decomposition_rule import DECISION_OVER_BUDGET as DECISION_OVER_BUDGET
+from sandbox_executor.decomposition_rule import DecompositionDecision as DecompositionDecision
+from sandbox_executor.decomposition_rule import InvalidPlanDecisionError
+from sandbox_executor.decomposition_rule import is_placeholder_item as is_placeholder_item
+from sandbox_executor.decomposition_rule import parse_sub_intent_list as parse_sub_intent_list
+from sandbox_executor.decomposition_rule import should_decompose as should_decompose
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import (
@@ -710,10 +713,6 @@ def _sanitize_string(name: str) -> str:
     return s or "unknown"
 
 
-# Decision values returned by should_decompose().
-DECISION_EXECUTE = "execute"
-DECISION_DECOMPOSED = "decomposed"
-DECISION_OVER_BUDGET = "over_budget"
 # Exit status of an executor run that refused an over-budget plan and committed its over_budget row to the execution
 # branch (pushed unless pushing is disabled). Distinct from 1 (a failed run) so the flow can tell the refusal apart and
 # read that row, while a direct 'holon execute' still exits non-zero. Every other over_budget outcome exits 1.
@@ -772,248 +771,25 @@ _PRIVATE_KEY_MASK = "[REDACTED PRIVATE KEY]"
 _PARTIAL_BRANCH_RE = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/E-\d+-[A-Za-z0-9._-]+/_$")
 _SHA_RE = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 
-# Normalised heading texts (lower-cased, hyphens, underscores and runs of spaces collapsed to one space) that open an
-# explicit sub-intent list. The legacy capitalised plural heading normalises to "sub intents".
-_SUB_INTENT_HEADINGS = frozenset({"sub intent list", "sub intents"})
-# An ATX heading (matched on a stripped line): 1-6 "#" followed by whitespace and the text, or by nothing at all, so
-# a bare "#" or "##" is an empty heading, as in CommonMark; group 2 is None for an empty heading.
-_HEADING_RE = re.compile(r"^(#{1,6})(?:\s+(.*?)\s*#*\s*)?$")
-_LIST_ITEM_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+(.*)$")
-# An item is a placeholder ("no child work") when, once normalised by _normalise_placeholder_item, its first whole
-# word is one of these, whatever follows: "None (plan fits the budget)", "N/A (single step)" and "No sub-intents
-# needed" are placeholders, while "Nonetheless ...", "Normalise ...", "Notify ..." and "Note ..." name real work. The
-# planner template requires every real item to start with an imperative verb, so a real item never opens with one.
-_PLACEHOLDER_RE = re.compile(r"^(?:none|n/a|na|nil|no|not)\b")
-# Wrapping characters stripped from both ends of an item before the placeholder test: brackets, parentheses, straight
-# and curly quotes, and markdown emphasis or code markers.
-_PLACEHOLDER_WRAPPERS = "()[]{}<>\"'`*_~\u2018\u2019\u201c\u201d"
-# Code fences, matched against a stripped line so a fence nested in a list item at any indentation is still a fence: an
-# opener is 3+ backticks or tildes (a backtick fence's info string may not contain a backtick); it closes only on a line
-# of the same character, at least as long, with nothing but whitespace after it.
-_FENCE_OPEN_RE = re.compile(r"^(`{3,}(?=[^`]*$)|~{3,})")
-_FENCE_CLOSE_RE = re.compile(r"^(`{3,}|~{3,})$")
-# A thematic break: 3+ of the same "*", "-" or "_", optionally separated by spaces or tabs (matched on a stripped line).
-_THEMATIC_BREAK_RE = re.compile(r"^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$")
-# A setext heading underline (matched on a stripped line): only "=" (level 1) or only "-" (level 2), no inner spaces.
-_SETEXT_UNDERLINE_RE = re.compile(r"^(=+|-+)$")
 
-
-@dataclass(frozen=True)
-class DecompositionDecision:
-    """Outcome of :func:`should_decompose`.
-
-    Attributes:
-        decision: ``"execute"``, ``"decomposed"`` (the plan lists an explicit sub-intent list) or ``"over_budget"``
-            (the plan entropy exceeds the budget and the plan lists no sub-intent list).
-        sub_intents: The parsed sub-intent list, one ``{slug, description, goal}`` dict per item; empty unless
-            ``decision`` is ``"decomposed"``.
-        entropy: The plan entropy compared against the budget.
-        entropy_budget: The resolved entropy budget (see :func:`sandbox_executor.budgets.resolve_entropy_budget`).
-    """
-
-    decision: str
-    sub_intents: list[dict[str, Any]] = field(default_factory=list)
-    entropy: float = 0.0
-    entropy_budget: float = DEFAULT_ENTROPY_BUDGET
-
-
-_MAX_LIST_INDENT = 3
-"""Deepest indentation, in columns, at which CommonMark still reads a list item as top-level."""
-
-
-def _normalise_heading(text: str) -> str:
-    """Lower-case a heading and collapse hyphens, underscores, non-breaking hyphens and whitespace to single spaces."""
-    return re.sub(r"[\s\-_\u2010\u2011]+", " ", text.strip().lower()).strip()
-
-
-def _normalise_placeholder_item(text: str) -> str:
-    """Lower-case an item, strip wrapping brackets, quotes and emphasis markers, and drop trailing punctuation."""
-    normalised = re.sub(r"\s+", " ", text).strip()
-    previous = None
-    while normalised != previous:
-        previous = normalised
-        normalised = normalised.strip(_PLACEHOLDER_WRAPPERS + " ").rstrip(".!?;:,")
-    return normalised.lower()
-
-
-def is_placeholder_item(text: str) -> bool:
-    """True when a sub-intent list item says there is no child work rather than naming any (see _PLACEHOLDER_RE)."""
-    return bool(_PLACEHOLDER_RE.match(_normalise_placeholder_item(text)))
-
-
-def _paragraph_state(
-    stripped: str, indent: int, kind: str | None, list_col: int | None
-) -> tuple[str | None, int | None]:
-    """Return the ``(paragraph kind, list content column)`` after a line outside fences that is not an ATX heading.
-
-    The kind is ``"text"`` for a plain paragraph, ``"item"`` for a list item and its content (including lazy
-    continuation lines, which CommonMark folds into the item's paragraph even at column 0) and ``None`` after a blank
-    line, a thematic break or an indented code line. ``list_col`` is the content column of the open top-level item, so
-    a line after a blank line still belongs to the item when indented at least that far.
-    """
-    if not stripped:
-        return None, list_col
-    nested = list_col is not None and indent >= list_col
-    if indent <= _MAX_LIST_INDENT and _THEMATIC_BREAK_RE.match(stripped):
-        return None, list_col if nested else None
-    item = _LIST_ITEM_RE.match(stripped)
-    if item and (indent <= _MAX_LIST_INDENT or nested):
-        return "item", list_col if nested else indent + len(stripped) - len(item.group(1))
-    if kind is not None:
-        # A continuation line, lazy or not, stays in the paragraph it continues.
-        return kind, list_col
-    if nested:
-        return "item", list_col
-    return ("text" if indent <= _MAX_LIST_INDENT else None), None
-
-
-def _setext_level(lines: list[str], index: int) -> int | None:
-    """Return the setext level (1 for ``=``, 2 for ``-``) when the line after a plain paragraph line underlines it.
-
-    The caller only asks for a line of a plain paragraph (``"text"`` from :func:`_paragraph_state`), never for a list
-    item, its content or its lazy continuation, so a ``---`` after any of them stays a thematic break and a ``===``
-    stays continuation text. The underline is only ``=`` or only ``-`` at 0-3 columns.
-    """
-    if index + 1 >= len(lines):
-        return None
-    following = lines[index + 1].expandtabs(4)
-    underline = _SETEXT_UNDERLINE_RE.match(following.strip())
-    if not underline or len(following) - len(following.lstrip()) > _MAX_LIST_INDENT:
-        return None
-    return 1 if underline.group(1)[0] == "=" else 2
-
-
-def parse_sub_intent_list(plan_content: str) -> list[dict[str, Any]]:  # noqa: C901, PLR0912, PLR0915
-    """Parse the explicit sub-intent list from a plan's markdown.
-
-    Only a level-2 or level-3 heading whose normalised text is ``sub intent list`` or ``sub intents`` opens the list;
-    top-level bullet and numbered items are collected until the next heading. The first item fixes the top-level
-    indentation (0-3 columns, as CommonMark allows); lines indented deeper than it, such as nested detail bullets,
-    never become items of their own: they are appended to the preceding item's description. A fence opens at any
-    indentation (so a code block nested in an item counts) and every line inside it is ignored, headings included; it
-    closes only on a run of the same character at least as long as its opener, and an unclosed fence runs to the end of
-    the plan. Outside fences, only a heading indented 0-3 columns ends the section, whether ATX (``## Next``) or setext
-    (a plain paragraph underlined with ``===`` or ``---``, see :func:`_setext_level`; a level-2 setext heading opens
-    the list like its ATX form), and thematic breaks (``* * *``, or ``---`` not under a plain paragraph, such as one
-    under an item or its lazy continuation line) at 0-3 columns are skipped.
-    Per-step sub-intent recommendation bullets are never under such a heading, so they are ignored. Each item becomes
-    ``{slug, description, goal}``; the slug and goal come from the item text only. Empty items, items with no
-    alphanumeric character and placeholder items are skipped (an item that, stripped of wrapping brackets, quotes and
-    emphasis and lower-cased, has ``none``, ``n/a``, ``na``, ``nil``, ``no`` or ``not`` as its first whole word; see
-    :func:`is_placeholder_item`), and duplicate slugs get a numeric suffix.
-
-    Args:
-        plan_content: The plan markdown.
-
-    Returns:
-        The parsed items, in plan order; empty when the plan has no such section.
-    """
-    items: list[tuple[str, list[str]]] = []
-    in_section = False
-    fence: str | None = None
-    base_indent: int | None = None
-    lines = plan_content.splitlines()
-    skip_underline = False
-    paragraph: str | None = None
-    paragraph_lines: list[str] = []
-    list_col: int | None = None
-    for index, line in enumerate(lines):
-        if skip_underline:
-            # The underline of the setext heading on the line above.
-            skip_underline = False
-            continue
-        expanded = line.expandtabs(4)
-        stripped = expanded.strip()
-        if fence is not None:
-            # Inside a fenced block nothing is a heading or an item; only a matching closing fence ends it.
-            closing = _FENCE_CLOSE_RE.match(stripped)
-            if closing and closing.group(1)[0] == fence[0] and len(closing.group(1)) >= len(fence):
-                fence = None
-            continue
-        indent = len(expanded) - len(expanded.lstrip())
-        opening = _FENCE_OPEN_RE.match(stripped)
-        if opening:
-            fence = opening.group(1)
-            paragraph = None
-            list_col = list_col if list_col is not None and indent >= list_col else None
-            continue
-        heading = _HEADING_RE.match(stripped) if indent <= _MAX_LIST_INDENT else None
-        setext = None
-        if not heading:
-            previous = paragraph
-            paragraph, list_col = _paragraph_state(stripped, indent, paragraph, list_col)
-            if paragraph == "text":
-                paragraph_lines = [*paragraph_lines, stripped] if previous == "text" else [stripped]
-                setext = _setext_level(lines, index)
-        if heading or setext:
-            # A setext heading's text is its whole paragraph, so "Sub-intent" then "list" over "---" opens the list.
-            if heading:
-                level, text = len(heading.group(1)), heading.group(2) or ""
-            else:
-                level, text = setext, " ".join(paragraph_lines)
-            in_section = level in (2, 3) and _normalise_heading(text) in _SUB_INTENT_HEADINGS
-            base_indent = None
-            paragraph, list_col = None, None
-            skip_underline = setext is not None
-            continue
-        if not in_section or not stripped:
-            continue
-        if indent <= _MAX_LIST_INDENT and _THEMATIC_BREAK_RE.match(stripped):
-            # "* * *" or "- - -" is a separator, never an item or an item's detail.
-            continue
-        if base_indent is not None and indent > base_indent:
-            # Nested bullets and continuation lines belong to the item above them, never to a child of their own.
-            items[-1][1].append(stripped)
-            continue
-        item = _LIST_ITEM_RE.match(stripped)
-        if item and item.group(1).strip() and indent <= _MAX_LIST_INDENT:
-            # CommonMark allows a top-level list to be indented 0-3 spaces; the first item fixes the section's level.
-            if base_indent is None:
-                base_indent = indent
-            items.append((item.group(1).strip(), []))
-
-    sub_intents: list[dict[str, Any]] = []
-    seen: dict[str, int] = {}
-    for text, details in items:
-        if is_placeholder_item(text) or not any(c.isalnum() for c in text):
-            # Placeholders and punctuation-only items name no child work.
-            continue
-        base = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:48].strip("-") or "sub-intent"
-        count = seen.get(base, 0) + 1
-        seen[base] = count
-        slug = base if count == 1 else f"{base}-{count}"
-        description = "\n".join([text, *details])
-        sub_intents.append({"slug": slug, "description": description, "goal": text})
-    return sub_intents
-
-
-def should_decompose(
-    plan_data: dict[str, Any], plan_content: str, intent_data: dict[str, Any] | None = None
+def _recorded_decision(
+    plan_data: dict[str, Any], plan_content: str, intent_data: dict[str, Any] | None
 ) -> DecompositionDecision:
-    """Decide whether a plan is executed, decomposed into its own sub-intent list, or rejected as over budget.
+    """Return the decomposition decision the plan row records.
 
-    The budget is the one the planner showed the agent and persisted on the plan row, resolved by
-    :func:`sandbox_executor.budgets.resolve_entropy_budget` (plan row, then intent row, then the shared default). A
-    non-empty explicit sub-intent list gives ``decomposed`` whatever the entropy; a plan above the budget without a
-    list gives ``over_budget``; anything else gives ``execute``. No child work is ever invented. The flow, not this
-    function, enforces ``MAX_SUB_INTENT_DEPTH``: it fails Stage 3 on a ``decomposed`` plan nested beyond that limit.
-
-    Args:
-        plan_data: The plan's ``plans.jsonl`` row.
-        plan_content: The plan markdown.
-        intent_data: The parent intent's ``intents.jsonl`` row, when known.
-
-    Returns:
-        A :class:`DecompositionDecision`.
+    Only a row that predates the record (an older planner image) is decided here, by the same rule: in a direct
+    'holon execute', or in a flow run whose back-fill write failed. A corrupt record exits 1 before any row is written;
+    the flow fails such a plan before dispatch.
     """
-    entropy = _safe_float(plan_data.get("entropy"), 0.0)
-    budget = resolve_entropy_budget(plan_data, intent_data)
-    sub_intents = parse_sub_intent_list(plan_content)
-    if sub_intents:
-        return DecompositionDecision(DECISION_DECOMPOSED, sub_intents, entropy, budget)
-    if entropy > budget:
-        return DecompositionDecision(DECISION_OVER_BUDGET, [], entropy, budget)
-    return DecompositionDecision(DECISION_EXECUTE, [], entropy, budget)
+    try:
+        recorded = DecompositionDecision.from_plan_row(plan_data)
+    except InvalidPlanDecisionError as exc:
+        print(
+            f"Error: the plan row of {plan_data.get('plan_id')} records an invalid decomposition decision: {exc}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return recorded if recorded is not None else should_decompose(plan_data, plan_content, intent_data)
 
 
 def sync_and_reconcile_pre_push(repo_dir: str, target_branch: str = "main") -> tuple[bool, str]:  # noqa: C901, PLR0911, PLR0912, PLR0915
@@ -1599,15 +1375,15 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                         if isinstance(plan_id, str) and (
                             plan_branch_prefix.split("/")[-1] == plan_id or plan_branch_prefix.endswith("/" + plan_id)
                         ):
+                            # The newest matching row wins, so a superseding row the flow back-filled is read.
                             plan_data = data
-                            break
                     except Exception as e:
                         print(f"Warning: skipping line {line_no} in plans.jsonl: {e}", file=sys.stderr)
 
         if not plan_data:
             plan_data = {
                 "plan_id": plan_branch_prefix.split("/")[-1],
-                "intent_branch": plan_branch_prefix.split("/P-")[0] + "/_",
+                "intent_branch": plan_branch_prefix.rsplit("/", 1)[0] + "/_",
                 "agent": agent_name,
                 "model": model_name,
                 "entropy": 3.0,
@@ -1646,7 +1422,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         ledger_dir = os.path.join(repo_dir, "holon-knowledge/ledger")
         os.makedirs(ledger_dir, exist_ok=True)
 
-        decision = should_decompose(plan_data, plan_content, intent_data)
+        decision = _recorded_decision(plan_data, plan_content, intent_data)
         # Both non-execute outcomes record one summary row, commit and push it for the flow to read, and skip the agent.
         skip_agent = decision.decision != DECISION_EXECUTE
         # Set when a failed execution's code is salvaged; that commit is pushed even when nothing else is staged.
@@ -1666,16 +1442,21 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 "created_at": timestamp_str,
             }
             if decision.decision == DECISION_DECOMPOSED:
-                print(f"Plan lists an explicit sub-intent list of {len(decision.sub_intents)} item(s); recording it.")
-                exec_entry["sub_intents"] = decision.sub_intents
+                count = len(decision.sub_intents)
+                print(f"The plan records an explicit sub-intent list of {count} item(s); referring to it.")
+                # The plan row is the only record of the list; this summary refers to it and never copies it.
+                exec_entry["plan_decision"] = {
+                    "plan_id": plan_data.get("plan_id"),
+                    "plan_branch": plan_branch,
+                    "decision": DECISION_DECOMPOSED,
+                    "sub_intent_count": count,
+                }
                 exec_entry["summary"] = (
-                    f"Plan {plan_branch} lists {len(decision.sub_intents)} sub-intent(s); the flow runs each one "
-                    "through the full pipeline."
+                    f"The plan {plan_branch} records {count} sub-intent(s); the flow runs each one through the full "
+                    "pipeline."
                 )
-                action_text = f"Recorded the sub-intent list of {plan_branch} ({len(decision.sub_intents)} item(s))"
-                commit_msg = (
-                    f"execute: recorded the sub-intent list of {plan_branch} ({len(decision.sub_intents)} item(s))"
-                )
+                action_text = f"The plan {plan_branch} records {count} sub-intent(s)"
+                commit_msg = f"execute: the plan {plan_branch} records {count} sub-intent(s)"
             else:
                 exec_entry["summary"] = (
                     f"Plan entropy {decision.entropy} exceeds the entropy budget {decision.entropy_budget} and the "

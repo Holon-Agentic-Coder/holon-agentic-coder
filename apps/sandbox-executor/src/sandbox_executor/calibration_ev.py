@@ -38,6 +38,22 @@ def is_matching_record(record: dict[str, Any], execution_id: str, plan_branch: s
     return bool((execution_id and rec_exec_id == execution_id) or (norm_pb and rec_pb == norm_pb))
 
 
+def is_converged_record(record: dict[str, Any]) -> bool:
+    """True for a summary row that ends a run successfully.
+
+    ``success`` and ``halted_for_human`` do; so does the superseding ``decomposed`` row Stage 3 writes once every child
+    merged and the plan branch was integrated (``integrated: true``), which carries no ``exit_code``.
+    """
+    status = str(record.get("status", "success"))
+    return status in ("success", "halted_for_human") or (status == "decomposed" and record.get("integrated") is True)
+
+
+def _record_exit_code(record: dict[str, Any]) -> int:
+    """The row's exit code; a row without one is 0 when it converged or is a (not failed) ``decomposed`` row, else 1."""
+    ok = is_converged_record(record) or str(record.get("status", "success")) == "decomposed"
+    return int(record.get("exit_code", 0 if ok else 1))
+
+
 def evaluate_dual_ev_outcomes(
     records: list[dict[str, Any]],
     execution_id: str,
@@ -69,20 +85,12 @@ def evaluate_dual_ev_outcomes(
     sorted_records = sorted(matching, key=sort_key)
     final_record = sorted_records[-1]
 
-    final_status = str(final_record.get("status", "success"))
-    default_exit = 0 if final_status in ("success", "halted_for_human") else 1
-    final_exit = int(final_record.get("exit_code", default_exit))
-
-    is_converged = final_status in ("success", "halted_for_human") and final_exit == 0
+    is_converged = is_converged_record(final_record) and _record_exit_code(final_record) == 0
     p_clean = 1.0 if is_converged else 0.0
     imp_clean = float(predicted_impact) if is_converged else 0.0
     ev_clean = round((imp_clean * p_clean) - cost_effort, 2)
 
-    has_failure = any(
-        str(r.get("status", "success")) == "failed"
-        or int(r.get("exit_code", 0 if str(r.get("status", "success")) in ("success", "halted_for_human") else 1)) != 0
-        for r in sorted_records
-    )
+    has_failure = any(str(r.get("status", "success")) == "failed" or _record_exit_code(r) != 0 for r in sorted_records)
 
     if has_failure:
         p_bugs, imp_bugs = 0.0, 0.0

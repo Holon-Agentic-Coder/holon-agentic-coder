@@ -19,6 +19,7 @@ from sandbox_executor.budgets import (
     load_budgets,
     resolve_entropy_budget,
 )
+from sandbox_executor.decomposition_rule import should_decompose
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.ledger import (
     _sanitize_model_name,
@@ -243,6 +244,18 @@ def _unique_temp_file(prefix: str, suffix: str) -> str:
     fd, path = tempfile.mkstemp(prefix=prefix, suffix=suffix)
     os.close(fd)
     return path
+
+
+def _plan_decision_fields(plan_entry: dict, plan_md_path: str, intent_data: dict | None) -> dict:
+    """Return the decomposition decision fields to record on the plan row (see ``DecompositionDecision``).
+
+    The rule runs on the plan file as it will be committed (after prettier), so the recorded ``sub_intents`` match
+    what every reader of the plan branch would parse. An over-budget plan without a list is still recorded, as
+    ``over_budget``; the flow's re-plan loop handles it.
+    """
+    with open(plan_md_path, encoding="utf-8") as f:
+        plan_content = f.read()
+    return should_decompose(plan_entry, plan_content, intent_data).to_plan_fields()
 
 
 def main():  # noqa: C901, PLR0912, PLR0915
@@ -525,18 +538,19 @@ Include metrics in this format:
         "entropy_budget": entropy_budget,
     }
 
+    # Format plan markdown before the ledger append, so the recorded decision is parsed from the committed file
+    try:
+        converge_prettier([plan_md_rel], repo_dir=repo_dir)
+    except Exception as e:
+        print(f"Warning: Failed to converge prettier on {plan_md_rel}: {e}", file=sys.stderr)
+    plan_entry.update(_plan_decision_fields(plan_entry, plan_md_path, intent_data))
+
     plans_ledger_dir = os.path.join(repo_dir, "holon-knowledge/ledger")
     os.makedirs(plans_ledger_dir, exist_ok=True)
     plans_ledger_path = os.path.join(plans_ledger_dir, "plans.jsonl")
     with atomic_ledger_append(plans_ledger_path) as lf:
         lf.write(json.dumps(plan_entry) + "\n")
     validate_ledger_file_unique_ids(plans_ledger_path, id_key="plan_id", parent_key="intent_branch")
-
-    # Format plan markdown before git commit
-    try:
-        converge_prettier([plan_md_rel], repo_dir=repo_dir)
-    except Exception as e:
-        print(f"Warning: Failed to converge prettier on {plan_md_rel}: {e}", file=sys.stderr)
 
     # Git commit and push
     run_cmd(["git", "add", plan_md_rel, "holon-knowledge/ledger/plans.jsonl"], cwd=repo_dir)

@@ -43,10 +43,7 @@ from sandbox_executor.agent_defaults import (
     harness_detection_disabled,
     normalise_agent_id,
 )
-from sandbox_executor.agent_runner import (
-    SANDBOX_WORKSPACE_MOUNT,
-    SANDBOX_WORKSPACE_UID_GID,
-)
+from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT, SANDBOX_WORKSPACE_UID_GID
 from sandbox_executor.budgets import (
     ENV_REPLAN_FEEDBACK,
     MAX_REPLAN_ATTEMPTS,
@@ -75,11 +72,7 @@ from sandbox_executor.entrypoint.executor import (
     _sanitize_string,
     should_decompose,
 )
-from sandbox_executor.entrypoint.planner import (
-    _sanitize_model_name,
-    load_metrics_config,
-    parse_metrics,
-)
+from sandbox_executor.entrypoint.planner import _sanitize_model_name, load_metrics_config, parse_metrics
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR, pre_run_guard_error
 from sandbox_executor.git import (
     EMPTY_DIFF_FAILURE_REASON,
@@ -104,10 +97,13 @@ from sandbox_executor.ledger import (
     LedgerRewriteError,
     assert_ledger_prefix,
     atomic_ledger_append,
+    build_execution_id,
+    build_plan_id,
     generate_action_id,
     parse_commit_trailers,
     try_append_action_record,
     try_append_ledger_line,
+    validate_stage_ledger,
 )
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.review_ensemble import (
@@ -2471,7 +2467,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
 
     if context.dry_run:
         # Validation only: name the branch the planner would create, without dispatching or writing anything.
-        plan_id = f"P-{int(time.time())}-{context.agent}-{safe_model}"
+        plan_id = build_plan_id(int(time.time()), intent_prefix, context.agent, safe_model)
         plan_branch = f"{intent_prefix}/{plan_id}/_"
         context.plan_branch = plan_branch
         context.log(f"Stage 2 (dry run): planner dispatch skipped; plan branch would be '{plan_branch}'.")
@@ -2979,7 +2975,7 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
 
     if context.dry_run:
         # Validation only: name the branch the executor would create, without dispatching or writing anything.
-        exec_id = f"E-{int(time.time())}-{_sanitize_string(context.agent)}-{_sanitize_string(context.model)}"
+        exec_id = build_execution_id(int(time.time()), plan_prefix, context.agent, context.model)
         exec_branch = f"{plan_prefix}/{exec_id}/_"
         context.execution_branch = exec_branch
         context.log(f"Stage 3 (dry run): executor dispatch skipped; execution branch would be '{exec_branch}'.")
@@ -5955,6 +5951,9 @@ class PipelineEngine:
         self.context.stage_results[stage.value] = result
         self.context.log(f"<-- [Flow Engine] Exited stage: {stage.value.upper()} (status={result.status.value})")
         self.context.log(result.summary_line())
+
+        repo_dir = getattr(self.context, "target_worktree", None) or getattr(self.context, "repo_dir", None)
+        validate_stage_ledger(repo_dir, stage)
 
     def handle_stage_failure(self, stage: FlowStage, error: Exception) -> StageResult:
         """Handle unexpected exceptions during stage execution."""

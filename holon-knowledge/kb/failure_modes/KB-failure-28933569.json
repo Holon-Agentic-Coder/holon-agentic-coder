@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-28933569",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-09T02:08:53.882386+00:00",
+  "updated_ts": "2026-11-09T02:08:53.882386+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794144191-83b4980c"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794136091-persist-review-loop-sandbox-across-iterations/P-1794136106-claude-agent-claude-fable-5/E-1794141703-claude-agent-claude-fable-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R3-001-03",
+    "symptoms": [
+      "_REVIEW_LOOP_POSITIONAL_PARAMS hand-mirrors the wrapped signature and is zipped with strict=False, so a future reorder/insertion or a seam callable passed positionally silently mis-gates session creation (e.g. creating a volume on a dry run); bind via inspect.signature(...).bind_partial or use strict=True so drift fails loudly."
+    ]
+  }
+}

@@ -4752,7 +4752,7 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         self.run_main(probe)
         self.assertEqual(seen["email"], executor.EXECUTOR_GIT_EMAIL)
         self.assertEqual(seen["name"], executor.EXECUTOR_GIT_NAME)
-        self.assertRegex(seen["branch"], r"^I-456/P-123/E-\d+-antigravity-agent-gemini-3\.5-flash/_$")
+        self.assertRegex(seen["branch"], r"^I-456/P-123/E-\d+-(?:[0-9a-f]{8}-)?antigravity-agent-gemini-3\.5-flash/_$")
 
     def _reject_pushes(self):
         hook = os.path.join(self.bare, "hooks", "pre-receive")
@@ -4779,7 +4779,7 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         self.assertIn(executor.UNPUSHED_PATCH_END, lines)
         patch_text = stderr.split(executor.UNPUSHED_PATCH_BEGIN, 1)[1].split(executor.UNPUSHED_PATCH_END, 1)[0]
         # format-patch folds long subjects onto a continuation line.
-        self.assertRegex(patch_text, r"Subject: \[PATCH 1/2\] execute: E-\S+\s+partial work \(failed\) for plan")
+        self.assertRegex(patch_text, r"Subject: \[PATCH 1/2\] execute:\s+E-\S+\s+partial work\s+\(failed\) for plan")
         self.assertIn("src/settings.py", patch_text)
         self.assertNotIn(self.PROBE, stderr)
 

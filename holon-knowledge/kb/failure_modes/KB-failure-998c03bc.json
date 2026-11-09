@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-998c03bc",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-09T02:08:53.879346+00:00",
+  "updated_ts": "2026-11-09T02:08:53.879346+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794144191-7e02c345"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794136091-persist-review-loop-sandbox-across-iterations/P-1794136106-claude-agent-claude-fable-5/E-1794141703-claude-agent-claude-fable-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R3-001-01",
+    "symptoms": [
+      "The unconditional `git config --global --add safe.directory` in _reusable_origin is executed by the new real-git unit tests (test_second_pass_reuses_the_clone_and_discards_leaked_state, test_real_origin_mismatch_is_wiped_and_recloned_from_the_configured_remote), appending stale tmp-path entries to the runner's real ~/.gitconfig on every run \u2014 state leaking outside tmp_path, against the PR's hermetic-test constraint. Isolate git global config in the tests (GIT_CONFIG_GLOBAL/HOME monkeypatch) and/or scope the write to sandboxed runs."
+    ]
+  }
+}

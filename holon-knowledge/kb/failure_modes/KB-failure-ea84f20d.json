@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-ea84f20d",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-09T02:08:53.871667+00:00",
+  "updated_ts": "2026-11-09T02:08:53.871667+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794144191-72f99fa2"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794136091-persist-review-loop-sandbox-across-iterations/P-1794136106-claude-agent-claude-fable-5/E-1794141703-claude-agent-claude-fable-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R1-001-01",
+    "symptoms": [
+      "A leaked volume holding a partially-cloned checkout (origin readable and matching, HEAD unborn) makes _reset_reused_checkout raise on every pass, wedging the whole session until budget exhaustion and contradicting the README's safe-to-reuse claim; fall back to _wipe_workspace plus re-clone on reset/clean failure."
+    ]
+  }
+}

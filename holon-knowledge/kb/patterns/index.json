@@ -1,6 +1,6 @@
 {
   "index_version": "1.0",
-  "updated_ts": "2026-11-08T09:10:01.413623+00:00",
+  "updated_ts": "2026-11-09T02:08:53.939407+00:00",
   "entries": [
     {
       "kb_id": "KB-pattern-33842d5b",
@@ -41,6 +41,17 @@
       "kb_type": "pattern",
       "status": "active",
       "created_ts": "2026-11-08T09:10:01.413433+00:00",
+      "tags": [
+        "code",
+        "proven"
+      ]
+    },
+    {
+      "kb_id": "KB-pattern-e1ddfc89",
+      "file": "KB-pattern-e1ddfc89.json",
+      "kb_type": "pattern",
+      "status": "active",
+      "created_ts": "2026-11-09T02:08:53.939295+00:00",
       "tags": [
         "code",
         "proven"

@@ -33,12 +33,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.agent_defaults import FALLBACK_AGENT, default_model_for
-from sandbox_executor.agent_runner import (
-    cleanup_repo_dir,
-    get_repo_url,
-    get_runner,
-    get_workspace_dir,
-)
+from sandbox_executor.agent_runner import cleanup_repo_dir, get_repo_url, get_runner, get_workspace_dir
 from sandbox_executor.artefacts import EXECUTION_SPEC, ArtefactReport, execution_write_protocol
 from sandbox_executor.budgets import (
     DEFAULT_ENTROPY_BUDGET,
@@ -54,6 +49,7 @@ from sandbox_executor.ledger import (
     LedgerRewriteError,
     append_action_record,
     atomic_ledger_append,
+    build_execution_id,
     extract_action_provenance_from_commit,
     format_commit_trailers,
     generate_action_id,
@@ -1562,8 +1558,8 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         exec_seq = int(time.time())
         safe_agent = _sanitize_string(agent_name)
         safe_model = _sanitize_string(model_name)
-        exec_id = f"E-{exec_seq}-{safe_agent}-{safe_model}"
-        exec_branch = f"{plan_branch_prefix}/E-{exec_seq}-{safe_agent}-{safe_model}/_"
+        exec_id = build_execution_id(exec_seq, plan_branch_prefix, safe_agent, safe_model)
+        exec_branch = f"{plan_branch_prefix}/{exec_id}/_"
 
         # Plan branch tip: the base the empty-diff guard compares the agent's work against, even on a resume.
         plan_tip_res = repo.rev_parse("HEAD")

@@ -2,7 +2,9 @@
 
 import contextlib
 import errno
+import hashlib
 import io
+import itertools
 import json
 import logging
 import os
@@ -12,7 +14,7 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal, TextIO
@@ -40,6 +42,69 @@ def generate_action_id(prefix: str = "ACT") -> str:
     ts = int(time.time())
     suffix = uuid.uuid4().hex[:8]
     return f"{prefix}-{ts}-{suffix}"
+
+
+_disambiguator_counter = itertools.count()
+
+
+def _sanitize_string(name: str, fallback: str = "unknown") -> str:
+    """Sanitise an identifier component for safe use in branch names and filenames."""
+    s = re.sub(r"\s+", "-", name.replace("/", "_"))
+    s = re.sub(r"[^a-zA-Z0-9_.-]", "", s)
+    s = re.sub(r"-+", "-", s)
+    s = re.sub(r"\.+", ".", s)
+    s = s[:64].strip(".-")
+    return s or fallback
+
+
+def _sanitize_model_name(model_name: str) -> str:
+    """Sanitise a model name so it is safe for use in git branch names and filenames."""
+    return _sanitize_string(model_name, fallback="unknown-model")
+
+
+def build_stage_disambiguator(parent_ref: str) -> str:
+    """Generate a deterministic 8-character lowercase hex disambiguator.
+
+    Derived from the parent branch/intent, high-resolution nanosecond timestamp,
+    and process ID.
+    """
+    clean_ref = parent_ref.removesuffix("/_").rstrip("/")
+    seed = f"{clean_ref}:{time.time_ns()}:{time.perf_counter_ns()}:{os.getpid()}:{next(_disambiguator_counter)}"
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
+
+
+def build_plan_id(
+    plan_seq: int,
+    parent_branch: str,
+    agent: str,
+    model: str,
+    disambiguator: str | None = None,
+) -> str:
+    """Build a deterministic, collision-resistant plan identifier.
+
+    Format: P-{plan_seq}-{disambiguator}-{safe_agent}-{safe_model}
+    """
+    safe_agent = _sanitize_string(agent, fallback="unknown-agent")
+    safe_model = _sanitize_model_name(model)
+    dis = disambiguator or build_stage_disambiguator(parent_branch)
+    return f"P-{plan_seq}-{dis}-{safe_agent}-{safe_model}"
+
+
+def build_execution_id(
+    exec_seq: int,
+    parent_branch: str,
+    agent: str,
+    model: str,
+    disambiguator: str | None = None,
+) -> str:
+    """Build a deterministic, collision-resistant execution identifier.
+
+    Format: E-{exec_seq}-{disambiguator}-{safe_agent}-{safe_model}
+    """
+    safe_agent = _sanitize_string(agent, fallback="unknown-agent")
+    safe_model = _sanitize_model_name(model)
+    dis = disambiguator or build_stage_disambiguator(parent_branch)
+    return f"E-{exec_seq}-{dis}-{safe_agent}-{safe_model}"
 
 
 @dataclass
@@ -566,6 +631,9 @@ def append_summary_record(ledger_path: str, record: SummaryRecord | dict[str, An
     with atomic_ledger_append(ledger_path) as f:
         f.write(json.dumps(data) + "\n")
 
+    if os.path.exists(ledger_path):
+        validate_ledger_file_unique_ids(ledger_path, id_key="execution_id", parent_key="plan_branch")
+
     return data
 
 
@@ -867,3 +935,94 @@ def format_query_results_table(records: list[dict[str, Any]]) -> str:
         output_lines.append(format_row(row))
 
     return "\n".join(output_lines)
+
+
+def _extract_parent_ref(record: dict[str, Any], parent_key: str) -> str | None:
+    """Extract and normalise the root parent intent or branch identifier from a record."""
+    parent_raw = record.get(parent_key)
+    if not isinstance(parent_raw, str):
+        if parent_key == "plan_branch":
+            fallback_key = "plan_id"
+        elif parent_key == "intent_branch":
+            fallback_key = "intent_id"
+        else:
+            fallback_key = "intent_branch"
+        parent_raw = record.get(fallback_key)
+    if not isinstance(parent_raw, str) or not parent_raw.strip():
+        return None
+    cleaned = parent_raw.removesuffix("/_").strip("/")
+    parts = cleaned.split("/")
+    if parent_key == "plan_branch":
+        for part in parts:
+            if part.startswith("P-"):
+                return part
+        return cleaned if cleaned else None
+    for part in parts:
+        if part.startswith("I-"):
+            return part
+    return parts[0] if parts else None
+
+
+def validate_ledger_unique_ids(
+    records: Iterable[dict[str, Any]],
+    id_key: str = "plan_id",
+    parent_key: str = "intent_branch",
+) -> None:
+    """Validate that identifier values do not collide across distinct intents or parent branches.
+
+    Args:
+        records: An iterable of ledger record dictionaries.
+        id_key: The dictionary key for the identifier (e.g. 'plan_id' or 'execution_id').
+        parent_key: The dictionary key for the parent reference (e.g. 'intent_branch' or 'plan_branch').
+
+    Raises:
+        ValueError: If a duplicate identifier is detected across distinct parent branches/intents.
+    """
+    seen: dict[str, str] = {}
+    for record in records:
+        id_val = record.get(id_key)
+        if not isinstance(id_val, str) or not id_val.strip():
+            continue
+        parent_ref = _extract_parent_ref(record, parent_key)
+        if not parent_ref:
+            continue
+        if id_val in seen and seen[id_val] != parent_ref:
+            raise ValueError(
+                f"Duplicate {id_key} '{id_val}' collision detected across distinct intents/branches: "
+                f"'{seen[id_val]}' vs '{parent_ref}'"
+            )
+        seen[id_val] = parent_ref
+
+
+def validate_ledger_file_unique_ids(
+    ledger_path: str,
+    id_key: str = "plan_id",
+    parent_key: str = "intent_branch",
+) -> None:
+    """Validate uniqueness of identifiers in a jsonl ledger file if the file exists."""
+    if not os.path.exists(ledger_path):
+        return
+    records: list[dict[str, Any]] = []
+    with open(ledger_path, encoding="utf-8") as f:
+        for line in f:
+            line_str = line.strip()
+            if not line_str:
+                continue
+            try:
+                records.append(json.loads(line_str))
+            except json.JSONDecodeError:
+                continue
+    validate_ledger_unique_ids(records, id_key=id_key, parent_key=parent_key)
+
+
+def validate_stage_ledger(repo_dir: str | None, stage: Any) -> None:
+    """Validate stage ledger uniqueness for a completed stage (e.g., plan or execute)."""
+    base_dir = repo_dir or "."
+    stage_val = getattr(stage, "value", stage)
+    stage_name = str(stage_val).lower()
+    if stage_name == "plan":
+        ledger_path = os.path.join(base_dir, "holon-knowledge", "ledger", "plans.jsonl")
+        validate_ledger_file_unique_ids(ledger_path, id_key="plan_id", parent_key="intent_branch")
+    elif stage_name == "execute":
+        ledger_path = os.path.join(base_dir, "holon-knowledge", "ledger", "executions.jsonl")
+        validate_ledger_file_unique_ids(ledger_path, id_key="execution_id", parent_key="plan_branch")

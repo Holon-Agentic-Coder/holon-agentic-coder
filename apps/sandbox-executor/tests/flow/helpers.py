@@ -538,6 +538,8 @@ class BudgetRoleAgents(FakeRoleAgents):
         if decision is None:
             decision = should_decompose(plan_row, content, intent_rows[-1] if intent_rows else None)
         if decision.decision == "execute":
+            # A file of its own per plan, so a child cut after an earlier sibling merged still has an effective diff.
+            (work / "src" / f"{plan_id.replace('-', '_')}.py").write_text(f"PLAN = {plan_id!r}\n", encoding="utf-8")
             return super()._execute(work, args, kwargs)
         agent, model = args[1], args[2]
         exec_id = f"E-{self.now()}-{_sanitize_string(agent)}-{_sanitize_string(model)}"

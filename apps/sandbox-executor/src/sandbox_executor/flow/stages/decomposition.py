@@ -1,28 +1,18 @@
-"""Stage 3 decomposition: run each sub-intent of an over-budget plan as a child flow and summarise the
-children.
+"""Stage 3 decomposition: validate a recorded sub-intent list, hand it to the child loop and summarise the children.
+
+The child loop itself lives in :mod:`sandbox_executor.flow.stages.children` and the final integration in
+:mod:`sandbox_executor.flow.stages.integration`; ``_run_decomposed_plan`` keeps the signature Stage 3 calls.
 """
 
 from __future__ import annotations
 
-import re
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from sandbox_executor.budgets import MAX_SUB_INTENT_DEPTH
+from sandbox_executor.flow.child_progress import PROGRESS_KEY, _sub_intent_depth, initial_progress
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _stage_failure
-
-if TYPE_CHECKING:
-    # Bound at runtime by the package __init__, because pipeline imports this module.
-    from sandbox_executor.flow.pipeline import PipelineEngine
-
-
-def _sub_intent_depth(intent_data: dict[str, Any]) -> int:
-    """Return the nesting depth recorded on an intent payload (0 for a root intent)."""
-    try:
-        return max(0, int(intent_data.get("sub_intent_depth") or 0))
-    except (TypeError, ValueError):
-        return 0
+from sandbox_executor.flow.stages.children import run_children
 
 
 def _sub_intent_depth_error(context: FlowContext) -> str | None:
@@ -36,58 +26,35 @@ def _sub_intent_depth_error(context: FlowContext) -> str | None:
     )
 
 
-_PR_URL_RE = re.compile(r"https?://\S+/pull/\d+")
+def _decomposition_child_lines(children: list[Any], parent_branch: str, indent: str) -> list[str]:
+    """Summary lines for one level of children; a child that itself decomposed lists its own children below it.
 
-
-def _child_review_pr(results: dict[str, StageResult]) -> tuple[Any, Any]:
-    """Return the ``(pr_url, pr_number)`` a child pipeline's Stage 4 recorded, or ``(None, None)``.
-
-    Stage 4 records the ``create_or_update_pr`` result under ``payload["pr"]``: it carries ``pr_number``, and the
-    URL only inside the ``gh`` output, so the URL is read from an explicit ``pr_url`` key when present, else from that
-    output.
+    Each child is shown with its PR (or branch) and whether it was merged into ``parent_branch``. A child that itself
+    decomposed has its own combined PR, listed the same way, with its children nested below it.
     """
-    review = results.get(FlowStage.REVIEW.value)
-    pr = review.payload.get("pr") if review is not None else None
-    if not isinstance(pr, dict):
-        return None, None
-    pr_url = pr.get("pr_url")
-    if not pr_url:
-        match = _PR_URL_RE.search(str(pr.get("output") or ""))
-        pr_url = match.group(0) if match else None
-    return pr_url, pr.get("pr_number")
-
-
-def _decomposition_child_lines(children: list[Any], parent_branch: str, indent: str, failed: bool) -> list[str]:
-    """Summary lines for one level of children; a child that itself decomposed lists its own children below it."""
     lines: list[str] = []
     for index, child in enumerate((c for c in children if isinstance(c, dict)), start=1):
+        where = child.get("pr_url") or child.get("execution_branch") or child.get("intent_branch") or "no branch"
+        state = f"merged into '{parent_branch}'" if child.get("merged") else str(child.get("status"))
         if not child.get("decomposed"):
-            where = child.get("pr_url") or child.get("execution_branch") or child.get("intent_branch") or "no branch"
-            lines.append(f"{indent}{index}. {child.get('slug')}: {where} ({child.get('status')})")
+            lines.append(f"{indent}{index}. {child.get('slug')}: {where} ({state})")
             continue
         grandchildren = [c for c in child.get("children") or [] if isinstance(c, dict)]
-        branch = child.get("intent_branch") or "its intent branch"
-        if failed:
-            note = f"decomposed into {len(grandchildren)} sub-intent(s) ({child.get('status')})"
-        else:
-            note = (
-                f"decomposed into {len(grandchildren)} sub-intent(s), so it has no PR of its own; merge its child "
-                f"PRs below into '{branch}', then raise a PR from '{branch}' to '{parent_branch}' (not yet automated)"
-            )
+        note = f"decomposed into {len(grandchildren)} sub-intent(s), combined in {where} ({state})"
         lines.append(f"{indent}{index}. {child.get('slug')}: {note}:")
-        lines.extend(_decomposition_child_lines(grandchildren, branch, indent + "   ", failed))
+        nested_parent = str(child.get("plan_branch") or "its plan branch")
+        lines.extend(_decomposition_child_lines(grandchildren, nested_parent, indent + "   "))
     return lines
 
 
 def format_decomposition_summary(execute_result: StageResult | None) -> list[str]:
-    """Lines for the flow summary of a decomposed Stage 3: each child's PR or branch, then the pending parent step.
+    """Lines for the flow summary of a decomposed Stage 3: each child's PR and its merge into the plan branch.
 
-    Each child pipeline that executes its plan stops at its own Stage 4 merge boundary with a PR into the parent
-    intent branch. A child that itself decomposed has no PR of its own: it is listed as decomposed, with its own
-    children (whose PRs need merging) nested below it. Aggregating the merged children and raising an intent branch's
-    PR to its own target are not yet automated, so the summary names that remaining step explicitly. When the
-    decomposed Stage 3 failed, the merge guidance and the pending parent step are omitted so a failed run never reads
-    as success. Returns an empty list when Stage 3 was not decomposed.
+    Each child PR is merged into the plan branch after its own review consensus and calibration; Stage 3 then
+    integrates the plan branch into the parent execution branch, and Stage 4 raises and reviews the combined PR into
+    the intent's target branch, so the summary names that next step. When the decomposed Stage 3 failed, the summary
+    counts how many children ran and merged and omits the hand-off, so a failed run never reads as success. Returns an
+    empty list when Stage 3 was not decomposed.
     """
     if execute_result is None or not execute_result.payload.get("decomposed"):
         return []
@@ -97,66 +64,38 @@ def format_decomposition_summary(execute_result: StageResult | None) -> list[str
     # Count the items the plan listed, not only the children that ran: a failed run stops at its first failing child,
     # and a depth refusal runs none.
     listed = sum(isinstance(i, dict) for i in raw_items) if isinstance(raw_items, list) else len(children)
+    plan_branch = payload.get("plan_branch") or "the plan branch"
     failed = execute_result.status == StageStatus.FAILED
     if failed:
+        merged = sum(bool(c.get("merged")) for c in children)
         lines = [
-            f"Decomposed into {listed} sub-intent(s); {len(children)} of {listed} ran before Stage 3 failed, so no "
-            "child PR is ready to merge:"
+            f"Decomposed into {listed} sub-intent(s); {len(children)} of {listed} ran and {merged} merged into "
+            f"'{plan_branch}' before Stage 3 failed:"
         ]
     else:
-        lines = [f"Decomposed into {listed} sub-intent(s); merge each child PR into the parent intent branch:"]
-    parent_branch = payload.get("parent_branch") or "the parent intent branch"
-    lines.extend(_decomposition_child_lines(children, parent_branch, "  ", failed))
+        lines = [f"Decomposed into {listed} sub-intent(s); each child PR was merged into '{plan_branch}':"]
+    lines.extend(_decomposition_child_lines(children, plan_branch, "  "))
     if failed:
         return lines
-    parent_target = payload.get("parent_target_branch") or "its target branch"
+    target = payload.get("parent_target_branch") or "its target branch"
+    source = payload.get("execution_branch") or "the execution branch"
     lines.append(
-        f"Pending (not yet automated): after the child PRs merge, raise a PR from '{parent_branch}' to "
-        f"'{parent_target}'."
+        f"Combined PR: Stage 4 raises and reviews '{source}' (with '{plan_branch}' merged in) into '{target}'."
     )
     return lines
-
-
-def _child_context(context: FlowContext, intent_data: dict[str, Any]) -> FlowContext:
-    """Build the FlowContext of one child intent, inheriting the parent's runner, flags and dispatcher."""
-    return FlowContext(
-        repo_dir=context.target_worktree,
-        intent_data=intent_data,
-        agent=context.agent,
-        model=context.model,
-        dry_run=context.dry_run,
-        auto_calibrate=context.auto_calibrate,
-        token_reduce=context.token_reduce,
-        skip_push=context.skip_push,
-        skip_review=context.skip_review,
-        skip_calibrate=context.skip_calibrate,
-        max_review_iterations=context.max_review_iterations,
-        review_ensemble_size=context.review_ensemble_size,
-        mitm_web=context.mitm_web,
-        dispatcher=context.dispatcher,
-    )
-
-
-def _child_intent_branch(parent_branch: str, index: int, slug: str) -> str:
-    """Return the bare intent branch of the ``index``-th (1-based) child of ``parent_branch``: ``{parent}--{n}-{slug}``.
-
-    The name is derived from the parent's branch and the item's position, never from the clock. A sanitised slug never
-    contains ``--``, so the name cannot collide with the parent, a sibling or any other intent, even one created in the
-    same second with the same slug; re-running the same parent's list derives the same name for the same child.
-    """
-    child_slug = re.sub(r"[^a-zA-Z0-9]+", "-", slug).strip("-").lower() or f"sub-intent-{index}"
-    return f"{parent_branch.removesuffix('/_')}--{index}-{child_slug}"
 
 
 def _run_decomposed_plan(
     context: FlowContext, start_time: str, summary_row: dict[str, Any], base_payload: dict[str, Any]
 ) -> StageResult:
-    """Drive each item of a recorded sub-intent list through the full pipeline, strictly one after another.
+    """Drive each item of a recorded sub-intent list through the full pipeline under the plan branch.
 
-    Each child is a new intent (created by the normal Stage 1 intent creator) whose ``target_branch`` and
-    ``parent_intent_id`` are this intent's branch, so it merges into its immediate parent and never into ``main``. A
-    child succeeds when its own pipeline ends without a failed stage (normally at its own Stage 4 consensus halt, the
-    merge boundary). The first failing child stops the loop and fails this stage, naming the child.
+    Validates the items and the depth limit, then hands the list to
+    :func:`sandbox_executor.flow.stages.children.run_children`: each child is cut from the plan branch tip, targets the
+    plan branch (never the intent branch or ``main``), and is merged into it after its consensus and calibration;
+    after the last child the plan branch is integrated into this execution branch for the combined PR. The plan
+    branch comes from the context, else from the decision record; without one the stage fails rather than fall back
+    to the intent branch.
     """
     raw_items = summary_row.get("sub_intents")
     items = [i for i in raw_items if isinstance(i, dict)] if isinstance(raw_items, list) else []
@@ -169,74 +108,17 @@ def _run_decomposed_plan(
             "Execute stage failed: the executor recorded a decomposed plan without any sub-intent list items.",
             **payload,
         )
-    depth = _sub_intent_depth(context.intent_data) + 1
+    plan_branch = str(context.plan_branch or summary_row.get("plan_branch") or "")
+    payload["plan_branch"] = plan_branch or None
     depth_error = _sub_intent_depth_error(context)
     if depth_error is not None:
         return _stage_failure(context, FlowStage.EXECUTE, start_time, depth_error, **payload)
+    if not plan_branch:
+        error = "Execute stage failed: no plan branch is known, so the sub-intents cannot be nested under it."
+        return _stage_failure(context, FlowStage.EXECUTE, start_time, error, **payload)
 
-    parent_branch = context.intent_branch or str(summary_row.get("plan_branch") or "").split("/P-")[0] + "/_"
-    payload["parent_branch"] = parent_branch
     payload["parent_target_branch"] = str(context.intent_data.get("target_branch") or "main")
-    entropy_budget = summary_row.get("entropy_budget")
-    labels = context.intent_data.get("labels")
-    total = len(items)
-    for index, item in enumerate(items, start=1):
-        slug = str(item.get("slug") or f"sub-intent-{index}")
-        child_data: dict[str, Any] = {
-            "branch": _child_intent_branch(parent_branch, index, slug),
-            "slug": slug,
-            "description": str(item.get("description") or item.get("goal") or slug),
-            "goal": str(item.get("goal") or item.get("description") or slug),
-            "parent_intent_id": parent_branch,
-            "target_branch": parent_branch,
-            "sub_intent_depth": depth,
-        }
-        if entropy_budget is not None:
-            child_data["entropy_budget"] = entropy_budget
-        if isinstance(labels, list):
-            child_data["labels"] = list(labels)
-        child = _child_context(context, child_data)
-        context.log(f"Stage 3: running sub-intent {index}/{total} '{slug}' through the full pipeline.")
-        try:
-            results = PipelineEngine(child).run()
-        finally:
-            context.logs.extend(f"[sub-intent {slug}] {line}" for line in child.logs)
-        failed = [name for name, res in results.items() if res.status == StageStatus.FAILED]
-        final_stage = next(reversed(results)) if results else None
-        pr_url, pr_number = _child_review_pr(results)
-        child_summary = {
-            "slug": slug,
-            "intent_branch": child.intent_branch,
-            "execution_branch": child.execution_branch,
-            "pr_url": pr_url,
-            "pr_number": pr_number,
-            "final_stage": final_stage,
-            "status": results[final_stage].status.value if final_stage else None,
-        }
-        child_execute = results.get(FlowStage.EXECUTE.value)
-        if child_execute is not None and child_execute.payload.get("decomposed"):
-            # The child ran its own sub-intents instead of opening a PR: carry them so the summary can list them.
-            child_summary["decomposed"] = True
-            child_summary["children"] = list(child_execute.payload.get("children") or [])
-        payload["children"].append(child_summary)
-        if failed or not results:
-            error = (results[failed[0]].error if failed else None) or "no stage ran"
-            return _stage_failure(
-                context,
-                FlowStage.EXECUTE,
-                start_time,
-                f"Execute stage failed: sub-intent {index}/{total} '{slug}' failed at stage "
-                f"'{failed[0] if failed else 'none'}': {error}",
-                **payload,
-            )
-
-    context.log(f"Stage 3 completed: all {total} sub-intent(s) of '{context.plan_branch}' ran through the pipeline.")
-    result = StageResult(
-        stage=FlowStage.EXECUTE,
-        status=StageStatus.SUCCESS,
-        start_time=start_time,
-        end_time=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        payload=payload,
-    )
-    context.stage_results["execute"] = result
-    return result
+    payload["entropy_budget"] = summary_row.get("entropy_budget")
+    payload[PROGRESS_KEY] = initial_progress(items, plan_branch)
+    context.log(f"Stage 3: running {len(items)} sub-intent(s) one after another under '{plan_branch}'.")
+    return run_children(context, start_time, payload)

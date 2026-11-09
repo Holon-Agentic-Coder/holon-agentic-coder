@@ -37,9 +37,10 @@ multi-agent system that plans competitively, executes in sandboxes, and improves
   the split).
 - **No direct merges from sub-intents to `main`.**
 - Below the root no human intervention is needed: the agent raises and merges every sub-intent's PR automatically, and
-  only the root intent's PR to `main` stops for a human. Until the implementation follows, the current flow still
-  targets the parent intent branch and leaves each sub-intent PR merge to the maintainer (see [Git Flow](git_flow.md)
-  Stage 3 under the flow equivalence guarantee).
+  only the root intent's PR to `main` stops for a human. `holon flow` cuts each child from the plan branch tip, merges
+  its PR into the plan branch with a merge commit after the child's review consensus and calibration, and raises one
+  combined PR from the parent execution branch (see [Git Flow](git_flow.md) Stage 3 under the flow equivalence
+  guarantee).
 
 #### 5) Sandboxed exploration is allowed (including risky)
 
@@ -347,15 +348,16 @@ Curate:
 - The deciding node's branch is the integration surface for its sub-intents.
 - Siblings under one deciding node always have different slugs, so their ids cannot collide.
 - Only the root intent's PR merges into `main`.
-- Until the implementation follows, the current flow still cuts each child from and targets the parent intent branch and
-  leaves each sub-intent PR merge to the maintainer (see [Git Flow](git_flow.md) Stage 3 under the flow equivalence
-  guarantee).
+- `holon flow` implements this for plan-decided splits: each child is cut from the plan branch tip after the previous
+  child merged, records the plan branch as its `target_branch` and `parent_intent_id`, and is merged into it by the
+  guarded `flow/github/merge.py` (merge commit only, never `main`, `master` or the default branch). The plan branch is
+  then merged into the parent execution branch, whose PR is the combined PR (see [Git Flow](git_flow.md) Stage 3).
 
 #### Human review boundary
 
 Human review occurs at:
 
-- root intent completion (its PR to `main`, the only human stop in the flow; see the current-implementation note above)
+- root intent completion (its PR to `main`, the only human stop in the flow)
 - estimator definition updates
 - trust/autonomy level changes
 - changes to “physics” or governance modules
@@ -456,7 +458,10 @@ Trust level is influenced by:
 The Holon Flow engine is the `sandbox_executor.flow` package in `apps/sandbox-executor/src/sandbox_executor/flow/`. Each
 module owns one cluster, so a change to one stage or helper touches a small, separate set of files. The package was
 split from the former single `flow.py` by moving code only. `tests/flow/test_move_proof.py` checks the `ast.dump` of
-every definition against a committed snapshot of the original file (`tests/flow/fixtures/flow_py_definitions.json`).
+every definition against a committed snapshot of the original file (`tests/flow/fixtures/flow_py_definitions.json`). A
+later deliberate change declares itself in that fixture: a changed body in `amended_definitions`, a new definition in
+`added_definitions` (with the module that must define it) and a deleted one in `removed_definitions`, each naming the
+execution and the reason.
 
 | Module                         | Responsibility                                                                                              |
 | ------------------------------ | ----------------------------------------------------------------------------------------------------------- |
@@ -465,6 +470,8 @@ every definition against a committed snapshot of the original file (`tests/flow/
 | `flow/context.py`              | The data model: `FlowStage`, `StageStatus`, `StageResult` and `FlowContext`.                                |
 | `flow/checkpoint.py`           | Checkpoint schema migration, `FlowCheckpoint`, and saving and loading checkpoints.                          |
 | `flow/ledger_reconcile.py`     | Resolves conflicts in the append-only JSONL ledgers by a union under the ledger lock.                       |
+| `flow/ledger_interleave.py`    | Resolves ledger-only merge conflicts: merge-base rows kept as a prefix, appended rows interleaved.          |
+| `flow/child_progress.py`       | Per-child progress of a decomposed Stage 3, origin reconciliation and the next-action decision.             |
 | `flow/stage_conflicts.py`      | The proactive conflict check a stage runs before it pushes.                                                 |
 | `flow/intent_questions.py`     | Validates an intent's clarifying questions before Stage 1 accepts it.                                       |
 | `flow/dispatch.py`             | Role-agent dispatch shared with `holon intent`, `holon plan` and `holon execute`.                           |
@@ -472,6 +479,7 @@ every definition against a committed snapshot of the original file (`tests/flow/
 | `flow/github/pr.py`            | Mergeability checks, review git trailers, semantic PR metadata and creating the PR.                         |
 | `flow/github/ci.py`            | Probes CI checks and waits for them to register and settle.                                                 |
 | `flow/github/review_post.py`   | Posts the Stage 4 consensus review to the pull request.                                                     |
+| `flow/github/merge.py`         | The guarded child merge into the plan branch and its fail-closed refusal check.                             |
 | `flow/review/workspace.py`     | The sandbox guard for reviewer turns and the persistent review session volume.                              |
 | `flow/review/records.py`       | Refused-review results, review action rows in the ledger and the reviewer summary line.                     |
 | `flow/review/ensemble.py`      | Dispatches the reviewer ensemble for one review iteration.                                                  |
@@ -480,7 +488,9 @@ every definition against a committed snapshot of the original file (`tests/flow/
 | `flow/review/cli.py`           | The `holon review-loop` CLI entry and the review loop summary helpers.                                      |
 | `flow/stages/intent.py`        | Stage 1: dispatches the intent creator and verifies its branch.                                             |
 | `flow/stages/plan.py`          | Stage 2: dispatches the planner, adopts its plan and makes the entropy budget decision.                     |
-| `flow/stages/decomposition.py` | Stage 3 decomposition: runs each sub-intent of an over-budget plan as a child flow.                         |
+| `flow/stages/decomposition.py` | Stage 3 decomposition: validates the sub-intent list, delegates to the child loop and summarises it.        |
+| `flow/stages/children.py`      | Stage 3 child loop: runs, resumes and merges each sub-intent under the plan branch, one after another.      |
+| `flow/stages/integration.py`   | Stage 3 integration: merges the plan branch into the parent execution branch for the combined PR.           |
 | `flow/stages/execute.py`       | Stage 3: dispatches the executor, adopts its branch and resumes failed partial executions.                  |
 | `flow/stages/review.py`        | Stage 4: runs the review loop and halts at consensus approval without merging.                              |
 | `flow/stages/calibrate.py`     | Stage 5: runs calibration and commits the calibrated artefacts.                                             |
@@ -492,10 +502,9 @@ Rules that keep the package healthy:
 
 - **Import direction.** Imports run from the leaves (`constants`, `context`, `checkpoint`) through `dispatch`,
   `git_refs`, `github/*`, `review/*` and `stages/*` to `pipeline`. No submodule imports `pipeline` at runtime. The one
-  back-edge is bound late: `stages/decomposition.py` runs child flows through `PipelineEngine`, but `pipeline` imports
-  the stages. So `flow/__init__.py` sets `stages.decomposition.PipelineEngine` after it has imported `pipeline`, and
-  `decomposition.py` imports the name only under `TYPE_CHECKING`. `tests/flow/test_package_exports.py` checks the
-  binding.
+  back-edge is bound late: `stages/children.py` runs child flows through `PipelineEngine`, but `pipeline` imports the
+  stages. So `flow/__init__.py` sets `stages.children.PipelineEngine` after it has imported `pipeline`, and
+  `children.py` imports the name only under `TYPE_CHECKING`. `tests/flow/test_package_exports.py` checks the binding.
 - **Tests patch the submodule, not the package.** A name such as `run_git` is looked up in each submodule that imports
   it, so a test patches `sandbox_executor.flow.<module>.<name>` at each submodule its code path crosses. It uses
   `tests/flow/lookup_patch.py` `patch_lookup_sites` when there is more than one, so they share one mock.

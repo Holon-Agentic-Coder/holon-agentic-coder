@@ -15,6 +15,7 @@ from sandbox_executor.flow import FlowContext, StageStatus, run_execute_stage, r
 from sandbox_executor.flow.stages import plan_decision
 from sandbox_executor.git import run_git
 
+from tests.flow.decomposition_fakes import decomposed_flow
 from tests.flow.helpers import SUB_INTENT_LIST, BudgetRoleAgents, _budget_context, _git, _ledger_rows
 
 PLANS_LEDGER = "holon-knowledge/ledger/plans.jsonl"
@@ -170,12 +171,15 @@ def _plan_rows_on_origin(host: Path, plan_branch: str) -> list[dict[str, Any]]:
 
 
 def _summary_on_origin(host: Path, execution_branch: str) -> dict[str, Any]:
-    (summary,) = [
+    # A decomposed execution also records superseding summary rows as its children merge; the first one is the row the
+    # executor wrote when it acted on the plan row's decision.
+    summaries = [
         row
         for row in _ledger_rows(host, f"refs/remotes/origin/{execution_branch}", "executions.jsonl")
         if row.get("entry_type") == "summary"
     ]
-    return summary
+    assert summaries, "the execution branch carries no summary row"
+    return summaries[0]
 
 
 class TestStage3ExecutesThePlanRowsDecision:
@@ -206,7 +210,12 @@ class TestStage3ExecutesThePlanRowsDecision:
             return run_decomposed(context, start_time, record, base_payload)
 
         run_decomposed = flow_module._run_decomposed_plan
-        with patch("sandbox_executor.flow.stages.execute._run_decomposed_plan", side_effect=spy):
+        # The children run through their own consensus halt and merge into the plan branch, so review is not skipped.
+        ctx.skip_review = False
+        with (
+            decomposed_flow(origin, tmp_path),
+            patch("sandbox_executor.flow.stages.execute._run_decomposed_plan", side_effect=spy),
+        ):
             res = run_execute_stage(ctx)
 
         assert res.status == StageStatus.SUCCESS, res.error

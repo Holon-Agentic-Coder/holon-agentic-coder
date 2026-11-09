@@ -259,22 +259,41 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
 - **Fits the budget:** the plan is executed as usual.
 - **Explicit sub-intent list:** the executor records the parsed list on its `decomposed` summary row and writes no
   `intents.jsonl` rows. The flow then runs each item as a child intent, strictly one after another and never
-  concurrently, through the full pipeline (intent, plan, execute, review, calibrate). Each child nests under the plan
-  that listed it, records it as its provenance (section 2.2) and is meant to target the deciding plan branch
-  (`target_branch`; see the current limitation below), never `main`. The first failing child fails the parent's Stage 3;
-  when all succeed, the parent's own Stage 4 and Stage 5 are skipped with reason `decomposed`, because review and
-  calibration ran per child. Nesting is bounded by `MAX_SUB_INTENT_DEPTH`, checked against the plan before the executor
-  is dispatched when the plan can be read.
+  concurrently, through the full pipeline (intent, plan, execute, review, calibrate). Nesting is bounded by
+  `MAX_SUB_INTENT_DEPTH`, checked against the plan before the executor is dispatched when the plan can be read.
+  - **Nesting under the plan branch.** Each child is named `{plan}--{n}-{slug}` (the plan branch without `/_`, the
+    item's 1-based position and its sanitised slug) and records the plan branch that listed it as both its
+    `target_branch` and its `parent_intent_id`, never the intent branch and never `main`. Stage 1 cuts the child from
+    `origin/{plan branch}`, so it starts from the plan branch tip as it stands then. The plan branch comes from the flow
+    context, else from the decision record; when neither is known, Stage 3 fails rather than fall back.
+  - **One after another, each merged before the next.** A child is ready to merge when its own Stage 4 halted at
+    consensus approval and its Stage 5 succeeded (or was skipped by flag). The flow then merges the child's PR into the
+    plan branch with `flow/github/merge.py`: merge commit only (`gh pr merge --merge --match-head-commit`), CI green and
+    `MERGEABLE`, after first merging the plan branch into the child head if it moved; a base of `main`, `master`, the
+    repository default branch or anything other than the plan branch is refused, as is a PR head that is protected or is
+    not the child's recorded execution branch (see [Safety](safety.md#sub-intent-merge-rules)). Only after that merge
+    does the next child start, so it is cut from a tip that already holds every earlier child's merge commit. The first
+    child that fails or is not ready marks its progress `failed`; one refused only by the merge guard stays
+    `review_done` with a `merge_error`, so a resume retries just the merge. Either way the parent's Stage 3 fails,
+    naming the child; later children do not start. Under `--skip-review` no child could reach its consensus halt, so a
+    decomposed Stage 3 (fresh or resumed) fails before any child is dispatched and asks for a re-run without the flag.
+  - **The combined PR.** After the last child merged, Stage 3 merges the plan branch into the parent execution branch
+    with a merge commit and appends a superseding `decomposed` summary row with `integrated: true`, the `plan_branch`
+    and the list of `children` (slug, intent and execution branch, PR number and URL, merge commit). The parent's own
+    Stage 4 and Stage 5 then run as for any execution: Stage 4 raises and reviews one combined PR from the parent
+    execution branch into the intent's `target_branch`, carrying the parent plan, the parent execution record and every
+    child's plan, execution record and code, and halts for the human when that target is `main`. A child that itself
+    decomposed is merged into this plan branch through its own combined PR in the same way.
+  - **Resume.** Per-child progress (`children_progress`: intent branch, execution branch, PR, status and merge commit)
+    lives in the parent's Stage 3 payload and is checkpointed after every change, and each child keeps its own
+    checkpoint keyed on its branch. Resuming a decomposed Stage 3 never dispatches the parent executor: the recorded
+    progress is reconciled with origin (origin wins), merged children are skipped, a reviewed child is merged, a child
+    with an execution branch or a PR resumes from its own checkpoint, and only a child with nothing recorded anywhere is
+    dispatched. Ledger-only conflicts during these merges keep the merge-base rows as an untouched prefix and interleave
+    both sides' appended rows on `created_at`; any other conflict fails the stage.
 
-  **Current limitation (until the implementation follows):** the current flow still records the parent intent branch as
-  each decomposed child's `target_branch`, cuts each child from that branch, and stops each child at its own Stage 4
-  consensus halt, where the maintainer merges its PR; the decided rule (sections 2.2, 3.1 and 4.1) is that the child is
-  cut from and merged automatically into the deciding plan or execution branch, and only the root intent's PR to `main`
-  stops for a human. Each child is cut as the branch stood when that child started, so a later child does not see an
-  earlier child's unmerged changes; order dependent items accordingly. Aggregating the merged children and raising the
-  parent's PR to its own target (for a root intent, `main`) are not yet automated. The `holon flow` summary lists each
-  child's PR (or its execution branch when no PR was recorded), lists a child that itself decomposed as having no PR of
-  its own with its own children nested below it, and names this pending parent-to-target step.
+  The `holon flow` summary lists each child's PR (or branch) and whether it was merged into the plan branch, nests a
+  child that itself decomposed with its own children below it, and names the combined PR that Stage 4 raises.
 
 - **Over budget without a list:** the flow returns to Stage 2 automatically, asking for a smaller plan or an explicit
   sub-intent list (only a smaller plan when the intent is at the sub-intent depth limit), at most `MAX_REPLAN_ATTEMPTS`
@@ -329,8 +348,8 @@ The guarantee has five deliberate limits:
   calibration runs. Checks that registered but are still pending are re-probed every `CI_REGISTRATION_POLL_SECONDS` (15
   s) until they settle or the iteration's `review_iteration` budget runs out; checks still pending then count as a CI
   finding. `--dry-run` does not wait, and its simulated consensus reports `not_measured`. Stacked sub-intent pull
-  requests, whose base is their parent intent branch, receive the same checks as pull requests into `main`, because
-  every CI workflow runs for pull requests into any base branch (see `.github/workflows/README.md`).
+  requests, whose base is the plan branch that listed them, receive the same checks as pull requests into `main`,
+  because every CI workflow runs for pull requests into any base branch (see `.github/workflows/README.md`).
 - **Token reduction is auto-detected.** `holon flow` (like `holon review-loop`) resolves token reduction with
   `detect_holon_coherence`: unless `HOLON_TOKEN_REDUCE` opts out (`0`, `false`, `no`, `off`), it is enabled by
   `--token-reduce`, `--mitm-web`, a truthy `HOLON_TOKEN_REDUCE` or `HOLON_PASSIVE_MONITORING`, a reachable proxy port, a
@@ -394,8 +413,8 @@ parent intent branch (section 2.2):
 **Building on siblings.** Siblings build on each other through the deciding node's branch: a sub-intent that depends on
 earlier siblings starts from, or rebases onto, that branch only after those siblings have merged into it, so no
 sub-intent is implemented blind to the work it depends on. The before-execution rebase of the dual rebase rule is that
-step. Until the implementation follows, the current flow cuts each child from the parent intent branch as it stood when
-that child started (see Stage 3 under the flow equivalence guarantee).
+step. `holon flow` cuts each child from the plan branch tip only after the previous child merged into it (see Stage 3
+under the flow equivalence guarantee).
 
 ### 3.2 Rebase Commands
 
@@ -431,8 +450,8 @@ If rebase fails:
 **Trigger:** Sub-intent execution completes successfully. The agent raises the sub-intent's PR into the deciding plan or
 execution branch automatically and merges it automatically, with no human intervention. This holds for a leaf sub-intent
 and for a nested parent alike; a nested parent merges once its own sub-intents have merged into their deciding node
-inside it, and its PR carries that deciding node's branch. (Until the implementation follows, the current flow leaves
-these merges to the maintainer; see Stage 3 under the flow equivalence guarantee.)
+inside it, and its PR carries that deciding node's branch. `holon flow` performs these merges with merge commits through
+the guarded child merge (see Stage 3 under the flow equivalence guarantee).
 
 In the worked commands a leaf sub-intent's merge source is written as its intent branch (`I-.../_`), shorthand for the
 branch that carries its work and that its PR carries; a nested parent's merge source is the branch of the deciding node
@@ -482,8 +501,8 @@ $ git push origin I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-
 **Root PR:** once all sub-intents have merged into their deciding node's branch, the root intent's PR to `main` is
 raised, reviewed (Stage 4) and calibrated (Stage 5) on the combined diff, stopping at the human merge boundary. This is
 the only human stop in the tree. A nested parent is a sub-intent and merges automatically into its deciding node's
-branch as in section 4.1. Raising the root PR after decomposition is not yet automated in the current flow (see Stage 3
-under the flow equivalence guarantee).
+branch as in section 4.1. In `holon flow` the root PR is the combined PR that the root's own Stage 4 raises from its
+execution branch after the plan branch was integrated into it (see Stage 3 under the flow equivalence guarantee).
 
 **Process:**
 
@@ -892,9 +911,7 @@ Even discarded intents provide value:
 
 **Key insight:** Human review is required only at the root intent level: the root intent's PR to `main` is the only
 human stop. Every sub-intent merge, for leaf sub-intents and nested parents alike, is raised and merged automatically by
-the agent into the deciding node's branch, evaluation-based and with no human intervention. Until the implementation
-follows, the current flow leaves the child PR merges to the maintainer (see Stage 3 under the flow equivalence
-guarantee).
+the agent into the deciding node's branch, evaluation-based and with no human intervention.
 
 ---
 

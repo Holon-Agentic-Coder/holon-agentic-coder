@@ -19,9 +19,11 @@ from sandbox_executor.budgets import (
     load_budgets,
 )
 from sandbox_executor.flow.checkpoint import save_checkpoint
+from sandbox_executor.flow.child_progress import has_recorded_decomposition
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.stages.calibrate import run_calibrate_stage
+from sandbox_executor.flow.stages.children import resume_children
 from sandbox_executor.flow.stages.decomposition import _sub_intent_depth_error
 from sandbox_executor.flow.stages.execute import run_execute_stage
 from sandbox_executor.flow.stages.intent import run_intent_stage
@@ -151,6 +153,10 @@ class PipelineEngine:
         elif stage == FlowStage.EXECUTE:
             # Only the first Execute stage of a Stage 3 resume continues partial work; a re-plan starts afresh.
             resume_partial, self._resume_partial_pending = self._resume_partial_pending, False
+            previous = self.context.stage_results.get(FlowStage.EXECUTE.value)
+            if has_recorded_decomposition(previous, self.context.plan_branch):
+                # A decomposed Stage 3 never re-dispatches the parent executor: its children resume from their progress.
+                return resume_children(self.context, previous)
             if resume_partial:
                 return run_execute_stage(self.context, resume_partial=True)
             return run_execute_stage(self.context)
@@ -205,11 +211,6 @@ class PipelineEngine:
     def save_checkpoint(self) -> str:
         """Save active pipeline state to checkpoint file."""
         return save_checkpoint(self.context, self.checkpoint_path)
-
-    def _parent_was_decomposed(self) -> bool:
-        """True when Stage 3 succeeded by running the plan's sub-intent list as child pipelines."""
-        execute = self.context.stage_results.get(FlowStage.EXECUTE.value)
-        return bool(execute is not None and execute.status == StageStatus.SUCCESS and execute.payload.get("decomposed"))
 
     def _replan_after_over_budget(self, result: StageResult) -> StageResult:
         """Return an over-budget plan to Stage 2 up to ``MAX_REPLAN_ATTEMPTS`` times, then fail Stage 3 clearly.
@@ -272,7 +273,7 @@ class PipelineEngine:
             self.save_checkpoint()
         return result
 
-    def run(self) -> dict[str, StageResult]:  # noqa: C901, PLR0912, PLR0915
+    def run(self) -> dict[str, StageResult]:  # noqa: C901, PLR0915
         """Execute the configured pipeline stages sequentially."""
         start_idx = 0
         if self.from_stage:
@@ -300,14 +301,6 @@ class PipelineEngine:
 
         for i in range(start_idx, len(self.STAGE_ORDER)):
             stage = self.STAGE_ORDER[i]
-
-            if stage in (FlowStage.REVIEW, FlowStage.CALIBRATE) and self._parent_was_decomposed():
-                # Review and calibration already ran per child; the parent's own execution branch is ledger-only.
-                self.context.log(f"Stage '{stage.value}' skipped: the plan was decomposed into child pipelines.")
-                result = StageResult(stage=stage, status=StageStatus.SKIPPED, payload={"reason": "decomposed"})
-                self.after_stage(stage, result)
-                self.save_checkpoint()
-                continue
 
             if stage == FlowStage.REVIEW and self.context.skip_review:
                 self.context.log("Stage 4 (REVIEW) skipped due to --skip-review flag.")

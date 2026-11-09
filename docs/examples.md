@@ -641,9 +641,7 @@ branch path records which plan spawned it.
 > [!NOTE] Every sub-intent, including the nested parent `I-1771890503-implement-entropy`, is cut from and merged into
 > its deciding plan branch; the agent raises and merges each sub-intent PR automatically, and only the root intent's PR
 > to `main` stops for a human. The children run one at a time, each through the full pipeline; nesting stops at
-> `MAX_SUB_INTENT_DEPTH`. Until the implementation follows, the current `holon flow` still targets the parent intent
-> branch and leaves child PR merges to the maintainer (see [Git Flow](git_flow.md) Stage 3 under the flow equivalence
-> guarantee).
+> `MAX_SUB_INTENT_DEPTH` (see [Git Flow](git_flow.md) Stage 3 under the flow equivalence guarantee).
 
 ### Intent hierarchy
 
@@ -1797,8 +1795,8 @@ git rebase origin/I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-
 #### 5) Push and trigger automatic merge evaluation
 
 Once tests pass on the rebased code, the agent pushes the branch, raises its PR and merges it automatically into the
-deciding plan branch, with no human review (until the implementation follows, the current flow leaves this merge to the
-maintainer; see [Git Flow](git_flow.md) Stage 3 under the flow equivalence guarantee):
+deciding plan branch with a merge commit, with no human review (see [Git Flow](git_flow.md) Stage 3 under the flow
+equivalence guarantee):
 
 ```bash
 # Push branch to remote

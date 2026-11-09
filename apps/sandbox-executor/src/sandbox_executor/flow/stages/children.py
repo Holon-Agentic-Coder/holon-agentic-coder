@@ -217,10 +217,14 @@ def _run_one_child(context: FlowContext, payload: dict[str, Any], entry: dict[st
 def _merge_ready_child(context: FlowContext, payload: dict[str, Any], entry: dict[str, Any]) -> str | None:
     """Merge a child whose review and calibration completed into the plan branch; return a refusal, or None."""
     plan_branch = str(payload["plan_branch"])
-    result = merge_child_pr(context.target_worktree, entry["pr_number"], plan_branch)
+    expected_head = str(entry.get("execution_branch") or "")
+    result = merge_child_pr(context.target_worktree, entry["pr_number"], plan_branch, expected_head=expected_head)
     if not result.merged:
+        # Stay review_done so a resume retries only this guarded merge, not the child's Stage 4/5.
+        entry["merge_error"] = result.reason
         return f"could not be merged into '{plan_branch}' (PR #{entry['pr_number']}): {result.reason}"
     entry["status"], entry["merge_commit"] = MERGED, result.merge_commit
+    entry.pop("merge_error", None)
     _set_child_summary(payload, {"index": entry["index"], "merged": True, "merge_commit": result.merge_commit})
     context.log(f"Stage 3: merged sub-intent '{entry['slug']}' (PR #{entry['pr_number']}) into '{plan_branch}'.")
     return None
@@ -247,9 +251,10 @@ def _advance_child(context: FlowContext, start_time: str, payload: dict[str, Any
 def run_children(context: FlowContext, start_time: str, payload: dict[str, Any]) -> StageResult:
     """Drive every child of ``payload["children_progress"]`` to merged, in order, then integrate the plan branch.
 
-    The first child that fails, is not ready to merge or is refused by the merge guard is marked ``failed``, the parent
-    checkpoint is saved, and Stage 3 fails naming the child; later children do not start. Under ``--skip-review`` no
-    child could reach its consensus halt and merge, so the stage fails before any child is dispatched.
+    The first child that fails or is not ready to merge is marked ``failed``; one refused only by the merge guard stays
+    ``review_done`` with a ``merge_error`` so a resume retries just the merge. The parent checkpoint is saved, and
+    Stage 3 fails naming the child; later children do not start. Under ``--skip-review`` no child could reach its
+    consensus halt and merge, so the stage fails before any child is dispatched.
     """
     if context.skip_review:
         error = (
@@ -262,7 +267,8 @@ def run_children(context: FlowContext, start_time: str, payload: dict[str, Any])
     for entry in progress:
         error = _advance_child(context, start_time, payload, entry)
         if error:
-            entry["status"] = FAILED
+            if entry.get("status") != REVIEW_DONE:
+                entry["status"] = FAILED
             _save_progress(context, start_time, payload)
             return _stage_failure(
                 context,

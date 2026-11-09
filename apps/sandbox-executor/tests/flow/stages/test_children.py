@@ -18,7 +18,7 @@ from sandbox_executor import flow as flow_module
 from sandbox_executor.budgets import MAX_SUB_INTENT_DEPTH
 from sandbox_executor.flow import FlowContext, FlowStage, PipelineEngine, StageResult, StageStatus
 from sandbox_executor.flow.checkpoint import get_default_checkpoint_path, load_checkpoint
-from sandbox_executor.flow.child_progress import child_checkpoint_path
+from sandbox_executor.flow.child_progress import child_checkpoint_path, next_child_action
 from sandbox_executor.flow.github.merge import MergeResult
 
 from tests.flow.decomposition_fakes import decomposed_flow, halted_review
@@ -98,7 +98,11 @@ def test_a_child_pr_whose_base_is_main_is_refused_and_stage_3_fails_naming_it(fl
     assert reviews.gh.prs[101]["state"] == "OPEN"
     assert _git(origin, "rev-parse", "refs/heads/main") == _git(host, "rev-parse", "origin/main")
     assert _git(origin, "rev-list", "--merges", f"refs/heads/{ctx.plan_branch}") == ""
-    assert [e["status"] for e in execute.payload["children_progress"]] == ["failed", "pending"]
+    # Refused only at the merge: the child stays review_done (merge_error recorded) so a resume retries the merge.
+    first, second = execute.payload["children_progress"]
+    assert (first["status"], second["status"]) == ("review_done", "pending")
+    assert "'main' is main, master or the repository default branch" in first["merge_error"]
+    assert next_child_action(first) == "merge"
     assert [p["slug"] for p in agents.intent_payloads[1:]] == ["add-the-parser"]
     assert "review" not in results
 
@@ -325,7 +329,9 @@ class TestChildLoopWithStubbedPipelines:
                 patch("sandbox_executor.flow.stages.children._fetch_refspecs_error", return_value=None),
             ):
                 res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", self._ROW, {"execution_id": "E-1"})
-        merge.assert_called_once_with(".", 7, "I-1-parent/P-2-agent-model/_")
+        # No execution branch was recorded by the stubbed child, so the expected head is empty and fails closed.
+        merge.assert_called_once_with(".", 7, "I-1-parent/P-2-agent-model/_", expected_head="")
+        assert res.payload["children_progress"][0]["status"] == "review_done"
         assert res.status == StageStatus.FAILED
         assert res.error == (
             "Execute stage failed: sub-intent 1/1 'first' could not be merged into 'I-1-parent/P-2-agent-model/_' "

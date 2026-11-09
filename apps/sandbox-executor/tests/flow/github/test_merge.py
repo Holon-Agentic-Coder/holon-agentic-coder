@@ -117,6 +117,53 @@ def test_unsafe_bases_and_a_failed_lookup_are_refused_before_any_git_write(repos
 
 
 @pytest.mark.parametrize(
+    ("head", "default", "expected_head", "fragment"),
+    [
+        ("main", "main", None, "the PR head 'main' is empty, main, master or the repository default branch"),
+        ("master", "main", None, "the PR head 'master'"),
+        ("trunk", "trunk", None, "the PR head 'trunk' is empty, main, master or the repository default branch"),
+        ("main", "main", "main", "the PR head 'main'"),
+        (CHILD_EXEC, "main", "I-9-other/E-1-agent-model/_", "is not the child's execution branch"),
+        (CHILD_EXEC, "main", "", "is not the child's execution branch ''"),
+    ],
+    ids=["head-main", "head-master", "head-default", "recorded-main", "other-branch", "nothing-recorded"],
+)
+def test_a_protected_or_unexpected_pr_head_is_refused_before_any_push(  # noqa: PLR0913
+    repos, tmp_path, head, default, expected_head, fragment
+):
+    origin, host, _ = repos
+    gh = FakeGitHub(origin, tmp_path, default_branch=default)
+    if head in ("master", "trunk"):
+        _git(origin, "branch", head, "main")
+    number = gh.open_pr(head, PLAN)
+    tips = {branch: gh.sha(branch) for branch in ("main", PLAN, CHILD_EXEC)}
+
+    result = merge_child_pr(str(host), number, PLAN, runner=gh, expected_head=expected_head)
+
+    assert result.merged is False and fragment in (result.reason or "")
+    assert gh.merge_calls() == []
+    assert {branch: gh.sha(branch) for branch in tips} == tips
+
+
+def test_the_recorded_execution_branch_as_head_is_merged(repos, tmp_path):
+    origin, host, _ = repos
+    gh, number = _fake(tmp_path, origin)
+
+    assert merge_child_pr(str(host), number, PLAN, runner=gh, expected_head=f"origin/{CHILD_EXEC}").merged is True
+
+
+@pytest.mark.parametrize(("target", "default"), [("main", None), ("master", None), ("trunk", "trunk"), ("", None)])
+def test_merge_into_branch_refuses_a_protected_or_default_target(repos, target, default):
+    origin, host, _ = repos
+    main_before = _git(origin, "rev-parse", "refs/heads/main")
+
+    sha, reason = merge_module.merge_into_branch(str(host), PLAN, target, "merge", default_branch=default)
+
+    assert sha is None and f"refusing to push to '{target}'" in reason
+    assert _git(origin, "rev-parse", "refs/heads/main") == main_before
+
+
+@pytest.mark.parametrize(
     "case",
     [
         ("fail", "MERGEABLE", "checks red"),

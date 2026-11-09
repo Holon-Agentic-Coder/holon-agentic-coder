@@ -168,17 +168,23 @@ def _merge_in_worktree(worktree: str, source_ref: str, message: str) -> str | No
     return f"merging '{source_ref}' conflicts outside holon-knowledge/ledger/*.jsonl or is not a pure ledger append"
 
 
-def merge_into_branch(repo_dir: str, source_branch: str, target_branch: str, message: str) -> tuple[str | None, str]:
+def merge_into_branch(
+    repo_dir: str, source_branch: str, target_branch: str, message: str, default_branch: str | None = None
+) -> tuple[str | None, str]:
     """Merge ``origin/source_branch`` into ``target_branch`` on origin with a merge commit, in a temporary worktree.
 
-    Both branches are fetched first. When the source is already an ancestor of the target nothing is written.
-    Ledger-only conflicts are resolved with :mod:`sandbox_executor.flow.ledger_interleave`; any other conflict aborts
-    the merge and nothing is pushed. The operator's checkout is never touched.
+    A ``target_branch`` that is empty, ``main``, ``master`` or ``default_branch`` is refused before anything is
+    fetched or pushed. Both branches are fetched first. When the source is already an ancestor of the target nothing
+    is written. Ledger-only conflicts are resolved with :mod:`sandbox_executor.flow.ledger_interleave`; any other
+    conflict aborts the merge and nothing is pushed. The operator's checkout is never touched.
 
     Returns:
         tuple[str | None, str]: ``(target_sha, "")`` with the target's tip on origin after the merge, or
         ``(None, reason)`` when it could not be merged or pushed.
     """
+    target = _bare_branch(target_branch)
+    if not target or target in PROTECTED_BRANCHES or target == _bare_branch(default_branch):
+        return None, f"refusing to push to '{target}': it is empty, main, master or the repository default branch"
     fetch_error = _fetch_refspecs_error(
         repo_dir, [f"+refs/heads/{b}:refs/remotes/origin/{b}" for b in (source_branch, target_branch)]
     )
@@ -217,12 +223,27 @@ def _merged_result(pr: dict[str, Any], plan_branch: str, already_merged: bool) -
     return MergeResult(True, merge_commit=oid, already_merged=already_merged)
 
 
-def _guard(repo_dir: str, pr: dict[str, Any], plan_branch: str, runner: GhRunner) -> str | None:
-    """Run the refusal check against a freshly read PR base and a fresh default-branch lookup."""
-    return merge_refusal_reason(pr.get("baseRefName"), plan_branch, lookup_default_branch(repo_dir, runner))
+def _guard(
+    repo_dir: str, pr: dict[str, Any], plan_branch: str, expected_head: str | None, runner: GhRunner
+) -> tuple[str | None, str | None]:
+    """Run the refusal checks against a freshly read PR and a fresh default-branch lookup; return (reason, default).
+
+    Besides :func:`merge_refusal_reason` on the base, the PR head must not be ``main``, ``master`` or the default
+    branch (the plan branch is pushed into it) and, when ``expected_head`` is given, must be exactly that branch.
+    """
+    default = lookup_default_branch(repo_dir, runner)
+    reason = merge_refusal_reason(pr.get("baseRefName"), plan_branch, default)
+    head = _bare_branch(pr.get("headRefName"))
+    if reason is None and (not head or head in PROTECTED_BRANCHES or head == _bare_branch(default)):
+        reason = f"the PR head '{head}' is empty, main, master or the repository default branch '{default}'"
+    if reason is None and expected_head is not None and head != _bare_branch(expected_head):
+        reason = f"the PR head '{head}' is not the child's execution branch '{_bare_branch(expected_head)}'"
+    return reason, default
 
 
-def _verified_head(repo_dir: str, pr: dict[str, Any], plan_branch: str, gh: GhRunner) -> tuple[str | None, str]:
+def _verified_head(
+    repo_dir: str, pr: dict[str, Any], plan_branch: str, expected_head: str | None, gh: GhRunner
+) -> tuple[str | None, str]:
     """Guard an open PR, bring the plan branch into its head, and wait until it is ready to merge at that head.
 
     Returns:
@@ -230,27 +251,33 @@ def _verified_head(repo_dir: str, pr: dict[str, Any], plan_branch: str, gh: GhRu
     """
     number, state = pr.get("number"), str(pr.get("state") or "").upper()
     reason = f"PR #{number} is {state or 'in an unknown state'}" if state != "OPEN" else None
-    reason = reason or _guard(repo_dir, pr, plan_branch, gh)
     if reason:
         return None, reason
-    head_sha, merge_error = merge_into_branch(
-        repo_dir, _bare_branch(plan_branch), _bare_branch(pr.get("headRefName")), f"merge: bring {plan_branch} in"
-    )
+    reason, default = _guard(repo_dir, pr, plan_branch, expected_head, gh)
+    if reason:
+        return None, reason
+    head_branch, message = _bare_branch(pr.get("headRefName")), f"merge: bring {plan_branch} in"
+    head_sha, merge_error = merge_into_branch(repo_dir, _bare_branch(plan_branch), head_branch, message, default)
     if head_sha is None:
         return None, f"bringing '{plan_branch}' into the child failed: {merge_error}"
     reason = _await_ready(repo_dir, number, head_sha, gh)
     # Re-read the PR immediately before merging: its base may have been edited since the first check.
-    reason = reason or _guard(repo_dir, view_pr(repo_dir, str(number), gh) or {}, plan_branch, gh)
+    reason = reason or _guard(repo_dir, view_pr(repo_dir, str(number), gh) or {}, plan_branch, expected_head, gh)[0]
     return (None, reason) if reason else (head_sha, "")
 
 
 def merge_child_pr(
-    repo_dir: str, pr_number: int | str, plan_branch: str, runner: GhRunner | None = None
+    repo_dir: str,
+    pr_number: int | str,
+    plan_branch: str,
+    runner: GhRunner | None = None,
+    expected_head: str | None = None,
 ) -> MergeResult:
     """Merge a child PR into ``plan_branch`` with a merge commit, only when every guard passes.
 
     Steps: read the PR (an already merged PR into the plan branch is an idempotent success); refuse through
-    :func:`merge_refusal_reason`; bring the plan branch into the child head when it is not already an ancestor
+    :func:`merge_refusal_reason` and refuse a head that is protected or (when ``expected_head`` is given) is not the
+    child's execution branch; bring the plan branch into the child head when it is not already an ancestor
     (ledger-only conflicts interleaved, anything else refused); wait, bounded, for the PR to be mergeable with green CI
     on that head; re-read the PR and re-run the refusal check; then ``gh pr merge --merge --match-head-commit`` and
     verify the PR reports ``MERGED``.
@@ -261,7 +288,7 @@ def merge_child_pr(
         return MergeResult(False, reason=f"PR #{pr_number} could not be read with gh")
     if str(pr.get("state") or "").upper() == "MERGED":
         return _merged_result(pr, plan_branch, already_merged=True)
-    head_sha, reason = _verified_head(repo_dir, pr, plan_branch, gh)
+    head_sha, reason = _verified_head(repo_dir, pr, plan_branch, expected_head, gh)
     if head_sha is None:
         return MergeResult(False, reason=reason)
     merge = gh(["pr", "merge", str(pr_number), "--merge", "--match-head-commit", head_sha], repo_dir)

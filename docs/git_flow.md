@@ -270,12 +270,13 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
     consensus approval and its Stage 5 succeeded (or was skipped by flag). The flow then merges the child's PR into the
     plan branch with `flow/github/merge.py`: merge commit only (`gh pr merge --merge --match-head-commit`), CI green and
     `MERGEABLE`, after first merging the plan branch into the child head if it moved; a base of `main`, `master`, the
-    repository default branch or anything other than the plan branch is refused (see
-    [Safety](safety.md#sub-intent-merge-rules)). Only after that merge does the next child start, so it is cut from a
-    tip that already holds every earlier child's merge commit. The first child that fails, is not ready or is refused
-    marks its progress `failed` and fails the parent's Stage 3, naming the child; later children do not start. Under
-    `--skip-review` no child could reach its consensus halt, so a decomposed Stage 3 (fresh or resumed) fails before
-    any child is dispatched and asks for a re-run without the flag.
+    repository default branch or anything other than the plan branch is refused, as is a PR head that is protected or is
+    not the child's recorded execution branch (see [Safety](safety.md#sub-intent-merge-rules)). Only after that merge
+    does the next child start, so it is cut from a tip that already holds every earlier child's merge commit. The first
+    child that fails or is not ready marks its progress `failed`; one refused only by the merge guard stays
+    `review_done` with a `merge_error`, so a resume retries just the merge. Either way the parent's Stage 3 fails,
+    naming the child; later children do not start. Under `--skip-review` no child could reach its consensus halt, so a
+    decomposed Stage 3 (fresh or resumed) fails before any child is dispatched and asks for a re-run without the flag.
   - **The combined PR.** After the last child merged, Stage 3 merges the plan branch into the parent execution branch
     with a merge commit and appends a superseding `decomposed` summary row with `integrated: true`, the `plan_branch`
     and the list of `children` (slug, intent and execution branch, PR number and URL, merge commit). The parent's own

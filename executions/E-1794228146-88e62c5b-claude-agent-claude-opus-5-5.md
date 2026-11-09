@@ -120,3 +120,55 @@ parent executor or a child.
 - Move proof: 15 definitions declared; budget entry `child_progress.py: 193`.
 - `uv run pytest apps/sandbox-executor/tests/flow -n auto --dist worksteal`: 565 passed in `5.87s`; lint and budgets
   pass.
+
+### Steps 5, 6 and 7: child loop, integration and the resume hook
+
+These three steps were implemented and committed together: `decomposition.py` delegates to `children.run_children`,
+which calls `integration.integrate_children`, and `pipeline.py` imports `children.resume_children`; any one of them
+alone leaves the package unimportable or the suite red.
+
+- Step 5, `flow/stages/children.py` (286 lines): `_PR_URL_RE`, `_child_review_pr` and `_child_context` moved unchanged
+  from `decomposition.py`. `run_children` drives each `children_progress` entry through `next_child_action`: `skip`;
+  `dispatch` or `resume` (`_run_one_child`, which loads the child's own checkpoint and runs
+  `PipelineEngine(child, from_stage=checkpoint.current_stage)`, refusing a child that has an execution branch or PR
+  but no checkpoint); then `_merge_ready_child` calls `merge_child_pr`. A child is ready only when Stage 4 halted with
+  consensus approval and Stage 5 succeeded or was skipped, and it has a PR number. Every state change saves the parent
+  checkpoint with Stage 3 `running`. The first failure marks the entry `failed` and fails Stage 3 naming the child.
+  Child intents record `target_branch = parent_intent_id = plan_branch` and are named `{plan}--{n}-{slug}`.
+- `stages/decomposition.py` (242 to 124 lines) keeps `_sub_intent_depth_error`, the summary formatting and
+  `_run_decomposed_plan` (signature unchanged): it validates the items, records the plan branch (from the context, else
+  the decision record), applies the depth limit, fails clearly when no plan branch is known (never falls back to the
+  intent branch), builds the initial progress and delegates. The summary lists each child PR as merged into the plan
+  branch and names the combined PR that Stage 4 raises; failed runs count how many ran and merged and omit the hand-off.
+- Step 6, `flow/stages/integration.py` (96 lines): `integrate_children` merges `origin/{plan}` into the parent execution
+  branch with `merge_into_branch` (merge commit, temporary worktree, ledger-only conflicts interleaved), appends a
+  superseding `decomposed` summary row with `integrated: true`, `plan_branch` and `children` (slug, intent branch,
+  execution branch, PR number and URL, merge commit) through `_append_superseding_execution_row`, and returns a
+  successful Stage 3 with `context.execution_branch` set to the parent execution branch. Both actions are idempotent
+  (no merge when the plan branch is already an ancestor; no row when the latest row is already `integrated`).
+  `_append_superseding_execution_row`'s commit message now names the row's status (same line count).
+- Step 7, `flow/pipeline.py` (394 to 387 lines): the decomposed Stage 4/5 skip block and `_parent_was_decomposed` are
+  deleted; `execute_stage` returns `resume_children(context, previous)` when the checkpointed Stage 3 satisfies
+  `has_recorded_decomposition(previous, context.plan_branch)` (decomposed, non-empty progress and the same plan
+  branch, so a re-plan never resumes an earlier plan's children). The post-hoc budget exemption for decomposed results
+  is kept. `ruff --fix` narrowed `PipelineEngine.run`'s suppression from `C901, PLR0912, PLR0915` to `C901, PLR0915`
+  (the branch count fell); `tests/test_complexity_gate.py` records that narrowing (a ratchet down, count 184 to 180).
+- `flow/__init__.py` (362 to 359 lines): re-exports the moved names from their new modules and binds
+  `_children.PipelineEngine` late instead of `_decomposition.PipelineEngine`.
+- Budgets: new `stages/children.py: 286`, `stages/integration.py: 96`; lowered `stages/decomposition.py: 124`,
+  `pipeline.py: 387`, `__init__.py: 359`, `child_progress.py: 190` (trimmed after the `plan_branch` guard so its budget
+  never rose). No budget was raised.
+- Move proof: 15 new definitions declared; `PipelineEngine`, `PipelineEngine.execute_stage`, `PipelineEngine.run`,
+  `_append_superseding_execution_row`, `_decomposition_child_lines`, `format_decomposition_summary` and
+  `_run_decomposed_plan` amended with reasons; `PipelineEngine._parent_was_decomposed` listed in
+  `removed_definitions`; the plumbing key is now `_children.PipelineEngine`.
+- Tests updated: `tests/flow/stages/test_decomposition.py` (end-to-end runs now use `decomposed_flow`, so children
+  halt at consensus, open PRs in a `FakeGitHub` and really merge into the plan branch on the fixture origin; child
+  targets are the plan branch; the stubbed helper also stubs the merge, integration and checkpoint; new tests for a
+  missing plan branch, a child not ready to merge, a refused merge and the resume hook's plan-branch guard; the
+  Stage 4/5 skip tests are replaced by a test that Stage 4 and Stage 5 now follow their flags),
+  `tests/flow/helpers.py` (the budget fake executor also writes a per-plan file, so a child cut after a sibling merged
+  still has an effective diff), `tests/flow/test_package_exports.py`, `tests/flow/move_proof.py`,
+  `tests/flow/test_move_proof.py` and `tests/test_cli.py`. New `tests/flow/decomposition_fakes.py`.
+- `uv run pytest apps/sandbox-executor/tests -n auto --dist worksteal`: 3434 passed, 21 skipped in `42.55s`; ruff and
+  the budget script pass.

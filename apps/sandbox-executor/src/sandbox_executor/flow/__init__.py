@@ -161,16 +161,14 @@ from sandbox_executor.flow.review.workspace import (
     reviewers_sandboxed,
 )
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
-from sandbox_executor.flow.stages import decomposition as _decomposition
+from sandbox_executor.flow.stages import children as _children
 from sandbox_executor.flow.stages.calibrate import (
     _commit_stage5_promoted_artifacts,
     _commit_stage5_reconciliation,
     run_calibrate_stage,
 )
+from sandbox_executor.flow.stages.children import _PR_URL_RE, _child_context, _child_review_pr
 from sandbox_executor.flow.stages.decomposition import (
-    _PR_URL_RE,
-    _child_context,
-    _child_review_pr,
     _decomposition_child_lines,
     _run_decomposed_plan,
     _sub_intent_depth_error,
@@ -201,8 +199,8 @@ from sandbox_executor.git import run_git
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.review_report import build_pr_review_consensus_report
 
-# stages.decomposition runs child flows through PipelineEngine, but pipeline imports the stages; bind it late.
-_decomposition.PipelineEngine = PipelineEngine
+# stages.children runs child flows through PipelineEngine, but pipeline imports the stages; bind it late.
+_children.PipelineEngine = PipelineEngine
 
 __all__ = [
     "CHECKPOINT_MIGRATION_REGISTRY",

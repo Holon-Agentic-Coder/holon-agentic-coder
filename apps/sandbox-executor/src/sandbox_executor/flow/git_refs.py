@@ -280,7 +280,7 @@ def _append_superseding_execution_row(context: FlowContext, exec_branch: str, ro
         for key, value in EXECUTOR_GIT_ENV.items():
             commit_env.setdefault(key, value)
         run_git(
-            ["commit", "-m", f"execute: record empty-diff failure for {row.get('execution_id')}"],
+            ["commit", "-m", f"execute: record superseding {row.get('status')} row for {row.get('execution_id')}"],
             cwd=worktree,
             env=commit_env,
         )

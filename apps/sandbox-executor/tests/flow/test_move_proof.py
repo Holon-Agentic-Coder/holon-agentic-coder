@@ -74,6 +74,5 @@ def test_package_plumbing_is_only_loggers_reexports_and_the_late_binding():
             if isinstance(node, ast.Assign | ast.AnnAssign) and assign_key(node) in {
                 "<const>:__all__",
                 "<const>:_children.PipelineEngine",
-                "<const>:_decomposition.PipelineEngine",
             }:
                 assert module_path == "__init__.py", module_path

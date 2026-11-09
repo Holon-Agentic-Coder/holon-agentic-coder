@@ -14,9 +14,7 @@ SNAPSHOT_PATH = Path(__file__).resolve().parent / "fixtures" / "flow_py_definiti
 # Package plumbing that flow.py did not have (or had once, at module level): the per-module loggers, the re-export
 # list and the late binding of PipelineEngine into stages.children (stages.decomposition before the child loop moved
 # there). Excluded on both sides of the comparison.
-PLUMBING_KEYS = frozenset(
-    {"<const>:logger", "<const>:__all__", "<const>:_children.PipelineEngine", "<const>:_decomposition.PipelineEngine"}
-)
+PLUMBING_KEYS = frozenset({"<const>:logger", "<const>:__all__", "<const>:_children.PipelineEngine"})
 LOGGER_SOURCE = "logger = logging.getLogger(__name__)"
 
 

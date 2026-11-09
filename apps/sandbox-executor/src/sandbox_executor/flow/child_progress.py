@@ -66,13 +66,16 @@ def initial_progress(items: list[dict[str, Any]], plan_branch: str) -> list[dict
     return progress
 
 
-def has_recorded_decomposition(stage_result: StageResult | None) -> bool:
+def has_recorded_decomposition(stage_result: StageResult | None, plan_branch: str | None = None) -> bool:
     """True when a (checkpointed) Stage 3 result already decomposed and recorded per-child progress.
 
-    The pipeline then resumes the children instead of dispatching the parent executor again.
+    The pipeline then resumes the children instead of dispatching the parent executor again. With ``plan_branch``, the
+    recorded decomposition must belong to that plan, so a re-plan never resumes the children of an earlier plan.
     """
     payload = stage_result.payload if stage_result is not None else None
-    return bool(isinstance(payload, dict) and payload.get("decomposed") and payload.get(PROGRESS_KEY))
+    if not (isinstance(payload, dict) and payload.get("decomposed") and payload.get(PROGRESS_KEY)):
+        return False
+    return plan_branch is None or payload.get("plan_branch") == plan_branch
 
 
 def child_checkpoint_path(context: FlowContext, intent_branch: str) -> str:
@@ -110,17 +113,11 @@ def _execution_branches(repo_dir: str, intent_branch: str) -> list[str] | None:
         for plan in _list_child_branches(repo_dir, intent_prefix, "P")
         for execution in _list_child_branches(repo_dir, plan.removesuffix("/_"), "E")
     ]
-
-    def seq(branch: str) -> int:
-        match = re.search(r"/E-(\d+)-[^/]+/_$", branch)
-        return int(match.group(1)) if match else -1
-
-    return sorted(branches, key=seq)
+    return sorted(branches, key=lambda b: int(m.group(1)) if (m := re.search(r"/E-(\d+)-[^/]+/_$", b)) else -1)
 
 
 def _child_pr(repo_dir: str, execution_branch: str, runner: GhRunner) -> tuple[dict[str, Any] | None, bool]:
-    """Return ``(pr, ok)``: the newest PR whose head is ``execution_branch`` (None when there is none) and whether
-    ``gh`` answered at all."""
+    """Return ``(pr, ok)``: the newest PR from ``execution_branch`` (None if there is none) and whether gh answered."""
     fields = "number,state,baseRefName,url,mergeCommit"
     proc = runner(["pr", "list", "--head", execution_branch, "--state", "all", "--json", fields], repo_dir)
     if proc.returncode != 0:

@@ -19,7 +19,7 @@ import pytest
 COMPLEXITY_RULES: frozenset[str] = frozenset({"C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915"})
 
 # Baseline established for intent I-1793334797-hac-ruff-complexity-gate-with-inline-baseline
-BASELINE_COMPLEXITY_NOQA_COUNT: int = 184
+BASELINE_COMPLEXITY_NOQA_COUNT: int = 180
 BASELINE_ANNOTATED_FUNCTIONS_COUNT: int = 90
 
 NOQA_DIRECTIVE_PATTERN = re.compile(r"#\s*noqa(?::\s*([A-Za-z0-9_,\s]+))?", re.IGNORECASE)
@@ -68,7 +68,7 @@ BASELINE_SNAPSHOT: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("sandbox_executor/flow/github/pr.py", ("PLR0913",)),
     ("sandbox_executor/flow/github/review_post.py", ("PLR0912", "PLR0913", "PLR0915")),
     ("sandbox_executor/flow/intent_questions.py", ("C901", "PLR0912", "PLR0915")),
-    ("sandbox_executor/flow/pipeline.py", ("C901", "PLR0912", "PLR0915")),
+    ("sandbox_executor/flow/pipeline.py", ("C901", "PLR0915")),
     ("sandbox_executor/flow/pipeline.py", ("PLR0911",)),
     ("sandbox_executor/flow/review/ensemble.py", ("PLR0913",)),
     ("sandbox_executor/flow/review/loop.py", ("C901", "PLR0912", "PLR0913", "PLR0915")),

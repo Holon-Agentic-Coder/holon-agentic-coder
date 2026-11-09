@@ -21,7 +21,9 @@ from sandbox_executor.flow import (
     run_intent_stage,
     run_plan_stage,
 )
+from sandbox_executor.flow.github.merge import MergeResult
 
+from tests.flow.decomposition_fakes import decomposed_flow, halted_review
 from tests.flow.helpers import SUB_INTENT_LIST, BudgetRoleAgents, _all_intent_rows, _budget_context, _ledger_rows
 from tests.flow.lookup_patch import patch_lookup_sites
 
@@ -46,12 +48,15 @@ class TestEntropyBudgetHandoffInFlow:
         assert run_intent_stage(ctx).status == StageStatus.SUCCESS
         assert run_plan_stage(ctx).status == StageStatus.SUCCESS
 
-        if precheck:
-            res = run_execute_stage(ctx)
-        else:
-            # Model a plan the flow could not read before dispatch: the executor's own row decides.
-            with patch("sandbox_executor.flow.stages.execute._plan_budget_decision", return_value=None):
+        # A decomposed plan runs its children through their own consensus halt and merge.
+        ctx.skip_review = False
+        with decomposed_flow(origin, tmp_path):
+            if precheck:
                 res = run_execute_stage(ctx)
+            else:
+                # Model a plan the flow could not read before dispatch: the executor's own row decides.
+                with patch("sandbox_executor.flow.stages.execute._plan_budget_decision", return_value=None):
+                    res = run_execute_stage(ctx)
 
         assert res.status != StageStatus.HALTED_FOR_HUMAN
         assert res.status == expected_status
@@ -129,8 +134,10 @@ class TestEntropyBudgetHandoffInFlow:
         host, origin = flow_repos
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (2.0, "")])
         ctx = _budget_context(host, agents, 5.0)
+        ctx.skip_review = False
 
-        results = PipelineEngine(ctx).run()
+        with decomposed_flow(origin, tmp_path) as reviews:
+            results = PipelineEngine(ctx).run()
 
         assert agents.overlaps == 0
         assert agents.roles() == [
@@ -141,34 +148,44 @@ class TestEntropyBudgetHandoffInFlow:
         ]
         children = [p["slug"] for p in agents.intent_payloads[1:]]
         assert children == ["add-the-parser", "add-the-cli-flag"]
+        plan_branch = ctx.plan_branch
         for payload in agents.intent_payloads[1:]:
-            assert payload["target_branch"] == ctx.intent_branch
-            assert payload["parent_intent_id"] == ctx.intent_branch
+            # Nested under the plan branch, never the intent branch or main.
+            assert payload["target_branch"] == plan_branch
+            assert payload["parent_intent_id"] == plan_branch
+            assert payload["branch"].startswith(plan_branch.removesuffix("/_") + "--")
             assert payload["entropy_budget"] == 5.0
             assert payload["sub_intent_depth"] == 1
             # Labels drive the PR title scope, so each child PR is scoped like its parent's.
             assert payload["labels"] == ["flow"]
         execute = results["execute"]
         assert execute.status == StageStatus.SUCCESS
-        assert execute.payload["decomposed"] is True
+        assert execute.payload["decomposed"] is True and execute.payload["integrated"] is True
         assert [c["slug"] for c in execute.payload["children"]] == children
-        assert execute.payload["parent_branch"] == ctx.intent_branch
+        assert execute.payload["plan_branch"] == plan_branch
         assert execute.payload["parent_target_branch"] == "main"
+        assert [e["status"] for e in execute.payload["children_progress"]] == ["merged", "merged"]
         for child in execute.payload["children"]:
             assert child["execution_branch"].startswith(child["intent_branch"].removesuffix("/_") + "/P-")
-            assert {"pr_url", "pr_number"} <= child.keys()
+            assert child["merged"] is True
+        # Each child PR targets the plan branch; Stage 4 of the parent raises the combined PR into main.
+        assert [(r["slug"], r["base"]) for r in reviews.reviewed] == [
+            ("add-the-parser", plan_branch),
+            ("add-the-cli-flag", plan_branch),
+            ("budget-test", "main"),
+        ]
+        assert reviews.reviewed[-1]["head"] == ctx.execution_branch == execute.payload["execution_branch"]
         summary = flow_module.format_decomposition_summary(execute)
-        assert summary[0] == "Decomposed into 2 sub-intent(s); merge each child PR into the parent intent branch:"
-        assert summary[1].startswith("  1. add-the-parser: ")
-        assert summary[-1] == (
-            f"Pending (not yet automated): after the child PRs merge, raise a PR from '{ctx.intent_branch}' to 'main'."
+        assert summary[0] == f"Decomposed into 2 sub-intent(s); each child PR was merged into '{plan_branch}':"
+        assert (
+            summary[1] == f"  1. add-the-parser: https://github.com/example/app/pull/101 (merged into '{plan_branch}')"
         )
-        assert all(c["status"] in ("success", "skipped", "halted_for_human") for c in execute.payload["children"])
-        assert results["review"].status == StageStatus.SKIPPED
-        assert results["review"].payload == {"reason": "decomposed"}
-        assert results["calibrate"].status == StageStatus.SKIPPED
-        # Skipped because the plan was decomposed, not only by the test context's skip flag.
-        assert results["calibrate"].payload == {"reason": "decomposed"}
+        assert summary[-1] == (
+            f"Combined PR: Stage 4 raises and reviews '{ctx.execution_branch}' (with '{plan_branch}' merged in) into "
+            "'main'."
+        )
+        assert results["review"].status == StageStatus.HALTED_FOR_HUMAN
+        assert results["calibrate"].payload == {"skipped_by_flag": True}
         assert any("[sub-intent add-the-parser]" in line for line in ctx.logs)
         # The executor wrote no intent rows: only the parent and the two children created through Stage 1 exist.
         assert sorted(r["slug"] for r in _all_intent_rows(host)) == sorted(["budget-test", *children])
@@ -178,36 +195,46 @@ class TestEntropyBudgetHandoffInFlow:
         # Parent and first child both list sub-intents; the two grandchildren and the second child execute.
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (9.0, SUB_INTENT_LIST), (2.0, "")])
         ctx = _budget_context(host, agents, 5.0)
+        ctx.skip_review = False
 
-        results = PipelineEngine(ctx).run()
+        with decomposed_flow(origin, tmp_path) as reviews:
+            results = PipelineEngine(ctx).run()
 
         execute = results["execute"]
         assert execute.status == StageStatus.SUCCESS
+        plan = ctx.plan_branch
         first, second = execute.payload["children"]
         assert first["decomposed"] is True
         assert "decomposed" not in second
+        child_plan = first["plan_branch"]
+        assert child_plan.startswith(first["intent_branch"].removesuffix("/_") + "/P-")
         grandchildren = first["children"]
         assert [g["slug"] for g in grandchildren] == ["add-the-parser", "add-the-cli-flag"]
-        # The first grandchild shares its parent's slug yet runs on its own branch, however fast the run.
+        # Grandchildren nest under the first child's own plan branch, however fast the run.
         assert [g["intent_branch"] for g in grandchildren] == [
-            first["intent_branch"].removesuffix("/_") + suffix
-            for suffix in ("--1-add-the-parser/_", "--2-add-the-cli-flag/_")
+            child_plan.removesuffix("/_") + suffix for suffix in ("--1-add-the-parser/_", "--2-add-the-cli-flag/_")
         ]
         assert [p["sub_intent_depth"] for p in agents.intent_payloads[1:]] == [1, 2, 2, 1]
-        assert [p["target_branch"] for p in agents.intent_payloads[2:4]] == [first["intent_branch"]] * 2
+        assert [p["target_branch"] for p in agents.intent_payloads[2:4]] == [child_plan] * 2
+        # The decomposed child raises its own combined PR into the parent's plan branch, which is then merged.
+        assert [(r["slug"], r["base"]) for r in reviews.reviewed] == [
+            ("add-the-parser", child_plan),
+            ("add-the-cli-flag", child_plan),
+            ("add-the-parser", plan),
+            ("add-the-cli-flag", plan),
+            ("budget-test", "main"),
+        ]
+        assert reviews.reviewed[2]["head"] == first["execution_branch"]
         summary = flow_module.format_decomposition_summary(execute)
         assert summary == [
-            "Decomposed into 2 sub-intent(s); merge each child PR into the parent intent branch:",
-            f"  1. add-the-parser: decomposed into 2 sub-intent(s), so it has no PR of its own; merge its child PRs "
-            f"below into '{first['intent_branch']}', then raise a PR from '{first['intent_branch']}' to "
-            f"'{ctx.intent_branch}' (not yet automated):",
-            f"     1. add-the-parser: {grandchildren[0]['execution_branch']} ({grandchildren[0]['status']})",
-            f"     2. add-the-cli-flag: {grandchildren[1]['execution_branch']} ({grandchildren[1]['status']})",
-            f"  2. add-the-cli-flag: {second['execution_branch']} ({second['status']})",
-            f"Pending (not yet automated): after the child PRs merge, raise a PR from '{ctx.intent_branch}' to 'main'.",
+            f"Decomposed into 2 sub-intent(s); each child PR was merged into '{plan}':",
+            f"  1. add-the-parser: decomposed into 2 sub-intent(s), combined in {first['pr_url']} (merged into "
+            f"'{plan}'):",
+            f"     1. add-the-parser: {grandchildren[0]['pr_url']} (merged into '{child_plan}')",
+            f"     2. add-the-cli-flag: {grandchildren[1]['pr_url']} (merged into '{child_plan}')",
+            f"  2. add-the-cli-flag: {second['pr_url']} (merged into '{plan}')",
+            f"Combined PR: Stage 4 raises and reviews '{ctx.execution_branch}' (with '{plan}' merged in) into 'main'.",
         ]
-        # The decomposed child's ledger-only execution branch is never offered as a PR to merge.
-        assert not any(first["execution_branch"] in line for line in summary)
 
     @pytest.mark.parametrize(
         ("parent", "index", "slug", "expected"),
@@ -227,24 +254,29 @@ class TestEntropyBudgetHandoffInFlow:
         # The first grandchild shares its parent's slug, and a frozen clock creates every intent in the same second.
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (9.0, SUB_INTENT_LIST), (2.0, "")])
         ctx = _budget_context(host, agents, 5.0)
+        ctx.skip_review = False
 
-        with patch("sandbox_executor.flow.stages.intent.time.time", return_value=1793098938.0):
+        with (
+            patch("sandbox_executor.flow.stages.intent.time.time", return_value=1793098938.0),
+            decomposed_flow(origin, tmp_path),
+        ):
             results = PipelineEngine(ctx).run()
 
         # Every intent was dispatched to the intent creator on a branch of its own: none reused another's.
         branches = [p["branch"] for p in agents.intent_payloads]
         assert len(branches) == len(set(branches)) == 5
-        root = ctx.intent_branch.removesuffix("/_")
+        assert results["execute"].status == StageStatus.SUCCESS
+        plan = ctx.plan_branch.removesuffix("/_")
+        first = results["execute"].payload["children"][0]
+        child_plan = first["plan_branch"].removesuffix("/_")
         assert branches == [
             "I-1793098938-budget-test",
-            f"{root}--1-add-the-parser",
-            f"{root}--1-add-the-parser--1-add-the-parser",
-            f"{root}--1-add-the-parser--2-add-the-cli-flag",
-            f"{root}--2-add-the-cli-flag",
+            f"{plan}--1-add-the-parser",
+            f"{child_plan}--1-add-the-parser",
+            f"{child_plan}--2-add-the-cli-flag",
+            f"{plan}--2-add-the-cli-flag",
         ]
         assert [p["sub_intent_depth"] for p in agents.intent_payloads[1:]] == [1, 2, 2, 1]
-        assert results["execute"].status == StageStatus.SUCCESS
-        first = results["execute"].payload["children"][0]
         assert [g["intent_branch"] for g in first["children"]] == [f"{b}/_" for b in branches[2:4]]
 
     def test_child_halting_at_its_own_review_is_a_success_and_records_its_pr(self, flow_repos, tmp_path):
@@ -252,44 +284,27 @@ class TestEntropyBudgetHandoffInFlow:
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (2.0, "")])
         ctx = _budget_context(host, agents, 5.0)
         ctx.skip_review = False
-        reviewed: list[str | None] = []
 
-        def fake_review(child_ctx: FlowContext) -> StageResult:
-            # The payload shape run_review_stage returns at its consensus halt: the PR result sits under "pr".
-            number = 101 + len(reviewed)
-            reviewed.append(child_ctx.execution_branch)
-            return StageResult(
-                stage=FlowStage.REVIEW,
-                status=StageStatus.HALTED_FOR_HUMAN,
-                payload={
-                    "consensus": {"approved": True, "score": 1.0, "iterations": 1, "status": "approved"},
-                    "halted_for_human": True,
-                    "pr": {
-                        "attempted": True,
-                        "success": True,
-                        "action": "create",
-                        "pr_number": number,
-                        "output": f"https://github.com/example/app/pull/{number}",
-                    },
-                },
-            )
-
-        with patch("sandbox_executor.flow.pipeline.run_review_stage", side_effect=fake_review):
+        with decomposed_flow(origin, tmp_path) as reviews:
             results = PipelineEngine(ctx).run()
 
         execute = results["execute"]
         assert execute.status == StageStatus.SUCCESS
         children = execute.payload["children"]
-        # Both children ran although the first stopped at its own merge boundary.
+        # Both children ran, each stopping at its own consensus halt before it was merged.
         assert [c["slug"] for c in children] == ["add-the-parser", "add-the-cli-flag"]
-        assert reviewed == [c["execution_branch"] for c in children]
+        assert [r["head"] for r in reviews.reviewed[:2]] == [c["execution_branch"] for c in children]
         assert [(c["pr_url"], c["pr_number"]) for c in children] == [
             ("https://github.com/example/app/pull/101", 101),
             ("https://github.com/example/app/pull/102", 102),
         ]
+        assert [e["pr_number"] for e in execute.payload["children_progress"]] == [101, 102]
+        assert [reviews.gh.prs[n]["state"] for n in (101, 102, 103)] == ["MERGED", "MERGED", "OPEN"]
+        # The parent's own Stage 4 raised the combined PR into main and halted there for the human.
+        assert reviews.gh.prs[103]["base"] == "main"
+        assert results["review"].status == StageStatus.HALTED_FOR_HUMAN
         summary = flow_module.format_decomposition_summary(execute)
-        assert summary[1].startswith("  1. add-the-parser: https://github.com/example/app/pull/101 (")
-        assert results["review"].payload == {"reason": "decomposed"}
+        assert summary[1].startswith("  1. add-the-parser: https://github.com/example/app/pull/101 (merged into ")
 
     def test_replan_whose_stage_2_fails_ends_the_run_in_stage_2(self, flow_repos, tmp_path):
         host, origin = flow_repos
@@ -332,12 +347,14 @@ class TestEntropyBudgetHandoffInFlow:
         assert "sub-intent 1/2 'add-the-parser' failed at stage 'plan'" in (execute.error or "")
         assert [p["slug"] for p in agents.intent_payloads[1:]] == ["add-the-parser"]
         assert "review" not in results
+        assert execute.payload["children_progress"][0]["status"] == "failed"
+        assert execute.payload["children_progress"][1]["status"] == "pending"
         summary = flow_module.format_decomposition_summary(execute)
         assert summary[0] == (
-            "Decomposed into 2 sub-intent(s); 1 of 2 ran before Stage 3 failed, so no child PR is ready to merge:"
+            f"Decomposed into 2 sub-intent(s); 1 of 2 ran and 0 merged into '{ctx.plan_branch}' before Stage 3 failed:"
         )
         assert len(summary) == 2
-        assert not any("merge each child PR" in line or line.startswith("Pending") for line in summary)
+        assert not any(line.startswith("Combined PR") for line in summary)
 
     def test_sub_intent_depth_is_bounded(self, flow_repos, tmp_path):
         host, origin = flow_repos
@@ -368,7 +385,7 @@ class TestEntropyBudgetHandoffInFlow:
         assert res.payload["decomposed"] is True
         assert res.payload["children"] == []
         assert flow_module.format_decomposition_summary(res) == [
-            "Decomposed into 2 sub-intent(s); 0 of 2 ran before Stage 3 failed, so no child PR is ready to merge:"
+            f"Decomposed into 2 sub-intent(s); 0 of 2 ran and 0 merged into '{ctx.plan_branch}' before Stage 3 failed:"
         ]
         # The executor ran once and no child intent was created.
         assert agents.roles() == ["intent-creator", "planner", "executor"]
@@ -424,14 +441,29 @@ class TestEntropyBudgetHandoffInFlow:
         assert "entropy 12.6" in (agents.replan_feedback_seen[1] or "")
         assert os.environ.get("HOLON_REPLAN_FEEDBACK") == "operator value"
 
-    def test_failed_decomposed_execute_does_not_skip_review_or_calibration(self):
-        ctx = FlowContext(token_reduce=False)
-        engine = PipelineEngine(ctx)
-        for status, expected in ((StageStatus.FAILED, False), (StageStatus.SUCCESS, True)):
+    def test_only_a_recorded_decomposition_of_the_current_plan_resumes_its_children(self):
+        plan = "I-1-parent/P-2-agent-model/_"
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, plan_branch=plan)
+        progress = [{"index": 1, "slug": "a", "intent_branch": "I-1-parent/P-2-agent-model--1-a/_", "status": "merged"}]
+        resumed = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"resumed": True})
+        fresh = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"fresh": True})
+        cases = [
+            ({"decomposed": True, "plan_branch": plan, "children_progress": progress}, resumed),
+            # A re-plan produced another plan branch: the old plan's children are not resumed.
+            ({"decomposed": True, "plan_branch": "I-1-parent/P-9-agent-model/_", "children_progress": progress}, fresh),
+            # A depth refusal recorded no progress, so nothing can be resumed.
+            ({"decomposed": True, "plan_branch": plan, "children_progress": []}, fresh),
+        ]
+        for payload, expected in cases:
             ctx.stage_results["execute"] = StageResult(
-                stage=FlowStage.EXECUTE, status=status, payload={"decomposed": True}
+                stage=FlowStage.EXECUTE, status=StageStatus.FAILED, payload=payload
             )
-            assert engine._parent_was_decomposed() is expected
+            with (
+                patch("sandbox_executor.flow.pipeline.resume_children", return_value=resumed) as resume,
+                patch("sandbox_executor.flow.pipeline.run_execute_stage", return_value=fresh) as dispatch,
+            ):
+                assert PipelineEngine(ctx).execute_stage(FlowStage.EXECUTE) is expected
+            assert (resume.called, dispatch.called) == (expected is resumed, expected is fresh)
 
     @pytest.mark.parametrize(("recorded", "expected"), [(-3, 0), ("-1", 0), (None, 0), ("deep", 0), ("2", 2)], ids=str)
     def test_sub_intent_depth_is_never_negative(self, recorded, expected):
@@ -439,26 +471,18 @@ class TestEntropyBudgetHandoffInFlow:
         assert flow_module._sub_intent_depth({"sub_intent_depth": recorded}) == expected
 
     def test_decomposed_summary_names_the_parent_intents_own_target_branch(self):
-        # The pending parent PR targets the parent intent's target_branch, not always main.
-        ctx = FlowContext(
-            token_reduce=False,
-            intent_data={"slug": "parent", "goal": "Change the application", "target_branch": "release/1.x"},
+        # The combined PR targets the parent intent's target_branch, not always main.
+        res, _ctx, _children = self._run_children(
+            {"slug": "parent", "goal": "Change the application", "target_branch": "release/1.x"},
+            self._ROW,
+            intent_branch="I-1-parent/_",
         )
-        ctx.intent_branch = "I-1-parent/_"
-        row = {
-            "status": "decomposed",
-            "plan_branch": "I-1-parent/P-2-agent-model/_",
-            "sub_intents": [{"slug": "first", "goal": "Add the parser"}],
-        }
-        done = {"intent": StageResult(stage=FlowStage.INTENT, status=StageStatus.SUCCESS)}
-
-        with patch.object(PipelineEngine, "run", return_value=done):
-            res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", row, {"execution_id": "E-1"})
 
         assert res.status == StageStatus.SUCCESS
         assert res.payload["parent_target_branch"] == "release/1.x"
         assert flow_module.format_decomposition_summary(res)[-1] == (
-            "Pending (not yet automated): after the child PRs merge, raise a PR from 'I-1-parent/_' to 'release/1.x'."
+            "Combined PR: Stage 4 raises and reviews 'I-1-parent/P-2-agent-model/E-3-agent-model/_' (with "
+            "'I-1-parent/P-2-agent-model/_' merged in) into 'release/1.x'."
         )
 
     def test_child_pipeline_that_runs_no_stage_fails_the_parent(self):
@@ -599,21 +623,45 @@ class TestEntropyBudgetHandoffInFlow:
             f"the limit of {MAX_SUB_INTENT_DEPTH}; refusing to recurse further."
         )
 
-    @staticmethod
+    _READY: ClassVar[dict[str, StageResult]] = {
+        "intent": StageResult(stage=FlowStage.INTENT, status=StageStatus.SUCCESS),
+        "review": halted_review(7, "https://github.com/o/r/pull/7"),
+        "calibrate": StageResult(
+            stage=FlowStage.CALIBRATE, status=StageStatus.SKIPPED, payload={"skipped_by_flag": True}
+        ),
+    }
+
+    @classmethod
     def _run_children(
-        intent_data: dict[str, Any], row: dict[str, Any], child_results: dict[str, StageResult] | None = None, **ctx_kw
+        cls,
+        intent_data: dict[str, Any],
+        row: dict[str, Any],
+        child_results: dict[str, StageResult] | None = None,
+        **ctx_kw,
     ) -> tuple[StageResult, FlowContext, list[FlowContext]]:
-        """Run _run_decomposed_plan with each child pipeline replaced by a stub; return result, parent, children."""
+        """Run _run_decomposed_plan with each child pipeline, the merge and the integration replaced by stubs."""
         ctx = FlowContext(token_reduce=False, intent_data=intent_data, **ctx_kw)
         children: list[FlowContext] = []
-        done = child_results or {"intent": StageResult(stage=FlowStage.INTENT, status=StageStatus.SUCCESS)}
+        done = child_results or cls._READY
 
         def fake_run(engine: PipelineEngine) -> dict[str, StageResult]:
             children.append(engine.context)
             return done
 
-        with patch.object(PipelineEngine, "run", autospec=True, side_effect=fake_run):
-            res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", row, {"execution_id": "E-1"})
+        def integrated(context: FlowContext, start_time: str, payload: dict[str, Any]) -> StageResult:
+            result = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload=payload)
+            context.stage_results["execute"] = result
+            return result
+
+        base = {"execution_id": "E-1", "execution_branch": "I-1-parent/P-2-agent-model/E-3-agent-model/_"}
+        with (
+            patch.object(PipelineEngine, "run", autospec=True, side_effect=fake_run),
+            patch("sandbox_executor.flow.stages.children.merge_child_pr", return_value=MergeResult(True, "m1")),
+            patch("sandbox_executor.flow.stages.children.integrate_children", side_effect=integrated),
+            patch("sandbox_executor.flow.stages.children.save_checkpoint"),
+            patch("sandbox_executor.flow.stages.children._fetch_refspecs_error", return_value=None),
+        ):
+            res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", row, base)
         return res, ctx, children
 
     _ROW: ClassVar[dict[str, Any]] = {
@@ -633,8 +681,9 @@ class TestEntropyBudgetHandoffInFlow:
 
         assert res.status == StageStatus.SUCCESS
         assert [c.intent_data["sub_intent_depth"] for c in children] == [MAX_SUB_INTENT_DEPTH]
-        assert ctx.logs[-1].endswith(
-            "] Stage 3 completed: all 1 sub-intent(s) of 'I-1-parent/P-2-agent-model/_' ran through the pipeline."
+        assert any(
+            line.endswith("] Stage 3: all 1 sub-intent(s) merged into 'I-1-parent/P-2-agent-model/_'.")
+            for line in ctx.logs
         )
 
     def test_child_one_deeper_than_the_cap_is_refused(self):
@@ -658,9 +707,15 @@ class TestEntropyBudgetHandoffInFlow:
         res, ctx, children = self._run_children({"slug": "parent", "labels": labels}, row)
 
         assert res.status == StageStatus.SUCCESS
-        # A checkpoint without intent_branch still names the parent from the plan branch.
-        assert res.payload["parent_branch"] == "I-1-parent/_"
-        assert [c.intent_data["target_branch"] for c in children] == ["I-1-parent/_"] * 2
+        # A context without plan_branch (a checkpoint) still nests the children under the recorded plan branch.
+        plan = "I-1-parent/P-2-agent-model/_"
+        assert res.payload["plan_branch"] == plan
+        assert [c.intent_data["target_branch"] for c in children] == [plan] * 2
+        assert [c.intent_data["parent_intent_id"] for c in children] == [plan] * 2
+        assert [c.intent_data["branch"] for c in children] == [
+            "I-1-parent/P-2-agent-model--1-sub-intent-1",
+            "I-1-parent/P-2-agent-model--2-sub-intent-2",
+        ]
         first, second = (c.intent_data for c in children)
         assert (first["slug"], first["description"], first["goal"]) == (
             "sub-intent-1",
@@ -675,23 +730,60 @@ class TestEntropyBudgetHandoffInFlow:
         assert first["labels"] == labels and first["labels"] is not labels
         assert res.payload["sub_intents"] == row["sub_intents"][:2]
         assert ctx.stage_results["execute"] is res
-        assert any(
-            line.endswith("] Stage 3: running sub-intent 1/2 'sub-intent-1' through the full pipeline.")
-            for line in ctx.logs
-        )
+        assert any(line.endswith("] Stage 3: running sub-intent 1 'sub-intent-1'.") for line in ctx.logs)
+        assert [e["status"] for e in res.payload["children_progress"]] == ["merged", "merged"]
 
-    def test_child_payload_prefers_the_intent_branch_and_hands_down_the_budget(self):
+    def test_child_payload_prefers_the_context_plan_branch_and_hands_down_the_budget(self):
         row = {k: v for k, v in self._ROW.items() if k != "plan_branch"}
         res, _ctx, children = self._run_children(
-            {"slug": "parent", "labels": "flow"}, row, intent_branch="I-9-parent/_"
+            {"slug": "parent", "labels": "flow"}, row, intent_branch="I-9-parent/_", plan_branch="I-9-parent/P-3-a-m/_"
         )
 
-        assert res.payload["parent_branch"] == "I-9-parent/_"
+        assert res.payload["plan_branch"] == "I-9-parent/P-3-a-m/_"
         (child,) = (c.intent_data for c in children)
+        # Never the intent branch: the plan branch is both the parent and the merge target.
+        assert child["target_branch"] == child["parent_intent_id"] == "I-9-parent/P-3-a-m/_"
         assert child["entropy_budget"] == 5.0
         assert (child["description"], child["goal"]) == ("Add the parser\n- with tests", "Add the parser")
         # Labels that are not a list are not handed down.
         assert "labels" not in child
+
+    def test_without_a_known_plan_branch_no_child_runs_and_the_intent_branch_is_never_the_fallback(self):
+        row = {k: v for k, v in self._ROW.items() if k != "plan_branch"}
+        res, _ctx, children = self._run_children({"slug": "parent"}, row, intent_branch="I-9-parent/_")
+
+        assert res.status == StageStatus.FAILED
+        assert res.error == (
+            "Execute stage failed: no plan branch is known, so the sub-intents cannot be nested under it."
+        )
+        assert children == []
+
+    def test_a_child_that_is_not_ready_to_merge_or_is_refused_fails_the_stage_naming_it(self):
+        skipped = {**self._READY, "review": StageResult(stage=FlowStage.REVIEW, status=StageStatus.SKIPPED)}
+        res, _ctx, _children = self._run_children(
+            {"slug": "parent"}, self._ROW, child_results=skipped, plan_branch=self._ROW["plan_branch"]
+        )
+        assert res.error == (
+            "Execute stage failed: sub-intent 1/1 'first' is not ready to merge into 'I-1-parent/P-2-agent-model/_': "
+            "its Stage 4 did not halt at consensus (status skipped)"
+        )
+        assert res.payload["children_progress"][0]["status"] == "failed"
+
+        refused = MergeResult(False, reason="the PR base 'main' is main, master or the repository default branch")
+        with patch("sandbox_executor.flow.stages.children.merge_child_pr", return_value=refused) as merge:
+            ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, plan_branch=self._ROW["plan_branch"])
+            with (
+                patch.object(PipelineEngine, "run", return_value=self._READY),
+                patch("sandbox_executor.flow.stages.children.save_checkpoint"),
+                patch("sandbox_executor.flow.stages.children._fetch_refspecs_error", return_value=None),
+            ):
+                res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", self._ROW, {"execution_id": "E-1"})
+        merge.assert_called_once_with(".", 7, "I-1-parent/P-2-agent-model/_")
+        assert res.status == StageStatus.FAILED
+        assert res.error == (
+            "Execute stage failed: sub-intent 1/1 'first' could not be merged into 'I-1-parent/P-2-agent-model/_' "
+            "(PR #7): the PR base 'main' is main, master or the repository default branch"
+        )
 
     @pytest.mark.parametrize("execute_failed_too", [False, True], ids=["plan-only", "plan-and-execute"])
     def test_failed_child_names_its_own_error_and_final_stage(self, execute_failed_too):
@@ -754,18 +846,24 @@ class TestEntropyBudgetHandoffInFlow:
 
     def test_failed_decomposition_summary_counts_the_listed_items_not_only_the_children_that_ran(self):
         items = [{"slug": "a"}, {"slug": "b"}, {"slug": "c"}, "not-an-item"]
-        ran_one = StageResult(
+        plan = "I-1-p/P-2-a-m/_"
+        ran_two = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.FAILED,
             payload={
                 "decomposed": True,
+                "plan_branch": plan,
                 "sub_intents": items,
-                "children": [{"slug": "a", "execution_branch": "E-a", "status": "failed"}],
+                "children": [
+                    {"slug": "a", "pr_url": "https://x/pull/1", "status": "halted_for_human", "merged": True},
+                    {"slug": "b", "execution_branch": "E-b", "status": "failed"},
+                ],
             },
         )
-        assert flow_module.format_decomposition_summary(ran_one) == [
-            "Decomposed into 3 sub-intent(s); 1 of 3 ran before Stage 3 failed, so no child PR is ready to merge:",
-            "  1. a: E-a (failed)",
+        assert flow_module.format_decomposition_summary(ran_two) == [
+            f"Decomposed into 3 sub-intent(s); 2 of 3 ran and 1 merged into '{plan}' before Stage 3 failed:",
+            f"  1. a: https://x/pull/1 (merged into '{plan}')",
+            "  2. b: E-b (failed)",
         ]
         # A depth refusal inside the decomposed run fails before any child runs.
         ran_none = StageResult(
@@ -774,19 +872,20 @@ class TestEntropyBudgetHandoffInFlow:
             payload={"decomposed": True, "sub_intents": items, "children": []},
         )
         assert flow_module.format_decomposition_summary(ran_none) == [
-            "Decomposed into 3 sub-intent(s); 0 of 3 ran before Stage 3 failed, so no child PR is ready to merge:",
+            "Decomposed into 3 sub-intent(s); 0 of 3 ran and 0 merged into 'the plan branch' before Stage 3 failed:",
         ]
         succeeded = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.SUCCESS,
             payload={
                 "decomposed": True,
+                "plan_branch": plan,
                 "sub_intents": items[:2],
                 "children": [{"slug": "a", "status": "s"}, {"slug": "b", "status": "s"}],
             },
         )
         assert flow_module.format_decomposition_summary(succeeded)[0] == (
-            "Decomposed into 2 sub-intent(s); merge each child PR into the parent intent branch:"
+            f"Decomposed into 2 sub-intent(s); each child PR was merged into '{plan}':"
         )
 
     def test_format_decomposition_summary_fallbacks(self):
@@ -797,6 +896,7 @@ class TestEntropyBudgetHandoffInFlow:
                 "execution_branch": "E-a",
                 "intent_branch": "I-a",
                 "status": "s",
+                "merged": True,
             },
             {"slug": "b", "execution_branch": "E-b", "intent_branch": "I-b", "status": "s"},
             {"slug": "c", "intent_branch": "I-c", "status": "s"},
@@ -808,12 +908,12 @@ class TestEntropyBudgetHandoffInFlow:
         )
 
         assert flow_module.format_decomposition_summary(result) == [
-            "Decomposed into 4 sub-intent(s); merge each child PR into the parent intent branch:",
-            "  1. a: https://x/pull/1 (s)",
+            "Decomposed into 4 sub-intent(s); each child PR was merged into 'the plan branch':",
+            "  1. a: https://x/pull/1 (merged into 'the plan branch')",
             "  2. b: E-b (s)",
             "  3. c: I-c (s)",
             "  4. d: no branch (s)",
-            "Pending (not yet automated): after the child PRs merge, raise a PR from 'the parent intent branch' to "
+            "Combined PR: Stage 4 raises and reviews 'the execution branch' (with 'the plan branch' merged in) into "
             "'its target branch'.",
         ]
 
@@ -836,33 +936,41 @@ class TestEntropyBudgetHandoffInFlow:
         )
 
         assert flow_module.format_decomposition_summary(result) == [
-            "Decomposed into 2 sub-intent(s); 2 of 2 ran before Stage 3 failed, so no child PR is ready to merge:",
-            "  1. a: decomposed into 1 sub-intent(s) (skipped):",
+            "Decomposed into 2 sub-intent(s); 2 of 2 ran and 0 merged into 'the plan branch' before Stage 3 failed:",
+            "  1. a: decomposed into 1 sub-intent(s), combined in E-a (skipped):",
             "     1. x: https://x/pull/3 (s)",
             "  2. b: E-b (failed)",
         ]
 
-    def test_decomposition_summary_names_each_decomposed_level_after_its_own_parent(self):
-        # The rendering recurses, so a decomposed grandchild points at its own parent, not at the root intent branch.
+    def test_decomposition_summary_names_each_decomposed_level_after_its_own_plan_branch(self):
+        # The rendering recurses, so a decomposed grandchild is merged into its parent's plan branch, not the root's.
         grandchild = {
             "slug": "g",
-            "intent_branch": "I-g/_",
+            "intent_branch": "I-a/P-1--1-g/_",
+            "plan_branch": "I-a/P-1--1-g/P-2/_",
+            "pr_url": "https://x/pull/8",
+            "merged": True,
             "decomposed": True,
-            "children": [{"slug": "x", "pr_url": "https://x/pull/9", "status": "s"}],
+            "children": [{"slug": "x", "pr_url": "https://x/pull/9", "status": "s", "merged": True}],
         }
-        child = {"slug": "a", "intent_branch": "I-a/_", "decomposed": True, "children": [grandchild]}
+        child = {
+            "slug": "a",
+            "plan_branch": "I-a/P-1/_",
+            "pr_url": "https://x/pull/10",
+            "merged": True,
+            "decomposed": True,
+            "children": [grandchild],
+        }
         result = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.SUCCESS,
-            payload={"decomposed": True, "sub_intents": [{"slug": "a"}], "children": [child], "parent_branch": "I-p/_"},
+            payload={"decomposed": True, "sub_intents": [{"slug": "a"}], "children": [child], "plan_branch": "I-p/P/_"},
         )
 
         assert flow_module.format_decomposition_summary(result)[1:4] == [
-            "  1. a: decomposed into 1 sub-intent(s), so it has no PR of its own; merge its child PRs below into "
-            "'I-a/_', then raise a PR from 'I-a/_' to 'I-p/_' (not yet automated):",
-            "     1. g: decomposed into 1 sub-intent(s), so it has no PR of its own; merge its child PRs below into "
-            "'I-g/_', then raise a PR from 'I-g/_' to 'I-a/_' (not yet automated):",
-            "        1. x: https://x/pull/9 (s)",
+            "  1. a: decomposed into 1 sub-intent(s), combined in https://x/pull/10 (merged into 'I-p/P/_'):",
+            "     1. g: decomposed into 1 sub-intent(s), combined in https://x/pull/8 (merged into 'I-a/P-1/_'):",
+            "        1. x: https://x/pull/9 (merged into 'I-a/P-1--1-g/P-2/_')",
         ]
 
     def test_successful_decomposition_summary_header_counts_the_listed_items(self):
@@ -877,7 +985,7 @@ class TestEntropyBudgetHandoffInFlow:
             },
         )
         assert flow_module.format_decomposition_summary(result)[0] == (
-            "Decomposed into 3 sub-intent(s); merge each child PR into the parent intent branch:"
+            "Decomposed into 3 sub-intent(s); each child PR was merged into 'the plan branch':"
         )
 
     @pytest.mark.parametrize("sub_intents", ["abc", 5], ids=["string", "number"])
@@ -888,7 +996,7 @@ class TestEntropyBudgetHandoffInFlow:
             payload={"decomposed": True, "sub_intents": sub_intents, "children": [{"slug": "a", "status": "s"}]},
         )
         assert flow_module.format_decomposition_summary(result)[0] == (
-            "Decomposed into 1 sub-intent(s); merge each child PR into the parent intent branch:"
+            "Decomposed into 1 sub-intent(s); each child PR was merged into 'the plan branch':"
         )
 
     # --- Pre-dispatch budget decision -----------------------------------------------------------------------------
@@ -1027,20 +1135,20 @@ class TestEntropyBudgetHandoffInFlow:
         assert saved[-1]["stage_results"]["execute"]["payload"]["replan_attempts"] == MAX_REPLAN_ATTEMPTS
         assert any(line.endswith("] " + error) for line in ctx.logs)
 
-    def test_decomposed_parent_checkpoints_its_skipped_review_and_calibration(self):
+    def test_decomposed_parent_runs_review_and_calibration_like_an_executed_plan(self):
         ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_review=True, skip_calibrate=True)
         ok = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS)
-        decomposed = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"decomposed": True})
+        decomposed = StageResult(
+            stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"decomposed": True, "integrated": True}
+        )
 
         results, saved = self._engine_run(ctx, [ok], [decomposed])
 
-        for stage in ("review", "calibrate"):
-            assert any(
-                line.endswith(f"] Stage '{stage}' skipped: the plan was decomposed into child pipelines.")
-                for line in ctx.logs
-            )
-        assert results["calibrate"].payload == {"reason": "decomposed"}
-        assert saved[-1]["stage_results"]["calibrate"]["payload"] == {"reason": "decomposed"}
+        # No decomposed skip any more: Stage 4 and Stage 5 follow the flags as for any execution.
+        assert results["review"].payload == {"skipped_by_flag": True}
+        assert results["calibrate"].payload == {"skipped_by_flag": True}
+        assert saved[-1]["stage_results"]["calibrate"]["payload"] == {"skipped_by_flag": True}
+        assert not any("the plan was decomposed into child pipelines" in line for line in ctx.logs)
 
     def test_undecomposed_success_runs_review_and_calibration_normally(self):
         ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_review=True, skip_calibrate=True)

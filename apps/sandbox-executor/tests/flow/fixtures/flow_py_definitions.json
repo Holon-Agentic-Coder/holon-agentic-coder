@@ -43,15 +43,14 @@
     "FlowContext.to_dict": "29d455c6759b60875a841be7e80489d034bda2ab90c4c44004f1fd4b83385acd",
     "FlowStage": "82254a7561243863d38c3f90d1957b3762334356d64068504fe0d624ab7c1adb",
     "FlowStage.from_str": "0d471a426c4f0eaf8ee84452891f49ce2548871d4c667c0935ac6c29a344cff4",
-    "PipelineEngine": "24296791def7faa162274d65c2d64292e894179129c57e91c4e74f1fec2ff954",
+    "PipelineEngine": "28ca469d9a001faad0513bf3780d7e64837214e48ea37ef94fb8ca4f7cd2aea2",
     "PipelineEngine.__init__": "58d606487ad8d5520a165575de4506a544f46231492d11eb48fc6a7b1de89843",
-    "PipelineEngine._parent_was_decomposed": "5b8537dee71f23ecbca1907d91ba64635b01bfc1bc4ae28fe054d5e16cfedad3",
     "PipelineEngine._replan_after_over_budget": "ac49bc425459a7c70f256e189e73a1c3f65620b62a0ecc07e0f2bb71cd4048ae",
     "PipelineEngine.after_stage": "5e68787e28ed419a2c544c93d17f7d7abce57b75aab11c30a37bcd51c3f70572",
     "PipelineEngine.before_stage": "d5d3202af6e09916cd3ee11872c457cf00a79b88eb3739fb4e032713b7211fa8",
-    "PipelineEngine.execute_stage": "e36f53dcdec56c064ee3ab5ef06fbfc1bdee385ac2caa51d9eb17805ae7d26e8",
+    "PipelineEngine.execute_stage": "391f9e224167da6bfba07db1d5be448ab9957ffb832d0d6af8dc06e1aeb29d69",
     "PipelineEngine.handle_stage_failure": "f1df746bd59c04090a4b1f7f6bb8baca43ca4f67f756ce4da60372f493659e59",
-    "PipelineEngine.run": "03cd6df5377391040389763d9c4526fe038642ecbfd0f32ecd3f0b96f39b3f97",
+    "PipelineEngine.run": "6d2914158f3f04d3c4e9f0ab7965c761d49d9aa3825cdc6be44e164fd56709a9",
     "PipelineEngine.save_checkpoint": "ad0d1c27391cbeba7dd72c467f5552a4113711f092563ddbc2c8171efcd53bab",
     "PipelineEngine.stage_budget_seconds": "fcfc6f919307cfb439ffb25a25eb9b96e67f2d76bc13ae9494c1e870fb8c00ce",
     "PipelineEngine.timed_execute_stage": "8fe137796d2b3781b1ede27edb4db3fa328cd41cbb87d83eecb753f911cb5c83",
@@ -71,7 +70,7 @@
     "StageStatus": "cb6ae0d8edc9458eae8bd44388bae5362c52d61a883d0f5e09abc366877e9ad4",
     "StageStatus.from_str": "8dc8624948685cecdcd826cb44b68af1c1dd4f9ba8f90ac3953d8411102b2060",
     "_append_only_union": "ac65ad61cdc9f228d9d77213ead5c15d58d05206ce9c19bd44e617150cf4b6c1",
-    "_append_superseding_execution_row": "384cd3285b4c08db5ee1131a347435b7aabd39368bbd2e155656a76f30ac865c",
+    "_append_superseding_execution_row": "7c8f7ee37fadf8985fb89a8e0a43443bbece807d5226df14b995a282db460bc9",
     "_attach_transported_detail": "59662a829a72996674404c298b23e5f7f32dca7008822d999b8ff6252c681ba9",
     "_augment_pr_text_with_rejected": "ad2114ed8800a876e67bf30dd12dcee43783f1cebc2658160171206fbb81f582",
     "_bounded_error_context": "92cb41f9dce5122986fca7e4b105d489e702c736d1a7f3520c21844f0baf9c20",
@@ -82,7 +81,7 @@
     "_ci_green": "f7a480344c0871be4aabbbf8be4821bb03e49a9ffea8ab921420c57dbf2d75bc",
     "_commit_stage5_promoted_artifacts": "d443c2729c21db20ea5d4ecb4285130c877f5e3fc8eabea364e3cfe2b6f4c712",
     "_commit_stage5_reconciliation": "1c48da8c32472bd1155e928391566f4a30907ba5dbf5d7d45685c394a34f10c7",
-    "_decomposition_child_lines": "ad6b833ee75d2166db98bd2048719dbcb789e647d92f5ab1fea617a61021acf9",
+    "_decomposition_child_lines": "c5a481c0c63cd762fedfd5c764279e1faa1c1ecb778e42cdff0cc99121865d69",
     "_discover_child_branch": "64cd430a6764fec00fc5c7a745b7e1fcc0ef34976a7d59b2ba22918486e81638",
     "_dispatch_review_ensemble": "6d542b482c186a7412509ff4fb865d70f479af15655f05db7092cdc2652fd28b",
     "_dispatch_review_resolver": "33c7c178761ebe962949725a89e92f2648ff4a89932731907dfda9049e337784",
@@ -130,7 +129,7 @@
     "_reviewer_finding_ids": "f918abf18c16ae2ac50d1d0cfffbd9c50b837088e5802c9585c565f7d5eb1bba",
     "_reviewer_summary": "a3702bcf9630fd87acda64e18ff9aac8eb4722ac7f602c9fff2c5f482f733227",
     "_reviewers_objected": "8c2c517800d0fbc073b2339aa7b343dfc7747110d2bf4611cb2200a0ffd1584e",
-    "_run_decomposed_plan": "46a179747e9f4afb618e4d782ae6ec827d59fb24225cf61d934cd6c908fb77c9",
+    "_run_decomposed_plan": "d1017e4774a07171b6c1e4dd786409f0d29f4d2b09552bf6629d978f8e4a478c",
     "_run_engine_review_loop": "a66253ec273612bf14e31d17b57b0933cb8c880502f610ab14dc74d06877c469",
     "_run_review_loop_iterations": "7d6e077f36540e6da0be29f451f35dcc437e037efbe42f2e353fea2bfaf5cadf",
     "_semantic_pr_text": "e3da288e06f6e0761ac3e6e2394d5a36fddf7f18a6b2d1a352d476f6a7139c24",
@@ -153,7 +152,7 @@
     "create_or_update_pr": "8239dda6a256804aa2cf16103973ec0ea47494beeedbad52d89f3da1df53d284",
     "extract_valid_ledger_rows": "c62d3bd144c535566cdaa5233017802171087f29b2865abfd83e49e7a11bd936",
     "failed_partial_head": "db9a4141bf19574117f4017557380e612c0d12d40c0061ff99455e6e9cab323b",
-    "format_decomposition_summary": "858f11c6186b8dfc4f016051118205da1e16ba91fc5b27a7ceaa346cc98e726f",
+    "format_decomposition_summary": "122212fcaa4a9feff5d3f2819d25545fa6ca09ffe5455369e0ca1f5e83076716",
     "format_review_git_trailers": "17156736e4157bd88fa85da486c205929156780c937e608ff056aaa39b6e5865",
     "generate_semantic_pr_metadata": "72d9667953f6e861924b4737f407492fe439633f8a81698d75608f6b12147141",
     "get_default_checkpoint_path": "b404a1ef50d215865f9e05045c5200adf83517263b159ec1367218a13cb5583c",
@@ -187,9 +186,20 @@
   "amended_definitions": {
     "_dispatch_review_resolver": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result",
     "_invoke_resolver_pass": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result",
-    "_run_review_loop_iterations": "E-1794206943-d5c00585 (I-1794205862-resolver-commits-locally-skip-push-fix): verify resolver_outcome.pushed is True before advancing review target and recording applied dispositions"
+    "_run_review_loop_iterations": "E-1794206943-d5c00585 (I-1794205862-resolver-commits-locally-skip-push-fix): verify resolver_outcome.pushed is True before advancing review target and recording applied dispositions",
+    "PipelineEngine": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): a decomposed Stage 3 no longer skips Stage 4 and Stage 5 (they raise and review the combined PR), and a checkpointed decomposed Stage 3 resumes its children instead of re-dispatching the parent executor",
+    "PipelineEngine.execute_stage": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): a decomposed Stage 3 no longer skips Stage 4 and Stage 5 (they raise and review the combined PR), and a checkpointed decomposed Stage 3 resumes its children instead of re-dispatching the parent executor",
+    "PipelineEngine.run": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): a decomposed Stage 3 no longer skips Stage 4 and Stage 5 (they raise and review the combined PR), and a checkpointed decomposed Stage 3 resumes its children instead of re-dispatching the parent executor",
+    "_append_superseding_execution_row": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the superseding-row commit message names the row's status, since the row now also records integrated children, not only an empty-diff failure",
+    "_decomposition_child_lines": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): children are nested under and merged into the plan branch; the summary lists each child PR as merged into it and names the combined PR that Stage 4 raises",
+    "format_decomposition_summary": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): children are nested under and merged into the plan branch; the summary lists each child PR as merged into it and names the combined PR that Stage 4 raises",
+    "_run_decomposed_plan": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): validates the items and the depth, nests the children under the plan branch (never the intent branch) and delegates the loop to stages/children.py"
   },
   "added_definitions": {
+    "<const>:CHILD_ROW_KEYS": {
+      "module": "stages/integration.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): Stage 3 integration of a decomposed plan: the plan branch merged into the parent execution branch and a superseding summary row listing the children, so Stage 4 raises the combined PR"
+    },
     "<const>:FAILED": {
       "module": "child_progress.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
@@ -242,6 +252,10 @@
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
     },
+    "_advance_child": {
+      "module": "stages/children.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the decomposed Stage 3 child loop: each child nested under the plan branch, run one after another, merged into it after its consensus and calibration, with per-child progress checkpointed and resumed"
+    },
     "_appended_tail": {
       "module": "ledger_interleave.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): ledger-only merge conflicts are resolved by interleaving both sides' appended rows on created_at behind the untouched merge-base prefix"
@@ -258,9 +272,17 @@
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
     },
+    "_build_child_intent": {
+      "module": "stages/children.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the decomposed Stage 3 child loop: each child nested under the plan branch, run one after another, merged into it after its consensus and calibration, with per-child progress checkpointed and resumed"
+    },
     "_child_pr": {
       "module": "child_progress.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
+    },
+    "_child_summary": {
+      "module": "stages/children.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the decomposed Stage 3 child loop: each child nested under the plan branch, run one after another, merged into it after its consensus and calibration, with per-child progress checkpointed and resumed"
     },
     "_ci_state": {
       "module": "github/merge.py",
@@ -286,9 +308,21 @@
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
     },
+    "_load_child_checkpoint": {
+      "module": "stages/children.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the decomposed Stage 3 child loop: each child nested under the plan branch, run one after another, merged into it after its consensus and calibration, with per-child progress checkpointed and resumed"
+    },
     "_merge_in_worktree": {
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
+    },
+    "_merge_readiness_error": {
+      "module": "stages/children.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the decomposed Stage 3 child loop: each child nested under the plan branch, run one after another, merged into it after its consensus and calibration, with per-child progress checkpointed and resumed"
+    },
+    "_merge_ready_child": {
+      "module": "stages/children.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the decomposed Stage 3 child loop: each child nested under the plan branch, run one after another, merged into it after its consensus and calibration, with per-child progress checkpointed and resumed"
     },
     "_merged_result": {
       "module": "github/merge.py",
@@ -302,6 +336,22 @@
       "module": "child_progress.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
     },
+    "_record_integration_row": {
+      "module": "stages/integration.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): Stage 3 integration of a decomposed plan: the plan branch merged into the parent execution branch and a superseding summary row listing the children, so Stage 4 raises the combined PR"
+    },
+    "_run_one_child": {
+      "module": "stages/children.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the decomposed Stage 3 child loop: each child nested under the plan branch, run one after another, merged into it after its consensus and calibration, with per-child progress checkpointed and resumed"
+    },
+    "_save_progress": {
+      "module": "stages/children.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the decomposed Stage 3 child loop: each child nested under the plan branch, run one after another, merged into it after its consensus and calibration, with per-child progress checkpointed and resumed"
+    },
+    "_set_child_summary": {
+      "module": "stages/children.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the decomposed Stage 3 child loop: each child nested under the plan branch, run one after another, merged into it after its consensus and calibration, with per-child progress checkpointed and resumed"
+    },
     "_settle_reason": {
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
@@ -309,6 +359,10 @@
     "_staged_lines": {
       "module": "ledger_interleave.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): ledger-only merge conflicts are resolved by interleaving both sides' appended rows on created_at behind the untouched merge-base prefix"
+    },
+    "_superseding_row": {
+      "module": "stages/integration.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): Stage 3 integration of a decomposed plan: the plan branch merged into the parent execution branch and a superseding summary row listing the children, so Stage 4 raises the combined PR"
     },
     "_verified_head": {
       "module": "github/merge.py",
@@ -333,6 +387,10 @@
     "initial_progress": {
       "module": "child_progress.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
+    },
+    "integrate_children": {
+      "module": "stages/integration.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): Stage 3 integration of a decomposed plan: the plan branch merged into the parent execution branch and a superseding summary row listing the children, so Stage 4 raises the combined PR"
     },
     "interleave_ledger_rows": {
       "module": "ledger_interleave.py",
@@ -366,6 +424,14 @@
       "module": "ledger_interleave.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): ledger-only merge conflicts are resolved by interleaving both sides' appended rows on created_at behind the untouched merge-base prefix"
     },
+    "resume_children": {
+      "module": "stages/children.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the decomposed Stage 3 child loop: each child nested under the plan branch, run one after another, merged into it after its consensus and calibration, with per-child progress checkpointed and resumed"
+    },
+    "run_children": {
+      "module": "stages/children.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the decomposed Stage 3 child loop: each child nested under the plan branch, run one after another, merged into it after its consensus and calibration, with per-child progress checkpointed and resumed"
+    },
     "run_gh": {
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
@@ -374,5 +440,8 @@
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
     }
+  },
+  "removed_definitions": {
+    "PipelineEngine._parent_was_decomposed": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the decomposed Stage 4/5 skip was removed: Stage 4 and Stage 5 now raise, review and calibrate the combined PR"
   }
 }

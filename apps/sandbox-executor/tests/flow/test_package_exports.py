@@ -7,7 +7,7 @@ import sys
 import pytest
 import sandbox_executor.flow as flow
 from sandbox_executor.flow import pipeline
-from sandbox_executor.flow.stages import decomposition
+from sandbox_executor.flow.stages import children
 
 from tests.flow.move_proof import load_snapshot, package_definitions
 
@@ -48,5 +48,5 @@ def test_package_reexports_the_imported_names_callers_reach(name):
     assert hasattr(flow, name)
 
 
-def test_decomposition_sees_the_pipeline_engine_through_the_late_binding():
-    assert decomposition.PipelineEngine is pipeline.PipelineEngine
+def test_the_child_loop_sees_the_pipeline_engine_through_the_late_binding():
+    assert children.PipelineEngine is pipeline.PipelineEngine

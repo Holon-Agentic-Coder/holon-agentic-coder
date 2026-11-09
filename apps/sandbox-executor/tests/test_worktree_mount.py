@@ -219,6 +219,28 @@ def test_ordinary_commits_in_a_linked_worktree_named_hooks_pass_verification(mai
     verify_git_metadata(mount, baseline)
 
 
+@pytest.mark.parametrize("name", ["logs", "refs", "objects", "lfs"])
+def test_tampering_in_a_linked_worktree_named_like_bulk_data_is_refused(main_repo, name):
+    worktree = main_repo.parent / name
+    _git(main_repo, "worktree", "add", "-q", "-b", f"feature-{name}", str(worktree))
+    mount = resolve_workspace_mount(str(worktree))
+    baseline = snapshot_git_metadata(mount)
+
+    (_gitdir(worktree) / "commondir").write_text("../../../evil\n", encoding="utf-8")
+
+    with pytest.raises(WorkspaceMountError, match="changed git metadata"):
+        verify_git_metadata(mount, baseline)
+
+
+def test_linked_worktree_whose_common_dir_overlaps_the_workspace_mount_is_refused(main_repo, monkeypatch):
+    linked = main_repo.parent / "linked"
+    _git(main_repo, "worktree", "add", "-q", "-b", "feature-x", str(linked))
+    monkeypatch.setattr("sandbox_executor.worktree_mount.SANDBOX_WORKSPACE_MOUNT", str(main_repo.resolve()))
+
+    with pytest.raises(WorkspaceMountError, match="overlaps the container workspace"):
+        resolve_workspace_mount(str(linked))
+
+
 def test_guarded_run_returns_the_run_exit_code_or_fails_on_tampering(linked_worktree, capsys):
     mount = resolve_workspace_mount(str(linked_worktree))
     hook = Path(mount.git_common_dir) / "hooks" / "post-checkout"

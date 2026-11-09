@@ -100,10 +100,21 @@ def _refuse_unsafe_toplevel(toplevel: str) -> None:
 
 
 def _checked_common_dir(toplevel: str) -> str:
-    """Return the worktree's common git directory, checking it is readable and covers the worktree's git dir."""
+    """Return the worktree's common git directory, checking it is readable and covers the worktree's git dir.
+
+    A linked worktree's common dir is bind-mounted at its own host path, so it must not overlap the container
+    workspace mountpoint or the two binds would collide.
+    """
     common_dir = _rev_parse_path(toplevel, "--git-common-dir")
     if not os.path.isdir(common_dir) or not os.access(common_dir, os.R_OK | os.X_OK):
         raise WorkspaceMountError(f"Common git directory '{common_dir}' of '{toplevel}' is missing or unreadable")
+    if not _is_within(common_dir, toplevel) and (
+        _is_within(common_dir, SANDBOX_WORKSPACE_MOUNT) or _is_within(SANDBOX_WORKSPACE_MOUNT, common_dir)
+    ):
+        raise WorkspaceMountError(
+            f"Common git directory '{common_dir}' of '{toplevel}' overlaps the container workspace "
+            f"'{SANDBOX_WORKSPACE_MOUNT}', so it cannot be bind-mounted at its own path"
+        )
     git_dir = _rev_parse_path(toplevel, "--git-dir")
     if not (_is_within(git_dir, common_dir) or _is_within(git_dir, toplevel)):
         raise WorkspaceMountError(
@@ -193,7 +204,8 @@ def workspace_mount_env(mount: WorkspaceMount) -> dict[str, str]:
 # Git consults these files to locate its directories and configuration; any of them may name a command
 # (``core.fsmonitor``, ``core.hooksPath``, ``include.path``) or redirect git to a directory that does.
 _TRUSTED_GIT_FILES = frozenset({"config", "config.worktree", "commondir", "gitdir"})
-# Bulk data under the common dir that can name no command, so it is not fingerprinted.
+# Bulk data under a git dir that can name no command, so it is not fingerprinted (only at a real git dir's top
+# level: a linked worktree named e.g. ``logs`` lives at ``worktrees/logs`` and must stay fingerprinted).
 _UNTRUSTED_BULK_DIRS = frozenset({"objects", "refs", "logs", "lfs"})
 
 
@@ -240,6 +252,14 @@ def _in_hooks(common_dir: str, root: str) -> bool:
     return False
 
 
+def _is_git_dir_top(common_dir: str, root: str) -> bool:
+    """Return True when ``root`` is the common dir or a submodule git dir (one holding ``HEAD``) in ``modules``."""
+    if root == common_dir:
+        return True
+    parts = os.path.relpath(root, common_dir).split(os.sep)
+    return parts[0] == "modules" and os.path.isfile(os.path.join(root, "HEAD"))
+
+
 def snapshot_git_metadata(mount: WorkspaceMount) -> dict[str, str]:
     """Fingerprint the git metadata the host's git trusts after the container exits.
 
@@ -252,7 +272,8 @@ def snapshot_git_metadata(mount: WorkspaceMount) -> dict[str, str]:
         mount.git_common_dir: _fingerprint(mount.git_common_dir),
     }
     for root, dirs, files in os.walk(mount.git_common_dir):
-        dirs[:] = [d for d in dirs if d not in _UNTRUSTED_BULK_DIRS]
+        if _is_git_dir_top(mount.git_common_dir, root):
+            dirs[:] = [d for d in dirs if d not in _UNTRUSTED_BULK_DIRS]
         in_hooks = _in_hooks(mount.git_common_dir, root)
         tracked = [f for f in files if in_hooks or f in _TRUSTED_GIT_FILES]
         tracked += [d for d in dirs if in_hooks or d == "hooks"]

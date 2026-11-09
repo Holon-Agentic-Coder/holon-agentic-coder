@@ -79,7 +79,14 @@ from sandbox_executor.redaction import (
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 from sandbox_executor.scaffold import init_project
 from sandbox_executor.token_reduction import generate_root_ca
-from sandbox_executor.worktree_mount import WorkspaceMount, workspace_mount_args, workspace_mount_env
+from sandbox_executor.worktree_mount import (
+    WorkspaceMount,
+    WorkspaceMountError,
+    snapshot_git_metadata,
+    verify_git_metadata,
+    workspace_mount_args,
+    workspace_mount_env,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1394,7 +1401,8 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
     ``workspace_mount`` names a host worktree to bind-mount; when set, exactly the binds from
     :func:`~sandbox_executor.worktree_mount.workspace_mount_args` are added and ``HOLON_TARGET_WORKTREE`` is
     pinned to the mountpoint so the entrypoint's workspace cannot drift from it; the rest of the command,
-    including every isolation flag, is unchanged.
+    including every isolation flag, is unchanged. The mounted git metadata is fingerprinted before the run and
+    the run fails (1) when the container changed it.
     """
     if not shutil.which("docker"):
         print("Error: 'docker' CLI command not found. Please install Docker.", file=sys.stderr)
@@ -1613,7 +1621,16 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
 
         # A forwarded HOLON_* value may hold a non-UTF-8 byte (surrogateescape); it must not crash the run here.
         print_encodable(f"Executing: {redact_command(docker_cmd)}")
+        # The host's git trusts the mounted git metadata after the run, so it is fingerprinted first and a change
+        # (a planted fsmonitor, hook, config.worktree or re-pointed .git) fails the run (docs/safety.md).
+        git_baseline = snapshot_git_metadata(workspace_mount) if workspace_mount else None
         result = subprocess.run(docker_cmd, env={**os.environ, "DOCKER_CLI_HINTS": "false"})
+        if workspace_mount and git_baseline is not None:
+            try:
+                verify_git_metadata(workspace_mount, git_baseline)
+            except WorkspaceMountError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                return 1
         return result.returncode
     finally:
         if env_file:

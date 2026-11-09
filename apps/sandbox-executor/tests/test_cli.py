@@ -2408,6 +2408,36 @@ def test_workspace_mount_bind_mounts_worktree_and_git_dir_and_pins_the_workspace
     assert all(os.path.isabs(source) for source in sources), sources
 
 
+def test_workspace_mount_run_fails_when_the_container_changes_trusted_git_metadata(tmp_path, capsys):
+    """A config.worktree planted during the run fails it before the host's git can honour it."""
+    from sandbox_executor.worktree_mount import WorkspaceMount
+
+    common = tmp_path / "repo" / ".git"
+    (common / "hooks").mkdir(parents=True)
+    (common / "config").write_text("[core]\n", encoding="utf-8")
+    (tmp_path / "wt").mkdir()
+    mount = WorkspaceMount(host_worktree=str(tmp_path / "wt"), git_common_dir=str(common))
+
+    def tampering_run(cmd, *args, **kwargs):
+        (common / "config.worktree").write_text("[core]\n\tfsmonitor = touch /tmp/pwned\n", encoding="utf-8")
+        return MagicMock(returncode=0)
+
+    with (
+        patch("sandbox_executor.cli.resolve_target_repo", return_value=("git@github.com:test/repo.git", None)),
+        patch("sandbox_executor.cli.get_agent_session_mounts", return_value=[]),
+        patch("subprocess.run", side_effect=tampering_run),
+        patch("shutil.which", return_value="/usr/bin/docker"),
+        patch.dict(os.environ, {}, clear=True),
+    ):
+        args = ["branch", "fake-agent", "fake-model"]
+        assert (
+            run_docker_container("review-loop", "holon/agent-claude", args, agent_id="claude", workspace_mount=mount)
+            == 1
+        )
+
+    assert "config.worktree" in capsys.readouterr().err
+
+
 @patch("sandbox_executor.cli.run_docker_container", return_value=0)
 def test_dispatch_role_agent_forwards_the_workspace_mount(mock_run_container):
     """dispatch_role_agent hands the mount to run_docker_container unchanged and never derives one itself."""

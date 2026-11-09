@@ -13,6 +13,8 @@ from sandbox_executor.worktree_mount import (
     WorkspaceMount,
     WorkspaceMountError,
     resolve_workspace_mount,
+    snapshot_git_metadata,
+    verify_git_metadata,
     workspace_mount_args,
     workspace_mount_env,
 )
@@ -146,3 +148,54 @@ def test_mount_env_pins_the_workspace_to_the_mountpoint():
     mount = WorkspaceMount(host_worktree="/host/wt", git_common_dir="/host/repo/.git")
 
     assert workspace_mount_env(mount) == {"HOLON_TARGET_WORKTREE": SANDBOX_WORKSPACE_MOUNT}
+
+
+def _gitdir(worktree: Path) -> Path:
+    return Path((worktree / ".git").read_text(encoding="utf-8").strip().removeprefix("gitdir: "))
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "rewrite_pointer",
+        "rewrite_commondir",
+        "plant_config_worktree",
+        "plant_common_config_worktree",
+        "plant_hook",
+        "swap_common_dir",
+    ],
+)
+def test_container_tampering_with_git_metadata_is_refused(main_repo, linked_worktree, tamper):
+    mount = resolve_workspace_mount(str(linked_worktree))
+    baseline = snapshot_git_metadata(mount)
+    common = Path(mount.git_common_dir)
+    evil = "[core]\n\tfsmonitor = touch /tmp/pwned\n"
+
+    if tamper == "rewrite_pointer":
+        (linked_worktree / ".git").write_text(f"gitdir: {linked_worktree}/.evil\n", encoding="utf-8")
+    elif tamper == "rewrite_commondir":
+        (_gitdir(linked_worktree) / "commondir").write_text("../../../evil\n", encoding="utf-8")
+    elif tamper == "plant_config_worktree":
+        (_gitdir(linked_worktree) / "config.worktree").write_text(evil, encoding="utf-8")
+    elif tamper == "plant_common_config_worktree":
+        (common / "config.worktree").write_text(evil, encoding="utf-8")
+    elif tamper == "plant_hook":
+        (common / "hooks" / "post-checkout").write_text("#!/bin/sh\n", encoding="utf-8")
+    else:
+        shutil.copytree(common, common.with_name(".git-new"))
+        common.rename(common.with_name(".git-old"))
+        common.with_name(".git-new").rename(common)
+
+    with pytest.raises(WorkspaceMountError, match="changed git metadata"):
+        verify_git_metadata(mount, baseline)
+
+
+def test_ordinary_git_work_in_the_container_passes_verification(main_repo, linked_worktree):
+    mount = resolve_workspace_mount(str(linked_worktree))
+    baseline = snapshot_git_metadata(mount)
+
+    (linked_worktree / "new.txt").write_text("x\n", encoding="utf-8")
+    _git(linked_worktree, "add", "new.txt")
+    _git(linked_worktree, "commit", "-q", "-m", "work")
+
+    verify_git_metadata(mount, baseline)

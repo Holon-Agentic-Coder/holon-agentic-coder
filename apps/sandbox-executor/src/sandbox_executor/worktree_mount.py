@@ -8,12 +8,16 @@ own host path, so a linked worktree's ``.git`` pointer file (``gitdir: <common>/
 
 The mount set is deliberately minimal (docs/safety.md, container sandbox): exactly the worktree top level plus, for a
 linked worktree, its common git directory, with the common directory's ``hooks`` and ``config`` overlaid read-only.
-Nothing here decides *whether* a stage mounts a worktree; callers opt in by passing the resolved
-:class:`WorkspaceMount` to the dispatcher.
+The overlay alone cannot stop a container from redirecting the host's git (rewriting the ``.git`` pointer or a
+``commondir``, planting a ``config.worktree``, or swapping the git directory out from under the overlay), so the host
+fingerprints the git metadata it later trusts before the run (:func:`snapshot_git_metadata`) and refuses to continue
+when it changed (:func:`verify_git_metadata`). Nothing here decides *whether* a stage mounts a worktree; callers
+opt in by passing the resolved :class:`WorkspaceMount` to the dispatcher.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass
 
@@ -25,6 +29,8 @@ __all__ = [
     "WorkspaceMount",
     "WorkspaceMountError",
     "resolve_workspace_mount",
+    "snapshot_git_metadata",
+    "verify_git_metadata",
     "workspace_mount_args",
     "workspace_mount_env",
 ]
@@ -178,3 +184,63 @@ def workspace_mount_env(mount: WorkspaceMount) -> dict[str, str]:
     never drift from where the worktree is actually mounted.
     """
     return {"HOLON_TARGET_WORKTREE": mount.container_workspace}
+
+
+# Git consults these files to locate its directories and configuration; any of them may name a command
+# (``core.fsmonitor``, ``core.hooksPath``, ``include.path``) or redirect git to a directory that does.
+_TRUSTED_GIT_FILES = frozenset({"config", "config.worktree", "commondir", "gitdir"})
+# Bulk data under the common dir that can name no command, so it is not fingerprinted.
+_UNTRUSTED_BULK_DIRS = frozenset({"objects", "refs", "logs", "lfs"})
+
+
+def _fingerprint(path: str) -> str:
+    """Return an identity for ``path`` that changes when it is rewritten, replaced, re-pointed or removed."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return "absent"
+    if os.path.islink(path):
+        return f"link:{os.readlink(path)}"
+    if os.path.isdir(path):
+        return f"dir:{st.st_dev}:{st.st_ino}"
+    with open(path, "rb") as fh:
+        return f"file:{hashlib.sha256(fh.read()).hexdigest()}"
+
+
+def snapshot_git_metadata(mount: WorkspaceMount) -> dict[str, str]:
+    """Fingerprint the git metadata the host's git trusts after the container exits.
+
+    Covers the worktree's ``.git`` entry, the common git dir itself, and every ``config``, ``config.worktree``,
+    ``commondir`` and ``gitdir`` file and every ``hooks`` entry beneath the common dir (including ``worktrees/*``
+    and ``modules/*``), so a new, rewritten or removed one, or a swapped directory, changes the snapshot.
+    """
+    snapshot = {
+        os.path.join(mount.host_worktree, ".git"): _fingerprint(os.path.join(mount.host_worktree, ".git")),
+        mount.git_common_dir: _fingerprint(mount.git_common_dir),
+    }
+    for root, dirs, files in os.walk(mount.git_common_dir):
+        dirs[:] = [d for d in dirs if d not in _UNTRUSTED_BULK_DIRS]
+        in_hooks = "hooks" in os.path.relpath(root, mount.git_common_dir).split(os.sep)
+        tracked = [f for f in files if in_hooks or f in _TRUSTED_GIT_FILES]
+        tracked += [d for d in dirs if in_hooks or d == "hooks"]
+        for name in tracked:
+            path = os.path.join(root, name)
+            snapshot[path] = _fingerprint(path)
+    return snapshot
+
+
+def verify_git_metadata(mount: WorkspaceMount, baseline: dict[str, str]) -> None:
+    """Raise :class:`WorkspaceMountError` when the git metadata differs from ``baseline``.
+
+    Called after the container exits and before the host runs git in the worktree again, so a planted
+    ``core.fsmonitor``/``core.hooksPath``, hook or redirected ``.git`` pointer is refused rather than executed.
+    """
+    current = snapshot_git_metadata(mount)
+    changed = sorted(
+        p for p in baseline.keys() | current.keys() if baseline.get(p, "absent") != current.get(p, "absent")
+    )
+    if changed:
+        raise WorkspaceMountError(
+            f"Refusing to continue: the container changed git metadata the host trusts ({', '.join(changed)}); "
+            f"inspect '{mount.host_worktree}' before running git in it"
+        )

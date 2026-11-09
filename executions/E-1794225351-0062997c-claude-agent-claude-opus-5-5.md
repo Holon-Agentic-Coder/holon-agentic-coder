@@ -6,17 +6,39 @@ Execution of plan `P-1794225025-924685ae-claude-agent-claude-opus-5-5` for inten
 `I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro`:
 record the decomposition decision on the plan row and make Stage 3 execute only that recorded decision.
 
-In progress.
+Outcome: all eight steps done. The rule (`should_decompose`, `parse_sub_intent_list`, `DecompositionDecision`,
+`DECISION_*`) lives in the new entrypoint-free `sandbox_executor/decomposition_rule.py`, re-exported from
+`entrypoint/executor.py`, with one serialisation (`to_plan_fields()` and `from_plan_row()`). The planner records
+`decomposition_decision`, `entropy`, `entropy_budget` and, when decomposed, `sub_intents` on the row it appends. The new
+`flow/stages/plan_decision.py` reads that record before dispatch and back-fills one superseding plan row only for an
+older planner image's row. The executor reads the newest plan row's decision and its `decomposed` summary carries a
+`plan_decision` reference and no `sub_intents`. Stage 3 runs the children from the plan row's record and treats an
+executor/plan-row disagreement as an error. `stages/decomposition.py`, `pipeline.py`, `checkpoint.py`, `flow/github/`
+and the three fenced docs are untouched, and no line budget was raised.
+
+Deviations, all forced by existing repository guards and recorded under their steps:
+
+- `parse_sub_intent_list` was refactored (into `_SubIntentScan` plus `_sub_intent_dicts`) instead of moving with its
+  `# noqa`, because `tests/test_complexity_gate.py` forbids relocating a complexity suppression. The regression corpus
+  passed unchanged.
+- The flow side has one new definition (`_backfill_plan_row`) instead of the planned `PlanDecisionError`,
+  `_append_superseding_plan_row` and `_decomposition_record`, because `tests/flow/test_package_exports.py` requires
+  every flow definition to be re-exported from `flow/__init__.py`, which had room for one name within its budget. A
+  corrupt record re-raises `InvalidPlanDecisionError` carrying the Stage 3 message, and `execute.py` builds the
+  `_run_decomposed_plan` record inline.
+- Two test files outside the declared touch set changed: `tests/flow/test_pipeline.py` (two patch targets re-pointed to
+  `stages.plan_decision`) and `tests/test_budgets.py` (the shared-constant identity check now points at
+  `decomposition_rule`, since the executor no longer imports the budget helpers).
 
 ## Actual Metrics
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.0   |
-| entropy_actual        | 0.0   |
-| impact_actual         | 0.0   |
-| cost_actual           | 0.0   |
-| learning_value_actual | 0.0   |
+| success_actual        | 0.95  |
+| entropy_actual        | 12.0  |
+| impact_actual         | 80.0  |
+| cost_actual           | 14.0  |
+| learning_value_actual | 5.0   |
 
 ## Steps Executed
 
@@ -147,3 +169,33 @@ In progress.
   and are no longer read. `plans.jsonl` field list gained `decomposition_decision`, `sub_intents`, `ledger_revision` and
   `decision_recorded_by`.
 - `npx prettier --write` then `--check` on both markdown files: the second pass is a no-op.
+
+### Step 8: Validation
+
+- Targeted tests, the full suite and both lint tasks pass (see below). `git diff --stat 403c8a4` touches only the
+  declared touch set plus `tests/flow/test_pipeline.py` and `tests/test_budgets.py` (see Summary).
+  `git diff 403c8a4 apps/sandbox-executor/flow_module_budgets.json` shows only `stages/plan.py` lowered (`247 -> 200`)
+  and `stages/plan_decision.py` added at `150`.
+
+## Tests Run
+
+No timing behaviour is measured, so each command ran once per commit; all runs used `-n auto --dist worksteal`.
+
+| command                                                                                                                                                                                                                                                                                                                           | result                                 | pytest time |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- | ----------- |
+| targeted: `uv run pytest` on `test_decomposition_rule.py`, `test_executor.py`, `test_planner.py`, `flow/stages/test_plan_decision.py`, `flow/stages/test_execute.py`, `flow/stages/test_decomposition.py`, `flow/test_move_proof.py`, `flow/test_patch_targets.py`, `flow/test_package_exports.py`, `flow/test_module_budgets.py` | `641 passed`, `0 failed` (15 subtests) | `27.92s`    |
+| `uv run task test` (first full run, after Step 7)                                                                                                                                                                                                                                                                                 | `3408 passed`, `1 failed`              | `30.97s`    |
+| `uv run pytest apps/sandbox-executor/tests/test_budgets.py` (after fixing the one failure)                                                                                                                                                                                                                                        | `32 passed`, `0 failed`                | `0.03s`     |
+| `uv run task test` (full run on the fixed tree)                                                                                                                                                                                                                                                                                   | `3409 passed`, `0 failed`              | `51.84s`    |
+| `uv run task lint` (uv lock check, ruff check, ruff format check, flow module budgets)                                                                                                                                                                                                                                            | passed (29 modules within budget)      | n/a         |
+| `uv run task lint-docs` (prettier check on all markdown)                                                                                                                                                                                                                                                                          | passed                                 | n/a         |
+
+The one failure of the first full run was
+`tests/test_budgets.py::test_default_entropy_budget_is_the_single_shared_constant`, which asserted
+`executor.DEFAULT_ENTROPY_BUDGET` and `executor.resolve_entropy_budget`; the executor no longer imports them, so the
+identity check now targets `decomposition_rule`. Median of the two full runs: not meaningful (different trees); the
+passing full run took `51.84s`.
+
+Earlier per-step runs: `tests/test_executor.py` `293 passed` (Step 1, unchanged corpus) and `297 passed` (Step 4);
+`tests/test_planner.py` `51 passed` (Step 2); `tests/flow` `505 passed` (Step 5); mutation check `8 failed, 387 passed`
+(Step 6, reverted).

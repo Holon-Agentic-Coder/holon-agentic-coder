@@ -134,3 +134,39 @@ post.
   Verified list. Per-reviewer lines, severity counts, the Checks line and the closing notice are unchanged.
 - `flow/github/review_post.py` unchanged: it forwards the deciding iteration's `reviewers` (reassigned each iteration in
   the loop) straight to `build_review_consensus_report`.
+
+### Step 7: Hermetic tests (a) to (e) and the incident regression
+
+- New `tests/test_review_resolver_failure.py` (14 tests):
+  - (a) `_verify_before_push` with PATH set to an empty directory returns
+    `(False, False, "... could not run: required tool 'uv' was not found on PATH ...")` without raising; a
+    `PermissionError` from `subprocess.run` gives "required tool 'uv' could not be started (PermissionError ...";
+    `run_cmd(check=True)` exits 127 naming the tool.
+  - (b, entrypoint half) a real temporary checkout with a bare `origin` and PATH holding only a `git` symlink:
+    `_run_resolver_mode` (findings and result in one file, as in the container) exits 1, writes `resolver: true`,
+    `pushed: false`, `exit_code: 1`, an `output_tail` and an error naming uv; HEAD, the commit count, the index and the
+    origin ref are unchanged. A second test shows a result is still written when `_commit_and_push_resolution` raises.
+  - (b, loop half) an injected resolver returning the entrypoint-shaped failure: one ensemble call, one resolver call,
+    status `failed`, `resolver_error` names uv, `error` and the summary ledger row say "resolver failed: ...", the
+    reviewer verdict stays `CHANGES_REQUESTED`, no `applied` ACT-RES row, the post is not approved.
+  - Incident regression: reviewers 1 and 2 approve, reviewer 3 flags a nit, the resolver raises
+    `FileNotFoundError: 'uv'`; the loop stops after one ensemble call and the posted body has
+    `CHANGES REQUESTED ... — 2/3 approved`, `1 nit findings` and the nit, never `APPROVED (3/3)`.
+  - (c) host-mode container path through `context.dispatcher`: exit 2 with the input payload untouched halts with
+    "Resolver container exited with code 2 and produced no resolver result"; exit 1 with a marked result carrying
+    dispositions and an `output_tail` halts with the exit code and the tail. A direct `_dispatch_review_resolver` test
+    covers the untouched payload.
+  - Contract unit tests for `resolver_result.py`: clean marked result kept, clean exit without a result fails, tail
+    redacted then bounded to its end, exit code named once and a repeated tail skipped.
+- (d) in `tests/test_review_report.py`: two approvals and one `CHANGES_REQUESTED` with one nit render
+  `CHANGES REQUESTED (Iteration 2) — 2/3 approved`, `0 critical, 0 important and 1 nit findings`, the nit's table row
+  and reviewer 3's `CHANGES_REQUESTED` line with `nit: 1`; a failed reviewer does not count as an approval; an approved
+  report still lists an open finding after Verified.
+- (e) was added in Step 2 and is collected in the default run.
+- Checked against the old code: with `loop.py` and `review_report.py` restored from before Steps 5 and 6, 4 of the 14
+  new tests fail, including the incident regression (the old loop ran a second ensemble iteration).
+- No pre-existing test assertion was changed in this step. Pre-existing test changes across the execution: the one fake
+  in `test_review_dispatch.py` (Step 5) and the move-proof fixture digests (Steps 4 and 5).
+- Affected files (`test_review_loop.py`, `test_review_report.py`, `test_container_images.py`, `test_review_dispatch.py`,
+  `test_review_workspace_integration.py`, `test_artefacts.py`, the new file and `tests/flow`): 733 passed, 15 skipped in
+  `5.75s`.

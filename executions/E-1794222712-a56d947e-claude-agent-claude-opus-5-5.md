@@ -4,17 +4,20 @@
 
 Implements plan `P-1794222469-9841ab3e-claude-agent-claude-opus-5-5`: a host-provisioned worktree bind-mount model
 (`sandbox_executor.worktree_mount`), `workspace_mount` on the dispatch path, and deletion of the Stage 4 named-volume
-machinery. In progress.
+machinery. All six plan steps are done. The bind mount is fully built and tested but inert: no production caller passes
+`workspace_mount`, so Stage 4 dispatches use the container's own ephemeral checkout until the sibling sub-intent removes
+the destructive in-container preamble. A passed mount always pins `HOLON_TARGET_WORKTREE` to the container workspace.
+Stage commits: `24cef3c` (Step 2), `e016c43` (Step 3), `766252b` (Step 4), `aab969a` (Step 5).
 
 ## Actual Metrics
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.0   |
-| entropy_actual        | 0.0   |
-| impact_actual         | 0.0   |
-| cost_actual           | 0.0   |
-| learning_value_actual | 0.0   |
+| success_actual        | 0.9   |
+| entropy_actual        | 9.5   |
+| impact_actual         | 80.0  |
+| cost_actual           | 20.0  |
+| learning_value_actual | 5.5   |
 
 ## Steps Executed
 
@@ -111,3 +114,23 @@ unchanged and no `volume`/`chown`, a forwarded host `HOLON_TARGET_WORKTREE` over
 
   `review/ensemble.py` and `dispatch.py` stayed equal: their changes were a rename and a docstring edit. No budget rose,
   and `scripts/check_flow_module_budgets.py` passes.
+
+### Step 6: Validation
+
+All validation commands passed on the first run (see Tests Run). No `pyproject.toml`, `uv.lock` or ledger file changed.
+
+## Tests Run
+
+| command                                                                                                                                                                                                                                                                                             | result                                                                                                             | pytest time |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ----------- |
+| `uv run pytest apps/sandbox-executor/tests/test_worktree_mount.py` (Step 2)                                                                                                                                                                                                                         | 16 passed                                                                                                          | 0.27s       |
+| `uv run pytest -n auto apps/sandbox-executor/tests/test_cli.py apps/sandbox-executor/tests/test_worktree_mount.py` (Step 3)                                                                                                                                                                         | 416 passed, 53 subtests passed                                                                                     | 2.16s       |
+| Step 4 review and flow tests, first run                                                                                                                                                                                                                                                             | 9 failed, 727 passed: the move-proof snapshot, package exports, and an ensemble seam that rejected the new keyword | 5.74s       |
+| Step 4 review, flow and cli tests after fixes                                                                                                                                                                                                                                                       | 1 failed (move-proof top-level floor), 1128 passed                                                                 | 7.46s       |
+| `uv run pytest -n auto apps/sandbox-executor/tests/flow` after lowering the floor                                                                                                                                                                                                                   | 497 passed                                                                                                         | 5.51s       |
+| Step 6 affected set (`test_worktree_mount`, `test_cli`, `test_review_dispatch`, `test_review_loop`, `test_review_ensemble`, `test_review_resolver_failure`, `test_flow_target_worktree`, `test_flow_default_branch_worktree`, `test_complexity_gate`, `tests/flow`) with `-n auto --dist worksteal` | 1202 passed, 53 subtests passed                                                                                    | 6.14s       |
+| `uv run task lint` (ruff check, ruff format check, `uv.lock` check, flow budgets)                                                                                                                                                                                                                   | passed                                                                                                             | n/a         |
+| `uv run task lint-docs`                                                                                                                                                                                                                                                                             | passed                                                                                                             | n/a         |
+| `uv run task test` (full suite, once, `-n auto --dist worksteal`)                                                                                                                                                                                                                                   | 3350 passed, 0 failed, 8 warnings                                                                                  | 31.51s      |
+
+No timing was measured, so the full suite ran once and there is no median.

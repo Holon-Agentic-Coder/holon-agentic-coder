@@ -954,6 +954,8 @@ class TestHolonFlowCLI(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             from sandbox_executor.flow import FlowContext
 
+            # The checkpoint's recorded target_worktree must be a git working tree for the resume to be accepted.
+            subprocess.run(["git", "init", "-q", tmp_dir], check=True, capture_output=True)
             # Create existing context with default flags
             orig_ctx = FlowContext(
                 target_worktree=tmp_dir,

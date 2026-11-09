@@ -20,7 +20,12 @@ from sandbox_executor.cli.options import (
     add_target_worktree_option,
 )
 from sandbox_executor.flow import FlowContext, FlowStage
-from sandbox_executor.git_flow import ensure_worktree, is_bare_repository, is_working_tree
+from sandbox_executor.git_flow import (
+    ensure_worktree,
+    is_bare_repository,
+    is_working_tree,
+    target_worktree_problem,
+)
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 
 logger = logging.getLogger(__name__)
@@ -28,6 +33,8 @@ logger = logging.getLogger(__name__)
 ORDER = 60
 
 _FROM_STAGE_CHOICES = [s.value for s in FlowStage if s != FlowStage.COMPLETED]
+
+_CHECKPOINT_TARGET_HINT = ", or pass --target-worktree to resume against a different attached worktree"
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -177,6 +184,16 @@ def _resolve_checkpoint_and_intent(
     return context, intent_data, flow_agent, flow_model
 
 
+def _check_skip_push(args: argparse.Namespace, context: Any | None) -> bool:
+    """Reject --skip-push (given or recorded in the checkpoint) outside a dry run, before any other gate."""
+    effective_dry_run = bool(args.dry_run or (context is not None and context.dry_run))
+    if (args.skip_push or (context is not None and context.skip_push)) and not effective_dry_run:
+        print(f"Error: {cli.SKIP_PUSH_DISPATCH_ERROR}", file=sys.stderr)
+        sys.exit(1)
+        return False
+    return True
+
+
 def _check_dry_run_and_preflight(
     args: argparse.Namespace,
     context: Any | None,
@@ -184,11 +201,6 @@ def _check_dry_run_and_preflight(
     flow_model: str,
 ) -> bool:
     effective_dry_run = bool(args.dry_run or (context is not None and context.dry_run))
-    if (args.skip_push or (context is not None and context.skip_push)) and not effective_dry_run:
-        print(f"Error: {cli.SKIP_PUSH_DISPATCH_ERROR}", file=sys.stderr)
-        sys.exit(1)
-        return False
-
     if effective_dry_run:
         logger.info("Pre-flight probe skipped for a dry-run flow (no agent is called).")
     elif not cli.flow_dispatches_agent(args.from_stage):
@@ -312,33 +324,104 @@ def _extract_flow_slug(
     return slug
 
 
-def _ensure_flow_worktree(
-    args: argparse.Namespace,
-    context: Any | None,
-    intent_data: dict[str, Any],
-) -> None:
-    """Auto-provision or attach a dedicated Git worktree if target_worktree is bare or absent."""
-    target_worktree = getattr(args, "target_worktree", ".") or "."
-    if is_working_tree(target_worktree) and not is_bare_repository(target_worktree):
-        return
-
-    slug = _extract_flow_slug(args, context, intent_data)
-    target_branch = "origin/main"
+def _flow_target_branch(intent_data: dict[str, Any], context: Any | None) -> str:
+    """Return the base branch a newly provisioned flow worktree branches from (default: 'origin/main')."""
     if intent_data and isinstance(intent_data, dict) and intent_data.get("target_branch"):
-        target_branch = str(intent_data["target_branch"])
-    elif (
+        return str(intent_data["target_branch"])
+    if (
         context is not None
         and getattr(context, "intent_data", None)
         and isinstance(context.intent_data, dict)
         and context.intent_data.get("target_branch")
     ):
-        target_branch = str(context.intent_data["target_branch"])
+        return str(context.intent_data["target_branch"])
+    return "origin/main"
 
-    worktree_path = ensure_worktree(target_worktree, slug=slug, target_branch=target_branch)
+
+def _effective_flow_target(args: argparse.Namespace, context: Any | None) -> tuple[str, bool]:
+    """Return the target worktree the run will use and whether it was restored from a checkpoint.
+
+    Mirrors ``_update_flow_context``: an explicit --target-worktree other than '.' wins, otherwise a checkpoint
+    resume keeps the checkpoint's recorded target_worktree.
+    """
+    explicit = getattr(args, "target_worktree", None)
+    if explicit and explicit != ".":
+        return explicit, False
+    if context is not None:
+        return getattr(context, "target_worktree", None) or ".", True
+    return explicit or ".", False
+
+
+def _should_provision(target_worktree: str, from_checkpoint: bool) -> bool:
+    """Return True for the auto-provisioned cases: a bare clone, or an absent CLI target.
+
+    A plain non-git directory is never provisioned, because the base repository lookup would otherwise fall back to
+    the current working directory's repository. An absent checkpoint target is not re-provisioned either, so that a
+    removed run worktree is reported rather than silently replaced.
+    """
+    if is_bare_repository(target_worktree):
+        return True
+    return not from_checkpoint and not os.path.exists(target_worktree)
+
+
+def _provision_flow_worktree(
+    args: argparse.Namespace,
+    context: Any | None,
+    intent_data: dict[str, Any],
+    target_worktree: str,
+    from_checkpoint: bool,
+) -> str:
+    """Auto-provision or attach a flow worktree, returning its path or target_worktree when provisioning fails."""
+    slug = _extract_flow_slug(args, context, intent_data)
+    try:
+        worktree_path = ensure_worktree(
+            target_worktree, slug=slug, target_branch=_flow_target_branch(intent_data, context)
+        )
+    except (RuntimeError, ValueError) as e:
+        logger.warning(
+            "Could not auto-provision a git worktree from '%s': %s", target_worktree, cli.redact_cli_error(e)
+        )
+        return target_worktree
     logger.info("Provisioned or attached git worktree for flow '%s' at: %s", slug, worktree_path)
-    args.target_worktree = worktree_path
+    if not from_checkpoint:
+        args.target_worktree = worktree_path
     if context is not None:
         context.target_worktree = worktree_path
+    return worktree_path
+
+
+def _ensure_flow_worktree(
+    args: argparse.Namespace,
+    context: Any | None,
+    intent_data: dict[str, Any],
+) -> bool:
+    """Ensure the run's target worktree is an attached, non-bare git working tree before any stage runs.
+
+    A bare or absent target is auto-provisioned as before (a checkpoint-restored target only when bare). Any other
+    target that is not a working tree, or one provisioning could not fix, prints an actionable error and exits 1.
+
+    Returns:
+        bool: True when the target is usable, False after the failure exit (for a patched ``sys.exit``).
+    """
+    target_worktree, from_checkpoint = _effective_flow_target(args, context)
+    if is_working_tree(target_worktree):
+        return True
+
+    resolved = target_worktree
+    if _should_provision(target_worktree, from_checkpoint):
+        resolved = _provision_flow_worktree(args, context, intent_data, target_worktree, from_checkpoint)
+
+    if from_checkpoint:
+        problem = target_worktree_problem(
+            resolved, subject=f"Checkpoint '{args.checkpoint}' target_worktree", hint=_CHECKPOINT_TARGET_HINT
+        )
+    else:
+        problem = target_worktree_problem(resolved)
+    if problem is not None:
+        print(f"Error: {problem}", file=sys.stderr)
+        sys.exit(1)
+        return False
+    return True
 
 
 def run(args: argparse.Namespace) -> int | None:
@@ -352,7 +435,8 @@ def run(args: argparse.Namespace) -> int | None:
             return None
         context, intent_data, flow_agent, flow_model = resolved
 
-        _ensure_flow_worktree(args, context, intent_data)
+        if not _check_skip_push(args, context) or not _ensure_flow_worktree(args, context, intent_data):
+            return None
 
         if not _check_dry_run_and_preflight(args, context, flow_agent, flow_model):
             return None

@@ -50,8 +50,18 @@ def evaluate_dual_ev_outcomes(
     if not matching:
         matching = [r for r in records if r.get("entry_type", "summary") == "summary"]
     if not matching:
-        clean_ev = round(0.0 - cost_effort, 2)
-        return DualEVMetrics(ev_clean=clean_ev, ev_with_bugs=clean_ev)
+        p_c = 1.0
+        imp_c = float(predicted_impact)
+        c_ev = round((imp_c * p_c) - cost_effort, 2)
+        return DualEVMetrics(
+            ev_clean=c_ev,
+            ev_with_bugs=c_ev,
+            p_success_clean=p_c,
+            p_success_with_bugs=p_c,
+            impact_clean=imp_c,
+            impact_with_bugs=imp_c,
+            bug_ev_drag=0.0,
+        )
 
     def sort_key(rec: dict[str, Any]) -> tuple[int, str]:
         return (int(rec.get("ledger_revision", 1)), str(rec.get("created_at", "")))

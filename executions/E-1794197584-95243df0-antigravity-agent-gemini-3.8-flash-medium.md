@@ -53,3 +53,20 @@ mathematical derivation logic, ensuring zero net line increase in `calibration.p
   blocks.
 - Updated `generate_calibration` to populate all dual EV fields in `report_dict`.
 - Validated markdown formatting using Prettier (`npx prettier --check`).
+
+### Step 4: Add comprehensive unit tests in `test_calibration_dual_ev.py` and run full validation
+
+- Implemented comprehensive unit test suite in `apps/sandbox-executor/tests/test_calibration_dual_ev.py`.
+- Verified clean runs (`ev_clean == ev_with_bugs`, `bug_ev_drag == 0.0`), halted for human runs, intermediate failure
+  recovery (`ev_clean > 0`, `ev_with_bugs == -cost_effort`, `bug_ev_drag > 0`), and converged failures.
+- Verified dual EV and bug drag rendering in `format_markdown_report`.
+- Verified strict gate compliance: `calibration_ev.py` has 190 physical lines (< 200 budget), `calibration.py` net line
+  delta is -4 lines (<= 0 delta), and zero `# noqa` annotations.
+
+## Tests Run
+
+- `uv run pytest apps/sandbox-executor/tests/test_calibration_dual_ev.py`: 7 passed in `0.06s`
+- `uv run pytest apps/sandbox-executor/tests/test_calibration_dual_ev.py apps/sandbox-executor/tests/test_calibration.py`:
+  88 passed in `0.62s`
+- `uv run task check`: all checks passed (ruff linting, formatting, module line budgets, prettier check)
+- `uv run task test`: 3302 passed, 2 deselected in `46.8s` (median: `46.8s`)

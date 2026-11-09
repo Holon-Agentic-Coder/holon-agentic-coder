@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-cbb897b8",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-09T05:41:12.247727+00:00",
+  "updated_ts": "2026-11-09T05:41:12.247727+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794200653-6d9442e2"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794197246-dual-ev-calibration-with-and-without-bugs/P-1794197261-edaaa218-antigravity-agent-gemini-3.8-flash-medium/E-1794197584-95243df0-antigravity-agent-gemini-3.8-flash-medium/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 2 finding detected: FIND-CI-002",
+    "symptoms": [
+      "Findings detected: ['FIND-CI-002']"
+    ]
+  }
+}

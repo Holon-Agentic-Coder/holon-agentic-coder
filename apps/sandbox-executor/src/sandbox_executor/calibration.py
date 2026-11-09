@@ -22,6 +22,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.agent_defaults import LEGACY_DEFAULT_AGENT, LEGACY_DEFAULT_MODEL
+from sandbox_executor.calibration_ev import (
+    evaluate_dual_ev_outcomes,
+    format_dual_ev_derivation_lines,
+    format_dual_ev_table_rows,
+    parse_summary_records,
+)
 from sandbox_executor.git import EMPTY_DIFF_EXCLUDES, run_git
 from sandbox_executor.knowledge.records import CredentialRedactor
 from sandbox_executor.ledger import generate_action_id, try_append_action_record
@@ -115,6 +121,23 @@ class ActualMetrics:
     files_changed: int = 0
     insertions: int = 0
     deletions: int = 0
+    ev_clean: float = 0.0
+    ev_with_bugs: float = 0.0
+    p_success_clean: float = 0.0
+    p_success_with_bugs: float = 0.0
+    impact_clean: float = 0.0
+    impact_with_bugs: float = 0.0
+    bug_ev_drag: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.ev != 0.0:
+            self.ev_clean = self.ev_clean or self.ev
+            self.p_success_clean = self.p_success_clean or self.p_success
+            self.impact_clean = self.impact_clean or self.impact
+        if self.bug_ev_drag == 0.0:
+            self.ev_with_bugs = self.ev_with_bugs or self.ev_clean
+            self.p_success_with_bugs = self.p_success_with_bugs or self.p_success_clean
+            self.impact_with_bugs = self.impact_with_bugs or self.impact_clean
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -131,6 +154,9 @@ class CalibrationDeltas:
     learning_value_error: float
     ev_error: float
     delta_ev: float
+    delta_ev_clean: float = 0.0
+    delta_ev_with_bugs: float = 0.0
+    bug_ev_drag: float = 0.0
 
     def to_dict(self) -> dict[str, float]:
         return dataclasses.asdict(self)
@@ -627,81 +653,67 @@ def load_metrics_physics(target_worktree: str = ".") -> tuple[float, float]:
     return default_lambda, default_mu
 
 
-def parse_predicted_metrics(plan_id: str, target_worktree: str = ".") -> tuple[PredictedMetrics, dict[str, Any]]:  # noqa: C901, PLR0912, PLR0915
-    """Parse predicted plan metrics from plans.jsonl or plans/P-{plan_id}.md."""
-    plan_meta: dict[str, Any] = {}
-    predicted = PredictedMetrics()
+def _parse_plan_markdown_content(content: str, predicted: PredictedMetrics) -> None:
+    row_pat = re.compile(r"\|\s*([a-zA-Z_0-9]+)\s*\|\s*([0-9\.\-]+)\s*\|")
+    in_overall = found_overall = False
+    for line in content.splitlines():
+        if "## Overall Plan Metrics" in line:
+            in_overall = found_overall = True
+        elif in_overall and line.startswith("## "):
+            break
+        elif (in_overall or not found_overall) and (m := row_pat.search(line)):
+            name = m.group(1).replace("_pred", "").strip()
+            if hasattr(predicted, name):
+                with contextlib.suppress(ValueError):
+                    setattr(predicted, name, float(m.group(2).strip()))
 
-    # 1. Primary: Search holon-knowledge/ledger/plans.jsonl
+
+def _parse_predicted_from_plans_ledger(
+    plan_id: str, target_worktree: str
+) -> tuple[PredictedMetrics, dict[str, Any]] | None:
     plans_jsonl = os.path.join(target_worktree, "holon-knowledge", "ledger", "plans.jsonl")
-    if os.path.exists(plans_jsonl):
-        try:
-            with open(plans_jsonl, encoding="utf-8") as f:
-                for line in f:
-                    if not line.strip():
-                        continue
-                    try:
-                        record = json.loads(line)
-                        if record.get("plan_id") == plan_id or plan_id in record.get("plan_branch", ""):
-                            plan_meta = record
-                            predicted.p_success = float(record.get("p_success", predicted.p_success))
-                            predicted.entropy = float(record.get("entropy", predicted.entropy))
-                            predicted.impact = float(record.get("impact", predicted.impact))
-                            predicted.cost = float(record.get("cost", predicted.cost))
-                            predicted.learning_value = float(record.get("learning_value", predicted.learning_value))
-                            predicted.ev = float(record.get("ev", predicted.ev))
-                            return predicted, plan_meta
-                    except (json.JSONDecodeError, ValueError):
-                        continue
-        except Exception as e:
-            logger.debug("Error reading plans.jsonl: %s", e)
+    if not os.path.exists(plans_jsonl):
+        return None
+    with contextlib.suppress(Exception), open(plans_jsonl, encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            with contextlib.suppress(json.JSONDecodeError, ValueError):
+                record = json.loads(line)
+                if record.get("plan_id") == plan_id or plan_id in record.get("plan_branch", ""):
+                    predicted = PredictedMetrics()
+                    for field in ("p_success", "entropy", "impact", "cost", "learning_value", "ev"):
+                        if field in record:
+                            setattr(predicted, field, float(record[field]))
+                    return predicted, record
+    return None
 
-    # 2. Fallback: Parse markdown table from plans/P-{plan_id}.md
-    plan_md_candidates = [
+
+def _parse_predicted_from_plan_markdown(
+    plan_id: str, target_worktree: str
+) -> tuple[PredictedMetrics, dict[str, Any]] | None:
+    candidates = [
         os.path.join(target_worktree, "plans", f"{plan_id}.md"),
         os.path.join(target_worktree, f"{plan_id}.md"),
     ]
-    for candidate in plan_md_candidates:
-        if os.path.exists(candidate):
-            try:
-                with open(candidate, encoding="utf-8") as f:
-                    content = f.read()
-                row_pat = re.compile(r"\|\s*([a-zA-Z_0-9]+)\s*\|\s*([0-9\.\-]+)\s*\|")
-                in_overall = False
-                found_overall = False
-                for line in content.splitlines():
-                    if "## Overall Plan Metrics" in line:
-                        in_overall = True
-                        found_overall = True
-                        continue
-                    if in_overall and line.startswith("## "):
-                        break
-                    if in_overall or not found_overall:
-                        m = row_pat.search(line)
-                        if m:
-                            name = m.group(1).replace("_pred", "").strip()
-                            try:
-                                val = float(m.group(2).strip())
-                                if name == "p_success":
-                                    predicted.p_success = val
-                                elif name == "entropy":
-                                    predicted.entropy = val
-                                elif name == "impact":
-                                    predicted.impact = val
-                                elif name == "cost":
-                                    predicted.cost = val
-                                elif name == "learning_value":
-                                    predicted.learning_value = val
-                                elif name == "ev":
-                                    predicted.ev = val
-                            except ValueError:
-                                continue
-                plan_meta["plan_file"] = os.path.relpath(candidate, target_worktree)
-                return predicted, plan_meta
-            except Exception as e:
-                logger.debug("Error parsing %s: %s", candidate, e)
+    for candidate in candidates:
+        if not os.path.exists(candidate):
+            continue
+        with contextlib.suppress(Exception), open(candidate, encoding="utf-8") as f:
+            content = f.read()
+            predicted = PredictedMetrics()
+            _parse_plan_markdown_content(content, predicted)
+            return predicted, {"plan_file": os.path.relpath(candidate, target_worktree)}
+    return None
 
-    return predicted, plan_meta
+
+def parse_predicted_metrics(plan_id: str, target_worktree: str = ".") -> tuple[PredictedMetrics, dict[str, Any]]:
+    """Parse predicted plan metrics from plans.jsonl or plans/P-{plan_id}.md."""
+    return (
+        _parse_predicted_from_plans_ledger(plan_id, target_worktree)
+        or _parse_predicted_from_plan_markdown(plan_id, target_worktree)
+        or (PredictedMetrics(), {})
+    )
 
 
 def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
@@ -731,62 +743,41 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
     target_ref = execution_branch if execution_branch else "HEAD"
 
     # 1. Search holon-knowledge/ledger/executions.jsonl via git show first, then fallback to disk
-    jsonl_content = read_git_file(target_ref, "holon-knowledge/ledger/executions.jsonl", target_worktree)
-    best_record: dict[str, Any] | None = None
-    best_rev = -1
-
-    if jsonl_content:
-        for line in jsonl_content.splitlines():
-            if not line.strip():
-                continue
-            try:
-                record = json.loads(line)
-                if record.get("entry_type", "summary") != "summary":
-                    continue
-                rec_exec_id = record.get("execution_id", "")
-                rec_plan_branch = record.get("plan_branch", "")
-                if (execution_id and rec_exec_id == execution_id) or (
-                    plan_branch and rec_plan_branch.rstrip("/_") == plan_branch.rstrip("/_")
-                ):
-                    rev = int(record.get("ledger_revision", 1))
-                    if best_record is None or rev >= best_rev:
-                        best_record = record
-                        best_rev = rev
-            except (json.JSONDecodeError, ValueError):
-                continue
-
-    if best_record is None:
-        executions_jsonl = os.path.join(target_worktree, "holon-knowledge", "ledger", "executions.jsonl")
+    jsonl_content = read_git_file(target_ref, LEDGER_EXECUTIONS_REL, target_worktree)
+    records = parse_summary_records(jsonl_content) if jsonl_content else []
+    norm_pb = plan_branch.rstrip("/_") if plan_branch else ""
+    matching = [
+        r
+        for r in records
+        if (execution_id and str(r.get("execution_id", "")) == execution_id)
+        or (norm_pb and str(r.get("plan_branch", "")).rstrip("/_") == norm_pb)
+    ]
+    if not matching:
+        executions_jsonl = os.path.join(target_worktree, LEDGER_EXECUTIONS_REL)
         if os.path.exists(executions_jsonl):
-            logger.info("Falling back to reading local executions.jsonl from disk at %s", executions_jsonl)
-            try:
-                with open(executions_jsonl, encoding="utf-8") as f:
-                    for line in f:
-                        if not line.strip():
-                            continue
-                        try:
-                            record = json.loads(line)
-                            if record.get("entry_type", "summary") != "summary":
-                                continue
-                            rec_exec_id = record.get("execution_id", "")
-                            rec_plan_branch = record.get("plan_branch", "")
-                            if (execution_id and rec_exec_id == execution_id) or (
-                                plan_branch and rec_plan_branch.rstrip("/_") == plan_branch.rstrip("/_")
-                            ):
-                                rev = int(record.get("ledger_revision", 1))
-                                if best_record is None or rev >= best_rev:
-                                    best_record = record
-                                    best_rev = rev
-                        except (json.JSONDecodeError, ValueError):
-                            continue
-            except Exception as e:
-                logger.debug("Error reading executions.jsonl: %s", e)
+            with contextlib.suppress(Exception), open(executions_jsonl, encoding="utf-8") as f:
+                disk_records = parse_summary_records(f.read())
+                disk_matching = [
+                    r
+                    for r in disk_records
+                    if (execution_id and str(r.get("execution_id", "")) == execution_id)
+                    or (norm_pb and str(r.get("plan_branch", "")).rstrip("/_") == norm_pb)
+                ]
+                if disk_matching:
+                    records = disk_records
+                    matching = disk_matching
+
+    best_record = (
+        max(matching, key=lambda r: (int(r.get("ledger_revision", 1)), str(r.get("created_at", ""))))
+        if matching
+        else None
+    )
 
     if best_record is not None:
         exec_meta = best_record
         status = best_record.get("status", "success")
-        actual.exit_code = 0 if status == "success" else int(best_record.get("exit_code", 1))
-        actual.p_success = 1.0 if status == "success" and actual.exit_code == 0 else 0.0
+        actual.exit_code = 0 if status in ("success", "halted_for_human") else int(best_record.get("exit_code", 1))
+        actual.p_success = 1.0 if status in ("success", "halted_for_human") and actual.exit_code == 0 else 0.0
         if "duration" in best_record:
             actual.duration_seconds = float(best_record["duration"])
         if "tokens" in best_record:
@@ -815,30 +806,19 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
         )
 
     if execution_branch and base_ref != target_ref:
-        res_base = run_git(
-            ["rev-parse", base_ref],
-            cwd=target_worktree,
-            check=False,
-            timeout=30,
-        )
+        res_base = run_git(["rev-parse", base_ref], cwd=target_worktree, check=False, timeout=30)
         if res_base.returncode != 0:
-            error_message = res_base.stderr.strip()
             raise RuntimeError(
-                f"Git rev-parse failed for '{base_ref}' with exit code {res_base.returncode}: {error_message}"
+                f"Git rev-parse failed for '{base_ref}' with exit code {res_base.returncode}: {res_base.stderr.strip()}"
             )
         base_sha = res_base.stdout.strip()
 
-        res_mb = run_git(
-            ["merge-base", base_ref, target_ref],
-            cwd=target_worktree,
-            check=False,
-            timeout=30,
-        )
+        res_mb = run_git(["merge-base", base_ref, target_ref], cwd=target_worktree, check=False, timeout=30)
         if res_mb.returncode != 0:
-            error_message = res_mb.stderr.strip()
+            err = res_mb.stderr.strip()
             raise RuntimeError(
                 f"Git merge-base failed between '{base_ref}' and '{target_ref}' "
-                f"with exit code {res_mb.returncode}: {error_message}"
+                f"with exit code {res_mb.returncode}: {err}"
             )
         merge_base_sha = res_mb.stdout.strip()
 
@@ -849,10 +829,10 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
             timeout=30,
         )
         if res_merges.returncode != 0:
-            error_message = res_merges.stderr.strip()
+            err = res_merges.stderr.strip()
             raise RuntimeError(
                 f"Git rev-list failed between '{base_ref}' and '{target_ref}' "
-                f"with exit code {res_merges.returncode}: {error_message}"
+                f"with exit code {res_merges.returncode}: {err}"
             )
         try:
             merged_commit_count = int(res_merges.stdout.strip())
@@ -924,10 +904,20 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
     exec_meta["ssa_obs"] = ssa_obs
 
     lambda_p, mu_p = load_metrics_physics(target_worktree)
-    actual.ev = round(
-        (actual.p_success * actual.impact) + (mu_p * actual.learning_value) - (lambda_p * actual.entropy) - actual.cost,
-        2,
-    )
+    cost_effort = round(actual.cost + (lambda_p * actual.entropy) - (mu_p * actual.learning_value), 2)
+    dual_ev = evaluate_dual_ev_outcomes(records, execution_id, plan_branch, predicted.impact, cost_effort)
+
+    actual.p_success_clean = dual_ev.p_success_clean
+    actual.p_success_with_bugs = dual_ev.p_success_with_bugs
+    actual.impact_clean = dual_ev.impact_clean
+    actual.impact_with_bugs = dual_ev.impact_with_bugs
+    actual.ev_clean = dual_ev.ev_clean
+    actual.ev_with_bugs = dual_ev.ev_with_bugs
+    actual.bug_ev_drag = dual_ev.bug_ev_drag
+
+    actual.p_success = actual.p_success_clean
+    actual.impact = actual.impact_clean
+    actual.ev = actual.ev_clean
 
     return actual, exec_meta
 
@@ -942,8 +932,10 @@ def compute_calibration_deltas(
     imp_err = round(abs(predicted.impact - actual.impact), 2)
     cost_err = round(abs(predicted.cost - actual.cost), 2)
     lv_err = round(abs(predicted.learning_value - actual.learning_value), 2)
-    ev_err = round(abs(predicted.ev - actual.ev), 2)
-    delta_ev = round(actual.ev - predicted.ev, 2)
+    ev_clean_err = round(abs(predicted.ev - actual.ev_clean), 2)
+    ev_bugs_err = round(abs(predicted.ev - actual.ev_with_bugs), 2)
+    delta_ev_clean = round(actual.ev_clean - predicted.ev, 2)
+    delta_ev_with_bugs = round(actual.ev_with_bugs - predicted.ev, 2)
 
     deltas = CalibrationDeltas(
         p_success_error=p_err,
@@ -951,8 +943,11 @@ def compute_calibration_deltas(
         impact_error=imp_err,
         cost_error=cost_err,
         learning_value_error=lv_err,
-        ev_error=ev_err,
-        delta_ev=delta_ev,
+        ev_error=ev_clean_err,
+        delta_ev=delta_ev_clean,
+        delta_ev_clean=delta_ev_clean,
+        delta_ev_with_bugs=delta_ev_with_bugs,
+        bug_ev_drag=actual.bug_ev_drag,
     )
 
     accuracy_ratings = {
@@ -961,7 +956,9 @@ def compute_calibration_deltas(
         "impact": "Exact" if imp_err == 0 else ("High" if imp_err <= 5.0 else "Moderate"),
         "cost": "Exact" if cost_err == 0 else ("High (≤ 1.0)" if cost_err <= 1.0 else "Moderate"),
         "learning_value": "Exact" if lv_err == 0 else "High",
-        "ev": "Exact" if ev_err == 0 else ("High" if ev_err <= 5.0 else "Moderate"),
+        "ev": "Exact" if ev_clean_err == 0 else ("High" if ev_clean_err <= 5.0 else "Moderate"),
+        "ev_clean": "Exact" if ev_clean_err == 0 else ("High" if ev_clean_err <= 5.0 else "Moderate"),
+        "ev_with_bugs": "Exact" if ev_bugs_err == 0 else ("High" if ev_bugs_err <= 5.0 else "Moderate"),
     }
 
     bias_directions = {
@@ -982,7 +979,9 @@ def compute_calibration_deltas(
             else ("Conservative Cost Estimate" if predicted.cost > actual.cost else "Underestimated Cost")
         ),
         "learning_value": "Perfectly Calibrated" if lv_err == 0 else "Accurate Learning Value",
-        "ev": ("Conservative Underestimate" if delta_ev >= 0 else "Optimistic Overestimate"),
+        "ev": ("Conservative Underestimate" if delta_ev_clean >= 0 else "Optimistic Overestimate"),
+        "ev_clean": ("Conservative Underestimate" if delta_ev_clean >= 0 else "Optimistic Overestimate"),
+        "ev_with_bugs": ("Conservative Underestimate" if delta_ev_with_bugs >= 0 else "Optimistic Overestimate"),
     }
 
     return deltas, accuracy_ratings, bias_directions
@@ -1007,9 +1006,6 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
     ef = report_data["entropy_factors"]
     lambda_val = report_data.get("lambda", 0.3)
     mu_val = report_data.get("mu", 0.5)
-
-    sign = "+" if deltas["delta_ev"] >= 0 else ""
-    delta_ev_str = f"{sign}{deltas['delta_ev']:.2f}"
 
     lines = [
         f"# Plan Calibration Report: {plan_id}",
@@ -1070,11 +1066,7 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
                 f"`{act['learning_value']:.2f}`            | `{deltas['learning_value_error']:.2f}`"
                 f"                                | {ratings['learning_value']:<17} | {biases['learning_value']:<26} |"
             ),
-            (
-                f"| **Expected Value ($EV$)** | `{pred['ev']:.2f}`            | "
-                f"`{act['ev']:.2f}`           | `{deltas['ev_error']:.2f}`"
-                f"                                | {ratings['ev']:<17} | {biases['ev']:<26} |"
-            ),
+            *format_dual_ev_table_rows(pred["ev"], act, deltas, ratings, biases),
             "",
             "---",
             "",
@@ -1092,17 +1084,7 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
                 f"{deltas['learning_value_error']:.2f}$"
             ),
             "- **Expected Value Realization:**",
-            (
-                f"  $$EV_{{\\text{{pred}}}} = {pred['p_success']:.2f} \\times {pred['impact']:.1f} + "
-                f"{mu_val:.1f} \\times {pred['learning_value']:.1f} - {lambda_val:.1f} \\times "
-                f"{pred['entropy']:.2f} - {pred['cost']:.2f} = {pred['ev']:.2f}$$"
-            ),
-            (
-                f"  $$EV_{{\\text{{actual}}}} = {act['p_success']:.2f} \\times {act['impact']:.1f} + "
-                f"{mu_val:.1f} \\times {act['learning_value']:.1f} - {lambda_val:.1f} \\times "
-                f"{act['entropy']:.2f} - {act['cost']:.2f} = {act['ev']:.2f}$$"
-            ),
-            f"  $$\\Delta EV = {delta_ev_str}$$",
+            *format_dual_ev_derivation_lines(pred, act, deltas, lambda_val, mu_val),
             "",
             "---",
             "",
@@ -1281,6 +1263,15 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
         "base_sha": base_sha,
         "merge_base_sha": merge_base_sha,
         "merged_commit_count": merged_commit_count,
+        "ev_clean": actual.ev_clean,
+        "ev_with_bugs": actual.ev_with_bugs,
+        "p_success_clean": actual.p_success_clean,
+        "p_success_with_bugs": actual.p_success_with_bugs,
+        "impact_clean": actual.impact_clean,
+        "impact_with_bugs": actual.impact_with_bugs,
+        "bug_ev_drag": actual.bug_ev_drag,
+        "delta_ev_clean": deltas.delta_ev_clean,
+        "delta_ev_with_bugs": deltas.delta_ev_with_bugs,
     }
 
     markdown_content = format_markdown_report(report_dict)

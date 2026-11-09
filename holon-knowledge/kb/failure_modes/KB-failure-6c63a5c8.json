@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-6c63a5c8",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-09T02:08:53.874829+00:00",
+  "updated_ts": "2026-11-09T02:08:53.874829+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794144191-d00e08d1"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794136091-persist-review-loop-sandbox-across-iterations/P-1794136106-claude-agent-claude-fable-5/E-1794141703-claude-agent-claude-fable-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R2-001-01",
+    "symptoms": [
+      "A crash-poisoned reused checkout (stale .git/index.lock or partial clone in the persistent volume) makes _reset_reused_checkout fail every subsequent pass; reuse-path git failures should fall back to wipe-and-reclone like the origin-mismatch path, otherwise the documented 'safe to reuse after a crash' claim does not hold."
+    ]
+  }
+}

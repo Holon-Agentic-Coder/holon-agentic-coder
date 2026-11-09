@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-b01c1d0b",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-09T02:08:53.887564+00:00",
+  "updated_ts": "2026-11-09T02:08:53.887564+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794145426-215114e1"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794136091-persist-review-loop-sandbox-across-iterations/P-1794136106-claude-agent-claude-fable-5/E-1794141703-claude-agent-claude-fable-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 2 finding detected: FIND-R1-002-01",
+    "symptoms": [
+      "review_session_volume_name digests only the target string, so same-named targets of different repositories (or concurrent sessions on one target) share a volume: concurrent passes wipe or reset the checkout under a live reviewer and sequential alternation defeats persistence while gh resolves PR targets against the stale foreign checkout. Mix the normalised HOLON_REPO_URL into the digest."
+    ]
+  }
+}

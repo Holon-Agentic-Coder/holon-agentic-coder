@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-b8d94d6f",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-09T02:08:53.880818+00:00",
+  "updated_ts": "2026-11-09T02:08:53.880818+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794144191-c2f02ee2"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794136091-persist-review-loop-sandbox-across-iterations/P-1794136106-claude-agent-claude-fable-5/E-1794141703-claude-agent-claude-fable-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R3-001-02",
+    "symptoms": [
+      "_seed_local_remote runs real `git commit` without setting user.name/user.email, so the hermetic unit tests fail on hosts without a global git identity; set a per-repo identity after `git init` as the integration test already does."
+    ]
+  }
+}

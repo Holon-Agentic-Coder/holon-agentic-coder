@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-62f7611e",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-09T02:08:53.919497+00:00",
+  "updated_ts": "2026-11-09T02:08:53.919497+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794175793-67355143"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794136091-persist-review-loop-sandbox-across-iterations/P-1794136106-claude-agent-claude-fable-5/E-1794141703-claude-agent-claude-fable-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 4 finding detected: FIND-R1-004-01",
+    "symptoms": [
+      "flow.py (already 5,959 lines) grows by 202 lines; move ReviewWorkspaceSession and its helpers into a dedicated review_workspace module. cli/__init__.py and test_review_loop.py/test_cli.py also grow past 1,000 lines."
+    ]
+  }
+}

@@ -7,17 +7,22 @@ Execution of plan `P-1794205494-860c0862-claude-agent-claude-opus-5-5` for inten
 default-branch worktree into a dedicated `flow-<slug>` worktree, refuse default-branch checkpoints, and refuse
 default-branch worktrees in `holon review`, `holon review-loop` and `holon calibrate`.
 
-In progress.
+Outcome: all eight steps done and all five acceptance criteria met. Full suite, `uv run task lint` and
+`uv run task lint-docs` pass. Flow module budgets, `uv.lock` and every file under `flow/` are unchanged. Two deviations
+from the plan, both recorded under their steps: the redirect runs after the pre-flight probe, so that a refused probe
+still writes no branch (Step 3), and the engine guard went into `flow_guard.py` because the move proof pins
+`pipeline.py` (Step 4, kept). `entropy_actual` is below the predicted `9.5`: those two surprises cost one fix cycle
+each, and pinning touched 10 tests with no behavioural changes.
 
 ## Actual Metrics
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.0   |
-| entropy_actual        | 0.0   |
-| impact_actual         | 0.0   |
-| cost_actual           | 0.0   |
-| learning_value_actual | 0.0   |
+| success_actual        | 0.95  |
+| entropy_actual        | 7.0   |
+| impact_actual         | 85.0  |
+| cost_actual           | 22.0  |
+| learning_value_actual | 5.0   |
 
 ## Steps Executed
 
@@ -149,3 +154,30 @@ In progress.
   and the redirect wording used by the help text.
 - Help texts: `holon flow` uses `TARGET_WORKTREE_HELP`; `holon review*` and `holon calibrate` use
   `DEFAULT_BRANCH_GUARD_HELP`.
+
+### Step 8: Verification
+
+- All commands below exit 0.
+  `git diff --exit-code 3461ee8 -- apps/sandbox-executor/flow_module_budgets.json uv.lock apps/sandbox-executor/src/sandbox_executor/flow`
+  is empty. Exactly three ledgers remain (`executions.jsonl`, `intents.jsonl`, `plans.jsonl`), and no `flow-*` directory
+  appeared next to the workspace.
+
+## Tests Run
+
+| command                                                                                                                 | result                                                                 | pytest time |
+| ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ----------- |
+| `uv run pytest tests/test_flow_target_worktree.py tests/test_git.py -n auto --dist worksteal` (Step 2)                  | 50 passed                                                              | `1.93s`     |
+| `uv run pytest tests/test_flow_target_worktree.py tests/test_preflight.py tests/flow -n auto --dist worksteal` (Step 3) | 808 passed                                                             | `5.23s`     |
+| full suite with `-m "not integration_test and not stress"` after Step 4                                                 | 3308 passed, 1 failed (checkpoint fixture on `main`, pinned in Step 7) | `30.56s`    |
+| `uv run pytest` on calibration, review loop, preflight, cli and cli options tests (Step 5)                              | 903 passed, 1 failed (same test)                                       | `2.52s`     |
+| `uv run task test` in a copy of the workspace committed on `main`, before pinning                                       | 3299 passed, 10 failed                                                 | `30.74s`    |
+| `uv run pytest tests/test_flow_default_branch_worktree.py -n auto --dist worksteal`                                     | 29 passed                                                              | `2.00s`     |
+| same, with the redirect disabled (mutation check)                                                                       | 24 passed, 5 failed                                                    | `2.10s`     |
+| `uv run task test` in a copy of the workspace committed on `main`, after pinning                                        | 3338 passed                                                            | `30.70s`    |
+| affected tests (Step 8 list plus `tests/test_preflight.py`) with `-n auto --dist worksteal`                             | 1486 passed                                                            | `6.03s`     |
+| `uv run task test` (single full run)                                                                                    | 3338 passed                                                            | `31.30s`    |
+| `uv run task lint`                                                                                                      | passed (ruff, format, 28 flow modules within budget)                   | n/a         |
+| `uv run task lint-docs`                                                                                                 | passed                                                                 | n/a         |
+
+Each command ran once, so each median equals its single value. The full-suite median is `31.30s`. No repetitions: the
+intent has no timing target.

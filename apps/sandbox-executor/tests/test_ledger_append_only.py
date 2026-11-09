@@ -29,7 +29,7 @@ from sandbox_executor.ledger import (
     try_append_ledger_line,
 )
 
-from tests.test_flow import FakeRoleAgents, _dispatch_context, _git
+from tests.flow.helpers import FakeRoleAgents, _dispatch_context, _git
 
 LEDGER_NAMES = ("intents", "plans", "executions")
 
@@ -82,10 +82,13 @@ class FakeGit:
 
 @pytest.fixture
 def fake_git(monkeypatch: pytest.MonkeyPatch) -> FakeGit:
-    """Replace git and the mergeability probe at their ``flow`` bindings."""
+    """Replace git and the mergeability probe at their ``flow`` submodule bindings."""
     fake = FakeGit()
-    monkeypatch.setattr(flow, "run_git", fake)
-    monkeypatch.setattr(flow, "check_pr_mergeability", lambda *_a, **_k: {"mergeable": "MERGEABLE"})
+    monkeypatch.setattr("sandbox_executor.flow.git_refs.run_git", fake)
+    monkeypatch.setattr("sandbox_executor.flow.stage_conflicts.run_git", fake)
+    monkeypatch.setattr(
+        "sandbox_executor.flow.stage_conflicts.check_pr_mergeability", lambda *_a, **_k: {"mergeable": "MERGEABLE"}
+    )
     return fake
 
 
@@ -190,7 +193,7 @@ class TestPrefixGuard:
     ) -> None:
         ledger = tmp_path / "executions.jsonl"
         ledger.write_text(_conflicted(), encoding="utf-8")
-        monkeypatch.setattr(flow, "assert_ledger_prefix", _report_rewrite)
+        monkeypatch.setattr("sandbox_executor.flow.ledger_reconcile.assert_ledger_prefix", _report_rewrite)
         with pytest.raises(LedgerRewriteError):
             reconcile_ledger_file(str(ledger))
 
@@ -239,7 +242,9 @@ def seeded_repos(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path,
     Git runs for real against the local origin; only the mergeability probe is stubbed, so ``gh`` is never asked.
     """
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(flow, "check_pr_mergeability", lambda *_a, **_k: {"mergeable": "MERGEABLE"})
+    monkeypatch.setattr(
+        "sandbox_executor.flow.stage_conflicts.check_pr_mergeability", lambda *_a, **_k: {"mergeable": "MERGEABLE"}
+    )
     origin, seed, host = tmp_path / "origin.git", tmp_path / "seed", tmp_path / "host"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True, capture_output=True)
     subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True, capture_output=True)
@@ -437,7 +442,7 @@ class TestPrePushMerge:
         self._branch_with_intent_row(host)
         self._advance_main(origin, tmp_path, "holon-knowledge/ledger/intents.jsonl", '{"slug":"main-row"}\n')
         head = _git(host, "rev-parse", "HEAD")
-        monkeypatch.setattr(flow, "assert_ledger_prefix", _report_rewrite)
+        monkeypatch.setattr("sandbox_executor.flow.ledger_reconcile.assert_ledger_prefix", _report_rewrite)
 
         with pytest.raises(LedgerRewriteError):
             sync_and_reconcile_pre_push(str(host), target_branch="main")
@@ -614,9 +619,11 @@ def test_calibration_rewrite_propagates_instead_of_writing_a_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fallback_calls: list[Any] = []
-    monkeypatch.setattr(flow, "_checkout_execution_branch", lambda _ctx: None)
-    monkeypatch.setattr(flow, "run_calibrate", _raise_rewrite)
-    monkeypatch.setattr(flow, "record_calibration_action", lambda *a, **_k: fallback_calls.append(a))
+    monkeypatch.setattr("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", lambda _ctx: None)
+    monkeypatch.setattr("sandbox_executor.flow.stages.calibrate.run_calibrate", _raise_rewrite)
+    monkeypatch.setattr(
+        "sandbox_executor.flow.stages.calibrate.record_calibration_action", lambda *a, **_k: fallback_calls.append(a)
+    )
     with pytest.raises(LedgerRewriteError):
         flow.run_calibrate_stage(_flow_context(tmp_path))
     assert fallback_calls == []
@@ -628,9 +635,9 @@ def test_stage5_reconciliation_rewrite_propagates_before_push(
 ) -> None:
     _seed_ledgers(tmp_path)
     report = SimpleNamespace(calibrated_branch="I-100-intent/P-200-plan/E-300-exec/calibrated", to_dict=dict)
-    monkeypatch.setattr(flow, "_checkout_execution_branch", lambda _ctx: None)
-    monkeypatch.setattr(flow, "run_calibrate", lambda **_k: report)
-    monkeypatch.setattr(flow, "reconcile_records", _raise_rewrite)
+    monkeypatch.setattr("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", lambda _ctx: None)
+    monkeypatch.setattr("sandbox_executor.flow.stages.calibrate.run_calibrate", lambda **_k: report)
+    monkeypatch.setattr("sandbox_executor.flow.stages.calibrate.reconcile_records", _raise_rewrite)
     with pytest.raises(LedgerRewriteError):
         flow.run_calibrate_stage(_flow_context(tmp_path))
     assert not any(c[:1] in (["commit"], ["push"]) for c in fake_git.calls)

@@ -25,7 +25,7 @@ holon = { path = "apps/sandbox-executor", editable = true }
 
 [tool.taskipy.tasks]
 clean = 'find . -name ".git" -prune -o -path "./.venv" -prune -o -type d \( -name "__pycache__" -o -name ".pytest_cache" -o -name ".ruff_cache" -o -name "*.egg-info" -o -name "build" -o -name "dist" -o -name ".mypy_cache" \) -exec rm -rf {} + && rm -rf .coverage coverage.xml htmlcov apps/sandbox-executor/build_all_images.log build_all_images.log'
-lint = "uv lock --check && git diff --exit-code uv.lock && ruff check . && ruff format --check ."
+lint = "uv lock --check && git diff --exit-code uv.lock && ruff check . && ruff format --check . && python scripts/check_flow_module_budgets.py"
 lint-docs = 'npx prettier --check "**/*.md"'
 check = "task lint && task lint-docs"
 format-code = "ruff check --fix . && ruff format ."

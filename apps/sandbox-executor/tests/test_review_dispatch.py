@@ -139,23 +139,23 @@ def test_stage4_host_integrity_dirty_merge_blocks_approval(tmp_path: Path, monke
     ctx = _make_context(tmp_path, dispatcher=fake_dispatcher)
 
     with (
-        patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
-        patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
+        patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
         patch(
-            "sandbox_executor.flow.create_or_update_pr",
+            "sandbox_executor.flow.review.loop.create_or_update_pr",
             return_value={"success": True, "action": "created", "pr": {"number": 1, "url": "https://github.com/pr/1"}},
         ),
         patch(
-            "sandbox_executor.flow.resolve_review_target",
+            "sandbox_executor.flow.review.ensemble.resolve_review_target",
             return_value=ReviewTarget(raw=EXEC_TARGET, head_branch=EXEC_TARGET, head_sha="abc1234"),
         ),
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
         patch(
-            "sandbox_executor.flow.check_pr_mergeability",
+            "sandbox_executor.flow.review.loop.check_pr_mergeability",
             return_value={"is_dirty": True, "merge_state_status": "DIRTY", "mergeable": "CONFLICTING"},
         ),
         patch(
-            "sandbox_executor.flow.probe_ci_checks",
+            "sandbox_executor.flow.review.loop.probe_ci_checks",
             return_value={
                 "all_passed": True,
                 "passed": 1,
@@ -165,7 +165,7 @@ def test_stage4_host_integrity_dirty_merge_blocks_approval(tmp_path: Path, monke
                 "source": "github_cli",
             },
         ),
-        patch("sandbox_executor.flow.post_pr_review_consensus") as mock_post,
+        patch("sandbox_executor.flow.review.loop.post_pr_review_consensus") as mock_post,
     ):
         result = run_review_stage(ctx)
 
@@ -188,23 +188,23 @@ def test_stage4_host_integrity_failed_ci_blocks_approval(tmp_path: Path, monkeyp
     ctx = _make_context(tmp_path, dispatcher=fake_dispatcher)
 
     with (
-        patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
-        patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
+        patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
         patch(
-            "sandbox_executor.flow.create_or_update_pr",
+            "sandbox_executor.flow.review.loop.create_or_update_pr",
             return_value={"success": True, "action": "created", "pr": {"number": 1, "url": "https://github.com/pr/1"}},
         ),
         patch(
-            "sandbox_executor.flow.resolve_review_target",
+            "sandbox_executor.flow.review.ensemble.resolve_review_target",
             return_value=ReviewTarget(raw=EXEC_TARGET, head_branch=EXEC_TARGET, head_sha="abc1234"),
         ),
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
         patch(
-            "sandbox_executor.flow.check_pr_mergeability",
+            "sandbox_executor.flow.review.loop.check_pr_mergeability",
             return_value={"is_dirty": False, "merge_state_status": "CLEAN", "mergeable": "MERGEABLE"},
         ),
         patch(
-            "sandbox_executor.flow.probe_ci_checks",
+            "sandbox_executor.flow.review.loop.probe_ci_checks",
             return_value={
                 "all_passed": False,
                 "passed": 0,
@@ -214,7 +214,7 @@ def test_stage4_host_integrity_failed_ci_blocks_approval(tmp_path: Path, monkeyp
                 "source": "github_cli",
             },
         ),
-        patch("sandbox_executor.flow.post_pr_review_consensus") as mock_post,
+        patch("sandbox_executor.flow.review.loop.post_pr_review_consensus") as mock_post,
     ):
         result = run_review_stage(ctx)
 
@@ -237,23 +237,23 @@ def test_stage4_canonical_ledger_records_verified_results(tmp_path: Path, monkey
     ctx = _make_context(tmp_path, dispatcher=fake_dispatcher)
 
     with (
-        patch("sandbox_executor.flow._checkout_execution_branch", return_value=None),
-        patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
+        patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
         patch(
-            "sandbox_executor.flow.create_or_update_pr",
+            "sandbox_executor.flow.review.loop.create_or_update_pr",
             return_value={"success": True, "action": "created", "pr": {"number": 1, "url": "https://github.com/pr/1"}},
         ),
         patch(
-            "sandbox_executor.flow.resolve_review_target",
+            "sandbox_executor.flow.review.ensemble.resolve_review_target",
             return_value=ReviewTarget(raw=EXEC_TARGET, head_branch=EXEC_TARGET, head_sha="abc1234"),
         ),
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
         patch(
-            "sandbox_executor.flow.check_pr_mergeability",
+            "sandbox_executor.flow.review.loop.check_pr_mergeability",
             return_value={"is_dirty": False, "merge_state_status": "CLEAN", "mergeable": "MERGEABLE"},
         ),
         patch(
-            "sandbox_executor.flow.probe_ci_checks",
+            "sandbox_executor.flow.review.loop.probe_ci_checks",
             return_value={
                 "all_passed": True,
                 "passed": 1,
@@ -264,7 +264,7 @@ def test_stage4_canonical_ledger_records_verified_results(tmp_path: Path, monkey
             },
         ),
         patch(
-            "sandbox_executor.flow.post_pr_review_consensus",
+            "sandbox_executor.flow.review.loop.post_pr_review_consensus",
             return_value={"dual_posted": True, "official_review": {"success": True}},
         ) as mock_post,
     ):
@@ -326,15 +326,15 @@ def _host_loop_patches():
         "checks": [],
     }
     return (
-        patch("sandbox_executor.flow.shutil.which", return_value=None),
-        patch("sandbox_executor.flow.check_pr_mergeability", side_effect=lambda *a, **k: dict(clean_merge)),
-        patch("sandbox_executor.flow.probe_ci_checks", side_effect=lambda *a, **k: dict(green_ci)),
+        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", side_effect=lambda *a, **k: dict(clean_merge)),
+        patch("sandbox_executor.flow.review.loop.probe_ci_checks", side_effect=lambda *a, **k: dict(green_ci)),
         patch(
-            "sandbox_executor.flow.post_pr_review_consensus",
+            "sandbox_executor.flow.review.loop.post_pr_review_consensus",
             MagicMock(return_value={"dual_posted": True, "official_review": {"success": True}}),
         ),
         patch(
-            "sandbox_executor.flow.resolve_review_target",
+            "sandbox_executor.flow.review.ensemble.resolve_review_target",
             return_value=ReviewTarget(raw=EXEC_TARGET, head_branch=EXEC_TARGET, head_sha="a" * 40),
         ),
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
@@ -448,7 +448,7 @@ def test_session_volume_is_removed_when_the_loop_raises_mid_iteration(tmp_path: 
         p.start()
     try:
         with (
-            patch("sandbox_executor.flow.probe_ci_checks", side_effect=RuntimeError("gh exploded")),
+            patch("sandbox_executor.flow.review.loop.probe_ci_checks", side_effect=RuntimeError("gh exploded")),
             pytest.raises(RuntimeError, match="gh exploded"),
         ):
             run_review_loop(ctx, target=EXEC_TARGET, max_iterations=5, workspace_session=_session(docker))

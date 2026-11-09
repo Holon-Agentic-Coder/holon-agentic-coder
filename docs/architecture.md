@@ -451,6 +451,61 @@ Trust level is influenced by:
 - `orchestrator/`
   - meta-agent loop, scheduling, work queue
 
+### Flow engine module map
+
+The Holon Flow engine is the `sandbox_executor.flow` package in `apps/sandbox-executor/src/sandbox_executor/flow/`. Each
+module owns one cluster, so a change to one stage or helper touches a small, separate set of files. The package was
+split from the former single `flow.py` by moving code only. `tests/flow/test_move_proof.py` checks the `ast.dump` of
+every definition against a committed snapshot of the original file (`tests/flow/fixtures/flow_py_definitions.json`).
+
+| Module                         | Responsibility                                                                                              |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `flow/__init__.py`             | Re-exports every engine name through `__all__`, so `from sandbox_executor.flow import ...` still works.     |
+| `flow/constants.py`            | Constants shared by two or more modules (`CURRENT_CONTEXT_SCHEMA_VERSION`, `CI_REGISTRATION_POLL_SECONDS`). |
+| `flow/context.py`              | The data model: `FlowStage`, `StageStatus`, `StageResult` and `FlowContext`.                                |
+| `flow/checkpoint.py`           | Checkpoint schema migration, `FlowCheckpoint`, and saving and loading checkpoints.                          |
+| `flow/ledger_reconcile.py`     | Resolves conflicts in the append-only JSONL ledgers by a union under the ledger lock.                       |
+| `flow/stage_conflicts.py`      | The proactive conflict check a stage runs before it pushes.                                                 |
+| `flow/intent_questions.py`     | Validates an intent's clarifying questions before Stage 1 accepts it.                                       |
+| `flow/dispatch.py`             | Role-agent dispatch shared with `holon intent`, `holon plan` and `holon execute`.                           |
+| `flow/git_refs.py`             | Branch fetches, child-branch discovery, ledger readers, execution refs and the effective diff.              |
+| `flow/github/pr.py`            | Mergeability checks, review git trailers, semantic PR metadata and creating the PR.                         |
+| `flow/github/ci.py`            | Probes CI checks and waits for them to register and settle.                                                 |
+| `flow/github/review_post.py`   | Posts the Stage 4 consensus review to the pull request.                                                     |
+| `flow/review/workspace.py`     | The sandbox guard for reviewer turns and the persistent review session volume.                              |
+| `flow/review/records.py`       | Refused-review results, review action rows in the ledger and the reviewer summary line.                     |
+| `flow/review/ensemble.py`      | Dispatches the reviewer ensemble for one review iteration.                                                  |
+| `flow/review/resolver.py`      | The resolver pass: filters adjudicated findings and records finding dispositions.                           |
+| `flow/review/loop.py`          | The review-resolve iteration loop and the engine's Stage 4 pass window.                                     |
+| `flow/review/cli.py`           | The `holon review-loop` CLI entry and the review loop summary helpers.                                      |
+| `flow/stages/intent.py`        | Stage 1: dispatches the intent creator and verifies its branch.                                             |
+| `flow/stages/plan.py`          | Stage 2: dispatches the planner, adopts its plan and makes the entropy budget decision.                     |
+| `flow/stages/decomposition.py` | Stage 3 decomposition: runs each sub-intent of an over-budget plan as a child flow.                         |
+| `flow/stages/execute.py`       | Stage 3: dispatches the executor, adopts its branch and resumes failed partial executions.                  |
+| `flow/stages/review.py`        | Stage 4: runs the review loop and halts at consensus approval without merging.                              |
+| `flow/stages/calibrate.py`     | Stage 5: runs calibration and commits the calibrated artefacts.                                             |
+| `flow/pipeline.py`             | `PipelineEngine` and `run_flow_pipeline`, which run the five stages in order with checkpoints.              |
+
+The `flow/github/`, `flow/review/` and `flow/stages/` packages each have an `__init__.py` holding only a docstring.
+
+Rules that keep the package healthy:
+
+- **Import direction.** Imports run from the leaves (`constants`, `context`, `checkpoint`) through `dispatch`,
+  `git_refs`, `github/*`, `review/*` and `stages/*` to `pipeline`. No submodule imports `pipeline` at runtime. The one
+  back-edge is bound late: `stages/decomposition.py` runs child flows through `PipelineEngine`, but `pipeline` imports
+  the stages. So `flow/__init__.py` sets `stages.decomposition.PipelineEngine` after it has imported `pipeline`, and
+  `decomposition.py` imports the name only under `TYPE_CHECKING`. `tests/flow/test_package_exports.py` checks the
+  binding.
+- **Tests patch the submodule, not the package.** A name such as `run_git` is looked up in each submodule that imports
+  it, so a test patches `sandbox_executor.flow.<module>.<name>` at each submodule its code path crosses. It uses
+  `tests/flow/lookup_patch.py` `patch_lookup_sites` when there is more than one, so they share one mock.
+  `tests/flow/test_patch_targets.py` rejects package-level patch targets. The only exception is a name that a caller
+  outside the package imports from `sandbox_executor.flow` inside a function body.
+- **Size ratchet.** `apps/sandbox-executor/flow_module_budgets.json` records each module's line count at the split.
+  `scripts/check_flow_module_budgets.py` runs in `uv run task lint` and through `tests/flow/test_module_budgets.py`, and
+  fails when a module grows past its budget, lacks a budget, or a budget names a missing module. Budgets only go down,
+  by hand.
+
 ---
 
 ### Interfaces (what components exchange)
@@ -553,3 +608,5 @@ The complexity gate is protected by an automated ratchet test at `apps/sandbox-e
   `ruff check` alone; bare `# noqa` directives without rule codes are rejected repo-wide via the `PGH004` lint.
 - When legacy functions are simplified or refactored, the baseline constants and snapshot must be ratcheted down,
   ensuring codebase complexity only decreases over time.
+- The snapshot names the module that carries each annotation. Since the flow engine split, its entries name
+  `sandbox_executor/flow/<module>.py` paths rather than the former `sandbox_executor/flow.py`.

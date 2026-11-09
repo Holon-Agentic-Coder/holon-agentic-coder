@@ -1447,9 +1447,9 @@ def test_stage5_rejected_report_commit_takes_failure_path(calibration_repo):
 
     with (
         patch("sandbox_executor.calibration.format_calibration_report"),
-        patch("sandbox_executor.flow.format_calibration_report"),
-        patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
-        patch("sandbox_executor.flow.run_git", side_effect=recording_run_git),
+        patch("sandbox_executor.flow.stages.calibrate.format_calibration_report"),
+        patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.review.run_git", side_effect=recording_run_git),
     ):
         run_calibrate_stage(ctx)
 
@@ -1484,7 +1484,7 @@ def test_stage5_commits_reconciliation_row_on_calibrated_branch(calibration_repo
     ctx = _stage5_context(repo, dry_run=False)
     with (
         patch("sandbox_executor.calibration.format_calibration_report"),
-        patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
     ):
         res = run_calibrate_stage(ctx)
     assert res.status == StageStatus.SUCCESS

@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-import hashlib
-import itertools
 import json
 import os
 import re
@@ -22,7 +20,12 @@ from sandbox_executor.budgets import (
     resolve_entropy_budget,
 )
 from sandbox_executor.formatting import converge_prettier
-from sandbox_executor.ledger import atomic_ledger_append
+from sandbox_executor.ledger import (
+    _sanitize_model_name,
+    atomic_ledger_append,
+    build_plan_id,
+    validate_ledger_file_unique_ids,
+)
 from sandbox_executor.redaction import redact_agent_secrets, redact_command, redact_command_args
 from sandbox_executor.turns import record_budget_failure, run_turn, supervise_authoring_turn
 
@@ -73,69 +76,6 @@ def run_cmd(
         print(f"Stderr:\n{redact_agent_secrets(result.stderr)}")
         sys.exit(result.returncode)
     return result
-
-
-_disambiguator_counter = itertools.count()
-
-
-def _sanitize_string(name: str, fallback: str = "unknown") -> str:
-    """Sanitise an identifier component for safe use in branch names and filenames."""
-    s = re.sub(r"\s+", "-", name.replace("/", "_"))
-    s = re.sub(r"[^a-zA-Z0-9_.-]", "", s)
-    s = re.sub(r"-+", "-", s)
-    s = re.sub(r"\.+", ".", s)
-    s = s[:64].strip(".-")
-    return s or fallback
-
-
-def _sanitize_model_name(model_name: str) -> str:
-    """Sanitise a model name so it is safe for use in git branch names and filenames."""
-    return _sanitize_string(model_name, fallback="unknown-model")
-
-
-def build_stage_disambiguator(parent_ref: str) -> str:
-    """Generate a deterministic 8-character lowercase hex disambiguator.
-
-    Derived from the parent branch/intent, high-resolution nanosecond timestamp,
-    and process ID.
-    """
-    clean_ref = parent_ref.removesuffix("/_").rstrip("/")
-    seed = f"{clean_ref}:{time.time_ns()}:{time.perf_counter_ns()}:{os.getpid()}:{next(_disambiguator_counter)}"
-    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
-
-
-def build_plan_id(
-    plan_seq: int,
-    parent_branch: str,
-    agent: str,
-    model: str,
-    disambiguator: str | None = None,
-) -> str:
-    """Build a deterministic, collision-resistant plan identifier.
-
-    Format: P-{plan_seq}-{disambiguator}-{safe_agent}-{safe_model}
-    """
-    safe_agent = _sanitize_string(agent, fallback="unknown-agent")
-    safe_model = _sanitize_model_name(model)
-    dis = disambiguator or build_stage_disambiguator(parent_branch)
-    return f"P-{plan_seq}-{dis}-{safe_agent}-{safe_model}"
-
-
-def build_execution_id(
-    exec_seq: int,
-    parent_branch: str,
-    agent: str,
-    model: str,
-    disambiguator: str | None = None,
-) -> str:
-    """Build a deterministic, collision-resistant execution identifier.
-
-    Format: E-{exec_seq}-{disambiguator}-{safe_agent}-{safe_model}
-    """
-    safe_agent = _sanitize_string(agent, fallback="unknown-agent")
-    safe_model = _sanitize_model_name(model)
-    dis = disambiguator or build_stage_disambiguator(parent_branch)
-    return f"E-{exec_seq}-{dis}-{safe_agent}-{safe_model}"
 
 
 def get_file_structure(root_dir, max_depth=3):
@@ -590,6 +530,7 @@ Include metrics in this format:
     plans_ledger_path = os.path.join(plans_ledger_dir, "plans.jsonl")
     with atomic_ledger_append(plans_ledger_path) as lf:
         lf.write(json.dumps(plan_entry) + "\n")
+    validate_ledger_file_unique_ids(plans_ledger_path, id_key="plan_id", parent_key="intent_branch")
 
     # Format plan markdown before git commit
     try:

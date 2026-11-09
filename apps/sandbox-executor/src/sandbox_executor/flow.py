@@ -74,8 +74,6 @@ from sandbox_executor.entrypoint.executor import (
 )
 from sandbox_executor.entrypoint.planner import (
     _sanitize_model_name,
-    build_execution_id,
-    build_plan_id,
     load_metrics_config,
     parse_metrics,
 )
@@ -103,10 +101,13 @@ from sandbox_executor.ledger import (
     LedgerRewriteError,
     assert_ledger_prefix,
     atomic_ledger_append,
+    build_execution_id,
+    build_plan_id,
     generate_action_id,
     parse_commit_trailers,
     try_append_action_record,
     try_append_ledger_line,
+    validate_ledger_file_unique_ids,
 )
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.review_ensemble import (
@@ -5954,6 +5955,16 @@ class PipelineEngine:
         self.context.stage_results[stage.value] = result
         self.context.log(f"<-- [Flow Engine] Exited stage: {stage.value.upper()} (status={result.status.value})")
         self.context.log(result.summary_line())
+
+        repo_dir = getattr(self.context, "target_worktree", None) or getattr(self.context, "repo_dir", None) or "."
+        if stage == FlowStage.PLAN:
+            plans_ledger = os.path.join(repo_dir, "holon-knowledge", "ledger", "plans.jsonl")
+            if os.path.exists(plans_ledger):
+                validate_ledger_file_unique_ids(plans_ledger, id_key="plan_id", parent_key="intent_branch")
+        elif stage == FlowStage.EXECUTE:
+            executions_ledger = os.path.join(repo_dir, "holon-knowledge", "ledger", "executions.jsonl")
+            if os.path.exists(executions_ledger):
+                validate_ledger_file_unique_ids(executions_ledger, id_key="execution_id", parent_key="plan_branch")
 
     def handle_stage_failure(self, stage: FlowStage, error: Exception) -> StageResult:
         """Handle unexpected exceptions during stage execution."""

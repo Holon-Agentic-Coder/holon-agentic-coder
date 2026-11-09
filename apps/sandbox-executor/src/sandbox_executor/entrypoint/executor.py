@@ -42,7 +42,6 @@ from sandbox_executor.budgets import (
     load_budgets,
     resolve_entropy_budget,
 )
-from sandbox_executor.entrypoint.planner import build_execution_id
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import (
@@ -50,6 +49,7 @@ from sandbox_executor.ledger import (
     LedgerRewriteError,
     append_action_record,
     atomic_ledger_append,
+    build_execution_id,
     extract_action_provenance_from_commit,
     format_commit_trailers,
     generate_action_id,

@@ -2,7 +2,9 @@
 
 import contextlib
 import errno
+import hashlib
 import io
+import itertools
 import json
 import logging
 import os
@@ -40,6 +42,69 @@ def generate_action_id(prefix: str = "ACT") -> str:
     ts = int(time.time())
     suffix = uuid.uuid4().hex[:8]
     return f"{prefix}-{ts}-{suffix}"
+
+
+_disambiguator_counter = itertools.count()
+
+
+def _sanitize_string(name: str, fallback: str = "unknown") -> str:
+    """Sanitise an identifier component for safe use in branch names and filenames."""
+    s = re.sub(r"\s+", "-", name.replace("/", "_"))
+    s = re.sub(r"[^a-zA-Z0-9_.-]", "", s)
+    s = re.sub(r"-+", "-", s)
+    s = re.sub(r"\.+", ".", s)
+    s = s[:64].strip(".-")
+    return s or fallback
+
+
+def _sanitize_model_name(model_name: str) -> str:
+    """Sanitise a model name so it is safe for use in git branch names and filenames."""
+    return _sanitize_string(model_name, fallback="unknown-model")
+
+
+def build_stage_disambiguator(parent_ref: str) -> str:
+    """Generate a deterministic 8-character lowercase hex disambiguator.
+
+    Derived from the parent branch/intent, high-resolution nanosecond timestamp,
+    and process ID.
+    """
+    clean_ref = parent_ref.removesuffix("/_").rstrip("/")
+    seed = f"{clean_ref}:{time.time_ns()}:{time.perf_counter_ns()}:{os.getpid()}:{next(_disambiguator_counter)}"
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
+
+
+def build_plan_id(
+    plan_seq: int,
+    parent_branch: str,
+    agent: str,
+    model: str,
+    disambiguator: str | None = None,
+) -> str:
+    """Build a deterministic, collision-resistant plan identifier.
+
+    Format: P-{plan_seq}-{disambiguator}-{safe_agent}-{safe_model}
+    """
+    safe_agent = _sanitize_string(agent, fallback="unknown-agent")
+    safe_model = _sanitize_model_name(model)
+    dis = disambiguator or build_stage_disambiguator(parent_branch)
+    return f"P-{plan_seq}-{dis}-{safe_agent}-{safe_model}"
+
+
+def build_execution_id(
+    exec_seq: int,
+    parent_branch: str,
+    agent: str,
+    model: str,
+    disambiguator: str | None = None,
+) -> str:
+    """Build a deterministic, collision-resistant execution identifier.
+
+    Format: E-{exec_seq}-{disambiguator}-{safe_agent}-{safe_model}
+    """
+    safe_agent = _sanitize_string(agent, fallback="unknown-agent")
+    safe_model = _sanitize_model_name(model)
+    dis = disambiguator or build_stage_disambiguator(parent_branch)
+    return f"E-{exec_seq}-{dis}-{safe_agent}-{safe_model}"
 
 
 @dataclass
@@ -566,6 +631,9 @@ def append_summary_record(ledger_path: str, record: SummaryRecord | dict[str, An
     with atomic_ledger_append(ledger_path) as f:
         f.write(json.dumps(data) + "\n")
 
+    if os.path.exists(ledger_path):
+        validate_ledger_file_unique_ids(ledger_path, id_key="execution_id", parent_key="plan_branch")
+
     return data
 
 
@@ -873,12 +941,22 @@ def _extract_parent_ref(record: dict[str, Any], parent_key: str) -> str | None:
     """Extract and normalise the root parent intent or branch identifier from a record."""
     parent_raw = record.get(parent_key)
     if not isinstance(parent_raw, str):
-        fallback_key = "intent_id" if parent_key == "intent_branch" else "intent_branch"
+        if parent_key == "plan_branch":
+            fallback_key = "plan_id"
+        elif parent_key == "intent_branch":
+            fallback_key = "intent_id"
+        else:
+            fallback_key = "intent_branch"
         parent_raw = record.get(fallback_key)
     if not isinstance(parent_raw, str) or not parent_raw.strip():
         return None
     cleaned = parent_raw.removesuffix("/_").strip("/")
     parts = cleaned.split("/")
+    if parent_key == "plan_branch":
+        for part in parts:
+            if part.startswith("P-"):
+                return part
+        return cleaned if cleaned else None
     for part in parts:
         if part.startswith("I-"):
             return part
@@ -935,4 +1013,3 @@ def validate_ledger_file_unique_ids(
             except json.JSONDecodeError:
                 continue
     validate_ledger_unique_ids(records, id_key=id_key, parent_key=parent_key)
-

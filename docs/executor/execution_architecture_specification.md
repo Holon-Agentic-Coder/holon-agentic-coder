@@ -55,7 +55,7 @@ sequenceDiagram
     Exec->>Exec: Parse ledger (plans.jsonl & intents.jsonl)
     Exec->>Exec: Judge the plan against its entropy budget
     alt Plan lists an explicit sub-intent list
-        Exec->>Exec: Record a 'decomposed' summary with sub_intents
+        Exec->>Exec: Record a 'decomposed' summary referring to the plan row (plan_decision)
         Exec->>Git: Commit and push the ledger-only execution branch
     else Plan over budget without a sub-intent list
         Exec->>Exec: Record an 'over_budget' summary
@@ -130,19 +130,19 @@ It returns one of three outcomes:
 - **`over_budget`**: the plan entropy exceeds the budget and the plan lists no sub-intent list.
 
 The executor never invents child work and never writes `intents.jsonl` rows. For both non-execute outcomes it skips the
-agent, records one `executions.jsonl` summary (`status: "decomposed"` with `sub_intents`, or `status: "over_budget"`
-with `entropy`, `entropy_budget` and a message) and commits only that ledger to the execution branch. The branch is then
-pushed, or kept locally when `HOLON_SKIP_PUSH` disables pushing. Because the agent never runs, the git-recovery
-verification never applies here, so only two checks can refuse that push: the branch has no parent commit, or the
-pre-push sync fails (the latter first commits a superseding failure row). Exit codes: `over_budget` exits 3
-(`OVER_BUDGET_EXIT_CODE`) only when its row is committed and then either pushed or deliberately kept local because
-`HOLON_SKIP_PUSH` disables pushing; every other outcome exits 1. `decomposed` exits 0 when recording, committing and
-pushing its row raise no error, which includes a run where nothing was staged or the push is refused, since neither
-raises one; any failure while recording, committing or pushing its row exits 1. Whether it exits 3 or 1, a direct
-`holon execute` of an `over_budget` plan fails, while the flow reads the recorded row and decides what happens next:
-each child intent is created through the normal Stage 1 intent creator and run through the full pipeline (unless the
-plan's intent is already at `budgets.MAX_SUB_INTENT_DEPTH`, in which case Stage 3 fails and refuses to recurse further),
-or the plan is sent back to Stage 2 (see [Git Flow](../git_flow.md#flow-equivalence-guarantee)).
+agent, records one `executions.jsonl` summary (`status: "decomposed"` with a `plan_decision` reference to the plan row's
+list, never a copy, or `status: "over_budget"` with `entropy`, `entropy_budget` and a message) and commits only that
+ledger to the execution branch. The branch is then pushed, or kept locally when `HOLON_SKIP_PUSH` disables pushing.
+Because the agent never runs, the git-recovery verification never applies here, so only two checks can refuse that push:
+the branch has no parent commit, or the pre-push sync fails (the latter first commits a superseding failure row). Exit
+codes: `over_budget` exits 3 (`OVER_BUDGET_EXIT_CODE`) only when its row is committed and then either pushed or
+deliberately kept local because `HOLON_SKIP_PUSH` disables pushing; every other outcome exits 1. `decomposed` exits 0
+when recording, committing and pushing its row raise no error, which includes a run where nothing was staged or the push
+is refused, since neither raises one; any failure while recording, committing or pushing its row exits 1. Whether it
+exits 3 or 1, a direct `holon execute` of an `over_budget` plan fails, while the flow reads the recorded row and decides
+what happens next: each child intent is created through the normal Stage 1 intent creator and run through the full
+pipeline (unless the plan's intent is already at `budgets.MAX_SUB_INTENT_DEPTH`, in which case Stage 3 fails and refuses
+to recurse further), or the plan is sent back to Stage 2 (see [Git Flow](../git_flow.md#flow-equivalence-guarantee)).
 
 ### 6. Agent Invocation
 

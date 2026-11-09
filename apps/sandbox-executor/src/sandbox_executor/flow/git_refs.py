@@ -257,7 +257,7 @@ def _latest_execution_summary(rows: list[dict[str, Any]], execution_id: str) -> 
 
 def _append_superseding_execution_row(context: FlowContext, exec_branch: str, row: dict[str, Any]) -> str | None:
     """Append a superseding executions.jsonl row on the execution branch and push it (see ``_append_ledger_row``)."""
-    message = f"execute: record empty-diff failure for {row.get('execution_id')}"
+    message = f"execute: record {row.get('status') or 'superseding'} row for {row.get('execution_id')}"
     return _append_ledger_row(context, exec_branch, "executions.jsonl", row, message)
 
 

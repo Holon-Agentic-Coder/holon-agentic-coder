@@ -26,6 +26,7 @@ from sandbox_executor.calibration_ev import (
     evaluate_dual_ev_outcomes,
     format_dual_ev_derivation_lines,
     format_dual_ev_table_rows,
+    is_converged_record,
     parse_summary_records,
 )
 from sandbox_executor.git import EMPTY_DIFF_EXCLUDES, run_git
@@ -775,9 +776,11 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
 
     if best_record is not None:
         exec_meta = best_record
-        status = best_record.get("status", "success")
-        actual.exit_code = 0 if status in ("success", "halted_for_human") else int(best_record.get("exit_code", 1))
-        actual.p_success = 1.0 if status in ("success", "halted_for_human") and actual.exit_code == 0 else 0.0
+        # An integrated decomposed parent (its children merged into the plan branch, then the plan branch into the
+        # execution branch) is a successful run: its superseding row carries no exit_code.
+        converged = is_converged_record(best_record)
+        actual.exit_code = 0 if converged else int(best_record.get("exit_code", 1))
+        actual.p_success = 1.0 if converged and actual.exit_code == 0 else 0.0
         if "duration" in best_record:
             actual.duration_seconds = float(best_record["duration"])
         if "tokens" in best_record:

@@ -256,10 +256,11 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
 [Turn and Stage Budgets](budgets.md#entropy-budget)):
 
 - **Fits the budget:** the plan is executed as usual.
-- **Explicit sub-intent list:** the executor records the parsed list on its `decomposed` summary row and writes no
-  `intents.jsonl` rows. The flow then runs each item as a child intent, strictly one after another and never
-  concurrently, through the full pipeline (intent, plan, execute, review, calibrate). Nesting is bounded by
-  `MAX_SUB_INTENT_DEPTH`, checked against the plan before the executor is dispatched when the plan can be read.
+- **Explicit sub-intent list:** the plan row holds the list; the executor only records a `decomposed` summary that
+  refers to it (`plan_decision`, see [Ledger Schema](ledger_schema.md)) and writes no `intents.jsonl` rows. The flow
+  then runs each item as a child intent, strictly one after another and never concurrently, through the full pipeline
+  (intent, plan, execute, review, calibrate). Nesting is bounded by `MAX_SUB_INTENT_DEPTH`, checked against the plan
+  before the executor is dispatched when the plan can be read.
   - **Nesting under the plan branch.** Each child is named `{plan}--{n}-{slug}` (the plan branch without `/_`, the
     item's 1-based position and its sanitised slug) and records the plan branch that listed it as both its
     `target_branch` and its `parent_intent_id`, never the intent branch and never `main`. Stage 1 cuts the child from
@@ -276,6 +277,7 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
     `review_done` with a `merge_error`, so a resume retries just the merge. Either way the parent's Stage 3 fails,
     naming the child; later children do not start. Under `--skip-review` no child could reach its consensus halt, so a
     decomposed Stage 3 (fresh or resumed) fails before any child is dispatched and asks for a re-run without the flag.
+    `--dry-run` and `--skip-push` likewise fail at the first child (no consensus approval, no PR number to merge).
   - **The combined PR.** After the last child merged, Stage 3 merges the plan branch into the parent execution branch
     with a merge commit and appends a superseding `decomposed` summary row with `integrated: true`, the `plan_branch`
     and the list of `children` (slug, intent and execution branch, PR number and URL, merge commit). The parent's own
@@ -289,7 +291,9 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
     progress is reconciled with origin (origin wins), merged children are skipped, a reviewed child is merged, a child
     with an execution branch or a PR resumes from its own checkpoint, and only a child with nothing recorded anywhere is
     dispatched. Ledger-only conflicts during these merges keep the merge-base rows as an untouched prefix and interleave
-    both sides' appended rows on `created_at`; any other conflict fails the stage.
+    both sides' appended rows on `created_at`; any other conflict fails the stage. The same reconciliation runs on a
+    fresh Stage 3 (`--from-stage execute` without the parent checkpoint), and an unexpected exception in the loop fails
+    Stage 3 while keeping the recorded progress.
 
   The `holon flow` summary lists each child's PR (or branch) and whether it was merged into the plan branch, nests a
   child that itself decomposed with its own children below it, and names the combined PR that Stage 4 raises.

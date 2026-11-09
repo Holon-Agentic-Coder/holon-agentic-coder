@@ -385,7 +385,7 @@ class TestChildLoopWithStubbedPipelines:
             "'I-1-parent/P-2-agent-model/_' merged in) into 'release/1.x'."
         )
 
-    def test_child_logs_reach_the_parent_when_a_child_pipeline_raises(self):
+    def test_child_logs_reach_the_parent_and_progress_survives_when_a_child_pipeline_raises(self):
         ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, intent_branch="I-1-parent/_")
 
         def boom(engine: PipelineEngine) -> dict[str, StageResult]:
@@ -395,14 +395,38 @@ class TestChildLoopWithStubbedPipelines:
         with (
             patch.object(PipelineEngine, "run", autospec=True, side_effect=boom),
             patch("sandbox_executor.flow.stages.children._fetch_refspecs_error", return_value=None),
-            pytest.raises(RuntimeError, match="child crashed"),
+            patch("sandbox_executor.flow.stages.children.save_checkpoint") as save,
         ):
-            flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", self._ROW, {"execution_id": "E-1"})
+            res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", self._ROW, {"execution_id": "E-1"})
 
         assert any(
             line.startswith("[sub-intent first] ") and line.endswith("child progress before the crash")
             for line in ctx.logs
         )
+        # An unexpected exception is a Stage 3 failure that still carries the recorded progress (so a resume continues
+        # the child instead of dispatching the parent executor and every child again), and the checkpoint was saved.
+        assert res.status == StageStatus.FAILED
+        assert "raised RuntimeError: child crashed" in (res.error or "")
+        assert [e["status"] for e in res.payload["children_progress"]] == ["in_progress"]
+        assert res.payload["decomposed"] is True
+        save.assert_called()
+
+    def test_a_fresh_stage_3_reconciles_with_origin_so_a_child_with_a_merged_pr_is_not_dispatched(self):
+        row = {**self._ROW, "sub_intents": [{"slug": "first", "goal": "One"}, {"slug": "second", "goal": "Two"}]}
+
+        def origin_has_child_one(_repo: str, progress: list[dict[str, Any]], _plan: str) -> list[str]:
+            progress[0].update(status="merged", execution_branch="I-1/E-1/_", pr_number=5, merge_commit="m0")
+            return []
+
+        with patch(
+            "sandbox_executor.flow.stages.children.reconcile_with_origin", side_effect=origin_has_child_one
+        ) as reconcile:
+            res, _ctx, children = self._run_children({"slug": "parent"}, row, intent_branch="I-1-parent/_")
+
+        reconcile.assert_called_once()
+        assert res.status == StageStatus.SUCCESS
+        assert [c.intent_data["slug"] for c in children] == ["second"]
+        assert [e["status"] for e in res.payload["children_progress"]] == ["merged", "merged"]
 
     def test_skip_review_refuses_a_decomposed_plan_before_any_child_is_dispatched(self):
         res, _ctx, children = self._run_children(

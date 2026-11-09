@@ -641,3 +641,18 @@ def test_stage5_reconciliation_rewrite_propagates_before_push(
     with pytest.raises(LedgerRewriteError):
         flow.run_calibrate_stage(_flow_context(tmp_path))
     assert not any(c[:1] in (["commit"], ["push"]) for c in fake_git.calls)
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"), [("decomposed", "decomposed"), ("failed", "failed"), (None, "superseding")]
+)
+def test_superseding_row_commit_message_names_the_row_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str | None, expected: str
+) -> None:
+    captured: list[str] = []
+    monkeypatch.setattr(
+        "sandbox_executor.flow.git_refs._append_ledger_row", lambda _c, _b, _l, _r, msg: captured.append(msg)
+    )
+    row = {"execution_id": "E-3", **({"status": status} if status else {})}
+    flow._append_superseding_execution_row(_flow_context(tmp_path), "I-1/P-2/E-3/_", row)
+    assert captured == [f"execute: record {expected} row for E-3"]

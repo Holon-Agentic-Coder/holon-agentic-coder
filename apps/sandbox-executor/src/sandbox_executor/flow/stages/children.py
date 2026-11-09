@@ -33,6 +33,7 @@ from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.git_refs import _fetch_refspecs_error
 from sandbox_executor.flow.github.merge import merge_child_pr
 from sandbox_executor.flow.stages.integration import integrate_children
+from sandbox_executor.redaction import redact_agent_secrets
 
 if TYPE_CHECKING:
     # Bound at runtime by the package __init__, because pipeline imports this module.
@@ -253,7 +254,7 @@ def _advance_child(context: FlowContext, start_time: str, payload: dict[str, Any
     return error
 
 
-def run_children(context: FlowContext, start_time: str, payload: dict[str, Any]) -> StageResult:
+def _drive_children(context: FlowContext, start_time: str, payload: dict[str, Any]) -> StageResult:
     """Drive every child of ``payload["children_progress"]`` to merged, in order, then integrate the plan branch.
 
     The first child that fails or is not ready to merge is marked ``failed``; one refused only by the merge guard stays
@@ -286,6 +287,24 @@ def run_children(context: FlowContext, start_time: str, payload: dict[str, Any])
     return integrate_children(context, start_time, payload)
 
 
+def run_children(context: FlowContext, start_time: str, payload: dict[str, Any]) -> StageResult:
+    """Reconcile the progress with origin, then drive the children; an unexpected exception keeps the progress.
+
+    Reconciling first (origin wins) means even a fresh Stage 3 entered without the parent checkpoint
+    (``--from-stage execute``) never re-dispatches a child that already has an execution branch or PR. An exception
+    that escaped to the pipeline would store a payload-less failure and overwrite the checkpointed
+    ``children_progress``, so it is turned into a Stage 3 failure that keeps the entries' last status instead.
+    """
+    try:
+        for note in reconcile_with_origin(context.target_worktree, payload[PROGRESS_KEY], str(payload["plan_branch"])):
+            context.log(f"Stage 3: {note} (origin wins).")
+        return _drive_children(context, start_time, payload)
+    except Exception as exc:
+        _save_progress(context, start_time, payload)
+        error = redact_agent_secrets(f"Execute stage failed: the sub-intent loop raised {type(exc).__name__}: {exc}")
+        return _stage_failure(context, FlowStage.EXECUTE, start_time, error, **payload)
+
+
 def resume_children(context: FlowContext, previous: StageResult) -> StageResult:
     """Resume a checkpointed decomposed Stage 3 without dispatching the parent executor.
 
@@ -299,6 +318,4 @@ def resume_children(context: FlowContext, previous: StageResult) -> StageResult:
     context.log("Stage 3 resume: the plan was already decomposed; continuing its children, not the parent executor.")
     if payload.get("execution_branch"):
         context.execution_branch = str(payload["execution_branch"])
-    for note in reconcile_with_origin(context.target_worktree, payload[PROGRESS_KEY], str(payload["plan_branch"])):
-        context.log(f"Stage 3 resume: {note} (origin wins).")
     return run_children(context, start_time, payload)

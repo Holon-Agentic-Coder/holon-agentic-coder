@@ -824,6 +824,12 @@ budget:
   against (plan row, then intent row, then `DEFAULT_ENTROPY_BUDGET`).
 - `plan_decision`: _(Only on `decomposed` rows)_ A reference to the plan row's recorded decision: `plan_id`,
   `plan_branch`, `decision` (`"decomposed"`) and `sub_intent_count`. The list itself lives only on the plan row.
+- `plan_branch`, `children`, `integrated`: _(Only on the superseding `decomposed` row Stage 3 itself, not the executor,
+  appends after the plan branch is integrated into the execution branch; `ledger_revision` is bumped and
+  `test_pass_rate` dropped)_ The plan branch the children were merged into, one
+  `{slug, intent_branch, execution_branch, pr_number, pr_url, merge_commit}` entry per child, and `integrated: true`.
+  Calibration scores such a row as a success. See [Git Flow](git_flow.md#flow-equivalence-guarantee) (Stage 3, the
+  combined PR) for when it is written.
 - `sub_intents`: _(Historic `decomposed` rows only)_ The plan's sub-intent list as the executor once copied it, each
   `{slug, description, goal}`. New rows never carry it and the flow no longer reads it.
 - `created_at`: Creation timestamp.

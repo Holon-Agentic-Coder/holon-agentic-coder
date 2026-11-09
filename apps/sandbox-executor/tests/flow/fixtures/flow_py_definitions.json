@@ -70,7 +70,7 @@
     "StageStatus": "cb6ae0d8edc9458eae8bd44388bae5362c52d61a883d0f5e09abc366877e9ad4",
     "StageStatus.from_str": "8dc8624948685cecdcd826cb44b68af1c1dd4f9ba8f90ac3953d8411102b2060",
     "_append_only_union": "ac65ad61cdc9f228d9d77213ead5c15d58d05206ce9c19bd44e617150cf4b6c1",
-    "_append_superseding_execution_row": "7715278e5bd14c2de17fbe3e32c17f65ed15b8f4f6a893e0bf06383a3180f36e",
+    "_append_superseding_execution_row": "070b3396e64f2fe50865067be2bb4694d575f2d10c34d0bfd4c5d9a74cb38b7a",
     "_attach_transported_detail": "59662a829a72996674404c298b23e5f7f32dca7008822d999b8ff6252c681ba9",
     "_augment_pr_text_with_rejected": "ad2114ed8800a876e67bf30dd12dcee43783f1cebc2658160171206fbb81f582",
     "_bounded_error_context": "92cb41f9dce5122986fca7e4b105d489e702c736d1a7f3520c21844f0baf9c20",
@@ -187,7 +187,7 @@
     "PipelineEngine": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): a decomposed Stage 3 no longer skips Stage 4 and Stage 5 (they raise and review the combined PR), and a checkpointed decomposed Stage 3 resumes its children instead of re-dispatching the parent executor",
     "PipelineEngine.execute_stage": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): a decomposed Stage 3 no longer skips Stage 4 and Stage 5 (they raise and review the combined PR), and a checkpointed decomposed Stage 3 resumes its children instead of re-dispatching the parent executor",
     "PipelineEngine.run": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): a decomposed Stage 3 no longer skips Stage 4 and Stage 5 (they raise and review the combined PR), and a checkpointed decomposed Stage 3 resumes its children instead of re-dispatching the parent executor",
-    "_append_superseding_execution_row": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the superseding-row commit message names the row's status, since the row now also records integrated children, not only an empty-diff failure | E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan-row back-fill and the superseding execution row share one temporary-worktree ledger append (_append_ledger_row)",
+    "_append_superseding_execution_row": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the superseding row now also records integrated children, not only an empty-diff failure | E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan-row back-fill and the superseding execution row share one temporary-worktree ledger append (_append_ledger_row) | review iteration 3 (PR 158): the commit message is built from the row's status (execute: record <status> row for <id>), so an integration row is no longer titled as an empty-diff failure",
     "_decomposition_child_lines": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): children are nested under and merged into the plan branch; the summary lists each child PR as merged into it and names the combined PR that Stage 4 raises",
     "_dispatch_review_resolver": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result",
     "_invoke_resolver_pass": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result",
@@ -260,7 +260,7 @@
     },
     "_append_ledger_row": {
       "module": "git_refs.py",
-      "reason": "introduced by the merged decomposed-flow rework"
+      "reason": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): shared temporary-worktree ledger append (commit message passed in) used by the plan-row back-fill and by the superseding execution row"
     },
     "_appended_tail": {
       "module": "ledger_interleave.py",
@@ -276,7 +276,7 @@
     },
     "_backfill_plan_row": {
       "module": "stages/plan_decision.py",
-      "reason": "introduced by the merged decomposed-flow rework"
+      "reason": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): appends the superseding plan row that records the decomposition decision for a plan row written by an older planner image"
     },
     "_bare_branch": {
       "module": "github/merge.py",
@@ -449,6 +449,13 @@
     "view_pr": {
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
+    },
+    "_drive_children": {
+      "module": "stages/children.py",
+      "reason": "review iteration 3 (PR 158): the child loop body, split out so run_children can turn an unexpected exception into a Stage 3 failure that keeps the recorded children_progress"
     }
+  },
+  "removed_definitions": {
+    "PipelineEngine._parent_was_decomposed": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): removed because Stage 4 and Stage 5 now run on a decomposed parent (its combined PR), so the pipeline no longer skips them"
   }
 }

@@ -33,6 +33,10 @@ from typing import Any
 
 from sandbox_executor.agent_defaults import FALLBACK_AGENT, default_model_for
 from sandbox_executor.agent_runner import get_repo_url, get_runner, get_workspace_dir
+from sandbox_executor.entrypoint.review_verification import (
+    missing_tool_result,
+    verification_error,
+)
 from sandbox_executor.flow import (
     FlowContext,
     _bounded_error_context,
@@ -43,6 +47,7 @@ from sandbox_executor.flow import (
 )
 from sandbox_executor.ledger import generate_action_id, try_append_action_record
 from sandbox_executor.redaction import redact_agent_secrets, redact_command
+from sandbox_executor.resolver_result import RESOLVER_RESULT_MARKER, bounded_output_tail
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 from sandbox_executor.review_report import (
     VALID_REJECTION_REASONS,
@@ -75,10 +80,14 @@ def run_cmd(
 
     The echo and the failure diagnostics are routed through the shared redactors, because the clone
     URL and git's own error messages can carry the GitHub token. The returned stdout and stderr are
-    raw and unredacted.
+    raw and unredacted. An executable that cannot be started (missing from PATH, not executable) is reported as
+    exit code 127 with a stderr naming it, never raised.
     """
     print(f"Running: {redact_command(args)}", file=sys.stderr)
-    result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True, check=False)
+    except OSError as exc:
+        result = missing_tool_result(args, exc)
     if result.returncode != 0 and check:
         print(f"Command failed with code {result.returncode}", file=sys.stderr)
         if result.stdout:
@@ -337,15 +346,16 @@ def _assert_safe_git_args(args: list[str]) -> None:
 
 
 def _verify_before_push(repo_dir: str) -> tuple[bool, bool, str | None]:
-    """Run ``uv run task lint`` and ``uv run task test`` before committing or pushing resolver changes."""
+    """Run ``uv run task lint`` and ``uv run task test`` before committing or pushing resolver changes.
+
+    A missing ``uv`` is a structured failure naming it (lint and tests unmeasured), never an exception.
+    """
     lint_res = run_cmd(["uv", "run", "task", "lint"], cwd=repo_dir, check=False)
     if lint_res.returncode != 0:
-        detail = _bounded_error_context((lint_res.stderr or lint_res.stdout or "").strip() or "lint failed")
-        return False, False, f"Resolver pre-push lint failed (exit code {lint_res.returncode}): {detail}"
+        return False, False, verification_error("lint", lint_res)
     test_res = run_cmd(["uv", "run", "task", "test"], cwd=repo_dir, check=False)
     if test_res.returncode != 0:
-        detail = _bounded_error_context((test_res.stderr or test_res.stdout or "").strip() or "tests failed")
-        return True, False, f"Resolver pre-push test failed (exit code {test_res.returncode}): {detail}"
+        return True, False, verification_error("test", test_res)
     return True, True, None
 
 
@@ -428,6 +438,14 @@ def _build_resolver_prompt(
     )
 
 
+class ResolverTurnError(RuntimeError):
+    """The resolver agent turn exited non-zero; carries the bounded, redacted tail of its output."""
+
+    def __init__(self, message: str, output_tail: str = "") -> None:
+        super().__init__(message)
+        self.output_tail = output_tail
+
+
 def _run_resolver_agent(
     repo_dir: str,
     agent_name: str,
@@ -459,7 +477,8 @@ def _run_resolver_agent(
             pass
     code = getattr(outcome, "returncode", getattr(outcome, "exit_code", 0))
     if code != 0:
-        raise RuntimeError(f"Resolver agent exited with code {code}")
+        output = f"{getattr(outcome, 'stdout', '') or ''}\n{getattr(outcome, 'stderr', '') or ''}"
+        raise ResolverTurnError(f"Resolver agent exited with code {code}", bounded_output_tail(output))
     return []
 
 
@@ -492,6 +511,7 @@ def _commit_and_push_resolution(
         return dispositions, initial_head, False, False, False, None
 
     lint_ok, tests_ok, verify_err = _verify_before_push(repo_dir)
+    # A verification failure, a missing verification tool included, never stages, commits or pushes anything.
     if not lint_ok or not tests_ok:
         return dispositions, initial_head, False, lint_ok, tests_ok, verify_err
 
@@ -544,6 +564,7 @@ def _run_resolver_mode(
     findings, action_ids = _load_resolver_findings(findings_source)
     dispositions_path = os.path.join(repo_dir, ".holon", "review", f"iter-{args.iteration}", "dispositions.json")
     error: str | None = None
+    output_tail = ""
     raw_dispositions: list[dict[str, Any]] = []
     if findings and not args.dry_run:
         prompt = _build_resolver_prompt(repo_dir, head_branch, args.iteration, findings, dispositions_path)
@@ -551,27 +572,34 @@ def _run_resolver_mode(
             raw_dispositions = _run_resolver_agent(repo_dir, agent_name, model_name, prompt, dispositions_path)
         except Exception as exc:
             error = f"Resolver turn failed: {_bounded_error_context(str(exc))}"
+            output_tail = getattr(exc, "output_tail", "")
         finally:
             if os.path.exists(dispositions_path):
                 with contextlib.suppress(OSError):
                     os.remove(dispositions_path)
 
     dispositions = deserialize_finding_dispositions(raw_dispositions, findings, action_ids)
-    head_sha = (_checked(["git", "rev-parse", "HEAD"], repo_dir, "resolve").stdout or "").strip()
+    head_sha = ""
     pushed = False
     lint_ok = False
     tests_ok = False
-    if error is None and findings:
-        dispositions, head_sha, pushed, lint_ok, tests_ok, error = _commit_and_push_resolution(
-            repo_dir,
-            head_branch,
-            args.iteration,
-            dispositions,
-            CommitPushOptions(skip_push=args.skip_push, dry_run=args.dry_run),
-        )
+    try:
+        head_sha = (_checked(["git", "rev-parse", "HEAD"], repo_dir, "resolve").stdout or "").strip()
+        if error is None and findings:
+            dispositions, head_sha, pushed, lint_ok, tests_ok, error = _commit_and_push_resolution(
+                repo_dir,
+                head_branch,
+                args.iteration,
+                dispositions,
+                CommitPushOptions(skip_push=args.skip_push, dry_run=args.dry_run),
+            )
+    except Exception as exc:
+        # Whatever escapes verification, commit or push, the host still gets a result with the error preserved.
+        error = f"Resolver verification or commit failed: {_bounded_error_context(str(exc))}"
+    exit_code = 0 if error is None else 1
 
     outcome = {
-        "resolver": True,
+        RESOLVER_RESULT_MARKER: True,
         "target": args.target,
         "head_branch": head_branch,
         "iteration": args.iteration,
@@ -581,6 +609,8 @@ def _run_resolver_mode(
         "lint_passed": lint_ok,
         "tests_passed": tests_ok,
         "error": error,
+        "exit_code": exit_code,
+        "output_tail": bounded_output_tail(output_tail or error),
     }
     if args.result_file:
         try:
@@ -590,7 +620,7 @@ def _run_resolver_mode(
             print(f"Warning: could not write result file '{args.result_file}': {exc}", file=sys.stderr)
     if args.json:
         print(json.dumps(outcome, indent=2))
-    sys.exit(0 if error is None else 1)
+    sys.exit(exit_code)
 
 
 def main() -> None:  # noqa: C901, PLR0912, PLR0915

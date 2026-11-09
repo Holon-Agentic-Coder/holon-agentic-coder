@@ -52,3 +52,21 @@ post.
 - Docker is not available in this sandbox, so the image was not built and the `uv-bin` tag was not pulled. The
   maintainer should run `docker buildx bake -f apps/sandbox-executor/docker-bake.hcl base` once; the smoke check makes a
   wrong tag a loud build failure.
+
+### Step 3: Missing verification tool is a structured resolver failure (entrypoint)
+
+- New shared contract module `src/sandbox_executor/resolver_result.py` (top level, outside the flow package; see Step
+  1): `RESOLVER_RESULT_MARKER`, `bounded_output_tail` (redact, then keep the last 2,000 characters),
+  `resolver_error_text`, `ContainerResolverResult` and `read_container_resolver_result` (used by Step 4).
+- New `entrypoint/review_verification.py` (the entrypoint grew past the plan's 40-line threshold, so the helpers moved
+  out): `missing_tool_result` turns an `OSError` from starting a command into a `CompletedProcess` with exit code 127
+  and a stderr naming the tool ("required tool 'uv' was not found on PATH; it ships in the holon-base image
+  (UV_VERSION): rebuild the agent image or install uv"); `verification_error` keeps "could not run" apart from a real
+  lint or test failure.
+- `entrypoint/review_loop.py` (`853 -> 883` lines): `run_cmd` catches `OSError` around `subprocess.run` and keeps its
+  `check` semantics (a missing `git` with `check=True` now exits 127 instead of raising); `_verify_before_push` returns
+  `(False, False, "Resolver pre-push verification could not run: required tool 'uv' ...")`; a comment in
+  `_commit_and_push_resolution` records that verification failures never stage, commit or push; `_run_resolver_agent`
+  raises `ResolverTurnError` (a `RuntimeError`, same message) carrying the turn's bounded output tail;
+  `_run_resolver_mode` guards the `git rev-parse` and `_commit_and_push_resolution` with `try`/`except`, so a result
+  file is always written, and adds the `exit_code` and `output_tail` keys.

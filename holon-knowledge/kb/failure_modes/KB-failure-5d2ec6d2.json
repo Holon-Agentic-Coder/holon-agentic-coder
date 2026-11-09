@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-5d2ec6d2",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-09T00:26:16.068722+00:00",
+  "updated_ts": "2026-11-09T00:26:16.068722+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1794178312-abe8129d"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794136091-persist-review-loop-sandbox-across-iterations/P-1794136106-claude-agent-claude-fable-5/E-1794141703-claude-agent-claude-fable-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 7 evaluation for I-1794136091-persist-review-loop-sandbox-across-iterations/P-1794136106-claude-agent-claude-fable-5/E-1794141703-claude-agent-claude-fable-5/_",
+    "symptoms": [
+      "Findings detected: ['FIND-CI-007']"
+    ]
+  }
+}

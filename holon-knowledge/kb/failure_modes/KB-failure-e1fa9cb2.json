@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-e1fa9cb2",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-09T00:26:16.077342+00:00",
+  "updated_ts": "2026-11-09T00:26:16.077342+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1794180816-7f17a794"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794136091-persist-review-loop-sandbox-across-iterations/P-1794136106-claude-agent-claude-fable-5/E-1794141703-claude-agent-claude-fable-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 9 reviewer 3 failed",
+    "symptoms": [
+      "the reviewer wrote no report (stderr: root agent idle; waiting for 1 background task(s) to finish)"
+    ]
+  }
+}

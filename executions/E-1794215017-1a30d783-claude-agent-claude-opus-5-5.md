@@ -34,3 +34,21 @@ In progress.
   removed, and changed keys need a new digest plus an amendment note.
 - Baseline: `uv run pytest apps/sandbox-executor/tests/test_cli.py apps/sandbox-executor/tests/test_review_dispatch.py apps/sandbox-executor/tests/flow -q -n auto --dist worksteal`
   gave 916 passed and 53 subtests passed in 5.32s.
+
+### Step 2: Add `worktree_mount.py` with test (a)
+
+- New `apps/sandbox-executor/src/sandbox_executor/worktree_mount.py` at the package root, next to `git_flow.py`. It
+  defines the frozen `WorkspaceMount` dataclass, `WorkspaceMountError`, `resolve_workspace_mount`,
+  `workspace_mount_args` and `workspace_mount_env`.
+- `resolve_workspace_mount` provisions through `git_flow.ensure_worktree` only when a `slug` is given. Otherwise a
+  non-worktree is refused with the `target_worktree_problem` message. It also refuses a bare repository, `/` and the
+  home directory, and a missing or unreadable common git directory. In addition, it refuses a worktree whose
+  `--git-dir` lies outside both mounted paths, because the container could not resolve it. `--git-common-dir` and
+  `--git-dir` are resolved against the top level and then `realpath`-normalised.
+- New `tests/test_worktree_mount.py` with 10 hermetic cases: linked worktree resolution, the `.git` pointer and
+  `commondir` resolving under the mounted common directory, exactly two binds with the identity path, a single bind for
+  a main worktree, provisioning of an absent `flow-demo` from a bare clone, refusal of a plain directory, a bare
+  repository, `/` and `$HOME`, and the env pin. Each test `chdir`s into `tmp_path` so `ensure_worktree`'s cwd
+  fallback can never reach the real repository.
+- Ruff is clean with no `noqa`. `uv run pytest apps/sandbox-executor/tests/test_worktree_mount.py -q` gave 10 passed
+  in 0.11s.

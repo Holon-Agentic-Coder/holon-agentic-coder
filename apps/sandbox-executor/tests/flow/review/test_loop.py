@@ -200,7 +200,7 @@ class TestReviewLoopStage:
             json=False,
             token_reduce=False,
         )
-        with patch("sandbox_executor.flow.review.loop.run_review_loop") as mock_loop:
+        with patch("sandbox_executor.flow.review.cli.run_review_loop") as mock_loop:
             mock_loop.return_value = {
                 "consensus": {"approved": True, "status": "approved", "iterations": 1},
                 "ensemble_verdict": "APPROVED",
@@ -216,7 +216,7 @@ class TestReviewLoopStage:
             assert "holon review approve" in captured
 
         # Test rejected exit code
-        with patch("sandbox_executor.flow.review.loop.run_review_loop") as mock_loop:
+        with patch("sandbox_executor.flow.review.cli.run_review_loop") as mock_loop:
             mock_loop.return_value = {
                 "consensus": {"approved": False, "status": "rejected", "iterations": 2},
                 "max_iterations": 2,

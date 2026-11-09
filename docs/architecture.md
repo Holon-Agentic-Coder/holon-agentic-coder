@@ -476,7 +476,8 @@ every definition against a committed snapshot of the original file (`tests/flow/
 | `flow/review/records.py`       | Refused-review results, review action rows in the ledger and the reviewer summary line.                     |
 | `flow/review/ensemble.py`      | Dispatches the reviewer ensemble for one review iteration.                                                  |
 | `flow/review/resolver.py`      | The resolver pass: filters adjudicated findings and records finding dispositions.                           |
-| `flow/review/loop.py`          | The review-resolve iteration loop and the `holon review-loop` CLI entry.                                    |
+| `flow/review/loop.py`          | The review-resolve iteration loop and the engine's Stage 4 pass window.                                     |
+| `flow/review/cli.py`           | The `holon review-loop` CLI entry and the review loop summary helpers.                                      |
 | `flow/stages/intent.py`        | Stage 1: dispatches the intent creator and verifies its branch.                                             |
 | `flow/stages/plan.py`          | Stage 2: dispatches the planner, adopts its plan and makes the entropy budget decision.                     |
 | `flow/stages/decomposition.py` | Stage 3 decomposition: runs each sub-intent of an over-budget plan as a child flow.                         |

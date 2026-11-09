@@ -1,4 +1,4 @@
-"""Proactive conflict check run before a stage pushes: rebase onto the target and reconcile ledgers."""
+"""Pre-push conflict check: detect unmerged files, probe mergeability, append-merge ledgers, raise on code conflicts."""
 
 from __future__ import annotations
 

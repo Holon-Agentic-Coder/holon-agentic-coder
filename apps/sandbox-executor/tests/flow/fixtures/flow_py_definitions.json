@@ -132,7 +132,7 @@
     "_reviewers_objected": "8c2c517800d0fbc073b2339aa7b343dfc7747110d2bf4611cb2200a0ffd1584e",
     "_run_decomposed_plan": "46a179747e9f4afb618e4d782ae6ec827d59fb24225cf61d934cd6c908fb77c9",
     "_run_engine_review_loop": "a66253ec273612bf14e31d17b57b0933cb8c880502f610ab14dc74d06877c469",
-    "_run_review_loop_iterations": "2065069f21af7ad25a01db776a9f03ecc04fc82bbde8ebc6fee5e098762b11e1",
+    "_run_review_loop_iterations": "7d6e077f36540e6da0be29f451f35dcc437e037efbe42f2e353fea2bfaf5cadf",
     "_semantic_pr_text": "e3da288e06f6e0761ac3e6e2394d5a36fddf7f18a6b2d1a352d476f6a7139c24",
     "_snapshot_child_branches": "fb0605b286d10ab17ec55f6b002d79e3f544f2937ac3b7fd37a1c562d66c2e70",
     "_split_conflict_sides": "5e551bf5339cd1ec67b7a5c401ebab40d03c78afa7b5bae60c08139f5e447c34",
@@ -187,6 +187,6 @@
   "amended_definitions": {
     "_dispatch_review_resolver": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result",
     "_invoke_resolver_pass": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result",
-    "_run_review_loop_iterations": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): halt the loop on any resolver failure before its dispositions are adjudicated; the FIND-CI row is built by review_report.ci_failure_finding"
+    "_run_review_loop_iterations": "E-1794206943-d5c00585 (I-1794205862-resolver-commits-locally-skip-push-fix): verify resolver_outcome.pushed is True before advancing review target and recording applied dispositions"
   }
 }

@@ -59,9 +59,8 @@ managed centrally.
 
 - Agents can explore freely in branches.
 - Only **root intents** (direct children of `main`) require human review to merge. Every merge below the root is raised
-  and merged automatically by the agent into the deciding plan or execution branch. Until the implementation follows,
-  the current flow still targets the parent intent branch and leaves each sub-intent PR merge to the maintainer (see
-  [Git Flow](git_flow.md) Stage 3 under the flow equivalence guarantee).
+  and merged automatically by the agent into the deciding plan or execution branch, under the
+  [sub-intent merge rules](#sub-intent-merge-rules).
 - **Governance changes** (estimators, routing policies, core invariants) always require human approval.
 
 ---
@@ -311,9 +310,9 @@ out-of-band reviews and never pause a running flow before the merge.
    - Sub-intents run autonomously through the full flow and merge only into their deciding node's branch (the plan
      branch that listed them, or the execution branch that decided the split), automatically, with no human step below
      the root.
-   - The root intent's PR to `main` is the only human step: no stage before it waits for a human.
-   - Until the implementation follows, the current flow still targets the parent intent branch and leaves each
-     sub-intent PR merge to the maintainer (see [Git Flow](git_flow.md) Stage 3 under the flow equivalence guarantee).
+   - The root intent's PR to `main` is the only human step: no stage before it waits for a human. After a decomposition
+     it is the combined PR from the root's execution branch, into which the plan branch holding every merged child was
+     integrated (see [Git Flow](git_flow.md) Stage 3 under the flow equivalence guarantee).
 
 2. **Estimator proposals**
    - Any change to P(success), ΔS, Impact, Learning Value, or EV estimators.
@@ -340,11 +339,34 @@ out-of-band reviews and never pause a running flow before the merge.
    - Target model (nothing flags novel intent types yet): if the intent type has no historical precedent in the KB, the
      plan is flagged for the reviewer at the merge PR; execution does not wait.
 
+### Sub-intent merge rules
+
+`flow/github/merge.py` is the only code path in which the flow engine merges a pull request. It merges a child's PR into
+the plan branch that listed it, and only when every rule holds:
+
+- **Merge commit only.** The only command it runs is `gh pr merge <n> --merge --match-head-commit <sha>`; never
+  `--squash`, `--rebase`, `--auto`, `--admin` or `--delete-branch`, so every child commit stays in the plan branch
+  history.
+- **Fail-closed base check.** A pure refusal check rejects a PR whose base is `main`, `master` or the repository default
+  branch, whose base is not the expected plan branch, or whose expected plan branch is itself one of those. It reads the
+  default branch from `gh repo view`; when that lookup fails the merge is refused, never guessed as `main`. The check
+  runs before anything is written and again, on a freshly read PR, immediately before the merge.
+- **Ready to merge.** The child's Stage 4 halted at consensus approval and its Stage 5 completed; the PR is open,
+  `MERGEABLE`, and its checks are green on the exact head that is merged (no checks counts as not green).
+- **Up to date.** When the plan branch moved after the child was cut, it is merged into the child head first; the merge
+  waits, bounded, for mergeability and CI on that new head.
+- **Ledgers stay append-only.** A merge conflict confined to `holon-knowledge/ledger/*.jsonl` is resolved by keeping the
+  merge-base rows as a byte-identical prefix and interleaving both sides' appended rows on `created_at` (each side's
+  order kept, a row both sides appended kept once); a side that changed a base row, or any conflict outside the ledgers,
+  aborts the merge.
+
+A refusal never raises: it fails the parent's Stage 3 naming the child and the reason, leaves the plan branch and `main`
+untouched, and is recorded in the checkpointed per-child progress, so a resume never merges or dispatches twice.
+
 ### Human review workflow
 
 Sub-intent PRs never enter this workflow: the agent merges them automatically into their deciding node's branch, and
-only the root intent reaches it (until the implementation follows, the current flow still leaves each sub-intent PR
-merge to the maintainer; see item 1 above).
+only the root intent reaches it (see [Sub-intent merge rules](#sub-intent-merge-rules)).
 
 ```
 

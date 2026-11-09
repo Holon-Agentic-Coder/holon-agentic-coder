@@ -1,8 +1,8 @@
 """Guard the CI workflow triggers: pull requests into any base branch run the checks, pushes only on ``main``.
 
-When a plan is decomposed, each sub-intent opens its pull request against the parent intent branch, not ``main``. A
-``pull_request`` trigger restricted to named base branches gives such stacked pull requests no checks at all, and the
-Stage 4 review loop then halts with ``test results not measured``. These tests fail if a base-branch filter
+When a plan is decomposed, each sub-intent opens its pull request against the plan branch that listed it, not
+``main``. A ``pull_request`` trigger restricted to named base branches gives such stacked pull requests no checks at all,
+and the Stage 4 review loop then halts with ``test results not measured``. These tests fail if a base-branch filter
 (``branches`` or ``branches-ignore``) returns to any ``pull_request`` trigger, and if ``push`` widens beyond ``main``
 (which would check every stacked commit twice).
 

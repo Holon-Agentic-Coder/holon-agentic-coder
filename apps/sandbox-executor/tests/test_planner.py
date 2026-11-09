@@ -10,6 +10,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from sandbox_executor.budgets import DEFAULT_ENTROPY_BUDGET, BudgetBreach
+from sandbox_executor.decomposition_rule import (
+    DECISION_DECOMPOSED,
+    DECISION_EXECUTE,
+    DECISION_OVER_BUDGET,
+    DecompositionDecision,
+    parse_sub_intent_list,
+    should_decompose,
+)
 from sandbox_executor.entrypoint import planner
 from sandbox_executor.turns import TurnResult
 
@@ -227,6 +235,7 @@ class _PlannerHarness:
         self.exit_code = None
         self.stdout = ""
         self.stderr = ""
+        self.converge_side_effect = None
 
     def _fake_run_cmd(self, args, cwd=None, env=None, check=True):
         self.git_cmds.append(list(args))
@@ -264,7 +273,7 @@ class _PlannerHarness:
             patch.object(planner, "get_runner", return_value=runner),
             patch.object(planner, "run_cmd", side_effect=self._fake_run_cmd),
             patch.object(planner, "run_turn", side_effect=self._fake_run_turn),
-            patch.object(planner, "converge_prettier") as self.mock_converge,
+            patch.object(planner, "converge_prettier", side_effect=self.converge_side_effect) as self.mock_converge,
             patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
             redirect_stdout(out),
             redirect_stderr(err),
@@ -629,6 +638,55 @@ class TestPlannerMain(unittest.TestCase):
         self.assertEqual(len(call_files), 1)
         self.assertTrue(call_files[0].startswith("plans/P-") and call_files[0].endswith(".md"))
         self.assertEqual(h.mock_converge.call_args[1].get("repo_dir"), h.repo_dir)
+
+    def committed_plan(self, h):
+        row = h.ledger_lines("plans.jsonl")[0]
+        return row, (pathlib.Path(h.repo_dir) / row["plan_file"]).read_text(encoding="utf-8")
+
+    def test_in_budget_plan_row_records_the_execute_decision(self):
+        h = self.harness([write_file(VALID_PLAN)])
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        row, _ = self.committed_plan(h)
+        self.assertEqual(row["decomposition_decision"], DECISION_EXECUTE)
+        self.assertNotIn("sub_intents", row)
+        self.assertEqual((row["entropy"], row["entropy_budget"]), (2.5, 15.0))
+
+    def test_listed_plan_row_records_the_sub_intent_list_of_the_committed_file(self):
+        listed = VALID_PLAN + "\n## Sub-intent list\n\n- Add the validator module\n- Document the write protocol\n"
+        h = self.harness([write_file(listed)])
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        row, plan_content = self.committed_plan(h)
+        self.assertEqual(row["decomposition_decision"], DECISION_DECOMPOSED)
+        self.assertEqual(row["sub_intents"], parse_sub_intent_list(plan_content))
+        self.assertEqual(
+            [item["slug"] for item in row["sub_intents"]], ["add-the-validator-module", "document-the-write-protocol"]
+        )
+        self.assertEqual(DecompositionDecision.from_plan_row(row), should_decompose(row, plan_content, INTENT))
+
+    def test_plan_row_records_the_list_after_prettier_rewrites_the_plan(self):
+        """Prettier runs before the ledger append, so the recorded list is the one parsed from the committed file."""
+        listed = VALID_PLAN + "\n## Sub-intent list\n\n- Add the validator module\n"
+
+        def rewrap(files, repo_dir):
+            path = pathlib.Path(repo_dir) / files[0]
+            path.write_text(path.read_text().replace("- Add the validator module", "- Add the validator\n  module"))
+
+        h = _PlannerHarness(self, [write_file(listed)])
+        h.converge_side_effect = rewrap
+        h.run()
+        self.addCleanup(h.cleanup)
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        row, plan_content = self.committed_plan(h)
+        self.assertEqual(row["sub_intents"], parse_sub_intent_list(plan_content))
+        self.assertEqual(row["sub_intents"][0]["description"], "Add the validator\nmodule")
+
+    def test_over_budget_plan_without_a_list_is_still_recorded(self):
+        h = self.harness([write_file(VALID_PLAN)], intent={**INTENT, "entropy_budget": 1.0})
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        row, _ = self.committed_plan(h)
+        self.assertEqual(row["decomposition_decision"], DECISION_OVER_BUDGET)
+        self.assertNotIn("sub_intents", row)
+        self.assertTrue(h.committed())
 
     def test_breach_then_successful_resume_commits_without_budget_record(self):
         stall = BudgetBreach("plan", "stall", 90, 91)

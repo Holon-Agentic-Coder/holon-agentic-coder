@@ -2951,8 +2951,10 @@ class TestExecutor(unittest.TestCase):
         decomposed, failure = summaries
         self.assertEqual(failure["ledger_revision"], 2)
         self.assertIn("Pre-push sync failure", failure["summary"])
-        self.assertEqual(failure["sub_intents"], decomposed["sub_intents"])
-        self.assertEqual([item["slug"] for item in decomposed["sub_intents"]], ["create-db-schema", "build-api-routes"])
+        # The decomposed summary refers to the plan row's list (never copies it); the superseding row repeats it.
+        self.assertEqual(failure["plan_decision"], decomposed["plan_decision"])
+        self.assertEqual(decomposed["plan_decision"]["sub_intent_count"], 2)
+        self.assertNotIn("sub_intents", decomposed)
         self.assertEqual(failure["execution_id"], decomposed["execution_id"])
 
     def _clone_workspace(self, base_dir: str, bare_dir: str, plan_branch: str) -> str:
@@ -4391,20 +4393,6 @@ def _run_executor_main(
     return rows
 
 
-def test_main_decomposed_records_sub_intents_without_intent_rows(tmp_path):
-    plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 9.0, "plan_file": "plans/P-123.md"}
-    intent_row = {"branch": "I-456", "slug": "parent", "entropy_budget": 5.0}
-    plan_md = "# Plan\n\n## Sub-intent list\n\n1. Add the parser\n2. Add the CLI flag\n"
-
-    rows = _run_executor_main(tmp_path, plan_row, plan_md, intent_row)
-
-    summaries = [r for r in rows if r.get("entry_type") == "summary"]
-    assert len(summaries) == 1
-    assert summaries[0]["status"] == "decomposed"
-    assert summaries[0]["entropy_budget"] == 5.0
-    assert [s["slug"] for s in summaries[0]["sub_intents"]] == ["add-the-parser", "add-the-cli-flag"]
-
-
 def test_main_over_budget_reads_intent_budget_when_plan_row_has_none(tmp_path):
     plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 12.6, "plan_file": "plans/P-123.md"}
     intent_row = {"branch": "I-456", "slug": "parent", "entropy_budget": 5.0}
@@ -4434,7 +4422,7 @@ def test_main_over_budget_without_a_plan_row_judges_the_fallback_entropy_against
     [
         (
             "# Plan\n\n## Sub-intent list\n\n1. Add the parser\n2. Add the CLI flag\n",
-            "Plan lists an explicit sub-intent list of 2 item(s); recording it.",
+            "The plan records an explicit sub-intent list of 2 item(s); referring to it.",
             None,
         ),
         (
@@ -4510,9 +4498,9 @@ def test_main_plan_decomposition_action_outcome(tmp_path, monkeypatch, plan_md, 
     [
         (
             "# Plan\n\n## Sub-intent list\n\n1. Add the parser\n2. Add the CLI flag\n",
-            "Plan I-456/P-123/_ lists 2 sub-intent(s); the flow runs each one through the full pipeline.",
-            "Recorded the sub-intent list of I-456/P-123/_ (2 item(s))",
-            "execute: recorded the sub-intent list of I-456/P-123/_ (2 item(s))",
+            "The plan I-456/P-123/_ records 2 sub-intent(s); the flow runs each one through the full pipeline.",
+            "The plan I-456/P-123/_ records 2 sub-intent(s)",
+            "execute: the plan I-456/P-123/_ records 2 sub-intent(s)",
         ),
         (
             "# Plan\n",

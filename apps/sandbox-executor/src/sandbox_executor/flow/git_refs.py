@@ -14,7 +14,7 @@ from typing import Any
 
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.git import changed_paths, empty_diff_summary, run_git
-from sandbox_executor.ledger import LedgerRewriteError, atomic_ledger_append
+from sandbox_executor.ledger import LedgerRewriteError, atomic_ledger_append, validate_ledger_file_unique_ids
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.review_target import ReviewTargetError, is_pr_reference, resolve_review_target
 
@@ -256,46 +256,44 @@ def _latest_execution_summary(rows: list[dict[str, Any]], execution_id: str) -> 
 
 
 def _append_superseding_execution_row(context: FlowContext, exec_branch: str, row: dict[str, Any]) -> str | None:
-    """Append a superseding executions.jsonl row on the execution branch and push it.
+    """Append a superseding executions.jsonl row on the execution branch and push it (see ``_append_ledger_row``)."""
+    message = f"execute: record empty-diff failure for {row.get('execution_id')}"
+    return _append_ledger_row(context, exec_branch, "executions.jsonl", row, message)
 
-    Works in a temporary detached worktree so the operator's checkout is never disturbed. Earlier
-    rows are left untouched (the ledger is append-only). After the push, origin/<branch> and the
-    local branch are fast-forwarded to the pushed commit so local readers see the superseding row.
 
-    Returns:
-        str | None: None on success, otherwise a description of what failed.
+def _append_ledger_row(context: FlowContext, branch: str, ledger: str, row: dict[str, Any], msg: str) -> str | None:
+    """Append ``row`` to holon-knowledge/ledger/<ledger> on ``branch``, commit it with ``msg`` and push that branch.
+
+    Works in a temporary detached worktree on origin/<branch> (the operator's checkout is never disturbed); earlier rows
+    are left untouched and the ledger's unique-id check runs before the commit. origin/<branch> and the local branch
+    are then fast-forwarded. Returns None on success, otherwise a secret-redacted description of what failed.
     """
-    repo_dir = context.target_worktree
-    tmp_root = tempfile.mkdtemp(prefix="holon-flow-guard-")
+    repo_dir, ledger_rel = context.target_worktree, f"holon-knowledge/ledger/{ledger}"
+    tmp_root = tempfile.mkdtemp(prefix="holon-flow-ledger-")
     worktree = os.path.join(tmp_root, "worktree")
     try:
-        run_git(["worktree", "add", "--detach", worktree, f"refs/remotes/origin/{exec_branch}"], cwd=repo_dir)
-        ledger_dir = os.path.join(worktree, "holon-knowledge", "ledger")
-        os.makedirs(ledger_dir, exist_ok=True)
-        with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as f:
+        run_git(["worktree", "add", "--detach", worktree, f"refs/remotes/origin/{branch}"], cwd=repo_dir)
+        ledger_path = os.path.join(worktree, ledger_rel)
+        os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
+        with atomic_ledger_append(ledger_path) as f:
             f.write(json.dumps(row) + "\n")
-        run_git(["add", "holon-knowledge/ledger/executions.jsonl"], cwd=worktree)
-        commit_env = os.environ.copy()
-        commit_env["DOCKER_CLI_HINTS"] = "false"
-        for key, value in EXECUTOR_GIT_ENV.items():
-            commit_env.setdefault(key, value)
-        run_git(
-            ["commit", "-m", f"execute: record empty-diff failure for {row.get('execution_id')}"],
-            cwd=worktree,
-            env=commit_env,
-        )
+        ids = ("plan_id", "intent_branch") if ledger == "plans.jsonl" else ("execution_id", "plan_branch")
+        validate_ledger_file_unique_ids(ledger_path, id_key=ids[0], parent_key=ids[1])
+        run_git(["add", ledger_rel], cwd=worktree)
+        commit_env = {**EXECUTOR_GIT_ENV, **os.environ, "DOCKER_CLI_HINTS": "false"}
+        run_git(["commit", "-m", msg], cwd=worktree, env=commit_env)
         pushed_sha = run_git(["rev-parse", "HEAD"], cwd=worktree).stdout.strip()
-        run_git(["push", "origin", f"HEAD:refs/heads/{exec_branch}"], cwd=worktree, timeout=300)
+        run_git(["push", "origin", f"HEAD:refs/heads/{branch}"], cwd=worktree, timeout=300)
     except LedgerRewriteError:
         raise
-    except (RuntimeError, TimeoutError, OSError) as exc:
+    except (RuntimeError, TimeoutError, OSError, ValueError) as exc:
         return redact_agent_secrets(str(exc))
     finally:
         run_git(["worktree", "remove", "--force", worktree], cwd=repo_dir, check=False)
         run_git(["worktree", "prune"], cwd=repo_dir, check=False)
         shutil.rmtree(tmp_root, ignore_errors=True)
     # The row is on origin now: aligning local refs is best-effort and never reported as a failed write.
-    _sync_local_execution_refs(context, exec_branch, pushed_sha)
+    _sync_local_execution_refs(context, branch, pushed_sha)
     return None
 
 

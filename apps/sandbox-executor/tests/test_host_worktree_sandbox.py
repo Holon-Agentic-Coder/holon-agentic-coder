@@ -565,19 +565,21 @@ def test_worktree_role_without_a_valid_worktree_fails_before_any_docker_command(
 _PLAN = "I-1-demo/P-1/_"
 
 
-def _push_over_budget_plan(repo: Path) -> str:
+def _push_over_budget_plan(repo: Path, slug: str = "demo") -> str:
     """Push an over-budget plan branch to origin (so the executor records a refusal without running an agent)."""
     _git(repo, "checkout", "-q", "-b", "plan-seed")
     ledger = repo / "holon-knowledge" / "ledger"
     ledger.mkdir(parents=True)
-    (ledger / "intents.jsonl").write_text('{"branch": "I-1-demo/_", "slug": "demo"}\n', encoding="utf-8")
+    (ledger / "intents.jsonl").write_text(f'{{"branch": "I-1-demo/_", "slug": "{slug}"}}\n', encoding="utf-8")
     (ledger / "plans.jsonl").write_text(
         '{"plan_id": "P-1", "intent_branch": "I-1-demo/_", "entropy": 8.0, "entropy_budget": 5.0}\n', encoding="utf-8"
     )
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "plan")
-    # Pushed by URL, so no remote-tracking ref appears until the host fetches the plan branch.
     _git(repo, "push", "-q", str(repo.parent / "remote.git"), f"HEAD:refs/heads/{_PLAN}")
+    # Newer git records a remote-tracking ref even for a push by URL when that URL is origin's; drop it so none exists
+    # until the host fetches the plan branch.
+    _git(repo, "update-ref", "-d", f"refs/remotes/origin/{_PLAN}")
     tip = _git(repo, "rev-parse", "HEAD")
     _git(repo, "checkout", "-q", "main")
     return tip
@@ -673,6 +675,34 @@ def test_c_executor_commits_and_pushes_its_execution_branch_from_the_mounted_wor
     assert "Holon Executor Agent" not in host_config and f'branch "{branch}"' not in host_config
 
 
+def test_c_executor_syncs_and_pushes_via_the_repo_url_not_the_hosts_origin(
+    repo: Path, flow_worktree: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sandbox_executor.entrypoint import executor
+
+    _push_over_budget_plan(repo)
+    git_flow.fetch_origin_branch(str(flow_worktree), _PLAN)
+    remote = str(repo.parent / "remote.git")
+    # The host's origin is an SSH remote the container cannot reach; HOLON_REPO_URL is the reachable one.
+    _git(repo, "remote", "set-url", "origin", "git@unreachable.invalid:holon/demo.git")
+    monkeypatch.setenv("HOLON_TARGET_WORKTREE", SANDBOX_WORKSPACE_MOUNT)
+    monkeypatch.setenv("HOLON_SKIP_PUSH", "")
+    monkeypatch.setattr(executor, "get_workspace_dir", lambda: str(flow_worktree))
+    monkeypatch.setattr(executor, "get_repo_url", lambda: remote)
+    monkeypatch.setattr(executor, "get_runner", lambda name: MagicMock(**{"get_version.return_value": "1.0.0"}))
+    monkeypatch.setattr(sys, "argv", ["executor.py", _PLAN, "antigravity-agent", "gemini-3.5-flash"])
+    calls: list[list[str]] = []
+
+    with _executor_spy(calls), pytest.raises(SystemExit) as exit_:
+        executor.main()
+
+    assert exit_.value.code == executor.OVER_BUDGET_EXIT_CODE
+    branch = _git(flow_worktree, "symbolic-ref", "--short", "HEAD")
+    assert _git(remote, "rev-parse", f"refs/heads/{branch}") == _git(flow_worktree, "rev-parse", "HEAD")
+    remote_ops = [c for c in calls if c[:2] in (["git", "fetch"], ["git", "push"])]
+    assert remote_ops and all(remote in c and "origin" not in c for c in remote_ops), remote_ops
+
+
 def test_g_holon_execute_provisions_the_plans_flow_worktree_off_a_default_branch_checkout(repo: Path) -> None:
     from sandbox_executor.cli.commands.execute import execution_worktree
 
@@ -686,6 +716,15 @@ def test_g_holon_execute_provisions_the_plans_flow_worktree_off_a_default_branch
     assert _git(worktree, "rev-parse", f"refs/remotes/origin/{_PLAN}") == tip
     # The default-branch checkout only selected the repository: it stays on main.
     assert _git(repo, "symbolic-ref", "--short", "HEAD") == "main"
+
+
+def test_g_holon_execute_names_the_flow_worktree_after_the_intent_ledger_slug(repo: Path) -> None:
+    from sandbox_executor.cli.commands.execute import execution_worktree
+
+    # An intent given an explicit branch keeps its own slug, which holon flow named the flow worktree after.
+    _push_over_budget_plan(repo, slug="custom")
+
+    assert execution_worktree(_PLAN, str(repo)) == str(repo.parent / "flow-custom")
 
 
 def test_g_holon_execute_reuses_an_existing_flow_worktree(repo: Path, flow_worktree: Path) -> None:

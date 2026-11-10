@@ -16,6 +16,7 @@ from sandbox_executor.cli.options import (
     add_token_reduction_options,
 )
 from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
+from sandbox_executor.flow.git_refs import _read_ledger_rows
 
 ORDER = 30
 
@@ -41,11 +42,20 @@ def execution_worktree(plan_branch: str, target_worktree: str | None) -> str:
         RuntimeError: If the flow worktree cannot be provisioned or the plan branch cannot be fetched.
     """
     worktree = target_worktree or os.getcwd()
-    if git_flow.is_default_branch_worktree(worktree, git_flow.repository_default_branch(worktree)):
-        slug = re.sub(r"^I-\d+-", "", plan_branch.split("/", 1)[0])
-        worktree = git_flow.ensure_flow_worktree_off_default(worktree, slug, None)
+    # Worktrees share remote-tracking refs, so fetching here also serves a flow worktree provisioned below.
     git_flow.fetch_origin_branch(worktree, plan_branch)
+    if git_flow.is_default_branch_worktree(worktree, git_flow.repository_default_branch(worktree)):
+        worktree = git_flow.ensure_flow_worktree_off_default(worktree, _intent_slug(worktree, plan_branch), None)
     return worktree
+
+
+def _intent_slug(worktree: str, plan_branch: str) -> str:
+    """The slug holon flow named the plan's flow-<slug> worktree after: the intent ledger row's, else the branch's."""
+    intent = plan_branch.split("/", 1)[0]
+    for row in _read_ledger_rows(worktree, f"origin/{plan_branch}", "intents.jsonl"):
+        if str(row.get("branch") or "").removesuffix("/_") == intent and row.get("slug"):
+            return str(row["slug"])
+    return re.sub(r"^I-\d+-", "", intent)
 
 
 def run(args: argparse.Namespace) -> int | None:

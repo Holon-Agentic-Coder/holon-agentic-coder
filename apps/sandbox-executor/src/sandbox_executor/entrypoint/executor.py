@@ -795,7 +795,9 @@ def _recorded_decision(
     return recorded if recorded is not None else should_decompose(plan_data, plan_content, intent_data)
 
 
-def sync_and_reconcile_pre_push(repo_dir: str, target_branch: str = "main") -> tuple[bool, str]:  # noqa: C901, PLR0911, PLR0912, PLR0915
+def sync_and_reconcile_pre_push(  # noqa: C901, PLR0911, PLR0912, PLR0915
+    repo_dir: str, target_branch: str = "main", remote_url: str | None = None
+) -> tuple[bool, str]:
     """Inspect whether remote target branch has advanced, merge it, and reconcile ledger conflicts.
 
     If the target branch on remote origin has diverged from HEAD, attempts an in-flight
@@ -808,6 +810,8 @@ def sync_and_reconcile_pre_push(repo_dir: str, target_branch: str = "main") -> t
     Args:
         repo_dir: Working directory of the git repository.
         target_branch: Target base branch name (defaults to "main").
+        remote_url: Fetch from this URL instead of the origin remote (a mounted worktree's origin is the host's),
+            still into refs/remotes/origin/<target_branch>.
 
     Returns:
         tuple[bool, str]: (success, message).
@@ -819,12 +823,13 @@ def sync_and_reconcile_pre_push(repo_dir: str, target_branch: str = "main") -> t
 
     repo = _get_repo(repo_dir)
     # 1. Check if remote origin exists
-    remotes_res = repo.run(["remote", "get-url", "origin"], check=False)
-    if remotes_res.returncode != 0:
+    if not remote_url and repo.run(["remote", "get-url", "origin"], check=False).returncode != 0:
         return True, "No remote origin configured"
 
     # 2. Fetch target branch tip
-    repo.fetch("origin", target_branch)
+    remote = remote_url or "origin"
+    tracking_refspec = f"+refs/heads/{target_branch}:refs/remotes/origin/{target_branch}"
+    repo.fetch(remote, tracking_refspec if remote_url else target_branch)
     target_ref = f"origin/{target_branch}"
     ref_check = repo.rev_parse(target_ref, verify=True)
     if ref_check.returncode != 0:
@@ -838,7 +843,7 @@ def sync_and_reconcile_pre_push(repo_dir: str, target_branch: str = "main") -> t
         is_shallow = repo.rev_parse("--is-shallow-repository")
         if is_shallow.stdout.strip().lower() == "true":
             print(f"Warning: Shallow repository detected. Deepening history for {target_ref}...", file=sys.stderr)
-            repo.fetch("origin", target_branch, "--deepen=50")
+            repo.fetch(remote, tracking_refspec if remote_url else target_branch, "--deepen=50")
             mb_cmd = repo.merge_base("HEAD", target_ref)
 
     if mb_cmd.returncode != 0:
@@ -1911,7 +1916,10 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                     or (intent_data.get("target_branch") if intent_data else None)
                     or "main"
                 )
-                sync_ok, sync_msg = sync_and_reconcile_pre_push(repo_dir, target_branch=target_base)
+                # The host worktree's origin may be an SSH remote; sync and push via the URL the host resolved.
+                sync_ok, sync_msg = sync_and_reconcile_pre_push(
+                    repo_dir, target_branch=target_base, remote_url=repo_url if mounted else None
+                )
                 if not sync_ok:
                     can_push = False
                     print(f"Error: Pre-push sync failed: {sync_msg}", file=sys.stderr)
@@ -1932,7 +1940,12 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 skip_push = os.getenv("HOLON_SKIP_PUSH")
                 if not (skip_push and skip_push.lower() in ("1", "true", "yes")):
                     # A mounted worktree's repository config is read-only, so no upstream is recorded there.
-                    push = repo.push(branch=exec_branch, set_upstream=not mounted, check=False)
+                    push = repo.push(
+                        remote=repo_url if mounted else "origin",
+                        branch=f"{exec_branch}:refs/heads/{exec_branch}" if mounted else exec_branch,
+                        set_upstream=not mounted,
+                        check=False,
+                    )
                     if push.returncode != 0:
                         # Unmounted, the container is removed on exit, so the commits survive only as the patch on
                         # stderr; a mounted worktree also keeps them on the host.

@@ -95,3 +95,28 @@ from what the reviewers returned, and the posted review must report it exactly.
   `APPROVED (1/3)` heading with an open finding, which is the defect, so it was rewritten as
   `test_an_approved_verdict_with_an_open_finding_renders_as_changes_requested`. A post-path test in
   `test_consensus_integrity.py` checks `--comment` (never `--approve`) for the failing shape.
+
+### Step 5: Resolver rejections of important or critical findings need evidence
+
+- New package module `resolver_evidence.py`: `settle_rejection(severity, reason, evidence)` keeps a rejection of an
+  `important` or `critical` finding only with a reason other than `out of scope` or `unspecified` and an `evidence`
+  string naming a `path:line` or a test (`tests/...::test_name` or a `test_*.py` file); otherwise the finding is `open`
+  with a null reason and the resolver's text kept as `evidence` (`unevidenced rejection (<reason>): <evidence>`).
+  `default_disposition` makes an unadjudicated important or critical finding `open` and a nit `rejected`.
+- `review_report.py`: `FindingDisposition.evidence` (serialised when set), `DISPOSITIONS` gains `open`,
+  `_normalise_rejection_reason` returns `unspecified` instead of manufacturing `out of scope`, and
+  `_disposition_from_mapping` applies the rule. Hardening found while writing the tests: the reviewed finding row's
+  severity is now authoritative, so a resolver cannot report a critical as a nit to escape the rule.
+- Deviation (plan's discard path): `ledger.py` validates `review_disposition` against `{"applied", "rejected"}` and is
+  outside the intent's scope list, so no `open` ledger value is written. An `open` disposition stays in memory, is never
+  added to `rejected_history`, and the finding goes back to the resolver when reviewers raise it again; only the
+  end-of-loop fallback records a still-open finding, as an `ACT-RES` row with `review_disposition` null, outcome
+  `failure`, action text `left open (no evidenced adjudication)` and the audit text in `error_context`. Recording open
+  rows mid-loop was avoided because the recorder dedupes by signature and would then drop the later real disposition.
+- The container resolver prompt (`entrypoint/review_loop.py` `_build_resolver_prompt`) now asks for an `evidence` key for
+  important and critical rejections, says `out of scope` alone is not accepted for them, and offers `open`.
+- Consumers checked: `ledger.py` (validation, trailer parsing: unaffected because `open` never reaches a row),
+  `render_dispositions_section` (shows evidence for an open row), `entrypoint/review_loop.py` commit path (only acts on
+  `applied`), `flow/review/loop.py` (`rejected_now` and `applied_now` filters ignore `open`).
+- Tests: new `tests/test_resolver_evidence.py` (19 passing), including a loop test where a bare `out of scope` rejection
+  of an important finding goes back to the resolver in iteration 2 and ends as a null-disposition `left open` row.

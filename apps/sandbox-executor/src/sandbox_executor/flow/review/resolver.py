@@ -23,6 +23,7 @@ from sandbox_executor.flow.review.ensemble import _ENGINE_PASSES_PER_DISPATCH
 from sandbox_executor.flow.review.records import _bounded_error_context, record_review_action
 from sandbox_executor.ledger import generate_action_id
 from sandbox_executor.redaction import redact_agent_secrets
+from sandbox_executor.resolver_evidence import OPEN
 from sandbox_executor.resolver_result import read_container_resolver_result, resolver_error_text
 from sandbox_executor.review_report import (
     FindingDisposition,
@@ -189,13 +190,15 @@ class DispositionRecorder:
             if self.effective_dry_run:
                 suppressed += 1
                 continue
-            outcome = "failure" if final_disp.rejection_reason == "no-convergence" else "success"
+            # A finding left open has no ledger disposition value: the row records it with a null disposition.
+            left_open = final_disp.disposition == OPEN
+            outcome = "failure" if left_open or final_disp.rejection_reason == "no-convergence" else "success"
+            detail = final_disp.rejection_reason or (final_disp.evidence if left_open else None)
             res_row: dict[str, Any] = {
                 "action_id": generate_action_id("ACT-RES"),
                 "execution_id": f"REV-RES-{iteration}-{int(time.time())}",
-                "action": (
-                    f"Review Loop iteration {iteration} finding {final_disp.id} adjudicated: {final_disp.disposition}"
-                ),
+                "action": f"Review Loop iteration {iteration} finding {final_disp.id} "
+                + ("left open (no evidenced adjudication)" if left_open else f"adjudicated: {final_disp.disposition}"),
                 "category": "code",
                 "target": self.review_target,
                 "outcome": outcome,
@@ -206,13 +209,11 @@ class DispositionRecorder:
                 ),
                 "review_iteration": iteration,
                 "review_finding_ids": [final_disp.id],
-                "review_disposition": final_disp.disposition,
+                "review_disposition": None if left_open else final_disp.disposition,
                 "rejection_reason": final_disp.rejection_reason,
                 "introduced_by_action_id": intro_id,
                 "labels": ["review", "resolver", f"iteration-{iteration}"],
-                "error_context": (
-                    _bounded_error_context(final_disp.rejection_reason) if final_disp.rejection_reason else None
-                ),
+                "error_context": _bounded_error_context(detail) if detail else None,
                 "created_at": datetime.now(UTC).isoformat(),
             }
             record_review_action(self.context, self.exec_file, res_row)

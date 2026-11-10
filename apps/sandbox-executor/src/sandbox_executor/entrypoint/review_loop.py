@@ -183,10 +183,13 @@ def _validate_mounted_workspace(repo_dir: str, target: ReviewTarget) -> ReviewTa
     return dataclasses.replace(target, head_sha=sha)
 
 
-def _record_preparation_failure(repo_dir: str, raw: str, stage: str, detail: str) -> bool:
-    """Append one ACT-REV failure row when the workspace has a ledger directory; True when it was written."""
+def _record_preparation_failure(
+    repo_dir: str, raw: str, stage: str, detail: str, ledger_file: str | None = None
+) -> bool:
+    """Append one ACT-REV failure row to ``ledger_file`` or, when unset, to the workspace ledger if its directory
+    exists; True when it was written."""
     ledger_dir = os.path.join(repo_dir, "holon-knowledge", "ledger")
-    if not os.path.isdir(ledger_dir):
+    if ledger_file is None and not os.path.isdir(ledger_dir):
         return False
     record = {
         "action_id": generate_action_id("ACT-REV"),
@@ -202,7 +205,7 @@ def _record_preparation_failure(repo_dir: str, raw: str, stage: str, detail: str
         "created_at": datetime.now(UTC).isoformat(),
     }
     written = try_append_action_record(
-        os.path.join(ledger_dir, "executions.jsonl"),
+        ledger_file or os.path.join(ledger_dir, "executions.jsonl"),
         record,
         label="Stage 4 review preparation failure",
         preserve_shape=True,
@@ -219,7 +222,8 @@ def _fail_preparation(
 ) -> None:
     """Record the failure, print a FAILED summary and exit 1 without computing or posting a consensus."""
     detail = _bounded_error_context(str(error))
-    if not _record_preparation_failure(repo_dir, raw, error.stage, detail):
+    ledger_file = _SCRATCH_LEDGER if result_file else None
+    if not _record_preparation_failure(repo_dir, raw, error.stage, detail, ledger_file):
         print(f"Review preparation failed ({error.stage}): {detail}", file=sys.stderr)
         print("No ledger row was written: the workspace has no holon-knowledge/ledger/ directory.", file=sys.stderr)
     result = {

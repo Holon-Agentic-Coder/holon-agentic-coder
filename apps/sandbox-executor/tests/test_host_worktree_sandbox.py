@@ -235,10 +235,9 @@ def test_c_d_container_writes_are_on_the_host_at_once_and_survive_an_abrupt_exit
 
 
 def test_e_reviewer_artifacts_live_under_the_git_ignored_subagent_review_root() -> None:
-    from sandbox_executor.review_ensemble import REVIEW_ROOT_REL, reviewer_dir_rel, reviewer_report_rel
+    from sandbox_executor.review_ensemble import REVIEW_ROOT_REL, reviewer_report_rel
 
     assert REVIEW_ROOT_REL == ".subagent/review"
-    assert reviewer_dir_rel(4, 2) == ".subagent/review/iter-4/reviewer-2"
     assert reviewer_report_rel(4, 2) == ".subagent/review/iter-4/reviewer-2/report.md"
     gitignore = Path(__file__).resolve().parents[3] / ".gitignore"
     assert ".subagent" in gitignore.read_text(encoding="utf-8").splitlines()

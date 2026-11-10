@@ -76,7 +76,6 @@ __all__ = [
     "format_agent_cmd_for_display",
     "parse_review_trailer",
     "render_review_trailer",
-    "reviewer_dir_rel",
     "reviewer_report_rel",
     "run_ensemble",
     "run_reviewer",
@@ -543,14 +542,9 @@ def _iteration_dir_rel(iteration: int) -> str:
     return f"{REVIEW_ROOT_REL}/iter-{_require_index(iteration, 'iteration')}"
 
 
-def reviewer_dir_rel(iteration: int, index: int) -> str:
-    """Repository-relative reviewer directory ``.subagent/review/iter-<n>/reviewer-<i>``."""
-    return f"{_iteration_dir_rel(iteration)}/reviewer-{_require_index(index, 'index')}"
-
-
 def reviewer_report_rel(iteration: int, index: int) -> str:
     """Repository-relative report path ``.subagent/review/iter-<n>/reviewer-<i>/report.md``."""
-    return f"{reviewer_dir_rel(iteration, index)}/{REPORT_NAME}"
+    return f"{_iteration_dir_rel(iteration)}/reviewer-{_require_index(index, 'index')}/{REPORT_NAME}"
 
 
 def _review_root(repo_dir: str) -> str:

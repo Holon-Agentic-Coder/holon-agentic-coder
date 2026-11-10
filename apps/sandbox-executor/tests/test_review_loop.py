@@ -230,6 +230,7 @@ class TestReviewLoopEntrypoint:
                 "sandbox_executor.entrypoint.review_loop._prepare_workspace",
                 side_effect=ReviewPreparationError("fetch", "Preparation failed: remote branch missing"),
             ),
+            patch("sandbox_executor.entrypoint.review_loop._SCRATCH_LEDGER", str(tmp_path / "scratch.jsonl")),
         ):
             with pytest.raises(SystemExit) as exc_info:
                 review_loop_main()
@@ -239,6 +240,36 @@ class TestReviewLoopEntrypoint:
             data = json.loads(result_file.read_text())
             assert "Preparation failed" in data["error"]
             assert data["ensemble_verdict"] == "FAILED"
+
+    def test_host_dispatched_prep_failure_goes_to_scratch_not_the_mounted_ledger(self, tmp_path: Path):
+        from sandbox_executor.entrypoint.review_loop import ReviewPreparationError
+
+        (tmp_path / ".git").mkdir()
+        ledger = tmp_path / "holon-knowledge" / "ledger"
+        ledger.mkdir(parents=True)
+        scratch = tmp_path / "scratch.jsonl"
+        test_args = [
+            "review_loop",
+            "I-100-test",
+            f"--target-worktree={tmp_path}",
+            f"--result-file={tmp_path / 'result.json'}",
+        ]
+
+        with (
+            patch.object(sys, "argv", test_args),
+            patch(
+                "sandbox_executor.entrypoint.review_loop._prepare_workspace",
+                side_effect=ReviewPreparationError("validate", "stale HEAD"),
+            ),
+            patch("sandbox_executor.entrypoint.review_loop._SCRATCH_LEDGER", str(scratch)),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            review_loop_main()
+
+        assert exc_info.value.code == 1
+        assert not (ledger / "executions.jsonl").exists()
+        (row,) = [json.loads(line) for line in scratch.read_text().splitlines()]
+        assert row["action"] == "Review Loop preparation (validate) failed for I-100-test"
 
 
 class TestCLIDispatchReviewLoop:

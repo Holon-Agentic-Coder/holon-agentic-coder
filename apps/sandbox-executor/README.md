@@ -211,14 +211,14 @@ A repository with `extensions.worktreeConfig` enabled is refused, because git wo
 ownership, so on Linux the worktree, its git directory and the common git directory must be writable by uid 1000 (as
 they are when the host user is uid 1000); otherwise `sandbox_worktree_mounts()` refuses the worktree before any
 container starts. On a host whose user has another uid (for example 1001 on CI runners), grant uid 1000 write access,
-e.g. `setfacl -R -m u:1000:rwX,d:u:1000:rwX <path>`. Docker Desktop on macOS and Windows maps ownership, so the check
-is Linux-only. The resolver stages its fixes without
-`holon-knowledge/ledger/executions.jsonl`, and a pass the host dispatches with `--result-file` appends its ledger rows
-to container scratch: the host loop owns the worktree's ledger and records every pass from the result file. The
-entrypoint only validates the mount: HEAD must be a readable commit on the review branch and equal the resolved PR head
-SHA, otherwise preparation fails closed. Edits, logs and reviewer scratch under `.subagent/review/` land on the host at
-once and survive a container crash. No Docker volume is created and no root init container runs. The other roles (intent
-creator, planner, executor) keep their private in-container clone and never mount the host worktree.
+e.g. `setfacl -R -m u:1000:rwX,d:u:1000:rwX <path>`. Docker Desktop on macOS and Windows maps ownership, so the check is
+Linux-only. The resolver stages its fixes without `holon-knowledge/ledger/executions.jsonl`, and a pass the host
+dispatches with `--result-file` appends its ledger rows to container scratch: the host loop owns the worktree's ledger
+and records every pass from the result file. The entrypoint only validates the mount: HEAD must be a readable commit on
+the review branch and equal the resolved PR head SHA, otherwise preparation fails closed. Edits, logs and reviewer
+scratch under `.subagent/review/` land on the host at once and survive a container crash. No Docker volume is created
+and no root init container runs. The other roles (intent creator, planner, executor) keep their private in-container
+clone and never mount the host worktree.
 
 `holon review-loop <target>` resolves the worktree on the host: the `--target-worktree` when it has the review branch
 checked out, otherwise the existing worktree of that branch (normally the run's `flow-<slug>`), otherwise, for a PR, a

@@ -505,8 +505,7 @@ def _docker_argvs(role: str, target_worktree: str | None, mounts: list[str] | Ex
 
 def test_review_loop_adds_only_the_worktree_mounts_and_pins_the_workspace():
     """The review-loop argv is the planner argv plus worktree mounts, the pinned workspace and venv; nothing more."""
-    from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
-    from sandbox_executor.cli import SANDBOX_UV_PROJECT_ENVIRONMENT
+    from sandbox_executor.agent_runner import SANDBOX_UV_PROJECT_ENVIRONMENT, SANDBOX_WORKSPACE_MOUNT
 
     _code, (baseline,) = _docker_argvs("planner", "/work/flow-demo", _FAKE_WORKTREE_MOUNTS)
     code, (review,) = _docker_argvs("review-loop", "/work/flow-demo", _FAKE_WORKTREE_MOUNTS)

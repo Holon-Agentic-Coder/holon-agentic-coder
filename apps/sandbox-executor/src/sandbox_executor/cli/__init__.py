@@ -35,7 +35,7 @@ from sandbox_executor.agent_defaults import (
     resolve_agent_runner,
     resolve_model,
 )
-from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
+from sandbox_executor.agent_runner import REVIEW_LOOP_ROLE, SANDBOX_UV_PROJECT_ENVIRONMENT, SANDBOX_WORKSPACE_MOUNT
 from sandbox_executor.budgets import stage_budget_handdown_env
 from sandbox_executor.calibration import run_calibrate
 from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
@@ -123,9 +123,6 @@ CONTAINER_CA_DIR = "/usr/local/share/ca-certificates"
 # SSL_CERT_FILE / REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE REPLACE the trust store of the clients that
 # read them, so they must point here and never at the single-cert Holon mount.
 CONTAINER_CA_BUNDLE_PATH = "/home/holon/.holon-ca-bundle.crt"
-# Container-private uv project environment for a mounted host worktree, outside the mount (and in the image's
-# holon-owned ~/.cache, since the mount's root-created parents are not writable by the holon user).
-SANDBOX_UV_PROJECT_ENVIRONMENT = "/home/holon/.cache/holon-venv"
 # Loopback tooling and link-local metadata endpoints must never be force-proxied.
 NO_PROXY_HOSTS = "localhost,127.0.0.1,::1,169.254.169.254"
 # mitmproxy loads its signing CA from this directory inside the sidecar image.
@@ -1452,10 +1449,7 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
 
     env_to_forward["HOLON_REPO_URL"] = resolved_repo_url
 
-    # With the host worktree mounted, pin the container workspace to the mountpoint so the entrypoint's
-    # get_workspace_dir() (which honours a forwarded HOLON_TARGET_WORKTREE first) cannot drift from it.
-    # Its .venv is the host's too, so 'uv run' in the container builds a container-private environment instead of
-    # rebuilding the host venv against the container's interpreter on every pass.
+    # Pin the container workspace to the host worktree mountpoint, and keep 'uv run' off the host's mounted .venv.
     if workspace_mounts:
         env_to_forward["HOLON_TARGET_WORKTREE"] = SANDBOX_WORKSPACE_MOUNT
         env_to_forward["UV_PROJECT_ENVIRONMENT"] = SANDBOX_UV_PROJECT_ENVIRONMENT
@@ -1774,8 +1768,6 @@ def _report_gateways(  # noqa: PLR0913
 
 
 INTENT_CREATOR_ROLE: str = "intent-creator"
-# The one role whose entrypoint works in place on a bind-mounted host worktree instead of a private clone.
-REVIEW_LOOP_ROLE: str = "review-loop"
 INTENT_CREATOR_IMAGE: str = "holon/orchestrator"
 # The intent-creator entrypoint never invokes a runner, so its container keeps the historical antigravity
 # mount profile whatever runner the caller resolved.

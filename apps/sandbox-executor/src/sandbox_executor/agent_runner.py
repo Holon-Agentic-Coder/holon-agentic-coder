@@ -156,6 +156,14 @@ cleanup_repo_dir = cleanup_target_worktree
 #: in-container entrypoint can never drift apart.
 SANDBOX_WORKSPACE_MOUNT = "/home/holon/.holon-sandbox/workspace"
 
+#: Container-private uv project environment for a mounted host worktree: outside the mount (whose ``.venv``
+#: is the host's) and in the image's holon-owned ``~/.cache``, since the mount's root-created parents are not
+#: writable by the holon user.
+SANDBOX_UV_PROJECT_ENVIRONMENT = "/home/holon/.cache/holon-venv"
+
+#: The one role whose entrypoint works in place on a bind-mounted host worktree instead of a private clone.
+REVIEW_LOOP_ROLE = "review-loop"
+
 
 def get_workspace_dir() -> str:
     """Returns the workspace directory path based on environment or sandbox status.

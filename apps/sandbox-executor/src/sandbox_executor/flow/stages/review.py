@@ -234,6 +234,9 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
                 f"Autonomous review requested changes: reviewers reported findings or did not approve ({summaries}). "
                 "Findings and dispositions are recorded in executions.jsonl; no automatic resolver runs."
             )
+        elif blockers := loop_res.get("consensus_blockers"):
+            # Every reviewer approved cleanly, but a role, container or adjudication check withheld consensus.
+            err_msg = f"Autonomous review blocked: consensus withheld by {'; '.join(blockers)} ({summaries})."
         else:
             err_msg = "Autonomous review consensus failed: test suite reported failures."
         if reviewers:

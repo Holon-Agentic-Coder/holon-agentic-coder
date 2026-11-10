@@ -890,6 +890,7 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "review_data": consensus_data["review_data"],
         "dispositions": consensus_data["dispositions"],
         "no_convergence": no_convergence,
+        "consensus_blockers": list(blockers),
         "resolver_error": resolver_error,
     }
     if pr_refusal_error or infra_error or post_error or resolver_error:

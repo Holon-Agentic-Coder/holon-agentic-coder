@@ -376,28 +376,8 @@ file transport, preserving host ownership of mergeability verification, CI gatin
 container dispatch fails, it fails closed before any PR review is approved. See the
 [sandbox-executor README](../apps/sandbox-executor/README.md#reviewer-ensemble).
 
-**Consensus integrity.** The loop decides consensus only from what the reviewers returned (`flow/review/verdict.py`):
-each reviewer's own verdict and counts go to `decide_consensus`, and three cross-checks can only withhold an approval,
-never grant one. An activated role at `CHANGES` in any reviewer's role table (an unreadable table counts as an
-objection), a container ensemble verdict other than `APPROVED` on the host dispatch path (a missing one adds no check),
-and a reviewer whose findings adjudication suppressed entirely (its pre-filter verdict is logged beside the `APPROVED`
-it would read after filtering, with the suppressed finding ids) each block consensus and are logged as
-`Consensus blocked at iteration N: ...`. Adjudication suppression (`flow/review/adjudication.py`) applies to nit
-findings only: a nit is withheld from the resolver when a nit with the same severity, path, line and summary was
-rejected earlier, unless the raising reviewer's Security role is at `CHANGES`. Critical and important findings are never
-suppressed, whatever an earlier resolver row says; a finding raised again at a higher severity is a new finding; and
-finding ids, which are positional (`R{reviewer}-F{n}`) and repeat across iterations, are never matched. Suppression
-never rewrites a reviewer's verdict, counts or role table; the earlier filter did, which let a critical re-raised as
-`R3-F1` be dropped and its reviewer posted as approved. Only rejected nits are listed to later reviewers as already
-adjudicated. A resolver rejection of an important or critical finding counts only with a reason other than
-`out of scope` and an `evidence` value naming a `path:line` or a test; otherwise the finding stays `open` and goes back
-to the resolver when it is raised again. The posted review is headed `APPROVED` only for an `APPROVED` ensemble verdict
-with every reviewer approved with zero open findings and no role at `CHANGES`; its fraction counts only those clean
-approvals, and the PR review is submitted with `--approve` only under the same rule. End-of-flow messages (the `REV-...`
-summary row, the action event, the Stage 4 error, the `[SAFETY HALT]` line and the `holon review-loop` summary) state
-each reviewer's final verdict as `Reviewer N VERDICT (critical/important/nit)` and say
-`not approved: reviewer N final verdict X` for any reviewer that did not approve cleanly; such a run never halts as
-approved and is never described as ready to merge.
+**Consensus integrity.** The loop decides consensus only from what the reviewers returned; role, container and
+adjudication checks can only withhold an approval. See [review_consensus.md](review_consensus.md).
 
 **Persistent review workspace.** One Stage 4 session (one `run_review_loop` invocation on the host) reuses a single
 labelled Docker volume (`holon.review-session=1`, named deterministically from the review target) across all of its

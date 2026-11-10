@@ -918,23 +918,9 @@ review tracking:
 - `review_severity`: Severity of finding (`critical`, `important`, `nit`).
 - `review_iteration`: Integer iteration or review round (>= 1).
 - `review_finding_ids`: List of review finding identifiers addressed by this action.
-- `review_disposition`: Disposition of finding (`applied`, `rejected`). An `ACT-RES` row with a null
-  `review_disposition` (action text `left open (no evidenced adjudication)`, outcome `failure`) records a finding still
-  open when the review loop ended; no new disposition value is written, so `executions.jsonl` keeps its vocabulary and
-  Holon still keeps exactly three append-only ledgers.
-- `rejection_reason`: Justification if review suggestion was rejected: `not diff-grounded`, `inaccurate`,
-  `out of scope`, `conflicting with a higher-severity finding`, `no-convergence` (set by the loop's convergence guard)
-  or `unspecified` (the resolver gave no recognised reason; it is never silently recorded as `out of scope`).
+- `review_disposition`: Disposition of finding (`applied`, `rejected`); see [Review consensus](review_consensus.md).
+- `rejection_reason`: Justification if review suggestion was rejected; see [Review consensus](review_consensus.md).
 - `introduced_by_action_id`: Action ID that originally introduced the issue being resolved.
-
-Evidence rule for resolver rejections (`sandbox_executor/resolver_evidence.py`): a rejection of an `important` or
-`critical` finding stands only when its reason is not `out of scope` or `unspecified` and the resolver supplies an
-`evidence` value naming the code it checked, a `path:line` token or a test (`tests/...::test_name` or a `test_*.py`
-file). Otherwise the finding's in-memory disposition is `open`, its rejection reason is null and the resolver's text is
-kept as evidence for audit (`unevidenced rejection (<reason>): <evidence>`, carried in the row's `error_context`). A
-finding the resolver did not adjudicate is `open` when important or critical and `rejected` (`unspecified`) when a nit.
-The reviewed finding's severity is authoritative, so a resolver cannot downgrade a finding to escape the rule. Only
-rejected nits are remembered as already adjudicated; see the consensus integrity rules in [git_flow.md](git_flow.md).
 
 ###### Resolver Commit Trailers
 

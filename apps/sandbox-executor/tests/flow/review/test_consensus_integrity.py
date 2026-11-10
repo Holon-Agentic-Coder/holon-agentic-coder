@@ -231,6 +231,7 @@ def test_a_role_at_changes_blocks_consensus_when_every_reviewer_approved_cleanly
 
     assert res["consensus"]["approved"] is False
     assert res["ensemble_verdict"] == "CHANGES_REQUESTED"
+    assert res["consensus_blockers"] == ["reviewer 3 Security role CHANGES"]
     assert stubs.post.call_args.kwargs["consensus_data"]["ensemble_verdict"] == "CHANGES_REQUESTED"
     assert any(
         "reviewer 3 Security role CHANGES" in line and "no resolver pass applicable" in line for line in ctx.logs
@@ -377,6 +378,25 @@ def test_stage4_names_each_final_verdict_and_never_reports_a_dissent_as_approved
         assert "ready for merge" not in text
         assert "consensus approval" not in text
         assert "[SAFETY HALT]" not in text
+
+
+def test_stage4_names_a_blocker_rather_than_test_failures_when_every_reviewer_approved_cleanly(tmp_path):
+    from sandbox_executor.flow.review.records import _reviewer_summary
+
+    loop_res = {
+        "consensus": {"approved": False, "status": "changes_requested"},
+        "ensemble_verdict": "CHANGES_REQUESTED",
+        "reviewers": [_reviewer_summary(clean_reviewer(i)) for i in (1, 2, 3)],
+        "consensus_blockers": ["reviewer 3 Security role CHANGES"],
+        "total_iterations": 1,
+    }
+
+    result, _ = _stage4(tmp_path, loop_res)
+
+    message = result.error or ""
+    assert result.status.value == "failed"
+    assert "Autonomous review blocked: consensus withheld by reviewer 3 Security role CHANGES" in message
+    assert "test suite reported failures" not in message
 
 
 def test_summary_lines_and_exit_status_name_a_reviewer_that_did_not_approve():

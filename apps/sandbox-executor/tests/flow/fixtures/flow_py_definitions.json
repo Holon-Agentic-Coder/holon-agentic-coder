@@ -29,8 +29,8 @@
     "<const>:_SEVERITY_RANK": "8032d743fb8fb6ae46551ed999c134d115fa7055ace3d265615210d4c6ca9cc9",
     "<const>:_SUMMARY_STATUS_WORDS": "f78eabc29cf72430b81869c699d24410ecfd63270d366be90e5d6a7dc9f97423",
     "ConflictResolutionError": "1106f011f9c3915dcabaaa6df3d15c592856e2c8014c105c1b87cdc431a51bd4",
-    "DispositionRecorder": "eafae3ecfe183dd2eee4f7ad76bf4612afa9ca84d11348557a65a93bd7e4f56c",
-    "DispositionRecorder.record": "e0210e6514c2406f89fe62a9db1d3df9101778deec461e6ad6cc81fcd083cf9b",
+    "DispositionRecorder": "9b143c419bb1e36bccd178390e52a33e704a054b6873624887893aaa96467abd",
+    "DispositionRecorder.record": "20883880716eeae5f18ef8600574d64b120d405a00bf0ac95522f5426d30d75c",
     "FlowCheckpoint": "cdd78d113d1e5f7c94785fa075cb714d53bd3b1f8a6600fe7f7b6eb7f344ea7e",
     "FlowCheckpoint.from_dict": "016bdf9e62d1b8c976326975414f7d2ec81d8bef9a9685eb35eec2ff4c512d04",
     "FlowCheckpoint.to_dict": "f9c0427e8cf21bc90cf1fc55f354b9c0a00fb3edda95f90d5138e3134ef8dca8",
@@ -72,7 +72,7 @@
     "_append_only_union": "ac65ad61cdc9f228d9d77213ead5c15d58d05206ce9c19bd44e617150cf4b6c1",
     "_append_superseding_execution_row": "070b3396e64f2fe50865067be2bb4694d575f2d10c34d0bfd4c5d9a74cb38b7a",
     "_attach_transported_detail": "59662a829a72996674404c298b23e5f7f32dca7008822d999b8ff6252c681ba9",
-    "_augment_pr_text_with_rejected": "ad2114ed8800a876e67bf30dd12dcee43783f1cebc2658160171206fbb81f582",
+    "_augment_pr_text_with_rejected": "7335cf81ebbbbdfbd15ecc0948fe5824ff27b40f8c26979f660debcd453a9e0b",
     "_bounded_error_context": "92cb41f9dce5122986fca7e4b105d489e702c736d1a7f3520c21844f0baf9c20",
     "_checkout_execution_branch": "869f8f3c966f50e099087c6bfadc1f1702da8fa7ec1c2ee9699c3d12a52fa1bb",
     "_child_context": "5eaeb18dd1c7f776e4194ee717f88be125578724fead279a85d26b2ee190e35a",
@@ -94,7 +94,7 @@
     "_fetch_branch_prefix": "221d942bba4298d46185c811ca1ca324aefa646b6d6eefd75f2cc4e84ab2515e",
     "_fetch_branch_prefix_error": "cf619f382ee6d8c48a593a925f8e949607479f9aefad33500ced91c78c2e2912",
     "_fetch_refspecs_error": "779def31372c0816d2007fcf93f865c4611ae9d881bc5279b6beaa5834ade75a",
-    "_filter_adjudicated_findings": "f980b7158f999d9f995cb9ec1e898f82b11429f2d96264697e630b3fe7512509",
+    "_filter_adjudicated_findings": "3fe6a16ec568bd0a17e2a57bfeea1c8725f9c4e7687f77ffe9437c8e15c24bca",
     "_format_entropy": "23422f18faf800748da7f8afaff6866c4e220ad197867a88b59a8a633027b0a0",
     "_get_dispatcher": "e1e10b9c62b3f7d3cf1a9671b8f3fb17ab18a325774f48d8dae52ad191838453",
     "_git_show_text": "a42530a744f118b9e02ca809f5b9d008cd4aa02e276e20fadac4ed67b13a9679",
@@ -131,7 +131,7 @@
     "_reviewers_objected": "8c2c517800d0fbc073b2339aa7b343dfc7747110d2bf4611cb2200a0ffd1584e",
     "_run_decomposed_plan": "71e19aef939d55aacba9451fd9fafaa40b1532bd0826b2070d8f82ec9a05aee2",
     "_run_engine_review_loop": "a66253ec273612bf14e31d17b57b0933cb8c880502f610ab14dc74d06877c469",
-    "_run_review_loop_iterations": "7d6e077f36540e6da0be29f451f35dcc437e037efbe42f2e353fea2bfaf5cadf",
+    "_run_review_loop_iterations": "75c4cc7aea6c9c7bd6f783b5f1ddc46851ef322509f78429cd0a79dc13685ce7",
     "_semantic_pr_text": "e3da288e06f6e0761ac3e6e2394d5a36fddf7f18a6b2d1a352d476f6a7139c24",
     "_snapshot_child_branches": "fb0605b286d10ab17ec55f6b002d79e3f544f2937ac3b7fd37a1c562d66c2e70",
     "_split_conflict_sides": "5e551bf5339cd1ec67b7a5c401ebab40d03c78afa7b5bae60c08139f5e447c34",
@@ -158,7 +158,7 @@
     "get_default_checkpoint_path": "b404a1ef50d215865f9e05045c5200adf83517263b159ec1367218a13cb5583c",
     "load_checkpoint": "2a2888a15002b07abc913050eeca0913f820c078408ec9ee6597a277150fd4b7",
     "migrate_checkpoint_data": "61bf422019f67c5028f22fd539518ce1ad20de3ccd1f14bbaae15cfac824d08f",
-    "post_pr_review_consensus": "e58ce457909da81ea37b3aee4b4a6f259ce979e953b6d03a3523bb39217ac7d1",
+    "post_pr_review_consensus": "e0f3bd2b138704f619a34b9dbd885b9e6ddd73ce8f477d6a97038f6110f5f24d",
     "probe_ci_checks": "5b6265ccc048270142cf0f25086ba57d558ca7bb43dfa9cd4f59a1b4a687b793",
     "reconcile_jsonl_ledger_conflict": "0edd66657dc3e9774afdbb85086ee5f9ad5e00f9c9b94324305e124db93d8696",
     "reconcile_ledger_file": "6f9527fc43471026735c3a766c631317b20bc59b5cf67170c0537ad20e9c73d8",
@@ -167,10 +167,10 @@
     "render_reviewer_summary_line": "74e400e207f212aacc349e1e0eb91b326ab26afbecc7a61510c6769511bcac65",
     "resolve_append_only_conflict": "46e721cf310aa6d18d8629a8cac4c275b5b485b3851e564246045065f563e807",
     "resolve_ci_registration_timeout": "1eb865d61d1f931bd24ef4a3a7996c06a143eb074e72f14a667650b91a3d781c",
-    "review_loop_approved": "af247a301c7f4978560ed489797be25715fc5e1150fe865ce894011a91f2ade5",
+    "review_loop_approved": "064d4058059830d1c930d1e7c1887a1a2a88448bbd23ad8fcab95a9183e1eaf2",
     "review_persist_enabled": "6e95bde1f51132591fe4ba02fd06741cccb650b1156ebb9fa654b8616f16f9d6",
     "review_session_volume_name": "ed14355b7dc8db254a864f94da05439d56a8d7cdfd4e6fcdba38e8f36de030f2",
-    "review_summary_lines": "695785e479462667fffb0e721d815fd0c27dcf3bb77eedeb6a54b715738b19fa",
+    "review_summary_lines": "30a22d8637a84fa1b5497085f944cb0b4b04d0969370c6fc3a569b10659d54af",
     "reviewers_sandboxed": "2493c5509b14e20d9240b59cd3fce7f0d9afea3d0be8eac7df9b2abe1700ac2a",
     "run_calibrate_stage": "9d3bdd0eedab36af64f16bd10e5e27b16a240a52182f4e1ad00acbaecb1fdd3d",
     "run_execute_stage": "d163ef16ecf859c23fcfdf2df16d913f5051dec5ff638f52af63ff6ff20eb5b4",
@@ -179,7 +179,7 @@
     "run_plan_stage": "3b410746b3caea63cd0ad2496fcfcf7250093bb528121fba7c808c3b0728b397",
     "run_review_loop": "c94b9fde80e2302bc21b3f80b68be697c32b7dadb0be8695341893f2ff5c6a0a",
     "run_review_loop_cli": "35ab628bc65b642a6ffc984febe193e5f0b7471797e0e44462af8754da82ae07",
-    "run_review_stage": "ec102f9b7bb40601cec1a96fb65da40eca19945b2fbf75dd3fa9b9e3087dbc4e",
+    "run_review_stage": "2d11b4e885085dce49e030e2546e4a5b5efb032e75cb6f7249f46df692af8a2b",
     "save_checkpoint": "d7aebe896012df99b7ad9969f35fd9c20f0c3a53af9d8e4dbec6451d48d4c21b",
     "validate_intent_questions": "b192729b0c7fe8ee7d45f5755506481059b5f893cbb90a77c991640444abae06"
   },
@@ -193,9 +193,17 @@
     "_invoke_resolver_pass": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result",
     "_plan_budget_decision": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan row records the decomposition decision; the flow reads it and back-fills older rows",
     "_run_decomposed_plan": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): validates the items and the depth, nests the children under the plan branch (never the intent branch) and delegates the loop to stages/children.py | E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the empty sub-intent list failure no longer says the executor is skipped, since the plan-owned decision is recorded on the plan row",
-    "_run_review_loop_iterations": "E-1794206943-d5c00585 (I-1794205862-resolver-commits-locally-skip-push-fix): verify resolver_outcome.pushed is True before advancing review target and recording applied dispositions",
+    "_run_review_loop_iterations": "E-1794206943-d5c00585 (I-1794205862-resolver-commits-locally-skip-push-fix): verify resolver_outcome.pushed is True before advancing review target and recording applied dispositions; E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): consensus decided from the returned reviewer verdicts with role, adjudication and container cross-checks; only actionable rows reach the resolver; only rejected nits are remembered; local-test CI evidence extracted; summary rows state the final verdicts",
     "format_decomposition_summary": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): children are nested under and merged into the plan branch; the summary lists each child PR as merged into it and names the combined PR that Stage 4 raises",
-    "run_execute_stage": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan row records the decomposition decision; the flow reads it and back-fills older rows"
+    "run_execute_stage": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan row records the decomposition decision; the flow reads it and back-fills older rows",
+    "_filter_adjudicated_findings": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): moved to review/adjudication.py; returns actionable and suppressed finding rows instead of rewritten reviewers, suppresses only nits rejected at the same signature, never matches positional ids, and never changes a verdict or counts",
+    "_augment_pr_text_with_rejected": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): moved to review/adjudication.py; lists only rejected nits, so reviewers are never told to stay silent about an important or critical finding",
+    "DispositionRecorder": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): a finding left open is recorded with a null review_disposition and outcome failure",
+    "DispositionRecorder.record": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): a finding left open is recorded with a null review_disposition and outcome failure",
+    "post_pr_review_consensus": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): --approve follows report_approves: an APPROVED ensemble verdict, every reviewer clean and no role at CHANGES",
+    "review_loop_approved": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): moved to review/verdict.py; also requires every final reviewer verdict to be a clean APPROVED",
+    "review_summary_lines": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): moved to review/verdict.py; adds a 'Not approved' line naming each reviewer whose final verdict was not a clean APPROVED",
+    "run_review_stage": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): a consensus whose final verdicts are not all a clean APPROVED fails; failure messages share one result block and state the final verdicts"
   },
   "added_definitions": {
     "<const>:CHILD_ROW_KEYS": {
@@ -453,6 +461,66 @@
     "_drive_children": {
       "module": "stages/children.py",
       "reason": "review iteration 3 (PR 158): the child loop body, split out so run_children can turn an unexpected exception into a Stage 3 failure that keeps the recorded children_progress"
+    },
+    "<const>:FindingSignature": {
+      "module": "review/adjudication.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): nits-only adjudication suppression that never rewrites a reviewer's verdict, counts or role table"
+    },
+    "<const>:SUPPRESSIBLE_SEVERITY": {
+      "module": "review/adjudication.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): nits-only adjudication suppression that never rewrites a reviewer's verdict, counts or role table"
+    },
+    "Adjudication": {
+      "module": "review/adjudication.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): nits-only adjudication suppression that never rewrites a reviewer's verdict, counts or role table"
+    },
+    "_final_verdict": {
+      "module": "review/verdict.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
+    },
+    "_summaries": {
+      "module": "review/verdict.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
+    },
+    "adjudication_mismatches": {
+      "module": "review/verdict.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
+    },
+    "apply_local_test_evidence": {
+      "module": "review/ci_evidence.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): the three duplicated local-tests CI evidence blocks of the review loop, extracted to keep loop.py within its budget"
+    },
+    "consensus_blockers": {
+      "module": "review/verdict.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
+    },
+    "decide_returned_consensus": {
+      "module": "review/verdict.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
+    },
+    "is_suppressible": {
+      "module": "review/adjudication.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): nits-only adjudication suppression that never rewrites a reviewer's verdict, counts or role table"
+    },
+    "not_approved_verdicts": {
+      "module": "review/verdict.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
+    },
+    "record_nit_rejections": {
+      "module": "review/adjudication.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): nits-only adjudication suppression that never rewrites a reviewer's verdict, counts or role table"
+    },
+    "render_final_verdicts": {
+      "module": "review/verdict.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
+    },
+    "role_objections": {
+      "module": "review/verdict.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
+    },
+    "security_objectors": {
+      "module": "review/adjudication.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): nits-only adjudication suppression that never rewrites a reviewer's verdict, counts or role table"
     }
   },
   "removed_definitions": {

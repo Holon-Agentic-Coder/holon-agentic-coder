@@ -20,9 +20,7 @@ def test_snapshot_was_taken_with_this_python_minor_version():
 
 
 def test_snapshot_covers_every_flow_py_definition():
-    # A declared removal was a flow.py definition too: it left the snapshot's digests, not its coverage.
-    snapshot = load_snapshot()
-    definitions = [*snapshot["definitions"], *snapshot.get("removed_definitions", {})]
+    definitions = load_snapshot()["definitions"]
     top_level = [key for key in definitions if "." not in key and not key.startswith("<const>:")]
     assert len(top_level) >= 124
 

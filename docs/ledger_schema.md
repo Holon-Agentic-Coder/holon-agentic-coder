@@ -918,8 +918,12 @@ review tracking:
 - `review_severity`: Severity of finding (`critical`, `important`, `nit`).
 - `review_iteration`: Integer iteration or review round (>= 1).
 - `review_finding_ids`: List of review finding identifiers addressed by this action.
-- `review_disposition`: Disposition of finding (`applied`, `rejected`); see [Review consensus](review_consensus.md).
-- `rejection_reason`: Justification if review suggestion was rejected; see [Review consensus](review_consensus.md).
+- `review_disposition`: Disposition of finding (`applied`, `rejected`), or null on an `ACT-RES` row for a finding left
+  open when the review loop ended (action text `left open (no evidenced adjudication)`, outcome `failure`); see
+  [Review consensus](review_consensus.md).
+- `rejection_reason`: Justification if review suggestion was rejected: `not diff-grounded`, `inaccurate`,
+  `out of scope`, `conflicting with a higher-severity finding`, `no-convergence` (set by the loop's convergence guard)
+  or `unspecified` (no recognised reason given); see [Review consensus](review_consensus.md).
 - `introduced_by_action_id`: Action ID that originally introduced the issue being resolved.
 
 ###### Resolver Commit Trailers

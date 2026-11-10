@@ -64,7 +64,7 @@ def _report_text(parsed: ParsedTrailer, block: object | None = None, body: str =
 def _reviewer(index: int, *findings: ReviewFinding, block: object | None = None, **kwargs) -> ReviewerResult:
     parsed = _parsed(*findings)
     text = _report_text(parsed, block, **kwargs)
-    report = f".holon/review/iter-1/reviewer-{index}/report.md"
+    report = f".subagent/review/iter-1/reviewer-{index}/report.md"
     return ReviewerResult.completed(index, f"agent-{index}", f"model-{index}", report, text, parsed)
 
 

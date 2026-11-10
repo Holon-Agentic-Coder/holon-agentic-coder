@@ -6,7 +6,7 @@ with a request built by :func:`build_review_request`, and ``review_report.py`` r
 results; the loop refuses to run reviewers outside a sandbox.
 
 Reviewer turns
-    Each reviewer gets a fresh scratch directory ``.holon/review/iter-<n>/reviewer-<i>/`` (``.holon/`` is git-ignored)
+    Each reviewer gets a fresh scratch directory ``.subagent/review/iter-<n>/reviewer-<i>/`` (``.subagent/`` is git-ignored)
     and a prompt built from ``holon-config/prompts/review_loop.template.md`` that holds only the diff, the PR
     description, the exact report path and the trailer contract. Reviewers run sequentially; before the next one
     starts, the previous report has been read into memory and its scratch directory removed, so no reviewer can see
@@ -76,6 +76,7 @@ __all__ = [
     "format_agent_cmd_for_display",
     "parse_review_trailer",
     "render_review_trailer",
+    "reviewer_dir_rel",
     "reviewer_report_rel",
     "run_ensemble",
     "run_reviewer",
@@ -96,7 +97,7 @@ SEVERITIES = ("critical", "important", "nit")
 TRAILER_OPEN = "<!-- holon-review-trailer -->"
 TRAILER_CLOSE = "<!-- /holon-review-trailer -->"
 TEMPLATE_REL = "holon-config/prompts/review_loop.template.md"
-REVIEW_ROOT_REL = ".holon/review"
+REVIEW_ROOT_REL = ".subagent/review"
 REPORT_NAME = "report.md"
 MAX_REASON_CHARS = 500
 _AGENT_ARG_DISPLAY_LEN = 100
@@ -538,30 +539,35 @@ def _require_index(value: Any, name: str) -> int:
 
 
 def _iteration_dir_rel(iteration: int) -> str:
-    """``.holon/review/iter-<n>``."""
+    """``.subagent/review/iter-<n>``."""
     return f"{REVIEW_ROOT_REL}/iter-{_require_index(iteration, 'iteration')}"
 
 
+def reviewer_dir_rel(iteration: int, index: int) -> str:
+    """Repository-relative reviewer directory ``.subagent/review/iter-<n>/reviewer-<i>``."""
+    return f"{_iteration_dir_rel(iteration)}/reviewer-{_require_index(index, 'index')}"
+
+
 def reviewer_report_rel(iteration: int, index: int) -> str:
-    """Repository-relative report path ``.holon/review/iter-<n>/reviewer-<i>/report.md``."""
-    return f"{_iteration_dir_rel(iteration)}/reviewer-{_require_index(index, 'index')}/{REPORT_NAME}"
+    """Repository-relative report path ``.subagent/review/iter-<n>/reviewer-<i>/report.md``."""
+    return f"{reviewer_dir_rel(iteration, index)}/{REPORT_NAME}"
 
 
 def _review_root(repo_dir: str) -> str:
-    """The resolved ``<repo_dir>/.holon/review``, refusing a root that a symlinked ``.holon`` or ``.holon/review``
+    """The resolved ``<repo_dir>/.subagent/review``, refusing a root that a symlinked ``.subagent`` or ``.subagent/review``
     steers anywhere else (for example outside the repository)."""
     expected = os.path.join(os.path.realpath(repo_dir), REVIEW_ROOT_REL)
     root = os.path.realpath(os.path.join(repo_dir, REVIEW_ROOT_REL))
     if root != expected:
         raise ValueError(
             f"review scratch root {REVIEW_ROOT_REL}/ does not resolve to {REVIEW_ROOT_REL}/ under the repository"
-            f" directory (a symlinked .holon or {REVIEW_ROOT_REL} is the likely cause)"
+            f" directory (a symlinked .subagent or {REVIEW_ROOT_REL} is the likely cause)"
         )
     return root
 
 
 def _contained_path(repo_dir: str, rel: str) -> str:
-    """Absolute path of ``rel``, refusing anything that does not resolve inside ``<repo_dir>/.holon/review/``."""
+    """Absolute path of ``rel``, refusing anything that does not resolve inside ``<repo_dir>/.subagent/review/``."""
     root = _review_root(repo_dir)
     path = os.path.realpath(os.path.join(repo_dir, rel))
     if not path.startswith(root + os.sep):
@@ -570,7 +576,7 @@ def _contained_path(repo_dir: str, rel: str) -> str:
 
 
 def _remove_scratch(repo_dir: str, rel: str) -> None:
-    """Remove a review scratch directory if it exists (contained to ``.holon/review/``)."""
+    """Remove a review scratch directory if it exists (contained to ``.subagent/review/``)."""
     path = _contained_path(repo_dir, rel)
     if os.path.lexists(path):
         shutil.rmtree(path)
@@ -863,7 +869,7 @@ def _undispatched(request: ReviewRequest, index: int, agent: str, model: str, re
 def _remove_leftovers(repo_dir: str, results: Sequence[ReviewerResult], iteration_rel: str) -> None:
     """Remove the last reports and the iteration directory; a failure here is logged, the results stand.
 
-    A path that cannot be removed, or that resolves outside ``.holon/review/`` (for example a symlinked iteration
+    A path that cannot be removed, or that resolves outside ``.subagent/review/`` (for example a symlinked iteration
     directory), is left in place rather than aborting the ensemble.
     """
     try:

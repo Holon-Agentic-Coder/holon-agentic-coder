@@ -179,7 +179,7 @@
     "run_plan_stage": "3b410746b3caea63cd0ad2496fcfcf7250093bb528121fba7c808c3b0728b397",
     "run_review_loop": "c94b9fde80e2302bc21b3f80b68be697c32b7dadb0be8695341893f2ff5c6a0a",
     "run_review_loop_cli": "35ab628bc65b642a6ffc984febe193e5f0b7471797e0e44462af8754da82ae07",
-    "run_review_stage": "4e33e98ccfaf0105412c05edbb22f85e5dbbd6d5faf907a105cf9a5c5ca02bcd",
+    "run_review_stage": "d75acf61664e33afc8aa0e7109d3625fc1cee4952cd2f05f322cb0a740aa6afb",
     "save_checkpoint": "d7aebe896012df99b7ad9969f35fd9c20f0c3a53af9d8e4dbec6451d48d4c21b",
     "validate_intent_questions": "b192729b0c7fe8ee7d45f5755506481059b5f893cbb90a77c991640444abae06"
   },
@@ -203,7 +203,7 @@
     "post_pr_review_consensus": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): --approve follows report_approves: an APPROVED ensemble verdict, every reviewer clean and no role at CHANGES",
     "review_loop_approved": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): moved to review/verdict.py; also requires every final reviewer verdict to be a clean APPROVED",
     "review_summary_lines": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): moved to review/verdict.py; adds a 'Not approved' line naming each reviewer whose final verdict was not a clean APPROVED",
-    "run_review_stage": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): a consensus whose final verdicts are not all a clean APPROVED fails; failure messages share one result block and state the final verdicts; a consensus withheld only by a role, container or adjudication blocker names that blocker, not failed tests"
+    "run_review_stage": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): a consensus whose final verdicts are not all a clean APPROVED fails; failure messages, mergeability halts included, share one result block and state the final verdicts; a consensus withheld only by a role, container or adjudication blocker names that blocker, not failed tests"
   },
   "added_definitions": {
     "<const>:CHILD_ROW_KEYS": {

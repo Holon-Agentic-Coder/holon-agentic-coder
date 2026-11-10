@@ -423,3 +423,29 @@ def test_the_loop_summary_row_states_the_final_verdicts(tmp_path, monkeypatch):
     assert summary["status"] == "failed"
     assert "not approved: reviewer 3 final verdict CHANGES_REQUESTED" in summary["summary"]
     assert "final verdicts: Reviewer 1 APPROVED (0/0/0)" in summary["summary"]
+
+
+@pytest.mark.parametrize(
+    ("mergeability", "expected"),
+    [
+        ({"is_dirty": True, "merge_state_status": "DIRTY", "mergeable": "CONFLICTING"}, "CI SIGNAL SUPPRESSED"),
+        ({"is_dirty": False, "merge_state_status": "MISSING_REF", "mergeable": "UNKNOWN"}, "MISSING_REF"),
+    ],
+)
+def test_stage4_mergeability_halts_also_name_each_final_verdict(tmp_path, mergeability, expected):
+    loop_res = {
+        "consensus": {"approved": False, "status": "changes_requested"},
+        "ensemble_verdict": "CHANGES_REQUESTED",
+        "reviewers": _summaries_of_the_failing_shape(),
+        "mergeability": mergeability,
+        "total_iterations": 1,
+    }
+
+    result, ctx = _stage4(tmp_path, loop_res)
+
+    message = result.error or ""
+    assert result.status.value == "failed"
+    assert expected in message
+    assert "Final verdicts: Reviewer 1 APPROVED (0/0/0)" in message
+    assert "not approved: reviewer 3 final verdict CHANGES_REQUESTED" in message
+    assert any(message in line for line in ctx.logs)

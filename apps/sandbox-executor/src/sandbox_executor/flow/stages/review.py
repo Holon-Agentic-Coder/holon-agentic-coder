@@ -196,7 +196,6 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
             "GitHub Actions suppresses test workflows on refs/pull/<PR>/merge. "
             "Halting consensus approval."
         )
-        context.log(err_msg)
     elif merge_status == "MISSING_REF":
         target_branch = context.intent_data.get("target_branch", "main")
         unresolved_ref = (mergeability.get("diagnostics") or {}).get("missing_ref") or context.execution_branch
@@ -205,7 +204,6 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
             f"(mergeable={mergeable_state}, mergeStateStatus={merge_status}). "
             "Verify that the branch exists locally or on origin."
         )
-        context.log(err_msg)
     elif (not consensus_reached or not_approved) and not dry_run_simulation:
         ci_checks = loop_res.get("ci_checks") or {}
         loop_breach = loop_res.get("budget_breach")
@@ -239,13 +237,14 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
             err_msg = f"Autonomous review blocked: consensus withheld by {'; '.join(blockers)} ({summaries})."
         else:
             err_msg = "Autonomous review consensus failed: test suite reported failures."
+
+    if err_msg is not None:
+        # Every Stage 4 failure, mergeability halts included, reports the reviewers' final verdicts.
         if reviewers:
             err_msg += f" Final verdicts: {render_final_verdicts(reviewers)}" + (
                 f"; not approved: {', '.join(not_approved)}." if not_approved else "."
             )
-        context.log(f"Stage 4 failed: {err_msg}")
-
-    if err_msg is not None:
+        context.log(err_msg if is_dirty or merge_status == "MISSING_REF" else f"Stage 4 failed: {err_msg}")
         result = StageResult(
             stage=FlowStage.REVIEW,
             status=StageStatus.FAILED,

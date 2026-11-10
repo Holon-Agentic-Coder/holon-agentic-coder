@@ -198,7 +198,7 @@ The review loop fails closed:
 
 Every reviewer-ensemble and resolver pass launches a fresh `--rm` role container that works in place on the host
 worktree under review; nothing is cloned, fetched, reset or cleaned inside the container. `run_docker_container()`
-requires an explicit `target_worktree` for the `review-loop` role and validates it with
+requires an explicit `target_worktree` for the `review-loop` and `executor` roles and validates it with
 `git_flow.sandbox_worktree_mounts()`: it must be an attached, non-bare working tree that does not have the default
 branch checked out. Its top-level directory is bind-mounted at the sandbox workspace path
 (`agent_runner.SANDBOX_WORKSPACE_MOUNT`, with `HOLON_TARGET_WORKTREE` pinned to the same path). A linked worktree's git
@@ -218,11 +218,21 @@ its ledger rows to container scratch: the host loop owns the worktree's ledger a
 file. The entrypoint only validates the mount: HEAD must be a readable commit on the review branch (a branch target
 refuses a detached HEAD) and equal the resolved PR head SHA, otherwise preparation fails closed. Edits, logs and
 reviewer scratch under `.subagent/review/` land on the host at once and survive a container crash. No Docker volume is
-created and no root init container runs. The other roles (intent creator, planner, executor) keep their private
-in-container clone and never mount the host worktree. Limitation and follow-up: the Stage 3 executor therefore still
-clones the plan branch inside its container, needs GitHub egress to do so and loses unpushed work when its container
-crashes; moving it onto a mounted worktree (one per concurrent execution) is deferred to a follow-up change. A pass that
-runs `uv run` in the mounted worktree uses the container-private environment
+created and no root init container runs.
+
+The Stage 3 executor works the same way on the run's `flow-<slug>` worktree. The host fetches the plan branch (and any
+partial execution branch a resume continues) into the worktree before dispatch: `holon flow` through its existing fetch
+of the plan's branches, and `holon execute` through `git_flow.fetch_origin_branch()`, after provisioning or reusing the
+plan's `flow-<slug>` worktree when it is given a default-branch checkout. The entrypoint (`entrypoint/executor.py`)
+recognises the mount by `HOLON_TARGET_WORKTREE` naming the sandbox workspace path and then never clones, fetches, resets
+or cleans: it requires a readable `HEAD`, a worktree without uncommitted changes (edits left by a crashed run stay on
+the host and are never swept into a new execution) and a plan branch that already resolves, creates the execution branch
+from the plan tip (or the resumed partial head) in the host worktree, writes its git identity to the container's global
+config and pushes without recording an upstream, since the repository config is read-only. A repository that is unusable
+after the agent ran fails the run instead of being re-initialised. Commits and edits are on the host at once, so a
+crash, OOM kill or timeout loses nothing. Only an unmounted run outside a container still clones or reuses its own
+workspace. The intent creator and planner keep their private in-container clone and never mount the host worktree. A
+pass that runs `uv run` in the mounted worktree uses the container-private environment
 `UV_PROJECT_ENVIRONMENT=/home/holon/.cache/holon-venv`, so it never rebuilds the host's `.venv`.
 
 `holon review-loop <target>` resolves the worktree on the host: the `--target-worktree` when it has the review branch

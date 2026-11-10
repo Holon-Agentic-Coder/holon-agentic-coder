@@ -7,7 +7,7 @@ is thrown at:
 
 - ``holon doctor`` (``cli.run_doctor``) in text and ``--json`` form: no exception escapes, the exit code is 0 or 1,
   and ``--json`` prints one valid JSON document whose ``environment`` section has the documented keys;
-- the run path (``cli.run_docker_container`` for the pi executor, inside a timed host stage so the budget hand-down
+- the run path (``cli.run_docker_container`` for the pi planner, inside a timed host stage so the budget hand-down
   runs): no exception escapes, an invalid ``models.json`` or envelope value is a clean ``Error:`` with exit 1, and a
   handed-down ``HOLON_STAGE_BUDGET_SECONDS`` is always a finite positive integer.
 
@@ -313,7 +313,7 @@ def _run_path(ws: _Workspace) -> tuple[int, str, list[str]]:
         timer = budgets.StageTimer("execute", budgets.load_budgets(os.environ).stage_seconds("execute"))
         with budgets.active_stage_timer(timer):
             code = cli.run_docker_container(
-                "executor", "holon/agent-pi", ["branch", "pi-agent", "m"], agent_id="pi", token_reduce=False
+                "planner", "holon/agent-pi", ["branch", "pi-agent", "m"], agent_id="pi", token_reduce=False
             )
     argv = list(mock_run.call_args[0][0]) if mock_run.called else []
     return code, ws.scrub(_text(out) + _text(err) + _text(logs)), argv

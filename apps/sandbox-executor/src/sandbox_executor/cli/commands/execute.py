@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import os
+import re
 import sys
 
-from sandbox_executor import cli
+from sandbox_executor import cli, git_flow
 from sandbox_executor.cli.commands._role import prepare_role_execution
 from sandbox_executor.cli.options import (
     add_preflight_option,
@@ -29,10 +31,33 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     parser.set_defaults(_run=run)
 
 
+def execution_worktree(plan_branch: str, target_worktree: str | None) -> str:
+    """Return the host worktree the executor container works in, with the plan branch fetched into it on the host.
+
+    A worktree with the default branch checked out only selects the repository: the plan's flow-<slug> sibling is
+    provisioned off it (or reused), so the container never clones or fetches to prepare its checkout.
+
+    Raises:
+        RuntimeError: If the flow worktree cannot be provisioned or the plan branch cannot be fetched.
+    """
+    worktree = target_worktree or os.getcwd()
+    if git_flow.is_default_branch_worktree(worktree, git_flow.repository_default_branch(worktree)):
+        slug = re.sub(r"^I-\d+-", "", plan_branch.split("/", 1)[0])
+        worktree = git_flow.ensure_flow_worktree_off_default(worktree, slug, None)
+    git_flow.fetch_origin_branch(worktree, plan_branch)
+    return worktree
+
+
 def run(args: argparse.Namespace) -> int | None:
     """Execute the execute command."""
     common_kwargs = prepare_role_execution(args)
     if common_kwargs is None:
+        return None
+    try:
+        common_kwargs["target_worktree"] = execution_worktree(args.plan_branch, common_kwargs.get("target_worktree"))
+    except (RuntimeError, ValueError) as exc:
+        print(f"Error: {cli.redact_cli_error(exc)}", file=sys.stderr)
+        sys.exit(1)
         return None
     exit_code = cli.dispatch_role_agent(
         "executor",

@@ -35,7 +35,11 @@ from sandbox_executor.agent_defaults import (
     resolve_agent_runner,
     resolve_model,
 )
-from sandbox_executor.agent_runner import REVIEW_LOOP_ROLE, SANDBOX_UV_PROJECT_ENVIRONMENT, SANDBOX_WORKSPACE_MOUNT
+from sandbox_executor.agent_runner import (
+    HOST_WORKTREE_ROLES,
+    SANDBOX_UV_PROJECT_ENVIRONMENT,
+    SANDBOX_WORKSPACE_MOUNT,
+)
 from sandbox_executor.budgets import stage_budget_handdown_env
 from sandbox_executor.calibration import run_calibrate
 from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
@@ -1390,18 +1394,18 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
 ) -> int:
     """Constructs docker run command with auto-discovered credentials and executes it.
 
-    The review-loop role works in place on the host worktree, so its ``target_worktree`` is required,
-    validated and bind-mounted at the sandbox workspace path (see ``git_flow.sandbox_worktree_mounts``)
-    with ``HOLON_TARGET_WORKTREE`` pinned to the mountpoint; every other role keeps its private clone.
+    The review-loop and executor roles work in place on the host worktree, so their ``target_worktree`` is
+    required, validated and bind-mounted at the sandbox workspace path (see ``git_flow.sandbox_worktree_mounts``)
+    with ``HOLON_TARGET_WORKTREE`` pinned to the mountpoint; the intent creator and planner keep their private clone.
     """
     if not shutil.which("docker"):
         print("Error: 'docker' CLI command not found. Please install Docker.", file=sys.stderr)
         return 1
 
     workspace_mounts: list[str] = []
-    if role == REVIEW_LOOP_ROLE:
+    if role in HOST_WORKTREE_ROLES:
         try:
-            workspace_mounts = git_flow.sandbox_worktree_mounts(target_worktree, SANDBOX_WORKSPACE_MOUNT)
+            workspace_mounts = git_flow.sandbox_worktree_mounts(target_worktree, SANDBOX_WORKSPACE_MOUNT, role)
         except RuntimeError as exc:
             print(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
             return 1

@@ -266,12 +266,12 @@ class TestHolonCLI(unittest.TestCase):
         now[0] += 700
         with patch.dict(os.environ, {"HOLON_STAGE_BUDGET_SECONDS": "9999"}, clear=True):
             with active_stage_timer(timer):
-                run_docker_container("executor", "holon/agent-pi", ["branch"], agent_id="pi")
+                run_docker_container("planner", "holon/agent-pi", ["branch"], agent_id="pi")
             budget_args = [a for a in mock_run.call_args[0][0] if a.startswith("HOLON_STAGE_BUDGET_SECONDS=")]
             self.assertEqual(budget_args, ["HOLON_STAGE_BUDGET_SECONDS=1940"])
         mock_run.reset_mock()
         with patch.dict(os.environ, {}, clear=True):
-            run_docker_container("executor", "holon/agent-pi", ["branch"], agent_id="pi")
+            run_docker_container("planner", "holon/agent-pi", ["branch"], agent_id="pi")
             self.assertFalse(
                 any(a.startswith("HOLON_STAGE_BUDGET_SECONDS=") for a in mock_run.call_args[0][0]),
             )
@@ -288,8 +288,9 @@ class TestHolonCLI(unittest.TestCase):
             self.assertEqual(rc, 1)
             self.assertIn("Error: Intent file is mandatory for intent creation.", mock_stderr.getvalue())
 
+    @patch("sandbox_executor.cli.commands.execute.execution_worktree", return_value="/work/flow-x")
     @patch("sandbox_executor.cli.run_docker_container", return_value=0)
-    def test_main_subcommands(self, mock_run_container):
+    def test_main_subcommands(self, mock_run_container, _mock_worktree):
         test_args = [
             "holon",
             "plan",
@@ -345,6 +346,7 @@ class TestHolonCLI(unittest.TestCase):
                 ["plan_branch_name", "antigravity-agent", "gemini-3.5-flash"],
                 agent_id="antigravity",
                 token_reduce=False,
+                target_worktree="/work/flow-x",
             )
 
     @patch("sandbox_executor.cli.run_docker_container", return_value=0)
@@ -1391,8 +1393,9 @@ class TestSharedRoleDispatch(unittest.TestCase):
             resolve_role_image("executor", "newrunner")
         self.assertEqual(resolve_role_image("intent-creator", "newrunner"), "holon/orchestrator")
 
+    @patch("sandbox_executor.cli.commands.execute.execution_worktree", return_value="/work/flow-x")
     @patch("sandbox_executor.cli.dispatch_role_agent", return_value=0)
-    def test_per_stage_commands_route_through_dispatch_role_agent(self, mock_dispatch):
+    def test_per_stage_commands_route_through_dispatch_role_agent(self, mock_dispatch, _mock_worktree):
         cases = [
             (["holon", "intent", "intents/test.json"], ("intent-creator", None, None, [])),
             (
@@ -1412,8 +1415,9 @@ class TestSharedRoleDispatch(unittest.TestCase):
             mock_dispatch.assert_called_once()
             self.assertEqual(mock_dispatch.call_args.args, expected)
 
+    @patch("sandbox_executor.cli.commands.execute.execution_worktree", return_value="/work/flow-x")
     @patch("sandbox_executor.cli.dispatch_role_agent")
-    def test_execute_of_a_refused_over_budget_plan_exits_non_zero_with_a_message(self, mock_dispatch):
+    def test_execute_of_a_refused_over_budget_plan_exits_non_zero_with_a_message(self, mock_dispatch, _mock_worktree):
         from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
 
         argv = ["holon", "execute", "I-1-x/P-1/_", "--agent", "claude-agent", "--model", "claude-opus-5-5"]

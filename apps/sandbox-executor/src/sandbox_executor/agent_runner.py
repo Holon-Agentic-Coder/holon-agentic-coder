@@ -161,8 +161,11 @@ SANDBOX_WORKSPACE_MOUNT = "/home/holon/.holon-sandbox/workspace"
 #: writable by the holon user.
 SANDBOX_UV_PROJECT_ENVIRONMENT = "/home/holon/.cache/holon-venv"
 
-#: The one role whose entrypoint works in place on a bind-mounted host worktree instead of a private clone.
 REVIEW_LOOP_ROLE = "review-loop"
+EXECUTOR_ROLE = "executor"
+
+#: The roles whose entrypoint works in place on a bind-mounted host worktree instead of a private clone.
+HOST_WORKTREE_ROLES: frozenset[str] = frozenset({REVIEW_LOOP_ROLE, EXECUTOR_ROLE})
 
 
 def get_workspace_dir() -> str:

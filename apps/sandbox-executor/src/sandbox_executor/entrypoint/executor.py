@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Sandbox executor entrypoint for Holon Agentic Coder.
 
-Clones or reuses a workspace repository, runs the configured agent, captures
+Works in place on the host worktree that 'holon execute' and 'holon flow' bind-mount into the container (an
+unmounted run outside a container clones or reuses its workspace instead), runs the configured agent, captures
 execution results into the ledger, and commits/pushes the execution branch.
 
 Key environment variables:
-    HOLON_TARGET_WORKTREE: Override the default workspace directory.
+    HOLON_TARGET_WORKTREE: Override the default workspace directory; the sandbox mountpoint marks a mounted worktree.
     HOLON_KEEP_WORKSPACE: Set to '1' to skip cleanup and reuse the existing workspace.
     HOLON_IN_SANDBOX: Set to '1' to explicitly mark sandbox context.
     HOLON_SKIP_PUSH: Set to '1' to skip the git push step.
@@ -32,7 +33,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.agent_defaults import FALLBACK_AGENT, default_model_for
-from sandbox_executor.agent_runner import cleanup_repo_dir, get_repo_url, get_runner, get_workspace_dir
+from sandbox_executor.agent_runner import (
+    SANDBOX_WORKSPACE_MOUNT,
+    cleanup_repo_dir,
+    get_repo_url,
+    get_runner,
+    get_workspace_dir,
+)
 from sandbox_executor.artefacts import EXECUTION_SPEC, ArtefactReport, execution_write_protocol
 from sandbox_executor.budgets import BudgetBreach, StageTimer, load_budgets
 
@@ -1023,15 +1030,53 @@ def superseding_failure_row(base_row: dict[str, Any], summary: str) -> dict[str,
     }
 
 
+def _workspace_mounted() -> bool:
+    """True when the workspace is the host worktree bind-mounted at the sandbox mountpoint."""
+    return os.getenv("HOLON_TARGET_WORKTREE") == SANDBOX_WORKSPACE_MOUNT
+
+
 def _configure_executor_identity(repo_dir: str) -> None:
-    """Set the repo-local executor git identity, so the agent's own commits and the executor's commits can land.
+    """Set the executor git identity, so the agent's own commits and the executor's commits can land.
 
     Called straight after the execution branch is created (before the agent runs) and again before the executor
-    commits, because a git recovery re-initialises the repository and discards the local config.
+    commits, because a git recovery re-initialises the repository and discards the local config. A mounted host
+    worktree's repository config is shared with the host and mounted read-only, so the identity then goes in the
+    container's own global config.
+    """
+    scope = "--global" if _workspace_mounted() else "--local"
+    repo = _get_repo(repo_dir)
+    repo.run(["config", scope, "user.email", EXECUTOR_GIT_EMAIL], check=False)
+    repo.run(["config", scope, "user.name", EXECUTOR_GIT_NAME], check=False)
+
+
+def _validate_mounted_workspace(repo_dir: str, plan_branch: str) -> str:
+    """Validate the host worktree mounted at repo_dir and return the plan tip the host fetched into it.
+
+    The container never clones, fetches, resets or cleans the mount. HEAD must be a readable commit, the worktree must
+    carry no uncommitted changes (an earlier crashed run's edits stay on the host for the operator, and are never
+    swept into this execution), and the plan branch must already resolve locally, because the host fetches it before
+    dispatch.
+
+    Raises:
+        RuntimeError: If any of these checks fails.
     """
     repo = _get_repo(repo_dir)
-    repo.config("user.email", EXECUTOR_GIT_EMAIL)
-    repo.config("user.name", EXECUTOR_GIT_NAME)
+    repo.run(["config", "--global", "--add", "safe.directory", repo_dir], check=False)
+    if repo.rev_parse("HEAD^{commit}", verify=True).returncode != 0:
+        raise RuntimeError(f"mounted workspace at '{repo_dir}' has no readable HEAD commit")
+    status = repo.run(["status", "--porcelain"], check=False)
+    if status.returncode != 0 or (status.stdout or "").strip():
+        raise RuntimeError(
+            f"mounted workspace at '{repo_dir}' has uncommitted changes, which are kept on the host; commit, stash or "
+            "discard them in the host worktree before executing"
+        )
+    for ref in (f"refs/remotes/origin/{plan_branch}", f"refs/heads/{plan_branch}"):
+        tip = repo.rev_parse(f"{ref}^{{commit}}", verify=True)
+        if tip.returncode == 0 and (tip.stdout or "").strip():
+            return tip.stdout.strip()
+    raise RuntimeError(
+        f"plan branch '{plan_branch}' does not resolve in the mounted workspace; the host fetches it before dispatch"
+    )
 
 
 def _salvage_pathspec(notes_rel: str) -> list[str]:
@@ -1176,10 +1221,15 @@ def _report_unpushed_work(repo_dir: str, exec_branch: str, plan_tip: str | None,
 
 
 def _resume_refusal(repo_dir: str, repo_url: str, partial_branch: str, plan_branch_prefix: str) -> str | None:
-    """Fetch a failed execution branch for a resume and return why it cannot be used, or None when it can."""
+    """Fetch a failed execution branch for a resume and return why it cannot be used, or None when it can.
+
+    A mounted host worktree is never fetched into: the host already fetched the branch before dispatch.
+    """
     shaped = _PARTIAL_BRANCH_RE.match(partial_branch) and ".." not in partial_branch
     if not shaped or not partial_branch.startswith(f"{plan_branch_prefix}/E-"):
         return f"'{partial_branch}' is not an execution branch of this plan"
+    if _workspace_mounted():
+        return None
     fetch = _get_repo(repo_dir).run(
         ["fetch", "--no-tags", repo_url, f"+refs/heads/{partial_branch}:refs/remotes/origin/{partial_branch}"],
         check=False,
@@ -1212,7 +1262,7 @@ def _resolve_partial_head(  # noqa: PLR0911
         return None, "the partial head is not on the fetched branch"
     if repo.merge_base(plan_tip, sha, is_ancestor=True).returncode != 0:
         shallow = repo.rev_parse("--is-shallow-repository")
-        if (shallow.stdout or "").strip() != "true":
+        if (shallow.stdout or "").strip() != "true" or _workspace_mounted():
             return None, "not a descendant of the plan tip"
         repo.fetch(repo_url, f"refs/heads/{partial_branch}", "--deepen=50")
         if repo.merge_base(plan_tip, sha, is_ancestor=True).returncode != 0:
@@ -1274,6 +1324,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     in_sandbox = in_sandbox_explicit or in_sandbox_heuristic
 
     is_default_repo = not os.getenv("HOLON_TARGET_WORKTREE")
+    mounted = _workspace_mounted()
     repo_dir = get_workspace_dir()
     if is_default_repo and not keep_workspace:
         if not in_sandbox:
@@ -1287,7 +1338,11 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     try:
         repo_url = get_repo_url()
         repo = _get_repo(repo_dir)
-        if not os.path.exists(os.path.join(repo_dir, ".git")):
+        mounted_plan_tip: str | None = None
+        if mounted:
+            # The host provisioned, fetched and mounted the worktree: no clone, fetch, reset or clean here.
+            mounted_plan_tip = _validate_mounted_workspace(repo_dir, plan_branch)
+        elif not os.path.exists(os.path.join(repo_dir, ".git")):
             repo.run(["clone", "--branch", plan_branch, "--single-branch", "--depth", "1", repo_url, "."])
         else:
             # If the directory already contains a .git repository (e.g. workspace is preserved
@@ -1338,8 +1393,11 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         exec_branch = f"{plan_branch_prefix}/{exec_id}/_"
 
         # Plan branch tip: the base the empty-diff guard compares the agent's work against, even on a resume.
-        plan_tip_res = repo.rev_parse("HEAD")
-        plan_tip = plan_tip_res.stdout.strip() if plan_tip_res.returncode == 0 and plan_tip_res.stdout else None
+        if mounted_plan_tip:
+            plan_tip: str | None = mounted_plan_tip
+        else:
+            plan_tip_res = repo.rev_parse("HEAD")
+            plan_tip = plan_tip_res.stdout.strip() if plan_tip_res.returncode == 0 and plan_tip_res.stdout else None
         partial_head: str | None = None
         if partial_branch:
             partial_head, resume_reason = _resolve_partial_head(
@@ -1352,7 +1410,9 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                     f"Starting from the plan tip of {plan_branch}: {redact_agent_secrets(resume_reason)}",
                     file=sys.stderr,
                 )
-        repo.run(["checkout", "-b", exec_branch, *([partial_head] if partial_head else [])])
+        # A mounted worktree is not on the plan branch, so the execution branch starts from the plan tip explicitly.
+        start_point = partial_head or mounted_plan_tip
+        repo.run(["checkout", "-b", exec_branch, *([start_point] if start_point else [])])
         # Before the agent runs, so the commits it makes step by step land on the execution branch.
         _configure_executor_identity(repo_dir)
 
@@ -1645,6 +1705,12 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             is_healthy, probe_err = _probe_git_repo(repo_dir)
             if not is_healthy:
                 repaired = _repair_git_repo(repo_dir, probe_err, default_branch=exec_branch, plan_branch=plan_branch)
+                if not repaired and mounted:
+                    # Its .git pointer is read-only and the git directory is the host's: never re-initialise it.
+                    raise RuntimeError(
+                        f"the mounted worktree's git repository is unusable after the agent ran ({probe_err}); its "
+                        "files are kept in the host worktree"
+                    )
                 if not repaired:
                     recovery_triggered = True
                     print(
@@ -1963,9 +2029,11 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             else:
                 skip_push = os.getenv("HOLON_SKIP_PUSH")
                 if not (skip_push and skip_push.lower() in ("1", "true", "yes")):
-                    push = repo.push(branch=exec_branch, set_upstream=True, check=False)
+                    # A mounted worktree's repository config is read-only, so no upstream is recorded there.
+                    push = repo.push(branch=exec_branch, set_upstream=not mounted, check=False)
                     if push.returncode != 0:
-                        # The container is removed on exit, so the commits survive only as the patch on stderr.
+                        # Unmounted, the container is removed on exit, so the commits survive only as the patch on
+                        # stderr; a mounted worktree also keeps them on the host.
                         _report_unpushed_work(repo_dir, exec_branch, plan_tip, push.stderr or push.stdout or "")
                         if not skip_agent:
                             print(stage_timer.summary("failed"))

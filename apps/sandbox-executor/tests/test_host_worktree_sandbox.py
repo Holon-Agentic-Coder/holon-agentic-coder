@@ -12,6 +12,9 @@ container round trip is covered by ``test_review_workspace_integration.py``. One
 (f) the recorded docker commands create no named volume and launch no root chown init container;
 (g) resumed runs and Stage 4 reviews reuse ``flow-<slug>`` and never create ``pr<N>-<slug>`` beside it;
 (h) the shared worktree stays the host's: no planted config.worktree, no duplicated or swept-up ledger rows.
+
+The Stage 3 executor is covered the same way: the host provisions or reuses flow-<slug> and fetches the plan branch, and
+the entrypoint branches from the plan tip in the mounted worktree, refusing a dirty one, with no clone or fetch.
 """
 
 from __future__ import annotations
@@ -503,12 +506,13 @@ def _docker_argvs(role: str, target_worktree: str | None, mounts: list[str] | Ex
     return code, captured
 
 
-def test_review_loop_adds_only_the_worktree_mounts_and_pins_the_workspace():
-    """The review-loop argv is the planner argv plus worktree mounts, the pinned workspace and venv; nothing more."""
+@pytest.mark.parametrize("role", ["review-loop", "executor"])
+def test_worktree_roles_add_only_the_worktree_mounts_and_pin_the_workspace(role):
+    """A review-loop or executor argv is the planner argv plus worktree mounts, the pinned workspace and venv only."""
     from sandbox_executor.agent_runner import SANDBOX_UV_PROJECT_ENVIRONMENT, SANDBOX_WORKSPACE_MOUNT
 
     _code, (baseline,) = _docker_argvs("planner", "/work/flow-demo", _FAKE_WORKTREE_MOUNTS)
-    code, (review,) = _docker_argvs("review-loop", "/work/flow-demo", _FAKE_WORKTREE_MOUNTS)
+    code, (review,) = _docker_argvs(role, "/work/flow-demo", _FAKE_WORKTREE_MOUNTS)
 
     assert code == 0
     # Guard every isolation flag: removing the mounts and the pinned workspace (and the role) restores the
@@ -518,7 +522,7 @@ def test_review_loop_adds_only_the_worktree_mounts_and_pins_the_workspace():
         reduced = _remove_argv_pair(reduced, pair)
     reduced = _remove_argv_pair(reduced, ["-e", f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"])
     reduced = _remove_argv_pair(reduced, ["-e", f"UV_PROJECT_ENVIRONMENT={SANDBOX_UV_PROJECT_ENVIRONMENT}"])
-    reduced = _remove_argv_pair(reduced, ["-e", "HOLON_ROLE=review-loop"])
+    reduced = _remove_argv_pair(reduced, ["-e", f"HOLON_ROLE={role}"])
     baseline = _remove_argv_pair(baseline, ["-e", "HOLON_TARGET_WORKTREE=/home/dev/own-checkout"])
     baseline = _remove_argv_pair(baseline, ["-e", "HOLON_ROLE=planner"])
     assert reduced == baseline
@@ -532,24 +536,162 @@ def test_review_loop_adds_only_the_worktree_mounts_and_pins_the_workspace():
     assert not SANDBOX_UV_PROJECT_ENVIRONMENT.startswith(SANDBOX_WORKSPACE_MOUNT)
 
 
-def test_other_roles_never_mount_the_host_worktree():
-    """Only the in-place review-loop role bind-mounts the worktree; the rest keep their private clone."""
+def test_the_planner_never_mounts_the_host_worktree():
+    """Only the in-place review-loop and executor roles bind-mount the worktree; the planner keeps its private clone."""
     from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
 
-    for role in ("planner", "executor"):
-        code, (argv,) = _docker_argvs(role, "/work/flow-demo", _FAKE_WORKTREE_MOUNTS)
-        assert code == 0
-        assert not any(SANDBOX_WORKSPACE_MOUNT in a or "/work/flow-demo" in a for a in argv), argv
+    code, (argv,) = _docker_argvs("planner", "/work/flow-demo", _FAKE_WORKTREE_MOUNTS)
+    assert code == 0
+    assert not any(SANDBOX_WORKSPACE_MOUNT in a or "/work/flow-demo" in a for a in argv), argv
 
 
-def test_review_loop_without_a_valid_worktree_fails_before_any_docker_command(capsys):
+@pytest.mark.parametrize("role", ["review-loop", "executor"])
+def test_worktree_role_without_a_valid_worktree_fails_before_any_docker_command(role, capsys):
     """A missing or refused worktree fails closed: exit 1, an actionable error, and no docker run at all."""
     from sandbox_executor import git_flow
 
-    code, captured = _docker_argvs("review-loop", None, RuntimeError("needs an explicit target worktree"))
+    code, captured = _docker_argvs(role, None, RuntimeError("needs an explicit target worktree"))
 
     assert code == 1
     assert captured == []
     assert "needs an explicit target worktree" in capsys.readouterr().err
     with pytest.raises(RuntimeError, match="needs an explicit target worktree"):
         git_flow.sandbox_worktree_mounts(None, "/sandbox")
+
+
+# --- the Stage 3 executor on the mounted flow worktree ---------------------------------------------------------------
+
+_PLAN = "I-1-demo/P-1/_"
+
+
+def _push_over_budget_plan(repo: Path) -> str:
+    """Push an over-budget plan branch to origin (so the executor records a refusal without running an agent)."""
+    _git(repo, "checkout", "-q", "-b", "plan-seed")
+    ledger = repo / "holon-knowledge" / "ledger"
+    ledger.mkdir(parents=True)
+    (ledger / "intents.jsonl").write_text('{"branch": "I-1-demo/_", "slug": "demo"}\n', encoding="utf-8")
+    (ledger / "plans.jsonl").write_text(
+        '{"plan_id": "P-1", "intent_branch": "I-1-demo/_", "entropy": 8.0, "entropy_budget": 5.0}\n', encoding="utf-8"
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "plan")
+    # Pushed by URL, so no remote-tracking ref appears until the host fetches the plan branch.
+    _git(repo, "push", "-q", str(repo.parent / "remote.git"), f"HEAD:refs/heads/{_PLAN}")
+    tip = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    return tip
+
+
+def _executor_spy(calls: list[list[str]]):
+    from sandbox_executor.entrypoint import executor
+
+    real_run_cmd = executor.run_cmd
+
+    def spy(args, *a, **k):
+        calls.append(list(args))
+        return real_run_cmd(args, *a, **k)
+
+    return patch.object(executor, "run_cmd", side_effect=spy)
+
+
+def test_b_executor_starts_from_the_host_fetched_plan_tip_without_cloning_or_fetching(
+    repo: Path, flow_worktree: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sandbox_executor.entrypoint import executor
+
+    tip = _push_over_budget_plan(repo)
+    git_flow.fetch_origin_branch(str(flow_worktree), _PLAN)
+    monkeypatch.setenv("HOLON_TARGET_WORKTREE", SANDBOX_WORKSPACE_MOUNT)
+    calls: list[list[str]] = []
+
+    with _executor_spy(calls):
+        assert executor._validate_mounted_workspace(str(flow_worktree), _PLAN) == tip
+
+    verbs = {c[1] for c in calls if c[0] == "git"}
+    assert verbs.isdisjoint({"clone", "fetch", "reset", "clean", "checkout", "pull"}), calls
+    # The mounted repository's config is the host's and read-only: safe.directory goes in the container's own config.
+    assert str(flow_worktree) in _git(flow_worktree, "config", "--global", "--get-all", "safe.directory")
+
+
+def test_b_executor_refuses_a_plan_branch_the_host_has_not_fetched(repo: Path, flow_worktree: Path) -> None:
+    from sandbox_executor.entrypoint import executor
+
+    _push_over_budget_plan(repo)
+
+    with pytest.raises(RuntimeError, match="the host fetches it before dispatch"):
+        executor._validate_mounted_workspace(str(flow_worktree), _PLAN)
+
+
+def test_d_executor_refuses_a_dirty_mounted_worktree_and_leaves_its_edits_on_the_host(
+    repo: Path, flow_worktree: Path
+) -> None:
+    from sandbox_executor.entrypoint import executor
+
+    _push_over_budget_plan(repo)
+    git_flow.fetch_origin_branch(str(flow_worktree), _PLAN)
+    (flow_worktree / "README.md").write_text("edit left by a crashed run\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="uncommitted changes, which are kept on the host"):
+        executor._validate_mounted_workspace(str(flow_worktree), _PLAN)
+
+    assert (flow_worktree / "README.md").read_text(encoding="utf-8") == "edit left by a crashed run\n"
+
+
+def test_c_executor_commits_and_pushes_its_execution_branch_from_the_mounted_worktree(
+    repo: Path, flow_worktree: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sandbox_executor.entrypoint import executor
+
+    tip = _push_over_budget_plan(repo)
+    git_flow.fetch_origin_branch(str(flow_worktree), _PLAN)
+    remote = str(repo.parent / "remote.git")
+    monkeypatch.setenv("HOLON_TARGET_WORKTREE", SANDBOX_WORKSPACE_MOUNT)
+    monkeypatch.setenv("HOLON_SKIP_PUSH", "")
+    monkeypatch.setattr(executor, "get_workspace_dir", lambda: str(flow_worktree))
+    monkeypatch.setattr(executor, "get_repo_url", lambda: remote)
+    monkeypatch.setattr(executor, "sync_and_reconcile_pre_push", lambda *a, **k: (True, "ok"))
+    monkeypatch.setattr(executor, "get_runner", lambda name: MagicMock(**{"get_version.return_value": "1.0.0"}))
+    monkeypatch.setattr(sys, "argv", ["executor.py", _PLAN, "antigravity-agent", "gemini-3.5-flash"])
+    calls: list[list[str]] = []
+
+    with _executor_spy(calls), pytest.raises(SystemExit) as exit_:
+        executor.main()
+
+    assert exit_.value.code == executor.OVER_BUDGET_EXIT_CODE
+    assert not any(c[:2] == ["git", "clone"] or c[:2] == ["git", "clean"] for c in calls), calls
+    # The execution branch is checked out in the host worktree, starts at the plan tip and is the one on origin.
+    branch = _git(flow_worktree, "symbolic-ref", "--short", "HEAD")
+    assert branch.startswith("I-1-demo/P-1/E-") and branch.endswith("/_")
+    assert _git(flow_worktree, "rev-parse", "HEAD~1") == tip
+    assert _git(repo.parent / "remote.git", "rev-parse", f"refs/heads/{branch}") == _git(
+        flow_worktree, "rev-parse", "HEAD"
+    )
+    assert _git(flow_worktree, "status", "--porcelain") == ""
+    # Nothing was written to the host's shared repository config: no upstream, no identity.
+    host_config = (repo / ".git" / "config").read_text(encoding="utf-8")
+    assert "Holon Executor Agent" not in host_config and f'branch "{branch}"' not in host_config
+
+
+def test_g_holon_execute_provisions_the_plans_flow_worktree_off_a_default_branch_checkout(repo: Path) -> None:
+    from sandbox_executor.cli.commands.execute import execution_worktree
+
+    tip = _push_over_budget_plan(repo)
+
+    worktree = execution_worktree(_PLAN, str(repo))
+
+    assert worktree == str(repo.parent / "flow-demo")
+    assert _git(worktree, "symbolic-ref", "--short", "HEAD") == "flow-demo"
+    # The plan branch is fetched on the host, so the executor container never fetches to prepare its checkout.
+    assert _git(worktree, "rev-parse", f"refs/remotes/origin/{_PLAN}") == tip
+    # The default-branch checkout only selected the repository: it stays on main.
+    assert _git(repo, "symbolic-ref", "--short", "HEAD") == "main"
+
+
+def test_g_holon_execute_reuses_an_existing_flow_worktree(repo: Path, flow_worktree: Path) -> None:
+    from sandbox_executor.cli.commands.execute import execution_worktree
+
+    _push_over_budget_plan(repo)
+    before = _worktrees(repo)
+
+    assert execution_worktree(_PLAN, str(flow_worktree)) == str(flow_worktree)
+    assert _worktrees(repo) == before

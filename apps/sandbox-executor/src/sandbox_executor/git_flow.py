@@ -21,6 +21,7 @@ provisioning for autonomous pipeline runs:
 - provision_reviewer_worktree / prune_reviewer_worktree / ephemeral_reviewer_worktree: Ephemeral flow-<slug>-rev<i>
   sibling worktrees for reviewer turns that need an isolated checkout.
 - sandbox_worktree_mounts: Validate a worktree and build the docker bind mounts that expose it to a role container.
+- fetch_origin_branch: Fetch a branch on the host, so a container working on a mounted worktree never fetches.
 """
 
 from __future__ import annotations
@@ -36,11 +37,12 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from sandbox_executor.git import branch_exists, resolve_ref, run_git
+from sandbox_executor.redaction import redact_agent_secrets
 
 logger = logging.getLogger(__name__)
 
-#: The unprivileged uid and gid the sandbox image runs as; a Linux bind mount keeps host ownership, so the review-loop
-#: container can only write a worktree and git directories that this user may write.
+#: The unprivileged uid and gid the sandbox image runs as; a Linux bind mount keeps host ownership, so a mounted role
+#: container (review loop or executor) can only write a worktree and git directories that this user may write.
 SANDBOX_CONTAINER_UID = 1000
 SANDBOX_CONTAINER_GID = 1000
 
@@ -57,6 +59,7 @@ __all__ = [
     "ensure_pr_worktree",
     "ensure_worktree",
     "ephemeral_reviewer_worktree",
+    "fetch_origin_branch",
     "find_worktree_for_branch",
     "is_bare_repository",
     "is_default_branch_worktree",
@@ -657,6 +660,22 @@ def ephemeral_reviewer_worktree(worktree: str, index: int) -> Iterator[str]:
         prune_reviewer_worktree(worktree, index)
 
 
+def fetch_origin_branch(worktree: str, branch: str) -> None:
+    """Fetch origin's branch into refs/remotes/origin/<branch> on the host, so a container mounting worktree need not.
+
+    Raises:
+        RuntimeError: If the fetch fails (the redacted git error is included).
+    """
+    res = run_git(
+        ["fetch", "--no-tags", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"],
+        cwd=worktree,
+        check=False,
+    )
+    if res.returncode != 0:
+        detail = redact_agent_secrets((res.stderr or "").strip()) or f"exit code {res.returncode}"
+        raise RuntimeError(f"could not fetch branch '{branch}' from origin into '{worktree}': {detail}")
+
+
 def _read_pointer(path: str, prefix: str = "") -> str | None:
     """Return the path a git pointer file (.git, commondir) names, made absolute relative to its directory."""
     try:
@@ -703,7 +722,7 @@ def _container_cannot_write(path: str) -> bool:
     return not st.st_mode & stat.S_IWOTH
 
 
-def _container_write_problem(*paths: str) -> str | None:
+def _container_write_problem(role: str, *paths: str) -> str | None:
     """On Linux, explain which of paths the sandbox user cannot write through a bind mount; None when all are fine."""
     if not sys.platform.startswith("linux"):
         return None
@@ -711,18 +730,18 @@ def _container_write_problem(*paths: str) -> str | None:
     if not unwritable:
         return None
     return (
-        f"the review-loop container runs as uid {SANDBOX_CONTAINER_UID} and a Linux bind mount keeps host ownership, "
-        f"so it cannot write {', '.join(repr(p) for p in unwritable)}. Run the review as uid {SANDBOX_CONTAINER_UID}, "
+        f"the {role} container runs as uid {SANDBOX_CONTAINER_UID} and a Linux bind mount keeps host ownership, "
+        f"so it cannot write {', '.join(repr(p) for p in unwritable)}. Run holon as uid {SANDBOX_CONTAINER_UID}, "
         f"or grant it write access (for example 'setfacl -R -m u:{SANDBOX_CONTAINER_UID}:rwX,"
         f"d:u:{SANDBOX_CONTAINER_UID}:rwX <path>')."
     )
 
 
-def _validated_sandbox_toplevel(target_worktree: str | None) -> str:
+def _validated_sandbox_toplevel(target_worktree: str | None, role: str) -> str:
     """Return the top-level directory of a worktree that may be mounted, or raise RuntimeError explaining why not."""
     if not target_worktree:
         raise RuntimeError(
-            "the review-loop container reviews a host worktree in place and needs an explicit target worktree; pass "
+            f"the {role} container works on a host worktree in place and needs an explicit target worktree; pass "
             "--target-worktree <path> (never the current directory implicitly)."
         )
     problem = target_worktree_problem(target_worktree, subject="Sandbox worktree")
@@ -730,7 +749,7 @@ def _validated_sandbox_toplevel(target_worktree: str | None) -> str:
         raise RuntimeError(problem)
     toplevel = _worktree_toplevel(target_worktree)
     problem = default_branch_worktree_problem(
-        toplevel, repository_default_branch(toplevel), command="The review-loop container", subject="Sandbox worktree"
+        toplevel, repository_default_branch(toplevel), command=f"The {role} container", subject="Sandbox worktree"
     )
     if problem:
         raise RuntimeError(problem)
@@ -746,7 +765,7 @@ def _validated_sandbox_toplevel(target_worktree: str | None) -> str:
     return toplevel
 
 
-def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str) -> list[str]:
+def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str, role: str = "review-loop") -> list[str]:
     """Validate a host worktree and return the docker arguments that bind-mount it into a role container.
 
     The worktree must be an attached, non-bare working tree that does not have the default branch checked out. Its
@@ -763,6 +782,7 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str) -> lis
     Args:
         target_worktree: Host worktree path (a subdirectory of one is accepted); required.
         mountpoint: Container path of the workspace.
+        role: Role of the container the worktree is mounted into, named in refusals.
 
     Returns:
         list[str]: Docker '-v' arguments.
@@ -772,7 +792,7 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str) -> lis
             pointer cannot be read, the repository enables extensions.worktreeConfig, or (on Linux) the container
             user cannot write the worktree or its git directories.
     """
-    toplevel = _validated_sandbox_toplevel(target_worktree)
+    toplevel = _validated_sandbox_toplevel(target_worktree, role)
     dot_git = os.path.join(toplevel, ".git")
     args = ["-v", f"{toplevel}:{mountpoint}"]
     if os.path.isdir(dot_git):
@@ -787,7 +807,7 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str) -> lis
         if not _within(git_dir, common_dir):
             args += ["-v", f"{git_dir}:{git_dir}"]
         read_only = [dot_git, os.path.join(git_dir, "commondir"), os.path.join(git_dir, "gitdir")]
-    problem = _container_write_problem(toplevel, git_dir, common_dir)
+    problem = _container_write_problem(role, toplevel, git_dir, common_dir)
     if problem:
         raise RuntimeError(problem)
     # An absent hooks/ or modules/ could be created by the container (planting modules/<name>/hooks for a later host

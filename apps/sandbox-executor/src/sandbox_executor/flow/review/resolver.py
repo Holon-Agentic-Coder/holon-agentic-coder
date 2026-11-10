@@ -1,5 +1,6 @@
-"""The Stage 4 resolver pass: dispatch the resolver agent, filter adjudicated findings and record finding
-dispositions.
+"""The Stage 4 resolver pass: dispatch the resolver agent and record finding dispositions.
+
+Adjudication suppression lives in :mod:`sandbox_executor.flow.review.adjudication`.
 """
 
 from __future__ import annotations
@@ -23,16 +24,13 @@ from sandbox_executor.flow.review.records import _bounded_error_context, record_
 from sandbox_executor.ledger import generate_action_id
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.resolver_result import read_container_resolver_result, resolver_error_text
-from sandbox_executor.review_ensemble import ReviewCounts, ReviewerResult, ReviewerStatus, ReviewerVerdict
 from sandbox_executor.review_report import (
     FindingDisposition,
     FindingRow,
     deserialize_finding_dispositions,
     finding_signature,
-    parse_reviewer_detail,
     serialize_finding_disposition,
     serialize_finding_for_resolver,
-    with_reviewer_detail,
 )
 from sandbox_executor.review_target import ReviewTarget
 
@@ -150,77 +148,6 @@ def _dispatch_review_resolver(
     finally:
         with contextlib.suppress(OSError):
             os.remove(result_file)
-
-
-def _augment_pr_text_with_rejected(
-    pr_text: tuple[str, str],
-    rejected: Sequence[FindingDisposition],
-) -> tuple[str, str]:
-    """Append already-adjudicated rejected findings to the PR description so reviewers do not re-raise them."""
-    if not rejected:
-        return pr_text
-    lines = [
-        pr_text[1] or "",
-        "",
-        "### Adjudicated Rejected Findings (Already Adjudicated — Do Not Re-Raise)",
-        "",
-    ]
-    for item in rejected:
-        loc = item.path if item.line is None else f"{item.path}:{item.line}"
-        lines.append(f"- `{item.id}` ({item.severity}, `{loc}`): {item.summary} — rejected: `{item.rejection_reason}`")
-    return pr_text[0], "\n".join(lines).strip()
-
-
-def _filter_adjudicated_findings(
-    reviewers: Sequence[ReviewerResult],
-    rejected_history: Mapping[tuple[str, str, int | None, str], FindingDisposition],
-    rejected_ids: frozenset[str] = frozenset(),
-) -> list[ReviewerResult]:
-    """Remove any finding already adjudicated as rejected so reviewers cannot re-raise it."""
-    if not rejected_history and not rejected_ids:
-        return list(reviewers)
-    filtered_results: list[ReviewerResult] = []
-    for result in reviewers:
-        if result.status is not ReviewerStatus.COMPLETED or not result.findings:
-            filtered_results.append(result)
-            continue
-        detail = parse_reviewer_detail(result)
-        kept_findings = []
-        kept_detail_findings = []
-        for idx, finding in enumerate(result.findings):
-            sig = finding_signature(finding.severity, finding.path, finding.line, finding.summary)
-            row_id = detail.findings[idx].id if idx < len(detail.findings) else ""
-            if sig in rejected_history or (row_id and row_id in rejected_ids):
-                continue
-            kept_findings.append(finding)
-            if idx < len(detail.findings):
-                kept_detail_findings.append(
-                    {"id": detail.findings[idx].id, "recommendation": detail.findings[idx].recommendation}
-                )
-        if len(kept_findings) == len(result.findings):
-            filtered_results.append(result)
-            continue
-        counts = ReviewCounts(
-            critical=sum(1 for f in kept_findings if f.severity == "critical"),
-            important=sum(1 for f in kept_findings if f.severity == "important"),
-            nit=sum(1 for f in kept_findings if f.severity == "nit"),
-        )
-        verdict = ReviewerVerdict.APPROVED if not kept_findings else result.verdict
-        updated = dataclasses.replace(
-            result,
-            verdict=verdict,
-            counts=counts,
-            findings=tuple(kept_findings),
-        )
-        if detail.roles or detail.verified or kept_detail_findings:
-            payload = {
-                "roles": [dataclasses.asdict(r) for r in detail.roles],
-                "findings": kept_detail_findings,
-                "verified": [dataclasses.asdict(v) for v in detail.verified],
-            }
-            updated = with_reviewer_detail(updated, payload)
-        filtered_results.append(updated)
-    return filtered_results
 
 
 def _lookup_introducing_action_id(row: FindingRow, action_ids: Mapping[str, str]) -> str | None:

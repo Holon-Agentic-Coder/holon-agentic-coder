@@ -86,6 +86,11 @@ def _final_verdict(data: Mapping[str, Any]) -> str:
     return str(data.get("verdict")) if data.get("status") == str(ReviewerStatus.COMPLETED) else "FAILED"
 
 
+def _roles_at_changes(data: Mapping[str, Any]) -> list[str]:
+    roles = (data.get("review_data") or {}).get("roles") or []
+    return [str(r.get("role")) for r in roles if isinstance(r, Mapping) and r.get("verdict") == "CHANGES"]
+
+
 def render_final_verdicts(reviewers: Sequence[ReviewerResult | Mapping[str, Any]]) -> str:
     """``Reviewer 1 APPROVED (0/0/0); ... Reviewer 3 CHANGES_REQUESTED (1/0/0)`` (critical/important/nit) and roles."""
     parts: list[str] = []
@@ -93,22 +98,19 @@ def render_final_verdicts(reviewers: Sequence[ReviewerResult | Mapping[str, Any]
         counts = data.get("counts") or {}
         tally = "/".join(str(counts.get(name, 0)) for name in ("critical", "important", "nit"))
         parts.append(f"Reviewer {data.get('index')} {_final_verdict(data)} ({tally})")
-        roles = (data.get("review_data") or {}).get("roles") or []
-        parts.extend(
-            f"Reviewer {data.get('index')} {role.get('role')} role CHANGES"
-            for role in roles
-            if isinstance(role, Mapping) and role.get("verdict") == "CHANGES"
-        )
+        parts.extend(f"Reviewer {data.get('index')} {role} role CHANGES" for role in _roles_at_changes(data))
     return "; ".join(parts) or "no reviewer returned a verdict"
 
 
 def not_approved_verdicts(reviewers: Sequence[ReviewerResult | Mapping[str, Any]]) -> list[str]:
-    """``reviewer N final verdict X`` for each reviewer that did not approve cleanly with zero findings."""
-    return [
-        f"reviewer {data.get('index')} final verdict {_final_verdict(data)}"
-        for data in _summaries(reviewers)
-        if _final_verdict(data) != str(ReviewerVerdict.APPROVED) or any((data.get("counts") or {}).values())
-    ]
+    """``reviewer N final verdict X`` for each reviewer that did not approve cleanly with zero findings, and
+    ``reviewer N <role> role CHANGES`` for each activated role at ``CHANGES``."""
+    not_approved: list[str] = []
+    for data in _summaries(reviewers):
+        if _final_verdict(data) != str(ReviewerVerdict.APPROVED) or any((data.get("counts") or {}).values()):
+            not_approved.append(f"reviewer {data.get('index')} final verdict {_final_verdict(data)}")
+        not_approved.extend(f"reviewer {data.get('index')} {role} role CHANGES" for role in _roles_at_changes(data))
+    return not_approved
 
 
 def review_loop_approved(loop_res: dict[str, Any]) -> bool:

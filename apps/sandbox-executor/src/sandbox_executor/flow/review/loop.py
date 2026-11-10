@@ -73,6 +73,7 @@ from sandbox_executor.ledger import (
     parse_commit_trailers,
     try_append_ledger_line,
 )
+from sandbox_executor.resolver_evidence import OPEN
 from sandbox_executor.review_ensemble import (
     ConsensusVerdict,
     ReviewerResult,
@@ -321,6 +322,8 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
     rejected_history: dict[tuple[str, str, int | None, str], FindingDisposition] = {}  # Rejected nits only.
     all_dispositions: list[FindingDisposition] = []
     pending_dispositions: tuple[FindingDisposition, ...] = ()
+    # The resolver's latest open disposition per finding, kept so its audit text reaches the end-of-loop ACT-RES row.
+    open_dispositions: dict[tuple[str, str, int | None, str], FindingDisposition] = {}
     prev_finding_sigs: frozenset[tuple[str, str, int | None, str]] = frozenset()
     prev_head_sha = ""
     unchanged_streak = 0
@@ -636,6 +639,11 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
             break
         rejected_now = [d for d in resolver_outcome.dispositions if d.disposition == "rejected"]
         applied_now = [d for d in resolver_outcome.dispositions if d.disposition == "applied"]
+        open_dispositions.update(
+            (finding_signature(d.severity, d.path, d.line, d.summary), d)
+            for d in resolver_outcome.dispositions
+            if d.disposition == OPEN
+        )
         if rejected_now:
             suppressed_ledger_records += recorder.record(iteration, rejected_now)
             record_nit_rejections(rejected_history, rejected_now)
@@ -667,7 +675,10 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
             if finding_signature(row.severity, row.path, row.line, row.summary) not in recorded_disposition_keys
         ]
         if remaining_findings:
-            fallback_dispositions = deserialize_finding_dispositions([], remaining_findings, finding_action_ids)
+            fallback_dispositions = [
+                open_dispositions.get(finding_signature(d.severity, d.path, d.line, d.summary), d)
+                for d in deserialize_finding_dispositions([], remaining_findings, finding_action_ids)
+            ]
             suppressed_ledger_records += recorder.record(iteration, fallback_dispositions)
 
     if not consensus_reached and pr_refusal_error is None and infra_error is None and iteration >= last_label:

@@ -107,10 +107,13 @@ def test_an_open_finding_goes_to_the_resolver_again_and_is_recorded_open_at_the_
     calls: list[int] = []
     head = iter(["a" * 40, "b" * 40])
 
+    evidence = "see src/app.py:12"
+
     def resolver(target, iteration, findings, action_ids, rejected_findings):
         calls.append(iteration)
         dispositions = [
-            {"id": row.id, "disposition": "rejected", "rejection_reason": "out of scope"} for row in findings
+            {"id": row.id, "disposition": "rejected", "rejection_reason": "out of scope", "evidence": evidence}
+            for row in findings
         ]
         return {"dispositions": dispositions, "head_sha": next(head), "pushed": True}
 
@@ -127,6 +130,8 @@ def test_an_open_finding_goes_to_the_resolver_again_and_is_recorded_open_at_the_
     assert row["rejection_reason"] is None
     assert row["outcome"] == "failure"
     assert "left open" in row["action"]
+    # The resolver's own text reaches the ledger for audit rather than being rebuilt without it.
+    assert row["error_context"] == "unevidenced rejection (out of scope): see src/app.py:12"
     assert [d["disposition"] for d in res["dispositions"]] == ["open"]
 
 

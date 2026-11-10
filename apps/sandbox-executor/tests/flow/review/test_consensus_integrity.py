@@ -309,7 +309,10 @@ def test_final_verdicts_name_every_reviewer_and_role_objection():
 
     assert line.startswith("Reviewer 1 APPROVED (0/0/0); Reviewer 2 APPROVED (0/0/0); ")
     assert "Reviewer 3 CHANGES_REQUESTED (1/0/0); Reviewer 3 Security role CHANGES" in line
-    assert not_approved_verdicts(reviewers) == ["reviewer 3 final verdict CHANGES_REQUESTED"]
+    assert not_approved_verdicts(reviewers) == [
+        "reviewer 3 final verdict CHANGES_REQUESTED",
+        "reviewer 3 Security role CHANGES",
+    ]
 
 
 # --- Step 4: the post path follows the report's approval guard -------------------------------------------------------
@@ -409,7 +412,31 @@ def test_summary_lines_and_exit_status_name_a_reviewer_that_did_not_approve():
     }
 
     assert review_loop_approved(loop_res) is False
-    assert "  Not approved   : reviewer 3 final verdict CHANGES_REQUESTED" in review_summary_lines(loop_res)
+    assert (
+        "  Not approved   : reviewer 3 final verdict CHANGES_REQUESTED; reviewer 3 Security role CHANGES"
+        in review_summary_lines(loop_res)
+    )
+
+
+def test_stage4_never_halts_as_approved_while_a_role_objects_behind_clean_verdicts(tmp_path):
+    """A claimed-approved consensus whose reviewers all approved cleanly but whose role sits at CHANGES is refused."""
+    from sandbox_executor.flow.review.records import _reviewer_summary
+
+    roles = [{"role": "Security", "verdict": "CHANGES", "review": "Mount escapes the sandbox."}]
+    objecting = with_reviewer_detail(clean_reviewer(3), {"roles": roles, "findings": [], "verified": []})
+    loop_res = {
+        "consensus": {"approved": True, "status": "approved"},
+        "ensemble_verdict": "APPROVED",
+        "reviewers": [_reviewer_summary(r) for r in (clean_reviewer(1), clean_reviewer(2), objecting)],
+        "total_iterations": 1,
+    }
+
+    result, ctx = _stage4(tmp_path, loop_res)
+
+    assert result.status.value == "failed"
+    assert "reviewer 3 Security role CHANGES" in (result.error or "")
+    for text in [result.error or "", *ctx.logs]:
+        assert "[SAFETY HALT]" not in text
 
 
 def test_the_loop_summary_row_states_the_final_verdicts(tmp_path, monkeypatch):

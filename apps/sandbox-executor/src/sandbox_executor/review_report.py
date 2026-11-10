@@ -62,6 +62,7 @@ __all__ = [
     "render_dispositions_section",
     "render_on_disk_trailer",
     "render_reviewer_line",
+    "report_approves",
     "resolve_report_title",
     "review_data_summary",
     "reviewer_detail_payload",
@@ -641,14 +642,39 @@ def _pr_link(repo_dir: str, target: str, consensus_data: Mapping[str, Any]) -> s
 # --- Sections -------------------------------------------------------------------------------------------------------
 
 
+def _clean_approval(result: ReviewerResult) -> bool:
+    """True for a reviewer that completed with an ``APPROVED`` verdict and zero open findings."""
+    return (
+        result.status is ReviewerStatus.COMPLETED
+        and result.verdict is ReviewerVerdict.APPROVED
+        and not result.counts.total
+        and not result.findings
+    )
+
+
 def _approvals(reviewers: Sequence[ReviewerResult]) -> int:
-    """The number of reviewers that completed and recorded an ``APPROVED`` verdict."""
-    return sum(1 for r in reviewers if r.status is ReviewerStatus.COMPLETED and r.verdict is ReviewerVerdict.APPROVED)
+    """The number of reviewers that completed with an ``APPROVED`` verdict and zero open findings."""
+    return sum(1 for r in reviewers if _clean_approval(r))
 
 
-def _heading(consensus_data: Mapping[str, Any], approvals: int, configured: int) -> str:
-    """The verdict heading: the ensemble verdict decides the word, the recorded approvals the fraction."""
-    if _is_approved(consensus_data):
+def report_approves(consensus_data: Mapping[str, Any], reviewers: Sequence[ReviewerResult]) -> bool:
+    """APPROVED only for an APPROVED ensemble verdict, every reviewer clean and no activated role at ``CHANGES``.
+
+    A defence in depth: an upstream regression that hands over an APPROVED verdict with a dissenting reviewer or role
+    still renders, and posts, as changes requested.
+    """
+    roles = collect_review_data(reviewers).roles
+    return (
+        _is_approved(consensus_data)
+        and bool(reviewers)
+        and all(_clean_approval(r) for r in reviewers)
+        and not any(role.verdict == "CHANGES" for role in roles)
+    )
+
+
+def _heading(consensus_data: Mapping[str, Any], approved: bool, approvals: int, configured: int) -> str:
+    """The verdict heading: :func:`report_approves` decides the word, the clean approvals the fraction."""
+    if approved:
         return f"## ✅ Ensemble Consensus Review — APPROVED ({approvals}/{configured})"
     iteration = consensus_data.get("iterations", 1)
     fraction = f"{approvals}/{configured} approved"
@@ -770,12 +796,13 @@ def build_review_consensus_report(
     data = collect_review_data(reviewers)
     configured = int(consensus_data.get("ensemble_size") or len(reviewers))
     report_title = title or resolve_report_title(consensus_data.get("intent_data"), None, clean_target)
-    # Open findings are always listed; an approved report shows them after its Verified list.
+    # Open findings are always listed; an approved report has none, so it shows its Verified list.
     body = _findings_section(data.findings)
-    if _is_approved(consensus_data):
+    approved = report_approves(consensus_data, reviewers)
+    if approved:
         body = _verified_section(data.verified) + (["", *body] if data.findings else [])
     lines = [
-        _heading(consensus_data, _approvals(reviewers), configured),
+        _heading(consensus_data, approved, _approvals(reviewers), configured),
         "",
         _evaluation(repo_dir, clean_target, consensus_data, data, report_title),
         "",

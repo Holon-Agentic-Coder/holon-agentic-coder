@@ -8,8 +8,8 @@ import shutil
 import subprocess
 from typing import Any
 
-from sandbox_executor.review_ensemble import ConsensusVerdict, ReviewerResult, ReviewerStatus
-from sandbox_executor.review_report import build_pr_review_consensus_report
+from sandbox_executor.review_ensemble import ReviewerResult
+from sandbox_executor.review_report import build_pr_review_consensus_report, report_approves
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +49,9 @@ def post_pr_review_consensus(  # noqa: PLR0912, PLR0913, PLR0915
         once.
     """
     clean_target = str(target or "").strip()
-    # The ensemble verdict alone decides an approval; no ``approved`` flag or status can promote any other value.
-    backed = consensus_data.get("ensemble_verdict") == str(ConsensusVerdict.APPROVED)
-    approved = backed and any(r.status is ReviewerStatus.COMPLETED for r in reviewers or [])
+    # The report's own guard decides an approval: an APPROVED ensemble verdict, every reviewer clean and no role at
+    # CHANGES. No ``approved`` flag or status can promote any other value.
+    approved = report_approves(consensus_data, reviewers or [])
 
     report_text = build_pr_review_consensus_report(
         repo_dir=repo_dir,

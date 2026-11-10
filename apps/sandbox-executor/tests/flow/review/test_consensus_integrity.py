@@ -309,3 +309,26 @@ def test_final_verdicts_name_every_reviewer_and_role_objection():
     assert line.startswith("Reviewer 1 APPROVED (0/0/0); Reviewer 2 APPROVED (0/0/0); ")
     assert "Reviewer 3 CHANGES_REQUESTED (1/0/0); Reviewer 3 Security role CHANGES" in line
     assert not_approved_verdicts(reviewers) == ["reviewer 3 final verdict CHANGES_REQUESTED"]
+
+
+# --- Step 4: the post path follows the report's approval guard -------------------------------------------------------
+
+
+def test_an_approved_verdict_with_a_dissenting_reviewer_is_posted_as_a_comment_never_an_approval():
+    from unittest.mock import MagicMock, patch
+
+    from sandbox_executor.flow import post_pr_review_consensus
+
+    reviewers = [clean_reviewer(1), clean_reviewer(2), _reviewer("critical", "Escape.", security="CHANGES")]
+    consensus_data = {"approved": True, "ensemble_verdict": "APPROVED", "status": "approved", "ensemble_size": 3}
+    with patch("shutil.which", return_value="/usr/bin/gh"), patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout="Success", stderr="")
+        res = post_pr_review_consensus(
+            repo_dir="/tmp", target="123", consensus_data=consensus_data, reviewers=reviewers
+        )
+
+    assert res["official_review"]["flag"] == "--comment"
+    review_call = mock_run.call_args_list[0][0][0]
+    assert "--approve" not in review_call
+    body = review_call[review_call.index("--body") + 1]
+    assert body.splitlines()[0].endswith("— 2/3 approved")

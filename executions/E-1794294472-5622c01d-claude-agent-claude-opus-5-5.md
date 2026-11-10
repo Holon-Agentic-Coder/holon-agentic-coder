@@ -78,3 +78,20 @@ from what the reviewers returned, and the posted review must report it exactly.
   Step 8 records the new definitions and modules.
 - Residual risk recorded: the container's ensemble verdict also folds in its own CI and mergeability view, so a
   container that sees CI as unmeasured blocks a host approval. That fails closed (human decides) by design.
+
+### Step 4: The posted review reports the returned verdicts exactly
+
+- `review_report.py`: `_approvals` counts only reviewers that completed with `APPROVED` and zero counts and findings
+  (`_clean_approval`). New public `report_approves(consensus_data, reviewers)` requires an APPROVED ensemble verdict,
+  at least one reviewer, every reviewer clean and no merged role at `CHANGES`; `_heading` and the body ordering use it,
+  so the renderer cannot be made to head an inconsistent review APPROVED. Heading text is otherwise byte-identical.
+- `flow/github/review_post.py`: the `--approve` flag now follows `report_approves` instead of the ensemble verdict plus
+  any completed reviewer (216 lines, unchanged).
+- `render_reviewer_line` already prints each reviewer's verdict and counts from the result it is given; with Step 3 that
+  is the returned result, asserted by the new failing-shape test.
+- Tests: `test_review_report.py` gains the failing-shape render (heading `CHANGES REQUESTED ... — 2/3 approved`, reviewer
+  3 `CHANGES_REQUESTED` with critical 1, `| Security | CHANGES |`), a role-only objection, and an APPROVED reviewer with
+  a nit not counted as a clean approval. `test_an_approved_report_still_lists_any_open_finding` asserted the old
+  `APPROVED (1/3)` heading with an open finding, which is the defect, so it was rewritten as
+  `test_an_approved_verdict_with_an_open_finding_renders_as_changes_requested`. A post-path test in
+  `test_consensus_integrity.py` checks `--comment` (never `--approve`) for the failing shape.

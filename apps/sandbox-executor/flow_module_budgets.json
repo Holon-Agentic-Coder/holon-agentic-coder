@@ -1,7 +1,7 @@
 {
   "description": "Line budgets for each module of apps/sandbox-executor/src/sandbox_executor/flow/, recorded at the post-split sizes and checked by scripts/check_flow_module_budgets.py (run by 'uv run task lint'). A module may shrink but never grow past its budget. Lower a budget by hand after shrinking a module; add an entry at creation size for a new module and remove the entry of a deleted one.",
   "budgets": {
-    "__init__.py": 359,
+    "__init__.py": 358,
     "checkpoint.py": 210,
     "child_progress.py": 194,
     "constants.py": 8,
@@ -18,11 +18,14 @@
     "ledger_reconcile.py": 224,
     "pipeline.py": 387,
     "review/__init__.py": 1,
-    "review/cli.py": 106,
+    "review/adjudication.py": 108,
+    "review/ci_evidence.py": 31,
+    "review/cli.py": 87,
     "review/ensemble.py": 141,
-    "review/loop.py": 962,
+    "review/loop.py": 952,
     "review/records.py": 316,
-    "review/resolver.py": 362,
+    "review/resolver.py": 290,
+    "review/verdict.py": 138,
     "review/workspace.py": 168,
     "stage_conflicts.py": 142,
     "stages/__init__.py": 1,
@@ -34,6 +37,6 @@
     "stages/intent.py": 204,
     "stages/plan.py": 200,
     "stages/plan_decision.py": 110,
-    "stages/review.py": 322
+    "stages/review.py": 298
   }
 }

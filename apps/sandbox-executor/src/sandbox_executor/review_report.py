@@ -28,6 +28,7 @@ from typing import Any
 
 from sandbox_executor.git import run_git
 from sandbox_executor.redaction import redact_agent_secrets
+from sandbox_executor.resolver_evidence import OPEN, UNSPECIFIED_REASON, default_disposition, settle_rejection
 from sandbox_executor.review_ensemble import (
     MAX_REASON_CHARS,
     SEVERITIES,
@@ -62,6 +63,7 @@ __all__ = [
     "render_dispositions_section",
     "render_on_disk_trailer",
     "render_reviewer_line",
+    "report_approves",
     "resolve_report_title",
     "review_data_summary",
     "reviewer_detail_payload",
@@ -79,7 +81,7 @@ MAX_BLOCK_ENTRIES = 50
 ROLES_OPEN = "<!-- holon-review-roles -->"
 ROLES_CLOSE = "<!-- /holon-review-roles -->"
 ROLE_VERDICTS = ("PASS", "CHANGES")
-DISPOSITIONS = ("applied", "rejected")
+DISPOSITIONS = ("applied", "rejected", OPEN)
 VALID_REJECTION_REASONS = (
     "not diff-grounded",
     "inaccurate",
@@ -163,6 +165,8 @@ class FindingDisposition:
     rejection_reason: str | None = None
     commit_sha: str | None = None
     introduced_by_action_id: str | None = None
+    # What the resolver checked: a ``path:line`` or a test; required to reject an important or critical finding.
+    evidence: str | None = None
 
 
 @dataclass(frozen=True)
@@ -414,17 +418,22 @@ def serialize_finding_disposition(item: FindingDisposition) -> dict[str, Any]:
         data["commit_sha"] = item.commit_sha
     if item.introduced_by_action_id:
         data["introduced_by_action_id"] = item.introduced_by_action_id
+    if item.evidence:
+        data["evidence"] = item.evidence
     return data
 
 
 def _normalise_rejection_reason(raw_reason: Any) -> str:
-    """Validate and normalise a one-line rejection reason against the allowed vocabulary."""
+    """Validate and normalise a one-line rejection reason; an unknown or missing one is ``unspecified``.
+
+    It used to default to ``out of scope``, which made a skipped or failed adjudication read as a deliberate rejection.
+    """
     clean = _inline(raw_reason, MAX_REASON_CHARS)
     low = clean.lower()
     for allowed in VALID_REJECTION_REASONS:
         if low == allowed or low.startswith(allowed):
             return allowed
-    return clean if clean in VALID_REJECTION_REASONS else "out of scope"
+    return UNSPECIFIED_REASON
 
 
 def deserialize_finding_dispositions(
@@ -463,7 +472,8 @@ def _disposition_from_mapping(
 ) -> FindingDisposition:
     """Construct one validated :class:`FindingDisposition` from raw mapping and optional fallback row."""
     ident = _inline(entry.get("id") or (fallback.id if fallback else "FIND-1"), 40) or "FIND-1"
-    raw_sev = str(entry.get("severity") or (fallback.severity if fallback else "nit")).strip().lower()
+    # The reviewed finding's severity is authoritative: a resolver cannot downgrade it to escape the evidence rule.
+    raw_sev = str((fallback.severity if fallback else None) or entry.get("severity") or "nit").strip().lower()
     severity = raw_sev if raw_sev in SEVERITIES else (fallback.severity if fallback else "nit")
     path = _inline(entry.get("path") or entry.get("file") or (fallback.path if fallback else ""), MAX_PATH_CHARS)
     raw_line = entry.get("line", fallback.line if fallback else None)
@@ -474,10 +484,12 @@ def _disposition_from_mapping(
         or NOT_SUPPLIED
     )
     raw_disp = str(entry.get("disposition") or entry.get("review_disposition") or "").strip().lower()
-    disposition = raw_disp if raw_disp in DISPOSITIONS else "rejected"
+    disposition = raw_disp if raw_disp in DISPOSITIONS else default_disposition(severity)
     reason: str | None = None
+    evidence = _inline(entry.get("evidence") or "", MAX_REASON_CHARS) or None
     if disposition == "rejected":
         reason = _normalise_rejection_reason(entry.get("rejection_reason") or entry.get("reason"))
+        disposition, reason, evidence = settle_rejection(severity, reason, evidence)
     commit_sha = _inline(entry.get("commit_sha") or "", 40) or None
     intro_id = _inline(entry.get("introduced_by_action_id") or action_ids.get(ident) or "", 64) or None
     return FindingDisposition(
@@ -491,6 +503,7 @@ def _disposition_from_mapping(
         rejection_reason=reason,
         commit_sha=commit_sha,
         introduced_by_action_id=intro_id,
+        evidence=evidence,
     )
 
 
@@ -506,7 +519,8 @@ def render_dispositions_section(dispositions: Sequence[FindingDisposition]) -> l
     ]
     for item in dispositions:
         location = item.path if item.line is None else f"{item.path}:{item.line}"
-        detail = item.commit_sha or "committed" if item.disposition == "applied" else (item.rejection_reason or "")
+        unapplied = item.rejection_reason or item.evidence or ""
+        detail = item.commit_sha or "committed" if item.disposition == "applied" else unapplied
         lines.append(
             f"| {_cell(item.id)} | {item.severity} | {_cell(location)} | {item.disposition} | {_cell(detail)} |"
         )
@@ -641,14 +655,39 @@ def _pr_link(repo_dir: str, target: str, consensus_data: Mapping[str, Any]) -> s
 # --- Sections -------------------------------------------------------------------------------------------------------
 
 
+def _clean_approval(result: ReviewerResult) -> bool:
+    """True for a reviewer that completed with an ``APPROVED`` verdict and zero open findings."""
+    return (
+        result.status is ReviewerStatus.COMPLETED
+        and result.verdict is ReviewerVerdict.APPROVED
+        and not result.counts.total
+        and not result.findings
+    )
+
+
 def _approvals(reviewers: Sequence[ReviewerResult]) -> int:
-    """The number of reviewers that completed and recorded an ``APPROVED`` verdict."""
-    return sum(1 for r in reviewers if r.status is ReviewerStatus.COMPLETED and r.verdict is ReviewerVerdict.APPROVED)
+    """The number of reviewers that completed with an ``APPROVED`` verdict and zero open findings."""
+    return sum(1 for r in reviewers if _clean_approval(r))
 
 
-def _heading(consensus_data: Mapping[str, Any], approvals: int, configured: int) -> str:
-    """The verdict heading: the ensemble verdict decides the word, the recorded approvals the fraction."""
-    if _is_approved(consensus_data):
+def report_approves(consensus_data: Mapping[str, Any], reviewers: Sequence[ReviewerResult]) -> bool:
+    """APPROVED only for an APPROVED ensemble verdict, every reviewer clean and no activated role at ``CHANGES``.
+
+    A defence in depth: an upstream regression that hands over an APPROVED verdict with a dissenting reviewer or role
+    still renders, and posts, as changes requested.
+    """
+    roles = collect_review_data(reviewers).roles
+    return (
+        _is_approved(consensus_data)
+        and bool(reviewers)
+        and all(_clean_approval(r) for r in reviewers)
+        and not any(role.verdict == "CHANGES" for role in roles)
+    )
+
+
+def _heading(consensus_data: Mapping[str, Any], approved: bool, approvals: int, configured: int) -> str:
+    """The verdict heading: :func:`report_approves` decides the word, the clean approvals the fraction."""
+    if approved:
         return f"## ✅ Ensemble Consensus Review — APPROVED ({approvals}/{configured})"
     iteration = consensus_data.get("iterations", 1)
     fraction = f"{approvals}/{configured} approved"
@@ -770,12 +809,13 @@ def build_review_consensus_report(
     data = collect_review_data(reviewers)
     configured = int(consensus_data.get("ensemble_size") or len(reviewers))
     report_title = title or resolve_report_title(consensus_data.get("intent_data"), None, clean_target)
-    # Open findings are always listed; an approved report shows them after its Verified list.
+    # Open findings are always listed; an approved report has none, so it shows its Verified list.
     body = _findings_section(data.findings)
-    if _is_approved(consensus_data):
+    approved = report_approves(consensus_data, reviewers)
+    if approved:
         body = _verified_section(data.verified) + (["", *body] if data.findings else [])
     lines = [
-        _heading(consensus_data, _approvals(reviewers), configured),
+        _heading(consensus_data, approved, _approvals(reviewers), configured),
         "",
         _evaluation(repo_dir, clean_target, consensus_data, data, report_title),
         "",

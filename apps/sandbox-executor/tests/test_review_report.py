@@ -380,12 +380,58 @@ def test_approval_fraction_counts_only_completed_approving_reviewers():
     assert body.splitlines()[0].endswith("— 1/3 approved")
 
 
-def test_an_approved_report_still_lists_any_open_finding():
+def test_an_approved_verdict_with_an_open_finding_renders_as_changes_requested():
+    """Formerly headed APPROVED (1/3): a reviewer with an open finding now forbids the APPROVED heading."""
     body = build_review_consensus_report("/nonexistent", "42", _approved(), [_reviewer(1), _reviewer(2, DOC_FINDING)])
 
-    assert body.startswith("## ✅ Ensemble Consensus Review — APPROVED (1/3)")
-    assert body.index("**Verified:**") < body.index("| ID | Severity |")
+    assert body.splitlines()[0].endswith("CHANGES REQUESTED (Iteration 2) — 1/3 approved")
+    assert "APPROVED (" not in body
     assert "Typo in the heading." in body
+
+
+def _failing_shape() -> list[ReviewerResult]:
+    """The incident: APPROVED, APPROVED and CHANGES_REQUESTED with one critical finding and Security at CHANGES."""
+    critical = ReviewFinding("critical", "src/sandbox/mounts.py", 40, "Bind mount exposes the host Docker socket.")
+    parsed = ParsedTrailer(ReviewerVerdict.CHANGES_REQUESTED, ReviewCounts(critical=1), (critical,))
+    block = {"roles": [{"role": "Security", "verdict": "CHANGES", "review": "Mount escapes the sandbox."}]}
+    third = ReviewerResult.completed(3, "agent-3", "model-3", "r3.md", _report_text(parsed, block), parsed)
+    return [_reviewer(1), _reviewer(2), third]
+
+
+def test_the_failing_shape_is_never_headed_approved_even_with_an_approved_ensemble_verdict():
+    body = build_review_consensus_report("/nonexistent", "42", _approved(), _failing_shape())
+
+    assert body.splitlines()[0] == "## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration 2) — 2/3 approved"
+    assert "APPROVED (" not in body
+    assert "- **Reviewer 3** (`agent-3 / model-3`): `CHANGES_REQUESTED` (critical: 1, important: 0, nit: 0)" in body
+    assert "| Security | CHANGES |" in body
+
+
+def test_a_role_at_changes_forbids_the_approved_heading_when_every_reviewer_is_clean():
+    block = {"roles": [{"role": "Security", "verdict": "CHANGES", "review": "Mount escapes the sandbox."}]}
+    reviewers = [_reviewer(1), _reviewer(2), _reviewer(3, block=block)]
+
+    body = build_review_consensus_report("/nonexistent", "42", _approved(), reviewers)
+
+    assert body.splitlines()[0].endswith("— 3/3 approved")
+    assert "APPROVED (" not in body
+    assert review_report.report_approves(_approved(), reviewers) is False
+    assert review_report.report_approves(_approved(), approved_reviewers()) is True
+
+
+def test_an_approved_finding_does_not_count_as_a_clean_approval():
+    noisy = ReviewerResult.completed(
+        2,
+        "agent-2",
+        "model-2",
+        "r2.md",
+        "",
+        ParsedTrailer(ReviewerVerdict.APPROVED, ReviewCounts(nit=1), (DOC_FINDING,)),
+    )
+
+    body = _report([_reviewer(1), noisy, _reviewer(3)])
+
+    assert body.splitlines()[0].endswith("— 2/3 approved")
 
 
 def test_an_approval_asserts_only_evidenced_claims():

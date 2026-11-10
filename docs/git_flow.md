@@ -376,6 +376,9 @@ file transport, preserving host ownership of mergeability verification, CI gatin
 container dispatch fails, it fails closed before any PR review is approved. See the
 [sandbox-executor README](../apps/sandbox-executor/README.md#reviewer-ensemble).
 
+**Consensus integrity.** The loop decides consensus only from what the reviewers returned; role, container and
+adjudication checks can only withhold an approval. See [review_consensus.md](review_consensus.md).
+
 **Persistent review workspace.** One Stage 4 session (one `run_review_loop` invocation on the host) reuses a single
 labelled Docker volume (`holon.review-session=1`, named deterministically from the review target) across all of its
 reviewer-ensemble and resolver dispatches: the volume is created lazily on the first dispatch, initialised for the

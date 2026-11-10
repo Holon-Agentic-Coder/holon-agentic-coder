@@ -430,12 +430,16 @@ def _build_resolver_prompt(
         f"You are operating in `{repo_dir}` on branch `{head_branch}`.\n"
         "Adjudicate EVERY finding below (critical, important, and nit) to exactly one disposition:\n"
         "- `applied`: fix the code in the working tree so `uv run task lint` and `uv run task test` pass.\n"
-        f"- `rejected`: provide a one-line `rejection_reason` from: {reasons}.\n"
+        f"- `rejected`: provide a one-line `rejection_reason` from: {reasons}. To reject a `critical` or "
+        "`important` finding you must also give an `evidence` value naming the code you checked "
+        "(`path/to/file.py:LINE` or a test such as `tests/test_x.py::test_name`); `out of scope` alone is not "
+        "accepted for them, and a rejection without both stays open.\n"
+        "- `open`: a finding you could neither fix nor reject with evidence; it goes to the next iteration.\n"
         f"{ci_instruction}"
         "Never force-push or rewrite git history. Do not run git commit or git push yourself; leave your edits "
         "in the working tree so the harness can verify, attach review trailers, commit, and push. "
         f"Write the JSON list of dispositions to `{dispositions_path}` "
-        "with keys `id`, `disposition`, and `rejection_reason`.\n\n"
+        "with keys `id`, `disposition`, `rejection_reason` and `evidence`.\n\n"
         f"```json\n{json.dumps(serialized, indent=2)}\n```\n"
     )
 

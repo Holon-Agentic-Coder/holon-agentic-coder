@@ -28,6 +28,13 @@ from sandbox_executor.flow.github.ci import (
 )
 from sandbox_executor.flow.github.pr import check_pr_mergeability, create_or_update_pr, format_review_git_trailers
 from sandbox_executor.flow.github.review_post import post_pr_review_consensus
+from sandbox_executor.flow.review.adjudication import (
+    Adjudication,
+    _augment_pr_text_with_rejected,
+    _filter_adjudicated_findings,
+    record_nit_rejections,
+)
+from sandbox_executor.flow.review.ci_evidence import apply_local_test_evidence
 from sandbox_executor.flow.review.ensemble import (
     _dispatch_review_ensemble,
     _ensemble_iteration,
@@ -48,10 +55,14 @@ from sandbox_executor.flow.review.records import (
 from sandbox_executor.flow.review.resolver import (
     DispositionRecorder,
     ResolverInput,
-    _augment_pr_text_with_rejected,
-    _filter_adjudicated_findings,
     _invoke_resolver_pass,
     _lookup_introducing_action_id,
+)
+from sandbox_executor.flow.review.verdict import (
+    consensus_blockers,
+    decide_returned_consensus,
+    not_approved_verdicts,
+    render_final_verdicts,
 )
 from sandbox_executor.flow.review.workspace import ReviewWorkspaceSession, review_persist_enabled, reviewers_sandboxed
 from sandbox_executor.flow.stages.execute import _warn_ledger_failure
@@ -62,12 +73,12 @@ from sandbox_executor.ledger import (
     parse_commit_trailers,
     try_append_ledger_line,
 )
+from sandbox_executor.resolver_evidence import OPEN
 from sandbox_executor.review_ensemble import (
     ConsensusVerdict,
     ReviewerResult,
     ReviewerStatus,
     _any_reviewer_objects,
-    decide_consensus,
     run_ensemble,
 )
 from sandbox_executor.review_report import (
@@ -244,6 +255,7 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
     severity = "clean"
     reviewers: list[ReviewerResult] = []
     ensemble_verdict: ConsensusVerdict | None = None
+    blockers: list[str] = []
     # Why the review failed before or outside the ensemble (sandbox refusal, target, diff); never posted.
     infra_error: str | None = None
     resolver_error: str | None = None  # Why a resolver pass failed; the loop halts on it before any adjudication.
@@ -307,10 +319,11 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
     resolver_enabled = (run_resolver_fn is not None) or (not reviewers_sandboxed())
     finding_action_ids: dict[str, str] = {}
     recorded_disposition_keys: set[tuple[str, str, int | None, str]] = set()
-    rejected_history: dict[tuple[str, str, int | None, str], FindingDisposition] = {}
-    rejected_ids: set[str] = set()
+    rejected_history: dict[tuple[str, str, int | None, str], FindingDisposition] = {}  # Rejected nits only.
     all_dispositions: list[FindingDisposition] = []
     pending_dispositions: tuple[FindingDisposition, ...] = ()
+    # The resolver's latest open disposition per finding, kept so its audit text reaches the end-of-loop ACT-RES row.
+    open_dispositions: dict[tuple[str, str, int | None, str], FindingDisposition] = {}
     prev_finding_sigs: frozenset[tuple[str, str, int | None, str]] = frozenset()
     prev_head_sha = ""
     unchanged_streak = 0
@@ -352,7 +365,7 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
             context.log(f"[Review Loop] {mergeability_note}")
 
         # 2. Reviewer ensemble execution on the resolved head (a dry run never dispatches reviewers)
-        reviewers, ensemble_verdict = [], None
+        reviewers, ensemble_verdict, container_verdict = [], None, None
         if not effective_dry_run and resolved_target is not None:
             iter_pr_text = _augment_pr_text_with_rejected(pr_text, tuple(rejected_history.values()))
             if run_ensemble_fn is not None or reviewers_sandboxed():
@@ -360,41 +373,34 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
                     context, resolved_target, target_branch, iteration, iter_pr_text, ensemble_fn, ensemble_size
                 )
             else:
-                reviewers, _container_verdict, infra_error = _dispatch_review_ensemble(
+                reviewers, container_verdict, infra_error = _dispatch_review_ensemble(
                     context,
                     resolved_target,
                     iteration,
                     ensemble_size,
                     workspace_volume=workspace_session.volume_name() if workspace_session else None,
                 )
-            if rejected_history or rejected_ids:
-                reviewers = _filter_adjudicated_findings(reviewers, rejected_history, frozenset(rejected_ids))
-
+        # The returned reviewers stay the single source of the verdict; adjudication only narrows the resolver input.
+        adjudication: Adjudication = _filter_adjudicated_findings(reviewers, rejected_history)
+        blockers = consensus_blockers(reviewers, container_verdict, adjudication)
+        for blocker in blockers:
+            context.log(f"[Review Loop] Consensus blocked at iteration {iteration}: {blocker}.")
         reviewer_findings = collect_review_data(reviewers).findings
-        reviewer_objected = _any_reviewer_objects(reviewers) or bool(reviewer_findings)
+        reviewer_objected = _any_reviewer_objects(reviewers) or bool(reviewer_findings) or bool(blockers)
 
         # 3. CI status inspection: post-review gate or fast-path probe
         if reviewer_objected:
             # Fast path on reviewer findings: probe CI once without waiting on pending checks.
             last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
-            if last_ci_status.get("source") == "local_tests" and tests_failed:
-                last_ci_status["all_passed"] = False
-                last_ci_status["passed"] = 0
-                last_ci_status["failed"] = 1
-                last_ci_status["checks"] = [{"name": "local_tests", "bucket": "fail", "state": "FAILURE"}]
-            elif last_ci_status.get("source") == "local_tests" and test_pass_rate is None and effective_dry_run:
-                last_ci_status["measured"] = False
+            apply_local_test_evidence(last_ci_status, tests_failed, test_pass_rate, effective_dry_run, False)
 
             # Include FIND-CI only if CI has already failed or local tests failed; pending checks are omitted.
             ci_failed = last_ci_status.get("failed", 0) > 0 or (
                 last_ci_status.get("source") == "local_tests" and tests_failed
             )
             ci_finding = ci_failed
-            ensemble_verdict = decide_consensus(
-                reviewers,
-                ensemble_size,
-                mergeable=None if missing_ref else not is_dirty,
-                ci_green=False if ci_failed else None,
+            ensemble_verdict = decide_returned_consensus(
+                reviewers, ensemble_size, None if missing_ref else not is_dirty, False if ci_failed else None, blockers
             )
         elif not is_dirty and not missing_ref and not effective_dry_run and infra_error is None:
             # Post-review CI gate on clean review: wait for CI registration and pending checks to settle.
@@ -415,20 +421,8 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 )
 
             last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
-            if last_ci_status.get("source") == "local_tests" and tests_failed:
-                last_ci_status["all_passed"] = False
-                last_ci_status["passed"] = 0
-                last_ci_status["failed"] = 1
-                last_ci_status["checks"] = [{"name": "local_tests", "bucket": "fail", "state": "FAILURE"}]
-            elif last_ci_status.get("source") == "local_tests" and test_pass_rate is None:
-                last_ci_status["all_passed"] = False
-                last_ci_status["passed"] = 0
-                last_ci_status["failed"] = 0
-                last_ci_status["skipped"] = 1
-                last_ci_status["measured"] = False
-                last_ci_status["checks"] = [{"name": "local_tests", "bucket": "skipping", "state": "NOT_MEASURED"}]
-                tests_not_measured = True
-            elif last_ci_status.get("source") == "github_cli" and last_ci_status.get("pending", 0) > 0:
+            tests_not_measured |= apply_local_test_evidence(last_ci_status, tests_failed, test_pass_rate, False, True)
+            if last_ci_status.get("source") == "github_cli" and last_ci_status.get("pending", 0) > 0:
                 last_ci_status = _wait_for_pending_ci(
                     context,
                     repo_dir,
@@ -443,38 +437,22 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
 
             ci_green = _ci_green(last_ci_status, tests_failed)
             ci_finding = not last_ci_status.get("all_passed", False) or tests_failed
-            ensemble_verdict = decide_consensus(
-                reviewers,
-                ensemble_size,
-                mergeable=True,
-                ci_green=ci_green,
-            )
+            ensemble_verdict = decide_returned_consensus(reviewers, ensemble_size, True, ci_green, blockers)
         else:
             # Fallback for dry runs, dirty mergeability, or infra failures: probe once without waiting.
             last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
-            if last_ci_status.get("source") == "local_tests" and tests_failed:
-                last_ci_status["all_passed"] = False
-                last_ci_status["passed"] = 0
-                last_ci_status["failed"] = 1
-                last_ci_status["checks"] = [{"name": "local_tests", "bucket": "fail", "state": "FAILURE"}]
-            elif last_ci_status.get("source") == "local_tests" and test_pass_rate is None and effective_dry_run:
-                last_ci_status["measured"] = False
-            elif last_ci_status.get("source") == "local_tests" and test_pass_rate is None:
-                last_ci_status["all_passed"] = False
-                last_ci_status["passed"] = 0
-                last_ci_status["failed"] = 0
-                last_ci_status["skipped"] = 1
-                last_ci_status["measured"] = False
-                last_ci_status["checks"] = [{"name": "local_tests", "bucket": "skipping", "state": "NOT_MEASURED"}]
-                tests_not_measured = True
+            tests_not_measured |= apply_local_test_evidence(
+                last_ci_status, tests_failed, test_pass_rate, effective_dry_run, True
+            )
 
             ci_finding = not last_ci_status.get("all_passed", False) or tests_failed
             if not effective_dry_run:
-                ensemble_verdict = decide_consensus(
+                ensemble_verdict = decide_returned_consensus(
                     reviewers,
                     ensemble_size,
-                    mergeable=None if missing_ref else not is_dirty,
-                    ci_green=_ci_green(last_ci_status, tests_failed),
+                    None if missing_ref else not is_dirty,
+                    _ci_green(last_ci_status, tests_failed),
+                    blockers,
                 )
 
         # 4. Findings: mergeability and CI infrastructure ids, then every reviewer finding
@@ -586,7 +564,7 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
             )
             break
 
-        iter_findings = list(collect_review_data(reviewers).findings)
+        iter_findings = list(adjudication.actionable)
         if ci_finding:
             ci_row = ci_failure_finding(iteration, _extract_failed_ci_check_names(last_ci_status, tests_failed))
             iter_findings.append(ci_row)
@@ -599,7 +577,8 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
         if not resolver_enabled or not iter_findings or is_dirty or resolved_target is None:
             context.log(
                 f"[Review Loop] Halting review loop at iteration {iteration}: verdict "
-                f"{ensemble_verdict} (no resolver pass applicable)."
+                f"{ensemble_verdict} (no resolver pass applicable"
+                + (f": {'; '.join(blockers)})." if blockers else ").")
             )
             break
 
@@ -644,7 +623,7 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
             ResolverInput(
                 findings=iter_findings,
                 action_ids=finding_action_ids,
-                rejected_findings=tuple(rejected_history.values()),
+                rejected_findings=tuple(rejected_history.values()),  # Rejected nits only.
                 workspace_volume=workspace_session.volume_name() if workspace_session else None,
             ),
             run_resolver_fn,
@@ -660,11 +639,14 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
             break
         rejected_now = [d for d in resolver_outcome.dispositions if d.disposition == "rejected"]
         applied_now = [d for d in resolver_outcome.dispositions if d.disposition == "applied"]
+        open_dispositions.update(
+            (finding_signature(d.severity, d.path, d.line, d.summary), d)
+            for d in resolver_outcome.dispositions
+            if d.disposition == OPEN
+        )
         if rejected_now:
             suppressed_ledger_records += recorder.record(iteration, rejected_now)
-            for disp in rejected_now:
-                rejected_history[finding_signature(disp.severity, disp.path, disp.line, disp.summary)] = disp
-                rejected_ids.add(disp.id)
+            record_nit_rejections(rejected_history, rejected_now)
 
         head_changed = bool(resolver_outcome.pushed)
         if applied_now or (head_changed and pending_dispositions):
@@ -693,7 +675,10 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
             if finding_signature(row.severity, row.path, row.line, row.summary) not in recorded_disposition_keys
         ]
         if remaining_findings:
-            fallback_dispositions = deserialize_finding_dispositions([], remaining_findings, finding_action_ids)
+            fallback_dispositions = [
+                open_dispositions.get(finding_signature(d.severity, d.path, d.line, d.summary), d)
+                for d in deserialize_finding_dispositions([], remaining_findings, finding_action_ids)
+            ]
             suppressed_ledger_records += recorder.record(iteration, fallback_dispositions)
 
     if not consensus_reached and pr_refusal_error is None and infra_error is None and iteration >= last_label:
@@ -816,6 +801,10 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
         halt_reasons.append("consensus post failed")
     if tests_not_measured:
         halt_reasons.append("test results not measured")
+    not_approved = not_approved_verdicts(reviewers)
+    if not_approved:
+        halt_reasons.append(f"not approved: {', '.join(not_approved)}")
+    final_verdicts = f"final verdicts: {render_final_verdicts(reviewers)}"
 
     # Record overall summary in executions.jsonl
     review_exec_id = f"REV-{int(time.time())}-{context.agent}"
@@ -833,7 +822,8 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
             if consensus_reached
             else f"Review Loop halted without consensus after {iteration} iteration(s)"
             + (f": {'; '.join(halt_reasons)}" if halt_reasons else "")
-        ),
+        )
+        + f"; {final_verdicts}",
         "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
         # Label units: 'total_iterations' is the last pass label, so its ceiling is the label budget.
         "total_iterations": iteration,
@@ -870,6 +860,7 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
                         if consensus_reached
                         else f"Consensus failed: findings={finding_ids}"
                         + (f"; {'; '.join(halt_reasons)}" if halt_reasons else "")
+                        + f"; {final_verdicts}"
                     ),
                 },
                 ledger_path=exec_file,
@@ -910,6 +901,7 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "review_data": consensus_data["review_data"],
         "dispositions": consensus_data["dispositions"],
         "no_convergence": no_convergence,
+        "consensus_blockers": list(blockers),
         "resolver_error": resolver_error,
     }
     if pr_refusal_error or infra_error or post_error or resolver_error:

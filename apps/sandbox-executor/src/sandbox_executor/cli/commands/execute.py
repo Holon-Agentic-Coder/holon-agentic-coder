@@ -16,7 +16,7 @@ from sandbox_executor.cli.options import (
     add_token_reduction_options,
 )
 from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
-from sandbox_executor.flow.git_refs import _read_ledger_rows
+from sandbox_executor.flow import _read_ledger_rows
 
 ORDER = 30
 
@@ -68,7 +68,6 @@ def run(args: argparse.Namespace) -> int | None:
     except (RuntimeError, ValueError) as exc:
         print(f"Error: {cli.redact_cli_error(exc)}", file=sys.stderr)
         sys.exit(1)
-        return None
     exit_code = cli.dispatch_role_agent(
         "executor",
         args.agent,

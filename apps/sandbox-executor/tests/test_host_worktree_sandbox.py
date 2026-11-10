@@ -140,6 +140,10 @@ def test_a_linked_worktree_mounts_its_git_dirs_at_host_paths_and_overlays_git_co
         f"{common / 'modules'}:{common / 'modules'}:ro",
         f"{common / 'worktrees'}:{common / 'worktrees'}:ro",
         f"{common / 'objects' / 'info' / 'alternates'}:{common / 'objects' / 'info' / 'alternates'}:ro",
+        f"{common / 'info' / 'exclude'}:{common / 'info' / 'exclude'}:ro",
+        f"{common / 'info' / 'attributes'}:{common / 'info' / 'attributes'}:ro",
+        # The common HEAD is the PRIMARY checkout's HEAD; the linked worktree resolves its own through its admin dir.
+        f"{common / 'HEAD'}:{common / 'HEAD'}:ro",
         f"{git_dir / 'config.worktree'}:{git_dir / 'config.worktree'}:ro",
     ]
     # The mounted pointer resolves through the mounted paths, without any network: git works there.
@@ -151,9 +155,9 @@ def test_a_linked_worktree_mounts_its_git_dirs_at_host_paths_and_overlays_git_co
 def test_a_primary_checkout_needs_no_extra_git_mount_but_still_protects_config_and_hooks(repo: Path) -> None:
     _git(repo, "checkout", "-q", "-b", "feature")
 
-    mounts = _mount_pairs(git_flow.sandbox_worktree_mounts(str(repo), MOUNT))
+    args = git_flow.sandbox_worktree_mounts(str(repo), MOUNT)
 
-    assert mounts == [
+    assert _mount_pairs(args) == [
         f"{repo}:{MOUNT}",
         f"{repo / '.git' / 'config'}:{MOUNT}/.git/config:ro",
         f"{repo / '.git' / 'config.worktree'}:{MOUNT}/.git/config.worktree:ro",
@@ -161,12 +165,17 @@ def test_a_primary_checkout_needs_no_extra_git_mount_but_still_protects_config_a
         f"{repo / '.git' / 'modules'}:{MOUNT}/.git/modules:ro",
         f"{repo / '.git' / 'worktrees'}:{MOUNT}/.git/worktrees:ro",
         f"{repo / '.git' / 'objects' / 'info' / 'alternates'}:{MOUNT}/.git/objects/info/alternates:ro",
+        f"{repo / '.git' / 'info' / 'exclude'}:{MOUNT}/.git/info/exclude:ro",
+        f"{repo / '.git' / 'info' / 'attributes'}:{MOUNT}/.git/info/attributes:ro",
     ]
-    # An absent worktrees/, config.worktree or objects/info/alternates is created before overlaying, so the
-    # container cannot create it.
+    # The primary checkout's HEAD is its own HEAD: it must stay writable for in-container commits.
+    assert _host_writable(args, str(repo / ".git" / "HEAD"))
+    # An absent worktrees/, config.worktree, objects/info/alternates or info/attributes is created before
+    # overlaying, so the container cannot create it.
     assert (repo / ".git" / "worktrees").is_dir()
     assert (repo / ".git" / "config.worktree").read_text(encoding="utf-8") == ""
     assert (repo / ".git" / "objects" / "info" / "alternates").read_text(encoding="utf-8") == ""
+    assert (repo / ".git" / "info" / "attributes").read_text(encoding="utf-8") == ""
 
 
 def test_a_sibling_worktree_admin_dirs_are_unwritable_while_own_admin_and_object_database_stay_writable(
@@ -206,6 +215,9 @@ def test_a_sibling_worktree_admin_dirs_are_unwritable_while_own_admin_and_object
         own / "gitdir",
         own / "config.worktree",
         common / "objects" / "info" / "alternates",
+        common / "info" / "exclude",
+        common / "info" / "attributes",
+        common / "HEAD",
         flow_worktree / ".git",
     ):
         assert not _host_writable(args, str(path)), path
@@ -234,6 +246,8 @@ def test_a_primary_checkout_with_linked_worktrees_keeps_their_admin_dirs_unwrita
     args = git_flow.sandbox_worktree_mounts(str(repo), MOUNT)
 
     for path in (admin, admin / "commondir", admin / "gitdir", admin / "HEAD", repo / ".git" / "worktrees"):
+        assert not _host_writable(args, str(path)), path
+    for path in (repo / ".git" / "info" / "exclude", repo / ".git" / "info" / "attributes"):
         assert not _host_writable(args, str(path)), path
     for path in (repo / ".git" / "HEAD", repo / ".git" / "index", repo / ".git" / "objects", repo / ".git" / "refs"):
         assert _host_writable(args, str(path)), path

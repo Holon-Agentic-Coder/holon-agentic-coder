@@ -175,7 +175,7 @@ flowchart TD
   - Runs a chosen plan variant in an isolated environment.
 - **Review Ensemble (Stage 4)**
   - `sandbox_executor/review_ensemble.py` runs independent reviewer agent turns, each in its own scratch directory under
-    `.holon/review/` and blind to the other reviewers' reports, parses the strict JSON trailer that ends each report,
+    `.subagent/review/` and blind to the other reviewers' reports, parses the strict JSON trailer that ends each report,
     and approves only by unanimity: every configured reviewer completed with `APPROVED` and zero findings, plus
     mergeable and green CI. Any failed reviewer, zero completed reviewers or unknown CI can never approve.
     `run_review_loop()` calls it once per iteration on the real diff (`--ensemble-size`, default 3), stops at the first

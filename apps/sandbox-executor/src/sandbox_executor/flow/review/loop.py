@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-import inspect
 import logging
 import os
 import shutil
@@ -53,7 +52,7 @@ from sandbox_executor.flow.review.resolver import (
     _invoke_resolver_pass,
     _lookup_introducing_action_id,
 )
-from sandbox_executor.flow.review.workspace import ReviewWorkspaceSession, review_persist_enabled, reviewers_sandboxed
+from sandbox_executor.flow.review.workspace import reviewers_sandboxed
 from sandbox_executor.flow.stages.execute import _warn_ledger_failure
 from sandbox_executor.knowledge import CredentialRedactor, append_action_event, compute_context_fingerprint
 from sandbox_executor.ledger import (
@@ -107,46 +106,7 @@ def _loop_status(
     return "rejected"
 
 
-def run_review_loop(
-    context: FlowContext,
-    *args: Any,
-    workspace_session: ReviewWorkspaceSession | None = None,
-    **kwargs: Any,
-) -> dict[str, Any]:
-    """Execute the native Stage 4 review loop, owning the session's persistent workspace lifecycle.
-
-    All arguments are forwarded verbatim to :func:`_run_review_loop_iterations`, which documents the
-    loop semantics and the full argument reference. This wrapper owns the per-session review workspace:
-    when the loop will genuinely dispatch role containers (host engine mode with no injected dispatcher
-    or review seams, not a dry run, and ``HOLON_REVIEW_PERSIST`` not disabled), it creates one
-    :class:`ReviewWorkspaceSession` whose labelled volume every reviewer-ensemble and resolver dispatch
-    of this loop mounts, and always tears the session down in a ``finally`` — covering refusals,
-    no-convergence, budget exhaustion and exceptions. In-container mode (``reviewers_sandboxed()``)
-    never creates a session. Tests may inject ``workspace_session`` to observe the lifecycle; an
-    injected session is torn down by this wrapper too.
-    """
-    supplied = inspect.signature(_run_review_loop_iterations).bind_partial(context, *args, **kwargs).arguments
-    effective_dry_run = bool(supplied.get("dry_run") or context.dry_run)
-    if effective_dry_run or reviewers_sandboxed() or not review_persist_enabled():
-        workspace_session = None
-    elif (
-        workspace_session is None
-        and context.dispatcher is None
-        and supplied.get("run_ensemble_fn") is None
-        and supplied.get("run_resolver_fn") is None
-    ):
-        review_target = str(
-            supplied.get("target") or context.execution_branch or context.intent_branch or "HEAD"
-        ).strip()
-        workspace_session = ReviewWorkspaceSession(review_target, agent=context.agent, log=context.log)
-    try:
-        return _run_review_loop_iterations(context, *args, workspace_session=workspace_session, **kwargs)
-    finally:
-        if workspace_session is not None:
-            workspace_session.teardown()
-
-
-def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
+def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     context: FlowContext,
     target: str | None = None,
     max_iterations: int = 25,
@@ -162,7 +122,7 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
     run_resolver_fn: Callable[..., Any] | None = None,
     skip_post: bool = False,
     first_iteration: int = 1,
-    workspace_session: ReviewWorkspaceSession | None = None,
+    ledger_file: str | None = None,
 ) -> dict[str, Any]:
     """Execute the native Stage 4 review loop with the real reviewer ensemble.
 
@@ -191,9 +151,7 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
         first_iteration: Label of the first pass (default 1). It is only a label: the ledger ``review_iteration``
             fields, finding IDs, trailers and the posted ``Iteration {n}`` heading carry it, while ``max_iterations``
             alone caps how many passes run. The engine passes its own continued count here.
-        workspace_session: Session owning the persistent review workspace volume that every reviewer and
-            resolver dispatch of this loop mounts; None dispatches with the historical clone-per-pass
-            behaviour. The :func:`run_review_loop` wrapper owns creation and teardown.
+        ledger_file: Where this pass appends ledger rows (default: the worktree's holon-knowledge ledger).
 
     The empty-diff guard runs for every target whatever ``auto_pr`` is: an empty diff is rejected and an
     unverifiable one fails, before any PR, iteration or post. A dry run never measures anything, so it reports
@@ -249,10 +207,8 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
     resolver_error: str | None = None  # Why a resolver pass failed; the loop halts on it before any adjudication.
     resolved_target: ReviewTarget | None = None
 
-    ledger_dir = os.path.join(repo_dir, "holon-knowledge", "ledger")
-    exec_file = os.path.join(ledger_dir, "executions.jsonl")
-    # Ledger rows that a dry run would otherwise have written; reported once at the end.
-    suppressed_ledger_records = 0
+    exec_file = ledger_file or os.path.join(repo_dir, "holon-knowledge", "ledger", "executions.jsonl")
+    suppressed_ledger_records = 0  # Rows a dry run would otherwise have written; reported once at the end.
 
     # Automate semantic PR generation if auto_pr is requested
     pr_res: dict[str, Any] = {}
@@ -361,11 +317,7 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 )
             else:
                 reviewers, _container_verdict, infra_error = _dispatch_review_ensemble(
-                    context,
-                    resolved_target,
-                    iteration,
-                    ensemble_size,
-                    workspace_volume=workspace_session.volume_name() if workspace_session else None,
+                    context, resolved_target, iteration, ensemble_size
                 )
             if rejected_history or rejected_ids:
                 reviewers = _filter_adjudicated_findings(reviewers, rejected_history, frozenset(rejected_ids))
@@ -645,7 +597,6 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 findings=iter_findings,
                 action_ids=finding_action_ids,
                 rejected_findings=tuple(rejected_history.values()),
-                workspace_volume=workspace_session.volume_name() if workspace_session else None,
             ),
             run_resolver_fn,
         )

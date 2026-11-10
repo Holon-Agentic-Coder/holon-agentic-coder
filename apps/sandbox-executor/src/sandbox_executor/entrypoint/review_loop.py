@@ -11,10 +11,10 @@ Coordinates the multi-pass review loop within an isolated container:
 - Enforces the human-only PR merge rule by halting unconditionally upon consensus approval.
 
 Preparation fails closed. The target is resolved before any git operation (a PR number or URL becomes its
-head branch and head SHA through gh, never a raw 'git clone --branch 90'); the head branch is cloned or
-fetched and checked out with every return code checked; and HEAD must equal the resolved head SHA. A git
-failure while syncing a reused checkout falls back to wipe and re-clone first. On any resolution, clone,
-or head-verification failure, one ACT-REV failure row is appended to
+head branch and head SHA through gh). The workspace is the host worktree, bind-mounted by the host and used
+in place: it is never cloned, fetched, reset or cleaned here, so a crash loses no edit. It must have the head
+branch checked out and HEAD must equal the resolved head SHA. On any resolution or validation failure, one
+ACT-REV failure row is appended to
 holon-knowledge/ledger/executions.jsonl when that directory exists (otherwise the reason goes to stderr only),
 a FAILED summary is printed and the process exits 1: no consensus is computed or posted.
 """
@@ -25,14 +25,13 @@ import dataclasses
 import json
 import logging
 import os
-import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.agent_defaults import FALLBACK_AGENT, default_model_for
-from sandbox_executor.agent_runner import get_repo_url, get_runner, get_workspace_dir
+from sandbox_executor.agent_runner import get_runner, get_workspace_dir
 from sandbox_executor.entrypoint.review_verification import (
     missing_tool_result,
     verification_error,
@@ -107,15 +106,10 @@ class ReviewPreparationError(RuntimeError):
         self.stage = stage
 
 
-def _has_checkout(repo_dir: str) -> bool:
-    """Return True when ``repo_dir`` already holds a git checkout."""
-    return os.path.exists(os.path.join(repo_dir, ".git"))
-
-
 def _gh_runner(repo_dir: str) -> RunGh:
     """Return a gh runner that names the repository through GH_REPO when there is no checkout yet."""
     env: dict[str, str] | None = None
-    if not _has_checkout(repo_dir):
+    if not os.path.exists(os.path.join(repo_dir, ".git")):
         slug = github_repo_slug(os.getenv("HOLON_REPO_URL", ""))
         if slug:
             env = {**os.environ, "GH_REPO": slug}
@@ -129,7 +123,7 @@ def _gh_runner(repo_dir: str) -> RunGh:
 
 
 def _resolve_target(repo_dir: str, raw: str, run_gh: RunGh | None = None) -> ReviewTarget:
-    """Resolve the raw target before any git operation; a branch's head SHA is read after the checkout."""
+    """Resolve the raw target before any git operation; a branch's head SHA is read from the mounted HEAD."""
     clean = raw.strip()
     if not clean or clean == "HEAD":
         raise ReviewPreparationError("resolve", "the container review needs a branch, PR number or PR URL target")
@@ -150,122 +144,57 @@ def _checked(args: list[str], repo_dir: str, stage: str) -> subprocess.Completed
     return result
 
 
-def _normalised_repo_url(url: str) -> str:
-    """Normalise a repository URL for origin comparison: trim whitespace, one trailing '/' and '.git'."""
-    clean = url.strip().removesuffix("/")
-    return clean.removesuffix(".git")
+def _validate_mounted_workspace(repo_dir: str, target: ReviewTarget) -> ReviewTarget:
+    """Validate that ``repo_dir`` is the host worktree checked out at the review head; never modify it.
 
-
-def _reusable_origin(repo_dir: str) -> bool:
-    """Return True when the existing checkout's ``origin`` matches ``HOLON_REPO_URL``.
-
-    Fails safe: with no ``HOLON_REPO_URL`` to verify against, an operator-supplied checkout is trusted as
-    it always was; an unreadable or mismatched origin is never fetched from (the caller wipes and
-    re-clones instead). A ``safe.directory`` entry is added first (best effort, container-local
-    ``~/.gitconfig``) so a uid mismatch inside a reused volume reads as a mismatch, not a crash.
+    HEAD must be a readable commit, on ``target.head_branch`` when a branch is checked out (a branch target
+    refuses a detached HEAD), and equal to ``target.head_sha`` when the target resolved one (a PR head): a stale
+    worktree is never reviewed under the PR head's label. A branch target's head SHA is the mounted HEAD. Zero
+    destructive operations: no clone, fetch, reset or wipe.
     """
+    if not os.path.exists(repo_dir) or not os.path.isdir(repo_dir):
+        raise ReviewPreparationError("validate", f"workspace directory '{repo_dir}' does not exist")
+
     run_cmd(["git", "config", "--global", "--add", "safe.directory", repo_dir], check=False)
-    expected = os.getenv("HOLON_REPO_URL", "").strip()
-    if not expected:
-        return True
-    origin = run_cmd(["git", "remote", "get-url", "origin"], cwd=repo_dir, check=False)
-    if origin.returncode != 0:
-        return False
-    return _normalised_repo_url(origin.stdout or "") == _normalised_repo_url(expected)
+    proc = run_cmd(["git", "rev-parse", "--verify", "HEAD^{commit}"], cwd=repo_dir, check=False)
+    sha = (proc.stdout or "").strip()
+    if proc.returncode != 0 or not sha:
+        stderr = (proc.stderr or "").strip()
+        msg = f"mounted workspace at '{repo_dir}' is not a valid git commit"
+        if stderr:
+            msg += f": {stderr}"
+        raise ReviewPreparationError("validate", msg)
 
-
-def _reset_reused_checkout(repo_dir: str) -> None:
-    """Make a reused checkout hermetically equivalent to a fresh clone of its current HEAD.
-
-    Aborts any in-progress rebase or merge (best effort), then discards every uncommitted and untracked
-    change — reviewer scratch under ``.holon/review/``, resolver leftovers and any in-container ledger
-    rows appended to the clone's copy of ``holon-knowledge/ledger/`` by a previous pass (the host loop's
-    rows are the canonical provenance), so each pass starts as a pure function of the fetched commit.
-    """
-    run_cmd(["git", "rebase", "--abort"], cwd=repo_dir, check=False)
-    run_cmd(["git", "merge", "--abort"], cwd=repo_dir, check=False)
-    _checked(["git", "reset", "--hard", "HEAD"], repo_dir, "reset")
-    _checked(["git", "clean", "-fdx"], repo_dir, "clean")
-
-
-def _wipe_workspace(repo_dir: str) -> None:
-    """Remove the contents of ``repo_dir`` without removing the directory itself (it may be a mountpoint)."""
-    for name in os.listdir(repo_dir):
-        path = os.path.join(repo_dir, name)
-        try:
-            if os.path.isdir(path) and not os.path.islink(path):
-                shutil.rmtree(path)
-            else:
-                os.remove(path)
-        except OSError as exc:
-            raise ReviewPreparationError("clone", f"could not clear the stale workspace at {repo_dir}: {exc}") from exc
-
-
-def _clone_or_fetch(repo_dir: str, target: ReviewTarget) -> None:
-    """Clone the head branch into a fresh workspace, or sync an existing one incrementally.
-
-    A reused checkout (a persistent review workspace volume carrying the previous pass's clone) is first
-    verified against ``HOLON_REPO_URL`` — on mismatch it is wiped and re-cloned, never fetched from — and
-    then hermetically reset before the incremental ``git fetch`` + ``git checkout -B``, which picks up
-    exactly the new commits (for example a resolver push from the previous pass). Any git failure on that
-    reuse path (a crash-poisoned checkout: unborn HEAD, stale ``index.lock``, a corrupted object store)
-    also falls back to wipe and re-clone, so a leaked volume never wedges the session; only a failing
-    clone itself still fails the pass closed.
-    """
-    branch = target.head_branch
-    if _has_checkout(repo_dir):
-        if _reusable_origin(repo_dir):
-            try:
-                _reset_reused_checkout(repo_dir)
-                _checked(
-                    ["git", "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], repo_dir, "fetch"
-                )
-                _checked(["git", "checkout", "-B", branch, f"origin/{branch}"], repo_dir, "checkout")
-                return
-            except ReviewPreparationError as exc:
-                print(
-                    f"Incremental sync of the reused workspace at {repo_dir} failed ({exc.stage}): {exc}; "
-                    "wiping and re-cloning.",
-                    file=sys.stderr,
-                )
-        else:
-            print(
-                f"Origin mismatch or unreadable in the reused workspace at {repo_dir}; wiping and re-cloning.",
-                file=sys.stderr,
+    if target.head_branch:
+        branch_proc = run_cmd(["git", "symbolic-ref", "--short", "-q", "HEAD"], cwd=repo_dir, check=False)
+        current_branch = branch_proc.stdout.strip() if branch_proc.returncode == 0 else ""
+        if not current_branch and not target.is_pr:
+            raise ReviewPreparationError(
+                "validate",
+                f"mounted workspace is on a detached HEAD; check out branch '{target.head_branch}' to review it",
             )
-        _wipe_workspace(repo_dir)
-    try:
-        repo_url = get_repo_url()
-    except RuntimeError as exc:
-        raise ReviewPreparationError("clone", str(exc)) from exc
-    print(f"Cloning {branch} into {repo_dir} from {redact_command([repo_url])}...", file=sys.stderr)
-    _checked(["git", "clone", "--branch", branch, repo_url, "."], repo_dir, "clone")
+        if current_branch and current_branch != target.head_branch:
+            raise ReviewPreparationError(
+                "validate",
+                f"checked-out branch '{current_branch}' does not match target '{target.head_branch}'",
+            )
+
+    if target.head_sha and target.head_sha != sha:
+        raise ReviewPreparationError(
+            "validate",
+            f"mounted workspace HEAD {sha} is not the review head {target.head_sha}; "
+            "sync the host worktree with the branch before reviewing",
+        )
+    return dataclasses.replace(target, head_sha=sha)
 
 
-def _rev_parse(repo_dir: str, rev: str, stage: str) -> str:
-    """Return the full SHA ``rev`` names, raising when git cannot resolve it."""
-    sha = (_checked(["git", "rev-parse", "--verify", f"{rev}^{{commit}}"], repo_dir, stage).stdout or "").strip()
-    if not sha:
-        raise ReviewPreparationError(stage, f"git rev-parse {rev} returned no commit")
-    return sha
-
-
-def _verify_head(repo_dir: str, target: ReviewTarget) -> ReviewTarget:
-    """Make HEAD the resolved head commit, fetching that SHA explicitly if the branch has moved."""
-    head_sha = target.head_sha or _rev_parse(repo_dir, f"refs/remotes/origin/{target.head_branch}", "verify")
-    if _rev_parse(repo_dir, "HEAD", "verify") != head_sha:
-        _checked(["git", "fetch", "origin", head_sha], repo_dir, "fetch")
-        _checked(["git", "checkout", "--detach", head_sha], repo_dir, "checkout")
-        actual = _rev_parse(repo_dir, "HEAD", "verify")
-        if actual != head_sha:
-            raise ReviewPreparationError("verify", f"HEAD is {actual}, expected the review head {head_sha}")
-    return dataclasses.replace(target, head_sha=head_sha)
-
-
-def _record_preparation_failure(repo_dir: str, raw: str, stage: str, detail: str) -> bool:
-    """Append one ACT-REV failure row when the workspace has a ledger directory; True when it was written."""
+def _record_preparation_failure(
+    repo_dir: str, raw: str, stage: str, detail: str, ledger_file: str | None = None
+) -> bool:
+    """Append one ACT-REV failure row to ``ledger_file`` or, when unset, to the workspace ledger if its directory
+    exists; True when it was written."""
     ledger_dir = os.path.join(repo_dir, "holon-knowledge", "ledger")
-    if not os.path.isdir(ledger_dir):
+    if ledger_file is None and not os.path.isdir(ledger_dir):
         return False
     record = {
         "action_id": generate_action_id("ACT-REV"),
@@ -281,7 +210,7 @@ def _record_preparation_failure(repo_dir: str, raw: str, stage: str, detail: str
         "created_at": datetime.now(UTC).isoformat(),
     }
     written = try_append_action_record(
-        os.path.join(ledger_dir, "executions.jsonl"),
+        ledger_file or os.path.join(ledger_dir, "executions.jsonl"),
         record,
         label="Stage 4 review preparation failure",
         preserve_shape=True,
@@ -298,7 +227,8 @@ def _fail_preparation(
 ) -> None:
     """Record the failure, print a FAILED summary and exit 1 without computing or posting a consensus."""
     detail = _bounded_error_context(str(error))
-    if not _record_preparation_failure(repo_dir, raw, error.stage, detail):
+    ledger_file = _SCRATCH_LEDGER if result_file else None
+    if not _record_preparation_failure(repo_dir, raw, error.stage, detail, ledger_file):
         print(f"Review preparation failed ({error.stage}): {detail}", file=sys.stderr)
         print("No ledger row was written: the workspace has no holon-knowledge/ledger/ directory.", file=sys.stderr)
     result = {
@@ -327,14 +257,18 @@ def _fail_preparation(
 
 
 def _prepare_workspace(repo_dir: str, raw: str) -> ReviewTarget:
-    """Resolve the target, then clone or fetch it and verify HEAD; raises ``ReviewPreparationError``."""
+    """Resolve the target, then validate the mounted workspace in place; raises ``ReviewPreparationError``."""
     target = _resolve_target(repo_dir, raw)
-    _clone_or_fetch(repo_dir, target)
-    return _verify_head(repo_dir, target)
+    return _validate_mounted_workspace(repo_dir, target)
 
 
 _FORBIDDEN_GIT_FLAGS = frozenset({"--force", "-f", "--force-with-lease", "--amend", "rebase"})
 _SEVERITY_ORDER = {"clean": 0, "nit": 1, "important": 2, "critical": 3}
+#: The resolver stages only its own changes: the host loop's uncommitted ledger rows in the shared worktree stay out.
+_RESOLVER_PATHSPEC = ["--", ".", ":(exclude)holon-knowledge/ledger/executions.jsonl"]
+#: Where a host-dispatched pass (one given --result-file) appends its ledger rows. The host loop owns the canonical
+#: ledger of the bind-mounted worktree and records every pass from the result file, so writing there would duplicate.
+_SCRATCH_LEDGER = "/tmp/holon-review-executions.jsonl"
 
 
 def _assert_safe_git_args(args: list[str]) -> None:
@@ -510,7 +444,7 @@ def _commit_and_push_resolution(
         _assert_safe_git_args(reset_cmd)
         run_cmd(reset_cmd, cwd=repo_dir, check=True)
     initial_head = pre_resolver_head or current_head
-    status_proc = run_cmd(["git", "status", "--porcelain"], cwd=repo_dir, check=False)
+    status_proc = run_cmd(["git", "status", "--porcelain", *_RESOLVER_PATHSPEC], cwd=repo_dir, check=False)
     has_worktree_changes = bool((status_proc.stdout or "").strip())
     applied_items = [d for d in dispositions if d.disposition == "applied"]
 
@@ -525,7 +459,7 @@ def _commit_and_push_resolution(
     if not lint_ok or not tests_ok:
         return dispositions, initial_head, False, lint_ok, tests_ok, verify_err
 
-    run_cmd(["git", "add", "-A"], cwd=repo_dir, check=True)
+    run_cmd(["git", "add", "-A", *_RESOLVER_PATHSPEC], cwd=repo_dir, check=True)
     finding_ids = [d.id for d in applied_items]
     ids_csv = ", ".join(finding_ids) or f"ITER-{iteration}"
     severities = [d.severity for d in applied_items] or ["nit"]
@@ -551,7 +485,9 @@ def _commit_and_push_resolution(
 
     pushed = False
     if not opts.skip_push and new_head != initial_head:
-        push_cmd = ["git", "push", "origin", f"HEAD:refs/heads/{head_branch}"]
+        # The host worktree's origin may be an SSH remote; push to the credential-free URL the host resolved.
+        remote = os.getenv("HOLON_REPO_URL", "").strip() or "origin"
+        push_cmd = ["git", "push", remote, f"HEAD:refs/heads/{head_branch}"]
         _assert_safe_git_args(push_cmd)
         push_res = run_cmd(push_cmd, cwd=repo_dir, check=False)
         if push_res.returncode != 0:
@@ -771,14 +707,11 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     loop_target = review.raw if review.is_pr else review.head_branch
     head_branch = review.head_branch
 
-    # Configure local git author and committer identity for Review Loop Agent
+    # Configure the Review Loop Agent's git identity in the container's own global config: the workspace is
+    # the host worktree, whose repository config is shared with the host and mounted read-only.
+    run_cmd(["git", "config", "--global", "user.name", "Holon Review Loop Agent"], cwd=repo_dir, check=False)
     run_cmd(
-        ["git", "config", "--local", "user.name", "Holon Review Loop Agent"],
-        cwd=repo_dir,
-        check=False,
-    )
-    run_cmd(
-        ["git", "config", "--local", "user.email", "review-loop-agent@holon-agentic-coder.com"],
+        ["git", "config", "--global", "user.email", "review-loop-agent@holon-agentic-coder.com"],
         cwd=repo_dir,
         check=False,
     )
@@ -852,6 +785,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         dry_run=args.dry_run,
         skip_post=args.skip_post,
         first_iteration=args.iteration,
+        ledger_file=_SCRATCH_LEDGER if args.result_file else None,
     )
 
     if args.result_file:

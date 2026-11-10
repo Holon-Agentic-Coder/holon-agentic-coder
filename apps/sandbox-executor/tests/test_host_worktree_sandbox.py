@@ -139,6 +139,7 @@ def test_a_linked_worktree_mounts_its_git_dirs_at_host_paths_and_overlays_git_co
         f"{common / 'hooks'}:{common / 'hooks'}:ro",
         f"{common / 'modules'}:{common / 'modules'}:ro",
         f"{common / 'worktrees'}:{common / 'worktrees'}:ro",
+        f"{common / 'objects' / 'info' / 'alternates'}:{common / 'objects' / 'info' / 'alternates'}:ro",
         f"{git_dir / 'config.worktree'}:{git_dir / 'config.worktree'}:ro",
     ]
     # The mounted pointer resolves through the mounted paths, without any network: git works there.
@@ -159,10 +160,13 @@ def test_a_primary_checkout_needs_no_extra_git_mount_but_still_protects_config_a
         f"{repo / '.git' / 'hooks'}:{MOUNT}/.git/hooks:ro",
         f"{repo / '.git' / 'modules'}:{MOUNT}/.git/modules:ro",
         f"{repo / '.git' / 'worktrees'}:{MOUNT}/.git/worktrees:ro",
+        f"{repo / '.git' / 'objects' / 'info' / 'alternates'}:{MOUNT}/.git/objects/info/alternates:ro",
     ]
-    # An absent worktrees/ or config.worktree is created before overlaying, so the container cannot create it.
+    # An absent worktrees/, config.worktree or objects/info/alternates is created before overlaying, so the
+    # container cannot create it.
     assert (repo / ".git" / "worktrees").is_dir()
     assert (repo / ".git" / "config.worktree").read_text(encoding="utf-8") == ""
+    assert (repo / ".git" / "objects" / "info" / "alternates").read_text(encoding="utf-8") == ""
 
 
 def test_a_sibling_worktree_admin_dirs_are_unwritable_while_own_admin_and_object_database_stay_writable(
@@ -201,6 +205,7 @@ def test_a_sibling_worktree_admin_dirs_are_unwritable_while_own_admin_and_object
         own / "commondir",
         own / "gitdir",
         own / "config.worktree",
+        common / "objects" / "info" / "alternates",
         flow_worktree / ".git",
     ):
         assert not _host_writable(args, str(path)), path

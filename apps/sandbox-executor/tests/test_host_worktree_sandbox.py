@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -176,6 +177,34 @@ def test_a_a_worktree_the_container_uid_cannot_write_is_refused_before_any_conta
     for path in git_dirs:
         path.chmod(0o775)
     assert git_flow.sandbox_worktree_mounts(str(flow_worktree), MOUNT)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="the uid preflight applies to Linux bind mounts")
+def test_a_a_named_user_acl_grants_the_container_uid_write_access(
+    flow_worktree: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 'setfacl -m u:<uid>:rwX' on a 0755 worktree owned by another uid, as the refusal message recommends.
+    uid = os.getuid() + 1
+    monkeypatch.setattr(git_flow, "SANDBOX_CONTAINER_UID", uid)
+    monkeypatch.setattr(git_flow, "SANDBOX_CONTAINER_GID", os.getgid() + 1)
+    common = flow_worktree.parent / "repo" / ".git"
+    for path in (flow_worktree, common, common / "worktrees" / "flow-demo"):
+        path.chmod(0o755)
+
+    def acl(user_perm: int, mask_perm: int) -> bytes:
+        none = 0xFFFFFFFF
+        entries = [(0x01, 7, none), (0x02, user_perm, uid), (0x04, 5, none), (0x10, mask_perm, none), (0x20, 5, none)]
+        return struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *entry) for entry in entries)
+
+    monkeypatch.setattr(git_flow.os, "getxattr", lambda path, name: acl(7, 7), raising=False)
+    assert git_flow.sandbox_worktree_mounts(str(flow_worktree), MOUNT)
+
+    # The ACL mask still limits a named-user entry, and a read-only entry is refused.
+    for user_perm, mask_perm in ((7, 5), (5, 7)):
+        blob = acl(user_perm, mask_perm)
+        monkeypatch.setattr(git_flow.os, "getxattr", lambda path, name, blob=blob: blob, raising=False)
+        with pytest.raises(RuntimeError, match=rf"runs as uid {uid}.*cannot write"):
+            git_flow.sandbox_worktree_mounts(str(flow_worktree), MOUNT)
 
 
 # --- (b) no clone, fetch, reset or clean in the container ------------------------------------------------------------

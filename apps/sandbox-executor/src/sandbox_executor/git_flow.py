@@ -29,6 +29,7 @@ import logging
 import os
 import re
 import stat
+import struct
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -42,6 +43,11 @@ logger = logging.getLogger(__name__)
 #: container can only write a worktree and git directories that this user may write.
 SANDBOX_CONTAINER_UID = 1000
 SANDBOX_CONTAINER_GID = 1000
+
+#: POSIX ACL entry tags and the write permission bit, as stored in the system.posix_acl_access xattr.
+_ACL_USER = 0x02
+_ACL_MASK = 0x10
+_ACL_WRITE = 0x02
 
 __all__ = [
     "checked_out_branch",
@@ -669,11 +675,29 @@ def _within(path: str, root: str) -> bool:
     return path == root or path.startswith(root + os.sep)
 
 
+def _acl_user_write(path: str, uid: int) -> bool | None:
+    """Return whether the access ACL of path lets named user uid write past the mask; None when uid has no entry."""
+    try:
+        acl = os.getxattr(path, "system.posix_acl_access")
+    except (AttributeError, OSError):
+        return None
+    # Linux xattr layout: a 4-byte version header, then 8-byte entries of (u16 tag, u16 perm, u32 id), little-endian.
+    entries = [struct.unpack_from("<HHI", acl, offset) for offset in range(4, len(acl) - 7, 8)]
+    user_perms = [perm for tag, perm, entry_id in entries if tag == _ACL_USER and entry_id == uid]
+    if not user_perms:
+        return None
+    mask_perms = [perm for tag, perm, _ in entries if tag == _ACL_MASK]
+    return bool(user_perms[0] & _ACL_WRITE) and all(perm & _ACL_WRITE for perm in mask_perms)
+
+
 def _container_cannot_write(path: str) -> bool:
-    """Return True when the sandbox user may not write the directory path, judged by its owner, group and mode bits."""
+    """Return True when the sandbox user may not write the directory path, judged by owner, named-user ACL and mode."""
     st = os.stat(path)
     if st.st_uid == SANDBOX_CONTAINER_UID:
         return not st.st_mode & stat.S_IWUSR
+    acl_write = _acl_user_write(path, SANDBOX_CONTAINER_UID)
+    if acl_write is not None:
+        return not acl_write
     if st.st_gid == SANDBOX_CONTAINER_GID:
         return not st.st_mode & stat.S_IWGRP
     return not st.st_mode & stat.S_IWOTH

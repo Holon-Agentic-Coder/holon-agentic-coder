@@ -30,6 +30,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from sandbox_executor import git_flow
 from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
+from sandbox_executor.entrypoint.execution_workspace import validate_mounted_workspace
 
 MOUNT = "/sandbox/workspace"
 
@@ -605,7 +606,7 @@ def test_b_executor_starts_from_the_host_fetched_plan_tip_without_cloning_or_fet
     calls: list[list[str]] = []
 
     with _executor_spy(calls):
-        assert executor._validate_mounted_workspace(str(flow_worktree), _PLAN) == tip
+        assert validate_mounted_workspace(executor._get_repo(str(flow_worktree)), str(flow_worktree), _PLAN) == tip
 
     verbs = {c[1] for c in calls if c[0] == "git"}
     assert verbs.isdisjoint({"clone", "fetch", "reset", "clean", "checkout", "pull"}), calls
@@ -619,7 +620,7 @@ def test_b_executor_refuses_a_plan_branch_the_host_has_not_fetched(repo: Path, f
     _push_over_budget_plan(repo)
 
     with pytest.raises(RuntimeError, match="the host fetches it before dispatch"):
-        executor._validate_mounted_workspace(str(flow_worktree), _PLAN)
+        validate_mounted_workspace(executor._get_repo(str(flow_worktree)), str(flow_worktree), _PLAN)
 
 
 def test_d_executor_refuses_a_dirty_mounted_worktree_and_leaves_its_edits_on_the_host(
@@ -632,7 +633,7 @@ def test_d_executor_refuses_a_dirty_mounted_worktree_and_leaves_its_edits_on_the
     (flow_worktree / "README.md").write_text("edit left by a crashed run\n", encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="uncommitted changes, which are kept on the host"):
-        executor._validate_mounted_workspace(str(flow_worktree), _PLAN)
+        validate_mounted_workspace(executor._get_repo(str(flow_worktree)), str(flow_worktree), _PLAN)
 
     assert (flow_worktree / "README.md").read_text(encoding="utf-8") == "edit left by a crashed run\n"
 

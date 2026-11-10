@@ -35,11 +35,7 @@ from sandbox_executor.agent_defaults import (
     resolve_agent_runner,
     resolve_model,
 )
-from sandbox_executor.agent_runner import (
-    HOST_WORKTREE_ROLES,
-    SANDBOX_UV_PROJECT_ENVIRONMENT,
-    SANDBOX_WORKSPACE_MOUNT,
-)
+from sandbox_executor.agent_runner import HOST_WORKTREE_ROLES, SANDBOX_UV_PROJECT_ENVIRONMENT, SANDBOX_WORKSPACE_MOUNT
 from sandbox_executor.budgets import stage_budget_handdown_env
 from sandbox_executor.calibration import run_calibrate
 from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE

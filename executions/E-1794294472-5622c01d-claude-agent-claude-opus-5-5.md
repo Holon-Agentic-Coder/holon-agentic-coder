@@ -2,19 +2,30 @@
 
 ## Summary
 
-In progress. Implements plan `P-1794294214-0a2285cf-claude-agent-claude-opus-5-5` for intent
-`I-1794294198-review-consensus-never-approves-past-an-open-critical`: the Stage 4 review loop must decide consensus only
-from what the reviewers returned, and the posted review must report it exactly.
+Outcome: all eight plan steps completed; `uv run task test`, `uv run task lint` and `uv run task lint-docs` pass.
+
+Implements plan `P-1794294214-0a2285cf-claude-agent-claude-opus-5-5` for intent
+`I-1794294198-review-consensus-never-approves-past-an-open-critical`. Confirmed cause: `_filter_adjudicated_findings`
+(then in `flow/review/resolver.py`) set a reviewer's verdict to APPROVED and its counts to zero once every finding was
+dropped, and matched rejected findings by positional id (`R{index}-F{n}`) as well as by signature, so a critical
+re-raised as `R3-F1` after an earlier `rejected: out of scope` row was dropped, and the loop (`loop.py`) decided
+consensus and posted the review on that rewritten list while the untouched role table still showed Security at
+`CHANGES`. Contributing defects: missing resolver reasons and dispositions defaulted to `rejected: out of scope`, the
+container's own ensemble verdict was discarded, role verdicts never blocked consensus, and the report heading and
+fraction counted verdicts only. The fix decides consensus from the returned reviewers with role, adjudication and
+container cross-checks, limits suppression to nits, requires evidence for important and critical rejections, makes the
+posted review and `--approve` refuse inconsistent approvals, and names every final verdict at the end of the flow.
+Merging stays with the human maintainer.
 
 ## Actual Metrics
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0     |
-| entropy_actual        | 0     |
-| impact_actual         | 0     |
-| cost_actual           | 0     |
-| learning_value_actual | 0     |
+| success_actual        | 1     |
+| entropy_actual        | 12.2  |
+| impact_actual         | 90    |
+| cost_actual           | 26    |
+| learning_value_actual | 6.5   |
 
 ## Steps Executed
 
@@ -157,3 +168,57 @@ from what the reviewers returned, and the posted review must report it exactly.
   says adjudicated findings are listed "so they are not re-raised"; it should say only rejected nits are listed and that
   important, critical and Security findings must always be raised.
 - `npx prettier --write` reflowed the two docs and this record; `uv run task lint-docs` then passed.
+
+### Step 8: Move-proof fixture, budgets and validation
+
+- `tests/flow/fixtures/flow_py_definitions.json`: digests refreshed with `definition_digests` (via `package_definitions`
+  in `tests/flow/move_proof.py`, never by hand) for the nine changed original definitions, each with an
+  `amended_definitions` reason naming this execution (`_filter_adjudicated_findings`, `_augment_pr_text_with_rejected`,
+  `_run_review_loop_iterations` (its earlier amendment kept and this one appended), `DispositionRecorder`,
+  `DispositionRecorder.record`, `post_pr_review_consensus`, `review_loop_approved`, `review_summary_lines`,
+  `run_review_stage`); the 15 new definitions are in `added_definitions` with their module and reason. No definition was
+  removed.
+- `flow_module_budgets.json`: new entries at creation size (`review/adjudication.py` 108, `review/verdict.py` 136,
+  `review/ci_evidence.py` 31) and lowered budgets for the modules that shrank (`review/resolver.py` 362 to 290,
+  `review/loop.py` 962 to 940, `review/cli.py` 106 to 87, `stages/review.py` 322 to 295, `__init__.py` 359 to 358). No
+  budget was raised.
+- Housekeeping: one `uv run` issued from `apps/sandbox-executor/` created an untracked `.venv` there and rewrote
+  `apps/sandbox-executor/uv.lock`; the `.venv` was deleted and `uv.lock` restored from git before committing, so no
+  dependency or lock change is part of this execution.
+- `test_workspace_survival_stress.py` clones the committed HEAD, so it failed before this step's commit (it still saw
+  the old fixture and budgets) and passed after it.
+
+## Tests Run
+
+No repeated runs: the intent has no timing requirement, so each command ran once (the Step 1 red run is the pre-fix
+measurement).
+
+| command                                                                                                                                                                                                                                                                                                                                                                                               | result                                                       | pytest time |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ----------- |
+| `uv run pytest apps/sandbox-executor/tests/flow/review/test_consensus_integrity.py` (Step 1, unmodified code)                                                                                                                                                                                                                                                                                         | 3 failed (expected red)                                      | `0.14s`     |
+| `uv run pytest apps/sandbox-executor/tests/flow apps/sandbox-executor/tests/test_review_report.py apps/sandbox-executor/tests/test_review_ensemble.py apps/sandbox-executor/tests/test_review_loop.py apps/sandbox-executor/tests/test_resolver_evidence.py apps/sandbox-executor/tests/test_review_resolver_failure.py apps/sandbox-executor/tests/test_review_dispatch.py -n auto --dist worksteal` | 943 passed, 0 failed                                         | `7.14s`     |
+| `uv run task test`                                                                                                                                                                                                                                                                                                                                                                                    | 3552 passed, 0 failed                                        | `29.38s`    |
+| `uv run task lint`                                                                                                                                                                                                                                                                                                                                                                                    | passed (ruff check, ruff format, `uv lock --check`, budgets) | n/a         |
+| `uv run task lint-docs`                                                                                                                                                                                                                                                                                                                                                                               | passed                                                       | n/a         |
+| `uv run pytest apps/sandbox-executor/tests/test_sandbox_hermetic_guard.py apps/sandbox-executor/tests/test_workspace_survival_stress.py` (before the Step 8 commit)                                                                                                                                                                                                                                   | 8 passed, 1 failed (clone of HEAD lacked the fixture)        | `61.56s`    |
+| `uv run pytest apps/sandbox-executor/tests/test_workspace_survival_stress.py` (after the Step 8 commit)                                                                                                                                                                                                                                                                                               | 1 passed, 0 failed                                           | `31.32s`    |
+
+Median pytest time of the green full-suite runs: `29.38s` (one run).
+
+## Pull Request Description
+
+Stage 4 could declare consensus, post `APPROVED (3/3)` and halt for the human while reviewer 3 had an open critical
+finding and its Security role was at `CHANGES`.
+
+- Cause: `_filter_adjudicated_findings` rewrote a reviewer's verdict to APPROVED and its counts to zero once all its
+  findings were filtered, and matched earlier rejections by positional id (`R3-F1` collides across iterations) as well
+  as by signature; the loop then decided consensus and posted from that rewritten list. Missing resolver reasons were
+  silently recorded as `out of scope`, and the container's own `CHANGES_REQUESTED` verdict was discarded.
+- Fix: consensus is computed from the returned reviewers (`flow/review/verdict.py`) and blocked by any role at
+  `CHANGES`, a container verdict other than APPROVED, or a reviewer whose verdict suppression would have changed;
+  suppression is nits-only and never touches verdicts (`flow/review/adjudication.py`); important and critical rejections
+  need a reason and `path:line` or test evidence (`resolver_evidence.py`), otherwise the finding stays open; the report
+  heading, fraction and `--approve` flag follow `report_approves`; end-of-flow messages name every final verdict.
+- Follow-up for the maintainer (out of scope here): `holon-config/prompts/review_loop.template.md` line 26 still says
+  adjudicated findings are listed "so they are not re-raised"; it should say only rejected nits are listed.
+- Merging remains with the human maintainer.

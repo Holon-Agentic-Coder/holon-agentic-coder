@@ -1,0 +1,28 @@
+# Execution Record: E-1794270142-ea5a02bf-antigravity-agent-gemini-3.8-flash-high
+
+## Summary
+
+Execution of plan `P-1794268104-fd29467b-antigravity-agent-gemini-3.8-flash-medium` for intent
+`I-1794268087-mount-host-worktree-into-sandbox-containers`: replace destructive in-container git operations, Docker
+named volume machinery, and root `chown` init containers with host git worktree bind-mounting, lossless in-place
+workspace execution, unified `.subagent/` scratch artifacts, and persistent worktree naming across stages.
+
+## Actual Metrics
+
+| metric                | value |
+| --------------------- | ----- |
+| success_actual        | 0.94  |
+| entropy_actual        | 3.80  |
+| impact_actual         | 92.0  |
+| cost_actual           | 7.50  |
+| learning_value_actual | 5.00  |
+
+## Steps Executed
+
+### Step 1: Host Worktree Validation, Provisioning, and Bind-Mount Resolution in CLI and Flow Dispatch
+
+- Implemented `resolve_worktree_git_mounts` in `sandbox_executor.cli` to resolve and construct `-v` bind mounts for a git worktree's backing common git directory and gitdir.
+- Updated `run_docker_container` and `dispatch_role_agent` to bind-mount the host worktree directly at `/home/holon/.holon-sandbox/workspace:rw`, mount backing git directories, pin `HOLON_TARGET_WORKTREE`, and excised `review_workspace_volume`.
+- Updated `_dispatch_role` in `sandbox_executor.flow.dispatch` to remove obsolete volume docstring references.
+- Updated `test_cli.py` to replace legacy volume mount assertions with host worktree bind-mount verification.
+

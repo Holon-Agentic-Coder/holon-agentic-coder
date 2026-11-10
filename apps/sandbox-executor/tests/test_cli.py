@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -2347,15 +2348,21 @@ def _remove_argv_pair(argv: list[str], pair: list[str]) -> list[str]:
     raise AssertionError(f"expected pair {pair} in docker argv: {argv}")
 
 
-def test_review_workspace_volume_adds_exactly_one_mount_and_pins_the_worktree():
-    """With a volume the argv gains one `-v` mount and the pinned worktree env; without one it is identical."""
+def test_host_worktree_bind_mount_and_pins_the_worktree(tmp_path: Path):
+    """The host worktree is bind-mounted at SANDBOX_WORKSPACE_MOUNT and HOLON_TARGET_WORKTREE is pinned."""
     from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
 
     captured: list[list[str]] = []
 
     def record_run(cmd, *args, **kwargs):
-        captured.append(list(cmd))
-        return MagicMock(returncode=0)
+        if cmd and cmd[0] == "docker":
+            captured.append(list(cmd))
+            return MagicMock(returncode=0)
+        if "rev-parse" in cmd and "--is-inside-work-tree" in cmd:
+            return MagicMock(returncode=0, stdout="true\n")
+        return MagicMock(returncode=0, stdout="")
+
+    (tmp_path / ".git").mkdir()
 
     with (
         patch("sandbox_executor.cli.resolve_target_repo", return_value=("git@github.com:test/repo.git", None)),
@@ -2365,63 +2372,23 @@ def test_review_workspace_volume_adds_exactly_one_mount_and_pins_the_worktree():
         patch.dict(os.environ, {}, clear=True),
     ):
         args = ["branch", "fake-agent", "fake-model"]
-        assert run_docker_container("review-loop", "holon/agent-claude", list(args), agent_id="claude") == 0
         assert (
             run_docker_container(
                 "review-loop",
                 "holon/agent-claude",
                 list(args),
                 agent_id="claude",
-                review_workspace_volume="holon-review-ws-abc123",
-            )
-            == 0
-        )
-
-    baseline, with_volume = captured
-    # Guard every isolation flag: removing the one mount and the pinned worktree variable restores the
-    # baseline argv byte for byte, so nothing else (``--rm``, ``--cap-drop=ALL``,
-    # ``--security-opt=no-new-privileges``, metadata sinkholes, mounts, env forwarding) changed.
-    reduced = _remove_argv_pair(with_volume, ["-v", f"holon-review-ws-abc123:{SANDBOX_WORKSPACE_MOUNT}"])
-    reduced = _remove_argv_pair(reduced, ["-e", f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"])
-    assert reduced == baseline
-    assert "--rm" in with_volume
-    assert "--cap-drop=ALL" in with_volume
-    assert "--security-opt=no-new-privileges" in with_volume
-    # A host HOLON_TARGET_WORKTREE cannot displace the pinned container workspace path.
-    assert [a for a in with_volume if a.startswith("HOLON_TARGET_WORKTREE=")] == [
-        f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"
-    ]
-
-
-def test_review_workspace_volume_overrides_a_forwarded_host_worktree():
-    """A forwarded host HOLON_TARGET_WORKTREE is replaced by the mountpoint when a volume is supplied."""
-    from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
-
-    captured: list[list[str]] = []
-
-    def record_run(cmd, *args, **kwargs):
-        captured.append(list(cmd))
-        return MagicMock(returncode=0)
-
-    with (
-        patch("sandbox_executor.cli.resolve_target_repo", return_value=("git@github.com:test/repo.git", None)),
-        patch("sandbox_executor.cli.get_agent_session_mounts", return_value=[]),
-        patch("subprocess.run", side_effect=record_run),
-        patch("shutil.which", return_value="/usr/bin/docker"),
-        patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": "/home/dev/own-checkout"}, clear=True),
-    ):
-        assert (
-            run_docker_container(
-                "review-loop",
-                "holon/agent-claude",
-                ["branch", "fake-agent", "fake-model"],
-                agent_id="claude",
-                review_workspace_volume="holon-review-ws-abc123",
+                target_worktree=str(tmp_path),
             )
             == 0
         )
 
     (argv,) = captured
+    worktree_mounts = [
+        argv[i : i + 2] for i in range(len(argv) - 1) if argv[i] == "-v" and str(tmp_path.resolve()) in argv[i + 1]
+    ]
+    assert worktree_mounts == [["-v", f"{tmp_path.resolve()}:{SANDBOX_WORKSPACE_MOUNT}:rw"]]
+    assert "--rm" in argv
     assert [a for a in argv if a.startswith("HOLON_TARGET_WORKTREE=")] == [
         f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"
     ]

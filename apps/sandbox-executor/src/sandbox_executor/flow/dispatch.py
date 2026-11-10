@@ -58,9 +58,8 @@ def _dispatch_role(
 ) -> int:
     """Dispatch one role agent through the same function the per-stage commands use.
 
-    Non-None ``extra`` keywords (e.g. ``review_workspace_volume`` for Stage 4 dispatches) are forwarded
-    to the dispatcher; None values are dropped so injected dispatchers without those parameters keep
-    working unchanged.
+    Non-None ``extra`` keywords are forwarded to the dispatcher; None values are dropped so injected
+    dispatchers without those parameters keep working unchanged.
     """
     dispatcher = _get_dispatcher(context)
     context.log(f"Dispatching {role} agent (runner={context.agent}, model={context.model}).")

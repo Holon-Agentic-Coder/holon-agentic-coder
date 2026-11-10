@@ -123,7 +123,6 @@ from sandbox_executor.flow.review.loop import (
     _review_window,
     _reviewers_objected,
     _run_engine_review_loop,
-    _run_review_loop_iterations,
     run_review_loop,
 )
 from sandbox_executor.flow.review.records import (
@@ -152,13 +151,7 @@ from sandbox_executor.flow.review.resolver import (
 )
 from sandbox_executor.flow.review.verdict import review_loop_approved, review_summary_lines
 from sandbox_executor.flow.review.workspace import (
-    _DOCKER_CLI_TIMEOUT_SECONDS,
-    _REVIEW_PERSIST_DISABLED_VALUES,
     HOST_REVIEW_REFUSAL,
-    REVIEW_SESSION_VOLUME_LABEL,
-    ReviewWorkspaceSession,
-    review_persist_enabled,
-    review_session_volume_name,
     reviewers_sandboxed,
 )
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
@@ -212,14 +205,11 @@ __all__ = [
     "LEDGER_REL_PATHS",
     "POSTING_ERROR_CONTEXT_MAX_CHARS",
     "REVIEW_GIT_ENV",
-    "REVIEW_SESSION_VOLUME_LABEL",
     "SKIP_PUSH_DISPATCH_ERROR",
     "TESTS_NOT_MEASURED_ERROR",
     "_CONFLICT_MARKERS",
-    "_DOCKER_CLI_TIMEOUT_SECONDS",
     "_ENGINE_PASSES_PER_DISPATCH",
     "_PR_URL_RE",
-    "_REVIEW_PERSIST_DISABLED_VALUES",
     "_SECTION_AFTER_MARKER",
     "_SEVERITY_RANK",
     "_SUMMARY_STATUS_WORDS",
@@ -233,7 +223,6 @@ __all__ = [
     "PrefixSide",
     "ResolverInput",
     "ResolverOutcome",
-    "ReviewWorkspaceSession",
     "StageResult",
     "StageStatus",
     "_append_ledger_row",
@@ -300,7 +289,6 @@ __all__ = [
     "_reviewers_objected",
     "_run_decomposed_plan",
     "_run_engine_review_loop",
-    "_run_review_loop_iterations",
     "_semantic_pr_text",
     "_snapshot_child_branches",
     "_split_conflict_sides",
@@ -340,8 +328,6 @@ __all__ = [
     "resolve_append_only_conflict",
     "resolve_ci_registration_timeout",
     "review_loop_approved",
-    "review_persist_enabled",
-    "review_session_volume_name",
     "review_summary_lines",
     "reviewers_sandboxed",
     "run_calibrate_stage",

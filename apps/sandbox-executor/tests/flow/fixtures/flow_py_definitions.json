@@ -18,13 +18,10 @@
     "<const>:POSTING_ERROR_CONTEXT_MAX_CHARS": "695d30caab4ec7641e3429afcf404a95af10d6b889e314c2089d6c5657d8b3b4",
     "<const>:PrefixSide": "4b7d4647bd9314133dbf9317dce669654d0e30c25f86ad9022b6bc736ef73786",
     "<const>:REVIEW_GIT_ENV": "a82ed9a52f4c948b9144313bfcb403547e6b5fb43bd3c72362077836ff79f301",
-    "<const>:REVIEW_SESSION_VOLUME_LABEL": "129f18ef180c94ba83e0ffaef2be94bdd4f62cafb9fd1eb0daec845833bb0490",
     "<const>:TESTS_NOT_MEASURED_ERROR": "f9848f01ca15d1e41efa1941a90d99daa8f9a76a5aa7924afbfe03d0be2620b8",
     "<const>:_CONFLICT_MARKERS": "35eec5ab779165a05799edd61ff2ccfe698903c79e3377b9f7607e69c89ac33f",
-    "<const>:_DOCKER_CLI_TIMEOUT_SECONDS": "2716908968285eeececc3d924b9401eef7c81546e6ad2c8816eb8fa2bcc9bcf9",
     "<const>:_ENGINE_PASSES_PER_DISPATCH": "92aad834f4ce97dde47bd043e5ed41576190e09d276b307a96ddccfd4411d700",
     "<const>:_PR_URL_RE": "0bc79c48bbcb379f0b56ffa086b13e081cfb2607599b4aaae78cc860de783fb2",
-    "<const>:_REVIEW_PERSIST_DISABLED_VALUES": "01406144fbbf53f3ae5f36449ece865012c664b51db37959633e530c68348fff",
     "<const>:_SECTION_AFTER_MARKER": "734e2d95ef4cb9cead94ce2eed1ccfe6cc999062b2ff9941b1cbab05d4995020",
     "<const>:_SEVERITY_RANK": "8032d743fb8fb6ae46551ed999c134d115fa7055ace3d265615210d4c6ca9cc9",
     "<const>:_SUMMARY_STATUS_WORDS": "f78eabc29cf72430b81869c699d24410ecfd63270d366be90e5d6a7dc9f97423",
@@ -54,15 +51,8 @@
     "PipelineEngine.save_checkpoint": "ad0d1c27391cbeba7dd72c467f5552a4113711f092563ddbc2c8171efcd53bab",
     "PipelineEngine.stage_budget_seconds": "fcfc6f919307cfb439ffb25a25eb9b96e67f2d76bc13ae9494c1e870fb8c00ce",
     "PipelineEngine.timed_execute_stage": "8fe137796d2b3781b1ede27edb4db3fa328cd41cbb87d83eecb753f911cb5c83",
-    "ResolverInput": "1d630a59c6dfd2f27f3ea2dda0a15f4a0e938d1c712f92b45721e45f389fb8aa",
+    "ResolverInput": "4a1869d1e657c8c58f7c3653fb822b5fefa06efda5a4a9e2c39e8e8f466ad7bb",
     "ResolverOutcome": "098277e9f8bdd5093de400fa86676197e5debffbbf7efe8ecf36159b5099e639",
-    "ReviewWorkspaceSession": "7b672151f1abd53595888d4284bb7030a0285e42618fcb355dd322e87eb0754e",
-    "ReviewWorkspaceSession.__init__": "7abb3d0e663e39f235f05d56b3e042a9d1bbc5be63c0764126aa863cae4d06d0",
-    "ReviewWorkspaceSession._checked_docker": "acd4ae923e1a25601dafc8e888d6f9849fa6751fd300b4fe00aa0002d6583c5d",
-    "ReviewWorkspaceSession._init_image": "893f20acbec2e3f6cb5f4fe2c768d47a202347fc862b87bab774400a667617b8",
-    "ReviewWorkspaceSession._run_docker_cli": "c34cce975bb507c6d4e1dbcf8d4d0b5bfb538648020ab670899dfe9e253cb623",
-    "ReviewWorkspaceSession.teardown": "acc555763546b9cca4dcc350ef5cf8328619ddaa5a057fdac5a2bf288287f5a4",
-    "ReviewWorkspaceSession.volume_name": "e116e424953c57b7a428970d672c16e1bede943ef39f85de1bc8904b393976a7",
     "StageResult": "38d9e9929f12d16ec736fb0c5f98a2a7c59e7ac5a691386ec5d48beeb2352df8",
     "StageResult.from_dict": "5d33806210e11e740356ad11630ef7651ada9c7b829bb70b80f4dfc438b9eca4",
     "StageResult.summary_line": "5acb17e2a39543a054d09cf7e8c2039bc53472717e26574b57e0abe636af6ae4",
@@ -83,9 +73,9 @@
     "_commit_stage5_reconciliation": "1c48da8c32472bd1155e928391566f4a30907ba5dbf5d7d45685c394a34f10c7",
     "_decomposition_child_lines": "c5a481c0c63cd762fedfd5c764279e1faa1c1ecb778e42cdff0cc99121865d69",
     "_discover_child_branch": "64cd430a6764fec00fc5c7a745b7e1fcc0ef34976a7d59b2ba22918486e81638",
-    "_dispatch_review_ensemble": "6d542b482c186a7412509ff4fb865d70f479af15655f05db7092cdc2652fd28b",
-    "_dispatch_review_resolver": "33c7c178761ebe962949725a89e92f2648ff4a89932731907dfda9049e337784",
-    "_dispatch_role": "752a81495783aca7f6e4e24a73d70e7b184d5bd0713dd5a608f0cc734af6420e",
+    "_dispatch_review_ensemble": "f981c51ec4b5edac6e23bbe09a28283cf339c0eb7992217cbc0d455f14919f44",
+    "_dispatch_review_resolver": "eda3d5bb866154bf12b4449d9ba117b31be427c3550a30ad194831f45c38fc1d",
+    "_dispatch_role": "858c0e29d65b71e5cfa02c2e0269e794c31573c1a24757b9f7b18fdeeb7ba3ec",
     "_ensemble_iteration": "51bd505a7784ce4013c4ea31aa4e2473e8adda9cc9393da56319cb52b5157dfe",
     "_execution_effective_diff": "769adbfde3c0fcbb4912a060a86df4c1d49624f7dc09a74d518c108b85108b2b",
     "_execution_parent_plan_branch": "9525941e04b95c0116b0f9040799effd2fed3e8d4151da571673af36be3c7163",
@@ -100,7 +90,7 @@
     "_git_show_text": "a42530a744f118b9e02ca809f5b9d008cd4aa02e276e20fadac4ed67b13a9679",
     "_has_conflict_marker_lines": "e7a70e944e5f29430000839f44918266faaf0e26317f5d745e18d94ba42efee1",
     "_has_origin_remote": "785187574235801a2370c30e3c47dbdd059ce5ec45cacd2edca0f3890359a6b5",
-    "_invoke_resolver_pass": "aaca27ae668ebe07fbccac9ea9e0d734f4a009aa724e0184ebb8bbaf4f1611b3",
+    "_invoke_resolver_pass": "180d04933946c01539bf1987683592263ff0d698ce108a20640654e069359ca9",
     "_latest_execution_summary": "ec3aa5db91dd4c5e71b95040c9dd24412d6c89ad7a09c978e754a93b63780a01",
     "_ledgers_with_conflict_markers": "63284f13f15771b068b1bf42c140226e5f3316f9607edef47f44200af6cf9bee",
     "_list_child_branches": "6c5c1af35bbf4c03b2a1b09537cdf537866d5dddaaf73602b07cba66e681470f",
@@ -131,7 +121,6 @@
     "_reviewers_objected": "8c2c517800d0fbc073b2339aa7b343dfc7747110d2bf4611cb2200a0ffd1584e",
     "_run_decomposed_plan": "71e19aef939d55aacba9451fd9fafaa40b1532bd0826b2070d8f82ec9a05aee2",
     "_run_engine_review_loop": "a66253ec273612bf14e31d17b57b0933cb8c880502f610ab14dc74d06877c469",
-    "_run_review_loop_iterations": "7965d946de4af06fc845187f191af0a251ecf4d32e290622c5011e882f2ca733",
     "_semantic_pr_text": "e3da288e06f6e0761ac3e6e2394d5a36fddf7f18a6b2d1a352d476f6a7139c24",
     "_snapshot_child_branches": "fb0605b286d10ab17ec55f6b002d79e3f544f2937ac3b7fd37a1c562d66c2e70",
     "_split_conflict_sides": "5e551bf5339cd1ec67b7a5c401ebab40d03c78afa7b5bae60c08139f5e447c34",
@@ -168,8 +157,6 @@
     "resolve_append_only_conflict": "46e721cf310aa6d18d8629a8cac4c275b5b485b3851e564246045065f563e807",
     "resolve_ci_registration_timeout": "1eb865d61d1f931bd24ef4a3a7996c06a143eb074e72f14a667650b91a3d781c",
     "review_loop_approved": "064d4058059830d1c930d1e7c1887a1a2a88448bbd23ad8fcab95a9183e1eaf2",
-    "review_persist_enabled": "6e95bde1f51132591fe4ba02fd06741cccb650b1156ebb9fa654b8616f16f9d6",
-    "review_session_volume_name": "ed14355b7dc8db254a864f94da05439d56a8d7cdfd4e6fcdba38e8f36de030f2",
     "review_summary_lines": "30a22d8637a84fa1b5497085f944cb0b4b04d0969370c6fc3a569b10659d54af",
     "reviewers_sandboxed": "2493c5509b14e20d9240b59cd3fce7f0d9afea3d0be8eac7df9b2abe1700ac2a",
     "run_calibrate_stage": "9d3bdd0eedab36af64f16bd10e5e27b16a240a52182f4e1ad00acbaecb1fdd3d",
@@ -177,32 +164,35 @@
     "run_flow_pipeline": "9eb839dedca4e077107119097d1f0e61fb840a39de8c051e09175d8e86e4e0ef",
     "run_intent_stage": "e1c5953def9707b953b5180bdee943df817b8f2634ad7aaac20a15eb2ca09205",
     "run_plan_stage": "3b410746b3caea63cd0ad2496fcfcf7250093bb528121fba7c808c3b0728b397",
-    "run_review_loop": "c94b9fde80e2302bc21b3f80b68be697c32b7dadb0be8695341893f2ff5c6a0a",
+    "run_review_loop": "4facb968df5453588cbf3c45a64dd66d541f3bd9cbf5c71195cd47af2bbb0a59",
     "run_review_loop_cli": "35ab628bc65b642a6ffc984febe193e5f0b7471797e0e44462af8754da82ae07",
     "run_review_stage": "d75acf61664e33afc8aa0e7109d3625fc1cee4952cd2f05f322cb0a740aa6afb",
     "save_checkpoint": "d7aebe896012df99b7ad9969f35fd9c20f0c3a53af9d8e4dbec6451d48d4c21b",
     "validate_intent_questions": "b192729b0c7fe8ee7d45f5755506481059b5f893cbb90a77c991640444abae06"
   },
   "amended_definitions": {
+    "DispositionRecorder": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): a finding left open is recorded with a null review_disposition and outcome failure",
+    "DispositionRecorder.record": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): a finding left open is recorded with a null review_disposition and outcome failure",
     "PipelineEngine": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): a decomposed Stage 3 no longer skips Stage 4 and Stage 5 (they raise and review the combined PR), and a checkpointed decomposed Stage 3 resumes its children instead of re-dispatching the parent executor",
     "PipelineEngine.execute_stage": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): a decomposed Stage 3 no longer skips Stage 4 and Stage 5 (they raise and review the combined PR), and a checkpointed decomposed Stage 3 resumes its children instead of re-dispatching the parent executor",
     "PipelineEngine.run": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): a decomposed Stage 3 no longer skips Stage 4 and Stage 5 (they raise and review the combined PR), and a checkpointed decomposed Stage 3 resumes its children instead of re-dispatching the parent executor",
+    "ResolverInput": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): the host-only workspace_volume field is gone",
     "_append_superseding_execution_row": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the superseding row now also records integrated children, not only an empty-diff failure | E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan-row back-fill and the superseding execution row share one temporary-worktree ledger append (_append_ledger_row) | review iteration 3 (PR 158): the commit message is built from the row's status (execute: record <status> row for <id>), so an integration row is no longer titled as an empty-diff failure",
+    "_augment_pr_text_with_rejected": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): moved to review/adjudication.py; lists only rejected nits, so reviewers are never told to stay silent about an important or critical finding",
     "_decomposition_child_lines": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): children are nested under and merged into the plan branch; the summary lists each child PR as merged into it and names the combined PR that Stage 4 raises",
-    "_dispatch_review_resolver": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result",
-    "_invoke_resolver_pass": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result",
+    "_dispatch_review_ensemble": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): the workspace_volume parameter is gone; the review-loop container works in the bind-mounted host worktree",
+    "_dispatch_review_resolver": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result | E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result | E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): the workspace_volume parameter is gone; the review-loop container works in the bind-mounted host worktree",
+    "_dispatch_role": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): the docstring no longer names the removed review_workspace_volume keyword",
+    "_filter_adjudicated_findings": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): moved to review/adjudication.py; returns actionable and suppressed finding rows instead of rewritten reviewers, suppresses only nits rejected at the same signature, never matches positional ids, and never changes a verdict or counts",
+    "_invoke_resolver_pass": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result | E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result | E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): no workspace volume is forwarded to the resolver dispatch",
     "_plan_budget_decision": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan row records the decomposition decision; the flow reads it and back-fills older rows",
     "_run_decomposed_plan": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): validates the items and the depth, nests the children under the plan branch (never the intent branch) and delegates the loop to stages/children.py | E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the empty sub-intent list failure no longer says the executor is skipped, since the plan-owned decision is recorded on the plan row",
-    "_run_review_loop_iterations": "E-1794206943-d5c00585 (I-1794205862-resolver-commits-locally-skip-push-fix): verify resolver_outcome.pushed is True before advancing review target and recording applied dispositions; E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): consensus decided from the returned reviewer verdicts with role, adjudication and container cross-checks; only actionable rows reach the resolver; only rejected nits are remembered; local-test CI evidence extracted; summary rows state the final verdicts; the loop result carries the final consensus blockers; an open disposition keeps the resolver's audit text in its end-of-loop ACT-RES row",
     "format_decomposition_summary": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): children are nested under and merged into the plan branch; the summary lists each child PR as merged into it and names the combined PR that Stage 4 raises",
-    "run_execute_stage": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan row records the decomposition decision; the flow reads it and back-fills older rows",
-    "_filter_adjudicated_findings": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): moved to review/adjudication.py; returns actionable and suppressed finding rows instead of rewritten reviewers, suppresses only nits rejected at the same signature, never matches positional ids, and never changes a verdict or counts",
-    "_augment_pr_text_with_rejected": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): moved to review/adjudication.py; lists only rejected nits, so reviewers are never told to stay silent about an important or critical finding",
-    "DispositionRecorder": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): a finding left open is recorded with a null review_disposition and outcome failure",
-    "DispositionRecorder.record": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): a finding left open is recorded with a null review_disposition and outcome failure",
     "post_pr_review_consensus": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): --approve follows report_approves: an APPROVED ensemble verdict, every reviewer clean and no role at CHANGES",
     "review_loop_approved": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): moved to review/verdict.py; also requires every final reviewer verdict to be a clean APPROVED",
     "review_summary_lines": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): moved to review/verdict.py; adds a 'Not approved' line naming each reviewer whose final verdict was not a clean APPROVED",
+    "run_execute_stage": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan row records the decomposition decision; the flow reads it and back-fills older rows",
+    "run_review_loop": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): the volume-owning wrapper is gone; run_review_loop is again the loop itself (the former _run_review_loop_iterations body, minus workspace_session); it takes a ledger_file so a host-dispatched container pass appends its ledger rows to container scratch, not to the host-owned ledger of the bind-mounted worktree",
     "run_review_stage": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): a consensus whose final verdicts are not all a clean APPROVED fails; failure messages, mergeability halts included, share one result block and state the final verdicts; a consensus withheld only by a role, container or adjudication blocker names that blocker, not failed tests"
   },
   "added_definitions": {
@@ -213,6 +203,10 @@
     "<const>:FAILED": {
       "module": "child_progress.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
+    },
+    "<const>:FindingSignature": {
+      "module": "review/adjudication.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): nits-only adjudication suppression that never rewrites a reviewer's verdict, counts or role table"
     },
     "<const>:GhRunner": {
       "module": "github/merge.py",
@@ -257,6 +251,14 @@
     "<const>:REVIEW_DONE": {
       "module": "child_progress.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
+    },
+    "<const>:SUPPRESSIBLE_SEVERITY": {
+      "module": "review/adjudication.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): nits-only adjudication suppression that never rewrites a reviewer's verdict, counts or role table"
+    },
+    "Adjudication": {
+      "module": "review/adjudication.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): nits-only adjudication suppression that never rewrites a reviewer's verdict, counts or role table"
     },
     "MergeResult": {
       "module": "github/merge.py",
@@ -314,9 +316,17 @@
       "module": "ledger_interleave.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): ledger-only merge conflicts are resolved by interleaving both sides' appended rows on created_at behind the untouched merge-base prefix"
     },
+    "_drive_children": {
+      "module": "stages/children.py",
+      "reason": "review iteration 3 (PR 158): the child loop body, split out so run_children can turn an unexpected exception into a Stage 3 failure that keeps the recorded children_progress"
+    },
     "_execution_branches": {
       "module": "child_progress.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
+    },
+    "_final_verdict": {
+      "module": "review/verdict.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
     },
     "_gh_json": {
       "module": "github/merge.py",
@@ -358,6 +368,10 @@
       "module": "stages/integration.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): Stage 3 integration of a decomposed plan: the plan branch merged into the parent execution branch and a superseding summary row listing the children, so Stage 4 raises the combined PR"
     },
+    "_roles_at_changes": {
+      "module": "review/verdict.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
+    },
     "_run_one_child": {
       "module": "stages/children.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the decomposed Stage 3 child loop: each child nested under the plan branch, run one after another, merged into it after its consensus and calibration, with per-child progress checkpointed and resumed"
@@ -378,6 +392,10 @@
       "module": "ledger_interleave.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): ledger-only merge conflicts are resolved by interleaving both sides' appended rows on created_at behind the untouched merge-base prefix"
     },
+    "_summaries": {
+      "module": "review/verdict.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
+    },
     "_superseding_row": {
       "module": "stages/integration.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): Stage 3 integration of a decomposed plan: the plan branch merged into the parent execution branch and a superseding summary row listing the children, so Stage 4 raises the combined PR"
@@ -386,6 +404,14 @@
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
     },
+    "adjudication_mismatches": {
+      "module": "review/verdict.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
+    },
+    "apply_local_test_evidence": {
+      "module": "review/ci_evidence.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): the three duplicated local-tests CI evidence blocks of the review loop, extracted to keep loop.py within its budget"
+    },
     "checkpoint_exists": {
       "module": "child_progress.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
@@ -393,6 +419,14 @@
     "child_checkpoint_path": {
       "module": "child_progress.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
+    },
+    "consensus_blockers": {
+      "module": "review/verdict.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
+    },
+    "decide_returned_consensus": {
+      "module": "review/verdict.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
     },
     "gh_runner": {
       "module": "github/merge.py",
@@ -414,6 +448,10 @@
       "module": "ledger_interleave.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): ledger-only merge conflicts are resolved by interleaving both sides' appended rows on created_at behind the untouched merge-base prefix"
     },
+    "is_suppressible": {
+      "module": "review/adjudication.py",
+      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): nits-only adjudication suppression that never rewrites a reviewer's verdict, counts or role table"
+    },
     "lookup_default_branch": {
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
@@ -434,81 +472,13 @@
       "module": "child_progress.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
     },
-    "reconcile_with_origin": {
-      "module": "child_progress.py",
-      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
-    },
-    "resolve_ledger_only_conflicts": {
-      "module": "ledger_interleave.py",
-      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): ledger-only merge conflicts are resolved by interleaving both sides' appended rows on created_at behind the untouched merge-base prefix"
-    },
-    "resume_children": {
-      "module": "stages/children.py",
-      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the decomposed Stage 3 child loop: each child nested under the plan branch, run one after another, merged into it after its consensus and calibration, with per-child progress checkpointed and resumed"
-    },
-    "run_children": {
-      "module": "stages/children.py",
-      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the decomposed Stage 3 child loop: each child nested under the plan branch, run one after another, merged into it after its consensus and calibration, with per-child progress checkpointed and resumed | review iteration 5 (PR 158): a failing checkpoint save inside the exception handler no longer replaces the original failure; it is reported next to it"
-    },
-    "run_gh": {
-      "module": "github/merge.py",
-      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
-    },
-    "view_pr": {
-      "module": "github/merge.py",
-      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
-    },
-    "_drive_children": {
-      "module": "stages/children.py",
-      "reason": "review iteration 3 (PR 158): the child loop body, split out so run_children can turn an unexpected exception into a Stage 3 failure that keeps the recorded children_progress"
-    },
-    "<const>:FindingSignature": {
-      "module": "review/adjudication.py",
-      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): nits-only adjudication suppression that never rewrites a reviewer's verdict, counts or role table"
-    },
-    "<const>:SUPPRESSIBLE_SEVERITY": {
-      "module": "review/adjudication.py",
-      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): nits-only adjudication suppression that never rewrites a reviewer's verdict, counts or role table"
-    },
-    "Adjudication": {
-      "module": "review/adjudication.py",
-      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): nits-only adjudication suppression that never rewrites a reviewer's verdict, counts or role table"
-    },
-    "_final_verdict": {
-      "module": "review/verdict.py",
-      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
-    },
-    "_roles_at_changes": {
-      "module": "review/verdict.py",
-      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
-    },
-    "_summaries": {
-      "module": "review/verdict.py",
-      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
-    },
-    "adjudication_mismatches": {
-      "module": "review/verdict.py",
-      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
-    },
-    "apply_local_test_evidence": {
-      "module": "review/ci_evidence.py",
-      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): the three duplicated local-tests CI evidence blocks of the review loop, extracted to keep loop.py within its budget"
-    },
-    "consensus_blockers": {
-      "module": "review/verdict.py",
-      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
-    },
-    "decide_returned_consensus": {
-      "module": "review/verdict.py",
-      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
-    },
-    "is_suppressible": {
-      "module": "review/adjudication.py",
-      "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): nits-only adjudication suppression that never rewrites a reviewer's verdict, counts or role table"
-    },
     "not_approved_verdicts": {
       "module": "review/verdict.py",
       "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
+    },
+    "reconcile_with_origin": {
+      "module": "child_progress.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): per-child progress of a decomposed Stage 3 in the parent payload, reconciled against origin on resume, with a pure next-action decision that never re-dispatches recorded work"
     },
     "record_nit_rejections": {
       "module": "review/adjudication.py",
@@ -518,16 +488,49 @@
       "module": "review/verdict.py",
       "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
     },
+    "resolve_ledger_only_conflicts": {
+      "module": "ledger_interleave.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): ledger-only merge conflicts are resolved by interleaving both sides' appended rows on created_at behind the untouched merge-base prefix"
+    },
+    "resume_children": {
+      "module": "stages/children.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the decomposed Stage 3 child loop: each child nested under the plan branch, run one after another, merged into it after its consensus and calibration, with per-child progress checkpointed and resumed"
+    },
     "role_objections": {
       "module": "review/verdict.py",
       "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): Stage 4 consensus decided from the returned reviewer verdicts, with role, adjudication and container cross-checks, and the final-verdict wording of end-of-flow messages"
     },
+    "run_children": {
+      "module": "stages/children.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the decomposed Stage 3 child loop: each child nested under the plan branch, run one after another, merged into it after its consensus and calibration, with per-child progress checkpointed and resumed | review iteration 5 (PR 158): a failing checkpoint save inside the exception handler no longer replaces the original failure; it is reported next to it"
+    },
+    "run_gh": {
+      "module": "github/merge.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
+    },
     "security_objectors": {
       "module": "review/adjudication.py",
       "reason": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): nits-only adjudication suppression that never rewrites a reviewer's verdict, counts or role table"
+    },
+    "view_pr": {
+      "module": "github/merge.py",
+      "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
     }
   },
   "removed_definitions": {
-    "PipelineEngine._parent_was_decomposed": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): removed because Stage 4 and Stage 5 now run on a decomposed parent (its combined PR), so the pipeline no longer skips them"
+    "<const>:REVIEW_SESSION_VOLUME_LABEL": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): removed with the persistent review workspace volume; role containers review the bind-mounted host worktree in place, so no volume, root chown init container or HOLON_REVIEW_PERSIST kill switch remains",
+    "<const>:_DOCKER_CLI_TIMEOUT_SECONDS": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): removed with the persistent review workspace volume; role containers review the bind-mounted host worktree in place, so no volume, root chown init container or HOLON_REVIEW_PERSIST kill switch remains",
+    "<const>:_REVIEW_PERSIST_DISABLED_VALUES": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): removed with the persistent review workspace volume; role containers review the bind-mounted host worktree in place, so no volume, root chown init container or HOLON_REVIEW_PERSIST kill switch remains",
+    "PipelineEngine._parent_was_decomposed": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): removed because Stage 4 and Stage 5 now run on a decomposed parent (its combined PR), so the pipeline no longer skips them",
+    "ReviewWorkspaceSession": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): removed with the persistent review workspace volume; role containers review the bind-mounted host worktree in place, so no volume, root chown init container or HOLON_REVIEW_PERSIST kill switch remains",
+    "ReviewWorkspaceSession.__init__": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): removed with the persistent review workspace volume; role containers review the bind-mounted host worktree in place, so no volume, root chown init container or HOLON_REVIEW_PERSIST kill switch remains",
+    "ReviewWorkspaceSession._checked_docker": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): removed with the persistent review workspace volume; role containers review the bind-mounted host worktree in place, so no volume, root chown init container or HOLON_REVIEW_PERSIST kill switch remains",
+    "ReviewWorkspaceSession._init_image": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): removed with the persistent review workspace volume; role containers review the bind-mounted host worktree in place, so no volume, root chown init container or HOLON_REVIEW_PERSIST kill switch remains",
+    "ReviewWorkspaceSession._run_docker_cli": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): removed with the persistent review workspace volume; role containers review the bind-mounted host worktree in place, so no volume, root chown init container or HOLON_REVIEW_PERSIST kill switch remains",
+    "ReviewWorkspaceSession.teardown": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): removed with the persistent review workspace volume; role containers review the bind-mounted host worktree in place, so no volume, root chown init container or HOLON_REVIEW_PERSIST kill switch remains",
+    "ReviewWorkspaceSession.volume_name": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): removed with the persistent review workspace volume; role containers review the bind-mounted host worktree in place, so no volume, root chown init container or HOLON_REVIEW_PERSIST kill switch remains",
+    "_run_review_loop_iterations": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): removed with the persistent review workspace volume; role containers review the bind-mounted host worktree in place, so no volume, root chown init container or HOLON_REVIEW_PERSIST kill switch remains",
+    "review_persist_enabled": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): removed with the persistent review workspace volume; role containers review the bind-mounted host worktree in place, so no volume, root chown init container or HOLON_REVIEW_PERSIST kill switch remains",
+    "review_session_volume_name": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): removed with the persistent review workspace volume; role containers review the bind-mounted host worktree in place, so no volume, root chown init container or HOLON_REVIEW_PERSIST kill switch remains"
   }
 }

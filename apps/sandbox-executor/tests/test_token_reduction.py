@@ -613,7 +613,7 @@ def test_run_docker_container_tears_down_sidecar_when_body_raises(monkeypatch):
     monkeypatch.setattr(cli, "get_agent_session_mounts", boom)
 
     with pytest.raises(RuntimeError, match="session mount exploded"):
-        cli.run_docker_container("executor", "holon/agent-pi", [], agent_id="pi")
+        cli.run_docker_container("planner", "holon/agent-pi", [], agent_id="pi")
 
     assert teardowns == [True]
 
@@ -623,7 +623,7 @@ def test_run_docker_container_tears_down_sidecar_after_the_run(monkeypatch):
     _stub_run_preconditions(monkeypatch, teardowns)
     monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=lambda *a, **k: _completed(returncode=7)))
 
-    assert cli.run_docker_container("executor", "holon/agent-pi", [], agent_id="pi") == 7
+    assert cli.run_docker_container("planner", "holon/agent-pi", [], agent_id="pi") == 7
     assert teardowns == [True]
 
 

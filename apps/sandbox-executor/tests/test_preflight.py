@@ -564,6 +564,7 @@ def test_bare_review_loop_still_runs_in_a_container(probe_env, monkeypatch):
         patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
         patch("sandbox_executor.cli.run_docker_container", return_value=0) as docker,
         patch("sandbox_executor.flow.run_review_loop_cli") as local,
+        patch("sandbox_executor.git_flow.resolve_review_worktree", side_effect=lambda path, *_: path),
     ):
         assert _run_main(["holon", "review-loop", "I-1/P-2/E-3/_"]) == 0
     local.assert_not_called()

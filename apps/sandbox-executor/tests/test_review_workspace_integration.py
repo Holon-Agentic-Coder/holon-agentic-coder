@@ -1,35 +1,48 @@
-"""Integration test for multi-pass review workspace reuse across real container boundaries.
+"""Integration test for the review-loop container working in place on a bind-mounted host worktree.
 
-Proves, against the real image and a seeded-remote volume (hermetic_testing.md Rule 2: ``--network
-none``, no external network, no host ``~/.ssh``), that two successive review-loop preparation passes
-sharing one workspace volume behave as designed: the first pass clones, the second fetches the
-inter-run commit incrementally into the same checkout, and neither an untracked file nor an
-uncommitted ledger row crosses the pass boundary. Only the preparation phase is driven, so no model
-or credential is needed. Skips gracefully wherever a Docker daemon is unavailable.
+Proves, against the real image (hermetic_testing.md Rule 2: ``--network none``, no external network, no host
+``~/.ssh``), that a linked host worktree mounted with :func:`git_flow.sandbox_worktree_mounts` is usable by git inside
+the container without any clone or fetch, that what the container writes lands on the host immediately and survives
+an abrupt exit, and that the repository's hooks cannot be written from inside the container. Only the preparation
+phase is driven, so no model or credential is needed. Skips gracefully wherever a Docker daemon is unavailable.
 """
 
+import os
 import shutil
 import subprocess
+import sys
+import tempfile
 import unittest
-import uuid
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
-from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT, SANDBOX_WORKSPACE_UID_GID
+from sandbox_executor import git_flow
+from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
+from sandbox_executor.git_flow import sandbox_worktree_mounts
 
-from tests.hermetic_fixtures import (
-    DEFAULT_FIXTURE_IMAGE,
-    create_seeded_remote,
-    remote_path,
-    remove_remote_volume,
-)
+from tests.hermetic_fixtures import DEFAULT_FIXTURE_IMAGE, IMAGE_UID
 
-#: Drives exactly the entrypoint's preparation phase (resolve, clone or fetch, verify HEAD) and prints
-#: the resolved head SHA; the review itself never runs, so the pass needs no model.
-_PREPARE_SNIPPET = (
-    "import os\n"
+#: Drives the entrypoint's preparation phase on the mounted worktree, writes an untracked file, tries to plant a
+#: hook, then dies abruptly with the OOM-kill exit code before any cleanup could run.
+_PREPARE_THEN_CRASH_SNIPPET = (
+    "import os, subprocess\n"
     "from sandbox_executor.entrypoint.review_loop import _prepare_workspace\n"
-    "target = _prepare_workspace(os.environ['HOLON_TARGET_WORKTREE'], 'main')\n"
-    "print(target.head_sha)\n"
+    "ws = os.environ['HOLON_TARGET_WORKTREE']\n"
+    "target = _prepare_workspace(ws, 'feature')\n"
+    "print('HEAD', target.head_sha, flush=True)\n"
+    "status = subprocess.run(['git', 'status', '--porcelain'], cwd=ws, capture_output=True, text=True)\n"
+    "print('STATUS', status.returncode, flush=True)\n"
+    "with open(os.path.join(ws, 'crash-note.txt'), 'w') as f:\n"
+    "    f.write('written in the container')\n"
+    "common = subprocess.run(['git', 'rev-parse', '--git-common-dir'], cwd=ws, capture_output=True, text=True)\n"
+    "hook = os.path.join(ws, common.stdout.strip(), 'hooks', 'post-checkout')\n"
+    "try:\n"
+    "    open(hook, 'w').close()\n"
+    "    print('HOOK written', flush=True)\n"
+    "except OSError:\n"
+    "    print('HOOK refused', flush=True)\n"
+    "os._exit(137)\n"
 )
 
 
@@ -43,129 +56,109 @@ def _is_docker_available() -> bool:
         return False
 
 
+def _git(cwd: Path, *args: str) -> str:
+    # The checkout may belong to the image's uid for the duration of the test (see _chown).
+    res = subprocess.run(["git", "-c", "safe.directory=*", *args], cwd=cwd, capture_output=True, text=True, check=True)
+    return res.stdout.strip()
+
+
+def _chown(root: Path, owner: str, *names: str) -> None:
+    """Recursively hand root/<name> to owner through a root helper container (the host user cannot chown)."""
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--user",
+            "0",
+            "-v",
+            f"{root}:/fixture",
+            "--entrypoint",
+            "chown",
+            DEFAULT_FIXTURE_IMAGE,
+            "-R",
+            owner,
+            *(f"/fixture/{name}" for name in names),
+        ],
+        capture_output=True,
+        timeout=120,
+        check=True,
+    )
+
+
 @pytest.mark.integration_test
-class TestPersistentReviewWorkspaceIntegration(unittest.TestCase):
-    """Two real preparation passes over one workspace volume: clone once, then sync incrementally."""
+class TestHostWorktreeBindMountIntegration(unittest.TestCase):
+    """One real container pass over a bind-mounted linked worktree: no clone, host-visible, crash-safe."""
 
-    def _run(self, cmd: list[str], timeout: int = 180) -> subprocess.CompletedProcess:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
-        self.assertEqual(
-            result.returncode,
-            0,
-            f"command {cmd} failed with code {result.returncode}.\nStdout:\n{result.stdout}\nStderr:\n{result.stderr}",
-        )
-        return result
-
-    def _helper(self, mounts: list[str], script: str, user: str | None = None) -> subprocess.CompletedProcess:
-        """Run a bash script in a throwaway helper container over the given volume mounts."""
-        cmd = ["docker", "run", "--rm", "--network", "none"]
-        if user:
-            cmd.extend(["--user", user])
-        cmd.extend([*mounts, "--entrypoint", "bash", DEFAULT_FIXTURE_IMAGE, "-c", script])
-        return self._run(cmd)
-
-    def test_second_pass_fetches_incrementally_and_leaks_no_state(self):
+    def test_container_works_in_place_and_its_edits_survive_a_crash(self):
         if not _is_docker_available():
             self.skipTest("Docker daemon is not available in test environment.")
 
-        remote_volume = create_seeded_remote()
-        self.addCleanup(remove_remote_volume, remote_volume)
-        remote = remote_path(remote_volume)
-        remote_mount = ["-v", f"{remote_volume}:{remote}"]
+        # Under the system temp root, which Docker can bind-mount on every platform.
+        root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="holon-it-worktree-")))
+        main = root / "repo"
+        main.mkdir()
+        _git(main, "init", "-q", "-b", "main")
+        _git(main, "config", "user.email", "test@holon.com")
+        _git(main, "config", "user.name", "Holon Test")
+        (main / "README.md").write_text("seed\n", encoding="utf-8")
+        _git(main, "add", "-A")
+        _git(main, "commit", "-qm", "seed")
+        worktree = root / "flow-demo"
+        _git(main, "worktree", "add", "-q", "-b", "feature", str(worktree))
+        head = _git(worktree, "rev-parse", "HEAD")
 
-        # The session workspace volume, initialised exactly as flow.ReviewWorkspaceSession does it:
-        # created, then chowned to the image's unprivileged user by a one-shot root container.
-        ws_volume = f"holon-it-ws-{uuid.uuid4().hex[:16]}"
-        self._run(["docker", "volume", "create", "--label", "holon.review-session=1", ws_volume], timeout=60)
-        self.addCleanup(remove_remote_volume, ws_volume)
-        ws_mount = ["-v", f"{ws_volume}:{SANDBOX_WORKSPACE_MOUNT}"]
-        self._run(
+        hand_over = sys.platform.startswith("linux") and f"{os.getuid()}:{os.getgid()}" != IMAGE_UID
+        # The checkout is handed to the image's uid only after the host builds the mounts, so let the write preflight
+        # judge it as the host user until then.
+        with (
+            patch.object(git_flow, "SANDBOX_CONTAINER_UID", os.getuid()),
+            patch.object(git_flow, "SANDBOX_CONTAINER_GID", os.getgid()),
+        ):
+            mounts = sandbox_worktree_mounts(str(worktree), SANDBOX_WORKSPACE_MOUNT)
+        if hand_over:
+            # A Linux bind mount keeps host ownership, and the image runs as uid 1000 (it cannot run as another uid:
+            # /home/holon is private), so the review-loop container needs a worktree owned by uid 1000 -- as on a
+            # host whose user is uid 1000. Hand it back before the temporary directory is removed.
+            _chown(root, IMAGE_UID, "repo", "flow-demo")
+            self.addCleanup(_chown, root, f"{os.getuid()}:{os.getgid()}", "repo", "flow-demo")
+        result = subprocess.run(
             [
                 "docker",
                 "run",
                 "--rm",
                 "--network",
                 "none",
-                "--user",
-                "root",
-                *ws_mount,
+                "-e",
+                f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}",
+                *mounts,
                 "--entrypoint",
-                "chown",
+                "python3",
                 DEFAULT_FIXTURE_IMAGE,
-                "-R",
-                SANDBOX_WORKSPACE_UID_GID,
-                SANDBOX_WORKSPACE_MOUNT,
-            ]
+                "-c",
+                _PREPARE_THEN_CRASH_SNIPPET,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
         )
+        output = f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
 
-        def prepare() -> str:
-            result = self._run(
-                [
-                    "docker",
-                    "run",
-                    "--rm",
-                    "--network",
-                    "none",
-                    "-e",
-                    f"HOLON_REPO_URL={remote}",
-                    "-e",
-                    f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}",
-                    *remote_mount,
-                    *ws_mount,
-                    "--entrypoint",
-                    "python3",
-                    DEFAULT_FIXTURE_IMAGE,
-                    "-c",
-                    _PREPARE_SNIPPET,
-                ]
-            )
-            return (result.stdout or "").strip().splitlines()[-1]
-
-        first_sha = prepare()
-        self.assertTrue(first_sha)
-
-        # Pollute the workspace as a previous pass could, and mark .git to detect a re-clone.
-        self._helper(
-            ws_mount,
-            f"set -eu\n"
-            f"touch {SANDBOX_WORKSPACE_MOUNT}/.git/holon-reuse-marker\n"
-            f"echo junk > {SANDBOX_WORKSPACE_MOUNT}/junk.txt\n"
-            f"echo '{{\"leak\": 1}}' >> {SANDBOX_WORKSPACE_MOUNT}/holon-knowledge/ledger/intents.jsonl\n",
-        )
-
-        # A resolver-style push lands on the seeded remote between the two passes.
-        push = self._helper(
-            remote_mount,
-            f"set -eu\n"
-            f"git clone -q {remote} /tmp/holon-resolver\n"
-            f"cd /tmp/holon-resolver\n"
-            f"git config user.email resolver@holon.com\n"
-            f'git config user.name "Holon Resolver"\n'
-            f"echo fix > fix.txt\n"
-            f"git add -A\n"
-            f"git commit -qm 'resolver fix'\n"
-            f"git push -q origin main\n"
-            f"git rev-parse HEAD\n",
-        )
-        pushed_sha = (push.stdout or "").strip().splitlines()[-1]
-        self.assertNotEqual(pushed_sha, first_sha)
-
-        second_sha = prepare()
-        self.assertEqual(second_sha, pushed_sha)
-
-        # Inspect the reused workspace: the .git marker survived (no re-clone), HEAD is the pushed
-        # commit (incremental fetch), and both planted leaks are gone (hermetic boundary).
-        inspect = self._helper(
-            ws_mount,
-            f"set -eu\n"
-            f"test -f {SANDBOX_WORKSPACE_MOUNT}/.git/holon-reuse-marker\n"
-            f"test ! -e {SANDBOX_WORKSPACE_MOUNT}/junk.txt\n"
-            f"git -C {SANDBOX_WORKSPACE_MOUNT} rev-parse HEAD\n"
-            f"grep -c leak {SANDBOX_WORKSPACE_MOUNT}/holon-knowledge/ledger/intents.jsonl || true\n",
-        )
-        lines = (inspect.stdout or "").strip().splitlines()
-        self.assertEqual(lines[0], pushed_sha)
-        self.assertEqual(lines[-1], "0", "an uncommitted ledger row leaked across the pass boundary")
+        self.assertEqual(result.returncode, 137, output)
+        self.assertIn(f"HEAD {head}", result.stdout, output)
+        self.assertIn("STATUS 0", result.stdout, output)
+        self.assertIn("HOOK refused", result.stdout, output)
+        # Visible on the host at once, and still there after the abrupt exit.
+        self.assertEqual((worktree / "crash-note.txt").read_text(encoding="utf-8"), "written in the container")
+        self.assertIn("?? crash-note.txt", _git(worktree, "status", "--porcelain"))
+        self.assertEqual(_git(worktree, "rev-parse", "HEAD"), head)
+        self.assertFalse((main / ".git" / "hooks" / "post-checkout").exists())
+        # No named volume was involved: the only mounts are host paths.
+        sources = [mounts[i + 1].split(":", 1)[0] for i in range(0, len(mounts), 2)]
+        self.assertTrue(all(os.path.isabs(source) for source in sources), mounts)
 
 
 if __name__ == "__main__":

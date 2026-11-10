@@ -336,8 +336,11 @@ _DIRECT_COMMANDS = [
 
 
 def _run_direct(argv: list[str]) -> tuple[int, str, list[MagicMock]]:
+    # Outside a sandbox, as on CI: HOLON_ROLE or HOLON_IN_SANDBOX would turn the container dispatch into a local run.
+    env = {k: v for k, v in os.environ.items() if k not in ("HOLON_ROLE", "HOLON_IN_SANDBOX")}
+    env.update(HOLON_AGENT="antigravity-agent", HOLON_MODEL="gemini-3.8-flash-medium")
     with (
-        patch.dict(os.environ, {"HOLON_AGENT": "antigravity-agent", "HOLON_MODEL": "gemini-3.8-flash-medium"}),
+        patch.dict(os.environ, env, clear=True),
         patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
         patch("sandbox_executor.flow.run_review_loop_cli", return_value=0) as local_review,
         patch("sandbox_executor.cli.run_docker_container", return_value=0) as docker,
@@ -369,7 +372,8 @@ def test_direct_entry_points_refuse_a_default_branch_worktree(main_repo: dict[st
 @pytest.mark.parametrize("argv", _DIRECT_COMMANDS, ids=lambda argv: " ".join(argv[:1] + argv[2:]))
 def test_direct_entry_points_run_on_another_branch(main_repo: dict[str, Path], argv: list[str]) -> None:
     feature = main_repo["root"] / "feature"
-    _git(main_repo["checkout"], "worktree", "add", "-q", "-b", "feature-x", str(feature), "origin/main")
+    # On the review branch itself: the review-loop container dispatch reviews that branch's worktree in place.
+    _git(main_repo["checkout"], "worktree", "add", "-q", "-b", "I-1/P-2/E-3/_", str(feature), "origin/main")
 
     code, stderr, callees = _run_direct([*argv, "--target-worktree", str(feature)])
 

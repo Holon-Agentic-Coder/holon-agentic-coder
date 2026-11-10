@@ -7,7 +7,7 @@ import os
 import sys
 from typing import Any
 
-from sandbox_executor import cli
+from sandbox_executor import cli, git_flow
 from sandbox_executor.cli.commands._worktree_guard import DEFAULT_BRANCH_GUARD_HELP, default_branch_worktree_allowed
 from sandbox_executor.cli.options import (
     _AGENT_HELP,
@@ -16,6 +16,7 @@ from sandbox_executor.cli.options import (
     add_target_worktree_option,
 )
 from sandbox_executor.review_ensemble import ENSEMBLE_SIZE_HELP
+from sandbox_executor.review_target import is_pr_reference, resolve_review_target
 
 ORDER = 70
 
@@ -133,6 +134,20 @@ def _build_container_review_args(args: argparse.Namespace) -> list[str]:
     return container_args
 
 
+def _container_review_worktree(args: argparse.Namespace) -> str:
+    """Return the host worktree the review-loop container reviews in place.
+
+    A PR target is resolved to its head branch on the host first; the worktree that has that branch checked out is
+    reused (normally the run's flow-<slug>), and a pr<N>-<slug> worktree is provisioned only when none exists.
+    """
+    worktree = os.path.abspath(getattr(args, "target_worktree", None) or ".")
+    target = str(args.target).strip()
+    if is_pr_reference(target):
+        resolved = resolve_review_target(worktree, target)
+        return git_flow.resolve_review_worktree(worktree, resolved.head_branch, resolved.pr_number)
+    return git_flow.resolve_review_worktree(worktree, target)
+
+
 def _run_container_review(args: argparse.Namespace, effective_token_reduce: bool) -> None:
     agent_id = cli.normalise_agent_id(args.agent)
     image_name = cli.image_for_agent(args.agent)
@@ -140,11 +155,10 @@ def _run_container_review(args: argparse.Namespace, effective_token_reduce: bool
     kwargs: dict[str, Any] = {
         "agent_id": agent_id,
         "token_reduce": effective_token_reduce,
+        "target_worktree": _container_review_worktree(args),
     }
     if getattr(args, "mitm_web", False):
         kwargs["mitm_web"] = True
-    if getattr(args, "target_worktree", None):
-        kwargs["target_worktree"] = args.target_worktree
     sys.exit(cli.run_docker_container("review-loop", image_name, container_args, **kwargs))
 
 

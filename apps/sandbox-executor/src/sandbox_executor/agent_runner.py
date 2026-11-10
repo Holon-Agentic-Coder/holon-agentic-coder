@@ -152,15 +152,20 @@ cleanup_repo_dir = cleanup_target_worktree
 
 #: Absolute container-side path of the sandboxed role-agent workspace. This is the value
 #: :func:`get_workspace_dir` resolves to inside a role container (``HOME=/home/holon`` and a sandbox
-#: signal set), kept as one shared constant so the host dispatcher's review workspace volume mount and
-#: the in-container entrypoint can never drift apart.
+#: signal set), kept as one shared constant so the host dispatcher's worktree bind mount and the
+#: in-container entrypoint can never drift apart.
 SANDBOX_WORKSPACE_MOUNT = "/home/holon/.holon-sandbox/workspace"
 
-#: The agent image's unprivileged user and group (Dockerfile: ``useradd -m holon`` is the image's first
-#: created user, hence uid and gid 1000). A freshly created named volume is root-owned, so the host
-#: initialises review workspace volumes by chowning the mount to this id before any role container
-#: writes to it (the same pattern as the seeded-remote test fixtures).
-SANDBOX_WORKSPACE_UID_GID = "1000:1000"
+#: Container-private uv project environment for a mounted host worktree: outside the mount (whose ``.venv``
+#: is the host's) and in the image's holon-owned ``~/.cache``, since the mount's root-created parents are not
+#: writable by the holon user.
+SANDBOX_UV_PROJECT_ENVIRONMENT = "/home/holon/.cache/holon-venv"
+
+REVIEW_LOOP_ROLE = "review-loop"
+EXECUTOR_ROLE = "executor"
+
+#: The roles whose entrypoint works in place on a bind-mounted host worktree instead of a private clone.
+HOST_WORKTREE_ROLES: frozenset[str] = frozenset({REVIEW_LOOP_ROLE, EXECUTOR_ROLE})
 
 
 def get_workspace_dir() -> str:

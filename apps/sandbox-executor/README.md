@@ -165,11 +165,11 @@ The review loop fails closed:
 
 - **Target resolution.** A PR number or GitHub PR URL is resolved through
   `gh pr view <target> --json number,headRefName,headRefOid,baseRefName,title,body` to its head branch, head SHA and
-  base branch (`sandbox_executor/review_target.py`); a branch resolves to its fetched tip. The container entrypoint does
-  this before any git operation, clones or fetches the head branch (never `git clone --branch 87`), checks every git
-  return code and requires `HEAD` to equal the head SHA, fetching that SHA explicitly if the branch has moved. Before
-  the clone, `gh` learns the repository from `GH_REPO`, derived from `HOLON_REPO_URL` without its credentials. On any
-  resolution, clone, fetch or checkout failure it appends one `ACT-REV` failure row to
+  base branch (`sandbox_executor/review_target.py`); a branch resolves to the mounted worktree's `HEAD`. The container
+  entrypoint does this before any git operation, with `gh` learning the repository from `GH_REPO` (derived from
+  `HOLON_REPO_URL` without its credentials), then validates the mounted worktree in place without cloning or fetching:
+  `HEAD` must be a readable commit on the head branch (a branch target refuses a detached `HEAD`) and equal the PR head
+  SHA. On any resolution or validation failure it appends one `ACT-REV` failure row to
   `holon-knowledge/ledger/executions.jsonl`, prints a FAILED summary and exits 1 without computing or posting a
   consensus. Limitation: when the workspace has no `holon-knowledge/ledger/` directory, the failure is reported only on
   stderr and through the exit code.
@@ -215,7 +215,8 @@ e.g. `setfacl -R -m u:1000:rwX,d:u:1000:rwX <path>`. Docker Desktop on macOS and
 Linux-only. The resolver stages its fixes without `holon-knowledge/ledger/executions.jsonl`, and a pass the host
 dispatches with `--result-file` appends its ledger rows to container scratch: the host loop owns the worktree's ledger
 and records every pass from the result file. The entrypoint only validates the mount: HEAD must be a readable commit on
-the review branch and equal the resolved PR head SHA, otherwise preparation fails closed. Edits, logs and reviewer
+the review branch (a branch target refuses a detached HEAD) and equal the resolved PR head SHA, otherwise preparation
+fails closed. Edits, logs and reviewer
 scratch under `.subagent/review/` land on the host at once and survive a container crash. No Docker volume is created
 and no root init container runs. The other roles (intent creator, planner, executor) keep their private in-container
 clone and never mount the host worktree.

@@ -147,10 +147,10 @@ def _checked(args: list[str], repo_dir: str, stage: str) -> subprocess.Completed
 def _validate_mounted_workspace(repo_dir: str, target: ReviewTarget) -> ReviewTarget:
     """Validate that ``repo_dir`` is the host worktree checked out at the review head; never modify it.
 
-    HEAD must be a readable commit, on ``target.head_branch`` when a branch is checked out, and equal to
-    ``target.head_sha`` when the target resolved one (a PR head): a stale worktree is never reviewed under
-    the PR head's label. A branch target's head SHA is the mounted HEAD. Zero destructive operations: no
-    clone, fetch, reset or wipe.
+    HEAD must be a readable commit, on ``target.head_branch`` when a branch is checked out (a branch target
+    refuses a detached HEAD), and equal to ``target.head_sha`` when the target resolved one (a PR head): a stale
+    worktree is never reviewed under the PR head's label. A branch target's head SHA is the mounted HEAD. Zero
+    destructive operations: no clone, fetch, reset or wipe.
     """
     if not os.path.exists(repo_dir) or not os.path.isdir(repo_dir):
         raise ReviewPreparationError("validate", f"workspace directory '{repo_dir}' does not exist")
@@ -168,6 +168,11 @@ def _validate_mounted_workspace(repo_dir: str, target: ReviewTarget) -> ReviewTa
     if target.head_branch:
         branch_proc = run_cmd(["git", "symbolic-ref", "--short", "-q", "HEAD"], cwd=repo_dir, check=False)
         current_branch = branch_proc.stdout.strip() if branch_proc.returncode == 0 else ""
+        if not current_branch and not target.is_pr:
+            raise ReviewPreparationError(
+                "validate",
+                f"mounted workspace is on a detached HEAD; check out branch '{target.head_branch}' to review it",
+            )
         if current_branch and current_branch != target.head_branch:
             raise ReviewPreparationError(
                 "validate",

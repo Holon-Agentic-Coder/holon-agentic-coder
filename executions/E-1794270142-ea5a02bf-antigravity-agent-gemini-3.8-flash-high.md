@@ -7,6 +7,10 @@ Execution of plan `P-1794268104-fd29467b-antigravity-agent-gemini-3.8-flash-medi
 named volume machinery, and root `chown` init containers with host git worktree bind-mounting, lossless in-place
 workspace execution, unified `.subagent/` scratch artifacts, and persistent worktree naming across stages.
 
+Scope: the host worktree bind-mount and in-place execution apply to the `review-loop` role (Stage 4 reviewer ensemble
+and resolver). The intent creator, planner and stage executor roles keep their private in-container clone
+(`entrypoint/executor.py`); moving them onto the bind-mounted `flow-<slug>` worktree is tracked as a follow-up.
+
 ## Actual Metrics
 
 | metric                | value |

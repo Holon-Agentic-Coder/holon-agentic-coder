@@ -847,6 +847,26 @@ def test_mounted_worktree_on_another_branch_is_refused(tmp_path, capsys):
     assert "checked-out branch 'feature/other' does not match target 'feature/y'" in err
 
 
+def test_detached_mounted_head_is_refused_for_a_branch_target(tmp_path, capsys):
+    fake_git = FakeGitCommands()
+
+    code, mock_loop, _post, _gh = _run_entrypoint(tmp_path, "feature/y", fake_git)
+
+    assert code == 1
+    mock_loop.assert_not_called()
+    err = capsys.readouterr().err
+    assert "mounted workspace is on a detached HEAD; check out branch 'feature/y'" in err
+
+
+def test_detached_mounted_head_at_the_pr_head_is_accepted_for_a_pr_target(tmp_path):
+    fake_git = FakeGitCommands()
+
+    code, mock_loop, _post, _gh = _run_entrypoint(tmp_path, "90", fake_git)
+
+    assert code == 0
+    mock_loop.assert_called_once()
+
+
 def test_unreadable_mounted_head_exits_one_posts_nothing_and_writes_one_failure_row(tmp_path, capsys):
     (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
     fake_git = FakeGitCommands(fail_on=("rev-parse",))

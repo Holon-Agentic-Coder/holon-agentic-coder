@@ -164,7 +164,7 @@
     "run_flow_pipeline": "9eb839dedca4e077107119097d1f0e61fb840a39de8c051e09175d8e86e4e0ef",
     "run_intent_stage": "e1c5953def9707b953b5180bdee943df817b8f2634ad7aaac20a15eb2ca09205",
     "run_plan_stage": "3b410746b3caea63cd0ad2496fcfcf7250093bb528121fba7c808c3b0728b397",
-    "run_review_loop": "5bfded5d3a399eac0d8316ae9c05707c72c96d26e056edc62ddbd094a1271398",
+    "run_review_loop": "7b62756a593319530931d003738a84aef5b382f051557abbf19c3f45afc4fe93",
     "run_review_loop_cli": "35ab628bc65b642a6ffc984febe193e5f0b7471797e0e44462af8754da82ae07",
     "run_review_stage": "ec102f9b7bb40601cec1a96fb65da40eca19945b2fbf75dd3fa9b9e3087dbc4e",
     "save_checkpoint": "d7aebe896012df99b7ad9969f35fd9c20f0c3a53af9d8e4dbec6451d48d4c21b",
@@ -185,7 +185,7 @@
     "_run_decomposed_plan": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): validates the items and the depth, nests the children under the plan branch (never the intent branch) and delegates the loop to stages/children.py | E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): the empty sub-intent list failure no longer says the executor is skipped, since the plan-owned decision is recorded on the plan row",
     "format_decomposition_summary": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): children are nested under and merged into the plan branch; the summary lists each child PR as merged into it and names the combined PR that Stage 4 raises",
     "run_execute_stage": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan row records the decomposition decision; the flow reads it and back-fills older rows",
-    "run_review_loop": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): the volume-owning wrapper is gone; run_review_loop is again the loop itself (the former _run_review_loop_iterations body, minus workspace_session)"
+    "run_review_loop": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): the volume-owning wrapper is gone; run_review_loop is again the loop itself (the former _run_review_loop_iterations body, minus workspace_session); it takes a ledger_file so a host-dispatched container pass appends its ledger rows to container scratch, not to the host-owned ledger of the bind-mounted worktree"
   },
   "added_definitions": {
     "<const>:CHILD_ROW_KEYS": {

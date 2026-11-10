@@ -255,6 +255,11 @@ def _prepare_workspace(repo_dir: str, raw: str) -> ReviewTarget:
 
 _FORBIDDEN_GIT_FLAGS = frozenset({"--force", "-f", "--force-with-lease", "--amend", "rebase"})
 _SEVERITY_ORDER = {"clean": 0, "nit": 1, "important": 2, "critical": 3}
+#: The resolver stages only its own changes: the host loop's uncommitted ledger rows in the shared worktree stay out.
+_RESOLVER_PATHSPEC = ["--", ".", ":(exclude)holon-knowledge/ledger/executions.jsonl"]
+#: Where a host-dispatched pass (one given --result-file) appends its ledger rows. The host loop owns the canonical
+#: ledger of the bind-mounted worktree and records every pass from the result file, so writing there would duplicate.
+_SCRATCH_LEDGER = "/tmp/holon-review-executions.jsonl"
 
 
 def _assert_safe_git_args(args: list[str]) -> None:
@@ -430,7 +435,7 @@ def _commit_and_push_resolution(
         _assert_safe_git_args(reset_cmd)
         run_cmd(reset_cmd, cwd=repo_dir, check=True)
     initial_head = pre_resolver_head or current_head
-    status_proc = run_cmd(["git", "status", "--porcelain"], cwd=repo_dir, check=False)
+    status_proc = run_cmd(["git", "status", "--porcelain", *_RESOLVER_PATHSPEC], cwd=repo_dir, check=False)
     has_worktree_changes = bool((status_proc.stdout or "").strip())
     applied_items = [d for d in dispositions if d.disposition == "applied"]
 
@@ -445,7 +450,7 @@ def _commit_and_push_resolution(
     if not lint_ok or not tests_ok:
         return dispositions, initial_head, False, lint_ok, tests_ok, verify_err
 
-    run_cmd(["git", "add", "-A"], cwd=repo_dir, check=True)
+    run_cmd(["git", "add", "-A", *_RESOLVER_PATHSPEC], cwd=repo_dir, check=True)
     finding_ids = [d.id for d in applied_items]
     ids_csv = ", ".join(finding_ids) or f"ITER-{iteration}"
     severities = [d.severity for d in applied_items] or ["nit"]
@@ -771,6 +776,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         dry_run=args.dry_run,
         skip_post=args.skip_post,
         first_iteration=args.iteration,
+        ledger_file=_SCRATCH_LEDGER if args.result_file else None,
     )
 
     if args.result_file:

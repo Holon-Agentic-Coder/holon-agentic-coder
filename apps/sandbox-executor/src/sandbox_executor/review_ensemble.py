@@ -502,7 +502,7 @@ def _missing_inputs(template_text: str, request: ReviewRequest) -> str:
 _REVIEWER_PROHIBITIONS = (
     "Write no file other than the report path. Make no GitHub write of any kind: no `gh pr review`, "
     "`gh pr comment`, `gh pr edit` or `gh api` call, and no merge or auto-merge. Append to no ledger under "
-    "`holon-knowledge/ledger/`. Spawn no subagents, and write nothing under `.subagent/`."
+    "`holon-knowledge/ledger/`. Spawn no subagents, and write nothing under `.subagent/` except the report path."
 )
 
 

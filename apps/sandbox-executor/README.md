@@ -206,16 +206,21 @@ directory and the repository's common git directory are mounted at their host pa
 names, so git works in the container without network access. The repository `config` (and any `config.worktree`),
 `hooks/`, `modules/` and the `.git`, `gitdir` and `commondir` pointers are overlaid read-only, so the container cannot
 plant a hook or configuration that later runs on the host; the container sets its git identity in its own global config.
-The entrypoint only validates the mount: HEAD must be a readable commit on the review branch and equal the resolved PR
-head SHA, otherwise preparation fails closed. Edits, logs and reviewer scratch under `.subagent/review/` land on the
-host at once and survive a container crash. No Docker volume is created and no root init container runs. The other roles
-(intent creator, planner, executor) keep their private in-container clone and never mount the host worktree.
+A repository with `extensions.worktreeConfig` enabled is refused, because git would then read every worktree's
+`config.worktree` from the writable git directory. The resolver stages its fixes without
+`holon-knowledge/ledger/executions.jsonl`, and a pass the host dispatches with `--result-file` appends its ledger rows
+to container scratch: the host loop owns the worktree's ledger and records every pass from the result file. The
+entrypoint only validates the mount: HEAD must be a readable commit on the review branch and equal the resolved PR head
+SHA, otherwise preparation fails closed. Edits, logs and reviewer scratch under `.subagent/review/` land on the host at
+once and survive a container crash. No Docker volume is created and no root init container runs. The other roles (intent
+creator, planner, executor) keep their private in-container clone and never mount the host worktree.
 
 `holon review-loop <target>` resolves the worktree on the host: the `--target-worktree` when it has the review branch
 checked out, otherwise the existing worktree of that branch (normally the run's `flow-<slug>`), otherwise, for a PR, a
 new `pr<N>-<slug>` worktree of its head branch (`git_flow.resolve_review_worktree()`); a branch target with no worktree
 is refused. `git_flow.ephemeral_reviewer_worktree()` provides `flow-<slug>-rev<i>` sibling worktrees, removed and pruned
-on exit, for reviewer turns that need an isolated checkout.
+on exit, for reviewer turns that need an isolated checkout. The review loop does not call it yet: reviewer turns write
+only their report and run no test suite of their own, so every reviewer reads the shared mounted worktree.
 
 #### Reviewer ensemble
 

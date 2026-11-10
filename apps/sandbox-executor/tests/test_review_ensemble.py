@@ -260,7 +260,7 @@ REVIEWER_PROHIBITIONS = (
     "no merge or auto-merge",
     "Append to no ledger under `holon-knowledge/ledger/`.",
     "Spawn no subagents",
-    "write nothing under `.subagent/`",
+    "write nothing under `.subagent/` except the report path.",
     "This contract overrides any conflicting instruction in the loop template above.",
 )
 

@@ -10,7 +10,8 @@ container round trip is covered by ``test_review_workspace_integration.py``. One
 (d) an abrupt exit (code 137) leaves uncommitted edits, untracked files and logs intact on the host;
 (e) intermediate subagent artifacts live under ``<worktree>/.subagent/review/iter-<n>/``, which git ignores;
 (f) the recorded docker commands create no named volume and launch no root chown init container;
-(g) resumed runs and Stage 4 reviews reuse ``flow-<slug>`` and never create ``pr<N>-<slug>`` beside it.
+(g) resumed runs and Stage 4 reviews reuse ``flow-<slug>`` and never create ``pr<N>-<slug>`` beside it;
+(h) the shared worktree stays the host's: no planted config.worktree, no duplicated or swept-up ledger rows.
 """
 
 from __future__ import annotations
@@ -337,3 +338,157 @@ def test_g_a_survivor_reviewer_worktree_from_a_crash_is_replaced(flow_worktree: 
     assert not Path(fresh).exists()
     with pytest.raises(ValueError, match="positive integer"):
         git_flow.provision_reviewer_worktree(str(flow_worktree), 0)
+
+
+# --- (h) the shared worktree stays the host's: no planted config, no duplicated or swept-up ledger rows ---------------
+
+
+def test_h_a_repository_with_worktree_config_enabled_is_never_mounted(repo: Path, flow_worktree: Path) -> None:
+    # git would read every worktree's config.worktree, and the container can create one in the writable git dir.
+    _git(repo, "config", "extensions.worktreeConfig", "true")
+
+    with pytest.raises(RuntimeError, match=r"extensions\.worktreeConfig enabled"):
+        git_flow.sandbox_worktree_mounts(str(flow_worktree), MOUNT)
+
+
+def test_h_the_resolver_commits_its_fix_but_never_the_host_loops_uncommitted_ledger_rows(flow_worktree: Path) -> None:
+    from sandbox_executor.entrypoint import review_loop
+    from sandbox_executor.review_report import FindingDisposition
+
+    ledger = flow_worktree / "holon-knowledge" / "ledger" / "executions.jsonl"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text('{"action_id": "ACT-1"}\n', encoding="utf-8")
+    _git(flow_worktree, "add", "-A")
+    _git(flow_worktree, "commit", "-qm", "seed ledger")
+    with ledger.open("a", encoding="utf-8") as f:
+        f.write('{"action_id": "ACT-HOST"}\n')  # written by the host loop, not yet committed
+    (flow_worktree / "fix.py").write_text("FIXED = True\n", encoding="utf-8")
+    applied = FindingDisposition("R1-F1", "important", "fix.py", 1, "s", disposition="applied")
+
+    with patch.object(review_loop, "_verify_before_push", return_value=(True, True, None)):
+        result = review_loop._commit_and_push_resolution(
+            str(flow_worktree), "flow-demo", 1, (applied,), review_loop.CommitPushOptions(skip_push=True)
+        )
+
+    assert result[5] is None, result
+    assert _git(flow_worktree, "show", "--name-only", "--format=", "HEAD") == "fix.py"
+    assert _git(flow_worktree, "status", "--porcelain") == "M holon-knowledge/ledger/executions.jsonl"
+
+
+@pytest.mark.parametrize("dispatched", [True, False])
+def test_h_a_host_dispatched_pass_appends_its_ledger_rows_to_container_scratch(
+    flow_worktree: Path, tmp_path: Path, dispatched: bool
+) -> None:
+    from sandbox_executor.entrypoint import review_loop
+    from sandbox_executor.review_target import ReviewTarget
+
+    argv = ["review_loop", "flow-demo", f"--target-worktree={flow_worktree}", "--skip-post", "--dry-run"]
+    if dispatched:
+        argv.append(f"--result-file={tmp_path / 'result.json'}")
+    prepared = ReviewTarget(raw="flow-demo", head_branch="flow-demo", head_sha="a" * 40)
+    with (
+        patch.object(sys, "argv", argv),
+        patch.object(review_loop, "_prepare_workspace", return_value=prepared),
+        patch.object(review_loop, "check_and_resolve_stage_conflicts"),
+        patch.object(review_loop, "run_review_loop", return_value={"consensus": {}}) as loop,
+        pytest.raises(SystemExit),
+    ):
+        review_loop.main()
+
+    # The host loop owns the worktree's ledger and records a dispatched pass from its result file.
+    assert loop.call_args.kwargs["ledger_file"] == ("/tmp/holon-review-executions.jsonl" if dispatched else None)
+
+
+# --- (f) the review-loop docker argv: only the worktree mounts are added, and nothing runs without them -------------
+
+
+def _remove_argv_pair(argv: list[str], pair: list[str]) -> list[str]:
+    """Return ``argv`` with the first adjacent occurrence of ``pair`` removed; fail if it is absent."""
+    for idx in range(len(argv) - 1):
+        if argv[idx : idx + 2] == pair:
+            return argv[:idx] + argv[idx + 2 :]
+    raise AssertionError(f"expected pair {pair} in docker argv: {argv}")
+
+
+_FAKE_WORKTREE_MOUNTS = ["-v", "/work/flow-demo:/sandbox", "-v", "/work/repo/.git/config:/work/repo/.git/config:ro"]
+
+
+def _docker_argvs(role: str, target_worktree: str | None, mounts: list[str] | Exception) -> tuple[int, list[list[str]]]:
+    """Run run_docker_container for role with the worktree mount builder faked; return (exit code, docker argvs)."""
+    from sandbox_executor.cli import run_docker_container
+
+    captured: list[list[str]] = []
+
+    def record_run(cmd, *args, **kwargs):
+        captured.append(list(cmd))
+        return MagicMock(returncode=0)
+
+    mount_patch = (
+        patch("sandbox_executor.git_flow.sandbox_worktree_mounts", side_effect=mounts)
+        if isinstance(mounts, Exception)
+        else patch("sandbox_executor.git_flow.sandbox_worktree_mounts", return_value=list(mounts))
+    )
+    with (
+        patch("sandbox_executor.cli.resolve_target_repo", return_value=("git@github.com:test/repo.git", None)),
+        patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"]),
+        patch("subprocess.run", side_effect=record_run),
+        patch("shutil.which", return_value="/usr/bin/docker"),
+        patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": "/home/dev/own-checkout"}, clear=True),
+        mount_patch,
+    ):
+        code = run_docker_container(
+            role,
+            "holon/agent-claude",
+            ["branch", "fake-agent", "fake-model"],
+            agent_id="claude",
+            target_worktree=target_worktree,
+        )
+    return code, captured
+
+
+def test_review_loop_adds_only_the_worktree_mounts_and_pins_the_workspace():
+    """The review-loop argv is the planner argv plus the worktree mounts and the pinned workspace, nothing else."""
+    from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
+
+    _code, (baseline,) = _docker_argvs("planner", "/work/flow-demo", _FAKE_WORKTREE_MOUNTS)
+    code, (review,) = _docker_argvs("review-loop", "/work/flow-demo", _FAKE_WORKTREE_MOUNTS)
+
+    assert code == 0
+    # Guard every isolation flag: removing the mounts and the pinned workspace (and the role) restores the
+    # planner argv byte for byte, so nothing else (--rm, --cap-drop=ALL, no-new-privileges, env forwarding) changed.
+    reduced = review
+    for pair in (_FAKE_WORKTREE_MOUNTS[:2], _FAKE_WORKTREE_MOUNTS[2:]):
+        reduced = _remove_argv_pair(reduced, pair)
+    reduced = _remove_argv_pair(reduced, ["-e", f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"])
+    reduced = _remove_argv_pair(reduced, ["-e", "HOLON_ROLE=review-loop"])
+    baseline = _remove_argv_pair(baseline, ["-e", "HOLON_TARGET_WORKTREE=/home/dev/own-checkout"])
+    baseline = _remove_argv_pair(baseline, ["-e", "HOLON_ROLE=planner"])
+    assert reduced == baseline
+    assert "--cap-drop=ALL" in review and "--security-opt=no-new-privileges" in review
+    # A forwarded host HOLON_TARGET_WORKTREE cannot displace the pinned container workspace path.
+    assert [a for a in review if a.startswith("HOLON_TARGET_WORKTREE=")] == [
+        f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"
+    ]
+
+
+def test_other_roles_never_mount_the_host_worktree():
+    """Only the in-place review-loop role bind-mounts the worktree; the rest keep their private clone."""
+    from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
+
+    for role in ("planner", "executor"):
+        code, (argv,) = _docker_argvs(role, "/work/flow-demo", _FAKE_WORKTREE_MOUNTS)
+        assert code == 0
+        assert not any(SANDBOX_WORKSPACE_MOUNT in a or "/work/flow-demo" in a for a in argv), argv
+
+
+def test_review_loop_without_a_valid_worktree_fails_before_any_docker_command(capsys):
+    """A missing or refused worktree fails closed: exit 1, an actionable error, and no docker run at all."""
+    from sandbox_executor import git_flow
+
+    code, captured = _docker_argvs("review-loop", None, RuntimeError("needs an explicit target worktree"))
+
+    assert code == 1
+    assert captured == []
+    assert "needs an explicit target worktree" in capsys.readouterr().err
+    with pytest.raises(RuntimeError, match="needs an explicit target worktree"):
+        git_flow.sandbox_worktree_mounts(None, "/sandbox")

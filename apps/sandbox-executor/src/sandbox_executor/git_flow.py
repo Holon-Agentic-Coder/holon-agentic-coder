@@ -670,7 +670,9 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str) -> lis
     common git directory are mounted at their host paths, which the worktree's '.git' pointer names, so git works in
     the container without network access. Everything that makes host git run code is overlaid read-only, so the
     container cannot plant a hook or configuration that later executes on the host: the repository config (and any
-    config.worktree), hooks/, modules/, and the '.git', 'gitdir' and 'commondir' pointers.
+    config.worktree), hooks/, modules/, and the '.git', 'gitdir' and 'commondir' pointers. A repository with
+    extensions.worktreeConfig enabled is refused: git would then read every worktree's config.worktree, which the
+    container could create or rewrite in the writable git directory.
 
     Args:
         target_worktree: Host worktree path (a subdirectory of one is accepted); required.
@@ -680,8 +682,8 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str) -> lis
         list[str]: Docker '-v' arguments.
 
     Raises:
-        RuntimeError: If no worktree is given, it is not an attached non-default-branch worktree, or its '.git'
-            pointer cannot be read.
+        RuntimeError: If no worktree is given, it is not an attached non-default-branch worktree, its '.git'
+            pointer cannot be read, or the repository enables extensions.worktreeConfig.
     """
     if not target_worktree:
         raise RuntimeError(
@@ -697,6 +699,15 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str) -> lis
     )
     if problem:
         raise RuntimeError(problem)
+    worktree_config = run_git(
+        ["config", "--type=bool", "--get", "extensions.worktreeConfig"], cwd=toplevel, check=False
+    )
+    if (worktree_config.stdout or "").strip() == "true":
+        raise RuntimeError(
+            f"Sandbox worktree '{toplevel}' belongs to a repository with extensions.worktreeConfig enabled; a "
+            "container could plant a config.worktree that later runs code on the host. Disable it with 'git config "
+            "--unset extensions.worktreeConfig' or review in a fresh clone."
+        )
 
     dot_git = os.path.join(toplevel, ".git")
     args = ["-v", f"{toplevel}:{mountpoint}"]

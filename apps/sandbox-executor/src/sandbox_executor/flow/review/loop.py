@@ -122,6 +122,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     run_resolver_fn: Callable[..., Any] | None = None,
     skip_post: bool = False,
     first_iteration: int = 1,
+    ledger_file: str | None = None,
 ) -> dict[str, Any]:
     """Execute the native Stage 4 review loop with the real reviewer ensemble.
 
@@ -150,6 +151,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         first_iteration: Label of the first pass (default 1). It is only a label: the ledger ``review_iteration``
             fields, finding IDs, trailers and the posted ``Iteration {n}`` heading carry it, while ``max_iterations``
             alone caps how many passes run. The engine passes its own continued count here.
+        ledger_file: Where this pass appends ledger rows (default: the worktree's holon-knowledge ledger).
 
     The empty-diff guard runs for every target whatever ``auto_pr`` is: an empty diff is rejected and an
     unverifiable one fails, before any PR, iteration or post. A dry run never measures anything, so it reports
@@ -205,10 +207,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     resolver_error: str | None = None  # Why a resolver pass failed; the loop halts on it before any adjudication.
     resolved_target: ReviewTarget | None = None
 
-    ledger_dir = os.path.join(repo_dir, "holon-knowledge", "ledger")
-    exec_file = os.path.join(ledger_dir, "executions.jsonl")
-    # Ledger rows that a dry run would otherwise have written; reported once at the end.
-    suppressed_ledger_records = 0
+    exec_file = ledger_file or os.path.join(repo_dir, "holon-knowledge", "ledger", "executions.jsonl")
+    suppressed_ledger_records = 0  # Rows a dry run would otherwise have written; reported once at the end.
 
     # Automate semantic PR generation if auto_pr is requested
     pr_res: dict[str, Any] = {}

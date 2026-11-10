@@ -10,6 +10,7 @@ phase is driven, so no model or credential is needed. Skips gracefully wherever 
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,7 +19,7 @@ import pytest
 from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
 from sandbox_executor.git_flow import sandbox_worktree_mounts
 
-from tests.hermetic_fixtures import DEFAULT_FIXTURE_IMAGE
+from tests.hermetic_fixtures import DEFAULT_FIXTURE_IMAGE, IMAGE_UID
 
 #: Drives the entrypoint's preparation phase on the mounted worktree, writes an untracked file, tries to plant a
 #: hook, then dies abruptly with the OOM-kill exit code before any cleanup could run.
@@ -54,8 +55,35 @@ def _is_docker_available() -> bool:
 
 
 def _git(cwd: Path, *args: str) -> str:
-    res = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True)
+    # The checkout may belong to the image's uid for the duration of the test (see _chown).
+    res = subprocess.run(["git", "-c", "safe.directory=*", *args], cwd=cwd, capture_output=True, text=True, check=True)
     return res.stdout.strip()
+
+
+def _chown(root: Path, owner: str, *names: str) -> None:
+    """Recursively hand root/<name> to owner through a root helper container (the host user cannot chown)."""
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--user",
+            "0",
+            "-v",
+            f"{root}:/fixture",
+            "--entrypoint",
+            "chown",
+            DEFAULT_FIXTURE_IMAGE,
+            "-R",
+            owner,
+            *(f"/fixture/{name}" for name in names),
+        ],
+        capture_output=True,
+        timeout=120,
+        check=True,
+    )
 
 
 @pytest.mark.integration_test
@@ -81,6 +109,12 @@ class TestHostWorktreeBindMountIntegration(unittest.TestCase):
         head = _git(worktree, "rev-parse", "HEAD")
 
         mounts = sandbox_worktree_mounts(str(worktree), SANDBOX_WORKSPACE_MOUNT)
+        if sys.platform.startswith("linux") and f"{os.getuid()}:{os.getgid()}" != IMAGE_UID:
+            # A Linux bind mount keeps host ownership, and the image runs as uid 1000 (it cannot run as another uid:
+            # /home/holon is private), so the review-loop container needs a worktree owned by uid 1000 -- as on a
+            # host whose user is uid 1000. Hand it back before the temporary directory is removed.
+            _chown(root, IMAGE_UID, "repo", "flow-demo")
+            self.addCleanup(_chown, root, f"{os.getuid()}:{os.getgid()}", "repo", "flow-demo")
         result = subprocess.run(
             [
                 "docker",
@@ -88,11 +122,6 @@ class TestHostWorktreeBindMountIntegration(unittest.TestCase):
                 "--rm",
                 "--network",
                 "none",
-                # The host's own uid, so ownership matches on runners whose user is not the image's uid 1000.
-                "--user",
-                f"{os.getuid()}:{os.getgid()}",
-                "-e",
-                "HOME=/tmp",
                 "-e",
                 f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}",
                 *mounts,

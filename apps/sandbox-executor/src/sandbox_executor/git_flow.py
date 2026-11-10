@@ -22,6 +22,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from sandbox_executor.git import branch_exists, resolve_ref, run_git
@@ -33,11 +35,16 @@ __all__ = [
     "default_branch_worktree_problem",
     "derive_worktree_layout",
     "ensure_flow_worktree_off_default",
+    "ensure_pr_worktree",
     "ensure_worktree",
+    "ephemeral_reviewer_worktree",
+    "find_worktree_for_branch",
     "is_bare_repository",
     "is_default_branch_worktree",
     "is_working_tree",
     "normalise_base_branch",
+    "provision_reviewer_worktree",
+    "prune_reviewer_worktree",
     "prune_worktrees",
     "repository_default_branch",
     "target_worktree_problem",

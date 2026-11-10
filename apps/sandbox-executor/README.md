@@ -216,10 +216,9 @@ Linux-only. The resolver stages its fixes without `holon-knowledge/ledger/execut
 dispatches with `--result-file` appends its ledger rows to container scratch: the host loop owns the worktree's ledger
 and records every pass from the result file. The entrypoint only validates the mount: HEAD must be a readable commit on
 the review branch (a branch target refuses a detached HEAD) and equal the resolved PR head SHA, otherwise preparation
-fails closed. Edits, logs and reviewer
-scratch under `.subagent/review/` land on the host at once and survive a container crash. No Docker volume is created
-and no root init container runs. The other roles (intent creator, planner, executor) keep their private in-container
-clone and never mount the host worktree.
+fails closed. Edits, logs and reviewer scratch under `.subagent/review/` land on the host at once and survive a
+container crash. No Docker volume is created and no root init container runs. The other roles (intent creator, planner,
+executor) keep their private in-container clone and never mount the host worktree.
 
 `holon review-loop <target>` resolves the worktree on the host: the `--target-worktree` when it has the review branch
 checked out, otherwise the existing worktree of that branch (normally the run's `flow-<slug>`), otherwise, for a PR, a

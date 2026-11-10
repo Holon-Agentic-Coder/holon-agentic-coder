@@ -212,13 +212,22 @@ beside them, such as `info/grafts`, which still subverts host-side ancestry; not
 the `.git`, `gitdir` and `commondir` pointers are overlaid read-only, so the container cannot plant a hook,
 configuration, attribute, exclude pattern, graft or commit-graph that host git later reads or runs, cannot touch any
 sibling worktree's administrative files (`commondir`, `gitdir`, `HEAD`, a plantable `config.worktree`) and cannot create
-new `worktrees/` entries; absent `hooks/`, `modules/`, `worktrees/`, `config`, `config.worktree`, `objects/info/` and
-`info/` are created before overlaying so the container cannot create them either. When the mounted worktree is a linked
-worktree, the common `HEAD` -- the primary checkout's HEAD, which in-container git never needs -- is overlaid read-only
-as well; a mounted primary checkout's own `HEAD` stays writable for its commits. Only the mounted worktree's own
-administrative directory is re-mounted read-write on top (docker layers the deeper mount destination over the shallower
-one), restoring exactly the writes its own git needs (`HEAD`, `index`, `FETCH_HEAD`) while its pointer files stay
-read-only through still-deeper overlays; the container sets its git identity in its own global config. A repository with
+new `worktrees/` entries. The common-root ancestry and ref-substitution surfaces are overlaid read-only too:
+`refs/replace/` and `packed-refs` (`refs/` itself stays writable -- in-container fetch, commit and push write loose
+refs, which never rewrite `packed-refs`; only ref deletion and `pack-refs`/`gc` do, and nothing in-container runs
+those), and `shallow`, whose entries would cut perceived ancestry exactly like grafts. Absent `hooks/`, `modules/`,
+`worktrees/`, `config`, `config.worktree`, `objects/info/`, `info/`, `refs/replace/` and `packed-refs` are created
+before overlaying so the container cannot create them either; an absent `shallow` is created as a read-only _directory_
+instead, because an empty `shallow` file would itself mark the repository shallow, while git treats a `shallow`
+directory as no shallow file at all (the only host operation the directory blocks -- turning the full clone into a
+shallow one later -- fails loudly, never silently). When the mounted worktree is a linked worktree, the common `HEAD`
+and `index` -- the primary checkout's, which in-container git never needs -- are overlaid read-only as well, along with
+the primary's transient `MERGE_HEAD`/`MERGE_MSG`/`ORIG_HEAD` when they exist (a created-empty stand-in would not be
+inert: git rejects a zero-length index and treats an empty `MERGE_HEAD` as an in-progress merge); a mounted primary
+checkout's own `HEAD` and `index` stay writable for its commits. Only the mounted worktree's own administrative
+directory is re-mounted read-write on top (docker layers the deeper mount destination over the shallower one), restoring
+exactly the writes its own git needs (`HEAD`, `index`, `FETCH_HEAD`) while its pointer files stay read-only through
+still-deeper overlays; the container sets its git identity in its own global config. A repository with
 `extensions.worktreeConfig` enabled is refused, because git would then read every worktree's `config.worktree` from the
 container's own writable git directory. The image runs as uid 1000 and a Linux bind mount keeps host ownership, so on
 Linux the worktree, its git directory and the common git directory must be writable by uid 1000 (as they are when the

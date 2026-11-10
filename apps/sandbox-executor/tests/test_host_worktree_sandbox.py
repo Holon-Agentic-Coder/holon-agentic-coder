@@ -143,8 +143,15 @@ def test_a_linked_worktree_mounts_its_git_dirs_at_host_paths_and_overlays_git_co
         # planted beside the known ones.
         f"{common / 'objects' / 'info'}:{common / 'objects' / 'info'}:ro",
         f"{common / 'info'}:{common / 'info'}:ro",
-        # The common HEAD is the PRIMARY checkout's HEAD; the linked worktree resolves its own through its admin dir.
+        # refs/ stays writable for loose refs; replace refs, packed-refs and shallow are host-trusted and pinned
+        # (shallow as a created directory, since an empty shallow FILE would itself mark the repository shallow).
+        f"{common / 'refs' / 'replace'}:{common / 'refs' / 'replace'}:ro",
+        f"{common / 'packed-refs'}:{common / 'packed-refs'}:ro",
+        f"{common / 'shallow'}:{common / 'shallow'}:ro",
+        # The common HEAD and index are the PRIMARY checkout's; the linked worktree resolves its own through its
+        # admin dir. The transient MERGE_HEAD/MERGE_MSG/ORIG_HEAD do not exist here, so no overlay is generated.
         f"{common / 'HEAD'}:{common / 'HEAD'}:ro",
+        f"{common / 'index'}:{common / 'index'}:ro",
         f"{git_dir / 'config.worktree'}:{git_dir / 'config.worktree'}:ro",
     ]
     # The mounted pointer resolves through the mounted paths, without any network: git works there.
@@ -167,21 +174,37 @@ def test_a_primary_checkout_needs_no_extra_git_mount_but_still_protects_config_a
         f"{repo / '.git' / 'worktrees'}:{MOUNT}/.git/worktrees:ro",
         f"{repo / '.git' / 'objects' / 'info'}:{MOUNT}/.git/objects/info:ro",
         f"{repo / '.git' / 'info'}:{MOUNT}/.git/info:ro",
+        f"{repo / '.git' / 'refs' / 'replace'}:{MOUNT}/.git/refs/replace:ro",
+        f"{repo / '.git' / 'packed-refs'}:{MOUNT}/.git/packed-refs:ro",
+        f"{repo / '.git' / 'shallow'}:{MOUNT}/.git/shallow:ro",
     ]
-    # The primary checkout's HEAD is its own HEAD: it must stay writable for in-container commits.
+    # The primary checkout's HEAD and index are its own: they must stay writable for in-container commits.
     assert _host_writable(args, str(repo / ".git" / "HEAD"))
-    # An absent worktrees/, config.worktree, objects/info/ or info/ is created before overlaying, so the container
-    # cannot create it -- nor any host-read file inside the two read-only directories, existing or not.
+    assert _host_writable(args, str(repo / ".git" / "index"))
+    # An absent worktrees/, config.worktree, objects/info/, info/, refs/replace/, packed-refs or shallow is created
+    # before overlaying, so the container cannot create it -- nor any host-read file inside the read-only
+    # directories, existing or not. shallow is created as a DIRECTORY: an empty shallow file would itself mark the
+    # repository shallow, while git treats a shallow directory as no shallow file at all.
     assert (repo / ".git" / "worktrees").is_dir()
     assert (repo / ".git" / "config.worktree").read_text(encoding="utf-8") == ""
     assert (repo / ".git" / "objects" / "info").is_dir()
     assert (repo / ".git" / "info").is_dir()
+    assert (repo / ".git" / "refs" / "replace").is_dir()
+    assert (repo / ".git" / "packed-refs").is_file()
+    assert (repo / ".git" / "shallow").is_dir()
     for planted in (
         repo / ".git" / "info" / "grafts",
         repo / ".git" / "objects" / "info" / "commit-graph",
         repo / ".git" / "objects" / "info" / "commit-graphs" / "commit-graph-chain",
+        repo / ".git" / "refs" / "replace" / "0123456789abcdef0123456789abcdef01234567",
+        repo / ".git" / "packed-refs",
+        repo / ".git" / "shallow",
     ):
         assert not _host_writable(args, str(planted)), planted
+    # Host git still behaves as a normal full clone with the created artifacts in place.
+    assert _git(repo, "rev-parse", "--is-shallow-repository") == "false"
+    _git(repo, "fetch", "-q", "origin")
+    assert _git(repo, "log", "--oneline", "-1")
 
 
 def test_a_sibling_worktree_admin_dirs_are_unwritable_while_own_admin_and_object_database_stay_writable(
@@ -195,6 +218,10 @@ def test_a_sibling_worktree_admin_dirs_are_unwritable_while_own_admin_and_object
     common = repo / ".git"
     own = common / "worktrees" / "flow-demo"
     sib = common / "worktrees" / "sibling"
+    # The primary checkout sits mid-merge, so its transient state files exist and must be overlaid-if-present.
+    head = _git(repo, "rev-parse", "HEAD")
+    for transient in ("MERGE_HEAD", "ORIG_HEAD"):
+        (common / transient).write_text(head + "\n", encoding="utf-8")
 
     args = git_flow.sandbox_worktree_mounts(str(flow_worktree), MOUNT)
 
@@ -226,18 +253,28 @@ def test_a_sibling_worktree_admin_dirs_are_unwritable_while_own_admin_and_object
         common / "info" / "exclude",
         common / "info" / "attributes",
         common / "info" / "grafts",
+        # Host-trusted ancestry and ref-substitution surfaces: replace refs (loose and packed), a plantable
+        # shallow, and the PRIMARY checkout's per-worktree state (HEAD, index, and the mid-merge transients).
+        common / "refs" / "replace",
+        common / "refs" / "replace" / "0123456789abcdef0123456789abcdef01234567",
+        common / "packed-refs",
+        common / "shallow",
         common / "HEAD",
+        common / "index",
+        common / "MERGE_HEAD",
+        common / "ORIG_HEAD",
         flow_worktree / ".git",
     ):
         assert not _host_writable(args, str(path)), path
-    # The mounted worktree's own git still works: its admin dir and the shared object database are writable.
+    # The mounted worktree's own git still works: its admin dir, the shared object database and loose refs are
+    # writable (fetch/commit/push write loose refs; only ref deletion and pack-refs rewrite packed-refs).
     for path in (
         own / "HEAD",
         own / "index",
         own / "FETCH_HEAD",
         common / "objects",
         common / "refs",
-        common / "packed-refs",
+        common / "refs" / "heads" / "flow-demo",
         flow_worktree / "README.md",
     ):
         assert _host_writable(args, str(path)), path
@@ -261,8 +298,13 @@ def test_a_primary_checkout_with_linked_worktrees_keeps_their_admin_dirs_unwrita
         repo / ".git" / "info" / "attributes",
         repo / ".git" / "info" / "grafts",
         repo / ".git" / "objects" / "info" / "commit-graph",
+        repo / ".git" / "refs" / "replace",
+        repo / ".git" / "packed-refs",
+        repo / ".git" / "shallow",
     ):
         assert not _host_writable(args, str(path)), path
+    # The primary's own per-worktree state stays writable: the overlays above apply to it only when it is the
+    # sibling of the mounted worktree, not when it is the mounted worktree itself.
     for path in (repo / ".git" / "HEAD", repo / ".git" / "index", repo / ".git" / "objects", repo / ".git" / "refs"):
         assert _host_writable(args, str(path)), path
 

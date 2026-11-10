@@ -783,14 +783,18 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str, role: 
     config and config.worktree are created first so the container cannot create them itself. The objects/info/ and
     info/ directories are overlaid read-only as a whole: objects/ stays writable for in-container commit/fetch/push,
     but every file host git reads from those two directories (objects/info/alternates, a commit-graph, info/exclude,
-    info/attributes, info/grafts) stays out of the container's reach, including files that do not exist yet.
+    info/attributes, info/grafts) stays out of the container's reach, including files that do not exist yet. The
+    common-root ancestry and ref-substitution surfaces are pinned too: refs/replace/ and packed-refs are overlaid
+    read-only (refs/ itself stays writable for in-container loose-ref writes), and shallow is overlaid read-only --
+    as the existing file when the repository is shallow, otherwise as a created 'shallow' directory, which git
+    treats as no shallow file at all, because an empty shallow FILE would itself mark the repository shallow.
     When the mounted worktree is a linked worktree, the common HEAD is the primary checkout's HEAD -- never needed
-    in-container -- and is overlaid read-only as well; a primary checkout's own HEAD stays writable. A
-    repository with
-    extensions.worktreeConfig enabled is refused: git would then read every worktree's config.worktree, which the
-    container could rewrite in its own writable git directory. On Linux, where a bind mount keeps host
-    ownership, a worktree or git directory that the image's user (uid SANDBOX_CONTAINER_UID) cannot write is refused
-    up front rather than failing every pass inside the container.
+    in-container -- and is overlaid read-only along with the primary's other per-worktree state at the common root
+    (index, and MERGE_HEAD/MERGE_MSG/ORIG_HEAD when present); a primary checkout's own HEAD and index stay writable.
+    A repository with extensions.worktreeConfig enabled is refused: git would then read every worktree's
+    config.worktree, which the container could rewrite in its own writable git directory. On Linux, where a bind
+    mount keeps host ownership, a worktree or git directory that the image's user (uid SANDBOX_CONTAINER_UID) cannot
+    write is refused up front rather than failing every pass inside the container.
 
     Args:
         target_worktree: Host worktree path (a subdirectory of one is accepted); required.
@@ -843,28 +847,7 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str, role: 
     # diffs, and exclude patterns hide planted files from host 'git status'), as is any file planted beside them --
     # notably info/grafts, still honored by current git, which would rewrite perceived ancestry and silently subvert
     # host-side merges -- and nothing in-container writes info/.
-    # In the linked-worktree case the common HEAD is the PRIMARY checkout's HEAD -- the
-    # mounted worktree resolves its own through worktrees/<self>/HEAD -- so it is overlaid read-only too; when the
-    # mounted worktree IS the primary checkout it is its own HEAD and must stay writable for in-container commits.
-    for name in ("hooks", "modules", "worktrees"):
-        os.makedirs(os.path.join(common_dir, name), exist_ok=True)
-    os.makedirs(os.path.join(common_dir, "objects", "info"), exist_ok=True)
-    os.makedirs(os.path.join(common_dir, "info"), exist_ok=True)
-    for path in dict.fromkeys(
-        (
-            os.path.join(common_dir, "config"),
-            os.path.join(common_dir, "config.worktree"),
-            os.path.join(git_dir, "config.worktree"),
-        )
-    ):
-        open(path, "a", encoding="utf-8").close()
-    read_only += [
-        os.path.join(common_dir, name) for name in ("config", "config.worktree", "hooks", "modules", "worktrees")
-    ]
-    read_only.append(os.path.join(common_dir, "objects", "info"))
-    read_only.append(os.path.join(common_dir, "info"))
-    if git_dir != common_dir:
-        read_only.append(os.path.join(common_dir, "HEAD"))
+    read_only += _common_dir_read_only_overlays(common_dir, git_dir)
     read_only.append(os.path.join(git_dir, "config.worktree"))
 
     for host_path in dict.fromkeys(read_only):
@@ -874,3 +857,60 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str, role: 
         container_path = os.path.join(mountpoint, rel) if _within(host_path, toplevel) else host_path
         args += ["-v", f"{host_path}:{container_path}:ro"]
     return args
+
+
+def _common_dir_read_only_overlays(common_dir: str, git_dir: str) -> list[str]:
+    """Create the absent host-read admin paths under the common dir and return the read-only overlay list.
+
+    See sandbox_worktree_mounts for the full threat model; this builds the common-dir part of its overlay plan.
+    """
+    # The common-root files host git trusts without a worktree context are pinned the same way. refs/ stays
+    # writable (in-container fetch/commit/push write loose refs), but refs/replace/ is overlaid read-only: a
+    # planted replace ref substitutes arbitrary objects into every host traversal (core.useReplaceRefs is on by
+    # default). So is packed-refs, which could smuggle the same replace ref or silently rewrite any branch: loose
+    # ref creation and update never write it (the loose ref wins); only ref deletion and pack-refs/gc rewrite it,
+    # neither of which the role containers run, and a background 'gc --auto' pack failing against the read-only
+    # mount is the same non-fatal warning as for commit-graph. A plantable shallow file would cut perceived
+    # ancestry exactly like grafts, but an EMPTY shallow file already marks the whole repository shallow to git
+    # (verified empirically), so create-then-overlay does not fit; instead, when no shallow file exists, a
+    # 'shallow' DIRECTORY is created and overlaid read-only: git treats a shallow directory as no shallow file at
+    # all (verified: log, status, commit, fetch, push, merge and merge-base behave as non-shallow), the container
+    # cannot replace a read-only mountpoint with a file, and the one host operation the directory blocks -- making
+    # this full clone shallow later -- fails loudly, never silently.
+    # In the linked-worktree case the common HEAD is the PRIMARY checkout's HEAD -- the
+    # mounted worktree resolves its own through worktrees/<self>/HEAD -- so it is overlaid read-only too, along
+    # with the primary's other per-worktree state at the common root: index (a container-staged index would land
+    # in the maintainer's next commit from the primary checkout) and MERGE_HEAD/MERGE_MSG/ORIG_HEAD. The transient
+    # files are overlaid only when they exist, because a created-empty stand-in is not inert (git rejects a
+    # zero-length index; an empty MERGE_HEAD flags an in-progress merge -- verified empirically). When the mounted
+    # worktree IS the primary checkout they are its own state and must stay writable for in-container commits.
+    for name in ("hooks", "modules", "worktrees"):
+        os.makedirs(os.path.join(common_dir, name), exist_ok=True)
+    os.makedirs(os.path.join(common_dir, "objects", "info"), exist_ok=True)
+    os.makedirs(os.path.join(common_dir, "info"), exist_ok=True)
+    os.makedirs(os.path.join(common_dir, "refs", "replace"), exist_ok=True)
+    shallow = os.path.join(common_dir, "shallow")
+    if not os.path.isfile(shallow):
+        os.makedirs(shallow, exist_ok=True)
+    for path in dict.fromkeys(
+        (
+            os.path.join(common_dir, "config"),
+            os.path.join(common_dir, "config.worktree"),
+            os.path.join(common_dir, "packed-refs"),
+            os.path.join(git_dir, "config.worktree"),
+        )
+    ):
+        open(path, "a", encoding="utf-8").close()
+    overlays = [
+        os.path.join(common_dir, name) for name in ("config", "config.worktree", "hooks", "modules", "worktrees")
+    ]
+    overlays.append(os.path.join(common_dir, "objects", "info"))
+    overlays.append(os.path.join(common_dir, "info"))
+    overlays.append(os.path.join(common_dir, "refs", "replace"))
+    overlays.append(os.path.join(common_dir, "packed-refs"))
+    overlays.append(shallow)
+    if git_dir != common_dir:
+        overlays += [
+            os.path.join(common_dir, name) for name in ("HEAD", "index", "MERGE_HEAD", "MERGE_MSG", "ORIG_HEAD")
+        ]
+    return overlays

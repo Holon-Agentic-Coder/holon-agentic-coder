@@ -111,6 +111,7 @@ def test_a_linked_worktree_mounts_its_git_dirs_at_host_paths_and_overlays_git_co
         f"{git_dir / 'gitdir'}:{git_dir / 'gitdir'}:ro",
         f"{common / 'config'}:{common / 'config'}:ro",
         f"{common / 'hooks'}:{common / 'hooks'}:ro",
+        f"{common / 'modules'}:{common / 'modules'}:ro",
     ]
     # The mounted pointer resolves through the mounted paths, without any network: git works there.
     assert (flow_worktree / ".git").read_text(encoding="utf-8").strip() == f"gitdir: {git_dir}"
@@ -127,6 +128,7 @@ def test_a_primary_checkout_needs_no_extra_git_mount_but_still_protects_config_a
         f"{repo}:{MOUNT}",
         f"{repo / '.git' / 'config'}:{MOUNT}/.git/config:ro",
         f"{repo / '.git' / 'hooks'}:{MOUNT}/.git/hooks:ro",
+        f"{repo / '.git' / 'modules'}:{MOUNT}/.git/modules:ro",
     ]
 
 
@@ -502,8 +504,9 @@ def _docker_argvs(role: str, target_worktree: str | None, mounts: list[str] | Ex
 
 
 def test_review_loop_adds_only_the_worktree_mounts_and_pins_the_workspace():
-    """The review-loop argv is the planner argv plus the worktree mounts and the pinned workspace, nothing else."""
+    """The review-loop argv is the planner argv plus worktree mounts, the pinned workspace and venv; nothing more."""
     from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
+    from sandbox_executor.cli import SANDBOX_UV_PROJECT_ENVIRONMENT
 
     _code, (baseline,) = _docker_argvs("planner", "/work/flow-demo", _FAKE_WORKTREE_MOUNTS)
     code, (review,) = _docker_argvs("review-loop", "/work/flow-demo", _FAKE_WORKTREE_MOUNTS)
@@ -515,6 +518,7 @@ def test_review_loop_adds_only_the_worktree_mounts_and_pins_the_workspace():
     for pair in (_FAKE_WORKTREE_MOUNTS[:2], _FAKE_WORKTREE_MOUNTS[2:]):
         reduced = _remove_argv_pair(reduced, pair)
     reduced = _remove_argv_pair(reduced, ["-e", f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"])
+    reduced = _remove_argv_pair(reduced, ["-e", f"UV_PROJECT_ENVIRONMENT={SANDBOX_UV_PROJECT_ENVIRONMENT}"])
     reduced = _remove_argv_pair(reduced, ["-e", "HOLON_ROLE=review-loop"])
     baseline = _remove_argv_pair(baseline, ["-e", "HOLON_TARGET_WORKTREE=/home/dev/own-checkout"])
     baseline = _remove_argv_pair(baseline, ["-e", "HOLON_ROLE=planner"])
@@ -524,6 +528,9 @@ def test_review_loop_adds_only_the_worktree_mounts_and_pins_the_workspace():
     assert [a for a in review if a.startswith("HOLON_TARGET_WORKTREE=")] == [
         f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"
     ]
+    # 'uv run' in the container must not rebuild the host's .venv inside the shared worktree.
+    assert f"UV_PROJECT_ENVIRONMENT={SANDBOX_UV_PROJECT_ENVIRONMENT}" in review
+    assert not SANDBOX_UV_PROJECT_ENVIRONMENT.startswith(SANDBOX_WORKSPACE_MOUNT)
 
 
 def test_other_roles_never_mount_the_host_worktree():

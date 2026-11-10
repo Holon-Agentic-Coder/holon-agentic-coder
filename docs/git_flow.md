@@ -384,7 +384,9 @@ closed otherwise. Edits, logs and `.subagent/review/` scratch are on the host at
 Docker volume or root init container is involved. Canonical `ACT-REV`/`ACT-FIND`/`ACT-RES`/`ACT-POST` rows and the
 summary row remain host-written. A standalone `holon review-loop <PR>` reuses the worktree that has the PR's head branch
 checked out (normally `flow-<slug>`) and creates a `pr<N>-<slug>` worktree only when none exists. See the
-[sandbox-executor README](../apps/sandbox-executor/README.md#host-worktree-workspace).
+[sandbox-executor README](../apps/sandbox-executor/README.md#host-worktree-workspace). The Stage 3 executor does not
+mount a host worktree yet: it still clones the plan branch inside its container, and moving it onto a mounted worktree
+is a recorded follow-up.
 
 #### Safety Halt & Merge Boundary
 

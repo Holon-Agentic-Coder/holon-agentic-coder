@@ -123,6 +123,9 @@ CONTAINER_CA_DIR = "/usr/local/share/ca-certificates"
 # SSL_CERT_FILE / REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE REPLACE the trust store of the clients that
 # read them, so they must point here and never at the single-cert Holon mount.
 CONTAINER_CA_BUNDLE_PATH = "/home/holon/.holon-ca-bundle.crt"
+# Container-private uv project environment for a mounted host worktree, outside the mount (and in the image's
+# holon-owned ~/.cache, since the mount's root-created parents are not writable by the holon user).
+SANDBOX_UV_PROJECT_ENVIRONMENT = "/home/holon/.cache/holon-venv"
 # Loopback tooling and link-local metadata endpoints must never be force-proxied.
 NO_PROXY_HOSTS = "localhost,127.0.0.1,::1,169.254.169.254"
 # mitmproxy loads its signing CA from this directory inside the sidecar image.
@@ -1451,8 +1454,11 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
 
     # With the host worktree mounted, pin the container workspace to the mountpoint so the entrypoint's
     # get_workspace_dir() (which honours a forwarded HOLON_TARGET_WORKTREE first) cannot drift from it.
+    # Its .venv is the host's too, so 'uv run' in the container builds a container-private environment instead of
+    # rebuilding the host venv against the container's interpreter on every pass.
     if workspace_mounts:
         env_to_forward["HOLON_TARGET_WORKTREE"] = SANDBOX_WORKSPACE_MOUNT
+        env_to_forward["UV_PROJECT_ENVIRONMENT"] = SANDBOX_UV_PROJECT_ENVIRONMENT
 
     norm_agent_id = local_llm.normalize_agent_id(agent_id)
 

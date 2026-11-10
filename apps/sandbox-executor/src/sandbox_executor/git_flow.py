@@ -790,8 +790,10 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str) -> lis
     problem = _container_write_problem(toplevel, git_dir, common_dir)
     if problem:
         raise RuntimeError(problem)
-    # An absent hooks/ could be created by the container, so make it exist before overlaying it.
-    os.makedirs(os.path.join(common_dir, "hooks"), exist_ok=True)
+    # An absent hooks/ or modules/ could be created by the container (planting modules/<name>/hooks for a later host
+    # 'git submodule' command), so make both exist before overlaying them.
+    for name in ("hooks", "modules"):
+        os.makedirs(os.path.join(common_dir, name), exist_ok=True)
     read_only += [os.path.join(common_dir, name) for name in ("config", "config.worktree", "hooks", "modules")]
     read_only.append(os.path.join(git_dir, "config.worktree"))
 

@@ -211,15 +211,19 @@ A repository with `extensions.worktreeConfig` enabled is refused, because git wo
 ownership, so on Linux the worktree, its git directory and the common git directory must be writable by uid 1000 (as
 they are when the host user is uid 1000); otherwise `sandbox_worktree_mounts()` refuses the worktree before any
 container starts. On a host whose user has another uid (for example 1001 on CI runners), grant uid 1000 write access,
-e.g. `setfacl -R -m u:1000:rwX,d:u:1000:rwX <path>`; the preflight honours a named-user ACL entry for uid 1000 (limited by
-the ACL mask). Docker Desktop on macOS and Windows maps ownership, so the check is
-Linux-only. The resolver stages its fixes without `holon-knowledge/ledger/executions.jsonl`, and a pass the host
-dispatches with `--result-file` appends its ledger rows to container scratch: the host loop owns the worktree's ledger
-and records every pass from the result file. The entrypoint only validates the mount: HEAD must be a readable commit on
-the review branch (a branch target refuses a detached HEAD) and equal the resolved PR head SHA, otherwise preparation
-fails closed. Edits, logs and reviewer scratch under `.subagent/review/` land on the host at once and survive a
-container crash. No Docker volume is created and no root init container runs. The other roles (intent creator, planner,
-executor) keep their private in-container clone and never mount the host worktree.
+e.g. `setfacl -R -m u:1000:rwX,d:u:1000:rwX <path>`; the preflight honours a named-user ACL entry for uid 1000 (limited
+by the ACL mask). Docker Desktop on macOS and Windows maps ownership, so the check is Linux-only. The resolver stages
+its fixes without `holon-knowledge/ledger/executions.jsonl`, and a pass the host dispatches with `--result-file` appends
+its ledger rows to container scratch: the host loop owns the worktree's ledger and records every pass from the result
+file. The entrypoint only validates the mount: HEAD must be a readable commit on the review branch (a branch target
+refuses a detached HEAD) and equal the resolved PR head SHA, otherwise preparation fails closed. Edits, logs and
+reviewer scratch under `.subagent/review/` land on the host at once and survive a container crash. No Docker volume is
+created and no root init container runs. The other roles (intent creator, planner, executor) keep their private
+in-container clone and never mount the host worktree. Limitation and follow-up: the Stage 3 executor therefore still
+clones the plan branch inside its container, needs GitHub egress to do so and loses unpushed work when its container
+crashes; moving it onto a mounted worktree (one per concurrent execution) is deferred to a follow-up change. A pass that
+runs `uv run` in the mounted worktree uses the container-private environment
+`UV_PROJECT_ENVIRONMENT=/home/holon/.cache/holon-venv`, so it never rebuilds the host's `.venv`.
 
 `holon review-loop <target>` resolves the worktree on the host: the `--target-worktree` when it has the review branch
 checked out, otherwise the existing worktree of that branch (normally the run's `flow-<slug>`), otherwise, for a PR, a

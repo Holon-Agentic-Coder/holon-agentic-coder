@@ -139,9 +139,10 @@ def test_a_linked_worktree_mounts_its_git_dirs_at_host_paths_and_overlays_git_co
         f"{common / 'hooks'}:{common / 'hooks'}:ro",
         f"{common / 'modules'}:{common / 'modules'}:ro",
         f"{common / 'worktrees'}:{common / 'worktrees'}:ro",
-        f"{common / 'objects' / 'info' / 'alternates'}:{common / 'objects' / 'info' / 'alternates'}:ro",
-        f"{common / 'info' / 'exclude'}:{common / 'info' / 'exclude'}:ro",
-        f"{common / 'info' / 'attributes'}:{common / 'info' / 'attributes'}:ro",
+        # The whole directories, not single files: a new host-read file (info/grafts, a commit-graph) cannot be
+        # planted beside the known ones.
+        f"{common / 'objects' / 'info'}:{common / 'objects' / 'info'}:ro",
+        f"{common / 'info'}:{common / 'info'}:ro",
         # The common HEAD is the PRIMARY checkout's HEAD; the linked worktree resolves its own through its admin dir.
         f"{common / 'HEAD'}:{common / 'HEAD'}:ro",
         f"{git_dir / 'config.worktree'}:{git_dir / 'config.worktree'}:ro",
@@ -164,18 +165,23 @@ def test_a_primary_checkout_needs_no_extra_git_mount_but_still_protects_config_a
         f"{repo / '.git' / 'hooks'}:{MOUNT}/.git/hooks:ro",
         f"{repo / '.git' / 'modules'}:{MOUNT}/.git/modules:ro",
         f"{repo / '.git' / 'worktrees'}:{MOUNT}/.git/worktrees:ro",
-        f"{repo / '.git' / 'objects' / 'info' / 'alternates'}:{MOUNT}/.git/objects/info/alternates:ro",
-        f"{repo / '.git' / 'info' / 'exclude'}:{MOUNT}/.git/info/exclude:ro",
-        f"{repo / '.git' / 'info' / 'attributes'}:{MOUNT}/.git/info/attributes:ro",
+        f"{repo / '.git' / 'objects' / 'info'}:{MOUNT}/.git/objects/info:ro",
+        f"{repo / '.git' / 'info'}:{MOUNT}/.git/info:ro",
     ]
     # The primary checkout's HEAD is its own HEAD: it must stay writable for in-container commits.
     assert _host_writable(args, str(repo / ".git" / "HEAD"))
-    # An absent worktrees/, config.worktree, objects/info/alternates or info/attributes is created before
-    # overlaying, so the container cannot create it.
+    # An absent worktrees/, config.worktree, objects/info/ or info/ is created before overlaying, so the container
+    # cannot create it -- nor any host-read file inside the two read-only directories, existing or not.
     assert (repo / ".git" / "worktrees").is_dir()
     assert (repo / ".git" / "config.worktree").read_text(encoding="utf-8") == ""
-    assert (repo / ".git" / "objects" / "info" / "alternates").read_text(encoding="utf-8") == ""
-    assert (repo / ".git" / "info" / "attributes").read_text(encoding="utf-8") == ""
+    assert (repo / ".git" / "objects" / "info").is_dir()
+    assert (repo / ".git" / "info").is_dir()
+    for planted in (
+        repo / ".git" / "info" / "grafts",
+        repo / ".git" / "objects" / "info" / "commit-graph",
+        repo / ".git" / "objects" / "info" / "commit-graphs" / "commit-graph-chain",
+    ):
+        assert not _host_writable(args, str(planted)), planted
 
 
 def test_a_sibling_worktree_admin_dirs_are_unwritable_while_own_admin_and_object_database_stay_writable(
@@ -215,8 +221,11 @@ def test_a_sibling_worktree_admin_dirs_are_unwritable_while_own_admin_and_object
         own / "gitdir",
         own / "config.worktree",
         common / "objects" / "info" / "alternates",
+        common / "objects" / "info" / "commit-graph",
+        common / "objects" / "info" / "commit-graphs" / "commit-graph-chain",
         common / "info" / "exclude",
         common / "info" / "attributes",
+        common / "info" / "grafts",
         common / "HEAD",
         flow_worktree / ".git",
     ):
@@ -247,7 +256,12 @@ def test_a_primary_checkout_with_linked_worktrees_keeps_their_admin_dirs_unwrita
 
     for path in (admin, admin / "commondir", admin / "gitdir", admin / "HEAD", repo / ".git" / "worktrees"):
         assert not _host_writable(args, str(path)), path
-    for path in (repo / ".git" / "info" / "exclude", repo / ".git" / "info" / "attributes"):
+    for path in (
+        repo / ".git" / "info" / "exclude",
+        repo / ".git" / "info" / "attributes",
+        repo / ".git" / "info" / "grafts",
+        repo / ".git" / "objects" / "info" / "commit-graph",
+    ):
         assert not _host_writable(args, str(path)), path
     for path in (repo / ".git" / "HEAD", repo / ".git" / "index", repo / ".git" / "objects", repo / ".git" / "refs"):
         assert _host_writable(args, str(path)), path

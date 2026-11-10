@@ -204,22 +204,24 @@ branch checked out. Its top-level directory is bind-mounted at the sandbox works
 (`agent_runner.SANDBOX_WORKSPACE_MOUNT`, with `HOLON_TARGET_WORKTREE` pinned to the same path). A linked worktree's git
 directory and the repository's common git directory are mounted at their host paths, which the worktree's `.git` pointer
 names, so git works in the container without network access. The repository `config` (and any `config.worktree`),
-`hooks/`, `modules/`, the whole `worktrees/` administrative directory, `objects/info/alternates` (the one file under the
-otherwise-writable `objects/` that redirects where host git reads object data from), `info/exclude` and
-`info/attributes` (host git reads both on its next command, and nothing in-container writes `info/`) and the `.git`,
-`gitdir` and `commondir` pointers are overlaid read-only, so the container cannot plant a hook, configuration, attribute
-or exclude pattern that host git later reads or runs, cannot touch any sibling worktree's administrative files
-(`commondir`, `gitdir`, `HEAD`, a plantable `config.worktree`) and cannot create new `worktrees/` entries; absent
-`hooks/`, `modules/`, `worktrees/`, `config`, `config.worktree`, `objects/info/alternates`, `info/exclude` and
-`info/attributes` are created before overlaying so the container cannot create them either. When the mounted worktree is
-a linked worktree, the common `HEAD` -- the primary checkout's HEAD, which in-container git never needs -- is overlaid
-read-only as well; a mounted primary checkout's own `HEAD` stays writable for its commits. Only the mounted worktree's
-own administrative directory is re-mounted read-write on top (docker layers the deeper mount destination over the
-shallower one), restoring exactly the writes its own git needs (`HEAD`, `index`, `FETCH_HEAD`) while its pointer files
-stay read-only through still-deeper overlays; the container sets its git identity in its own global config. A repository
-with `extensions.worktreeConfig` enabled is refused, because git would then read every worktree's `config.worktree` from
-the container's own writable git directory. The image runs as uid 1000 and a Linux bind mount keeps host ownership, so
-on Linux the worktree, its git directory and the common git directory must be writable by uid 1000 (as they are when the
+`hooks/`, `modules/`, the whole `worktrees/` administrative directory, the whole `objects/info/` directory (`objects/`
+stays writable for in-container commits, but everything under `objects/info/` is host-read: `alternates` redirects where
+host git reads object data from, and a planted commit-graph would misrepresent ancestry; nothing in-container writes
+`objects/info/`), the whole `info/` directory (`exclude` and `attributes` are host-read, and so is any file planted
+beside them, such as `info/grafts`, which still subverts host-side ancestry; nothing in-container writes `info/`) and
+the `.git`, `gitdir` and `commondir` pointers are overlaid read-only, so the container cannot plant a hook,
+configuration, attribute, exclude pattern, graft or commit-graph that host git later reads or runs, cannot touch any
+sibling worktree's administrative files (`commondir`, `gitdir`, `HEAD`, a plantable `config.worktree`) and cannot create
+new `worktrees/` entries; absent `hooks/`, `modules/`, `worktrees/`, `config`, `config.worktree`, `objects/info/` and
+`info/` are created before overlaying so the container cannot create them either. When the mounted worktree is a linked
+worktree, the common `HEAD` -- the primary checkout's HEAD, which in-container git never needs -- is overlaid read-only
+as well; a mounted primary checkout's own `HEAD` stays writable for its commits. Only the mounted worktree's own
+administrative directory is re-mounted read-write on top (docker layers the deeper mount destination over the shallower
+one), restoring exactly the writes its own git needs (`HEAD`, `index`, `FETCH_HEAD`) while its pointer files stay
+read-only through still-deeper overlays; the container sets its git identity in its own global config. A repository with
+`extensions.worktreeConfig` enabled is refused, because git would then read every worktree's `config.worktree` from the
+container's own writable git directory. The image runs as uid 1000 and a Linux bind mount keeps host ownership, so on
+Linux the worktree, its git directory and the common git directory must be writable by uid 1000 (as they are when the
 host user is uid 1000); otherwise `sandbox_worktree_mounts()` refuses the worktree before any container starts. On a
 host whose user has another uid (for example 1001 on CI runners), grant uid 1000 write access, e.g.
 `setfacl -R -m u:1000:rwX,d:u:1000:rwX <path>`; the preflight honours a named-user ACL entry for uid 1000 (limited by

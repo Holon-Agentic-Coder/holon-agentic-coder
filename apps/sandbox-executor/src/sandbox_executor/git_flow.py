@@ -780,9 +780,10 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str, role: 
     administrative directory is re-mounted read-write on top (docker layers the mount with the deeper destination over
     the shallower one), restoring only the writes its own git needs (HEAD, index, FETCH_HEAD); its pointer files and
     config.worktree stay read-only through the still-deeper file overlays, and absent hooks/, modules/, worktrees/,
-    config, config.worktree, objects/info/alternates (the one file under the writable objects/ that redirects
-    where host git reads object data from) and info/exclude and info/attributes (host git reads both on its next
-    command, and nothing in-container writes info/) are created first so the container cannot create them itself.
+    config and config.worktree are created first so the container cannot create them itself. The objects/info/ and
+    info/ directories are overlaid read-only as a whole: objects/ stays writable for in-container commit/fetch/push,
+    but every file host git reads from those two directories (objects/info/alternates, a commit-graph, info/exclude,
+    info/attributes, info/grafts) stays out of the container's reach, including files that do not exist yet.
     When the mounted worktree is a linked worktree, the common HEAD is the primary checkout's HEAD -- never needed
     in-container -- and is overlaid read-only as well; a primary checkout's own HEAD stays writable. A
     repository with
@@ -831,13 +832,18 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str, role: 
     # make each exist before overlaying it. worktrees/ is overlaid read-only as a whole: a sibling worktree's
     # administrative files (commondir, gitdir, HEAD, config.worktree) are what the next host git command run in that
     # sibling reads, so none of them may be container-writable.
-    # objects/ must stay read-write for in-container commit/fetch/push, but objects/info/alternates is the one file
-    # under it that redirects where host git reads object data from, so it is created empty (inert) and overlaid
-    # read-only too; nothing the container runs (no repack/gc, no update-server-info) writes objects/info/.
-    # info/exclude and info/attributes are host-read as well (a planted '* merge=ours' attribute would subvert
-    # host-side merges, '* -diff' would blind host diffs, and exclude patterns hide planted files from host
-    # 'git status') and nothing in-container writes info/, so both are created (append keeps existing content)
-    # and overlaid read-only. In the linked-worktree case the common HEAD is the PRIMARY checkout's HEAD -- the
+    # objects/ must stay read-write for in-container commit/fetch/push, but everything under objects/info/ is
+    # host-read (alternates redirects where host git reads object data from; a planted commit-graph, trusted by
+    # host git via core.commitGraph's on-by-default, would misrepresent ancestry to host traversals), so the whole
+    # directory is overlaid read-only -- pinning files that do not exist yet. Nothing in-container writes
+    # objects/info/: plain fetch/commit/push never do, no repack, gc or update-server-info runs in-container, and
+    # were a background 'gc --auto' ever triggered, its commit-graph write failing against the read-only mount is a
+    # non-fatal warning. The whole info/ directory is overlaid read-only for the same reason: exclude and attributes
+    # are host-read (a planted '* merge=ours' attribute would subvert host-side merges, '* -diff' would blind host
+    # diffs, and exclude patterns hide planted files from host 'git status'), as is any file planted beside them --
+    # notably info/grafts, still honored by current git, which would rewrite perceived ancestry and silently subvert
+    # host-side merges -- and nothing in-container writes info/.
+    # In the linked-worktree case the common HEAD is the PRIMARY checkout's HEAD -- the
     # mounted worktree resolves its own through worktrees/<self>/HEAD -- so it is overlaid read-only too; when the
     # mounted worktree IS the primary checkout it is its own HEAD and must stay writable for in-container commits.
     for name in ("hooks", "modules", "worktrees"):
@@ -848,9 +854,6 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str, role: 
         (
             os.path.join(common_dir, "config"),
             os.path.join(common_dir, "config.worktree"),
-            os.path.join(common_dir, "objects", "info", "alternates"),
-            os.path.join(common_dir, "info", "exclude"),
-            os.path.join(common_dir, "info", "attributes"),
             os.path.join(git_dir, "config.worktree"),
         )
     ):
@@ -858,9 +861,8 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str, role: 
     read_only += [
         os.path.join(common_dir, name) for name in ("config", "config.worktree", "hooks", "modules", "worktrees")
     ]
-    read_only.append(os.path.join(common_dir, "objects", "info", "alternates"))
-    read_only.append(os.path.join(common_dir, "info", "exclude"))
-    read_only.append(os.path.join(common_dir, "info", "attributes"))
+    read_only.append(os.path.join(common_dir, "objects", "info"))
+    read_only.append(os.path.join(common_dir, "info"))
     if git_dir != common_dir:
         read_only.append(os.path.join(common_dir, "HEAD"))
     read_only.append(os.path.join(git_dir, "config.worktree"))

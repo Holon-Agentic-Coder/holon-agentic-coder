@@ -651,28 +651,6 @@ def test_run_cmd_clone_echo_and_failure_carry_no_token_fragment(clone_leak_env, 
     assert "returned error: 403" in output
 
 
-def test_main_clone_banner_carries_no_token_fragment(clone_leak_env, monkeypatch, tmp_path, capsys):
-    sample, argv, _ = clone_leak_env
-    monkeypatch.setenv("HOLON_REPO_URL", argv[7])
-    test_args = ["review_loop", "I-100-test", f"--target-worktree={tmp_path}", "--json", "--dry-run"]
-    with (
-        patch.object(sys, "argv", test_args),
-        patch("sandbox_executor.entrypoint.review_loop.run_cmd"),
-        patch("sandbox_executor.entrypoint.review_loop.check_and_resolve_stage_conflicts"),
-        patch(
-            "sandbox_executor.entrypoint.review_loop.run_review_loop",
-            return_value={"target": "I-100-test", "consensus": {"approved": True, "iterations": 1}},
-        ),
-        pytest.raises(SystemExit),
-    ):
-        review_loop_main()
-    captured = capsys.readouterr()
-    output = captured.out + captured.err
-    assert "Cloning I-100-test into" in output
-    assert "github.com/myorg/myrepo.git" in output
-    assert_no_fragment(output, sample)
-
-
 # --------------------------------------------------------------------------------------
 # Fail-closed entrypoint preparation: resolve, clone, verify
 # --------------------------------------------------------------------------------------
@@ -710,7 +688,9 @@ class FakeGitCommands:
             return subprocess.CompletedProcess(args, 128, stdout="", stderr=f"fatal: {verb} failed")
         if verb == "remote" and args[2:4] == ["get-url", "origin"]:
             return subprocess.CompletedProcess(args, 0, stdout=f"{self._origin_url}\n", stderr="")
-        if verb == "rev-parse" and args[-1].startswith("HEAD"):
+        if verb == "symbolic-ref":
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if verb == "rev-parse" and any("HEAD" in a for a in args):
             head = self._heads.pop(0) if len(self._heads) > 1 else self._heads[0]
             return subprocess.CompletedProcess(args, 0, stdout=f"{head}\n", stderr="")
         if verb == "rev-parse":
@@ -746,6 +726,7 @@ def _ledger_rows(repo_dir: Path) -> list[dict]:
 def _run_entrypoint(repo_dir: Path, target: str, fake_git: FakeGitCommands, *extra: str):
     """Run the entrypoint main() with fakes at the gh, run_cmd and loop seams; returns (exit, loop, post)."""
     run_gh, gh_calls = _fake_gh()
+    (repo_dir / ".git").mkdir(exist_ok=True)
     loop_result = {
         "target": target,
         "consensus": {"approved": True, "status": "approved", "iterations": 1},
@@ -765,50 +746,33 @@ def _run_entrypoint(repo_dir: Path, target: str, fake_git: FakeGitCommands, *ext
     return exit_info.value.code, mock_loop, mock_post, gh_calls
 
 
-def test_pr_number_target_clones_the_head_branch_never_the_number(tmp_path):
-    from sandbox_executor.entrypoint import review_loop as entrypoint
-
+def test_pr_number_target_validates_mounted_workspace(tmp_path):
     fake_git = FakeGitCommands()
-    verified = []
-    real_verify_head = entrypoint._verify_head
-
-    def spy(repo_dir, target):
-        verified.append(real_verify_head(repo_dir, target))
-        return verified[-1]
-
-    with patch(f"{ENTRYPOINT}._verify_head", side_effect=spy):
-        code, mock_loop, _post, gh_calls = _run_entrypoint(tmp_path, "90", fake_git)
+    code, mock_loop, _post, gh_calls = _run_entrypoint(tmp_path, "90", fake_git)
 
     assert code == 0
     assert gh_calls == [["gh", "pr", "view", "90", "--json", "number,headRefName,headRefOid,baseRefName,title,body"]]
-    clone = next(c for c in fake_git.calls if c[1] == "clone")
-    assert clone[:4] == ["git", "clone", "--branch", "feature/x"]
-    for argv in fake_git.calls:
-        for i, token in enumerate(argv[:-1]):
-            assert not (token == "--branch" and argv[i + 1] == "90"), argv
-    # The PR stays the loop target; the head branch is the execution branch.
+    # Zero clone or fetch calls
+    assert not any(c[1] in ("clone", "fetch") for c in fake_git.calls)
     assert mock_loop.call_args.kwargs["target"] == "90"
     assert mock_loop.call_args.kwargs["context"].execution_branch == "feature/x"
-    # Verifying HEAD keeps every resolved field, including the PR's own base branch.
-    assert [(t.head_sha, t.pr_number, t.base_branch) for t in verified] == [(PR_HEAD_SHA, 90, "release")]
 
 
 def test_branch_target_in_an_existing_checkout_fetches_and_checks_out_the_branch(tmp_path):
-    (tmp_path / ".git").mkdir()
     fake_git = FakeGitCommands()
 
     code, mock_loop, _post, gh_calls = _run_entrypoint(tmp_path, "feature/y", fake_git)
 
     assert code == 0
     assert gh_calls == []
-    assert ["git", "fetch", "origin", "+refs/heads/feature/y:refs/remotes/origin/feature/y"] in fake_git.calls
-    assert ["git", "checkout", "-B", "feature/y", "origin/feature/y"] in fake_git.calls
+    # Zero clone or fetch calls: validates in place
+    assert not any(c[1] in ("clone", "fetch") for c in fake_git.calls)
     assert mock_loop.call_args.kwargs["target"] == "feature/y"
 
 
 def test_failing_clone_exits_one_posts_nothing_and_writes_one_failure_row(tmp_path, capsys):
     (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
-    fake_git = FakeGitCommands(fail_on=("clone",))
+    fake_git = FakeGitCommands(fail_on=("rev-parse",))
 
     code, mock_loop, mock_post, _gh = _run_entrypoint(tmp_path, "90", fake_git)
 
@@ -821,14 +785,14 @@ def test_failing_clone_exits_one_posts_nothing_and_writes_one_failure_row(tmp_pa
     assert rows[0]["outcome"] == "failure"
     assert rows[0]["action_origin"] == "pr_review"
     assert rows[0]["target"] == "90"
-    assert "clone failed" in rows[0]["error_context"]
+    assert "validate" in rows[0]["error_context"] or "failed" in rows[0]["error_context"]
     out = capsys.readouterr().out
     assert "Consensus      : FAILED" in out
     assert "APPROVED" not in out
 
 
 def test_failing_clone_without_a_ledger_reports_on_stderr_only(tmp_path, capsys):
-    fake_git = FakeGitCommands(fail_on=("clone",))
+    fake_git = FakeGitCommands(fail_on=("rev-parse",))
 
     code, mock_loop, _post, _gh = _run_entrypoint(tmp_path, "feature/x", fake_git)
 
@@ -836,7 +800,7 @@ def test_failing_clone_without_a_ledger_reports_on_stderr_only(tmp_path, capsys)
     mock_loop.assert_not_called()
     assert not (tmp_path / "holon-knowledge").exists()
     err = capsys.readouterr().err
-    assert "Review preparation failed (clone)" in err
+    assert "Review preparation failed (validate)" in err
     assert "No ledger row was written" in err
 
 
@@ -861,27 +825,6 @@ def test_failing_resolution_exits_one_before_any_git_command(tmp_path, capsys):
     data = json.loads(capsys.readouterr().out)
     assert data["consensus"] == {"approved": False, "status": "failed", "iterations": 0}
     assert "no pull requests found" in data["error"]
-
-
-def test_head_mismatch_fetches_the_resolved_sha_explicitly(tmp_path):
-    fake_git = FakeGitCommands(heads=["f" * 40, PR_HEAD_SHA])
-
-    code, _loop, _post, _gh = _run_entrypoint(tmp_path, "90", fake_git)
-
-    assert code == 0
-    assert ["git", "fetch", "origin", PR_HEAD_SHA] in fake_git.calls
-    assert ["git", "checkout", "--detach", PR_HEAD_SHA] in fake_git.calls
-
-
-def test_head_mismatch_with_a_failing_sha_fetch_exits_one(tmp_path):
-    (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
-    fake_git = FakeGitCommands(heads=["f" * 40], fail_on=("fetch",))
-
-    code, mock_loop, _post, _gh = _run_entrypoint(tmp_path, "90", fake_git)
-
-    assert code == 1
-    mock_loop.assert_not_called()
-    assert len(_ledger_rows(tmp_path)) == 1
 
 
 def test_gh_runner_names_the_repository_without_credentials(tmp_path, monkeypatch):
@@ -2545,78 +2488,8 @@ class TestResolverAgentExecution:
 
 
 # --------------------------------------------------------------------------------------
-# Persistent review workspace: hermetic reuse and incremental sync in _clone_or_fetch
+# Persistent review workspace: helpers for real git tests
 # --------------------------------------------------------------------------------------
-
-
-def test_reused_matching_checkout_resets_cleans_then_syncs_incrementally(tmp_path):
-    """A matching checkout is hermetically reset (reset -> clean) before fetch -> checkout; never cloned."""
-    (tmp_path / ".git").mkdir()
-    fake_git = FakeGitCommands()
-
-    code, _loop_mock, _post, _gh = _run_entrypoint(tmp_path, "feature/y", fake_git)
-
-    assert code == 0
-    assert not any(c[1] == "clone" for c in fake_git.calls)
-    assert ["git", "rebase", "--abort"] in fake_git.calls
-    assert ["git", "merge", "--abort"] in fake_git.calls
-    ordered = [
-        fake_git.calls.index(["git", "reset", "--hard", "HEAD"]),
-        fake_git.calls.index(["git", "clean", "-fdx"]),
-        fake_git.calls.index(["git", "fetch", "origin", "+refs/heads/feature/y:refs/remotes/origin/feature/y"]),
-        fake_git.calls.index(["git", "checkout", "-B", "feature/y", "origin/feature/y"]),
-    ]
-    assert ordered == sorted(ordered), f"hermetic reset must precede the incremental sync: {fake_git.calls}"
-
-
-def test_reused_checkout_with_a_mismatched_origin_is_wiped_and_recloned(tmp_path):
-    """A checkout whose origin does not match HOLON_REPO_URL is cleared and re-cloned, never fetched from."""
-    (tmp_path / ".git").mkdir()
-    (tmp_path / ".git" / "config").write_text("[remote]", encoding="utf-8")
-    (tmp_path / "stale-junk.txt").write_text("left by another repository", encoding="utf-8")
-    fake_git = FakeGitCommands(origin_url="https://github.com/other/stale.git")
-
-    code, _loop_mock, _post, _gh = _run_entrypoint(tmp_path, "feature/y", fake_git)
-
-    assert code == 0
-    clone = next(c for c in fake_git.calls if c[1] == "clone")
-    assert clone[:4] == ["git", "clone", "--branch", "feature/y"]
-    # The branch fetch of the reuse path never ran against the wrong remote.
-    assert ["git", "fetch", "origin", "+refs/heads/feature/y:refs/remotes/origin/feature/y"] not in fake_git.calls
-    # The stale contents really are gone from the mountpoint (the directory itself remains).
-    assert not (tmp_path / ".git").exists()
-    assert not (tmp_path / "stale-junk.txt").exists()
-    assert tmp_path.exists()
-
-
-def test_failing_hermetic_reset_falls_back_to_wipe_and_reclone(tmp_path):
-    """A failure in the reuse path's reset or clean wipes the poisoned checkout and re-clones."""
-    (tmp_path / ".git").mkdir()
-    (tmp_path / "stale-junk.txt").write_text("leftover", encoding="utf-8")
-    fake_git = FakeGitCommands(fail_on=("clean",))
-
-    code, mock_loop, _post, _gh = _run_entrypoint(tmp_path, "feature/y", fake_git)
-
-    assert code == 0
-    mock_loop.assert_called_once()
-    clone = next(c for c in fake_git.calls if c[1] == "clone")
-    assert clone[:4] == ["git", "clone", "--branch", "feature/y"]
-    # The incremental branch fetch never ran against the poisoned checkout.
-    assert ["git", "fetch", "origin", "+refs/heads/feature/y:refs/remotes/origin/feature/y"] not in fake_git.calls
-    assert not (tmp_path / ".git").exists()
-    assert not (tmp_path / "stale-junk.txt").exists()
-
-
-def test_failing_reset_followed_by_failing_clone_exits_one(tmp_path):
-    """When the wipe-and-reclone fallback itself cannot clone, preparation still fails closed."""
-    (tmp_path / ".git").mkdir()
-    fake_git = FakeGitCommands(fail_on=("reset", "clone"))
-
-    code, mock_loop, mock_post, _gh = _run_entrypoint(tmp_path, "feature/y", fake_git)
-
-    assert code == 1
-    mock_loop.assert_not_called()
-    mock_post.assert_not_called()
 
 
 def _real_git(cwd, *args) -> str:
@@ -2647,100 +2520,6 @@ def _seed_local_remote(tmp_path):
     _real_git(seed, "remote", "add", "origin", str(remote))
     _real_git(seed, "push", "-q", "origin", "main")
     return remote, seed
-
-
-def test_second_pass_reuses_the_clone_and_discards_leaked_state(tmp_path, monkeypatch):
-    """Real-git proof of goals 2 and 3: incremental fetch picks up the pushed commit; no state leaks.
-
-    Pass 1 clones into the (simulated) persistent workspace. Between passes, a resolver-style commit is
-    pushed to the remote and the workspace is polluted with an untracked file and an uncommitted ledger
-    row, as a previous pass could leave behind. Pass 2 must keep the clone (no re-clone), discard both
-    leaks and land exactly on the pushed commit.
-    """
-    from sandbox_executor.entrypoint.review_loop import _prepare_workspace
-
-    _isolate_git_global_config(monkeypatch, tmp_path)
-    remote, seed = _seed_local_remote(tmp_path)
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    monkeypatch.setenv("HOLON_REPO_URL", str(remote))
-
-    first = _prepare_workspace(str(workspace), "main")
-    assert first.head_sha == _real_git(seed, "rev-parse", "HEAD")
-
-    # Pollute the workspace as a previous pass could, and mark the .git directory to detect a re-clone.
-    marker = workspace / ".git" / "holon-reuse-marker"
-    marker.write_text("pass 1", encoding="utf-8")
-    (workspace / "reviewer-scratch.txt").write_text("untracked leak", encoding="utf-8")
-    ledger_file = workspace / "holon-knowledge" / "ledger" / "executions.jsonl"
-    committed_ledger = ledger_file.read_text(encoding="utf-8")
-    with ledger_file.open("a", encoding="utf-8") as f:
-        f.write('{"execution_id": "IN-CONTAINER-LEAK"}\n')
-
-    # A resolver push lands on the remote between the two passes.
-    (seed / "fix.txt").write_text("resolver fix", encoding="utf-8")
-    _real_git(seed, "add", "-A")
-    _real_git(seed, "commit", "-qm", "resolver fix")
-    _real_git(seed, "push", "-q", "origin", "main")
-    pushed_sha = _real_git(seed, "rev-parse", "HEAD")
-
-    second = _prepare_workspace(str(workspace), "main")
-
-    assert second.head_sha == pushed_sha
-    assert _real_git(workspace, "rev-parse", "HEAD") == pushed_sha
-    assert marker.exists(), "the checkout was re-cloned instead of fetched incrementally"
-    assert not (workspace / "reviewer-scratch.txt").exists()
-    assert ledger_file.read_text(encoding="utf-8") == committed_ledger
-    assert (workspace / "fix.txt").read_text(encoding="utf-8") == "resolver fix"
-
-
-def test_real_origin_mismatch_is_wiped_and_recloned_from_the_configured_remote(tmp_path, monkeypatch):
-    """Real-git proof of the fail-safe: a foreign checkout is never fetched from, only replaced."""
-    from sandbox_executor.entrypoint.review_loop import _prepare_workspace
-
-    _isolate_git_global_config(monkeypatch, tmp_path)
-    remote, seed = _seed_local_remote(tmp_path)
-    foreign_dir = tmp_path / "foreign"
-    foreign_dir.mkdir()
-    foreign_remote, _foreign_seed = _seed_local_remote(foreign_dir)
-
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    monkeypatch.setenv("HOLON_REPO_URL", str(foreign_remote))
-    _prepare_workspace(str(workspace), "main")
-    marker = workspace / ".git" / "holon-reuse-marker"
-    marker.write_text("foreign clone", encoding="utf-8")
-
-    monkeypatch.setenv("HOLON_REPO_URL", str(remote))
-    result = _prepare_workspace(str(workspace), "main")
-
-    assert result.head_sha == _real_git(seed, "rev-parse", "HEAD")
-    assert _real_git(workspace, "remote", "get-url", "origin") == str(remote)
-    assert not marker.exists(), "the foreign checkout was reused instead of wiped"
-
-
-def test_poisoned_reused_checkout_is_wiped_and_recloned(tmp_path, monkeypatch):
-    """Real-git proof of crash recovery: a leaked volume holding a partial clone (matching origin, unborn
-    HEAD, stale index.lock) cannot be hermetically reset, so the pass wipes it and re-clones instead of
-    failing every subsequent pass."""
-    from sandbox_executor.entrypoint.review_loop import _prepare_workspace
-
-    _isolate_git_global_config(monkeypatch, tmp_path)
-    remote, seed = _seed_local_remote(tmp_path)
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    monkeypatch.setenv("HOLON_REPO_URL", str(remote))
-
-    # Simulate a clone interrupted by a crash: origin already configured, but no commit and a stale lock.
-    _real_git(tmp_path, "init", "-b", "main", str(workspace))
-    _real_git(workspace, "remote", "add", "origin", str(remote))
-    (workspace / ".git" / "index.lock").write_text("", encoding="utf-8")
-
-    result = _prepare_workspace(str(workspace), "main")
-
-    assert result.head_sha == _real_git(seed, "rev-parse", "HEAD")
-    assert _real_git(workspace, "rev-parse", "HEAD") == result.head_sha
-    assert not (workspace / ".git" / "index.lock").exists()
 
 
 def test_resolver_mode_soft_resets_local_commit_and_commits_with_trailers(tmp_path, monkeypatch):

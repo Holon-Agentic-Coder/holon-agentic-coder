@@ -26,3 +26,11 @@ workspace execution, unified `.subagent/` scratch artifacts, and persistent work
 - Updated `_dispatch_role` in `sandbox_executor.flow.dispatch` to remove obsolete volume docstring references.
 - Updated `test_cli.py` to replace legacy volume mount assertions with host worktree bind-mount verification.
 
+### Step 2: Container In-Place Workspace Validation and In-Container Git Purge in review_loop.py
+
+- Completely removed `_clone_or_fetch`, `_reset_reused_checkout`, `_verify_head`, `_reusable_origin`, `_normalised_repo_url`, `_has_checkout`, and `_wipe_workspace` from `sandbox_executor.entrypoint.review_loop`.
+- Eliminated all destructive in-container git operations (`git reset --hard HEAD`, `git clean -fdx`, `git fetch origin`, `git checkout -B`, `git clone`).
+- Implemented non-destructive in-place `_validate_mounted_workspace(repo_dir: str, target: ReviewTarget) -> ReviewTarget` which verifies the mounted repository is an existing git repository with a readable HEAD commit.
+- Updated `test_review_loop.py` to assert non-destructive workspace validation and removed obsolete in-container clone/reset/wipe tests.
+
+

@@ -266,12 +266,12 @@ class TestHolonCLI(unittest.TestCase):
         now[0] += 700
         with patch.dict(os.environ, {"HOLON_STAGE_BUDGET_SECONDS": "9999"}, clear=True):
             with active_stage_timer(timer):
-                run_docker_container("planner", "holon/agent-pi", ["branch"], agent_id="pi")
+                run_docker_container("executor", "holon/agent-pi", ["branch"], agent_id="pi")
             budget_args = [a for a in mock_run.call_args[0][0] if a.startswith("HOLON_STAGE_BUDGET_SECONDS=")]
             self.assertEqual(budget_args, ["HOLON_STAGE_BUDGET_SECONDS=1940"])
         mock_run.reset_mock()
         with patch.dict(os.environ, {}, clear=True):
-            run_docker_container("planner", "holon/agent-pi", ["branch"], agent_id="pi")
+            run_docker_container("executor", "holon/agent-pi", ["branch"], agent_id="pi")
             self.assertFalse(
                 any(a.startswith("HOLON_STAGE_BUDGET_SECONDS=") for a in mock_run.call_args[0][0]),
             )
@@ -288,9 +288,8 @@ class TestHolonCLI(unittest.TestCase):
             self.assertEqual(rc, 1)
             self.assertIn("Error: Intent file is mandatory for intent creation.", mock_stderr.getvalue())
 
-    @patch("sandbox_executor.cli.commands.execute.execution_worktree", return_value="/work/flow-x")
     @patch("sandbox_executor.cli.run_docker_container", return_value=0)
-    def test_main_subcommands(self, mock_run_container, _mock_worktree):
+    def test_main_subcommands(self, mock_run_container):
         test_args = [
             "holon",
             "plan",
@@ -346,7 +345,6 @@ class TestHolonCLI(unittest.TestCase):
                 ["plan_branch_name", "antigravity-agent", "gemini-3.5-flash"],
                 agent_id="antigravity",
                 token_reduce=False,
-                target_worktree="/work/flow-x",
             )
 
     @patch("sandbox_executor.cli.run_docker_container", return_value=0)
@@ -1393,9 +1391,8 @@ class TestSharedRoleDispatch(unittest.TestCase):
             resolve_role_image("executor", "newrunner")
         self.assertEqual(resolve_role_image("intent-creator", "newrunner"), "holon/orchestrator")
 
-    @patch("sandbox_executor.cli.commands.execute.execution_worktree", return_value="/work/flow-x")
     @patch("sandbox_executor.cli.dispatch_role_agent", return_value=0)
-    def test_per_stage_commands_route_through_dispatch_role_agent(self, mock_dispatch, _mock_worktree):
+    def test_per_stage_commands_route_through_dispatch_role_agent(self, mock_dispatch):
         cases = [
             (["holon", "intent", "intents/test.json"], ("intent-creator", None, None, [])),
             (
@@ -1415,9 +1412,8 @@ class TestSharedRoleDispatch(unittest.TestCase):
             mock_dispatch.assert_called_once()
             self.assertEqual(mock_dispatch.call_args.args, expected)
 
-    @patch("sandbox_executor.cli.commands.execute.execution_worktree", return_value="/work/flow-x")
     @patch("sandbox_executor.cli.dispatch_role_agent")
-    def test_execute_of_a_refused_over_budget_plan_exits_non_zero_with_a_message(self, mock_dispatch, _mock_worktree):
+    def test_execute_of_a_refused_over_budget_plan_exits_non_zero_with_a_message(self, mock_dispatch):
         from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
 
         argv = ["holon", "execute", "I-1-x/P-1/_", "--agent", "claude-agent", "--model", "claude-opus-5-5"]
@@ -2336,3 +2332,96 @@ def test_find_git_root_returns_the_nearest_git_ancestor(tmp_path, monkeypatch):
 
     assert finished, "_find_git_root did not return within its deadline"
     assert root == str(repo)
+
+
+# --------------------------------------------------------------------------------------
+# Persistent Stage 4 review workspace: the volume mount plumbing in run_docker_container
+# --------------------------------------------------------------------------------------
+
+
+def _remove_argv_pair(argv: list[str], pair: list[str]) -> list[str]:
+    """Return ``argv`` with the first adjacent occurrence of ``pair`` removed; fail if it is absent."""
+    for idx in range(len(argv) - 1):
+        if argv[idx : idx + 2] == pair:
+            return argv[:idx] + argv[idx + 2 :]
+    raise AssertionError(f"expected pair {pair} in docker argv: {argv}")
+
+
+def test_review_workspace_volume_adds_exactly_one_mount_and_pins_the_worktree():
+    """With a volume the argv gains one `-v` mount and the pinned worktree env; without one it is identical."""
+    from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
+
+    captured: list[list[str]] = []
+
+    def record_run(cmd, *args, **kwargs):
+        captured.append(list(cmd))
+        return MagicMock(returncode=0)
+
+    with (
+        patch("sandbox_executor.cli.resolve_target_repo", return_value=("git@github.com:test/repo.git", None)),
+        patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"]),
+        patch("subprocess.run", side_effect=record_run),
+        patch("shutil.which", return_value="/usr/bin/docker"),
+        patch.dict(os.environ, {}, clear=True),
+    ):
+        args = ["branch", "fake-agent", "fake-model"]
+        assert run_docker_container("review-loop", "holon/agent-claude", list(args), agent_id="claude") == 0
+        assert (
+            run_docker_container(
+                "review-loop",
+                "holon/agent-claude",
+                list(args),
+                agent_id="claude",
+                review_workspace_volume="holon-review-ws-abc123",
+            )
+            == 0
+        )
+
+    baseline, with_volume = captured
+    # Guard every isolation flag: removing the one mount and the pinned worktree variable restores the
+    # baseline argv byte for byte, so nothing else (``--rm``, ``--cap-drop=ALL``,
+    # ``--security-opt=no-new-privileges``, metadata sinkholes, mounts, env forwarding) changed.
+    reduced = _remove_argv_pair(with_volume, ["-v", f"holon-review-ws-abc123:{SANDBOX_WORKSPACE_MOUNT}"])
+    reduced = _remove_argv_pair(reduced, ["-e", f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"])
+    assert reduced == baseline
+    assert "--rm" in with_volume
+    assert "--cap-drop=ALL" in with_volume
+    assert "--security-opt=no-new-privileges" in with_volume
+    # A host HOLON_TARGET_WORKTREE cannot displace the pinned container workspace path.
+    assert [a for a in with_volume if a.startswith("HOLON_TARGET_WORKTREE=")] == [
+        f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"
+    ]
+
+
+def test_review_workspace_volume_overrides_a_forwarded_host_worktree():
+    """A forwarded host HOLON_TARGET_WORKTREE is replaced by the mountpoint when a volume is supplied."""
+    from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
+
+    captured: list[list[str]] = []
+
+    def record_run(cmd, *args, **kwargs):
+        captured.append(list(cmd))
+        return MagicMock(returncode=0)
+
+    with (
+        patch("sandbox_executor.cli.resolve_target_repo", return_value=("git@github.com:test/repo.git", None)),
+        patch("sandbox_executor.cli.get_agent_session_mounts", return_value=[]),
+        patch("subprocess.run", side_effect=record_run),
+        patch("shutil.which", return_value="/usr/bin/docker"),
+        patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": "/home/dev/own-checkout"}, clear=True),
+    ):
+        assert (
+            run_docker_container(
+                "review-loop",
+                "holon/agent-claude",
+                ["branch", "fake-agent", "fake-model"],
+                agent_id="claude",
+                review_workspace_volume="holon-review-ws-abc123",
+            )
+            == 0
+        )
+
+    (argv,) = captured
+    assert [a for a in argv if a.startswith("HOLON_TARGET_WORKTREE=")] == [
+        f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"
+    ]

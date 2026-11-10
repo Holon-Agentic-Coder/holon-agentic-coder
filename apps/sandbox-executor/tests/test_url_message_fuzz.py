@@ -453,7 +453,7 @@ def _run_delimiter_case(value: str) -> tuple[int, _DockerRecorder, list[str], di
         contextlib.redirect_stdout(stdout),
         contextlib.redirect_stderr(io.StringIO()),
     ):
-        rc = cli.run_docker_container("planner", "img", [], agent_id="claude-agent")
+        rc = cli.run_docker_container("executor", "img", [], agent_id="claude-agent")
         probe_argv, probe_secret = preflight.build_probe_docker_cmd(
             "claude-agent", "m", "img", "probe", session_mounts=[]
         )
@@ -617,7 +617,7 @@ def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, 
                     )
                 )
             if rejected:
-                codes.append(cli.run_docker_container("planner", "img", [], agent_id="pi"))
+                codes.append(cli.run_docker_container("executor", "img", [], agent_id="pi"))
         if _leaks(out, credential):
             failures.append(case_id)
         if rejected and (codes != [1, 1, 1, 1] or docker.argv):

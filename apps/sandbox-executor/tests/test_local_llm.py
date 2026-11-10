@@ -427,7 +427,7 @@ class TestLauncherIntegration(unittest.TestCase):
             patch.dict(os.environ, merged_env, clear=True),
         ):
             code = cli.run_docker_container(
-                "planner",
+                "executor",
                 f"holon/agent-{agent_id}",
                 ["branch", f"{agent_id}-agent", "m"],
                 agent_id=agent_id,

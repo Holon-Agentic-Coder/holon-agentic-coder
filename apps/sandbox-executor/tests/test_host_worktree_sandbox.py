@@ -53,7 +53,12 @@ def _git(cwd: Path | str, *args: str) -> str:
 
 @pytest.fixture
 def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A primary checkout on main with a local bare origin; git never reads the host's own config."""
+    """A primary checkout on main with a local bare origin; git never reads the host's own config.
+
+    The host user plays the container user, so the write preflight holds whatever uid runs the tests.
+    """
+    monkeypatch.setattr(git_flow, "SANDBOX_CONTAINER_UID", os.getuid())
+    monkeypatch.setattr(git_flow, "SANDBOX_CONTAINER_GID", os.getgid())
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     for role in ("AUTHOR", "COMMITTER"):
@@ -149,6 +154,28 @@ def test_a_only_an_attached_non_default_branch_worktree_is_ever_mounted(
 
     with pytest.raises(RuntimeError, match=message):
         git_flow.sandbox_worktree_mounts(target, MOUNT)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="the uid preflight applies to Linux bind mounts")
+def test_a_a_worktree_the_container_uid_cannot_write_is_refused_before_any_container_starts(
+    flow_worktree: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A CI runner whose user is uid 1001 owns a 0755 worktree that the image's uid cannot write.
+    monkeypatch.setattr(git_flow, "SANDBOX_CONTAINER_UID", os.getuid() + 1)
+    monkeypatch.setattr(git_flow, "SANDBOX_CONTAINER_GID", os.getgid() + 1)
+    common = flow_worktree.parent / "repo" / ".git"
+    git_dirs = (flow_worktree, common, common / "worktrees" / "flow-demo")
+    for path in git_dirs:
+        path.chmod(0o755)
+
+    with pytest.raises(RuntimeError, match=rf"runs as uid {os.getuid() + 1}.*cannot write.*{flow_worktree}"):
+        git_flow.sandbox_worktree_mounts(str(flow_worktree), MOUNT)
+
+    # Group write for the container's gid is enough.
+    monkeypatch.setattr(git_flow, "SANDBOX_CONTAINER_GID", os.getgid())
+    for path in git_dirs:
+        path.chmod(0o775)
+    assert git_flow.sandbox_worktree_mounts(str(flow_worktree), MOUNT)
 
 
 # --- (b) no clone, fetch, reset or clean in the container ------------------------------------------------------------

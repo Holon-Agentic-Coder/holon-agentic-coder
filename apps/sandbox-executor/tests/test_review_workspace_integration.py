@@ -14,8 +14,10 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+from sandbox_executor import git_flow
 from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
 from sandbox_executor.git_flow import sandbox_worktree_mounts
 
@@ -108,8 +110,15 @@ class TestHostWorktreeBindMountIntegration(unittest.TestCase):
         _git(main, "worktree", "add", "-q", "-b", "feature", str(worktree))
         head = _git(worktree, "rev-parse", "HEAD")
 
-        mounts = sandbox_worktree_mounts(str(worktree), SANDBOX_WORKSPACE_MOUNT)
-        if sys.platform.startswith("linux") and f"{os.getuid()}:{os.getgid()}" != IMAGE_UID:
+        hand_over = sys.platform.startswith("linux") and f"{os.getuid()}:{os.getgid()}" != IMAGE_UID
+        # The checkout is handed to the image's uid only after the host builds the mounts, so let the write preflight
+        # judge it as the host user until then.
+        with (
+            patch.object(git_flow, "SANDBOX_CONTAINER_UID", os.getuid()),
+            patch.object(git_flow, "SANDBOX_CONTAINER_GID", os.getgid()),
+        ):
+            mounts = sandbox_worktree_mounts(str(worktree), SANDBOX_WORKSPACE_MOUNT)
+        if hand_over:
             # A Linux bind mount keeps host ownership, and the image runs as uid 1000 (it cannot run as another uid:
             # /home/holon is private), so the review-loop container needs a worktree owned by uid 1000 -- as on a
             # host whose user is uid 1000. Hand it back before the temporary directory is removed.

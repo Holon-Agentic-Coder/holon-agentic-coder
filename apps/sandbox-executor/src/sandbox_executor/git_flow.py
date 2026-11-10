@@ -28,6 +28,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+import stat
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -35,6 +37,11 @@ from pathlib import Path
 from sandbox_executor.git import branch_exists, resolve_ref, run_git
 
 logger = logging.getLogger(__name__)
+
+#: The unprivileged uid and gid the sandbox image runs as; a Linux bind mount keeps host ownership, so the review-loop
+#: container can only write a worktree and git directories that this user may write.
+SANDBOX_CONTAINER_UID = 1000
+SANDBOX_CONTAINER_GID = 1000
 
 __all__ = [
     "checked_out_branch",
@@ -662,29 +669,33 @@ def _within(path: str, root: str) -> bool:
     return path == root or path.startswith(root + os.sep)
 
 
-def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str) -> list[str]:
-    """Validate a host worktree and return the docker arguments that bind-mount it into a role container.
+def _container_cannot_write(path: str) -> bool:
+    """Return True when the sandbox user may not write the directory path, judged by its owner, group and mode bits."""
+    st = os.stat(path)
+    if st.st_uid == SANDBOX_CONTAINER_UID:
+        return not st.st_mode & stat.S_IWUSR
+    if st.st_gid == SANDBOX_CONTAINER_GID:
+        return not st.st_mode & stat.S_IWGRP
+    return not st.st_mode & stat.S_IWOTH
 
-    The worktree must be an attached, non-bare working tree that does not have the default branch checked out. Its
-    top-level directory is mounted read-write at mountpoint. A linked worktree's git directory and the repository's
-    common git directory are mounted at their host paths, which the worktree's '.git' pointer names, so git works in
-    the container without network access. Everything that makes host git run code is overlaid read-only, so the
-    container cannot plant a hook or configuration that later executes on the host: the repository config (and any
-    config.worktree), hooks/, modules/, and the '.git', 'gitdir' and 'commondir' pointers. A repository with
-    extensions.worktreeConfig enabled is refused: git would then read every worktree's config.worktree, which the
-    container could create or rewrite in the writable git directory.
 
-    Args:
-        target_worktree: Host worktree path (a subdirectory of one is accepted); required.
-        mountpoint: Container path of the workspace.
+def _container_write_problem(*paths: str) -> str | None:
+    """On Linux, explain which of paths the sandbox user cannot write through a bind mount; None when all are fine."""
+    if not sys.platform.startswith("linux"):
+        return None
+    unwritable = [path for path in dict.fromkeys(paths) if _container_cannot_write(path)]
+    if not unwritable:
+        return None
+    return (
+        f"the review-loop container runs as uid {SANDBOX_CONTAINER_UID} and a Linux bind mount keeps host ownership, "
+        f"so it cannot write {', '.join(repr(p) for p in unwritable)}. Run the review as uid {SANDBOX_CONTAINER_UID}, "
+        f"or grant it write access (for example 'setfacl -R -m u:{SANDBOX_CONTAINER_UID}:rwX,"
+        f"d:u:{SANDBOX_CONTAINER_UID}:rwX <path>')."
+    )
 
-    Returns:
-        list[str]: Docker '-v' arguments.
 
-    Raises:
-        RuntimeError: If no worktree is given, it is not an attached non-default-branch worktree, its '.git'
-            pointer cannot be read, or the repository enables extensions.worktreeConfig.
-    """
+def _validated_sandbox_toplevel(target_worktree: str | None) -> str:
+    """Return the top-level directory of a worktree that may be mounted, or raise RuntimeError explaining why not."""
     if not target_worktree:
         raise RuntimeError(
             "the review-loop container reviews a host worktree in place and needs an explicit target worktree; pass "
@@ -708,7 +719,36 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str) -> lis
             "container could plant a config.worktree that later runs code on the host. Disable it with 'git config "
             "--unset extensions.worktreeConfig' or review in a fresh clone."
         )
+    return toplevel
 
+
+def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str) -> list[str]:
+    """Validate a host worktree and return the docker arguments that bind-mount it into a role container.
+
+    The worktree must be an attached, non-bare working tree that does not have the default branch checked out. Its
+    top-level directory is mounted read-write at mountpoint. A linked worktree's git directory and the repository's
+    common git directory are mounted at their host paths, which the worktree's '.git' pointer names, so git works in
+    the container without network access. Everything that makes host git run code is overlaid read-only, so the
+    container cannot plant a hook or configuration that later executes on the host: the repository config (and any
+    config.worktree), hooks/, modules/, and the '.git', 'gitdir' and 'commondir' pointers. A repository with
+    extensions.worktreeConfig enabled is refused: git would then read every worktree's config.worktree, which the
+    container could create or rewrite in the writable git directory. On Linux, where a bind mount keeps host
+    ownership, a worktree or git directory that the image's user (uid SANDBOX_CONTAINER_UID) cannot write is refused
+    up front rather than failing every pass inside the container.
+
+    Args:
+        target_worktree: Host worktree path (a subdirectory of one is accepted); required.
+        mountpoint: Container path of the workspace.
+
+    Returns:
+        list[str]: Docker '-v' arguments.
+
+    Raises:
+        RuntimeError: If no worktree is given, it is not an attached non-default-branch worktree, its '.git'
+            pointer cannot be read, the repository enables extensions.worktreeConfig, or (on Linux) the container
+            user cannot write the worktree or its git directories.
+    """
+    toplevel = _validated_sandbox_toplevel(target_worktree)
     dot_git = os.path.join(toplevel, ".git")
     args = ["-v", f"{toplevel}:{mountpoint}"]
     if os.path.isdir(dot_git):
@@ -723,6 +763,9 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str) -> lis
         if not _within(git_dir, common_dir):
             args += ["-v", f"{git_dir}:{git_dir}"]
         read_only = [dot_git, os.path.join(git_dir, "commondir"), os.path.join(git_dir, "gitdir")]
+    problem = _container_write_problem(toplevel, git_dir, common_dir)
+    if problem:
+        raise RuntimeError(problem)
     # An absent hooks/ could be created by the container, so make it exist before overlaying it.
     os.makedirs(os.path.join(common_dir, "hooks"), exist_ok=True)
     read_only += [os.path.join(common_dir, name) for name in ("config", "config.worktree", "hooks", "modules")]

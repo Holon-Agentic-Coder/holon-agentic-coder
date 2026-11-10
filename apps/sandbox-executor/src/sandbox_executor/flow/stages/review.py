@@ -14,6 +14,7 @@ from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, S
 from sandbox_executor.flow.dispatch import _stage_failure, _test_evidence
 from sandbox_executor.flow.review.loop import _reviewers_objected, _run_engine_review_loop
 from sandbox_executor.flow.review.records import render_reviewer_summary_line
+from sandbox_executor.flow.review.verdict import not_approved_verdicts, render_final_verdicts
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.git import run_git
 from sandbox_executor.knowledge import ConsultEngine
@@ -180,6 +181,12 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
     }
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # A dry run simulates the loop and is never approved; it still halts for a human like a real review would.
+    dry_run_simulation = bool(context.dry_run) and consensus_info.get("status") == "not_measured"
+    reviewers = loop_res.get("reviewers") or []
+    # Defence in depth: a consensus whose final verdicts are not all a clean APPROVED never halts as approved.
+    not_approved = not_approved_verdicts(reviewers)
+    err_msg: str | None = None
 
     if is_dirty:
         target_branch = context.intent_data.get("target_branch", "main")
@@ -190,26 +197,7 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
             "Halting consensus approval."
         )
         context.log(err_msg)
-        result = StageResult(
-            stage=FlowStage.REVIEW,
-            status=StageStatus.FAILED,
-            start_time=start_time,
-            end_time=end_time,
-            payload={
-                "review_package": review_package,
-                "consensus": consensus_info,
-                "halted_for_human": False,
-                "human_merge_gate_enforced": False,
-                "mergeability": mergeability,
-                "posting": loop_res.get("posting"),
-                "pr": loop_res.get("pr"),
-            },
-            error=err_msg,
-        )
-        context.stage_results["review"] = result
-        return result
-
-    if merge_status == "MISSING_REF":
+    elif merge_status == "MISSING_REF":
         target_branch = context.intent_data.get("target_branch", "main")
         unresolved_ref = (mergeability.get("diagnostics") or {}).get("missing_ref") or context.execution_branch
         err_msg = (
@@ -218,31 +206,10 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
             "Verify that the branch exists locally or on origin."
         )
         context.log(err_msg)
-        result = StageResult(
-            stage=FlowStage.REVIEW,
-            status=StageStatus.FAILED,
-            start_time=start_time,
-            end_time=end_time,
-            payload={
-                "review_package": review_package,
-                "consensus": consensus_info,
-                "halted_for_human": False,
-                "human_merge_gate_enforced": False,
-                "mergeability": mergeability,
-                "posting": loop_res.get("posting"),
-                "pr": loop_res.get("pr"),
-            },
-            error=err_msg,
-        )
-        context.stage_results["review"] = result
-        return result
-
-    # A dry run simulates the loop and is never approved; it still halts for a human like a real review would.
-    dry_run_simulation = bool(context.dry_run) and consensus_info.get("status") == "not_measured"
-    if not consensus_reached and not dry_run_simulation:
+    elif (not consensus_reached or not_approved) and not dry_run_simulation:
         ci_checks = loop_res.get("ci_checks") or {}
         loop_breach = loop_res.get("budget_breach")
-        summaries = "; ".join(render_reviewer_summary_line(r) for r in loop_res.get("reviewers") or [])
+        summaries = "; ".join(render_reviewer_summary_line(r) for r in reviewers)
         if loop_res.get("error"):
             # A guard refusal (empty_diff / diff_unverified) or an exhausted engine review budget:
             # no tests decided this outcome.
@@ -269,7 +236,13 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
             )
         else:
             err_msg = "Autonomous review consensus failed: test suite reported failures."
+        if reviewers:
+            err_msg += f" Final verdicts: {render_final_verdicts(reviewers)}" + (
+                f"; not approved: {', '.join(not_approved)}." if not_approved else "."
+            )
         context.log(f"Stage 4 failed: {err_msg}")
+
+    if err_msg is not None:
         result = StageResult(
             stage=FlowStage.REVIEW,
             status=StageStatus.FAILED,
@@ -293,7 +266,7 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
     halt_reason = (
         "Dry-run review loop finished; consensus not measured and not approved."
         if dry_run_simulation
-        else "Review Loop reached consensus approval."
+        else f"Review Loop reached consensus approval (final verdicts: {render_final_verdicts(reviewers)})."
     )
     context.log(
         f"[SAFETY HALT] {halt_reason} "

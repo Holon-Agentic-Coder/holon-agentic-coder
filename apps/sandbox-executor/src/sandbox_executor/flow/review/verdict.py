@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from sandbox_executor.flow.review.adjudication import Adjudication
-from sandbox_executor.flow.review.records import _reviewer_summary
+from sandbox_executor.flow.review.records import _reviewer_summary, render_reviewer_summary_line
 from sandbox_executor.review_ensemble import (
     ConsensusVerdict,
     ReviewerResult,
@@ -109,3 +109,28 @@ def not_approved_verdicts(reviewers: Sequence[ReviewerResult | Mapping[str, Any]
         for data in _summaries(reviewers)
         if _final_verdict(data) != str(ReviewerVerdict.APPROVED) or any((data.get("counts") or {}).values())
     ]
+
+
+def review_loop_approved(loop_res: dict[str, Any]) -> bool:
+    """True only for an APPROVED ensemble verdict, an approved consensus and every final verdict a clean APPROVED."""
+    return (
+        loop_res.get("ensemble_verdict") == str(ConsensusVerdict.APPROVED)
+        and bool((loop_res.get("consensus") or {}).get("approved"))
+        and not not_approved_verdicts(loop_res.get("reviewers") or [])
+    )
+
+
+def review_summary_lines(loop_res: dict[str, Any]) -> list[str]:
+    """Summary lines with the real per-reviewer verdicts of the deciding iteration, naming any that did not approve."""
+    reviewers = loop_res.get("reviewers") or []
+    lines = [f"  Ensemble       : {loop_res.get('ensemble_verdict') or 'NOT RUN'}"]
+    lines.extend(f"    {render_reviewer_summary_line(r)}" for r in reviewers)
+    not_approved = not_approved_verdicts(reviewers)
+    if not_approved:
+        lines.append(f"  Not approved   : {'; '.join(not_approved)}")
+    review_data = loop_res.get("review_data") or {}
+    roles = (
+        ", ".join(f"{r.get('role')} ({r.get('verdict')})" for r in review_data.get("roles") or []) or "none reported"
+    )
+    lines.append(f"  Roles          : {roles}; open findings: {len(review_data.get('findings') or [])}")
+    return lines

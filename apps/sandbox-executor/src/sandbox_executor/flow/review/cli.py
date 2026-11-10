@@ -1,4 +1,4 @@
-"""The 'holon review-loop' CLI entry and the review loop summary helpers it shares with the entrypoint."""
+"""The 'holon review-loop' CLI entry; its summary helpers live in :mod:`sandbox_executor.flow.review.verdict`."""
 
 from __future__ import annotations
 
@@ -7,27 +7,8 @@ from typing import Any
 
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.review.loop import run_review_loop
-from sandbox_executor.flow.review.records import _bounded_error_context, render_reviewer_summary_line
-from sandbox_executor.review_ensemble import ConsensusVerdict
-
-
-def review_loop_approved(loop_res: dict[str, Any]) -> bool:
-    """True only when the ensemble verdict is APPROVED and the loop's consensus is approved (exit code 0)."""
-    return loop_res.get("ensemble_verdict") == str(ConsensusVerdict.APPROVED) and bool(
-        (loop_res.get("consensus") or {}).get("approved")
-    )
-
-
-def review_summary_lines(loop_res: dict[str, Any]) -> list[str]:
-    """Summary lines with the real per-reviewer verdicts of the deciding iteration."""
-    lines = [f"  Ensemble       : {loop_res.get('ensemble_verdict') or 'NOT RUN'}"]
-    lines.extend(f"    {render_reviewer_summary_line(r)}" for r in loop_res.get("reviewers") or [])
-    review_data = loop_res.get("review_data") or {}
-    roles = (
-        ", ".join(f"{r.get('role')} ({r.get('verdict')})" for r in review_data.get("roles") or []) or "none reported"
-    )
-    lines.append(f"  Roles          : {roles}; open findings: {len(review_data.get('findings') or [])}")
-    return lines
+from sandbox_executor.flow.review.records import _bounded_error_context
+from sandbox_executor.flow.review.verdict import review_loop_approved, review_summary_lines
 
 
 def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:

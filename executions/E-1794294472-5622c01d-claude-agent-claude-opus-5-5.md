@@ -120,3 +120,29 @@ from what the reviewers returned, and the posted review must report it exactly.
   `applied`), `flow/review/loop.py` (`rejected_now` and `applied_now` filters ignore `open`).
 - Tests: new `tests/test_resolver_evidence.py` (19 passing), including a loop test where a bare `out of scope` rejection
   of an important finding goes back to the resolver in iteration 2 and ends as a null-disposition `left open` row.
+
+### Step 6: End-of-flow messages state the final verdicts
+
+- `flow/review/verdict.py`: `render_final_verdicts` (`Reviewer 1 APPROVED (0/0/0); ...` in critical/important/nit order,
+  plus each role at `CHANGES`) and `not_approved_verdicts` (`reviewer N final verdict X`). `review_loop_approved` and
+  `review_summary_lines` moved here from `flow/review/cli.py` (106 to 87 lines) so the shared CLI and entrypoint helpers
+  could gain the guard without raising the `cli.py` budget; `review_loop_approved` now also requires every final verdict
+  to be a clean APPROVED, which gates both `[SAFETY HALT]` prints and both exit codes, and the summary gains a
+  `Not approved   : ...` line (before the Roles line, which existing tests read as the last line).
+- `loop.py`: the summary ledger row and the action event `error_context` end with `final verdicts: ...`, and a
+  `not approved: ...` halt reason is added whenever a final verdict is not a clean APPROVED.
+- `flow/stages/review.py`: the dirty, missing-ref and non-consensus failures share one `StageResult` block (295 lines,
+  down from 322; message text of the dirty and missing-ref paths unchanged); a consensus whose final verdicts are not
+  all clean APPROVED fails instead of halting as approved; non-consensus messages end with
+  `Final verdicts: ...; not approved: ...`; the `[SAFETY HALT]` reason names the final verdicts.
+- `entrypoint/review_loop.py` console summary needed no further change: it already uses `review_summary_lines` and
+  `review_loop_approved` from the flow package (an entrypoint-to-flow import, so the host flow engine gains no entrypoint
+  import).
+- Other summary paths checked: `flow/stages/children.py` merge readiness already requires a Stage 4
+  `HALTED_FOR_HUMAN` with an approved consensus, which the Stage 4 guard now withholds; `flow/pipeline.py` only logs the
+  halt; `cli/commands/flow.py` (outside scope) prints `[SAFETY HALT]` only for `halted_for_human`, which is now False for
+  any non-approved final verdict, and otherwise prints the Stage 4 error that carries the final verdicts.
+- Tests (21 in `test_consensus_integrity.py` now): Stage 4 with a non-approved final ensemble, both honestly reported
+  and with an approved consensus claimed by a simulated regression, fails with every verdict and `not approved` in the
+  message and never `ready for merge`, `consensus approval` or `[SAFETY HALT]`; summary lines and exit status; the
+  summary ledger row.

@@ -58,7 +58,12 @@ from sandbox_executor.flow.review.resolver import (
     _invoke_resolver_pass,
     _lookup_introducing_action_id,
 )
-from sandbox_executor.flow.review.verdict import consensus_blockers, decide_returned_consensus
+from sandbox_executor.flow.review.verdict import (
+    consensus_blockers,
+    decide_returned_consensus,
+    not_approved_verdicts,
+    render_final_verdicts,
+)
 from sandbox_executor.flow.review.workspace import ReviewWorkspaceSession, review_persist_enabled, reviewers_sandboxed
 from sandbox_executor.flow.stages.execute import _warn_ledger_failure
 from sandbox_executor.knowledge import CredentialRedactor, append_action_event, compute_context_fingerprint
@@ -785,6 +790,10 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
         halt_reasons.append("consensus post failed")
     if tests_not_measured:
         halt_reasons.append("test results not measured")
+    not_approved = not_approved_verdicts(reviewers)
+    if not_approved:
+        halt_reasons.append(f"not approved: {', '.join(not_approved)}")
+    final_verdicts = f"final verdicts: {render_final_verdicts(reviewers)}"
 
     # Record overall summary in executions.jsonl
     review_exec_id = f"REV-{int(time.time())}-{context.agent}"
@@ -802,7 +811,8 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
             if consensus_reached
             else f"Review Loop halted without consensus after {iteration} iteration(s)"
             + (f": {'; '.join(halt_reasons)}" if halt_reasons else "")
-        ),
+        )
+        + f"; {final_verdicts}",
         "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
         # Label units: 'total_iterations' is the last pass label, so its ceiling is the label budget.
         "total_iterations": iteration,
@@ -839,6 +849,7 @@ def _run_review_loop_iterations(  # noqa: C901, PLR0912, PLR0913, PLR0915
                         if consensus_reached
                         else f"Consensus failed: findings={finding_ids}"
                         + (f"; {'; '.join(halt_reasons)}" if halt_reasons else "")
+                        + f"; {final_verdicts}"
                     ),
                 },
                 ledger_path=exec_file,

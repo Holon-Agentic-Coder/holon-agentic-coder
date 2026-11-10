@@ -332,3 +332,74 @@ def test_an_approved_verdict_with_a_dissenting_reviewer_is_posted_as_a_comment_n
     assert "--approve" not in review_call
     body = review_call[review_call.index("--body") + 1]
     assert body.splitlines()[0].endswith("— 2/3 approved")
+
+
+# --- Step 6: end-of-flow wording names every final verdict -----------------------------------------------------------
+
+
+def _stage4(tmp_path: Path, loop_res: dict[str, Any]):
+    from unittest.mock import patch
+
+    from sandbox_executor.flow import FlowContext, run_review_stage
+
+    ctx = FlowContext(
+        repo_dir=str(tmp_path), execution_branch=EXEC_TARGET, dry_run=True, token_reduce=False, max_review_iterations=5
+    )
+    with patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res):
+        return run_review_stage(ctx), ctx
+
+
+def _summaries_of_the_failing_shape() -> list[dict[str, Any]]:
+    from sandbox_executor.flow.review.records import _reviewer_summary
+
+    third = _reviewer("critical", "Bind mount exposes the host Docker socket.", security="CHANGES")
+    return [_reviewer_summary(r) for r in (clean_reviewer(1), clean_reviewer(2), third)]
+
+
+@pytest.mark.parametrize("claimed_approved", [False, True])
+def test_stage4_names_each_final_verdict_and_never_reports_a_dissent_as_approved(tmp_path, claimed_approved):
+    """``claimed_approved`` simulates an upstream regression handing Stage 4 an approved consensus anyway."""
+    loop_res = {
+        "consensus": {"approved": claimed_approved, "status": "approved" if claimed_approved else "changes_requested"},
+        "ensemble_verdict": "APPROVED" if claimed_approved else "CHANGES_REQUESTED",
+        "reviewers": _summaries_of_the_failing_shape(),
+        "total_iterations": 1,
+    }
+
+    result, ctx = _stage4(tmp_path, loop_res)
+
+    assert result.status.value == "failed"
+    assert result.payload["halted_for_human"] is False
+    message = result.error or ""
+    assert "Reviewer 1 APPROVED (0/0/0); Reviewer 2 APPROVED (0/0/0); Reviewer 3 CHANGES_REQUESTED (1/0/0)" in message
+    assert "not approved: reviewer 3 final verdict CHANGES_REQUESTED" in message
+    for text in [message, *ctx.logs]:
+        assert "ready for merge" not in text
+        assert "consensus approval" not in text
+        assert "[SAFETY HALT]" not in text
+
+
+def test_summary_lines_and_exit_status_name_a_reviewer_that_did_not_approve():
+    from sandbox_executor.flow import review_loop_approved, review_summary_lines
+
+    loop_res = {
+        "consensus": {"approved": True},
+        "ensemble_verdict": "APPROVED",
+        "reviewers": _summaries_of_the_failing_shape(),
+    }
+
+    assert review_loop_approved(loop_res) is False
+    assert "  Not approved   : reviewer 3 final verdict CHANGES_REQUESTED" in review_summary_lines(loop_res)
+
+
+def test_the_loop_summary_row_states_the_final_verdicts(tmp_path, monkeypatch):
+    from tests.test_review_loop import _ledger
+
+    first = _reviewer("important", "Mount options are logged verbosely.")
+    second = _reviewer("critical", "Bind mount exposes the host Docker socket.", security="CHANGES")
+    _run_two_iterations(tmp_path, monkeypatch, first, second)
+
+    (summary,) = [row for row in _ledger(tmp_path) if row.get("entry_type") == "summary"]
+    assert summary["status"] == "failed"
+    assert "not approved: reviewer 3 final verdict CHANGES_REQUESTED" in summary["summary"]
+    assert "final verdicts: Reviewer 1 APPROVED (0/0/0)" in summary["summary"]

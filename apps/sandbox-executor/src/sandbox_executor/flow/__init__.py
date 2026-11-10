@@ -109,7 +109,7 @@ from sandbox_executor.flow.ledger_reconcile import (
 )
 from sandbox_executor.flow.pipeline import PipelineEngine, run_flow_pipeline
 from sandbox_executor.flow.review.adjudication import _augment_pr_text_with_rejected, _filter_adjudicated_findings
-from sandbox_executor.flow.review.cli import review_loop_approved, review_summary_lines, run_review_loop_cli
+from sandbox_executor.flow.review.cli import run_review_loop_cli
 from sandbox_executor.flow.review.ensemble import (
     _ENGINE_PASSES_PER_DISPATCH,
     _dispatch_review_ensemble,
@@ -150,6 +150,7 @@ from sandbox_executor.flow.review.resolver import (
     _invoke_resolver_pass,
     _lookup_introducing_action_id,
 )
+from sandbox_executor.flow.review.verdict import review_loop_approved, review_summary_lines
 from sandbox_executor.flow.review.workspace import (
     _DOCKER_CLI_TIMEOUT_SECONDS,
     _REVIEW_PERSIST_DISABLED_VALUES,

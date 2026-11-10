@@ -390,8 +390,8 @@ the loop instructions above:
 8. Never read other files under `.subagent/review/`; other reviewers' reports are not part of your input.
 9. Write no file other than the report path. Make no GitHub write of any kind: no `gh pr review`, `gh pr comment`,
    `gh pr edit` or `gh api` call, and no merge or auto-merge. Append to no ledger under `holon-knowledge/ledger/`.
-10. Spawn no subagents, and write nothing under `.subagent/` outside your assigned scratch directory. The loop that runs the ensemble posts the consensus and
-    records the ledger rows itself.
+10. Spawn no subagents, and write nothing under `.subagent/` outside your assigned scratch directory. The loop that runs
+    the ensemble posts the consensus and records the ledger rows itself.
 11. Flag growth of any file over 1,000 lines as Important, flag new inline complexity suppressions as Important, and
     check that new behaviour lives in the module that owns the data with no new entrypoint-to-engine imports.
 

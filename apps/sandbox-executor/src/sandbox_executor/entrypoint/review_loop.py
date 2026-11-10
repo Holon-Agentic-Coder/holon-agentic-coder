@@ -11,10 +11,10 @@ Coordinates the multi-pass review loop within an isolated container:
 - Enforces the human-only PR merge rule by halting unconditionally upon consensus approval.
 
 Preparation fails closed. The target is resolved before any git operation (a PR number or URL becomes its
-head branch and head SHA through gh, never a raw 'git clone --branch 90'); the head branch is cloned or
-fetched and checked out with every return code checked; and HEAD must equal the resolved head SHA. A git
-failure while syncing a reused checkout falls back to wipe and re-clone first. On any resolution, clone,
-or head-verification failure, one ACT-REV failure row is appended to
+head branch and head SHA through gh). The workspace is the host worktree, bind-mounted by the host and used
+in place: it is never cloned, fetched, reset or cleaned here, so a crash loses no edit. It must have the head
+branch checked out and HEAD must equal the resolved head SHA. On any resolution or validation failure, one
+ACT-REV failure row is appended to
 holon-knowledge/ledger/executions.jsonl when that directory exists (otherwise the reason goes to stderr only),
 a FAILED summary is printed and the process exits 1: no consensus is computed or posted.
 """
@@ -123,7 +123,7 @@ def _gh_runner(repo_dir: str) -> RunGh:
 
 
 def _resolve_target(repo_dir: str, raw: str, run_gh: RunGh | None = None) -> ReviewTarget:
-    """Resolve the raw target before any git operation; a branch's head SHA is read after the checkout."""
+    """Resolve the raw target before any git operation; a branch's head SHA is read from the mounted HEAD."""
     clean = raw.strip()
     if not clean or clean == "HEAD":
         raise ReviewPreparationError("resolve", "the container review needs a branch, PR number or PR URL target")
@@ -145,9 +145,12 @@ def _checked(args: list[str], repo_dir: str, stage: str) -> subprocess.Completed
 
 
 def _validate_mounted_workspace(repo_dir: str, target: ReviewTarget) -> ReviewTarget:
-    """Validate that ``repo_dir`` is an existing git checkout whose HEAD commit is readable.
+    """Validate that ``repo_dir`` is the host worktree checked out at the review head; never modify it.
 
-    Zero destructive operations: no clone, fetch, reset or wipe.
+    HEAD must be a readable commit, on ``target.head_branch`` when a branch is checked out, and equal to
+    ``target.head_sha`` when the target resolved one (a PR head): a stale worktree is never reviewed under
+    the PR head's label. A branch target's head SHA is the mounted HEAD. Zero destructive operations: no
+    clone, fetch, reset or wipe.
     """
     if not os.path.exists(repo_dir) or not os.path.isdir(repo_dir):
         raise ReviewPreparationError("validate", f"workspace directory '{repo_dir}' does not exist")
@@ -171,8 +174,13 @@ def _validate_mounted_workspace(repo_dir: str, target: ReviewTarget) -> ReviewTa
                 f"checked-out branch '{current_branch}' does not match target '{target.head_branch}'",
             )
 
-    head_sha = target.head_sha or sha
-    return dataclasses.replace(target, head_sha=head_sha)
+    if target.head_sha and target.head_sha != sha:
+        raise ReviewPreparationError(
+            "validate",
+            f"mounted workspace HEAD {sha} is not the review head {target.head_sha}; "
+            "sync the host worktree with the branch before reviewing",
+        )
+    return dataclasses.replace(target, head_sha=sha)
 
 
 def _record_preparation_failure(repo_dir: str, raw: str, stage: str, detail: str) -> bool:
@@ -240,7 +248,7 @@ def _fail_preparation(
 
 
 def _prepare_workspace(repo_dir: str, raw: str) -> ReviewTarget:
-    """Resolve the target, then validate that the mounted workspace is readable; raises ``ReviewPreparationError``."""
+    """Resolve the target, then validate the mounted workspace in place; raises ``ReviewPreparationError``."""
     target = _resolve_target(repo_dir, raw)
     return _validate_mounted_workspace(repo_dir, target)
 
@@ -463,7 +471,9 @@ def _commit_and_push_resolution(
 
     pushed = False
     if not opts.skip_push and new_head != initial_head:
-        push_cmd = ["git", "push", "origin", f"HEAD:refs/heads/{head_branch}"]
+        # The host worktree's origin may be an SSH remote; push to the credential-free URL the host resolved.
+        remote = os.getenv("HOLON_REPO_URL", "").strip() or "origin"
+        push_cmd = ["git", "push", remote, f"HEAD:refs/heads/{head_branch}"]
         _assert_safe_git_args(push_cmd)
         push_res = run_cmd(push_cmd, cwd=repo_dir, check=False)
         if push_res.returncode != 0:
@@ -683,14 +693,11 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     loop_target = review.raw if review.is_pr else review.head_branch
     head_branch = review.head_branch
 
-    # Configure local git author and committer identity for Review Loop Agent
+    # Configure the Review Loop Agent's git identity in the container's own global config: the workspace is
+    # the host worktree, whose repository config is shared with the host and mounted read-only.
+    run_cmd(["git", "config", "--global", "user.name", "Holon Review Loop Agent"], cwd=repo_dir, check=False)
     run_cmd(
-        ["git", "config", "--local", "user.name", "Holon Review Loop Agent"],
-        cwd=repo_dir,
-        check=False,
-    )
-    run_cmd(
-        ["git", "config", "--local", "user.email", "review-loop-agent@holon-agentic-coder.com"],
+        ["git", "config", "--global", "user.email", "review-loop-agent@holon-agentic-coder.com"],
         cwd=repo_dir,
         check=False,
     )

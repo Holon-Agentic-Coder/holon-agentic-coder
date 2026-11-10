@@ -15,6 +15,12 @@ provisioning for autonomous pipeline runs:
 - is_default_branch_worktree: Decide whether a working tree has the default branch checked out.
 - ensure_flow_worktree_off_default: Provision or reuse the flow-<slug> sibling of a default-branch worktree.
 - default_branch_worktree_problem: Explain, actionably, why a default-branch worktree is refused.
+- find_worktree_for_branch: Find the attached worktree that has a branch checked out.
+- ensure_pr_worktree: Reuse the worktree of a PR head branch (normally flow-<slug>), or provision pr<N>-<slug>.
+- resolve_review_worktree: Pick the host worktree a review-loop container works in for a review target.
+- provision_reviewer_worktree / prune_reviewer_worktree / ephemeral_reviewer_worktree: Ephemeral flow-<slug>-rev<i>
+  sibling worktrees for reviewer turns that need an isolated checkout.
+- sandbox_worktree_mounts: Validate a worktree and build the docker bind mounts that expose it to a role container.
 """
 
 from __future__ import annotations
@@ -47,6 +53,8 @@ __all__ = [
     "prune_reviewer_worktree",
     "prune_worktrees",
     "repository_default_branch",
+    "resolve_review_worktree",
+    "sandbox_worktree_mounts",
     "target_worktree_problem",
 ]
 
@@ -475,3 +483,244 @@ def default_branch_worktree_problem(
         f"branches, commits and writes ledger or calibration records in the worktree it runs in, and the "
         f"default-branch worktree must stay identical to origin/{base}. {remedy}."
     )
+
+
+def find_worktree_for_branch(worktree: str, branch: str) -> str | None:
+    """Return the attached worktree of the repository containing worktree that has branch checked out.
+
+    Args:
+        worktree: Path inside the repository (any of its worktrees, or a bare clone).
+        branch: Short branch name.
+
+    Returns:
+        str | None: The worktree's absolute path, or None when no existing worktree has the branch checked out.
+    """
+    if not worktree or not os.path.isdir(worktree) or not branch.strip():
+        return None
+    res = run_git(["worktree", "list", "--porcelain"], cwd=worktree, check=False)
+    if res.returncode != 0:
+        return None
+    path: str | None = None
+    for line in res.stdout.splitlines():
+        if line.startswith("worktree "):
+            path = line[len("worktree ") :]
+        elif line == f"branch refs/heads/{branch.strip()}" and path and os.path.isdir(path):
+            return os.path.normpath(path)
+    return None
+
+
+def _clean_slug(text: str) -> str:
+    """Return text reduced to a path- and branch-safe slug."""
+    return re.sub(r"[^a-zA-Z0-9_\-]+", "-", text.strip()).strip("-")
+
+
+def ensure_pr_worktree(worktree: str, pr_number: int, head_branch: str) -> str:
+    """Reuse the worktree that has a PR's head branch checked out, or provision a pr<N>-<slug> sibling for it.
+
+    A flow run's flow-<slug> worktree is the one that normally has the head branch checked out, so a review of that
+    PR reuses it and never creates a second worktree for the same branch.
+
+    Args:
+        worktree: Path inside the repository; it only selects the repository and the sibling directory.
+        pr_number: Pull request number.
+        head_branch: The PR's head branch.
+
+    Returns:
+        str: Absolute path to the worktree with head_branch checked out.
+
+    Raises:
+        RuntimeError: If the head branch exists neither locally nor on origin, if the pr<N>-<slug> path exists but is
+            not that branch's worktree, or if 'git worktree add' fails.
+    """
+    toplevel = _worktree_toplevel(worktree)
+    prune_worktrees(toplevel)
+    existing = find_worktree_for_branch(toplevel, head_branch)
+    if existing:
+        logger.info("Reused worktree '%s' for PR #%s (%s)", existing, pr_number, head_branch)
+        return existing
+    path = os.path.join(os.path.dirname(toplevel), f"pr{pr_number}-{_clean_slug(head_branch) or 'head'}")
+    if os.path.exists(path):
+        raise RuntimeError(
+            f"PR worktree path '{path}' exists but does not have '{head_branch}' checked out; check the branch out "
+            f"in it or remove it with 'git worktree remove {path}'."
+        )
+    run_git(
+        ["fetch", "--no-tags", "origin", f"+refs/heads/{head_branch}:refs/remotes/origin/{head_branch}"],
+        cwd=toplevel,
+        check=False,
+        timeout=300,
+    )
+    if not branch_exists(toplevel, head_branch, check_remote=True):
+        raise RuntimeError(
+            f"PR #{pr_number} head branch '{head_branch}' exists neither locally nor on origin (a fork PR?); check it "
+            "out in a worktree and pass --target-worktree <path>."
+        )
+    return _attach_or_create_worktree(toplevel, path, head_branch, (f"origin/{head_branch}",))
+
+
+def resolve_review_worktree(worktree: str, head_branch: str, pr_number: int | None = None) -> str:
+    """Pick the host worktree a review-loop container works in for a review of head_branch.
+
+    The given worktree when it has head_branch checked out; otherwise the existing worktree of head_branch (normally
+    the run's flow-<slug>); otherwise, for a PR, a new pr<N>-<slug> worktree (see ensure_pr_worktree).
+
+    Args:
+        worktree: The --target-worktree path; it also selects the repository.
+        head_branch: The branch under review (a PR's head branch).
+        pr_number: The PR number when the target is a pull request.
+
+    Returns:
+        str: Absolute path to a worktree with head_branch checked out.
+
+    Raises:
+        RuntimeError: If no worktree of a branch target exists, or a PR worktree cannot be provisioned.
+    """
+    if checked_out_branch(worktree) == head_branch:
+        return _worktree_toplevel(worktree)
+    existing = find_worktree_for_branch(worktree, head_branch)
+    if existing:
+        return existing
+    if pr_number is not None:
+        return ensure_pr_worktree(worktree, pr_number, head_branch)
+    raise RuntimeError(
+        f"No worktree has branch '{head_branch}' checked out; the review-loop container reviews a host worktree in "
+        f"place. Create one with 'git worktree add <path> {head_branch}' and pass --target-worktree <path>."
+    )
+
+
+def _reviewer_worktree_path(worktree: str, index: int) -> str:
+    """Return the flow-<slug>-rev<index> sibling path of worktree's top-level directory."""
+    if isinstance(index, bool) or not isinstance(index, int) or index < 1:
+        raise ValueError(f"reviewer index must be a positive integer, got {index!r}")
+    return f"{_worktree_toplevel(worktree)}-rev{index}"
+
+
+def prune_reviewer_worktree(worktree: str, index: int) -> None:
+    """Remove the flow-<slug>-rev<index> sibling of worktree, if registered, and prune stale records.
+
+    Only 'git worktree remove' deletes anything, so a directory that is not a registered worktree is left in place.
+
+    Args:
+        worktree: The worktree the reviewer worktree was provisioned from.
+        index: 1-based reviewer index.
+    """
+    path = _reviewer_worktree_path(worktree, index)
+    if os.path.exists(path):
+        res = run_git(["worktree", "remove", "--force", path], cwd=worktree, check=False)
+        if res.returncode != 0:
+            logger.warning("git worktree remove failed for '%s': %s", path, res.stderr.strip())
+    prune_worktrees(worktree)
+
+
+def provision_reviewer_worktree(worktree: str, index: int) -> str:
+    """Provision the ephemeral flow-<slug>-rev<index> sibling worktree, detached at worktree's HEAD.
+
+    A survivor of an earlier crashed iteration is removed first.
+
+    Args:
+        worktree: The flow worktree under review.
+        index: 1-based reviewer index.
+
+    Returns:
+        str: Absolute path to the new reviewer worktree.
+
+    Raises:
+        ValueError: If index is not a positive integer.
+        RuntimeError: If 'git worktree add' fails (for example, a non-worktree directory occupies the path).
+    """
+    path = _reviewer_worktree_path(worktree, index)
+    prune_reviewer_worktree(worktree, index)
+    run_git(["worktree", "add", "--detach", path, "HEAD"], cwd=worktree, check=True)
+    return os.path.abspath(path)
+
+
+@contextmanager
+def ephemeral_reviewer_worktree(worktree: str, index: int) -> Iterator[str]:
+    """Yield a flow-<slug>-rev<index> reviewer worktree that is removed and pruned when the block exits, however."""
+    path = provision_reviewer_worktree(worktree, index)
+    try:
+        yield path
+    finally:
+        prune_reviewer_worktree(worktree, index)
+
+
+def _read_pointer(path: str, prefix: str = "") -> str | None:
+    """Return the path a git pointer file (.git, commondir) names, made absolute relative to its directory."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            content = f.read().strip()
+    except OSError:
+        return None
+    if not content.startswith(prefix):
+        return None
+    target = content[len(prefix) :].strip()
+    return os.path.normpath(os.path.join(os.path.dirname(path), target)) if target else None
+
+
+def _within(path: str, root: str) -> bool:
+    """Return True when path is root or lies under it."""
+    return path == root or path.startswith(root + os.sep)
+
+
+def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str) -> list[str]:
+    """Validate a host worktree and return the docker arguments that bind-mount it into a role container.
+
+    The worktree must be an attached, non-bare working tree that does not have the default branch checked out. Its
+    top-level directory is mounted read-write at mountpoint. A linked worktree's git directory and the repository's
+    common git directory are mounted at their host paths, which the worktree's '.git' pointer names, so git works in
+    the container without network access. Everything that makes host git run code is overlaid read-only, so the
+    container cannot plant a hook or configuration that later executes on the host: the repository config (and any
+    config.worktree), hooks/, modules/, and the '.git', 'gitdir' and 'commondir' pointers.
+
+    Args:
+        target_worktree: Host worktree path (a subdirectory of one is accepted); required.
+        mountpoint: Container path of the workspace.
+
+    Returns:
+        list[str]: Docker '-v' arguments.
+
+    Raises:
+        RuntimeError: If no worktree is given, it is not an attached non-default-branch worktree, or its '.git'
+            pointer cannot be read.
+    """
+    if not target_worktree:
+        raise RuntimeError(
+            "the review-loop container reviews a host worktree in place and needs an explicit target worktree; pass "
+            "--target-worktree <path> (never the current directory implicitly)."
+        )
+    problem = target_worktree_problem(target_worktree, subject="Sandbox worktree")
+    if problem:
+        raise RuntimeError(problem)
+    toplevel = _worktree_toplevel(target_worktree)
+    problem = default_branch_worktree_problem(
+        toplevel, repository_default_branch(toplevel), command="The review-loop container", subject="Sandbox worktree"
+    )
+    if problem:
+        raise RuntimeError(problem)
+
+    dot_git = os.path.join(toplevel, ".git")
+    args = ["-v", f"{toplevel}:{mountpoint}"]
+    if os.path.isdir(dot_git):
+        git_dir = common_dir = dot_git
+        read_only: list[str] = []
+    else:
+        git_dir = _read_pointer(dot_git, "gitdir:") or ""
+        if not os.path.isdir(git_dir):
+            raise RuntimeError(f"cannot resolve the git directory of worktree '{toplevel}' from its .git file")
+        common_dir = _read_pointer(os.path.join(git_dir, "commondir")) or git_dir
+        args += ["-v", f"{common_dir}:{common_dir}"]
+        if not _within(git_dir, common_dir):
+            args += ["-v", f"{git_dir}:{git_dir}"]
+        read_only = [dot_git, os.path.join(git_dir, "commondir"), os.path.join(git_dir, "gitdir")]
+    # An absent hooks/ could be created by the container, so make it exist before overlaying it.
+    os.makedirs(os.path.join(common_dir, "hooks"), exist_ok=True)
+    read_only += [os.path.join(common_dir, name) for name in ("config", "config.worktree", "hooks", "modules")]
+    read_only.append(os.path.join(git_dir, "config.worktree"))
+
+    for host_path in dict.fromkeys(read_only):
+        if not os.path.exists(host_path):
+            continue
+        rel = os.path.relpath(host_path, toplevel)
+        container_path = os.path.join(mountpoint, rel) if _within(host_path, toplevel) else host_path
+        args += ["-v", f"{host_path}:{container_path}:ro"]
+    return args

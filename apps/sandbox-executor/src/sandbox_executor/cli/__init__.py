@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Any, TextIO
 from urllib.parse import unquote, urlparse, urlsplit, urlunsplit
 
-from sandbox_executor import local_llm
+from sandbox_executor import git_flow, local_llm
 from sandbox_executor.agent_defaults import (
     AGENT_IMAGE_MAPPING as AGENT_IMAGE_MAPPING,  # re-exported: the mapping moved to agent_defaults
 )
@@ -204,7 +204,6 @@ __all__ = [
     "report_budgets_and_envelope",
     "resolve_role_image",
     "resolve_target_repo",
-    "resolve_worktree_git_mounts",
     "run_calibrate",
     "run_docker_container",
     "run_doctor",
@@ -1378,96 +1377,6 @@ def is_secret_env_item(key: str, value: str) -> bool:
     return is_secret_env_name(key) or redact_command([item]) != item or carries_url_password(value)
 
 
-def resolve_worktree_git_mounts(worktree_path: str) -> list[str]:
-    """Return docker bind mount args for a git worktree's backing git directory if separate from the worktree.
-
-    When worktree_path/.git is a file (a linked git worktree), git commands inside the container need
-    its gitdir and commondir to resolve. We parse the .git file and its commondir pointer directly
-    (with git rev-parse fallback). Mounting the common git directory (and git dir if outside it) at
-    the identical host path inside the container allows git inside the container to read and write
-    refs, objects and commits without network access.
-    """
-    worktree_abs = os.path.abspath(worktree_path)
-    dot_git = os.path.join(worktree_abs, ".git")
-    if not os.path.exists(dot_git) or os.path.isdir(dot_git):
-        return []
-
-    common_dir: str | None = None
-    git_dir: str | None = None
-
-    try:
-        with open(dot_git, encoding="utf-8") as f:
-            content = f.read().strip()
-        if content.startswith("gitdir:"):
-            raw_gitdir = content[len("gitdir:") :].strip()
-            git_dir = os.path.abspath(
-                os.path.join(worktree_abs, raw_gitdir) if not os.path.isabs(raw_gitdir) else raw_gitdir
-            )
-            commondir_file = os.path.join(git_dir, "commondir")
-            if os.path.exists(commondir_file):
-                with open(commondir_file, encoding="utf-8") as cf:
-                    raw_common = cf.read().strip()
-                common_dir = os.path.abspath(
-                    os.path.join(git_dir, raw_common) if not os.path.isabs(raw_common) else raw_common
-                )
-    except OSError:
-        pass
-
-    if common_dir is None or git_dir is None:
-        res_common = subprocess.run(
-            ["git", "rev-parse", "--git-common-dir"],
-            cwd=worktree_abs,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if res_common.returncode == 0 and res_common.stdout.strip():
-            raw_c = res_common.stdout.strip()
-            common_dir = os.path.abspath(os.path.join(worktree_abs, raw_c) if not os.path.isabs(raw_c) else raw_c)
-
-        res_git = subprocess.run(
-            ["git", "rev-parse", "--git-dir"],
-            cwd=worktree_abs,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if res_git.returncode == 0 and res_git.stdout.strip():
-            raw_g = res_git.stdout.strip()
-            git_dir = os.path.abspath(os.path.join(worktree_abs, raw_g) if not os.path.isabs(raw_g) else raw_g)
-
-    mounts: list[str] = []
-    if common_dir and os.path.exists(common_dir):
-        mounts.append(common_dir)
-    if git_dir and os.path.exists(git_dir):
-        if common_dir is None or not git_dir.startswith(common_dir + os.sep):
-            if git_dir not in mounts:
-                mounts.append(git_dir)
-
-    args: list[str] = []
-    for m in mounts:
-        args.extend(["-v", f"{m}:{m}:rw"])
-    return args
-
-
-def _resolve_dispatch_worktree(target_worktree: str | None, intent_file: str | None) -> str:
-    """Resolve an attached, non-bare host git worktree directory for container bind-mounting."""
-    resolved_worktree = target_worktree or os.getcwd()
-    dot_git = os.path.join(resolved_worktree, ".git")
-    if os.path.isdir(resolved_worktree) and os.path.exists(dot_git):
-        return os.path.abspath(resolved_worktree)
-    from sandbox_executor import git_flow
-
-    if not git_flow.is_working_tree(resolved_worktree) or git_flow.is_bare_repository(resolved_worktree):
-        slug = "task"
-        if intent_file and os.path.exists(intent_file):
-            with contextlib.suppress(Exception):
-                with open(intent_file, encoding="utf-8") as f:
-                    slug = json.load(f).get("slug") or slug
-        resolved_worktree = git_flow.ensure_worktree(resolved_worktree, slug=slug)
-    return os.path.abspath(resolved_worktree)
-
-
 def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
     role: str,
     image_name: str,
@@ -1481,12 +1390,21 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
 ) -> int:
     """Constructs docker run command with auto-discovered credentials and executes it.
 
-    The host git worktree is bind-mounted directly at /home/holon/.holon-sandbox/workspace, along
-    with its backing git directory, and HOLON_TARGET_WORKTREE is pinned to the mountpoint.
+    The review-loop role works in place on the host worktree, so its ``target_worktree`` is required,
+    validated and bind-mounted at the sandbox workspace path (see ``git_flow.sandbox_worktree_mounts``)
+    with ``HOLON_TARGET_WORKTREE`` pinned to the mountpoint; every other role keeps its private clone.
     """
     if not shutil.which("docker"):
         print("Error: 'docker' CLI command not found. Please install Docker.", file=sys.stderr)
         return 1
+
+    workspace_mounts: list[str] = []
+    if role == REVIEW_LOOP_ROLE:
+        try:
+            workspace_mounts = git_flow.sandbox_worktree_mounts(target_worktree, SANDBOX_WORKSPACE_MOUNT)
+        except RuntimeError as exc:
+            print(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
+            return 1
 
     try:
         resolved_repo_url, embedded_token = resolve_target_repo(target_worktree)
@@ -1531,9 +1449,10 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
 
     env_to_forward["HOLON_REPO_URL"] = resolved_repo_url
 
-    # Pin container workspace to the canonical sandbox mountpoint so in-container
-    # get_workspace_dir() resolves deterministically.
-    env_to_forward["HOLON_TARGET_WORKTREE"] = SANDBOX_WORKSPACE_MOUNT
+    # With the host worktree mounted, pin the container workspace to the mountpoint so the entrypoint's
+    # get_workspace_dir() (which honours a forwarded HOLON_TARGET_WORKTREE first) cannot drift from it.
+    if workspace_mounts:
+        env_to_forward["HOLON_TARGET_WORKTREE"] = SANDBOX_WORKSPACE_MOUNT
 
     norm_agent_id = local_llm.normalize_agent_id(agent_id)
 
@@ -1663,10 +1582,8 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
             abs_result = os.path.abspath(result_file)
             docker_cmd.extend(["-v", f"{abs_result}:/tmp/review_result.json"])
 
-        # Bind-mount host worktree and its backing git directory into container workspace
-        host_worktree_abs = _resolve_dispatch_worktree(target_worktree, intent_file)
-        docker_cmd.extend(["-v", f"{host_worktree_abs}:{SANDBOX_WORKSPACE_MOUNT}:rw"])
-        docker_cmd.extend(resolve_worktree_git_mounts(host_worktree_abs))
+        # The validated host worktree, its git directories and the read-only git-config overlays.
+        docker_cmd.extend(workspace_mounts)
 
         # Auto-detect Session Mounts
         session_mounts = get_agent_session_mounts(agent_id)
@@ -1851,6 +1768,8 @@ def _report_gateways(  # noqa: PLR0913
 
 
 INTENT_CREATOR_ROLE: str = "intent-creator"
+# The one role whose entrypoint works in place on a bind-mounted host worktree instead of a private clone.
+REVIEW_LOOP_ROLE: str = "review-loop"
 INTENT_CREATOR_IMAGE: str = "holon/orchestrator"
 # The intent-creator entrypoint never invokes a runner, so its container keeps the historical antigravity
 # mount profile whatever runner the caller resolved.
@@ -1898,7 +1817,8 @@ def dispatch_role_agent(  # noqa: PLR0913
         model: Resolved model name. Planner and executor receive it through positional_args; the
             intent creator does not run a model.
         positional_args: Container arguments (e.g. [plan_branch, runner, model] for the executor).
-        target_worktree: Optional target git worktree directory to bind-mount.
+        target_worktree: Target git worktree directory: resolves the origin URL, and is the worktree the
+            review-loop role works in (required for that role).
         intent_file: Intent payload path, mandatory for the intent creator.
         result_file: Structured outcome payload path for container-to-host result transport.
         token_reduce: Whether to route container traffic through the token reduction proxy.

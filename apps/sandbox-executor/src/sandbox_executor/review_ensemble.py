@@ -6,9 +6,9 @@ with a request built by :func:`build_review_request`, and ``review_report.py`` r
 results; the loop refuses to run reviewers outside a sandbox.
 
 Reviewer turns
-    Each reviewer gets a fresh scratch directory ``.subagent/review/iter-<n>/reviewer-<i>/`` (``.subagent/`` is git-ignored)
-    and a prompt built from ``holon-config/prompts/review_loop.template.md`` that holds only the diff, the PR
-    description, the exact report path and the trailer contract. Reviewers run sequentially; before the next one
+    Each reviewer gets a fresh scratch directory ``.subagent/review/iter-<n>/reviewer-<i>/`` (``.subagent/`` is
+    git-ignored) and a prompt built from ``holon-config/prompts/review_loop.template.md`` that holds only the diff, the
+    PR description, the exact report path and the trailer contract. Reviewers run sequentially; before the next one
     starts, the previous report has been read into memory and its scratch directory removed, so no reviewer can see
     another reviewer's output. The turn is supervised by :func:`~sandbox_executor.turns.supervise_authoring_turn`, the
     same supervision the planner uses, with :data:`REVIEW_REPORT_SPEC` as the artefact spec and ``modify_code=False``;
@@ -554,8 +554,8 @@ def reviewer_report_rel(iteration: int, index: int) -> str:
 
 
 def _review_root(repo_dir: str) -> str:
-    """The resolved ``<repo_dir>/.subagent/review``, refusing a root that a symlinked ``.subagent`` or ``.subagent/review``
-    steers anywhere else (for example outside the repository)."""
+    """The resolved ``<repo_dir>/.subagent/review``, refusing a root that a symlinked ``.subagent`` or
+    ``.subagent/review`` steers anywhere else (for example outside the repository)."""
     expected = os.path.join(os.path.realpath(repo_dir), REVIEW_ROOT_REL)
     root = os.path.realpath(os.path.join(repo_dir, REVIEW_ROOT_REL))
     if root != expected:

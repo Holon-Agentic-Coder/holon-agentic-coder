@@ -194,27 +194,28 @@ The review loop fails closed:
 - **Bounded waits.** Pending CI checks are re-probed every `CI_REGISTRATION_POLL_SECONDS` (15 s) until they settle or
   the iteration's `review_iteration` budget runs out; checks still pending then count as a CI finding.
 
-#### Persistent review workspace
+#### Host worktree workspace
 
-When `holon flow` Stage 4 runs on the host, every reviewer-ensemble pass and every resolver pass still launches a fresh
-`--rm` role container, but all passes of one session share one persistent workspace: `run_review_loop()` lazily creates
-a Docker volume named deterministically from the review target and labelled `holon.review-session=1`
-(`flow.ReviewWorkspaceSession`), initialises its ownership for the image's unprivileged `holon` user with a one-shot
-root container, and mounts it at the sandbox workspace path (`agent_runner.SANDBOX_WORKSPACE_MOUNT`, with
-`HOLON_TARGET_WORKTREE` pinned to the same path) on every dispatch. The first pass clones; each later pass verifies the
-checkout's `origin` against `HOLON_REPO_URL` (on mismatch the contents are wiped and re-cloned, never fetched from),
-makes the reused checkout hermetically equivalent to a fresh clone (`git reset --hard` plus `git clean -fdx`, which
-discards reviewer scratch under `.holon/review/`, resolver leftovers and any uncommitted in-container ledger rows — the
-host loop's rows are the canonical provenance), then fetches only the new commits with
-`git fetch origin +refs/heads/<branch>:refs/remotes/origin/<branch>` and `git checkout -B <branch> origin/<branch>`. Any
-git failure on that reuse path (a crash-poisoned checkout: unborn HEAD, stale `index.lock`, corrupted objects) likewise
-falls back to wipe and re-clone, so a leaked volume never wedges the session. The volume is removed in a `finally`
-teardown whatever way the loop ends; a teardown failure only warns, and a volume leaked by a crash is safe to reuse and
-prunable via `docker volume prune --filter label=holon.review-session`. Note that the checkout's `.git/config` persists
-the clone's `origin` URL verbatim, so when `HOLON_REPO_URL` embeds a credential a leaked volume retains that credential
-until the volume is pruned or the next pass re-clones with a rotated URL. Set `HOLON_REVIEW_PERSIST=0`
-(`false`/`no`/`off`) to disable persistence and restore the historical full-clone-per-pass dispatch. In-container runs
-and dry runs never create a session.
+Every reviewer-ensemble and resolver pass launches a fresh `--rm` role container that works in place on the host
+worktree under review; nothing is cloned, fetched, reset or cleaned inside the container. `run_docker_container()`
+requires an explicit `target_worktree` for the `review-loop` role and validates it with
+`git_flow.sandbox_worktree_mounts()`: it must be an attached, non-bare working tree that does not have the default
+branch checked out. Its top-level directory is bind-mounted at the sandbox workspace path
+(`agent_runner.SANDBOX_WORKSPACE_MOUNT`, with `HOLON_TARGET_WORKTREE` pinned to the same path). A linked worktree's git
+directory and the repository's common git directory are mounted at their host paths, which the worktree's `.git` pointer
+names, so git works in the container without network access. The repository `config` (and any `config.worktree`),
+`hooks/`, `modules/` and the `.git`, `gitdir` and `commondir` pointers are overlaid read-only, so the container cannot
+plant a hook or configuration that later runs on the host; the container sets its git identity in its own global config.
+The entrypoint only validates the mount: HEAD must be a readable commit on the review branch and equal the resolved PR
+head SHA, otherwise preparation fails closed. Edits, logs and reviewer scratch under `.subagent/review/` land on the
+host at once and survive a container crash. No Docker volume is created and no root init container runs. The other roles
+(intent creator, planner, executor) keep their private in-container clone and never mount the host worktree.
+
+`holon review-loop <target>` resolves the worktree on the host: the `--target-worktree` when it has the review branch
+checked out, otherwise the existing worktree of that branch (normally the run's `flow-<slug>`), otherwise, for a PR, a
+new `pr<N>-<slug>` worktree of its head branch (`git_flow.resolve_review_worktree()`); a branch target with no worktree
+is refused. `git_flow.ephemeral_reviewer_worktree()` provides `flow-<slug>-rev<i>` sibling worktrees, removed and pruned
+on exit, for reviewer turns that need an isolated checkout.
 
 #### Reviewer ensemble
 
@@ -230,7 +231,7 @@ and dry runs never create a session.
   trailer; `serialize_review_outcome(reviewers, consensus_verdict)` and `deserialize_review_outcome(data)` transport
   verified outcomes across the container boundary; `build_reviewer_prompt(template_text, request, report_rel)` fills
   `holon-config/prompts/review_loop.template.md`.
-- **Reviewer turns.** Each reviewer runs in a fresh scratch directory `.holon/review/iter-<n>/reviewer-<i>/`
+- **Reviewer turns.** Each reviewer runs in a fresh scratch directory `.subagent/review/iter-<n>/reviewer-<i>/`
   (git-ignored) under the same turn supervision as the planner (`supervise_authoring_turn`), within one shared
   `review_iteration` budget per ensemble, and ephemeral credentials are cleaned up in a `finally`. Its prompt holds only
   the diff, the PR description, its report path and the trailer contract. Before the next reviewer starts, the previous

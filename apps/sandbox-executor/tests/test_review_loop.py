@@ -260,6 +260,7 @@ class TestCLIDispatchReviewLoop:
             patch.dict(os.environ, {}, clear=True),
             patch("sandbox_executor.cli.run_docker_container") as mock_docker,
             patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
+            patch("sandbox_executor.git_flow.resolve_review_worktree", return_value="/work/flow-demo") as mock_worktree,
         ):
             mock_docker.return_value = 0
             with pytest.raises(SystemExit) as exc_info:
@@ -271,6 +272,9 @@ class TestCLIDispatchReviewLoop:
             assert role == "review-loop"
             assert "holon/agent-antigravity" in image
             assert "I-100/P-200/E-300/_" in container_args
+            # The container reviews the host worktree that has the branch checked out, resolved on the host.
+            assert mock_worktree.call_args[0] == (os.path.abspath("."), "I-100/P-200/E-300/_")
+            assert mock_docker.call_args.kwargs["target_worktree"] == "/work/flow-demo"
 
     def test_cli_local_flag_dispatches_local_runner(self):
         from sandbox_executor.cli import main as cli_main
@@ -652,15 +656,14 @@ def test_run_cmd_clone_echo_and_failure_carry_no_token_fragment(clone_leak_env, 
 
 
 # --------------------------------------------------------------------------------------
-# Fail-closed entrypoint preparation: resolve, clone, verify
+# Fail-closed entrypoint preparation: resolve, then validate the mounted worktree in place
 # --------------------------------------------------------------------------------------
 
 PR_HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
 ENTRYPOINT = "sandbox_executor.entrypoint.review_loop"
 
 
-#: The HOLON_REPO_URL that ``_run_entrypoint`` exports; the fake answers ``git remote get-url origin``
-#: with it by default, so an existing checkout reads as belonging to the expected remote.
+#: The HOLON_REPO_URL that ``_run_entrypoint`` exports; the fake answers ``git remote get-url origin`` with it.
 FAKE_REPO_URL = "https://github.com/acme/widgets.git"
 
 
@@ -673,6 +676,7 @@ class FakeGitCommands:
         fail_on: tuple[str, ...] = (),
         heads: list[str] | None = None,
         origin_url: str = FAKE_REPO_URL,
+        branch: str = "",
     ):
         self.calls: list[list[str]] = []
         self._head_sha = head_sha
@@ -680,6 +684,8 @@ class FakeGitCommands:
         # Successive answers for 'git rev-parse HEAD'; the last one repeats.
         self._heads = list(heads or [head_sha])
         self._origin_url = origin_url
+        # What 'git symbolic-ref --short -q HEAD' reports; empty reads as a detached HEAD.
+        self._branch = branch
 
     def __call__(self, args, cwd=None, env=None, check=True):
         self.calls.append(list(args))
@@ -689,7 +695,7 @@ class FakeGitCommands:
         if verb == "remote" and args[2:4] == ["get-url", "origin"]:
             return subprocess.CompletedProcess(args, 0, stdout=f"{self._origin_url}\n", stderr="")
         if verb == "symbolic-ref":
-            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(args, 0 if self._branch else 1, stdout=f"{self._branch}\n", stderr="")
         if verb == "rev-parse" and any("HEAD" in a for a in args):
             head = self._heads.pop(0) if len(self._heads) > 1 else self._heads[0]
             return subprocess.CompletedProcess(args, 0, stdout=f"{head}\n", stderr="")
@@ -746,31 +752,71 @@ def _run_entrypoint(repo_dir: Path, target: str, fake_git: FakeGitCommands, *ext
     return exit_info.value.code, mock_loop, mock_post, gh_calls
 
 
-def test_pr_number_target_validates_mounted_workspace(tmp_path):
-    fake_git = FakeGitCommands()
+#: git verbs that would change, re-create or network-sync the mounted host worktree during preparation.
+_DESTRUCTIVE_GIT_VERBS = ("clone", "fetch", "reset", "clean", "checkout", "rebase", "merge")
+
+
+def test_pr_number_target_is_resolved_then_validated_in_place(tmp_path):
+    fake_git = FakeGitCommands(branch="feature/x")
     code, mock_loop, _post, gh_calls = _run_entrypoint(tmp_path, "90", fake_git)
 
     assert code == 0
     assert gh_calls == [["gh", "pr", "view", "90", "--json", "number,headRefName,headRefOid,baseRefName,title,body"]]
-    # Zero clone or fetch calls
-    assert not any(c[1] in ("clone", "fetch") for c in fake_git.calls)
+    assert not any(c[1] in _DESTRUCTIVE_GIT_VERBS for c in fake_git.calls), fake_git.calls
     assert mock_loop.call_args.kwargs["target"] == "90"
     assert mock_loop.call_args.kwargs["context"].execution_branch == "feature/x"
 
 
-def test_branch_target_in_an_existing_checkout_fetches_and_checks_out_the_branch(tmp_path):
-    fake_git = FakeGitCommands()
+def test_branch_target_is_validated_in_place_without_any_destructive_git_command(tmp_path):
+    fake_git = FakeGitCommands(branch="feature/y")
 
     code, mock_loop, _post, gh_calls = _run_entrypoint(tmp_path, "feature/y", fake_git)
 
     assert code == 0
     assert gh_calls == []
-    # Zero clone or fetch calls: validates in place
-    assert not any(c[1] in ("clone", "fetch") for c in fake_git.calls)
+    assert not any(c[1] in _DESTRUCTIVE_GIT_VERBS for c in fake_git.calls), fake_git.calls
     assert mock_loop.call_args.kwargs["target"] == "feature/y"
 
 
-def test_failing_clone_exits_one_posts_nothing_and_writes_one_failure_row(tmp_path, capsys):
+def test_git_identity_goes_to_the_container_global_config_never_the_shared_repository_config(tmp_path):
+    fake_git = FakeGitCommands(branch="feature/y")
+
+    code, _loop, _post, _gh = _run_entrypoint(tmp_path, "feature/y", fake_git)
+
+    assert code == 0
+    identity = [c for c in fake_git.calls if c[1] == "config" and any(a.startswith("user.") for a in c)]
+    assert [c[2] for c in identity] == ["--global", "--global"]
+
+
+def test_stale_mounted_head_is_refused_rather_than_reviewed_as_the_pr_head(tmp_path, capsys):
+    (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+    stale = "f" * 40
+    fake_git = FakeGitCommands(heads=[stale], branch="feature/x")
+
+    code, mock_loop, mock_post, _gh = _run_entrypoint(tmp_path, "90", fake_git)
+
+    assert code == 1
+    mock_loop.assert_not_called()
+    mock_post.assert_not_called()
+    (row,) = _ledger_rows(tmp_path)
+    assert row["action"] == "Review Loop preparation (validate) failed for 90"
+    assert f"mounted workspace HEAD {stale} is not the review head {PR_HEAD_SHA}" in row["error_context"]
+    assert not any(c[1] in _DESTRUCTIVE_GIT_VERBS for c in fake_git.calls), fake_git.calls
+
+
+def test_mounted_worktree_on_another_branch_is_refused(tmp_path, capsys):
+    fake_git = FakeGitCommands(branch="feature/other")
+
+    code, mock_loop, _post, _gh = _run_entrypoint(tmp_path, "feature/y", fake_git)
+
+    assert code == 1
+    mock_loop.assert_not_called()
+    err = capsys.readouterr().err
+    assert "Review preparation failed (validate)" in err
+    assert "checked-out branch 'feature/other' does not match target 'feature/y'" in err
+
+
+def test_unreadable_mounted_head_exits_one_posts_nothing_and_writes_one_failure_row(tmp_path, capsys):
     (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
     fake_git = FakeGitCommands(fail_on=("rev-parse",))
 
@@ -785,13 +831,14 @@ def test_failing_clone_exits_one_posts_nothing_and_writes_one_failure_row(tmp_pa
     assert rows[0]["outcome"] == "failure"
     assert rows[0]["action_origin"] == "pr_review"
     assert rows[0]["target"] == "90"
-    assert "validate" in rows[0]["error_context"] or "failed" in rows[0]["error_context"]
+    assert rows[0]["action"] == "Review Loop preparation (validate) failed for 90"
+    assert "is not a valid git commit" in rows[0]["error_context"]
     out = capsys.readouterr().out
     assert "Consensus      : FAILED" in out
     assert "APPROVED" not in out
 
 
-def test_failing_clone_without_a_ledger_reports_on_stderr_only(tmp_path, capsys):
+def test_unreadable_mounted_head_without_a_ledger_reports_on_stderr_only(tmp_path, capsys):
     fake_git = FakeGitCommands(fail_on=("rev-parse",))
 
     code, mock_loop, _post, _gh = _run_entrypoint(tmp_path, "feature/x", fake_git)

@@ -94,6 +94,25 @@ def _mount_pairs(args: list[str]) -> list[str]:
     return args[1::2]
 
 
+def _host_writable(args: list[str], host_path: str) -> bool:
+    """Whether the container can write host_path through the mount plan, judged as docker layers bind mounts.
+
+    Docker applies the mount with the deeper destination over the shallower one, so for every container path a mount
+    maps host_path to, the deepest-destination mount covering that container path decides read-only or read-write.
+    """
+    table = [(pair.split(":")[0], pair.split(":")[1], pair.endswith(":ro")) for pair in _mount_pairs(args)]
+
+    def effective_read_only(container_path: str) -> bool:
+        covering = [m for m in table if container_path == m[1] or container_path.startswith(m[1] + "/")]
+        return max(covering, key=lambda m: len(m[1]))[2]
+
+    return any(
+        (host_path == source or host_path.startswith(source + "/"))
+        and not effective_read_only(destination + host_path[len(source) :])
+        for source, destination, _ in table
+    )
+
+
 # --- (a) validation, bind mounts and git directory resolution -------------------------------------------------------
 
 
@@ -109,13 +128,18 @@ def test_a_linked_worktree_mounts_its_git_dirs_at_host_paths_and_overlays_git_co
         f"{flow_worktree}:{MOUNT}",
         # The .git pointer names these host paths, so they are mounted at the identical path in the container.
         f"{common}:{common}",
+        # The own admin dir is re-mounted read-write over the read-only worktrees/ overlay (deeper mount wins).
+        f"{git_dir}:{git_dir}",
         # Nothing the container writes may later run code on the host.
         f"{flow_worktree / '.git'}:{MOUNT}/.git:ro",
         f"{git_dir / 'commondir'}:{git_dir / 'commondir'}:ro",
         f"{git_dir / 'gitdir'}:{git_dir / 'gitdir'}:ro",
         f"{common / 'config'}:{common / 'config'}:ro",
+        f"{common / 'config.worktree'}:{common / 'config.worktree'}:ro",
         f"{common / 'hooks'}:{common / 'hooks'}:ro",
         f"{common / 'modules'}:{common / 'modules'}:ro",
+        f"{common / 'worktrees'}:{common / 'worktrees'}:ro",
+        f"{git_dir / 'config.worktree'}:{git_dir / 'config.worktree'}:ro",
     ]
     # The mounted pointer resolves through the mounted paths, without any network: git works there.
     assert (flow_worktree / ".git").read_text(encoding="utf-8").strip() == f"gitdir: {git_dir}"
@@ -131,9 +155,83 @@ def test_a_primary_checkout_needs_no_extra_git_mount_but_still_protects_config_a
     assert mounts == [
         f"{repo}:{MOUNT}",
         f"{repo / '.git' / 'config'}:{MOUNT}/.git/config:ro",
+        f"{repo / '.git' / 'config.worktree'}:{MOUNT}/.git/config.worktree:ro",
         f"{repo / '.git' / 'hooks'}:{MOUNT}/.git/hooks:ro",
         f"{repo / '.git' / 'modules'}:{MOUNT}/.git/modules:ro",
+        f"{repo / '.git' / 'worktrees'}:{MOUNT}/.git/worktrees:ro",
     ]
+    # An absent worktrees/ or config.worktree is created before overlaying, so the container cannot create it.
+    assert (repo / ".git" / "worktrees").is_dir()
+    assert (repo / ".git" / "config.worktree").read_text(encoding="utf-8") == ""
+
+
+def test_a_sibling_worktree_admin_dirs_are_unwritable_while_own_admin_and_object_database_stay_writable(
+    repo: Path, flow_worktree: Path
+) -> None:
+    """A compromised container must not reach any sibling worktree's administrative files -- its commondir, gitdir,
+    HEAD or a plantable config.worktree -- or create a new worktrees/ entry, because host git reads those pointer and
+    config files on its next command in that worktree. The mounted worktree's own git writes must survive."""
+    sibling = repo.parent / "sibling"
+    _git(repo, "worktree", "add", "-q", "-b", "sibling", str(sibling))
+    common = repo / ".git"
+    own = common / "worktrees" / "flow-demo"
+    sib = common / "worktrees" / "sibling"
+
+    args = git_flow.sandbox_worktree_mounts(str(flow_worktree), MOUNT)
+
+    # The sibling's admin dir and the worktrees/ dir itself (so no new entry can be planted) are read-only.
+    for path in (
+        sib,
+        sib / "commondir",
+        sib / "gitdir",
+        sib / "HEAD",
+        sib / "index",
+        sib / "config.worktree",
+        sib / "planted-new-file",
+        common / "worktrees",
+        common / "worktrees" / "planted-new-worktree",
+    ):
+        assert not _host_writable(args, str(path)), path
+    # Everything that makes host git run code stays read-only, including the own pointer files.
+    for path in (
+        common / "config",
+        common / "config.worktree",
+        common / "hooks" / "pre-commit",
+        common / "modules",
+        own / "commondir",
+        own / "gitdir",
+        own / "config.worktree",
+        flow_worktree / ".git",
+    ):
+        assert not _host_writable(args, str(path)), path
+    # The mounted worktree's own git still works: its admin dir and the shared object database are writable.
+    for path in (
+        own / "HEAD",
+        own / "index",
+        own / "FETCH_HEAD",
+        common / "objects",
+        common / "refs",
+        common / "packed-refs",
+        flow_worktree / "README.md",
+    ):
+        assert _host_writable(args, str(path)), path
+
+
+def test_a_primary_checkout_with_linked_worktrees_keeps_their_admin_dirs_unwritable(repo: Path) -> None:
+    """When the mounted worktree is the primary checkout, its linked worktrees' admin dirs under .git/worktrees/ are
+    reachable through the read-write workspace mount; the worktrees/ overlay must make them read-only while the
+    checkout's own .git state (HEAD, index, objects, refs) stays writable."""
+    linked = repo.parent / "linked"
+    _git(repo, "worktree", "add", "-q", "-b", "linked", str(linked))
+    _git(repo, "checkout", "-q", "-b", "feature")
+    admin = repo / ".git" / "worktrees" / "linked"
+
+    args = git_flow.sandbox_worktree_mounts(str(repo), MOUNT)
+
+    for path in (admin, admin / "commondir", admin / "gitdir", admin / "HEAD", repo / ".git" / "worktrees"):
+        assert not _host_writable(args, str(path)), path
+    for path in (repo / ".git" / "HEAD", repo / ".git" / "index", repo / ".git" / "objects", repo / ".git" / "refs"):
+        assert _host_writable(args, str(path)), path
 
 
 @pytest.mark.parametrize(

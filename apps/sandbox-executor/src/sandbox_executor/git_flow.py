@@ -773,9 +773,16 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str, role: 
     common git directory are mounted at their host paths, which the worktree's '.git' pointer names, so git works in
     the container without network access. Everything that makes host git run code is overlaid read-only, so the
     container cannot plant a hook or configuration that later executes on the host: the repository config (and any
-    config.worktree), hooks/, modules/, and the '.git', 'gitdir' and 'commondir' pointers. A repository with
+    config.worktree), hooks/, modules/, the whole worktrees/ administrative directory, and the '.git', 'gitdir' and
+    'commondir' pointers. The worktrees/ overlay is what keeps every SIBLING worktree's administrative files
+    (commondir, gitdir, HEAD, a plantable config.worktree) and the creation of new worktrees/ entries out of the
+    container's reach -- host git reads those files on its next command in that worktree. The mounted worktree's own
+    administrative directory is re-mounted read-write on top (docker layers the mount with the deeper destination over
+    the shallower one), restoring only the writes its own git needs (HEAD, index, FETCH_HEAD); its pointer files and
+    config.worktree stay read-only through the still-deeper file overlays, and absent hooks/, modules/, worktrees/
+    and config.worktree are created first so the container cannot create them itself. A repository with
     extensions.worktreeConfig enabled is refused: git would then read every worktree's config.worktree, which the
-    container could create or rewrite in the writable git directory. On Linux, where a bind mount keeps host
+    container could rewrite in its own writable git directory. On Linux, where a bind mount keeps host
     ownership, a worktree or git directory that the image's user (uid SANDBOX_CONTAINER_UID) cannot write is refused
     up front rather than failing every pass inside the container.
 
@@ -804,17 +811,28 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str, role: 
             raise RuntimeError(f"cannot resolve the git directory of worktree '{toplevel}' from its .git file")
         common_dir = _read_pointer(os.path.join(git_dir, "commondir")) or git_dir
         args += ["-v", f"{common_dir}:{common_dir}"]
-        if not _within(git_dir, common_dir):
+        if git_dir != common_dir:
+            # Re-mounted read-write on top of the read-only worktrees/ overlay below (docker layers the deeper
+            # destination over the shallower one): the mounted worktree's own git must write its HEAD, index and
+            # FETCH_HEAD, while its pointer files stay read-only through the still-deeper file overlays.
             args += ["-v", f"{git_dir}:{git_dir}"]
         read_only = [dot_git, os.path.join(git_dir, "commondir"), os.path.join(git_dir, "gitdir")]
     problem = _container_write_problem(role, toplevel, git_dir, common_dir)
     if problem:
         raise RuntimeError(problem)
-    # An absent hooks/ or modules/ could be created by the container (planting modules/<name>/hooks for a later host
-    # 'git submodule' command), so make both exist before overlaying them.
-    for name in ("hooks", "modules"):
+    # An absent hooks/, modules/ or worktrees/ could be created by the container (planting modules/<name>/hooks for a
+    # later host 'git submodule' command, or a new worktrees/ entry whose pointer files host git would follow), and an
+    # absent config.worktree could be planted against a host operator who later enables extensions.worktreeConfig, so
+    # make each exist before overlaying it. worktrees/ is overlaid read-only as a whole: a sibling worktree's
+    # administrative files (commondir, gitdir, HEAD, config.worktree) are what the next host git command run in that
+    # sibling reads, so none of them may be container-writable.
+    for name in ("hooks", "modules", "worktrees"):
         os.makedirs(os.path.join(common_dir, name), exist_ok=True)
-    read_only += [os.path.join(common_dir, name) for name in ("config", "config.worktree", "hooks", "modules")]
+    for path in dict.fromkeys((os.path.join(common_dir, "config.worktree"), os.path.join(git_dir, "config.worktree"))):
+        open(path, "a", encoding="utf-8").close()
+    read_only += [
+        os.path.join(common_dir, name) for name in ("config", "config.worktree", "hooks", "modules", "worktrees")
+    ]
     read_only.append(os.path.join(git_dir, "config.worktree"))
 
     for host_path in dict.fromkeys(read_only):

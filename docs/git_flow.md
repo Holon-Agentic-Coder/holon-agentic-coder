@@ -381,12 +381,14 @@ adjudication checks can only withhold an approval. See [review_consensus.md](rev
 
 **Host worktree workspace.** Every Stage 4 reviewer-ensemble and resolver dispatch runs in a fresh `--rm` container that
 works in place on the run's `flow-<slug>` worktree, bind-mounted from the host together with the git directories its
-`.git` pointer names; the repository config, hooks and git pointers are mounted read-only. The container never clones,
-fetches, resets or cleans: it validates that HEAD is on the review branch and equals the resolved head SHA, and fails
-closed otherwise. Edits, logs and `.subagent/review/` scratch are on the host at once and survive a container crash. No
-Docker volume or root init container is involved. Canonical `ACT-REV`/`ACT-FIND`/`ACT-RES`/`ACT-POST` rows and the
-summary row remain host-written. A standalone `holon review-loop <PR>` reuses the worktree that has the PR's head branch
-checked out (normally `flow-<slug>`) and creates a `pr<N>-<slug>` worktree only when none exists. See the
+`.git` pointer names; the repository config, hooks, git pointers and the whole `worktrees/` administrative directory are
+mounted read-only, so no sibling worktree's admin files are reachable, with only the mounted worktree's own admin
+directory re-mounted read-write on top. The container never clones, fetches, resets or cleans: it validates that HEAD is
+on the review branch and equals the resolved head SHA, and fails closed otherwise. Edits, logs and `.subagent/review/`
+scratch are on the host at once and survive a container crash. No Docker volume or root init container is involved.
+Canonical `ACT-REV`/`ACT-FIND`/`ACT-RES`/`ACT-POST` rows and the summary row remain host-written. A standalone
+`holon review-loop <PR>` reuses the worktree that has the PR's head branch checked out (normally `flow-<slug>`) and
+creates a `pr<N>-<slug>` worktree only when none exists. See the
 [sandbox-executor README](../apps/sandbox-executor/README.md#host-worktree-workspace). The Stage 3 executor works in
 place on the same mounted `flow-<slug>` worktree: the host fetches the plan branch before dispatch, and the container
 creates the execution branch from the plan tip there, commits and pushes it, with no clone, fetch, reset or clean.

@@ -204,21 +204,27 @@ branch checked out. Its top-level directory is bind-mounted at the sandbox works
 (`agent_runner.SANDBOX_WORKSPACE_MOUNT`, with `HOLON_TARGET_WORKTREE` pinned to the same path). A linked worktree's git
 directory and the repository's common git directory are mounted at their host paths, which the worktree's `.git` pointer
 names, so git works in the container without network access. The repository `config` (and any `config.worktree`),
-`hooks/`, `modules/` and the `.git`, `gitdir` and `commondir` pointers are overlaid read-only, so the container cannot
-plant a hook or configuration that later runs on the host; the container sets its git identity in its own global config.
-A repository with `extensions.worktreeConfig` enabled is refused, because git would then read every worktree's
-`config.worktree` from the writable git directory. The image runs as uid 1000 and a Linux bind mount keeps host
-ownership, so on Linux the worktree, its git directory and the common git directory must be writable by uid 1000 (as
-they are when the host user is uid 1000); otherwise `sandbox_worktree_mounts()` refuses the worktree before any
-container starts. On a host whose user has another uid (for example 1001 on CI runners), grant uid 1000 write access,
-e.g. `setfacl -R -m u:1000:rwX,d:u:1000:rwX <path>`; the preflight honours a named-user ACL entry for uid 1000 (limited
-by the ACL mask). Docker Desktop on macOS and Windows maps ownership, so the check is Linux-only. The resolver stages
-its fixes without `holon-knowledge/ledger/executions.jsonl`, and a pass the host dispatches with `--result-file` appends
-its ledger rows to container scratch: the host loop owns the worktree's ledger and records every pass from the result
-file. The entrypoint only validates the mount: HEAD must be a readable commit on the review branch (a branch target
-refuses a detached HEAD) and equal the resolved PR head SHA, otherwise preparation fails closed. Edits, logs and
-reviewer scratch under `.subagent/review/` land on the host at once and survive a container crash. No Docker volume is
-created and no root init container runs.
+`hooks/`, `modules/`, the whole `worktrees/` administrative directory and the `.git`, `gitdir` and `commondir` pointers
+are overlaid read-only, so the container cannot plant a hook or configuration that later runs on the host, cannot touch
+any sibling worktree's administrative files (`commondir`, `gitdir`, `HEAD`, a plantable `config.worktree`) and cannot
+create new `worktrees/` entries; absent `hooks/`, `modules/`, `worktrees/` and `config.worktree` are created before
+overlaying so the container cannot create them either. Only the mounted worktree's own administrative directory is
+re-mounted read-write on top (docker layers the deeper mount destination over the shallower one), restoring exactly the
+writes its own git needs (`HEAD`, `index`, `FETCH_HEAD`) while its pointer files stay read-only through still-deeper
+overlays; the container sets its git identity in its own global config. A repository with `extensions.worktreeConfig`
+enabled is refused, because git would then read every worktree's `config.worktree` from the container's own writable git
+directory. The image runs as uid 1000 and a Linux bind mount keeps host ownership, so on Linux the worktree, its git
+directory and the common git directory must be writable by uid 1000 (as they are when the host user is uid 1000);
+otherwise `sandbox_worktree_mounts()` refuses the worktree before any container starts. On a host whose user has another
+uid (for example 1001 on CI runners), grant uid 1000 write access, e.g. `setfacl -R -m u:1000:rwX,d:u:1000:rwX <path>`;
+the preflight honours a named-user ACL entry for uid 1000 (limited by the ACL mask). Docker Desktop on macOS and Windows
+maps ownership, so the check is Linux-only. The resolver stages its fixes without
+`holon-knowledge/ledger/executions.jsonl`, and a pass the host dispatches with `--result-file` appends its ledger rows
+to container scratch: the host loop owns the worktree's ledger and records every pass from the result file. The
+entrypoint only validates the mount: HEAD must be a readable commit on the review branch (a branch target refuses a
+detached HEAD) and equal the resolved PR head SHA, otherwise preparation fails closed. Edits, logs and reviewer scratch
+under `.subagent/review/` land on the host at once and survive a container crash. No Docker volume is created and no
+root init container runs.
 
 The Stage 3 executor works the same way on the run's `flow-<slug>` worktree. The host fetches the plan branch (and any
 partial execution branch a resume continues) into the worktree before dispatch: `holon flow` through its existing fetch

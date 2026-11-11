@@ -71,12 +71,12 @@ validation under the **3-Tier Fallback Contract**.
 
 Depending on the environment configuration:
 
-- **Host worktree**: The container works in place on the flow's host-provisioned `flow-<slug>` worktree, bind-mounted
-  at the sandbox workspace path (`HOLON_TARGET_WORKTREE`). The executor never clones, fetches, resets or pushes.
+- **Host worktree**: The container works in place on the flow's host-provisioned `flow-<slug>` worktree, bind-mounted at
+  the sandbox workspace path (`HOLON_TARGET_WORKTREE`). The executor never clones, fetches, resets or pushes.
 - **Host-side fetch and push**: Before the container starts, the host fetches the plan branch and the target branch.
   After it returns, the host pushes every new execution branch, including a failed one so a resume can find it. If the
-  host push fails, the commits stay on the host's local branch and the error names the operation, branch and remote.
-  No repository URL variable exists.
+  host push fails, the commits stay on the host's local branch and the error names the operation, branch and remote. No
+  repository URL variable exists.
 
 ### 3. Execution Branch Creation
 
@@ -113,14 +113,14 @@ It returns one of three outcomes:
 The executor never invents child work and never writes `intents.jsonl` rows. For both non-execute outcomes it skips the
 agent, records one `executions.jsonl` summary (`status: "decomposed"` with a `plan_decision` reference to the plan row's
 list, never a copy, or `status: "over_budget"` with `entropy`, `entropy_budget` and a message) and commits only that
-ledger to the execution branch. The host then pushes the branch after the container returns; the container never pushes. Exit codes: `over_budget`
-exits 3 (`OVER_BUDGET_EXIT_CODE`) only when its row is committed; every other outcome exits 1. `decomposed` exits 0 when
-recording and committing its row raise no error, which includes a run where nothing was staged; any failure while
-recording or committing its row exits 1. Whether it
-exits 3 or 1, a direct `holon execute` of an `over_budget` plan fails, while the flow reads the recorded row and decides
-what happens next: each child intent is created through the normal Stage 1 intent creator and run through the full
-pipeline (unless the plan's intent is already at `budgets.MAX_SUB_INTENT_DEPTH`, in which case Stage 3 fails and refuses
-to recurse further), or the plan is sent back to Stage 2 (see [Git Flow](../git_flow.md#flow-equivalence-guarantee)).
+ledger to the execution branch. The host then pushes the branch after the container returns; the container never pushes.
+Exit codes: `over_budget` exits 3 (`OVER_BUDGET_EXIT_CODE`) only when its row is committed; every other outcome exits 1.
+`decomposed` exits 0 when recording and committing its row raise no error, which includes a run where nothing was
+staged; any failure while recording or committing its row exits 1. Whether it exits 3 or 1, a direct `holon execute` of
+an `over_budget` plan fails, while the flow reads the recorded row and decides what happens next: each child intent is
+created through the normal Stage 1 intent creator and run through the full pipeline (unless the plan's intent is already
+at `budgets.MAX_SUB_INTENT_DEPTH`, in which case Stage 3 fails and refuses to recurse further), or the plan is sent back
+to Stage 2 (see [Git Flow](../git_flow.md#flow-equivalence-guarantee)).
 
 ### 6. Agent Invocation
 

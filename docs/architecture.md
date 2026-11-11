@@ -173,6 +173,10 @@ flowchart TD
   - Git abstraction: Routes all repository interactions through `sandbox_executor.git` (`run_git`, `get_diff_numstat`,
     `resolve_ref`, `get_head_commit`, `branch_exists`) with automatic credential sanitisation and timeout enforcement.
   - Runs a chosen plan variant in an isolated environment.
+  - One host worktree for every stage: the intent creator, planner, executor and review-loop containers all work in the
+    flow's bind-mounted `flow-<slug>` worktree and only commit. The host fetches the base before each container starts
+    and pushes the committed branch after it returns, so no container clones or touches the remote and no `ssh-agent` or
+    repository URL variable is needed.
 - **Review Ensemble (Stage 4)**
   - `sandbox_executor/review_ensemble.py` runs independent reviewer agent turns, each in its own scratch directory under
     `.subagent/review/` and blind to the other reviewers' reports, parses the strict JSON trailer that ends each report,
@@ -475,6 +479,7 @@ execution and the reason.
 | `flow/stage_conflicts.py`      | The proactive conflict check a stage runs before it pushes.                                                 |
 | `flow/intent_questions.py`     | Validates an intent's clarifying questions before Stage 1 accepts it.                                       |
 | `flow/dispatch.py`             | Role-agent dispatch shared with `holon intent`, `holon plan` and `holon execute`.                           |
+| `flow/host_remote.py`          | Host-side fetch of the base and push of the committed branch; containers never touch the remote.            |
 | `flow/git_refs.py`             | Branch fetches, child-branch discovery, ledger readers, execution refs and the effective diff.              |
 | `flow/github/pr.py`            | Mergeability checks, review git trailers, semantic PR metadata and creating the PR.                         |
 | `flow/github/ci.py`            | Probes CI checks and waits for them to register and settle.                                                 |

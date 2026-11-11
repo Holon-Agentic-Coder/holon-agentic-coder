@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """Sandbox executor entrypoint for Holon Agentic Coder.
 
-Works in place on the host worktree that 'holon execute' and 'holon flow' bind-mount into the container (an
-unmounted run outside a container clones or reuses its workspace instead), runs the configured agent, captures
-execution results into the ledger, and commits/pushes the execution branch.
+Works in place on the host worktree that 'holon execute' and 'holon flow' bind-mount into the container, runs the
+configured agent, captures execution results into the ledger, and commits the execution branch. The container never
+touches the remote: the host fetches the plan and target branches first and pushes the execution branch afterwards.
 
 Key environment variables:
-    HOLON_TARGET_WORKTREE: Override the default workspace directory; the sandbox mountpoint marks a mounted worktree.
-    HOLON_KEEP_WORKSPACE: Set to '1' to skip cleanup and reuse the existing workspace.
+    HOLON_TARGET_WORKTREE: The sandbox mountpoint, which marks the mounted host worktree (required).
     HOLON_IN_SANDBOX: Set to '1' to explicitly mark sandbox context.
-    HOLON_SKIP_PUSH: Set to '1' to skip the git push step.
     HOLON_ROLE: When set, implies sandbox context.
 
 Known limitations:

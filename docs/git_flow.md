@@ -337,8 +337,8 @@ The guarantee has five deliberate limits:
   unless the ensemble verdict is `APPROVED` and the consensus is approved and posted.
 - **Dispatch needs `origin`.** `--dry-run` validates the payload and names the branches without dispatching anything.
   `--skip-push` is rejected outside `--dry-run` -- on every run, including a `--from-stage` or `--checkpoint` resume
-  from any stage -- before any stage runs, because the role containers clone from and push to `origin`, Stage 4 opens
-  the PR from the `origin` execution branch and Stage 5 pushes the `/calibrated` branch.
+  from any stage -- before any stage runs, because the host fetches from and pushes to `origin` for the role containers,
+  Stage 4 opens the PR from the `origin` execution branch and Stage 5 pushes the `/calibrated` branch.
 - **Unmeasured tests are never a pass.** Stage 3 carries the executor container's recorded `test_pass_rate` from its
   `executions.jsonl` summary row; when the row records none, it is `null` ("not measured"). Stage 4 then reports
   `test_results` with `pass_rate: null`, `measured: false`, `passed: null`, and when no CI checks exist the review
@@ -383,15 +383,19 @@ adjudication checks can only withhold an approval. See [review_consensus.md](rev
 works in place on the run's `flow-<slug>` worktree, bind-mounted from the host together with the git directories its
 `.git` pointer names; the repository config, hooks, git pointers and the whole `worktrees/` administrative directory are
 mounted read-only, so no sibling worktree's admin files are reachable, with only the mounted worktree's own admin
-directory re-mounted read-write on top. The container never clones, fetches, resets or cleans: it validates that HEAD is
-on the review branch and equals the resolved head SHA, and fails closed otherwise. Edits, logs and `.subagent/review/`
-scratch are on the host at once and survive a container crash. No Docker volume or root init container is involved.
-Canonical `ACT-REV`/`ACT-FIND`/`ACT-RES`/`ACT-POST` rows and the summary row remain host-written. A standalone
-`holon review-loop <PR>` reuses the worktree that has the PR's head branch checked out (normally `flow-<slug>`) and
-creates a `pr<N>-<slug>` worktree only when none exists. See the
-[sandbox-executor README](../apps/sandbox-executor/README.md#host-worktree-workspace). The Stage 3 executor works in
-place on the same mounted `flow-<slug>` worktree: the host fetches the plan branch before dispatch, and the container
-creates the execution branch from the plan tip there, commits and pushes it, with no clone, fetch, reset or clean.
+directory re-mounted read-write on top. The container never clones, fetches, pushes, resets or cleans: it validates that
+HEAD is on the review branch and equals the resolved head SHA, and fails closed otherwise. Edits, logs and
+`.subagent/review/` scratch are on the host at once and survive a container crash. No Docker volume or root init
+container is involved. Canonical `ACT-REV`/`ACT-FIND`/`ACT-RES`/`ACT-POST` rows and the summary row remain host-written.
+A standalone `holon review-loop <PR>` reuses the worktree that has the PR's head branch checked out (normally
+`flow-<slug>`) and creates a `pr<N>-<slug>` worktree only when none exists. See the
+[sandbox-executor README](../apps/sandbox-executor/README.md#host-worktree-workspace). **One worktree for every stage.**
+The Stage 1 intent creator, Stage 2 planner, Stage 3 executor and Stage 4 review-loop and resolver all run in the same
+mounted `flow-<slug>` worktree with the same protections; none clones. No container touches the remote: roles only
+commit, the host fetches the base before each container starts and pushes the committed branch after it returns (Stage 1
+the intent branch, Stage 2 the new plan branch, Stage 3 every new execution branch including a failed one, Stage 4's
+resolver head fast-forward only). A failed host fetch or push names the operation, branch and remote. No `ssh-agent` or
+repository URL variable is involved, so an SSH `origin` works.
 
 #### Safety Halt & Merge Boundary
 

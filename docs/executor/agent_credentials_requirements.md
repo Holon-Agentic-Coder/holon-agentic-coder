@@ -69,10 +69,10 @@ overwriting `/etc/shadow` or `/usr/bin/`).
   - `HOLON_AGENT_SKIP_PERMISSIONS`: Defaults to `true`; makes the `claude` and `antigravity` runners pass their
     permission-bypass flags on the command line. Only `1`, `true`, `yes` or `on` (case-insensitive) enable it; any other
     value, including an empty one, opts out.
-  - `GITHUB_TOKEN` / `GH_TOKEN`: Authenticates `gh` API calls inside the container. Git fetches and pushes never run in a
-    container: the host fetches and pushes with its own credentials. The `./holon` host CLI retrieves this token using
-    `find_github_token()`, falling back to the local `gh` CLI credentials if not set in the environment. It reaches the container as described in
-    [How the GitHub token reaches the container](#how-the-github-token-reaches-the-container).
+  - `GITHUB_TOKEN` / `GH_TOKEN`: Authenticates `gh` API calls inside the container. Git fetches and pushes never run in
+    a container: the host fetches and pushes with its own credentials. The `./holon` host CLI retrieves this token using
+    `find_github_token()`, falling back to the local `gh` CLI credentials if not set in the environment. It reaches the
+    container as described in [How the GitHub token reaches the container](#how-the-github-token-reaches-the-container).
 
 #### How the GitHub token reaches the container
 
@@ -84,22 +84,23 @@ file inside the workspace:
    would be altered by the shared command redactor. Secret names are `GITHUB_TOKEN`, `GH_TOKEN`, `HOLON_AGENT_KEY`,
    `HOLON_MITM_WEB_PASSWORD` and any name the shared key regex recognises (for example `*_TOKEN`, `*_SECRET`,
    `*_PASSWORD` and `*_API_KEY`). Credential-shaped values include any value carrying URL userinfo with a password (a
-   proxy or base URL in any scheme, or none, under any `HOLON_*` name), decided by a last-`@` userinfo rule, so a password holding a raw `/`, `?` or `#` is recognised whole. `HOLON_AGENT_SETTINGS`
-   is classified by pattern, not by name: it goes into the env-file only when its value carries a credential shape (an
-   `apiKey`, an `sk-ant-` key or an OAuth token key), so a credential-free settings JSON that spans several lines still
-   works. Everything else stays on `-e`. The file is created with `mkstemp` and mode `0600` in the owner-only (`0700`)
-   directory `~/.holon/tmp/env-files`. It is removed when the run ends, whether through success, failure, an early
-   error, an exception or an interrupt. Files left behind by a killed run are swept after 24 hours. Docker reads the
-   file on the client side, so no bind mount is needed. A value containing a line break is rejected with an error that
-   names the variable but never the value, because the env-file format has no quoting. If the env-file directory or file
-   cannot be created (an `OSError`, for example a read-only or foreign-owned `~/.holon`), the run stops with a clear
-   error and a non-zero exit before `docker run`; the credentials never fall back to the argv. The
+   proxy or base URL in any scheme, or none, under any `HOLON_*` name), decided by a last-`@` userinfo rule, so a
+   password holding a raw `/`, `?` or `#` is recognised whole. `HOLON_AGENT_SETTINGS` is classified by pattern, not by
+   name: it goes into the env-file only when its value carries a credential shape (an `apiKey`, an `sk-ant-` key or an
+   OAuth token key), so a credential-free settings JSON that spans several lines still works. Everything else stays on
+   `-e`. The file is created with `mkstemp` and mode `0600` in the owner-only (`0700`) directory
+   `~/.holon/tmp/env-files`. It is removed when the run ends, whether through success, failure, an early error, an
+   exception or an interrupt. Files left behind by a killed run are swept after 24 hours. Docker reads the file on the
+   client side, so no bind mount is needed. A value containing a line break is rejected with an error that names the
+   variable but never the value, because the env-file format has no quoting. If the env-file directory or file cannot be
+   created (an `OSError`, for example a read-only or foreign-owned `~/.holon`), the run stops with a clear error and a
+   non-zero exit before `docker run`; the credentials never fall back to the argv. The
    [readiness probe](#readiness-probe-holon-doctor) builds its container environment with the same classifier
    (`is_secret_env_item`) and `write_env_file`: `HOLON_AGENT_KEY` and a credential-bearing `HOLON_AGENT_SETTINGS` travel
-   in a `0600` env-file that is removed once the probe returns, times out or fails. A runner flag filled from such a variable (`claude --settings`) is passed as a
-   `"${HOLON_AGENT_SETTINGS}"` reference through `sh -c` and expanded inside the container, so the value never reaches
-   the host `docker run` argv.
-2. **No git credentials in the container.** No git credential helper (`GIT_CONFIG_*`) is injected and no SSH agent
+   in a `0600` env-file that is removed once the probe returns, times out or fails. A runner flag filled from such a
+   variable (`claude --settings`) is passed as a `"${HOLON_AGENT_SETTINGS}"` reference through `sh -c` and expanded
+   inside the container, so the value never reaches the host `docker run` argv.
+2. **No git credentials in the container.** No git credential-helper (`GIT_CONFIG_*`) is injected and no `ssh-agent`
    socket is mounted. The role containers never clone, fetch, pull, push or run `ls-remote` against a remote; the host
    does that with its own credentials (see [Host-side fetch and push](#host-side-fetch-and-push)). `GITHUB_TOKEN` is
    forwarded for `gh` API calls only.
@@ -109,17 +110,17 @@ file inside the workspace:
 Every stage works in the host-provisioned `flow-<slug>` worktree bind-mounted into its container. The host fetches the
 base before each container starts and pushes the committed branch after it returns (module
 `sandbox_executor/flow/host_remote.py`; the standalone `holon intent`, `holon plan` and `holon execute` commands use
-`cli/commands/_host_publish.py`). Nothing inside a container depends on an SSH agent, SSH key, `known_hosts` or the
+`cli/commands/_host_publish.py`). Nothing inside a container depends on an `ssh-agent`, SSH key, `known_hosts` or the
 origin URL scheme, so a worktree whose `origin` is an SSH URL works. When the host cannot fetch or push, the stage error
-names the operation, the branch and the remote (for example `host push of '<branch>' through remote 'origin' failed:
-<detail>`), with credentials stripped.
+names the operation, the branch and the remote (for example
+`host push of '<branch>' through remote 'origin' failed: <detail>`), with credentials stripped.
 
 #### Redaction of command and environment echoes
 
 Every echoed command goes through one shared pattern set in `sandbox_executor.redaction`. This covers the host
-`Executing: docker run ...` line, the in-sandbox `Running: ...` lines and their failure diagnostics, the
-planner's agent-command echo, `git` failure messages and the mitmproxy sidecar's failure output. The same pattern set
-redacts executor ledger records and agent output. Credentials are replaced with the fixed marker `*******`, while the
+`Executing: docker run ...` line, the in-sandbox `Running: ...` lines and their failure diagnostics, the planner's
+agent-command echo, `git` failure messages and the mitmproxy sidecar's failure output. The same pattern set redacts
+executor ledger records and agent output. Credentials are replaced with the fixed marker `*******`, while the
 repository, branch and command shape stay readable (for example `https://*******@github.com/<org>/<repo>.git`). Never
 add a second, divergent pattern set; extend that module instead. (The knowledge-record `CredentialRedactor` and the
 mitmproxy wire-log addon, which runs inside the sidecar and cannot import the package, are pre-existing and separately

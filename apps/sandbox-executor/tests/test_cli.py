@@ -4,7 +4,6 @@ import importlib.metadata
 import io
 import json
 import os
-import secrets
 import stat
 import subprocess
 import tempfile
@@ -14,23 +13,19 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from sandbox_executor import cli, local_llm
+from sandbox_executor.agent_runner import SANDBOX_UV_PROJECT_ENVIRONMENT, SANDBOX_WORKSPACE_MOUNT
 from sandbox_executor.cli import (
     _run_docker,
     build_network_isolation_args,
     find_github_token,
     get_agent_session_mounts,
-    get_ssh_auth_mounts,
     main,
-    normalize_repo_remote,
-    resolve_target_repo_url,
     run_docker_container,
-    strip_url_credentials,
 )
 from sandbox_executor.flow import SKIP_PUSH_DISPATCH_ERROR, FlowContext
 
 from tests.leak_assertions import (
     CREDENTIAL_FREE_URLS,
-    assert_names_repo,
     assert_no_fragment,
     assert_no_leak,
     make_gh_probe,
@@ -44,6 +39,10 @@ from tests.test_local_llm import HEALTH_COLD, HEALTH_OFF, HEALTH_SMALL_PROMPT, H
 _REAL_ENV_FILE_DIR = cli.env_file_dir
 
 
+# What git_flow.sandbox_worktree_mounts returns for a valid worktree, reduced to its bind mount.
+_WORKTREE_MOUNTS = ["-v", f"/work/flow-x:{SANDBOX_WORKSPACE_MOUNT}"]
+
+
 def _read_env_file(docker_argv: list[str]) -> dict[str, str]:
     """Parse the --env-file a recorded docker argv points at (only valid while the run is in progress)."""
     path = docker_argv[docker_argv.index("--env-file") + 1]
@@ -51,15 +50,30 @@ def _read_env_file(docker_argv: list[str]) -> dict[str, str]:
         return dict(line.rstrip("\n").split("=", 1) for line in fh)
 
 
+def _stub_host_publish(testcase: unittest.TestCase) -> dict[str, MagicMock]:
+    """Stand in for the host fetch and push the standalone commands run around the container."""
+    mocks: dict[str, MagicMock] = {}
+    for name, target, kwargs in (
+        ("intent_prepare", "intent.prepare_worktree", {"return_value": "/work/flow-x"}),
+        ("intent_push", "intent.push_checked_out_branch", {"return_value": "I-1-x/_"}),
+        ("plan_prepare", "plan.prepare_worktree", {"return_value": "/work/flow-x"}),
+        ("plan_push", "plan.push_checked_out_branch", {"return_value": "I-1-x/P-1/_"}),
+        ("execute_worktree", "execute.execution_worktree", {"return_value": "/work/flow-x"}),
+        ("execute_push", "execute.push_checked_out_branch", {"return_value": "I-1-x/P-1/E-2/_"}),
+    ):
+        patcher = patch(f"sandbox_executor.cli.commands.{target}", **kwargs)
+        mocks[name] = patcher.start()
+        testcase.addCleanup(patcher.stop)
+    return mocks
+
+
 class TestHolonCLI(unittest.TestCase):
+    def setUp(self):
+        self.host = _stub_host_publish(self)
+
     def test_find_github_token(self):
         with patch.dict(os.environ, {"GITHUB_TOKEN": "gh_test_token_123"}):
             self.assertEqual(find_github_token(), "gh_test_token_123")
-
-    def test_get_ssh_auth_mounts(self):
-        mounts, envs = get_ssh_auth_mounts()
-        self.assertIsInstance(mounts, list)
-        self.assertIsInstance(envs, dict)
 
     @patch("sys.platform", "darwin")
     @patch("os.path.exists")
@@ -167,12 +181,12 @@ class TestHolonCLI(unittest.TestCase):
         self.assertIn(":rw", err_msg)
         self.assertNotIn(":ro", err_msg)
 
-    @patch("sandbox_executor.cli.resolve_target_repo", return_value=("git@github.com:test/repo.git", None))
+    @patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=list(_WORKTREE_MOUNTS))
     @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock:ro"])
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
     def test_run_docker_container_includes_network_isolation(
-        self, mock_which, mock_run, mock_mounts, mock_resolve_repo
+        self, mock_which, mock_run, mock_mounts, mock_worktree_mounts
     ):
         mock_run.return_value = MagicMock(returncode=0)
         with patch.dict(os.environ, {"GITHUB_TOKEN": "secret_token"}, clear=True):
@@ -188,11 +202,11 @@ class TestHolonCLI(unittest.TestCase):
             self.assertIn("--security-opt=no-new-privileges", executed_cmd)
             self.assertIn("169.254.169.254:127.0.0.1", executed_cmd)
 
-    @patch("sandbox_executor.cli.resolve_target_repo", return_value=("git@github.com:test/repo.git", None))
+    @patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=list(_WORKTREE_MOUNTS))
     @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"])
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
-    def test_run_docker_container(self, mock_which, mock_run, mock_mounts, mock_resolve_repo):
+    def test_run_docker_container(self, mock_which, mock_run, mock_mounts, mock_worktree_mounts):
         env_files: list[dict[str, str]] = []
         mock_run.side_effect = lambda cmd, *a, **k: env_files.append(_read_env_file(cmd)) or MagicMock(returncode=0)
         with patch.dict(os.environ, {"GITHUB_TOKEN": "secret_token"}, clear=True):
@@ -209,13 +223,17 @@ class TestHolonCLI(unittest.TestCase):
             # The token travels in the 0600 env-file, never on the docker command line.
             self.assertFalse(any("secret_token" in arg for arg in args))
             self.assertEqual(env_files, [{"GITHUB_TOKEN": "secret_token"}])
-            self.assertIn("HOLON_REPO_URL=git@github.com:test/repo.git", args)
+            # The worktree is bind-mounted and pinned; no repository URL or SSH agent reaches the container.
+            self.assertIn(f"/work/flow-x:{SANDBOX_WORKSPACE_MOUNT}", args)
+            self.assertIn(f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}", args)
+            self.assertIn(f"UV_PROJECT_ENVIRONMENT={SANDBOX_UV_PROJECT_ENVIRONMENT}", args)
+            self.assertFalse(any("HOLON_REPO_URL" in a or "SSH_AUTH_SOCK" in a or "GIT_CONFIG_" in a for a in args))
 
-    @patch("sandbox_executor.cli.resolve_target_repo", return_value=("git@github.com:test/repo.git", None))
+    @patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=list(_WORKTREE_MOUNTS))
     @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"])
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
-    def test_run_docker_container_forward_env_vars(self, mock_which, mock_run, mock_mounts, mock_resolve_repo):
+    def test_run_docker_container_forward_env_vars(self, mock_which, mock_run, mock_mounts, mock_worktree_mounts):
         env_files: list[dict[str, str]] = []
         mock_run.side_effect = lambda cmd, *a, **k: env_files.append(_read_env_file(cmd)) or MagicMock(returncode=0)
         env = {
@@ -248,14 +266,13 @@ class TestHolonCLI(unittest.TestCase):
             self.assertEqual([a for a in args if a.startswith("HOLON_ROLE=")], ["HOLON_ROLE=planner"])
             # Ensure non-prefixed variable is NOT forwarded
             self.assertFalse(any("SOME_OTHER_VAR" in arg for arg in args))
-            self.assertIn("HOLON_REPO_URL=git@github.com:test/repo.git", args)
 
-    @patch("sandbox_executor.cli.resolve_target_repo", return_value=("git@github.com:test/repo.git", None))
+    @patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=list(_WORKTREE_MOUNTS))
     @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"])
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
     def test_run_docker_container_hands_down_the_active_stage_remainder(
-        self, mock_which, mock_run, mock_mounts, mock_resolve_repo
+        self, mock_which, mock_run, mock_mounts, mock_worktree_mounts
     ):
         # C6-I1: inside a timed host stage the container gets the remaining time; outside one nothing is added.
         from sandbox_executor.budgets import StageTimer, active_stage_timer
@@ -280,17 +297,16 @@ class TestHolonCLI(unittest.TestCase):
         with self.assertRaises(TypeError):
             run_docker_container("planner", "holon/agent-antigravity", ["branch"])  # type: ignore[call-arg]
 
-    @patch("sandbox_executor.cli.resolve_target_repo", return_value=("git@github.com:test/repo.git", None))
+    @patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=list(_WORKTREE_MOUNTS))
     @patch("shutil.which", return_value="/usr/bin/docker")
-    def test_run_docker_container_intent_creator_requires_intent_file(self, mock_which, mock_resolve_repo):
+    def test_run_docker_container_intent_creator_requires_intent_file(self, mock_which, mock_worktree_mounts):
         with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
             rc = run_docker_container("intent-creator", "holon/orchestrator", [], agent_id="antigravity")
             self.assertEqual(rc, 1)
             self.assertIn("Error: Intent file is mandatory for intent creation.", mock_stderr.getvalue())
 
-    @patch("sandbox_executor.cli.commands.execute.execution_worktree", return_value="/work/flow-x")
     @patch("sandbox_executor.cli.run_docker_container", return_value=0)
-    def test_main_subcommands(self, mock_run_container, _mock_worktree):
+    def test_main_subcommands(self, mock_run_container):
         test_args = [
             "holon",
             "plan",
@@ -310,7 +326,10 @@ class TestHolonCLI(unittest.TestCase):
                 ["intent_branch_name", "antigravity-agent", "gemini-3.5-flash"],
                 agent_id="antigravity",
                 token_reduce=False,
+                target_worktree="/work/flow-x",
             )
+            self.host["plan_prepare"].assert_called_once_with("intent_branch_name", None, "intent_branch_name")
+            self.host["plan_push"].assert_called_once_with("/work/flow-x")
 
         mock_run_container.reset_mock()
         test_intent_args = ["holon", "intent", "intents/test.json"]
@@ -324,7 +343,9 @@ class TestHolonCLI(unittest.TestCase):
                 [],
                 agent_id="antigravity",
                 intent_file="intents/test.json",
+                target_worktree="/work/flow-x",
             )
+            self.host["intent_push"].assert_called_once_with("/work/flow-x")
 
         mock_run_container.reset_mock()
         test_exec_args = [
@@ -348,6 +369,7 @@ class TestHolonCLI(unittest.TestCase):
                 token_reduce=False,
                 target_worktree="/work/flow-x",
             )
+            self.host["execute_push"].assert_called_once_with("/work/flow-x")
 
     @patch("sandbox_executor.cli.run_docker_container", return_value=0)
     def test_main_subcommands_token_reduce_flag(self, mock_run_container):
@@ -371,6 +393,7 @@ class TestHolonCLI(unittest.TestCase):
                 ["intent_branch_name", "antigravity-agent", "gemini-3.5-flash"],
                 agent_id="antigravity",
                 token_reduce=True,
+                target_worktree="/work/flow-x",
             )
 
     def test_console_script_entrypoint_registered(self):
@@ -400,6 +423,7 @@ class TestHolonCLI(unittest.TestCase):
             [],
             agent_id="antigravity",
             intent_file="intents/test.json",
+            target_worktree="/work/flow-x",
         )
 
     def test_main_help(self):
@@ -441,192 +465,70 @@ class TestHolonCLI(unittest.TestCase):
         self.assertIn("docker not found", res.stderr)
 
 
-class TestRepoUrlResolution(unittest.TestCase):
-    def test_normalize_repo_remote_parse_error_withholds_value(self):
-        head = str(secrets.randbelow(900000) + 100000)
-        value = f"{head}?{make_probe()}@nohost"
-        with self.assertRaises(ValueError) as ctx:
-            normalize_repo_remote(value)
-        self.assertIn("Unable to parse the remote URL", str(ctx.exception))
-        self.assertNotIn(head, str(ctx.exception))
-        assert_no_fragment(str(ctx.exception), value)
+class TestRunDockerContainerWorktree(unittest.TestCase):
+    """Every role works in the host worktree; no container is handed a repository URL or git credentials."""
 
-    def test_normalize_repo_remote_ssh_scp(self):
-        """Test SSH SCP format normalization."""
-        host, path = normalize_repo_remote("git@github.com:org/repo.git")
-        self.assertEqual(host, "github.com")
-        self.assertEqual(path, "org/repo.git")
-
-    def test_normalize_repo_remote_ssh_url(self):
-        """Test SSH URL format normalization."""
-        host, path = normalize_repo_remote("ssh://git@github.com/org/repo.git")
-        self.assertEqual(host, "github.com")
-        self.assertEqual(path, "org/repo.git")
-
-    def test_normalize_repo_remote_https(self):
-        """Test HTTPS format normalization."""
-        host, path = normalize_repo_remote("https://github.com/org/repo.git")
-        self.assertEqual(host, "github.com")
-        self.assertEqual(path, "org/repo.git")
-
-    def test_normalize_repo_remote_custom_host_nested_path(self):
-        """Test custom host and nested path normalization."""
-        host, path = normalize_repo_remote("git@gitlab.internal.corp:group/subgroup/project.git")
-        self.assertEqual(host, "gitlab.internal.corp")
-        self.assertEqual(path, "group/subgroup/project.git")
-
-    def test_normalize_repo_remote_without_git_suffix(self):
-        """Test that missing .git suffix is automatically appended."""
-        host, path = normalize_repo_remote("https://github.com/org/repo")
-        self.assertEqual(host, "github.com")
-        self.assertEqual(path, "org/repo.git")
-
-    def test_normalize_repo_remote_invalid(self):
-        """Test invalid remote URL raises ValueError."""
-        with self.assertRaises(ValueError):
-            normalize_repo_remote("invalid-remote-url-without-colons")
-
-    def test_resolve_target_repo_url_explicit_override(self):
-        """Test that HOLON_REPO_URL takes absolute precedence."""
-        with patch.dict(os.environ, {"HOLON_REPO_URL": "https://custom.override/repo.git"}, clear=True):
-            self.assertEqual(resolve_target_repo_url(), "https://custom.override/repo.git")
-
-    def test_resolve_target_repo_url_ssh_with_token(self):
-        """Test SSH remote paired with detected GitHub token."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            subprocess.run(["git", "init", "-b", "main", tmp_dir], capture_output=True, check=True)
-            subprocess.run(
-                ["git", "-C", tmp_dir, "remote", "add", "origin", "git@github.com:myorg/myrepo.git"],
-                capture_output=True,
-                check=True,
-            )
-            with patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_mock_token_123"}, clear=True):
-                resolved = resolve_target_repo_url(target_worktree=tmp_dir)
-                # Credential-free: the token reaches git through a runtime credential helper instead.
-                self.assertEqual(resolved, "https://github.com/myorg/myrepo.git")
-
-    def test_resolve_target_repo_url_ssh_without_token(self):
-        """Test SSH remote without token returns raw remote URL for SSH agent forwarding."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            subprocess.run(["git", "init", "-b", "main", tmp_dir], capture_output=True, check=True)
-            subprocess.run(
-                ["git", "-C", tmp_dir, "remote", "add", "origin", "git@github.com:myorg/myrepo.git"],
-                capture_output=True,
-                check=True,
-            )
-            with patch.dict(os.environ, {}, clear=True), patch("shutil.which", return_value=None):
-                resolved = resolve_target_repo_url(target_worktree=tmp_dir)
-                self.assertEqual(resolved, "git@github.com:myorg/myrepo.git")
-
-    def test_resolve_target_repo_url_https_with_token(self):
-        """Test HTTPS remote paired with token."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            subprocess.run(["git", "init", "-b", "main", tmp_dir], capture_output=True, check=True)
-            subprocess.run(
-                ["git", "-C", tmp_dir, "remote", "add", "origin", "https://github.com/myorg/myrepo.git"],
-                capture_output=True,
-                check=True,
-            )
-            with patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_mock_token_456"}, clear=True):
-                resolved = resolve_target_repo_url(target_worktree=tmp_dir)
-                self.assertEqual(resolved, "https://github.com/myorg/myrepo.git")
-
-    def test_resolve_target_repo_url_worktree(self):
-        """Test worktree inherits origin from main repository."""
-        with tempfile.TemporaryDirectory() as base_dir:
-            main_repo = os.path.join(base_dir, "main_repo")
-            worktree_dir = os.path.join(base_dir, "worktree_repo")
-            os.makedirs(main_repo, exist_ok=True)
-            subprocess.run(["git", "init", "-b", "main", main_repo], capture_output=True, check=True)
-            subprocess.run(["git", "-C", main_repo, "config", "user.name", "Tester"], capture_output=True, check=True)
-            subprocess.run(
-                ["git", "-C", main_repo, "config", "user.email", "test@test.org"],
-                capture_output=True,
-                check=True,
-            )
-            subprocess.run(
-                ["git", "-C", main_repo, "remote", "add", "origin", "git@github.com:worktree/repo.git"],
-                capture_output=True,
-                check=True,
-            )
-            dummy_file = os.path.join(main_repo, "file.txt")
-            with open(dummy_file, "w") as f:
-                f.write("test")
-            subprocess.run(["git", "-C", main_repo, "add", "file.txt"], capture_output=True, check=True)
-            subprocess.run(["git", "-C", main_repo, "commit", "-m", "init"], capture_output=True, check=True)
-            subprocess.run(
-                ["git", "-C", main_repo, "worktree", "add", "-b", "branch1", worktree_dir],
-                capture_output=True,
-                check=True,
-            )
-
-            with patch.dict(os.environ, {}, clear=True), patch("shutil.which", return_value=None):
-                resolved = resolve_target_repo_url(target_worktree=worktree_dir)
-                self.assertEqual(resolved, "git@github.com:worktree/repo.git")
-
-    def test_resolve_target_repo_url_missing_origin(self):
-        """Test that repository without origin remote raises RuntimeError."""
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            subprocess.run(["git", "init", "-b", "main", tmp_dir], capture_output=True, check=True)
-            with patch.dict(os.environ, {}, clear=True):
-                with self.assertRaises(RuntimeError) as cm:
-                    resolve_target_repo_url(target_worktree=tmp_dir)
-                self.assertIn("Unable to resolve git remote 'origin'", str(cm.exception))
-
-    def test_resolve_target_repo_url_non_git_dir(self):
-        """Test that non-git directory raises RuntimeError."""
-        with tempfile.TemporaryDirectory() as tmp_dir, patch.dict(os.environ, {}, clear=True):
-            with self.assertRaises(RuntimeError) as cm:
-                resolve_target_repo_url(target_worktree=tmp_dir)
-            self.assertIn("Unable to resolve git remote 'origin'", str(cm.exception))
-
+    @patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=list(_WORKTREE_MOUNTS))
     @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=[])
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
-    def test_sanitized_cmd_masks_tokenized_repo_url(self, mock_which, mock_run, mock_mounts):
-        """Test that a tokenised HOLON_REPO_URL is stripped of its credential before it is forwarded or echoed."""
+    def test_a_stale_repo_url_is_dropped_and_changes_nothing(self, mock_which, mock_run, mock_mounts, mock_worktree):
+        runs: list[tuple[list[str], dict[str, str]]] = []
+        mock_run.side_effect = lambda cmd, *a, **k: runs.append((list(cmd), _read_env_file(cmd))) or MagicMock(
+            returncode=0
+        )
+        stale = f"https://x-access-token:{make_gh_probe()}@github.com/myorg/myrepo.git"
+        base_env = {"GITHUB_TOKEN": "secret_token", "HOLON_AGENT_EFFORT": "high"}
+
+        def run_with(env: dict[str, str]) -> tuple[list[str], dict[str, str]]:
+            with patch.dict(os.environ, env, clear=True), patch("sys.stdout", new_callable=io.StringIO):
+                code = run_docker_container("planner", "img", ["branch"], agent_id="antigravity")
+            self.assertEqual(code, 0)
+            cmd, env_file = runs[-1]
+            # The env-file path is a fresh temporary name each run.
+            return ["<env-file>" if a == cmd[cmd.index("--env-file") + 1] else a for a in cmd], env_file
+
+        baseline = run_with(base_env)
+        with_stale = run_with({**base_env, "HOLON_REPO_URL": stale})
+
+        self.assertEqual(with_stale, baseline)
+        self.assertFalse(any("HOLON_REPO_URL" in a for a in with_stale[0]))
+        self.assertNotIn("HOLON_REPO_URL", with_stale[1])
+
+    @patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=list(_WORKTREE_MOUNTS))
+    @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=[])
+    @patch("subprocess.run")
+    @patch("shutil.which", return_value="/usr/bin/docker")
+    def test_github_token_stays_in_the_env_file_and_out_of_the_echo(self, mock_which, mock_run, mock_mounts, mock_wt):
         env_files: list[dict[str, str]] = []
         mock_run.side_effect = lambda cmd, *a, **k: env_files.append(_read_env_file(cmd)) or MagicMock(returncode=0)
         sample = make_gh_probe()
-        sample_url = f"https://x-access-token:{sample}@github.com/myorg/myrepo.git"
         with (
-            patch.dict(os.environ, {"HOLON_REPO_URL": sample_url}, clear=True),
+            patch.dict(os.environ, {"GITHUB_TOKEN": sample}, clear=True),
             patch("sys.stdout", new_callable=io.StringIO) as mock_stdout,
         ):
-            code = run_docker_container(
-                "planner",
-                "holon/agent-antigravity",
-                ["branch", "agent", "model"],
-                agent_id="antigravity",
-            )
-            self.assertEqual(code, 0)
-            output = mock_stdout.getvalue()
-            self.assertIn("HOLON_REPO_URL=https://github.com/myorg/myrepo.git", output)
-            self.assertNotIn(sample, output)
-            self.assertNotIn(sample, " ".join(mock_run.call_args[0][0]))
-            # With no other token source, the credential stripped from the URL becomes the forwarded token.
-            # The override carried the credential, so the host-scoped helper travels with it.
-            self.assertEqual(len(env_files), 1)
-            self.assertEqual(set(env_files[0]), {"GITHUB_TOKEN", "GIT_CONFIG_VALUE_1"})
-            self.assertEqual(env_files[0]["GITHUB_TOKEN"], sample)
+            code = run_docker_container("planner", "img", ["branch"], agent_id="antigravity")
+        self.assertEqual(code, 0)
+        self.assertNotIn(sample, mock_stdout.getvalue())
+        self.assertNotIn(sample, " ".join(mock_run.call_args[0][0]))
+        self.assertEqual(env_files, [{"GITHUB_TOKEN": sample}])
 
     @patch("shutil.which", return_value="/usr/bin/docker")
-    def test_run_docker_container_fails_fast_on_missing_origin(self, mock_which):
-        """Test that run_docker_container exits non-zero without calling Docker if origin is unresolvable."""
+    def test_a_role_without_a_valid_worktree_fails_before_docker_runs(self, mock_which):
+        docker = _RecordingDocker()
         with (
-            tempfile.TemporaryDirectory() as empty_dir,
+            tempfile.TemporaryDirectory() as not_a_repo,
             patch.dict(os.environ, {}, clear=True),
-            patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
+            patch.object(cli.subprocess, "run", docker),
         ):
-            code = run_docker_container(
-                "planner",
-                "holon/agent-antigravity",
-                ["branch", "agent", "model"],
-                agent_id="antigravity",
-                target_worktree=empty_dir,
-            )
-            self.assertEqual(code, 1)
-            self.assertIn("Error: Unable to resolve git remote 'origin'", mock_stderr.getvalue())
+            for worktree in (None, not_a_repo):
+                with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+                    code = run_docker_container(
+                        "planner", "holon/agent-pi", ["branch"], agent_id="pi", target_worktree=worktree
+                    )
+                self.assertEqual(code, 1)
+                self.assertIn("Error:", mock_stderr.getvalue())
+        self.assertEqual(docker.argv, [])
 
 
 class TestHolonFlowCLI(unittest.TestCase):
@@ -1379,6 +1281,9 @@ class TestDoctor(unittest.TestCase):
 class TestSharedRoleDispatch(unittest.TestCase):
     """'holon intent|plan|execute' and 'holon flow' share one dispatch path (dispatch_role_agent)."""
 
+    def setUp(self):
+        self.host = _stub_host_publish(self)
+
     def test_normalise_agent_id_and_image_resolution(self):
         from sandbox_executor.agent_defaults import UnmappedAgentRunnerError
         from sandbox_executor.cli import normalise_agent_id, resolve_role_image
@@ -1393,9 +1298,8 @@ class TestSharedRoleDispatch(unittest.TestCase):
             resolve_role_image("executor", "newrunner")
         self.assertEqual(resolve_role_image("intent-creator", "newrunner"), "holon/orchestrator")
 
-    @patch("sandbox_executor.cli.commands.execute.execution_worktree", return_value="/work/flow-x")
     @patch("sandbox_executor.cli.dispatch_role_agent", return_value=0)
-    def test_per_stage_commands_route_through_dispatch_role_agent(self, mock_dispatch, _mock_worktree):
+    def test_per_stage_commands_route_through_dispatch_role_agent(self, mock_dispatch):
         cases = [
             (["holon", "intent", "intents/test.json"], ("intent-creator", None, None, [])),
             (
@@ -1414,10 +1318,11 @@ class TestSharedRoleDispatch(unittest.TestCase):
             self.assertEqual(cm.exception.code, 0)
             mock_dispatch.assert_called_once()
             self.assertEqual(mock_dispatch.call_args.args, expected)
+            # Each standalone command hands its prepared host worktree to the container.
+            self.assertEqual(mock_dispatch.call_args.kwargs["target_worktree"], "/work/flow-x")
 
-    @patch("sandbox_executor.cli.commands.execute.execution_worktree", return_value="/work/flow-x")
     @patch("sandbox_executor.cli.dispatch_role_agent")
-    def test_execute_of_a_refused_over_budget_plan_exits_non_zero_with_a_message(self, mock_dispatch, _mock_worktree):
+    def test_execute_of_a_refused_over_budget_plan_exits_non_zero_with_a_message(self, mock_dispatch):
         from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
 
         argv = ["holon", "execute", "I-1-x/P-1/_", "--agent", "claude-agent", "--model", "claude-opus-5-5"]
@@ -1489,7 +1394,7 @@ def leak_env(tmp_path, monkeypatch):
     subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", "git@github.com:myorg/myrepo.git"], check=True)
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
     monkeypatch.setattr(cli, "get_agent_session_mounts", lambda agent_id: [])
-    monkeypatch.setattr(cli, "get_ssh_auth_mounts", lambda: ([], {}))
+    monkeypatch.setattr(cli.git_flow, "sandbox_worktree_mounts", lambda *args, **kwargs: list(_WORKTREE_MOUNTS))
     # A proxy URL carrying its own credential, as an external HOLON_PROXY_URL can.
     proxy_sample = make_probe("proxypw")
     monkeypatch.setattr(
@@ -1556,7 +1461,7 @@ def test_docker_echo_and_argv_carry_no_secret_fragment(leak_env, monkeypatch, ca
         assert_no_fragment(echo, value)  # goal 4a: the printed docker run command
         assert_no_fragment(argv_text, value)  # goal 4c: the docker argv list
     # The repository, role and branch stay readable.
-    for readable in ("HOLON_REPO_URL=https://github.com/myorg/myrepo.git", "HOLON_ROLE=planner", _BRANCH):
+    for readable in (f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}", "HOLON_ROLE=planner", _BRANCH):
         assert readable in echo
         assert readable in docker.argv
     assert "--env-file" in echo
@@ -1686,258 +1591,20 @@ def test_env_file_is_removed_however_the_run_ends(leak_env, monkeypatch, outcome
     assert not os.path.exists(docker.env_file)
 
 
-def test_git_credential_helper_is_injected_by_reference_only(leak_env, monkeypatch):
+def test_no_git_credential_or_ssh_agent_environment_reaches_the_container(leak_env, monkeypatch):
+    """The container never talks to the remote, so it gets no credential helper, SSH agent or repository URL."""
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/ssh-agent.sock")
     docker = _RecordingDocker()
     monkeypatch.setattr(cli.subprocess, "run", docker)
 
     assert _run_planner(leak_env["repo"]) == 0
 
     env = docker.container_env
-    assert env["GIT_CONFIG_COUNT"] == "2"
-    assert env["GIT_CONFIG_KEY_0"] == "credential.https://github.com.helper"
-    assert env["GIT_CONFIG_VALUE_0"] == ""
-    assert env["GIT_CONFIG_KEY_1"] == "credential.https://github.com.helper"
-    # The helper's literal `password=` text sends it through the env-file like any credential-shaped
-    # value, although it holds only the `$GITHUB_TOKEN` reference.
-    assert "GIT_CONFIG_VALUE_1" not in docker.argv_env
-    helper = docker.env_file_contents["GIT_CONFIG_VALUE_1"]
-    assert helper == cli.GIT_CREDENTIAL_HELPER
-    assert '"$GITHUB_TOKEN"' in helper
-    assert_no_fragment(helper, leak_env["probes"]["GITHUB_TOKEN"])
-
-
-def test_credential_helper_answers_from_the_environment(leak_env):
-    """The helper, run by real git, yields the token from the environment and nothing is read from a file."""
-    sample = leak_env["probes"]["GITHUB_TOKEN"]
-    env = {
-        "PATH": os.environ["PATH"],
-        "HOME": os.environ["HOME"],
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_TERMINAL_PROMPT": "0",
-        "GITHUB_TOKEN": sample,
-        "GIT_CONFIG_COUNT": "2",
-        "GIT_CONFIG_KEY_0": "credential.https://github.com.helper",
-        "GIT_CONFIG_VALUE_0": "",
-        "GIT_CONFIG_KEY_1": "credential.https://github.com.helper",
-        "GIT_CONFIG_VALUE_1": cli.GIT_CREDENTIAL_HELPER,
-    }
-    origin = subprocess.run(
-        ["git", "config", "--show-scope", "--get-all", "credential.https://github.com.helper"],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert [line.split("\t", 1)[0] for line in origin.stdout.splitlines()] == ["command", "command"]
-    filled = subprocess.run(
-        ["git", "credential", "fill"],
-        input="protocol=https\nhost=github.com\npath=myorg/myrepo.git\n\n",
-        env=env,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert "username=x-access-token" in filled.stdout.splitlines()
-    assert f"password={sample}" in filled.stdout.splitlines()
-
-
-def test_override_url_credential_is_stripped_and_forwarded_through_the_env_file(leak_env, monkeypatch, capsys):
-    sample = leak_env["probes"]["GITHUB_TOKEN"]
-    monkeypatch.delenv("GITHUB_TOKEN")
-    monkeypatch.setenv("HOLON_REPO_URL", f"https://x-access-token:{sample}@github.com/myorg/myrepo.git")
-    docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
-
-    assert _run_planner(leak_env["repo"]) == 0
-
-    captured = capsys.readouterr()
-    assert "HOLON_REPO_URL contains embedded credentials" in captured.err
-    for text in (captured.out, captured.err, " ".join(docker.argv)):
-        assert_no_fragment(text, sample)
-    assert "HOLON_REPO_URL=https://github.com/myorg/myrepo.git" in docker.argv
-    assert docker.env_file_contents["GITHUB_TOKEN"] == sample
-    assert docker.container_env.get("GIT_CONFIG_KEY_1") == "credential.https://github.com.helper"
-
-
-def test_origin_url_credential_is_stripped_and_forwarded_through_the_env_file(leak_env, monkeypatch, capsys):
-    """An origin remote that embeds a credential never reaches the container URL; the credential is a helper token."""
-    url_sample = make_probe("origincred")
-    monkeypatch.delenv("GITHUB_TOKEN")
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            leak_env["repo"],
-            "remote",
-            "set-url",
-            "origin",
-            f"https://x-access-token:{url_sample}@git.example.org/myorg/myrepo.git",
-        ],
-        check=True,
-    )
-    docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
-
-    assert _run_planner(leak_env["repo"]) == 0
-
-    captured = capsys.readouterr()
-    assert "remote.origin.url contains embedded credentials" in captured.err
-    for text in (captured.out, captured.err, " ".join(docker.argv)):
-        assert_no_fragment(text, url_sample)
-    assert "HOLON_REPO_URL=https://git.example.org/myorg/myrepo.git" in docker.argv
-    assert docker.env_file_contents["GITHUB_TOKEN"] == url_sample
-    assert docker.container_env.get("GIT_CONFIG_KEY_1") == "credential.https://git.example.org.helper"
-
-
-@pytest.mark.parametrize("source", ["override", "origin"])
-def test_embedded_url_credential_wins_over_the_ambient_host_token(leak_env, monkeypatch, source):
-    """A credential embedded in the repository URL names its remote, so it beats a host token for another host."""
-    url_sample = make_probe("enterprisecred")
-    url = f"https://x-access-token:{url_sample}@git.example.org/myorg/myrepo.git"
-    if source == "override":
-        monkeypatch.setenv("HOLON_REPO_URL", url)
-    else:
-        subprocess.run(["git", "-C", leak_env["repo"], "remote", "set-url", "origin", url], check=True)
-    docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
-
-    assert _run_planner(leak_env["repo"]) == 0
-
-    assert docker.env_file_contents["GITHUB_TOKEN"] == url_sample
-    assert "HOLON_REPO_URL=https://git.example.org/myorg/myrepo.git" in docker.argv
-    assert docker.container_env.get("GIT_CONFIG_KEY_1") == "credential.https://git.example.org.helper"
-
-
-def _set_repo_url(leak_env, monkeypatch, source: str, url: str) -> None:
-    if source == "override":
-        monkeypatch.setenv("HOLON_REPO_URL", url)
-    else:
-        subprocess.run(["git", "-C", leak_env["repo"], "remote", "set-url", "origin", url], check=True)
-
-
-@pytest.mark.parametrize("source", ["override", "origin"])
-def test_plain_user_name_in_the_url_is_not_a_credential(leak_env, monkeypatch, capsys, source):
-    """`https://<user>@host/...` names a login, not a token: it is stripped silently and the host token applies."""
-    _set_repo_url(leak_env, monkeypatch, source, "https://someuser@git.example.org/myorg/myrepo.git")
-    docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
-
-    assert _run_planner(leak_env["repo"]) == 0
-
-    assert "embedded credentials" not in capsys.readouterr().err
-    assert "HOLON_REPO_URL=https://git.example.org/myorg/myrepo.git" in docker.argv
+    assert not [key for key in env if key.startswith("GIT_CONFIG_") or key in ("SSH_AUTH_SOCK", "HOLON_REPO_URL")]
+    assert "/tmp/ssh-agent.sock" not in " ".join(docker.argv)
+    # The token still rides in the env-file, never as a `-e` item.
     assert docker.env_file_contents["GITHUB_TOKEN"] == leak_env["probes"]["GITHUB_TOKEN"]
-    # An origin remote gets the host-scoped helper for the host token; a credential-free override gets none.
-    has_helper = docker.container_env.get("GIT_CONFIG_KEY_1") == "credential.https://git.example.org.helper"
-    assert has_helper is (source == "origin")
-
-
-def _token_user_url() -> tuple[str, str]:
-    sample = make_gh_probe("gh" + "o_")
-    return f"https://{sample}@git.example.org/myorg/myrepo.git", sample
-
-
-def _password_url() -> tuple[str, str]:
-    pw_sample = make_probe("userpass")
-    return f"https://someuser:{pw_sample}@git.example.org/myorg/myrepo.git", pw_sample
-
-
-def _access_token_url() -> tuple[str, str]:
-    sample = make_probe("accesstoken")
-    return f"https://x-access-token:{sample}@git.example.org/myorg/myrepo.git", sample
-
-
-@pytest.mark.parametrize("source", ["override", "origin"])
-@pytest.mark.parametrize(
-    "make_url",
-    [_token_user_url, _password_url, _access_token_url],
-    ids=["token-as-user", "user-password", "x-access-token"],
-)
-def test_url_credential_forms_supply_the_env_file_token(leak_env, monkeypatch, capsys, source, make_url):
-    """Each userinfo form that carries a credential is stripped, warned about, and wins over the host token."""
-    url, url_part = make_url()
-    _set_repo_url(leak_env, monkeypatch, source, url)
-    docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
-
-    assert _run_planner(leak_env["repo"]) == 0
-
-    captured = capsys.readouterr()
-    expected_source = "HOLON_REPO_URL" if source == "override" else "remote.origin.url"
-    assert f"{expected_source} contains embedded credentials" in captured.err
-    for text in (captured.out, captured.err, " ".join(docker.argv)):
-        assert_no_fragment(text, url_part)
-    assert "HOLON_REPO_URL=https://git.example.org/myorg/myrepo.git" in docker.argv
-    assert docker.env_file_contents["GITHUB_TOKEN"] == url_part
-    assert docker.container_env.get("GIT_CONFIG_KEY_1") == "credential.https://git.example.org.helper"
-
-
-@pytest.mark.parametrize("override", ["ssh://git@github.com/myorg/myrepo.git", "git@github.com:myorg/myrepo.git"])
-def test_ssh_override_url_keeps_its_user_and_synthesises_no_token(leak_env, monkeypatch, capsys, override):
-    """The SSH login user (`git`) is not a credential: it stays in the URL and never becomes GITHUB_TOKEN."""
-    monkeypatch.delenv("GITHUB_TOKEN")
-    monkeypatch.setenv("HOLON_REPO_URL", override)
-    docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
-
-    assert _run_planner(leak_env["repo"]) == 0
-
-    assert "embedded credentials" not in capsys.readouterr().err
-    assert f"HOLON_REPO_URL={override}" in docker.argv
-    assert "GITHUB_TOKEN" not in docker.env_file_contents
-    assert not any(arg.startswith("GITHUB_TOKEN=") for arg in docker.argv)
-    assert not any(key.startswith("GIT_CONFIG_") for key in docker.container_env)
-
-
-@pytest.mark.parametrize("source", ["override", "origin"])
-def test_plain_http_url_credential_is_discarded_not_forwarded(leak_env, monkeypatch, capsys, source):
-    """Plain HTTP is never sent a credential: it is dropped with an accurate warning, not forwarded unused."""
-    url_sample = make_probe("plainhttpcred")
-    url = f"http://x-access-token:{url_sample}@git.example.org/myorg/myrepo.git"
-    monkeypatch.delenv("GITHUB_TOKEN")
-    if source == "override":
-        monkeypatch.setenv("HOLON_REPO_URL", url)
-    else:
-        subprocess.run(["git", "-C", leak_env["repo"], "remote", "set-url", "origin", url], check=True)
-    docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
-
-    assert _run_planner(leak_env["repo"]) == 0
-
-    captured = capsys.readouterr()
-    assert "contains embedded credentials" in captured.err
-    assert "discarded" in captured.err
-    assert "credential helper" not in captured.err
-    for text in (captured.out, captured.err, " ".join(docker.argv), *docker.env_file_contents.values()):
-        assert_no_fragment(text, url_sample)
-    assert "HOLON_REPO_URL=http://git.example.org/myorg/myrepo.git" in docker.argv
-    assert "GITHUB_TOKEN" not in docker.env_file_contents
-    assert not any(key.startswith("GIT_CONFIG_") for key in docker.container_env)
-
-
-def test_plain_http_override_falls_back_to_the_host_token(leak_env, monkeypatch):
-    """Discarding a plain-HTTP credential leaves the ambient host token as the forwarded GITHUB_TOKEN."""
-    url_sample = make_probe("plainhttpcred")
-    monkeypatch.setenv("HOLON_REPO_URL", f"http://x-access-token:{url_sample}@git.example.org/myorg/myrepo.git")
-    docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
-
-    assert _run_planner(leak_env["repo"]) == 0
-
-    assert docker.env_file_contents["GITHUB_TOKEN"] == leak_env["probes"]["GITHUB_TOKEN"]
-    for value in docker.env_file_contents.values():
-        assert_no_fragment(value, url_sample)
-    assert not any(key.startswith("GIT_CONFIG_") for key in docker.container_env)
-
-
-def test_no_credential_helper_for_an_override_url_that_never_carried_the_token(leak_env, monkeypatch):
-    monkeypatch.setenv("HOLON_REPO_URL", "https://git.example.org/myorg/myrepo.git")
-    docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
-
-    assert _run_planner(leak_env["repo"]) == 0
-
-    assert not any(key.startswith("GIT_CONFIG_") for key in docker.container_env)
+    assert "GITHUB_TOKEN" not in docker.argv_env
 
 
 def test_agent_settings_carrying_an_api_key_travel_in_the_env_file(leak_env, monkeypatch, capsys):
@@ -1992,157 +1659,6 @@ def test_env_file_dir_is_tightened_to_owner_only(tmp_path, monkeypatch):
 
     assert _REAL_ENV_FILE_DIR() == str(loose)
     assert stat.S_IMODE(os.stat(loose).st_mode) == 0o700
-
-
-# Built once at collection, so the URL and the expected credential are the same runtime value.
-_GH_USER_PROBE = make_gh_probe()
-
-
-@pytest.mark.parametrize(
-    ("url", "expected"),
-    [
-        ("https://x-access-token:SECRET@github.com/o/r.git", ("https://github.com/o/r.git", "SECRET")),
-        # A plain bare user name is a login name, not a credential.
-        ("https://someuser@github.com/o/r.git", ("https://github.com/o/r.git", None)),
-        ("https://someuser:@github.com/o/r.git", ("https://github.com/o/r.git", None)),
-        # A token-shaped bare user name is the credential (GitHub accepts a token as the user name).
-        # A fixed id: the probe is random per process, and xdist workers must collect identical test ids.
-        pytest.param(
-            f"https://{_GH_USER_PROBE}@github.com/o/r.git",
-            ("https://github.com/o/r.git", _GH_USER_PROBE),
-            id="token-as-user-name",
-        ),
-        ("https://someuser:SECRET@github.com/o/r.git", ("https://github.com/o/r.git", "SECRET")),
-        # The `<token>:x-oauth-basic` form carries the token as the user name.
-        ("https://SECRET:x-oauth-basic@github.com/o/r.git", ("https://github.com/o/r.git", "SECRET")),
-        # Userinfo is percent-decoded, as git decodes it.
-        ("https://someuser:SE%40CRET@github.com/o/r.git", ("https://github.com/o/r.git", "SE@CRET")),
-        ("https://github.com/o/r.git", ("https://github.com/o/r.git", None)),
-        ("https://u:SECRET@ghe.example:8443/o/r.git", ("https://ghe.example:8443/o/r.git", "SECRET")),
-        ("git@github.com:o/r.git", ("git@github.com:o/r.git", None)),
-        ("ssh://git@github.com/o/r.git", ("ssh://git@github.com/o/r.git", None)),
-        ("ssh://git@ghe.example:2222/o/r.git", ("ssh://git@ghe.example:2222/o/r.git", None)),
-        ("git+ssh://git@github.com/o/r.git", ("git+ssh://git@github.com/o/r.git", None)),
-        # The placeholder password is compared case-insensitively and is never itself the credential.
-        ("https://SECRET:X-OAuth-Basic@github.com/o/r.git", ("https://github.com/o/r.git", "SECRET")),
-        ("https://:x-oauth-basic@github.com/o/r.git", ("https://github.com/o/r.git", None)),
-        # Bracketed IPv6 hosts and ports survive; an `@` in the path is not userinfo.
-        ("https://u:SECRET@[::1]:8443/o/r.git", ("https://[::1]:8443/o/r.git", "SECRET")),
-        ("https://github.com/o/r@v1.git", ("https://github.com/o/r@v1.git", None)),
-        # A credential-free URL is returned byte for byte: case, port, query and fragment kept.
-        ("https://GitHub.com:443/O/R.git?x=1#frag", ("https://GitHub.com:443/O/R.git?x=1#frag", None)),
-        ("http://git.example.org/o/r.git", ("http://git.example.org/o/r.git", None)),
-        ("file:///srv/git/r.git", ("file:///srv/git/r.git", None)),
-        # A raw `/`, `?` or `#` in the password is still userinfo to git: the whole credential is stripped.
-        ("https://someuser:SE/CRET@github.com/o/r.git", ("https://github.com/o/r.git", "SE/CRET")),
-        ("https://someuser:SE?CRET@github.com/o/r.git", ("https://github.com/o/r.git", "SE?CRET")),
-        ("https://someuser:SE#CRET@github.com/o/r.git", ("https://github.com/o/r.git", "SE#CRET")),
-        ("https://u:S/E?C#RET@ghe.example:8443/o/r.git", ("https://ghe.example:8443/o/r.git", "S/E?C#RET")),
-        ("https://u:SE/CRET@github.com/o/r@v1.git", ("https://github.com/o/r@v1.git", "SE/CRET")),
-        # A port, an IPv6 literal or a bare host before the delimiter is not a password.
-        ("https://ghe.example:8443/o/r@v1.git", ("https://ghe.example:8443/o/r@v1.git", None)),
-        ("https://[::1]:8443/o/r@v1.git", ("https://[::1]:8443/o/r@v1.git", None)),
-        ("https://github.com/o/r.git?ref=a@b#c@d", ("https://github.com/o/r.git?ref=a@b#c@d", None)),
-    ],
-)
-def test_strip_url_credentials(url, expected):
-    assert strip_url_credentials(url) == expected
-
-
-@pytest.mark.parametrize(
-    ("url", "expected"),
-    [
-        ("https://github.com/o/r.git", "github.com"),
-        ("https://GHE.example:8443/o/r.git", "ghe.example:8443"),
-        ("http://github.com/o/r.git", None),
-        ("git@github.com:o/r.git", None),
-        ("ssh://git@github.com/o/r.git", None),
-    ],
-)
-def test_credential_host(url, expected):
-    assert cli.credential_host(url) == expected
-
-
-def test_credential_helper_is_scoped_to_host_and_port(leak_env, monkeypatch):
-    url_sample = make_probe("e")
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            leak_env["repo"],
-            "remote",
-            "set-url",
-            "origin",
-            f"https://x-access-token:{url_sample}@ghe.example:8443/myorg/myrepo.git",
-        ],
-        check=True,
-    )
-    docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
-
-    assert _run_planner(leak_env["repo"]) == 0
-
-    assert docker.container_env["GIT_CONFIG_KEY_0"] == "credential.https://ghe.example:8443.helper"
-    assert docker.container_env["GIT_CONFIG_KEY_1"] == "credential.https://ghe.example:8443.helper"
-    assert docker.container_env["HOLON_REPO_URL"] == "https://ghe.example:8443/myorg/myrepo.git"
-    assert docker.env_file_contents["GITHUB_TOKEN"] == url_sample
-
-
-def _helper_env(sample: str, helper_host: str) -> dict[str, str]:
-    key = f"credential.https://{helper_host}.helper"
-    return {
-        "PATH": os.environ["PATH"],
-        "HOME": os.environ["HOME"],
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_TERMINAL_PROMPT": "0",
-        "GIT_ASKPASS": "",
-        "SSH_ASKPASS": "",
-        "GITHUB_TOKEN": sample,
-        "GIT_CONFIG_COUNT": "2",
-        "GIT_CONFIG_KEY_0": key,
-        "GIT_CONFIG_VALUE_0": "",
-        "GIT_CONFIG_KEY_1": key,
-        "GIT_CONFIG_VALUE_1": cli.GIT_CREDENTIAL_HELPER,
-    }
-
-
-@pytest.mark.parametrize(
-    ("asked_host", "answered"),
-    [("ghe.example:8443", True), ("ghe.example", False), ("ghe.example:9443", False), ("github.com", False)],
-)
-def test_real_git_answers_only_for_the_scoped_host(leak_env, asked_host, answered):
-    """Real `git credential fill`: the helper answers for its own host:port and stays silent elsewhere."""
-    sample = leak_env["probes"]["GITHUB_TOKEN"]
-    filled = subprocess.run(
-        ["git", "credential", "fill"],
-        input=f"protocol=https\nhost={asked_host}\npath=myorg/myrepo.git\n\n",
-        env=_helper_env(sample, "ghe.example:8443"),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if answered:
-        assert filled.returncode == 0
-        assert f"password={sample}" in filled.stdout.splitlines()
-    else:
-        # With prompts disabled and no helper for this host, git cannot fill a credential.
-        assert filled.returncode != 0
-        assert_no_leak(sample, filled.stdout, filled.stderr)
-
-
-def test_empty_user_oauth_basic_override_forwards_no_placeholder(leak_env, monkeypatch, capsys):
-    """`https://:x-oauth-basic@host` carries no credential: the placeholder is never forwarded."""
-    monkeypatch.delenv("GITHUB_TOKEN")
-    monkeypatch.setenv("HOLON_REPO_URL", "https://:x-oauth-basic@git.example.org/myorg/myrepo.git")
-    docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
-
-    assert _run_planner(leak_env["repo"]) == 0
-
-    assert "embedded credentials" not in capsys.readouterr().err
-    assert docker.container_env["HOLON_REPO_URL"] == "https://git.example.org/myorg/myrepo.git"
-    assert "GITHUB_TOKEN" not in docker.container_env
-    assert not any(key.startswith("GIT_CONFIG_") for key in docker.container_env)
 
 
 def test_oauth_settings_json_travels_in_the_env_file(leak_env, monkeypatch, capsys):
@@ -2200,7 +1716,7 @@ def test_intent_file_error_path_leaves_no_env_file(leak_env, monkeypatch, capsys
     assert os.listdir(cli.env_file_dir()) == []
 
 
-def test_redact_command_echo_masks_the_helper_reference_only(leak_env, monkeypatch, capsys):
+def test_redact_command_echo_names_the_env_file_but_not_its_contents(leak_env, monkeypatch, capsys):
     """The echo shows `--env-file <path>` but never the env-file contents or the token."""
     docker = _RecordingDocker()
     monkeypatch.setattr(cli.subprocess, "run", docker)
@@ -2209,8 +1725,8 @@ def test_redact_command_echo_masks_the_helper_reference_only(leak_env, monkeypat
 
     echo = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("Executing: docker run"))
     assert f"--env-file {docker.env_file}" in echo
-    assert "GIT_CONFIG_VALUE_1" not in echo
-    assert_names_repo(echo, "github.com/myorg/myrepo.git", _BRANCH)
+    assert_no_fragment(echo, leak_env["probes"]["GITHUB_TOKEN"])
+    assert _BRANCH in echo
 
 
 def _password_head_error(head: str) -> ValueError:

@@ -625,7 +625,7 @@ class TestExecutor(unittest.TestCase):
                 # Simulate corrupted git repository after agent execution
                 mock_res.returncode = 1
                 mock_res.stdout = ""
-                mock_res.stderr = "fatal: not a git repository"
+                mock_res.stderr = f"fatal: not a git repository: /work/{_fake_token('ghp_')}"
             else:
                 mock_res.returncode = 0
                 mock_res.stdout = "OK"
@@ -649,13 +649,16 @@ class TestExecutor(unittest.TestCase):
                 executor.main()
 
             self.assertIn("the mounted worktree's git repository is unusable after the agent ran", str(raised.exception))
+            # The failure line printed for the operator redacts the git diagnostic.
+            self.assertIn("Execution failed:", mock_stderr.getvalue())
+            self.assertNotIn(_fake_token("ghp_"), mock_stderr.getvalue())
             # No backup directory, no re-initialisation and no remote verb
             self.assertEqual([d for d in os.listdir(tmp_dir) if d.startswith(".git-unusable-")], [])
             called_cmds = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
             self.assertNotIn(["git", "init"], called_cmds)
             self.assertEqual(_remote_git_cmds(called_cmds), [])
 
-    def _run_over_budget_main(  # noqa: PLR0913
+    def _run_over_budget_main(
         self, sync_result, *, staged=True, has_parent=True, git_calls=None, stdout=None
     ):
         """Run executor.main() on an over-budget plan whose ledger row is staged; return its exit code and records.
@@ -2357,295 +2360,48 @@ class TestExecutor(unittest.TestCase):
         plan_tip = tip_res.stdout.strip()
         return bare_dir, plan_tip
 
-    @patch("sandbox_executor.entrypoint.executor.shutil.rmtree")
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
-    def test_git_recovery_corrupted_git_preserves_parent_history_and_worktree(
-        self, mock_get_runner, mock_cleanup, mock_rmtree
-    ):
-        with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
-            plan_branch = "I-456/P-123/_"
-            bare_dir, plan_tip = self._create_bare_remote_with_plan(base_dir, plan_branch)
-            workspace_dir = os.path.join(base_dir, "workspace")
-
-            mock_runner = MagicMock()
-            mock_runner.get_version.return_value = "1.0.0"
-
-            def build_cmd_side_effect(*args, **kwargs):
-                agent_script = (
-                    "import os, shutil; "
-                    "os.makedirs('src', exist_ok=True); "
-                    "open('src/agent_edit.py', 'w').write('# agent edit'); "
-                    "shutil.rmtree('.git/objects')"
-                )
-                return ["python3", "-c", agent_script]
-
-            mock_runner.build_cmd.side_effect = build_cmd_side_effect
-            mock_runner.validate.return_value = None
-            mock_get_runner.return_value = mock_runner
-
-            with (
-                patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": workspace_dir}),
-                patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=workspace_dir),
-                patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value=bare_dir),
-                patch("sys.argv", ["executor.py", plan_branch, "antigravity-agent", "gemini-3.5-flash"]),
-            ):
-                executor.main()
-
-            mock_rmtree.assert_not_called()
-
-            parent_res = subprocess.run(
-                ["git", "rev-parse", "HEAD^"],
-                cwd=workspace_dir,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            self.assertEqual(parent_res.stdout.strip(), plan_tip)
-
-            tree_res = subprocess.run(
-                ["git", "ls-tree", "-r", "--name-only", "HEAD"],
-                cwd=workspace_dir,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            tree_files = tree_res.stdout.splitlines()
-            self.assertIn("src/codebase.py", tree_files)
-            self.assertIn("src/agent_edit.py", tree_files)
-            self.assertIn("holon-knowledge/ledger/executions.jsonl", tree_files)
-            self.assertFalse(any(f.startswith("executions/") for f in tree_files))
-            self.assertFalse(os.path.exists(os.path.join(workspace_dir, "executions")))
-
-            backup_dirs = [d for d in os.listdir(workspace_dir) if d.startswith(".git-unusable-")]
-            self.assertEqual(len(backup_dirs), 1)
-
-            exclude_path = os.path.join(workspace_dir, ".git", "info", "exclude")
-            self.assertTrue(os.path.exists(exclude_path))
-            with open(exclude_path) as ef:
-                content = ef.read()
-                self.assertIn(backup_dirs[0], content)
-                self.assertIn(".git-unusable-*", content)
-
-            branches_res = subprocess.run(
-                ["git", "branch", "-a"], cwd=bare_dir, capture_output=True, text=True, check=True
-            )
-            self.assertIn("E-", branches_res.stdout)
-
-    @patch("sandbox_executor.entrypoint.executor.shutil.rmtree")
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
-    @patch("sandbox_executor.entrypoint.executor.get_runner")
-    def test_git_recovery_failure_superseding_row_carries_agent_output_accounting(
-        self, mock_get_runner, mock_cleanup, mock_rmtree
-    ):
-        """Regression test: superseding ledger_revision: 2 row carries agent output accounting."""
+    def test_corrupted_git_after_the_agent_keeps_the_worktree_and_publishes_nothing(self, mock_get_runner):
         with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
             plan_branch = "I-456/P-123/_"
             bare_dir, _plan_tip = self._create_bare_remote_with_plan(base_dir, plan_branch)
-            workspace_dir = os.path.join(base_dir, "workspace")
+            workspace_dir = self._clone_workspace(base_dir, bare_dir, plan_branch)
+            origin_refs = subprocess.run(
+                ["git", "for-each-ref"], cwd=bare_dir, capture_output=True, text=True, check=True
+            ).stdout
 
             mock_runner = MagicMock()
             mock_runner.get_version.return_value = "1.0.0"
-
-            # Simulate agent run with output, and corrupted git objects
-            def build_cmd_side_effect(*args, **kwargs):
-                agent_script = (
-                    "import os, shutil; print('Agent stdout line for accounting'); shutil.rmtree('.git/objects')"
-                )
-                return ["python3", "-c", agent_script]
-
-            mock_runner.build_cmd.side_effect = build_cmd_side_effect
+            agent_script = (
+                "import os, shutil; "
+                "os.makedirs('src', exist_ok=True); "
+                "open('src/agent_edit.py', 'w').write('# agent edit'); "
+                "shutil.rmtree('.git/objects')"
+            )
+            mock_runner.build_cmd.return_value = ["python3", "-c", agent_script]
             mock_runner.validate.return_value = None
             mock_get_runner.return_value = mock_runner
 
-            # Force git recovery verification to fail by breaking ancestry_check or tree_valid
-            orig_run_cmd = executor.run_cmd
-
-            def failing_run_cmd(cmd, cwd=None, **kwargs):
-                if isinstance(cmd, list) and len(cmd) >= 4 and cmd[:3] == ["git", "merge-base", "--is-ancestor"]:
-                    # Return non-zero to fail recovery verification
-                    return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="not ancestor")
-                return orig_run_cmd(cmd, cwd=cwd, **kwargs)
-
             with (
                 patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": workspace_dir}),
-                patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=workspace_dir),
-                patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value=bare_dir),
-                patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=failing_run_cmd),
                 patch("sys.argv", ["executor.py", plan_branch, "antigravity-agent", "gemini-3.5-flash"]),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(RuntimeError) as raised,
             ):
                 executor.main()
 
-            ledger_file = os.path.join(workspace_dir, "holon-knowledge", "ledger", "executions.jsonl")
-            self.assertTrue(os.path.exists(ledger_file))
-            with open(ledger_file) as f:
-                entries = [json.loads(line) for line in f if line.strip()]
-
-            # There should be 2 entries: rev 1 and rev 2
-            self.assertEqual(len(entries), 2)
-            rev1 = entries[0]
-            rev2 = entries[1]
-
-            self.assertEqual(rev1["ledger_revision"], 1)
-            self.assertEqual(rev2["ledger_revision"], 2)
-            self.assertEqual(rev2["status"], "failure")
-            self.assertIn("Git recovery failure", rev2["summary"])
-
-            # Reader contract: superseding row repeats authoritative fields
-            self.assertNotIn("execution_file", rev1)
-            self.assertNotIn("execution_file", rev2)
-            self.assertEqual(rev2["agent_output_truncated"], rev1["agent_output_truncated"])
-            self.assertEqual(rev2["agent_output_bytes"], rev1["agent_output_bytes"])
-            self.assertGreater(rev2["agent_output_bytes"], 0)
-            # C4-I2: the superseding row repeats every authoritative field of revision 1, including the notes and
-            # budget fields; only status, summary, created_at and ledger_revision may differ.
-            _assert_supersedes(self, rev1, rev2)
-
-    @patch("sandbox_executor.entrypoint.executor.sync_and_reconcile_pre_push")
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
-    @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub)
-    def test_pre_push_sync_failure_superseding_row_carries_agent_output_accounting(
-        self, mock_get_runner, mock_cleanup, mock_sync
-    ):
-        """Test that pre-push sync failure rev-2 row carries agent output accounting and omits execution_file."""
-        mock_runner = MagicMock()
-        mock_runner.get_version.return_value = "1.1.22"
-        mock_runner.build_cmd.return_value = ["agy", "run"]
-        mock_get_runner.return_value = mock_runner
-
-        mock_sync.return_value = (False, "unresolvable conflicts")
-
-        def side_effect(args, cwd=None, **kwargs):
-            mock_res = MagicMock()
-            if _cuts_branch(args):
-                ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
-                os.makedirs(ledger_dir, exist_ok=True)
-                with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
-                    f.write(
-                        json.dumps(
-                            {
-                                "plan_id": "P-123",
-                                "intent_branch": "I-456/_",
-                                "entropy": 2.0,
-                                "entropy_budget": 5.0,
-                            }
-                        )
-                        + "\n"
-                    )
-            if "agy" in args:
-                mock_res.returncode = 0
-                mock_res.stdout = "Task complete with output.\n"
-                mock_res.stderr = ""
-            elif "diff" in args and "--cached" in args and "--quiet" in args:
-                mock_res.returncode = 1
-                mock_res.stdout = ""
-                mock_res.stderr = ""
-            elif "rev-parse" in args and "--verify" in args and "HEAD^" in args:
-                mock_res.returncode = 0
-                mock_res.stdout = "parent-commit-sha\n"
-            else:
-                mock_res.returncode = 0
-                mock_res.stdout = ""
-                mock_res.stderr = ""
-            return mock_res
-
-        with (
-            tempfile.TemporaryDirectory() as tmp_dir,
-            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir}),
-            patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect),
-            patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
-            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
-        ):
-            executor.main()
-
-            ledger_file = os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")
-            self.assertTrue(os.path.exists(ledger_file))
-            with open(ledger_file) as lf:
-                entries = [json.loads(line) for line in lf if line.strip()]
-
-            self.assertEqual(len(entries), 2)
-            rev1, rev2 = entries[0], entries[1]
-            self.assertEqual(rev1["ledger_revision"], 1)
-            self.assertEqual(rev2["ledger_revision"], 2)
-            self.assertEqual(rev2["status"], "failure")
-            self.assertIn("Pre-push sync failure", rev2["summary"])
-            self.assertNotIn("execution_file", rev1)
-            self.assertNotIn("execution_file", rev2)
-            self.assertEqual(rev2["agent_output_truncated"], rev1["agent_output_truncated"])
-            self.assertEqual(rev2["agent_output_bytes"], rev1["agent_output_bytes"])
-            self.assertGreater(rev2["agent_output_bytes"], 0)
-            # C4-I2: the superseding row repeats every authoritative field of revision 1, including the notes and
-            # budget fields; only status, summary, created_at and ledger_revision may differ.
-            _assert_supersedes(self, rev1, rev2)
-
-    @patch("sandbox_executor.entrypoint.executor.sync_and_reconcile_pre_push")
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
-    @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub)
-    def test_pre_push_sync_failure_after_decomposition_supersedes_the_decomposed_row(
-        self, mock_get_runner, mock_cleanup, mock_sync
-    ):
-        """C4-I2: the decompose path has no agent-output accounting; its superseding row is built from its own row."""
-        mock_runner = MagicMock()
-        mock_runner.get_version.return_value = "1.0.0"
-        mock_get_runner.return_value = mock_runner
-        mock_sync.return_value = (False, "unresolvable conflicts")
-
-        def side_effect(args, cwd=None, **kwargs):
-            mock_res = MagicMock()
-            mock_res.returncode = 0
-            mock_res.stdout = ""
-            mock_res.stderr = ""
-            if _cuts_branch(args):
-                ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
-                os.makedirs(ledger_dir, exist_ok=True)
-                with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
-                    f.write(
-                        json.dumps(
-                            {
-                                "plan_id": "P-123",
-                                "intent_branch": "I-456/_",
-                                "entropy": 8.0,
-                                "entropy_budget": 5.0,
-                                "plan_file": "plans/P-123.md",
-                            }
-                        )
-                        + "\n"
-                    )
-                os.makedirs(os.path.join(cwd, "plans"), exist_ok=True)
-                with open(os.path.join(cwd, "plans", "P-123.md"), "w") as f:
-                    f.write("# Plan\n\n## Sub-intent list\n\n- Create DB schema\n- Build API routes\n")
-            elif "diff" in args and "--cached" in args and "--quiet" in args:
-                mock_res.returncode = 1
-            return mock_res
-
-        with (
-            tempfile.TemporaryDirectory() as tmp_dir,
-            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir}),
-            patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect),
-            patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
-            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
-        ):
-            executor.main()
-
-            ledger_file = os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")
-            with open(ledger_file) as lf:
-                summaries = [
-                    row
-                    for row in (json.loads(line) for line in lf if line.strip())
-                    if row.get("entry_type") == "summary"
-                ]
-
-        self.assertEqual([row["status"] for row in summaries], ["decomposed", "failure"])
-        decomposed, failure = summaries
-        self.assertEqual(failure["ledger_revision"], 2)
-        self.assertIn("Pre-push sync failure", failure["summary"])
-        # The decomposed summary refers to the plan row's list (never copies it); the superseding row repeats it.
-        self.assertEqual(failure["plan_decision"], decomposed["plan_decision"])
-        self.assertEqual(decomposed["plan_decision"]["sub_intent_count"], 2)
-        self.assertNotIn("sub_intents", decomposed)
-        self.assertEqual(failure["execution_id"], decomposed["execution_id"])
+            self.assertIn("the mounted worktree's git repository is unusable after the agent ran", str(raised.exception))
+            # The host's worktree is never rebuilt: the agent's file stays, and no backup or re-initialised repo appears.
+            self.assertTrue(os.path.exists(os.path.join(workspace_dir, "src", "agent_edit.py")))
+            self.assertEqual([d for d in os.listdir(workspace_dir) if d.startswith(".git-unusable-")], [])
+            self.assertFalse(os.path.isdir(os.path.join(workspace_dir, ".git", "objects")))
+            # The executor never touches the remote.
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "for-each-ref"], cwd=bare_dir, capture_output=True, text=True, check=True
+                ).stdout,
+                origin_refs,
+            )
 
     def _clone_workspace(self, base_dir: str, bare_dir: str, plan_branch: str) -> str:
         workspace_dir = os.path.join(base_dir, "workspace")
@@ -2656,8 +2412,7 @@ class TestExecutor(unittest.TestCase):
         )
         return workspace_dir
 
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
-    def test_benign_dubious_ownership_is_repaired_without_rebuild(self, mock_cleanup):
+    def test_benign_dubious_ownership_is_repaired_without_rebuild(self):
         plan_branch = "I-456/P-123/_"
         with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
             bare_dir, _ = self._create_bare_remote_with_plan(base_dir, plan_branch)
@@ -2670,8 +2425,7 @@ class TestExecutor(unittest.TestCase):
             self.assertTrue(executor._probe_git_repo(workspace_dir)[0])
             self.assertEqual([d for d in os.listdir(workspace_dir) if d.startswith(".git-unusable-")], [])
 
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
-    def test_safe_directory_probe_plumbing_and_realpath_normalization(self, mock_cleanup):
+    def test_safe_directory_probe_plumbing_and_realpath_normalization(self):
         plan_branch = "I-456/P-123/_"
         with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
             bare_dir, _ = self._create_bare_remote_with_plan(base_dir, plan_branch)
@@ -2697,8 +2451,7 @@ class TestExecutor(unittest.TestCase):
             healthy, _ = executor._probe_git_repo(workspace_dir)
             self.assertTrue(healthy)
 
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
-    def test_safe_directory_fallback_on_unwritable_config(self, mock_cleanup):
+    def test_safe_directory_fallback_on_unwritable_config(self):
         plan_branch = "I-456/P-123/_"
         with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
             bare_dir, _ = self._create_bare_remote_with_plan(base_dir, plan_branch)
@@ -2772,8 +2525,7 @@ class TestExecutor(unittest.TestCase):
             finally:
                 executor._FALLBACK_SAFE_DIRECTORIES.discard(canonical_path)
 
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
-    def test_lock_repair_removes_only_abandoned_locks(self, mock_cleanup):
+    def test_lock_repair_removes_only_abandoned_locks(self):
         plan_branch = "I-456/P-123/_"
         with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
             bare_dir, _ = self._create_bare_remote_with_plan(base_dir, plan_branch)
@@ -2809,9 +2561,8 @@ class TestExecutor(unittest.TestCase):
             self.assertTrue(executor._probe_git_repo(workspace_dir)[0])
             self.assertEqual([d for d in os.listdir(workspace_dir) if d.startswith(".git-unusable-")], [])
 
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
-    def test_leaked_git_dir_env_is_stripped_from_git_calls(self, mock_get_runner, mock_cleanup):
+    def test_leaked_git_dir_env_is_stripped_from_git_calls(self, mock_get_runner):
         plan_branch = "I-456/P-123/_"
         with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
             bare_dir, _ = self._create_bare_remote_with_plan(base_dir, plan_branch)
@@ -2832,7 +2583,6 @@ class TestExecutor(unittest.TestCase):
                     },
                 ),
                 patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=workspace_dir),
-                patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value=bare_dir),
                 patch("sys.argv", ["executor.py", plan_branch, "antigravity-agent", "gemini-3.5-flash"]),
             ):
                 executor.main()
@@ -2841,8 +2591,7 @@ class TestExecutor(unittest.TestCase):
             self.assertEqual([d for d in os.listdir(workspace_dir) if d.startswith(".git-unusable-")], [])
             self.assertTrue(executor._probe_git_repo(workspace_dir)[0])
 
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
-    def test_missing_head_is_restored_on_the_execution_branch(self, mock_cleanup):
+    def test_missing_head_is_restored_on_the_execution_branch(self):
         plan_branch = "I-456/P-123/_"
         exec_branch = "I-456/P-123/E-1790000000-antigravity-agent-gemini-3.5-flash/_"
         with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
@@ -2881,103 +2630,6 @@ class TestExecutor(unittest.TestCase):
             ).stdout.strip()
             self.assertEqual(head_tip, plan_tip)
             self.assertEqual([d for d in os.listdir(workspace_dir) if d.startswith(".git-unusable-")], [])
-
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
-    @patch("sandbox_executor.entrypoint.executor.get_runner")
-    def test_unrecoverable_remote_branch_refusal_to_push(self, mock_get_runner, mock_cleanup):
-        with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
-            plan_branch = "I-456/P-123/_"
-            bare_dir, _ = self._create_bare_remote_with_plan(base_dir, plan_branch)
-            workspace_dir = os.path.join(base_dir, "workspace")
-
-            subprocess.run(
-                ["git", "clone", "--branch", plan_branch, bare_dir, workspace_dir],
-                check=True,
-                capture_output=True,
-            )
-
-            mock_runner = MagicMock()
-            mock_runner.get_version.return_value = "1.0.0"
-
-            def build_cmd_side_effect(*args, **kwargs):
-                # Delete plan branch on bare remote during agent run so recovery fetch fails
-                subprocess.run(
-                    ["git", "branch", "-D", plan_branch],
-                    cwd=bare_dir,
-                    check=True,
-                    capture_output=True,
-                )
-                return ["python3", "-c", "import shutil; shutil.rmtree('.git/objects')"]
-
-            mock_runner.build_cmd.side_effect = build_cmd_side_effect
-            mock_runner.validate.return_value = None
-            mock_get_runner.return_value = mock_runner
-
-            with (
-                patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": workspace_dir, "HOLON_GIT_FETCH_RETRIES": "1"}),
-                patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=workspace_dir),
-                patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value=bare_dir),
-                patch("sys.argv", ["executor.py", plan_branch, "antigravity-agent", "gemini-3.5-flash"]),
-            ):
-                executor.main()
-
-            branches_res = subprocess.run(
-                ["git", "branch", "-a"], cwd=bare_dir, capture_output=True, text=True, check=True
-            )
-            self.assertNotIn("E-", branches_res.stdout)
-
-            backup_dirs = [d for d in os.listdir(workspace_dir) if d.startswith(".git-unusable-")]
-            self.assertEqual(len(backup_dirs), 1)
-
-            ledger_file = os.path.join(workspace_dir, "holon-knowledge/ledger/executions.jsonl")
-            self.assertTrue(os.path.exists(ledger_file))
-            with open(ledger_file) as f:
-                lines = [json.loads(line) for line in f if line.strip()]
-            self.assertTrue(any(entry.get("status") == "failure" for entry in lines))
-            failure_entry = [entry for entry in lines if entry.get("status") == "failure"][-1]
-            self.assertIn("Git recovery failure", failure_entry.get("summary", ""))
-            self.assertIn(backup_dirs[0], failure_entry.get("summary", ""))
-
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
-    @patch("sandbox_executor.entrypoint.executor.get_runner")
-    def test_recovery_fetch_diagnostic_is_redacted(self, mock_get_runner, mock_cleanup):
-        """The printed `git fetch` diagnostic goes through the shared redactor, not raw stderr."""
-        with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
-            plan_branch = "I-456/P-123/_"
-            bare_dir, _ = self._create_bare_remote_with_plan(base_dir, plan_branch)
-            workspace_dir = os.path.join(base_dir, "workspace")
-            subprocess.run(
-                ["git", "clone", "--branch", plan_branch, bare_dir, workspace_dir],
-                check=True,
-                capture_output=True,
-            )
-            # Fake, runtime-built value: git echoes the unreachable remote path in its fetch error.
-            fake_value = "ghp_" + "Z" * 36
-            unreachable_remote = os.path.join(base_dir, f"missing-{fake_value}.git")
-
-            mock_runner = MagicMock()
-            mock_runner.get_version.return_value = "1.0.0"
-            mock_runner.build_cmd.return_value = ["python3", "-c", "import shutil; shutil.rmtree('.git/objects')"]
-            mock_runner.validate.return_value = None
-            mock_get_runner.return_value = mock_runner
-
-            captured = io.StringIO()
-            with (
-                patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": workspace_dir, "HOLON_GIT_FETCH_RETRIES": "1"}),
-                patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=workspace_dir),
-                patch(
-                    "sandbox_executor.entrypoint.executor.get_repo_url",
-                    side_effect=[bare_dir, unreachable_remote],
-                ),
-                patch("sys.argv", ["executor.py", plan_branch, "antigravity-agent", "gemini-3.5-flash"]),
-                contextlib.redirect_stderr(captured),
-            ):
-                executor.main()
-
-            output = captured.getvalue()
-            self.assertIn("Fetch diagnostic error:", output)
-            self.assertNotIn(fake_value, output)
-
 
 class TestExecutorPrePushSync(unittest.TestCase):
     """Unit tests for executor pre-push remote synchronisation and conflict isolation."""

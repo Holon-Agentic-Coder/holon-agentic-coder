@@ -185,7 +185,7 @@ def test_push_commit_refuses_a_hostile_branch_name(flow_repos, branch, no_git):
         push_commit(str(host), tip, branch)
 
 
-@pytest.mark.parametrize("remote", ["--receive-pack=x", "-o", "", "a b", "a/b", "x@y/z", "origin\n", "x.lock"])
+@pytest.mark.parametrize("remote", ["--receive-pack=x", "-o", "", "a b", "a/b", "x@y/z", "origin\n", "x.lock", "x."])
 def test_push_commit_refuses_a_hostile_remote_name(flow_repos, remote, no_git):
     host, _origin = flow_repos
     tip = _git(host, "rev-parse", "HEAD")
@@ -206,3 +206,43 @@ def test_push_commit_never_force_pushes_a_non_descendant_commit(flow_repos):
 
     assert raised.value.operation == "push"
     assert _git(origin, "rev-parse", "refs/heads/work/_") == tip
+
+
+def test_fetch_base_passes_the_validated_arguments_after_a_double_dash(flow_repos, monkeypatch):
+    host, _origin = flow_repos
+    calls = []
+
+    def record(argv, **kwargs):
+        calls.append(argv)
+        return type("Result", (), {"returncode": 0, "stderr": ""})()
+
+    monkeypatch.setattr(host_remote, "run_git", record)
+
+    fetch_base(str(host), "feature/x", "upstream")
+
+    assert calls == [["fetch", "--no-tags", "--", "upstream", "+refs/heads/feature/x:refs/remotes/upstream/feature/x"]]
+
+
+@pytest.mark.parametrize(
+    ("branch", "remote"),
+    [
+        ("--upload-pack=x", "origin"),
+        ("-f", "origin"),
+        ("a..b", "origin"),
+        ("", "origin"),
+        ("x.lock", "origin"),
+        ("main", "--upload-pack=x"),
+        ("main", "-o"),
+        ("main", ""),
+        ("main", "a/b"),
+        ("main", "x."),
+        ("main", "x.lock"),
+    ],
+)
+def test_fetch_base_refuses_hostile_input_before_running_git(flow_repos, branch, remote, no_git):
+    host, _origin = flow_repos
+
+    with pytest.raises(HostRemoteError, match="refusing to fetch") as raised:
+        fetch_base(str(host), branch, remote)
+
+    assert (raised.value.operation, raised.value.branch, raised.value.remote) == ("fetch", branch, remote)

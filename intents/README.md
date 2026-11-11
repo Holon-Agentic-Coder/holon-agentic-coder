@@ -46,10 +46,21 @@ The `./holon` script automatically handles credential discovery, volume mounts, 
 ### Low-Level Manual Docker Execution
 
 The container never reaches the git remote: the host fetches the base before the container starts and pushes the
-committed branch after it returns, using the host's own git credentials. No SSH agent socket, SSH key or credential
-helper is mounted or needed, so use `./holon intent` (above), which performs those host-side remote operations around
-the container. A bare `docker run` of `holon/orchestrator` only commits inside the mounted worktree and publishes
-nothing.
+committed branch after it returns, using the host's own git credentials, so no SSH agent socket, SSH key or credential
+helper is mounted or needed. Prefer `./holon intent` (above), which performs those host-side remote operations. A bare
+`docker run` only commits inside the mounted worktree and publishes nothing; it needs the intent file and the flow's
+host `flow-<slug>` worktree mounted (see
+[create_intent.md](../docs/sandbox/create_intent.md#low-level-execution-manual-docker-run) for the full argument
+breakdown):
+
+```bash
+docker run --rm \
+  -e HOLON_ROLE=intent-creator \
+  -v "$PWD/intents/intent.json:/tmp/intent.json" \
+  -v <worktree>:/home/holon/.holon-sandbox/workspace \
+  -e HOLON_TARGET_WORKTREE=/home/holon/.holon-sandbox/workspace \
+  holon/orchestrator
+```
 
 ---
 

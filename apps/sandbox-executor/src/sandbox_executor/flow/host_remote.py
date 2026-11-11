@@ -13,7 +13,6 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from sandbox_executor.flow.git_refs import _fetch_refspecs_error
 from sandbox_executor.git import run_git
 from sandbox_executor.redaction import redact_agent_secrets
 
@@ -38,12 +37,19 @@ class HostRemoteError(RuntimeError):
 def fetch_base(repo_dir: str, branch: str, remote: str = DEFAULT_REMOTE) -> None:
     """Fetch ``branch`` from the worktree's remote into ``refs/remotes/<remote>/<branch>``.
 
+    The branch and remote are validated like a push's and follow ``--``, so neither can inject a ``git fetch`` option.
+
     Raises:
-        HostRemoteError: If the fetch fails.
+        HostRemoteError: If an argument is unsafe or the fetch fails.
     """
-    error = _fetch_refspecs_error(repo_dir, [f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"], remote)
-    if error is not None:
-        raise HostRemoteError("fetch", branch, remote, error)
+    unsafe = _name_error("fetch", branch, remote)
+    if unsafe:
+        raise HostRemoteError("fetch", branch, remote, unsafe)
+    refspec = f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"
+    res = run_git(["fetch", "--no-tags", "--", remote, refspec], cwd=repo_dir, check=False, timeout=300)
+    if res.returncode != 0:
+        detail = (res.stderr or "").strip() if isinstance(res.stderr, str) else ""
+        raise HostRemoteError("fetch", branch, remote, detail or f"git fetch exited with code {res.returncode}")
 
 
 def _is_branch_name(name: str) -> bool:
@@ -52,6 +58,15 @@ def _is_branch_name(name: str) -> bool:
         and not any(bad in name for bad in ("..", "//", "/.", ".lock/"))
         and not name.endswith(("/", ".", ".lock"))
     )
+
+
+def _name_error(verb: str, branch: str, remote: str) -> str | None:
+    """Return why ``branch`` or ``remote`` is unsafe to hand to ``git <verb>``, or None when both are fine."""
+    if not _is_branch_name(branch):
+        return f"refusing to {verb}: the target branch name is not a plain branch name"
+    if not _REMOTE_NAME.match(remote) or remote.endswith((".", ".lock")):
+        return f"refusing to {verb}: the remote name is not a plain remote name"
+    return None
 
 
 def _push_input_error(source: str, branch: str, remote: str) -> str | None:
@@ -63,11 +78,7 @@ def _push_input_error(source: str, branch: str, remote: str) -> str | None:
     """
     if not (_OBJECT_ID.match(source) or (source.startswith("refs/heads/") and _is_branch_name(source[11:]))):
         return "refusing to push: the source is not a full hex object id or a refs/heads/ ref"
-    if not _is_branch_name(branch):
-        return "refusing to push: the target branch name is not a plain branch name"
-    if not _REMOTE_NAME.match(remote) or remote.endswith((".", ".lock")):
-        return "refusing to push: the remote name is not a plain remote name"
-    return None
+    return _name_error("push", branch, remote)
 
 
 def push_commit(repo_dir: str, source: str, branch: str, remote: str = DEFAULT_REMOTE) -> None:

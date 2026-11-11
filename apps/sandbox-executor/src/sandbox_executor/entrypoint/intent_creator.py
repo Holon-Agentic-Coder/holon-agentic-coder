@@ -131,9 +131,21 @@ def main():  # noqa: PLR0915
 
     # Git commit; the host pushes the branch after this container returns.
     run_cmd(["git", "add", "holon-knowledge/ledger/intents.jsonl"], cwd=repo_dir)
-    run_cmd(["git", "config", "--local", "user.email", "intent-agent@holon-agentic-coder.com"], cwd=repo_dir)
-    run_cmd(["git", "config", "--local", "user.name", "Holon Intent Agent"], cwd=repo_dir)
-    run_cmd(["git", "commit", "-m", commit_msg], cwd=repo_dir)
+    # The identity goes on the command line: a mounted host worktree's repository config is shared with the host and
+    # mounted read-only, so a ``git config`` write there fails.
+    run_cmd(
+        [
+            "git",
+            "-c",
+            "user.email=intent-agent@holon-agentic-coder.com",
+            "-c",
+            "user.name=Holon Intent Agent",
+            "commit",
+            "-m",
+            commit_msg,
+        ],
+        cwd=repo_dir,
+    )
 
     print(f"Intent branch '{intent_branch}' created and intent logged.")
 

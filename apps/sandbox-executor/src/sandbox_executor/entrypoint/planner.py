@@ -32,6 +32,16 @@ from sandbox_executor.ledger import (
 from sandbox_executor.redaction import redact_agent_secrets, redact_command, redact_command_args
 from sandbox_executor.turns import record_budget_failure, run_turn, supervise_authoring_turn
 
+# The commit identity goes on the command line: a mounted host worktree's repository config is shared with the host and
+# mounted read-only, so a ``git config`` write there fails.
+PLANNER_GIT_IDENTITY = (
+    "git",
+    "-c",
+    "user.email=planner-agent@holon-agentic-coder.com",
+    "-c",
+    "user.name=Holon Planner Agent",
+)
+
 
 def render_placeholders(template: str, values: Mapping[str, str]) -> str:
     """Render every ``{name}`` or unmatched ``{name`` placeholder in one regular-expression pass.
@@ -186,10 +196,13 @@ def _record_plan_budget_failure(  # noqa: PLR0913
     if os.path.exists(os.path.join(repo_dir, plan_md_rel)):
         add_targets.append(plan_md_rel)
     run_cmd(["git", "add", *add_targets], cwd=repo_dir, check=False)
-    run_cmd(["git", "config", "--local", "user.email", "planner-agent@holon-agentic-coder.com"], cwd=repo_dir)
-    run_cmd(["git", "config", "--local", "user.name", "Holon Planner Agent"], cwd=repo_dir)
     run_cmd(
-        ["git", "commit", "-m", f"plan: {plan_id} stopped by {breach.budget_name} budget ({agent_name}, {model_name})"],
+        [
+            *PLANNER_GIT_IDENTITY,
+            "commit",
+            "-m",
+            f"plan: {plan_id} stopped by {breach.budget_name} budget ({agent_name}, {model_name})",
+        ],
         cwd=repo_dir,
         check=False,
     )
@@ -550,9 +563,9 @@ Include metrics in this format:
 
     # Git commit; the host pushes the branch after this container returns.
     run_cmd(["git", "add", plan_md_rel, "holon-knowledge/ledger/plans.jsonl"], cwd=repo_dir)
-    run_cmd(["git", "config", "--local", "user.email", "planner-agent@holon-agentic-coder.com"], cwd=repo_dir)
-    run_cmd(["git", "config", "--local", "user.name", "Holon Planner Agent"], cwd=repo_dir)
-    run_cmd(["git", "commit", "-m", f"plan: {plan_id} created by {agent_name} ({model_name})"], cwd=repo_dir)
+    run_cmd(
+        [*PLANNER_GIT_IDENTITY, "commit", "-m", f"plan: {plan_id} created by {agent_name} ({model_name})"], cwd=repo_dir
+    )
 
     print(f"Plan branch '{plan_branch}' successfully created and committed.")
     print(stage_timer.summary("ok"))

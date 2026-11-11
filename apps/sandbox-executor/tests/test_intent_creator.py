@@ -68,7 +68,8 @@ class TestIntentCreator(unittest.TestCase):
         self.assertTrue(mock_run.call_count >= 5)
         called_cmds = [" ".join(call[0][0]) for call in mock_run.call_args_list]
         self.assertEqual(remote_git_cmds(called_cmds), [])
-        self.assertTrue(any("git commit" in cmd for cmd in called_cmds))
+        self.assertTrue(any(cmd.startswith("git ") and " commit -m " in cmd for cmd in called_cmds))
+        self.assertFalse(any(cmd.startswith("git config") for cmd in called_cmds))
 
         # Check that intents.jsonl was written to
         written_file_path = next(k for k in file_contents if "intents.jsonl" in k)

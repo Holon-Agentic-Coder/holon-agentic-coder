@@ -704,21 +704,19 @@ def _entrypoint_git_runner(repo_dir: str) -> Callable[[list[str]], str]:
 
 
 def _safe_float(val: Any, default: float = 0.0) -> float:
-    if val is None:
-        return default
     try:
-        return float(val)
+        return default if val is None else float(val)
     except (ValueError, TypeError):
         return default
 
 
-def _sanitize_string(name: str) -> str:
+def _sanitize_string(name: str, fallback: str = "unknown") -> str:
     s = re.sub(r"\s+", "-", name.replace("/", "_"))
     s = re.sub(r"[^a-zA-Z0-9_.-]", "", s)
     s = re.sub(r"-+", "-", s)
     s = re.sub(r"\.+", ".", s)
     s = s[:64].strip(".-")
-    return s or "unknown"
+    return s or fallback
 
 
 # Exit status of an executor run that refused an over-budget plan and committed its over_budget row to the execution
@@ -1174,8 +1172,7 @@ def _report_unpushed_work(repo_dir: str, exec_branch: str, plan_tip: str | None,
     The host captures the container's stderr, so the patch between the marker lines survives the ``--rm`` container
     without any new mount. Every line printed is redacted.
     """
-    head = _get_repo(repo_dir).rev_parse("HEAD")
-    head_sha = (head.stdout or "").strip() or "unknown"
+    head_sha = (_get_repo(repo_dir).rev_parse("HEAD").stdout or "").strip() or "unknown"
     print(
         f"Error: push of execution branch '{exec_branch}' was refused; local head {head_sha}: "
         f"{redact_agent_secrets(named_push_rejection(exec_branch, reason.strip()))}",
@@ -1295,8 +1292,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 repo.run(["checkout", "-f", "-B", plan_branch, "FETCH_HEAD"])
 
         exec_seq = int(time.time())
-        safe_agent = _sanitize_string(agent_name)
-        safe_model = _sanitize_string(model_name)
+        safe_agent, safe_model = _sanitize_string(agent_name, "unknown-agent"), _sanitize_string(model_name)
         exec_id = build_execution_id(exec_seq, plan_branch_prefix, safe_agent, safe_model)
         exec_branch = f"{plan_branch_prefix}/{exec_id}/_"
 

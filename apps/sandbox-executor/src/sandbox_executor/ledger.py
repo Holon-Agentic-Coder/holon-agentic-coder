@@ -86,8 +86,7 @@ def build_plan_id(
 
     Format: P-{plan_seq}-{disambiguator}-{safe_agent}-{safe_model}
     """
-    safe_agent = _sanitize_string(agent, fallback="unknown-agent")
-    safe_model = _sanitize_model_name(model)
+    safe_agent, safe_model = _sanitize_string(agent, fallback="unknown-agent"), _sanitize_model_name(model)
     dis = disambiguator or build_stage_disambiguator(parent_branch)
     return fit_plan_id(parent_branch, plan_seq, dis, safe_agent, safe_model).name
 
@@ -103,8 +102,7 @@ def build_execution_id(
 
     Format: E-{exec_seq}-{disambiguator}-{safe_agent}-{safe_model}
     """
-    safe_agent = _sanitize_string(agent, fallback="unknown-agent")
-    safe_model = _sanitize_model_name(model)
+    safe_agent, safe_model = _sanitize_string(agent, fallback="unknown-agent"), _sanitize_model_name(model)
     dis = disambiguator or build_stage_disambiguator(parent_branch)
     return fit_execution_id(parent_branch, exec_seq, dis, safe_agent, safe_model).name
 

@@ -1,6 +1,6 @@
 {
   "index_version": "1.0",
-  "updated_ts": "2026-11-11T10:11:52.181833+00:00",
+  "updated_ts": "2026-11-11T11:08:20.778787+00:00",
   "entries": [
     {
       "kb_id": "KB-failure-d25f1b01",
@@ -6465,6 +6465,666 @@
       "kb_type": "failure_mode",
       "status": "active",
       "created_ts": "2026-11-11T10:11:52.181468+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-1c0e7513",
+      "file": "KB-failure-1c0e7513.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.623065+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-f3fc8c0c",
+      "file": "KB-failure-f3fc8c0c.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.625710+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-68af23c7",
+      "file": "KB-failure-68af23c7.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.628005+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-c036ac84",
+      "file": "KB-failure-c036ac84.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.630284+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-803c8f1e",
+      "file": "KB-failure-803c8f1e.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.632598+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-f73ebf54",
+      "file": "KB-failure-f73ebf54.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.645079+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-93b1f5fc",
+      "file": "KB-failure-93b1f5fc.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.647597+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-2c66f5af",
+      "file": "KB-failure-2c66f5af.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.649913+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-2cf6b47a",
+      "file": "KB-failure-2cf6b47a.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.652233+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-88bd4ed9",
+      "file": "KB-failure-88bd4ed9.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.654912+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-bb2e8350",
+      "file": "KB-failure-bb2e8350.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.657323+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-99238df6",
+      "file": "KB-failure-99238df6.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.659657+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-8453a3b8",
+      "file": "KB-failure-8453a3b8.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.661970+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-06234a4b",
+      "file": "KB-failure-06234a4b.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.664319+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-51a3d2a2",
+      "file": "KB-failure-51a3d2a2.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.666790+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-a48dff52",
+      "file": "KB-failure-a48dff52.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.669127+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-3553ae5e",
+      "file": "KB-failure-3553ae5e.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.671447+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-51270e3e",
+      "file": "KB-failure-51270e3e.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.673824+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-43256f2b",
+      "file": "KB-failure-43256f2b.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.676168+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-4ac1cfa2",
+      "file": "KB-failure-4ac1cfa2.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.678480+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-f92e5bf6",
+      "file": "KB-failure-f92e5bf6.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.680919+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-37e5307f",
+      "file": "KB-failure-37e5307f.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.683316+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-5f03dfa5",
+      "file": "KB-failure-5f03dfa5.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.685697+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-b3753294",
+      "file": "KB-failure-b3753294.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.688089+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-049ebbf1",
+      "file": "KB-failure-049ebbf1.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.690449+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-c2f4f5a7",
+      "file": "KB-failure-c2f4f5a7.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.693070+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-dcffe038",
+      "file": "KB-failure-dcffe038.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.695581+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-3f52838b",
+      "file": "KB-failure-3f52838b.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.697976+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-0c9c149e",
+      "file": "KB-failure-0c9c149e.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.700371+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-2831cdf0",
+      "file": "KB-failure-2831cdf0.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.702759+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-2faef3e3",
+      "file": "KB-failure-2faef3e3.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.705202+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-e758356e",
+      "file": "KB-failure-e758356e.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.707604+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-73089607",
+      "file": "KB-failure-73089607.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.709952+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-7688b857",
+      "file": "KB-failure-7688b857.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.712329+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-0fbe1424",
+      "file": "KB-failure-0fbe1424.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.714800+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-c971eea1",
+      "file": "KB-failure-c971eea1.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.717133+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-be8df1ff",
+      "file": "KB-failure-be8df1ff.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.719540+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-8bd6b1f7",
+      "file": "KB-failure-8bd6b1f7.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.722165+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-e099bb52",
+      "file": "KB-failure-e099bb52.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.724802+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-24171096",
+      "file": "KB-failure-24171096.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.727260+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-1ad6530a",
+      "file": "KB-failure-1ad6530a.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.729713+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-f3efce2a",
+      "file": "KB-failure-f3efce2a.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.732091+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-7bd0752f",
+      "file": "KB-failure-7bd0752f.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.734521+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-c6daa8f6",
+      "file": "KB-failure-c6daa8f6.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.736942+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-b1446a9a",
+      "file": "KB-failure-b1446a9a.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.739465+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-05451d03",
+      "file": "KB-failure-05451d03.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.741920+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-b095c2e8",
+      "file": "KB-failure-b095c2e8.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.744393+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-d09bdb65",
+      "file": "KB-failure-d09bdb65.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.746825+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-16a28ae3",
+      "file": "KB-failure-16a28ae3.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.749425+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-47da398b",
+      "file": "KB-failure-47da398b.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.751868+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-4f3343ff",
+      "file": "KB-failure-4f3343ff.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.754607+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-0bdd5fdb",
+      "file": "KB-failure-0bdd5fdb.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.757476+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-8ab099ff",
+      "file": "KB-failure-8ab099ff.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.759963+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-3a90916e",
+      "file": "KB-failure-3a90916e.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.762522+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-1d25f4c8",
+      "file": "KB-failure-1d25f4c8.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.765285+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-2b0c9c39",
+      "file": "KB-failure-2b0c9c39.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.767960+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-e53e2893",
+      "file": "KB-failure-e53e2893.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.770577+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-673a3d7d",
+      "file": "KB-failure-673a3d7d.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.773177+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-ff9a048a",
+      "file": "KB-failure-ff9a048a.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.775751+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-0b6d318d",
+      "file": "KB-failure-0b6d318d.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-11T11:08:20.778331+00:00",
       "tags": [
         "code",
         "veto"

@@ -1,0 +1,29 @@
+{
+  "kb_id": "KB-failure-ff9a048a",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-11T11:08:20.775751+00:00",
+  "updated_ts": "2026-11-11T11:08:20.775751+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1794394744-4769b5a1",
+      "ACT-REV-1794394742-5aafad14"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794391536-refcap/P-1794391544-abdc9b6d-claude-agent-claude-sonnet-5-5/E-1794391637-5549d1a0-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 9 reviewer 3 completed",
+    "symptoms": []
+  }
+}

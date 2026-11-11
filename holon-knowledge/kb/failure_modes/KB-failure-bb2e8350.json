@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-bb2e8350",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-11T11:08:20.657323+00:00",
+  "updated_ts": "2026-11-11T11:08:20.657323+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794393193-dc3ba23b",
+      "ACT-FIND-1794393192-6dc1a5e4"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794391536-refcap/P-1794391544-abdc9b6d-claude-agent-claude-sonnet-5-5/E-1794391637-5549d1a0-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R2-001-03",
+    "symptoms": [
+      "The literal-suffix guard only matches one f-string pattern and misses other ways of building a '/_' branch; broaden or document it."
+    ]
+  }
+}

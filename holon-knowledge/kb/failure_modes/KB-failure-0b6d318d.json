@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-0b6d318d",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-11T11:08:20.778331+00:00",
+  "updated_ts": "2026-11-11T11:08:20.778331+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794394744-588caba7",
+      "ACT-FIND-1794394742-711a4351"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794391536-refcap/P-1794391544-abdc9b6d-claude-agent-claude-sonnet-5-5/E-1794391637-5549d1a0-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 9 finding detected: FIND-R3-009-01",
+    "symptoms": [
+      "File over 1,000 lines grows by a net of about 3 lines (imports and two original_labels spreads); keep it from growing by moving the logic to the owning module or offsetting."
+    ]
+  }
+}

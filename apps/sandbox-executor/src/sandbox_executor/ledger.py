@@ -19,6 +19,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal, TextIO
 
+from sandbox_executor.ref_names import fit_execution_id, fit_plan_id
+
 try:
     import fcntl
 except ImportError:
@@ -82,12 +84,13 @@ def build_plan_id(
 ) -> str:
     """Build a deterministic, collision-resistant plan identifier.
 
-    Format: P-{plan_seq}-{disambiguator}-{safe_agent}-{safe_model}
+    Format: P-{plan_seq}-{disambiguator}-{safe_agent}-{safe_model}; the labels are shortened with a digest only when
+    the branch would exceed the ref limit (see ``ref_names``).
     """
     safe_agent = _sanitize_string(agent, fallback="unknown-agent")
     safe_model = _sanitize_model_name(model)
     dis = disambiguator or build_stage_disambiguator(parent_branch)
-    return f"P-{plan_seq}-{dis}-{safe_agent}-{safe_model}"
+    return fit_plan_id(parent_branch, plan_seq, dis, safe_agent, safe_model).name
 
 
 def build_execution_id(
@@ -99,12 +102,13 @@ def build_execution_id(
 ) -> str:
     """Build a deterministic, collision-resistant execution identifier.
 
-    Format: E-{exec_seq}-{disambiguator}-{safe_agent}-{safe_model}
+    Format: E-{exec_seq}-{disambiguator}-{safe_agent}-{safe_model}; the labels are shortened with a digest only when
+    the branch would exceed the ref limit (see ``ref_names``).
     """
     safe_agent = _sanitize_string(agent, fallback="unknown-agent")
     safe_model = _sanitize_model_name(model)
     dis = disambiguator or build_stage_disambiguator(parent_branch)
-    return f"E-{exec_seq}-{dis}-{safe_agent}-{safe_model}"
+    return fit_execution_id(parent_branch, exec_seq, dis, safe_agent, safe_model).name
 
 
 @dataclass

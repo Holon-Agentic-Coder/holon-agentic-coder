@@ -66,7 +66,7 @@
     "_bounded_error_context": "92cb41f9dce5122986fca7e4b105d489e702c736d1a7f3520c21844f0baf9c20",
     "_checkout_execution_branch": "869f8f3c966f50e099087c6bfadc1f1702da8fa7ec1c2ee9699c3d12a52fa1bb",
     "_child_context": "5eaeb18dd1c7f776e4194ee717f88be125578724fead279a85d26b2ee190e35a",
-    "_child_intent_branch": "add9c9ab307f62dea824782c8216c8b264c9d7dbeddb816877961f4f01725ba2",
+    "_child_intent_branch": "193b25611294b9598a49b1d438da3bde09bc78a998a8dea4f1e78cf79a0b72ca",
     "_child_review_pr": "cead528da583163e4ba84f1c49f3a2fda0916c7442f3257082b62f4ab3ea6b88",
     "_ci_green": "f7a480344c0871be4aabbbf8be4821bb03e49a9ffea8ab921420c57dbf2d75bc",
     "_commit_stage5_promoted_artifacts": "d443c2729c21db20ea5d4ecb4285130c877f5e3fc8eabea364e3cfe2b6f4c712",
@@ -159,10 +159,10 @@
     "review_loop_approved": "064d4058059830d1c930d1e7c1887a1a2a88448bbd23ad8fcab95a9183e1eaf2",
     "review_summary_lines": "30a22d8637a84fa1b5497085f944cb0b4b04d0969370c6fc3a569b10659d54af",
     "reviewers_sandboxed": "2493c5509b14e20d9240b59cd3fce7f0d9afea3d0be8eac7df9b2abe1700ac2a",
-    "run_calibrate_stage": "9d3bdd0eedab36af64f16bd10e5e27b16a240a52182f4e1ad00acbaecb1fdd3d",
+    "run_calibrate_stage": "680941912f7b917af9e88e238f2fa06a45d8af09f82e18fae417df870feff67c",
     "run_execute_stage": "d163ef16ecf859c23fcfdf2df16d913f5051dec5ff638f52af63ff6ff20eb5b4",
     "run_flow_pipeline": "9eb839dedca4e077107119097d1f0e61fb840a39de8c051e09175d8e86e4e0ef",
-    "run_intent_stage": "e1c5953def9707b953b5180bdee943df817b8f2634ad7aaac20a15eb2ca09205",
+    "run_intent_stage": "67d3b808876b3f02cf6bf022e4504cf60f866687fc43abf7266004aa0b4d334d",
     "run_plan_stage": "3b410746b3caea63cd0ad2496fcfcf7250093bb528121fba7c808c3b0728b397",
     "run_review_loop": "4facb968df5453588cbf3c45a64dd66d541f3bd9cbf5c71195cd47af2bbb0a59",
     "run_review_loop_cli": "35ab628bc65b642a6ffc984febe193e5f0b7471797e0e44462af8754da82ae07",
@@ -193,7 +193,10 @@
     "review_summary_lines": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): moved to review/verdict.py; adds a 'Not approved' line naming each reviewer whose final verdict was not a clean APPROVED",
     "run_execute_stage": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan row records the decomposition decision; the flow reads it and back-fills older rows",
     "run_review_loop": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): the volume-owning wrapper is gone; run_review_loop is again the loop itself (the former _run_review_loop_iterations body, minus workspace_session); it takes a ledger_file so a host-dispatched container pass appends its ledger rows to container scratch, not to the host-owned ledger of the bind-mounted worktree",
-    "run_review_stage": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): a consensus whose final verdicts are not all a clean APPROVED fails; failure messages, mergeability halts included, share one result block and state the final verdicts; a consensus withheld only by a role, container or adjudication blocker names that blocker, not failed tests"
+    "run_review_stage": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): a consensus whose final verdicts are not all a clean APPROVED fails; failure messages, mergeability halts included, share one result block and state the final verdicts; a consensus withheld only by a role, container or adjudication blocker names that blocker, not failed tests",
+    "_child_intent_branch": "E-1794391637-5549d1a0 (I-1794391536-refcap): the child branch is fitted under the 255-character ref limit through ref_names",
+    "run_calibrate_stage": "E-1794391637-5549d1a0 (I-1794391536-refcap): the calibration branch name comes from ref_names.calibration_branch",
+    "run_intent_stage": "E-1794391637-5549d1a0 (I-1794391536-refcap): the root intent branch is resolved and measured through ref_names, failing before any branch exists"
   },
   "added_definitions": {
     "<const>:CHILD_ROW_KEYS": {

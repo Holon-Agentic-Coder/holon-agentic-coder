@@ -1201,7 +1201,7 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
         )
 
     # Target calibrated branch
-    raw_branch = execution_branch.rstrip("/_").rstrip("/")
+    raw_branch = execution_branch.removesuffix("/_").rstrip("/")
     if raw_branch.startswith("refs/remotes/origin/"):
         raw_branch = raw_branch[len("refs/remotes/origin/") :]
     elif raw_branch.startswith("origin/"):

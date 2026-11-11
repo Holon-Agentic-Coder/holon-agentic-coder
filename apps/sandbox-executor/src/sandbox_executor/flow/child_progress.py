@@ -18,6 +18,7 @@ from sandbox_executor.flow.checkpoint import get_default_checkpoint_path
 from sandbox_executor.flow.context import FlowContext, StageResult
 from sandbox_executor.flow.git_refs import _fetch_branch_prefix_error, _list_child_branches, _origin_has_branch
 from sandbox_executor.flow.github.merge import GhRunner, _merged_result, gh_runner
+from sandbox_executor.ref_names import fit_child_intent_branch
 
 PROGRESS_KEY = "children_progress"
 PENDING = "pending"
@@ -43,7 +44,7 @@ def _child_intent_branch(parent_branch: str, index: int, slug: str) -> str:
     same second with the same slug; re-running the same parent's list derives the same name for the same child.
     """
     child_slug = re.sub(r"[^a-zA-Z0-9]+", "-", slug).strip("-").lower() or f"sub-intent-{index}"
-    return f"{parent_branch.removesuffix('/_')}--{index}-{child_slug}"
+    return fit_child_intent_branch(parent_branch, index, child_slug).name
 
 
 def initial_progress(items: list[dict[str, Any]], plan_branch: str) -> list[dict[str, Any]]:

@@ -77,6 +77,7 @@ from sandbox_executor.redaction import redact_args as redact_args
 from sandbox_executor.redaction import redact_command_args
 from sandbox_executor.redaction import redact_env_literals as redact_env_literals
 from sandbox_executor.redaction import redact_text as redact_text
+from sandbox_executor.ref_names import named_push_rejection, original_labels
 from sandbox_executor.turns import AuthoringOutcome, record_budget_failure, run_turn, supervise_authoring_turn
 
 _MAX_PRINT_LEN: int = 5000
@@ -1177,7 +1178,7 @@ def _report_unpushed_work(repo_dir: str, exec_branch: str, plan_tip: str | None,
     head_sha = (head.stdout or "").strip() or "unknown"
     print(
         f"Error: push of execution branch '{exec_branch}' was refused; local head {head_sha}: "
-        f"{redact_agent_secrets(reason.strip())}",
+        f"{redact_agent_secrets(named_push_rejection(exec_branch, reason.strip()))}",
         file=sys.stderr,
     )
     if not plan_tip:
@@ -1403,6 +1404,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 "agent": agent_name,
                 "agent_version": runner.get_version(),
                 "model": model_name,
+                **original_labels(exec_id, safe_agent, safe_model),
                 "status": decision.decision,
                 "entropy": decision.entropy,
                 "entropy_budget": decision.entropy_budget,
@@ -1783,6 +1785,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 "agent": agent_name,
                 "agent_version": runner.get_version(),
                 "model": model_name,
+                **original_labels(exec_id, safe_agent, safe_model),
                 "status": exec_status,
                 "summary": summary,
                 "created_at": timestamp_str,

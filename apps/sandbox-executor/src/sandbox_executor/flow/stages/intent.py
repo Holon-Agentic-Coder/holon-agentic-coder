@@ -24,6 +24,7 @@ from sandbox_executor.flow.intent_questions import validate_intent_questions
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.knowledge import ConsultEngine
+from sandbox_executor.ref_names import RefTooLongError, resolve_root_intent_branch
 
 logger = logging.getLogger(__name__)
 
@@ -110,9 +111,11 @@ def run_intent_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
         raw_slug = re.sub(r"[^a-zA-Z0-9]+", "-", raw_slug).strip("-").lower()
 
     # The intent creator expects the bare branch prefix and appends '/_' itself.
-    branch = str(intent_data.get("branch") or f"I-{int(time.time())}-{raw_slug}").removesuffix("/_")
+    try:
+        branch = resolve_root_intent_branch(intent_data, raw_slug, int(time.time()), context.agent, context.model)
+    except RefTooLongError as e:
+        return _stage_failure(context, FlowStage.INTENT, start_time, f"Intent stage failed: {e}")
     intent_data["branch"] = branch
-    intent_data["slug"] = raw_slug
     intent_data["target_branch"] = target_branch
 
     intent_branch = f"{branch}/_"

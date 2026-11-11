@@ -149,8 +149,9 @@ def test_a_linked_worktree_mounts_its_git_dirs_at_host_paths_and_overlays_git_co
         f"{common / 'packed-refs'}:{common / 'packed-refs'}:ro",
         f"{common / 'shallow'}:{common / 'shallow'}:ro",
         # The common HEAD and index are the PRIMARY checkout's; the linked worktree resolves its own through its
-        # admin dir. FETCH_HEAD and the transients (MERGE_HEAD/MERGE_MSG/ORIG_HEAD/CHERRY_PICK_HEAD/REVERT_HEAD)
-        # do not exist here, so no overlay is generated for them.
+        # admin dir. FETCH_HEAD, the transients (MERGE_HEAD/MERGE_MSG/MERGE_MODE/ORIG_HEAD/CHERRY_PICK_HEAD/
+        # REVERT_HEAD/SQUASH_MSG/AUTO_MERGE), the rebase state (REBASE_HEAD, rebase-merge/, rebase-apply/), the
+        # sequencer/ directory and the BISECT_* files do not exist here, so no overlay is generated for them.
         f"{common / 'HEAD'}:{common / 'HEAD'}:ro",
         f"{common / 'index'}:{common / 'index'}:ro",
         f"{git_dir / 'config.worktree'}:{git_dir / 'config.worktree'}:ro",
@@ -180,10 +181,13 @@ def test_a_primary_checkout_needs_no_extra_git_mount_but_still_protects_config_a
         f"{repo / '.git' / 'shallow'}:{MOUNT}/.git/shallow:ro",
     ]
     # The primary checkout's HEAD, index and FETCH_HEAD are its own: they must stay writable for in-container
-    # commits and fetches.
+    # commits and fetches, and its own mid-operation state (rebase, sequencer) is never overlaid either --
+    # the per-worktree overlays are gated to the linked case.
     assert _host_writable(args, str(repo / ".git" / "HEAD"))
     assert _host_writable(args, str(repo / ".git" / "index"))
     assert _host_writable(args, str(repo / ".git" / "FETCH_HEAD"))
+    assert _host_writable(args, str(repo / ".git" / "rebase-merge" / "git-rebase-todo"))
+    assert _host_writable(args, str(repo / ".git" / "sequencer" / "todo"))
     # An absent worktrees/, config.worktree, objects/info/, info/, refs/replace/, packed-refs or shallow is created
     # before overlaying, so the container cannot create it -- nor any host-read file inside the read-only
     # directories, existing or not. shallow is created as a DIRECTORY: an empty shallow file would itself mark the
@@ -224,12 +228,23 @@ def test_a_sibling_worktree_admin_dirs_are_unwritable_while_own_admin_and_object
     common = repo / ".git"
     own = common / "worktrees" / "flow-demo"
     sib = common / "worktrees" / "sibling"
-    # The primary checkout has fetched and sits mid-merge (with cherry-pick/revert state planted alongside), so
-    # its per-worktree state files at the common root exist and must be overlaid-if-present.
+    # The primary checkout has fetched and sits mid-merge (with cherry-pick/revert, rebase, sequencer and bisect
+    # state planted alongside), so its per-worktree state at the common root exists and must be overlaid-if-present.
+    # A container-writable rebase-merge/git-rebase-todo would be arbitrary host code execution: host
+    # 'git rebase --continue' runs its 'exec' lines.
     head = _git(repo, "rev-parse", "HEAD")
-    for transient in ("FETCH_HEAD", "MERGE_HEAD", "ORIG_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"):
+    for transient in ("FETCH_HEAD", "MERGE_HEAD", "ORIG_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD"):
         (common / transient).write_text(head + "\n", encoding="utf-8")
+    (common / "AUTO_MERGE").write_text(head + "\n", encoding="utf-8")
     (common / "MERGE_MSG").write_text("merge msg\n", encoding="utf-8")
+    (common / "SQUASH_MSG").write_text("squash msg\n", encoding="utf-8")
+    (common / "BISECT_LOG").write_text("git bisect start\n", encoding="utf-8")
+    (common / "rebase-merge").mkdir()
+    (common / "rebase-merge" / "git-rebase-todo").write_text("exec true\n", encoding="utf-8")
+    (common / "rebase-apply").mkdir()
+    (common / "rebase-apply" / "next").write_text("1\n", encoding="utf-8")
+    (common / "sequencer").mkdir()
+    (common / "sequencer" / "todo").write_text(f"pick {head} subject\n", encoding="utf-8")
 
     args = git_flow.sandbox_worktree_mounts(str(flow_worktree), MOUNT)
 
@@ -275,6 +290,16 @@ def test_a_sibling_worktree_admin_dirs_are_unwritable_while_own_admin_and_object
         common / "ORIG_HEAD",
         common / "CHERRY_PICK_HEAD",
         common / "REVERT_HEAD",
+        common / "REBASE_HEAD",
+        common / "AUTO_MERGE",
+        common / "SQUASH_MSG",
+        common / "BISECT_LOG",
+        common / "rebase-merge",
+        common / "rebase-merge" / "git-rebase-todo",
+        common / "rebase-apply",
+        common / "rebase-apply" / "next",
+        common / "sequencer",
+        common / "sequencer" / "todo",
         flow_worktree / ".git",
     ):
         assert not _host_writable(args, str(path)), path

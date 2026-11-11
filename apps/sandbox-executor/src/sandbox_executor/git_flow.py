@@ -790,9 +790,11 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str, role: 
     treats as no shallow file at all, because an empty shallow FILE would itself mark the repository shallow.
     When the mounted worktree is a linked worktree, the common HEAD is the primary checkout's HEAD -- never needed
     in-container -- and is overlaid read-only along with the primary's other per-worktree state at the common root,
-    each when present: index, FETCH_HEAD, and the transient MERGE_HEAD/MERGE_MSG/ORIG_HEAD/CHERRY_PICK_HEAD/
-    REVERT_HEAD; a primary checkout's own HEAD, index and FETCH_HEAD stay writable for in-container commits and
-    fetches.
+    each when present: index, FETCH_HEAD, the transient MERGE_HEAD/MERGE_MSG/MERGE_MODE/ORIG_HEAD/CHERRY_PICK_HEAD/
+    REVERT_HEAD/SQUASH_MSG/AUTO_MERGE files, the mid-rebase REBASE_HEAD file and rebase-merge/ and rebase-apply/
+    directories (whose git-rebase-todo 'exec' lines host 'git rebase --continue' executes), the sequencer/
+    directory and the BISECT_* bisect-state files; a primary checkout's own HEAD, index and FETCH_HEAD stay
+    writable for in-container commits and fetches.
     A repository with extensions.worktreeConfig enabled is refused: git would then read every worktree's
     config.worktree, which the container could rewrite in its own writable git directory. On Linux, where a bind
     mount keeps host ownership, a worktree or git directory that the image's user (uid SANDBOX_CONTAINER_UID) cannot
@@ -884,12 +886,20 @@ def _common_dir_read_only_overlays(common_dir: str, git_dir: str) -> list[str]:
     # with the primary's other per-worktree state at the common root: index (a container-staged index would land
     # in the maintainer's next commit from the primary checkout), FETCH_HEAD (a planted ref that a later host
     # 'git merge FETCH_HEAD' or 'git log FETCH_HEAD' in the primary checkout would consume; the mounted worktree's
-    # own FETCH_HEAD lives in its admin dir and stays writable), and the transients MERGE_HEAD/MERGE_MSG/ORIG_HEAD/
-    # CHERRY_PICK_HEAD/REVERT_HEAD, which host 'git commit' consumes to conclude a merge, cherry-pick or revert.
-    # Each is overlaid only when it exists, because a created-empty stand-in is not inert (git rejects a
-    # zero-length index; an empty MERGE_HEAD flags an in-progress merge -- verified empirically); one absent at
-    # mount time therefore stays plantable, the documented accepted residual. When the mounted worktree IS the
-    # primary checkout they are its own state and must stay writable for in-container commits and fetches.
+    # own FETCH_HEAD lives in its admin dir and stays writable), and the primary's mid-operation state: the
+    # transients MERGE_HEAD/MERGE_MSG/MERGE_MODE/ORIG_HEAD/CHERRY_PICK_HEAD/REVERT_HEAD/SQUASH_MSG/AUTO_MERGE,
+    # which host 'git commit' consumes to conclude a merge, cherry-pick, revert or squash; REBASE_HEAD and the
+    # rebase-merge/ and rebase-apply/ directories (a rewritten rebase-merge/git-rebase-todo 'exec' line is
+    # arbitrary host code execution on the maintainer's next 'git rebase --continue' -- verified empirically);
+    # the sequencer/ directory, whose todo redirects a host 'git cherry-pick/revert --continue' to attacker
+    # commits; and the BISECT_LOG/BISECT_START/BISECT_EXPECTED_REV/BISECT_ANCESTORS_OK/BISECT_NAMES/BISECT_TERMS
+    # files, which steer a host bisect. Each is overlaid only when it exists, because a created-empty stand-in
+    # is not inert (git rejects a zero-length index; an empty MERGE_HEAD flags an in-progress merge; an empty
+    # rebase-merge/ or rebase-apply/ directory makes host git report a rebase in progress and refuse to start a
+    # new one; a pre-existing empty sequencer/ makes a host multi-commit cherry-pick or revert fail with 'could
+    # not create sequencer directory' -- all verified empirically); state absent at mount time therefore stays
+    # plantable, the documented accepted residual, now covering these directories too. When the mounted worktree
+    # IS the primary checkout they are its own state and must stay writable for in-container commits and fetches.
     for name in ("hooks", "modules", "worktrees"):
         os.makedirs(os.path.join(common_dir, name), exist_ok=True)
     os.makedirs(os.path.join(common_dir, "objects", "info"), exist_ok=True)
@@ -929,9 +939,22 @@ def _common_dir_read_only_overlays(common_dir: str, git_dir: str) -> list[str]:
                 "FETCH_HEAD",
                 "MERGE_HEAD",
                 "MERGE_MSG",
+                "MERGE_MODE",
                 "ORIG_HEAD",
                 "CHERRY_PICK_HEAD",
                 "REVERT_HEAD",
+                "SQUASH_MSG",
+                "AUTO_MERGE",
+                "REBASE_HEAD",
+                "rebase-merge",
+                "rebase-apply",
+                "sequencer",
+                "BISECT_LOG",
+                "BISECT_START",
+                "BISECT_EXPECTED_REV",
+                "BISECT_ANCESTORS_OK",
+                "BISECT_NAMES",
+                "BISECT_TERMS",
             )
         ]
     return overlays

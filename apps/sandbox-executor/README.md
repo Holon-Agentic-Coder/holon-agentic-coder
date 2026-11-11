@@ -227,9 +227,15 @@ is overlaid read-only, so an in-container `git fetch` that must rewrite it (deep
 fails loudly: a shallow host clone is effectively unsupported in-container, and flow worktrees come from full clones.
 When the mounted worktree is a linked worktree, the common `HEAD` -- the primary checkout's, which in-container git
 never needs -- is overlaid read-only as well, along with the rest of the primary's per-worktree state at the common
-root, each when it exists: `index`, `FETCH_HEAD`, and the transient
-`MERGE_HEAD`/`MERGE_MSG`/`ORIG_HEAD`/`CHERRY_PICK_HEAD`/`REVERT_HEAD` (a created-empty stand-in would not be inert: git
-rejects a zero-length index and treats an empty `MERGE_HEAD` as an in-progress merge); a mounted primary checkout's own
+root, each when it exists: `index`, `FETCH_HEAD`, the transient
+`MERGE_HEAD`/`MERGE_MSG`/`MERGE_MODE`/`ORIG_HEAD`/`CHERRY_PICK_HEAD`/`REVERT_HEAD`/`SQUASH_MSG`/`AUTO_MERGE` files, the
+mid-rebase `REBASE_HEAD` file and `rebase-merge/` and `rebase-apply/` directories (whose `git-rebase-todo` `exec` lines
+host `git rebase --continue` executes), the `sequencer/` directory (whose `todo` redirects a host
+`cherry-pick/revert --continue`) and the `BISECT_*` bisect-state files. A created-empty stand-in would not be inert --
+git rejects a zero-length index, treats an empty `MERGE_HEAD` as an in-progress merge, reports a rebase in progress (and
+refuses to start one) over an empty `rebase-merge/` or `rebase-apply/` directory, and fails a multi-commit cherry-pick
+or revert over a pre-existing empty `sequencer/` -- so state absent at mount time stays plantable, the documented
+accepted residual, which covers these directories as well as the transient files; a mounted primary checkout's own
 `HEAD`, `index` and `FETCH_HEAD` stay writable for its commits and fetches. Only the mounted worktree's own
 administrative directory is re-mounted read-write on top (docker layers the deeper mount destination over the shallower
 one), restoring exactly the writes its own git needs (`HEAD`, `index`, `FETCH_HEAD`) while its pointer files stay

@@ -792,7 +792,8 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str, role: 
     maintainer's next conflicting host merge and the directory's mere presence activates rerere, so an existing
     rr-cache/ is overlaid read-only and an absent one is replaced by a created read-only 'rr-cache' FILE, which is
     inert for git while blocking the directory's creation -- except where host rerere.enabled is already true, where
-    the stand-in would break host merges and 'git gc', so an empty read-only rr-cache DIRECTORY is created instead.
+    the stand-in would break host merges and 'git gc', so an empty read-only rr-cache DIRECTORY is created instead (a non-empty stray rr-cache file there is refused with a
+    RuntimeError).
     When the mounted worktree is a linked worktree, the common HEAD is the primary checkout's HEAD -- never needed
     in-container -- and is overlaid read-only along with the primary's other per-worktree state at the common root,
     each when present: index, FETCH_HEAD, the transient MERGE_HEAD/MERGE_MSG/MERGE_MODE/MERGE_AUTOSTASH/ORIG_HEAD/

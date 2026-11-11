@@ -107,10 +107,7 @@ class TestTurnExecutionEnvironment(unittest.TestCase):
         mock_run.reset_mock()
         with (
             patch("shutil.which", return_value="/usr/bin/docker"),
-            patch(
-                "sandbox_executor.cli.resolve_target_repo",
-                return_value=("git@github.com:test/repo.git", None),
-            ),
+            patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=[]),
             patch("sandbox_executor.cli.get_agent_session_mounts", return_value=[]),
         ):
             code = run_docker_container(
@@ -118,6 +115,7 @@ class TestTurnExecutionEnvironment(unittest.TestCase):
                 "holon/agent-antigravity",
                 ["branch", "agent", "model"],
                 agent_id="antigravity",
+                target_worktree="/tmp/worktree",
             )
             self.assertEqual(code, 0)
             self.assertTrue(mock_run.called)

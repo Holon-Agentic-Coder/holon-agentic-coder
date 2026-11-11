@@ -48,13 +48,13 @@ class TestIntentCreatorIntegration(unittest.TestCase):
 
     def test_intent_creator_docker_execution(self):
         """Test that running the orchestrator with the intent-creator role successfully
-        creates the intent branch and appends the intent to the ledger using a bare repository held in a Docker volume.
+        creates the intent branch and appends the intent to the ledger in a seeded worktree held in a Docker volume.
         """
         if not _is_docker_available():
             self.skipTest("Docker daemon is not available in test environment.")
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # A named volume owns its own uid, so the container can clone from and push back to the
+            # A named volume owns its own uid, so the container can commit into the
             # fixture without any host/container uid negotiation.
             volume = create_seeded_remote()
             self.addCleanup(remove_remote_volume, volume)
@@ -78,7 +78,7 @@ class TestIntentCreatorIntegration(unittest.TestCase):
                 "-e",
                 "HOLON_ROLE=intent-creator",
                 "-e",
-                f"HOLON_REPO_URL={remote_path(volume)}",
+                f"HOLON_TARGET_WORKTREE={remote_path(volume)}",
                 *remote_volume_args(volume),
                 "-v",
                 f"{intent_json_path}:/tmp/intent.json",
@@ -106,7 +106,7 @@ class TestIntentCreatorIntegration(unittest.TestCase):
 
             intent_branch = match.group(1)
 
-            # Verify the pushed branch carries our intent record. The fixture never surfaces on the
+            # Verify the created branch carries our intent record. The fixture never surfaces on the
             # host, so the read is done by a container running as the volume's own user.
             show_result = remote_show_file(intent_branch, "holon-knowledge/ledger/intents.jsonl", volume)
 

@@ -74,16 +74,16 @@
     "_decomposition_child_lines": "c5a481c0c63cd762fedfd5c764279e1faa1c1ecb778e42cdff0cc99121865d69",
     "_discover_child_branch": "64cd430a6764fec00fc5c7a745b7e1fcc0ef34976a7d59b2ba22918486e81638",
     "_dispatch_review_ensemble": "f981c51ec4b5edac6e23bbe09a28283cf339c0eb7992217cbc0d455f14919f44",
-    "_dispatch_review_resolver": "eda3d5bb866154bf12b4449d9ba117b31be427c3550a30ad194831f45c38fc1d",
+    "_dispatch_review_resolver": "c9ded84083977e406692e9323bfd5d4a020eddd8bdcd45bb1a0d348c9375085c",
     "_dispatch_role": "858c0e29d65b71e5cfa02c2e0269e794c31573c1a24757b9f7b18fdeeb7ba3ec",
     "_ensemble_iteration": "51bd505a7784ce4013c4ea31aa4e2473e8adda9cc9393da56319cb52b5157dfe",
     "_execution_effective_diff": "769adbfde3c0fcbb4912a060a86df4c1d49624f7dc09a74d518c108b85108b2b",
     "_execution_parent_plan_branch": "9525941e04b95c0116b0f9040799effd2fed3e8d4151da571673af36be3c7163",
     "_extract_failed_ci_check_names": "fe599cece57f4844334aacb883d33bb7f2e70680bf63d606ee0392f63dca83b0",
-    "_fast_forward_local_branch": "797bb8d04d85b0fd15d3ef7306b3ca6bf8238a0dfb5d2f74ab469b32cb693ce3",
+    "_fast_forward_local_branch": "b35ba9b59d8ea6fddd89cfc0a587eff8a4da03c3c12223dbd46567cd1d4897bf",
     "_fetch_branch_prefix": "221d942bba4298d46185c811ca1ca324aefa646b6d6eefd75f2cc4e84ab2515e",
     "_fetch_branch_prefix_error": "cf619f382ee6d8c48a593a925f8e949607479f9aefad33500ced91c78c2e2912",
-    "_fetch_refspecs_error": "779def31372c0816d2007fcf93f865c4611ae9d881bc5279b6beaa5834ade75a",
+    "_fetch_refspecs_error": "4cef8d9172449f87bbdd023660395df4a8f03c455f163c043fa651d96e9bd134",
     "_filter_adjudicated_findings": "3fe6a16ec568bd0a17e2a57bfeea1c8725f9c4e7687f77ffe9437c8e15c24bca",
     "_format_entropy": "23422f18faf800748da7f8afaff6866c4e220ad197867a88b59a8a633027b0a0",
     "_get_dispatcher": "e1e10b9c62b3f7d3cf1a9671b8f3fb17ab18a325774f48d8dae52ad191838453",
@@ -160,10 +160,10 @@
     "review_summary_lines": "30a22d8637a84fa1b5497085f944cb0b4b04d0969370c6fc3a569b10659d54af",
     "reviewers_sandboxed": "2493c5509b14e20d9240b59cd3fce7f0d9afea3d0be8eac7df9b2abe1700ac2a",
     "run_calibrate_stage": "9d3bdd0eedab36af64f16bd10e5e27b16a240a52182f4e1ad00acbaecb1fdd3d",
-    "run_execute_stage": "d163ef16ecf859c23fcfdf2df16d913f5051dec5ff638f52af63ff6ff20eb5b4",
+    "run_execute_stage": "29fbdad952f002fd6ecbc819d359fa83bd5f7410f7ec606bfe12d9eec52e3d22",
     "run_flow_pipeline": "9eb839dedca4e077107119097d1f0e61fb840a39de8c051e09175d8e86e4e0ef",
-    "run_intent_stage": "e1c5953def9707b953b5180bdee943df817b8f2634ad7aaac20a15eb2ca09205",
-    "run_plan_stage": "3b410746b3caea63cd0ad2496fcfcf7250093bb528121fba7c808c3b0728b397",
+    "run_intent_stage": "bfd4f856f19c41fab1e0f9ceb9dcd4b0c3d815cbc90544cea0bf2757a9e6f2ec",
+    "run_plan_stage": "0be14982fcc771d08897bb9ddd0443440a4235e8cfdba84c476c3f45c0ebec39",
     "run_review_loop": "4facb968df5453588cbf3c45a64dd66d541f3bd9cbf5c71195cd47af2bbb0a59",
     "run_review_loop_cli": "35ab628bc65b642a6ffc984febe193e5f0b7471797e0e44462af8754da82ae07",
     "run_review_stage": "d75acf61664e33afc8aa0e7109d3625fc1cee4952cd2f05f322cb0a740aa6afb",
@@ -181,7 +181,7 @@
     "_augment_pr_text_with_rejected": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): moved to review/adjudication.py; lists only rejected nits, so reviewers are never told to stay silent about an important or critical finding",
     "_decomposition_child_lines": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): children are nested under and merged into the plan branch; the summary lists each child PR as merged into it and names the combined PR that Stage 4 raises",
     "_dispatch_review_ensemble": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): the workspace_volume parameter is gone; the review-loop container works in the bind-mounted host worktree",
-    "_dispatch_review_resolver": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result | E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result | E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): the workspace_volume parameter is gone; the review-loop container works in the bind-mounted host worktree",
+    "_dispatch_review_resolver": "E-1794391353-95df8afb (I-1794391245-worktree): the git fetch helper takes the remote name, or advances a checked-out local branch by fast-forward, so the host can fetch and push through the worktree's own remote while a role leaves it checked out",
     "_dispatch_role": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): the docstring no longer names the removed review_workspace_volume keyword",
     "_filter_adjudicated_findings": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): moved to review/adjudication.py; returns actionable and suppressed finding rows instead of rewritten reviewers, suppresses only nits rejected at the same signature, never matches positional ids, and never changes a verdict or counts",
     "_invoke_resolver_pass": "E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result | E-1794197319-7ead078e (I-1794196901-resolver-uv-available-and-fail-loudly): a resolver container that exits non-zero or leaves no resolver result is a failed pass, read through sandbox_executor.resolver_result | E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): no workspace volume is forwarded to the resolver dispatch",
@@ -191,9 +191,13 @@
     "post_pr_review_consensus": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): --approve follows report_approves: an APPROVED ensemble verdict, every reviewer clean and no role at CHANGES",
     "review_loop_approved": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): moved to review/verdict.py; also requires every final reviewer verdict to be a clean APPROVED",
     "review_summary_lines": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): moved to review/verdict.py; adds a 'Not approved' line naming each reviewer whose final verdict was not a clean APPROVED",
-    "run_execute_stage": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan row records the decomposition decision; the flow reads it and back-fills older rows",
+    "run_execute_stage": "E-1794391353-95df8afb (I-1794391245-worktree): the git fetch helper takes the remote name, or advances a checked-out local branch by fast-forward, so the host can fetch and push through the worktree's own remote while a role leaves it checked out",
     "run_review_loop": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): the volume-owning wrapper is gone; run_review_loop is again the loop itself (the former _run_review_loop_iterations body, minus workspace_session); it takes a ledger_file so a host-dispatched container pass appends its ledger rows to container scratch, not to the host-owned ledger of the bind-mounted worktree",
-    "run_review_stage": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): a consensus whose final verdicts are not all a clean APPROVED fails; failure messages, mergeability halts included, share one result block and state the final verdicts; a consensus withheld only by a role, container or adjudication blocker names that blocker, not failed tests"
+    "run_review_stage": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): a consensus whose final verdicts are not all a clean APPROVED fails; failure messages, mergeability halts included, share one result block and state the final verdicts; a consensus withheld only by a role, container or adjudication blocker names that blocker, not failed tests",
+    "_fetch_refspecs_error": "E-1794391353-95df8afb (I-1794391245-worktree): the git fetch helper takes the remote name, or advances a checked-out local branch by fast-forward, so the host can fetch and push through the worktree's own remote while a role leaves it checked out",
+    "_fast_forward_local_branch": "E-1794391353-95df8afb (I-1794391245-worktree): the git fetch helper takes the remote name, or advances a checked-out local branch by fast-forward, so the host can fetch and push through the worktree's own remote while a role leaves it checked out",
+    "run_intent_stage": "E-1794391353-95df8afb (I-1794391245-worktree): the git fetch helper takes the remote name, or advances a checked-out local branch by fast-forward, so the host can fetch and push through the worktree's own remote while a role leaves it checked out",
+    "run_plan_stage": "E-1794391353-95df8afb (I-1794391245-worktree): the git fetch helper takes the remote name, or advances a checked-out local branch by fast-forward, so the host can fetch and push through the worktree's own remote while a role leaves it checked out"
   },
   "added_definitions": {
     "<const>:CHILD_ROW_KEYS": {
@@ -515,6 +519,46 @@
     "view_pr": {
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
+    },
+    "<const>:DEFAULT_REMOTE": {
+      "module": "host_remote.py",
+      "reason": "E-1794391353-95df8afb (I-1794391245-worktree): the host performs every remote fetch and push of a stage, so role containers never touch the remote: fetch the base before a container, push what it committed after, and name the operation, branch and remote on failure"
+    },
+    "HostRemoteError": {
+      "module": "host_remote.py",
+      "reason": "E-1794391353-95df8afb (I-1794391245-worktree): the host performs every remote fetch and push of a stage, so role containers never touch the remote: fetch the base before a container, push what it committed after, and name the operation, branch and remote on failure"
+    },
+    "HostRemoteError.__init__": {
+      "module": "host_remote.py",
+      "reason": "E-1794391353-95df8afb (I-1794391245-worktree): the host performs every remote fetch and push of a stage, so role containers never touch the remote: fetch the base before a container, push what it committed after, and name the operation, branch and remote on failure"
+    },
+    "fetch_base": {
+      "module": "host_remote.py",
+      "reason": "E-1794391353-95df8afb (I-1794391245-worktree): the host performs every remote fetch and push of a stage, so role containers never touch the remote: fetch the base before a container, push what it committed after, and name the operation, branch and remote on failure"
+    },
+    "push_commit": {
+      "module": "host_remote.py",
+      "reason": "E-1794391353-95df8afb (I-1794391245-worktree): the host performs every remote fetch and push of a stage, so role containers never touch the remote: fetch the base before a container, push what it committed after, and name the operation, branch and remote on failure"
+    },
+    "push_branch": {
+      "module": "host_remote.py",
+      "reason": "E-1794391353-95df8afb (I-1794391245-worktree): the host performs every remote fetch and push of a stage, so role containers never touch the remote: fetch the base before a container, push what it committed after, and name the operation, branch and remote on failure"
+    },
+    "remote_error": {
+      "module": "host_remote.py",
+      "reason": "E-1794391353-95df8afb (I-1794391245-worktree): the host performs every remote fetch and push of a stage, so role containers never touch the remote: fetch the base before a container, push what it committed after, and name the operation, branch and remote on failure"
+    },
+    "new_local_child_branches": {
+      "module": "host_remote.py",
+      "reason": "E-1794391353-95df8afb (I-1794391245-worktree): the host performs every remote fetch and push of a stage, so role containers never touch the remote: fetch the base before a container, push what it committed after, and name the operation, branch and remote on failure"
+    },
+    "publish_new_child_branches": {
+      "module": "host_remote.py",
+      "reason": "E-1794391353-95df8afb (I-1794391245-worktree): the host performs every remote fetch and push of a stage, so role containers never touch the remote: fetch the base before a container, push what it committed after, and name the operation, branch and remote on failure"
+    },
+    "_push_resolver_head": {
+      "module": "review/resolver.py",
+      "reason": "E-1794391353-95df8afb (I-1794391245-worktree): the host performs every remote fetch and push of a stage, so role containers never touch the remote: fetch the base before a container, push what it committed after, and name the operation, branch and remote on failure"
     }
   },
   "removed_definitions": {

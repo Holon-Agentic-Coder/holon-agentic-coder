@@ -577,7 +577,7 @@ def _stub_run_preconditions(monkeypatch, teardowns: list[bool]) -> None:
         cli, "shutil", SimpleNamespace(which=lambda name: "/usr/bin/docker" if name == "docker" else None)
     )
     monkeypatch.setattr(cli, "find_github_token", lambda: None)
-    monkeypatch.setattr(cli, "resolve_target_repo", lambda repo_dir=None: ("git@github.com:example/repo.git", None))
+    monkeypatch.setattr(cli.git_flow, "sandbox_worktree_mounts", lambda *args, **kwargs: [])
     monkeypatch.setattr(
         cli,
         "get_token_reduction_mounts_and_envs",

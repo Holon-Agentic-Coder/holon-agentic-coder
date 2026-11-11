@@ -605,7 +605,6 @@ def test_f_review_loop_dispatch_runs_one_docker_run_with_no_volume_and_no_root_i
 
     env = {key: value for key, value in os.environ.items() if key in ("PATH", "HOME") or key.startswith("GIT_")}
     with (
-        patch("sandbox_executor.cli.resolve_target_repo", return_value=("https://github.com/acme/widgets.git", None)),
         patch("sandbox_executor.cli.get_agent_session_mounts", return_value=[]),
         patch("subprocess.run", side_effect=record),
         patch("shutil.which", side_effect=lambda name: "/usr/bin/docker" if name == "docker" else real_which(name)),
@@ -736,11 +735,11 @@ def test_h_the_resolver_commits_its_fix_but_never_the_host_loops_uncommitted_led
     applied = FindingDisposition("R1-F1", "important", "fix.py", 1, "s", disposition="applied")
 
     with patch.object(review_loop, "_verify_before_push", return_value=(True, True, None)):
-        result = review_loop._commit_and_push_resolution(
-            str(flow_worktree), "flow-demo", 1, (applied,), review_loop.CommitPushOptions(skip_push=True)
+        result = review_loop._commit_resolution(
+            str(flow_worktree), "flow-demo", 1, (applied,), review_loop.CommitOptions()
         )
 
-    assert result[5] is None, result
+    assert result[4] is None, result
     assert _git(flow_worktree, "show", "--name-only", "--format=", "HEAD") == "fix.py"
     assert _git(flow_worktree, "status", "--porcelain") == "M holon-knowledge/ledger/executions.jsonl"
 
@@ -783,7 +782,9 @@ def _remove_argv_pair(argv: list[str], pair: list[str]) -> list[str]:
 _FAKE_WORKTREE_MOUNTS = ["-v", "/work/flow-demo:/sandbox", "-v", "/work/repo/.git/config:/work/repo/.git/config:ro"]
 
 
-def _docker_argvs(role: str, target_worktree: str | None, mounts: list[str] | Exception) -> tuple[int, list[list[str]]]:
+def _docker_argvs(
+    role: str, target_worktree: str | None, mounts: list[str] | Exception, intent_file: str | None = None
+) -> tuple[int, list[list[str]]]:
     """Run run_docker_container for role with the worktree mount builder faked; return (exit code, docker argvs)."""
     from sandbox_executor.cli import run_docker_container
 
@@ -799,7 +800,6 @@ def _docker_argvs(role: str, target_worktree: str | None, mounts: list[str] | Ex
         else patch("sandbox_executor.git_flow.sandbox_worktree_mounts", return_value=list(mounts))
     )
     with (
-        patch("sandbox_executor.cli.resolve_target_repo", return_value=("git@github.com:test/repo.git", None)),
         patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"]),
         patch("subprocess.run", side_effect=record_run),
         patch("shutil.which", return_value="/usr/bin/docker"),
@@ -812,29 +812,42 @@ def _docker_argvs(role: str, target_worktree: str | None, mounts: list[str] | Ex
             ["branch", "fake-agent", "fake-model"],
             agent_id="claude",
             target_worktree=target_worktree,
+            intent_file=intent_file,
         )
     return code, captured
 
 
-@pytest.mark.parametrize("role", ["review-loop", "executor"])
-def test_worktree_roles_add_only_the_worktree_mounts_and_pin_the_workspace(role):
-    """A review-loop or executor argv is the planner argv plus worktree mounts, the pinned workspace and venv only."""
+ALL_WORKTREE_ROLES = ["intent-creator", "planner", "review-loop", "executor"]
+
+
+@pytest.fixture
+def intent_file(tmp_path: Path) -> str:
+    path = tmp_path / "intent.json"
+    path.write_text("{}", encoding="utf-8")
+    return str(path)
+
+
+@pytest.mark.parametrize("role", ALL_WORKTREE_ROLES)
+def test_worktree_roles_add_only_the_worktree_mounts_and_pin_the_workspace(role, intent_file):
+    """Every role argv is a role-neutral argv plus worktree mounts, the pinned workspace and venv only."""
     from sandbox_executor.agent_runner import SANDBOX_UV_PROJECT_ENVIRONMENT, SANDBOX_WORKSPACE_MOUNT
 
-    _code, (baseline,) = _docker_argvs("planner", "/work/flow-demo", _FAKE_WORKTREE_MOUNTS)
-    code, (review,) = _docker_argvs(role, "/work/flow-demo", _FAKE_WORKTREE_MOUNTS)
+    _code, (baseline,) = _docker_argvs("unmounted-role", None, [], intent_file)
+    code, (review,) = _docker_argvs(role, "/work/flow-demo", _FAKE_WORKTREE_MOUNTS, intent_file)
 
     assert code == 0
-    # Guard every isolation flag: removing the mounts and the pinned workspace (and the role) restores the
-    # planner argv byte for byte, so nothing else (--rm, --cap-drop=ALL, no-new-privileges, env forwarding) changed.
+    # Removing the mounts, the pinned workspace and the role restores the neutral argv byte for byte, so nothing
+    # else (--rm, --cap-drop=ALL, no-new-privileges, env forwarding) changed.
     reduced = review
     for pair in (_FAKE_WORKTREE_MOUNTS[:2], _FAKE_WORKTREE_MOUNTS[2:]):
         reduced = _remove_argv_pair(reduced, pair)
     reduced = _remove_argv_pair(reduced, ["-e", f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"])
     reduced = _remove_argv_pair(reduced, ["-e", f"UV_PROJECT_ENVIRONMENT={SANDBOX_UV_PROJECT_ENVIRONMENT}"])
     reduced = _remove_argv_pair(reduced, ["-e", f"HOLON_ROLE={role}"])
+    if role == "intent-creator":
+        reduced = _remove_argv_pair(reduced, ["-v", f"{intent_file}:/tmp/intent.json"])
     baseline = _remove_argv_pair(baseline, ["-e", "HOLON_TARGET_WORKTREE=/home/dev/own-checkout"])
-    baseline = _remove_argv_pair(baseline, ["-e", "HOLON_ROLE=planner"])
+    baseline = _remove_argv_pair(baseline, ["-e", "HOLON_ROLE=unmounted-role"])
     assert reduced == baseline
     assert "--cap-drop=ALL" in review and "--security-opt=no-new-privileges" in review
     # A forwarded host HOLON_TARGET_WORKTREE cannot displace the pinned container workspace path.
@@ -846,21 +859,34 @@ def test_worktree_roles_add_only_the_worktree_mounts_and_pin_the_workspace(role)
     assert not SANDBOX_UV_PROJECT_ENVIRONMENT.startswith(SANDBOX_WORKSPACE_MOUNT)
 
 
-def test_the_planner_never_mounts_the_host_worktree():
-    """Only the in-place review-loop and executor roles bind-mount the worktree; the planner keeps its private clone."""
-    from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
+@pytest.mark.parametrize("role", ["intent-creator", "planner", "review-loop"])
+def test_every_role_mounts_the_worktree_exactly_as_the_executor_does(role, intent_file):
+    """The worktree mount arguments, pin and venv of each role are identical to the executor's."""
+    from sandbox_executor.agent_runner import SANDBOX_UV_PROJECT_ENVIRONMENT, SANDBOX_WORKSPACE_MOUNT
 
-    code, (argv,) = _docker_argvs("planner", "/work/flow-demo", _FAKE_WORKTREE_MOUNTS)
+    wanted = {
+        f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}",
+        f"UV_PROJECT_ENVIRONMENT={SANDBOX_UV_PROJECT_ENVIRONMENT}",
+        *_FAKE_WORKTREE_MOUNTS[1::2],
+    }
+
+    def worktree_args(argv: list[str]) -> list[tuple[str, str]]:
+        return [(argv[i], argv[i + 1]) for i in range(len(argv) - 1) if argv[i + 1] in wanted]
+
+    _code, (executor_argv,) = _docker_argvs("executor", "/work/flow-demo", _FAKE_WORKTREE_MOUNTS)
+    code, (argv,) = _docker_argvs(role, "/work/flow-demo", _FAKE_WORKTREE_MOUNTS, intent_file)
+
     assert code == 0
-    assert not any(SANDBOX_WORKSPACE_MOUNT in a or "/work/flow-demo" in a for a in argv), argv
+    assert len(worktree_args(argv)) == len(wanted)
+    assert worktree_args(argv) == worktree_args(executor_argv)
 
 
-@pytest.mark.parametrize("role", ["review-loop", "executor"])
-def test_worktree_role_without_a_valid_worktree_fails_before_any_docker_command(role, capsys):
+@pytest.mark.parametrize("role", ALL_WORKTREE_ROLES)
+def test_worktree_role_without_a_valid_worktree_fails_before_any_docker_command(role, capsys, intent_file):
     """A missing or refused worktree fails closed: exit 1, an actionable error, and no docker run at all."""
     from sandbox_executor import git_flow
 
-    code, captured = _docker_argvs(role, None, RuntimeError("needs an explicit target worktree"))
+    code, captured = _docker_argvs(role, None, RuntimeError("needs an explicit target worktree"), intent_file)
 
     assert code == 1
     assert captured == []
@@ -949,67 +975,59 @@ def test_d_executor_refuses_a_dirty_mounted_worktree_and_leaves_its_edits_on_the
     assert (flow_worktree / "README.md").read_text(encoding="utf-8") == "edit left by a crashed run\n"
 
 
-def test_c_executor_commits_and_pushes_its_execution_branch_from_the_mounted_worktree(
-    repo: Path, flow_worktree: Path, monkeypatch: pytest.MonkeyPatch
+def _run_executor_on_mounted_worktree(
+    repo: Path, flow_worktree: Path, monkeypatch: pytest.MonkeyPatch, calls: list[list[str]]
 ) -> None:
+    """Run the executor's main on the over-budget plan in the mounted worktree and expect the refusal exit."""
     from sandbox_executor.entrypoint import executor
 
-    tip = _push_over_budget_plan(repo)
-    git_flow.fetch_origin_branch(str(flow_worktree), _PLAN)
-    remote = str(repo.parent / "remote.git")
     monkeypatch.setenv("HOLON_TARGET_WORKTREE", SANDBOX_WORKSPACE_MOUNT)
-    monkeypatch.setenv("HOLON_SKIP_PUSH", "")
     monkeypatch.setattr(executor, "get_workspace_dir", lambda: str(flow_worktree))
-    monkeypatch.setattr(executor, "get_repo_url", lambda: remote)
     monkeypatch.setattr(executor, "sync_and_reconcile_pre_push", lambda *a, **k: (True, "ok"))
     monkeypatch.setattr(executor, "get_runner", lambda name: MagicMock(**{"get_version.return_value": "1.0.0"}))
     monkeypatch.setattr(sys, "argv", ["executor.py", _PLAN, "antigravity-agent", "gemini-3.5-flash"])
-    calls: list[list[str]] = []
 
     with _executor_spy(calls), pytest.raises(SystemExit) as exit_:
         executor.main()
 
     assert exit_.value.code == executor.OVER_BUDGET_EXIT_CODE
+
+
+def test_c_executor_commits_its_execution_branch_in_the_mounted_worktree_and_leaves_the_push_to_the_host(
+    repo: Path, flow_worktree: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tip = _push_over_budget_plan(repo)
+    git_flow.fetch_origin_branch(str(flow_worktree), _PLAN)
+    calls: list[list[str]] = []
+
+    _run_executor_on_mounted_worktree(repo, flow_worktree, monkeypatch, calls)
+
     assert not any(c[:2] == ["git", "clone"] or c[:2] == ["git", "clean"] for c in calls), calls
-    # The execution branch is checked out in the host worktree, starts at the plan tip and is the one on origin.
+    # The execution branch is checked out in the host worktree and starts at the plan tip.
     branch = _git(flow_worktree, "symbolic-ref", "--short", "HEAD")
     assert branch.startswith("I-1-demo/P-1/E-") and branch.endswith("/_")
     assert _git(flow_worktree, "rev-parse", "HEAD~1") == tip
-    assert _git(repo.parent / "remote.git", "rev-parse", f"refs/heads/{branch}") == _git(
-        flow_worktree, "rev-parse", "HEAD"
-    )
     assert _git(flow_worktree, "status", "--porcelain") == ""
+    # The container never publishes it: the host pushes after the container returns.
+    remote = repo.parent / "remote.git"
+    assert subprocess.run(["git", "rev-parse", "--verify", "-q", f"refs/heads/{branch}"], cwd=remote).returncode != 0
     # Nothing was written to the host's shared repository config: no upstream, no identity.
     host_config = (repo / ".git" / "config").read_text(encoding="utf-8")
     assert "Holon Executor Agent" not in host_config and f'branch "{branch}"' not in host_config
 
 
-def test_c_executor_syncs_and_pushes_via_the_repo_url_not_the_hosts_origin(
+def test_c_executor_runs_no_remote_git_command_even_when_the_hosts_origin_is_unreachable(
     repo: Path, flow_worktree: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from sandbox_executor.entrypoint import executor
-
     _push_over_budget_plan(repo)
     git_flow.fetch_origin_branch(str(flow_worktree), _PLAN)
-    remote = str(repo.parent / "remote.git")
-    # The host's origin is an SSH remote the container cannot reach; HOLON_REPO_URL is the reachable one.
     _git(repo, "remote", "set-url", "origin", "git@unreachable.invalid:holon/demo.git")
-    monkeypatch.setenv("HOLON_TARGET_WORKTREE", SANDBOX_WORKSPACE_MOUNT)
-    monkeypatch.setenv("HOLON_SKIP_PUSH", "")
-    monkeypatch.setattr(executor, "get_workspace_dir", lambda: str(flow_worktree))
-    monkeypatch.setattr(executor, "get_repo_url", lambda: remote)
-    monkeypatch.setattr(executor, "get_runner", lambda name: MagicMock(**{"get_version.return_value": "1.0.0"}))
-    monkeypatch.setattr(sys, "argv", ["executor.py", _PLAN, "antigravity-agent", "gemini-3.5-flash"])
     calls: list[list[str]] = []
 
-    with _executor_spy(calls), pytest.raises(SystemExit) as exit_:
-        executor.main()
+    _run_executor_on_mounted_worktree(repo, flow_worktree, monkeypatch, calls)
 
-    assert exit_.value.code == executor.OVER_BUDGET_EXIT_CODE
-    branch = _git(flow_worktree, "symbolic-ref", "--short", "HEAD")
-    assert _git(remote, "rev-parse", f"refs/heads/{branch}") == _git(flow_worktree, "rev-parse", "HEAD")
-    remote_ops = [c for c in calls if c[:2] in (["git", "fetch"], ["git", "push"])]
-    assert remote_ops and all(remote in c and "origin" not in c for c in remote_ops), remote_ops
+    remote_verbs = {"fetch", "push", "pull", "ls-remote", "clone"}
+    assert not [c for c in calls if c[0] == "git" and remote_verbs & set(c[1:3])], calls
 
 
 def test_g_holon_execute_provisions_the_plans_flow_worktree_off_a_default_branch_checkout(repo: Path) -> None:

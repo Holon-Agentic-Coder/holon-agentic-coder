@@ -750,9 +750,7 @@ def _recorded_decision(
     return recorded if recorded is not None else should_decompose(plan_data, plan_content, intent_data)
 
 
-def sync_and_reconcile_pre_push(  # noqa: C901, PLR0911, PLR0912
-    repo_dir: str, target_branch: str = "main"
-) -> tuple[bool, str]:
+def sync_and_reconcile_pre_push(repo_dir: str, target_branch: str = "main") -> tuple[bool, str]:
     """Inspect whether the fetched target branch has advanced, merge it, and reconcile ledger conflicts.
 
     The host fetched the target branch into ``refs/remotes/origin/<target_branch>`` before the container started, so
@@ -773,8 +771,6 @@ def sync_and_reconcile_pre_push(  # noqa: C901, PLR0911, PLR0912
     Raises:
         None: Aborts any in-flight merge on failure and returns (False, err_msg).
     """
-    from sandbox_executor.flow import reconcile_ledger_file
-
     repo = _get_repo(repo_dir)
     # 1. The target branch tip the host fetched
     target_ref = f"origin/{target_branch}"
@@ -805,7 +801,11 @@ def sync_and_reconcile_pre_push(  # noqa: C901, PLR0911, PLR0912
             repo.commit(f"chore(sync): sync target branch {target_branch} before push", check=False)
         return True, f"Cleanly merged {target_ref}"
 
-    # Merge conflict detected
+    return _reconcile_conflicted_merge(repo, repo_dir, target_ref)
+
+
+def _conflicted_files(repo: GitRepository) -> list[str]:
+    """Return the paths left conflicted by an in-flight merge, from the unmerged index or else the porcelain status."""
     unmerged_res = repo.diff("--name-only", "--diff-filter=U")
     conflicted_files = [f.strip() for f in unmerged_res.stdout.splitlines() if f.strip()]
     if not conflicted_files:
@@ -813,7 +813,14 @@ def sync_and_reconcile_pre_push(  # noqa: C901, PLR0911, PLR0912
         for line in status_res.stdout.splitlines():
             if any(line.startswith(c) for c in ("UU ", "AA ", "UD ", "DU ", "AU ", "UA ", "DD ")):
                 conflicted_files.append(line[3:].strip())
+    return conflicted_files
 
+
+def _reconcile_conflicted_merge(repo: GitRepository, repo_dir: str, target_ref: str) -> tuple[bool, str]:
+    """Resolve an in-flight merge whose conflicts are all append-only ledgers, or abort it and say why."""
+    from sandbox_executor.flow import reconcile_ledger_file
+
+    conflicted_files = _conflicted_files(repo)
     non_ledger_files = [
         f for f in conflicted_files if not (f.startswith("holon-knowledge/ledger/") and f.endswith(".jsonl"))
     ]

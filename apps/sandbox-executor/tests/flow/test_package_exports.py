@@ -112,10 +112,20 @@ KNOWN_UNEXPORTED = frozenset(
     }
 )
 
-DEFINITIONS = public_definitions(FLOW_PACKAGE_DIR, "sandbox_executor.flow")
+try:
+    DEFINITIONS = public_definitions(FLOW_PACKAGE_DIR, "sandbox_executor.flow")
+    DEFINITIONS_ERROR = None
+except ValueError as error:  # reported by test_public_definitions_are_unambiguous, not as a collection error
+    DEFINITIONS = {}
+    DEFINITIONS_ERROR = str(error)
+
+
+def test_public_definitions_are_unambiguous():
+    assert DEFINITIONS_ERROR is None, DEFINITIONS_ERROR
 
 
 def test_every_public_definition_is_listed_in_all():
+    assert DEFINITIONS_ERROR is None, DEFINITIONS_ERROR
     missing = set(names_missing_from_all(DEFINITIONS, declared_all(FLOW_PACKAGE_DIR)))
     assert sorted(missing - KNOWN_UNEXPORTED) == []
     assert sorted(KNOWN_UNEXPORTED - missing) == []

@@ -462,7 +462,10 @@ split from the former single `flow.py` by moving code only. Three tests guard th
 - `tests/flow/test_patch_targets.py` checks that patch targets resolve where the code under test looks them up.
 - `tests/flow/test_package_exports.py` parses each submodule and requires every public top-level function and class to
   be re-exported by `flow/__init__.py`, listed in `__all__` and the same object as in its owning module. A
-  temporary-package test proves it fails when a definition is added without being re-exported.
+  temporary-package test proves it fails when a definition is added without being re-exported. A shrink-only
+  `KNOWN_UNEXPORTED` allowlist in that test covers public definitions that were never re-exported (reachable only
+  through their owning module); a new definition cannot join it, and an entry must be removed once it is re-exported.
+  The test also fails if two submodules define the same public name.
 - `tests/flow/test_module_budgets.py` enforces the module size budgets in `flow_module_budgets.json`.
 
 | Module                         | Responsibility                                                                                              |

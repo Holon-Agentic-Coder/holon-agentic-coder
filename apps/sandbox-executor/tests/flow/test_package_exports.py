@@ -36,8 +36,10 @@ def public_definitions(package_dir: Path, package_name: str) -> dict[str, str]:
 
     Private (``_``-prefixed) names, ``__init__.py``, nested definitions and constants are not definitions for this
     contract: constants and imported names are covered by ``REEXPORTED_IMPORTS`` and ``__all__`` membership.
+    Raises ``ValueError`` when two modules define the same public name, since the name would be ambiguous.
     """
     definitions: dict[str, str] = {}
+    duplicates: list[str] = []
     for path in sorted(package_dir.rglob("*.py")):
         if path.name == "__init__.py":
             continue
@@ -46,7 +48,11 @@ def public_definitions(package_dir: Path, package_name: str) -> dict[str, str]:
             if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) and not node.name.startswith(
                 "_"
             ):
+                if node.name in definitions:
+                    duplicates.append(f"{node.name} ({definitions[node.name]}, {dotted})")
                 definitions[node.name] = dotted
+    if duplicates:
+        raise ValueError(f"public name defined in more than one module: {', '.join(sorted(duplicates))}")
     return definitions
 
 

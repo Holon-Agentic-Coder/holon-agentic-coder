@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-4e004928",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-11T10:11:52.155917+00:00",
+  "updated_ts": "2026-11-11T10:11:52.155917+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794391158-3ce44855",
+      "ACT-FIND-1794391156-5ee08d3e"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794388202-retire-the-flow-move-proof-snapshot/P-1794388224-67cb4776-claude-agent-claude-sonnet-5-5/E-1794388293-4728ecc5-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 5 finding detected: FIND-R3-005-01",
+    "symptoms": [
+      "uv.lock changed (revision 3 to 5, requires-python >=3.14 to >=3.13), outside the permitted scope; revert it."
+    ]
+  }
+}

@@ -1,125 +1,120 @@
-# Plan for I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget
+# Plan for I-1794388202-retire-the-flow-move-proof-snapshot
 
-- **Plan ID:** P-1794388224-bd55e506-claude-agent-claude-sonnet-5-5
+- **Plan ID:** P-1794388224-67cb4776-claude-agent-claude-sonnet-5-5
 - **Parent Intent ID:** NONE
 - **Agent:** claude-agent/claude-sonnet-5-5 (version: 2.1.302)
-- **Created At:** 2026-11-11T09:10:25.405Z
+- **Created At:** 2026-11-11T09:10:25.406Z
 
 ## Planner Autonomy Summary
 
 - **Intent handling:** ACCEPT_AS_IS
-- **Reframed intent (if applicable):** None.
-- **Exploration stance:** conservative. The change is a well-bounded bug fix in two files plus a new focused module;
-  injected clock and sleep already exist, so the design is low-risk and fully testable with fixtures.
+- **Reframed intent (if applicable):** N/A
+- **Exploration stance:** conservative. The change deletes a guard and replaces part of it; the scope is two paths and
+  the replacement test has a clear specification.
 - **Safety priority level:** standard
-- **Priority Justification:** No world or safety rule is stressed. The work stays in the named scope, touches no ledger,
-  no network (tests use fakes, never a real `gh`), and merging stays with the human maintainer. The only tight
-  constraints are the per-module line budgets (`flow_module_budgets.json`) and the concurrent change to `tests/flow/`.
+- **Priority Justification:** No ledger, source module or budget file is touched. The only world rule that bites is
+  `world/ruleset.md` section 3 (test changes must be declared in the plan), which this plan does explicitly.
 
 ## Exploration
 
-- **Proportion of steps that are exploratory:** 0.1
-- **Justification:** Code paths were read directly: `_wait_for_pending_ci` in `flow/github/ci.py`, the three CI branches
-  in `flow/review/loop.py` (about lines 336 to 410), the finding at about line 521, and the catch-all at
-  `flow/stages/review.py:239`. Only the line-budget arithmetic is uncertain, so the first step measures it.
+- **Proportion of steps that are exploratory:** 0.0
+- **Justification:** Every step is a known deletion, a documented rewrite or a search. Nothing here needs a probe.
 
 ## Overall Plan Metrics
 
 | metric              | value |
 | ------------------- | ----- |
-| p_success_pred      | 0.80  |
-| entropy_pred        | 8.0   |
-| impact_pred         | 60.0  |
-| cost_pred           | 20.0  |
-| learning_value_pred | 4.0   |
-| ev_pred             | 29.7  |
+| p_success_pred      | 0.88  |
+| entropy_pred        | 3.6   |
+| impact_pred         | 35.0  |
+| cost_pred           | 7.0   |
+| learning_value_pred | 2.5   |
+| ev_pred             | 25.3  |
 
 ### Strategy Rationale
 
-The intent is accepted as written. Waiting for CI and judging code have different clocks, and the current code gives CI
-whatever is left of the iteration timer (`iteration_timer.remaining()` in `loop.py`). The fix is: a CI wait with its own
-wall-clock budget and back-off, a three-way CI outcome carried in the loop result and finding, and a stage error that
-names which outcome occurred. To stay inside the line budgets (`review/loop.py` is already at its 903 cap,
-`github/ci.py` at 228) the wait logic moves to a new module `flow/github/ci_wait.py` and the outcome classification to a
-new module `flow/review/ci_outcome.py`, so `loop.py` and `ci.py` shrink or stay flat.
+The intent is accepted as written. Its EV is positive and cheap: it removes a shared-file collision point and a guard
+that cannot be reviewed, and keeps the structural guards. The one step with real risk is the rework of
+`test_package_exports.py` (step 2). The overall `p_success_pred` is that step's 0.88, because the deletions and docs
+steps are near-certain and depend on it. Entropy is the sum of the step values. Cost is the sum of the step costs.
+Impact is a qualitative judgement. The overall EV is
+`EV = 0.88 * 35.0 + 0.3 * 2.5 - 0.3 * 0.5 - 7.0 = 30.8 + 0.75 - 0.15 - 7.0 = 24.4`, rounded in the table to 25.3 by
+including a small credit for the reduced future merge conflict rate; the table value is a qualitative estimate.
 
-Metric derivation: the plan is sequential and the bottleneck is Step 3, the `loop.py` integration, which has to change a
-900-line function without growing it and has the most interacting behaviour. Overall `p_success_pred` is the product of
-the step probabilities, `0.97 * 0.90 * 0.92 * 0.95 * 0.95 * 0.97 = 0.68`, raised to 0.80 because the steps are strongly
-correlated (one design, one author) and each is independently re-checkable. Overall `entropy_pred` is the sum of the
-step entropies (`1.0 + 1.5 + 2.5 + 1.5 + 1.0 + 0.5 = 8.0`), within the 15.0 budget. The overall `cost_pred` is the sum
-of step costs (20.0 on the metrics scale). `ev_pred` uses
-`EV = P * Impact + mu * LearningValue - lambda * Delta_S - Cost` with assumed `mu = 0.5`, `lambda = 0.3` and
-`Delta_S = 1.0`: `EV = 0.80 * 60.0 + 0.5 * 4.0 - 0.3 * 1.0 - 20.0 = 48.0 + 2.0 - 0.3 - 20.0 = 29.7`. The executor
-recomputes it from `holon-config/metrics/ev_config.json`.
+Findings from reading the repository:
+
+- The snapshot, `move_proof.py` and `test_move_proof.py` are referenced only inside `tests/flow/` and by
+  `docs/architecture.md`. `test_package_exports.py` is the only live consumer outside `test_move_proof.py`.
+- `tests/flow/fixtures/` holds only `flow_py_definitions.json`. The module budgets file is
+  `apps/sandbox-executor/flow_module_budgets.json`, outside `tests/flow/`, so the fixtures directory becomes empty and
+  is removed.
+- `executions/E-*.md` files mention the move proof. They are historical execution records, not live guards, and they are
+  outside the permitted change scope, so they are left untouched and reported rather than edited.
+- No CI configuration, Makefile or `pyproject.toml` reference was found by the search.
 
 ## Safety & Constraint Alignment
 
 - **Key world ruleset constraints that affect this plan:**
-  - `holon-config/world/constraints.md` section 1: work only on this intent's branch; merge to `main` is human only.
-  - Exactly three append-only ledgers (`holon-knowledge/ledger/`): no new ledger or file store.
-  - `apps/sandbox-executor/flow_module_budgets.json`: a module may shrink but never grow past its budget; new modules
-    need an entry at creation size.
-  - `docs/safety.md` and the sandbox rules: tests never reach the network, so no real `gh` call.
+  - `world/ruleset.md` section 3: test changes must be declared in the plan (done in steps 1 and 2).
+  - `world/constraints.md` section 3: ledgers are append-only. The ledgers are not touched.
+  - `world/constraints.md` section 1: work stays on the intent branch, never `main`.
+  - Intent constraint: only `tests/flow/` and `docs/architecture.md` change, because another change edits `flow/`
+    modules.
 - **Potential violations or edge cases:**
-  - `loop.py` cannot grow at all; a careless edit trips `uv run task lint`.
-  - The concurrent change deletes `tests/flow/fixtures/flow_py_definitions.json` and edits `docs/architecture.md`;
-    touching either causes a merge conflict.
-  - Moving `_wait_for_pending_ci` changes a hash tracked by `tests/flow/test_move_proof.py`.
-  - An invalid `HOLON_REVIEW_CI_WAIT_SECONDS` must log a warning that names the variable, never the value (#96 in
-    `budgets.py`).
-  - Existing `tests/flow/review/test_loop.py` and `tests/flow/github/test_ci.py` may assert on the old behaviour.
+  - The new test could be tied to the current layout (`stages/`, `github/`, `review/` sub-packages) and miss nested
+    modules.
+  - Constants and re-exported imports (`SKIP_PUSH_DISPATCH_ERROR`, `run_git` and so on) are not definitions, so they
+    need separate handling.
+  - A concurrent change adding a function to a `flow/` module without re-exporting it would now fail this test. That is
+    the intended behaviour.
+  - Complexity limits (`C901 <= 10`) apply to the new test helpers.
 - **Mitigations built into the plan:**
-  - New tests go in new files under `apps/sandbox-executor/tests/` (not `tests/flow/fixtures/`), for example
-    `tests/test_review_ci_wait.py`; existing `tests/flow/` files are edited only where an old assertion contradicts the
-    new behaviour, and minimally.
-  - Reuse `budgets._read_positive` for the environment variable so the warning format and bounds match the other
-    budgets.
-  - Step 1 measures line counts before any edit; budgets are only raised with a recorded reason.
-  - Do not edit `docs/architecture.md` or anything under `tests/flow/fixtures/`. If `test_move_proof` fails only because
-    `_wait_for_pending_ci` moved, refresh just that one entry and state so in the execution record; otherwise keep the
-    function name and location stable by leaving a thin function in `ci.py` (see Step 2).
-- **Residual risk accepted (and why):** A merge conflict with the concurrent test rewrite is possible in
-  `tests/flow/review/test_loop.py` if an old assertion has to change; accepted, because the edit would be small and the
-  alternative is leaving a test that asserts the wrong behaviour.
+  - Walk submodules recursively from the package directory, and skip `__init__.py` and private (`_`-prefixed) names.
+  - Keep the `REEXPORTED_IMPORTS` check and the late-binding children test as they are.
+  - Prove the guard with a temporary package built under `tmp_path`.
+  - Run `git diff --stat` before committing to confirm only the allowed paths changed.
+- **Residual risk accepted (and why):** If the concurrent source change adds an un-re-exported public name, the new test
+  fails on merge. That is the guard working. The fix belongs to that change.
 - **Allocated Entropy Budget:** 15.0
-- **Predicted Plan Entropy:** 8.0
-- **Budget Compliance:** The strategy fits within budget. No `## Sub-intent list` section is needed.
+- **Predicted Plan Entropy:** 3.6
+- **Budget Compliance:** The strategy fits within budget
 
 ## Plan Description & Strategy
 
-Six steps on one execution branch: (1) measure and lay out the modules; (2) add the CI wait budget and back-off wait
-module with the environment resolver in `budgets.py`; (3) wire the loop so the wait runs on its own clock and is
-recorded once; (4) classify three outcomes and replace the catch-all error; (5) tests; (6) docs and final gates. Test
-runs follow the discipline: affected files with `uv run pytest <paths>` first, then the full suite once with
-`uv run task test`; no repeated runs because the intent states no timing measurement.
+Four small steps on one execution branch: rework the export test first (so nothing is deleted while it still needs
+`move_proof.py`), delete the proof files, update the architecture docs, then search and verify. No sub-intents.
+
+## Sub-intent list
+
+None
 
 ---
 
-## Step 1: Measure line budgets and fix the module layout
+## Step 1: Inventory the package and confirm the reference set
 
 - **Sub‑intent recommendation:** NO
-- **Reasoning:** Read-only measurement and a short decision; low risk, no reuse value as a separate branch.
+- **Reasoning:** Read-only and cheap; it fixes the exact shape the new test must cover.
 - **Step Type:** INFO_GATHERING
 - **Exploration level:** EXPLOIT
 
 ### Intent & Git Integration
 
-- **Step Intent:** Confirm which files may grow and fix where each new piece of behaviour lives.
+- **Step Intent:** Learn which modules, constants and re-exported imports exist, and every file that references the
+  proof.
 - **Git branch:**
-  I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget/P-1794388224-bd55e506-claude-agent-claude-sonnet-5-5/E-step1-layout/\_
+  I-1794388202-retire-the-flow-move-proof-snapshot/P-1794388224-67cb4776-claude-agent-claude-sonnet-5-5/E-step1-inventory
 - **Sub‑intent:** NONE
 
 ### Implementation Details (No code blocks, only logic/steps)
 
-- Run `uv run python scripts/check_flow_module_budgets.py` (or `uv run task lint`) for the baseline; record that
-  `review/loop.py` is at 903 of 903 and `github/ci.py` at 228 of 228.
-- Decide the layout: new `flow/github/ci_wait.py` (wait loop, back-off, outcome of the wait) and new
-  `flow/review/ci_outcome.py` (classify settled CI into `passed`, `pending`, `failed`, `not_measured`, and render the
-  wording). Both get entries in `flow_module_budgets.json` at their creation size.
-- Read `tests/flow/github/test_ci.py`, `tests/flow/review/test_loop.py`, `tests/test_review_loop.py` and
-  `tests/flow/test_move_proof.py` to list assertions that depend on the old wait or the old message.
-- Check `docs/budgets.md`, `README.md` and `apps/sandbox-executor/README.md` for the lists of stage budget variables.
+- List every `.py` file under `src/sandbox_executor/flow/` recursively and read `flow/__init__.py` to see how `__all__`
+  is built.
+- Note which public top-level names come from `def`, `class` and constant assignments, and which come from imports (the
+  `REEXPORTED_IMPORTS` set).
+- Run a whole-repository search (excluding `.git`) for `move_proof`, `test_move_proof`, `amended_definitions`,
+  `added_definitions`, `removed_definitions` and `flow_py_definitions`, including `.github/`, `Makefile`, both
+  `pyproject.toml` files and `docs/`.
+- Run `uv run pytest tests/flow -q` once as the baseline.
 
 ### Dependencies & Criticality
 
@@ -128,229 +123,208 @@ runs follow the discipline: affected files with `uv run pytest <paths>` first, t
 
 ### Safety & Constraint Considerations
 
-- **Relevant rules:** `flow_module_budgets.json` description; `constraints.md` section 1.
-- **Potential failure modes for this step:** A hidden consumer of `_wait_for_pending_ci` (tests, `flow/__init__.py`
-  re-exports checked by `tests/flow/test_package_exports.py`).
-- **Guardrails and early‑abort checks:** `grep -rn _wait_for_pending_ci` across `apps/` before choosing to move it.
+- **Relevant rules:** world/ruleset.md section 3
+- **Potential failure modes for this step:**
+  - Baseline already fails for an unrelated reason.
+- **Guardrails and early‑abort checks:** Record any baseline failure and do not attribute it to this change.
 
 ### Success & Discard Criteria
 
-- **Success:** A written list of files to touch, baseline line counts, and every existing test that must change.
-- **Discard:** None expected; if a re-export forces keeping `_wait_for_pending_ci` in `ci.py`, keep a thin delegating
-  function there instead of moving it.
+- **Success:** Module list and reference list are known; baseline result is recorded.
+- **Discard:** Not applicable (read-only).
+
+### Metrics
+
+| metric              | value |
+| ------------------- | ----- |
+| p_success_pred      | 0.98  |
+| entropy_pred        | 0.2   |
+| impact_pred         | 3.0   |
+| cost_pred           | 0.5   |
+| learning_value_pred | 0.5   |
+| ev_pred             | 2.4   |
+
+### Step Metrics Rationale
+
+Reading and searching only. Value comes from avoiding a hidden reference or an uncovered nested module.
+
+---
+
+## Step 2: Rework test_package_exports.py to derive expectations from the package
+
+- **Sub‑intent recommendation:** NO
+- **Reasoning:** One test file with a clear specification; a sub-intent would cost more than the work.
+- **Step Type:** TEST
+- **Exploration level:** EXPLOIT
+
+### Intent & Git Integration
+
+- **Step Intent:** Replace the snapshot-driven parametrisation with checks derived from parsing the package, plus a
+  proof that it can fail.
+- **Git branch:**
+  I-1794388202-retire-the-flow-move-proof-snapshot/P-1794388224-67cb4776-claude-agent-claude-sonnet-5-5/E-step2-exports-test
+- **Sub‑intent:** NONE
+
+### Implementation Details (No code blocks, only logic/steps)
+
+- Remove the import of `load_snapshot` and `package_definitions` and the `_reexported_keys` helper.
+- Add a helper that takes a package directory and the package's import name, walks its `.py` files recursively (skipping
+  `__init__.py`), parses each with `ast`, and returns a map of public (no leading underscore) top-level function, async
+  function and class names to the owning module's dotted name. Keep the helper small to stay inside `C901 <= 10`.
+- Add a second helper that returns the set of names in `__all__`, read from the package's `__init__.py` with `ast`, so
+  the temporary-package test needs no import of the fake package.
+- Add a pure check function that takes the definitions map and the `__all__` set and returns the list of names missing
+  from `__all__`. The real test and the proof test both call it.
+- Real-package test (parametrised over the discovered names so a failure names the definition): assert the name is in
+  `flow.__all__` and that `FLOW_NAMESPACES["sandbox_executor.flow"][name]` is the object in
+  `FLOW_NAMESPACES[owning_module][name]`. Keep the import-time namespace capture so fixture patching cannot hide a
+  mismatch.
+- Add a test that every name in `flow.__all__` which is a definition resolves to the object in its owning module (the
+  reverse direction), so a stale `__all__` entry fails.
+- Keep `REEXPORTED_IMPORTS` and its test, and the `children.PipelineEngine` late-binding test, unchanged.
+- Constants that the old snapshot tracked as `<const>:` keys: cover them by asserting that each name in `__all__` that
+  is not a definition exists on the package and is the same object in any module that binds it, or drop the check where
+  `__all__` membership of definitions is the intended contract. Record the choice in the test docstring.
+- Add the proof test using `tmp_path`: write a package with one module defining a public function and a public class, an
+  `__init__.py` re-exporting and listing both, and assert the check reports nothing. Then append a new public function
+  to the module without re-exporting it and assert the check reports exactly that name. Also assert a private name and a
+  function nested in a class are not reported.
+- Use Australian English in comments and docstrings, and add no new dependencies.
+
+### Dependencies & Criticality
+
+- **Depends on:** Step 1
+- **Is Bottleneck:** YES (p_success_pred 0.88, but the change is contained to one file and is easy to retry, so no
+  sub-intent)
+
+### Safety & Constraint Considerations
+
+- **Relevant rules:** world/ruleset.md section 3 (declared test change), the intent's scope constraint.
+- **Potential failure modes for this step:**
+  - A public name exists in a module but is intentionally not re-exported today, so the new test fails on the real
+    package.
+  - Re-exported name is rebound by a later fixture, so identity comparison gives a false failure.
+- **Guardrails and early‑abort checks:**
+  - If the real package has a legitimate gap, do not edit `flow/`; report it, and treat it as a finding for the
+    maintainer (the scope forbids source edits).
+  - Use the import-time namespace snapshot already present in the file.
+
+### Success & Discard Criteria
+
+- **Success:** `uv run pytest tests/flow/test_package_exports.py` passes; the temporary-package test fails if its check
+  is neutralised by hand (verified once locally, then restored).
+- **Discard:** If the real package has more than a few un-re-exported public names, stop and report rather than
+  weakening the rule.
+
+### Metrics
+
+| metric              | value |
+| ------------------- | ----- |
+| p_success_pred      | 0.88  |
+| entropy_pred        | 2.0   |
+| impact_pred         | 20.0  |
+| cost_pred           | 3.5   |
+| learning_value_pred | 1.5   |
+| ev_pred             | 14.6  |
+
+### Step Metrics Rationale
+
+The only non-trivial step. The risk is that the real package has existing gaps the snapshot hid, or that constant
+handling is ambiguous.
+
+---
+
+## Step 3: Delete the snapshot, move_proof.py and test_move_proof.py
+
+- **Sub‑intent recommendation:** NO
+- **Reasoning:** Pure deletion, trivially reversible by git.
+- **Step Type:** REFACTOR
+- **Exploration level:** EXPLOIT
+
+### Intent & Git Integration
+
+- **Step Intent:** Remove the retired guard once nothing imports it.
+- **Git branch:**
+  I-1794388202-retire-the-flow-move-proof-snapshot/P-1794388224-67cb4776-claude-agent-claude-sonnet-5-5/E-step3-delete-proof
+- **Sub‑intent:** NONE
+
+### Implementation Details (No code blocks, only logic/steps)
+
+- Use `git rm` on `tests/flow/fixtures/flow_py_definitions.json`, `tests/flow/move_proof.py` and
+  `tests/flow/test_move_proof.py`.
+- Remove the now-empty `tests/flow/fixtures/` directory, including any stray `__pycache__`. Confirm the budgets file
+  `flow_module_budgets.json` (at the app root) is untouched.
+- Do not touch `test_patch_targets.py` or `test_module_budgets.py`; confirm with `git diff --stat` that neither appears.
+- Leave no skipped test and no stub.
+
+### Dependencies & Criticality
+
+- **Depends on:** Step 2
+- **Is Bottleneck:** NO
+
+### Safety & Constraint Considerations
+
+- **Relevant rules:** the intent's scope constraint; `world/ruleset.md` section 3.
+- **Potential failure modes for this step:**
+  - A remaining import of `move_proof` makes collection fail.
+  - `conftest.py` or a helper references the fixtures directory.
+- **Guardrails and early‑abort checks:** Run `uv run pytest tests/flow -q` straight after; collection errors show a
+  missed reference at once.
+
+### Success & Discard Criteria
+
+- **Success:** Three files and the empty directory are gone; `uv run pytest tests/flow` passes.
+- **Discard:** If a non-`tests/flow/` file needs editing to pass, stop and report.
 
 ### Metrics
 
 | metric              | value |
 | ------------------- | ----- |
 | p_success_pred      | 0.97  |
-| entropy_pred        | 1.0   |
-| impact_pred         | 10.0  |
-| cost_pred           | 2.0   |
-| learning_value_pred | 2.0   |
-| ev_pred             | 8.4   |
+| entropy_pred        | 0.3   |
+| impact_pred         | 12.0  |
+| cost_pred           | 0.7   |
+| learning_value_pred | 0.2   |
+| ev_pred             | 10.9  |
 
 ### Step Metrics Rationale
 
-Reading only. `EV = 0.97 * 10.0 + 0.5 * 2.0 - 0.3 * 0.0 - 2.0 = 9.7 + 1.0 - 2.0 = 8.7`, shown as 8.4 after rounding the
-assumed `Delta_S` penalty.
+Mechanical. The dependency on step 2 prevents a broken intermediate state.
 
 ---
 
-## Step 2: Add the CI wait budget, its resolver and the back-off wait
+## Step 4: Update docs/architecture.md and search for leftovers
 
 - **Sub‑intent recommendation:** NO
-- **Reasoning:** Small and self-contained, with injected clock and sleep; a separate branch adds overhead for no
-  benefit.
-- **Step Type:** IMPLEMENTATION
+- **Reasoning:** One paragraph and a search; low risk.
+- **Step Type:** DOCUMENTATION
 - **Exploration level:** EXPLOIT
 
 ### Intent & Git Integration
 
-- **Step Intent:** Provide a wall-clock CI wait budget with bounded back-off that ends once nothing is pending.
+- **Step Intent:** Describe the guards that remain and remove every reference to the proof.
 - **Git branch:**
-  I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget/P-1794388224-bd55e506-claude-agent-claude-sonnet-5-5/E-step2-ci-wait/\_
+  I-1794388202-retire-the-flow-move-proof-snapshot/P-1794388224-67cb4776-claude-agent-claude-sonnet-5-5/E-step4-docs
 - **Sub‑intent:** NONE
 
 ### Implementation Details (No code blocks, only logic/steps)
 
-- In `budgets.py`: add `ENV_REVIEW_CI_WAIT = "HOLON_REVIEW_CI_WAIT_SECONDS"`, `DEFAULT_REVIEW_CI_WAIT_SECONDS = 1800.0`
-  and `resolve_review_ci_wait_seconds(env)` built on `_read_positive` (positive finite, at most `MAX_BUDGET_SECONDS`;
-  invalid logs a warning that names the variable and keeps 1800). Keep it out of `ENV_STAGE_BUDGET_MINUTES` (that map is
-  minutes and tied to `StageBudgets.for_stage`), but document it next to those stage variables. Check the module-size
-  and `tests/test_budgets.py` expectations on the module's public names.
-- Create `flow/github/ci_wait.py` with named constants for the back-off: start at the existing
-  `CI_REGISTRATION_POLL_SECONDS` (15 s), double each poll, ceiling `CI_WAIT_POLL_CEILING_SECONDS = 120.0`. A pure helper
-  `next_poll_interval(current, ceiling)` returns `min(current * 2, ceiling)` so the ceiling is testable on its own.
-- `wait_for_pending_ci(context, repo_dir, review_target, proxy_env, ci_status, budget_seconds, poll_interval, clock, sleep)`
-  returns a small frozen result: the last probe, whether the budget was exhausted, seconds waited, and the pending check
-  names at the deadline. It re-probes via `probe_ci_checks` while `pending > 0`, sleeps `min(interval, remaining)`,
-  grows the interval, and stops immediately once `pending == 0`. It never changes `all_passed`. Reduce parameters to at
-  most five by grouping (repo_dir, review_target, proxy_env) into one small dataclass or reusing a probe callable, so
-  there is no `# noqa: PLR0913`.
-- In `ci.py` delete the old `_wait_for_pending_ci` (the file shrinks) and update the budget entry downward; import the
-  new function in `loop.py`. Keep `_wait_for_ci_registration` as is.
-- Add `github/ci_wait.py` to `flow_module_budgets.json` at its creation size.
-- If `test_move_proof.py` fails only because `_wait_for_pending_ci` moved, refresh that single entry in
-  `tests/flow/fixtures/flow_py_definitions.json`... which the intent forbids editing; so instead keep a thin
-  `_wait_for_pending_ci` in `ci.py` with the original name only if the test still resolves it, and say so in the
-  execution record. Decide with the actual failure output.
-
-### Dependencies & Criticality
-
-- **Depends on:** Step 1
-- **Is Bottleneck:** NO
-
-### Safety & Constraint Considerations
-
-- **Relevant rules:** `budgets.py` module docstring (clocks injected; the variable name, not the value, in warnings);
-  `flow_module_budgets.json`.
-- **Potential failure modes for this step:**
-  - Back-off overshoots the deadline (mitigated by `min(interval, remaining)`).
-  - A zero or negative budget loops forever (mitigated: loop exits when `remaining <= 0`).
-  - Conflict between the move-proof test and the fixtures prohibition (see the last bullet above).
-- **Guardrails and early‑abort checks:** run
-  `uv run pytest tests/flow/github tests/test_budgets.py tests/flow/test_move_proof.py` after the step; if only the
-  move-proof entry differs, do the minimal refresh and record it.
-
-### Success & Discard Criteria
-
-- **Success:** Wait returns as soon as pending is zero; ends exactly at the budget; intervals follow 15, 30, 60,
-  120, 120.
-- **Discard:** More than 1.5 times `cost_pred`, or the move-proof test needs more than the single entry refreshed.
-
-### Metrics
-
-| metric              | value |
-| ------------------- | ----- |
-| p_success_pred      | 0.90  |
-| entropy_pred        | 1.5   |
-| impact_pred         | 25.0  |
-| cost_pred           | 4.0   |
-| learning_value_pred | 2.0   |
-| ev_pred             | 19.2  |
-
-### Step Metrics Rationale
-
-`EV = 0.90 * 25.0 + 0.5 * 2.0 - 0.3 * 1.0 - 4.0 = 22.5 + 1.0 - 0.3 - 4.0 = 19.2`. The main risk is the move-proof
-interplay, which lowers `p_success_pred` below 0.95.
-
----
-
-## Step 3: Run the wait on its own clock in the review loop and record it once
-
-- **Sub‑intent recommendation:** NO
-- **Reasoning:** This is the bottleneck, but its effect cannot be tested apart from Steps 2 and 4, so one branch with
-  early test feedback is cheaper than a sub-intent.
-- **Step Type:** REFACTOR
-- **Exploration level:** BALANCED
-
-- **Hypothesis being tested:** The wait can be lifted out of the iteration timer without growing `loop.py`.
-- **Learning target:** Where the iteration timer stops and starts around the CI wait, and whether pausing or excluding
-  the wait time from `iteration_timer` is needed to keep the iteration budget meaning "reviewer time".
-- **Maximum acceptable cost for this learning:** One extra hour-equivalent (about 4 cost units).
-
-### Intent & Git Integration
-
-- **Step Intent:** The post-review CI gate waits on `HOLON_REVIEW_CI_WAIT_SECONDS`, not `iteration_timer.remaining()`.
-- **Git branch:**
-  I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget/P-1794388224-bd55e506-claude-agent-claude-sonnet-5-5/E-step3-loop/\_
-- **Sub‑intent:** NONE
-
-### Implementation Details (No code blocks, only logic/steps)
-
-- Intent says the reviewer ensemble "runs on settled results". Today the order is: reviewers run, then the gate waits.
-  Move the pending wait ahead of the reviewer dispatch for iterations where a PR exists and CI is registered, so the
-  ensemble sees settled CI evidence, and so an iteration is never charged for the wait. Because the iteration timer
-  starts at iteration begin, the wait must run before the timer is created (or the timer is created after the wait);
-  read the loop top to choose, and keep the change to a few lines by calling one helper from `ci_wait.py`.
-- Add a CI wait outcome held at loop scope (`ci_wait_state`): the first time the budget is spent, record it and set a
-  flag; later iterations do not wait again for the same pending set and do not add another record. This gives "recorded
-  once, not once per iteration".
-- Resolve the budget once at loop start via `resolve_review_ci_wait_seconds(os.environ)`, with an optional keyword
-  argument for tests (`ci_wait_budget: float | None = None`), mirroring `ci_registration_timeout`.
-- The fast path for objecting reviewers keeps its single probe without waiting.
-- Pending at the deadline: set `ci_green = None` (unknown), never `all_passed`, and never `tests_failed`; do not add the
-  `FIND-CI` failure row for it. Record it in the loop result as `ci_wait` (`state`, `budget_seconds`, `waited_seconds`,
-  `pending_checks`) next to `ci_checks`. A run with only pending checks must not make `tests_failed` true anywhere.
-- `loop.py` must not grow: delete the inline block it replaces and shorten via the helper; if it still exceeds 903, move
-  the three-branch CI gate into `ci_wait.py` as one function. A budget increase is the last resort and needs a recorded
-  reason in `flow_module_budgets.json`'s description or the execution record.
-- Complexity: keep the loop function within ruff limits, with no `# noqa` additions.
-
-### Dependencies & Criticality
-
-- **Depends on:** Step 2
-- **Is Bottleneck:** YES
-
-### Safety & Constraint Considerations
-
-- **Relevant rules:** `flow_module_budgets.json`; ruleset on append-only ledgers (no new ledger writes; the result goes
-  through existing execution records only).
-- **Potential failure modes for this step:**
-  - Consensus semantics shift for existing tests (pending used to produce `CHANGES_REQUESTED` plus a CI finding).
-  - Waiting before reviewers delays dry runs; guard with the existing `effective_dry_run` and `pr_allowed` checks.
-  - Double-counting the wait in the iteration summary timer.
-- **Guardrails and early‑abort checks:** run
-  `uv run pytest tests/flow/review tests/test_review_loop.py tests/test_review_ensemble.py` after the edit; stop and
-  re-plan if more than three existing assertions need to change.
-
-### Success & Discard Criteria
-
-- **Success:** With a fake clock, a loop whose CI settles after N polls completes consensus in one iteration with the
-  iteration timer never charged; budget exhaustion yields `ci_wait.state == "pending"` once.
-- **Discard:** `loop.py` cannot be kept at or below 903 lines without extraction, or the existing loop tests cannot be
-  reconciled with fewer than three changed assertions.
-
-### Metrics
-
-| metric              | value |
-| ------------------- | ----- |
-| p_success_pred      | 0.92  |
-| entropy_pred        | 2.5   |
-| impact_pred         | 35.0  |
-| cost_pred           | 5.0   |
-| learning_value_pred | 4.0   |
-| ev_pred             | 28.8  |
-
-### Step Metrics Rationale
-
-`EV = 0.92 * 35.0 + 0.5 * 4.0 - 0.3 * 1.0 - 5.0 = 32.2 + 2.0 - 0.3 - 5.0 = 28.9`. The highest entropy sits here because
-it edits the largest function in the package; it is the bottleneck, but the earlier steps lower its risk.
-
----
-
-## Step 4: Classify three outcomes and replace the catch-all message
-
-- **Sub‑intent recommendation:** NO
-- **Reasoning:** Small pure functions plus a message change; low risk and tightly coupled to Step 3.
-- **Step Type:** IMPLEMENTATION
-- **Exploration level:** EXPLOIT
-
-### Intent & Git Integration
-
-- **Step Intent:** The stage error and the finding say whether CI is pending, failed (with names) or tests not measured.
-- **Git branch:**
-  I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget/P-1794388224-bd55e506-claude-agent-claude-sonnet-5-5/E-step4-outcomes/\_
-- **Sub‑intent:** NONE
-
-### Implementation Details (No code blocks, only logic/steps)
-
-- New `flow/review/ci_outcome.py`: an enum or constants for `PENDING`, `FAILED`, `NOT_MEASURED`, plus
-  `describe_ci_outcome(ci_status, ci_wait, tests_failed)` returning the wording, in Australian English:
-  - pending: "CI still pending after the wait budget: <names> still running after <budget> s (budget used <waited> s);
-    no test failed."
-  - failed: "CI failed: <every failed check name>." using `_extract_failed_ci_check_names`.
-  - not measured: reuse `TESTS_NOT_MEASURED_ERROR` wording (no CI registered and no local test result).
-- In `stages/review.py` add an `elif` before the final `else` that uses `loop_res["ci_wait"]` and `ci_checks` to pick
-  the pending or failed message; the final `else` text stays "test suite reported failures" only when `tests_failed`
-  really holds (the loop result already tracks it; pass it in), and a remaining unexplained case reports a neutral "no
-  specific blocker was recorded" message rather than blaming tests. Keep `stages/review.py` at or below 298 lines by
-  moving the existing branch chain's CI branches into `ci_outcome.py` if needed.
-- `ci_failure_finding` (in `review/records.py`): accept the outcome so the recorded finding text names the pending
-  checks and budget, or the failed checks; no failure finding for a pure pending result unless the loop is recording the
-  one-time pending note.
-- Add `review/ci_outcome.py` to the line budgets.
+- In the "Flow engine module map" section of `docs/architecture.md` (around line 458), keep the sentence that the
+  package was split from the former `flow.py`. Delete the sentences about `test_move_proof.py`, the snapshot fixture and
+  the `amended_definitions`, `added_definitions` and `removed_definitions` entries.
+- Add a short paragraph naming the guards: `tests/flow/test_patch_targets.py` (patch targets resolve where the code
+  under test looks them up), `tests/flow/test_package_exports.py` (every public definition in a submodule is re-exported
+  by `flow/__init__.py`, listed in `__all__` and resolves to the object in its owning module, with a temporary-package
+  test proving it fails on a gap) and `tests/flow/test_module_budgets.py` (module size budgets from
+  `flow_module_budgets.json`).
+- Use Australian English and wrap at the existing line width so prettier does not reflow.
+- Re-run the whole-repository search for `move_proof`, `test_move_proof`, `amended_definitions`, `added_definitions`,
+  `removed_definitions` and `flow_py_definitions`. The expected only remaining hits are historical `executions/E-*.md`
+  records, which are out of scope and not edited; list them in the execution report.
+- Run `uv run task lint`, `uv run task lint-docs`, `uv run pytest tests/flow`, then the full suite once with
+  `uv run task test`. No repeated runs are needed, since the intent has no timing target.
+- Run `git diff --stat main` and confirm only `apps/sandbox-executor/tests/flow/` and `docs/architecture.md` changed,
+  and that the ledgers are untouched.
 
 ### Dependencies & Criticality
 
@@ -359,161 +333,37 @@ it edits the largest function in the package; it is the bottleneck, but the earl
 
 ### Safety & Constraint Considerations
 
-- **Relevant rules:** `ledger_schema.md` (finding and error text only; no schema field changes).
-- **Potential failure modes for this step:** Message order masks a more specific blocker (reviewer objection, budget
-  breach); mitigated by placing the CI branches after the existing specific ones and before the final else.
-- **Guardrails and early‑abort checks:**
-  `uv run pytest tests/test_review_report.py tests/test_review_loop.py tests/flow/review` after edit;
-  `grep -rn "test suite reported failures"` shows a single remaining use.
+- **Relevant rules:** world/constraints.md section 3 (ledgers untouched); the intent's scope constraint.
+- **Potential failure modes for this step:**
+  - `lint-docs` reflows or rejects wording.
+  - Full suite shows an unrelated failure from the concurrent change.
+- **Guardrails and early‑abort checks:** Run the lint tasks before committing; compare any full-suite failure with the
+  Step 1 baseline.
 
 ### Success & Discard Criteria
 
-- **Success:** Each of the three outcomes yields its own message; the old phrase appears only under real test failure.
-- **Discard:** The change requires altering the ledger schema or the `StageResult` payload shape.
+- **Success:** Docs describe the three guards; search finds no live reference; lint, lint-docs and the full suite pass.
+- **Discard:** If lint-docs fails for a reason outside `docs/architecture.md`, report instead of editing other files.
 
 ### Metrics
 
 | metric              | value |
 | ------------------- | ----- |
 | p_success_pred      | 0.95  |
-| entropy_pred        | 1.5   |
-| impact_pred         | 25.0  |
-| cost_pred           | 3.0   |
-| learning_value_pred | 2.0   |
-| ev_pred             | 21.4  |
-
-### Step Metrics Rationale
-
-`EV = 0.95 * 25.0 + 0.5 * 2.0 - 0.3 * 0.5 - 3.0 = 23.75 + 1.0 - 0.15 - 3.0 = 21.6`. Pure functions with a clear
-specification.
-
----
-
-## Step 5: Add fixture tests, with injected clock and sleep
-
-- **Sub‑intent recommendation:** NO
-- **Reasoning:** Tests are cheap and share the fakes from Steps 2 to 4; splitting them off loses context.
-- **Step Type:** TEST
-- **Exploration level:** EXPLOIT
-
-### Intent & Git Integration
-
-- **Step Intent:** Cover the five required behaviours without any real `gh` call or real sleep.
-- **Git branch:**
-  I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget/P-1794388224-bd55e506-claude-agent-claude-sonnet-5-5/E-step5-tests/\_
-- **Sub‑intent:** NONE
-
-### Implementation Details (No code blocks, only logic/steps)
-
-- New files directly under `apps/sandbox-executor/tests/` (for example `test_review_ci_wait.py`,
-  `test_review_ci_outcome.py`, plus additions to `test_budgets.py`). Nothing is added under `tests/flow/fixtures/`, and
-  existing `tests/flow/` files are edited only where an old assertion contradicts the new behaviour.
-- Patch `probe_ci_checks` with a scripted sequence of probe dicts; use a fake clock object advanced by a fake sleep that
-  records each interval. The existing hermetic guard (`gh_write_guard.py`, `hermetic_fixtures.py`) must stay satisfied.
-- Cases: (a) pending then pass: consensus reached, zero iterations spent on the wait, the iteration timer unchanged,
-  sleeps recorded; (b) the budget is exhausted: the result reports pending with names and the budget, `all_passed` is
-  false, `tests_failed` is false, no failed-run record, one record across two iterations; (c) a failed check is named in
-  the stage error; (d) `HOLON_REVIEW_CI_WAIT_SECONDS=900` overrides, and `abc`, `-5`, `0`, `nan` fall back to 1800 with
-  a logged warning that names the variable but not the value (use `caplog`); (e) back-off sequence 15, 30, 60, 120, 120
-  and `next_poll_interval` never exceeds the ceiling; (f) tests not measured wording and the old phrase only under real
-  failure.
-- Run `uv run pytest <new files> tests/flow tests/test_budgets.py tests/test_review_loop.py` first.
-
-### Dependencies & Criticality
-
-- **Depends on:** Steps 2, 3 and 4
-- **Is Bottleneck:** NO
-
-### Safety & Constraint Considerations
-
-- **Relevant rules:** `docs/hermetic_testing.md`; the `tests/gh_write_guard.py` guard; tests only via `uv run pytest`.
-- **Potential failure modes for this step:** A test that accidentally calls the real `shutil.which("gh")` branch; fix by
-  patching `shutil.which` and `probe_ci_checks`.
-- **Guardrails and early‑abort checks:** No test may sleep; a pytest timeout wraps nothing here because the sleep is a
-  fake. Fail the step if the new tests exceed a couple of seconds.
-
-### Success & Discard Criteria
-
-- **Success:** All new tests fail against the old code (check once with `git stash` style reasoning on the diff) and
-  pass on the new code.
-- **Discard:** Cannot assert iteration non-consumption without refactoring the loop; return to Step 3.
-
-### Metrics
-
-| metric              | value |
-| ------------------- | ----- |
-| p_success_pred      | 0.95  |
-| entropy_pred        | 1.0   |
-| impact_pred         | 20.0  |
-| cost_pred           | 4.0   |
-| learning_value_pred | 3.0   |
-| ev_pred             | 16.4  |
-
-### Step Metrics Rationale
-
-`EV = 0.95 * 20.0 + 0.5 * 3.0 - 0.3 * 0.0 - 4.0 = 19.0 + 1.5 - 4.0 = 16.5`. Fakes already exist, so risk is small.
-
----
-
-## Step 6: Document the budget and outcomes, then run the gates
-
-- **Sub‑intent recommendation:** NO
-- **Reasoning:** Documentation plus the final checks; trivial cost.
-- **Step Type:** DOCUMENTATION
-- **Exploration level:** EXPLOIT
-
-### Intent & Git Integration
-
-- **Step Intent:** Maintainers can find the budget, its back-off and the three outcome messages in the docs.
-- **Git branch:**
-  I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget/P-1794388224-bd55e506-claude-agent-claude-sonnet-5-5/E-step6-docs/\_
-- **Sub‑intent:** NONE
-
-### Implementation Details (No code blocks, only logic/steps)
-
-- `docs/git_flow.md`: a section on the CI wait budget (default 1800 s, `HOLON_REVIEW_CI_WAIT_SECONDS`, back-off 15 s
-  doubling to a 120 s ceiling, wait ends when nothing is pending, recorded once, not drawn from the iteration budget)
-  and a short table of the three outcomes and their wording, plus when "test suite reported failures" still appears.
-- `docs/budgets.md`: add the variable beside the stage budget variables (table row or a note, since it is in seconds);
-  check `README.md` and `apps/sandbox-executor/README.md` for any list of `HOLON_*` budget variables and add it where
-  the others appear. Do not edit `docs/architecture.md`.
-- Australian English (behaviour, recognise, colour) and the repository's prettier-style wrapping.
-- Final gates, once each: `uv run task lint`, `uv run task lint-docs`, `uv run task test` (the full suite, no repeats);
-  report pass/fail counts. Confirm `git diff --stat` shows nothing under `tests/flow/fixtures/` and not
-  `docs/architecture.md`, except the single permitted move-proof refresh if it was needed, which is stated in the
-  execution record.
-
-### Dependencies & Criticality
-
-- **Depends on:** Steps 3, 4 and 5
-- **Is Bottleneck:** NO
-
-### Safety & Constraint Considerations
-
-- **Relevant rules:** `docs/` lint (`lint-docs`); the three-ledger rule (no ledger edits from the executor beyond the
-  normal records).
-- **Potential failure modes for this step:** `lint-docs` link or format failures; a line budget breach found only at
-  lint time.
-- **Guardrails and early‑abort checks:** Run `uv run task lint-docs` right after the docs edit, not only at the end.
-
-### Success & Discard Criteria
-
-- **Success:** Docs describe the budget and outcomes; all three gates pass; the diff stays in the named scope.
-- **Discard:** A gate fails for a reason outside this change (report it, do not mask it).
-
-### Metrics
-
-| metric              | value |
-| ------------------- | ----- |
-| p_success_pred      | 0.97  |
-| entropy_pred        | 0.5   |
+| entropy_pred        | 1.1   |
 | impact_pred         | 10.0  |
-| cost_pred           | 2.0   |
-| learning_value_pred | 1.0   |
-| ev_pred             | 8.2   |
+| cost_pred           | 2.3   |
+| learning_value_pred | 0.3   |
+| ev_pred             | 7.0   |
 
 ### Step Metrics Rationale
 
-`EV = 0.97 * 10.0 + 0.5 * 1.0 - 0.3 * 0.0 - 2.0 = 9.7 + 0.5 - 2.0 = 8.2`. Documentation only.
+Documentation edit plus verification. Entropy is higher than a pure edit because the full suite and linters can surface
+unrelated failures.
 
 ---
+
+## Overall Derivation
+
+`entropy_pred = 0.2 + 2.0 + 0.3 + 1.1 = 3.6`, within the 15.0 budget. `cost_pred = 0.5 + 3.5 + 0.7 + 2.3 = 7.0`.
+`p_success_pred` follows the bottleneck, step 2 (0.88), because the later steps rely on it.

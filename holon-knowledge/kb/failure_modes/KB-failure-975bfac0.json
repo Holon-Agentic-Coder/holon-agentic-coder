@@ -1,0 +1,29 @@
+{
+  "kb_id": "KB-failure-975bfac0",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-11T10:11:52.127727+00:00",
+  "updated_ts": "2026-11-11T10:11:52.127727+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1794390873-761e3481",
+      "ACT-REV-1794390872-a3982da8"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794388202-retire-the-flow-move-proof-snapshot/P-1794388224-67cb4776-claude-agent-claude-sonnet-5-5/E-1794388293-4728ecc5-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 3 reviewer 3 completed",
+    "symptoms": []
+  }
+}

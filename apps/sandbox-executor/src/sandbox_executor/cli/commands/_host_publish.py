@@ -40,13 +40,15 @@ def push_checked_out_branch(worktree: str) -> str:
     """Push the branch the container left checked out in ``worktree`` (fast-forward only) and return its name.
 
     Raises:
-        RuntimeError: If no branch is checked out, or the push fails (the message names the operation, the branch
-            and the remote).
+        RuntimeError: If no I-/P-/E- branch is checked out, or the push fails (the message names the operation,
+            the branch and the remote).
     """
     res = run_git(["symbolic-ref", "--short", "-q", "HEAD"], cwd=worktree, check=False)
     branch = (res.stdout or "").strip() if res.returncode == 0 else ""
     if not branch:
         raise RuntimeError(f"no branch is checked out in '{worktree}' to push")
+    if not re.match(r"I-\d+-", branch):
+        raise RuntimeError(f"branch '{branch}' checked out in '{worktree}' is not an I-/P-/E- branch; not pushing it")
     try:
         push_branch(worktree, branch)
     except HostRemoteError as exc:

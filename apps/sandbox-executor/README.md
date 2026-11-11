@@ -230,7 +230,9 @@ _directory_ would itself turn host rerere on, so a zero-length `rr-cache` _file_
 instead -- inert for git, while the one host operation it blocks, enabling rerere in this clone later, fails loudly,
 never silently. Where host rerere is already enabled (`git config rerere.enabled` true) the stand-in file would break
 the host's merges and `git gc`, so an empty read-only `rr-cache` _directory_ is created instead (a stand-in file left by
-an earlier mount is replaced by it); host rerere then simply cannot record. When the host clone is itself shallow, its
+an earlier mount is replaced by it); in-container rerere then simply cannot record (the host's own directory stays
+writable to the host). The created empty directory stays behind on the host: if `rerere.enabled` is later unset, its
+mere presence turns host rerere on (an explicit `false` still disables it). When the host clone is itself shallow, its
 existing `shallow` file is overlaid read-only, so an in-container `git fetch` that must rewrite it (deepening or
 shallow-boundary negotiation) fails loudly: a shallow host clone is effectively unsupported in-container, and flow
 worktrees come from full clones. When the mounted worktree is a linked worktree, the common `HEAD` -- the primary

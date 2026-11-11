@@ -64,10 +64,25 @@ def public_definitions(package_dir: Path, package_name: str) -> dict[str, str]:
 def declared_all(package_dir: Path) -> set[str]:
     """Names listed in the package's ``__all__``, read from its ``__init__.py`` without importing it."""
     tree = ast.parse((package_dir / "__init__.py").read_text(encoding="utf-8"))
+    names: set[str] = set()
+    found = False
     for node in tree.body:
-        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets):
-            return {element.value for element in node.value.elts}
-    return set()
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)) and node.value is not None:
+            targets, value = [node.target], node.value
+        else:
+            continue
+        if any(isinstance(t, ast.Name) and t.id == "__all__" for t in targets):
+            if not isinstance(value, (ast.List, ast.Tuple)) or not all(
+                isinstance(e, ast.Constant) and isinstance(e.value, str) for e in value.elts
+            ):
+                raise ValueError("flow/__init__.py must declare __all__ as a literal list or tuple of strings")
+            names.update(element.value for element in value.elts)
+            found = True
+    if not found:
+        raise ValueError("flow/__init__.py does not declare __all__")
+    return names
 
 
 def names_missing_from_all(definitions: dict[str, str], listed: set[str]) -> list[str]:

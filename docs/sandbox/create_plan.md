@@ -159,9 +159,10 @@ container starts and pushes the committed branch after it returns, so no SSH key
 
 ## 2. Execution Details & Fail-Fast Behavior
 
-During execution, the container performs the following operations:
+During execution, the host first fetches the intent branch into the mounted flow worktree, and the container then
+performs the following operations in that worktree (it never reaches the remote):
 
-1. Clones the repository fresh into `/home/holon/repo` targeting the provided `intent_branch`.
+1. Works in the mounted worktree checked out at the provided `intent_branch`.
 2. Creates an ephemeral plan branch: `I-{timestamp}-{slug}/P-{plan_timestamp}-{agent_name}-{model_name}/_`.
 3. Compiles a detailed prompt using the template in `holon-config/prompts/planner.template.md` combined with the intent
    data from the ledger.
@@ -171,7 +172,7 @@ During execution, the container performs the following operations:
    `ev`). It fails, before anything is appended or committed, when the metrics are missing or non-numeric; metrics are
    never back-filled with defaults.
 6. Appends a structured plan entry to `holon-knowledge/ledger/plans.jsonl`.
-7. Commits the changes, pushes the plan branch to origin and prints `plan: ok (elapsed min / 35 min)`.
+7. Commits the changes and prints `plan: ok (elapsed min / 35 min)`. The host then pushes the plan branch to origin.
 
 ### Incremental plan artefact
 

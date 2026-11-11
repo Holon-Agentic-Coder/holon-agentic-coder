@@ -59,8 +59,8 @@ def run_cmd(
 ) -> subprocess.CompletedProcess[str]:
     """Run a command, echoing it with credentials masked, and exit on failure when `check` is set.
 
-    The echo and the failure diagnostics go through the shared redactors, because the clone URL and
-    git's own error messages can carry the GitHub token.
+    The echo and the failure diagnostics go through the shared redactors, because git's own error
+    messages can carry the GitHub token when a remote URL embeds it.
 
     Args:
         args: The command and its arguments.

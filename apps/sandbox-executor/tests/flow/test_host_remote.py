@@ -118,3 +118,63 @@ def test_the_module_imports_nothing_from_the_entrypoints_or_the_cli():
     tree = ast.parse(Path(host_remote.__file__).read_text(encoding="utf-8"))
     imported = [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
     assert not [name for name in imported if name.startswith(("sandbox_executor.entrypoint", "sandbox_executor.cli"))]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "--receive-pack=touch /tmp/pwned",
+        "--force",
+        "+refs/heads/main",
+        "+" + "a" * 40,
+        "HEAD",
+        "main",
+        "abc123",
+        "refs/tags/v1",
+        "refs/heads/../main",
+        "refs/heads/-x",
+        "",
+        "a" * 40 + "\n",
+    ],
+)
+def test_push_commit_refuses_a_hostile_source_before_running_git(flow_repos, source):
+    host, origin = flow_repos
+    before = _git(origin, "for-each-ref")
+
+    with pytest.raises(HostRemoteError) as raised:
+        push_commit(str(host), source, "remote-name")
+
+    assert "refusing to push" in str(raised.value)
+    assert _git(origin, "for-each-ref") == before
+
+
+@pytest.mark.parametrize("branch", ["--receive-pack=x", "-f", "a..b", "", "a b", "x//y", "x.lock", "+main"])
+def test_push_commit_refuses_a_hostile_branch_name(flow_repos, branch):
+    host, _origin = flow_repos
+    tip = _git(host, "rev-parse", "HEAD")
+
+    with pytest.raises(HostRemoteError, match="refusing to push"):
+        push_commit(str(host), tip, branch)
+
+
+@pytest.mark.parametrize("remote", ["--receive-pack=x", "-o", "", "a b"])
+def test_push_commit_refuses_a_hostile_remote_name(flow_repos, remote):
+    host, _origin = flow_repos
+    tip = _git(host, "rev-parse", "HEAD")
+
+    with pytest.raises(HostRemoteError, match="refusing to push"):
+        push_commit(str(host), tip, "remote-name", remote)
+
+
+def test_push_commit_never_force_pushes_a_non_descendant_commit(flow_repos):
+    host, origin = flow_repos
+    tip = _commit_on(host, "work/_", "first")
+    push_branch(str(host), "work/_")
+    _git(host, "reset", "-q", "--hard", "main")
+    diverged = _commit_on(host, "other", "diverged")
+
+    with pytest.raises(HostRemoteError) as raised:
+        push_commit(str(host), diverged, "work/_")
+
+    assert raised.value.operation == "push"
+    assert _git(origin, "rev-parse", "refs/heads/work/_") == tip

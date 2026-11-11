@@ -19,6 +19,9 @@ from sandbox_executor.redaction import redact_agent_secrets
 
 DEFAULT_REMOTE = "origin"
 
+_OBJECT_ID = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+_BRANCH_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@+-]*\Z")
+
 
 class HostRemoteError(RuntimeError):
     """A host fetch or push failed; carries the operation, the branch and the remote name used."""
@@ -42,13 +45,44 @@ def fetch_base(repo_dir: str, branch: str, remote: str = DEFAULT_REMOTE) -> None
         raise HostRemoteError("fetch", branch, remote, error)
 
 
+def _is_branch_name(name: str) -> bool:
+    return (
+        bool(_BRANCH_NAME.match(name))
+        and ".." not in name
+        and "//" not in name
+        and not name.endswith(("/", ".", ".lock"))
+    )
+
+
+def _push_input_error(source: str, branch: str, remote: str) -> str | None:
+    """Return why ``source``, ``branch`` or ``remote`` is unsafe to hand to ``git push``, or None when all are fine.
+
+    The source comes from a role container's result and so is untrusted: only a full hex object id or a
+    ``refs/heads/`` ref is accepted, which rules out option-looking values (``--receive-pack=...``) and a ``+``
+    force prefix.
+    """
+    if not (_OBJECT_ID.match(source) or (source.startswith("refs/heads/") and _is_branch_name(source[11:]))):
+        return "refusing to push: the source is not a full hex object id or a refs/heads/ ref"
+    if not _is_branch_name(branch):
+        return "refusing to push: the target branch name is not a plain branch name"
+    if not _is_branch_name(remote):
+        return "refusing to push: the remote name is not a plain remote name"
+    return None
+
+
 def push_commit(repo_dir: str, source: str, branch: str, remote: str = DEFAULT_REMOTE) -> None:
-    """Push ``source`` (a ref or commit) to ``branch`` on the worktree's remote; never forced, so only a fast-forward.
+    """Push ``source`` (a full hex object id or ``refs/heads/`` ref) to ``branch``; fast-forward only, never forced.
+
+    The arguments follow ``--`` and are validated first, so an untrusted ``source`` cannot inject a ``git push``
+    option or a ``+`` force refspec.
 
     Raises:
-        HostRemoteError: If the push fails.
+        HostRemoteError: If an argument is unsafe or the push fails.
     """
-    res = run_git(["push", remote, f"{source}:refs/heads/{branch}"], cwd=repo_dir, check=False, timeout=300)
+    unsafe = _push_input_error(source, branch, remote)
+    if unsafe:
+        raise HostRemoteError("push", branch, remote, unsafe)
+    res = run_git(["push", "--", remote, f"{source}:refs/heads/{branch}"], cwd=repo_dir, check=False, timeout=300)
     if res.returncode != 0:
         detail = (res.stderr or "").strip() if isinstance(res.stderr, str) else ""
         raise HostRemoteError("push", branch, remote, detail or f"git push exited with code {res.returncode}")

@@ -269,6 +269,31 @@ def test_the_review_resolver_head_is_pushed_by_the_host_through_an_ssh_origin(ss
     assert _git(origin, "rev-parse", f"refs/heads/{branch}") == new_sha
 
 
+def test_a_hostile_resolver_head_sha_is_refused_and_a_diverged_one_is_never_forced(ssh_origin_host, tmp_path):
+    host, origin = ssh_origin_host
+    agents = FakeRoleAgents(tmp_path, origin)
+    ctx = _dispatch_context(host, agents)
+    assert PipelineEngine(ctx).run()["execute"].status == StageStatus.SUCCESS
+    branch = ctx.execution_branch
+    old_sha = _git(host, "rev-parse", f"refs/heads/{branch}")
+    target = ReviewTarget(raw=branch, head_branch=branch, head_sha=old_sha)
+
+    for hostile in ("--receive-pack=touch /tmp/pwned", f"+{old_sha}", "HEAD"):
+        pushed, error = _push_resolver_head(ctx, target, hostile, None)
+        assert pushed is False
+        assert error is not None and "refusing to push" in error
+
+    # A head that is not a descendant of the pushed tip is a non-fast-forward: refused, the remote is untouched.
+    _git(host, "checkout", "-q", "--detach", "main")
+    (host / "diverged.txt").write_text("x", encoding="utf-8")
+    _git(host, "add", "-A")
+    _git(host, "commit", "-qm", "diverged")
+    pushed, error = _push_resolver_head(ctx, target, _git(host, "rev-parse", "HEAD"), None)
+    assert pushed is False
+    assert error is not None and error.startswith("Resolver push failed")
+    assert _git(origin, "rev-parse", f"refs/heads/{branch}") == old_sha
+
+
 # --- a stale HOLON_REPO_URL changes nothing -----------------------------------------------------------------------
 
 

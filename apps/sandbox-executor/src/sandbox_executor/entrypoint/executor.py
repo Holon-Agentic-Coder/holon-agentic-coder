@@ -604,7 +604,7 @@ def _repair_git_repo(  # noqa: C901
         repo_dir: Workspace path.
         probe_err: Error text produced by :func:`_probe_git_repo`.
         default_branch: Branch HEAD must end up on -- the execution branch.
-        plan_branch: Branch the workspace was cloned from, used as the tip source when the
+        plan_branch: Branch the workspace was checked out from, used as the tip source when the
             execution branch does not exist yet.
 
     Returns True if the repository was successfully restored to a usable state, False otherwise.
@@ -659,7 +659,7 @@ def _repair_git_repo(  # noqa: C901
             # HEAD damage makes every git command fail, so the tip has to be read from disk. Guessing
             # an arbitrary branch here would silently put the execution commit on the wrong ref,
             # so the only acceptable sources are the execution branch itself and the plan branch the
-            # workspace was cloned from.
+            # workspace was checked out from.
             tip_sha = _resolve_local_ref(git_dir, target_branch) or (
                 _resolve_local_ref(git_dir, plan_branch) if plan_branch else None
             )

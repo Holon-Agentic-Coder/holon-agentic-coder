@@ -75,8 +75,8 @@ def run_cmd(
 ) -> subprocess.CompletedProcess[str]:
     """Execute a system command and return CompletedProcess, exiting on non-zero if check=True.
 
-    The echo and the failure diagnostics are routed through the shared redactors, because the clone
-    URL and git's own error messages can carry the GitHub token. The returned stdout and stderr are
+    The echo and the failure diagnostics are routed through the shared redactors, because git's own error
+    messages can carry the GitHub token when a remote URL embeds it. The returned stdout and stderr are
     raw and unredacted. An executable that cannot be started (missing from PATH, not executable) is reported as
     exit code 127 with a stderr naming it, never raised.
     """

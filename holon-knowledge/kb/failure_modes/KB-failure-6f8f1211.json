@@ -1,0 +1,29 @@
+{
+  "kb_id": "KB-failure-6f8f1211",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-11T09:55:54.753266+00:00",
+  "updated_ts": "2026-11-11T09:55:54.753266+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1794390870-bcfd26ca",
+      "ACT-REV-1794390869-dec7a679"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget/P-1794388224-bd55e506-claude-agent-claude-sonnet-5-5/E-1794388336-46c54247-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 3 reviewer 2 completed",
+    "symptoms": []
+  }
+}

@@ -45,6 +45,11 @@ ENV_STAGE_BUDGET_MINUTES = {
     "calibration": "HOLON_STAGE_BUDGET_CALIBRATION_MINUTES",
 }
 
+# Wall-clock budget, in seconds, for waiting on pending CI checks after the reviewers ran; separate from the review
+# iteration budget above, so a slow CI runner never consumes reviewer time.
+ENV_REVIEW_CI_WAIT = "HOLON_REVIEW_CI_WAIT_SECONDS"
+
+DEFAULT_REVIEW_CI_WAIT_SECONDS = 1800.0
 DEFAULT_TURN_SECONDS = 3600.0
 DEFAULT_STALL_SECONDS = 90.0
 # Largest budget accepted from the environment, in seconds (7 days), checked after any minute -> second conversion.
@@ -172,6 +177,11 @@ def load_budgets(env: Mapping[str, str]) -> Budgets:
     return Budgets(turn=turn, stages=StageBudgets(**stage_values), stage_override_seconds=override)
 
 
+def resolve_review_ci_wait_seconds(env: Mapping[str, str]) -> float:
+    """CI wait budget from ``HOLON_REVIEW_CI_WAIT_SECONDS``; an invalid value logs a warning and keeps 1800 s."""
+    return _read_positive(env, ENV_REVIEW_CI_WAIT, DEFAULT_REVIEW_CI_WAIT_SECONDS)
+
+
 Clock = Callable[[], float]
 Sleeper = Callable[[float], None]
 
@@ -202,6 +212,10 @@ class StageTimer:
     def breached(self) -> bool:
         """True once elapsed time has reached the ceiling."""
         return self.elapsed() >= self.budget_seconds
+
+    def credit(self, seconds: float) -> None:
+        """Exclude ``seconds`` already spent (a CI wait that has its own budget) from the elapsed time."""
+        self._start += max(0.0, seconds)
 
     def stop(self) -> float:
         """Freeze the elapsed time and return it."""

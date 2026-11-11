@@ -1132,61 +1132,6 @@ def test_approved_loop_never_merges(tmp_path, gh_write_guard):
     assert gh_write_guard == []
 
 
-def test_pending_ci_wait_honours_its_deadline(tmp_path):
-    from sandbox_executor.flow import FlowContext, _wait_for_pending_ci
-
-    now = [0.0]
-    sleeps: list[float] = []
-
-    def _sleep(seconds: float) -> None:
-        sleeps.append(seconds)
-        now[0] += seconds
-
-    pending = {"source": "github_cli", "pending": 2, "all_passed": False}
-    probe = MagicMock(return_value=dict(pending))
-    with patch("sandbox_executor.flow.github.ci.probe_ci_checks", probe):
-        res = _wait_for_pending_ci(
-            FlowContext(repo_dir=str(tmp_path)),
-            str(tmp_path),
-            "feature/x",
-            {},
-            dict(pending),
-            timeout=40.0,
-            poll_interval=15.0,
-            clock=lambda: now[0],
-            sleep=_sleep,
-        )
-
-    assert sleeps == [15.0, 15.0, 10.0]
-    assert now[0] == 40.0
-    assert res["pending"] == 2
-    assert res["all_passed"] is False
-
-
-def test_pending_ci_wait_returns_once_checks_settle(tmp_path):
-    from sandbox_executor.flow import FlowContext, _wait_for_pending_ci
-
-    sleeps: list[float] = []
-    settled = {"source": "github_cli", "pending": 0, "all_passed": True}
-    probe = MagicMock(return_value=dict(settled))
-    with patch("sandbox_executor.flow.github.ci.probe_ci_checks", probe):
-        res = _wait_for_pending_ci(
-            FlowContext(repo_dir=str(tmp_path)),
-            str(tmp_path),
-            "feature/x",
-            {},
-            {"source": "github_cli", "pending": 1},
-            timeout=600.0,
-            poll_interval=15.0,
-            clock=lambda: 0.0,
-            sleep=sleeps.append,
-        )
-
-    assert sleeps == [15.0]
-    assert probe.call_count == 1
-    assert res["all_passed"] is True
-
-
 def test_mergeability_probe_is_bounded_by_a_subprocess_timeout(tmp_path):
     from sandbox_executor.flow import check_pr_mergeability
 

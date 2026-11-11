@@ -76,9 +76,17 @@ from sandbox_executor.flow.github.ci import (
     _ci_green,
     _extract_failed_ci_check_names,
     _wait_for_ci_registration,
-    _wait_for_pending_ci,
     probe_ci_checks,
     resolve_ci_registration_timeout,
+)
+from sandbox_executor.flow.github.ci_wait import (
+    CiWaitPolicy,
+    CiWaitResult,
+    is_pending_only,
+    next_poll_interval,
+    pending_check_names,
+    settle_pending_ci,
+    wait_for_pending_ci,
 )
 from sandbox_executor.flow.github.pr import (
     _resolve_commit_ref,
@@ -118,6 +126,7 @@ from sandbox_executor.flow.ledger_reconcile import (
 )
 from sandbox_executor.flow.pipeline import PipelineEngine, run_flow_pipeline
 from sandbox_executor.flow.review.adjudication import _augment_pr_text_with_rejected, _filter_adjudicated_findings
+from sandbox_executor.flow.review.ci_outcome import describe_ci_outcome, gate_ci_flags
 from sandbox_executor.flow.review.cli import run_review_loop_cli
 from sandbox_executor.flow.review.ensemble import (
     _ENGINE_PASSES_PER_DISPATCH,
@@ -222,6 +231,8 @@ __all__ = [
     "_SECTION_AFTER_MARKER",
     "_SEVERITY_RANK",
     "_SUMMARY_STATUS_WORDS",
+    "CiWaitPolicy",
+    "CiWaitResult",
     "ConflictResolutionError",
     "DispositionRecorder",
     "FlowCheckpoint",
@@ -310,7 +321,6 @@ __all__ = [
     "_test_evidence",
     "_track_local_branch",
     "_wait_for_ci_registration",
-    "_wait_for_pending_ci",
     "_warn_ledger_failure",
     "_worst_severity",
     "_write_resolved_ledger",
@@ -318,17 +328,22 @@ __all__ = [
     "check_and_resolve_stage_conflicts",
     "check_pr_mergeability",
     "create_or_update_pr",
+    "describe_ci_outcome",
     "extract_valid_ledger_rows",
     "failed_partial_head",
     "fetch_base",
     "format_decomposition_summary",
     "format_review_git_trailers",
+    "gate_ci_flags",
     "generate_semantic_pr_metadata",
     "get_default_checkpoint_path",
+    "is_pending_only",
     "load_checkpoint",
     "migrate_checkpoint_data",
     "new_local_child_branches",
+    "next_poll_interval",
     "parse_metrics",
+    "pending_check_names",
     "post_pr_review_consensus",
     "probe_ci_checks",
     "publish_new_child_branches",
@@ -356,5 +371,7 @@ __all__ = [
     "run_review_loop_cli",
     "run_review_stage",
     "save_checkpoint",
+    "settle_pending_ci",
     "validate_intent_questions",
+    "wait_for_pending_ci",
 ]

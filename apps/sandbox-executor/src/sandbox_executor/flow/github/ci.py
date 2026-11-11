@@ -13,7 +13,6 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from sandbox_executor.flow.constants import CI_REGISTRATION_POLL_SECONDS
 from sandbox_executor.flow.context import FlowContext
 
 logger = logging.getLogger(__name__)
@@ -167,40 +166,6 @@ def _wait_for_ci_registration(  # noqa: PLR0913
             context.log(f"[Review Loop] No CI checks registered within {timeout:g}s.")
             return
         sleep(max(0.0, min(poll_interval, remaining)))
-
-
-def _wait_for_pending_ci(  # noqa: PLR0913
-    context: FlowContext,
-    repo_dir: str,
-    review_target: str,
-    proxy_env: dict[str, str],
-    ci_status: dict[str, Any],
-    timeout: float,
-    poll_interval: float,
-    clock: Callable[[], float] | None = None,
-    sleep: Callable[[float], None] | None = None,
-) -> dict[str, Any]:
-    """Re-probe GitHub CI while checks are pending, for at most ``timeout`` seconds.
-
-    The deadline is the rest of the iteration's ``review_iteration`` budget. Checks still pending at the
-    deadline are returned as they are: pending is never ``all_passed``, so the iteration records a CI finding.
-
-    Returns:
-        dict[str, Any]: The last CI probe result.
-    """
-    clock = clock or time.monotonic
-    sleep = sleep or time.sleep
-    deadline = clock() + max(0.0, timeout)
-    interval = poll_interval if poll_interval > 0 else CI_REGISTRATION_POLL_SECONDS
-    while ci_status.get("pending", 0) > 0:
-        remaining = deadline - clock()
-        if remaining <= 0:
-            context.log(f"[Review Loop] {ci_status['pending']} GitHub CI check(s) still pending at the deadline.")
-            break
-        context.log(f"[Review Loop] Waiting for {ci_status['pending']} pending GitHub CI check(s)...")
-        sleep(min(interval, remaining))
-        ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
-    return ci_status
 
 
 def _ci_green(ci_status: dict[str, Any], tests_failed: bool) -> bool | None:

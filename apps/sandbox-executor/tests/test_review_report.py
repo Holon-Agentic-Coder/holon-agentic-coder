@@ -462,6 +462,14 @@ def test_unmeasured_ci_is_never_reported_as_a_pass(ci_checks):
     assert "passed," not in body
 
 
+def test_pending_ci_after_a_spent_wait_names_the_wait_in_the_evaluation():
+    ci = {"total": 2, "passed": 1, "failed": 0, "pending": 1, "source": "github_cli"}
+    wait = {"state": "pending", "budget_seconds": 1800.0, "waited_seconds": 1800.0, "pending_checks": ["unit"]}
+
+    assert "CI pending after a 1800 s wait; mergeability" in _report([], ci_checks=ci, ci_wait=wait)
+    assert "CI pending; mergeability" in _report([], ci_checks=ci)
+
+
 def test_measured_ci_renders_passed_total_failing_and_pending():
     ci = {"total": 5, "passed": 3, "failed": 1, "pending": 1, "source": "github_cli"}
 

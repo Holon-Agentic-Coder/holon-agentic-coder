@@ -215,6 +215,10 @@ def test_stage4_host_integrity_failed_ci_blocks_approval(tmp_path: Path, monkeyp
                 "pending": 0,
                 "total": 2,
                 "source": "github_cli",
+                "checks": [
+                    {"name": "lint", "bucket": "fail", "state": "FAILURE"},
+                    {"name": "unit", "bucket": "fail", "state": "FAILURE"},
+                ],
             },
         ),
         patch("sandbox_executor.flow.review.loop.post_pr_review_consensus") as mock_post,
@@ -222,7 +226,8 @@ def test_stage4_host_integrity_failed_ci_blocks_approval(tmp_path: Path, monkeyp
         result = run_review_stage(ctx)
 
     assert result.status is StageStatus.FAILED
-    assert "test suite reported failures" in (result.error or "")
+    assert "CI failed: lint, unit." in (result.error or "")
+    assert "test suite reported failures" not in (result.error or "")
     assert mock_post.called
     assert mock_post.call_args[1]["consensus_data"]["approved"] is False
 

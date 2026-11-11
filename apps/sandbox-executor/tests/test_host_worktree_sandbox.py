@@ -148,15 +148,22 @@ def test_a_linked_worktree_mounts_its_git_dirs_at_host_paths_and_overlays_git_co
         f"{common / 'refs' / 'replace'}:{common / 'refs' / 'replace'}:ro",
         f"{common / 'packed-refs'}:{common / 'packed-refs'}:ro",
         f"{common / 'shallow'}:{common / 'shallow'}:ro",
+        # rr-cache/ was absent, so a zero-length rr-cache FILE stand-in was created and overlaid: inert for git,
+        # unlike a created directory, whose mere presence would turn host rerere on.
+        f"{common / 'rr-cache'}:{common / 'rr-cache'}:ro",
         # The common HEAD and index are the PRIMARY checkout's; the linked worktree resolves its own through its
         # admin dir. FETCH_HEAD, the transients (MERGE_HEAD/MERGE_MSG/MERGE_MODE/ORIG_HEAD/CHERRY_PICK_HEAD/
-        # MERGE_AUTOSTASH/REVERT_HEAD/SQUASH_MSG/AUTO_MERGE), the rebase state (REBASE_HEAD, rebase-merge/,
-        # rebase-apply/), the
-        # sequencer/ directory and the BISECT_* files do not exist here, so no overlay is generated for them.
+        # MERGE_AUTOSTASH/REVERT_HEAD/SQUASH_MSG/AUTO_MERGE/MERGE_RR), the rebase state (REBASE_HEAD,
+        # rebase-merge/, rebase-apply/), the sequencer/ directory and the BISECT_* files do not exist here, so no
+        # overlay is generated for them.
         f"{common / 'HEAD'}:{common / 'HEAD'}:ro",
         f"{common / 'index'}:{common / 'index'}:ro",
         f"{git_dir / 'config.worktree'}:{git_dir / 'config.worktree'}:ro",
     ]
+    # The rr-cache stand-in is a zero-length FILE: inert for host git, unlike a directory, and unreplaceable as a
+    # read-only mountpoint in-container.
+    assert (common / "rr-cache").is_file()
+    assert (common / "rr-cache").read_text(encoding="utf-8") == ""
     # The mounted pointer resolves through the mounted paths, without any network: git works there.
     assert (flow_worktree / ".git").read_text(encoding="utf-8").strip() == f"gitdir: {git_dir}"
     assert _git(flow_worktree, "rev-parse", "HEAD") == _git(repo, "rev-parse", "HEAD")
@@ -180,6 +187,7 @@ def test_a_primary_checkout_needs_no_extra_git_mount_but_still_protects_config_a
         f"{repo / '.git' / 'refs' / 'replace'}:{MOUNT}/.git/refs/replace:ro",
         f"{repo / '.git' / 'packed-refs'}:{MOUNT}/.git/packed-refs:ro",
         f"{repo / '.git' / 'shallow'}:{MOUNT}/.git/shallow:ro",
+        f"{repo / '.git' / 'rr-cache'}:{MOUNT}/.git/rr-cache:ro",
     ]
     # The primary checkout's HEAD, index and FETCH_HEAD are its own: they must stay writable for in-container
     # commits and fetches, and its own mid-operation state (rebase, sequencer) is never overlaid either --
@@ -192,7 +200,9 @@ def test_a_primary_checkout_needs_no_extra_git_mount_but_still_protects_config_a
     # An absent worktrees/, config.worktree, objects/info/, info/, refs/replace/, packed-refs or shallow is created
     # before overlaying, so the container cannot create it -- nor any host-read file inside the read-only
     # directories, existing or not. shallow is created as a DIRECTORY: an empty shallow file would itself mark the
-    # repository shallow, while git treats a shallow directory as no shallow file at all.
+    # repository shallow, while git treats a shallow directory as no shallow file at all. rr-cache is the inverse:
+    # an empty rr-cache DIRECTORY would itself turn host rerere on, while a zero-length rr-cache FILE is inert, so
+    # the absent shared rerere cache is pinned as a created read-only file in both layouts.
     assert (repo / ".git" / "worktrees").is_dir()
     assert (repo / ".git" / "config.worktree").read_text(encoding="utf-8") == ""
     assert (repo / ".git" / "objects" / "info").is_dir()
@@ -203,6 +213,8 @@ def test_a_primary_checkout_needs_no_extra_git_mount_but_still_protects_config_a
     packed_refs = (repo / ".git" / "packed-refs").read_text(encoding="utf-8")
     assert packed_refs == "# pack-refs with: peeled fully-peeled sorted \n"
     assert (repo / ".git" / "shallow").is_dir()
+    assert (repo / ".git" / "rr-cache").is_file()
+    assert (repo / ".git" / "rr-cache").read_text(encoding="utf-8") == ""
     for planted in (
         repo / ".git" / "info" / "grafts",
         repo / ".git" / "objects" / "info" / "commit-graph",
@@ -210,6 +222,8 @@ def test_a_primary_checkout_needs_no_extra_git_mount_but_still_protects_config_a
         repo / ".git" / "refs" / "replace" / "0123456789abcdef0123456789abcdef01234567",
         repo / ".git" / "packed-refs",
         repo / ".git" / "shallow",
+        repo / ".git" / "rr-cache",
+        repo / ".git" / "rr-cache" / "0123456789abcdef0123456789abcdef01234567" / "postimage",
     ):
         assert not _host_writable(args, str(planted)), planted
     # Host git still behaves as a normal full clone with the created artifacts in place.
@@ -238,11 +252,24 @@ def test_a_sibling_worktree_admin_dirs_are_unwritable_while_own_admin_and_object
         (common / transient).write_text(head + "\n", encoding="utf-8")
     (common / "AUTO_MERGE").write_text(head + "\n", encoding="utf-8")
     (common / "MERGE_MSG").write_text("merge msg\n", encoding="utf-8")
+    (common / "MERGE_MODE").write_text("", encoding="utf-8")
     (common / "MERGE_AUTOSTASH").write_text(head + "\n", encoding="utf-8")
+    (common / "MERGE_RR").write_text("0123456789abcdef0123456789abcdef01234567\tREADME.md\n", encoding="utf-8")
     (common / "SQUASH_MSG").write_text("squash msg\n", encoding="utf-8")
     (common / "BISECT_LOG").write_text("git bisect start\n", encoding="utf-8")
+    (common / "BISECT_START").write_text("main\n", encoding="utf-8")
+    (common / "BISECT_EXPECTED_REV").write_text(head + "\n", encoding="utf-8")
+    (common / "BISECT_ANCESTORS_OK").write_text("", encoding="utf-8")
+    (common / "BISECT_NAMES").write_text("\n", encoding="utf-8")
+    (common / "BISECT_TERMS").write_text("bad\ngood\n", encoding="utf-8")
     (common / "BISECT_HEAD").write_text(head + "\n", encoding="utf-8")
     (common / "BISECT_FIRST_PARENT").write_text("", encoding="utf-8")
+    # A pre-existing rerere cache: a container-rewritten postimage would be applied silently to the maintainer's
+    # next conflicting host merge, so the existing directory is overlaid read-only as a whole.
+    (common / "rr-cache" / "0123456789abcdef0123456789abcdef01234567").mkdir(parents=True)
+    (common / "rr-cache" / "0123456789abcdef0123456789abcdef01234567" / "postimage").write_text(
+        "resolved\n", encoding="utf-8"
+    )
     (common / "rebase-merge").mkdir()
     (common / "rebase-merge" / "git-rebase-todo").write_text("exec true\n", encoding="utf-8")
     (common / "rebase-apply").mkdir()
@@ -281,24 +308,35 @@ def test_a_sibling_worktree_admin_dirs_are_unwritable_while_own_admin_and_object
         common / "info" / "attributes",
         common / "info" / "grafts",
         # Host-trusted ancestry and ref-substitution surfaces: replace refs (loose and packed), a plantable
-        # shallow, and the PRIMARY checkout's per-worktree state (HEAD, index, FETCH_HEAD and the transients).
+        # shallow, the shared rerere cache (its existing entries included), and the PRIMARY checkout's
+        # per-worktree state (HEAD, index, FETCH_HEAD and the transients, MERGE_RR among them -- a sibling's
+        # MERGE_RR lives in its worktrees/<name>/ admin dir and is covered by the worktrees/ overlay).
         common / "refs" / "replace",
         common / "refs" / "replace" / "0123456789abcdef0123456789abcdef01234567",
         common / "packed-refs",
         common / "shallow",
+        common / "rr-cache",
+        common / "rr-cache" / "0123456789abcdef0123456789abcdef01234567" / "postimage",
         common / "HEAD",
         common / "index",
         common / "FETCH_HEAD",
         common / "MERGE_HEAD",
         common / "MERGE_MSG",
+        common / "MERGE_MODE",
         common / "ORIG_HEAD",
         common / "CHERRY_PICK_HEAD",
         common / "REVERT_HEAD",
         common / "REBASE_HEAD",
         common / "AUTO_MERGE",
         common / "MERGE_AUTOSTASH",
+        common / "MERGE_RR",
         common / "SQUASH_MSG",
         common / "BISECT_LOG",
+        common / "BISECT_START",
+        common / "BISECT_EXPECTED_REV",
+        common / "BISECT_ANCESTORS_OK",
+        common / "BISECT_NAMES",
+        common / "BISECT_TERMS",
         common / "BISECT_HEAD",
         common / "BISECT_FIRST_PARENT",
         common / "rebase-merge",

@@ -787,15 +787,18 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str, role: 
     common-root ancestry and ref-substitution surfaces are pinned too: refs/replace/ and packed-refs are overlaid
     read-only (refs/ itself stays writable for in-container loose-ref writes), and shallow is overlaid read-only --
     as the existing file when the repository is shallow, otherwise as a created 'shallow' directory, which git
-    treats as no shallow file at all, because an empty shallow FILE would itself mark the repository shallow.
+    treats as no shallow file at all, because an empty shallow FILE would itself mark the repository shallow. The
+    shared rerere cache rr-cache/ is pinned in both layouts: a planted resolution is applied silently to the
+    maintainer's next conflicting host merge and the directory's mere presence activates rerere, so an existing
+    rr-cache/ is overlaid read-only and an absent one is replaced by a created read-only 'rr-cache' FILE, which is
+    inert for git while blocking the directory's creation.
     When the mounted worktree is a linked worktree, the common HEAD is the primary checkout's HEAD -- never needed
     in-container -- and is overlaid read-only along with the primary's other per-worktree state at the common root,
     each when present: index, FETCH_HEAD, the transient MERGE_HEAD/MERGE_MSG/MERGE_MODE/MERGE_AUTOSTASH/ORIG_HEAD/
     CHERRY_PICK_HEAD/REVERT_HEAD/SQUASH_MSG/AUTO_MERGE files, the mid-rebase REBASE_HEAD file and rebase-merge/
-    and rebase-apply/ directories (whose git-rebase-todo 'exec' lines host 'git rebase --continue' executes),
-    the sequencer/
-    directory and the BISECT_* bisect-state files; a primary checkout's own HEAD, index and FETCH_HEAD stay
-    writable for in-container commits and fetches.
+    and rebase-apply/ directories (whose git-rebase-todo 'exec' lines host 'git rebase --continue' executes), the
+    sequencer/ directory, the mid-merge rerere map MERGE_RR and the BISECT_* bisect-state files; a primary
+    checkout's own HEAD, index and FETCH_HEAD stay writable for in-container commits and fetches.
     A repository with extensions.worktreeConfig enabled is refused: git would then read every worktree's
     config.worktree, which the container could rewrite in its own writable git directory. On Linux, where a bind
     mount keeps host ownership, a worktree or git directory that the image's user (uid SANDBOX_CONTAINER_UID) cannot
@@ -889,8 +892,10 @@ def _common_dir_read_only_overlays(common_dir: str, git_dir: str) -> list[str]:
     # 'git merge FETCH_HEAD' or 'git log FETCH_HEAD' in the primary checkout would consume; the mounted worktree's
     # own FETCH_HEAD lives in its admin dir and stays writable), and the primary's mid-operation state: the
     # transients MERGE_HEAD/MERGE_MSG/MERGE_MODE/ORIG_HEAD/CHERRY_PICK_HEAD/REVERT_HEAD/SQUASH_MSG/AUTO_MERGE,
-    # which host 'git commit' consumes to conclude a merge, cherry-pick, revert or squash, and MERGE_AUTOSTASH,
-    # whose stash host 'git merge --continue' reapplies to the maintainer's working tree; REBASE_HEAD and the
+    # which host 'git commit' consumes to conclude a merge, cherry-pick, revert or squash, MERGE_AUTOSTASH,
+    # whose stash host 'git merge --continue' reapplies to the maintainer's working tree, and MERGE_RR, the
+    # mid-merge map pairing conflicted paths with rr-cache entries (per-worktree state, so the primary's lives at
+    # the common root while every sibling's copy is already covered by the worktrees/ overlay); REBASE_HEAD and the
     # rebase-merge/ and rebase-apply/ directories (a rewritten rebase-merge/git-rebase-todo 'exec' line is
     # arbitrary host code execution on the maintainer's next 'git rebase --continue' -- verified empirically);
     # the sequencer/ directory, whose todo redirects a host 'git cherry-pick/revert --continue' to attacker
@@ -911,6 +916,19 @@ def _common_dir_read_only_overlays(common_dir: str, git_dir: str) -> list[str]:
     shallow = os.path.join(common_dir, "shallow")
     if not os.path.isfile(shallow):
         os.makedirs(shallow, exist_ok=True)
+    # The shared rerere cache is host-consumed in BOTH layouts: a planted rr-cache/<id>/postimage is applied
+    # silently to the maintainer's next conflicting host merge ('Resolved ... using previous resolution.'), and
+    # the directory's mere presence activates rerere with no rerere config at all (both verified empirically), so
+    # an existing rr-cache/ is overlaid read-only -- an in-container conflicting merge then emits a non-fatal
+    # 'error: could not write ... preimage' and completes as an ordinary conflicted merge (verified). An absent
+    # rr-cache/ cannot be created-then-overlaid like hooks/: the created directory would itself turn host rerere
+    # ON. A zero-length rr-cache FILE is inert instead (merges, aborts and status behave exactly as with no
+    # rr-cache -- verified), so one is created and overlaid read-only; the container cannot replace a read-only
+    # mountpoint with a directory, and the one host operation the file blocks -- enabling rerere in this clone
+    # later -- fails loudly ('fatal: could not create directory'), never silently.
+    rr_cache = os.path.join(common_dir, "rr-cache")
+    if not os.path.isdir(rr_cache):
+        open(rr_cache, "a", encoding="utf-8").close()
     for path in dict.fromkeys(
         (
             os.path.join(common_dir, "config"),
@@ -933,6 +951,7 @@ def _common_dir_read_only_overlays(common_dir: str, git_dir: str) -> list[str]:
     overlays.append(os.path.join(common_dir, "refs", "replace"))
     overlays.append(os.path.join(common_dir, "packed-refs"))
     overlays.append(shallow)
+    overlays.append(rr_cache)
     if git_dir != common_dir:
         overlays += [
             os.path.join(common_dir, name)
@@ -949,6 +968,7 @@ def _common_dir_read_only_overlays(common_dir: str, git_dir: str) -> list[str]:
                 "REVERT_HEAD",
                 "SQUASH_MSG",
                 "AUTO_MERGE",
+                "MERGE_RR",
                 "REBASE_HEAD",
                 "rebase-merge",
                 "rebase-apply",

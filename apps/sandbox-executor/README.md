@@ -215,44 +215,51 @@ sibling worktree's administrative files (`commondir`, `gitdir`, `HEAD`, a planta
 new `worktrees/` entries. The common-root ancestry and ref-substitution surfaces are overlaid read-only too:
 `refs/replace/` and `packed-refs` (`refs/` itself stays writable -- in-container fetch, commit and push write loose
 refs, which never rewrite `packed-refs`; only ref deletion and `pack-refs`/`gc` do, and nothing in-container runs
-those), and `shallow`, whose entries would cut perceived ancestry exactly like grafts. Absent `hooks/`, `modules/`,
-`worktrees/`, `config`, `config.worktree`, `objects/info/`, `info/` and `refs/replace/` are created before overlaying so
-the container cannot create them either; an absent `packed-refs` is created with only the standard
+those), `shallow`, whose entries would cut perceived ancestry exactly like grafts, and the shared rerere cache
+`rr-cache/`, whose planted resolutions host git applies silently to the maintainer's next conflicting merge (its mere
+presence activates rerere even with no rerere configuration; an in-container conflicting merge against the read-only
+overlay fails only to record its preimage, non-fatally, and completes as an ordinary conflicted merge). Absent `hooks/`,
+`modules/`, `worktrees/`, `config`, `config.worktree`, `objects/info/`, `info/` and `refs/replace/` are created before
+overlaying so the container cannot create them either; an absent `packed-refs` is created with only the standard
 `# pack-refs with: ...` header line, which git treats exactly like no packed refs while keeping host `git fsck` free of
 the `emptyPackedRefsFile` warning a zero-byte file draws; and an absent `shallow` is created as a read-only _directory_
 instead, because an empty `shallow` file would itself mark the repository shallow, while git treats a `shallow`
 directory as no shallow file at all (the only host operation the directory blocks -- turning the full clone into a
-shallow one later -- fails loudly, never silently). When the host clone is itself shallow, its existing `shallow` file
-is overlaid read-only, so an in-container `git fetch` that must rewrite it (deepening or shallow-boundary negotiation)
-fails loudly: a shallow host clone is effectively unsupported in-container, and flow worktrees come from full clones.
-When the mounted worktree is a linked worktree, the common `HEAD` -- the primary checkout's, which in-container git
-never needs -- is overlaid read-only as well, along with the rest of the primary's per-worktree state at the common
-root, each when it exists: `index`, `FETCH_HEAD`, the transient
+shallow one later -- fails loudly, never silently). An absent `rr-cache/` is the inverse: an empty `rr-cache`
+_directory_ would itself turn host rerere on, so a zero-length `rr-cache` _file_ is created and overlaid read-only
+instead -- inert for git, while the one host operation it blocks, enabling rerere in this clone later, fails loudly,
+never silently. When the host clone is itself shallow, its existing `shallow` file is overlaid read-only, so an
+in-container `git fetch` that must rewrite it (deepening or shallow-boundary negotiation) fails loudly: a shallow host
+clone is effectively unsupported in-container, and flow worktrees come from full clones. When the mounted worktree is a
+linked worktree, the common `HEAD` -- the primary checkout's, which in-container git never needs -- is overlaid
+read-only as well, along with the rest of the primary's per-worktree state at the common root, each when it exists:
+`index`, `FETCH_HEAD`, the transient
 `MERGE_HEAD`/`MERGE_MSG`/`MERGE_MODE`/`MERGE_AUTOSTASH`/`ORIG_HEAD`/`CHERRY_PICK_HEAD`/`REVERT_HEAD`/`SQUASH_MSG`/`AUTO_MERGE`
-files, the mid-rebase `REBASE_HEAD` file and `rebase-merge/` and `rebase-apply/` directories (whose `git-rebase-todo`
-`exec` lines host `git rebase --continue` executes), the `sequencer/` directory (whose `todo` redirects a host
-`cherry-pick/revert --continue`) and the `BISECT_*` bisect-state files. A created-empty stand-in would not be inert --
-git rejects a zero-length index, treats an empty `MERGE_HEAD` as an in-progress merge, reports a rebase in progress (and
-refuses to start one) over an empty `rebase-merge/` or `rebase-apply/` directory, and fails a multi-commit cherry-pick
-or revert over a pre-existing empty `sequencer/` -- so state absent at mount time stays plantable, the documented
-accepted residual, which covers these directories as well as the transient files; a mounted primary checkout's own
-`HEAD`, `index` and `FETCH_HEAD` stay writable for its commits and fetches. Only the mounted worktree's own
-administrative directory is re-mounted read-write on top (docker layers the deeper mount destination over the shallower
-one), restoring exactly the writes its own git needs (`HEAD`, `index`, `FETCH_HEAD`) while its pointer files stay
-read-only through still-deeper overlays; the container sets its git identity in its own global config. A repository with
-`extensions.worktreeConfig` enabled is refused, because git would then read every worktree's `config.worktree` from the
-container's own writable git directory. The image runs as uid 1000 and a Linux bind mount keeps host ownership, so on
-Linux the worktree, its git directory and the common git directory must be writable by uid 1000 (as they are when the
-host user is uid 1000); otherwise `sandbox_worktree_mounts()` refuses the worktree before any container starts. On a
-host whose user has another uid (for example 1001 on CI runners), grant uid 1000 write access, e.g.
-`setfacl -R -m u:1000:rwX,d:u:1000:rwX <path>`; the preflight honours a named-user ACL entry for uid 1000 (limited by
-the ACL mask). Docker Desktop on macOS and Windows maps ownership, so the check is Linux-only. The resolver stages its
-fixes without `holon-knowledge/ledger/executions.jsonl`, and a pass the host dispatches with `--result-file` appends its
-ledger rows to container scratch: the host loop owns the worktree's ledger and records every pass from the result file.
-The entrypoint only validates the mount: HEAD must be a readable commit on the review branch (a branch target refuses a
-detached HEAD) and equal the resolved PR head SHA, otherwise preparation fails closed. Edits, logs and reviewer scratch
-under `.subagent/review/` land on the host at once and survive a container crash. No Docker volume is created and no
-root init container runs.
+files, the mid-merge rerere map `MERGE_RR` (per-worktree state: the primary's lives at the common root, while a
+sibling's copy is already covered by the `worktrees/` overlay), the mid-rebase `REBASE_HEAD` file and `rebase-merge/`
+and `rebase-apply/` directories (whose `git-rebase-todo` `exec` lines host `git rebase --continue` executes), the
+`sequencer/` directory (whose `todo` redirects a host `cherry-pick/revert --continue`) and the `BISECT_*` bisect-state
+files. A created-empty stand-in would not be inert -- git rejects a zero-length index, treats an empty `MERGE_HEAD` as
+an in-progress merge, reports a rebase in progress (and refuses to start one) over an empty `rebase-merge/` or
+`rebase-apply/` directory, and fails a multi-commit cherry-pick or revert over a pre-existing empty `sequencer/` -- so
+state absent at mount time stays plantable, the documented accepted residual, which covers these directories as well as
+the transient files; a mounted primary checkout's own `HEAD`, `index` and `FETCH_HEAD` stay writable for its commits and
+fetches. Only the mounted worktree's own administrative directory is re-mounted read-write on top (docker layers the
+deeper mount destination over the shallower one), restoring exactly the writes its own git needs (`HEAD`, `index`,
+`FETCH_HEAD`) while its pointer files stay read-only through still-deeper overlays; the container sets its git identity
+in its own global config. A repository with `extensions.worktreeConfig` enabled is refused, because git would then read
+every worktree's `config.worktree` from the container's own writable git directory. The image runs as uid 1000 and a
+Linux bind mount keeps host ownership, so on Linux the worktree, its git directory and the common git directory must be
+writable by uid 1000 (as they are when the host user is uid 1000); otherwise `sandbox_worktree_mounts()` refuses the
+worktree before any container starts. On a host whose user has another uid (for example 1001 on CI runners), grant uid
+1000 write access, e.g. `setfacl -R -m u:1000:rwX,d:u:1000:rwX <path>`; the preflight honours a named-user ACL entry for
+uid 1000 (limited by the ACL mask). Docker Desktop on macOS and Windows maps ownership, so the check is Linux-only. The
+resolver stages its fixes without `holon-knowledge/ledger/executions.jsonl`, and a pass the host dispatches with
+`--result-file` appends its ledger rows to container scratch: the host loop owns the worktree's ledger and records every
+pass from the result file. The entrypoint only validates the mount: HEAD must be a readable commit on the review branch
+(a branch target refuses a detached HEAD) and equal the resolved PR head SHA, otherwise preparation fails closed. Edits,
+logs and reviewer scratch under `.subagent/review/` land on the host at once and survive a container crash. No Docker
+volume is created and no root init container runs.
 
 The Stage 3 executor works the same way on the run's `flow-<slug>` worktree. The host fetches the plan branch (and any
 partial execution branch a resume continues) into the worktree before dispatch: `holon flow` through its existing fetch

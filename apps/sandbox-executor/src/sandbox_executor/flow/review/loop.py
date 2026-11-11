@@ -611,6 +611,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         if head_changed and resolved_target is not None:
             new_sha = resolver_outcome.head_sha or f"{current_sha or '0' * 32}-iter{iteration}"
             resolved_target = dataclasses.replace(resolved_target, head_sha=new_sha)
+            ci_wait = None  # A spent wait belongs to the old head; the new head's pending checks get their own wait.
             context.log(
                 f"[Review Loop] Resolver pushed new head '{new_sha}' at iteration {iteration}; "
                 "proceeding to re-review in full."

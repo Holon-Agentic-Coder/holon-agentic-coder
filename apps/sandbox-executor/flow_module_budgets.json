@@ -24,7 +24,7 @@
     "review/ci_outcome.py": 43,
     "review/cli.py": 87,
     "review/ensemble.py": 136,
-    "review/loop.py": 905,
+    "review/loop.py": 906,
     "review/records.py": 316,
     "review/resolver.py": 280,
     "review/verdict.py": 138,

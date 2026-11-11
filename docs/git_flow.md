@@ -408,9 +408,12 @@ The budget applies per wait, not per loop: each iteration that reaches the post-
 loop of N iterations whose checks each settle after a long wait can spend up to N times the budget. A wait that ends
 because the budget is spent is recorded in the loop result (and the posted consensus data) as `ci_wait`
 (`state: pending`, `budget_seconds`, `waited_seconds`, `pending_checks`); while the same checks stay pending, later
-iterations do not wait again. The record is cleared once a later iteration sees nothing pending, so it never contradicts
-the final `ci_checks`. Checks still pending at the deadline are unknown: never `all_passed`, never a failed test run,
-and no `FIND-CI` finding is recorded for them unless the local test run itself failed.
+iterations on the same head do not wait again. The record is cleared once a later iteration sees nothing pending, or
+when the resolver pushes a new head (the new head's pending checks get their own wait), so it never contradicts the
+final `ci_checks`. Checks still pending at the deadline are unknown: never `all_passed`, never a failed test run, and
+after a clean review no `FIND-CI` finding is recorded for them unless the local test run itself failed. A dry run, a
+dirty mergeability state or a review infrastructure failure skips the wait, and there pending checks still count as not
+passed and record `FIND-CI`.
 
 When the review ends without approval, the Stage 4 error says which outcome occurred:
 

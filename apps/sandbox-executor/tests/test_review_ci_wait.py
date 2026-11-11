@@ -362,3 +362,35 @@ def test_pending_from_a_source_that_is_not_waited_on_is_not_a_missing_blocker():
     message = describe_ci_outcome(status, None, False)
     assert "CI still pending and not waited for: macos-tests" in message
     assert message != NO_BLOCKER_RECORDED
+
+
+def test_spent_wait_is_cleared_when_the_resolver_pushes_a_new_head(tmp_path, monkeypatch):
+    # Iteration 1: wait spent with local tests failing, the resolver pushes. Iteration 2: the new head waits afresh.
+    install_fake_reviewers(monkeypatch)
+    fake = FakeTime()
+    probe = MagicMock(side_effect=lambda *a, **k: dict(PENDING))
+    resolver = MagicMock(return_value={"dispositions": [], "head_sha": "newhead1", "pushed": True})
+    with (
+        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=dict(CLEAN_MERGE)),
+        patch("sandbox_executor.flow.review.loop.probe_ci_checks", probe),
+        patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
+        patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc1234"),
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
+    ):
+        run_review_loop(
+            _context(tmp_path, {"test_pass_rate": 0.5, "exit_code": 1}),
+            target=EXEC_TARGET,
+            max_iterations=2,
+            ensemble_size=1,
+            auto_pr=False,
+            run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
+            run_resolver_fn=resolver,
+            clock=fake.clock,
+            sleep=fake.sleep,
+            ci_wait_budget=30.0,
+        )
+
+    assert resolver.call_count >= 1
+    # Without the clear the second iteration would skip its wait; each wait sleeps 15 s then 15 s (budget 30 s).
+    assert sum(fake.sleeps) > 30.0

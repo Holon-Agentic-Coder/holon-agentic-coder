@@ -232,38 +232,54 @@ def test_a_primary_checkout_needs_no_extra_git_mount_but_still_protects_config_a
     assert _git(repo, "log", "--oneline", "-1")
 
 
-def test_an_absent_rr_cache_becomes_a_read_only_directory_when_host_rerere_is_enabled(repo: Path) -> None:
+@pytest.mark.parametrize("enabled", ["true", "yes", "1", "on"])
+def test_rr_cache_is_a_read_only_empty_directory_when_host_rerere_is_enabled(repo: Path, enabled: str) -> None:
     # A stand-in FILE would make a conflicting host merge die ('could not create directory') and break 'git gc'.
+    # Truthy spellings are normalised by 'git config --type=bool'.
     _git(repo, "checkout", "-q", "-b", "feature")
-    _git(repo, "config", "rerere.enabled", "true")
-    (repo / ".git" / "rr-cache").write_text("", encoding="utf-8")  # stand-in left by an earlier mount
-
-    args = git_flow.sandbox_worktree_mounts(str(repo), MOUNT)
-
-    assert (repo / ".git" / "rr-cache").is_dir()
-    assert f"{repo / '.git' / 'rr-cache'}:{MOUNT}/.git/rr-cache:ro" in _mount_pairs(args)
-    assert not _host_writable(args, str(repo / ".git" / "rr-cache" / "0123456789abcdef" / "postimage"))
-
-
-def test_an_absent_rr_cache_is_a_read_only_empty_directory_when_host_rerere_is_enabled_and_a_file_otherwise(
-    repo: Path,
-) -> None:
-    _git(repo, "checkout", "-q", "-b", "feature")
-    _git(repo, "config", "rerere.enabled", "true")
+    _git(repo, "config", "rerere.enabled", enabled)
 
     args = git_flow.sandbox_worktree_mounts(str(repo), MOUNT)
 
     assert (repo / ".git" / "rr-cache").is_dir()
     assert list((repo / ".git" / "rr-cache").iterdir()) == []
     assert f"{repo / '.git' / 'rr-cache'}:{MOUNT}/.git/rr-cache:ro" in _mount_pairs(args)
+    assert not _host_writable(args, str(repo / ".git" / "rr-cache" / "0123456789abcdef" / "postimage"))
 
-    # Explicitly disabled: the inert file stand-in is created (a directory would turn rerere on when unset).
-    (repo / ".git" / "rr-cache").rmdir()
-    _git(repo, "config", "rerere.enabled", "false")
-    args = git_flow.sandbox_worktree_mounts(str(repo), MOUNT)
-    assert f"{repo / '.git' / 'rr-cache'}:{MOUNT}/.git/rr-cache:ro" in _mount_pairs(args)
-    assert (repo / ".git" / "rr-cache").is_file()
-    assert (repo / ".git" / "rr-cache").read_text(encoding="utf-8") == ""
+
+def test_a_stand_in_rr_cache_file_from_an_earlier_mount_is_replaced_by_a_directory_once_rerere_is_enabled(
+    repo: Path,
+) -> None:
+    _git(repo, "checkout", "-q", "-b", "feature")
+    (repo / ".git" / "rr-cache").write_text("", encoding="utf-8")
+    _git(repo, "config", "rerere.enabled", "true")
+
+    git_flow.sandbox_worktree_mounts(str(repo), MOUNT)
+
+    assert (repo / ".git" / "rr-cache").is_dir()
+
+
+def test_rr_cache_is_an_inert_read_only_file_when_host_rerere_is_disabled_or_unset(repo: Path) -> None:
+    _git(repo, "checkout", "-q", "-b", "feature")
+    for setting in (None, "false"):
+        if setting is not None:
+            _git(repo, "config", "rerere.enabled", setting)
+
+        args = git_flow.sandbox_worktree_mounts(str(repo), MOUNT)
+
+        assert f"{repo / '.git' / 'rr-cache'}:{MOUNT}/.git/rr-cache:ro" in _mount_pairs(args)
+        assert (repo / ".git" / "rr-cache").is_file()
+        assert (repo / ".git" / "rr-cache").read_text(encoding="utf-8") == ""
+        (repo / ".git" / "rr-cache").unlink()
+
+
+def test_a_non_empty_rr_cache_file_is_refused_when_host_rerere_is_enabled(repo: Path) -> None:
+    _git(repo, "checkout", "-q", "-b", "feature")
+    _git(repo, "config", "rerere.enabled", "true")
+    (repo / ".git" / "rr-cache").write_text("stray\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match=r"rr-cache"):
+        git_flow.sandbox_worktree_mounts(str(repo), MOUNT)
 
 
 def test_a_sibling_worktree_admin_dirs_are_unwritable_while_own_admin_and_object_database_stay_writable(

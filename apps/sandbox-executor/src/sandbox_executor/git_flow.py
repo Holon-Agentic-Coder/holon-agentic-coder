@@ -791,7 +791,8 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str, role: 
     shared rerere cache rr-cache/ is pinned in both layouts: a planted resolution is applied silently to the
     maintainer's next conflicting host merge and the directory's mere presence activates rerere, so an existing
     rr-cache/ is overlaid read-only and an absent one is replaced by a created read-only 'rr-cache' FILE, which is
-    inert for git while blocking the directory's creation.
+    inert for git while blocking the directory's creation -- except where host rerere.enabled is already true, where
+    the stand-in would break host merges and 'git gc', so an empty read-only rr-cache DIRECTORY is created instead.
     When the mounted worktree is a linked worktree, the common HEAD is the primary checkout's HEAD -- never needed
     in-container -- and is overlaid read-only along with the primary's other per-worktree state at the common root,
     each when present: index, FETCH_HEAD, the transient MERGE_HEAD/MERGE_MSG/MERGE_MODE/MERGE_AUTOSTASH/ORIG_HEAD/
@@ -934,11 +935,18 @@ def _common_dir_read_only_overlays(common_dir: str, git_dir: str) -> list[str]:
     # host-writable. The created directory persists, so if rerere.enabled is later unset its mere presence turns
     # host rerere on (an explicit false still disables it).
     rr_cache = os.path.join(common_dir, "rr-cache")
+    # The probe reads the same layered config host git does (system, global and the repository's own, includes
+    # followed); '--type=bool' normalises true/yes/on/1, and an unset or invalid value counts as not enabled.
     rerere_res = run_git(["--git-dir", common_dir, "config", "--type=bool", "--get", "rerere.enabled"], check=False)
     rerere_enabled = rerere_res.returncode == 0 and rerere_res.stdout.strip() == "true"
     if rerere_enabled:
         if os.path.isfile(rr_cache) and os.path.getsize(rr_cache) == 0:
             os.remove(rr_cache)
+        if os.path.exists(rr_cache) and not os.path.isdir(rr_cache):
+            raise RuntimeError(
+                f"{rr_cache} is a non-empty regular file but rerere is enabled: host git needs a directory there; "
+                "remove the stray file and retry"
+            )
         os.makedirs(rr_cache, exist_ok=True)
     elif not os.path.isdir(rr_cache):
         open(rr_cache, "a", encoding="utf-8").close()

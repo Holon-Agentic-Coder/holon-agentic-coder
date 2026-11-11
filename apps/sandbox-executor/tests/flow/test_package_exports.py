@@ -1,4 +1,9 @@
-"""The sandbox_executor.flow package re-exports every name flow.py bound, from the module that now defines it."""
+"""The sandbox_executor.flow package re-exports the names flow.py bound, from the module that now defines it.
+
+Deliberate deviation: the 30 public definitions in ``KNOWN_UNEXPORTED`` are not re-exported (they are reached through
+their owning submodules). The guard ratchets: new unexported definitions fail, and the set can only shrink.
+Constants are intentionally outside the definitions contract.
+"""
 
 from __future__ import annotations
 

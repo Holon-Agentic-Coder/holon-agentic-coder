@@ -121,12 +121,12 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
                 os.environ.pop(ENV_REPLAN_FEEDBACK, None)
             else:
                 os.environ[ENV_REPLAN_FEEDBACK] = previous_feedback_env
+    # The host pushes every plan branch the container committed, a failed planner's salvage commit included.
+    push_error = remote_error(publish_new_child_branches, repo_dir, intent_prefix, "P", existing_plans)
     if exit_code != 0:
         return _stage_failure(
             context, FlowStage.PLAN, start_time, f"{no_plan_error} (planner agent exited with code {exit_code})"
         )
-
-    push_error = remote_error(publish_new_child_branches, repo_dir, intent_prefix, "P", existing_plans)
     if push_error is not None:
         return _stage_failure(context, FlowStage.PLAN, start_time, f"Plan stage failed: {push_error}")
     fetch_error = _fetch_branch_prefix_error(repo_dir, intent_prefix)

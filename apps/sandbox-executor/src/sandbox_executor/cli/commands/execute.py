@@ -88,8 +88,10 @@ def run(args: argparse.Namespace) -> int | None:
     try:
         push_checked_out_branch(common_kwargs["target_worktree"])
     except RuntimeError as exc:
-        print(f"Error: {cli.redact_cli_error(exc)}", file=sys.stderr)
-        exit_code = exit_code or 1
+        # After a failed dispatch there may be no execution branch to push; that must not bury the run's own error.
+        if exit_code == 0:
+            print(f"Error: {cli.redact_cli_error(exc)}", file=sys.stderr)
+            exit_code = 1
     if exit_code == OVER_BUDGET_EXIT_CODE:
         print(
             f"Error: plan {args.plan_branch} is over its entropy budget and was not executed (exit code "

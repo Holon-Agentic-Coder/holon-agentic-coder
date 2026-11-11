@@ -383,9 +383,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
             tests_not_measured |= apply_local_test_evidence(last_ci_status, tests_failed, test_pass_rate, False, True)
             last_ci_status, waited = settle_pending_ci(context, probe_ci, last_ci_status, ci_policy, bool(ci_wait))
-            if waited:
-                iteration_timer.credit(waited.waited_seconds)  # The wait has its own budget: no iteration pays for it.
-                ci_wait = waited if waited.exhausted else ci_wait
+            iteration_timer.credit(waited.waited_seconds if waited else 0.0)  # The wait has its own budget.
+            ci_wait = waited if waited and waited.exhausted else (ci_wait if last_ci_status.get("pending", 0) else None)
             ci_green, ci_finding = gate_ci_flags(last_ci_status, tests_failed)
             ensemble_verdict = decide_returned_consensus(reviewers, ensemble_size, True, ci_green, blockers)
         else:
@@ -660,6 +659,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         # Label units: the last pass label pairs with the label budget, never with the remaining pass limit.
         "max_review_iterations": last_label,
         "ci_checks": last_ci_status,
+        "ci_wait": ci_wait.as_record() if ci_wait else None,
         "mergeability": last_mergeability,
         "mergeability_note": mergeability_note,
         "trailers": last_trailers_str,

@@ -83,14 +83,15 @@ def wait_for_pending_ci(
 ) -> tuple[dict[str, Any], CiWaitResult]:
     """Re-probe CI while checks are pending, for at most ``policy.budget_seconds`` of wall-clock time.
 
-    Polls back off from ``poll_interval``, doubling up to the ceiling, and the wait ends as soon as nothing is pending.
-    Checks still pending when the budget is spent are returned as they are: never ``all_passed``, never a failure.
+    Polls back off from ``poll_interval``, doubling up to the ceiling, and the wait ends as soon as nothing is pending
+    or any check has failed (the outcome is then already a CI failure, so waiting on the rest buys nothing). Checks
+    still pending when the budget is spent are returned as they are: never ``all_passed``, never a failure.
     """
     start = policy.clock()
     deadline = start + max(0.0, policy.budget_seconds)
     interval = policy.poll_interval if policy.poll_interval > 0 else CI_REGISTRATION_POLL_SECONDS
     exhausted = False
-    while ci_status.get("pending", 0) > 0:
+    while ci_status.get("pending", 0) > 0 and ci_status.get("failed", 0) == 0:
         remaining = deadline - policy.clock()
         if remaining <= 0:
             exhausted = True

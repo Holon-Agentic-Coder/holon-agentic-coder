@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from sandbox_executor.flow.github.ci import _ci_green, _extract_failed_ci_check_names
-from sandbox_executor.flow.github.ci_wait import is_pending_only
+from sandbox_executor.flow.github.ci_wait import is_pending_only, pending_check_names
 
 NO_BLOCKER_RECORDED = "Autonomous review consensus failed: no specific blocker was recorded."
 
@@ -29,6 +29,10 @@ def describe_ci_outcome(ci_status: dict[str, Any], ci_wait: dict[str, Any] | Non
         if tests_failed and failed == ["local_tests"]:
             return "Autonomous review consensus failed: test suite reported failures."
         return f"Autonomous review consensus failed: CI failed: {', '.join(failed)}."
+    if not (ci_wait and ci_wait.get("state") == "pending") and is_pending_only(ci_status):
+        # Pending that no wait explains (a probe source the loop does not wait on): still pending, never "no blocker".
+        names = ", ".join(pending_check_names(ci_status)) or "checks"
+        return f"Autonomous review stopped: CI still pending and not waited for: {names} still running; no test failed."
     if ci_wait and ci_wait.get("state") == "pending":
         names = ", ".join(ci_wait.get("pending_checks") or []) or "checks"
         return (

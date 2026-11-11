@@ -396,14 +396,21 @@ creates the execution branch from the plan tip there, commits and pushes it, wit
 #### CI wait budget and outcomes
 
 Waiting for CI and judging code run on different clocks. After the reviewers approve, the review loop waits for pending
-GitHub checks under a wall-clock CI wait budget of `HOLON_REVIEW_CI_WAIT_SECONDS` (default `1800` s; an invalid value
-logs a warning that names the variable and keeps the default). The wait is not drawn from the `review_iteration` budget,
-so a slow runner never costs an iteration. Polling backs off from `CI_REGISTRATION_POLL_SECONDS` (`15` s), doubling each
-poll to a ceiling of `CI_WAIT_POLL_CEILING_SECONDS` (`120` s), so the intervals are `15`, `30`, `60`, `120`, `120` s and
-so on, and the wait ends as soon as no check is pending. A wait that ends because the budget is spent is recorded once
-in the loop result as `ci_wait` (`state: pending`, `budget_seconds`, `waited_seconds`, `pending_checks`), not once per
-iteration, and later iterations do not wait again. Checks still pending at the deadline are unknown: never `all_passed`,
-never a failed test run, and no `FIND-CI` finding is recorded for them.
+GitHub checks under a wall-clock CI wait budget of `HOLON_REVIEW_CI_WAIT_SECONDS` (default `1800` s, in seconds, at most
+7 days). A value that is not a number, is not finite, is zero, negative or above 7 days is invalid: the loop logs a
+warning that names the variable and keeps `1800` s, so the wait cannot be switched off through the variable. The wait is
+not drawn from the `review_iteration` budget, so a slow runner never costs an iteration. Polling backs off from
+`CI_REGISTRATION_POLL_SECONDS` (`15` s), doubling each poll to a ceiling of `CI_WAIT_POLL_CEILING_SECONDS` (`120` s), so
+the intervals are `15`, `30`, `60`, `120`, `120` s and so on. The wait ends as soon as no check is pending, or as soon
+as any check has failed (that is already a CI failure, so the remaining checks are not waited on).
+
+The budget applies per wait, not per loop: each iteration that reaches the post-review CI gate gets a fresh wait, so a
+loop of N iterations whose checks each settle after a long wait can spend up to N times the budget. A wait that ends
+because the budget is spent is recorded in the loop result (and the posted consensus data) as `ci_wait`
+(`state: pending`, `budget_seconds`, `waited_seconds`, `pending_checks`); while the same checks stay pending, later
+iterations do not wait again. The record is cleared once a later iteration sees nothing pending, so it never contradicts
+the final `ci_checks`. Checks still pending at the deadline are unknown: never `all_passed`, never a failed test run,
+and no `FIND-CI` finding is recorded for them unless the local test run itself failed.
 
 When the review ends without approval, the Stage 4 error says which outcome occurred:
 

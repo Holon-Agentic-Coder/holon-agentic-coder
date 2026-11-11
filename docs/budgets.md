@@ -28,7 +28,8 @@ from synthetic throughput data, and the tests that exercise them use injected cl
 | Stage ceiling (exact) | (unset) | `HOLON_STAGE_BUDGET_SECONDS`                  | Replaces every per-stage value above, in seconds.                   |
 
 `HOLON_REVIEW_CI_WAIT_SECONDS` is in seconds, not minutes, and is not part of `HOLON_STAGE_BUDGET_SECONDS`: the wait
-backs off from 15 s to a 120 s ceiling and ends once no check is pending (see
+backs off from 15 s to a 120 s ceiling and ends once no check is pending or one has failed; `0`, negative and
+non-numeric values are invalid and keep 1800 s, and the budget applies per wait (see
 [CI wait budget and outcomes](git_flow.md#ci-wait-budget-and-outcomes)).
 
 `HOLON_STAGE_BUDGET_SECONDS` is meant for handing one exact ceiling to a single sandbox role; set it only for that

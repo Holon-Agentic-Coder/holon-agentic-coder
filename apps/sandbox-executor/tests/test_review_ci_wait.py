@@ -58,18 +58,29 @@ class FakeTime:
         self.now += seconds
 
 
-def _context(tmp_path: Path) -> FlowContext:
+FAILED_CHECK = {
+    "source": "github_cli",
+    "pending": 0,
+    "failed": 1,
+    "passed": 0,
+    "all_passed": False,
+    "total": 1,
+    "checks": [{"name": "lint", "bucket": "fail", "state": "FAILURE"}],
+}
+
+
+def _context(tmp_path: Path, payload: dict | None = None) -> FlowContext:
     (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True, exist_ok=True)
     ctx = FlowContext(
         repo_dir=str(tmp_path), execution_branch=EXEC_TARGET, agent="fake-agent", model="fake-model", token_reduce=False
     )
     ctx.stage_results["execute"] = StageResult(
-        stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"test_pass_rate": 1.0, "exit_code": 0}
+        stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload=payload or {"test_pass_rate": 1.0, "exit_code": 0}
     )
     return ctx
 
 
-def _run_loop(tmp_path: Path, monkeypatch, probes: list[dict], fake: FakeTime, **kwargs):
+def _run_loop(tmp_path: Path, monkeypatch, probes: list[dict], fake: FakeTime, payload: dict | None = None, **kwargs):
     """Run the loop with scripted probes (the last one repeats) and a fake clock."""
     install_fake_reviewers(monkeypatch)
     script = list(probes)
@@ -86,7 +97,7 @@ def _run_loop(tmp_path: Path, monkeypatch, probes: list[dict], fake: FakeTime, *
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
     ):
         return run_review_loop(
-            _context(tmp_path),
+            _context(tmp_path, payload),
             target=EXEC_TARGET,
             max_iterations=2,
             ensemble_size=1,
@@ -239,3 +250,82 @@ def test_stage_error_reports_pending_after_the_wait_budget(tmp_path):
     assert result.status == StageStatus.FAILED
     assert "CI still pending after the wait budget" in result.error
     assert "test suite reported failures" not in result.error
+
+
+def test_wait_that_settles_into_a_failed_check_records_the_ci_finding(tmp_path, monkeypatch):
+    res = _run_loop(tmp_path, monkeypatch, [PENDING, FAILED_CHECK], FakeTime(), ci_wait_budget=600.0)
+
+    assert res["consensus"]["approved"] is False
+    assert any(finding.startswith("FIND-CI") for finding in res["findings"])
+    assert res["ci_wait"] is None
+    assert res["ci_checks"]["failed"] == 1
+
+
+def test_pending_checks_with_failed_local_tests_still_record_the_ci_finding(tmp_path, monkeypatch):
+    res = _run_loop(
+        tmp_path,
+        monkeypatch,
+        [PENDING],
+        FakeTime(),
+        payload={"test_pass_rate": 0.5, "exit_code": 1},
+        ci_wait_budget=30.0,
+    )
+
+    assert res["tests_failed"] is True
+    assert res["consensus"]["approved"] is False
+    assert any(finding.startswith("FIND-CI") for finding in res["findings"])
+    assert res["ci_wait"]["state"] == "pending"
+
+
+def test_wait_stops_at_once_when_a_check_has_already_failed():
+    fake = FakeTime()
+    probe = MagicMock(return_value=dict(PENDING))
+    mixed = {**PENDING, "failed": 1}
+    policy = CiWaitPolicy(1800.0, 15.0, clock=fake.clock, sleep=fake.sleep)
+    status, result = wait_for_pending_ci(MagicMock(), probe, mixed, policy)
+
+    assert fake.sleeps == []
+    assert probe.call_count == 0
+    assert status["failed"] == 1
+    assert result.exhausted is False
+
+
+def test_stale_wait_record_is_cleared_when_a_later_probe_has_settled(tmp_path, monkeypatch):
+    # First pass: the wait is spent with local tests failing (a finding), the resolver runs, then the checks settle.
+    install_fake_reviewers(monkeypatch)
+    fake = FakeTime()
+    script = [PENDING, PENDING, PENDING, PASSED]
+    probe = MagicMock(side_effect=lambda *a, **k: dict(script.pop(0) if len(script) > 1 else script[0]))
+    resolver = MagicMock(return_value=MagicMock(returncode=0))
+    with (
+        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=dict(CLEAN_MERGE)),
+        patch("sandbox_executor.flow.review.loop.probe_ci_checks", probe),
+        patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
+        patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc1234"),
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
+    ):
+        res = run_review_loop(
+            _context(tmp_path, {"test_pass_rate": 0.5, "exit_code": 1}),
+            target=EXEC_TARGET,
+            max_iterations=2,
+            ensemble_size=1,
+            auto_pr=False,
+            run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
+            run_resolver_fn=resolver,
+            clock=fake.clock,
+            sleep=fake.sleep,
+            ci_wait_budget=30.0,
+        )
+
+    assert res["total_iterations"] == 2
+    assert res["ci_checks"]["pending"] == 0
+    assert res["ci_wait"] is None
+
+
+def test_pending_from_a_source_that_is_not_waited_on_is_not_a_missing_blocker():
+    status = {**PENDING, "source": "other"}
+
+    message = describe_ci_outcome(status, None, False)
+    assert "CI still pending and not waited for: macos-tests" in message
+    assert message != NO_BLOCKER_RECORDED

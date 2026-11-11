@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-e099bb52",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-11T11:08:20.724802+00:00",
+  "updated_ts": "2026-11-11T11:08:20.724802+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794394182-e77dd125",
+      "ACT-FIND-1794394181-8adcbb84"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794391536-refcap/P-1794391544-abdc9b6d-claude-agent-claude-sonnet-5-5/E-1794391637-5549d1a0-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 6 finding detected: FIND-R2-006-01",
+    "symptoms": [
+      "safe_agent uses the fallback 'unknown' but build_execution_id uses 'unknown-agent', so an empty agent name makes original_labels add spurious original_agent and original_model fields; pass the 'unknown-agent' fallback."
+    ]
+  }
+}

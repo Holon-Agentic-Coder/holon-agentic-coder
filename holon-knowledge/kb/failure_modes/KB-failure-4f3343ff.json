@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-4f3343ff",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-11T11:08:20.754607+00:00",
+  "updated_ts": "2026-11-11T11:08:20.754607+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794394561-27237da6",
+      "ACT-FIND-1794394560-f2080dd1"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794391536-refcap/P-1794391544-abdc9b6d-claude-agent-claude-sonnet-5-5/E-1794391637-5549d1a0-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 8 finding detected: FIND-R1-008-02",
+    "symptoms": [
+      "Only the execution push names a ref-length rejection; apply named_push_rejection to the other push paths too."
+    ]
+  }
+}

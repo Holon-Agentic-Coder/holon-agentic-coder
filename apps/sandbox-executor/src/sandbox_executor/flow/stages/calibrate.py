@@ -31,6 +31,7 @@ from sandbox_executor.knowledge import (
     reconcile_records,
 )
 from sandbox_executor.ledger import LedgerRewriteError
+from sandbox_executor.ref_names import calibration_branch
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +169,7 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR
             repo_dir, target_branch=target_branch, stage_name="calibrate", branch=context.execution_branch
         )
 
-    calibrated_branch = f"{context.execution_branch.rstrip('/_').rstrip('/')}/calibrated"
+    calibrated_branch = calibration_branch(context.execution_branch)
     report_dict: dict[str, Any] = {}
     calibration_succeeded = False
 

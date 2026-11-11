@@ -18,6 +18,7 @@ from sandbox_executor.flow.checkpoint import get_default_checkpoint_path
 from sandbox_executor.flow.context import FlowContext, StageResult
 from sandbox_executor.flow.git_refs import _fetch_branch_prefix_error, _list_child_branches, _origin_has_branch
 from sandbox_executor.flow.github.merge import GhRunner, _merged_result, gh_runner
+from sandbox_executor.ref_names import FitResult, fit_child_intent_branch
 
 PROGRESS_KEY = "children_progress"
 PENDING = "pending"
@@ -35,15 +36,13 @@ def _sub_intent_depth(intent_data: dict[str, Any]) -> int:
         return 0
 
 
-def _child_intent_branch(parent_branch: str, index: int, slug: str) -> str:
-    """Return the bare intent branch of the ``index``-th (1-based) child of ``parent_branch``: ``{parent}--{n}-{slug}``.
-
-    The name is derived from the parent's branch and the item's position, never from the clock. A sanitised slug never
-    contains ``--``, so the name cannot collide with the parent, a sibling or any other intent, even one created in the
-    same second with the same slug; re-running the same parent's list derives the same name for the same child.
+def _child_intent_branch(parent_branch: str, index: int, slug: str) -> FitResult:
+    """Return the fitted bare intent branch of the ``index``-th (1-based) child: ``{parent}--{n}-{slug}``.
+    The name comes from the parent's branch and position, never the clock; a sanitised slug never contains ``--``, so
+    it cannot collide with another intent, and the same list always derives the same name for the same child.
     """
-    child_slug = re.sub(r"[^a-zA-Z0-9]+", "-", slug).strip("-").lower() or f"sub-intent-{index}"
-    return f"{parent_branch.removesuffix('/_')}--{index}-{child_slug}"
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", slug).strip("-").lower() or f"sub-intent-{index}"
+    return fit_child_intent_branch(parent_branch, index, slug)
 
 
 def initial_progress(items: list[dict[str, Any]], plan_branch: str) -> list[dict[str, Any]]:
@@ -51,11 +50,13 @@ def initial_progress(items: list[dict[str, Any]], plan_branch: str) -> list[dict
     progress: list[dict[str, Any]] = []
     for index, item in enumerate(items, start=1):
         slug = str(item.get("slug") or f"sub-intent-{index}")
+        fitted = _child_intent_branch(plan_branch, index, slug)
         progress.append(
             {
                 "index": index,
                 "slug": slug,
-                "intent_branch": f"{_child_intent_branch(plan_branch, index, slug)}/_",
+                "intent_branch": f"{fitted.name}/_",
+                "original_slug": fitted.originals.get("child slug"),
                 "execution_branch": None,
                 "pr_number": None,
                 "pr_url": None,

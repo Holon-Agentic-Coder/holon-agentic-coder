@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-a48dff52",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-11T11:08:20.669127+00:00",
+  "updated_ts": "2026-11-11T11:08:20.669127+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794393419-1ac61cc1",
+      "ACT-FIND-1794393417-e616c5da"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794391536-refcap/P-1794391544-abdc9b6d-claude-agent-claude-sonnet-5-5/E-1794391637-5549d1a0-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 2 finding detected: FIND-R2-002-01",
+    "symptoms": [
+      "The root intent reserve covers only one plan and one execution segment, so a long root slug with decomposition makes child naming raise RefTooLongError at Stage 3 instead of shortening the root at Stage 1; reserve child levels or handle the failure by name."
+    ]
+  }
+}

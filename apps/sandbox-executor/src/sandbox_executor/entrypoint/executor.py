@@ -54,6 +54,7 @@ from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import (
     ActionRecord,
     LedgerRewriteError,
+    _sanitize_model_name,
     append_action_record,
     atomic_ledger_append,
     build_execution_id,
@@ -74,6 +75,7 @@ from sandbox_executor.redaction import redact_args as redact_args
 from sandbox_executor.redaction import redact_command_args
 from sandbox_executor.redaction import redact_env_literals as redact_env_literals
 from sandbox_executor.redaction import redact_text as redact_text
+from sandbox_executor.ref_names import original_labels
 from sandbox_executor.turns import AuthoringOutcome, record_budget_failure, run_turn, supervise_authoring_turn
 
 _MAX_PRINT_LEN: int = 5000
@@ -700,21 +702,19 @@ def _entrypoint_git_runner(repo_dir: str) -> Callable[[list[str]], str]:
 
 
 def _safe_float(val: Any, default: float = 0.0) -> float:
-    if val is None:
-        return default
     try:
-        return float(val)
+        return default if val is None else float(val)
     except (ValueError, TypeError):
         return default
 
 
-def _sanitize_string(name: str) -> str:
+def _sanitize_string(name: str, fallback: str = "unknown") -> str:
     s = re.sub(r"\s+", "-", name.replace("/", "_"))
     s = re.sub(r"[^a-zA-Z0-9_.-]", "", s)
     s = re.sub(r"-+", "-", s)
     s = re.sub(r"\.+", ".", s)
     s = s[:64].strip(".-")
-    return s or "unknown"
+    return s or fallback
 
 
 # Exit status of an executor run that refused an over-budget plan and committed its over_budget row to the execution
@@ -1072,8 +1072,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         mounted_plan_tip = validate_mounted_workspace(repo, repo_dir, plan_branch)
 
         exec_seq = int(time.time())
-        safe_agent = _sanitize_string(agent_name)
-        safe_model = _sanitize_string(model_name)
+        safe_agent, safe_model = _sanitize_string(agent_name, "unknown-agent"), _sanitize_model_name(model_name)
         exec_id = build_execution_id(exec_seq, plan_branch_prefix, safe_agent, safe_model)
         exec_branch = f"{plan_branch_prefix}/{exec_id}/_"
 
@@ -1175,6 +1174,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 "agent": agent_name,
                 "agent_version": runner.get_version(),
                 "model": model_name,
+                **original_labels(exec_id, safe_agent, safe_model),
                 "status": decision.decision,
                 "entropy": decision.entropy,
                 "entropy_budget": decision.entropy_budget,
@@ -1470,6 +1470,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 "agent": agent_name,
                 "agent_version": runner.get_version(),
                 "model": model_name,
+                **original_labels(exec_id, safe_agent, safe_model),
                 "status": exec_status,
                 "summary": summary,
                 "created_at": timestamp_str,

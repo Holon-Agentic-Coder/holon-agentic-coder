@@ -25,11 +25,13 @@ from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import (
     _sanitize_model_name,
+    _sanitize_string,
     atomic_ledger_append,
     build_plan_id,
     validate_ledger_file_unique_ids,
 )
 from sandbox_executor.redaction import redact_agent_secrets, redact_command, redact_command_args
+from sandbox_executor.ref_names import original_labels
 from sandbox_executor.turns import record_budget_failure, run_turn, supervise_authoring_turn
 
 # The commit identity goes on the command line: a mounted host worktree's repository config is shared with the host and
@@ -545,6 +547,7 @@ Include metrics in this format:
         "plan_file": plan_md_rel,
         "status": "proposed",
         "entropy_budget": entropy_budget,
+        **original_labels(plan_id, _sanitize_string(agent_name, "unknown-agent"), safe_model),
     }
 
     # Format plan markdown before the ledger append, so the recorded decision is parsed from the committed file

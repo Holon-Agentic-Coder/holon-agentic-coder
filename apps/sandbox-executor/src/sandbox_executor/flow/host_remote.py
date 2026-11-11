@@ -15,6 +15,7 @@ from typing import Any
 
 from sandbox_executor.git import run_git
 from sandbox_executor.redaction import redact_agent_secrets
+from sandbox_executor.ref_names import named_push_rejection
 
 DEFAULT_REMOTE = "origin"
 
@@ -96,7 +97,8 @@ def push_commit(repo_dir: str, source: str, branch: str, remote: str = DEFAULT_R
     res = run_git(["push", "--", remote, f"{source}:refs/heads/{branch}"], cwd=repo_dir, check=False, timeout=300)
     if res.returncode != 0:
         detail = (res.stderr or "").strip() if isinstance(res.stderr, str) else ""
-        raise HostRemoteError("push", branch, remote, detail or f"git push exited with code {res.returncode}")
+        detail = detail or f"git push exited with code {res.returncode}"
+        raise HostRemoteError("push", branch, remote, named_push_rejection(branch, detail))
 
 
 def push_branch(repo_dir: str, branch: str, remote: str = DEFAULT_REMOTE) -> None:

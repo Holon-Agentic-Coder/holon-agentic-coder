@@ -217,3 +217,11 @@ def test_a_failed_origin_fetch_marks_the_entry_for_resume(tmp_path):
     reconcile_with_origin(str(tmp_path), progress, PLAN, runner=FakeGitHub(tmp_path, tmp_path))
     assert progress[0]["origin_lookup_failed"] is True
     assert next_child_action(progress[0]) == "resume"
+
+
+def test_initial_progress_records_original_of_shortened_child_slug() -> None:
+    long_slug = "very-long-slug-" * 20
+    shortened, untouched = initial_progress([{"slug": long_slug}, {"slug": "x"}], PLAN)
+    assert shortened["original_slug"] == long_slug.strip("-")
+    assert long_slug.strip("-") not in shortened["intent_branch"]
+    assert untouched["original_slug"] is None

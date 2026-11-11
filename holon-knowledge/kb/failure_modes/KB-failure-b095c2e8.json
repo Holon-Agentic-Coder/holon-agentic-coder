@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-b095c2e8",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-11T11:08:20.744393+00:00",
+  "updated_ts": "2026-11-11T11:08:20.744393+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794394388-bfca937b",
+      "ACT-FIND-1794394387-deec2413"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794391536-refcap/P-1794391544-abdc9b6d-claude-agent-claude-sonnet-5-5/E-1794391637-5549d1a0-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 7 finding detected: FIND-R3-007-02",
+    "symptoms": [
+      "ensure_chain_fits runs on a recorded branch, so a resumed flow can fail at Stage 1 despite the keep-existing-names rule; skip or document it."
+    ]
+  }
+}

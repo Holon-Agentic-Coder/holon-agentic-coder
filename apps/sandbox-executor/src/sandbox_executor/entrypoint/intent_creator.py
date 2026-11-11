@@ -10,6 +10,7 @@ from sandbox_executor.entrypoint.execution_workspace import start_branch_from_ho
 from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import atomic_ledger_append
 from sandbox_executor.redaction import redact_agent_secrets, redact_command
+from sandbox_executor.ref_names import resolve_root_intent_branch
 
 
 def run_cmd(
@@ -81,9 +82,8 @@ def main():  # noqa: PLR0915
 
         import time
 
-        branch = f"I-{int(time.time())}-{slug_clean}"
+        branch = resolve_root_intent_branch(intent_data, slug_clean, int(time.time()), "", "")
         intent_data["branch"] = branch
-        intent_data["slug"] = slug_clean
 
     intent_branch = f"{branch}/_"
 

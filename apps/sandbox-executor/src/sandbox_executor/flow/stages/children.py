@@ -102,6 +102,8 @@ def _build_child_intent(context: FlowContext, payload: dict[str, Any], entry: di
     labels = context.intent_data.get("labels")
     if isinstance(labels, list):
         child_data["labels"] = list(labels)
+    if entry.get("original_slug"):
+        child_data["original_slug"] = entry["original_slug"]
     return child_data
 
 

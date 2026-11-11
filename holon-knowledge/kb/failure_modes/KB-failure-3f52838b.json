@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-3f52838b",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-11T11:08:20.697976+00:00",
+  "updated_ts": "2026-11-11T11:08:20.697976+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794393706-c9fcdef5",
+      "ACT-FIND-1794393705-9a4db7e7"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794391536-refcap/P-1794391544-abdc9b6d-claude-agent-claude-sonnet-5-5/E-1794391637-5549d1a0-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 4 finding detected: FIND-R2-004-01",
+    "symptoms": [
+      "fit_root_intent_branch and fit_child_intent_branch reserve room for downstream levels, so names that fit the limit alone (over about 69 characters) are shortened, breaking the 'a name that fits is unchanged' requirement; boundary tests bypass the builders via fit_parts."
+    ]
+  }
+}

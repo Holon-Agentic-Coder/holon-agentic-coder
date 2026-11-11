@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-8453a3b8",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-11T11:08:20.661970+00:00",
+  "updated_ts": "2026-11-11T11:08:20.661970+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794393193-5e8eb439",
+      "ACT-FIND-1794393192-e11c9dc5"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794391536-refcap/P-1794391544-abdc9b6d-claude-agent-claude-sonnet-5-5/E-1794391637-5549d1a0-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R3-001-01",
+    "symptoms": [
+      "named_push_rejection measures with the /calibrated suffix, so a non-length push failure on a 234-244 character execution branch is mislabelled 'ref too long'; measure with /_ or require the rejection text."
+    ]
+  }
+}

@@ -3,17 +3,18 @@
 ## Summary
 
 Implementing plan `P-1794391254-8ec0e2e8-claude-agent-claude-sonnet-5-5`: mount the host worktree for all four stages,
-move every remote git operation to the host, and remove `HOLON_REPO_URL`. In progress.
+move every remote git operation to the host, and remove `HOLON_REPO_URL`. Complete: all six plan steps are done and the
+gates pass.
 
 ## Actual Metrics
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.0   |
-| entropy_actual        | 0.0   |
-| impact_actual         | 0.0   |
-| cost_actual           | 0.0   |
-| learning_value_actual | 0.0   |
+| success_actual        | 0.9   |
+| entropy_actual        | 16.0  |
+| impact_actual         | 85.0  |
+| cost_actual           | 40.0  |
+| learning_value_actual | 6.0   |
 
 ## Steps Executed
 
@@ -51,3 +52,34 @@ move every remote git operation to the host, and remove `HOLON_REPO_URL`. In pro
   `agent_runner.py` is the one place that names the variable, so a stale value is dropped by the forwarding loop and the
   preflight probe.
 - Sweep: `docker/` does not exist and `.github` has no match; `entrypoint/role_dispatcher.sh` runs no git.
+
+### Step 5: hermetic tests
+
+- Added `tests/flow/test_host_remote.py` and `tests/flow/test_worktree_all_stages.py` (placed under `tests/flow/`
+  because they use the `flow_repos` fixture) covering: intent and plan mounts equal the executor's, no SSH agent or
+  repository URL in any docker argv, sibling-worktree protections for the new mounts, a static check that no entrypoint
+  names a remote git verb, an SSH-origin worktree (`url.<bare>.insteadOf`) passing all stages, a stale `HOLON_REPO_URL`
+  changing nothing, and named host fetch and push failures without credentials.
+- Existing tests were migrated to the mounted, commit-only contract. Tests for deleted behaviour (clone, repair re-init,
+  unpushed patch, credential helper, SSH mounts, URL resolution) were deleted.
+
+### Step 6: docs, budgets and gates
+
+- Docs now describe one worktree for all four stages and host-side fetch and push. `flow_module_budgets.json` gained
+  `host_remote.py` and raised five budgets, with the reason recorded in its description. The move-proof snapshot
+  declares the new and amended definitions.
+- Known gap: `__main__` of the executor still prints a traceback for the unusable-repo `RuntimeError`; its first line is
+  redacted but the traceback is not.
+
+## Tests Run
+
+| command                                                           | result                              |
+| ----------------------------------------------------------------- | ----------------------------------- |
+| baseline `uv run task test` (before changes)                      | 3583 passed, 30.08s                 |
+| `uv run pytest apps/sandbox-executor/tests/flow` (affected paths) | 660 passed, 8.28s                   |
+| `uv run task test` / full non-integration suite, final            | 3522 passed, 648 subtests, 30.63s   |
+| `uv run task lint`                                                | passed (ruff, format, flow budgets) |
+| `uv run task lint-docs`                                           | passed                              |
+
+No repeated or timing runs were needed: the intent has no performance target. The test count fell from 3583 to 3522
+because tests for deleted behaviour were removed, net of the new tests.

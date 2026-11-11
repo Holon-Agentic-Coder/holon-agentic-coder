@@ -537,9 +537,7 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub)
-    def test_main_converges_prettier_on_markdown_artifacts(
-        self, mock_get_runner, mock_run_cmd, mock_converge
-    ):
+    def test_main_converges_prettier_on_markdown_artifacts(self, mock_get_runner, mock_run_cmd, mock_converge):
         """Test that executor.main() collects modified markdown files and execution record.
 
         Also asserts that converge_prettier is invoked before git commit.
@@ -648,7 +646,9 @@ class TestExecutor(unittest.TestCase):
             ):
                 executor.main()
 
-            self.assertIn("the mounted worktree's git repository is unusable after the agent ran", str(raised.exception))
+            self.assertIn(
+                "the mounted worktree's git repository is unusable after the agent ran", str(raised.exception)
+            )
             # The failure line printed for the operator redacts the git diagnostic.
             self.assertIn("Execution failed:", mock_stderr.getvalue())
             self.assertNotIn(_fake_token("ghp_"), mock_stderr.getvalue())
@@ -658,9 +658,7 @@ class TestExecutor(unittest.TestCase):
             self.assertNotIn(["git", "init"], called_cmds)
             self.assertEqual(_remote_git_cmds(called_cmds), [])
 
-    def _run_over_budget_main(
-        self, sync_result, *, staged=True, has_parent=True, git_calls=None, stdout=None
-    ):
+    def _run_over_budget_main(self, sync_result, *, staged=True, has_parent=True, git_calls=None, stdout=None):
         """Run executor.main() on an over-budget plan whose ledger row is staged; return its exit code and records.
 
         ``staged`` and ``has_parent`` set what the staged-changes check and the parent-commit check report;
@@ -774,9 +772,7 @@ class TestExecutor(unittest.TestCase):
 
     def test_main_over_budget_on_a_parentless_commit_is_not_recorded_and_exits_1(self):
         git_calls: list[list[str]] = []
-        code, stderr_lines, rows, _, _ = self._run_over_budget_main(
-            (True, "ok"), has_parent=False, git_calls=git_calls
-        )
+        code, stderr_lines, rows, _, _ = self._run_over_budget_main((True, "ok"), has_parent=False, git_calls=git_calls)
 
         # A branch with no parent is never published, so the over_budget row is not recorded and the run fails.
         self.assertEqual(code, 1)
@@ -831,7 +827,9 @@ class TestExecutor(unittest.TestCase):
                 self.assertRaises(SystemExit) as refused,
             ):
                 executor.main()
-            heads = git(workspace, "for-each-ref", "--format=%(refname:short)", "refs/heads/I-456/P-123/").stdout.split()
+            heads = git(
+                workspace, "for-each-ref", "--format=%(refname:short)", "refs/heads/I-456/P-123/"
+            ).stdout.split()
             local = [ref for ref in heads if ref != plan_branch]
             ledger = git(workspace, "show", f"{local[0]}:holon-knowledge/ledger/executions.jsonl").stdout
             rows = [json.loads(line) for line in ledger.splitlines() if line.strip()]
@@ -2002,9 +2000,7 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub)
-    def test_agent_output_ledger_byte_count_matches_the_budget_field(
-        self, mock_get_runner, mock_run_cmd
-    ):
+    def test_agent_output_ledger_byte_count_matches_the_budget_field(self, mock_get_runner, mock_run_cmd):
         """Test the documented field contract: marker tail claim <= agent_output_bytes <= budget."""
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.1.22"
@@ -2036,9 +2032,7 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub)
-    def test_execution_record_fence_outlasts_backticks_in_agent_output(
-        self, mock_get_runner, mock_run_cmd
-    ):
+    def test_execution_record_fence_outlasts_backticks_in_agent_output(self, mock_get_runner, mock_run_cmd):
         """Test that agent output containing a fence line cannot close the record's block early."""
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.1.22"
@@ -2066,9 +2060,7 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.entrypoint.executor.get_runner")
     @patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub)
     @patch("sandbox_executor.entrypoint.executor.prepare_agent_output_block")
-    def test_agent_output_logging_failure_fault_tolerance(
-        self, mock_sanitize, mock_get_runner, mock_run_cmd
-    ):
+    def test_agent_output_logging_failure_fault_tolerance(self, mock_sanitize, mock_get_runner, mock_run_cmd):
         """Test that logging/sanitizing failure does not alter execution status or raise out of main."""
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.1.22"
@@ -2390,8 +2382,10 @@ class TestExecutor(unittest.TestCase):
             ):
                 executor.main()
 
-            self.assertIn("the mounted worktree's git repository is unusable after the agent ran", str(raised.exception))
-            # The host's worktree is never rebuilt: the agent's file stays, and no backup or re-initialised repo appears.
+            self.assertIn(
+                "the mounted worktree's git repository is unusable after the agent ran", str(raised.exception)
+            )
+            # The host's worktree is never rebuilt: the agent's file stays and no backup appears.
             self.assertTrue(os.path.exists(os.path.join(workspace_dir, "src", "agent_edit.py")))
             self.assertEqual([d for d in os.listdir(workspace_dir) if d.startswith(".git-unusable-")], [])
             self.assertFalse(os.path.isdir(os.path.join(workspace_dir, ".git", "objects")))
@@ -2631,6 +2625,7 @@ class TestExecutor(unittest.TestCase):
             self.assertEqual(head_tip, plan_tip)
             self.assertEqual([d for d in os.listdir(workspace_dir) if d.startswith(".git-unusable-")], [])
 
+
 class TestExecutorPrePushSync(unittest.TestCase):
     """Unit tests for executor pre-push remote synchronisation and conflict isolation."""
 
@@ -2677,6 +2672,8 @@ class TestExecutorPrePushSync(unittest.TestCase):
             f.write(json.dumps({"execution_id": "E-remote", "created_at": "2026-10-06T09:30:00Z"}) + "\n")
         self._git(peer_dir, "commit", "-am", "peer commit")
         self._git(peer_dir, "push", "origin", "main")
+        # The host fetches the target branch before the container runs; the sync reads that remote-tracking ref.
+        self._git(self.work_dir, "fetch", "-q", "origin")
 
         # 3. Pre-push sync on feature branch
         success, msg = sync_and_reconcile_pre_push(self.work_dir, target_branch="main")
@@ -2711,6 +2708,8 @@ class TestExecutorPrePushSync(unittest.TestCase):
         self._git(peer_dir, "add", "code.py")
         self._git(peer_dir, "commit", "-m", "peer conflicting code")
         self._git(peer_dir, "push", "origin", "main")
+        # The host fetches the target branch before the container runs; the sync reads that remote-tracking ref.
+        self._git(self.work_dir, "fetch", "-q", "origin")
 
         # 3. Pre-push sync should fail and abort the merge
         success, msg = sync_and_reconcile_pre_push(self.work_dir, target_branch="main")
@@ -2721,11 +2720,32 @@ class TestExecutorPrePushSync(unittest.TestCase):
         status = self._git(self.work_dir, "status", "--porcelain").stdout.strip()
         self.assertEqual(status, "")
 
-    def test_pre_push_sync_no_remote_configured(self):
+    def test_pre_push_sync_without_a_fetched_target_ref_is_a_no_op(self):
         self._git(self.work_dir, "remote", "remove", "origin")
         success, msg = sync_and_reconcile_pre_push(self.work_dir, target_branch="main")
         self.assertTrue(success)
-        self.assertIn("No remote origin", msg)
+        self.assertEqual(msg, "Remote branch origin/main not found")
+
+    def test_pre_push_sync_never_contacts_the_remote(self):
+        # A peer advances the remote, but the host has not fetched: the sync sees nothing new and runs no remote verb.
+        peer_dir = os.path.join(self.root, "peer-unfetched")
+        subprocess.run(["git", "clone", self.remote_dir, peer_dir], check=True, capture_output=True)
+        self._git(peer_dir, "config", "user.email", "peer@holon.com")
+        self._git(peer_dir, "config", "user.name", "Peer User")
+        self._git(peer_dir, "commit", "--allow-empty", "-m", "peer")
+        self._git(peer_dir, "push", "origin", "main")
+        commands: list[list[str]] = []
+        real_run_cmd = executor.run_cmd
+
+        def recording(args, **kwargs):
+            commands.append(list(args))
+            return real_run_cmd(args, **kwargs)
+
+        with patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=recording):
+            success, msg = sync_and_reconcile_pre_push(self.work_dir, target_branch="main")
+        self.assertTrue(success, msg)
+        self.assertIn("up to date", msg)
+        self.assertEqual(_remote_git_cmds(commands), [])
 
     def test_pre_push_sync_multi_ledger_conflicts(self):
         # 1. On feature branch, append to plans.jsonl and executions.jsonl
@@ -2757,6 +2777,8 @@ class TestExecutorPrePushSync(unittest.TestCase):
         self._git(peer_dir, "add", "-A")
         self._git(peer_dir, "commit", "-m", "peer multi ledger")
         self._git(peer_dir, "push", "origin", "main")
+        # The host fetches the target branch before the container runs; the sync reads that remote-tracking ref.
+        self._git(self.work_dir, "fetch", "-q", "origin")
 
         # 3. Pre-push sync
         success, msg = sync_and_reconcile_pre_push(self.work_dir, target_branch="main")
@@ -2772,37 +2794,6 @@ class TestExecutorPrePushSync(unittest.TestCase):
         with open(exec_file, encoding="utf-8") as f:
             e_rows = [json.loads(line) for line in f if line.strip()]
         self.assertEqual(len(e_rows), 3)
-
-    def test_pre_push_sync_shallow_clone_deepen_handling(self):
-        # Verify shallow repository check and deepening behaviour via mocked run_cmd
-        with patch("sandbox_executor.entrypoint.executor.run_cmd") as mock_run_cmd:
-
-            def side_effect(args, **kwargs):  # noqa: PLR0911
-                cmd_str = " ".join(args)
-                if "remote get-url" in cmd_str:
-                    return MagicMock(returncode=0, stdout="origin")
-                if "rev-parse --verify origin/main" in cmd_str:
-                    return MagicMock(returncode=0, stdout="origin/main")
-                if "rev-parse origin/main" in cmd_str:
-                    return MagicMock(returncode=0, stdout="abc1234")
-                if "merge-base HEAD origin/main" in cmd_str:
-                    # Fail on first call, succeed after deepening
-                    if mock_run_cmd.deepen_called:
-                        return MagicMock(returncode=0, stdout="abc1234")
-                    return MagicMock(returncode=1, stdout="")
-                if "--is-shallow-repository" in cmd_str:
-                    return MagicMock(returncode=0, stdout="true")
-                if "fetch --deepen=50" in cmd_str:
-                    mock_run_cmd.deepen_called = True
-                    return MagicMock(returncode=0, stdout="")
-                return MagicMock(returncode=0, stdout="")
-
-            mock_run_cmd.deepen_called = False
-            mock_run_cmd.side_effect = side_effect
-
-            success, msg = sync_and_reconcile_pre_push(self.work_dir, target_branch="main")
-            self.assertTrue(success, msg)
-            self.assertTrue(mock_run_cmd.deepen_called)
 
     def test_pre_push_sync_recognizes_expanded_unmerged_prefixes(self):
         # Verify unmerged status check recognises AU, UA, and DD prefixes
@@ -3912,10 +3903,9 @@ def test_no_placeholder_sub_intent_text_in_source():
 
 
 class TestExecutorPartialWorkSalvage(unittest.TestCase):
-    """An execution's code is never lost: salvage on failure, identity before dispatch, refused push, resume."""
+    """An execution's code is never lost: salvage on failure, identity before dispatch, no push, resume."""
 
     PLAN = "I-456/P-123/_"
-    PROBE = make_gh_probe()
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(prefix="sandbox_salvage_test_")
@@ -3925,6 +3915,7 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         self.seed = os.path.join(self.root, "seed")
         subprocess.run(["git", "init", "-q", "--bare", "-b", "main", self.bare], check=True)
         self.git(self.bare, "config", "core.hooksPath", os.path.join(self.bare, "hooks"))
+        self.workspace = ""
         subprocess.run(["git", "init", "-q", "-b", "main", self.seed], check=True)
         files = {
             ".gitignore": "*.ignored\n",
@@ -3964,11 +3955,12 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         with open(path, "w") as f:
             f.write(VALID_NOTES)
 
-    def run_main(self, first_turn, *, extra_args=(), url=None, breach=None, returncode=0):
-        """Run executor.main() against the bare origin with a fake agent; returns (exit code, stderr, prompts)."""
+    def run_main(self, first_turn, *, extra_args=(), breach=None, returncode=0):
+        """Run executor.main() in a worktree the host cloned from the bare origin; returns (code, stderr, prompts)."""
         self.runs += 1
         workspace = os.path.join(self.root, f"workspace-{self.runs}")
-        os.makedirs(workspace)
+        # The host fetched every branch of the origin into the worktree before the container started.
+        self.git(self.root, "clone", "-q", "--branch", self.PLAN, self.bare, workspace)
         self.workspace = workspace
         prompts = []
 
@@ -3986,10 +3978,9 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         stderr = io.StringIO()
         code = 0
         with (
-            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": workspace, "HOLON_SKIP_PUSH": ""}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": workspace}),
             patch.object(executor, "run_turn", side_effect=fake_run_turn),
             patch.object(executor, "get_runner", return_value=runner),
-            patch.object(executor, "get_repo_url", return_value=url or self.bare),
             # Distinct execution ids for several runs in one test.
             patch("time.time", side_effect=lambda: real_time() + 1000 * self.runs),
             patch("sys.argv", ["executor.py", self.PLAN, "antigravity-agent", "gemini-3.5-flash", *extra_args]),
@@ -4003,35 +3994,44 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         return code, stderr.getvalue(), prompts
 
     def exec_branches(self):
+        """The execution branches the last run committed in its worktree."""
+        out = self.git(self.workspace, "for-each-ref", "--format=%(refname:short)", "refs/heads/I-456/P-123/")
+        return sorted(b for b in out.split() if "/E-" in b)
+
+    def origin_exec_branches(self):
         out = self.git(self.bare, "for-each-ref", "--format=%(refname:short)", "refs/heads/I-456/P-123/")
         return sorted(b for b in out.split() if "/E-" in b)
 
+    def host_push(self, branch):
+        """What the host does after a container: push the branch the container committed."""
+        self.git(self.workspace, "push", "-q", self.bare, f"{branch}:refs/heads/{branch}")
+
     def summary(self, branch):
-        ledger = self.git(self.bare, "show", f"{branch}:holon-knowledge/ledger/executions.jsonl")
+        ledger = self.git(self.workspace, "show", f"{branch}:holon-knowledge/ledger/executions.jsonl")
         rows = [json.loads(line) for line in ledger.splitlines() if line.strip()]
         return [r for r in rows if r.get("entry_type") == "summary"][-1]
 
     def files_in(self, commit):
-        return set(self.git(self.bare, "show", "--name-only", "--format=", commit).split())
+        return set(self.git(self.workspace, "show", "--name-only", "--format=", commit).split())
 
     def subject(self, commit):
-        return self.git(self.bare, "log", "-1", "--format=%s", commit).strip()
+        return self.git(self.workspace, "log", "-1", "--format=%s", commit).strip()
 
     def assert_salvaged(self, branch):
         self.assertIn("failed for plan", self.subject(branch))
         self.assertIn("partial work (failed) for plan", self.subject(f"{branch}~1"))
-        self.assertEqual(self.git(self.bare, "rev-parse", f"{branch}~2").strip(), self.plan_tip)
+        self.assertEqual(self.git(self.workspace, "rev-parse", f"{branch}~2").strip(), self.plan_tip)
         partial = self.files_in(f"{branch}~1")
         self.assertEqual(partial, {"src/codebase.py", "src/obsolete.py", "src/new_module.py"})
         failure = self.files_in(branch)
         self.assertIn("holon-knowledge/ledger/executions.jsonl", failure)
         self.assertTrue(all(f.startswith(("executions/", "holon-knowledge/ledger/")) for f in failure))
-        tree = self.git(self.bare, "ls-tree", "-r", "--name-only", branch).split()
+        tree = self.git(self.workspace, "ls-tree", "-r", "--name-only", branch).split()
         self.assertNotIn("scratch.ignored", tree)
         self.assertNotIn("src/obsolete.py", tree)
         row = self.summary(branch)
         self.assertEqual(row["status"], "failure")
-        self.assertEqual(row["partial_head"], self.git(self.bare, "rev-parse", f"{branch}~1").strip())
+        self.assertEqual(row["partial_head"], self.git(self.workspace, "rev-parse", f"{branch}~1").strip())
 
     def test_budget_breach_salvages_dirty_tree_into_partial_work_commit(self):
         code, _stderr, _ = self.run_main(self.dirty_turn, breach=BudgetBreach("execute", "stage", 2700, 2700))
@@ -4054,8 +4054,8 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         self.run_main(notes_only, returncode=1)
         [branch] = self.exec_branches()
         self.assertNotIn("partial_head", self.summary(branch))
-        self.assertEqual(self.git(self.bare, "rev-parse", f"{branch}~1").strip(), self.plan_tip)
-        log = self.git(self.bare, "log", "--format=%s", f"{self.plan_tip}..{branch}")
+        self.assertEqual(self.git(self.workspace, "rev-parse", f"{branch}~1").strip(), self.plan_tip)
+        log = self.git(self.workspace, "log", "--format=%s", f"{self.plan_tip}..{branch}")
         self.assertNotIn("partial work", log)
 
     def test_agent_commits_with_clean_tree_record_the_agent_head(self):
@@ -4068,32 +4068,39 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         self.run_main(committing_agent, breach=BudgetBreach("execute", "stage", 2700, 2700))
         [branch] = self.exec_branches()
         self.assertEqual(self.subject(f"{branch}~1"), "step 1")
-        author = self.git(self.bare, "log", "-1", "--format=%ae", f"{branch}~1").strip()
+        author = self.git(self.workspace, "log", "-1", "--format=%ae", f"{branch}~1").strip()
         self.assertEqual(author, executor.EXECUTOR_GIT_EMAIL)
-        self.assertEqual(self.summary(branch)["partial_head"], self.git(self.bare, "rev-parse", f"{branch}~1").strip())
+        self.assertEqual(
+            self.summary(branch)["partial_head"], self.git(self.workspace, "rev-parse", f"{branch}~1").strip()
+        )
 
     def test_success_path_has_one_completed_commit_and_no_partial_head(self):
         code, _stderr, _ = self.run_main(self.dirty_turn)
         self.assertEqual(code, 0)
         [branch] = self.exec_branches()
-        log = self.git(self.bare, "log", "--format=%s", f"{self.plan_tip}..{branch}").splitlines()
+        log = self.git(self.workspace, "log", "--format=%s", f"{self.plan_tip}..{branch}").splitlines()
         self.assertEqual(len(log), 1)
         self.assertIn("completed for plan", log[0])
         self.assertNotIn("partial_head", self.summary(branch))
-        self.assertNotIn("scratch.ignored", self.git(self.bare, "ls-tree", "-r", "--name-only", branch).split())
+        self.assertNotIn("scratch.ignored", self.git(self.workspace, "ls-tree", "-r", "--name-only", branch).split())
 
     def test_identity_is_configured_on_the_execution_branch_before_the_agent_runs(self):
         seen = {}
 
         def probe(workspace, path):
-            seen["email"] = self.git(workspace, "config", "--local", "user.email").strip()
-            seen["name"] = self.git(workspace, "config", "--local", "user.name").strip()
+            # The mounted worktree's own config is the host's, so the identity goes in the container's global config.
+            seen["email"] = self.git(workspace, "config", "--global", "user.email").strip()
+            seen["name"] = self.git(workspace, "config", "--global", "user.name").strip()
+            seen["local"] = subprocess.run(
+                ["git", "config", "--local", "user.email"], cwd=workspace, capture_output=True, text=True
+            ).stdout.strip()
             seen["branch"] = self.git(workspace, "rev-parse", "--abbrev-ref", "HEAD").strip()
             self.dirty_turn(workspace, path)
 
         self.run_main(probe)
         self.assertEqual(seen["email"], executor.EXECUTOR_GIT_EMAIL)
         self.assertEqual(seen["name"], executor.EXECUTOR_GIT_NAME)
+        self.assertEqual(seen["local"], "")
         self.assertRegex(seen["branch"], r"^I-456/P-123/E-\d+-(?:[0-9a-f]{8}-)?antigravity-agent-gemini-3\.5-flash/_$")
 
     def _reject_pushes(self):
@@ -4102,238 +4109,18 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
             f.write("#!/bin/sh\necho 'push refused by test hook' >&2\nexit 1\n")
         os.chmod(hook, 0o755)
 
-    def probe_turn(self, workspace, path):
-        self.dirty_turn(workspace, path)
-        with open(os.path.join(workspace, "src/settings.py"), "w") as f:
-            f.write(f'VALUE = "{self.PROBE}"\n')
-
-    def test_refused_push_prints_redacted_patch_and_exits_non_zero(self):
+    def test_failed_run_commits_locally_and_never_pushes(self):
         self._reject_pushes()
-        code, stderr, _ = self.run_main(self.probe_turn, breach=BudgetBreach("execute", "stage", 2700, 2700))
+        code, stderr, _ = self.run_main(self.dirty_turn, breach=BudgetBreach("execute", "stage", 2700, 2700))
+        # The budget breach alone sets the exit status: a rejecting origin is never consulted.
         self.assertEqual(code, 1)
-        self.assertEqual(self.exec_branches(), [])
-        head = self.git(self.workspace, "rev-parse", "HEAD").strip()
-        branch = self.git(self.workspace, "rev-parse", "--abbrev-ref", "HEAD").strip()
-        self.assertIn(f"Error: push of execution branch '{branch}' was refused; local head {head}", stderr)
-        self.assertIn("push refused by test hook", stderr)
-        lines = stderr.splitlines()
-        self.assertIn(executor.UNPUSHED_PATCH_BEGIN, lines)
-        self.assertIn(executor.UNPUSHED_PATCH_END, lines)
-        patch_text = stderr.split(executor.UNPUSHED_PATCH_BEGIN, 1)[1].split(executor.UNPUSHED_PATCH_END, 1)[0]
-        # format-patch folds long subjects onto a continuation line.
-        self.assertRegex(patch_text, r"Subject: \[PATCH 1/2\] execute:\s+E-\S+\s+partial work\s+\(failed\) for plan")
-        self.assertIn("src/settings.py", patch_text)
-        self.assertNotIn(self.PROBE, stderr)
+        [branch] = self.exec_branches()
+        self.assert_salvaged(branch)
+        self.assertEqual(self.origin_exec_branches(), [])
+        self.assertNotIn("push refused by test hook", stderr)
+        self.assertNotIn("was refused", stderr)
 
-    def test_refused_push_patch_applies_with_git_am(self):
-        self._reject_pushes()
-        _code, stderr, _ = self.run_main(self.dirty_turn, returncode=1)
-        patch_text = stderr.split(executor.UNPUSHED_PATCH_BEGIN + "\n", 1)[1].split(executor.UNPUSHED_PATCH_END, 1)[0]
-        patch_file = os.path.join(self.root, "unpushed.patch")
-        with open(patch_file, "w") as f:
-            f.write(patch_text)
-        self.git(self.seed, "am", "-q", patch_file)
-        with open(os.path.join(self.seed, "src/codebase.py")) as f:
-            self.assertIn("def added(): pass", f.read())
-
-    def test_oversized_unpushed_patch_falls_back_to_diffstat(self):
-        self._reject_pushes()
-        with patch.object(executor, "UNPUSHED_PATCH_MAX_BYTES", 16):
-            code, stderr, _ = self.run_main(self.probe_turn, returncode=1)
-        self.assertEqual(code, 1)
-        self.assertNotIn(executor.UNPUSHED_PATCH_BEGIN, stderr)
-        self.assertIn("src/new_module.py", stderr)
-        self.assertIn("Unpushed patch omitted", stderr)
-        self.assertIn("UNPUSHED_PATCH_MAX_BYTES", stderr)
-        self.assertNotIn(self.PROBE, stderr)
-
-    def test_unpushed_patch_cap_is_below_the_redaction_input_limit(self):
-        self.assertLessEqual(executor.UNPUSHED_PATCH_MAX_BYTES, executor._MAX_REDACT_INPUT_LEN)
-
-    def test_patch_over_the_redaction_limit_falls_back_to_diffstat_at_the_real_cap(self):
-        """A patch between the redaction limit and 256 KiB is never printed with its middle cut out."""
-        self._reject_pushes()
-
-        def large_turn(workspace, path):
-            self.dirty_turn(workspace, path)
-            with open(os.path.join(workspace, "src/large.py"), "w") as f:
-                f.writelines(f"VALUE_{i} = {i}\n" for i in range(12_000))
-
-        code, stderr, _ = self.run_main(large_turn, returncode=1)
-        self.assertEqual(code, 1)
-        raw = self.git(self.workspace, "format-patch", "--stdout", f"{self.plan_tip}..HEAD")
-        self.assertGreater(len(raw.encode()), executor._MAX_REDACT_INPUT_LEN)
-        self.assertLess(len(raw.encode()), 256 * 1024)
-        self.assertNotIn(executor.UNPUSHED_PATCH_BEGIN, stderr)
-        self.assertIn("src/large.py", stderr)
-        self.assertIn("Unpushed patch omitted", stderr)
-
-    def test_unpushed_patch_excludes_env_and_credential_files(self):
-        self._reject_pushes()
-        unrecognisable = "hunter2-plain-value-9f3k"
-
-        def env_turn(workspace, path):
-            self.dirty_turn(workspace, path)
-            with open(os.path.join(workspace, ".env"), "w") as f:
-                f.write(f"{unrecognisable}\n")
-            os.makedirs(os.path.join(workspace, "config/secrets"))
-            with open(os.path.join(workspace, "config/secrets/db"), "w") as f:
-                f.write(f"{unrecognisable}\n")
-            with open(os.path.join(workspace, "Credentials.json"), "w") as f:
-                f.write(f'{{"p": "{unrecognisable}"}}\n')
-
-        code, stderr, _ = self.run_main(env_turn, returncode=1)
-        self.assertEqual(code, 1)
-        self.assertIn(executor.UNPUSHED_PATCH_BEGIN, stderr)
-        self.assertNotIn(unrecognisable, stderr)
-        self.assertIn("src/new_module.py", stderr)
-        notice = next(line for line in stderr.splitlines() if line.startswith("Unpushed patch excludes"))
-        for rel in (".env", "config/secrets/db", "Credentials.json"):
-            self.assertIn(rel, notice)
-        # The excluded files are committed locally, so they are on the branch once a push succeeds.
-        tree = self.git(self.workspace, "ls-tree", "-r", "--name-only", "HEAD").split()
-        self.assertIn(".env", tree)
-
-    def test_unpushed_patch_excludes_key_files_and_masks_private_key_blocks(self):
-        self._reject_pushes()
-        body = "FAKE0TEST0KEY0BODY0not0a0real0key"
-        block = f"-----BEGIN OPENSSH PRIVATE KEY-----\n{body}\n{body}\n-----END OPENSSH PRIVATE KEY-----\n"
-
-        def key_turn(workspace, path):
-            self.dirty_turn(workspace, path)
-            for rel in ("deploy.pem", "src/fixture.txt", "keys/id_ed25519", "tls/Server.KEY"):
-                os.makedirs(os.path.dirname(os.path.join(workspace, rel)), exist_ok=True)
-                with open(os.path.join(workspace, rel), "w") as f:
-                    f.write(block)
-
-        code, stderr, _ = self.run_main(key_turn, returncode=1)
-        self.assertEqual(code, 1)
-        self.assertNotIn(body, stderr)
-        notice = next(line for line in stderr.splitlines() if line.startswith("Unpushed patch excludes"))
-        for rel in ("deploy.pem", "keys/id_ed25519", "tls/Server.KEY"):
-            self.assertIn(rel, notice)
-        self.assertNotIn("src/fixture.txt", notice)
-        patch_text = stderr.split(executor.UNPUSHED_PATCH_BEGIN, 1)[1].split(executor.UNPUSHED_PATCH_END, 1)[0]
-        self.assertIn("src/fixture.txt", patch_text)
-        self.assertIn(f"+{executor._PRIVATE_KEY_MASK}", patch_text)
-        self.assertIn("-----END OPENSSH PRIVATE KEY-----", patch_text)
-
-    def test_mask_private_keys_keeps_markers_line_count_and_diff_prefixes(self):
-        body = "FAKE0TEST0KEY0BODY"
-        text = (
-            "+keep me\n+-----BEGIN RSA PRIVATE KEY-----\n+" + body + "\n+" + body + "\n"
-            "+-----END RSA PRIVATE KEY-----\n+after\n"
-        )
-        masked = executor.mask_private_keys(text)
-        self.assertNotIn(body, masked)
-        self.assertEqual(masked.count("\n"), text.count("\n"))
-        self.assertEqual(
-            masked.splitlines(),
-            [
-                "+keep me",
-                "+-----BEGIN RSA PRIVATE KEY-----",
-                f"+{executor._PRIVATE_KEY_MASK}",
-                f"+{executor._PRIVATE_KEY_MASK}",
-                "+-----END RSA PRIVATE KEY-----",
-                "+after",
-            ],
-        )
-
-    def test_mask_private_keys_covers_inline_and_unterminated_blocks(self):
-        body = "FAKE0TEST0KEY0BODY"
-        inline = f'KEY = "-----BEGIN PRIVATE KEY-----\\n{body}\\n-----END PRIVATE KEY-----"\n'
-        self.assertNotIn(body, executor.mask_private_keys(inline))
-        unterminated = f"+-----BEGIN EC PRIVATE KEY-----\n+{body}\n"
-        self.assertNotIn(body, executor.mask_private_keys(unterminated))
-        public = f"-----BEGIN PUBLIC KEY-----\n{body}\n-----END PUBLIC KEY-----\n"
-        self.assertEqual(executor.mask_private_keys(public), public)
-
-    def test_marker_only_source_keeps_later_files_intact_and_patch_applies_with_git_am(self):
-        """A file that only names a BEGIN marker never masks the rest of the patch, so recovery still works."""
-        self._reject_pushes()
-        detector = (
-            'MARKER = "-----BEGIN RSA PRIVATE KEY-----"\n'
-            'TEMPLATE = """-----BEGIN RSA PRIVATE KEY-----\n'
-            '"""\n'
-            "def looks_like_key(text):\n"
-            "    return MARKER in text\n"
-        )
-
-        def marker_turn(workspace, path):
-            self.dirty_turn(workspace, path)
-            with open(os.path.join(workspace, "src/detect.py"), "w") as f:
-                f.write(detector)
-            with open(os.path.join(workspace, "src/zapp.py"), "w") as f:
-                f.write("def zapp():\n    return 42\n")
-
-        _code, stderr, _ = self.run_main(marker_turn, returncode=1)
-        patch_text = stderr.split(executor.UNPUSHED_PATCH_BEGIN + "\n", 1)[1].split(executor.UNPUSHED_PATCH_END, 1)[0]
-        self.assertNotIn(executor._PRIVATE_KEY_MASK, patch_text)
-        raw = self.git(self.workspace, "format-patch", "--stdout", f"{self.plan_tip}..HEAD", "--", "src/zapp.py")
-        zapp_section = "diff --git a/src/zapp.py" + raw.split("diff --git a/src/zapp.py", 1)[1].split("\n-- \n", 1)[0]
-        self.assertIn(zapp_section, patch_text)
-        patch_file = os.path.join(self.root, "unpushed.patch")
-        with open(patch_file, "w") as f:
-            f.write(patch_text)
-        self.git(self.seed, "am", "-q", patch_file)
-        with open(os.path.join(self.seed, "src/detect.py")) as f:
-            self.assertEqual(f.read(), detector)
-        with open(os.path.join(self.seed, "src/zapp.py")) as f:
-            self.assertIn("return 42", f.read())
-
-    def test_mask_private_keys_never_crosses_patch_headers(self):
-        body = "FAKE0TEST0KEY0BODY"
-        text = (
-            "diff --git a/a.py b/a.py\n@@ -0,0 +1,2 @@\n+KEY = '''-----BEGIN RSA PRIVATE KEY-----\n+" + body + "\n"
-            "diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n@@ -1 +1,2 @@\n same\n+abc\n"
-            "+-----END RSA PRIVATE KEY-----\n-- \n2.43.0\n"
-        )
-        masked = executor.mask_private_keys(text)
-        self.assertNotIn(body, masked)
-        self.assertEqual(masked.count(executor._PRIVATE_KEY_MASK), 1)
-        self.assertEqual(masked.split("diff --git a/b.py", 1)[1], text.split("diff --git a/b.py", 1)[1])
-
-    def test_mask_private_keys_covers_pgp_blocks_and_putty_private_lines(self):
-        body = "FAKE0TEST0PGP0BODY"
-        pgp = (
-            "+-----BEGIN PGP PRIVATE KEY BLOCK-----\n+Version: fake\n+\n+" + body + "\n+=Ab12\n"
-            "+-----END PGP PRIVATE KEY BLOCK-----\n+after\n"
-        )
-        masked = executor.mask_private_keys(pgp)
-        self.assertNotIn(body, masked)
-        self.assertNotIn("=Ab12", masked)
-        self.assertEqual(masked.splitlines()[-2:], ["+-----END PGP PRIVATE KEY BLOCK-----", "+after"])
-        inline = f'"k": "-----BEGIN PGP PRIVATE KEY BLOCK-----\\n{body}\\n-----END PGP PRIVATE KEY BLOCK-----"'
-        self.assertNotIn(body, executor.mask_private_keys(inline))
-        ppk = (
-            "+PuTTY-User-Key-File-3: ssh-ed25519\n+Public-Lines: 1\n+FAKEPUBLIC\n+Private-Lines: 2\n"
-            f"+{body}\n+{body}2\n+Private-MAC: fake\n"
-        )
-        masked = executor.mask_private_keys(ppk)
-        self.assertNotIn(body, masked)
-        self.assertIn("+FAKEPUBLIC", masked)
-        self.assertIn("+Private-MAC: fake", masked)
-        self.assertEqual(masked.count(executor._PRIVATE_KEY_MASK), 2)
-
-    def test_unpushed_patch_excludes_putty_and_pgp_key_files(self):
-        self._reject_pushes()
-        unrecognisable = "plain-key-value-7q2w"
-
-        def key_turn(workspace, path):
-            self.dirty_turn(workspace, path)
-            for rel in ("keys/deploy.ppk", "keys/Signing.ASC", "keys/secring.gpg"):
-                os.makedirs(os.path.dirname(os.path.join(workspace, rel)), exist_ok=True)
-                with open(os.path.join(workspace, rel), "w") as f:
-                    f.write(f"{unrecognisable}\n")
-
-        code, stderr, _ = self.run_main(key_turn, returncode=1)
-        self.assertEqual(code, 1)
-        self.assertNotIn(unrecognisable, stderr)
-        notice = next(line for line in stderr.splitlines() if line.startswith("Unpushed patch excludes"))
-        for rel in ("keys/deploy.ppk", "keys/Signing.ASC", "keys/secring.gpg"):
-            self.assertIn(rel, notice)
-
-    def test_salvaged_commit_is_pushed_when_the_failure_commit_has_nothing_staged(self):
+    def test_salvaged_commit_is_kept_when_the_failure_commit_has_nothing_staged(self):
         def code_only(workspace, _path):
             with open(os.path.join(workspace, "src/codebase.py"), "a") as f:
                 f.write("def added(): pass\n")
@@ -4345,12 +4132,14 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
             _code, _stderr, _ = self.run_main(code_only, returncode=1)
         [branch] = self.exec_branches()
         self.assertIn("partial work (failed) for plan", self.subject(branch))
-        self.assertEqual(self.git(self.bare, "rev-parse", f"{branch}~1").strip(), self.plan_tip)
+        self.assertEqual(self.git(self.workspace, "rev-parse", f"{branch}~1").strip(), self.plan_tip)
         self.assertEqual(self.files_in(branch), {"src/codebase.py"})
 
     def _failed_branch_with_partial_head(self):
         self.run_main(self.dirty_turn, breach=BudgetBreach("execute", "stage", 2700, 2700))
         [branch] = self.exec_branches()
+        # The host pushes it, and fetches it into the worktree of the resuming run.
+        self.host_push(branch)
         return branch, self.summary(branch)["partial_head"]
 
     def test_resume_cuts_the_new_branch_from_a_descending_partial_head(self):
@@ -4358,7 +4147,6 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         seen = {}
 
         def continue_turn(workspace, path):
-            seen["shallow"] = self.git(workspace, "rev-parse", "--is-shallow-repository").strip()
             # The partial work is already in the tree: the edit and the deletion survive.
             seen["deleted"] = not os.path.exists(os.path.join(workspace, "src/obsolete.py"))
             with open(os.path.join(workspace, "src/new_module.py"), "a") as f:
@@ -4367,12 +4155,11 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
             with open(path, "w") as f:
                 f.write(VALID_NOTES)
 
-        url = f"file://{self.bare}"  # file:// keeps the clone shallow, as it is in the container
-        code, stderr, prompts = self.run_main(continue_turn, extra_args=(failed,), url=url)
-        self.assertEqual(seen, {"shallow": "true", "deleted": True})
+        code, stderr, prompts = self.run_main(continue_turn, extra_args=(failed,))
+        self.assertEqual(seen, {"deleted": True})
         self.assertEqual(code, 0, stderr)
         [new] = [b for b in self.exec_branches() if b != failed]
-        self.assertEqual(self.git(self.bare, "rev-parse", f"{new}~1").strip(), partial_head)
+        self.assertEqual(self.git(self.workspace, "rev-parse", f"{new}~1").strip(), partial_head)
         self.assertIn(executor.continuation_note(failed, partial_head), prompts[0])
         self.assertEqual(self.summary(new)["status"], "success")
 
@@ -4381,6 +4168,7 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         with patch("sandbox_executor.git.has_effective_diff", side_effect=RuntimeError("diff unavailable")):
             self.run_main(self.dirty_turn, returncode=0)
         [failed] = self.exec_branches()
+        self.host_push(failed)
         row = self.summary(failed)
         self.assertEqual((row["status"], row["failure_reason"]), ("failed", "diff_unverified"))
         partial_head = row["partial_head"]
@@ -4392,10 +4180,10 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
             with open(path, "w") as f:
                 f.write(VALID_NOTES)
 
-        code, stderr, prompts = self.run_main(continue_turn, extra_args=(failed,), url=f"file://{self.bare}")
+        code, stderr, prompts = self.run_main(continue_turn, extra_args=(failed,))
         self.assertEqual(code, 0, stderr)
         [new] = [b for b in self.exec_branches() if b != failed]
-        self.assertEqual(self.git(self.bare, "rev-parse", f"{new}~1").strip(), partial_head)
+        self.assertEqual(self.git(self.workspace, "rev-parse", f"{new}~1").strip(), partial_head)
         self.assertIn(executor.continuation_note(failed, partial_head), prompts[0])
 
     def test_resume_without_partial_head_starts_from_the_plan_tip(self):
@@ -4406,10 +4194,11 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
 
         self.run_main(notes_only, returncode=1)
         [failed] = self.exec_branches()
-        _code, stderr, prompts = self.run_main(self.dirty_turn, extra_args=(failed,), url=f"file://{self.bare}")
+        self.host_push(failed)
+        _code, stderr, prompts = self.run_main(self.dirty_turn, extra_args=(failed,))
         self.assertIn(f"Starting from the plan tip of {self.PLAN}: no partial_head", stderr)
         [new] = [b for b in self.exec_branches() if b != failed]
-        self.assertEqual(self.git(self.bare, "rev-parse", f"{new}~1").strip(), self.plan_tip)
+        self.assertEqual(self.git(self.workspace, "rev-parse", f"{new}~1").strip(), self.plan_tip)
         self.assertNotIn("Continuation:", prompts[0])
 
     def test_resume_from_a_partial_head_off_the_plan_tip_starts_from_the_plan_tip(self):
@@ -4420,10 +4209,10 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         self.git(self.seed, "commit", "-q", "-am", "plan revision")
         self.git(self.seed, "push", "-q", self.bare, f"HEAD:refs/heads/{self.PLAN}")
         new_tip = self.git(self.seed, "rev-parse", "HEAD").strip()
-        _code, stderr, _ = self.run_main(self.dirty_turn, extra_args=(failed,), url=f"file://{self.bare}")
+        _code, stderr, _ = self.run_main(self.dirty_turn, extra_args=(failed,))
         self.assertIn(f"Starting from the plan tip of {self.PLAN}: not a descendant of the plan tip", stderr)
         [new] = [b for b in self.exec_branches() if b != failed]
-        self.assertEqual(self.git(self.bare, "rev-parse", f"{new}~1").strip(), new_tip)
+        self.assertEqual(self.git(self.workspace, "rev-parse", f"{new}~1").strip(), new_tip)
 
     def test_resume_refuses_a_branch_outside_the_plan(self):
         _code, stderr, _ = self.run_main(self.dirty_turn, extra_args=("I-9/P-9/E-1-x-y/_",))

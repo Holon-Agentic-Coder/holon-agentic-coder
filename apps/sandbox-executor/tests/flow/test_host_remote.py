@@ -18,7 +18,7 @@ from sandbox_executor.flow.host_remote import (
 
 from tests.flow.helpers import _configure_identity, _git
 
-TOKENISED_URL = "https://x-access-token:s3cretTOKENvalue99@127.0.0.1:9/acme/widgets.git"
+TOKENISED_URL = "https://ci-user:s3cretTOKENvalue99@127.0.0.1:9/acme/widgets.git"
 
 
 def _commit_on(host: Path, branch: str, name: str) -> str:

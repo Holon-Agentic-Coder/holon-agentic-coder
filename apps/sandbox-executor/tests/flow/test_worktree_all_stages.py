@@ -275,7 +275,7 @@ def test_the_review_resolver_head_is_pushed_by_the_host_through_an_ssh_origin(ss
 @pytest.mark.parametrize("role", ROLES)
 def test_a_stale_repository_url_in_the_environment_changes_nothing(role, sandbox_repo, tmp_path):
     _main, flow = sandbox_repo
-    stale = {"HOLON_REPO_URL": "https://x-access-token:stale-secret-value@github.com/old/repo.git"}
+    stale = {"HOLON_REPO_URL": "https://ci-user:stale-secret-value@github.com/old/repo.git"}
 
     clean_argv, clean_secrets = _docker_run(role, flow, tmp_path)
     stale_argv, stale_secrets = _docker_run(role, flow, tmp_path, env=stale)
@@ -306,7 +306,7 @@ def test_a_stale_repository_url_leaves_the_intent_stage_outcome_unchanged(flow_r
 def test_a_failed_host_push_fails_the_intent_stage_with_the_named_error(flow_repos, tmp_path):
     host, origin = flow_repos
     secret = "s3cretTOKENvalue99"
-    _git(host, "config", "remote.origin.pushurl", f"https://x-access-token:{secret}@127.0.0.1:9/acme/widgets.git")
+    _git(host, "config", "remote.origin.pushurl", f"https://ci-user:{secret}@127.0.0.1:9/acme/widgets.git")
     agents = FakeRoleAgents(tmp_path, origin)
     ctx = _dispatch_context(host, agents)
 

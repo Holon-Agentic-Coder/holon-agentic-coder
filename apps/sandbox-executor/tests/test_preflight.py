@@ -178,7 +178,7 @@ def test_probe_drops_a_stale_retired_repo_url(probe_env, monkeypatch, isolated_e
         return cmd, seen["lines"]
 
     baseline = probe_once()
-    monkeypatch.setenv("HOLON_REPO_URL", "https://x-access-token:stale-secret@github.com/o/r.git")
+    monkeypatch.setenv("HOLON_REPO_URL", "https://ci-user:stale-secret@github.com/o/r.git")
     cmd, lines = probe_once()
 
     assert (cmd, lines) == baseline

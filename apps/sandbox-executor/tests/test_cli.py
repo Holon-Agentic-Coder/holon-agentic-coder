@@ -474,8 +474,8 @@ class TestRunDockerContainerWorktree(unittest.TestCase):
     @patch("shutil.which", return_value="/usr/bin/docker")
     def test_a_stale_repo_url_is_dropped_and_changes_nothing(self, mock_which, mock_run, mock_mounts, mock_worktree):
         runs: list[tuple[list[str], dict[str, str]]] = []
-        mock_run.side_effect = lambda cmd, *a, **k: runs.append((list(cmd), _read_env_file(cmd))) or MagicMock(
-            returncode=0
+        mock_run.side_effect = lambda cmd, *a, **k: (
+            runs.append((list(cmd), _read_env_file(cmd))) or MagicMock(returncode=0)
         )
         stale = f"https://x-access-token:{make_gh_probe()}@github.com/myorg/myrepo.git"
         base_env = {"GITHUB_TOKEN": "secret_token", "HOLON_AGENT_EFFORT": "high"}

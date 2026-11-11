@@ -228,9 +228,9 @@ fails loudly: a shallow host clone is effectively unsupported in-container, and 
 When the mounted worktree is a linked worktree, the common `HEAD` -- the primary checkout's, which in-container git
 never needs -- is overlaid read-only as well, along with the rest of the primary's per-worktree state at the common
 root, each when it exists: `index`, `FETCH_HEAD`, the transient
-`MERGE_HEAD`/`MERGE_MSG`/`MERGE_MODE`/`ORIG_HEAD`/`CHERRY_PICK_HEAD`/`REVERT_HEAD`/`SQUASH_MSG`/`AUTO_MERGE` files, the
-mid-rebase `REBASE_HEAD` file and `rebase-merge/` and `rebase-apply/` directories (whose `git-rebase-todo` `exec` lines
-host `git rebase --continue` executes), the `sequencer/` directory (whose `todo` redirects a host
+`MERGE_HEAD`/`MERGE_MSG`/`MERGE_MODE`/`MERGE_AUTOSTASH`/`ORIG_HEAD`/`CHERRY_PICK_HEAD`/`REVERT_HEAD`/`SQUASH_MSG`/`AUTO_MERGE`
+files, the mid-rebase `REBASE_HEAD` file and `rebase-merge/` and `rebase-apply/` directories (whose `git-rebase-todo`
+`exec` lines host `git rebase --continue` executes), the `sequencer/` directory (whose `todo` redirects a host
 `cherry-pick/revert --continue`) and the `BISECT_*` bisect-state files. A created-empty stand-in would not be inert --
 git rejects a zero-length index, treats an empty `MERGE_HEAD` as an in-progress merge, reports a rebase in progress (and
 refuses to start one) over an empty `rebase-merge/` or `rebase-apply/` directory, and fails a multi-commit cherry-pick

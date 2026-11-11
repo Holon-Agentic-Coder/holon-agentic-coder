@@ -150,7 +150,8 @@ def test_a_linked_worktree_mounts_its_git_dirs_at_host_paths_and_overlays_git_co
         f"{common / 'shallow'}:{common / 'shallow'}:ro",
         # The common HEAD and index are the PRIMARY checkout's; the linked worktree resolves its own through its
         # admin dir. FETCH_HEAD, the transients (MERGE_HEAD/MERGE_MSG/MERGE_MODE/ORIG_HEAD/CHERRY_PICK_HEAD/
-        # REVERT_HEAD/SQUASH_MSG/AUTO_MERGE), the rebase state (REBASE_HEAD, rebase-merge/, rebase-apply/), the
+        # MERGE_AUTOSTASH/REVERT_HEAD/SQUASH_MSG/AUTO_MERGE), the rebase state (REBASE_HEAD, rebase-merge/,
+        # rebase-apply/), the
         # sequencer/ directory and the BISECT_* files do not exist here, so no overlay is generated for them.
         f"{common / 'HEAD'}:{common / 'HEAD'}:ro",
         f"{common / 'index'}:{common / 'index'}:ro",
@@ -237,8 +238,11 @@ def test_a_sibling_worktree_admin_dirs_are_unwritable_while_own_admin_and_object
         (common / transient).write_text(head + "\n", encoding="utf-8")
     (common / "AUTO_MERGE").write_text(head + "\n", encoding="utf-8")
     (common / "MERGE_MSG").write_text("merge msg\n", encoding="utf-8")
+    (common / "MERGE_AUTOSTASH").write_text(head + "\n", encoding="utf-8")
     (common / "SQUASH_MSG").write_text("squash msg\n", encoding="utf-8")
     (common / "BISECT_LOG").write_text("git bisect start\n", encoding="utf-8")
+    (common / "BISECT_HEAD").write_text(head + "\n", encoding="utf-8")
+    (common / "BISECT_FIRST_PARENT").write_text("", encoding="utf-8")
     (common / "rebase-merge").mkdir()
     (common / "rebase-merge" / "git-rebase-todo").write_text("exec true\n", encoding="utf-8")
     (common / "rebase-apply").mkdir()
@@ -292,8 +296,11 @@ def test_a_sibling_worktree_admin_dirs_are_unwritable_while_own_admin_and_object
         common / "REVERT_HEAD",
         common / "REBASE_HEAD",
         common / "AUTO_MERGE",
+        common / "MERGE_AUTOSTASH",
         common / "SQUASH_MSG",
         common / "BISECT_LOG",
+        common / "BISECT_HEAD",
+        common / "BISECT_FIRST_PARENT",
         common / "rebase-merge",
         common / "rebase-merge" / "git-rebase-todo",
         common / "rebase-apply",

@@ -122,6 +122,9 @@ def _fast_forward_local_branch(context: FlowContext, branch: str, target_sha: st
     repo_dir = context.target_worktree
     local = run_git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=repo_dir, check=False)
     local_sha = local.stdout.strip() if local.returncode == 0 and isinstance(local.stdout, str) else ""
+    if local_sha == target_sha:
+        # A role committed on this branch in the worktree and the host pushed it; it may well be checked out.
+        return True
     if local_sha:
         ancestor = run_git(["merge-base", "--is-ancestor", local_sha, target_sha], cwd=repo_dir, check=False)
         if ancestor.returncode != 0:

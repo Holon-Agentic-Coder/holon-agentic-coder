@@ -412,8 +412,8 @@ iterations on the same head do not wait again. The record is cleared once a late
 when the resolver pushes a new head (the new head's pending checks get their own wait), so it never contradicts the
 final `ci_checks`. Checks still pending at the deadline are unknown: never `all_passed`, never a failed test run, and
 after a clean review no `FIND-CI` finding is recorded for them unless the local test run itself failed. A dry run, a
-dirty mergeability state or a review infrastructure failure skips the wait, and there pending checks still count as not
-passed and record `FIND-CI`.
+dirty mergeability state, a missing ref or a review infrastructure failure skips the wait, and there pending checks
+still count as not passed and record `FIND-CI`.
 
 When the review ends without approval, the Stage 4 error says which outcome occurred:
 

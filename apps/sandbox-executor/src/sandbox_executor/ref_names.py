@@ -188,8 +188,9 @@ def ensure_chain_fits(intent_bare: str, agent: str, model: str) -> None:
 def resolve_root_intent_branch(intent_data: dict[str, Any], slug: str, seq: int, agent: str, model: str) -> str:
     """Return the bare root intent branch, recording the slug used (and the original when shortened) in the payload.
 
-    A recorded ``branch`` is used as it is. Either way the plan and execution branches that will nest below it, with
-    the configured agent and model labels, are measured first, so an impossible name fails before any branch exists.
+    A recorded ``branch`` is used as it is, but is still measured against the current labels, so a resume whose labels
+    changed may fail here, before any branch exists. Either way the plan and execution branches that will nest below
+    it, with the configured agent and model labels, are measured first, so an impossible name fails early.
     """
     recorded = intent_data.get("branch")
     if recorded:

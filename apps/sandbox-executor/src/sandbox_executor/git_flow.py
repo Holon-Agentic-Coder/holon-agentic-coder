@@ -926,8 +926,18 @@ def _common_dir_read_only_overlays(common_dir: str, git_dir: str) -> list[str]:
     # rr-cache -- verified), so one is created and overlaid read-only; the container cannot replace a read-only
     # mountpoint with a directory, and the one host operation the file blocks -- enabling rerere in this clone
     # later -- fails loudly ('fatal: could not create directory'), never silently.
+    # With rerere explicitly enabled the host recreates the directory on its first conflict anyway, so the stand-in
+    # FILE would break the host ('fatal: could not create directory' on a conflicting merge, 'failed to run
+    # rerere' in git gc): there an empty read-only rr-cache DIRECTORY is created instead, exactly the already
+    # verified existing-directory case, and a stand-in file left by an earlier mount is replaced by it.
     rr_cache = os.path.join(common_dir, "rr-cache")
-    if not os.path.isdir(rr_cache):
+    rerere_res = run_git(["--git-dir", common_dir, "config", "--type=bool", "--get", "rerere.enabled"], check=False)
+    rerere_enabled = rerere_res.returncode == 0 and rerere_res.stdout.strip() == "true"
+    if rerere_enabled:
+        if os.path.isfile(rr_cache) and os.path.getsize(rr_cache) == 0:
+            os.remove(rr_cache)
+        os.makedirs(rr_cache, exist_ok=True)
+    elif not os.path.isdir(rr_cache):
         open(rr_cache, "a", encoding="utf-8").close()
     for path in dict.fromkeys(
         (

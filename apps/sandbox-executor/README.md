@@ -228,12 +228,14 @@ directory as no shallow file at all (the only host operation the directory block
 shallow one later -- fails loudly, never silently). An absent `rr-cache/` is the inverse: an empty `rr-cache`
 _directory_ would itself turn host rerere on, so a zero-length `rr-cache` _file_ is created and overlaid read-only
 instead -- inert for git, while the one host operation it blocks, enabling rerere in this clone later, fails loudly,
-never silently. When the host clone is itself shallow, its existing `shallow` file is overlaid read-only, so an
-in-container `git fetch` that must rewrite it (deepening or shallow-boundary negotiation) fails loudly: a shallow host
-clone is effectively unsupported in-container, and flow worktrees come from full clones. When the mounted worktree is a
-linked worktree, the common `HEAD` -- the primary checkout's, which in-container git never needs -- is overlaid
-read-only as well, along with the rest of the primary's per-worktree state at the common root, each when it exists:
-`index`, `FETCH_HEAD`, the transient
+never silently. Where host rerere is already enabled (`git config rerere.enabled` true) the stand-in file would break
+the host's merges and `git gc`, so an empty read-only `rr-cache` _directory_ is created instead (a stand-in file left by
+an earlier mount is replaced by it); host rerere then simply cannot record. When the host clone is itself shallow, its
+existing `shallow` file is overlaid read-only, so an in-container `git fetch` that must rewrite it (deepening or
+shallow-boundary negotiation) fails loudly: a shallow host clone is effectively unsupported in-container, and flow
+worktrees come from full clones. When the mounted worktree is a linked worktree, the common `HEAD` -- the primary
+checkout's, which in-container git never needs -- is overlaid read-only as well, along with the rest of the primary's
+per-worktree state at the common root, each when it exists: `index`, `FETCH_HEAD`, the transient
 `MERGE_HEAD`/`MERGE_MSG`/`MERGE_MODE`/`MERGE_AUTOSTASH`/`ORIG_HEAD`/`CHERRY_PICK_HEAD`/`REVERT_HEAD`/`SQUASH_MSG`/`AUTO_MERGE`
 files, the mid-merge rerere map `MERGE_RR` (per-worktree state: the primary's lives at the common root, while a
 sibling's copy is already covered by the `worktrees/` overlay), the mid-rebase `REBASE_HEAD` file and `rebase-merge/`

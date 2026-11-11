@@ -232,6 +232,19 @@ def test_a_primary_checkout_needs_no_extra_git_mount_but_still_protects_config_a
     assert _git(repo, "log", "--oneline", "-1")
 
 
+def test_an_absent_rr_cache_becomes_a_read_only_directory_when_host_rerere_is_enabled(repo: Path) -> None:
+    # A stand-in FILE would make a conflicting host merge die ('could not create directory') and break 'git gc'.
+    _git(repo, "checkout", "-q", "-b", "feature")
+    _git(repo, "config", "rerere.enabled", "true")
+    (repo / ".git" / "rr-cache").write_text("", encoding="utf-8")  # stand-in left by an earlier mount
+
+    args = git_flow.sandbox_worktree_mounts(str(repo), MOUNT)
+
+    assert (repo / ".git" / "rr-cache").is_dir()
+    assert f"{repo / '.git' / 'rr-cache'}:{MOUNT}/.git/rr-cache:ro" in _mount_pairs(args)
+    assert not _host_writable(args, str(repo / ".git" / "rr-cache" / "0123456789abcdef" / "postimage"))
+
+
 def test_a_sibling_worktree_admin_dirs_are_unwritable_while_own_admin_and_object_database_stay_writable(
     repo: Path, flow_worktree: Path
 ) -> None:

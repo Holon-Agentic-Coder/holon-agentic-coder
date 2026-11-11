@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-058287fb",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-11T10:11:52.166621+00:00",
+  "updated_ts": "2026-11-11T10:11:52.166621+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794391465-15f2ea9e",
+      "ACT-FIND-1794391464-1fe8c99f"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794388202-retire-the-flow-move-proof-snapshot/P-1794388224-67cb4776-claude-agent-claude-sonnet-5-5/E-1794388293-4728ecc5-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 7 finding detected: FIND-R1-007-01",
+    "symptoms": [
+      "Lockfile revision and requires-python floor changed, outside the permitted scope (only tests/flow/ and docs/architecture.md); revert it."
+    ]
+  }
+}

@@ -130,9 +130,10 @@ Edit src/app.py.
 class FakeRoleAgents:
     """Recording dispatcher that simulates the intent-creator, planner and executor containers.
 
-    Each call clones origin into a fresh directory (as the containers clone HOLON_REPO_URL), creates
-    the branch the real entrypoint would create, commits and pushes. Behaviour switches let tests
-    model a silent planner or an executor that produces no effective diff.
+    Each call works in the mounted host worktree (``target_worktree``), as the containers do: it branches off the
+    ref the host fetched, creates the branch the real entrypoint would create and commits. It never contacts the
+    remote; the host pushes. Behaviour switches let tests model a silent planner or an executor that produces no
+    effective diff.
     """
 
     def __init__(  # noqa: PLR0913
@@ -163,8 +164,7 @@ class FakeRoleAgents:
 
     def __call__(self, role: str, runner: str, model: str, positional_args: list[str], **kwargs: Any) -> int:
         self.calls.append({"role": role, "runner": runner, "model": model, "args": list(positional_args), **kwargs})
-        work = self.root / f"agent-{len(self.calls)}-{role}"
-        subprocess.run(["git", "clone", "-q", str(self.origin), str(work)], check=True, capture_output=True)
+        work = Path(kwargs["target_worktree"])
         handler = {"intent-creator": self._intent, "planner": self._plan, "executor": self._execute}[role]
         exit_code = handler(work, positional_args, kwargs)
         if self.during_dispatch is not None:
@@ -174,10 +174,9 @@ class FakeRoleAgents:
     def now(self) -> int:
         return int(time.time()) + self.clock_offset
 
-    def _push(self, work: Path, branch: str, message: str) -> None:
+    def _commit(self, work: Path, message: str) -> None:
         _git(work, "add", "-A")
         _git(work, "commit", "-q", "-m", message)
-        _git(work, "push", "-q", "origin", f"HEAD:refs/heads/{branch}")
 
     def _intent(self, work: Path, _args: list[str], kwargs: dict[str, Any]) -> int:
         with open(kwargs["intent_file"], encoding="utf-8") as f:
@@ -186,7 +185,7 @@ class FakeRoleAgents:
         intent_branch = f"{payload['branch']}/_"
         _git(work, "checkout", "-q", "-B", intent_branch, f"origin/{payload.get('target_branch', 'main')}")
         _append_jsonl(work / "holon-knowledge/ledger/intents.jsonl", {**payload, "status": "proposed"})
-        self._push(work, intent_branch, f"intent: created {intent_branch}")
+        self._commit(work, f"intent: created {intent_branch}")
         return 0
 
     def _plan(self, work: Path, args: list[str], _kwargs: dict[str, Any]) -> int:
@@ -195,8 +194,7 @@ class FakeRoleAgents:
             return 0
         plan_id = f"P-{self.now()}-{agent}-{_sanitize_model_name(model)}"
         plan_branch = f"{intent_branch.removesuffix('/_')}/{plan_id}/_"
-        _git(work, "fetch", "-q", "origin", intent_branch)
-        _git(work, "checkout", "-q", "-B", plan_branch, "FETCH_HEAD")
+        _git(work, "checkout", "-q", "-B", plan_branch, f"refs/remotes/origin/{intent_branch}")
         plan_rel = f"plans/{plan_id}.md"
         (work / "plans").mkdir(exist_ok=True)
         plan_content = PLAN_MARKDOWN.format(intent=intent_branch, plan_id=plan_id)
@@ -216,7 +214,7 @@ class FakeRoleAgents:
             "status": "proposed",
         }
         _append_jsonl(work / "holon-knowledge/ledger/plans.jsonl", self._recorded(work, row, plan_content))
-        self._push(work, plan_branch, f"plan: {plan_id} created by {agent} ({model})")
+        self._commit(work, f"plan: {plan_id} created by {agent} ({model})")
         return 0
 
     def _recorded(self, work: Path, row: dict[str, Any], plan_content: str) -> dict[str, Any]:
@@ -231,8 +229,7 @@ class FakeRoleAgents:
         plan_branch, agent, model = args
         exec_id = f"E-{self.now()}-{_sanitize_string(agent)}-{_sanitize_string(model)}"
         exec_branch = f"{plan_branch.removesuffix('/_')}/{exec_id}/_"
-        _git(work, "fetch", "-q", "origin", plan_branch)
-        _git(work, "checkout", "-q", "-B", exec_branch, "FETCH_HEAD")
+        _git(work, "checkout", "-q", "-B", exec_branch, f"refs/remotes/origin/{plan_branch}")
         if self.executor_mode in ("change", "change_failure"):
             (work / "src" / "app.py").write_text("print('implemented')\n", encoding="utf-8")
         status = "failure" if self.executor_mode in ("agent_failure", "change_failure") else "success"
@@ -259,7 +256,7 @@ class FakeRoleAgents:
             (work / "plans" / f"{exec_id}_notes.md").write_text("notes\n", encoding="utf-8")
         else:
             _append_jsonl(work / "holon-knowledge/ledger/executions.jsonl", row)
-        self._push(work, exec_branch, f"execute: {exec_id} completed for plan {plan_branch}")
+        self._commit(work, f"execute: {exec_id} completed for plan {plan_branch}")
         return 0
 
     def roles(self) -> list[str]:
@@ -410,10 +407,12 @@ def _git(repo: Path, *args: str) -> str:
     proc = subprocess.run(
         ["git", *_TEST_GIT_CONFIG, *args],
         cwd=repo,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, proc.args, proc.stdout, proc.stderr)
     return proc.stdout.strip()
 
 
@@ -499,8 +498,7 @@ class BudgetRoleAgents(FakeRoleAgents):
             return 0
         plan_id = f"P-{self.now()}-{agent}-{_sanitize_model_name(model)}"
         plan_branch = f"{intent_branch.removesuffix('/_')}/{plan_id}/_"
-        _git(work, "fetch", "-q", "origin", intent_branch)
-        _git(work, "checkout", "-q", "-B", plan_branch, "FETCH_HEAD")
+        _git(work, "checkout", "-q", "-B", plan_branch, f"refs/remotes/origin/{intent_branch}")
         plan_rel = f"plans/{plan_id}.md"
         (work / "plans").mkdir(exist_ok=True)
         plan_content = PLAN_MARKDOWN.format(intent=intent_branch, plan_id=plan_id) + extra
@@ -522,17 +520,17 @@ class BudgetRoleAgents(FakeRoleAgents):
             ]
             row["entropy_budget"] = resolve_entropy_budget({}, intents[-1] if intents else None)
         _append_jsonl(work / "holon-knowledge/ledger/plans.jsonl", self._recorded(work, row, plan_content))
-        self._push(work, plan_branch, f"plan: {plan_id} created by {agent} ({model})")
+        self._commit(work, f"plan: {plan_id} created by {agent} ({model})")
         return 0
 
     def _execute(self, work: Path, args: list[str], kwargs: dict[str, Any]) -> int:
         plan_branch = args[0]
-        _git(work, "fetch", "-q", "origin", plan_branch)
+        plan_ref = f"refs/remotes/origin/{plan_branch}"
         plan_id = plan_branch.removesuffix("/_").rsplit("/", 1)[-1]
-        plans = _ledger_rows(work, "FETCH_HEAD", "plans.jsonl")
+        plans = _ledger_rows(work, plan_ref, "plans.jsonl")
         plan_row = next(r for r in reversed(plans) if r.get("plan_id") == plan_id)
-        intent_rows = _ledger_rows(work, "FETCH_HEAD", "intents.jsonl")
-        content = _git(work, "show", f"FETCH_HEAD:{plan_row['plan_file']}")
+        intent_rows = _ledger_rows(work, plan_ref, "intents.jsonl")
+        content = _git(work, "show", f"{plan_ref}:{plan_row['plan_file']}")
         # Like the real executor: the newest plan row's recorded decision, the rule only for an older row.
         decision = self.executor_decision or DecompositionDecision.from_plan_row(plan_row)
         if decision is None:
@@ -544,7 +542,7 @@ class BudgetRoleAgents(FakeRoleAgents):
         agent, model = args[1], args[2]
         exec_id = f"E-{self.now()}-{_sanitize_string(agent)}-{_sanitize_string(model)}"
         exec_branch = f"{plan_branch.removesuffix('/_')}/{exec_id}/_"
-        _git(work, "checkout", "-q", "-B", exec_branch, "FETCH_HEAD")
+        _git(work, "checkout", "-q", "-B", exec_branch, plan_ref)
         row: dict[str, Any] = {
             "entry_type": "summary",
             "execution_id": exec_id,
@@ -563,7 +561,7 @@ class BudgetRoleAgents(FakeRoleAgents):
                 "sub_intent_count": len(decision.sub_intents),
             }
         _append_jsonl(work / "holon-knowledge/ledger/executions.jsonl", row)
-        self._push(work, exec_branch, f"execute: {exec_id} recorded {decision.decision}")
+        self._commit(work, f"execute: {exec_id} recorded {decision.decision}")
         # Like the real executor: a refused plan exits non-zero after pushing its row.
         return OVER_BUDGET_EXIT_CODE if decision.decision == "over_budget" else 0
 

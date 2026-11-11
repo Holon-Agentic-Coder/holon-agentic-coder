@@ -63,13 +63,6 @@ def push_branch(repo_dir: str, branch: str, remote: str = DEFAULT_REMOTE) -> Non
     push_commit(repo_dir, f"refs/heads/{branch}", branch, remote)
 
 
-def local_branch_tip(repo_dir: str, branch: str) -> str | None:
-    """Return the commit the local ``branch`` points at, or None when it does not exist."""
-    res = run_git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}^{{commit}}"], cwd=repo_dir, check=False)
-    sha = res.stdout.strip() if res.returncode == 0 and isinstance(res.stdout, str) else ""
-    return sha or None
-
-
 def remote_error(operation: Callable[..., Any], *args: Any) -> str | None:
     """Run a host remote operation and return its ``HostRemoteError`` message, or None when it succeeded."""
     try:

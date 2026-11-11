@@ -133,7 +133,12 @@ def _fast_forward_local_branch(context: FlowContext, branch: str, target_sha: st
                 f"to {target_sha[:12]}."
             )
             return False
-    res = run_git(["branch", "-f", "--no-track", branch, target_sha], cwd=repo_dir, check=False)
+    head = run_git(["symbolic-ref", "--short", "-q", "HEAD"], cwd=repo_dir, check=False)
+    if head.returncode == 0 and head.stdout.strip() == branch:
+        # The role left the worktree on this branch: advance the checkout with it, as git refuses to move that ref.
+        res = run_git(["merge", "--ff-only", "--quiet", target_sha], cwd=repo_dir, check=False)
+    else:
+        res = run_git(["branch", "-f", "--no-track", branch, target_sha], cwd=repo_dir, check=False)
     if res.returncode != 0:
         context.log(f"Warning: could not fast-forward local branch '{branch}' to {target_sha[:12]}.")
         return False

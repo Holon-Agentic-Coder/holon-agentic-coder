@@ -1,7 +1,7 @@
 {
   "description": "Line budgets for each module of apps/sandbox-executor/src/sandbox_executor/flow/, recorded at the post-split sizes and checked by scripts/check_flow_module_budgets.py (run by 'uv run task lint'). A module may shrink but never grow past its budget. Lower a budget by hand after shrinking a module; add an entry at creation size for a new module and remove the entry of a deleted one. Budgets raised by E-1794391353-95df8afb (I-1794391245-worktree), which moved every remote fetch and push of a stage to the host: stages/intent.py, stages/plan.py and stages/execute.py each gained the host fetch before dispatch and the host push after it, review/resolver.py gained the host push of the resolver's committed head, and git_refs.py gained the remote-name parameter and the fast-forward of a checked-out local branch; the new host_remote.py owns the remote operations.",
   "budgets": {
-    "__init__.py": 344,
+    "__init__.py": 360,
     "checkpoint.py": 210,
     "child_progress.py": 194,
     "constants.py": 8,

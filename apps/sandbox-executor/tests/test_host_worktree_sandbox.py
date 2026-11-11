@@ -260,7 +260,8 @@ def test_an_absent_rr_cache_is_a_read_only_empty_directory_when_host_rerere_is_e
     # Explicitly disabled: the inert file stand-in is created (a directory would turn rerere on when unset).
     (repo / ".git" / "rr-cache").rmdir()
     _git(repo, "config", "rerere.enabled", "false")
-    git_flow.sandbox_worktree_mounts(str(repo), MOUNT)
+    args = git_flow.sandbox_worktree_mounts(str(repo), MOUNT)
+    assert f"{repo / '.git' / 'rr-cache'}:{MOUNT}/.git/rr-cache:ro" in _mount_pairs(args)
     assert (repo / ".git" / "rr-cache").is_file()
     assert (repo / ".git" / "rr-cache").read_text(encoding="utf-8") == ""
 

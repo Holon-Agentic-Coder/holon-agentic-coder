@@ -149,7 +149,8 @@ def test_a_linked_worktree_mounts_its_git_dirs_at_host_paths_and_overlays_git_co
         f"{common / 'packed-refs'}:{common / 'packed-refs'}:ro",
         f"{common / 'shallow'}:{common / 'shallow'}:ro",
         # The common HEAD and index are the PRIMARY checkout's; the linked worktree resolves its own through its
-        # admin dir. The transient MERGE_HEAD/MERGE_MSG/ORIG_HEAD do not exist here, so no overlay is generated.
+        # admin dir. FETCH_HEAD and the transients (MERGE_HEAD/MERGE_MSG/ORIG_HEAD/CHERRY_PICK_HEAD/REVERT_HEAD)
+        # do not exist here, so no overlay is generated for them.
         f"{common / 'HEAD'}:{common / 'HEAD'}:ro",
         f"{common / 'index'}:{common / 'index'}:ro",
         f"{git_dir / 'config.worktree'}:{git_dir / 'config.worktree'}:ro",
@@ -178,9 +179,11 @@ def test_a_primary_checkout_needs_no_extra_git_mount_but_still_protects_config_a
         f"{repo / '.git' / 'packed-refs'}:{MOUNT}/.git/packed-refs:ro",
         f"{repo / '.git' / 'shallow'}:{MOUNT}/.git/shallow:ro",
     ]
-    # The primary checkout's HEAD and index are its own: they must stay writable for in-container commits.
+    # The primary checkout's HEAD, index and FETCH_HEAD are its own: they must stay writable for in-container
+    # commits and fetches.
     assert _host_writable(args, str(repo / ".git" / "HEAD"))
     assert _host_writable(args, str(repo / ".git" / "index"))
+    assert _host_writable(args, str(repo / ".git" / "FETCH_HEAD"))
     # An absent worktrees/, config.worktree, objects/info/, info/, refs/replace/, packed-refs or shallow is created
     # before overlaying, so the container cannot create it -- nor any host-read file inside the read-only
     # directories, existing or not. shallow is created as a DIRECTORY: an empty shallow file would itself mark the
@@ -190,7 +193,10 @@ def test_a_primary_checkout_needs_no_extra_git_mount_but_still_protects_config_a
     assert (repo / ".git" / "objects" / "info").is_dir()
     assert (repo / ".git" / "info").is_dir()
     assert (repo / ".git" / "refs" / "replace").is_dir()
-    assert (repo / ".git" / "packed-refs").is_file()
+    # Created with the standard header line only: inert like an absent packed-refs, but free of the
+    # emptyPackedRefsFile warning host 'git fsck' reports for a zero-byte file.
+    packed_refs = (repo / ".git" / "packed-refs").read_text(encoding="utf-8")
+    assert packed_refs == "# pack-refs with: peeled fully-peeled sorted \n"
     assert (repo / ".git" / "shallow").is_dir()
     for planted in (
         repo / ".git" / "info" / "grafts",
@@ -218,10 +224,12 @@ def test_a_sibling_worktree_admin_dirs_are_unwritable_while_own_admin_and_object
     common = repo / ".git"
     own = common / "worktrees" / "flow-demo"
     sib = common / "worktrees" / "sibling"
-    # The primary checkout sits mid-merge, so its transient state files exist and must be overlaid-if-present.
+    # The primary checkout has fetched and sits mid-merge (with cherry-pick/revert state planted alongside), so
+    # its per-worktree state files at the common root exist and must be overlaid-if-present.
     head = _git(repo, "rev-parse", "HEAD")
-    for transient in ("MERGE_HEAD", "ORIG_HEAD"):
+    for transient in ("FETCH_HEAD", "MERGE_HEAD", "ORIG_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"):
         (common / transient).write_text(head + "\n", encoding="utf-8")
+    (common / "MERGE_MSG").write_text("merge msg\n", encoding="utf-8")
 
     args = git_flow.sandbox_worktree_mounts(str(flow_worktree), MOUNT)
 
@@ -254,15 +262,19 @@ def test_a_sibling_worktree_admin_dirs_are_unwritable_while_own_admin_and_object
         common / "info" / "attributes",
         common / "info" / "grafts",
         # Host-trusted ancestry and ref-substitution surfaces: replace refs (loose and packed), a plantable
-        # shallow, and the PRIMARY checkout's per-worktree state (HEAD, index, and the mid-merge transients).
+        # shallow, and the PRIMARY checkout's per-worktree state (HEAD, index, FETCH_HEAD and the transients).
         common / "refs" / "replace",
         common / "refs" / "replace" / "0123456789abcdef0123456789abcdef01234567",
         common / "packed-refs",
         common / "shallow",
         common / "HEAD",
         common / "index",
+        common / "FETCH_HEAD",
         common / "MERGE_HEAD",
+        common / "MERGE_MSG",
         common / "ORIG_HEAD",
+        common / "CHERRY_PICK_HEAD",
+        common / "REVERT_HEAD",
         flow_worktree / ".git",
     ):
         assert not _host_writable(args, str(path)), path

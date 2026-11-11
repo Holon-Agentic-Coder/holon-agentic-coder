@@ -789,8 +789,10 @@ def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str, role: 
     as the existing file when the repository is shallow, otherwise as a created 'shallow' directory, which git
     treats as no shallow file at all, because an empty shallow FILE would itself mark the repository shallow.
     When the mounted worktree is a linked worktree, the common HEAD is the primary checkout's HEAD -- never needed
-    in-container -- and is overlaid read-only along with the primary's other per-worktree state at the common root
-    (index, and MERGE_HEAD/MERGE_MSG/ORIG_HEAD when present); a primary checkout's own HEAD and index stay writable.
+    in-container -- and is overlaid read-only along with the primary's other per-worktree state at the common root,
+    each when present: index, FETCH_HEAD, and the transient MERGE_HEAD/MERGE_MSG/ORIG_HEAD/CHERRY_PICK_HEAD/
+    REVERT_HEAD; a primary checkout's own HEAD, index and FETCH_HEAD stay writable for in-container commits and
+    fetches.
     A repository with extensions.worktreeConfig enabled is refused: git would then read every worktree's
     config.worktree, which the container could rewrite in its own writable git directory. On Linux, where a bind
     mount keeps host ownership, a worktree or git directory that the image's user (uid SANDBOX_CONTAINER_UID) cannot
@@ -880,10 +882,14 @@ def _common_dir_read_only_overlays(common_dir: str, git_dir: str) -> list[str]:
     # In the linked-worktree case the common HEAD is the PRIMARY checkout's HEAD -- the
     # mounted worktree resolves its own through worktrees/<self>/HEAD -- so it is overlaid read-only too, along
     # with the primary's other per-worktree state at the common root: index (a container-staged index would land
-    # in the maintainer's next commit from the primary checkout) and MERGE_HEAD/MERGE_MSG/ORIG_HEAD. The transient
-    # files are overlaid only when they exist, because a created-empty stand-in is not inert (git rejects a
-    # zero-length index; an empty MERGE_HEAD flags an in-progress merge -- verified empirically). When the mounted
-    # worktree IS the primary checkout they are its own state and must stay writable for in-container commits.
+    # in the maintainer's next commit from the primary checkout), FETCH_HEAD (a planted ref that a later host
+    # 'git merge FETCH_HEAD' or 'git log FETCH_HEAD' in the primary checkout would consume; the mounted worktree's
+    # own FETCH_HEAD lives in its admin dir and stays writable), and the transients MERGE_HEAD/MERGE_MSG/ORIG_HEAD/
+    # CHERRY_PICK_HEAD/REVERT_HEAD, which host 'git commit' consumes to conclude a merge, cherry-pick or revert.
+    # Each is overlaid only when it exists, because a created-empty stand-in is not inert (git rejects a
+    # zero-length index; an empty MERGE_HEAD flags an in-progress merge -- verified empirically); one absent at
+    # mount time therefore stays plantable, the documented accepted residual. When the mounted worktree IS the
+    # primary checkout they are its own state and must stay writable for in-container commits and fetches.
     for name in ("hooks", "modules", "worktrees"):
         os.makedirs(os.path.join(common_dir, name), exist_ok=True)
     os.makedirs(os.path.join(common_dir, "objects", "info"), exist_ok=True)
@@ -896,11 +902,16 @@ def _common_dir_read_only_overlays(common_dir: str, git_dir: str) -> list[str]:
         (
             os.path.join(common_dir, "config"),
             os.path.join(common_dir, "config.worktree"),
-            os.path.join(common_dir, "packed-refs"),
             os.path.join(git_dir, "config.worktree"),
         )
     ):
         open(path, "a", encoding="utf-8").close()
+    packed_refs = os.path.join(common_dir, "packed-refs")
+    if not os.path.exists(packed_refs):
+        # A zero-byte packed-refs draws a non-fatal 'git fsck' emptyPackedRefsFile warning; the standard header
+        # line is equally inert for git and keeps the maintainer's fsck output clean (verified empirically).
+        with open(packed_refs, "w", encoding="utf-8") as handle:
+            handle.write("# pack-refs with: peeled fully-peeled sorted \n")
     overlays = [
         os.path.join(common_dir, name) for name in ("config", "config.worktree", "hooks", "modules", "worktrees")
     ]
@@ -911,6 +922,16 @@ def _common_dir_read_only_overlays(common_dir: str, git_dir: str) -> list[str]:
     overlays.append(shallow)
     if git_dir != common_dir:
         overlays += [
-            os.path.join(common_dir, name) for name in ("HEAD", "index", "MERGE_HEAD", "MERGE_MSG", "ORIG_HEAD")
+            os.path.join(common_dir, name)
+            for name in (
+                "HEAD",
+                "index",
+                "FETCH_HEAD",
+                "MERGE_HEAD",
+                "MERGE_MSG",
+                "ORIG_HEAD",
+                "CHERRY_PICK_HEAD",
+                "REVERT_HEAD",
+            )
         ]
     return overlays

@@ -19,8 +19,11 @@ shortest, because those labels are only known, and shortened, when the plan and 
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field, replace
 from typing import Any
+
+from sandbox_executor.budgets import MAX_SUB_INTENT_DEPTH
 
 MAX_REF_LENGTH = 255
 REF_PREFIX = "refs/heads/"
@@ -132,9 +135,16 @@ def _segment_parts(parent: str, head: str, agent: str, model: str, weight: int) 
 _SEGMENT_FIXED_LENGTH = len("/E-") + _TIMESTAMP_LENGTH + 1 + _DISAMBIGUATOR_LENGTH + 1 + 1
 
 
+_MIN_SEGMENT_LENGTH = _SEGMENT_FIXED_LENGTH + 2 * DIGEST_LENGTH
+
+
+# A child level below an intent: its plan segment, the ``--{n}-`` marker and a digest-only slug, labels shortest.
+_MIN_CHILD_LEVEL_LENGTH = _MIN_SEGMENT_LENGTH + len("--1-") + DIGEST_LENGTH
+
+
 def downstream_reserve() -> int:
     """Characters one plan and one execution segment add below an intent branch, labels at their shortest."""
-    return 2 * (_SEGMENT_FIXED_LENGTH + 2 * DIGEST_LENGTH)
+    return 2 * _MIN_SEGMENT_LENGTH
 
 
 def fit_plan_id(parent: str, seq: int, dis: str, agent: str, model: str) -> FitResult:
@@ -162,14 +172,26 @@ def fit_root_intent_branch(seq: int, slug: str) -> FitResult:
     return fit_parts(parts, extra=downstream_reserve())
 
 
+def _child_levels_below(parent: str) -> int:
+    """Child levels the sub-intent depth limit still allows below a child of ``parent`` (``--{n}-`` marks a level)."""
+    return max(0, MAX_SUB_INTENT_DEPTH - len(re.findall(r"--\d+-", parent)) - 1)
+
+
 def fit_child_intent_branch(parent: str, index: int, slug: str) -> FitResult:
-    """Fit ``{parent}--{index}-{slug}``, leaving room for one plan and one execution segment below the child."""
+    """Fit ``{parent}--{index}-{slug}``, leaving room below it for its plan and execution segment.
+
+    Room is also kept for every child level the depth limit still allows, so a grandchild can be named; when that
+    would leave no room even for a digest-only slug, only the child's own plan and execution segment are kept.
+    """
     parts = [
         Part("parent", parent.removesuffix(INTENT_SUFFIX)),
         Part("index", f"--{index}-"),
         Part("child slug", slug, shortenable=True),
     ]
-    return fit_parts(parts, extra=downstream_reserve())
+    try:
+        return fit_parts(parts, extra=downstream_reserve() + _child_levels_below(parent) * _MIN_CHILD_LEVEL_LENGTH)
+    except RefTooLongError:
+        return fit_parts(parts, extra=downstream_reserve())
 
 
 def ensure_chain_fits(intent_bare: str, agent: str, model: str) -> None:

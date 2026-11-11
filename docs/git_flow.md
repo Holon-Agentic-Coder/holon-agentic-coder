@@ -192,6 +192,37 @@ Example:
 I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/E-1771890391-init-project/_
 ```
 
+### 2.5.1 Branch Name Length Limit
+
+GitHub rejects a push whose full ref name is too long. Measured against the real service, a full ref of 255 characters,
+counting the `refs/heads/` prefix (11 characters), is accepted and 256 is rejected, so a branch name without the prefix
+can be at most 244 characters. One module, `sandbox_executor/ref_names.py`, owns the limit (`MAX_REF_LENGTH = 255`) and
+every branch name the engine creates goes through it: the root intent, plan, execution and calibration branches, and
+every decomposed child intent, plan and execution branch at any depth.
+
+- **Calibration rule:** the calibration branch ends in `/calibrated` where the others end in `/_`, which is 9 characters
+  more. Every name is therefore measured as if it ended in `/calibrated`: `len("refs/heads/" + name + "/calibrated")`
+  must be at most 255.
+- **A name that fits is unchanged.** No existing branch, checkpoint or ledger row changes.
+- **Shortening order:** when a name is over the limit, only the parts the engine controls are cut, in this order: the
+  child slug, then the agent and model labels inside the nested plan and execution segments, then the root intent slug.
+  A cut part keeps a prefix of its original text and ends in a 6-character hexadecimal digest (`sha256`, first six
+  characters) of the full original text, so two different long inputs never collide and the same input always gives the
+  same name. A part is cut only as far as needed and never below the digest alone.
+- **Never touched:** timestamps, the 8-character identifiers and the `--{n}-` child markers.
+- **Room for what comes next:** an intent branch is measured with room left for one plan and one execution segment below
+  it, whose labels are at their shortest, because those labels are only known (and shortened) when the plan and
+  execution are created. A plan is measured with room for the execution below it.
+- **Resume:** a resumed flow keeps the names it already created. The recorded `branch` (intent), the checkpoint and the
+  per-child progress entries are used as they are and the shortening rule is never re-run on them.
+- **Ledger:** the original text stays recoverable. An intent row records `original_slug` only when its slug was
+  shortened; plan and execution rows already record the unshortened `agent` and `model`, and add `original_agent` and
+  `original_model` only when the labels in the identifier were shortened. Rows for names that fit are unchanged.
+- **Failure:** if a name cannot fit even after shortening, Stage 1 fails before any branch exists, naming the limit, the
+  computed length and the segment that cannot be shortened (for example
+  `the segment that cannot be shortened is 'parent'`). If a push is still rejected for ref length, the executor reports
+  `ref too long: branch <name> (<n> characters)` and still prints the `UNPUSHED EXECUTION PATCH`, so the work is kept.
+
 ### 2.6 Hierarchy Summary
 
 `/_` is the Intent Root (The "What") `/P-.../_` is the Plan (The "How") `/P-.../E-.../_` is the Execution (The "Do")

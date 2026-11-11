@@ -137,6 +137,11 @@ historic row without the field is decided by the same rule and, in a flow run, s
 planner's fields plus the decision, a fresh `created_at`, `ledger_revision + 1`, `decision_recorded_by: "flow"`); a
 direct `holon execute`, or a flow run whose back-fill write failed, decides it in the executor.
 
+Shortened branch names (optional fields, written only when a name was shortened to fit the 255-character ref limit; see
+`docs/git_flow.md` section 2.5.1): an intent row records `original_slug` (the unshortened slug; `slug` holds the one
+used), and a plan or execution row records `original_agent` and `original_model` (the sanitised labels before the digest
+cut). Rows for names that fit are written exactly as before and no historic row is rewritten.
+
 Child intent rows: when Stage 3 runs a recorded sub-intent list, the flow creates each child through the same Stage 1
 intent creator, so each child appends an ordinary intent row on its own intent branch. Its payload carries `slug`,
 `description`, `goal`, `parent_intent_id`, `target_branch` (the deciding node's branch, equal to `deciding_branch`

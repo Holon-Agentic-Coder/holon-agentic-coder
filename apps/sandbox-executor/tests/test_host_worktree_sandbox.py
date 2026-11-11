@@ -278,8 +278,12 @@ def test_a_non_empty_rr_cache_file_is_refused_when_host_rerere_is_enabled(repo: 
     _git(repo, "config", "rerere.enabled", "true")
     (repo / ".git" / "rr-cache").write_text("stray\n", encoding="utf-8")
 
-    with pytest.raises(RuntimeError, match=r"rr-cache"):
+    with pytest.raises(RuntimeError, match=r"non-empty regular file but rerere is enabled"):
         git_flow.sandbox_worktree_mounts(str(repo), MOUNT)
+
+    # The refusal leaves the stray file exactly as found: nothing is removed or replaced before raising.
+    assert (repo / ".git" / "rr-cache").is_file()
+    assert (repo / ".git" / "rr-cache").read_text(encoding="utf-8") == "stray\n"
 
 
 def test_a_sibling_worktree_admin_dirs_are_unwritable_while_own_admin_and_object_database_stay_writable(

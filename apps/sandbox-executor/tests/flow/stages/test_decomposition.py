@@ -248,7 +248,7 @@ class TestEntropyBudgetHandoffInFlow:
         ids=["child", "grandchild", "unsanitised-slug", "empty-slug"],
     )
     def test_child_intent_branch_is_derived_from_parent_and_position(self, parent, index, slug, expected):
-        assert flow_module._child_intent_branch(parent, index, slug) == expected
+        assert flow_module._child_intent_branch(parent, index, slug).name == expected
 
     def test_same_slug_child_created_in_the_same_second_gets_its_own_intent_branch(self, flow_repos, tmp_path):
         host, origin = flow_repos

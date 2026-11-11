@@ -705,10 +705,8 @@ def _entrypoint_git_runner(repo_dir: str) -> Callable[[list[str]], str]:
 
 
 def _safe_float(val: Any, default: float = 0.0) -> float:
-    if val is None:
-        return default
     try:
-        return float(val)
+        return default if val is None else float(val)
     except (ValueError, TypeError):
         return default
 
@@ -1175,8 +1173,7 @@ def _report_unpushed_work(repo_dir: str, exec_branch: str, plan_tip: str | None,
     The host captures the container's stderr, so the patch between the marker lines survives the ``--rm`` container
     without any new mount. Every line printed is redacted.
     """
-    head = _get_repo(repo_dir).rev_parse("HEAD")
-    head_sha = (head.stdout or "").strip() or "unknown"
+    head_sha = (_get_repo(repo_dir).rev_parse("HEAD").stdout or "").strip() or "unknown"
     print(
         f"Error: push of execution branch '{exec_branch}' was refused; local head {head_sha}: "
         f"{redact_agent_secrets(named_push_rejection(exec_branch, reason.strip()))}",

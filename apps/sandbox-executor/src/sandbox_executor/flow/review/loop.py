@@ -353,6 +353,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             # Fast path on reviewer findings: probe CI once without waiting on pending checks.
             last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
             apply_local_test_evidence(last_ci_status, tests_failed, test_pass_rate, effective_dry_run, False)
+            ci_wait = ci_wait if last_ci_status.get("pending", 0) else None  # Never keep a stale wait record.
 
             # Include FIND-CI only if CI has already failed or local tests failed; pending checks are omitted.
             ci_failed = last_ci_status.get("failed", 0) > 0 or (
@@ -393,6 +394,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             tests_not_measured |= apply_local_test_evidence(
                 last_ci_status, tests_failed, test_pass_rate, effective_dry_run, True
             )
+            ci_wait = ci_wait if last_ci_status.get("pending", 0) else None  # Never keep a stale wait record.
 
             ci_finding = not last_ci_status.get("all_passed", False) or tests_failed
             if not effective_dry_run:

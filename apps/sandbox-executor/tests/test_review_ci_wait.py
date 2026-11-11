@@ -27,7 +27,7 @@ from sandbox_executor.flow.github.ci_wait import (
 from sandbox_executor.flow.review.ci_outcome import NO_BLOCKER_RECORDED, describe_ci_outcome
 from sandbox_executor.review_target import DiffVerdict
 
-from tests.review_fakes import FakeEnsemble, clean_reviewer, install_fake_reviewers
+from tests.review_fakes import FakeEnsemble, clean_reviewer, install_fake_reviewers, objecting_reviewer
 
 EXEC_TARGET = "I-100-intent/P-200-plan/E-300-exec/_"
 CLEAN_MERGE = {"is_dirty": False, "merge_state_status": "CLEAN", "mergeable": "MERGEABLE"}
@@ -313,6 +313,39 @@ def test_stale_wait_record_is_cleared_when_a_later_probe_has_settled(tmp_path, m
             auto_pr=False,
             run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
             run_resolver_fn=resolver,
+            clock=fake.clock,
+            sleep=fake.sleep,
+            ci_wait_budget=30.0,
+        )
+
+    assert res["total_iterations"] == 2
+    assert res["ci_checks"]["pending"] == 0
+    assert res["ci_wait"] is None
+
+
+def test_stale_wait_record_is_cleared_when_a_later_iteration_takes_the_objected_fast_path(tmp_path, monkeypatch):
+    # Iteration 1: clean review, wait spent, local tests failing. Iteration 2: a reviewer objects and the probe settled.
+    install_fake_reviewers(monkeypatch)
+    fake = FakeTime()
+    script = [PENDING, PENDING, PENDING, PASSED]
+    probe = MagicMock(side_effect=lambda *a, **k: dict(script.pop(0) if len(script) > 1 else script[0]))
+    rounds = iter([[clean_reviewer(1)], [objecting_reviewer(1)], [objecting_reviewer(1)]])
+    with (
+        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=dict(CLEAN_MERGE)),
+        patch("sandbox_executor.flow.review.loop.probe_ci_checks", probe),
+        patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
+        patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc1234"),
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
+    ):
+        res = run_review_loop(
+            _context(tmp_path, {"test_pass_rate": 0.5, "exit_code": 1}),
+            target=EXEC_TARGET,
+            max_iterations=2,
+            ensemble_size=1,
+            auto_pr=False,
+            run_ensemble_fn=FakeEnsemble(lambda size: next(rounds)),
+            run_resolver_fn=MagicMock(return_value=MagicMock(returncode=0)),
             clock=fake.clock,
             sleep=fake.sleep,
             ci_wait_budget=30.0,

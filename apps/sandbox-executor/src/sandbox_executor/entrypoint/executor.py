@@ -718,7 +718,7 @@ def _sanitize_string(name: str) -> str:
 
 
 # Exit status of an executor run that refused an over-budget plan and committed its over_budget row to the execution
-# branch (pushed unless pushing is disabled). Distinct from 1 (a failed run) so the flow can tell the refusal apart and
+# branch (the host pushes it afterwards). Distinct from 1 (a failed run) so the flow can tell the refusal apart and
 # read that row, while a direct 'holon execute' still exits non-zero. Every other over_budget outcome exits 1.
 OVER_BUDGET_EXIT_CODE = 3
 
@@ -1162,9 +1162,9 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         os.makedirs(ledger_dir, exist_ok=True)
 
         decision = _recorded_decision(plan_data, plan_content, intent_data)
-        # Both non-execute outcomes record one summary row, commit and push it for the flow to read, and skip the agent.
+        # Both non-execute outcomes record one summary row, commit it (the host pushes it) and skip the agent.
         skip_agent = decision.decision != DECISION_EXECUTE
-        # Set when a failed execution's code is salvaged; that commit is pushed even when nothing else is staged.
+        # Set when a failed execution's code is salvaged; the host pushes that commit even with nothing else staged.
         salvaged_head: str | None = None
 
         if skip_agent:

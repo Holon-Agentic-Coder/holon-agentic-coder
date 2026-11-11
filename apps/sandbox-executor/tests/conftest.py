@@ -175,7 +175,8 @@ def checkout_ledger_guard() -> Iterator[None]:
 
     A test that runs the executor or a stage must pin its worktree to ``tmp_path``; one that does not leaks its
     fixture rows into the real append-only ledgers. The guard compares each ledger's size and modification time
-    before and after the test.
+    before and after the test. Under xdist, or while a ``holon flow`` or calibration writes the same checkout, a write
+    by another worker or process can fail an unrelated test; re-run it in isolation to confirm attribution.
     """
 
     def snapshot() -> dict[str, tuple[int, int] | None]:

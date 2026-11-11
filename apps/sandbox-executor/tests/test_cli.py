@@ -396,6 +396,29 @@ class TestHolonCLI(unittest.TestCase):
                 target_worktree="/work/flow-x",
             )
 
+    def _run_execute_with_failing_push(self, dispatch_exit: int) -> tuple[int, str]:
+        self.host["execute_push"].side_effect = RuntimeError("no such branch")
+        argv = ["holon", "execute", "plan_branch_name", "--agent", "antigravity-agent", "--model", "m"]
+        stderr = io.StringIO()
+        with (
+            patch("sandbox_executor.cli.run_docker_container", return_value=dispatch_exit),
+            patch("sys.argv", argv),
+            patch("sys.stderr", stderr),
+            self.assertRaises(SystemExit) as cm,
+        ):
+            main()
+        return cm.exception.code, stderr.getvalue()
+
+    def test_execute_push_failure_after_a_successful_dispatch_exits_1_with_the_error(self):
+        code, err = self._run_execute_with_failing_push(0)
+        self.assertEqual(code, 1)
+        self.assertIn("Error: no such branch", err)
+
+    def test_execute_push_failure_after_a_failed_dispatch_keeps_the_dispatch_exit_code(self):
+        code, err = self._run_execute_with_failing_push(2)
+        self.assertEqual(code, 2)
+        self.assertNotIn("no such branch", err)
+
     def test_console_script_entrypoint_registered(self):
         eps = [ep for ep in importlib.metadata.entry_points(group="console_scripts") if ep.name == "holon"]
         self.assertEqual(len(eps), 1)

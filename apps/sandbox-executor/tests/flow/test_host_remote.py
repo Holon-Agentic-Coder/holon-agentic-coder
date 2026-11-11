@@ -120,6 +120,32 @@ def test_the_module_imports_nothing_from_the_entrypoints_or_the_cli():
     assert not [name for name in imported if name.startswith(("sandbox_executor.entrypoint", "sandbox_executor.cli"))]
 
 
+@pytest.fixture
+def no_git(monkeypatch):
+    """Fail fast if a refused push input reaches git, instead of letting a real push run (and possibly hang)."""
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError(f"validation let git run: {args}")
+
+    monkeypatch.setattr(host_remote, "run_git", forbidden)
+
+
+def test_push_commit_passes_the_validated_arguments_after_a_double_dash(flow_repos, monkeypatch):
+    host, _origin = flow_repos
+    calls = []
+
+    def record(argv, **kwargs):
+        calls.append(argv)
+        return type("Result", (), {"returncode": 0, "stderr": ""})()
+
+    monkeypatch.setattr(host_remote, "run_git", record)
+    tip = "a" * 40
+
+    push_commit(str(host), tip, "feature/x", "upstream")
+
+    assert calls == [["push", "--", "upstream", f"{tip}:refs/heads/feature/x"]]
+
+
 @pytest.mark.parametrize(
     "source",
     [
@@ -137,7 +163,7 @@ def test_the_module_imports_nothing_from_the_entrypoints_or_the_cli():
         "a" * 40 + "\n",
     ],
 )
-def test_push_commit_refuses_a_hostile_source_before_running_git(flow_repos, source):
+def test_push_commit_refuses_a_hostile_source_before_running_git(flow_repos, source, no_git):
     host, origin = flow_repos
     before = _git(origin, "for-each-ref")
 
@@ -148,8 +174,10 @@ def test_push_commit_refuses_a_hostile_source_before_running_git(flow_repos, sou
     assert _git(origin, "for-each-ref") == before
 
 
-@pytest.mark.parametrize("branch", ["--receive-pack=x", "-f", "a..b", "", "a b", "x//y", "x.lock", "+main"])
-def test_push_commit_refuses_a_hostile_branch_name(flow_repos, branch):
+@pytest.mark.parametrize(
+    "branch", ["--receive-pack=x", "-f", "a..b", "", "a b", "x//y", "x.lock", "+main", "a/.b", "a.lock/b", "a\n"]
+)
+def test_push_commit_refuses_a_hostile_branch_name(flow_repos, branch, no_git):
     host, _origin = flow_repos
     tip = _git(host, "rev-parse", "HEAD")
 
@@ -157,8 +185,8 @@ def test_push_commit_refuses_a_hostile_branch_name(flow_repos, branch):
         push_commit(str(host), tip, branch)
 
 
-@pytest.mark.parametrize("remote", ["--receive-pack=x", "-o", "", "a b"])
-def test_push_commit_refuses_a_hostile_remote_name(flow_repos, remote):
+@pytest.mark.parametrize("remote", ["--receive-pack=x", "-o", "", "a b", "a/b", "x@y/z", "origin\n", "x.lock"])
+def test_push_commit_refuses_a_hostile_remote_name(flow_repos, remote, no_git):
     host, _origin = flow_repos
     tip = _git(host, "rev-parse", "HEAD")
 

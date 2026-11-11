@@ -21,6 +21,7 @@ DEFAULT_REMOTE = "origin"
 
 _OBJECT_ID = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _BRANCH_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@+-]*\Z")
+_REMOTE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 
 class HostRemoteError(RuntimeError):
@@ -48,8 +49,7 @@ def fetch_base(repo_dir: str, branch: str, remote: str = DEFAULT_REMOTE) -> None
 def _is_branch_name(name: str) -> bool:
     return (
         bool(_BRANCH_NAME.match(name))
-        and ".." not in name
-        and "//" not in name
+        and not any(bad in name for bad in ("..", "//", "/.", ".lock/"))
         and not name.endswith(("/", ".", ".lock"))
     )
 
@@ -65,7 +65,7 @@ def _push_input_error(source: str, branch: str, remote: str) -> str | None:
         return "refusing to push: the source is not a full hex object id or a refs/heads/ ref"
     if not _is_branch_name(branch):
         return "refusing to push: the target branch name is not a plain branch name"
-    if not _is_branch_name(remote):
+    if not _REMOTE_NAME.match(remote) or remote.endswith((".", ".lock")):
         return "refusing to push: the remote name is not a plain remote name"
     return None
 

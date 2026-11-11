@@ -15,6 +15,13 @@ provisioning for autonomous pipeline runs:
 - is_default_branch_worktree: Decide whether a working tree has the default branch checked out.
 - ensure_flow_worktree_off_default: Provision or reuse the flow-<slug> sibling of a default-branch worktree.
 - default_branch_worktree_problem: Explain, actionably, why a default-branch worktree is refused.
+- find_worktree_for_branch: Find the attached worktree that has a branch checked out.
+- ensure_pr_worktree: Reuse the worktree of a PR head branch (normally flow-<slug>), or provision pr<N>-<slug>.
+- resolve_review_worktree: Pick the host worktree a review-loop container works in for a review target.
+- provision_reviewer_worktree / prune_reviewer_worktree / ephemeral_reviewer_worktree: Ephemeral flow-<slug>-rev<i>
+  sibling worktrees for reviewer turns that need an isolated checkout.
+- sandbox_worktree_mounts: Validate a worktree and build the docker bind mounts that expose it to a role container.
+- fetch_origin_branch: Fetch a branch on the host, so a container working on a mounted worktree never fetches.
 """
 
 from __future__ import annotations
@@ -22,24 +29,48 @@ from __future__ import annotations
 import logging
 import os
 import re
+import stat
+import struct
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from sandbox_executor.git import branch_exists, resolve_ref, run_git
+from sandbox_executor.redaction import redact_agent_secrets
 
 logger = logging.getLogger(__name__)
+
+#: The unprivileged uid and gid the sandbox image runs as; a Linux bind mount keeps host ownership, so a mounted role
+#: container (review loop or executor) can only write a worktree and git directories that this user may write.
+SANDBOX_CONTAINER_UID = 1000
+SANDBOX_CONTAINER_GID = 1000
+
+#: POSIX ACL entry tags and the write permission bit, as stored in the system.posix_acl_access xattr.
+_ACL_USER = 0x02
+_ACL_MASK = 0x10
+_ACL_WRITE = 0x02
 
 __all__ = [
     "checked_out_branch",
     "default_branch_worktree_problem",
     "derive_worktree_layout",
     "ensure_flow_worktree_off_default",
+    "ensure_pr_worktree",
     "ensure_worktree",
+    "ephemeral_reviewer_worktree",
+    "fetch_origin_branch",
+    "find_worktree_for_branch",
     "is_bare_repository",
     "is_default_branch_worktree",
     "is_working_tree",
     "normalise_base_branch",
+    "provision_reviewer_worktree",
+    "prune_reviewer_worktree",
     "prune_worktrees",
     "repository_default_branch",
+    "resolve_review_worktree",
+    "sandbox_worktree_mounts",
     "target_worktree_problem",
 ]
 
@@ -468,3 +499,510 @@ def default_branch_worktree_problem(
         f"branches, commits and writes ledger or calibration records in the worktree it runs in, and the "
         f"default-branch worktree must stay identical to origin/{base}. {remedy}."
     )
+
+
+def find_worktree_for_branch(worktree: str, branch: str) -> str | None:
+    """Return the attached worktree of the repository containing worktree that has branch checked out.
+
+    Args:
+        worktree: Path inside the repository (any of its worktrees, or a bare clone).
+        branch: Short branch name.
+
+    Returns:
+        str | None: The worktree's absolute path, or None when no existing worktree has the branch checked out.
+    """
+    if not worktree or not os.path.isdir(worktree) or not branch.strip():
+        return None
+    res = run_git(["worktree", "list", "--porcelain"], cwd=worktree, check=False)
+    if res.returncode != 0:
+        return None
+    path: str | None = None
+    for line in res.stdout.splitlines():
+        if line.startswith("worktree "):
+            path = line[len("worktree ") :]
+        elif line == f"branch refs/heads/{branch.strip()}" and path and os.path.isdir(path):
+            return os.path.normpath(path)
+    return None
+
+
+def _clean_slug(text: str) -> str:
+    """Return text reduced to a path- and branch-safe slug."""
+    return re.sub(r"[^a-zA-Z0-9_\-]+", "-", text.strip()).strip("-")
+
+
+def ensure_pr_worktree(worktree: str, pr_number: int, head_branch: str) -> str:
+    """Reuse the worktree that has a PR's head branch checked out, or provision a pr<N>-<slug> sibling for it.
+
+    A flow run's flow-<slug> worktree is the one that normally has the head branch checked out, so a review of that
+    PR reuses it and never creates a second worktree for the same branch.
+
+    Args:
+        worktree: Path inside the repository; it only selects the repository and the sibling directory.
+        pr_number: Pull request number.
+        head_branch: The PR's head branch.
+
+    Returns:
+        str: Absolute path to the worktree with head_branch checked out.
+
+    Raises:
+        RuntimeError: If the head branch exists neither locally nor on origin, if the pr<N>-<slug> path exists but is
+            not that branch's worktree, or if 'git worktree add' fails.
+    """
+    toplevel = _worktree_toplevel(worktree)
+    prune_worktrees(toplevel)
+    existing = find_worktree_for_branch(toplevel, head_branch)
+    if existing:
+        logger.info("Reused worktree '%s' for PR #%s (%s)", existing, pr_number, head_branch)
+        return existing
+    path = os.path.join(os.path.dirname(toplevel), f"pr{pr_number}-{_clean_slug(head_branch) or 'head'}")
+    if os.path.exists(path):
+        raise RuntimeError(
+            f"PR worktree path '{path}' exists but does not have '{head_branch}' checked out; check the branch out "
+            f"in it or remove it with 'git worktree remove {path}'."
+        )
+    run_git(
+        ["fetch", "--no-tags", "origin", f"+refs/heads/{head_branch}:refs/remotes/origin/{head_branch}"],
+        cwd=toplevel,
+        check=False,
+        timeout=300,
+    )
+    if not branch_exists(toplevel, head_branch, check_remote=True):
+        raise RuntimeError(
+            f"PR #{pr_number} head branch '{head_branch}' exists neither locally nor on origin (a fork PR?); check it "
+            "out in a worktree and pass --target-worktree <path>."
+        )
+    return _attach_or_create_worktree(toplevel, path, head_branch, (f"origin/{head_branch}",))
+
+
+def resolve_review_worktree(worktree: str, head_branch: str, pr_number: int | None = None) -> str:
+    """Pick the host worktree a review-loop container works in for a review of head_branch.
+
+    The given worktree when it has head_branch checked out; otherwise the existing worktree of head_branch (normally
+    the run's flow-<slug>); otherwise, for a PR, a new pr<N>-<slug> worktree (see ensure_pr_worktree).
+
+    Args:
+        worktree: The --target-worktree path; it also selects the repository.
+        head_branch: The branch under review (a PR's head branch).
+        pr_number: The PR number when the target is a pull request.
+
+    Returns:
+        str: Absolute path to a worktree with head_branch checked out.
+
+    Raises:
+        RuntimeError: If no worktree of a branch target exists, or a PR worktree cannot be provisioned.
+    """
+    if checked_out_branch(worktree) == head_branch:
+        return _worktree_toplevel(worktree)
+    existing = find_worktree_for_branch(worktree, head_branch)
+    if existing:
+        return existing
+    if pr_number is not None:
+        return ensure_pr_worktree(worktree, pr_number, head_branch)
+    raise RuntimeError(
+        f"No worktree has branch '{head_branch}' checked out; the review-loop container reviews a host worktree in "
+        f"place. Create one with 'git worktree add <path> {head_branch}' and pass --target-worktree <path>."
+    )
+
+
+def _reviewer_worktree_path(worktree: str, index: int) -> str:
+    """Return the flow-<slug>-rev<index> sibling path of worktree's top-level directory."""
+    if isinstance(index, bool) or not isinstance(index, int) or index < 1:
+        raise ValueError(f"reviewer index must be a positive integer, got {index!r}")
+    return f"{_worktree_toplevel(worktree)}-rev{index}"
+
+
+def prune_reviewer_worktree(worktree: str, index: int) -> None:
+    """Remove the flow-<slug>-rev<index> sibling of worktree, if registered, and prune stale records.
+
+    Only 'git worktree remove' deletes anything, so a directory that is not a registered worktree is left in place.
+
+    Args:
+        worktree: The worktree the reviewer worktree was provisioned from.
+        index: 1-based reviewer index.
+    """
+    path = _reviewer_worktree_path(worktree, index)
+    if os.path.exists(path):
+        res = run_git(["worktree", "remove", "--force", path], cwd=worktree, check=False)
+        if res.returncode != 0:
+            logger.warning("git worktree remove failed for '%s': %s", path, res.stderr.strip())
+    prune_worktrees(worktree)
+
+
+def provision_reviewer_worktree(worktree: str, index: int) -> str:
+    """Provision the ephemeral flow-<slug>-rev<index> sibling worktree, detached at worktree's HEAD.
+
+    A survivor of an earlier crashed iteration is removed first.
+
+    Args:
+        worktree: The flow worktree under review.
+        index: 1-based reviewer index.
+
+    Returns:
+        str: Absolute path to the new reviewer worktree.
+
+    Raises:
+        ValueError: If index is not a positive integer.
+        RuntimeError: If 'git worktree add' fails (for example, a non-worktree directory occupies the path).
+    """
+    path = _reviewer_worktree_path(worktree, index)
+    prune_reviewer_worktree(worktree, index)
+    run_git(["worktree", "add", "--detach", path, "HEAD"], cwd=worktree, check=True)
+    return os.path.abspath(path)
+
+
+@contextmanager
+def ephemeral_reviewer_worktree(worktree: str, index: int) -> Iterator[str]:
+    """Yield a flow-<slug>-rev<index> reviewer worktree that is removed and pruned when the block exits, however."""
+    path = provision_reviewer_worktree(worktree, index)
+    try:
+        yield path
+    finally:
+        prune_reviewer_worktree(worktree, index)
+
+
+def fetch_origin_branch(worktree: str, branch: str) -> None:
+    """Fetch origin's branch into refs/remotes/origin/<branch> on the host, so a container mounting worktree need not.
+
+    Raises:
+        RuntimeError: If the fetch fails (the redacted git error is included).
+    """
+    res = run_git(
+        ["fetch", "--no-tags", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"],
+        cwd=worktree,
+        check=False,
+    )
+    if res.returncode != 0:
+        detail = redact_agent_secrets((res.stderr or "").strip()) or f"exit code {res.returncode}"
+        raise RuntimeError(f"could not fetch branch '{branch}' from origin into '{worktree}': {detail}")
+
+
+def _read_pointer(path: str, prefix: str = "") -> str | None:
+    """Return the path a git pointer file (.git, commondir) names, made absolute relative to its directory."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            content = f.read().strip()
+    except OSError:
+        return None
+    if not content.startswith(prefix):
+        return None
+    target = content[len(prefix) :].strip()
+    return os.path.normpath(os.path.join(os.path.dirname(path), target)) if target else None
+
+
+def _within(path: str, root: str) -> bool:
+    """Return True when path is root or lies under it."""
+    return path == root or path.startswith(root + os.sep)
+
+
+def _acl_user_write(path: str, uid: int) -> bool | None:
+    """Return whether the access ACL of path lets named user uid write past the mask; None when uid has no entry."""
+    try:
+        acl = os.getxattr(path, "system.posix_acl_access")
+    except (AttributeError, OSError):
+        return None
+    # Linux xattr layout: a 4-byte version header, then 8-byte entries of (u16 tag, u16 perm, u32 id), little-endian.
+    entries = [struct.unpack_from("<HHI", acl, offset) for offset in range(4, len(acl) - 7, 8)]
+    user_perms = [perm for tag, perm, entry_id in entries if tag == _ACL_USER and entry_id == uid]
+    if not user_perms:
+        return None
+    mask_perms = [perm for tag, perm, _ in entries if tag == _ACL_MASK]
+    return bool(user_perms[0] & _ACL_WRITE) and all(perm & _ACL_WRITE for perm in mask_perms)
+
+
+def _container_cannot_write(path: str) -> bool:
+    """Return True when the sandbox user may not write the directory path, judged by owner, named-user ACL and mode."""
+    st = os.stat(path)
+    if st.st_uid == SANDBOX_CONTAINER_UID:
+        return not st.st_mode & stat.S_IWUSR
+    acl_write = _acl_user_write(path, SANDBOX_CONTAINER_UID)
+    if acl_write is not None:
+        return not acl_write
+    if st.st_gid == SANDBOX_CONTAINER_GID:
+        return not st.st_mode & stat.S_IWGRP
+    return not st.st_mode & stat.S_IWOTH
+
+
+def _container_write_problem(role: str, *paths: str) -> str | None:
+    """On Linux, explain which of paths the sandbox user cannot write through a bind mount; None when all are fine."""
+    if not sys.platform.startswith("linux"):
+        return None
+    unwritable = [path for path in dict.fromkeys(paths) if _container_cannot_write(path)]
+    if not unwritable:
+        return None
+    return (
+        f"the {role} container runs as uid {SANDBOX_CONTAINER_UID} and a Linux bind mount keeps host ownership, "
+        f"so it cannot write {', '.join(repr(p) for p in unwritable)}. Run holon as uid {SANDBOX_CONTAINER_UID}, "
+        f"or grant it write access (for example 'setfacl -R -m u:{SANDBOX_CONTAINER_UID}:rwX,"
+        f"d:u:{SANDBOX_CONTAINER_UID}:rwX <path>')."
+    )
+
+
+def _validated_sandbox_toplevel(target_worktree: str | None, role: str) -> str:
+    """Return the top-level directory of a worktree that may be mounted, or raise RuntimeError explaining why not."""
+    if not target_worktree:
+        raise RuntimeError(
+            f"the {role} container works on a host worktree in place and needs an explicit target worktree; pass "
+            "--target-worktree <path> (never the current directory implicitly)."
+        )
+    problem = target_worktree_problem(target_worktree, subject="Sandbox worktree")
+    if problem:
+        raise RuntimeError(problem)
+    toplevel = _worktree_toplevel(target_worktree)
+    problem = default_branch_worktree_problem(
+        toplevel, repository_default_branch(toplevel), command=f"The {role} container", subject="Sandbox worktree"
+    )
+    if problem:
+        raise RuntimeError(problem)
+    worktree_config = run_git(
+        ["config", "--type=bool", "--get", "extensions.worktreeConfig"], cwd=toplevel, check=False
+    )
+    if (worktree_config.stdout or "").strip() == "true":
+        raise RuntimeError(
+            f"Sandbox worktree '{toplevel}' belongs to a repository with extensions.worktreeConfig enabled; a "
+            "container could plant a config.worktree that later runs code on the host. Disable it with 'git config "
+            "--unset extensions.worktreeConfig' or review in a fresh clone."
+        )
+    return toplevel
+
+
+def sandbox_worktree_mounts(target_worktree: str | None, mountpoint: str, role: str = "review-loop") -> list[str]:
+    """Validate a host worktree and return the docker arguments that bind-mount it into a role container.
+
+    The worktree must be an attached, non-bare working tree that does not have the default branch checked out. Its
+    top-level directory is mounted read-write at mountpoint. A linked worktree's git directory and the repository's
+    common git directory are mounted at their host paths, which the worktree's '.git' pointer names, so git works in
+    the container without network access. Everything that makes host git run code is overlaid read-only, so the
+    container cannot plant a hook or configuration that later executes on the host: the repository config (and any
+    config.worktree), hooks/, modules/, the whole worktrees/ administrative directory, and the '.git', 'gitdir' and
+    'commondir' pointers. The worktrees/ overlay is what keeps every SIBLING worktree's administrative files
+    (commondir, gitdir, HEAD, a plantable config.worktree) and the creation of new worktrees/ entries out of the
+    container's reach -- host git reads those files on its next command in that worktree. The mounted worktree's own
+    administrative directory is re-mounted read-write on top (docker layers the mount with the deeper destination over
+    the shallower one), restoring only the writes its own git needs (HEAD, index, FETCH_HEAD); its pointer files and
+    config.worktree stay read-only through the still-deeper file overlays, and absent hooks/, modules/, worktrees/,
+    config and config.worktree are created first so the container cannot create them itself. The objects/info/ and
+    info/ directories are overlaid read-only as a whole: objects/ stays writable for in-container commit/fetch/push,
+    but every file host git reads from those two directories (objects/info/alternates, a commit-graph, info/exclude,
+    info/attributes, info/grafts) stays out of the container's reach, including files that do not exist yet. The
+    common-root ancestry and ref-substitution surfaces are pinned too: refs/replace/ and packed-refs are overlaid
+    read-only (refs/ itself stays writable for in-container loose-ref writes), and shallow is overlaid read-only --
+    as the existing file when the repository is shallow, otherwise as a created 'shallow' directory, which git
+    treats as no shallow file at all, because an empty shallow FILE would itself mark the repository shallow. The
+    shared rerere cache rr-cache/ is pinned in both layouts: a planted resolution is applied silently to the
+    maintainer's next conflicting host merge and the directory's mere presence activates rerere, so an existing
+    rr-cache/ is overlaid read-only and an absent one is replaced by a created read-only 'rr-cache' FILE, which is
+    inert for git while blocking the directory's creation -- except where host rerere.enabled is already true, where
+    the stand-in would break host merges and 'git gc', so an empty read-only rr-cache DIRECTORY is created instead (a
+    non-empty stray rr-cache file there is refused with a RuntimeError).
+    When the mounted worktree is a linked worktree, the common HEAD is the primary checkout's HEAD -- never needed
+    in-container -- and is overlaid read-only along with the primary's other per-worktree state at the common root,
+    each when present: index, FETCH_HEAD, the transient MERGE_HEAD/MERGE_MSG/MERGE_MODE/MERGE_AUTOSTASH/ORIG_HEAD/
+    CHERRY_PICK_HEAD/REVERT_HEAD/SQUASH_MSG/AUTO_MERGE files, the mid-rebase REBASE_HEAD file and rebase-merge/
+    and rebase-apply/ directories (whose git-rebase-todo 'exec' lines host 'git rebase --continue' executes), the
+    sequencer/ directory, the mid-merge rerere map MERGE_RR and the BISECT_* bisect-state files; a primary
+    checkout's own HEAD, index and FETCH_HEAD stay writable for in-container commits and fetches.
+    A repository with extensions.worktreeConfig enabled is refused: git would then read every worktree's
+    config.worktree, which the container could rewrite in its own writable git directory. On Linux, where a bind
+    mount keeps host ownership, a worktree or git directory that the image's user (uid SANDBOX_CONTAINER_UID) cannot
+    write is refused up front rather than failing every pass inside the container.
+
+    Args:
+        target_worktree: Host worktree path (a subdirectory of one is accepted); required.
+        mountpoint: Container path of the workspace.
+        role: Role of the container the worktree is mounted into, named in refusals.
+
+    Returns:
+        list[str]: Docker '-v' arguments.
+
+    Raises:
+        RuntimeError: If no worktree is given, it is not an attached non-default-branch worktree, its '.git'
+            pointer cannot be read, the repository enables extensions.worktreeConfig, or (on Linux) the container
+            user cannot write the worktree or its git directories.
+    """
+    toplevel = _validated_sandbox_toplevel(target_worktree, role)
+    dot_git = os.path.join(toplevel, ".git")
+    args = ["-v", f"{toplevel}:{mountpoint}"]
+    if os.path.isdir(dot_git):
+        git_dir = common_dir = dot_git
+        read_only: list[str] = []
+    else:
+        git_dir = _read_pointer(dot_git, "gitdir:") or ""
+        if not os.path.isdir(git_dir):
+            raise RuntimeError(f"cannot resolve the git directory of worktree '{toplevel}' from its .git file")
+        common_dir = _read_pointer(os.path.join(git_dir, "commondir")) or git_dir
+        args += ["-v", f"{common_dir}:{common_dir}"]
+        if git_dir != common_dir:
+            # Re-mounted read-write on top of the read-only worktrees/ overlay below (docker layers the deeper
+            # destination over the shallower one): the mounted worktree's own git must write its HEAD, index and
+            # FETCH_HEAD, while its pointer files stay read-only through the still-deeper file overlays.
+            args += ["-v", f"{git_dir}:{git_dir}"]
+        read_only = [dot_git, os.path.join(git_dir, "commondir"), os.path.join(git_dir, "gitdir")]
+    problem = _container_write_problem(role, toplevel, git_dir, common_dir)
+    if problem:
+        raise RuntimeError(problem)
+    # An absent hooks/, modules/ or worktrees/ could be created by the container (planting modules/<name>/hooks for a
+    # later host 'git submodule' command, or a new worktrees/ entry whose pointer files host git would follow), and an
+    # absent config.worktree could be planted against a host operator who later enables extensions.worktreeConfig, so
+    # make each exist before overlaying it. worktrees/ is overlaid read-only as a whole: a sibling worktree's
+    # administrative files (commondir, gitdir, HEAD, config.worktree) are what the next host git command run in that
+    # sibling reads, so none of them may be container-writable.
+    # objects/ must stay read-write for in-container commit/fetch/push, but everything under objects/info/ is
+    # host-read (alternates redirects where host git reads object data from; a planted commit-graph, trusted by
+    # host git via core.commitGraph's on-by-default, would misrepresent ancestry to host traversals), so the whole
+    # directory is overlaid read-only -- pinning files that do not exist yet. Nothing in-container writes
+    # objects/info/: plain fetch/commit/push never do, no repack, gc or update-server-info runs in-container, and
+    # were a background 'gc --auto' ever triggered, its commit-graph write failing against the read-only mount is a
+    # non-fatal warning. The whole info/ directory is overlaid read-only for the same reason: exclude and attributes
+    # are host-read (a planted '* merge=ours' attribute would subvert host-side merges, '* -diff' would blind host
+    # diffs, and exclude patterns hide planted files from host 'git status'), as is any file planted beside them --
+    # notably info/grafts, still honored by current git, which would rewrite perceived ancestry and silently subvert
+    # host-side merges -- and nothing in-container writes info/.
+    read_only += _common_dir_read_only_overlays(common_dir, git_dir)
+    read_only.append(os.path.join(git_dir, "config.worktree"))
+
+    for host_path in dict.fromkeys(read_only):
+        if not os.path.exists(host_path):
+            continue
+        rel = os.path.relpath(host_path, toplevel)
+        container_path = os.path.join(mountpoint, rel) if _within(host_path, toplevel) else host_path
+        args += ["-v", f"{host_path}:{container_path}:ro"]
+    return args
+
+
+def _common_dir_read_only_overlays(common_dir: str, git_dir: str) -> list[str]:
+    """Create the absent host-read admin paths under the common dir and return the read-only overlay list.
+
+    See sandbox_worktree_mounts for the full threat model; this builds the common-dir part of its overlay plan.
+    """
+    # The common-root files host git trusts without a worktree context are pinned the same way. refs/ stays
+    # writable (in-container fetch/commit/push write loose refs), but refs/replace/ is overlaid read-only: a
+    # planted replace ref substitutes arbitrary objects into every host traversal (core.useReplaceRefs is on by
+    # default). So is packed-refs, which could smuggle the same replace ref or silently rewrite any branch: loose
+    # ref creation and update never write it (the loose ref wins); only ref deletion and pack-refs/gc rewrite it,
+    # neither of which the role containers run, and a background 'gc --auto' pack failing against the read-only
+    # mount is the same non-fatal warning as for commit-graph. A plantable shallow file would cut perceived
+    # ancestry exactly like grafts, but an EMPTY shallow file already marks the whole repository shallow to git
+    # (verified empirically), so create-then-overlay does not fit; instead, when no shallow file exists, a
+    # 'shallow' DIRECTORY is created and overlaid read-only: git treats a shallow directory as no shallow file at
+    # all (verified: log, status, commit, fetch, push, merge and merge-base behave as non-shallow), the container
+    # cannot replace a read-only mountpoint with a file, and the one host operation the directory blocks -- making
+    # this full clone shallow later -- fails loudly, never silently.
+    # In the linked-worktree case the common HEAD is the PRIMARY checkout's HEAD -- the
+    # mounted worktree resolves its own through worktrees/<self>/HEAD -- so it is overlaid read-only too, along
+    # with the primary's other per-worktree state at the common root: index (a container-staged index would land
+    # in the maintainer's next commit from the primary checkout), FETCH_HEAD (a planted ref that a later host
+    # 'git merge FETCH_HEAD' or 'git log FETCH_HEAD' in the primary checkout would consume; the mounted worktree's
+    # own FETCH_HEAD lives in its admin dir and stays writable), and the primary's mid-operation state: the
+    # transients MERGE_HEAD/MERGE_MSG/MERGE_MODE/ORIG_HEAD/CHERRY_PICK_HEAD/REVERT_HEAD/SQUASH_MSG/AUTO_MERGE,
+    # which host 'git commit' consumes to conclude a merge, cherry-pick, revert or squash, MERGE_AUTOSTASH,
+    # whose stash host 'git merge --continue' reapplies to the maintainer's working tree, and MERGE_RR, the
+    # mid-merge map pairing conflicted paths with rr-cache entries (per-worktree state, so the primary's lives at
+    # the common root while every sibling's copy is already covered by the worktrees/ overlay); REBASE_HEAD and the
+    # rebase-merge/ and rebase-apply/ directories (a rewritten rebase-merge/git-rebase-todo 'exec' line is
+    # arbitrary host code execution on the maintainer's next 'git rebase --continue' -- verified empirically);
+    # the sequencer/ directory, whose todo redirects a host 'git cherry-pick/revert --continue' to attacker
+    # commits; and the BISECT_LOG/BISECT_START/BISECT_EXPECTED_REV/BISECT_ANCESTORS_OK/BISECT_NAMES/BISECT_TERMS/
+    # BISECT_FIRST_PARENT/BISECT_HEAD files (the last two exist for --first-parent and --no-checkout bisects),
+    # which steer a host bisect. Each is overlaid only when it exists, because a created-empty stand-in
+    # is not inert (git rejects a zero-length index; an empty MERGE_HEAD flags an in-progress merge; an empty
+    # rebase-merge/ or rebase-apply/ directory makes host git report a rebase in progress and refuse to start a
+    # new one; a pre-existing empty sequencer/ makes a host multi-commit cherry-pick or revert fail with 'could
+    # not create sequencer directory' -- all verified empirically); state absent at mount time therefore stays
+    # plantable, the documented accepted residual, now covering these directories too. When the mounted worktree
+    # IS the primary checkout they are its own state and must stay writable for in-container commits and fetches.
+    for name in ("hooks", "modules", "worktrees"):
+        os.makedirs(os.path.join(common_dir, name), exist_ok=True)
+    os.makedirs(os.path.join(common_dir, "objects", "info"), exist_ok=True)
+    os.makedirs(os.path.join(common_dir, "info"), exist_ok=True)
+    os.makedirs(os.path.join(common_dir, "refs", "replace"), exist_ok=True)
+    shallow = os.path.join(common_dir, "shallow")
+    if not os.path.isfile(shallow):
+        os.makedirs(shallow, exist_ok=True)
+    # The shared rerere cache is host-consumed in BOTH layouts: a planted rr-cache/<id>/postimage is applied
+    # silently to the maintainer's next conflicting host merge ('Resolved ... using previous resolution.'), and
+    # the directory's mere presence activates rerere with no rerere config at all (both verified empirically), so
+    # an existing rr-cache/ is overlaid read-only -- an in-container conflicting merge then emits a non-fatal
+    # 'error: could not write ... preimage' and completes as an ordinary conflicted merge (verified). An absent
+    # rr-cache/ cannot be created-then-overlaid like hooks/: the created directory would itself turn host rerere
+    # ON. A zero-length rr-cache FILE is inert instead (merges, aborts and status behave exactly as with no
+    # rr-cache -- verified), so one is created and overlaid read-only; the container cannot replace a read-only
+    # mountpoint with a directory, and the one host operation the file blocks -- enabling rerere in this clone
+    # later -- fails loudly ('fatal: could not create directory'), never silently.
+    # With rerere explicitly enabled the host recreates the directory on its first conflict anyway, so the stand-in
+    # FILE would break the host ('fatal: could not create directory' on a conflicting merge, 'failed to run
+    # rerere' in git gc): there an empty read-only rr-cache DIRECTORY is created instead, exactly the already
+    # verified existing-directory case, and a stand-in file left by an earlier mount is replaced by it.
+    # Only in-container rerere is blocked (the read-only property is the container mount's); the host directory stays
+    # host-writable. The created directory persists, so if rerere.enabled is later unset its mere presence turns
+    # host rerere on (an explicit false still disables it).
+    rr_cache = os.path.join(common_dir, "rr-cache")
+    # The probe reads the same layered config host git does (system, global and the repository's own, includes
+    # followed); '--type=bool' normalises true/yes/on/1, and an unset or invalid value counts as not enabled.
+    rerere_res = run_git(["--git-dir", common_dir, "config", "--type=bool", "--get", "rerere.enabled"], check=False)
+    rerere_enabled = rerere_res.returncode == 0 and rerere_res.stdout.strip() == "true"
+    if rerere_enabled:
+        if os.path.isfile(rr_cache) and os.path.getsize(rr_cache) == 0:
+            os.remove(rr_cache)
+        if os.path.exists(rr_cache) and not os.path.isdir(rr_cache):
+            raise RuntimeError(
+                f"{rr_cache} is a non-empty regular file but rerere is enabled: host git needs a directory there; "
+                "remove the stray file and retry"
+            )
+        os.makedirs(rr_cache, exist_ok=True)
+    elif not os.path.isdir(rr_cache):
+        open(rr_cache, "a", encoding="utf-8").close()
+    for path in dict.fromkeys(
+        (
+            os.path.join(common_dir, "config"),
+            os.path.join(common_dir, "config.worktree"),
+            os.path.join(git_dir, "config.worktree"),
+        )
+    ):
+        open(path, "a", encoding="utf-8").close()
+    packed_refs = os.path.join(common_dir, "packed-refs")
+    if not os.path.exists(packed_refs):
+        # A zero-byte packed-refs draws a non-fatal 'git fsck' emptyPackedRefsFile warning; the standard header
+        # line is equally inert for git and keeps the maintainer's fsck output clean (verified empirically).
+        with open(packed_refs, "w", encoding="utf-8") as handle:
+            handle.write("# pack-refs with: peeled fully-peeled sorted \n")
+    overlays = [
+        os.path.join(common_dir, name) for name in ("config", "config.worktree", "hooks", "modules", "worktrees")
+    ]
+    overlays.append(os.path.join(common_dir, "objects", "info"))
+    overlays.append(os.path.join(common_dir, "info"))
+    overlays.append(os.path.join(common_dir, "refs", "replace"))
+    overlays.append(os.path.join(common_dir, "packed-refs"))
+    overlays.append(shallow)
+    overlays.append(rr_cache)
+    if git_dir != common_dir:
+        overlays += [
+            os.path.join(common_dir, name)
+            for name in (
+                "HEAD",
+                "index",
+                "FETCH_HEAD",
+                "MERGE_HEAD",
+                "MERGE_MSG",
+                "MERGE_MODE",
+                "MERGE_AUTOSTASH",
+                "ORIG_HEAD",
+                "CHERRY_PICK_HEAD",
+                "REVERT_HEAD",
+                "SQUASH_MSG",
+                "AUTO_MERGE",
+                "MERGE_RR",
+                "REBASE_HEAD",
+                "rebase-merge",
+                "rebase-apply",
+                "sequencer",
+                "BISECT_LOG",
+                "BISECT_START",
+                "BISECT_EXPECTED_REV",
+                "BISECT_ANCESTORS_OK",
+                "BISECT_NAMES",
+                "BISECT_TERMS",
+                "BISECT_FIRST_PARENT",
+                "BISECT_HEAD",
+            )
+        ]
+    return overlays

@@ -220,8 +220,9 @@ every decomposed child intent, plan and execution branch at any depth.
   `original_model` only when the labels in the identifier were shortened. Rows for names that fit are unchanged.
 - **Failure:** if a name cannot fit even after shortening, Stage 1 fails before any branch exists, naming the limit, the
   computed length and the segment that cannot be shortened (for example
-  `the segment that cannot be shortened is 'parent'`). If a push is still rejected for ref length, the executor reports
-  `ref too long: branch <name> (<n> characters)` and still prints the `UNPUSHED EXECUTION PATCH`, so the work is kept.
+  `the segment that cannot be shortened is 'parent'`). If a push is still rejected for ref length, the host push fails
+  with `ref too long: branch <name> (<n> characters)`. A child branch name that cannot fit at Stage 3 fails that stage
+  with the same named limit rather than raising.
 
 ### 2.6 Hierarchy Summary
 

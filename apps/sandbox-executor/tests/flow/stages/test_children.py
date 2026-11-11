@@ -20,7 +20,7 @@ from sandbox_executor.flow import FlowContext, FlowStage, PipelineEngine, StageR
 from sandbox_executor.flow.checkpoint import get_default_checkpoint_path, load_checkpoint
 from sandbox_executor.flow.child_progress import child_checkpoint_path, next_child_action
 from sandbox_executor.flow.github.merge import MergeResult
-from sandbox_executor.flow.stages.children import resume_children
+from sandbox_executor.flow.stages.children import _build_child_intent, resume_children
 
 from tests.flow.decomposition_fakes import decomposed_flow, halted_review
 from tests.flow.helpers import SUB_INTENT_LIST, BudgetRoleAgents, _budget_context, _git
@@ -519,3 +519,15 @@ def test_a_child_promoted_to_merged_on_resume_is_summarised_as_merged():
     assert res.payload["children"] == [
         {"index": 1, "slug": "first", "status": "halted_for_human", "merged": True, "merge_commit": "m9"}
     ]
+
+
+@pytest.mark.parametrize("original", ["a-very-long-original-slug", None])
+def test_child_intent_records_original_slug_only_when_shortened(original):
+    context = FlowContext(token_reduce=False, intent_data={"slug": "parent"})
+    entry = {"index": 1, "slug": "child", "intent_branch": "I-1-parent--1-child/_", "original_slug": original}
+    payload = {"plan_branch": "I-1-parent/P-2-a-m/_", "sub_intents": [{"goal": "g"}]}
+
+    child = _build_child_intent(context, payload, entry)
+
+    assert child.get("original_slug") == original
+    assert ("original_slug" in child) is (original is not None)

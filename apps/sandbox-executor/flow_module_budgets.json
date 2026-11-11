@@ -1,5 +1,5 @@
 {
-  "description": "Line budgets for each module of apps/sandbox-executor/src/sandbox_executor/flow/, recorded at the post-split sizes and checked by scripts/check_flow_module_budgets.py (run by 'uv run task lint'). A module may shrink but never grow past its budget. Budgets of child_progress.py, stages/calibrate.py and stages/intent.py were raised by 1, 1 and 3 lines for the ref_names helpers that build and name the /_ and /calibrated branches. Budgets of stages/intent.py, stages/plan.py, stages/execute.py, review/resolver.py and git_refs.py were also raised for the host-side fetch and push that moved every remote operation of a stage out of the role containers (host_remote.py owns them). Lower a budget by hand after shrinking a module; add an entry at creation size for a new module and remove the entry of a deleted one.",
+  "description": "Line budgets for each module of apps/sandbox-executor/src/sandbox_executor/flow/, recorded at the post-split sizes and checked by scripts/check_flow_module_budgets.py (run by 'uv run task lint'). A module may shrink but never grow past its budget. Budgets of child_progress.py, stages/calibrate.py and stages/intent.py were raised by 1, 1 and 3 lines for the ref_names helpers that build and name the /_ and /calibrated branches. Budgets of stages/intent.py, stages/plan.py, stages/execute.py, review/resolver.py and git_refs.py were also raised for the host-side fetch and push that moved every remote operation of a stage out of the role containers (host_remote.py owns them). Budgets of stages/decomposition.py and stages/children.py were raised by 4 and 2 lines to report a child branch name that cannot fit as a Stage 3 failure and to record original_slug on shortened child intents. Lower a budget by hand after shrinking a module; add an entry at creation size for a new module and remove the entry of a deleted one.",
   "budgets": {
     "__init__.py": 377,
     "checkpoint.py": 210,
@@ -33,8 +33,8 @@
     "stage_conflicts.py": 142,
     "stages/__init__.py": 1,
     "stages/calibrate.py": 316,
-    "stages/children.py": 327,
-    "stages/decomposition.py": 124,
+    "stages/children.py": 329,
+    "stages/decomposition.py": 128,
     "stages/execute.py": 407,
     "stages/integration.py": 95,
     "stages/intent.py": 227,

@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-e758356e",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-11T11:08:20.707604+00:00",
+  "updated_ts": "2026-11-11T11:08:20.707604+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794393707-04fc23e2",
+      "ACT-FIND-1794393705-40f65692"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794391536-refcap/P-1794391544-abdc9b6d-claude-agent-claude-sonnet-5-5/E-1794391637-5549d1a0-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 4 finding detected: FIND-R3-004-02",
+    "symptoms": [
+      "File is over 1,000 lines (1032) and grows via the new import and docstring lines; avoid net growth."
+    ]
+  }
+}

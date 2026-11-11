@@ -13,6 +13,7 @@ from sandbox_executor.flow.child_progress import PROGRESS_KEY, _sub_intent_depth
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.stages.children import run_children
+from sandbox_executor.ref_names import RefTooLongError
 
 
 def _sub_intent_depth_error(context: FlowContext) -> str | None:
@@ -119,6 +120,9 @@ def _run_decomposed_plan(
 
     payload["parent_target_branch"] = str(context.intent_data.get("target_branch") or "main")
     payload["entropy_budget"] = summary_row.get("entropy_budget")
-    payload[PROGRESS_KEY] = initial_progress(items, plan_branch)
+    try:
+        payload[PROGRESS_KEY] = initial_progress(items, plan_branch)
+    except RefTooLongError as e:
+        return _stage_failure(context, FlowStage.EXECUTE, start_time, f"Execute stage failed: {e}", **payload)
     context.log(f"Stage 3: running {len(items)} sub-intent(s) one after another under '{plan_branch}'.")
     return run_children(context, start_time, payload)

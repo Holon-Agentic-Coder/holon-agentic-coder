@@ -19,6 +19,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal, TextIO
 
+from sandbox_executor.ref_names import fit_execution_id, fit_plan_id
+
 try:
     import fcntl
 except ImportError:
@@ -84,10 +86,9 @@ def build_plan_id(
 
     Format: P-{plan_seq}-{disambiguator}-{safe_agent}-{safe_model}
     """
-    safe_agent = _sanitize_string(agent, fallback="unknown-agent")
-    safe_model = _sanitize_model_name(model)
+    safe_agent, safe_model = _sanitize_string(agent, fallback="unknown-agent"), _sanitize_model_name(model)
     dis = disambiguator or build_stage_disambiguator(parent_branch)
-    return f"P-{plan_seq}-{dis}-{safe_agent}-{safe_model}"
+    return fit_plan_id(parent_branch, plan_seq, dis, safe_agent, safe_model).name
 
 
 def build_execution_id(
@@ -101,10 +102,9 @@ def build_execution_id(
 
     Format: E-{exec_seq}-{disambiguator}-{safe_agent}-{safe_model}
     """
-    safe_agent = _sanitize_string(agent, fallback="unknown-agent")
-    safe_model = _sanitize_model_name(model)
+    safe_agent, safe_model = _sanitize_string(agent, fallback="unknown-agent"), _sanitize_model_name(model)
     dis = disambiguator or build_stage_disambiguator(parent_branch)
-    return f"E-{exec_seq}-{dis}-{safe_agent}-{safe_model}"
+    return fit_execution_id(parent_branch, exec_seq, dis, safe_agent, safe_model).name
 
 
 @dataclass

@@ -248,7 +248,7 @@ class TestEntropyBudgetHandoffInFlow:
         ids=["child", "grandchild", "unsanitised-slug", "empty-slug"],
     )
     def test_child_intent_branch_is_derived_from_parent_and_position(self, parent, index, slug, expected):
-        assert flow_module._child_intent_branch(parent, index, slug) == expected
+        assert flow_module._child_intent_branch(parent, index, slug).name == expected
 
     def test_same_slug_child_created_in_the_same_second_gets_its_own_intent_branch(self, flow_repos, tmp_path):
         host, origin = flow_repos
@@ -597,6 +597,24 @@ class TestEntropyBudgetHandoffInFlow:
         assert source.count("status=StageStatus.HALTED_FOR_HUMAN") == 1
         review_body = source.split("def run_review_stage(", 1)[1].split("\ndef ", 1)[0]
         assert "status=StageStatus.HALTED_FOR_HUMAN" in review_body
+
+    def test_child_branch_that_cannot_fit_fails_stage_three_with_the_named_limit(self):
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent", "goal": "Change the application"})
+        long_plan_branch = f"I-1-{'a' * 300}/P-2-agent-model/_"
+        row: dict[str, Any] = {
+            "status": "decomposed",
+            "plan_branch": long_plan_branch,
+            "sub_intents": [{"slug": "child", "goal": "Do the child"}],
+        }
+
+        res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", row, {"execution_id": "E-1"})
+
+        assert res.status == StageStatus.FAILED
+        assert (res.error or "").startswith("Execute stage failed: ")
+        assert "255" in (res.error or "")
+        assert res.payload["decomposed"] is True
+        assert res.payload["plan_branch"] == long_plan_branch
+        assert res.payload["children"] == []
 
     # --- Depth cap boundary -------------------------------------------------------------------------------------
 

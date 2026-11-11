@@ -167,7 +167,10 @@ def _segment_result(result: FitResult, parent: str) -> FitResult:
 
 
 def fit_root_intent_branch(seq: int, slug: str) -> FitResult:
-    """Fit ``I-{seq}-{slug}``, leaving room for one plan and one execution segment below it."""
+    """Fit ``I-{seq}-{slug}``, leaving room for one plan and one execution segment below it.
+
+    The reserve means a name within ``downstream_reserve()`` of the limit may be shortened although it would fit alone.
+    """
     parts = [Part("prefix", f"I-{seq}-"), Part("slug", slug, shortenable=True)]
     return fit_parts(parts, extra=downstream_reserve())
 
@@ -240,7 +243,6 @@ def is_over_limit_rejection(output: str) -> bool:
 
 def named_push_rejection(branch: str, output: str) -> str:
     """Name a ref-length rejection (``ref too long: branch <name> (<n> characters)``); other output passes through."""
-    bare = branch.removesuffix(INTENT_SUFFIX)
-    if not is_over_limit_rejection(output) and measured_length(bare) <= MAX_REF_LENGTH:
+    if not is_over_limit_rejection(output) and len(REF_PREFIX) + len(branch) <= MAX_REF_LENGTH:
         return output
     return f"ref too long: branch {branch} ({len(REF_PREFIX) + len(branch)} characters); {output}"

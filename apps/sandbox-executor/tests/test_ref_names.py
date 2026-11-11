@@ -226,6 +226,7 @@ _ALLOWED_SUFFIX_BUILDERS = {
 
 
 def test_no_other_module_builds_a_branch_with_a_literal_suffix():
+    # Heuristic: only catches the f"...}/_" pattern, not concatenation or format() constructions.
     root = Path(ref_names.__file__).parent
     offenders = [
         str(path.relative_to(root))

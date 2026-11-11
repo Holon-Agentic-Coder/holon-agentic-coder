@@ -1,5 +1,5 @@
 {
-  "description": "Line budgets for each module of apps/sandbox-executor/src/sandbox_executor/flow/, recorded at the post-split sizes and checked by scripts/check_flow_module_budgets.py (run by 'uv run task lint'). A module may shrink but never grow past its budget. Lower a budget by hand after shrinking a module; add an entry at creation size for a new module and remove the entry of a deleted one.",
+  "description": "Line budgets for each module of apps/sandbox-executor/src/sandbox_executor/flow/, recorded at the post-split sizes and checked by scripts/check_flow_module_budgets.py (run by 'uv run task lint'). A module may shrink but never grow past its budget. Budgets of child_progress.py, stages/calibrate.py and stages/intent.py were raised by 1, 1 and 3 lines for the ref_names helpers that build and name the /_ and /calibrated branches. Lower a budget by hand after shrinking a module; add an entry at creation size for a new module and remove the entry of a deleted one.",
   "budgets": {
     "__init__.py": 344,
     "checkpoint.py": 210,

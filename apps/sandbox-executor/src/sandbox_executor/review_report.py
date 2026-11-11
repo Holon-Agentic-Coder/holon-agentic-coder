@@ -703,6 +703,10 @@ def _severity_counts(findings: Sequence[FindingRow]) -> str:
 def _evaluation(repo_dir: str, target: str, consensus_data: Mapping[str, Any], data: ReviewData, title: str) -> str:
     """The evaluation paragraph: title, commit, base branch, finding counts, CI state and mergeability."""
     mergeability = _mergeability_word(consensus_data)
+    ci = _ci_state(consensus_data.get("ci_checks") or {})
+    wait = consensus_data.get("ci_wait") or {}
+    if ci == "pending" and wait.get("state") == "pending":
+        ci += f" after a {float(wait.get('budget_seconds') or 0):g} s wait"
     note = _inline(consensus_data.get("mergeability_note"), MAX_REASON_CHARS)
     base = _inline(consensus_data.get("base_branch") or "main", MAX_PATH_CHARS)
     link = _pr_link(repo_dir, target, consensus_data)
@@ -710,8 +714,7 @@ def _evaluation(repo_dir: str, target: str, consensus_data: Mapping[str, Any], d
     return (
         f"Reviewed {subject} at "
         f"`{_target_commit(repo_dir, consensus_data)}` against `{base}`: {_severity_counts(data.findings)}; "
-        f"CI {_ci_state(consensus_data.get('ci_checks') or {})}; mergeability {mergeability}"
-        + (f" ({note})." if note else ".")
+        f"CI {ci}; mergeability {mergeability}" + (f" ({note})." if note else ".")
     )
 
 

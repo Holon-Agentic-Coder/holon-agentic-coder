@@ -348,11 +348,11 @@ The guarantee has five deliberate limits:
   writing ledger rows. If none register, the loop stops after that single iteration with consensus status `not_measured`
   (one iteration's review rows and one summary row, not rows for every iteration), Stage 4 fails with
   `test results not measured: no recorded Stage 3 test result and no CI checks`, and the pipeline halts before Stage 5
-  calibration runs. Checks that registered but are still pending are re-probed every `CI_REGISTRATION_POLL_SECONDS` (15
-  s) until they settle or the iteration's `review_iteration` budget runs out; checks still pending then count as a CI
-  finding. `--dry-run` does not wait, and its simulated consensus reports `not_measured`. Stacked sub-intent pull
-  requests, whose base is the plan branch that listed them, receive the same checks as pull requests into `main`,
-  because every CI workflow runs for pull requests into any base branch (see `.github/workflows/README.md`).
+  calibration runs. Checks that registered but are still pending are waited out on their own CI wait budget (see
+  [CI wait budget and outcomes](#ci-wait-budget-and-outcomes)), never the iteration's `review_iteration` budget.
+  `--dry-run` does not wait, and its simulated consensus reports `not_measured`. Stacked sub-intent pull requests, whose
+  base is the plan branch that listed them, receive the same checks as pull requests into `main`, because every CI
+  workflow runs for pull requests into any base branch (see `.github/workflows/README.md`).
 - **Token reduction is auto-detected.** `holon flow` (like `holon review-loop`) resolves token reduction with
   `detect_holon_coherence`: unless `HOLON_TOKEN_REDUCE` opts out (`0`, `false`, `no`, `off`), it is enabled by
   `--token-reduce`, `--mitm-web`, a truthy `HOLON_TOKEN_REDUCE` or `HOLON_PASSIVE_MONITORING`, a reachable proxy port, a
@@ -392,6 +392,39 @@ creates a `pr<N>-<slug>` worktree only when none exists. See the
 [sandbox-executor README](../apps/sandbox-executor/README.md#host-worktree-workspace). The Stage 3 executor works in
 place on the same mounted `flow-<slug>` worktree: the host fetches the plan branch before dispatch, and the container
 creates the execution branch from the plan tip there, commits and pushes it, with no clone, fetch, reset or clean.
+
+#### CI wait budget and outcomes
+
+Waiting for CI and judging code run on different clocks. After the reviewers approve, the review loop waits for pending
+GitHub checks under a wall-clock CI wait budget of `HOLON_REVIEW_CI_WAIT_SECONDS` (default `1800` s, in seconds, at most
+7 days). A value that is not a number, is not finite, is zero, negative or above 7 days is invalid: the loop logs a
+warning that names the variable and keeps `1800` s, so the wait cannot be switched off through the variable. The wait is
+not drawn from the `review_iteration` budget, so a slow runner never costs an iteration. Polling backs off from
+`CI_REGISTRATION_POLL_SECONDS` (`15` s), doubling each poll to a ceiling of `CI_WAIT_POLL_CEILING_SECONDS` (`120` s), so
+the intervals are `15`, `30`, `60`, `120`, `120` s and so on. The wait ends as soon as no check is pending, or as soon
+as any check has failed (that is already a CI failure, so the remaining checks are not waited on).
+
+The budget applies per wait, not per loop: each iteration that reaches the post-review CI gate gets a fresh wait, so a
+loop of N iterations whose checks each settle after a long wait can spend up to N times the budget. A wait that ends
+because the budget is spent is recorded in the loop result (and the posted consensus data) as `ci_wait`
+(`state: pending`, `budget_seconds`, `waited_seconds`, `pending_checks`); while the same checks stay pending, later
+iterations on the same head do not wait again. The record is cleared once a later iteration sees nothing pending, or
+when the resolver pushes a new head (the new head's pending checks get their own wait), so it never contradicts the
+final `ci_checks`. Checks still pending at the deadline are unknown: never `all_passed`, never a failed test run, and
+after a clean review no `FIND-CI` finding is recorded for them unless the local test run itself failed. A dry run, a
+dirty mergeability state, a missing ref or a review infrastructure failure skips the wait, and there pending checks
+still count as not passed and record `FIND-CI`.
+
+When the review ends without approval, the Stage 4 error says which outcome occurred:
+
+| Outcome            | Stage 4 error                                                                                         |
+| ------------------ | ----------------------------------------------------------------------------------------------------- |
+| CI still pending   | `CI still pending after the wait budget: <names> still running after <budget> s ...; no test failed.` |
+| CI failed          | `CI failed: <every failed check name>.`                                                               |
+| Tests not measured | `test results not measured: no recorded Stage 3 test result and no CI checks.`                        |
+
+`test suite reported failures` appears only when the local test run really failed. When nothing specific blocked the
+review, the error says `no specific blocker was recorded` instead of blaming the tests.
 
 #### Safety Halt & Merge Boundary
 

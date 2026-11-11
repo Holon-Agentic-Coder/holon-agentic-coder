@@ -170,9 +170,14 @@ def fit_root_intent_branch(seq: int, slug: str) -> FitResult:
     """Fit ``I-{seq}-{slug}``, leaving room for one plan and one execution segment below it.
 
     The reserve means a name within ``downstream_reserve()`` of the limit may be shortened although it would fit alone.
+    Room is also kept for every child level the depth limit allows, so decomposition can name the first child; when
+    that would leave no room even for a digest-only slug, only the intent's own plan and execution are kept.
     """
     parts = [Part("prefix", f"I-{seq}-"), Part("slug", slug, shortenable=True)]
-    return fit_parts(parts, extra=downstream_reserve())
+    try:
+        return fit_parts(parts, extra=downstream_reserve() + MAX_SUB_INTENT_DEPTH * _MIN_CHILD_LEVEL_LENGTH)
+    except RefTooLongError:
+        return fit_parts(parts, extra=downstream_reserve())
 
 
 def _child_levels_below(parent: str) -> int:

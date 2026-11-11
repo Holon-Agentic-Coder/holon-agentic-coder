@@ -235,3 +235,10 @@ def test_no_other_module_builds_a_branch_with_a_literal_suffix():
         and str(path.relative_to(root)) not in _ALLOWED_SUFFIX_BUILDERS | {"ref_names.py"}
     ]
     assert offenders == []
+
+
+def test_long_root_slug_leaves_room_for_every_child_level():
+    root = ref_names.fit_root_intent_branch(1794391536, "x" * 140).name
+    child = ref_names.fit_child_intent_branch(root, 1, "y" * 80)
+    grandchild = ref_names.fit_child_intent_branch(child.name, 1, "z" * 80)
+    ref_names.ensure_chain_fits(grandchild.name, "claude-agent", "claude-sonnet-5-5")

@@ -21,6 +21,7 @@ from sandbox_executor.flow.git_refs import (
     _snapshot_child_branches,
     _track_local_branch,
 )
+from sandbox_executor.flow.host_remote import publish_new_child_branches, remote_error
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.knowledge import ConsultEngine
@@ -30,10 +31,11 @@ logger = logging.getLogger(__name__)
 
 
 def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911, PLR0912, PLR0915
-    """Execute Stage 2: dispatch the planner agent and adopt the plan branch it pushed.
+    """Execute Stage 2: dispatch the planner agent and adopt the plan branch it committed.
 
-    The planner container (the same one 'holon plan' launches) authors plans/P-*.md, appends
-    plans.jsonl and pushes. The flow never writes a plan itself: if no planner produced a plan file,
+    The host fetches the intent branch; the planner container (the same one 'holon plan' launches) authors
+    plans/P-*.md and appends plans.jsonl on a plan branch in the mounted worktree; the host pushes that branch. The
+    flow never writes a plan itself: if no planner produced a plan file,
     the stage fails. Downstream stages operate unattended and never stall on interactive questions.
     """
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -119,11 +121,14 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
                 os.environ.pop(ENV_REPLAN_FEEDBACK, None)
             else:
                 os.environ[ENV_REPLAN_FEEDBACK] = previous_feedback_env
+    # The host pushes every plan branch the container committed, a failed planner's salvage commit included.
+    push_error = remote_error(publish_new_child_branches, repo_dir, intent_prefix, "P", existing_plans)
     if exit_code != 0:
         return _stage_failure(
             context, FlowStage.PLAN, start_time, f"{no_plan_error} (planner agent exited with code {exit_code})"
         )
-
+    if push_error is not None:
+        return _stage_failure(context, FlowStage.PLAN, start_time, f"Plan stage failed: {push_error}")
     fetch_error = _fetch_branch_prefix_error(repo_dir, intent_prefix)
     if fetch_error is not None:
         return _stage_failure(

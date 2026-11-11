@@ -30,7 +30,6 @@ __all__ = [
     "ReviewTargetError",
     "RunGh",
     "classify_review_diff",
-    "github_repo_slug",
     "is_pr_reference",
     "resolve_review_target",
     "verify_review_diff",
@@ -40,9 +39,6 @@ PR_VIEW_FIELDS = "number,headRefName,headRefOid,baseRefName,title,body"
 GH_TIMEOUT_SECONDS = 60
 
 _PR_URL = re.compile(r"^https://github\.com/[^/\s]+/[^/\s]+/pull/(\d+)(?:[/?#].*)?$")
-_GITHUB_URL = re.compile(
-    r"^(?:https?://(?:[^@/]*@)?github\.com/|(?:ssh://)?git@github\.com[:/])([^/\s]+)/([^/\s]+?)/?$"
-)
 
 RunGh = Callable[[list[str], str | None], "subprocess.CompletedProcess[str]"]
 
@@ -85,15 +81,6 @@ def is_pr_reference(target: str) -> bool:
     """Return True for a bare PR number or a GitHub pull request URL."""
     clean = target.strip()
     return clean.isdigit() or bool(_PR_URL.match(clean))
-
-
-def github_repo_slug(repo_url: str) -> str | None:
-    """Return 'owner/repo' for an https or ssh GitHub URL (userinfo and '.git' dropped), else None."""
-    match = _GITHUB_URL.match(repo_url.strip())
-    if not match:
-        return None
-    owner, repo = match.group(1), match.group(2).removesuffix(".git")
-    return f"{owner}/{repo}" if owner and repo else None
 
 
 def _default_run_gh(argv: list[str], cwd: str | None) -> subprocess.CompletedProcess[str]:

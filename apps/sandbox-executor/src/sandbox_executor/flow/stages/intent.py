@@ -20,6 +20,7 @@ from sandbox_executor.flow.git_refs import (
     _read_ledger_rows,
     _track_local_branch,
 )
+from sandbox_executor.flow.host_remote import fetch_base, push_branch, remote_error
 from sandbox_executor.flow.intent_questions import validate_intent_questions
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
@@ -58,8 +59,9 @@ def _reused_intent_conflict(repo_dir: str, intent_branch: str, branch: str, inte
 def run_intent_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911, PLR0912, PLR0915
     """Execute Stage 1: validate the intent payload and dispatch the intent-creator agent.
 
-    The intent-creator container (the same one 'holon intent' launches) creates the intent branch,
-    appends intents.jsonl and pushes; the flow then fetches origin and verifies the branch exists.
+    The host fetches the target branch; the intent-creator container (the same one 'holon intent' launches) creates
+    the intent branch in the mounted worktree and appends intents.jsonl; the host then pushes the branch, fetches
+    origin and verifies the branch exists.
     """
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log("Starting Stage 1: Intent Creation")
@@ -144,6 +146,15 @@ def run_intent_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
                 return _stage_failure(context, FlowStage.INTENT, start_time, conflict, intent_branch=intent_branch)
             context.log(f"Intent branch '{intent_branch}' already exists on origin; reusing it without re-dispatching.")
         else:
+            base_error = remote_error(fetch_base, repo_dir, target_branch)
+            if base_error is not None:
+                return _stage_failure(
+                    context,
+                    FlowStage.INTENT,
+                    start_time,
+                    f"Intent stage failed: {base_error}",
+                    intent_branch=intent_branch,
+                )
             tmp_dir = os.path.expanduser("~/.holon/tmp")
             os.makedirs(tmp_dir, exist_ok=True)
             fd, intent_file = tempfile.mkstemp(prefix="holon-flow-intent-", suffix=".json", dir=tmp_dir)
@@ -164,6 +175,15 @@ def run_intent_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
                     FlowStage.INTENT,
                     start_time,
                     f"Intent stage failed: intent-creator agent exited with code {exit_code}.",
+                    intent_branch=intent_branch,
+                )
+            push_error = remote_error(push_branch, repo_dir, intent_branch)
+            if push_error is not None:
+                return _stage_failure(
+                    context,
+                    FlowStage.INTENT,
+                    start_time,
+                    f"Intent stage failed: {push_error}",
                     intent_branch=intent_branch,
                 )
             fetch_error = _fetch_branch_prefix_error(repo_dir, branch)

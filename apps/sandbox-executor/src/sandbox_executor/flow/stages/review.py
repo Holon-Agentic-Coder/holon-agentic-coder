@@ -12,6 +12,7 @@ from sandbox_executor.budgets import format_minutes
 from sandbox_executor.calibration import is_metadata_path
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _stage_failure, _test_evidence
+from sandbox_executor.flow.review.ci_outcome import describe_ci_outcome
 from sandbox_executor.flow.review.loop import _reviewers_objected, _run_engine_review_loop
 from sandbox_executor.flow.review.records import render_reviewer_summary_line
 from sandbox_executor.flow.review.verdict import not_approved_verdicts, render_final_verdicts
@@ -236,7 +237,7 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
             # Every reviewer approved cleanly, but a role, container or adjudication check withheld consensus.
             err_msg = f"Autonomous review blocked: consensus withheld by {'; '.join(blockers)} ({summaries})."
         else:
-            err_msg = "Autonomous review consensus failed: test suite reported failures."
+            err_msg = describe_ci_outcome(ci_checks, loop_res.get("ci_wait"), bool(loop_res.get("tests_failed")))
 
     if err_msg is not None:
         # Every Stage 4 failure, mergeability halts included, reports the reviewers' final verdicts.

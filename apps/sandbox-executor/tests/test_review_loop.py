@@ -694,7 +694,7 @@ PR_HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
 ENTRYPOINT = "sandbox_executor.entrypoint.review_loop"
 
 
-#: The HOLON_REPO_URL that ``_run_entrypoint`` exports; the fake answers ``git remote get-url origin`` with it.
+#: The origin URL the fake git reports.
 FAKE_REPO_URL = "https://github.com/acme/widgets.git"
 
 
@@ -771,8 +771,7 @@ def _run_entrypoint(repo_dir: Path, target: str, fake_git: FakeGitCommands, *ext
     }
     with (
         patch.object(sys, "argv", ["review_loop", target, f"--target-worktree={repo_dir}", *extra]),
-        patch.dict(os.environ, {"HOLON_REPO_URL": FAKE_REPO_URL}),
-        patch(f"{ENTRYPOINT}._gh_runner", return_value=run_gh),
+        patch("sandbox_executor.review_target._default_run_gh", new=run_gh),
         patch(f"{ENTRYPOINT}.run_cmd", side_effect=fake_git),
         patch(f"{ENTRYPOINT}.check_and_resolve_stage_conflicts"),
         patch(f"{ENTRYPOINT}.run_review_loop", return_value=loop_result) as mock_loop,
@@ -910,7 +909,7 @@ def test_failing_resolution_exits_one_before_any_git_command(tmp_path, capsys):
 
     with (
         patch.object(sys, "argv", ["review_loop", "90", f"--target-worktree={tmp_path}", "--json"]),
-        patch(f"{ENTRYPOINT}._gh_runner", return_value=_failing_gh),
+        patch("sandbox_executor.review_target._default_run_gh", new=_failing_gh),
         patch(f"{ENTRYPOINT}.run_cmd", side_effect=fake_git),
         patch(f"{ENTRYPOINT}.run_review_loop") as mock_loop,
         pytest.raises(SystemExit) as exit_info,
@@ -925,21 +924,20 @@ def test_failing_resolution_exits_one_before_any_git_command(tmp_path, capsys):
     assert "no pull requests found" in data["error"]
 
 
-def test_gh_runner_names_the_repository_without_credentials(tmp_path, monkeypatch):
-    from sandbox_executor.entrypoint import review_loop as entry
+def test_default_gh_runner_sets_no_repository_env(tmp_path):
+    from sandbox_executor import review_target
 
-    monkeypatch.setenv("HOLON_REPO_URL", "https://x-access-token:secret@github.com/acme/widgets.git")
     seen: dict = {}
 
     def _fake_run(argv, **kwargs):
         seen.update(kwargs)
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-    with patch(f"{ENTRYPOINT}.subprocess.run", side_effect=_fake_run):
-        entry._gh_runner(str(tmp_path))(["gh", "pr", "view", "90"], str(tmp_path))
+    with patch.object(review_target.subprocess, "run", side_effect=_fake_run):
+        review_target._default_run_gh(["gh", "pr", "view", "90"], str(tmp_path))
 
-    assert seen["env"]["GH_REPO"] == "acme/widgets"
-    assert seen["timeout"] == 60
+    assert "env" not in seen
+    assert seen["timeout"] == review_target.GH_TIMEOUT_SECONDS
 
 
 # --------------------------------------------------------------------------------------
@@ -1132,61 +1130,6 @@ def test_approved_loop_never_merges(tmp_path, gh_write_guard):
         assert "merge" not in argv[:3], argv
         assert "--auto" not in argv, argv
     assert gh_write_guard == []
-
-
-def test_pending_ci_wait_honours_its_deadline(tmp_path):
-    from sandbox_executor.flow import FlowContext, _wait_for_pending_ci
-
-    now = [0.0]
-    sleeps: list[float] = []
-
-    def _sleep(seconds: float) -> None:
-        sleeps.append(seconds)
-        now[0] += seconds
-
-    pending = {"source": "github_cli", "pending": 2, "all_passed": False}
-    probe = MagicMock(return_value=dict(pending))
-    with patch("sandbox_executor.flow.github.ci.probe_ci_checks", probe):
-        res = _wait_for_pending_ci(
-            FlowContext(repo_dir=str(tmp_path)),
-            str(tmp_path),
-            "feature/x",
-            {},
-            dict(pending),
-            timeout=40.0,
-            poll_interval=15.0,
-            clock=lambda: now[0],
-            sleep=_sleep,
-        )
-
-    assert sleeps == [15.0, 15.0, 10.0]
-    assert now[0] == 40.0
-    assert res["pending"] == 2
-    assert res["all_passed"] is False
-
-
-def test_pending_ci_wait_returns_once_checks_settle(tmp_path):
-    from sandbox_executor.flow import FlowContext, _wait_for_pending_ci
-
-    sleeps: list[float] = []
-    settled = {"source": "github_cli", "pending": 0, "all_passed": True}
-    probe = MagicMock(return_value=dict(settled))
-    with patch("sandbox_executor.flow.github.ci.probe_ci_checks", probe):
-        res = _wait_for_pending_ci(
-            FlowContext(repo_dir=str(tmp_path)),
-            str(tmp_path),
-            "feature/x",
-            {},
-            {"source": "github_cli", "pending": 1},
-            timeout=600.0,
-            poll_interval=15.0,
-            clock=lambda: 0.0,
-            sleep=sleeps.append,
-        )
-
-    assert sleeps == [15.0]
-    assert probe.call_count == 1
-    assert res["all_passed"] is True
 
 
 def test_mergeability_probe_is_bounded_by_a_subprocess_timeout(tmp_path):
@@ -2466,7 +2409,6 @@ class TestResolverAgentExecution:
             result_file=str(result_file),
             iteration=1,
             dry_run=False,
-            skip_push=False,
             target="my-branch",
             json=False,
         )
@@ -2502,7 +2444,6 @@ class TestResolverAgentExecution:
             result_file=str(result_file),
             iteration=1,
             dry_run=False,
-            skip_push=False,
             target="my-branch",
             json=False,
         )
@@ -2535,7 +2476,6 @@ class TestResolverAgentExecution:
             result_file=str(result_file),
             iteration=1,
             dry_run=False,
-            skip_push=False,
             target="my-branch",
             json=False,
         )
@@ -2554,8 +2494,6 @@ class TestResolverAgentExecution:
                 return subprocess.CompletedProcess(cmd, 0, stdout="")
             if cmd[:2] == ["git", "commit"]:
                 return subprocess.CompletedProcess(cmd, 0, stdout="[my-branch 1234567] commit")
-            if cmd[:2] == ["git", "push"]:
-                return subprocess.CompletedProcess(cmd, 0, stdout="")
             return subprocess.CompletedProcess(cmd, 0, stdout="")
 
         heads = [
@@ -2582,7 +2520,7 @@ class TestResolverAgentExecution:
         assert result_json["lint_passed"] is True
         assert result_json["tests_passed"] is True
         assert result_json["error"] is None
-        assert result_json["pushed"] is True
+        assert "pushed" not in result_json
 
 
 # --------------------------------------------------------------------------------------
@@ -2621,11 +2559,11 @@ def _seed_local_remote(tmp_path):
 
 
 def test_resolver_mode_soft_resets_local_commit_and_commits_with_trailers(tmp_path, monkeypatch):
-    """When the resolver agent commits locally, _commit_and_push_resolution soft-resets to pre_resolver_head,
+    """When the resolver agent commits locally, _commit_resolution soft-resets to pre_resolver_head,
 
-    runs verification, re-commits with review trailers, and pushes with pushed=True.
+    runs verification and re-commits with review trailers, without pushing.
     """
-    from sandbox_executor.entrypoint.review_loop import _commit_and_push_resolution
+    from sandbox_executor.entrypoint.review_loop import CommitOptions, _commit_resolution
     from sandbox_executor.review_report import FindingDisposition
 
     _isolate_git_global_config(monkeypatch, tmp_path)
@@ -2653,16 +2591,15 @@ def test_resolver_mode_soft_resets_local_commit_and_commits_with_trailers(tmp_pa
     with patch(
         "sandbox_executor.entrypoint.review_loop._verify_before_push", return_value=(True, True, None)
     ) as mock_verify:
-        updated, new_head, pushed, lint_ok, tests_ok, err = _commit_and_push_resolution(
+        updated, new_head, lint_ok, tests_ok, err = _commit_resolution(
             str(seed),
             "main",
             1,
             dispositions,
-            pre_resolver_head=pre_resolver_head,
+            CommitOptions(pre_resolver_head=pre_resolver_head),
         )
 
     mock_verify.assert_called_once_with(str(seed))
-    assert pushed is True
     assert lint_ok is True
     assert tests_ok is True
     assert err is None
@@ -2680,9 +2617,8 @@ def test_resolver_mode_soft_resets_local_commit_and_commits_with_trailers(tmp_pa
     assert "Action-Origin: pr_review" in msg
     assert "Review-Severity: important" in msg
 
-    # Pushed to remote
-    remote_head = _real_git(remote, "rev-parse", "refs/heads/main")
-    assert remote_head == new_head
+    # Never pushed: the remote stays at the seed commit
+    assert _real_git(remote, "rev-parse", "refs/heads/main") == pre_resolver_head
 
 
 def test_build_resolver_prompt_forbids_both_git_commit_and_push(tmp_path):

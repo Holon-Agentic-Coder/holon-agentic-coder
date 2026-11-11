@@ -200,17 +200,19 @@ def test_push_rejection_is_named_and_other_output_passes_through():
     assert named_push_rejection(branch, "network unreachable") == "network unreachable"
 
 
-def test_unpushed_work_report_names_a_ref_too_long_rejection(tmp_path, capsys):
-    from sandbox_executor.entrypoint.executor import _report_unpushed_work
+def test_host_push_names_a_ref_too_long_rejection(monkeypatch):
+    from sandbox_executor.flow import host_remote
 
-    git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"]
-    subprocess.run([*git, "init", "-q", str(tmp_path)], check=True)
-    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "base"], cwd=tmp_path, check=True)
-    tip = subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True).stdout.strip()
-    _report_unpushed_work(str(tmp_path), "I-1-x/E-2-y/_", tip, "remote: ref too long")
-    err = capsys.readouterr().err
-    assert "ref too long: branch I-1-x/E-2-y/_" in err
-    assert "BEGIN UNPUSHED EXECUTION PATCH" in err
+    class _Rejected:
+        returncode = 1
+        stdout = ""
+        stderr = 'remote: ref too long: "refs/heads/I-1-x/E-2-y/_"\nremote: pre-receive hook declined'
+
+    monkeypatch.setattr(host_remote, "run_git", lambda *args, **kwargs: _Rejected())
+    with pytest.raises(host_remote.HostRemoteError) as info:
+        host_remote.push_commit("/unused", "a" * 40, "I-1-x/E-2-y/_")
+    assert "ref too long: branch I-1-x/E-2-y/_" in str(info.value)
+    assert "pre-receive hook declined" in str(info.value)
 
 
 _ALLOWED_SUFFIX_BUILDERS = {

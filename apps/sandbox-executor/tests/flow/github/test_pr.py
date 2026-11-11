@@ -169,6 +169,7 @@ class TestReviewMergeabilityGuards:
         with patch_lookup_sites(
             "sandbox_executor.flow.git_refs.run_git",
             "sandbox_executor.flow.github.pr.run_git",
+            "sandbox_executor.flow.host_remote.run_git",
             "sandbox_executor.flow.stage_conflicts.run_git",
         ) as mock_git:
             mock_git.return_value = MagicMock(returncode=0, stdout="")

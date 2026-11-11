@@ -48,14 +48,14 @@ class TestPlannerIntegration(unittest.TestCase):
 
     def test_planner_docker_execution_all_agents_fail_fast(self):
         """Test that running the orchestrator with the planner role fails fast
-        (returns non-zero exit code and does not push branches) when agent commands fail
+        (returns non-zero exit code and does not create plan branches) when agent commands fail
         (due to missing API keys / missing local tools in the test environment).
         """
         if not _is_docker_available():
             self.skipTest("Docker daemon is not available in test environment.")
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # A named volume owns its own uid, so the container can clone from and push back to the
+            # A named volume owns its own uid, so the container can commit into the
             # fixture without any host/container uid negotiation.
             volume = create_seeded_remote()
             self.addCleanup(remove_remote_volume, volume)
@@ -79,7 +79,7 @@ class TestPlannerIntegration(unittest.TestCase):
                 "-e",
                 "HOLON_ROLE=intent-creator",
                 "-e",
-                f"HOLON_REPO_URL={remote_path(volume)}",
+                f"HOLON_TARGET_WORKTREE={remote_path(volume)}",
                 *remote_volume_args(volume),
                 "-v",
                 f"{intent_json_path}:/tmp/intent.json",
@@ -132,7 +132,7 @@ class TestPlannerIntegration(unittest.TestCase):
                         "-e",
                         "HOLON_ROLE=planner",
                         "-e",
-                        f"HOLON_REPO_URL={remote_path(volume)}",
+                        f"HOLON_TARGET_WORKTREE={remote_path(volume)}",
                         *remote_volume_args(volume),
                         image_name,
                         intent_branch,
@@ -169,5 +169,5 @@ class TestPlannerIntegration(unittest.TestCase):
                         f"Stdout:\n{result.stdout}\nStderr:\n{result.stderr}",
                     )
 
-                    # Verify that no success/push message was printed
-                    self.assertNotIn("successfully created, committed, and pushed", result.stdout)
+                    # Verify that no success message was printed
+                    self.assertNotIn("successfully created and committed", result.stdout)

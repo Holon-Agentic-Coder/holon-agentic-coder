@@ -38,35 +38,28 @@ sequenceDiagram
     autonumber
     participant Host as Host / Orchestrator
     participant Exec as Sandbox Executor
-    participant Git as Git Remote / Repo
+    participant Git as Host worktree (git)
     participant Agent as Agent CLI
 
     Host->>Exec: Start (plan_branch, agent, model)
     Exec->>Exec: Validate runner exists & check credentials
-    alt Clean Workspace
-        Exec->>Git: Clone plan branch to HOLON_REPO_DIR
-    else Reused Workspace (HOLON_KEEP_WORKSPACE=1)
-        Exec->>Exec: Validate origin remote
-        Exec->>Git: Fetch plan branch
-        Exec->>Exec: Clean untracked files (sandboxed environment only)
-        Exec->>Exec: Checkout plan branch
-    end
+    Note over Host,Git: Host fetches the plan and target branches before the container starts
     Exec->>Exec: Create unique execution branch
     Exec->>Exec: Parse ledger (plans.jsonl & intents.jsonl)
     Exec->>Exec: Judge the plan against its entropy budget
     alt Plan lists an explicit sub-intent list
         Exec->>Exec: Record a 'decomposed' summary referring to the plan row (plan_decision)
-        Exec->>Git: Commit and push the ledger-only execution branch
+        Exec->>Git: Commit the ledger-only execution branch
     else Plan over budget without a sub-intent list
         Exec->>Exec: Record an 'over_budget' summary
-        Exec->>Git: Commit and push the ledger-only execution branch
+        Exec->>Git: Commit the ledger-only execution branch
     else Direct execution
         Exec->>Agent: Construct cmd & invoke with plan prompt
         Agent-->>Exec: Return output (success or failure)
         Exec->>Exec: Update executions.jsonl
-        Exec->>Git: Commit and push execution branch
+        Exec->>Git: Commit execution branch
     end
-    Exec->>Exec: Clean up workspace (if HOLON_KEEP_WORKSPACE=0)
+    Host->>Host: Push every new execution branch (fast-forward, never forced)
 ```
 
 ### 1. Runner Validation
@@ -78,24 +71,12 @@ validation under the **3-Tier Fallback Contract**.
 
 Depending on the environment configuration:
 
-- **Dynamic Repository URL Resolution**: In containerized workflows, `HOLON_REPO_URL` is automatically resolved on the
-  host by the `holon` CLI wrapper. It inspects the target repository's git remote (`git config --get remote.origin.url`,
-  respecting `--repo-dir` and git worktrees) and normalizes SSH (`git@`, `ssh://`) or HTTPS formats. When paired with
-  `find_github_token()`, an authenticated URL (`https://x-access-token:<token>@<host>/<org>/<repo>.git`) is constructed
-  and forwarded to the container. If no token is detected, the raw remote URL is forwarded to enable SSH agent
-  forwarding.
-- **Host Override & Fail-Fast**: Exporting `HOLON_REPO_URL` on the host serves as an optional override that takes
-  absolute precedence. If the host CLI cannot resolve an `origin` remote and no override is present, it fails fast with
-  a descriptive error and exits non-zero before invoking Docker.
-- **Container-Side Strict Contract**: Inside the execution container, `get_repo_url()` strictly reads `HOLON_REPO_URL`.
-  If it is unset or empty, it raises an explicit `RuntimeError`. Silent fallbacks to hardcoded repositories (such as
-  `holon-agentic-coder.git`) have been completely eliminated.
-- **Clean Workspace**: If `HOLON_REPO_DIR` is empty or not configured, a default workspace is initialized (either
-  `~/.holon-sandbox/workspace` in sandbox mode or `~/.holon/repo` locally).
-- **Stale Workspace Discarding**: If the workspace already contains a `.git` folder but its remote URL does not match
-  the expected `HOLON_REPO_URL`, the workspace is cleared and cloned anew.
-- **Workspace Reuse**: Under `HOLON_KEEP_WORKSPACE=1`, the directory is preserved. A `git fetch` is performed, untracked
-  files are cleaned if inside a sandbox, and a force checkout is executed.
+- **Host worktree**: The container works in place on the flow's host-provisioned `flow-<slug>` worktree, bind-mounted at
+  the sandbox workspace path (`HOLON_TARGET_WORKTREE`). The executor never clones, fetches, resets or pushes.
+- **Host-side fetch and push**: Before the container starts, the host fetches the plan branch and the target branch.
+  After it returns, the host pushes every new execution branch, including a failed one so a resume can find it. If the
+  host push fails, the commits stay on the host's local branch and the error names the operation, branch and remote. No
+  repository URL variable exists.
 
 ### 3. Execution Branch Creation
 
@@ -132,17 +113,14 @@ It returns one of three outcomes:
 The executor never invents child work and never writes `intents.jsonl` rows. For both non-execute outcomes it skips the
 agent, records one `executions.jsonl` summary (`status: "decomposed"` with a `plan_decision` reference to the plan row's
 list, never a copy, or `status: "over_budget"` with `entropy`, `entropy_budget` and a message) and commits only that
-ledger to the execution branch. The branch is then pushed, or kept locally when `HOLON_SKIP_PUSH` disables pushing.
-Because the agent never runs, the git-recovery verification never applies here, so only two checks can refuse that push:
-the branch has no parent commit, or the pre-push sync fails (the latter first commits a superseding failure row). Exit
-codes: `over_budget` exits 3 (`OVER_BUDGET_EXIT_CODE`) only when its row is committed and then either pushed or
-deliberately kept local because `HOLON_SKIP_PUSH` disables pushing; every other outcome exits 1. `decomposed` exits 0
-when recording, committing and pushing its row raise no error, which includes a run where nothing was staged or the push
-is refused, since neither raises one; any failure while recording, committing or pushing its row exits 1. Whether it
-exits 3 or 1, a direct `holon execute` of an `over_budget` plan fails, while the flow reads the recorded row and decides
-what happens next: each child intent is created through the normal Stage 1 intent creator and run through the full
-pipeline (unless the plan's intent is already at `budgets.MAX_SUB_INTENT_DEPTH`, in which case Stage 3 fails and refuses
-to recurse further), or the plan is sent back to Stage 2 (see [Git Flow](../git_flow.md#flow-equivalence-guarantee)).
+ledger to the execution branch. The host then pushes the branch after the container returns; the container never pushes.
+Exit codes: `over_budget` exits 3 (`OVER_BUDGET_EXIT_CODE`) only when its row is committed; every other outcome exits 1.
+`decomposed` exits 0 when recording and committing its row raise no error, which includes a run where nothing was
+staged; any failure while recording or committing its row exits 1. Whether it exits 3 or 1, a direct `holon execute` of
+an `over_budget` plan fails, while the flow reads the recorded row and decides what happens next: each child intent is
+created through the normal Stage 1 intent creator and run through the full pipeline (unless the plan's intent is already
+at `budgets.MAX_SUB_INTENT_DEPTH`, in which case Stage 3 fails and refuses to recurse further), or the plan is sent back
+to Stage 2 (see [Git Flow](../git_flow.md#flow-equivalence-guarantee)).
 
 ### 6. Agent Invocation
 
@@ -165,8 +143,9 @@ summary row (`execution_notes_valid`). See
 
 ### 8. Git Commit & Push
 
-All modified files and ledgers are added, committed, and pushed back to the origin repository under the unique execution
-branch (unless `HOLON_SKIP_PUSH=1` is specified).
+All modified files and ledgers are added and committed in the mounted worktree under the unique execution branch. The
+container does not push: the host pushes every new execution branch after the container returns, including a failed one
+so a resume can find it. If that push fails, the commits stay on the host's local branch.
 
 ---
 
@@ -221,13 +200,5 @@ outputs:
 
 ### Workspace Retention Policy
 
-Workspace state retention is controlled by the environment variable `HOLON_KEEP_WORKSPACE`:
-
-| Environment Variable                | Context                        | Git Cleaning Behavior         | Workspace Preservation                       |
-| :---------------------------------- | :----------------------------- | :---------------------------- | :------------------------------------------- |
-| `HOLON_KEEP_WORKSPACE=0` (or unset) | Any                            | Cleaned on startup & teardown | Workspace directory is completely deleted    |
-| `HOLON_KEEP_WORKSPACE=1`            | Sandbox (`HOLON_IN_SANDBOX=1`) | Runs `git clean -fd`          | Directory preserved, untracked files deleted |
-| `HOLON_KEEP_WORKSPACE=1`            | Local host / Non-sandbox       | Skips `git clean -fd`         | Directory preserved, untracked files kept    |
-
-> [!NOTE] Skipping `git clean -fd` in local host environments allows developers to keep custom `.env` or configuration
-> files in their working directories between test executions.
+The flow's `flow-<slug>` worktree lives on the host, so edits, commits and logs survive a container crash. The container
+neither clears nor cleans it.

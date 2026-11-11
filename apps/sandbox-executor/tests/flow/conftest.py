@@ -54,6 +54,8 @@ def _flow_repos_template(tmp_path_factory, hermetic_git_config) -> Path:
     for name in ("intents.jsonl", "plans.jsonl", "executions.jsonl"):
         (seed / "holon-knowledge" / "ledger").mkdir(parents=True, exist_ok=True)
         (seed / "holon-knowledge" / "ledger" / name).write_text("", encoding="utf-8")
+    # Like the real repository: the flow's own state lives in the worktree, but never in a role's commit.
+    (seed / ".gitignore").write_text(".holon/\nholon-knowledge/.index/\n", encoding="utf-8")
     (seed / "src").mkdir()
     (seed / "src" / "app.py").write_text("print('hi')\n", encoding="utf-8")
     _git(seed, "add", "-A")

@@ -24,7 +24,13 @@ from synthetic throughput data, and the tests that exercise them use injected cl
 | Execute stage         | 45 min  | `HOLON_STAGE_BUDGET_EXECUTE_MINUTES`          | The execute stage, including the executor container's own test run. |
 | Review iteration      | 15 min  | `HOLON_STAGE_BUDGET_REVIEW_ITERATION_MINUTES` | Each review-loop iteration.                                         |
 | Calibration stage     | 10 min  | `HOLON_STAGE_BUDGET_CALIBRATION_MINUTES`      | The calibration stage.                                              |
+| Review CI wait        | 1800 s  | `HOLON_REVIEW_CI_WAIT_SECONDS`                | Waiting for pending CI checks; separate from the review iteration.  |
 | Stage ceiling (exact) | (unset) | `HOLON_STAGE_BUDGET_SECONDS`                  | Replaces every per-stage value above, in seconds.                   |
+
+`HOLON_REVIEW_CI_WAIT_SECONDS` is in seconds, not minutes, and is not part of `HOLON_STAGE_BUDGET_SECONDS`: the wait
+backs off from 15 s to a 120 s ceiling and ends once no check is pending or one has failed; `0`, negative and
+non-numeric values are invalid and keep 1800 s, and the budget applies per wait (see
+[CI wait budget and outcomes](git_flow.md#ci-wait-budget-and-outcomes)).
 
 `HOLON_STAGE_BUDGET_SECONDS` is meant for handing one exact ceiling to a single sandbox role; set it only for that
 container, because wherever it is set it applies to every stage. The host does this itself: while `holon flow` runs a

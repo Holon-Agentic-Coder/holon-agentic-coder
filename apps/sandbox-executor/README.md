@@ -82,15 +82,13 @@ enforcement:
 - **Credentials Off the Command Line**: The GitHub token and other credential variables reach the container through a
   temporary `0600` docker `--env-file` (in the `0700` directory `~/.holon/tmp/env-files`) that is removed after the run;
   the pre-flight readiness probe (`holon doctor`, and before `holon plan` / `execute` / `flow`) uses the same env-file
-  and classifier for `HOLON_AGENT_KEY` and a credential-bearing `HOLON_AGENT_SETTINGS`, and forwards `HOLON_REPO_URL`
-  without userinfo. `HOLON_REPO_URL` never embeds credentials: HTTP(S) userinfo is stripped from both the override and
-  `remote.origin.url`, while SSH remotes are left untouched. A stripped credential (the password, the user name in the
-  `<token>:x-oauth-basic` form, or a token-shaped bare user name) wins over the ambient host token, except that a
-  plain-HTTP credential is discarded with a warning. In-container git authenticates through a host-scoped credential
-  helper configured only in the environment (`GIT_CONFIG_*`), so the token is never written to `.git/config`. Every
-  echoed command is masked through the shared `sandbox_executor.redaction` patterns, always before any length clamp.
-  Known gap: the mitmweb dashboard password is still on the sidecar's command line. See
-  [Agent Credentials](../../docs/executor/agent_credentials_requirements.md#repository-url-credentials).
+  and classifier for `HOLON_AGENT_KEY` and a credential-bearing `HOLON_AGENT_SETTINGS`. No role container runs git
+  against a remote, so no git credential-helper (`GIT_CONFIG_*`) is injected and no `ssh-agent` socket is mounted;
+  `GITHUB_TOKEN` is forwarded for `gh` API calls only. The old repository URL variable `HOLON_REPO_URL` was removed: a
+  stale value in the environment is ignored, neither forwarded nor an error. Every echoed command is masked through the
+  shared `sandbox_executor.redaction` patterns, always before any length clamp. Known gap: the mitmweb dashboard
+  password is still on the sidecar's command line. See
+  [Agent Credentials](../../docs/executor/agent_credentials_requirements.md#host-side-fetch-and-push).
 
 ---
 
@@ -102,11 +100,12 @@ The package provides the unified `holon` CLI command.
 
 Runs the automated 5-stage Holon Flow lifecycle pipeline (Intent -> Plan -> Execute -> Review Loop -> Calibrate). A flow
 run is equivalent to invoking `holon intent`, `holon plan`, `holon execute`, `holon review-loop` and `holon calibrate`
-by hand: Stages 1-3 launch the same role containers with the resolved `--agent` and `--model`, then fetch `origin` to
-adopt the branch each container pushed. The flow fails Stage 2 rather than fabricate a plan when no planner produced
-`plans/P-*.md`, and fails Stage 3 (recording `status: "failed"`, opening no PR) when the execution changes nothing
-outside `holon-knowledge/ledger/`, `plans/` and `executions/`. `--skip-push` is only accepted with `--dry-run`, which
-validates without dispatching. See [the flow equivalence guarantee](../../docs/git_flow.md#flow-equivalence-guarantee).
+by hand: Stages 1-3 launch the same role containers with the resolved `--agent` and `--model`; the host fetches the base
+before each container starts and pushes the branch it committed after it returns. The flow fails Stage 2 rather than
+fabricate a plan when no planner produced `plans/P-*.md`, and fails Stage 3 (recording `status: "failed"`, opening no
+PR) when the execution changes nothing outside `holon-knowledge/ledger/`, `plans/` and `executions/`. `--skip-push` is
+only accepted with `--dry-run`, which validates without dispatching. See
+[the flow equivalence guarantee](../../docs/git_flow.md#flow-equivalence-guarantee).
 
 ```bash
 # Run complete lifecycle
@@ -166,8 +165,8 @@ The review loop fails closed:
 - **Target resolution.** A PR number or GitHub PR URL is resolved through
   `gh pr view <target> --json number,headRefName,headRefOid,baseRefName,title,body` to its head branch, head SHA and
   base branch (`sandbox_executor/review_target.py`); a branch resolves to the mounted worktree's `HEAD`. The container
-  entrypoint does this before any git operation, with `gh` learning the repository from `GH_REPO` (derived from
-  `HOLON_REPO_URL` without its credentials), then validates the mounted worktree in place without cloning or fetching:
+  entrypoint does this before any git operation, with `gh` learning the repository from the mounted worktree's own
+  remote configuration without network access, then validates the mounted worktree in place without cloning or fetching:
   `HEAD` must be a readable commit on the head branch (a branch target refuses a detached `HEAD`) and equal the PR head
   SHA. On any resolution or validation failure it appends one `ACT-REV` failure row to
   `holon-knowledge/ledger/executions.jsonl`, prints a FAILED summary and exits 1 without computing or posting a
@@ -213,32 +212,31 @@ the `.git`, `gitdir` and `commondir` pointers are overlaid read-only, so the con
 configuration, attribute, exclude pattern, graft or commit-graph that host git later reads or runs, cannot touch any
 sibling worktree's administrative files (`commondir`, `gitdir`, `HEAD`, a plantable `config.worktree`) and cannot create
 new `worktrees/` entries. The common-root ancestry and ref-substitution surfaces are overlaid read-only too:
-`refs/replace/` and `packed-refs` (`refs/` itself stays writable -- in-container fetch, commit and push write loose
-refs, which never rewrite `packed-refs`; only ref deletion and `pack-refs`/`gc` do, and nothing in-container runs
-those), `shallow`, whose entries would cut perceived ancestry exactly like grafts, and the shared rerere cache
-`rr-cache/`, whose planted resolutions host git applies silently to the maintainer's next conflicting merge (its mere
-presence activates rerere even with no rerere configuration; an in-container conflicting merge against the read-only
-overlay fails only to record its preimage, non-fatally, and completes as an ordinary conflicted merge). Absent `hooks/`,
-`modules/`, `worktrees/`, `config`, `config.worktree`, `objects/info/`, `info/` and `refs/replace/` are created before
-overlaying so the container cannot create them either; an absent `packed-refs` is created with only the standard
-`# pack-refs with: ...` header line, which git treats exactly like no packed refs while keeping host `git fsck` free of
-the `emptyPackedRefsFile` warning a zero-byte file draws; and an absent `shallow` is created as a read-only _directory_
-instead, because an empty `shallow` file would itself mark the repository shallow, while git treats a `shallow`
-directory as no shallow file at all (the only host operation the directory blocks -- turning the full clone into a
-shallow one later -- fails loudly, never silently). An absent `rr-cache/` is the inverse: an empty `rr-cache`
-_directory_ would itself turn host rerere on, so a zero-length `rr-cache` _file_ is created and overlaid read-only
-instead -- inert for git, while the one host operation it blocks, enabling rerere in this clone later, fails loudly,
-never silently. Where host rerere is already enabled (`git config rerere.enabled` true) the stand-in file would break
-the host's merges and `git gc`, so an empty read-only `rr-cache` _directory_ is created instead (a stand-in file left by
-an earlier mount is replaced by it); in-container rerere then simply cannot record (the host's own directory stays
-writable to the host). The created empty directory stays behind on the host: if `rerere.enabled` is later unset, its
-mere presence turns host rerere on (an explicit `false` still disables it). A non-empty regular file at `rr-cache` with
-rerere enabled is refused with a `RuntimeError` asking for the stray file's removal. When the host clone is itself
-shallow, its existing `shallow` file is overlaid read-only, so an in-container `git fetch` that must rewrite it
-(deepening or shallow-boundary negotiation) fails loudly: a shallow host clone is effectively unsupported in-container,
-and flow worktrees come from full clones. When the mounted worktree is a linked worktree, the common `HEAD` -- the
-primary checkout's, which in-container git never needs -- is overlaid read-only as well, along with the rest of the
-primary's per-worktree state at the common root, each when it exists: `index`, `FETCH_HEAD`, the transient
+`refs/replace/` and `packed-refs` (`refs/` itself stays writable -- in-container commits write loose refs, which never
+rewrite `packed-refs`; only ref deletion and `pack-refs`/`gc` do, and nothing in-container runs those), `shallow`, whose
+entries would cut perceived ancestry exactly like grafts, and the shared rerere cache `rr-cache/`, whose planted
+resolutions host git applies silently to the maintainer's next conflicting merge (its mere presence activates rerere
+even with no rerere configuration; an in-container conflicting merge against the read-only overlay fails only to record
+its preimage, non-fatally, and completes as an ordinary conflicted merge). Absent `hooks/`, `modules/`, `worktrees/`,
+`config`, `config.worktree`, `objects/info/`, `info/` and `refs/replace/` are created before overlaying so the container
+cannot create them either; an absent `packed-refs` is created with only the standard `# pack-refs with: ...` header
+line, which git treats exactly like no packed refs while keeping host `git fsck` free of the `emptyPackedRefsFile`
+warning a zero-byte file draws; and an absent `shallow` is created as a read-only _directory_ instead, because an empty
+`shallow` file would itself mark the repository shallow, while git treats a `shallow` directory as no shallow file at
+all (the only host operation the directory blocks -- turning the full clone into a shallow one later -- fails loudly,
+never silently). An absent `rr-cache/` is the inverse: an empty `rr-cache` _directory_ would itself turn host rerere on,
+so a zero-length `rr-cache` _file_ is created and overlaid read-only instead -- inert for git, while the one host
+operation it blocks, enabling rerere in this clone later, fails loudly, never silently. Where host rerere is already
+enabled (`git config rerere.enabled` true) the stand-in file would break the host's merges and `git gc`, so an empty
+read-only `rr-cache` _directory_ is created instead (a stand-in file left by an earlier mount is replaced by it);
+in-container rerere then simply cannot record (the host's own directory stays writable to the host). The created empty
+directory stays behind on the host: if `rerere.enabled` is later unset, its mere presence turns host rerere on (an
+explicit `false` still disables it). A non-empty regular file at `rr-cache` with rerere enabled is refused with a
+`RuntimeError` asking for the stray file's removal. When the host clone is itself shallow, its existing `shallow` file
+is overlaid read-only, so anything that must rewrite it fails loudly: a shallow host clone is effectively unsupported
+in-container, and flow worktrees come from full clones. When the mounted worktree is a linked worktree, the common
+`HEAD` -- the primary checkout's, which in-container git never needs -- is overlaid read-only as well, along with the
+rest of the primary's per-worktree state at the common root, each when it exists: `index`, `FETCH_HEAD`, the transient
 `MERGE_HEAD`/`MERGE_MSG`/`MERGE_MODE`/`MERGE_AUTOSTASH`/`ORIG_HEAD`/`CHERRY_PICK_HEAD`/`REVERT_HEAD`/`SQUASH_MSG`/`AUTO_MERGE`
 files, the mid-merge rerere map `MERGE_RR` (per-worktree state: the primary's lives at the common root, while a
 sibling's copy is already covered by the `worktrees/` overlay), the mid-rebase `REBASE_HEAD` file and `rebase-merge/`
@@ -266,19 +264,34 @@ pass from the result file. The entrypoint only validates the mount: HEAD must be
 logs and reviewer scratch under `.subagent/review/` land on the host at once and survive a container crash. No Docker
 volume is created and no root init container runs.
 
-The Stage 3 executor works the same way on the run's `flow-<slug>` worktree. The host fetches the plan branch (and any
-partial execution branch a resume continues) into the worktree before dispatch: `holon flow` through its existing fetch
-of the plan's branches, and `holon execute` through `git_flow.fetch_origin_branch()`, after provisioning or reusing the
-plan's `flow-<slug>` worktree when it is given a default-branch checkout. The entrypoint (`entrypoint/executor.py`)
-recognises the mount by `HOLON_TARGET_WORKTREE` naming the sandbox workspace path and then never clones, fetches, resets
-or cleans: it requires a readable `HEAD`, a worktree without uncommitted changes (edits left by a crashed run stay on
-the host and are never swept into a new execution) and a plan branch that already resolves, creates the execution branch
-from the plan tip (or the resumed partial head) in the host worktree, writes its git identity to the container's global
-config and pushes without recording an upstream, since the repository config is read-only. A repository that is unusable
-after the agent ran fails the run instead of being re-initialised. Commits and edits are on the host at once, so a
-crash, OOM kill or timeout loses nothing. Only an unmounted run outside a container still clones or reuses its own
-workspace. The intent creator and planner keep their private in-container clone and never mount the host worktree. A
-pass that runs `uv run` in the mounted worktree uses the container-private environment
+Every stage works the same way on the run's `flow-<slug>` worktree, with the same protections for all four roles (the
+Stage 1 intent creator, Stage 2 planner, Stage 3 executor and Stage 4 review-loop and resolver). No role container ever
+runs `git clone`, `fetch`, `pull`, `push`, `ls-remote` or `reset` against a remote; roles only commit in the mounted
+worktree. The host, with its own credentials, fetches the base before each container starts (the target branch for Stage
+1, the intent branch for Stage 2, the plan branch plus the target branch for Stage 3, the plan and execution branches
+for Stage 4's diff check) and pushes the committed branch after the container returns: Stage 1 pushes the intent branch,
+Stage 2 the new plan branch, Stage 3 every new execution branch (including a failed one so a resume can find it), and
+Stage 4's resolver commits in the container while the host pushes that head, fast-forward only and never forced. This
+lives in `flow/host_remote.py` (`fetch_base`, `push_branch`, `push_commit`, `publish_new_child_branches`,
+`HostRemoteError`) and, for the standalone commands, `cli/commands/_host_publish.py`: `holon intent`, `holon plan` and
+`holon execute` fetch on the host first and push the checked-out branch after a successful container exit. No stage
+depends on an `ssh-agent`, SSH key, `known_hosts` or the origin URL scheme inside a container, so a worktree whose
+`origin` is an SSH URL passes all four stages. When the host cannot fetch or push, the stage error names the operation,
+the branch and the remote with credentials stripped, for example
+`host push of '<branch>' through remote 'origin' failed: <detail>`; a failed host push leaves the commits on the host's
+local branch.
+
+For the Stage 3 executor, the host fetches the plan branch (and any partial execution branch a resume continues) into
+the worktree before dispatch: `holon flow` through its existing fetch of the plan's branches, and `holon execute`
+through `git_flow.fetch_origin_branch()`, after provisioning or reusing the plan's `flow-<slug>` worktree when it is
+given a default-branch checkout. The entrypoint (`entrypoint/executor.py`) recognises the mount by
+`HOLON_TARGET_WORKTREE` naming the sandbox workspace path and then never clones, fetches, resets or cleans: it requires
+a readable `HEAD`, a worktree without uncommitted changes (edits left by a crashed run stay on the host and are never
+swept into a new execution) and a plan branch that already resolves, creates the execution branch from the plan tip (or
+the resumed partial head) in the host worktree, writes its git identity to the container's global config; it does not
+push. A repository that is unusable after the agent ran fails the run instead of being re-initialised. Commits and edits
+are on the host at once, so a crash, OOM kill or timeout loses nothing. The intent creator and planner mount the same
+worktree. A pass that runs `uv run` in the mounted worktree uses the container-private environment
 `UV_PROJECT_ENVIRONMENT=/home/holon/.cache/holon-venv`, so it never rebuilds the host's `.venv`.
 
 `holon review-loop <target>` resolves the worktree on the host: the `--target-worktree` when it has the review branch

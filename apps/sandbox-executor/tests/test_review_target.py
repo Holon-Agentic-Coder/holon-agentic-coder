@@ -13,7 +13,6 @@ from sandbox_executor.review_target import (
     ReviewTarget,
     ReviewTargetError,
     classify_review_diff,
-    github_repo_slug,
     is_pr_reference,
     resolve_review_target,
     verify_review_diff,
@@ -76,7 +75,7 @@ def _pr_json(**overrides: Any) -> str:
 
 
 # --------------------------------------------------------------------------------------
-# is_pr_reference and github_repo_slug
+# is_pr_reference
 # --------------------------------------------------------------------------------------
 
 
@@ -97,21 +96,6 @@ def _pr_json(**overrides: Any) -> str:
 )
 def test_is_pr_reference(target, expected):
     assert is_pr_reference(target) is expected
-
-
-@pytest.mark.parametrize(
-    ("url", "expected"),
-    [
-        ("https://github.com/acme/widgets.git", "acme/widgets"),
-        ("https://x-access-token:secret@github.com/acme/widgets.git", "acme/widgets"),
-        ("git@github.com:acme/widgets.git", "acme/widgets"),
-        ("ssh://git@github.com/acme/widgets", "acme/widgets"),
-        ("https://gitlab.com/acme/widgets.git", None),
-        ("", None),
-    ],
-)
-def test_github_repo_slug_drops_userinfo_and_dot_git(url, expected):
-    assert github_repo_slug(url) == expected
 
 
 # --------------------------------------------------------------------------------------

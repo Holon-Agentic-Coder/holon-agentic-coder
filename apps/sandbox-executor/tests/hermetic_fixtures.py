@@ -1,7 +1,7 @@
 """Fixture helpers for container-based integration tests.
 
 These exist because a fixture that works under Docker Desktop can fail on a Linux CI runner. The
-tests need a git remote that a *container* can clone from and push back to. Bind-mounting a host
+tests need a git worktree that a *container* can commit into. Bind-mounting a host
 temporary directory cannot provide that: on macOS the mount's ownership is remapped into the
 container, while on Linux it keeps the host owner (the CI runner user), which is unrelated to the
 image's unprivileged ``holon`` user (uid 1000). Every workaround for that mismatch was a dead end:
@@ -10,7 +10,7 @@ image's unprivileged ``holon`` user (uid 1000). Every workaround for that mismat
   ``GIT_CONFIG_COUNT``/``GIT_CONFIG_KEY_<n>`` (not honoured by ``git clone``, verified against git
   2.47.3 in ``holon/orchestrator``) nor the ``file://`` transport (``safe.directory`` applies to
   ``file://`` sources too) can express the exception;
-* the container uid cannot write the mount at all, so a push dies with ``remote unpack failed:
+* the container uid cannot write the mount at all, so a commit dies with ``remote unpack failed:
   unable to create temporary object directory``;
 * relaxing the fixture to ``0o777`` is a CWE-732 insecure-permissions violation (CodeQL, high);
 * ``--user $(id -u)`` breaks the image entrypoint because ``/home/holon`` is ``drwx------``;
@@ -27,37 +27,32 @@ import uuid
 
 DEFAULT_FIXTURE_IMAGE = "holon/orchestrator"
 IMAGE_UID = "1000:1000"
+SANDBOX_WORKSPACE_MOUNT = "/home/holon/.holon-sandbox/workspace"
 
 
 def remote_path(volume: str) -> str:
-    """Return the in-container path at which *volume* is mounted, and the URL it is cloned from.
+    """Return the in-container path at which *volume* is mounted: the role workspace mount.
 
-    Derived from the volume name, so every fixture instance owns a distinct path. It must not be a
-    fixed literal: a shared path is shared state between concurrently running tests, and this one
-    collides with the CLI's ``HOLON_MOCK_REMOTE_PATH`` default, which means a test would silently
-    exercise that override branch -- or silently depend on it -- instead of the normal path.
+    The volume holds a seeded worktree, standing in for the host worktree that the host bind-mounts
+    at the sandbox workspace path. Role containers never reach a git remote, so there is no URL.
     """
-    return f"/holon-remote-{volume}.git"
+    return SANDBOX_WORKSPACE_MOUNT
 
 
-def _seed_script(remote: str) -> str:
+def _seed_script(workspace: str) -> str:
     return f"""\
 set -eu
-git init --bare -b main {remote}
-rm -rf /tmp/holon-fixture-seed
-git init -b main -q /tmp/holon-fixture-seed
-cd /tmp/holon-fixture-seed
+git init -b main -q {workspace}
+cd {workspace}
 git config user.email test@holon.com
 git config user.name "Holon Fixture"
 mkdir -p holon-knowledge/ledger
 : > holon-knowledge/ledger/intents.jsonl
 git add -A
 git commit -qm "fixture seed"
-git remote add origin {remote}
-git push -q origin main
 # A freshly created volume is root-owned and the seed must run as root to populate it, so hand
-# ownership to the image's unprivileged user; otherwise the role container cannot push into it.
-chown -R {IMAGE_UID} {remote}
+# ownership to the image's unprivileged user; otherwise the role container cannot commit into it.
+chown -R {IMAGE_UID} {workspace}
 """
 
 
@@ -66,7 +61,7 @@ class RemoteFixtureError(RuntimeError):
 
 
 def create_seeded_remote(image: str = DEFAULT_FIXTURE_IMAGE) -> str:
-    """Creates a named volume holding a bare repository with one commit on ``main``.
+    """Creates a named volume holding a seeded worktree with one commit on ``main``.
 
     Returns the volume name. The caller must reclaim it with :func:`remove_remote_volume`, normally
     via ``self.addCleanup`` so a failing assertion cannot leak the volume.
@@ -119,14 +114,14 @@ def remove_remote_volume(volume: str) -> None:
 
 
 def remote_volume_args(volume: str) -> list[str]:
-    """Docker arguments mounting the fixture volume at the path ``HOLON_REPO_URL`` refers to."""
+    """Docker arguments mounting the fixture volume as the role workspace."""
     return ["-v", f"{volume}:{remote_path(volume)}"]
 
 
 def remote_show_file(
     ref: str, path: str, volume: str, image: str = DEFAULT_FIXTURE_IMAGE
 ) -> subprocess.CompletedProcess:
-    """Runs ``git show <ref>:<path>`` against the fixture repository from inside a container.
+    """Runs ``git show <ref>:<path>`` against the fixture worktree from inside a container.
 
     The repository deliberately never exists on the host, so all inspection goes through the
     container; the inspecting container runs as the image's own user, which also owns the volume

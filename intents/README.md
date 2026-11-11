@@ -39,42 +39,26 @@ Every intent configuration file must be a JSON object with the following fields:
 ./holon intent intents/your-intent-file.json
 ```
 
-The `./holon` script automatically handles credential discovery, SSH agent socket forwarding, volume mounts, and
-container routing.
+The `./holon` script automatically handles credential discovery, volume mounts, and container routing.
 
 ---
 
 ### Low-Level Manual Docker Execution
 
-If you need to invoke Docker manually without the CLI wrapper, ensure your local SSH agent is running (`ssh-add -l`) and
-run:
-
-> [!TIP] Use `"$PWD"` for mounting the volume to ensure compatibility across Bash, Zsh, and Fish shells. Avoid using
-> `$(pwd)` in Fish shell as command substitution does not evaluate inside double quotes.
-
-### For macOS (Docker Desktop)
-
-```bash
-docker run --rm \
-  -e HOLON_ROLE=intent-creator \
-  -v "$PWD/intents/your-intent-file.json:/tmp/intent.json" \
-  -v /run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock \
-  -e SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock \
-  holon/orchestrator
-```
-
-### For Linux
-
-> [!IMPORTANT] Ensure your `SSH_AUTH_SOCK` environment variable is set and non-empty (e.g., `echo $SSH_AUTH_SOCK` shows
-> a path) before running this command. If it is empty, the bind mount `-v "$SSH_AUTH_SOCK:/run/ssh-agent"` will resolve
-> to a syntax error.
+The container never reaches the git remote: the host fetches the base before the container starts and pushes the
+committed branch after it returns, using the host's own git credentials, so no SSH agent socket, SSH key or credential
+helper is mounted or needed. Prefer `./holon intent` (above), which performs those host-side remote operations. A bare
+`docker run` only commits inside the mounted worktree and publishes nothing; it needs the intent file and the flow's
+host `flow-<slug>` worktree mounted (see
+[create_intent.md](../docs/sandbox/create_intent.md#low-level-execution-manual-docker-run) for the full argument
+breakdown):
 
 ```bash
 docker run --rm \
   -e HOLON_ROLE=intent-creator \
-  -v "$PWD/intents/your-intent-file.json:/tmp/intent.json" \
-  -v "$SSH_AUTH_SOCK:/run/ssh-agent" \
-  -e SSH_AUTH_SOCK=/run/ssh-agent \
+  -v "$PWD/intents/intent.json:/tmp/intent.json" \
+  -v <worktree>:/home/holon/.holon-sandbox/workspace \
+  -e HOLON_TARGET_WORKTREE=/home/holon/.holon-sandbox/workspace \
   holon/orchestrator
 ```
 

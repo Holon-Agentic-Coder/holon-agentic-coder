@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-b37a8006",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-11T10:40:31.294275+00:00",
+  "updated_ts": "2026-11-11T10:40:31.294275+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794393204-f75a512b",
+      "ACT-FIND-1794393203-e391145b"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794391245-worktree/P-1794391254-8ec0e2e8-claude-agent-claude-sonnet-5-5/E-1794391353-95df8afb-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R2-001-01",
+    "symptoms": [
+      "push_checked_out_branch pushes whatever branch is checked out, including a non-execution branch if the container failed early; validate the branch shape."
+    ]
+  }
+}

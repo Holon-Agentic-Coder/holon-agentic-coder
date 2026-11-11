@@ -221,6 +221,7 @@ class TestUnmeasuredTestsStopEarly:
             "consensus": {"approved": False, "status": "rejected"},
             "mergeability": {"is_dirty": False},
             "ci_checks": {"source": "local_tests", "all_passed": False},
+            "tests_failed": True,
         }
         with (
             patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),

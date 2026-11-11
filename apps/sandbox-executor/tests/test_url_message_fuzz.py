@@ -162,19 +162,6 @@ def _host_config_base_url(value: str) -> list[str]:
     return out
 
 
-def _remote_url(value: str) -> list[str]:
-    with _captured({"HOLON_REPO_URL": value}) as out:
-        try:
-            cli.resolve_target_repo()
-        except RuntimeError as exc:
-            out.append(str(exc))
-        try:
-            cli.normalize_repo_remote(value)
-        except ValueError as exc:
-            out.append(str(exc))
-    return out
-
-
 # A health response that drives every #94 doctor line: the cache state, memory figures, and both envelope warnings.
 _HEALTH_TIGHT = {
     "prefill_cache": {"enabled": True, "entries": 1, "memory_bytes": 5},
@@ -278,7 +265,6 @@ ENTRY_POINTS: dict[str, Callable[[str], list[str]]] = {
     "attach_external_proxy": _proxy_attach,
     "local_base_url": _local_base_url,
     "host_config_base_url": _host_config_base_url,
-    "remote_url": _remote_url,
     "doctor": _doctor,
     "gateway_probe": _gateway_probe,
     "envelope": _envelope,
@@ -396,7 +382,7 @@ def _patch_docker_host(monkeypatch) -> None:
     """Stand in a docker binary and empty mount helpers, so `run_docker_container` reaches the echo."""
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
     monkeypatch.setattr(cli, "get_agent_session_mounts", lambda agent_id: [])
-    monkeypatch.setattr(cli, "get_ssh_auth_mounts", lambda: ([], {}))
+    monkeypatch.setattr(cli.git_flow, "sandbox_worktree_mounts", lambda *args, **kwargs: [])
     monkeypatch.setattr(cli, "get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {}))
 
 
@@ -445,7 +431,7 @@ def _run_delimiter_case(value: str) -> tuple[int, _DockerRecorder, list[str], di
     from sandbox_executor import preflight
 
     docker = _DockerRecorder()
-    env = {"HOLON_REPO_URL": "https://github.com/myorg/myrepo.git", "HOLON_PROXY_URL": value}
+    env = {"HOLON_PROXY_URL": value}
     stdout = io.StringIO()
     with (
         patch.dict(os.environ, env),
@@ -562,7 +548,6 @@ _LOCAL_ENV = {
     "HOLON_LOCAL_BASE_URL": "http://localhost:8081/v1",
     "HOLON_LOCAL_MODELS": "m1",
     "HOLON_LOCAL_CONTEXT_WINDOW": "65536",
-    "HOLON_REPO_URL": "https://github.com/myorg/myrepo.git",
 }
 
 
@@ -588,7 +573,7 @@ def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, 
     )
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
     monkeypatch.setattr(cli, "get_agent_session_mounts", lambda agent_id: [])
-    monkeypatch.setattr(cli, "get_ssh_auth_mounts", lambda: ([], {}))
+    monkeypatch.setattr(cli.git_flow, "sandbox_worktree_mounts", lambda *args, **kwargs: [])
     monkeypatch.setattr(cli, "get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {}))
     failures: list[str] = []
     cases = list(_invalid_value_cases())

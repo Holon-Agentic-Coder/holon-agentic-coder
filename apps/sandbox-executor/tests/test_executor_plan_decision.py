@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from sandbox_executor.entrypoint import executor
 
-from tests.test_executor import _run_executor_main
+from tests.test_executor import _cuts_branch, _run_executor_main, _validate_stub
 
 
 def test_main_decomposed_reads_the_list_the_plan_row_records(tmp_path):
@@ -91,7 +91,7 @@ def test_main_reads_the_newest_matching_plan_row(tmp_path):
         commands.append(list(args))
         if args[:4] == ["git", "diff", "--cached", "--quiet"]:
             res.returncode = 1
-        if "clone" in args:
+        if _cuts_branch(args):
             ledger = os.path.join(cwd, "holon-knowledge/ledger")
             os.makedirs(ledger, exist_ok=True)
             with open(os.path.join(ledger, "plans.jsonl"), "w") as f:
@@ -100,11 +100,11 @@ def test_main_reads_the_newest_matching_plan_row(tmp_path):
 
     repo = str(tmp_path / "repo")
     with (
-        patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": repo, "HOLON_SKIP_PUSH": "1"}),
+        patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": repo}),
+        patch("sandbox_executor.entrypoint.executor.workspace_mounted", return_value=True),
         patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect),
         patch("sandbox_executor.entrypoint.executor.get_runner", return_value=runner),
-        patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value="/mock/repo"),
-        patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
+        patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub),
         patch("sys.argv", ["executor.py", "I-456/P-123/_", "claude-agent", "claude-opus-5-5"]),
     ):
         executor.main()
@@ -120,7 +120,7 @@ def test_main_corrupt_recorded_decision_exits_without_a_row(tmp_path, capsys):
     runner = MagicMock()
 
     def side_effect(args, cwd=None, **kwargs):
-        if "clone" in args:
+        if _cuts_branch(args):
             ledger = os.path.join(cwd, "holon-knowledge/ledger")
             os.makedirs(ledger, exist_ok=True)
             with open(os.path.join(ledger, "plans.jsonl"), "w") as f:
@@ -129,11 +129,11 @@ def test_main_corrupt_recorded_decision_exits_without_a_row(tmp_path, capsys):
 
     repo = str(tmp_path / "repo")
     with (
-        patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": repo, "HOLON_SKIP_PUSH": "1"}),
+        patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": repo}),
+        patch("sandbox_executor.entrypoint.executor.workspace_mounted", return_value=True),
         patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect),
         patch("sandbox_executor.entrypoint.executor.get_runner", return_value=runner),
-        patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value="/mock/repo"),
-        patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
+        patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub),
         patch("sys.argv", ["executor.py", "I-456/P-123/_", "claude-agent", "claude-opus-5-5"]),
         pytest.raises(SystemExit) as exc_info,
     ):

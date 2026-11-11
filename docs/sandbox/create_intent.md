@@ -15,9 +15,8 @@ Before running the command, ensure you have:
    ```bash
    ./apps/sandbox-executor/build_all_images.sh
    ```
-2. Set up SSH keys on your host machine configured for GitHub access.
-3. Configured SSH keys and ensured your local SSH agent is running and has your keys loaded (i.e., `ssh-add -l` displays
-   your key), as SSH Agent Forwarding inside the container relies on host authentication.
+2. Configured git access to GitHub on your host machine. The host fetches and pushes with its own credentials; the
+   container never contacts the remote.
 
 ---
 
@@ -54,7 +53,7 @@ create.
 ## Recommended Execution Methods (Holon CLI)
 
 > [!IMPORTANT] **Use the Holon CLI instead of raw `docker run` commands.** The CLI automatically discovers GitHub
-> credentials, API keys, and host SSH agent sockets, mounting them safely into the sandboxed container.
+> credentials and API keys, and the flow's host worktree, mounting them safely into the sandboxed container.
 
 You can run the Intent Creator via any of the following standard pathways:
 
@@ -103,31 +102,17 @@ JSON file you created.
 > [!TIP] Use `"$PWD"` for mounting the volume to ensure compatibility across Bash, Zsh, and Fish shells. Avoid using
 > `$(pwd)` in Fish shell as command substitution does not evaluate inside double quotes.
 
-### For macOS (Docker Desktop)
-
 ```bash
 docker run --rm \
   -e HOLON_ROLE=intent-creator \
   -v "$PWD/intents/intent.json:/tmp/intent.json" \
-  -v /run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock \
-  -e SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock \
+  -v <worktree>:/home/holon/.holon-sandbox/workspace \
+  -e HOLON_TARGET_WORKTREE=/home/holon/.holon-sandbox/workspace \
   holon/orchestrator
 ```
 
-### For Linux
-
-> [!IMPORTANT] Ensure your `SSH_AUTH_SOCK` environment variable is set and non-empty (e.g., `echo $SSH_AUTH_SOCK` shows
-> a path) before running this command. If it is empty, the bind mount `-v "$SSH_AUTH_SOCK:/run/ssh-agent"` will resolve
-> to a syntax error.
-
-```bash
-docker run --rm \
-  -e HOLON_ROLE=intent-creator \
-  -v "$PWD/intents/intent.json:/tmp/intent.json" \
-  -v "$SSH_AUTH_SOCK:/run/ssh-agent" \
-  -e SSH_AUTH_SOCK=/run/ssh-agent \
-  holon/orchestrator
-```
+The container never runs git against a remote. The host, with its own git credentials, fetches the base before the
+container starts and pushes the committed branch after it returns, so no SSH key or agent is needed for the container.
 
 ### Argument Breakdown:
 
@@ -135,10 +120,12 @@ docker run --rm \
   container.
 - **`-v /path/to/intent.json:/tmp/intent.json`**: Mounts your host-defined JSON file into the container at the expected
   path.
-- **`-v /run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock` / `-v "$SSH_AUTH_SOCK:/run/ssh-agent"`**:
-  Mounts the host's SSH agent socket into the container to enable SSH Agent Forwarding. This allows the container to
-  authenticate using your host's SSH credentials securely without exposing private key files directly to the container.
-  (The container automatically configures `StrictHostKeyChecking=no` internally).
+- **`-v <worktree>:/home/holon/.holon-sandbox/workspace`** and
+  **`-e HOLON_TARGET_WORKTREE=/home/holon/.holon-sandbox/workspace`**: Bind-mounts the flow's host-provisioned
+  `flow-<slug>` worktree at the sandbox workspace path. The intent creator works in place there and only commits; it
+  never clones, fetches or pushes. The host fetches the base before the container starts and pushes the committed branch
+  after it returns, using the host's own git credentials. Because no git command inside the container contacts a remote,
+  no `ssh-agent`, SSH key or credential-helper is mounted or needed.
 
 ---
 

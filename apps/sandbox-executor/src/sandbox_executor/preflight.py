@@ -239,7 +239,7 @@ def build_probe_docker_cmd(
     isolation come from the same helpers ``run_docker_container`` uses, and so does the credential classifier
     (``cli.is_secret_env_item``): ``HOLON_AGENT_KEY``, a credential-bearing ``HOLON_AGENT_SETTINGS`` and any other
     credential-bearing value are returned separately for a 0600 ``--env-file``, never as ``-e`` items that ``ps`` and
-    ``/proc/<pid>/cmdline`` can read. ``HOLON_REPO_URL`` is forwarded without its userinfo: the probe runs no git.
+    ``/proc/<pid>/cmdline`` can read.
 
     Args:
         agent: Runner name.
@@ -252,21 +252,20 @@ def build_probe_docker_cmd(
         The docker argv, free of credential values, and the variables the caller must hand over with
         ``cli.write_env_file`` and ``--env-file`` (empty when there are none).
     """
-    from sandbox_executor.agent_runner import runners
+    from sandbox_executor.agent_runner import RETIRED_ENV_VARS, runners
     from sandbox_executor.cli import (
         _gateway_host_args,
         build_network_isolation_args,
         is_secret_env_item,
-        strip_url_credentials,
     )
 
     agent_id = normalise_agent_id(agent)
     cmd = ["docker", "run", "--rm", "-i", "--name", container_name]
     env: dict[str, str] = {
-        key: value for key, value in os.environ.items() if key.startswith("HOLON_") and key != "HOLON_ROLE"
+        key: value
+        for key, value in os.environ.items()
+        if key.startswith("HOLON_") and key != "HOLON_ROLE" and key not in RETIRED_ENV_VARS
     }
-    if "HOLON_REPO_URL" in env:
-        env["HOLON_REPO_URL"] = strip_url_credentials(env["HOLON_REPO_URL"].strip())[0]
     env["HOLON_AGENT_ID"] = agent_id
     env[SKIP_ENV_VAR] = "1"
     secret_env: dict[str, str] = {}

@@ -214,7 +214,7 @@ class TestPrefixGuard:
 class GuardedIntentAgents(FakeRoleAgents):
     """Intent-creator stand-in that follows the real entrypoint: stage pre-check, then a guarded ledger append.
 
-    ``exit_code`` models a container that fails after its clone, before it pushes anything.
+    ``exit_code`` models a container that fails after the mount is validated, before it commits anything.
     """
 
     def __init__(self, root: Path, origin: Path, exit_code: int = 0) -> None:
@@ -231,7 +231,7 @@ class GuardedIntentAgents(FakeRoleAgents):
         flow.check_and_resolve_stage_conflicts(str(work), stage_name="intent")
         with atomic_ledger_append(str(work / "holon-knowledge/ledger/intents.jsonl")) as lf:
             lf.write(json.dumps({**payload, "status": "proposed"}) + "\n")
-        self._push(work, intent_branch, f"intent: created {intent_branch}")
+        self._commit(work, f"intent: created {intent_branch}")
         return 0
 
 
@@ -285,7 +285,11 @@ class TestIntentStageLedgers:
         new_intents = _origin_ledger(host, f"origin/{ctx.intent_branch}", "intents")[len(main_bytes["intents"]) :]
         assert new_intents.count(b"\n") == 1
         assert json.loads(new_intents)["slug"] == "dispatch-test"
-        _assert_host_untouched(host, main_bytes)
+        # The flow worktree is where the container committed, so main itself and the index stay untouched.
+        for name in LEDGER_NAMES:
+            assert _origin_ledger(host, "main", name) == main_bytes[name], name
+        assert _git(host, "diff", "--cached", "--name-only") == ""
+        assert _git(host, "status", "--porcelain", "--untracked-files=no") == ""
 
     def test_failed_stage_leaves_ledgers_identical_and_unstaged(self, seeded_repos, tmp_path: Path) -> None:
         host, origin, main_bytes = seeded_repos
@@ -389,8 +393,11 @@ class TestPrePushMerge:
     """Merging the advanced target branch keeps its ledger bytes as the prefix of the branch's ledger."""
 
     @staticmethod
-    def _advance_main(origin: Path, tmp_path: Path, rel_path: str, text: str) -> bytes:
-        """Append ``text`` to ``rel_path`` on origin's main from a peer clone and return the file's new bytes."""
+    def _advance_main(host: Path, origin: Path, tmp_path: Path, rel_path: str, text: str) -> bytes:
+        """Append ``text`` to ``rel_path`` on origin's main from a peer clone, which the host then fetches.
+
+        Returns the file's new bytes.
+        """
         peer = tmp_path / "peer"
         subprocess.run(["git", "clone", "-q", str(origin), str(peer)], check=True, capture_output=True)
         (peer / rel_path).parent.mkdir(parents=True, exist_ok=True)
@@ -399,6 +406,7 @@ class TestPrePushMerge:
         _git(peer, "add", "-A")
         _git(peer, "commit", "-q", "-m", "peer")
         _git(peer, "push", "-q", "origin", "main")
+        _git(host, "fetch", "-q", "origin")
         return (peer / rel_path).read_bytes()
 
     def _branch_with_intent_row(self, host: Path) -> Path:
@@ -413,7 +421,7 @@ class TestPrePushMerge:
         host, origin, _ = seeded_repos
         ledger = self._branch_with_intent_row(host)
         main_row = '{"slug":"main-row","created_at":"2026-10-30"}\n'
-        main_intents = self._advance_main(origin, tmp_path, "holon-knowledge/ledger/intents.jsonl", main_row)
+        main_intents = self._advance_main(host, origin, tmp_path, "holon-knowledge/ledger/intents.jsonl", main_row)
 
         ok, msg = sync_and_reconcile_pre_push(str(host), target_branch="main")
 
@@ -425,7 +433,7 @@ class TestPrePushMerge:
         host, origin, main_bytes = seeded_repos
         ledger = self._branch_with_intent_row(host)
         branch_bytes = ledger.read_bytes()
-        self._advance_main(origin, tmp_path, "src/other.py", "x = 1\n")
+        self._advance_main(host, origin, tmp_path, "src/other.py", "x = 1\n")
 
         ok, msg = sync_and_reconcile_pre_push(str(host), target_branch="main")
 
@@ -440,7 +448,7 @@ class TestPrePushMerge:
     ) -> None:
         host, origin, _ = seeded_repos
         self._branch_with_intent_row(host)
-        self._advance_main(origin, tmp_path, "holon-knowledge/ledger/intents.jsonl", '{"slug":"main-row"}\n')
+        self._advance_main(host, origin, tmp_path, "holon-knowledge/ledger/intents.jsonl", '{"slug":"main-row"}\n')
         head = _git(host, "rev-parse", "HEAD")
         monkeypatch.setattr("sandbox_executor.flow.ledger_reconcile.assert_ledger_prefix", _report_rewrite)
 
@@ -489,14 +497,14 @@ def _run_executor_main(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, plan: dict[str, Any] | None = None, status: str = "tip-sha\n"
 ) -> list[list[str]]:
     """Run the executor entrypoint with faked git and agent until it raises; return every command it ran."""
-    from tests.test_executor import _turn_via_run_cmd
+    from tests.test_executor import _cuts_branch, _turn_via_run_cmd, _validate_stub
 
     commands: list[list[str]] = []
     plan_row = plan or {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 2.0}
 
     def fake_run_cmd(args: list[str], cwd: str | None = None, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         commands.append(list(args))
-        if "clone" in args and cwd:
+        if _cuts_branch(args) and cwd:
             plans = Path(cwd) / "holon-knowledge" / "ledger" / "plans.jsonl"
             plans.parent.mkdir(parents=True, exist_ok=True)
             plans.write_text(json.dumps(plan_row) + "\n")
@@ -514,9 +522,9 @@ def _run_executor_main(
     monkeypatch.setattr(executor_module, "run_cmd", fake_run_cmd)
     monkeypatch.setattr(executor_module, "run_turn", _turn_via_run_cmd)
     monkeypatch.setattr(executor_module, "get_runner", lambda *_a, **_k: runner)
-    monkeypatch.setattr(executor_module, "get_repo_url", lambda *_a, **_k: "/fake/repo")
+    monkeypatch.setattr(executor_module, "validate_mounted_workspace", _validate_stub)
+    monkeypatch.setattr(executor_module, "workspace_mounted", lambda: True)
     monkeypatch.setenv("HOLON_TARGET_WORKTREE", str(tmp_path))
-    monkeypatch.setenv("HOLON_SKIP_PUSH", "1")
     monkeypatch.setattr("sys.argv", ["executor.py", "I-456/P-123/_", "agent", "model"])
     with pytest.raises(LedgerRewriteError):
         executor_module.main()
@@ -524,14 +532,14 @@ def _run_executor_main(
 
 
 @pytest.mark.parametrize("action_logging", ["0", "1"], ids=["summary-row", "action-record"])
-def test_executor_rewrite_stops_before_commit_and_push(
+def test_executor_rewrite_stops_before_commit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action_logging: str
 ) -> None:
     """The summary-row write and the best-effort action-record writes both fail closed."""
     monkeypatch.setenv("HOLON_ACTION_LOGGING", action_logging)
     monkeypatch.setattr(ledger_module, "assert_ledger_prefix", _report_rewrite)
     commands = _run_executor_main(tmp_path, monkeypatch)
-    assert not any(c[:2] in (["git", "commit"], ["git", "push"]) for c in commands)
+    assert not any(c[:2] == ["git", "commit"] for c in commands)
 
 
 def _rewrite_only(event_type: str, target: str | None = None) -> Any:
@@ -544,11 +552,6 @@ def _rewrite_only(event_type: str, target: str | None = None) -> Any:
         return real(path, record, **kwargs)
 
     return fake
-
-
-def _unrepairable_repo(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(executor_module, "_probe_git_repo", lambda _d: (False, "broken"))
-    monkeypatch.setattr(executor_module, "_repair_git_repo", lambda *_a, **_k: False)
 
 
 def _budget_breach(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -572,7 +575,6 @@ _EXECUTOR_SITES: dict[str, tuple[str | None, str | None, Any]] = {
     "plan-decomposition": ("plan_decomposition", None, _over_budget_plan),
     "budget-failure": (None, None, _budget_breach),
     "agent-command": ("command_execution", None, None),
-    "git-recovery": ("git_mutation", ".git", _unrepairable_repo),
     "prettier-action": ("doc_update", None, _markdown_changed),
     "commit-action": ("git_mutation", "HEAD", None),
 }
@@ -589,7 +591,7 @@ def test_each_executor_write_site_fails_closed_on_its_own(
         monkeypatch.setattr(executor_module, "append_action_record", _rewrite_only(event_type, target))
     extra = (arrange(monkeypatch) if arrange else None) or {}
     commands = _run_executor_main(tmp_path, monkeypatch, **extra)
-    assert not any(c[:2] in (["git", "commit"], ["git", "push"]) for c in commands)
+    assert not any(c[:2] == ["git", "commit"] for c in commands)
 
 
 def _raise_rewrite(*_args: Any, **_kwargs: Any) -> Any:

@@ -14,7 +14,7 @@ FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-bin
 # --- Base Layer ---
 FROM python:3.13-slim AS holon-base
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends git curl jq build-essential ca-certificates ssh vim shellcheck gpg && \
+    apt-get install -y --no-install-recommends git curl jq build-essential ca-certificates vim shellcheck gpg && \
     mkdir -p -m 0755 /etc/apt/keyrings && \
     curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
     chmod 0644 /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
@@ -22,13 +22,6 @@ RUN apt-get update && \
     apt-get update && \
     apt-get install -y --no-install-recommends gh && \
     rm -rf /var/lib/apt/lists/*
-
-# Configure SSH globally inside the container to automatically accept host keys
-# NOTE: Disabling StrictHostKeyChecking globally is acceptable for throwaway sandboxes.
-# If this image is reused in a persistent or production environment, it should be
-# hardened by pinning known hosts instead of disabling checking entirely.
-RUN mkdir -p /etc/ssh && \
-    printf "\nHost *\n    StrictHostKeyChecking no\n    UserKnownHostsFile /dev/null\n" >> /etc/ssh/ssh_config
 
 # Install Node.js v24.18.0 (multi-architecture support)
 RUN dpkgArch="$(dpkg --print-architecture)" && \

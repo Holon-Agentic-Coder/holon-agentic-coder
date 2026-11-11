@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-f4f1ef09",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-11T10:40:31.296827+00:00",
+  "updated_ts": "2026-11-11T10:40:31.296827+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794393204-95331165",
+      "ACT-FIND-1794393203-d5bb6259"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794391245-worktree/P-1794391254-8ec0e2e8-claude-agent-claude-sonnet-5-5/E-1794391353-95df8afb-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R2-001-02",
+    "symptoms": [
+      "Standalone execute does not push a failed execution branch (exit 1), unlike the flow, so partial work is not resumable from origin."
+    ]
+  }
+}

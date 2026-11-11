@@ -38,13 +38,13 @@ def _fetch_branch_prefix_error(repo_dir: str, prefix: str) -> str | None:
     return _fetch_refspecs_error(repo_dir, [f"+refs/heads/{prefix}/*:refs/remotes/origin/{prefix}/*"])
 
 
-def _fetch_refspecs_error(repo_dir: str, refspecs: list[str]) -> str | None:
-    """Fetch the given refspecs from origin in one command.
+def _fetch_refspecs_error(repo_dir: str, refspecs: list[str], remote: str = "origin") -> str | None:
+    """Fetch the given refspecs from the worktree's remote (``origin`` by default) in one command.
 
     Returns:
         str | None: None on success, otherwise a secret-redacted description of the fetch failure.
     """
-    res = run_git(["fetch", "--no-tags", "origin", *refspecs], cwd=repo_dir, check=False, timeout=300)
+    res = run_git(["fetch", "--no-tags", remote, *refspecs], cwd=repo_dir, check=False, timeout=300)
     if res.returncode == 0:
         return None
     stderr = res.stderr.strip() if isinstance(res.stderr, str) else ""
@@ -122,6 +122,9 @@ def _fast_forward_local_branch(context: FlowContext, branch: str, target_sha: st
     repo_dir = context.target_worktree
     local = run_git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=repo_dir, check=False)
     local_sha = local.stdout.strip() if local.returncode == 0 and isinstance(local.stdout, str) else ""
+    if local_sha == target_sha:
+        # A role committed on this branch in the worktree and the host pushed it; it may well be checked out.
+        return True
     if local_sha:
         ancestor = run_git(["merge-base", "--is-ancestor", local_sha, target_sha], cwd=repo_dir, check=False)
         if ancestor.returncode != 0:
@@ -130,7 +133,12 @@ def _fast_forward_local_branch(context: FlowContext, branch: str, target_sha: st
                 f"to {target_sha[:12]}."
             )
             return False
-    res = run_git(["branch", "-f", "--no-track", branch, target_sha], cwd=repo_dir, check=False)
+    head = run_git(["symbolic-ref", "--short", "-q", "HEAD"], cwd=repo_dir, check=False)
+    if head.returncode == 0 and head.stdout.strip() == branch:
+        # The role left the worktree on this branch: advance the checkout with it, as git refuses to move that ref.
+        res = run_git(["merge", "--ff-only", "--quiet", target_sha], cwd=repo_dir, check=False)
+    else:
+        res = run_git(["branch", "-f", "--no-track", branch, target_sha], cwd=repo_dir, check=False)
     if res.returncode != 0:
         context.log(f"Warning: could not fast-forward local branch '{branch}' to {target_sha[:12]}.")
         return False

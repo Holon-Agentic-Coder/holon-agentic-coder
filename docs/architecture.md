@@ -457,11 +457,13 @@ Trust level is influenced by:
 
 The Holon Flow engine is the `sandbox_executor.flow` package in `apps/sandbox-executor/src/sandbox_executor/flow/`. Each
 module owns one cluster, so a change to one stage or helper touches a small, separate set of files. The package was
-split from the former single `flow.py` by moving code only. `tests/flow/test_move_proof.py` checks the `ast.dump` of
-every definition against a committed snapshot of the original file (`tests/flow/fixtures/flow_py_definitions.json`). A
-later deliberate change declares itself in that fixture: a changed body in `amended_definitions`, a new definition in
-`added_definitions` (with the module that must define it) and a deleted one in `removed_definitions`, each naming the
-execution and the reason.
+split from the former single `flow.py` by moving code only. Three tests guard the structure that remains:
+
+- `tests/flow/test_patch_targets.py` checks that patch targets resolve where the code under test looks them up.
+- `tests/flow/test_package_exports.py` parses each submodule and requires every public top-level function and class to
+  be re-exported by `flow/__init__.py`, listed in `__all__` and the same object as in its owning module. A
+  temporary-package test proves it fails when a definition is added without being re-exported.
+- `tests/flow/test_module_budgets.py` enforces the module size budgets in `flow_module_budgets.json`.
 
 | Module                         | Responsibility                                                                                              |
 | ------------------------------ | ----------------------------------------------------------------------------------------------------------- |

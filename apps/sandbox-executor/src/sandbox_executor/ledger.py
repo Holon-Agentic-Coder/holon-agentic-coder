@@ -84,8 +84,7 @@ def build_plan_id(
 ) -> str:
     """Build a deterministic, collision-resistant plan identifier.
 
-    Format: P-{plan_seq}-{disambiguator}-{safe_agent}-{safe_model}; the labels are shortened with a digest only when
-    the branch would exceed the ref limit (see ``ref_names``).
+    Format: P-{plan_seq}-{disambiguator}-{safe_agent}-{safe_model}
     """
     safe_agent = _sanitize_string(agent, fallback="unknown-agent")
     safe_model = _sanitize_model_name(model)
@@ -102,8 +101,7 @@ def build_execution_id(
 ) -> str:
     """Build a deterministic, collision-resistant execution identifier.
 
-    Format: E-{exec_seq}-{disambiguator}-{safe_agent}-{safe_model}; the labels are shortened with a digest only when
-    the branch would exceed the ref limit (see ``ref_names``).
+    Format: E-{exec_seq}-{disambiguator}-{safe_agent}-{safe_model}
     """
     safe_agent = _sanitize_string(agent, fallback="unknown-agent")
     safe_model = _sanitize_model_name(model)

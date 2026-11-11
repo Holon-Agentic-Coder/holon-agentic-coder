@@ -237,8 +237,16 @@ def test_no_other_module_builds_a_branch_with_a_literal_suffix():
     assert offenders == []
 
 
-def test_long_root_slug_leaves_room_for_every_child_level():
-    root = ref_names.fit_root_intent_branch(1794391536, "x" * 140).name
-    child = ref_names.fit_child_intent_branch(root, 1, "y" * 80)
-    grandchild = ref_names.fit_child_intent_branch(child.name, 1, "z" * 80)
-    ref_names.ensure_chain_fits(grandchild.name, "claude-agent", "claude-sonnet-5-5")
+@pytest.mark.parametrize("slug_length", [60, 70, 100])
+def test_root_slug_that_fits_alone_is_unchanged_through_the_real_builder(slug_length):
+    slug = "s" * slug_length
+    data: dict[str, str] = {}
+    branch = resolve_root_intent_branch(data, slug, SEQ, AGENT, MODEL)
+    assert branch == f"I-{SEQ}-{slug}" and data == {"slug": slug}
+
+
+def test_root_name_is_shortened_only_when_it_exceeds_the_limit_or_leaves_no_room_below():
+    room = MAX_REF_LENGTH - len(REF_PREFIX) - len(CALIBRATION_SUFFIX) - len(f"I-{SEQ}-")
+    assert "slug" in fit_root_intent_branch(SEQ, "s" * (room + 1)).originals
+    at_limit = fit_root_intent_branch(SEQ, "s" * room)
+    assert measured_length(at_limit.name) + 2 * ref_names._MIN_SEGMENT_LENGTH <= MAX_REF_LENGTH

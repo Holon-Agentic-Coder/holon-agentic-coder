@@ -12,18 +12,15 @@ original text, so two different long inputs never collide and the same input alw
 8-character identifiers and index markers are never part of a shortenable part. A name that cannot fit even with every
 shortenable part at its minimum raises ``RefTooLongError``.
 
-An intent branch is measured with room left for one plan and one execution segment below it whose labels are at their
-shortest, because those labels are only known, and shortened, when the plan and execution are created.
+An intent branch is shortened only when it exceeds the limit on its own or leaves no room for a plan and an execution
+segment below it with their labels at their shortest; ``ensure_chain_fits`` checks the real labels at creation time.
 """
 
 from __future__ import annotations
 
 import hashlib
-import re
 from dataclasses import dataclass, field, replace
 from typing import Any
-
-from sandbox_executor.budgets import MAX_SUB_INTENT_DEPTH
 
 MAX_REF_LENGTH = 255
 REF_PREFIX = "refs/heads/"
@@ -133,18 +130,7 @@ def _segment_parts(parent: str, head: str, agent: str, model: str, weight: int) 
 
 
 _SEGMENT_FIXED_LENGTH = len("/E-") + _TIMESTAMP_LENGTH + 1 + _DISAMBIGUATOR_LENGTH + 1 + 1
-
-
 _MIN_SEGMENT_LENGTH = _SEGMENT_FIXED_LENGTH + 2 * DIGEST_LENGTH
-
-
-# A child level below an intent: its plan segment, the ``--{n}-`` marker and a digest-only slug, labels shortest.
-_MIN_CHILD_LEVEL_LENGTH = _MIN_SEGMENT_LENGTH + len("--1-") + DIGEST_LENGTH
-
-
-def downstream_reserve() -> int:
-    """Characters one plan and one execution segment add below an intent branch, labels at their shortest."""
-    return 2 * _MIN_SEGMENT_LENGTH
 
 
 def fit_plan_id(parent: str, seq: int, dis: str, agent: str, model: str) -> FitResult:
@@ -166,40 +152,30 @@ def _segment_result(result: FitResult, parent: str) -> FitResult:
     return FitResult(result.name[parent_length:], result.originals)
 
 
-def fit_root_intent_branch(seq: int, slug: str) -> FitResult:
-    """Fit ``I-{seq}-{slug}``, leaving room for one plan and one execution segment below it.
-
-    The reserve means a name within ``downstream_reserve()`` of the limit may be shortened although it would fit alone.
-    Room is also kept for every child level the depth limit allows, so decomposition can name the first child; when
-    that would leave no room even for a digest-only slug, only the intent's own plan and execution are kept.
-    """
-    parts = [Part("prefix", f"I-{seq}-"), Part("slug", slug, shortenable=True)]
+def _fit_intent_parts(parts: list[Part]) -> FitResult:
+    """Fit an intent name alone; shorten further only when no plan and execution could fit below the fitted name."""
+    result = fit_parts(parts)
     try:
-        return fit_parts(parts, extra=downstream_reserve() + MAX_SUB_INTENT_DEPTH * _MIN_CHILD_LEVEL_LENGTH)
+        ensure_chain_fits(result.name, "0" * DIGEST_LENGTH, "0" * DIGEST_LENGTH)
     except RefTooLongError:
-        return fit_parts(parts, extra=downstream_reserve())
+        return fit_parts(parts, extra=2 * _MIN_SEGMENT_LENGTH)
+    return result
 
 
-def _child_levels_below(parent: str) -> int:
-    """Child levels the sub-intent depth limit still allows below a child of ``parent`` (``--{n}-`` marks a level)."""
-    return max(0, MAX_SUB_INTENT_DEPTH - len(re.findall(r"--\d+-", parent)) - 1)
+def fit_root_intent_branch(seq: int, slug: str) -> FitResult:
+    """Fit ``I-{seq}-{slug}``; a name that fits, with room for a plan and execution below it, is unchanged."""
+    return _fit_intent_parts([Part("prefix", f"I-{seq}-"), Part("slug", slug, shortenable=True)])
 
 
 def fit_child_intent_branch(parent: str, index: int, slug: str) -> FitResult:
-    """Fit ``{parent}--{index}-{slug}``, leaving room below it for its plan and execution segment.
-
-    Room is also kept for every child level the depth limit still allows, so a grandchild can be named; when that
-    would leave no room even for a digest-only slug, only the child's own plan and execution segment are kept.
-    """
-    parts = [
-        Part("parent", parent.removesuffix(INTENT_SUFFIX)),
-        Part("index", f"--{index}-"),
-        Part("child slug", slug, shortenable=True),
-    ]
-    try:
-        return fit_parts(parts, extra=downstream_reserve() + _child_levels_below(parent) * _MIN_CHILD_LEVEL_LENGTH)
-    except RefTooLongError:
-        return fit_parts(parts, extra=downstream_reserve())
+    """Fit ``{parent}--{index}-{slug}``; a name that fits, with room for a plan and execution below it, is unchanged."""
+    return _fit_intent_parts(
+        [
+            Part("parent", parent.removesuffix(INTENT_SUFFIX)),
+            Part("index", f"--{index}-"),
+            Part("child slug", slug, shortenable=True),
+        ]
+    )
 
 
 def ensure_chain_fits(intent_bare: str, agent: str, model: str) -> None:

@@ -57,6 +57,7 @@ from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import (
     ActionRecord,
     LedgerRewriteError,
+    _sanitize_model_name,
     append_action_record,
     atomic_ledger_append,
     build_execution_id,
@@ -1292,7 +1293,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 repo.run(["checkout", "-f", "-B", plan_branch, "FETCH_HEAD"])
 
         exec_seq = int(time.time())
-        safe_agent, safe_model = _sanitize_string(agent_name, "unknown-agent"), _sanitize_string(model_name)
+        safe_agent, safe_model = _sanitize_string(agent_name, "unknown-agent"), _sanitize_model_name(model_name)
         exec_id = build_execution_id(exec_seq, plan_branch_prefix, safe_agent, safe_model)
         exec_branch = f"{plan_branch_prefix}/{exec_id}/_"
 

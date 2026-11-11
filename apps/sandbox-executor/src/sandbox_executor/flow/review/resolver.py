@@ -19,6 +19,7 @@ from typing import Any
 from sandbox_executor.agent_defaults import FALLBACK_AGENT
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.dispatch import _dispatch_role
+from sandbox_executor.flow.host_remote import push_commit, remote_error
 from sandbox_executor.flow.review.ensemble import _ENGINE_PASSES_PER_DISPATCH
 from sandbox_executor.flow.review.records import _bounded_error_context, record_review_action
 from sandbox_executor.ledger import generate_action_id
@@ -55,6 +56,20 @@ class ResolverInput:
     findings: Sequence[FindingRow]
     action_ids: Mapping[str, str] = field(default_factory=dict)
     rejected_findings: Sequence[FindingDisposition] = ()
+
+
+def _push_resolver_head(
+    context: FlowContext, target: ReviewTarget, head_sha: str, container_error: str | None
+) -> tuple[bool, str | None]:
+    """Push the head the resolver committed in the container, from the host; return ``(pushed, error)``.
+
+    Nothing is pushed after a failed pass, under ``skip_push`` or when the head did not move. The push is a
+    fast-forward only and a failure becomes the named ``HostRemoteError`` message of the resolver pass.
+    """
+    if container_error or context.skip_push or not head_sha or head_sha == target.head_sha or not target.head_branch:
+        return False, None
+    error = remote_error(push_commit, context.target_worktree, head_sha, target.head_branch)
+    return error is None, None if error is None else f"Resolver push failed: {error}"
 
 
 def _dispatch_review_resolver(
@@ -99,8 +114,6 @@ def _dispatch_review_resolver(
         "--result-file=/tmp/review_result.json",
         "--json",
     ]
-    if context.skip_push:
-        container_args.append("--skip-push")
     if context.dry_run:
         container_args.append("--dry-run")
 
@@ -118,13 +131,14 @@ def _dispatch_review_resolver(
 
         # Fails closed: a non-zero exit, or a file still holding the input payload, is a failed pass.
         parsed = read_container_resolver_result(data, exit_code, target.head_sha)
+        pushed, push_error = _push_resolver_head(context, target, parsed.head_sha, parsed.error)
         return ResolverOutcome(
             dispositions=deserialize_finding_dispositions(parsed.raw_dispositions, findings, lookup),
             head_sha=parsed.head_sha,
-            pushed=parsed.pushed,
+            pushed=pushed,
             lint_passed=parsed.lint_passed,
             tests_passed=parsed.tests_passed,
-            error=parsed.error,
+            error=parsed.error or push_error,
         )
     except Exception as exc:
         dispositions = deserialize_finding_dispositions([], findings, lookup)

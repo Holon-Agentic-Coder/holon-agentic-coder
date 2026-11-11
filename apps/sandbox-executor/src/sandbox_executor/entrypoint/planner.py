@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 
 from sandbox_executor import artefacts
-from sandbox_executor.agent_runner import cleanup_repo_dir, get_repo_url, get_runner, get_workspace_dir
+from sandbox_executor.agent_runner import get_runner, get_workspace_dir
 from sandbox_executor.artefacts import PLAN_REQUIRED_METRICS, PLAN_SPEC, plan_write_protocol, validate_artefact
 from sandbox_executor.budgets import (
     ENV_REPLAN_FEEDBACK,
@@ -20,7 +20,9 @@ from sandbox_executor.budgets import (
     resolve_entropy_budget,
 )
 from sandbox_executor.decomposition_rule import should_decompose
+from sandbox_executor.entrypoint.execution_workspace import start_branch_from_host_fetch
 from sandbox_executor.formatting import converge_prettier
+from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import (
     _sanitize_model_name,
     atomic_ledger_append,
@@ -161,13 +163,12 @@ def _record_plan_budget_failure(  # noqa: PLR0913
     repo_dir: str,
     plan_id: str,
     plan_md_rel: str,
-    plan_branch: str,
     agent_name: str,
     model_name: str,
     stage_timer: StageTimer,
     reason: str = "resume did not recover",
 ) -> None:
-    """Record the single ACT-BUDGET action, then commit and push it together with the salvaged partial plan.
+    """Record the single ACT-BUDGET action, then commit it together with the salvaged partial plan; the host pushes.
 
     The ledger record would vanish with the container workspace if it were not committed, so the plan branch carries
     it (plus whatever plan text was salvaged) even though no ``plans.jsonl`` entry is made for an unusable plan.
@@ -187,13 +188,11 @@ def _record_plan_budget_failure(  # noqa: PLR0913
     run_cmd(["git", "add", *add_targets], cwd=repo_dir, check=False)
     run_cmd(["git", "config", "--local", "user.email", "planner-agent@holon-agentic-coder.com"], cwd=repo_dir)
     run_cmd(["git", "config", "--local", "user.name", "Holon Planner Agent"], cwd=repo_dir)
-    commit = run_cmd(
+    run_cmd(
         ["git", "commit", "-m", f"plan: {plan_id} stopped by {breach.budget_name} budget ({agent_name}, {model_name})"],
         cwd=repo_dir,
         check=False,
     )
-    if commit.returncode == 0:
-        run_cmd(["git", "push", "-u", "origin", plan_branch], cwd=repo_dir, check=False)
 
 
 def build_replan_paragraph(feedback: str, entropy_budget: float) -> str:
@@ -276,20 +275,18 @@ def main():  # noqa: C901, PLR0912, PLR0915
         intent_branch_prefix = intent_branch_prefix[:-2]
 
     repo_dir = get_workspace_dir()
-    cleanup_repo_dir(repo_dir, raise_on_error=True)
-    os.makedirs(repo_dir, exist_ok=True)
-
-    # Clone the repo
-    repo_url = get_repo_url()
-    run_cmd(["git", "clone", "--branch", intent_branch, "--single-branch", "--depth", "1", repo_url, "."], cwd=repo_dir)
 
     plan_seq = int(time.time())
     safe_model = _sanitize_model_name(model_name)
     plan_id = build_plan_id(plan_seq, intent_branch_prefix, agent_name, safe_model)
     plan_branch = f"{intent_branch_prefix}/{plan_id}/_"
 
-    # Checkout plan branch
-    run_cmd(["git", "checkout", "-b", plan_branch], cwd=repo_dir)
+    # The host fetched the intent branch into the mounted worktree; the plan branch starts from it, locally.
+    try:
+        start_branch_from_host_fetch(GitRepository(repo_dir, runner=run_cmd), repo_dir, intent_branch, plan_branch)
+    except RuntimeError as exc:
+        print(f"Error: {redact_agent_secrets(str(exc))}")
+        sys.exit(1)
 
     # Proactively check and resolve any stage conflicts
     from sandbox_executor.flow import check_and_resolve_stage_conflicts
@@ -447,7 +444,6 @@ Include metrics in this format:
             repo_dir,
             plan_id,
             plan_md_rel,
-            plan_branch,
             agent_name,
             model_name,
             stage_timer,
@@ -552,14 +548,13 @@ Include metrics in this format:
         lf.write(json.dumps(plan_entry) + "\n")
     validate_ledger_file_unique_ids(plans_ledger_path, id_key="plan_id", parent_key="intent_branch")
 
-    # Git commit and push
+    # Git commit; the host pushes the branch after this container returns.
     run_cmd(["git", "add", plan_md_rel, "holon-knowledge/ledger/plans.jsonl"], cwd=repo_dir)
     run_cmd(["git", "config", "--local", "user.email", "planner-agent@holon-agentic-coder.com"], cwd=repo_dir)
     run_cmd(["git", "config", "--local", "user.name", "Holon Planner Agent"], cwd=repo_dir)
     run_cmd(["git", "commit", "-m", f"plan: {plan_id} created by {agent_name} ({model_name})"], cwd=repo_dir)
-    run_cmd(["git", "push", "-u", "origin", plan_branch], cwd=repo_dir)
 
-    print(f"Plan branch '{plan_branch}' successfully created, committed, and pushed.")
+    print(f"Plan branch '{plan_branch}' successfully created and committed.")
     print(stage_timer.summary("ok"))
 
 

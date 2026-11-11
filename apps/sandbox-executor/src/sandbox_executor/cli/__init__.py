@@ -17,7 +17,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, TextIO
-from urllib.parse import unquote, urlparse, urlsplit, urlunsplit
+from urllib.parse import urlparse
 
 from sandbox_executor import git_flow, local_llm
 from sandbox_executor.agent_defaults import (
@@ -35,7 +35,13 @@ from sandbox_executor.agent_defaults import (
     resolve_agent_runner,
     resolve_model,
 )
-from sandbox_executor.agent_runner import HOST_WORKTREE_ROLES, SANDBOX_UV_PROJECT_ENVIRONMENT, SANDBOX_WORKSPACE_MOUNT
+from sandbox_executor.agent_runner import (
+    HOST_WORKTREE_ROLES,
+    INTENT_CREATOR_ROLE,
+    RETIRED_ENV_VARS,
+    SANDBOX_UV_PROJECT_ENVIRONMENT,
+    SANDBOX_WORKSPACE_MOUNT,
+)
 from sandbox_executor.budgets import stage_budget_handdown_env
 from sandbox_executor.calibration import run_calibrate
 from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
@@ -151,7 +157,6 @@ __all__ = [
     "BLOCKED_METADATA_HOSTS",
     "DEFAULT_ENSEMBLE_SIZE",
     "ENSEMBLE_SIZE_HELP",
-    "GIT_CREDENTIAL_HELPER",
     "OVER_BUDGET_EXIT_CODE",
     "PACKAGE_LOGGER_NAME",
     "SKIP_PUSH_DISPATCH_ERROR",
@@ -175,7 +180,6 @@ __all__ = [
     "append_action_event",
     "build_parser",
     "configure_cli_logging",
-    "credential_host",
     "detect_holon_coherence",
     "dispatch_role_agent",
     "env_file_dir",
@@ -194,7 +198,6 @@ __all__ = [
     "load_checkpoint",
     "main",
     "normalise_agent_id",
-    "normalize_repo_remote",
     "preflight_gate",
     "print_encodable",
     "promote_pending_candidates",
@@ -203,14 +206,12 @@ __all__ = [
     "redact_cli_error",
     "report_budgets_and_envelope",
     "resolve_role_image",
-    "resolve_target_repo",
     "run_calibrate",
     "run_docker_container",
     "run_doctor",
     "run_flow_pipeline",
     "run_preflight_probe",
     "setup_token_reduction_proxy",
-    "strip_url_credentials",
     "sweep_stale_env_files",
     "teardown_token_reduction_proxy",
     "url_userinfo_end",
@@ -282,227 +283,6 @@ def find_github_token() -> str | None:
         except Exception as e:
             logger.debug("Failed to retrieve token via gh CLI: %s", e)
     return None
-
-
-def normalize_repo_remote(remote_url: str) -> tuple[str, str]:
-    """Normalize a git remote URL into (host, path_with_git).
-
-    Handles SSH SCP-like syntax (git@host:org/repo.git), URI-style SSH
-    (ssh://git@host/org/repo.git), and HTTPS/HTTP remotes (https://host/org/repo.git).
-
-    Returns:
-        A tuple of (host, repo_path) where repo_path always ends with .git.
-
-    Raises:
-        ValueError: If remote_url cannot be parsed.
-    """
-    clean_url = remote_url.strip()
-    if "://" in clean_url:
-        parsed = urlparse(clean_url)
-        host = parsed.hostname or parsed.netloc.split("@")[-1].split(":")[0]
-        try:
-            port = parsed.port
-        except ValueError:
-            # urlparse's message quotes the bad port, which may be part of a password.
-            raise ValueError(
-                "Unable to parse the remote URL; its value is withheld because it may hold a credential."
-            ) from None
-        if port and port not in (22, 443):
-            host = f"{host}:{port}"
-        path = parsed.path.lstrip("/")
-    else:
-        m = re.match(r"^(?:(?P<user>[^@]+)@)?(?P<host>[^:]+):(?P<path>.+)$", clean_url)
-        if not m:
-            raise ValueError("Unable to parse the remote URL; its value is withheld because it may hold a credential.")
-        host = m.group("host")
-        path = m.group("path").lstrip("/")
-
-    if path.endswith(".git"):
-        path = path[:-4]
-    path_with_git = f"{path}.git"
-    return host, path_with_git
-
-
-# A GitHub token used as the bare user name of an HTTPS URL (`https://<token>@host/...`). Any other
-# bare user name is a login name, not a credential.
-_GITHUB_TOKEN_USER_RE = re.compile(r"(?:gh[opsu]_|github_pat_)[A-Za-z0-9_-]{8,}")
-
-# The fixed password GitHub documents for the `https://<token>:x-oauth-basic@host/...` form.
-_OAUTH_BASIC_PASSWORD = "x-oauth-basic"
-
-
-def strip_url_credentials(url: str) -> tuple[str, str | None]:
-    """Remove the userinfo (`user:password@`) from an `http(s)://` URL.
-
-    Only HTTP(S) userinfo is a credential. SSH remotes, both `ssh://git@host/org/repo.git` and the
-    SCP-style `git@host:org/repo.git`, carry the SSH login user (conventionally `git`), not a token,
-    and are returned unchanged: stripping it would make ssh log in as the local user and fail.
-
-    Args:
-        url: A remote URL.
-
-    Returns:
-        The URL without userinfo, and the credential it carried, percent-decoded (as git decodes
-        it), decided in this order:
-
-        1. the user name in the GitHub `<token>:x-oauth-basic` form (password compared
-           case-insensitively); the literal `x-oauth-basic` is never the credential, so with an
-           empty user name (`:x-oauth-basic@`) there is none;
-        2. otherwise any non-empty password (`x-access-token:<token>@`, `user:password@`);
-        3. otherwise a bare user name only when it is shaped like a GitHub token (GitHub accepts a
-           token as a bare user name).
-
-        A plain bare user name is a login name, not a credential: it is stripped and the credential
-        is None. The credential is also None when the URL carried no userinfo or is not an HTTP(S)
-        URL. A password holding a raw `/`, `?` or `#` is stripped whole (see
-        `redaction.url_userinfo_end`, the rule the echo redactor and env-file routing share).
-    """
-    if not url.lower().startswith(("https://", "http://")):
-        return url, None
-    scheme_end = url.index("://") + 3
-    rest = url[scheme_end:]
-    at = url_userinfo_end(rest)
-    if at is None:
-        return url, None
-    userinfo = rest[:at]
-    clean_url = urlunsplit(urlsplit(url[:scheme_end] + rest[at + 1 :]))
-    user, _, password = (unquote(part) for part in userinfo.partition(":"))
-    if password.lower() == _OAUTH_BASIC_PASSWORD:
-        # The placeholder password is never the credential: the user name is, and an empty user name
-        # leaves no credential at all.
-        credential: str | None = user or None
-    elif password:
-        credential = password
-    elif _GITHUB_TOKEN_USER_RE.fullmatch(user):
-        credential = user
-    else:
-        credential = None
-    return clean_url, credential
-
-
-def credential_host(repo_url: str) -> str | None:
-    """Return the `host[:port]` a git credential helper should be scoped to, or None.
-
-    Only HTTPS remotes carry a token through a credential helper; SSH remotes authenticate through
-    the forwarded agent socket and plain HTTP must never be sent a credential.
-
-    Args:
-        repo_url: A credential-free remote URL.
-
-    Returns:
-        The lower-cased host, with its port when one is present, for an HTTPS URL; otherwise None.
-    """
-    if not repo_url.lower().startswith("https://"):
-        return None
-    hostport = urlsplit(repo_url).netloc.rpartition("@")[2].lower()
-    return hostport or None
-
-
-def _resolve_target_repo(target_worktree: str | None = None) -> tuple[str, str | None, str | None]:
-    """Resolve the credential-free target repository URL and any credential its source embedded.
-
-    Returns:
-        The credential-free URL, the credential stripped from it (or None), and the name of the
-        source that carried the credential (`HOLON_REPO_URL` or `remote.origin.url`), or None.
-
-    Raises:
-        RuntimeError: If remote.origin.url cannot be resolved or is empty.
-    """
-    override = os.getenv("HOLON_REPO_URL")
-    if override and override.strip():
-        clean_url, embedded = strip_url_credentials(override.strip())
-        return clean_url, embedded, "HOLON_REPO_URL" if embedded else None
-
-    target_dir = os.path.abspath(target_worktree) if target_worktree else os.getcwd()
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-    proc = subprocess.run(
-        ["git", "-C", target_dir, "config", "--get", "remote.origin.url"],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=env,
-    )
-    if proc.returncode != 0 or not proc.stdout.strip():
-        raise RuntimeError(
-            f"Error: Unable to resolve git remote 'origin' in '{target_dir}'. "
-            "Ensure the command is run inside a git repository with an 'origin' remote configured, "
-            "or set HOLON_REPO_URL explicitly."
-        )
-
-    raw_url, embedded = strip_url_credentials(proc.stdout.strip())
-    source = "remote.origin.url" if embedded else None
-    if find_github_token():
-        host, repo_path = normalize_repo_remote(raw_url)
-        return f"https://{host}/{repo_path}", embedded, source
-
-    return raw_url, embedded, source
-
-
-def resolve_target_repo(target_worktree: str | None = None) -> tuple[str, str | None]:
-    """Resolve the target git repository URL without credentials, and the credential it carried.
-
-    Checks the HOLON_REPO_URL environment variable first. If unset, queries git remote.origin.url in
-    target_worktree (or cwd). Any HTTP(S) userinfo in either source is stripped. When it carries a
-    credential (see `strip_url_credentials`; a plain user name does not), a warning names the source
-    but never the value, and `run_docker_container` hands that credential to git inside the
-    container through a runtime credential helper, in preference to an ambient host token. When a
-    GitHub token is found, an origin remote is normalised to a plain HTTPS URL the same way.
-    Otherwise the remote URL is returned as is, for SSH agent forwarding. A credential stripped from
-    a URL that stays plain HTTP is discarded, since no credential helper is configured for it.
-
-    Returns:
-        The credential-free URL, and the credential stripped from it (None when there was none or
-        it was discarded).
-
-    Raises:
-        RuntimeError: If remote.origin.url cannot be resolved or is empty.
-    """
-    clean_url, embedded, source = _resolve_target_repo(target_worktree)
-    if source and credential_host(clean_url) is None:
-        # Plain HTTP is never sent a credential, so no helper will use it: discard it rather than
-        # forward an unused secret into the container.
-        print(
-            f"Warning: {source} contains embedded credentials; they are stripped from the URL and "
-            "discarded, because plain HTTP is never sent a credential. Use an HTTPS or SSH remote.",
-            file=sys.stderr,
-        )
-        return clean_url, None
-    if source:
-        print(
-            f"Warning: {source} contains embedded credentials; they are stripped from the URL and the "
-            "token is supplied to git inside the container through a credential helper instead.",
-            file=sys.stderr,
-        )
-    return clean_url, embedded
-
-
-def resolve_target_repo_url(target_worktree: str | None = None) -> str:
-    """Resolve the target git repository URL, always without embedded credentials.
-
-    See `resolve_target_repo`, which also returns the credential the URL carried.
-
-    Raises:
-        RuntimeError: If remote.origin.url cannot be resolved or is empty.
-    """
-    return resolve_target_repo(target_worktree)[0]
-
-
-def get_ssh_auth_mounts() -> tuple[list[str], dict[str, str]]:
-    """Determine SSH agent socket volume mounts and env vars based on OS."""
-    mounts = []
-    env_vars = {}
-
-    if sys.platform == "darwin":
-        # macOS Docker Desktop magic socket path
-        mounts.extend(["-v", "/run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock"])
-        env_vars["SSH_AUTH_SOCK"] = "/run/host-services/ssh-auth.sock"
-    else:
-        ssh_sock = os.getenv("SSH_AUTH_SOCK")
-        if ssh_sock and os.path.exists(ssh_sock):
-            mounts.extend(["-v", f"{ssh_sock}:/run/ssh-agent"])
-            env_vars["SSH_AUTH_SOCK"] = "/run/ssh-agent"
-
-    return mounts, env_vars
 
 
 def get_agent_session_mounts(agent_id: str) -> list[str]:  # noqa: C901
@@ -1286,13 +1066,6 @@ def get_host_proxy_envs() -> dict[str, str]:
 ENV_FILE_PREFIX = "holon-env-"
 _ENV_FILE_STALE_SECONDS = 24 * 60 * 60
 
-# A git credential helper that answers `get` from the container's own environment. It holds only the
-# `$GITHUB_TOKEN` reference, never the value; docker passes --env-file values verbatim (no quote or
-# `$` processing), so the reference is expanded by the helper's shell at call time.
-GIT_CREDENTIAL_HELPER = (
-    '!f() { if [ "$1" = get ]; then printf "username=x-access-token\\npassword=%s\\n" "$GITHUB_TOKEN"; fi; }; f'
-)
-
 
 def env_file_dir() -> str:
     """Return the directory for temporary credential env-files, creating it owner-only (0700).
@@ -1390,9 +1163,10 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
 ) -> int:
     """Constructs docker run command with auto-discovered credentials and executes it.
 
-    The review-loop and executor roles work in place on the host worktree, so their ``target_worktree`` is
-    required, validated and bind-mounted at the sandbox workspace path (see ``git_flow.sandbox_worktree_mounts``)
-    with ``HOLON_TARGET_WORKTREE`` pinned to the mountpoint; the intent creator and planner keep their private clone.
+    Every role (intent creator, planner, executor and review loop) works in place on the host worktree, so its
+    ``target_worktree`` is required, validated and bind-mounted at the sandbox workspace path (see
+    ``git_flow.sandbox_worktree_mounts``) with ``HOLON_TARGET_WORKTREE`` pinned to the mountpoint. No container
+    reaches the remote: the host fetches the base before the container starts and pushes after it returns.
     """
     if not shutil.which("docker"):
         print("Error: 'docker' CLI command not found. Please install Docker.", file=sys.stderr)
@@ -1405,12 +1179,6 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
         except RuntimeError as exc:
             print(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
             return 1
-
-    try:
-        resolved_repo_url, embedded_token = resolve_target_repo(target_worktree)
-    except RuntimeError as exc:
-        print(redact_cli_error(exc), file=sys.stderr)
-        return 1
 
     tty_flag = ["-it"] if sys.stdin.isatty() else ["-i"]
     docker_cmd = ["docker", "run", "--rm", *tty_flag]
@@ -1429,13 +1197,11 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
 
     # Forward all host environment variables prefixed with HOLON_ and GITHUB_TOKEN
     env_to_forward = {}
-    override_url = (os.getenv("HOLON_REPO_URL") or "").strip()
-    # A credential embedded in the repository URL (explicit override or origin) is scoped to that
-    # remote and wins over an ambient host token, which may belong to a different host.
-    gh_token = embedded_token or find_github_token()
+    gh_token = find_github_token()
 
     for key, value in os.environ.items():
-        if key.startswith("HOLON_") or key == "GITHUB_TOKEN":
+        # A retired variable is ignored: no container needs a repository URL, as the host does every fetch and push.
+        if (key.startswith("HOLON_") and key not in RETIRED_ENV_VARS) or key == "GITHUB_TOKEN":
             env_to_forward[key] = value
 
     # Set after the host forwarding loop so a host GITHUB_TOKEN cannot displace the chosen token.
@@ -1446,8 +1212,6 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
     # first; this replaces any forwarded host HOLON_STAGE_BUDGET_SECONDS. Every role-container dispatch goes
     # through here, so no caller has to pass it.
     env_to_forward.update(stage_budget_handdown_env())
-
-    env_to_forward["HOLON_REPO_URL"] = resolved_repo_url
 
     # Pin the container workspace to the host worktree mountpoint, and keep 'uv run' off the host's mounted .venv.
     if workspace_mounts:
@@ -1469,27 +1233,6 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
 
     for key, value in sorted(env_to_forward.items()):
         add_env(key, value)
-
-    # The token reaches in-container git through runtime-only config (GIT_CONFIG_COUNT, git 2.31+),
-    # never through the URL or a file. It is scoped to the one host the token used to be embedded
-    # for: a remote built from origin, or an override URL that carried it. Entry 0 resets any
-    # inherited helpers for that host. The entries go through the same classifier as every other
-    # variable: the helper's literal `password=` text sends it to the env-file, although it holds only
-    # the `$GITHUB_TOKEN` reference.
-    helper_host = credential_host(resolved_repo_url)
-    if gh_token and helper_host and (not override_url or embedded_token):
-        helper_key = f"credential.https://{helper_host}.helper"
-        add_env("GIT_CONFIG_COUNT", "2")
-        add_env("GIT_CONFIG_KEY_0", helper_key)
-        add_env("GIT_CONFIG_VALUE_0", "")
-        add_env("GIT_CONFIG_KEY_1", helper_key)
-        add_env("GIT_CONFIG_VALUE_1", GIT_CREDENTIAL_HELPER)
-
-    # SSH Agent Socket Mounts
-    ssh_mounts, ssh_envs = get_ssh_auth_mounts()
-    docker_cmd.extend(ssh_mounts)
-    for k, v in ssh_envs.items():
-        add_env(k, v)
 
     # Containers reach the host only through the gateway name; make it resolvable on Linux as it already is on
     # Docker Desktop, so agent base URLs rewritten to host.docker.internal work on every platform.
@@ -1767,7 +1510,6 @@ def _report_gateways(  # noqa: PLR0913
         print("prefill_cache=unknown (no loopback or allow-listed endpoint to probe)", file=out)
 
 
-INTENT_CREATOR_ROLE: str = "intent-creator"
 INTENT_CREATOR_IMAGE: str = "holon/orchestrator"
 # The intent-creator entrypoint never invokes a runner, so its container keeps the historical antigravity
 # mount profile whatever runner the caller resolved.
@@ -1815,8 +1557,7 @@ def dispatch_role_agent(  # noqa: PLR0913
         model: Resolved model name. Planner and executor receive it through positional_args; the
             intent creator does not run a model.
         positional_args: Container arguments (e.g. [plan_branch, runner, model] for the executor).
-        target_worktree: Target git worktree directory: resolves the origin URL, and is the worktree the
-            review-loop role works in (required for that role).
+        target_worktree: Host git worktree the role container works in (required).
         intent_file: Intent payload path, mandatory for the intent creator.
         result_file: Structured outcome payload path for container-to-host result transport.
         token_reduce: Whether to route container traffic through the token reduction proxy.

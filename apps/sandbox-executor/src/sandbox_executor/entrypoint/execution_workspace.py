@@ -21,8 +21,26 @@ def workspace_mounted() -> bool:
     return os.getenv("HOLON_TARGET_WORKTREE") == SANDBOX_WORKSPACE_MOUNT
 
 
+def start_branch_from_host_fetch(repo: GitRepository, repo_dir: str, base_branch: str, new_branch: str) -> None:
+    """Create ``new_branch`` in the mounted host worktree at the tip of ``base_branch``, which the host fetched.
+
+    The authoring roles (intent creator and planner) commit on the branch it creates; the host pushes it afterwards.
+    No git command here touches the remote.
+
+    Raises:
+        RuntimeError: If the workspace is not the mounted host worktree, or fails ``validate_mounted_workspace``.
+    """
+    if not workspace_mounted():
+        raise RuntimeError("the host worktree is not mounted at the sandbox workspace; this role never clones")
+    base_tip = validate_mounted_workspace(repo, repo_dir, base_branch)
+    repo.run(["checkout", "-B", new_branch, base_tip])
+
+
 def validate_mounted_workspace(repo: GitRepository, repo_dir: str, plan_branch: str) -> str:
-    """Validate the host worktree mounted at repo_dir and return the plan tip the host fetched into it.
+    """Validate the host worktree mounted at repo_dir and return the tip of ``plan_branch`` the host fetched into it.
+
+    Every role entrypoint uses this for its base branch (the target branch for the intent creator, the intent branch
+    for the planner, the plan branch for the executor).
 
     The container never clones, fetches, resets or cleans the mount. HEAD must be a readable commit, the worktree must
     carry no uncommitted changes (an earlier crashed run's edits stay on the host for the operator, and are never
@@ -46,40 +64,23 @@ def validate_mounted_workspace(repo: GitRepository, repo_dir: str, plan_branch: 
         if tip.returncode == 0 and (tip.stdout or "").strip():
             return tip.stdout.strip()
     raise RuntimeError(
-        f"plan branch '{plan_branch}' does not resolve in the mounted workspace; the host fetches it before dispatch"
+        f"branch '{plan_branch}' does not resolve in the mounted workspace; the host fetches it before dispatch"
     )
 
 
-def _resume_refusal(repo: GitRepository, repo_url: str, partial_branch: str, plan_branch_prefix: str) -> str | None:
-    """Fetch a failed execution branch for a resume and return why it cannot be used, or None when it can.
+def _resume_refusal(partial_branch: str, plan_branch_prefix: str) -> str | None:
+    """Return why a failed execution branch cannot be resumed, or None when it can be.
 
-    A mounted host worktree is never fetched into: the host already fetched the branch before dispatch.
+    The host already fetched the branch before dispatch; the container never fetches.
     """
     shaped = _PARTIAL_BRANCH_RE.match(partial_branch) and ".." not in partial_branch
     if not shaped or not partial_branch.startswith(f"{plan_branch_prefix}/E-"):
         return f"'{partial_branch}' is not an execution branch of this plan"
-    if workspace_mounted():
-        return None
-    fetch = repo.run(
-        ["fetch", "--no-tags", repo_url, f"+refs/heads/{partial_branch}:refs/remotes/origin/{partial_branch}"],
-        check=False,
-    )
-    return "fetch failed" if fetch.returncode != 0 else None
-
-
-def _descends_from_plan_tip(repo: GitRepository, repo_url: str, partial_branch: str, plan_tip: str, sha: str) -> bool:
-    """True when sha descends from the plan tip, deepening a shallow (never a mounted) clone once to find out."""
-    if repo.merge_base(plan_tip, sha, is_ancestor=True).returncode == 0:
-        return True
-    shallow = repo.rev_parse("--is-shallow-repository")
-    if (shallow.stdout or "").strip() != "true" or workspace_mounted():
-        return False
-    repo.fetch(repo_url, f"refs/heads/{partial_branch}", "--deepen=50")
-    return repo.merge_base(plan_tip, sha, is_ancestor=True).returncode == 0
+    return None
 
 
 def resolve_partial_head(
-    repo: GitRepository, repo_url: str, partial_branch: str, plan_tip: str | None, plan_branch_prefix: str
+    repo: GitRepository, partial_branch: str, plan_tip: str | None, plan_branch_prefix: str
 ) -> tuple[str | None, str]:
     """Return the partial head to resume from (or None) and the reason, read from the failed branch's own ledger.
 
@@ -88,7 +89,7 @@ def resolve_partial_head(
     """
     if not plan_tip:
         return None, "the plan tip is unknown"
-    refusal = _resume_refusal(repo, repo_url, partial_branch, plan_branch_prefix)
+    refusal = _resume_refusal(partial_branch, plan_branch_prefix)
     if refusal:
         return None, refusal
     from sandbox_executor.flow import failed_partial_head
@@ -99,7 +100,7 @@ def resolve_partial_head(
         return None, "no partial_head"
     if repo.run(["cat-file", "-e", f"{sha}^{{commit}}"], check=False).returncode != 0:
         return None, "the partial head is not on the fetched branch"
-    if not _descends_from_plan_tip(repo, repo_url, partial_branch, plan_tip, sha):
+    if repo.merge_base(plan_tip, sha, is_ancestor=True).returncode != 0:
         return None, "not a descendant of the plan tip"
     return sha, "resumed"
 

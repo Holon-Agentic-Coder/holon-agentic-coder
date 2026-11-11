@@ -38,13 +38,13 @@ def _fetch_branch_prefix_error(repo_dir: str, prefix: str) -> str | None:
     return _fetch_refspecs_error(repo_dir, [f"+refs/heads/{prefix}/*:refs/remotes/origin/{prefix}/*"])
 
 
-def _fetch_refspecs_error(repo_dir: str, refspecs: list[str]) -> str | None:
-    """Fetch the given refspecs from origin in one command.
+def _fetch_refspecs_error(repo_dir: str, refspecs: list[str], remote: str = "origin") -> str | None:
+    """Fetch the given refspecs from the worktree's remote (``origin`` by default) in one command.
 
     Returns:
         str | None: None on success, otherwise a secret-redacted description of the fetch failure.
     """
-    res = run_git(["fetch", "--no-tags", "origin", *refspecs], cwd=repo_dir, check=False, timeout=300)
+    res = run_git(["fetch", "--no-tags", remote, *refspecs], cwd=repo_dir, check=False, timeout=300)
     if res.returncode == 0:
         return None
     stderr = res.stderr.strip() if isinstance(res.stderr, str) else ""

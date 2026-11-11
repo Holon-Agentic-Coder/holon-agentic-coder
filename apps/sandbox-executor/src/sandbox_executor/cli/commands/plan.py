@@ -6,6 +6,7 @@ import argparse
 import sys
 
 from sandbox_executor import cli
+from sandbox_executor.cli.commands._host_publish import prepare_worktree, push_checked_out_branch, slug_of_branch
 from sandbox_executor.cli.commands._role import prepare_role_execution
 from sandbox_executor.cli.options import (
     add_preflight_option,
@@ -33,6 +34,13 @@ def run(args: argparse.Namespace) -> int | None:
     common_kwargs = prepare_role_execution(args)
     if common_kwargs is None:
         return None
+    try:
+        common_kwargs["target_worktree"] = prepare_worktree(
+            args.intent_branch, common_kwargs.get("target_worktree"), slug_of_branch(args.intent_branch)
+        )
+    except (RuntimeError, ValueError) as exc:
+        print(f"Error: {cli.redact_cli_error(exc)}", file=sys.stderr)
+        sys.exit(1)
     exit_code = cli.dispatch_role_agent(
         "planner",
         args.agent,
@@ -40,5 +48,11 @@ def run(args: argparse.Namespace) -> int | None:
         [args.intent_branch, args.agent, args.model],
         **common_kwargs,
     )
+    if exit_code == 0:
+        try:
+            push_checked_out_branch(common_kwargs["target_worktree"])
+        except RuntimeError as exc:
+            print(f"Error: {cli.redact_cli_error(exc)}", file=sys.stderr)
+            exit_code = 1
     sys.exit(exit_code)
     return None

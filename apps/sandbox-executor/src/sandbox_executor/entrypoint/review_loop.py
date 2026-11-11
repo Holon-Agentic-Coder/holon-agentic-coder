@@ -56,11 +56,9 @@ from sandbox_executor.review_report import (
     serialize_finding_disposition,
 )
 from sandbox_executor.review_target import (
-    GH_TIMEOUT_SECONDS,
     ReviewTarget,
     ReviewTargetError,
     RunGh,
-    github_repo_slug,
     is_pr_reference,
     resolve_review_target,
 )
@@ -106,22 +104,6 @@ class ReviewPreparationError(RuntimeError):
         self.stage = stage
 
 
-def _gh_runner(repo_dir: str) -> RunGh:
-    """Return a gh runner that names the repository through GH_REPO when there is no checkout yet."""
-    env: dict[str, str] | None = None
-    if not os.path.exists(os.path.join(repo_dir, ".git")):
-        slug = github_repo_slug(os.getenv("HOLON_REPO_URL", ""))
-        if slug:
-            env = {**os.environ, "GH_REPO": slug}
-
-    def _run(argv: list[str], cwd: str | None) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            argv, cwd=cwd, env=env, capture_output=True, text=True, check=False, timeout=GH_TIMEOUT_SECONDS
-        )
-
-    return _run
-
-
 def _resolve_target(repo_dir: str, raw: str, run_gh: RunGh | None = None) -> ReviewTarget:
     """Resolve the raw target before any git operation; a branch's head SHA is read from the mounted HEAD."""
     clean = raw.strip()
@@ -130,7 +112,7 @@ def _resolve_target(repo_dir: str, raw: str, run_gh: RunGh | None = None) -> Rev
     if not is_pr_reference(clean):
         return ReviewTarget(raw=clean, head_branch=clean, head_sha="")
     try:
-        return resolve_review_target(repo_dir, clean, run_gh=run_gh or _gh_runner(repo_dir))
+        return resolve_review_target(repo_dir, clean, run_gh=run_gh)
     except ReviewTargetError as exc:
         raise ReviewPreparationError("resolve", str(exc)) from exc
 
@@ -423,24 +405,23 @@ def _run_resolver_agent(
 
 
 @dataclasses.dataclass(frozen=True)
-class CommitPushOptions:
-    """Options governing resolution commit and push behaviour."""
+class CommitOptions:
+    """Options governing the resolution commit; the host pushes the committed head after the container returns."""
 
-    skip_push: bool = False
     dry_run: bool = False
     pre_resolver_head: str | None = None
 
 
-def _commit_and_push_resolution(
+def _commit_resolution(
     repo_dir: str,
     head_branch: str,
     iteration: int,
     dispositions: tuple[FindingDisposition, ...],
-    options: CommitPushOptions | None = None,
+    options: CommitOptions | None = None,
     **kwargs: Any,
-) -> tuple[tuple[FindingDisposition, ...], str, bool, bool, bool, str | None]:
-    """Verify via lint and test, commit applied fixes with finding IDs, and fast-forward push."""
-    opts = options or CommitPushOptions()
+) -> tuple[tuple[FindingDisposition, ...], str, bool, bool, str | None]:
+    """Verify via lint and test, and commit applied fixes with finding IDs; the host pushes the new head."""
+    opts = options or CommitOptions()
     pre_resolver_head: str | None = kwargs.get("pre_resolver_head", opts.pre_resolver_head)
     current_head = (_checked(["git", "rev-parse", "HEAD"], repo_dir, "resolve").stdout or "").strip()
     if pre_resolver_head and current_head != pre_resolver_head:
@@ -453,15 +434,15 @@ def _commit_and_push_resolution(
     applied_items = [d for d in dispositions if d.disposition == "applied"]
 
     if not applied_items or not has_worktree_changes:
-        return dispositions, initial_head, False, False, False, None
+        return dispositions, initial_head, False, False, None
 
     if opts.dry_run:
-        return dispositions, initial_head, False, False, False, None
+        return dispositions, initial_head, False, False, None
 
     lint_ok, tests_ok, verify_err = _verify_before_push(repo_dir)
     # A verification failure, a missing verification tool included, never stages, commits or pushes anything.
     if not lint_ok or not tests_ok:
-        return dispositions, initial_head, False, lint_ok, tests_ok, verify_err
+        return dispositions, initial_head, lint_ok, tests_ok, verify_err
 
     run_cmd(["git", "add", "-A", *_RESOLVER_PATHSPEC], cwd=repo_dir, check=True)
     finding_ids = [d.id for d in applied_items]
@@ -480,26 +461,14 @@ def _commit_and_push_resolution(
     commit_res = run_cmd(commit_cmd, cwd=repo_dir, check=False)
     if commit_res.returncode != 0:
         err = _bounded_error_context((commit_res.stderr or commit_res.stdout or "").strip() or "git commit failed")
-        return dispositions, initial_head, False, True, True, f"Resolver commit failed: {err}"
+        return dispositions, initial_head, True, True, f"Resolver commit failed: {err}"
 
     new_head = (_checked(["git", "rev-parse", "HEAD"], repo_dir, "resolve").stdout or "").strip()
     updated = tuple(
         dataclasses.replace(d, commit_sha=new_head) if d.disposition == "applied" else d for d in dispositions
     )
 
-    pushed = False
-    if not opts.skip_push and new_head != initial_head:
-        # The host worktree's origin may be an SSH remote; push to the credential-free URL the host resolved.
-        remote = os.getenv("HOLON_REPO_URL", "").strip() or "origin"
-        push_cmd = ["git", "push", remote, f"HEAD:refs/heads/{head_branch}"]
-        _assert_safe_git_args(push_cmd)
-        push_res = run_cmd(push_cmd, cwd=repo_dir, check=False)
-        if push_res.returncode != 0:
-            err = _bounded_error_context((push_res.stderr or push_res.stdout or "").strip() or "git push failed")
-            return updated, new_head, False, True, True, f"Resolver push failed: {err}"
-        pushed = True
-
-    return updated, new_head, pushed, True, True, None
+    return updated, new_head, True, True, None
 
 
 def _run_resolver_mode(
@@ -531,25 +500,23 @@ def _run_resolver_mode(
 
     dispositions = deserialize_finding_dispositions(raw_dispositions, findings, action_ids)
     head_sha = pre_resolver_head
-    pushed = False
     lint_ok = False
     tests_ok = False
     try:
         if error is None and findings:
-            dispositions, head_sha, pushed, lint_ok, tests_ok, error = _commit_and_push_resolution(
+            dispositions, head_sha, lint_ok, tests_ok, error = _commit_resolution(
                 repo_dir,
                 head_branch,
                 args.iteration,
                 dispositions,
-                CommitPushOptions(
-                    skip_push=args.skip_push,
+                CommitOptions(
                     dry_run=args.dry_run,
                     pre_resolver_head=pre_resolver_head,
                 ),
                 pre_resolver_head=pre_resolver_head,
             )
     except Exception as exc:
-        # Whatever escapes verification, commit or push, the host still gets a result with the error preserved.
+        # Whatever escapes verification or commit, the host still gets a result with the error preserved.
         error = f"Resolver verification or commit failed: {_bounded_error_context(str(exc))}"
     exit_code = 0 if error is None else 1
 
@@ -560,7 +527,6 @@ def _run_resolver_mode(
         "iteration": args.iteration,
         "dispositions": [serialize_finding_disposition(item) for item in dispositions],
         "head_sha": head_sha,
-        "pushed": pushed,
         "lint_passed": lint_ok,
         "tests_passed": tests_ok,
         "error": error,

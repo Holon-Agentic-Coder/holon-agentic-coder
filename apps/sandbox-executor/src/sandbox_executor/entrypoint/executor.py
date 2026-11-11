@@ -22,7 +22,6 @@ import contextlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -33,7 +32,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.agent_defaults import FALLBACK_AGENT, default_model_for
-from sandbox_executor.agent_runner import cleanup_repo_dir, get_repo_url, get_runner, get_workspace_dir
+from sandbox_executor.agent_runner import get_runner, get_workspace_dir
 from sandbox_executor.artefacts import EXECUTION_SPEC, ArtefactReport, execution_write_protocol
 from sandbox_executor.budgets import BudgetBreach, StageTimer, load_budgets
 
@@ -730,50 +729,6 @@ EXECUTOR_GIT_EMAIL = "executor-agent@holon-agentic-coder.com"
 EXECUTOR_GIT_NAME = "Holon Executor Agent"
 EXECUTIONS_LEDGER_REL = "holon-knowledge/ledger/executions.jsonl"
 
-# Marker lines around the unpushed-work patch printed on stderr when the execution branch push is refused.
-UNPUSHED_PATCH_BEGIN = "BEGIN UNPUSHED EXECUTION PATCH"
-UNPUSHED_PATCH_END = "END UNPUSHED EXECUTION PATCH"
-# 96 KiB: large enough for a typical execution's patch, and below the redaction input limit, so redaction never cuts
-# the middle out of a patch that is still printed. The raw patch is checked against it before redaction.
-UNPUSHED_PATCH_MAX_BYTES = 96 * 1024
-# Env files, credential and token stores, private keys and secrets directories, matched case-insensitively at any
-# depth. They are left out of the unpushed patch and its diffstat, because pattern redaction cannot recognise every
-# value they may hold.
-UNPUSHED_PATCH_EXCLUDED_GLOBS = (
-    "**/.env",
-    "**/.env.*",
-    "**/*credential*",
-    "**/.netrc",
-    "**/.npmrc",
-    "**/.pypirc",
-    "**/.pgpass",
-    "**/secrets/**",
-    "**/*.pem",
-    "**/*.key",
-    "**/*.p12",
-    "**/*.pfx",
-    "**/id_rsa*",
-    "**/id_dsa*",
-    "**/id_ecdsa*",
-    "**/id_ed25519*",
-    "**/*.ppk",
-    "**/*.asc",
-    "**/*.gpg",
-)
-# PEM, OpenSSH and armoured PGP private-key markers, in any file whatever its name.
-_PRIVATE_KEY_BEGIN = r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"
-_PRIVATE_KEY_END = r"-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"
-# A whole key on one line, for example a JSON value with escaped newlines.
-_INLINE_PRIVATE_KEY_RE = re.compile(rf"({_PRIVATE_KEY_BEGIN})(.*?)({_PRIVATE_KEY_END})")
-# A BEGIN marker that ends its line opens a multi-line block (trailing whitespace allowed).
-_PRIVATE_KEY_BLOCK_START_RE = re.compile(rf"{_PRIVATE_KEY_BEGIN}\s*$")
-_PRIVATE_KEY_BLOCK_END_RE = re.compile(_PRIVATE_KEY_END)
-# A line that can only be key material: base64 (PEM, OpenSSH, PGP armour and its checksum) or an armour header.
-_PRIVATE_KEY_MATERIAL_RE = re.compile(r"^(?:[A-Za-z0-9+/=]+|(?:Proc-Type|DEK-Info|Version|Comment|Charset|Hash): .*)$")
-# PuTTY key files give the number of private base64 lines that follow.
-_PPK_PRIVATE_LINES_RE = re.compile(r"^Private-Lines:\s*(\d+)$")
-_PRIVATE_KEY_MASK = "[REDACTED PRIVATE KEY]"
-
 
 def _recorded_decision(
     plan_data: dict[str, Any], plan_content: str, intent_data: dict[str, Any] | None
@@ -795,12 +750,13 @@ def _recorded_decision(
     return recorded if recorded is not None else should_decompose(plan_data, plan_content, intent_data)
 
 
-def sync_and_reconcile_pre_push(  # noqa: C901, PLR0911, PLR0912, PLR0915
-    repo_dir: str, target_branch: str = "main", remote_url: str | None = None
+def sync_and_reconcile_pre_push(  # noqa: C901, PLR0911, PLR0912
+    repo_dir: str, target_branch: str = "main"
 ) -> tuple[bool, str]:
-    """Inspect whether remote target branch has advanced, merge it, and reconcile ledger conflicts.
+    """Inspect whether the fetched target branch has advanced, merge it, and reconcile ledger conflicts.
 
-    If the target branch on remote origin has diverged from HEAD, attempts an in-flight
+    The host fetched the target branch into ``refs/remotes/origin/<target_branch>`` before the container started, so
+    this reads no remote. If that ref has diverged from HEAD, attempts an in-flight
     merge. If merge conflicts are strictly confined to holon-knowledge/ledger/*.jsonl,
     resolves each conflicted ledger by pure append (the target branch's bytes stay a prefix and the
     branch's missing lines follow in their original order), stages the resolved files, verifies that
@@ -810,8 +766,6 @@ def sync_and_reconcile_pre_push(  # noqa: C901, PLR0911, PLR0912, PLR0915
     Args:
         repo_dir: Working directory of the git repository.
         target_branch: Target base branch name (defaults to "main").
-        remote_url: Fetch from this URL instead of the origin remote (a mounted worktree's origin is the host's),
-            still into refs/remotes/origin/<target_branch>.
 
     Returns:
         tuple[bool, str]: (success, message).
@@ -822,14 +776,7 @@ def sync_and_reconcile_pre_push(  # noqa: C901, PLR0911, PLR0912, PLR0915
     from sandbox_executor.flow import reconcile_ledger_file
 
     repo = _get_repo(repo_dir)
-    # 1. Check if remote origin exists
-    if not remote_url and repo.run(["remote", "get-url", "origin"], check=False).returncode != 0:
-        return True, "No remote origin configured"
-
-    # 2. Fetch target branch tip
-    remote = remote_url or "origin"
-    tracking_refspec = f"+refs/heads/{target_branch}:refs/remotes/origin/{target_branch}"
-    repo.fetch(remote, tracking_refspec if remote_url else target_branch)
+    # 1. The target branch tip the host fetched
     target_ref = f"origin/{target_branch}"
     ref_check = repo.rev_parse(target_ref, verify=True)
     if ref_check.returncode != 0:
@@ -839,13 +786,6 @@ def sync_and_reconcile_pre_push(  # noqa: C901, PLR0911, PLR0912, PLR0915
 
     # 3. Check divergence with HEAD
     mb_cmd = repo.merge_base("HEAD", target_ref)
-    if mb_cmd.returncode != 0:
-        is_shallow = repo.rev_parse("--is-shallow-repository")
-        if is_shallow.stdout.strip().lower() == "true":
-            print(f"Warning: Shallow repository detected. Deepening history for {target_ref}...", file=sys.stderr)
-            repo.fetch(remote, tracking_refspec if remote_url else target_branch, "--deepen=50")
-            mb_cmd = repo.merge_base("HEAD", target_ref)
-
     if mb_cmd.returncode != 0:
         print(f"Warning: Unable to compute merge-base with {target_ref}; skipping pre-push sync.", file=sys.stderr)
         return True, f"Unable to compute merge-base with {target_ref}"
@@ -1091,110 +1031,10 @@ def _is_patch_structure(line: str) -> bool:
     return line.startswith(("diff --git ", "@@ ", "From ", "index ", "--- ", "+++ ")) or line == "-- "
 
 
-def mask_private_keys(text: str) -> str:
-    """Mask private-key material in ``text`` line by line, keeping markers, line count and diff line prefixes.
-
-    A multi-line block is opened only by a BEGIN marker that ends its line, and only the lines after it that can be key
-    material are masked. Masking stops at the END marker, at the first other line, or at a patch header, so a file that
-    merely names the marker never masks the rest of the patch, and a block never crosses into another file or commit.
-    """
-    masked = []
-    in_block = False
-    ppk_lines = 0
-    for line in text.split("\n"):
-        prefix, rest = _split_diff_prefix(line)
-        content = rest.strip()
-        if _is_patch_structure(line):
-            in_block, ppk_lines = False, 0
-            masked.append(line)
-            continue
-        if in_block or ppk_lines:
-            if in_block and _PRIVATE_KEY_BLOCK_END_RE.search(rest):
-                in_block = False
-                masked.append(line)
-                continue
-            if not content and in_block:
-                masked.append(line)
-                continue
-            if _PRIVATE_KEY_MATERIAL_RE.match(content):
-                ppk_lines = max(ppk_lines - 1, 0)
-                indent = rest[: len(rest) - len(rest.lstrip())]
-                masked.append(f"{prefix}{indent}{_PRIVATE_KEY_MASK}")
-                continue
-            in_block, ppk_lines = False, 0
-        line = _INLINE_PRIVATE_KEY_RE.sub(
-            lambda m: f"{m.group(1)}{_PRIVATE_KEY_MASK if m.group(2) else ''}{m.group(3)}", line
-        )
-        if _PRIVATE_KEY_BLOCK_START_RE.search(line):
-            in_block = True
-        elif ppk := _PPK_PRIVATE_LINES_RE.match(content):
-            ppk_lines = int(ppk.group(1))
-        masked.append(line)
-    return "\n".join(masked)
-
-
-def _unpushed_patch_text(repo_dir: str, plan_tip: str) -> str:
-    """The redacted patch block for ``<plan tip>..HEAD``, or a redacted diffstat when it exceeds the size cap.
-
-    Paths matching ``UNPUSHED_PATCH_EXCLUDED_GLOBS`` are left out of both, and a line before the block names the
-    excluded paths that changed, so the reader knows the patch is incomplete. Private-key blocks in any other file are
-    masked by content before the patch is redacted.
-    """
-    repo = _get_repo(repo_dir)
-    excluded = [f":(exclude,glob,icase){glob}" for glob in UNPUSHED_PATCH_EXCLUDED_GLOBS]
-    pathspec = ["--", ".", *excluded]
-    rev_range = f"{plan_tip}..HEAD"
-    matched = [f":(glob,icase){glob}" for glob in UNPUSHED_PATCH_EXCLUDED_GLOBS]
-    left_out = repo.diff("--name-only", rev_range, "--", *matched)
-    left_out_paths = (left_out.stdout or "").split()
-    notice = (
-        f"Unpushed patch excludes env, credential and key files: {redact_agent_secrets(', '.join(left_out_paths))}\n"
-        if left_out_paths
-        else ""
-    )
-    patch = repo.run(["format-patch", "--stdout", rev_range, *pathspec], check=False)
-    raw_patch = patch.stdout or ""
-    # Checked raw first: redaction cuts any input over its limit, which would hide an oversized patch.
-    if patch.returncode == 0 and len(raw_patch.encode("utf-8")) <= UNPUSHED_PATCH_MAX_BYTES:
-        patch_text = redact_agent_secrets(mask_private_keys(raw_patch))
-        if len(patch_text.encode("utf-8")) <= UNPUSHED_PATCH_MAX_BYTES:
-            return f"{notice}{UNPUSHED_PATCH_BEGIN}\n{patch_text.rstrip(chr(10))}\n{UNPUSHED_PATCH_END}"
-    stat = repo.diff("--stat", rev_range, *pathspec)
-    return (
-        f"{notice}{redact_agent_secrets(stat.stdout or '').rstrip()}\n"
-        f"Unpushed patch omitted: it could not be produced or exceeded UNPUSHED_PATCH_MAX_BYTES "
-        f"({UNPUSHED_PATCH_MAX_BYTES} bytes)."
-    )
-
-
-def _report_unpushed_work(repo_dir: str, exec_branch: str, plan_tip: str | None, reason: str) -> None:
-    """Report a refused push on stderr with a recoverable copy of the unpushed commits.
-
-    The host captures the container's stderr, so the patch between the marker lines survives the ``--rm`` container
-    without any new mount. Every line printed is redacted.
-    """
-    head = _get_repo(repo_dir).rev_parse("HEAD")
-    head_sha = (head.stdout or "").strip() or "unknown"
-    print(
-        f"Error: push of execution branch '{exec_branch}' was refused; local head {head_sha}: "
-        f"{redact_agent_secrets(reason.strip())}",
-        file=sys.stderr,
-    )
-    if not plan_tip:
-        print("Unpushed patch omitted: the plan tip is unknown.", file=sys.stderr)
-        return
-    print(_unpushed_patch_text(repo_dir, plan_tip), file=sys.stderr)
-
-
 def main() -> None:  # noqa: C901, PLR0912, PLR0915
-    is_default_repo = False
     repo_dir = None
-    keep_workspace = False
     exec_id: str | None = None
     timestamp_str: str = datetime.now(UTC).isoformat()
-    recovery_triggered: bool = False
-    base_tip: str | None = None
-    backup_path: str | None = None
 
     if len(sys.argv) < 2:
         print("Usage: executor.py <plan_branch> [agent_name] [model_name] [partial_execution_branch]")
@@ -1214,84 +1054,17 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     if plan_branch_prefix.endswith("/_"):
         plan_branch_prefix = plan_branch_prefix[:-2]
 
-    keep_workspace = str(os.getenv("HOLON_KEEP_WORKSPACE", "")).lower() in ("1", "true", "yes")
-    in_sandbox_explicit = (
-        str(os.getenv("HOLON_IN_SANDBOX", "")).lower() in ("1", "true", "yes")
-        or bool(os.getenv("HOLON_ROLE"))
-        or os.path.exists("/.dockerenv")
-    )
-    # Heuristic fallback: sandbox containers without HOLON_ROLE or /.dockerenv.
-    # Use HOLON_TARGET_WORKTREE to override in ambiguous environments (Linux/macOS/Windows).
-    in_sandbox_heuristic = os.getenv("USER") == "holon" or os.getenv("USERNAME") == "holon"
-    if in_sandbox_heuristic and not in_sandbox_explicit:
+    repo_dir = get_workspace_dir()
+    if not workspace_mounted():
         print(
-            "Warning: using heuristic sandbox detection; set HOLON_IN_SANDBOX=1 to suppress this.",
+            "Error: the host worktree is not mounted at the sandbox workspace; the executor never clones or fetches.",
             file=sys.stderr,
         )
-    in_sandbox = in_sandbox_explicit or in_sandbox_heuristic
-
-    is_default_repo = not os.getenv("HOLON_TARGET_WORKTREE")
-    mounted = workspace_mounted()
-    repo_dir = get_workspace_dir()
-    if is_default_repo and not keep_workspace:
-        if not in_sandbox:
-            print(
-                f"Warning: Cleaning default local repository directory at {repo_dir}.\n"
-                "Set HOLON_KEEP_WORKSPACE=1 to retain.",
-                file=sys.stderr,
-            )
-        cleanup_repo_dir(repo_dir, raise_on_error=True)
-    os.makedirs(repo_dir, exist_ok=True)
+        sys.exit(1)
     try:
-        repo_url = get_repo_url()
         repo = _get_repo(repo_dir)
-        mounted_plan_tip: str | None = None
-        if mounted:
-            # The host provisioned, fetched and mounted the worktree: no clone, fetch, reset or clean here.
-            mounted_plan_tip = validate_mounted_workspace(repo, repo_dir, plan_branch)
-        elif not os.path.exists(os.path.join(repo_dir, ".git")):
-            repo.run(["clone", "--branch", plan_branch, "--single-branch", "--depth", "1", repo_url, "."])
-        else:
-            # If the directory already contains a .git repository (e.g. workspace is preserved
-            # via HOLON_KEEP_WORKSPACE=1), reuse the workspace with git fetch and force checkout.
-            if not in_sandbox:
-                print(
-                    f"Warning: Reusing workspace at {repo_dir}.\n"
-                    "Uncommitted changes and untracked files will be discarded.",
-                    file=sys.stderr,
-                )
-            # Validate that the existing .git dir belongs to the expected remote before reusing.
-            # A stale .git from a different repository would otherwise silently trigger the
-            # reuse path (git fetch <new_url>) instead of a clean clone, producing confusing failures.
-            # A workspace cloned before HOLON_REPO_URL became credential-free stores the tokenised
-            # URL as its origin, so it mismatches here and is re-cloned, which also purges that
-            # persisted token from the preserved .git/config.
-            remote_result = repo.run(["remote", "get-url", "origin"], check=False)
-            if remote_result.returncode != 0 or remote_result.stdout.strip() != repo_url:
-                print(
-                    f"Warning: Remote URL mismatch or unreadable at {repo_dir}. "
-                    "Discarding stale workspace and re-cloning.",
-                    file=sys.stderr,
-                )
-                cleanup_repo_dir(repo_dir, raise_on_error=True)
-                os.makedirs(repo_dir, exist_ok=True)
-                repo.run(["clone", "--branch", plan_branch, "--single-branch", "--depth", "1", repo_url, "."])
-            else:
-                repo.fetch(repo_url, plan_branch, check=True)
-                if in_sandbox or repo_dir == os.path.expanduser("~/.holon-sandbox/workspace"):
-                    repo.clean(force=True, directories=True)
-                else:
-                    # Deliberate trade-off: preserve local developer files (e.g. .env, local configs)
-                    # when HOLON_KEEP_WORKSPACE=1 is used outside the sandbox. Untracked files from
-                    # the previous run will NOT be removed. Set HOLON_KEEP_WORKSPACE=0 (the default)
-                    # to ensure a clean workspace on every run.
-                    print(
-                        f"Warning: Skipping 'git clean -fd' as we are in a local workspace at {repo_dir}.\n"
-                        "Untracked files from the previous run are preserved. "
-                        "Unset HOLON_KEEP_WORKSPACE to ensure a clean workspace.",
-                        file=sys.stderr,
-                    )
-                repo.run(["checkout", "-f", "-B", plan_branch, "FETCH_HEAD"])
+        # The host provisioned, fetched and mounted the worktree: no clone, fetch, reset or clean here.
+        mounted_plan_tip = validate_mounted_workspace(repo, repo_dir, plan_branch)
 
         exec_seq = int(time.time())
         safe_agent = _sanitize_string(agent_name)
@@ -1300,16 +1073,10 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         exec_branch = f"{plan_branch_prefix}/{exec_id}/_"
 
         # Plan branch tip: the base the empty-diff guard compares the agent's work against, even on a resume.
-        if mounted_plan_tip:
-            plan_tip: str | None = mounted_plan_tip
-        else:
-            plan_tip_res = repo.rev_parse("HEAD")
-            plan_tip = plan_tip_res.stdout.strip() if plan_tip_res.returncode == 0 and plan_tip_res.stdout else None
+        plan_tip = mounted_plan_tip
         partial_head: str | None = None
         if partial_branch:
-            partial_head, resume_reason = resolve_partial_head(
-                repo, repo_url, partial_branch, plan_tip, plan_branch_prefix
-            )
+            partial_head, resume_reason = resolve_partial_head(repo, partial_branch, plan_tip, plan_branch_prefix)
             if partial_head:
                 print(f"Resuming partial work from {partial_branch} at {partial_head}")
             else:
@@ -1606,99 +1373,15 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
             notes_valid = finalise_execution_notes(notes_path, notes_report)
 
-            recovery_triggered = False
-            base_tip = None
-            backup_path = None
             is_healthy, probe_err = _probe_git_repo(repo_dir)
             if not is_healthy:
                 repaired = _repair_git_repo(repo_dir, probe_err, default_branch=exec_branch, plan_branch=plan_branch)
-                if not repaired and mounted:
+                if not repaired:
                     # Its .git pointer is read-only and the git directory is the host's: never re-initialise it.
                     raise RuntimeError(
                         f"the mounted worktree's git repository is unusable after the agent ran ({probe_err}); its "
                         "files are kept in the host worktree"
                     )
-                if not repaired:
-                    recovery_triggered = True
-                    print(
-                        "Warning: git repository invalid or missing after agent execution. Re-initialising git repo...",
-                        file=sys.stderr,
-                    )
-                    git_dot = os.path.join(repo_dir, ".git")
-                    backup_name = None
-                    if os.path.exists(git_dot):
-                        timestamp_suffix = int(datetime.now(UTC).timestamp())
-                        backup_name = f".git-unusable-{timestamp_suffix}"
-                        backup_path = os.path.join(repo_dir, backup_name)
-                        if os.path.exists(backup_path):
-                            backup_name = f".git-unusable-{timestamp_suffix}-{time.time_ns() % 1_000_000}"
-                            backup_path = os.path.join(repo_dir, backup_name)
-                        shutil.move(git_dot, backup_path)
-                        print(f"Warning: unrepairable git repository moved aside to {backup_path}", file=sys.stderr)
-
-                    repo.run(["init"])
-                    info_dir = os.path.join(repo_dir, ".git", "info")
-                    os.makedirs(info_dir, exist_ok=True)
-                    exclude_file = os.path.join(info_dir, "exclude")
-                    with open(exclude_file, "a") as ef:
-                        if backup_name:
-                            ef.write(f"\n{backup_name}\n")
-                        ef.write(".git-unusable-*\n")
-
-                    repo_url = get_repo_url()
-                    repo.run(["remote", "add", "origin", repo_url], check=False)
-
-                    fetch_retries = 3
-                    try:
-                        fetch_retries = int(os.getenv("HOLON_GIT_FETCH_RETRIES", "3"))
-                    except (ValueError, TypeError):
-                        fetch_retries = 3
-
-                    fetch_success = False
-                    fetch_err = ""
-                    for attempt in range(fetch_retries):
-                        fetch_res = repo.run(["fetch", "--no-tags", "origin", plan_branch], check=False)
-                        if fetch_res.returncode == 0:
-                            fetch_success = True
-                            break
-                        fetch_err = (fetch_res.stderr or fetch_res.stdout).strip()
-                        if attempt < fetch_retries - 1:
-                            time.sleep(1)
-
-                    if fetch_success:
-                        tip_res = repo.rev_parse("FETCH_HEAD")
-                        if tip_res.returncode == 0 and tip_res.stdout.strip():
-                            base_tip = tip_res.stdout.strip()
-                            repo.run(["update-ref", f"refs/heads/{exec_branch}", base_tip])
-                            repo.run(["symbolic-ref", "HEAD", f"refs/heads/{exec_branch}"])
-                            repo.reset(base_tip)
-
-                    if not base_tip:
-                        exec_status = "failure"
-                        summary = (
-                            f"Git recovery failure: unable to preserve parent history from {plan_branch}. "
-                            f"Corrupted repo backed up at {backup_path or 'unknown'}. Remote push aborted."
-                        )
-                        print(f"Error: {summary}", file=sys.stderr)
-                        if fetch_err:
-                            print(f"Fetch diagnostic error: {redact_agent_secrets(fetch_err)}", file=sys.stderr)
-
-                    if is_action_logging_enabled(intent_data):
-                        with suppress_ledger_failures():
-                            append_action_record(
-                                os.path.join(ledger_dir, "executions.jsonl"),
-                                ActionRecord(
-                                    action_id=generate_action_id(),
-                                    execution_id=exec_id,
-                                    event_type="git_mutation",
-                                    action="Re-initialised git repo due to corrupted repository",
-                                    category="config",
-                                    labels=["recovery", "git"],
-                                    target=".git",
-                                    outcome="success" if base_tip else "failure",
-                                    action_origin=action_origin,
-                                ),
-                            )
 
             # Empty-diff guard (shared with holon flow and the review loop): an agent run that changes nothing
             # outside holon-knowledge/ledger/, plans/ and executions/ is never recorded as success, and whatever it did
@@ -1712,7 +1395,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                     has_effective_diff,
                 )
 
-                diff_base = base_tip if recovery_triggered else plan_tip
+                diff_base = plan_tip
                 try:
                     if not diff_base:
                         raise RuntimeError(f"tip of {plan_branch} is unknown")
@@ -1772,9 +1455,8 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
             # Salvage on failure, in two commits: first the agent's code changes ("partial work (failed)"), then the
             # notes and the ledger row ("failed for plan"), so a failed execution never loses its code.
-            salvage_base = base_tip if recovery_triggered else plan_tip
-            if exec_status != "success" and salvage_base:
-                salvaged_head = _salvage_partial_work(repo_dir, exec_id, plan_branch, notes_rel, salvage_base)
+            if exec_status != "success" and plan_tip:
+                salvaged_head = _salvage_partial_work(repo_dir, exec_id, plan_branch, notes_rel, plan_tip)
 
             exec_entry = {
                 "entry_type": "summary",
@@ -1857,7 +1539,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             print("Current git repository status:")
             print(redact_text(status_output.stdout))
 
-        # Set once the commit is pushed (or kept locally when pushing is disabled), never when the push is refused.
+        # Set once the execution branch carries its commit; the host pushes it after this container returns.
         branch_recorded = False
         staged_check = repo.diff(cached=True, quiet=True)
         if staged_check.returncode != 0 or salvaged_head:
@@ -1865,65 +1547,20 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 _configure_executor_identity(repo_dir)
                 repo.commit(commit_msg)
 
-            can_push = True
-            if recovery_triggered:
-                if not base_tip:
-                    can_push = False
-                else:
-                    ancestry_check = repo.merge_base(base_tip, "HEAD", is_ancestor=True)
-                    has_parent = repo.rev_parse("HEAD^", verify=True).returncode == 0
-                    tree_check = repo.run(["ls-tree", "-r", "--name-only", "HEAD"], check=False)
-                    head_files = set(tree_check.stdout.splitlines())
-                    base_tree_check = repo.run(
-                        ["ls-tree", "-r", "--name-only", base_tip],
-                        check=False,
-                    )
-                    base_files = set(base_tree_check.stdout.splitlines())
-
-                    tree_valid = bool(head_files & base_files) if base_files else bool(head_files)
-
-                    if ancestry_check.returncode != 0 or not has_parent or not tree_valid:
-                        can_push = False
-                        cause = []
-                        if ancestry_check.returncode != 0:
-                            cause.append(f"HEAD is not a descendant of base {base_tip}")
-                        if not has_parent:
-                            cause.append("HEAD has no parent commit")
-                        if not tree_valid:
-                            cause.append("committed tree missing repository files")
-                        err_reason = "; ".join(cause)
-                        print(f"Error: Git recovery verification failed: {err_reason}", file=sys.stderr)
-
-                        summary = (
-                            f"Git recovery failure: {err_reason}. "
-                            f"Corrupted repo backed up at {backup_path or 'unknown'}. Remote push aborted."
-                        )
-                        fail_ledger_entry = superseding_failure_row(exec_entry, summary)
-                        with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as ef:
-                            ef.write(json.dumps(fail_ledger_entry) + "\n")
-
-                        repo.add("holon-knowledge/ledger/executions.jsonl", check=False)
-                        repo.commit(f"execute: record failure for {exec_id}", check=False)
-
-            # Invariant: A branch with no parent must never be pushed, whatever the execution status.
-            parent_verify = repo.rev_parse("HEAD^", verify=True)
-            if parent_verify.returncode != 0:
-                can_push = False
-
-            if can_push:
+            # Invariant: A branch with no parent must never be published, whatever the execution status.
+            can_record = repo.rev_parse("HEAD^", verify=True).returncode == 0
+            if can_record:
                 target_base = (
                     os.getenv("HOLON_TARGET_BRANCH")
                     or (intent_data.get("target_branch") if intent_data else None)
                     or "main"
                 )
-                # The host worktree's origin may be an SSH remote; sync and push via the URL the host resolved.
-                sync_ok, sync_msg = sync_and_reconcile_pre_push(
-                    repo_dir, target_branch=target_base, remote_url=repo_url if mounted else None
-                )
+                # The host fetched the target branch into the worktree before dispatch; no remote is read here.
+                sync_ok, sync_msg = sync_and_reconcile_pre_push(repo_dir, target_branch=target_base)
                 if not sync_ok:
-                    can_push = False
+                    can_record = False
                     print(f"Error: Pre-push sync failed: {sync_msg}", file=sys.stderr)
-                    sync_summary = f"Pre-push sync failure: {sync_msg}. Remote push aborted."
+                    sync_summary = f"Pre-push sync failure: {sync_msg}. The branch was not published."
                     # Also reachable when the agent was skipped, whose exec_entry is the decomposed or over_budget row.
                     fail_ledger_entry = superseding_failure_row(exec_entry, sync_summary)
                     with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as ef:
@@ -1931,34 +1568,11 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                     repo.add("holon-knowledge/ledger/executions.jsonl", check=False)
                     repo.commit(f"execute: record sync failure for {exec_id}", check=False)
 
-            if not can_push:
-                print(
-                    "Refusing to push execution branch: safety or sync verification failed.",
-                    file=sys.stderr,
-                )
+            if can_record:
+                branch_recorded = True
+                print(f"Execution branch '{exec_branch}' successfully committed locally; the host pushes it.")
             else:
-                skip_push = os.getenv("HOLON_SKIP_PUSH")
-                if not (skip_push and skip_push.lower() in ("1", "true", "yes")):
-                    # A mounted worktree's repository config is read-only, so no upstream is recorded there.
-                    push = repo.push(
-                        remote=repo_url if mounted else "origin",
-                        branch=f"{exec_branch}:refs/heads/{exec_branch}" if mounted else exec_branch,
-                        set_upstream=not mounted,
-                        check=False,
-                    )
-                    if push.returncode != 0:
-                        # Unmounted, the container is removed on exit, so the commits survive only as the patch on
-                        # stderr; a mounted worktree also keeps them on the host.
-                        _report_unpushed_work(repo_dir, exec_branch, plan_tip, push.stderr or push.stdout or "")
-                        if not skip_agent:
-                            print(stage_timer.summary("failed"))
-                        sys.exit(1)
-                    branch_recorded = True
-                    print(f"Execution branch '{exec_branch}' successfully committed and pushed.")
-                else:
-                    branch_recorded = True
-                    print(f"Skipping git push for {exec_branch} (push disabled via environment variable).")
-                    print(f"Execution branch '{exec_branch}' successfully committed locally.")
+                print("Refusing to publish execution branch: safety or sync verification failed.", file=sys.stderr)
         else:
             print("No staged changes to commit.")
 
@@ -1972,7 +1586,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 f"budget {decision.entropy_budget} and it lists no sub-intent list."
             )
             if not branch_recorded:
-                # Nothing was pushed, so no execution branch records the over_budget row: a failed run, not a refusal.
+                # No execution branch carries the over_budget row: a failed run, not a refusal.
                 print(f"{refusal} Its over_budget row was not recorded on an execution branch.", file=sys.stderr)
                 sys.exit(1)
             print(
@@ -1987,9 +1601,6 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     finally:
         if "runner" in locals() and hasattr(runner, "cleanup_ephemeral_credentials"):
             runner.cleanup_ephemeral_credentials()
-        # reuse `keep_workspace` already computed at function start
-        if is_default_repo and repo_dir and not keep_workspace:
-            cleanup_repo_dir(repo_dir, raise_on_error=False)
 
 
 if __name__ == "__main__":

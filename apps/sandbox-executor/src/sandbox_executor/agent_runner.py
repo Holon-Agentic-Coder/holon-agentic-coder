@@ -161,11 +161,18 @@ SANDBOX_WORKSPACE_MOUNT = "/home/holon/.holon-sandbox/workspace"
 #: writable by the holon user.
 SANDBOX_UV_PROJECT_ENVIRONMENT = "/home/holon/.cache/holon-venv"
 
+INTENT_CREATOR_ROLE = "intent-creator"
+PLANNER_ROLE = "planner"
 REVIEW_LOOP_ROLE = "review-loop"
 EXECUTOR_ROLE = "executor"
 
-#: The roles whose entrypoint works in place on a bind-mounted host worktree instead of a private clone.
-HOST_WORKTREE_ROLES: frozenset[str] = frozenset({REVIEW_LOOP_ROLE, EXECUTOR_ROLE})
+#: Every role entrypoint works in place on the bind-mounted host worktree and never touches the remote: the host
+#: fetches the base before the container starts and pushes the committed branch after it returns.
+HOST_WORKTREE_ROLES: frozenset[str] = frozenset({INTENT_CREATOR_ROLE, PLANNER_ROLE, REVIEW_LOOP_ROLE, EXECUTOR_ROLE})
+
+#: Host environment variables that earlier releases forwarded and no container reads any more; a stale value is dropped,
+#: never forwarded and never an error.
+RETIRED_ENV_VARS: frozenset[str] = frozenset({"HOLON_REPO_URL"})
 
 
 def get_workspace_dir() -> str:
@@ -766,23 +773,3 @@ def get_runner(agent_name: str) -> AgentRunner:
         print(f"Error: Unsupported agent '{agent_name}'. Supported agents are: {supported}")
         sys.exit(1)
     return runners[agent_id]
-
-
-def get_repo_url() -> str:
-    """Get the target repository URL for git operations from HOLON_REPO_URL.
-
-    Returns:
-        The repository URL string from the HOLON_REPO_URL environment variable.
-
-    Raises:
-        RuntimeError: If HOLON_REPO_URL is unset or empty.
-    """
-    repo_url = os.getenv("HOLON_REPO_URL")
-    if repo_url and repo_url.strip():
-        return repo_url.strip()
-
-    raise RuntimeError(
-        "HOLON_REPO_URL environment variable is not set or empty. "
-        "In containerized execution, HOLON_REPO_URL is normally populated dynamically by the host CLI wrapper (holon). "
-        "Please run via the holon CLI wrapper or export HOLON_REPO_URL explicitly."
-    )

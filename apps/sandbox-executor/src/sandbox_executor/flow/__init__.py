@@ -76,7 +76,6 @@ from sandbox_executor.flow.github.ci import (
     _ci_green,
     _extract_failed_ci_check_names,
     _wait_for_ci_registration,
-    _wait_for_pending_ci,
     probe_ci_checks,
     resolve_ci_registration_timeout,
 )
@@ -300,7 +299,6 @@ __all__ = [
     "_test_evidence",
     "_track_local_branch",
     "_wait_for_ci_registration",
-    "_wait_for_pending_ci",
     "_warn_ledger_failure",
     "_worst_severity",
     "_write_resolved_ledger",

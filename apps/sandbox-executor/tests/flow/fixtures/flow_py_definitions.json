@@ -132,7 +132,6 @@
     "_test_evidence": "a35baa25a65f3498e4af45b226944ec405221924829e8a5a1d744615a287dc2d",
     "_track_local_branch": "c2b5fcdfa9abe7ec98fd50ffd2e370b3a331930ba746f201d0c9492d64278b83",
     "_wait_for_ci_registration": "5c0627e02039f58f0e2e57347f4cf927614101ae5e34cb5f1d3c5b0ec5c3603d",
-    "_wait_for_pending_ci": "f54b4c894874902d8f3dfe76650d0b64aa3c76ccfecb54d5fe90245442bba015",
     "_warn_ledger_failure": "4855fa85c26828f216fcbc055614581d5416cc232701ec7fd7aaa9a259bbce6b",
     "_worst_severity": "4675c63765e0a8eaf8775690de277f46023cee67a2c4efd48b10055b2f666b06",
     "_write_resolved_ledger": "95f4b5eb8135b9a9cce2ca013f6647c633f8e81466480113ad31ac4e6f524319",
@@ -164,9 +163,9 @@
     "run_flow_pipeline": "9eb839dedca4e077107119097d1f0e61fb840a39de8c051e09175d8e86e4e0ef",
     "run_intent_stage": "e1c5953def9707b953b5180bdee943df817b8f2634ad7aaac20a15eb2ca09205",
     "run_plan_stage": "3b410746b3caea63cd0ad2496fcfcf7250093bb528121fba7c808c3b0728b397",
-    "run_review_loop": "4facb968df5453588cbf3c45a64dd66d541f3bd9cbf5c71195cd47af2bbb0a59",
+    "run_review_loop": "16c70f06d284e0ad99d721971647c3ec86384e3e164045614a97dd7a023798e0",
     "run_review_loop_cli": "35ab628bc65b642a6ffc984febe193e5f0b7471797e0e44462af8754da82ae07",
-    "run_review_stage": "d75acf61664e33afc8aa0e7109d3625fc1cee4952cd2f05f322cb0a740aa6afb",
+    "run_review_stage": "2230e6b0158ebdeb9188f8e0b411377fdf6453301f4a7ac1952332b183bc75d4",
     "save_checkpoint": "d7aebe896012df99b7ad9969f35fd9c20f0c3a53af9d8e4dbec6451d48d4c21b",
     "validate_intent_questions": "b192729b0c7fe8ee7d45f5755506481059b5f893cbb90a77c991640444abae06"
   },
@@ -192,8 +191,8 @@
     "review_loop_approved": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): moved to review/verdict.py; also requires every final reviewer verdict to be a clean APPROVED",
     "review_summary_lines": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): moved to review/verdict.py; adds a 'Not approved' line naming each reviewer whose final verdict was not a clean APPROVED",
     "run_execute_stage": "E-1794225351-0062997c (I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro): the plan row records the decomposition decision; the flow reads it and back-fills older rows",
-    "run_review_loop": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): the volume-owning wrapper is gone; run_review_loop is again the loop itself (the former _run_review_loop_iterations body, minus workspace_session); it takes a ledger_file so a host-dispatched container pass appends its ledger rows to container scratch, not to the host-owned ledger of the bind-mounted worktree",
-    "run_review_stage": "E-1794294472-5622c01d (I-1794294198-review-consensus-never-approves-past-an-open-critical): a consensus whose final verdicts are not all a clean APPROVED fails; failure messages, mergeability halts included, share one result block and state the final verdicts; a consensus withheld only by a role, container or adjudication blocker names that blocker, not failed tests"
+    "run_review_loop": "E-1794388336-46c54247 (I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget): the post-review gate waits for pending CI on its own budget (HOLON_REVIEW_CI_WAIT_SECONDS), outside the iteration timer, and reports ci_wait and tests_failed",
+    "run_review_stage": "E-1794388336-46c54247 (I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget): a CI outcome (failed with names, or pending after the wait budget) replaces the catch-all 'test suite reported failures' message"
   },
   "added_definitions": {
     "<const>:CHILD_ROW_KEYS": {
@@ -515,6 +514,54 @@
     "view_pr": {
       "module": "github/merge.py",
       "reason": "E-1794228146-88e62c5b (I-1794224634-...--2-nest-decomposed-children-under-the-plan-branch-m): guarded merge of a child PR into its plan branch (merge commit only, CI green and mergeable, fail-closed refusal of main, master, the default branch, an unexpected base and a failed lookup)"
+    },
+    "<const>:CI_WAIT_POLL_CEILING_SECONDS": {
+      "module": "github/ci_wait.py",
+      "reason": "E-1794388336-46c54247 (I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget): CI wait budget and back-off, ending when nothing is pending"
+    },
+    "next_poll_interval": {
+      "module": "github/ci_wait.py",
+      "reason": "E-1794388336-46c54247 (I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget): CI wait budget and back-off, ending when nothing is pending"
+    },
+    "CiWaitPolicy": {
+      "module": "github/ci_wait.py",
+      "reason": "E-1794388336-46c54247 (I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget): CI wait budget and back-off, ending when nothing is pending"
+    },
+    "CiWaitResult": {
+      "module": "github/ci_wait.py",
+      "reason": "E-1794388336-46c54247 (I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget): CI wait budget and back-off, ending when nothing is pending"
+    },
+    "CiWaitResult.as_record": {
+      "module": "github/ci_wait.py",
+      "reason": "E-1794388336-46c54247 (I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget): CI wait budget and back-off, ending when nothing is pending"
+    },
+    "pending_check_names": {
+      "module": "github/ci_wait.py",
+      "reason": "E-1794388336-46c54247 (I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget): CI wait budget and back-off, ending when nothing is pending"
+    },
+    "is_pending_only": {
+      "module": "github/ci_wait.py",
+      "reason": "E-1794388336-46c54247 (I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget): CI wait budget and back-off, ending when nothing is pending"
+    },
+    "wait_for_pending_ci": {
+      "module": "github/ci_wait.py",
+      "reason": "E-1794388336-46c54247 (I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget): CI wait budget and back-off, ending when nothing is pending"
+    },
+    "settle_pending_ci": {
+      "module": "github/ci_wait.py",
+      "reason": "E-1794388336-46c54247 (I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget): CI wait budget and back-off, ending when nothing is pending"
+    },
+    "<const>:NO_BLOCKER_RECORDED": {
+      "module": "review/ci_outcome.py",
+      "reason": "E-1794388336-46c54247 (I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget): the three CI outcomes (pending, failed, not measured) reported in plain wording"
+    },
+    "gate_ci_flags": {
+      "module": "review/ci_outcome.py",
+      "reason": "E-1794388336-46c54247 (I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget): the three CI outcomes (pending, failed, not measured) reported in plain wording"
+    },
+    "describe_ci_outcome": {
+      "module": "review/ci_outcome.py",
+      "reason": "E-1794388336-46c54247 (I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget): the three CI outcomes (pending, failed, not measured) reported in plain wording"
     }
   },
   "removed_definitions": {
@@ -531,6 +578,7 @@
     "ReviewWorkspaceSession.volume_name": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): removed with the persistent review workspace volume; role containers review the bind-mounted host worktree in place, so no volume, root chown init container or HOLON_REVIEW_PERSIST kill switch remains",
     "_run_review_loop_iterations": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): removed with the persistent review workspace volume; role containers review the bind-mounted host worktree in place, so no volume, root chown init container or HOLON_REVIEW_PERSIST kill switch remains",
     "review_persist_enabled": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): removed with the persistent review workspace volume; role containers review the bind-mounted host worktree in place, so no volume, root chown init container or HOLON_REVIEW_PERSIST kill switch remains",
-    "review_session_volume_name": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): removed with the persistent review workspace volume; role containers review the bind-mounted host worktree in place, so no volume, root chown init container or HOLON_REVIEW_PERSIST kill switch remains"
+    "review_session_volume_name": "E-1794270142-ea5a02bf (I-1794268087-mount-host-worktree-into-sandbox-containers): removed with the persistent review workspace volume; role containers review the bind-mounted host worktree in place, so no volume, root chown init container or HOLON_REVIEW_PERSIST kill switch remains",
+    "_wait_for_pending_ci": "E-1794388336-46c54247 (I-1794388202-review-loop-waits-for-ci-outside-the-iteration-budget): moved to flow/github/ci_wait.py as wait_for_pending_ci; the pending-CI wait has its own wall-clock budget and back-off instead of the rest of the iteration budget"
   }
 }

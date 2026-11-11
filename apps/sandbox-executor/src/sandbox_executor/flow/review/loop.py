@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import functools
 import logging
 import os
 import shutil
@@ -12,7 +13,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.agent_defaults import FALLBACK_AGENT
-from sandbox_executor.budgets import StageTimer, load_budgets
+from sandbox_executor.budgets import StageTimer, load_budgets, resolve_review_ci_wait_seconds
 from sandbox_executor.flow.constants import CI_REGISTRATION_POLL_SECONDS
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.dispatch import _test_evidence
@@ -21,10 +22,10 @@ from sandbox_executor.flow.github.ci import (
     _ci_green,
     _extract_failed_ci_check_names,
     _wait_for_ci_registration,
-    _wait_for_pending_ci,
     probe_ci_checks,
     resolve_ci_registration_timeout,
 )
+from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, CiWaitResult, settle_pending_ci
 from sandbox_executor.flow.github.pr import check_pr_mergeability, create_or_update_pr, format_review_git_trailers
 from sandbox_executor.flow.github.review_post import post_pr_review_consensus
 from sandbox_executor.flow.review.adjudication import (
@@ -34,6 +35,7 @@ from sandbox_executor.flow.review.adjudication import (
     record_nit_rejections,
 )
 from sandbox_executor.flow.review.ci_evidence import apply_local_test_evidence
+from sandbox_executor.flow.review.ci_outcome import gate_ci_flags
 from sandbox_executor.flow.review.ensemble import (
     _dispatch_review_ensemble,
     _ensemble_iteration,
@@ -126,6 +128,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     dry_run: bool = False,
     ci_registration_timeout: float | None = None,
     ci_poll_interval: float = CI_REGISTRATION_POLL_SECONDS,
+    ci_wait_budget: float | None = None,
     clock: Callable[[], float] | None = None,
     sleep: Callable[[float], None] | None = None,
     *,
@@ -154,7 +157,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         dry_run: If True, evaluate without applying git commits or mutations.
         ci_registration_timeout: Seconds to wait for CI checks to register when Stage 3 recorded no test
             result (default: ``HOLON_CI_REGISTRATION_TIMEOUT``, then 180; ``0`` disables the wait).
-        ci_poll_interval: Seconds between CI registration and pending-CI probes.
+        ci_poll_interval: First interval between CI probes; pending-CI polls double from it.
+        ci_wait_budget: Seconds to wait for pending CI, outside the iteration budget (default: env, then 1800).
         clock: Monotonic clock for the per-iteration budget and the CI waits (default: time.monotonic).
         sleep: Sleep function used by the CI waits (default: time.sleep); injectable for tests.
         run_ensemble_fn: Reviewer ensemble seam (default: ``review_ensemble.run_ensemble``); tests inject a fake.
@@ -270,6 +274,10 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             logger.debug("Non-fatal PR create/update in review loop: %s", exc)
 
     iteration_budget_seconds = load_budgets(os.environ).stage_seconds("review_iteration")
+    ci_wait_budget_seconds = resolve_review_ci_wait_seconds(os.environ) if ci_wait_budget is None else ci_wait_budget
+    probe_ci = functools.partial(probe_ci_checks, repo_dir, review_target, proxy_env=proxy_env)
+    ci_policy = CiWaitPolicy(ci_wait_budget_seconds, ci_poll_interval, clock=clock, sleep=sleep)
+    ci_wait: CiWaitResult | None = None  # The first wait that spent its budget; recorded once, never waited out again.
     iteration_summaries: list[str] = []
     budget_breach: dict[str, Any] | None = None
     resolver_enabled = (run_resolver_fn is not None) or (not reviewers_sandboxed())
@@ -374,21 +382,11 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
 
             last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
             tests_not_measured |= apply_local_test_evidence(last_ci_status, tests_failed, test_pass_rate, False, True)
-            if last_ci_status.get("source") == "github_cli" and last_ci_status.get("pending", 0) > 0:
-                last_ci_status = _wait_for_pending_ci(
-                    context,
-                    repo_dir,
-                    review_target,
-                    proxy_env,
-                    last_ci_status,
-                    iteration_timer.remaining(),
-                    ci_poll_interval,
-                    clock=clock,
-                    sleep=sleep,
-                )
-
-            ci_green = _ci_green(last_ci_status, tests_failed)
-            ci_finding = not last_ci_status.get("all_passed", False) or tests_failed
+            last_ci_status, waited = settle_pending_ci(context, probe_ci, last_ci_status, ci_policy, bool(ci_wait))
+            if waited:
+                iteration_timer.credit(waited.waited_seconds)  # The wait has its own budget: no iteration pays for it.
+                ci_wait = waited if waited.exhausted else ci_wait
+            ci_green, ci_finding = gate_ci_flags(last_ci_status, tests_failed)
             ensemble_verdict = decide_returned_consensus(reviewers, ensemble_size, True, ci_green, blockers)
         else:
             # Fallback for dry runs, dirty mergeability, or infra failures: probe once without waiting.
@@ -837,6 +835,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "human_approval_command": f"holon review approve {review_target}",
         "mergeability": last_mergeability,
         "ci_checks": last_ci_status,
+        "ci_wait": ci_wait.as_record() if ci_wait else None,
+        "tests_failed": tests_failed,
         "trailers": last_trailers_str,
         # Label units, matching the summary ledger row and the console 'Iterations: {label} / {label budget}' line.
         "total_iterations": iteration,

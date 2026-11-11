@@ -348,11 +348,11 @@ The guarantee has five deliberate limits:
   writing ledger rows. If none register, the loop stops after that single iteration with consensus status `not_measured`
   (one iteration's review rows and one summary row, not rows for every iteration), Stage 4 fails with
   `test results not measured: no recorded Stage 3 test result and no CI checks`, and the pipeline halts before Stage 5
-  calibration runs. Checks that registered but are still pending are re-probed every `CI_REGISTRATION_POLL_SECONDS` (15
-  s) until they settle or the iteration's `review_iteration` budget runs out; checks still pending then count as a CI
-  finding. `--dry-run` does not wait, and its simulated consensus reports `not_measured`. Stacked sub-intent pull
-  requests, whose base is the plan branch that listed them, receive the same checks as pull requests into `main`,
-  because every CI workflow runs for pull requests into any base branch (see `.github/workflows/README.md`).
+  calibration runs. Checks that registered but are still pending are waited out on their own CI wait budget (see
+  [CI wait budget and outcomes](#ci-wait-budget-and-outcomes)), never the iteration's `review_iteration` budget.
+  `--dry-run` does not wait, and its simulated consensus reports `not_measured`. Stacked sub-intent pull requests, whose
+  base is the plan branch that listed them, receive the same checks as pull requests into `main`, because every CI
+  workflow runs for pull requests into any base branch (see `.github/workflows/README.md`).
 - **Token reduction is auto-detected.** `holon flow` (like `holon review-loop`) resolves token reduction with
   `detect_holon_coherence`: unless `HOLON_TOKEN_REDUCE` opts out (`0`, `false`, `no`, `off`), it is enabled by
   `--token-reduce`, `--mitm-web`, a truthy `HOLON_TOKEN_REDUCE` or `HOLON_PASSIVE_MONITORING`, a reachable proxy port, a
@@ -392,6 +392,29 @@ creates a `pr<N>-<slug>` worktree only when none exists. See the
 [sandbox-executor README](../apps/sandbox-executor/README.md#host-worktree-workspace). The Stage 3 executor works in
 place on the same mounted `flow-<slug>` worktree: the host fetches the plan branch before dispatch, and the container
 creates the execution branch from the plan tip there, commits and pushes it, with no clone, fetch, reset or clean.
+
+#### CI wait budget and outcomes
+
+Waiting for CI and judging code run on different clocks. After the reviewers approve, the review loop waits for pending
+GitHub checks under a wall-clock CI wait budget of `HOLON_REVIEW_CI_WAIT_SECONDS` (default `1800` s; an invalid value
+logs a warning that names the variable and keeps the default). The wait is not drawn from the `review_iteration` budget,
+so a slow runner never costs an iteration. Polling backs off from `CI_REGISTRATION_POLL_SECONDS` (`15` s), doubling each
+poll to a ceiling of `CI_WAIT_POLL_CEILING_SECONDS` (`120` s), so the intervals are `15`, `30`, `60`, `120`, `120` s and
+so on, and the wait ends as soon as no check is pending. A wait that ends because the budget is spent is recorded once
+in the loop result as `ci_wait` (`state: pending`, `budget_seconds`, `waited_seconds`, `pending_checks`), not once per
+iteration, and later iterations do not wait again. Checks still pending at the deadline are unknown: never `all_passed`,
+never a failed test run, and no `FIND-CI` finding is recorded for them.
+
+When the review ends without approval, the Stage 4 error says which outcome occurred:
+
+| Outcome            | Stage 4 error                                                                                         |
+| ------------------ | ----------------------------------------------------------------------------------------------------- |
+| CI still pending   | `CI still pending after the wait budget: <names> still running after <budget> s ...; no test failed.` |
+| CI failed          | `CI failed: <every failed check name>.`                                                               |
+| Tests not measured | `test results not measured: no recorded Stage 3 test result and no CI checks.`                        |
+
+`test suite reported failures` appears only when the local test run really failed. When nothing specific blocked the
+review, the error says `no specific blocker was recorded` instead of blaming the tests.
 
 #### Safety Halt & Merge Boundary
 

@@ -24,7 +24,7 @@ from sandbox_executor.turns import TurnResult
 from tests.leak_assertions import assert_no_fragment, make_gh_probe
 
 
-@patch.dict("os.environ", {"HOLON_AGENT_KEY": "dummy", "HOLON_REPO_URL": "git@github.com:example/repo.git"})
+@patch.dict("os.environ", {"HOLON_AGENT_KEY": "dummy"})
 class TestPlanner(unittest.TestCase):
     def test_get_file_structure(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -239,18 +239,24 @@ class _PlannerHarness:
 
     def _fake_run_cmd(self, args, cwd=None, env=None, check=True):
         self.git_cmds.append(list(args))
-        if args[:2] == ["git", "clone"]:
-            ledger = pathlib.Path(cwd) / "holon-knowledge" / "ledger"
-            ledger.mkdir(parents=True, exist_ok=True)
-            (ledger / "intents.jsonl").write_text(json.dumps(self.intent) + "\n")
-            prompts = pathlib.Path(cwd) / "holon-config" / "prompts"
-            prompts.mkdir(parents=True, exist_ok=True)
-            (prompts / "planner.template.md").write_text(self.template)
         result = MagicMock()
         result.returncode = 0
         result.stdout = ""
         result.stderr = ""
         return result
+
+    def _fake_start_branch(self, repo, repo_dir, base_branch, new_branch):
+        # The host already fetched the base; the branch is created locally from it.
+        self.git_cmds.append(["git", "checkout", "-B", new_branch, base_branch])
+        self.branch_args = (repo_dir, base_branch, new_branch)
+
+    def _seed_workspace(self):
+        ledger = pathlib.Path(self.repo_dir) / "holon-knowledge" / "ledger"
+        ledger.mkdir(parents=True, exist_ok=True)
+        (ledger / "intents.jsonl").write_text(json.dumps(self.intent) + "\n")
+        prompts = pathlib.Path(self.repo_dir) / "holon-config" / "prompts"
+        prompts.mkdir(parents=True, exist_ok=True)
+        (prompts / "planner.template.md").write_text(self.template)
 
     def _fake_run_turn(self, cmd, **kwargs):
         self.turn_prompts.append(cmd[-1])
@@ -264,12 +270,13 @@ class _PlannerHarness:
         self.runner = runner
         self.tmp = tempfile.TemporaryDirectory()
         self.repo_dir = self.tmp.name
+        self._seed_workspace()
         out, err = io.StringIO(), io.StringIO()
         with (
             patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": self.repo_dir, **self.env}),
             patch("sys.argv", ["planner.py", "I-12345/_", "pi-agent", self.model]),
             patch.object(planner, "get_workspace_dir", return_value=self.repo_dir),
-            patch.object(planner, "cleanup_repo_dir") as self.mock_cleanup,
+            patch.object(planner, "start_branch_from_host_fetch", side_effect=self._fake_start_branch),
             patch.object(planner, "get_runner", return_value=runner),
             patch.object(planner, "run_cmd", side_effect=self._fake_run_cmd),
             patch.object(planner, "run_turn", side_effect=self._fake_run_turn),
@@ -299,6 +306,13 @@ class _PlannerHarness:
         self.tmp.cleanup()
 
 
+REMOTE_GIT_VERBS = {"clone", "fetch", "pull", "push", "ls-remote"}
+
+
+def remote_git_cmds(cmds):
+    return [cmd for cmd in cmds if cmd[:1] == ["git"] and REMOTE_GIT_VERBS & set(cmd[1:3])]
+
+
 def write_file(content, returncode=0, stdout="", breach=None):
     def turn(cmd, watch_path):
         if content is not None:
@@ -322,7 +336,7 @@ def stdout_only(stdout, returncode=0):
     return lambda cmd, watch_path: TurnResult(returncode=returncode, stdout=stdout)
 
 
-@patch.dict("os.environ", {"HOLON_AGENT_KEY": "dummy", "HOLON_REPO_URL": "git@github.com:example/repo.git"})
+@patch.dict("os.environ", {"HOLON_AGENT_KEY": "dummy"})
 class TestPlannerMain(unittest.TestCase):
     def test_partial_fixture_lacks_only_the_rationale(self):
         self.assertNotEqual(PARTIAL_PLAN, VALID_PLAN)
@@ -336,13 +350,14 @@ class TestPlannerMain(unittest.TestCase):
     def test_valid_plan_file_is_committed_with_its_metrics(self):
         h = self.harness([write_file(VALID_PLAN)])
         self.assertEqual(h.exit_code, 0, h.stderr)
-        h.mock_cleanup.assert_called_once_with(h.repo_dir, raise_on_error=True)
         entries = h.ledger_lines("plans.jsonl")
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["p_success"], 0.8)
         self.assertEqual(entries[0]["entropy"], 2.5)
         self.assertTrue(h.committed())
-        self.assertTrue(any(cmd[:2] == ["git", "push"] for cmd in h.git_cmds))
+        self.assertEqual(h.branch_args, (h.repo_dir, "I-12345/_", h.branch_args[2]))
+        self.assertTrue(h.branch_args[2].startswith("I-12345/"))
+        self.assertEqual(remote_git_cmds(h.git_cmds), [])
         self.assertRegex(h.stdout, r"plan: ok \(\d+\.\d min / 35 min\)")
 
     def test_plan_row_persists_the_budget_shown_to_the_agent(self):
@@ -627,8 +642,8 @@ class TestPlannerMain(unittest.TestCase):
         for model_name, expected_safe_model in test_cases:
             with self.subTest(model_name=model_name):
                 h = self.harness([write_file(VALID_PLAN)], model=model_name)
-                checkout_cmds = [" ".join(c) for c in h.git_cmds if c[:3] == ["git", "checkout", "-b"]]
-                self.assertTrue(checkout_cmds, f"No 'git checkout -b' command found in: {h.git_cmds}")
+                checkout_cmds = [" ".join(c) for c in h.git_cmds if c[:3] == ["git", "checkout", "-B"]]
+                self.assertTrue(checkout_cmds, f"No 'git checkout -B' command found in: {h.git_cmds}")
                 self.assertIn(expected_safe_model, checkout_cmds[0])
 
     def test_converges_prettier_on_plan_file(self):
@@ -805,7 +820,6 @@ def test_agent_cmd_echo_masks_bare_provider_value_in_long_arg():
 
 @pytest.mark.parametrize("agent_fails", [False, True], ids=["agent_ok", "agent_fails_echoing_value"])
 def test_planner_main_agent_echo_carries_no_settings_value(monkeypatch, agent_fails):
-    monkeypatch.setenv("HOLON_REPO_URL", "https://github.com/myorg/myrepo.git")
     value = _fake_provider_value()
     settings_blob = json.dumps({"env": {"CLAUDE_CODE_OAUTH_TOKEN": value}})
     # A failing agent writes no plan file and no stdout, which routes main() to the stdout/stderr dump.

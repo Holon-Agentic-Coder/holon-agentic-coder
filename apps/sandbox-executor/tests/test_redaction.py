@@ -152,7 +152,7 @@ def test_redact_env_literals_default_names_are_unchanged(monkeypatch: pytest.Mon
     [
         lambda t: f"GITHUB_TOKEN={t}",
         lambda t: f"GH_TOKEN={t}",
-        lambda t: f"HOLON_REPO_URL=https://x-access-token:{t}@{REPO}",
+        lambda t: f"REMOTE_URL=https://x-access-token:{t}@{REPO}",
         lambda t: f"http://127.0.0.1:8081/?token={t}",
         lambda t: f"SOME_UNRECOGNISED_NAME={t}",
         lambda t: t,
@@ -205,7 +205,6 @@ def test_redact_command_does_not_mask_a_branch_named_after_a_secret_word() -> No
         ("HOLON_MITM_WEB_PASSWORD", True),
         ("HOLON_CUSTOM_SECRET", True),
         ("HOLON_API_KEY", True),
-        ("HOLON_REPO_URL", False),
         ("HOLON_ROLE", False),
         ("HOLON_AGENT_PROVIDER", False),
         ("HOLON_PASSIVE_MONITORING", False),
@@ -417,14 +416,9 @@ def test_at_sign_outside_the_userinfo_is_not_masked(line: str) -> None:
     assert redaction.carries_url_password(line.split("=", 1)[-1]) is False
 
 
-def test_strip_url_credentials_shares_the_redactor_userinfo_rule() -> None:
-    """One userinfo rule: credential stripping and the echo redactor must not drift apart."""
-    from sandbox_executor import cli
-
-    assert cli.url_userinfo_end is redaction.url_userinfo_end
+def test_redactor_masks_the_userinfo_of_a_delimited_password() -> None:
+    """The redactor masks a password containing delimiters."""
     sample = _delimited_probe()
     url = f"https://alice:{sample}@{REPO}"
-    clean, credential = cli.strip_url_credentials(url)
-    assert credential == sample
     assert redaction.redact_text(url) == f"https://{REDACTION_MARKER}@{REPO}"
-    assert clean == f"https://{REPO}"
+    assert redaction.carries_url_password(url) is True

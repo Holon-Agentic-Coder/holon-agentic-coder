@@ -121,15 +121,13 @@ def test_probe_runs_runner_in_its_container_and_redacts(probe_env):
 
 
 def _set_probe_values(monkeypatch):
-    """Set fake HOLON_AGENT_KEY, HOLON_AGENT_SETTINGS and credential-bearing HOLON_REPO_URL values."""
+    """Set fake HOLON_AGENT_KEY and HOLON_AGENT_SETTINGS values."""
     agent_probe = make_probe("key")
     settings_probe = make_probe("settings")
-    url_probe = make_probe("url")
     settings = '{"env":{"CLAUDE_CODE_OAUTH_TOKEN":"' + settings_probe + '"}}'
     monkeypatch.setenv("HOLON_AGENT_KEY", agent_probe)
     monkeypatch.setenv("HOLON_AGENT_SETTINGS", settings)
-    monkeypatch.setenv("HOLON_REPO_URL", f"https://x-access-token:{url_probe}@github.com/o/r.git")
-    return agent_probe, settings, url_probe
+    return agent_probe, settings
 
 
 def _env_file_of(cmd):
@@ -137,7 +135,7 @@ def _env_file_of(cmd):
 
 
 def test_probe_keeps_credentials_off_the_docker_argv(probe_env, monkeypatch, isolated_env_file_dir):
-    agent_probe, settings, url_probe = _set_probe_values(monkeypatch)
+    agent_probe, settings = _set_probe_values(monkeypatch)
     seen = {}
 
     def runner_fn(cmd, **kwargs):
@@ -153,21 +151,38 @@ def test_probe_keeps_credentials_off_the_docker_argv(probe_env, monkeypatch, iso
 
     assert res.ok
     argv = " ".join(seen["cmd"])
-    for sample in (agent_probe, settings, url_probe):
+    for sample in (agent_probe, settings):
         assert sample not in argv
-    assert "HOLON_REPO_URL=https://github.com/o/r.git" in seen["cmd"]
     assert "HOLON_SKIP_PREFLIGHT=1" in seen["cmd"]
     assert seen["cmd"][2] == "--env-file"
     assert os.path.dirname(seen["path"]) == str(isolated_env_file_dir)
     assert seen["mode"] == 0o600
     assert f"HOLON_AGENT_KEY={agent_probe}" in seen["lines"]
     assert f"HOLON_AGENT_SETTINGS={settings}" in seen["lines"]
-    assert not any(url_probe in line for line in seen["lines"])
     # The runner's `--settings` flag reads the variable inside the container instead of carrying the value.
     tail = seen["cmd"][seen["cmd"].index("holon/agent-claude") + 1 :]
     assert tail[:2] == ["sh", "-c"]
     assert '--settings "${HOLON_AGENT_SETTINGS}"' in tail[2]
     assert not os.path.exists(seen["path"])
+
+
+def test_probe_drops_a_stale_retired_repo_url(probe_env, monkeypatch, isolated_env_file_dir):
+    """A leftover HOLON_REPO_URL is neither forwarded nor an error: the probe is identical without it."""
+
+    def probe_once():
+        seen = {}
+        assert run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=_record_probe(seen)).ok
+        cmd = ["<env-file>" if arg == _env_file_of(seen["cmd"]) else arg for arg in seen["cmd"]]
+        name = cmd.index("--name") + 1
+        cmd[name] = "<name>"
+        return cmd, seen["lines"]
+
+    baseline = probe_once()
+    monkeypatch.setenv("HOLON_REPO_URL", "https://ci-user:stale-secret@github.com/o/r.git")
+    cmd, lines = probe_once()
+
+    assert (cmd, lines) == baseline
+    assert not any("HOLON_REPO_URL" in item or "stale-secret" in item for item in [*cmd, *lines])
 
 
 def _record_probe(seen):
@@ -435,6 +450,17 @@ def test_plan_and_execute_abort_before_container_on_failed_probe(probe_env, monk
     assert "QUOTA_EXHAUSTED" in capsys.readouterr().err
 
 
+@pytest.fixture
+def host_publish():
+    """Stand in for the host fetch and push around the standalone commands."""
+    with (
+        patch("sandbox_executor.cli.commands.plan.prepare_worktree", return_value="/wt") as prepare,
+        patch("sandbox_executor.cli.commands.plan.push_checked_out_branch", return_value="I-1/P-2/_") as push,
+    ):
+        yield prepare, push
+
+
+@pytest.mark.usefixtures("host_publish")
 @pytest.mark.parametrize("bypass", ["flag", "env"])
 def test_skip_preflight_bypasses_probe(probe_env, monkeypatch, bypass):
     monkeypatch.setenv("HOLON_AGENT", "antigravity-agent")
@@ -465,6 +491,7 @@ def cli_logging():
     package_logger.setLevel(saved_level)
 
 
+@pytest.mark.usefixtures("host_publish")
 def test_cli_prints_harness_and_skipped_preflight_info_on_stderr(probe_env, monkeypatch, capsys, cli_logging):
     monkeypatch.setenv("PI_CODING_AGENT", "1")
     monkeypatch.setenv("CLAUDECODE", "1")
@@ -507,7 +534,7 @@ def test_configure_cli_logging_is_idempotent_and_scoped(cli_logging):
     assert not any(isinstance(h, _CurrentStderrHandler) for h in logging.getLogger().handlers)
 
 
-def test_plan_uses_harness_runner_and_explicit_model(probe_env, monkeypatch):
+def test_plan_uses_harness_runner_and_explicit_model(probe_env, monkeypatch, host_publish):
     monkeypatch.setenv("CLAUDECODE", "1")
     monkeypatch.setenv("HOLON_MODEL", "claude-opus-5-5")
     with (
@@ -521,7 +548,11 @@ def test_plan_uses_harness_runner_and_explicit_model(probe_env, monkeypatch):
         ["I-1/_", "claude-agent", "claude-opus-5-5"],
         agent_id="claude",
         token_reduce=False,
+        target_worktree="/wt",
     )
+    prepare, push = host_publish
+    prepare.assert_called_once()
+    push.assert_called_once_with("/wt")
 
 
 def test_plan_exits_with_error_without_model(probe_env, monkeypatch, capsys):
@@ -543,7 +574,7 @@ def test_execute_with_unmapped_env_runner_fails_before_docker(probe_env, monkeyp
 def test_run_docker_container_disables_nested_preflight(probe_env):
     with (
         patch("sandbox_executor.cli.shutil.which", return_value="/usr/bin/docker"),
-        patch("sandbox_executor.cli.resolve_target_repo", return_value=("https://example.invalid/r.git", None)),
+        patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=[]),
         patch("sandbox_executor.cli.find_github_token", return_value=None),
         patch("sandbox_executor.cli.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as run,
     ):

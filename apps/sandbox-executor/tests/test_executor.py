@@ -42,6 +42,31 @@ def _agent_turns_use_run_cmd():
         yield fake
 
 
+@pytest.fixture(autouse=True)
+def _workspace_is_mounted():
+    """Every test runs the executor as it runs in a role container: in the host's mounted worktree."""
+    with patch("sandbox_executor.entrypoint.executor.workspace_mounted", return_value=True):
+        yield
+
+
+def _validate_stub(repo, repo_dir, plan_branch):
+    """Stand-in for validate_mounted_workspace when git is faked: the plan tip the host fetched."""
+    return "tip-sha"
+
+
+_REMOTE_GIT_VERBS = {"clone", "fetch", "pull", "push", "ls-remote", "remote"}
+
+
+def _remote_git_cmds(cmds) -> list:
+    """The git commands that name a remote verb: a role container issues none."""
+    return [cmd for cmd in cmds if cmd[:1] == ["git"] and _REMOTE_GIT_VERBS & set(cmd[1:3])]
+
+
+def _cuts_branch(args) -> bool:
+    """True for the command that cuts the execution branch, the first step after the mount is validated."""
+    return list(args[:3]) == ["git", "checkout", "-b"]
+
+
 # Provider credentials are exercised as *shapes*, never as real keys. The filler is spliced in right
 # after the vendor prefix, so no contiguous vendor-format secret ever exists in this file (GitHub
 # push protection correctly refuses to accept one, even a documentation example) while the sweep
@@ -387,9 +412,8 @@ class TestExecutor(unittest.TestCase):
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    def test_main_execution_flow(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
-        mock_get_repo_url.return_value = "/mock/repo"
+    @patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub)
+    def test_main_execution_flow(self, mock_get_runner, mock_run_cmd):
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.0.0"
         mock_runner.build_cmd.return_value = ["agy", "--model", "gemini-3.5-flash", "prompt"]
@@ -400,7 +424,7 @@ class TestExecutor(unittest.TestCase):
         mock_result.stdout = "OK"
 
         def side_effect(args, cwd=None, **kwargs):
-            if "clone" in args:
+            if _cuts_branch(args):
                 ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
                 os.makedirs(ledger_dir, exist_ok=True)
                 with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
@@ -422,7 +446,7 @@ class TestExecutor(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as tmp_dir,
-            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir}),
         ):
             ledger_dir = os.path.join(tmp_dir, "holon-knowledge/ledger")
 
@@ -447,7 +471,7 @@ class TestExecutor(unittest.TestCase):
         mock_runner.build_cmd.return_value = ["agy", "--model", "gemini-3.5-flash", "prompt"]
 
         def side_effect(args, cwd=None, **kwargs):
-            if "clone" in args:
+            if _cuts_branch(args):
                 ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
                 os.makedirs(ledger_dir, exist_ok=True)
                 with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
@@ -463,9 +487,12 @@ class TestExecutor(unittest.TestCase):
         with (
             patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect) as mock_run_cmd,
             patch("sandbox_executor.entrypoint.executor.get_runner", return_value=mock_runner),
-            patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value="/mock/repo"),
+            patch(
+                "sandbox_executor.entrypoint.executor.validate_mounted_workspace",
+                new=lambda *_args: tip_stdout.strip(),
+            ),
             tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as tmp_dir,
-            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir}),
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
         ):
             executor.main()
@@ -509,15 +536,12 @@ class TestExecutor(unittest.TestCase):
     @patch("sandbox_executor.entrypoint.executor.converge_prettier")
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    def test_main_converges_prettier_on_markdown_artifacts(
-        self, mock_get_repo_url, mock_get_runner, mock_run_cmd, mock_converge
-    ):
+    @patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub)
+    def test_main_converges_prettier_on_markdown_artifacts(self, mock_get_runner, mock_run_cmd, mock_converge):
         """Test that executor.main() collects modified markdown files and execution record.
 
         Also asserts that converge_prettier is invoked before git commit.
         """
-        mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.0.0"
         mock_runner.build_cmd.return_value = ["agy", "--model", "gemini-3.5-flash", "prompt"]
@@ -528,7 +552,7 @@ class TestExecutor(unittest.TestCase):
         mock_result.stdout = "OK"
 
         def side_effect(args, cwd=None, **kwargs):
-            if "clone" in args:
+            if _cuts_branch(args):
                 ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
                 os.makedirs(ledger_dir, exist_ok=True)
                 with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
@@ -554,7 +578,7 @@ class TestExecutor(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as tmp_dir,
-            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir}),
         ):
             with patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]):
                 executor.main()
@@ -567,12 +591,10 @@ class TestExecutor(unittest.TestCase):
             self.assertFalse(any(f.startswith("executions/") for f in call_files))
             self.assertEqual(mock_converge.call_args[1].get("repo_dir"), tmp_dir)
 
-    @patch("sandbox_executor.entrypoint.executor.shutil.rmtree")
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    def test_main_git_recovery_on_corrupted_repo(self, mock_get_repo_url, mock_get_runner, mock_run_cmd, mock_rmtree):
-        mock_get_repo_url.return_value = "/mock/repo"
+    @patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub)
+    def test_main_unusable_repo_after_the_agent_is_an_error_not_a_rebuild(self, mock_get_runner, mock_run_cmd):
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.0.0"
         mock_runner.build_cmd.return_value = ["agy", "--model", "gemini-3.5-flash", "prompt"]
@@ -580,7 +602,7 @@ class TestExecutor(unittest.TestCase):
 
         def side_effect(args, cwd=None, **kwargs):
             mock_res = MagicMock()
-            if "clone" in args:
+            if _cuts_branch(args):
                 ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
                 os.makedirs(ledger_dir, exist_ok=True)
                 with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
@@ -597,17 +619,11 @@ class TestExecutor(unittest.TestCase):
                     )
                 mock_res.returncode = 0
                 mock_res.stdout = "OK"
-            elif args == ["git", "remote", "get-url", "origin"]:
-                mock_res.returncode = 0
-                mock_res.stdout = "/mock/repo"
             elif args == ["git", "rev-parse", "--is-inside-work-tree"]:
                 # Simulate corrupted git repository after agent execution
                 mock_res.returncode = 1
                 mock_res.stdout = ""
-                mock_res.stderr = "fatal: not a git repository"
-            elif args == ["git", "rev-parse", "FETCH_HEAD"]:
-                mock_res.returncode = 0
-                mock_res.stdout = "mock_tip_hash_12345"
+                mock_res.stderr = f"fatal: not a git repository: /work/{_fake_token('ghp_')}"
             else:
                 mock_res.returncode = 0
                 mock_res.stdout = "OK"
@@ -618,47 +634,35 @@ class TestExecutor(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as tmp_dir,
-            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir}),
             patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
         ):
-            # Create dummy .git directory to test removal/re-init
-            git_dot = os.path.join(tmp_dir, ".git")
-            os.makedirs(git_dot, exist_ok=True)
+            # A .git directory the repair cannot restore: the mounted worktree is the host's, so it is never rebuilt
+            os.makedirs(os.path.join(tmp_dir, ".git"), exist_ok=True)
 
-            with patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]):
+            with (
+                patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
+                self.assertRaises(RuntimeError) as raised,
+            ):
                 executor.main()
 
-            self.assertIn("Warning: git repository invalid or missing after agent execution", mock_stderr.getvalue())
-
-            # Verify that shutil.rmtree was NOT called on .git
-            mock_rmtree.assert_not_called()
-
-            # Verify backup directory .git-unusable-* was created
-            backup_dirs = [d for d in os.listdir(tmp_dir) if d.startswith(".git-unusable-")]
-            self.assertEqual(len(backup_dirs), 1)
-
-            # Verify .git/info/exclude contains the backup directory name
-            exclude_path = os.path.join(tmp_dir, ".git", "info", "exclude")
-            self.assertTrue(os.path.exists(exclude_path))
-            with open(exclude_path) as ef:
-                content = ef.read()
-                self.assertIn(backup_dirs[0], content)
-                self.assertIn(".git-unusable-*", content)
-
-            # Verify that recovery commands were executed in sequence
+            self.assertIn(
+                "the mounted worktree's git repository is unusable after the agent ran", str(raised.exception)
+            )
+            # The failure line printed for the operator redacts the git diagnostic.
+            self.assertIn("Execution failed:", mock_stderr.getvalue())
+            self.assertNotIn(_fake_token("ghp_"), mock_stderr.getvalue())
+            # No backup directory, no re-initialisation and no remote verb
+            self.assertEqual([d for d in os.listdir(tmp_dir) if d.startswith(".git-unusable-")], [])
             called_cmds = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
-            self.assertIn(["git", "init"], called_cmds)
-            self.assertIn(["git", "remote", "add", "origin", "/mock/repo"], called_cmds)
-            self.assertTrue(any(cmd[:4] == ["git", "fetch", "--no-tags", "origin"] for cmd in called_cmds))
-            self.assertTrue(any(cmd[:2] == ["git", "reset"] for cmd in called_cmds))
+            self.assertNotIn(["git", "init"], called_cmds)
+            self.assertEqual(_remote_git_cmds(called_cmds), [])
 
-    def _run_over_budget_main(  # noqa: PLR0913
-        self, sync_result, *, staged=True, has_parent=True, skip_push=True, git_calls=None, stdout=None
-    ):
+    def _run_over_budget_main(self, sync_result, *, staged=True, has_parent=True, git_calls=None, stdout=None):
         """Run executor.main() on an over-budget plan whose ledger row is staged; return its exit code and records.
 
         ``staged`` and ``has_parent`` set what the staged-changes check and the parent-commit check report;
-        ``skip_push`` disables pushing; ``git_calls`` collects every command run; ``stdout`` captures standard output.
+        ``git_calls`` collects every command run; ``stdout`` captures standard output.
         """
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.0.0"
@@ -668,7 +672,7 @@ class TestExecutor(unittest.TestCase):
             if git_calls is not None:
                 git_calls.append(list(args))
             mock_result = MagicMock(returncode=0, stdout="", stderr="")
-            if "clone" in args:
+            if _cuts_branch(args):
                 ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
                 os.makedirs(ledger_dir, exist_ok=True)
                 with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
@@ -684,10 +688,10 @@ class TestExecutor(unittest.TestCase):
         stderr = io.StringIO()
         with (
             tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as tmp_dir,
-            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1" if skip_push else ""}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir}),
             patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect),
             patch("sandbox_executor.entrypoint.executor.get_runner", return_value=mock_runner),
-            patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value="/mock/repo"),
+            patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub),
             patch("sandbox_executor.entrypoint.executor.sync_and_reconcile_pre_push", return_value=sync_result),
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
             patch("sys.stderr", stderr),
@@ -726,7 +730,7 @@ class TestExecutor(unittest.TestCase):
         mock_runner.build_cmd.assert_not_called()
         self.assertEqual(intent_slugs, ["parent-intent"])
 
-    def test_main_over_budget_with_a_refused_push_exits_1_without_claiming_a_recorded_row(self):
+    def test_main_over_budget_with_a_failed_pre_push_sync_exits_1_without_claiming_a_recorded_row(self):
         code, stderr_lines, rows, intent_slugs, mock_runner = self._run_over_budget_main(
             (False, "unresolvable conflicts")
         )
@@ -738,10 +742,11 @@ class TestExecutor(unittest.TestCase):
             "no sub-intent list. Its over_budget row was not recorded on an execution branch.",
             stderr_lines,
         )
-        self.assertIn("Refusing to push execution branch: safety or sync verification failed.", stderr_lines)
+        self.assertIn("Refusing to publish execution branch: safety or sync verification failed.", stderr_lines)
         self.assertFalse(any("Re-plan it within the budget" in line for line in stderr_lines))
         self.assertEqual([row["status"] for row in rows], ["over_budget", "failure"])
         self.assertIn("Pre-push sync failure", rows[1]["summary"])
+        self.assertTrue(rows[1]["summary"].endswith("The branch was not published."))
         mock_runner.build_cmd.assert_not_called()
         self.assertEqual(intent_slugs, ["parent-intent"])
 
@@ -765,31 +770,20 @@ class TestExecutor(unittest.TestCase):
         self.assertFalse(any(call[:2] in (["git", "commit"], ["git", "push"]) for call in git_calls))
         self.assertEqual([row["status"] for row in rows], ["over_budget"])
 
-    def test_main_over_budget_on_a_parentless_commit_refuses_the_push_and_exits_1(self):
+    def test_main_over_budget_on_a_parentless_commit_is_not_recorded_and_exits_1(self):
         git_calls: list[list[str]] = []
-        code, stderr_lines, rows, _, _ = self._run_over_budget_main(
-            (True, "ok"), has_parent=False, skip_push=False, git_calls=git_calls
-        )
+        code, stderr_lines, rows, _, _ = self._run_over_budget_main((True, "ok"), has_parent=False, git_calls=git_calls)
 
-        # A branch with no parent is never pushed, so the over_budget row is not recorded and the run fails.
+        # A branch with no parent is never published, so the over_budget row is not recorded and the run fails.
         self.assertEqual(code, 1)
         self.assertIn(["git", "rev-parse", "--verify", "HEAD^"], git_calls)
         self.assertFalse(any(call[:2] == ["git", "push"] for call in git_calls))
-        self.assertIn("Refusing to push execution branch: safety or sync verification failed.", stderr_lines)
+        self.assertIn("Refusing to publish execution branch: safety or sync verification failed.", stderr_lines)
         self.assertIn(self.NOT_RECORDED_LINE, stderr_lines)
         self.assertEqual([row["status"] for row in rows], ["over_budget"])
 
-    def _run_over_budget_main_against_local_origin(self, *, reject_push):  # noqa: PLR0915
-        """Run executor.main() unmocked against a local bare origin holding an over-budget plan branch.
-
-        Every git command is real and pushing stays enabled, as under ``holon flow``. Returns the exit code (or the
-        raised exception), the executor's stderr lines and the origin's execution branches with their ledger rows.
-
-        Hooks never come from the developer's global git config (a global ``core.hooksPath`` would replace them):
-        the origin pins its own ``hooks`` directory in its local config, and every client-side git command runs with
-        ``core.hooksPath`` pinned to an empty directory through ``GIT_CONFIG_COUNT``, which git drops for the
-        receiving side of a local push.
-        """
+    def test_main_over_budget_commits_locally_exits_with_the_refusal_code_and_never_pushes(self):
+        """Run executor.main() unmocked in a worktree cloned from a local origin that holds an over-budget plan."""
         plan_branch = "I-456/P-123/_"
         plan_row = {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 8.0, "entropy_budget": 5.0}
         mock_runner = MagicMock()
@@ -798,20 +792,11 @@ class TestExecutor(unittest.TestCase):
         def git(cwd, *args):
             return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
 
-        with tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as root, contextlib.ExitStack() as stack:
+        with tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as root:
             origin = os.path.join(root, "origin.git")
             seed = os.path.join(root, "seed")
             workspace = os.path.join(root, "workspace")
-            client_hooks = os.path.join(root, "client-hooks")
-            os.makedirs(client_hooks)
-            stack.enter_context(
-                patch.dict(
-                    os.environ,
-                    {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": client_hooks},
-                )
-            )
             subprocess.run(["git", "init", "-q", "--bare", "-b", "main", origin], check=True, capture_output=True)
-            git(origin, "config", "core.hooksPath", os.path.join(origin, "hooks"))
             subprocess.run(["git", "init", "-q", "-b", "main", seed], check=True, capture_output=True)
             git(seed, "config", "user.email", "test@example.test")
             git(seed, "config", "user.name", "Test")
@@ -826,69 +811,40 @@ class TestExecutor(unittest.TestCase):
             git(seed, "add", "-A")
             git(seed, "commit", "-q", "-m", "plan")
             git(seed, "push", "-q", origin, f"HEAD:refs/heads/{plan_branch}")
-            if reject_push:
-                hook = os.path.join(origin, "hooks", "pre-receive")
-                with open(hook, "w") as f:
-                    f.write("#!/bin/sh\necho 'push rejected by test hook' >&2\nexit 1\n")
-                os.chmod(hook, 0o755)
-            os.makedirs(workspace)
+            # The host fetched the plan branch into the worktree it mounts.
+            git(root, "clone", "-q", "--branch", plan_branch, origin, workspace)
+            git(workspace, "checkout", "-q", "--detach")
+            origin_refs = git(origin, "for-each-ref", "--format=%(refname)").stdout
 
             stderr = io.StringIO()
-            outcome: int | BaseException
             with (
-                patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": workspace, "HOLON_SKIP_PUSH": ""}),
+                patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": workspace}),
                 patch("sandbox_executor.entrypoint.executor.get_runner", return_value=mock_runner),
-                patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value=origin),
                 patch("sandbox_executor.entrypoint.executor.sync_and_reconcile_pre_push", return_value=(True, "ok")),
                 patch("sys.argv", ["executor.py", plan_branch, "antigravity-agent", "gemini-3.5-flash"]),
                 patch("sys.stderr", stderr),
                 contextlib.redirect_stdout(io.StringIO()),
+                self.assertRaises(SystemExit) as refused,
             ):
-                try:
-                    executor.main()
-                    outcome = 0
-                except SystemExit as exit_:
-                    outcome = exit_.code
-                except Exception as exc:  # __main__ turns any escaping exception into exit 1
-                    outcome = exc
-            refs = git(origin, "for-each-ref", "--format=%(refname:short)", "refs/heads/I-456/P-123/").stdout.split()
-            exec_branches = {}
-            for ref in refs:
-                if ref == plan_branch:
-                    continue
-                ledger = git(origin, "show", f"{ref}:holon-knowledge/ledger/executions.jsonl").stdout
-                exec_branches[ref] = [json.loads(line) for line in ledger.splitlines() if line.strip()]
+                executor.main()
+            heads = git(
+                workspace, "for-each-ref", "--format=%(refname:short)", "refs/heads/I-456/P-123/"
+            ).stdout.split()
+            local = [ref for ref in heads if ref != plan_branch]
+            ledger = git(workspace, "show", f"{local[0]}:holon-knowledge/ledger/executions.jsonl").stdout
+            rows = [json.loads(line) for line in ledger.splitlines() if line.strip()]
+            origin_after = git(origin, "for-each-ref", "--format=%(refname)").stdout
+
         mock_runner.build_cmd.assert_not_called()
-        return outcome, stderr.getvalue().splitlines(), exec_branches
-
-    def test_main_over_budget_pushed_to_origin_exits_with_the_refusal_code(self):
-        outcome, stderr_lines, exec_branches = self._run_over_budget_main_against_local_origin(reject_push=False)
-
-        # The push path is the one holon flow takes (it refuses --skip-push): the pushed refusal must exit with the
-        # code the flow reads as "the over_budget row is recorded", never 1.
-        self.assertEqual(outcome, executor.OVER_BUDGET_EXIT_CODE)
-        self.assertIn(
-            "Error: plan I-456/P-123/_ was not executed: its entropy 8.0 exceeds the entropy budget 5.0 and it lists "
-            "no sub-intent list. Re-plan it within the budget, or add an explicit sub-intent list.",
-            stderr_lines,
-        )
-        self.assertNotIn(self.NOT_RECORDED_LINE, stderr_lines)
-        self.assertEqual(len(exec_branches), 1)
-        [(branch, rows)] = exec_branches.items()
-        self.assertRegex(branch, r"^I-456/P-123/E-[^/]+/_$")
+        # The refusal exit code tells the flow the over_budget row is recorded on a local execution branch.
+        self.assertEqual(refused.exception.code, executor.OVER_BUDGET_EXIT_CODE)
+        self.assertIn("Re-plan it within the budget", stderr.getvalue())
+        self.assertNotIn(self.NOT_RECORDED_LINE, stderr.getvalue().splitlines())
+        self.assertEqual(len(local), 1)
+        self.assertRegex(local[0], r"^I-456/P-123/E-[^/]+/_$")
         self.assertEqual([row["status"] for row in rows], ["over_budget"])
-
-    def test_main_over_budget_whose_push_is_rejected_by_origin_fails(self):
-        outcome, stderr_lines, exec_branches = self._run_over_budget_main_against_local_origin(reject_push=True)
-
-        # The rejected push is handled: it is reported with the local head and git's reason, then exits 1; nothing
-        # reaches the origin.
-        self.assertEqual(outcome, 1)
-        refused = [line for line in stderr_lines if "was refused; local head" in line]
-        self.assertEqual(len(refused), 1)
-        self.assertIn("push rejected by test hook", refused[0])
-        self.assertFalse(any("Re-plan it within the budget" in line for line in stderr_lines))
-        self.assertEqual(exec_branches, {})
+        # The executor never pushes: the host does that after the container returns.
+        self.assertEqual(origin_after, origin_refs)
 
     def test_run_cmd_raises_called_process_error(self):
         with self.assertRaises(subprocess.CalledProcessError) as ctx:
@@ -897,9 +853,8 @@ class TestExecutor(unittest.TestCase):
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    def test_main_custom_holon_repo_dir_not_deleted(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
-        mock_get_repo_url.return_value = "/mock/repo"
+    @patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub)
+    def test_main_custom_holon_repo_dir_not_deleted(self, mock_get_runner, mock_run_cmd):
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.0.0"
         mock_get_runner.return_value = mock_runner
@@ -912,7 +867,7 @@ class TestExecutor(unittest.TestCase):
             custom_dir = os.path.join(tmp_dir, "custom_repo")
             os.makedirs(custom_dir, exist_ok=True)
             with (
-                patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": custom_dir, "HOLON_SKIP_PUSH": "1"}),
+                patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": custom_dir}),
                 patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
             ):
                 executor.main()
@@ -921,69 +876,12 @@ class TestExecutor(unittest.TestCase):
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    @patch("sandbox_executor.agent_runner.os.path.expanduser")
-    @patch("sandbox_executor.agent_runner._rmtree")
-    def test_main_default_workspace_deleted(
-        self, mock_rmtree, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd
-    ):
-        mock_get_repo_url.return_value = "/mock/repo"
+    @patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub)
+    def test_main_raises_exception_on_failure(self, mock_get_runner, mock_run_cmd):
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.0.0"
         mock_get_runner.return_value = mock_runner
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
-        # The simulated agent changes a source file, so the empty-diff guard lets the run succeed.
-        mock_tip = MagicMock(returncode=0, stdout="plan-tip-sha\n")
-        mock_diff = MagicMock(returncode=0, stdout="src/app.py\0")
-
-        def run_cmd_side_effect(args, cwd=None, **kwargs):
-            if args[:3] == ["git", "rev-parse", "HEAD"]:
-                return mock_tip
-            if "diff" in args and "--name-only" in args:
-                return mock_diff
-            return mock_result
-
-        mock_run_cmd.side_effect = run_cmd_side_effect
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            default_dir = os.path.join(tmp_dir, "repo")
-            mock_expanduser.return_value = default_dir
-            os.makedirs(default_dir, exist_ok=True)
-
-            env = os.environ.copy()
-            if "HOLON_TARGET_WORKTREE" in env:
-                del env["HOLON_TARGET_WORKTREE"]
-            env["HOLON_SKIP_PUSH"] = "1"
-
-            with (
-                patch.dict(os.environ, env, clear=True),
-                patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
-            ):
-                executor.main()
-
-            mock_rmtree.assert_any_call(default_dir)
-            for call_args in mock_rmtree.call_args_list:
-                cleaned_path = os.path.abspath(call_args.args[0])
-                self.assertTrue(
-                    cleaned_path.startswith(os.path.abspath(tmp_dir)),
-                    f"Invariant violated: _rmtree called on {cleaned_path} outside fixture {tmp_dir}",
-                )
-
-            mock_run_cmd_args = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
-            self.assertTrue(any("add" in cmd and "-A" in cmd for cmd in mock_run_cmd_args))
-            self.assertTrue(any("status" in cmd for cmd in mock_run_cmd_args))
-
-    @patch("sandbox_executor.entrypoint.executor.run_cmd")
-    @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    def test_main_raises_exception_on_failure(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
-        mock_get_repo_url.return_value = "/mock/repo"
-        mock_runner = MagicMock()
-        mock_runner.get_version.return_value = "1.0.0"
-        mock_get_runner.return_value = mock_runner
-        mock_run_cmd.side_effect = subprocess.CalledProcessError(1, ["git", "clone"])
+        mock_run_cmd.side_effect = subprocess.CalledProcessError(1, ["git", "checkout"])
 
         with (
             tempfile.TemporaryDirectory() as tmp_dir,
@@ -994,44 +892,6 @@ class TestExecutor(unittest.TestCase):
             with self.assertRaises(subprocess.CalledProcessError):
                 executor.main()
             self.assertIn("Execution failed:", mock_stderr.getvalue())
-
-    @patch("sandbox_executor.entrypoint.executor.run_cmd")
-    @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    @patch("sandbox_executor.agent_runner.os.path.expanduser")
-    @patch("sandbox_executor.agent_runner._rmtree")
-    @patch("sandbox_executor.agent_runner.os.path.lexists", return_value=True)
-    @patch("sandbox_executor.agent_runner.os.path.ismount", return_value=False)
-    @patch("sandbox_executor.agent_runner.os.path.islink", return_value=False)
-    def test_main_raises_runtime_error_on_cleanup_failure(  # noqa: PLR0913
-        self,
-        mock_islink,
-        mock_ismount,
-        mock_lexists,
-        mock_rmtree,
-        mock_expanduser,
-        mock_get_repo_url,
-        mock_get_runner,
-        mock_run_cmd,
-    ):
-        mock_rmtree.side_effect = PermissionError("Permission denied")
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            mock_expanduser.return_value = tmp_dir
-            env = os.environ.copy()
-            env.pop("HOLON_TARGET_WORKTREE", None)
-            with (
-                patch.dict(os.environ, env, clear=True),
-                patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
-            ):
-                with self.assertRaises(RuntimeError) as ctx:
-                    executor.main()
-                self.assertIn("Failed to clean up existing target worktree", str(ctx.exception))
-                for call_args in mock_rmtree.call_args_list:
-                    cleaned_path = os.path.abspath(call_args.args[0])
-                    self.assertTrue(
-                        cleaned_path.startswith(os.path.abspath(tmp_dir)),
-                        f"Invariant violated: _rmtree called on {cleaned_path} outside fixture {tmp_dir}",
-                    )
 
     def test_clear_dir_contents(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1187,157 +1047,10 @@ class TestExecutor(unittest.TestCase):
         mock_chmod.assert_called_with("/fake/file.txt", stat.S_IWUSR | stat.S_IRUSR, follow_symlinks=False)
         mock_func.assert_called_with("/fake/file.txt")
 
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    @patch("sandbox_executor.agent_runner.os.path.expanduser")
-    def test_main_keep_workspace(self, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd, mock_cleanup):
-        mock_get_repo_url.return_value = "/mock/repo"
-        mock_runner = MagicMock()
-        mock_runner.get_version.return_value = "1.0.0"
-        mock_get_runner.return_value = mock_runner
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
-        mock_run_cmd.return_value = mock_result
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            default_dir = os.path.join(tmp_dir, "repo")
-            mock_expanduser.return_value = default_dir
-            os.makedirs(default_dir, exist_ok=True)
-
-            env = os.environ.copy()
-            if "HOLON_TARGET_WORKTREE" in env:
-                del env["HOLON_TARGET_WORKTREE"]
-            env["HOLON_SKIP_PUSH"] = "1"
-            env["HOLON_KEEP_WORKSPACE"] = "true"
-
-            with (
-                patch.dict(os.environ, env, clear=True),
-                patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
-            ):
-                executor.main()
-
-            mock_cleanup.assert_not_called()
-
-    @patch("sandbox_executor.entrypoint.executor.os.path.exists")
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
-    @patch("sandbox_executor.entrypoint.executor.run_cmd")
-    @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    @patch("sandbox_executor.agent_runner.os.path.expanduser")
-    def test_main_keep_workspace_existing_git(  # noqa: PLR0913
-        self, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd, mock_cleanup, mock_exists
-    ):
-        mock_get_repo_url.return_value = "/mock/repo"
-        mock_runner = MagicMock()
-        mock_runner.get_version.return_value = "1.0.0"
-        mock_get_runner.return_value = mock_runner
-
-        import genericpath
-
-        mock_exists.side_effect = lambda p: False if p == "/.dockerenv" else genericpath.exists(p)
-
-        def _run_cmd_side_effect(args, cwd=None, **kwargs):
-            mock_res = MagicMock()
-            mock_res.returncode = 0
-            # Return the correct remote URL so the workspace reuse path is followed.
-            mock_res.stdout = "/mock/repo" if args == ["git", "remote", "get-url", "origin"] else ""
-            return mock_res
-
-        mock_run_cmd.side_effect = _run_cmd_side_effect
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            default_dir = os.path.join(tmp_dir, "repo")
-            git_dir = os.path.join(default_dir, ".git")
-            mock_expanduser.return_value = default_dir
-            os.makedirs(git_dir, exist_ok=True)
-
-            env = os.environ.copy()
-            if "HOLON_TARGET_WORKTREE" in env:
-                del env["HOLON_TARGET_WORKTREE"]
-            if "HOLON_ROLE" in env:
-                del env["HOLON_ROLE"]
-            if "HOLON_IN_SANDBOX" in env:
-                del env["HOLON_IN_SANDBOX"]
-            env["HOLON_SKIP_PUSH"] = "1"
-            env["HOLON_KEEP_WORKSPACE"] = "true"
-            if "USER" in env:
-                del env["USER"]
-            if "USERNAME" in env:
-                del env["USERNAME"]
-
-            with (
-                patch.dict(os.environ, env, clear=True),
-                patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
-                patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
-            ):
-                executor.main()
-                self.assertIn("Warning: Reusing workspace at", mock_stderr.getvalue())
-
-            mock_cleanup.assert_not_called()
-            called_cmds = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
-            fetch_idx = next(
-                i for i, cmd in enumerate(called_cmds) if cmd == ["git", "fetch", "/mock/repo", "I-456/P-123/_"]
-            )
-            clean_idx = next(i for i, cmd in enumerate(called_cmds) if cmd == ["git", "clean", "-fd"])
-            checkout_idx = next(
-                i
-                for i, cmd in enumerate(called_cmds)
-                if cmd == ["git", "checkout", "-f", "-B", "I-456/P-123/_", "FETCH_HEAD"]
-            )
-            self.assertTrue(fetch_idx < clean_idx < checkout_idx)
-            self.assertFalse(any("clone" in cmd for cmd in called_cmds))
-
-    @patch("sandbox_executor.entrypoint.executor.run_cmd")
-    @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    @patch("sandbox_executor.agent_runner.os.path.expanduser")
-    @patch("sandbox_executor.agent_runner._clear_dir_contents")
-    @patch("sandbox_executor.agent_runner.os.path.ismount", return_value=True)
-    def test_main_mount_point_clears_contents(  # noqa: PLR0913
-        self, mock_ismount, mock_clear_dir_contents, mock_expanduser, mock_get_repo_url, mock_get_runner, mock_run_cmd
-    ):
-        mock_get_repo_url.return_value = "/mock/repo"
-        mock_runner = MagicMock()
-        mock_runner.get_version.return_value = "1.0.0"
-        mock_get_runner.return_value = mock_runner
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = ""
-        mock_run_cmd.return_value = mock_result
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            default_dir = os.path.join(tmp_dir, "repo")
-            mock_expanduser.return_value = default_dir
-            os.makedirs(default_dir, exist_ok=True)
-
-            env = os.environ.copy()
-            if "HOLON_TARGET_WORKTREE" in env:
-                del env["HOLON_TARGET_WORKTREE"]
-            env["HOLON_SKIP_PUSH"] = "1"
-
-            with (
-                patch.dict(os.environ, env, clear=True),
-                patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
-            ):
-                executor.main()
-
-            self.assertTrue(mock_clear_dir_contents.called)
-            mock_clear_dir_contents.assert_any_call(default_dir, raise_on_error=True)
-            for call_args in mock_clear_dir_contents.call_args_list:
-                cleared_path = os.path.abspath(call_args.args[0])
-                self.assertTrue(
-                    cleared_path.startswith(os.path.abspath(tmp_dir)),
-                    f"Invariant violated: _clear_dir_contents called on {cleared_path} outside fixture {tmp_dir}",
-                )
-
-    @patch("sandbox_executor.entrypoint.executor.run_cmd")
-    @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    def test_main_git_add_not_called_on_failure(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
-        mock_get_repo_url.return_value = "/mock/repo"
+    @patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub)
+    def test_main_git_add_not_called_on_failure(self, mock_get_runner, mock_run_cmd):
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.0.0"
         mock_runner.build_cmd.return_value = ["agy", "run"]
@@ -1345,7 +1058,7 @@ class TestExecutor(unittest.TestCase):
 
         def side_effect(args, cwd=None, **kwargs):
             mock_res = MagicMock()
-            if "clone" in args:
+            if _cuts_branch(args):
                 ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
                 os.makedirs(ledger_dir, exist_ok=True)
                 with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
@@ -1374,20 +1087,20 @@ class TestExecutor(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as tmp_dir,
-            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir}),
         ):
             with patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]):
                 executor.main()
 
             mock_run_cmd_args = [call.args[0] for call in mock_run_cmd.call_args_list if call.args]
-            self.assertFalse(any("add" in cmd and "-A" in cmd for cmd in mock_run_cmd_args))
+            # The failed run's changes are only salvaged through the scoped add, never staged wholesale.
+            self.assertFalse(_unscoped_add_all(mock_run_cmd_args))
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    def test_agent_output_captured_on_failure(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
+    @patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub)
+    def test_agent_output_captured_on_failure(self, mock_get_runner, mock_run_cmd):
         """Test that failing agent runs capture bounded diagnostic output into execution record."""
-        mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.1.22"
         mock_runner.build_cmd.return_value = ["agy", "run"]
@@ -1397,7 +1110,7 @@ class TestExecutor(unittest.TestCase):
 
         def side_effect(args, cwd=None, **kwargs):
             mock_res = MagicMock()
-            if "clone" in args:
+            if _cuts_branch(args):
                 ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
                 os.makedirs(ledger_dir, exist_ok=True)
                 with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
@@ -1426,9 +1139,8 @@ class TestExecutor(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as tmp_dir,
-            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir}),
             patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
-            patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
         ):
             executor.main()
@@ -1441,10 +1153,9 @@ class TestExecutor(unittest.TestCase):
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    def test_agent_output_truncation_marker_and_byte_budget(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
+    @patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub)
+    def test_agent_output_truncation_marker_and_byte_budget(self, mock_get_runner, mock_run_cmd):
         """Test that agent output exceeding HOLON_AGENT_LOG_BYTES is truncated with explicit marker."""
-        mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.1.22"
         mock_runner.build_cmd.return_value = ["agy", "run"]
@@ -1456,7 +1167,7 @@ class TestExecutor(unittest.TestCase):
 
         def side_effect(args, cwd=None, **kwargs):
             mock_res = MagicMock()
-            if "clone" in args:
+            if _cuts_branch(args):
                 ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
                 os.makedirs(ledger_dir, exist_ok=True)
                 with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
@@ -1487,10 +1198,9 @@ class TestExecutor(unittest.TestCase):
             tempfile.TemporaryDirectory() as tmp_dir,
             patch.dict(
                 os.environ,
-                {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1", "HOLON_AGENT_LOG_BYTES": "1024"},
+                {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_AGENT_LOG_BYTES": "1024"},
             ),
             patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
-            patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
         ):
             executor.main()
@@ -1504,10 +1214,9 @@ class TestExecutor(unittest.TestCase):
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    def test_agent_output_secret_redaction(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
+    @patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub)
+    def test_agent_output_secret_redaction(self, mock_get_runner, mock_run_cmd):
         """Test that literal token values from GITHUB_TOKEN, GH_TOKEN, and HOLON_AGENT_KEY are stripped."""
-        mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.1.22"
         mock_runner.build_cmd.return_value = ["agy", "run"]
@@ -1522,7 +1231,7 @@ class TestExecutor(unittest.TestCase):
 
         def side_effect(args, cwd=None, **kwargs):
             mock_res = MagicMock()
-            if "clone" in args:
+            if _cuts_branch(args):
                 ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
                 os.makedirs(ledger_dir, exist_ok=True)
                 with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
@@ -1555,14 +1264,12 @@ class TestExecutor(unittest.TestCase):
                 os.environ,
                 {
                     "HOLON_TARGET_WORKTREE": tmp_dir,
-                    "HOLON_SKIP_PUSH": "1",
                     "GITHUB_TOKEN": secret_gh,
                     "GH_TOKEN": secret_gh_tok,
                     "HOLON_AGENT_KEY": secret_key,
                 },
             ),
             patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
-            patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
         ):
             executor.main()
@@ -1576,15 +1283,14 @@ class TestExecutor(unittest.TestCase):
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    def test_agent_output_truncation_never_severs_secret(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
+    @patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub)
+    def test_agent_output_truncation_never_severs_secret(self, mock_get_runner, mock_run_cmd):
         """Test that the byte-tail cut cannot strand a credential fragment in the committed record.
 
         Regression: bounding the tail before redacting severed a secret straddling the boundary,
         and neither the literal sweep (which matches whole values only) nor the key-name regex
         (whose anchor the same cut also breaks) could remove what survived on the kept side.
         """
-        mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.1.22"
         mock_runner.build_cmd.return_value = ["agy", "run"]
@@ -1608,7 +1314,7 @@ class TestExecutor(unittest.TestCase):
 
         def side_effect(args, cwd=None, **kwargs):
             mock_res = MagicMock()
-            if "clone" in args:
+            if _cuts_branch(args):
                 ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
                 os.makedirs(ledger_dir, exist_ok=True)
                 with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
@@ -1641,7 +1347,6 @@ class TestExecutor(unittest.TestCase):
                 os.environ,
                 {
                     "HOLON_TARGET_WORKTREE": tmp_dir,
-                    "HOLON_SKIP_PUSH": "1",
                     "HOLON_AGENT_LOG_BYTES": str(budget),
                     "GITHUB_TOKEN": straddle_value,
                     "GH_TOKEN": straddle_value,
@@ -1649,7 +1354,6 @@ class TestExecutor(unittest.TestCase):
                 },
             ),
             patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
-            patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
         ):
             executor.main()
@@ -1709,7 +1413,7 @@ class TestExecutor(unittest.TestCase):
 
         def side_effect(args, cwd=None, **kwargs):
             mock_res = MagicMock()
-            if "clone" in args:
+            if _cuts_branch(args):
                 ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
                 os.makedirs(ledger_dir, exist_ok=True)
                 with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
@@ -2053,12 +1757,11 @@ class TestExecutor(unittest.TestCase):
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    def test_agent_output_budget_above_redaction_cap_is_clamped(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
+    @patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub)
+    def test_agent_output_budget_above_redaction_cap_is_clamped(self, mock_get_runner, mock_run_cmd):
         """Test that a configured budget over redact_text's input cap is clamped, and announced."""
         from sandbox_executor.entrypoint.executor import _MAX_REDACT_INPUT_LEN, _TRUNCATION_MARKER_RESERVE
 
-        mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.1.22"
         mock_runner.build_cmd.return_value = ["agy", "run"]
@@ -2080,7 +1783,6 @@ class TestExecutor(unittest.TestCase):
                 os.environ,
                 {
                     "HOLON_TARGET_WORKTREE": tmp_dir,
-                    "HOLON_SKIP_PUSH": "1",
                     "HOLON_AGENT_LOG_BYTES": str(configured),
                     "GITHUB_TOKEN": "",
                     "GH_TOKEN": "",
@@ -2088,7 +1790,6 @@ class TestExecutor(unittest.TestCase):
                 },
             ),
             patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
-            patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
             patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
         ):
@@ -2298,12 +1999,9 @@ class TestExecutor(unittest.TestCase):
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    def test_agent_output_ledger_byte_count_matches_the_budget_field(
-        self, mock_get_repo_url, mock_get_runner, mock_run_cmd
-    ):
+    @patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub)
+    def test_agent_output_ledger_byte_count_matches_the_budget_field(self, mock_get_runner, mock_run_cmd):
         """Test the documented field contract: marker tail claim <= agent_output_bytes <= budget."""
-        mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.1.22"
         mock_runner.build_cmd.return_value = ["agy", "run"]
@@ -2317,10 +2015,9 @@ class TestExecutor(unittest.TestCase):
             tempfile.TemporaryDirectory() as tmp_dir,
             patch.dict(
                 os.environ,
-                {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1", "HOLON_AGENT_LOG_BYTES": str(budget)},
+                {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_AGENT_LOG_BYTES": str(budget)},
             ),
             patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
-            patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
         ):
             executor.main()
@@ -2334,12 +2031,9 @@ class TestExecutor(unittest.TestCase):
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    def test_execution_record_fence_outlasts_backticks_in_agent_output(
-        self, mock_get_repo_url, mock_get_runner, mock_run_cmd
-    ):
+    @patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub)
+    def test_execution_record_fence_outlasts_backticks_in_agent_output(self, mock_get_runner, mock_run_cmd):
         """Test that agent output containing a fence line cannot close the record's block early."""
-        mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.1.22"
         mock_runner.build_cmd.return_value = ["agy", "run"]
@@ -2350,9 +2044,8 @@ class TestExecutor(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as tmp_dir,
-            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir}),
             patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
-            patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
         ):
             executor.main()
@@ -2365,13 +2058,10 @@ class TestExecutor(unittest.TestCase):
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    @patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub)
     @patch("sandbox_executor.entrypoint.executor.prepare_agent_output_block")
-    def test_agent_output_logging_failure_fault_tolerance(
-        self, mock_sanitize, mock_get_repo_url, mock_get_runner, mock_run_cmd
-    ):
+    def test_agent_output_logging_failure_fault_tolerance(self, mock_sanitize, mock_get_runner, mock_run_cmd):
         """Test that logging/sanitizing failure does not alter execution status or raise out of main."""
-        mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.1.22"
         mock_runner.build_cmd.return_value = ["agy", "run"]
@@ -2381,7 +2071,7 @@ class TestExecutor(unittest.TestCase):
 
         def side_effect(args, cwd=None, **kwargs):
             mock_res = MagicMock()
-            if "clone" in args:
+            if _cuts_branch(args):
                 ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
                 os.makedirs(ledger_dir, exist_ok=True)
                 with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
@@ -2410,9 +2100,8 @@ class TestExecutor(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as tmp_dir,
-            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir}),
             patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
-            patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
         ):
             # Assert executor.main() does not raise
@@ -2427,10 +2116,9 @@ class TestExecutor(unittest.TestCase):
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    def test_executions_ledger_optional_keys(self, mock_get_repo_url, mock_get_runner, mock_run_cmd):
+    @patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub)
+    def test_executions_ledger_optional_keys(self, mock_get_runner, mock_run_cmd):
         """Test that executions.jsonl records optional keys without breaking schema invariants."""
-        mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.1.22"
         mock_runner.build_cmd.return_value = ["agy", "run"]
@@ -2438,7 +2126,7 @@ class TestExecutor(unittest.TestCase):
 
         def side_effect(args, cwd=None, **kwargs):
             mock_res = MagicMock()
-            if "clone" in args:
+            if _cuts_branch(args):
                 ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
                 os.makedirs(ledger_dir, exist_ok=True)
                 with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
@@ -2467,9 +2155,8 @@ class TestExecutor(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as tmp_dir,
-            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir}),
             patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
-            patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
         ):
             executor.main()
@@ -2665,297 +2352,50 @@ class TestExecutor(unittest.TestCase):
         plan_tip = tip_res.stdout.strip()
         return bare_dir, plan_tip
 
-    @patch("sandbox_executor.entrypoint.executor.shutil.rmtree")
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
-    def test_git_recovery_corrupted_git_preserves_parent_history_and_worktree(
-        self, mock_get_runner, mock_cleanup, mock_rmtree
-    ):
-        with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
-            plan_branch = "I-456/P-123/_"
-            bare_dir, plan_tip = self._create_bare_remote_with_plan(base_dir, plan_branch)
-            workspace_dir = os.path.join(base_dir, "workspace")
-
-            mock_runner = MagicMock()
-            mock_runner.get_version.return_value = "1.0.0"
-
-            def build_cmd_side_effect(*args, **kwargs):
-                agent_script = (
-                    "import os, shutil; "
-                    "os.makedirs('src', exist_ok=True); "
-                    "open('src/agent_edit.py', 'w').write('# agent edit'); "
-                    "shutil.rmtree('.git/objects')"
-                )
-                return ["python3", "-c", agent_script]
-
-            mock_runner.build_cmd.side_effect = build_cmd_side_effect
-            mock_runner.validate.return_value = None
-            mock_get_runner.return_value = mock_runner
-
-            with (
-                patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": workspace_dir}),
-                patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=workspace_dir),
-                patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value=bare_dir),
-                patch("sys.argv", ["executor.py", plan_branch, "antigravity-agent", "gemini-3.5-flash"]),
-            ):
-                executor.main()
-
-            mock_rmtree.assert_not_called()
-
-            parent_res = subprocess.run(
-                ["git", "rev-parse", "HEAD^"],
-                cwd=workspace_dir,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            self.assertEqual(parent_res.stdout.strip(), plan_tip)
-
-            tree_res = subprocess.run(
-                ["git", "ls-tree", "-r", "--name-only", "HEAD"],
-                cwd=workspace_dir,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            tree_files = tree_res.stdout.splitlines()
-            self.assertIn("src/codebase.py", tree_files)
-            self.assertIn("src/agent_edit.py", tree_files)
-            self.assertIn("holon-knowledge/ledger/executions.jsonl", tree_files)
-            self.assertFalse(any(f.startswith("executions/") for f in tree_files))
-            self.assertFalse(os.path.exists(os.path.join(workspace_dir, "executions")))
-
-            backup_dirs = [d for d in os.listdir(workspace_dir) if d.startswith(".git-unusable-")]
-            self.assertEqual(len(backup_dirs), 1)
-
-            exclude_path = os.path.join(workspace_dir, ".git", "info", "exclude")
-            self.assertTrue(os.path.exists(exclude_path))
-            with open(exclude_path) as ef:
-                content = ef.read()
-                self.assertIn(backup_dirs[0], content)
-                self.assertIn(".git-unusable-*", content)
-
-            branches_res = subprocess.run(
-                ["git", "branch", "-a"], cwd=bare_dir, capture_output=True, text=True, check=True
-            )
-            self.assertIn("E-", branches_res.stdout)
-
-    @patch("sandbox_executor.entrypoint.executor.shutil.rmtree")
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
-    @patch("sandbox_executor.entrypoint.executor.get_runner")
-    def test_git_recovery_failure_superseding_row_carries_agent_output_accounting(
-        self, mock_get_runner, mock_cleanup, mock_rmtree
-    ):
-        """Regression test: superseding ledger_revision: 2 row carries agent output accounting."""
+    def test_corrupted_git_after_the_agent_keeps_the_worktree_and_publishes_nothing(self, mock_get_runner):
         with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
             plan_branch = "I-456/P-123/_"
             bare_dir, _plan_tip = self._create_bare_remote_with_plan(base_dir, plan_branch)
-            workspace_dir = os.path.join(base_dir, "workspace")
+            workspace_dir = self._clone_workspace(base_dir, bare_dir, plan_branch)
+            origin_refs = subprocess.run(
+                ["git", "for-each-ref"], cwd=bare_dir, capture_output=True, text=True, check=True
+            ).stdout
 
             mock_runner = MagicMock()
             mock_runner.get_version.return_value = "1.0.0"
-
-            # Simulate agent run with output, and corrupted git objects
-            def build_cmd_side_effect(*args, **kwargs):
-                agent_script = (
-                    "import os, shutil; print('Agent stdout line for accounting'); shutil.rmtree('.git/objects')"
-                )
-                return ["python3", "-c", agent_script]
-
-            mock_runner.build_cmd.side_effect = build_cmd_side_effect
+            agent_script = (
+                "import os, shutil; "
+                "os.makedirs('src', exist_ok=True); "
+                "open('src/agent_edit.py', 'w').write('# agent edit'); "
+                "shutil.rmtree('.git/objects')"
+            )
+            mock_runner.build_cmd.return_value = ["python3", "-c", agent_script]
             mock_runner.validate.return_value = None
             mock_get_runner.return_value = mock_runner
 
-            # Force git recovery verification to fail by breaking ancestry_check or tree_valid
-            orig_run_cmd = executor.run_cmd
-
-            def failing_run_cmd(cmd, cwd=None, **kwargs):
-                if isinstance(cmd, list) and len(cmd) >= 4 and cmd[:3] == ["git", "merge-base", "--is-ancestor"]:
-                    # Return non-zero to fail recovery verification
-                    return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="not ancestor")
-                return orig_run_cmd(cmd, cwd=cwd, **kwargs)
-
             with (
                 patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": workspace_dir}),
-                patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=workspace_dir),
-                patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value=bare_dir),
-                patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=failing_run_cmd),
                 patch("sys.argv", ["executor.py", plan_branch, "antigravity-agent", "gemini-3.5-flash"]),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(RuntimeError) as raised,
             ):
                 executor.main()
 
-            ledger_file = os.path.join(workspace_dir, "holon-knowledge", "ledger", "executions.jsonl")
-            self.assertTrue(os.path.exists(ledger_file))
-            with open(ledger_file) as f:
-                entries = [json.loads(line) for line in f if line.strip()]
-
-            # There should be 2 entries: rev 1 and rev 2
-            self.assertEqual(len(entries), 2)
-            rev1 = entries[0]
-            rev2 = entries[1]
-
-            self.assertEqual(rev1["ledger_revision"], 1)
-            self.assertEqual(rev2["ledger_revision"], 2)
-            self.assertEqual(rev2["status"], "failure")
-            self.assertIn("Git recovery failure", rev2["summary"])
-
-            # Reader contract: superseding row repeats authoritative fields
-            self.assertNotIn("execution_file", rev1)
-            self.assertNotIn("execution_file", rev2)
-            self.assertEqual(rev2["agent_output_truncated"], rev1["agent_output_truncated"])
-            self.assertEqual(rev2["agent_output_bytes"], rev1["agent_output_bytes"])
-            self.assertGreater(rev2["agent_output_bytes"], 0)
-            # C4-I2: the superseding row repeats every authoritative field of revision 1, including the notes and
-            # budget fields; only status, summary, created_at and ledger_revision may differ.
-            _assert_supersedes(self, rev1, rev2)
-
-    @patch("sandbox_executor.entrypoint.executor.sync_and_reconcile_pre_push")
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
-    @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    def test_pre_push_sync_failure_superseding_row_carries_agent_output_accounting(
-        self, mock_get_repo_url, mock_get_runner, mock_cleanup, mock_sync
-    ):
-        """Test that pre-push sync failure rev-2 row carries agent output accounting and omits execution_file."""
-        mock_get_repo_url.return_value = "/mock/repo"
-        mock_runner = MagicMock()
-        mock_runner.get_version.return_value = "1.1.22"
-        mock_runner.build_cmd.return_value = ["agy", "run"]
-        mock_get_runner.return_value = mock_runner
-
-        mock_sync.return_value = (False, "unresolvable conflicts")
-
-        def side_effect(args, cwd=None, **kwargs):
-            mock_res = MagicMock()
-            if "clone" in args:
-                ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
-                os.makedirs(ledger_dir, exist_ok=True)
-                with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
-                    f.write(
-                        json.dumps(
-                            {
-                                "plan_id": "P-123",
-                                "intent_branch": "I-456/_",
-                                "entropy": 2.0,
-                                "entropy_budget": 5.0,
-                            }
-                        )
-                        + "\n"
-                    )
-            if "agy" in args:
-                mock_res.returncode = 0
-                mock_res.stdout = "Task complete with output.\n"
-                mock_res.stderr = ""
-            elif "diff" in args and "--cached" in args and "--quiet" in args:
-                mock_res.returncode = 1
-                mock_res.stdout = ""
-                mock_res.stderr = ""
-            elif "rev-parse" in args and "--verify" in args and "HEAD^" in args:
-                mock_res.returncode = 0
-                mock_res.stdout = "parent-commit-sha\n"
-            else:
-                mock_res.returncode = 0
-                mock_res.stdout = ""
-                mock_res.stderr = ""
-            return mock_res
-
-        with (
-            tempfile.TemporaryDirectory() as tmp_dir,
-            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
-            patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect),
-            patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
-            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.8-flash"]),
-        ):
-            executor.main()
-
-            ledger_file = os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")
-            self.assertTrue(os.path.exists(ledger_file))
-            with open(ledger_file) as lf:
-                entries = [json.loads(line) for line in lf if line.strip()]
-
-            self.assertEqual(len(entries), 2)
-            rev1, rev2 = entries[0], entries[1]
-            self.assertEqual(rev1["ledger_revision"], 1)
-            self.assertEqual(rev2["ledger_revision"], 2)
-            self.assertEqual(rev2["status"], "failure")
-            self.assertIn("Pre-push sync failure", rev2["summary"])
-            self.assertNotIn("execution_file", rev1)
-            self.assertNotIn("execution_file", rev2)
-            self.assertEqual(rev2["agent_output_truncated"], rev1["agent_output_truncated"])
-            self.assertEqual(rev2["agent_output_bytes"], rev1["agent_output_bytes"])
-            self.assertGreater(rev2["agent_output_bytes"], 0)
-            # C4-I2: the superseding row repeats every authoritative field of revision 1, including the notes and
-            # budget fields; only status, summary, created_at and ledger_revision may differ.
-            _assert_supersedes(self, rev1, rev2)
-
-    @patch("sandbox_executor.entrypoint.executor.sync_and_reconcile_pre_push")
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
-    @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
-    def test_pre_push_sync_failure_after_decomposition_supersedes_the_decomposed_row(
-        self, mock_get_repo_url, mock_get_runner, mock_cleanup, mock_sync
-    ):
-        """C4-I2: the decompose path has no agent-output accounting; its superseding row is built from its own row."""
-        mock_get_repo_url.return_value = "/mock/repo"
-        mock_runner = MagicMock()
-        mock_runner.get_version.return_value = "1.0.0"
-        mock_get_runner.return_value = mock_runner
-        mock_sync.return_value = (False, "unresolvable conflicts")
-
-        def side_effect(args, cwd=None, **kwargs):
-            mock_res = MagicMock()
-            mock_res.returncode = 0
-            mock_res.stdout = ""
-            mock_res.stderr = ""
-            if "clone" in args:
-                ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
-                os.makedirs(ledger_dir, exist_ok=True)
-                with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
-                    f.write(
-                        json.dumps(
-                            {
-                                "plan_id": "P-123",
-                                "intent_branch": "I-456/_",
-                                "entropy": 8.0,
-                                "entropy_budget": 5.0,
-                                "plan_file": "plans/P-123.md",
-                            }
-                        )
-                        + "\n"
-                    )
-                os.makedirs(os.path.join(cwd, "plans"), exist_ok=True)
-                with open(os.path.join(cwd, "plans", "P-123.md"), "w") as f:
-                    f.write("# Plan\n\n## Sub-intent list\n\n- Create DB schema\n- Build API routes\n")
-            elif "diff" in args and "--cached" in args and "--quiet" in args:
-                mock_res.returncode = 1
-            return mock_res
-
-        with (
-            tempfile.TemporaryDirectory() as tmp_dir,
-            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir, "HOLON_SKIP_PUSH": "1"}),
-            patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect),
-            patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
-            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
-        ):
-            executor.main()
-
-            ledger_file = os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")
-            with open(ledger_file) as lf:
-                summaries = [
-                    row
-                    for row in (json.loads(line) for line in lf if line.strip())
-                    if row.get("entry_type") == "summary"
-                ]
-
-        self.assertEqual([row["status"] for row in summaries], ["decomposed", "failure"])
-        decomposed, failure = summaries
-        self.assertEqual(failure["ledger_revision"], 2)
-        self.assertIn("Pre-push sync failure", failure["summary"])
-        # The decomposed summary refers to the plan row's list (never copies it); the superseding row repeats it.
-        self.assertEqual(failure["plan_decision"], decomposed["plan_decision"])
-        self.assertEqual(decomposed["plan_decision"]["sub_intent_count"], 2)
-        self.assertNotIn("sub_intents", decomposed)
-        self.assertEqual(failure["execution_id"], decomposed["execution_id"])
+            self.assertIn(
+                "the mounted worktree's git repository is unusable after the agent ran", str(raised.exception)
+            )
+            # The host's worktree is never rebuilt: the agent's file stays and no backup appears.
+            self.assertTrue(os.path.exists(os.path.join(workspace_dir, "src", "agent_edit.py")))
+            self.assertEqual([d for d in os.listdir(workspace_dir) if d.startswith(".git-unusable-")], [])
+            self.assertFalse(os.path.isdir(os.path.join(workspace_dir, ".git", "objects")))
+            # The executor never touches the remote.
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "for-each-ref"], cwd=bare_dir, capture_output=True, text=True, check=True
+                ).stdout,
+                origin_refs,
+            )
 
     def _clone_workspace(self, base_dir: str, bare_dir: str, plan_branch: str) -> str:
         workspace_dir = os.path.join(base_dir, "workspace")
@@ -2966,8 +2406,7 @@ class TestExecutor(unittest.TestCase):
         )
         return workspace_dir
 
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
-    def test_benign_dubious_ownership_is_repaired_without_rebuild(self, mock_cleanup):
+    def test_benign_dubious_ownership_is_repaired_without_rebuild(self):
         plan_branch = "I-456/P-123/_"
         with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
             bare_dir, _ = self._create_bare_remote_with_plan(base_dir, plan_branch)
@@ -2980,8 +2419,7 @@ class TestExecutor(unittest.TestCase):
             self.assertTrue(executor._probe_git_repo(workspace_dir)[0])
             self.assertEqual([d for d in os.listdir(workspace_dir) if d.startswith(".git-unusable-")], [])
 
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
-    def test_safe_directory_probe_plumbing_and_realpath_normalization(self, mock_cleanup):
+    def test_safe_directory_probe_plumbing_and_realpath_normalization(self):
         plan_branch = "I-456/P-123/_"
         with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
             bare_dir, _ = self._create_bare_remote_with_plan(base_dir, plan_branch)
@@ -3007,8 +2445,7 @@ class TestExecutor(unittest.TestCase):
             healthy, _ = executor._probe_git_repo(workspace_dir)
             self.assertTrue(healthy)
 
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
-    def test_safe_directory_fallback_on_unwritable_config(self, mock_cleanup):
+    def test_safe_directory_fallback_on_unwritable_config(self):
         plan_branch = "I-456/P-123/_"
         with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
             bare_dir, _ = self._create_bare_remote_with_plan(base_dir, plan_branch)
@@ -3082,8 +2519,7 @@ class TestExecutor(unittest.TestCase):
             finally:
                 executor._FALLBACK_SAFE_DIRECTORIES.discard(canonical_path)
 
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
-    def test_lock_repair_removes_only_abandoned_locks(self, mock_cleanup):
+    def test_lock_repair_removes_only_abandoned_locks(self):
         plan_branch = "I-456/P-123/_"
         with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
             bare_dir, _ = self._create_bare_remote_with_plan(base_dir, plan_branch)
@@ -3119,9 +2555,8 @@ class TestExecutor(unittest.TestCase):
             self.assertTrue(executor._probe_git_repo(workspace_dir)[0])
             self.assertEqual([d for d in os.listdir(workspace_dir) if d.startswith(".git-unusable-")], [])
 
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
-    def test_leaked_git_dir_env_is_stripped_from_git_calls(self, mock_get_runner, mock_cleanup):
+    def test_leaked_git_dir_env_is_stripped_from_git_calls(self, mock_get_runner):
         plan_branch = "I-456/P-123/_"
         with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
             bare_dir, _ = self._create_bare_remote_with_plan(base_dir, plan_branch)
@@ -3138,12 +2573,10 @@ class TestExecutor(unittest.TestCase):
                     os.environ,
                     {
                         "HOLON_TARGET_WORKTREE": workspace_dir,
-                        "HOLON_SKIP_PUSH": "1",
                         "GIT_DIR": "/invalid/nonexistent/git/dir",
                     },
                 ),
                 patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=workspace_dir),
-                patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value=bare_dir),
                 patch("sys.argv", ["executor.py", plan_branch, "antigravity-agent", "gemini-3.5-flash"]),
             ):
                 executor.main()
@@ -3152,8 +2585,7 @@ class TestExecutor(unittest.TestCase):
             self.assertEqual([d for d in os.listdir(workspace_dir) if d.startswith(".git-unusable-")], [])
             self.assertTrue(executor._probe_git_repo(workspace_dir)[0])
 
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
-    def test_missing_head_is_restored_on_the_execution_branch(self, mock_cleanup):
+    def test_missing_head_is_restored_on_the_execution_branch(self):
         plan_branch = "I-456/P-123/_"
         exec_branch = "I-456/P-123/E-1790000000-antigravity-agent-gemini-3.5-flash/_"
         with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
@@ -3192,102 +2624,6 @@ class TestExecutor(unittest.TestCase):
             ).stdout.strip()
             self.assertEqual(head_tip, plan_tip)
             self.assertEqual([d for d in os.listdir(workspace_dir) if d.startswith(".git-unusable-")], [])
-
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
-    @patch("sandbox_executor.entrypoint.executor.get_runner")
-    def test_unrecoverable_remote_branch_refusal_to_push(self, mock_get_runner, mock_cleanup):
-        with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
-            plan_branch = "I-456/P-123/_"
-            bare_dir, _ = self._create_bare_remote_with_plan(base_dir, plan_branch)
-            workspace_dir = os.path.join(base_dir, "workspace")
-
-            subprocess.run(
-                ["git", "clone", "--branch", plan_branch, bare_dir, workspace_dir],
-                check=True,
-                capture_output=True,
-            )
-
-            mock_runner = MagicMock()
-            mock_runner.get_version.return_value = "1.0.0"
-
-            def build_cmd_side_effect(*args, **kwargs):
-                # Delete plan branch on bare remote during agent run so recovery fetch fails
-                subprocess.run(
-                    ["git", "branch", "-D", plan_branch],
-                    cwd=bare_dir,
-                    check=True,
-                    capture_output=True,
-                )
-                return ["python3", "-c", "import shutil; shutil.rmtree('.git/objects')"]
-
-            mock_runner.build_cmd.side_effect = build_cmd_side_effect
-            mock_runner.validate.return_value = None
-            mock_get_runner.return_value = mock_runner
-
-            with (
-                patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": workspace_dir, "HOLON_GIT_FETCH_RETRIES": "1"}),
-                patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=workspace_dir),
-                patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value=bare_dir),
-                patch("sys.argv", ["executor.py", plan_branch, "antigravity-agent", "gemini-3.5-flash"]),
-            ):
-                executor.main()
-
-            branches_res = subprocess.run(
-                ["git", "branch", "-a"], cwd=bare_dir, capture_output=True, text=True, check=True
-            )
-            self.assertNotIn("E-", branches_res.stdout)
-
-            backup_dirs = [d for d in os.listdir(workspace_dir) if d.startswith(".git-unusable-")]
-            self.assertEqual(len(backup_dirs), 1)
-
-            ledger_file = os.path.join(workspace_dir, "holon-knowledge/ledger/executions.jsonl")
-            self.assertTrue(os.path.exists(ledger_file))
-            with open(ledger_file) as f:
-                lines = [json.loads(line) for line in f if line.strip()]
-            self.assertTrue(any(entry.get("status") == "failure" for entry in lines))
-            failure_entry = [entry for entry in lines if entry.get("status") == "failure"][-1]
-            self.assertIn("Git recovery failure", failure_entry.get("summary", ""))
-            self.assertIn(backup_dirs[0], failure_entry.get("summary", ""))
-
-    @patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir")
-    @patch("sandbox_executor.entrypoint.executor.get_runner")
-    def test_recovery_fetch_diagnostic_is_redacted(self, mock_get_runner, mock_cleanup):
-        """The printed `git fetch` diagnostic goes through the shared redactor, not raw stderr."""
-        with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
-            plan_branch = "I-456/P-123/_"
-            bare_dir, _ = self._create_bare_remote_with_plan(base_dir, plan_branch)
-            workspace_dir = os.path.join(base_dir, "workspace")
-            subprocess.run(
-                ["git", "clone", "--branch", plan_branch, bare_dir, workspace_dir],
-                check=True,
-                capture_output=True,
-            )
-            # Fake, runtime-built value: git echoes the unreachable remote path in its fetch error.
-            fake_value = "ghp_" + "Z" * 36
-            unreachable_remote = os.path.join(base_dir, f"missing-{fake_value}.git")
-
-            mock_runner = MagicMock()
-            mock_runner.get_version.return_value = "1.0.0"
-            mock_runner.build_cmd.return_value = ["python3", "-c", "import shutil; shutil.rmtree('.git/objects')"]
-            mock_runner.validate.return_value = None
-            mock_get_runner.return_value = mock_runner
-
-            captured = io.StringIO()
-            with (
-                patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": workspace_dir, "HOLON_GIT_FETCH_RETRIES": "1"}),
-                patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=workspace_dir),
-                patch(
-                    "sandbox_executor.entrypoint.executor.get_repo_url",
-                    side_effect=[bare_dir, unreachable_remote],
-                ),
-                patch("sys.argv", ["executor.py", plan_branch, "antigravity-agent", "gemini-3.5-flash"]),
-                contextlib.redirect_stderr(captured),
-            ):
-                executor.main()
-
-            output = captured.getvalue()
-            self.assertIn("Fetch diagnostic error:", output)
-            self.assertNotIn(fake_value, output)
 
 
 class TestExecutorPrePushSync(unittest.TestCase):
@@ -3336,6 +2672,8 @@ class TestExecutorPrePushSync(unittest.TestCase):
             f.write(json.dumps({"execution_id": "E-remote", "created_at": "2026-10-06T09:30:00Z"}) + "\n")
         self._git(peer_dir, "commit", "-am", "peer commit")
         self._git(peer_dir, "push", "origin", "main")
+        # The host fetches the target branch before the container runs; the sync reads that remote-tracking ref.
+        self._git(self.work_dir, "fetch", "-q", "origin")
 
         # 3. Pre-push sync on feature branch
         success, msg = sync_and_reconcile_pre_push(self.work_dir, target_branch="main")
@@ -3370,6 +2708,8 @@ class TestExecutorPrePushSync(unittest.TestCase):
         self._git(peer_dir, "add", "code.py")
         self._git(peer_dir, "commit", "-m", "peer conflicting code")
         self._git(peer_dir, "push", "origin", "main")
+        # The host fetches the target branch before the container runs; the sync reads that remote-tracking ref.
+        self._git(self.work_dir, "fetch", "-q", "origin")
 
         # 3. Pre-push sync should fail and abort the merge
         success, msg = sync_and_reconcile_pre_push(self.work_dir, target_branch="main")
@@ -3380,11 +2720,32 @@ class TestExecutorPrePushSync(unittest.TestCase):
         status = self._git(self.work_dir, "status", "--porcelain").stdout.strip()
         self.assertEqual(status, "")
 
-    def test_pre_push_sync_no_remote_configured(self):
+    def test_pre_push_sync_without_a_fetched_target_ref_is_a_no_op(self):
         self._git(self.work_dir, "remote", "remove", "origin")
         success, msg = sync_and_reconcile_pre_push(self.work_dir, target_branch="main")
         self.assertTrue(success)
-        self.assertIn("No remote origin", msg)
+        self.assertEqual(msg, "Remote branch origin/main not found")
+
+    def test_pre_push_sync_never_contacts_the_remote(self):
+        # A peer advances the remote, but the host has not fetched: the sync sees nothing new and runs no remote verb.
+        peer_dir = os.path.join(self.root, "peer-unfetched")
+        subprocess.run(["git", "clone", self.remote_dir, peer_dir], check=True, capture_output=True)
+        self._git(peer_dir, "config", "user.email", "peer@holon.com")
+        self._git(peer_dir, "config", "user.name", "Peer User")
+        self._git(peer_dir, "commit", "--allow-empty", "-m", "peer")
+        self._git(peer_dir, "push", "origin", "main")
+        commands: list[list[str]] = []
+        real_run_cmd = executor.run_cmd
+
+        def recording(args, **kwargs):
+            commands.append(list(args))
+            return real_run_cmd(args, **kwargs)
+
+        with patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=recording):
+            success, msg = sync_and_reconcile_pre_push(self.work_dir, target_branch="main")
+        self.assertTrue(success, msg)
+        self.assertIn("up to date", msg)
+        self.assertEqual(_remote_git_cmds(commands), [])
 
     def test_pre_push_sync_multi_ledger_conflicts(self):
         # 1. On feature branch, append to plans.jsonl and executions.jsonl
@@ -3416,6 +2777,8 @@ class TestExecutorPrePushSync(unittest.TestCase):
         self._git(peer_dir, "add", "-A")
         self._git(peer_dir, "commit", "-m", "peer multi ledger")
         self._git(peer_dir, "push", "origin", "main")
+        # The host fetches the target branch before the container runs; the sync reads that remote-tracking ref.
+        self._git(self.work_dir, "fetch", "-q", "origin")
 
         # 3. Pre-push sync
         success, msg = sync_and_reconcile_pre_push(self.work_dir, target_branch="main")
@@ -3431,37 +2794,6 @@ class TestExecutorPrePushSync(unittest.TestCase):
         with open(exec_file, encoding="utf-8") as f:
             e_rows = [json.loads(line) for line in f if line.strip()]
         self.assertEqual(len(e_rows), 3)
-
-    def test_pre_push_sync_shallow_clone_deepen_handling(self):
-        # Verify shallow repository check and deepening behaviour via mocked run_cmd
-        with patch("sandbox_executor.entrypoint.executor.run_cmd") as mock_run_cmd:
-
-            def side_effect(args, **kwargs):  # noqa: PLR0911
-                cmd_str = " ".join(args)
-                if "remote get-url" in cmd_str:
-                    return MagicMock(returncode=0, stdout="origin")
-                if "rev-parse --verify origin/main" in cmd_str:
-                    return MagicMock(returncode=0, stdout="origin/main")
-                if "rev-parse origin/main" in cmd_str:
-                    return MagicMock(returncode=0, stdout="abc1234")
-                if "merge-base HEAD origin/main" in cmd_str:
-                    # Fail on first call, succeed after deepening
-                    if mock_run_cmd.deepen_called:
-                        return MagicMock(returncode=0, stdout="abc1234")
-                    return MagicMock(returncode=1, stdout="")
-                if "--is-shallow-repository" in cmd_str:
-                    return MagicMock(returncode=0, stdout="true")
-                if "fetch --deepen=50" in cmd_str:
-                    mock_run_cmd.deepen_called = True
-                    return MagicMock(returncode=0, stdout="")
-                return MagicMock(returncode=0, stdout="")
-
-            mock_run_cmd.deepen_called = False
-            mock_run_cmd.side_effect = side_effect
-
-            success, msg = sync_and_reconcile_pre_push(self.work_dir, target_branch="main")
-            self.assertTrue(success, msg)
-            self.assertTrue(mock_run_cmd.deepen_called)
 
     def test_pre_push_sync_recognizes_expanded_unmerged_prefixes(self):
         # Verify unmerged status check recognises AU, UA, and DD prefixes
@@ -3495,12 +2827,11 @@ class TestExecutorPrePushSync(unittest.TestCase):
 
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
     @patch("sandbox_executor.entrypoint.executor.get_runner")
-    @patch("sandbox_executor.entrypoint.executor.get_repo_url")
+    @patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub)
     def test_execution_run_records_action_and_summary_records_with_entry_type(  # noqa: PLR0915
-        self, mock_get_repo_url, mock_get_runner, mock_run_cmd
+        self, mock_get_runner, mock_run_cmd
     ):
         """Test that execution run with action logging enabled records both action and summary records."""
-        mock_get_repo_url.return_value = "/mock/repo"
         mock_runner = MagicMock()
         mock_runner.get_version.return_value = "1.3.3"
         mock_runner.build_cmd.return_value = ["agy", "run"]
@@ -3508,7 +2839,7 @@ class TestExecutorPrePushSync(unittest.TestCase):
 
         def side_effect(args, cwd=None, **kwargs):
             mock_res = MagicMock()
-            if "clone" in args:
+            if _cuts_branch(args):
                 ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
                 os.makedirs(ledger_dir, exist_ok=True)
                 with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
@@ -3555,7 +2886,6 @@ class TestExecutorPrePushSync(unittest.TestCase):
                 os.environ,
                 {
                     "HOLON_TARGET_WORKTREE": tmp_dir,
-                    "HOLON_SKIP_PUSH": "1",
                     "HOLON_ACTION_LOGGING": "1",
                     "HOLON_ACTION_ORIGIN": "pr_review",
                     "HOLON_REVIEW_SEVERITY": "critical",
@@ -3564,7 +2894,6 @@ class TestExecutorPrePushSync(unittest.TestCase):
                 },
             ),
             patch("sandbox_executor.entrypoint.executor.get_workspace_dir", return_value=tmp_dir),
-            patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
             patch("sys.argv", ["executor.py", "I-777/P-777/_", "antigravity-agent", "gemini-3.8-flash"]),
         ):
             executor.main()
@@ -3633,7 +2962,7 @@ class TestExecutorIncrementalNotes(unittest.TestCase):
 
         def fake_run_cmd(args, cwd=None, **kwargs):
             git_cmds.append(list(args))
-            if "clone" in args:
+            if _cuts_branch(args):
                 ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
                 os.makedirs(ledger_dir, exist_ok=True)
                 with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
@@ -3663,11 +2992,11 @@ class TestExecutorIncrementalNotes(unittest.TestCase):
         exit_code = 0
         stdout, stderr = io.StringIO(), io.StringIO()
         with (
-            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp.name, "HOLON_SKIP_PUSH": "1", **(env or {})}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp.name, **(env or {})}),
             patch.object(executor, "run_cmd", side_effect=fake_run_cmd),
             patch.object(executor, "run_turn", side_effect=fake_run_turn),
             patch.object(executor, "get_runner", return_value=runner),
-            patch.object(executor, "get_repo_url", return_value="/mock/repo"),
+            patch.object(executor, "validate_mounted_workspace", new=_validate_stub),
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
             patch("sys.stdout", stdout),
             patch("sys.stderr", stderr),
@@ -4360,7 +3689,7 @@ def _run_executor_main(  # noqa: PLR0913
             commands.append(list(args))
         if args[:4] == ["git", "diff", "--cached", "--quiet"]:
             res.returncode = 1
-        if "clone" in args:
+        if _cuts_branch(args):
             ledger = os.path.join(cwd, "holon-knowledge/ledger")
             os.makedirs(ledger, exist_ok=True)
             with open(os.path.join(ledger, "plans.jsonl"), "w") as f:
@@ -4375,11 +3704,11 @@ def _run_executor_main(  # noqa: PLR0913
 
     repo = str(tmp_path / "repo")
     with (
-        patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": repo, "HOLON_SKIP_PUSH": "1"}),
+        patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": repo}),
+        patch("sandbox_executor.entrypoint.executor.workspace_mounted", return_value=True),
         patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect),
         patch("sandbox_executor.entrypoint.executor.get_runner", return_value=runner),
-        patch("sandbox_executor.entrypoint.executor.get_repo_url", return_value="/mock/repo"),
-        patch("sandbox_executor.entrypoint.executor.cleanup_repo_dir"),
+        patch("sandbox_executor.entrypoint.executor.validate_mounted_workspace", new=_validate_stub),
         patch("sys.argv", ["executor.py", plan_branch, "claude-agent", "claude-opus-5-5"]),
     ):
         exit_code = 0
@@ -4574,10 +3903,9 @@ def test_no_placeholder_sub_intent_text_in_source():
 
 
 class TestExecutorPartialWorkSalvage(unittest.TestCase):
-    """An execution's code is never lost: salvage on failure, identity before dispatch, refused push, resume."""
+    """An execution's code is never lost: salvage on failure, identity before dispatch, no push, resume."""
 
     PLAN = "I-456/P-123/_"
-    PROBE = make_gh_probe()
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(prefix="sandbox_salvage_test_")
@@ -4587,6 +3915,7 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         self.seed = os.path.join(self.root, "seed")
         subprocess.run(["git", "init", "-q", "--bare", "-b", "main", self.bare], check=True)
         self.git(self.bare, "config", "core.hooksPath", os.path.join(self.bare, "hooks"))
+        self.workspace = ""
         subprocess.run(["git", "init", "-q", "-b", "main", self.seed], check=True)
         files = {
             ".gitignore": "*.ignored\n",
@@ -4626,11 +3955,12 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         with open(path, "w") as f:
             f.write(VALID_NOTES)
 
-    def run_main(self, first_turn, *, extra_args=(), url=None, breach=None, returncode=0):
-        """Run executor.main() against the bare origin with a fake agent; returns (exit code, stderr, prompts)."""
+    def run_main(self, first_turn, *, extra_args=(), breach=None, returncode=0):
+        """Run executor.main() in a worktree the host cloned from the bare origin; returns (code, stderr, prompts)."""
         self.runs += 1
         workspace = os.path.join(self.root, f"workspace-{self.runs}")
-        os.makedirs(workspace)
+        # The host fetched every branch of the origin into the worktree before the container started.
+        self.git(self.root, "clone", "-q", "--branch", self.PLAN, self.bare, workspace)
         self.workspace = workspace
         prompts = []
 
@@ -4648,10 +3978,9 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         stderr = io.StringIO()
         code = 0
         with (
-            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": workspace, "HOLON_SKIP_PUSH": ""}),
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": workspace}),
             patch.object(executor, "run_turn", side_effect=fake_run_turn),
             patch.object(executor, "get_runner", return_value=runner),
-            patch.object(executor, "get_repo_url", return_value=url or self.bare),
             # Distinct execution ids for several runs in one test.
             patch("time.time", side_effect=lambda: real_time() + 1000 * self.runs),
             patch("sys.argv", ["executor.py", self.PLAN, "antigravity-agent", "gemini-3.5-flash", *extra_args]),
@@ -4665,35 +3994,44 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         return code, stderr.getvalue(), prompts
 
     def exec_branches(self):
+        """The execution branches the last run committed in its worktree."""
+        out = self.git(self.workspace, "for-each-ref", "--format=%(refname:short)", "refs/heads/I-456/P-123/")
+        return sorted(b for b in out.split() if "/E-" in b)
+
+    def origin_exec_branches(self):
         out = self.git(self.bare, "for-each-ref", "--format=%(refname:short)", "refs/heads/I-456/P-123/")
         return sorted(b for b in out.split() if "/E-" in b)
 
+    def host_push(self, branch):
+        """What the host does after a container: push the branch the container committed."""
+        self.git(self.workspace, "push", "-q", self.bare, f"{branch}:refs/heads/{branch}")
+
     def summary(self, branch):
-        ledger = self.git(self.bare, "show", f"{branch}:holon-knowledge/ledger/executions.jsonl")
+        ledger = self.git(self.workspace, "show", f"{branch}:holon-knowledge/ledger/executions.jsonl")
         rows = [json.loads(line) for line in ledger.splitlines() if line.strip()]
         return [r for r in rows if r.get("entry_type") == "summary"][-1]
 
     def files_in(self, commit):
-        return set(self.git(self.bare, "show", "--name-only", "--format=", commit).split())
+        return set(self.git(self.workspace, "show", "--name-only", "--format=", commit).split())
 
     def subject(self, commit):
-        return self.git(self.bare, "log", "-1", "--format=%s", commit).strip()
+        return self.git(self.workspace, "log", "-1", "--format=%s", commit).strip()
 
     def assert_salvaged(self, branch):
         self.assertIn("failed for plan", self.subject(branch))
         self.assertIn("partial work (failed) for plan", self.subject(f"{branch}~1"))
-        self.assertEqual(self.git(self.bare, "rev-parse", f"{branch}~2").strip(), self.plan_tip)
+        self.assertEqual(self.git(self.workspace, "rev-parse", f"{branch}~2").strip(), self.plan_tip)
         partial = self.files_in(f"{branch}~1")
         self.assertEqual(partial, {"src/codebase.py", "src/obsolete.py", "src/new_module.py"})
         failure = self.files_in(branch)
         self.assertIn("holon-knowledge/ledger/executions.jsonl", failure)
         self.assertTrue(all(f.startswith(("executions/", "holon-knowledge/ledger/")) for f in failure))
-        tree = self.git(self.bare, "ls-tree", "-r", "--name-only", branch).split()
+        tree = self.git(self.workspace, "ls-tree", "-r", "--name-only", branch).split()
         self.assertNotIn("scratch.ignored", tree)
         self.assertNotIn("src/obsolete.py", tree)
         row = self.summary(branch)
         self.assertEqual(row["status"], "failure")
-        self.assertEqual(row["partial_head"], self.git(self.bare, "rev-parse", f"{branch}~1").strip())
+        self.assertEqual(row["partial_head"], self.git(self.workspace, "rev-parse", f"{branch}~1").strip())
 
     def test_budget_breach_salvages_dirty_tree_into_partial_work_commit(self):
         code, _stderr, _ = self.run_main(self.dirty_turn, breach=BudgetBreach("execute", "stage", 2700, 2700))
@@ -4716,8 +4054,8 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         self.run_main(notes_only, returncode=1)
         [branch] = self.exec_branches()
         self.assertNotIn("partial_head", self.summary(branch))
-        self.assertEqual(self.git(self.bare, "rev-parse", f"{branch}~1").strip(), self.plan_tip)
-        log = self.git(self.bare, "log", "--format=%s", f"{self.plan_tip}..{branch}")
+        self.assertEqual(self.git(self.workspace, "rev-parse", f"{branch}~1").strip(), self.plan_tip)
+        log = self.git(self.workspace, "log", "--format=%s", f"{self.plan_tip}..{branch}")
         self.assertNotIn("partial work", log)
 
     def test_agent_commits_with_clean_tree_record_the_agent_head(self):
@@ -4730,32 +4068,39 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         self.run_main(committing_agent, breach=BudgetBreach("execute", "stage", 2700, 2700))
         [branch] = self.exec_branches()
         self.assertEqual(self.subject(f"{branch}~1"), "step 1")
-        author = self.git(self.bare, "log", "-1", "--format=%ae", f"{branch}~1").strip()
+        author = self.git(self.workspace, "log", "-1", "--format=%ae", f"{branch}~1").strip()
         self.assertEqual(author, executor.EXECUTOR_GIT_EMAIL)
-        self.assertEqual(self.summary(branch)["partial_head"], self.git(self.bare, "rev-parse", f"{branch}~1").strip())
+        self.assertEqual(
+            self.summary(branch)["partial_head"], self.git(self.workspace, "rev-parse", f"{branch}~1").strip()
+        )
 
     def test_success_path_has_one_completed_commit_and_no_partial_head(self):
         code, _stderr, _ = self.run_main(self.dirty_turn)
         self.assertEqual(code, 0)
         [branch] = self.exec_branches()
-        log = self.git(self.bare, "log", "--format=%s", f"{self.plan_tip}..{branch}").splitlines()
+        log = self.git(self.workspace, "log", "--format=%s", f"{self.plan_tip}..{branch}").splitlines()
         self.assertEqual(len(log), 1)
         self.assertIn("completed for plan", log[0])
         self.assertNotIn("partial_head", self.summary(branch))
-        self.assertNotIn("scratch.ignored", self.git(self.bare, "ls-tree", "-r", "--name-only", branch).split())
+        self.assertNotIn("scratch.ignored", self.git(self.workspace, "ls-tree", "-r", "--name-only", branch).split())
 
     def test_identity_is_configured_on_the_execution_branch_before_the_agent_runs(self):
         seen = {}
 
         def probe(workspace, path):
-            seen["email"] = self.git(workspace, "config", "--local", "user.email").strip()
-            seen["name"] = self.git(workspace, "config", "--local", "user.name").strip()
+            # The mounted worktree's own config is the host's, so the identity goes in the container's global config.
+            seen["email"] = self.git(workspace, "config", "--global", "user.email").strip()
+            seen["name"] = self.git(workspace, "config", "--global", "user.name").strip()
+            seen["local"] = subprocess.run(
+                ["git", "config", "--local", "user.email"], cwd=workspace, capture_output=True, text=True
+            ).stdout.strip()
             seen["branch"] = self.git(workspace, "rev-parse", "--abbrev-ref", "HEAD").strip()
             self.dirty_turn(workspace, path)
 
         self.run_main(probe)
         self.assertEqual(seen["email"], executor.EXECUTOR_GIT_EMAIL)
         self.assertEqual(seen["name"], executor.EXECUTOR_GIT_NAME)
+        self.assertEqual(seen["local"], "")
         self.assertRegex(seen["branch"], r"^I-456/P-123/E-\d+-(?:[0-9a-f]{8}-)?antigravity-agent-gemini-3\.5-flash/_$")
 
     def _reject_pushes(self):
@@ -4764,238 +4109,18 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
             f.write("#!/bin/sh\necho 'push refused by test hook' >&2\nexit 1\n")
         os.chmod(hook, 0o755)
 
-    def probe_turn(self, workspace, path):
-        self.dirty_turn(workspace, path)
-        with open(os.path.join(workspace, "src/settings.py"), "w") as f:
-            f.write(f'VALUE = "{self.PROBE}"\n')
-
-    def test_refused_push_prints_redacted_patch_and_exits_non_zero(self):
+    def test_failed_run_commits_locally_and_never_pushes(self):
         self._reject_pushes()
-        code, stderr, _ = self.run_main(self.probe_turn, breach=BudgetBreach("execute", "stage", 2700, 2700))
+        code, stderr, _ = self.run_main(self.dirty_turn, breach=BudgetBreach("execute", "stage", 2700, 2700))
+        # The budget breach alone sets the exit status: a rejecting origin is never consulted.
         self.assertEqual(code, 1)
-        self.assertEqual(self.exec_branches(), [])
-        head = self.git(self.workspace, "rev-parse", "HEAD").strip()
-        branch = self.git(self.workspace, "rev-parse", "--abbrev-ref", "HEAD").strip()
-        self.assertIn(f"Error: push of execution branch '{branch}' was refused; local head {head}", stderr)
-        self.assertIn("push refused by test hook", stderr)
-        lines = stderr.splitlines()
-        self.assertIn(executor.UNPUSHED_PATCH_BEGIN, lines)
-        self.assertIn(executor.UNPUSHED_PATCH_END, lines)
-        patch_text = stderr.split(executor.UNPUSHED_PATCH_BEGIN, 1)[1].split(executor.UNPUSHED_PATCH_END, 1)[0]
-        # format-patch folds long subjects onto a continuation line.
-        self.assertRegex(patch_text, r"Subject: \[PATCH 1/2\] execute:\s+E-\S+\s+partial work\s+\(failed\) for plan")
-        self.assertIn("src/settings.py", patch_text)
-        self.assertNotIn(self.PROBE, stderr)
+        [branch] = self.exec_branches()
+        self.assert_salvaged(branch)
+        self.assertEqual(self.origin_exec_branches(), [])
+        self.assertNotIn("push refused by test hook", stderr)
+        self.assertNotIn("was refused", stderr)
 
-    def test_refused_push_patch_applies_with_git_am(self):
-        self._reject_pushes()
-        _code, stderr, _ = self.run_main(self.dirty_turn, returncode=1)
-        patch_text = stderr.split(executor.UNPUSHED_PATCH_BEGIN + "\n", 1)[1].split(executor.UNPUSHED_PATCH_END, 1)[0]
-        patch_file = os.path.join(self.root, "unpushed.patch")
-        with open(patch_file, "w") as f:
-            f.write(patch_text)
-        self.git(self.seed, "am", "-q", patch_file)
-        with open(os.path.join(self.seed, "src/codebase.py")) as f:
-            self.assertIn("def added(): pass", f.read())
-
-    def test_oversized_unpushed_patch_falls_back_to_diffstat(self):
-        self._reject_pushes()
-        with patch.object(executor, "UNPUSHED_PATCH_MAX_BYTES", 16):
-            code, stderr, _ = self.run_main(self.probe_turn, returncode=1)
-        self.assertEqual(code, 1)
-        self.assertNotIn(executor.UNPUSHED_PATCH_BEGIN, stderr)
-        self.assertIn("src/new_module.py", stderr)
-        self.assertIn("Unpushed patch omitted", stderr)
-        self.assertIn("UNPUSHED_PATCH_MAX_BYTES", stderr)
-        self.assertNotIn(self.PROBE, stderr)
-
-    def test_unpushed_patch_cap_is_below_the_redaction_input_limit(self):
-        self.assertLessEqual(executor.UNPUSHED_PATCH_MAX_BYTES, executor._MAX_REDACT_INPUT_LEN)
-
-    def test_patch_over_the_redaction_limit_falls_back_to_diffstat_at_the_real_cap(self):
-        """A patch between the redaction limit and 256 KiB is never printed with its middle cut out."""
-        self._reject_pushes()
-
-        def large_turn(workspace, path):
-            self.dirty_turn(workspace, path)
-            with open(os.path.join(workspace, "src/large.py"), "w") as f:
-                f.writelines(f"VALUE_{i} = {i}\n" for i in range(12_000))
-
-        code, stderr, _ = self.run_main(large_turn, returncode=1)
-        self.assertEqual(code, 1)
-        raw = self.git(self.workspace, "format-patch", "--stdout", f"{self.plan_tip}..HEAD")
-        self.assertGreater(len(raw.encode()), executor._MAX_REDACT_INPUT_LEN)
-        self.assertLess(len(raw.encode()), 256 * 1024)
-        self.assertNotIn(executor.UNPUSHED_PATCH_BEGIN, stderr)
-        self.assertIn("src/large.py", stderr)
-        self.assertIn("Unpushed patch omitted", stderr)
-
-    def test_unpushed_patch_excludes_env_and_credential_files(self):
-        self._reject_pushes()
-        unrecognisable = "hunter2-plain-value-9f3k"
-
-        def env_turn(workspace, path):
-            self.dirty_turn(workspace, path)
-            with open(os.path.join(workspace, ".env"), "w") as f:
-                f.write(f"{unrecognisable}\n")
-            os.makedirs(os.path.join(workspace, "config/secrets"))
-            with open(os.path.join(workspace, "config/secrets/db"), "w") as f:
-                f.write(f"{unrecognisable}\n")
-            with open(os.path.join(workspace, "Credentials.json"), "w") as f:
-                f.write(f'{{"p": "{unrecognisable}"}}\n')
-
-        code, stderr, _ = self.run_main(env_turn, returncode=1)
-        self.assertEqual(code, 1)
-        self.assertIn(executor.UNPUSHED_PATCH_BEGIN, stderr)
-        self.assertNotIn(unrecognisable, stderr)
-        self.assertIn("src/new_module.py", stderr)
-        notice = next(line for line in stderr.splitlines() if line.startswith("Unpushed patch excludes"))
-        for rel in (".env", "config/secrets/db", "Credentials.json"):
-            self.assertIn(rel, notice)
-        # The excluded files are committed locally, so they are on the branch once a push succeeds.
-        tree = self.git(self.workspace, "ls-tree", "-r", "--name-only", "HEAD").split()
-        self.assertIn(".env", tree)
-
-    def test_unpushed_patch_excludes_key_files_and_masks_private_key_blocks(self):
-        self._reject_pushes()
-        body = "FAKE0TEST0KEY0BODY0not0a0real0key"
-        block = f"-----BEGIN OPENSSH PRIVATE KEY-----\n{body}\n{body}\n-----END OPENSSH PRIVATE KEY-----\n"
-
-        def key_turn(workspace, path):
-            self.dirty_turn(workspace, path)
-            for rel in ("deploy.pem", "src/fixture.txt", "keys/id_ed25519", "tls/Server.KEY"):
-                os.makedirs(os.path.dirname(os.path.join(workspace, rel)), exist_ok=True)
-                with open(os.path.join(workspace, rel), "w") as f:
-                    f.write(block)
-
-        code, stderr, _ = self.run_main(key_turn, returncode=1)
-        self.assertEqual(code, 1)
-        self.assertNotIn(body, stderr)
-        notice = next(line for line in stderr.splitlines() if line.startswith("Unpushed patch excludes"))
-        for rel in ("deploy.pem", "keys/id_ed25519", "tls/Server.KEY"):
-            self.assertIn(rel, notice)
-        self.assertNotIn("src/fixture.txt", notice)
-        patch_text = stderr.split(executor.UNPUSHED_PATCH_BEGIN, 1)[1].split(executor.UNPUSHED_PATCH_END, 1)[0]
-        self.assertIn("src/fixture.txt", patch_text)
-        self.assertIn(f"+{executor._PRIVATE_KEY_MASK}", patch_text)
-        self.assertIn("-----END OPENSSH PRIVATE KEY-----", patch_text)
-
-    def test_mask_private_keys_keeps_markers_line_count_and_diff_prefixes(self):
-        body = "FAKE0TEST0KEY0BODY"
-        text = (
-            "+keep me\n+-----BEGIN RSA PRIVATE KEY-----\n+" + body + "\n+" + body + "\n"
-            "+-----END RSA PRIVATE KEY-----\n+after\n"
-        )
-        masked = executor.mask_private_keys(text)
-        self.assertNotIn(body, masked)
-        self.assertEqual(masked.count("\n"), text.count("\n"))
-        self.assertEqual(
-            masked.splitlines(),
-            [
-                "+keep me",
-                "+-----BEGIN RSA PRIVATE KEY-----",
-                f"+{executor._PRIVATE_KEY_MASK}",
-                f"+{executor._PRIVATE_KEY_MASK}",
-                "+-----END RSA PRIVATE KEY-----",
-                "+after",
-            ],
-        )
-
-    def test_mask_private_keys_covers_inline_and_unterminated_blocks(self):
-        body = "FAKE0TEST0KEY0BODY"
-        inline = f'KEY = "-----BEGIN PRIVATE KEY-----\\n{body}\\n-----END PRIVATE KEY-----"\n'
-        self.assertNotIn(body, executor.mask_private_keys(inline))
-        unterminated = f"+-----BEGIN EC PRIVATE KEY-----\n+{body}\n"
-        self.assertNotIn(body, executor.mask_private_keys(unterminated))
-        public = f"-----BEGIN PUBLIC KEY-----\n{body}\n-----END PUBLIC KEY-----\n"
-        self.assertEqual(executor.mask_private_keys(public), public)
-
-    def test_marker_only_source_keeps_later_files_intact_and_patch_applies_with_git_am(self):
-        """A file that only names a BEGIN marker never masks the rest of the patch, so recovery still works."""
-        self._reject_pushes()
-        detector = (
-            'MARKER = "-----BEGIN RSA PRIVATE KEY-----"\n'
-            'TEMPLATE = """-----BEGIN RSA PRIVATE KEY-----\n'
-            '"""\n'
-            "def looks_like_key(text):\n"
-            "    return MARKER in text\n"
-        )
-
-        def marker_turn(workspace, path):
-            self.dirty_turn(workspace, path)
-            with open(os.path.join(workspace, "src/detect.py"), "w") as f:
-                f.write(detector)
-            with open(os.path.join(workspace, "src/zapp.py"), "w") as f:
-                f.write("def zapp():\n    return 42\n")
-
-        _code, stderr, _ = self.run_main(marker_turn, returncode=1)
-        patch_text = stderr.split(executor.UNPUSHED_PATCH_BEGIN + "\n", 1)[1].split(executor.UNPUSHED_PATCH_END, 1)[0]
-        self.assertNotIn(executor._PRIVATE_KEY_MASK, patch_text)
-        raw = self.git(self.workspace, "format-patch", "--stdout", f"{self.plan_tip}..HEAD", "--", "src/zapp.py")
-        zapp_section = "diff --git a/src/zapp.py" + raw.split("diff --git a/src/zapp.py", 1)[1].split("\n-- \n", 1)[0]
-        self.assertIn(zapp_section, patch_text)
-        patch_file = os.path.join(self.root, "unpushed.patch")
-        with open(patch_file, "w") as f:
-            f.write(patch_text)
-        self.git(self.seed, "am", "-q", patch_file)
-        with open(os.path.join(self.seed, "src/detect.py")) as f:
-            self.assertEqual(f.read(), detector)
-        with open(os.path.join(self.seed, "src/zapp.py")) as f:
-            self.assertIn("return 42", f.read())
-
-    def test_mask_private_keys_never_crosses_patch_headers(self):
-        body = "FAKE0TEST0KEY0BODY"
-        text = (
-            "diff --git a/a.py b/a.py\n@@ -0,0 +1,2 @@\n+KEY = '''-----BEGIN RSA PRIVATE KEY-----\n+" + body + "\n"
-            "diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n@@ -1 +1,2 @@\n same\n+abc\n"
-            "+-----END RSA PRIVATE KEY-----\n-- \n2.43.0\n"
-        )
-        masked = executor.mask_private_keys(text)
-        self.assertNotIn(body, masked)
-        self.assertEqual(masked.count(executor._PRIVATE_KEY_MASK), 1)
-        self.assertEqual(masked.split("diff --git a/b.py", 1)[1], text.split("diff --git a/b.py", 1)[1])
-
-    def test_mask_private_keys_covers_pgp_blocks_and_putty_private_lines(self):
-        body = "FAKE0TEST0PGP0BODY"
-        pgp = (
-            "+-----BEGIN PGP PRIVATE KEY BLOCK-----\n+Version: fake\n+\n+" + body + "\n+=Ab12\n"
-            "+-----END PGP PRIVATE KEY BLOCK-----\n+after\n"
-        )
-        masked = executor.mask_private_keys(pgp)
-        self.assertNotIn(body, masked)
-        self.assertNotIn("=Ab12", masked)
-        self.assertEqual(masked.splitlines()[-2:], ["+-----END PGP PRIVATE KEY BLOCK-----", "+after"])
-        inline = f'"k": "-----BEGIN PGP PRIVATE KEY BLOCK-----\\n{body}\\n-----END PGP PRIVATE KEY BLOCK-----"'
-        self.assertNotIn(body, executor.mask_private_keys(inline))
-        ppk = (
-            "+PuTTY-User-Key-File-3: ssh-ed25519\n+Public-Lines: 1\n+FAKEPUBLIC\n+Private-Lines: 2\n"
-            f"+{body}\n+{body}2\n+Private-MAC: fake\n"
-        )
-        masked = executor.mask_private_keys(ppk)
-        self.assertNotIn(body, masked)
-        self.assertIn("+FAKEPUBLIC", masked)
-        self.assertIn("+Private-MAC: fake", masked)
-        self.assertEqual(masked.count(executor._PRIVATE_KEY_MASK), 2)
-
-    def test_unpushed_patch_excludes_putty_and_pgp_key_files(self):
-        self._reject_pushes()
-        unrecognisable = "plain-key-value-7q2w"
-
-        def key_turn(workspace, path):
-            self.dirty_turn(workspace, path)
-            for rel in ("keys/deploy.ppk", "keys/Signing.ASC", "keys/secring.gpg"):
-                os.makedirs(os.path.dirname(os.path.join(workspace, rel)), exist_ok=True)
-                with open(os.path.join(workspace, rel), "w") as f:
-                    f.write(f"{unrecognisable}\n")
-
-        code, stderr, _ = self.run_main(key_turn, returncode=1)
-        self.assertEqual(code, 1)
-        self.assertNotIn(unrecognisable, stderr)
-        notice = next(line for line in stderr.splitlines() if line.startswith("Unpushed patch excludes"))
-        for rel in ("keys/deploy.ppk", "keys/Signing.ASC", "keys/secring.gpg"):
-            self.assertIn(rel, notice)
-
-    def test_salvaged_commit_is_pushed_when_the_failure_commit_has_nothing_staged(self):
+    def test_salvaged_commit_is_kept_when_the_failure_commit_has_nothing_staged(self):
         def code_only(workspace, _path):
             with open(os.path.join(workspace, "src/codebase.py"), "a") as f:
                 f.write("def added(): pass\n")
@@ -5007,12 +4132,14 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
             _code, _stderr, _ = self.run_main(code_only, returncode=1)
         [branch] = self.exec_branches()
         self.assertIn("partial work (failed) for plan", self.subject(branch))
-        self.assertEqual(self.git(self.bare, "rev-parse", f"{branch}~1").strip(), self.plan_tip)
+        self.assertEqual(self.git(self.workspace, "rev-parse", f"{branch}~1").strip(), self.plan_tip)
         self.assertEqual(self.files_in(branch), {"src/codebase.py"})
 
     def _failed_branch_with_partial_head(self):
         self.run_main(self.dirty_turn, breach=BudgetBreach("execute", "stage", 2700, 2700))
         [branch] = self.exec_branches()
+        # The host pushes it, and fetches it into the worktree of the resuming run.
+        self.host_push(branch)
         return branch, self.summary(branch)["partial_head"]
 
     def test_resume_cuts_the_new_branch_from_a_descending_partial_head(self):
@@ -5020,7 +4147,6 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         seen = {}
 
         def continue_turn(workspace, path):
-            seen["shallow"] = self.git(workspace, "rev-parse", "--is-shallow-repository").strip()
             # The partial work is already in the tree: the edit and the deletion survive.
             seen["deleted"] = not os.path.exists(os.path.join(workspace, "src/obsolete.py"))
             with open(os.path.join(workspace, "src/new_module.py"), "a") as f:
@@ -5029,12 +4155,11 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
             with open(path, "w") as f:
                 f.write(VALID_NOTES)
 
-        url = f"file://{self.bare}"  # file:// keeps the clone shallow, as it is in the container
-        code, stderr, prompts = self.run_main(continue_turn, extra_args=(failed,), url=url)
-        self.assertEqual(seen, {"shallow": "true", "deleted": True})
+        code, stderr, prompts = self.run_main(continue_turn, extra_args=(failed,))
+        self.assertEqual(seen, {"deleted": True})
         self.assertEqual(code, 0, stderr)
         [new] = [b for b in self.exec_branches() if b != failed]
-        self.assertEqual(self.git(self.bare, "rev-parse", f"{new}~1").strip(), partial_head)
+        self.assertEqual(self.git(self.workspace, "rev-parse", f"{new}~1").strip(), partial_head)
         self.assertIn(executor.continuation_note(failed, partial_head), prompts[0])
         self.assertEqual(self.summary(new)["status"], "success")
 
@@ -5043,6 +4168,7 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         with patch("sandbox_executor.git.has_effective_diff", side_effect=RuntimeError("diff unavailable")):
             self.run_main(self.dirty_turn, returncode=0)
         [failed] = self.exec_branches()
+        self.host_push(failed)
         row = self.summary(failed)
         self.assertEqual((row["status"], row["failure_reason"]), ("failed", "diff_unverified"))
         partial_head = row["partial_head"]
@@ -5054,10 +4180,10 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
             with open(path, "w") as f:
                 f.write(VALID_NOTES)
 
-        code, stderr, prompts = self.run_main(continue_turn, extra_args=(failed,), url=f"file://{self.bare}")
+        code, stderr, prompts = self.run_main(continue_turn, extra_args=(failed,))
         self.assertEqual(code, 0, stderr)
         [new] = [b for b in self.exec_branches() if b != failed]
-        self.assertEqual(self.git(self.bare, "rev-parse", f"{new}~1").strip(), partial_head)
+        self.assertEqual(self.git(self.workspace, "rev-parse", f"{new}~1").strip(), partial_head)
         self.assertIn(executor.continuation_note(failed, partial_head), prompts[0])
 
     def test_resume_without_partial_head_starts_from_the_plan_tip(self):
@@ -5068,10 +4194,11 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
 
         self.run_main(notes_only, returncode=1)
         [failed] = self.exec_branches()
-        _code, stderr, prompts = self.run_main(self.dirty_turn, extra_args=(failed,), url=f"file://{self.bare}")
+        self.host_push(failed)
+        _code, stderr, prompts = self.run_main(self.dirty_turn, extra_args=(failed,))
         self.assertIn(f"Starting from the plan tip of {self.PLAN}: no partial_head", stderr)
         [new] = [b for b in self.exec_branches() if b != failed]
-        self.assertEqual(self.git(self.bare, "rev-parse", f"{new}~1").strip(), self.plan_tip)
+        self.assertEqual(self.git(self.workspace, "rev-parse", f"{new}~1").strip(), self.plan_tip)
         self.assertNotIn("Continuation:", prompts[0])
 
     def test_resume_from_a_partial_head_off_the_plan_tip_starts_from_the_plan_tip(self):
@@ -5082,10 +4209,10 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         self.git(self.seed, "commit", "-q", "-am", "plan revision")
         self.git(self.seed, "push", "-q", self.bare, f"HEAD:refs/heads/{self.PLAN}")
         new_tip = self.git(self.seed, "rev-parse", "HEAD").strip()
-        _code, stderr, _ = self.run_main(self.dirty_turn, extra_args=(failed,), url=f"file://{self.bare}")
+        _code, stderr, _ = self.run_main(self.dirty_turn, extra_args=(failed,))
         self.assertIn(f"Starting from the plan tip of {self.PLAN}: not a descendant of the plan tip", stderr)
         [new] = [b for b in self.exec_branches() if b != failed]
-        self.assertEqual(self.git(self.bare, "rev-parse", f"{new}~1").strip(), new_tip)
+        self.assertEqual(self.git(self.workspace, "rev-parse", f"{new}~1").strip(), new_tip)
 
     def test_resume_refuses_a_branch_outside_the_plan(self):
         _code, stderr, _ = self.run_main(self.dirty_turn, extra_args=("I-9/P-9/E-1-x-y/_",))

@@ -166,6 +166,42 @@ def checkout_knowledge_index_guard() -> Iterator[None]:
         )
 
 
+_CHECKOUT_LEDGERS = ("intents.jsonl", "plans.jsonl", "executions.jsonl")
+
+
+@pytest.fixture(autouse=True)
+def checkout_ledger_guard() -> Iterator[None]:
+    """Fail any test that appends to, rewrites or deletes a checkout ledger under ``holon-knowledge/ledger/``.
+
+    A test that runs the executor or a stage must pin its worktree to ``tmp_path``; one that does not leaks its
+    fixture rows into the real append-only ledgers. The guard compares each ledger's size and modification time
+    before and after the test. Under xdist, or while a ``holon flow`` or calibration writes the same checkout, a write
+    by another worker or process can fail an unrelated test; re-run it in isolation to confirm attribution.
+    """
+
+    def snapshot() -> dict[str, tuple[int, int] | None]:
+        result: dict[str, tuple[int, int] | None] = {}
+        for name in _CHECKOUT_LEDGERS:
+            path = os.path.join(REPO_ROOT, "holon-knowledge", "ledger", name)
+            try:
+                stat = os.stat(path)
+                result[name] = (stat.st_size, stat.st_mtime_ns)
+            except OSError:
+                result[name] = None
+        return result
+
+    before = snapshot()
+    yield
+    changed = sorted(name for name, state in snapshot().items() if state != before[name])
+    if changed:
+        pytest.fail(
+            "Test wrote the checkout's holon-knowledge/ledger/: "
+            + ", ".join(changed)
+            + " -- pin repo_dir and the working directory to tmp_path to fix this.",
+            pytrace=False,
+        )
+
+
 @pytest.fixture(autouse=True)
 def gh_write_guard(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
     """Fail any test that runs an unmocked ``gh`` write command (comment, review, create, edit, merge, ...).

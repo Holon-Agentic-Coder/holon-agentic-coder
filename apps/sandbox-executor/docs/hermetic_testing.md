@@ -69,11 +69,11 @@ with tempfile.TemporaryDirectory() as tmp_dir:
 Integration tests (`test_intent_creator_integration.py`, `test_planner_integration.py`) must never touch real remotes
 such as `github.com` or mount host `~/.ssh` keys:
 
-- Use a named Docker volume as the bare git remote, seeded through `apps/sandbox-executor/tests/hermetic_fixtures.py`.
-- Mount the volume at a path derived from its own volume name (`remote_path(volume)`), and pass that same value as
-  `-e HOLON_REPO_URL=...`. Never hardcode a shared container path: a fixed path is shared state between concurrently
-  running tests, and it happens to coincide with the CLI's `HOLON_MOCK_REMOTE_PATH` override, so a test would silently
-  depend on -- or silently exercise -- that branch instead of the normal one.
+- Use a named Docker volume holding a seeded worktree, seeded through
+  `apps/sandbox-executor/tests/hermetic_fixtures.py`.
+- Mount that worktree at the sandbox workspace path (`~/.holon-sandbox/workspace`) with `-e HOLON_TARGET_WORKTREE`
+  naming the same path, as the real flow does. The container never contacts a remote, so no URL is passed. Never share
+  one seeded volume between concurrently running tests: each test seeds its own.
 - Isolate container networking using `--network none`.
 - Inspect results and verify commits from inside the container against the same volume (`remote_show_file`), and reclaim
   the volume with `remove_remote_volume` via `self.addCleanup`.

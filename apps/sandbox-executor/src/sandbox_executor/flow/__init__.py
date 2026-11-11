@@ -96,6 +96,15 @@ from sandbox_executor.flow.github.pr import (
     generate_semantic_pr_metadata,
 )
 from sandbox_executor.flow.github.review_post import post_pr_review_consensus
+from sandbox_executor.flow.host_remote import (
+    HostRemoteError,
+    fetch_base,
+    new_local_child_branches,
+    publish_new_child_branches,
+    push_branch,
+    push_commit,
+    remote_error,
+)
 from sandbox_executor.flow.intent_questions import validate_intent_questions
 from sandbox_executor.flow.ledger_reconcile import (
     _CONFLICT_MARKERS,
@@ -229,6 +238,7 @@ __all__ = [
     "FlowCheckpoint",
     "FlowContext",
     "FlowStage",
+    "HostRemoteError",
     "MigrationTransform",
     "PipelineEngine",
     "PrefixSide",
@@ -321,6 +331,7 @@ __all__ = [
     "describe_ci_outcome",
     "extract_valid_ledger_rows",
     "failed_partial_head",
+    "fetch_base",
     "format_decomposition_summary",
     "format_review_git_trailers",
     "gate_ci_flags",
@@ -329,16 +340,21 @@ __all__ = [
     "is_pending_only",
     "load_checkpoint",
     "migrate_checkpoint_data",
+    "new_local_child_branches",
     "next_poll_interval",
     "parse_metrics",
     "pending_check_names",
     "post_pr_review_consensus",
     "probe_ci_checks",
+    "publish_new_child_branches",
+    "push_branch",
+    "push_commit",
     "reconcile_jsonl_ledger_conflict",
     "reconcile_ledger_file",
     "record_review_action",
     "recorded_test_pass_rate",
     "redact_agent_secrets",
+    "remote_error",
     "render_reviewer_summary_line",
     "resolve_append_only_conflict",
     "resolve_ci_registration_timeout",

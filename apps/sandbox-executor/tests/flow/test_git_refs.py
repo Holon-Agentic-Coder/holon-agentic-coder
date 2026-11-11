@@ -45,7 +45,8 @@ class TestStageTargetsIgnoreOperatorHead:
         ctx = _dispatch_context(host, FakeRoleAgents(tmp_path, origin))
         results = PipelineEngine(ctx).run()
         assert results["execute"].status == StageStatus.SUCCESS
-        assert _git(host, "rev-parse", "--abbrev-ref", "HEAD") == "main"
+        # The executor container leaves the worktree on its execution branch; the operator's checkout is main.
+        _git(host, "checkout", "-q", "main")
         return ctx
 
     @staticmethod

@@ -409,7 +409,6 @@ class TestLauncherIntegration(unittest.TestCase):
         # Synthesised model entries declare no contextWindow; the envelope needs one.
         merged_env = {
             "GITHUB_TOKEN": "mock-token",
-            "HOLON_REPO_URL": "git@github.com:dummy/repo.git",
             "HOLON_LOCAL_CONTEXT_WINDOW": "32768",
             **env,
         }
@@ -417,6 +416,7 @@ class TestLauncherIntegration(unittest.TestCase):
             patch("shutil.which", side_effect=lambda name: "/usr/bin/docker" if name == "docker" else None),
             patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run,
             patch.object(cli, "get_agent_session_mounts", side_effect=mounts or (lambda agent: [])),
+            patch.object(cli.git_flow, "sandbox_worktree_mounts", return_value=[]),
             patch.object(
                 cli,
                 "get_token_reduction_mounts_and_envs",

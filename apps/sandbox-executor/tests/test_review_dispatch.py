@@ -184,7 +184,7 @@ def test_stage4_host_integrity_failed_ci_blocks_approval(tmp_path: Path, monkeyp
         payload = serialize_review_outcome(_three_approved_reviewers(), ConsensusVerdict.APPROVED)
         if "--resolve" in _args:
             # A resolver pass that changed nothing still writes a resolver result; one that leaves none halts the loop.
-            payload = {"resolver": True, "dispositions": [], "head_sha": "abc1234", "pushed": False, "error": None}
+            payload = {"resolver": True, "dispositions": [], "head_sha": "abc1234", "error": None}
         Path(result_file).write_text(json.dumps(payload), encoding="utf-8")
         return 0
 
@@ -328,7 +328,7 @@ def _host_loop_patches():
 
 
 def _objecting_then_approving_dispatcher(calls: list[dict]):
-    """A fake dispatcher: iteration 1 reviewers object, the resolver applies and pushes, iteration 2 approves."""
+    """A fake dispatcher: iteration 1 reviewers object, the resolver applies and commits, iteration 2 approves."""
     from sandbox_executor.review_ensemble import ReviewFinding
 
     def fake_dispatcher(role, runner, model, positional_args, **kwargs):
@@ -343,7 +343,6 @@ def _objecting_then_approving_dispatcher(calls: list[dict]):
                     {**item, "disposition": "applied", "rejection_reason": None} for item in payload.get("findings", [])
                 ],
                 "head_sha": "b" * 40,
-                "pushed": True,
                 "lint_passed": True,
                 "tests_passed": True,
                 "error": None,
@@ -385,7 +384,10 @@ def test_every_stage4_dispatch_reviews_the_flow_worktree_in_place(tmp_path: Path
     for p in patches:
         p.start()
     try:
-        with patch("subprocess.run", side_effect=AssertionError("the loop ran a subprocess")) as no_subprocess:
+        with (
+            patch("subprocess.run", side_effect=AssertionError("the loop ran a subprocess")) as no_subprocess,
+            patch("sandbox_executor.flow.review.resolver.push_commit") as host_push,
+        ):
             res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=5)
     finally:
         for p in reversed(patches):
@@ -398,6 +400,8 @@ def test_every_stage4_dispatch_reviews_the_flow_worktree_in_place(tmp_path: Path
     assert [c["target_worktree"] for c in calls] == [ctx.target_worktree] * 3
     assert all("review_workspace_volume" not in c for c in calls)
     no_subprocess.assert_not_called()
+    # The host, not the container, pushes the committed head after the resolver pass.
+    host_push.assert_called_once_with(ctx.target_worktree, "b" * 40, EXEC_TARGET)
 
     # Canonical Stage 4 provenance stays host-written: per-iteration ACT-REV rows and one summary row.
     ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"

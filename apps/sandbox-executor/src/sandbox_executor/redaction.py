@@ -89,7 +89,7 @@ def _first_delimiter(text: str, start: int = 0) -> int:
 def url_userinfo_end(rest: str) -> int | None:
     """Return the index of the `@` that ends the userinfo of `rest` (the URL after `scheme://`).
 
-    The one userinfo rule shared by credential stripping (`cli.strip_url_credentials`), the echo
+    The one userinfo rule shared by credential stripping, the echo
     redactor and env-file routing, so a URL whose credential is stripped is also masked and kept off
     process arguments. A password may hold a raw `/`, `?` or `#`, which ends the authority early for
     `urlsplit` while the text up to the `@` is still the credential. When the authority as `urlsplit`
@@ -128,7 +128,7 @@ def url_value_userinfo(value: str) -> tuple[int, int] | None:
     """Return the `(start, end)` span of the credential userinfo of a whole URL value, or None.
 
     Decides on the whole value with the shared last-`@` rule (`url_userinfo_end`), exactly as
-    `cli.strip_url_credentials` does, never with a free-text token scan, so no RFC 3986 sub-delim
+    credential stripping does, never with a free-text token scan, so no RFC 3986 sub-delim
     (`! $ & ' ( ) * + , ; =`) or other character in the password can hide the userinfo. A value that
     does not start with `scheme://` or `//` is read as a `//` authority, as a proxy URL is. Surrounding
     whitespace is ignored. The userinfo counts when it is a credential by the echo redactor's rule

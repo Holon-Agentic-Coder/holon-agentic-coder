@@ -44,6 +44,8 @@ class TestStage3PartialResumeDispatch:
 
         with (
             patch("sandbox_executor.flow.stages.execute.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stages.execute.fetch_base"),
+            patch("sandbox_executor.flow.stages.execute.publish_new_child_branches", return_value=[]),
             patch("sandbox_executor.flow.stages.execute._plan_budget_decision", return_value=None),
             patch(
                 "sandbox_executor.flow.stages.execute._snapshot_child_branches", return_value={self.FAILED, self.OLDER}

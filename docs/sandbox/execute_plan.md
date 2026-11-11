@@ -3,7 +3,8 @@
 This guide explains how to run the Sandbox Executor role using the Docker sandbox environment.
 
 The Executor checks out a plan branch, runs the AI coding agent to implement changes, executes validation test suites,
-records execution results in the ledger `holon-knowledge/ledger/executions.jsonl`, and pushes the execution branch.
+records execution results in the ledger `holon-knowledge/ledger/executions.jsonl`, and commits the execution branch,
+which the host then pushes.
 
 For in-depth specifications of the execution architecture and credentials mapping, refer to:
 
@@ -78,13 +79,13 @@ under `/home/holon/...` as read-only (`:ro`) mounts:
 - **`pi`**: Maps `~/.config/pi`
 - **`gemini`**: Maps `~/.config/gcloud`
 
-### 3. SSH Agent Socket Forwarding
+### 3. Host Worktree and Host-Side Git
 
-To allow the containerized executor to perform git pushes to remote origins without requiring SSH keys inside the
-sandbox:
-
-- **macOS**: Mounts `/run/host-services/ssh-auth.sock` to the container and updates the `SSH_AUTH_SOCK` environment.
-- **Linux/Other**: Mounts the host's existing `SSH_AUTH_SOCK` value to `/run/ssh-agent` in the container.
+The executor works in place on the flow's host-provisioned `flow-<slug>` worktree, bind-mounted at
+`/home/holon/.holon-sandbox/workspace` with `HOLON_TARGET_WORKTREE` naming the same path. The container only commits.
+The host, with its own git credentials, fetches the plan and target branches before the container starts and pushes
+every new execution branch after it returns (including a failed one, so a resume can find it). No `ssh-agent` socket is
+mounted and a worktree whose `origin` is an SSH URL works.
 
 ### 4. Optional Token Reduction Proxy (`--token-reduce`)
 

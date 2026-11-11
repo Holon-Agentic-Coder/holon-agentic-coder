@@ -6,7 +6,6 @@ import pytest
 from sandbox_executor.agent_runner import (
     AntigravityAgentRunner,
     StandardAgentRunner,
-    get_repo_url,
     get_runner,
     runners,
 )
@@ -432,42 +431,7 @@ class TestAgentRunner(unittest.TestCase):
             get_runner("open-codex")
 
 
-class TestGetRepoUrl(unittest.TestCase):
-    def test_get_repo_url_returns_env_var(self):
-        """Test that get_repo_url returns HOLON_REPO_URL when set."""
-        import unittest.mock
-
-        with unittest.mock.patch.dict("os.environ", {"HOLON_REPO_URL": "git@github.com:custom/repo.git"}, clear=True):
-            self.assertEqual(get_repo_url(), "git@github.com:custom/repo.git")
-
-    def test_get_repo_url_raises_when_unset(self):
-        """Test that get_repo_url raises RuntimeError mentioning HOLON_REPO_URL and host CLI when unset."""
-        import unittest.mock
-
-        with unittest.mock.patch.dict("os.environ", {}, clear=True):
-            with self.assertRaises(RuntimeError) as cm:
-                get_repo_url()
-            self.assertIn("HOLON_REPO_URL", str(cm.exception))
-            self.assertIn("holon", str(cm.exception))
-
-    def test_get_repo_url_raises_even_when_token_is_set(self):
-        """Test that setting tokens without HOLON_REPO_URL still raises RuntimeError without falling back."""
-        import unittest.mock
-
-        tokens_to_test = [
-            {"GITHUB_TOKEN": "ghp_secret123"},
-            {"GH_TOKEN": "gho_testToken123"},
-            {"HOLON_AGENT_KEY": "github_pat_secret456"},
-        ]
-        for token_env in tokens_to_test:
-            with (
-                self.subTest(env=token_env),
-                unittest.mock.patch.dict("os.environ", token_env, clear=True),
-            ):
-                with self.assertRaises(RuntimeError) as cm:
-                    get_repo_url()
-                self.assertIn("HOLON_REPO_URL", str(cm.exception))
-
+class TestGuards(unittest.TestCase):
     def test_guard_no_hardcoded_holon_agentic_coder_repo_in_src(self):
         """Guard test: assert no file under apps/sandbox-executor/src mentions 'holon-agentic-coder.git'."""
         src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))

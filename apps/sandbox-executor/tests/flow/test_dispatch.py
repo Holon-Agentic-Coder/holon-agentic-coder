@@ -105,8 +105,10 @@ class TestFlowRoleDispatch:
         assert payload["answers"] == {"What protocol?": "OAuth2"}
         rows = _ledger_rows(host, f"origin/{ctx.intent_branch}", "intents.jsonl")
         assert [r["slug"] for r in rows] == ["resolved-q"]
-        # No local ledger write, and the temporary payload file is removed.
-        assert (host / "holon-knowledge/ledger/intents.jsonl").read_text(encoding="utf-8") == ""
+        # The container committed the row on the intent branch in the worktree, which stays clean; the temporary
+        # payload file is removed.
+        assert _git(host, "status", "--porcelain") == ""
+        assert _git(host, "rev-parse", "--abbrev-ref", "HEAD") == ctx.intent_branch
         assert not any((tmp_path / "home" / ".holon" / "tmp").iterdir())
 
     def test_stage1_reuses_existing_intent_branch_without_redispatch(self, flow_repos, tmp_path):
@@ -649,6 +651,8 @@ class TestFlowRoleDispatch:
 
             with (
                 patch("sandbox_executor.cli.dispatch_role_agent", return_value=0) as mock_dispatch,
+                patch("sandbox_executor.cli.commands.plan.prepare_worktree", return_value="."),
+                patch("sandbox_executor.cli.commands.plan.push_checked_out_branch"),
                 patch("sys.argv", ["holon", "plan", "I-1-x/_"]),
                 pytest.raises(SystemExit),
             ):

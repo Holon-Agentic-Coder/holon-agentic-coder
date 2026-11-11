@@ -144,7 +144,6 @@ def test_resolver_mode_without_uv_records_the_failure_without_commit_or_push(
         result_file=str(result_file),
         iteration=1,
         dry_run=False,
-        skip_push=False,
         target="feature",
         json=False,
     )
@@ -158,7 +157,7 @@ def test_resolver_mode_without_uv_records_the_failure_without_commit_or_push(
     assert exc_info.value.code == 1
     outcome = json.loads(result_file.read_text(encoding="utf-8"))
     assert outcome["resolver"] is True
-    assert outcome["pushed"] is False
+    assert "pushed" not in outcome
     assert outcome["exit_code"] == 1
     assert "required tool 'uv' was not found on PATH" in outcome["error"]
     assert "uv" in outcome["output_tail"]
@@ -178,7 +177,6 @@ def test_resolver_mode_writes_a_result_when_commit_raises(resolver_checkout: Pat
         result_file=str(result_file),
         iteration=1,
         dry_run=False,
-        skip_push=False,
         target="feature",
         json=False,
     )
@@ -186,7 +184,7 @@ def test_resolver_mode_writes_a_result_when_commit_raises(resolver_checkout: Pat
     with (
         patch("sandbox_executor.entrypoint.review_loop._run_resolver_agent", return_value=[]),
         patch(
-            "sandbox_executor.entrypoint.review_loop._commit_and_push_resolution",
+            "sandbox_executor.entrypoint.review_loop._commit_resolution",
             side_effect=RuntimeError("disk full"),
         ),
         pytest.raises(SystemExit) as exc_info,
@@ -215,7 +213,6 @@ def _entrypoint_failure(findings: list[FindingRow], head_sha: str) -> dict:
         "resolver": True,
         "dispositions": [{"id": f.id, "disposition": "applied", "rejection_reason": None} for f in findings],
         "head_sha": head_sha,
-        "pushed": False,
         "lint_passed": False,
         "tests_passed": False,
         "error": UV_MISSING_ERROR,
@@ -346,7 +343,6 @@ def test_resolver_container_exiting_non_zero_with_dispositions_halts_with_its_ou
         "resolver": True,
         "dispositions": [{"id": "R1-F1", "disposition": "applied", "rejection_reason": None}],
         "head_sha": "a" * 40,
-        "pushed": False,
         "error": None,
         "exit_code": 1,
         "output_tail": "Traceback (most recent call last): FileNotFoundError: 'uv'",
@@ -376,12 +372,12 @@ def test_dispatch_review_resolver_reads_an_untouched_input_payload_as_no_result(
 
 
 def test_clean_exit_with_a_marked_result_keeps_the_payload() -> None:
-    data = {"resolver": True, "dispositions": [], "head_sha": "b" * 40, "pushed": True, "error": None}
+    data = {"resolver": True, "dispositions": [], "head_sha": "b" * 40, "error": None}
 
     parsed = read_container_resolver_result(data, 0, "a" * 40)
 
     assert parsed.error is None
-    assert (parsed.head_sha, parsed.pushed) == ("b" * 40, True)
+    assert parsed.head_sha == "b" * 40
 
 
 def test_clean_exit_without_any_result_is_a_failed_pass() -> None:
@@ -406,3 +402,100 @@ def test_resolver_error_text_names_the_exit_code_once_and_skips_a_repeated_tail(
     assert resolver_error_text(None, 0, "ignored") is None
     assert resolver_error_text("boom", 3, "boom") == "boom (resolver exit code 3)"
     assert resolver_error_text("exited with code 3", 3, None) == "exited with code 3"
+
+
+# --- the host pushes the head the resolver container committed -----------------------------------------------------
+
+
+def _resolver_dispatch(tmp_path: Path, *, commit: bool = True, **ctx_kwargs):
+    """Run one host resolver pass whose fake container commits in the clone; returns (outcome, origin, clone, base)."""
+    origin = tmp_path / "origin.git"
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "init", "--bare", "-b", "feature", str(origin)], capture_output=True, check=True)
+    subprocess.run(["git", "init", "-b", "feature", str(clone)], capture_output=True, check=True)
+    (clone / "app.py").write_text("print('bug')\n", encoding="utf-8")
+    _git(clone, "add", "app.py")
+    _git(clone, "commit", "-m", "initial")
+    _git(clone, "remote", "add", "origin", str(origin))
+    _git(clone, "push", "origin", "HEAD:refs/heads/feature")
+    base = _git(clone, "rev-parse", "HEAD")
+    new_head = base
+
+    def dispatcher(_role, _runner, _model, positional_args, **kwargs):
+        nonlocal new_head
+        if commit:
+            (clone / "app.py").write_text("print('fixed')\n", encoding="utf-8")
+            _git(clone, "commit", "-am", "resolve")
+            new_head = _git(clone, "rev-parse", "HEAD")
+        payload = {"resolver": True, "dispositions": [], "head_sha": new_head, "error": None}
+        Path(kwargs["result_file"]).write_text(json.dumps(payload), encoding="utf-8")
+        positional_args_seen.extend(positional_args)
+        return 0
+
+    positional_args_seen: list[str] = []
+    ctx = _make_context(tmp_path, dispatcher=dispatcher, target_worktree=str(clone), **ctx_kwargs)
+    target = ReviewTarget(raw="feature", head_branch="feature", head_sha=base)
+    row = FindingRow("R1-F1", "nit", "app.py", 1, (1,), "prints bug", "fix it")
+    outcome = _dispatch_review_resolver(ctx, target, 1, ResolverInput(findings=[row]))
+    assert "--skip-push" not in positional_args_seen
+    return outcome, origin, clone, base
+
+
+def test_host_pushes_the_head_the_container_committed(tmp_path: Path) -> None:
+    outcome, origin, _clone, base = _resolver_dispatch(tmp_path)
+
+    assert outcome.error is None
+    assert outcome.pushed is True
+    assert outcome.head_sha != base
+    assert _git(origin, "rev-parse", "refs/heads/feature") == outcome.head_sha
+
+
+def test_host_does_not_push_an_unchanged_head(tmp_path: Path) -> None:
+    outcome, origin, _clone, base = _resolver_dispatch(tmp_path, commit=False)
+
+    assert outcome.error is None
+    assert outcome.pushed is False
+    assert _git(origin, "rev-parse", "refs/heads/feature") == base
+
+
+def test_host_does_not_push_under_skip_push(tmp_path: Path) -> None:
+    outcome, origin, _clone, base = _resolver_dispatch(tmp_path, skip_push=True)
+
+    assert outcome.error is None
+    assert outcome.pushed is False
+    assert _git(origin, "rev-parse", "refs/heads/feature") == base
+
+
+def test_host_does_not_push_after_a_failed_pass(tmp_path: Path) -> None:
+    ctx = _make_context(tmp_path, dispatcher=lambda *_a, **_k: 2)
+    target = ReviewTarget(raw="feature", head_branch="feature", head_sha="a" * 40)
+
+    with patch("sandbox_executor.flow.review.resolver.push_commit") as host_push:
+        outcome = _dispatch_review_resolver(ctx, target, 1, ResolverInput(findings=[]))
+
+    host_push.assert_not_called()
+    assert outcome.pushed is False
+
+
+def test_failed_host_push_names_the_operation_branch_and_remote_without_credentials(tmp_path: Path) -> None:
+    secret_url = "https://x-access-token:SECRET@github.com/acme/widgets.git"
+    stderr = f"fatal: unable to access '{secret_url}/': The requested URL returned error: 403"
+
+    def dispatcher(_role, _runner, _model, _args, **kwargs):
+        payload = {"resolver": True, "dispositions": [], "head_sha": "b" * 40, "error": None}
+        Path(kwargs["result_file"]).write_text(json.dumps(payload), encoding="utf-8")
+        return 0
+
+    ctx = _make_context(tmp_path, dispatcher=dispatcher)
+    target = ReviewTarget(raw="feature", head_branch="feature", head_sha="a" * 40)
+
+    with patch(
+        "sandbox_executor.flow.host_remote.run_git",
+        return_value=subprocess.CompletedProcess([], 1, stdout="", stderr=stderr),
+    ):
+        outcome = _dispatch_review_resolver(ctx, target, 1, ResolverInput(findings=[]))
+
+    assert outcome.pushed is False
+    assert outcome.error is not None
+    assert outcome.error.startswith("Resolver push failed: host push of 'feature' through remote 'origin' failed: ")
+    assert "SECRET" not in outcome.error

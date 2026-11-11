@@ -16,17 +16,16 @@ Before running the command, ensure you have:
    ```bash
    ./apps/sandbox-executor/build_all_images.sh
    ```
-2. Set up SSH keys on your host machine configured for GitHub access.
-3. Configured SSH keys and ensured your local SSH agent is running and has your keys loaded (i.e., `ssh-add -l` displays
-   your key), as SSH Agent Forwarding inside the container relies on host authentication.
-4. Created an intent branch (e.g., `I-1771890389-refactor-metrics/_`) and registered it in the intent ledger.
+2. Configured git access to GitHub on your host machine. The host fetches and pushes with its own credentials; the
+   container never contacts the remote.
+3. Created an intent branch (e.g., `I-1771890389-refactor-metrics/_`) and registered it in the intent ledger.
 
 ---
 
 ## Recommended Execution Methods (Holon CLI)
 
 > [!IMPORTANT] **Use the Holon CLI instead of raw `docker run` commands.** The CLI automatically manages image mapping,
-> credential passing, and SSH agent socket mounts.
+> credential passing, and the worktree mount.
 
 You can run Plan Generation via any of the following standard pathways:
 
@@ -125,44 +124,30 @@ responses can be compacted before the agent spends tokens on them.
 If you need to invoke Docker manually, run the following command to start the planner container, replacing arguments as
 needed:
 
-### For macOS (Docker Desktop)
-
 ```bash
 docker run --rm \
   -e HOLON_ROLE=planner \
-  -v /run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock \
-  -e SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock \
+  -v <worktree>:/home/holon/.holon-sandbox/workspace \
+  -e HOLON_TARGET_WORKTREE=/home/holon/.holon-sandbox/workspace \
   holon/agent-pi \
   "I-1782654790-bootstrap-holon-cli-intent/_" \
   "pi-agent" \
   "gemini-3.8-flash"
 ```
 
-### For Linux
-
-> [!IMPORTANT] Ensure your `SSH_AUTH_SOCK` environment variable is set and non-empty (e.g., `echo $SSH_AUTH_SOCK` shows
-> a path) before running this command. If it is empty, the bind mount `-v "$SSH_AUTH_SOCK:/run/ssh-agent"` will resolve
-> to a syntax error.
-
-```bash
-docker run --rm \
-  -e HOLON_ROLE=planner \
-  -v "$SSH_AUTH_SOCK:/run/ssh-agent" \
-  -e SSH_AUTH_SOCK=/run/ssh-agent \
-  holon/agent-pi \
-  "I-1782654790-bootstrap-holon-cli-intent/_" \
-  "pi-agent" \
-  "gemini-3.8-flash"
-```
+The container never runs git against a remote. The host, with its own git credentials, fetches the base before the
+container starts and pushes the committed branch after it returns, so no SSH key or agent is needed for the container.
 
 ### Argument Breakdown:
 
 - **`-e HOLON_ROLE=planner`**: Routes the entrypoint call to the Python planner module (`planner.py`) inside the
   container.
-- **`-v /run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock` / `-v "$SSH_AUTH_SOCK:/run/ssh-agent"`**:
-  Mounts the host's SSH agent socket into the container to enable SSH Agent Forwarding. This allows the container to
-  authenticate using your host's SSH credentials securely without exposing private key files directly to the container.
-  (The container automatically configures `StrictHostKeyChecking=no` internally).
+- **`-v <worktree>:/home/holon/.holon-sandbox/workspace`** and
+  **`-e HOLON_TARGET_WORKTREE=/home/holon/.holon-sandbox/workspace`**: Bind-mounts the flow's host-provisioned
+  `flow-<slug>` worktree at the sandbox workspace path. The planner works in place there and only commits; it never
+  clones, fetches or pushes. The host fetches the base before the container starts and pushes the committed branch after
+  it returns, using the host's own git credentials. Because no git command inside the container contacts a remote, no
+  `ssh-agent`, SSH key or credential-helper is mounted or needed.
 - **`holon/agent-pi`**: The name of the built Docker image for the chosen agent (e.g., `holon/agent-pi`,
   `holon/agent-claude`).
 - **Container Arguments:**
@@ -174,9 +159,10 @@ docker run --rm \
 
 ## 2. Execution Details & Fail-Fast Behavior
 
-During execution, the container performs the following operations:
+During execution, the host first fetches the intent branch into the mounted flow worktree, and the container then
+performs the following operations in that worktree (it never reaches the remote):
 
-1. Clones the repository fresh into `/home/holon/repo` targeting the provided `intent_branch`.
+1. Works in the mounted worktree checked out at the provided `intent_branch`.
 2. Creates an ephemeral plan branch: `I-{timestamp}-{slug}/P-{plan_timestamp}-{agent_name}-{model_name}/_`.
 3. Compiles a detailed prompt using the template in `holon-config/prompts/planner.template.md` combined with the intent
    data from the ledger.
@@ -186,7 +172,7 @@ During execution, the container performs the following operations:
    `ev`). It fails, before anything is appended or committed, when the metrics are missing or non-numeric; metrics are
    never back-filled with defaults.
 6. Appends a structured plan entry to `holon-knowledge/ledger/plans.jsonl`.
-7. Commits the changes, pushes the plan branch to origin and prints `plan: ok (elapsed min / 35 min)`.
+7. Commits the changes and prints `plan: ok (elapsed min / 35 min)`. The host then pushes the plan branch to origin.
 
 ### Incremental plan artefact
 

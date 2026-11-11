@@ -63,7 +63,6 @@ class ContainerResolverResult:
 
     raw_dispositions: Any
     head_sha: str
-    pushed: bool
     lint_passed: bool
     tests_passed: bool
     error: str | None
@@ -85,7 +84,6 @@ def read_container_resolver_result(
         return ContainerResolverResult(
             raw_dispositions=[],
             head_sha=fallback_head_sha,
-            pushed=False,
             lint_passed=False,
             tests_passed=False,
             error=f"Resolver container {how} and produced no resolver result",
@@ -93,7 +91,6 @@ def read_container_resolver_result(
     return ContainerResolverResult(
         raw_dispositions=data.get("dispositions"),
         head_sha=str(data.get("head_sha") or fallback_head_sha or "").strip(),
-        pushed=bool(data.get("pushed", False)),
         lint_passed=bool(data.get("lint_passed", True)),
         tests_passed=bool(data.get("tests_passed", True)),
         error=resolver_error_text(data.get("error"), exit_code, data.get("output_tail")),

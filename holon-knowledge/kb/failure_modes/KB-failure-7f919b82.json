@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-7f919b82",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T09:27:17.929510+00:00",
+  "updated_ts": "2026-11-12T09:27:17.929510+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1794464780-claude-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794458330-stubfetch/P-1794458347-aa9e9dfa-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop halted without consensus after 5 iteration(s): resolver failed: Resolver pre-push test failed (exit code 1); failed: apps/sandbox-executor/tests/test_cli.py::test_claude_container_gets_the_discovered_secrets_file_value_by_type[[REDACTED_SECRET]], apps/sandbox-executor/tests/test_cli.py::test_secrets_travel_in_an_owner_only_env_file_that_is_removed, apps/sandbox-executor/tests/test_cli.py::test_line_break_in_a_secret_aborts_before_docker_runs; full output: .holon/review/verification/test.log: ============================= test session starts ==============================\nplatform linux -- Python 3.13.14, pytest-9.1.1, pluggy-1.6.0\nrootdir: /home/holon/.holon-sandbox/workspace\nconfigfile: pyproject.toml\ntestpaths: apps/sandbox-executor/tests\nplugins: xdist-3.8.0\ncreated: 18/18 workers\n18 ... [13370 characters omitted] ... not_interleave\napps/sandbox-executor/tests/test_ledger_lock.py::test_concurrent_process_appends_do_not_interleave\napps/sandbox-executor/tests/test_ledger_lock.py::test_concurrent_process_appends_do_not_interleave\napps/sandbox-executor/tests/test_ledger_lock.py::test_concurrent_process_appends_do_not_interleave\n  /usr/local/lib/python3.13/multiprocessing/popen_fork.py:73: DeprecationWarning: This process (pid=33902) is multi-threaded, use of fork() may lead to deadlocks in the child.\n    self.pid = os.fork()\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED apps/sandbox-executor/tests/test_cli.py::test_claude_container_gets_the_discovered_secrets_file_value_by_type[[REDACTED_SECRET]]\nFAILED apps/sandbox-executor/tests/test_cli.py::test_claude_container_gets_the_discovered_secrets_file_value_by_type[[REDACTED_SECRET]]\nFAILED apps/sandbox-executor/tests/test_cli.py::test_secrets_travel_in_an_owner_only_env_file_that_is_removed\nFAILED apps/sandbox-executor/tests/test_cli.py::test_line_break_in_a_secret_aborts_before_docker_runs\n================= 4 failed, 3669 passed, 8 warnings in 32.65s ==================; not approved: reviewer 2 final verdict CHANGES_REQUESTED, reviewer 2 Testing role CHANGES; final verdicts: Reviewer 1 APPROVED (0/0/0); Reviewer 2 CHANGES_REQUESTED (0/0/1); Reviewer 2 Testing role CHANGES; Reviewer 3 APPROVED (0/0/0)",
+    "symptoms": []
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "kb_id": "KB-pattern-e97cca6b",
+  "kb_type": "pattern",
+  "version": "1.0",
+  "created_ts": "2026-11-12T09:27:17.834736+00:00",
+  "updated_ts": "2026-11-12T09:27:17.834736+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-POST-1794475627-0ed4582d",
+      "ACT-POST-1794464780-2f4548ef",
+      "ACT-POST-1794464243-318b306f",
+      "ACT-POST-1794459366-c7b54442",
+      "ACT-POST-1794459133-336cae37"
+    ],
+    "success_count": 11,
+    "failure_count": 0,
+    "wilson_lower": 0.741167033031979,
+    "posterior_mean": 0.9230769230769231,
+    "ladder_state": "likely-success"
+  },
+  "tags": [
+    "code",
+    "proven"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Proven approach for I-1794458330-stubfetch/P-1794458347-aa9e9dfa-claude-agent-claude-sonnet-5-5/E-1794458626-bd9b5cc1-claude-agent-claude-sonnet-5-5/_",
+    "description": "Advisory (likely-success): Historical executions matching this context pattern succeeded in 11/11 (100.0%) trials (Wilson 95% lower bound: 0.74). Consider evaluating proven approach: 'Review consensus dual-posted to GitHub for I-1794458330-stubfetch/P-1794458347-aa9e9dfa-claude-agent-claude-sonnet-5-5/E-1794458626-bd9b5cc1-claude-agent-claude-sonnet-5-5/_'.",
+    "action": "Review consensus dual-posted to GitHub for I-1794458330-stubfetch/P-1794458347-aa9e9dfa-claude-agent-claude-sonnet-5-5/E-1794458626-bd9b5cc1-claude-agent-claude-sonnet-5-5/_"
+  }
+}

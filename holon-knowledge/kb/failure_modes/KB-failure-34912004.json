@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-34912004",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T09:27:17.923513+00:00",
+  "updated_ts": "2026-11-12T09:27:17.923513+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794464678-bb43de84"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794458330-stubfetch/P-1794458347-aa9e9dfa-claude-agent-claude-sonnet-5-5/E-1794458626-bd9b5cc1-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 5 finding detected: FIND-CI-005",
+    "symptoms": [
+      "Findings detected: ['FIND-CI-005', 'FIND-R2-005-01']"
+    ]
+  }
+}

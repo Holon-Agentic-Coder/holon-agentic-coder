@@ -32,6 +32,7 @@ from typing import Any
 
 from sandbox_executor.agent_defaults import FALLBACK_AGENT, default_model_for
 from sandbox_executor.agent_runner import get_runner, get_workspace_dir
+from sandbox_executor.entrypoint.review_failure_detail import with_short_summary
 from sandbox_executor.entrypoint.review_verification import (
     missing_tool_result,
     verification_error,
@@ -269,9 +270,10 @@ def _verify_before_push(repo_dir: str) -> tuple[bool, bool, str | None]:
     lint_res = run_cmd(["uv", "run", "task", "lint"], cwd=repo_dir, check=False)
     if lint_res.returncode != 0:
         return False, False, verification_error("lint", lint_res, _bounded_error_context)
-    test_res = run_cmd(["uv", "run", "task", "test"], cwd=repo_dir, check=False)
+    test_env = with_short_summary(dict(os.environ))
+    test_res = run_cmd(["uv", "run", "task", "test"], cwd=repo_dir, env=test_env, check=False)
     if test_res.returncode != 0:
-        return True, False, verification_error("test", test_res, _bounded_error_context)
+        return True, False, verification_error("test", test_res, _bounded_error_context, workspace=repo_dir)
     return True, True, None
 
 

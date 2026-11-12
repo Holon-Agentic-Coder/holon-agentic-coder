@@ -443,7 +443,7 @@ def test_container_review_fetches_the_three_branches_once_before_dispatch(monkey
     exec_branch = "I-1-x/P-1-a/E-2-a/_"
     calls: list[str] = []
     monkeypatch.setattr(review_fetch, "_has_origin_remote", lambda _w: True)
-    monkeypatch.setattr(review_fetch, "_target_branch", lambda _w, _p: "main")
+    monkeypatch.setattr(review_fetch, "target_branch", lambda _w, _p: "main")
     monkeypatch.setattr(git_flow, "fetch_origin_branch", lambda _w, branch: calls.append(branch))
     monkeypatch.setattr(git_flow, "resolve_review_worktree", lambda *_a: "/wt")
 
@@ -459,7 +459,7 @@ def test_container_review_fetch_failure_stops_the_stage_before_dispatch(monkeypa
         raise RuntimeError(f"could not fetch branch '{branch}' from origin")
 
     monkeypatch.setattr(review_fetch, "_has_origin_remote", lambda _w: True)
-    monkeypatch.setattr(review_fetch, "_target_branch", lambda _w, _p: "main")
+    monkeypatch.setattr(review_fetch, "target_branch", lambda _w, _p: "main")
     monkeypatch.setattr(git_flow, "fetch_origin_branch", failing_fetch)
     monkeypatch.setattr(
         cli, "resolve_runner_and_model", lambda a, m: (type("R", (), {"value": a})(), type("R", (), {"value": m})())

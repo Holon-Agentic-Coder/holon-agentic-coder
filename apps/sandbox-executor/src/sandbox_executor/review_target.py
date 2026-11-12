@@ -196,16 +196,16 @@ def _fetched_branch_ref(repo_dir: str, branch: str, role: str) -> tuple[str | No
     from sandbox_executor.flow.git_refs import _fetch_refspecs_error, _has_origin_remote, _resolve_branch_ref
 
     has_origin = _has_origin_remote(repo_dir)
-    mounted = workspace_is_mounted()
+    mounted = has_origin and workspace_is_mounted()
     if has_origin and not mounted:
         refspec = f"+refs/heads/{branch}:refs/remotes/origin/{branch}"
         error = _fetch_refspecs_error(repo_dir, [refspec])
         if error is not None:
             return None, f"{role} '{branch}' could not be fetched from origin: {error}"
     ref = _resolve_branch_ref(repo_dir, branch, prefer_remote=True)
-    if ref is None or (has_origin and mounted and not ref.startswith("refs/remotes/origin/")):
-        if has_origin and mounted:
-            return None, f"{role} '{branch}' is not fetched from origin; the host must fetch it before dispatch"
+    if mounted and (ref is None or not ref.startswith("refs/remotes/origin/")):
+        return None, f"{role} '{branch}' is not fetched from origin; the host must fetch it before dispatch"
+    if ref is None:
         return None, f"{role} '{branch}' could not be resolved"
     return ref, ""
 

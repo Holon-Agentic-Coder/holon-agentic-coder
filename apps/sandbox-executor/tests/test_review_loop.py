@@ -1132,6 +1132,34 @@ def test_approved_loop_never_merges(tmp_path, gh_write_guard):
     assert gh_write_guard == []
 
 
+@pytest.mark.parametrize(("mounted", "expected_fetch"), [(True, False), (False, True)])
+def test_reviewed_commit_lookup_fetches_only_outside_a_mounted_container(tmp_path, mounted, expected_fetch):
+    """The loop's reviewed-commit lookup skips the fetch in a mounted container (no ssh); the host still fetches."""
+    from sandbox_executor.flow import run_review_loop
+    from sandbox_executor.review_target import DiffVerdict
+
+    with (
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "ok")),
+        patch("sandbox_executor.flow.review.loop.shutil.which", return_value="/usr/bin/gh"),
+        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
+        patch(
+            "sandbox_executor.flow.review.loop.probe_ci_checks",
+            return_value={"all_passed": True, "source": "github_cli"},
+        ),
+        patch("sandbox_executor.flow.review.loop.create_or_update_pr", return_value={"success": True}),
+        patch("sandbox_executor.flow.review.loop.workspace_is_mounted", return_value=mounted),
+        patch("sandbox_executor.flow.review.loop._resolve_reviewed_target", return_value=(None, None)),
+        patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123") as resolve,
+        patch(
+            "sandbox_executor.flow.github.review_post.subprocess.run",
+            return_value=MagicMock(returncode=0, stdout=""),
+        ),
+    ):
+        run_review_loop(_loop_ctx(tmp_path), target="feature/x", max_iterations=1)
+
+    assert resolve.call_args.kwargs["fetch"] is expected_fetch
+
+
 def test_mergeability_probe_is_bounded_by_a_subprocess_timeout(tmp_path):
     from sandbox_executor.flow import check_pr_mergeability
 

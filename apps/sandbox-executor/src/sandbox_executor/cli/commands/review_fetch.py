@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from sandbox_executor import git_flow
-from sandbox_executor.cli.commands.execute import _target_branch
+from sandbox_executor.cli.commands.execute import target_branch
 from sandbox_executor.git import run_git
 
 
@@ -35,6 +35,6 @@ def fetch_review_branches(worktree: str, head_branch: str, base_branch: str | No
         if branch and branch not in fetched:
             git_flow.fetch_origin_branch(worktree, branch)
             fetched.add(branch)
-    base = base_branch or (_target_branch(worktree, plan_branch) if plan_branch else "main")
+    base = base_branch or (target_branch(worktree, plan_branch) if plan_branch else "main")
     if base not in fetched:
         git_flow.fetch_origin_branch(worktree, base)

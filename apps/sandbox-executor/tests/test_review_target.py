@@ -599,3 +599,28 @@ def test_host_review_still_fetches_before_resolving(tmp_path, monkeypatch):
 
     assert verdict is DiffVerdict.VERIFIED
     assert len(fetched) == 2
+
+
+def _lookup_fetch_flag(tmp_path, monkeypatch) -> bool:
+    repo = _repo(tmp_path)
+    seen: dict[str, Any] = {}
+
+    def fake_resolve(repo_dir, branch, fetch=True):
+        seen["fetch"] = fetch
+        return _git(repo, "rev-parse", "--short", "HEAD").strip()
+
+    monkeypatch.setattr("sandbox_executor.flow._resolve_review_commit", fake_resolve)
+    rt._resolve_branch(str(repo), "main")
+    return seen["fetch"]
+
+
+def test_mounted_branch_target_resolves_without_fetching(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOLON_TARGET_WORKTREE", rt.SANDBOX_WORKSPACE_MOUNT)
+
+    assert _lookup_fetch_flag(tmp_path, monkeypatch) is False
+
+
+def test_host_branch_target_resolves_with_fetching(tmp_path, monkeypatch):
+    monkeypatch.delenv("HOLON_TARGET_WORKTREE", raising=False)
+
+    assert _lookup_fetch_flag(tmp_path, monkeypatch) is True

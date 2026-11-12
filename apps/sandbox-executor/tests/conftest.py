@@ -8,6 +8,7 @@ import pytest
 from sandbox_executor import cli
 from sandbox_executor.agent_defaults import detected_harness_markers
 
+from tests.credential_env import CREDENTIAL_ENV_NAMES
 from tests.gh_write_guard import guarded_popen
 from tests.hermetic_fixtures import (
     REPO_ROOT,
@@ -17,7 +18,7 @@ from tests.hermetic_fixtures import (
 from tests.worktree_fixtures import init_feature_worktree
 
 # Ambient variables that can carry a live credential or change which code path a test exercises.
-_AMBIENT_CREDENTIAL_NAMES = ("GITHUB_TOKEN", "GH_TOKEN")
+_AMBIENT_CREDENTIAL_NAMES = ("GITHUB_TOKEN", "GH_TOKEN", *CREDENTIAL_ENV_NAMES)
 _AMBIENT_PREFIX = "HOLON_"
 
 # Set by the test harness itself, never by a user: the child-suite recursion sentinels and the
@@ -95,7 +96,8 @@ def hermetic_git_config(tmp_path_factory) -> Iterator[str]:
 def no_ambient_credentials(monkeypatch):
     """Run every test without the developer's or the sandbox's own credentials.
 
-    Clears `GITHUB_TOKEN`, `GH_TOKEN` and every `HOLON_*` variable except the harness's own, and
+    Clears `GITHUB_TOKEN`, `GH_TOKEN`, every name in `tests.credential_env.CREDENTIAL_ENV_NAMES` (the Claude
+    and other runner credentials) and every `HOLON_*` variable except the harness's own, and
     limits `find_github_token` to the (now cleared) environment so no test can reach the real
     `gh auth token`. A test that needs a token sets one explicitly, through `monkeypatch.setenv` or
     `patch.dict`.

@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-45b5f84b",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T07:13:10.396104+00:00",
+  "updated_ts": "2026-11-12T07:13:10.396104+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794295889-7c6182d3"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794294198-review-consensus-never-approves-past-an-open-critical/P-1794294214-0a2285cf-claude-agent-claude-opus-5-5/E-1794294472-5622c01d-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R3-001-01",
+    "symptoms": [
+      "When only a role or container verdict blocked consensus (all reviewers clean, CI green), the Stage 4 error falls through to 'test suite reported failures', which blames the wrong cause; add a branch for blocker-only failures."
+    ]
+  }
+}

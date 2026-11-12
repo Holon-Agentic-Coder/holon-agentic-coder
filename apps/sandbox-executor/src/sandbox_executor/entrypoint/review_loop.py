@@ -264,16 +264,14 @@ def _assert_safe_git_args(args: list[str]) -> None:
 
 
 def _verify_before_push(repo_dir: str) -> tuple[bool, bool, str | None]:
-    """Run ``uv run task lint``, the changed-Markdown Prettier gate and ``uv run task test`` before committing or pushing resolver changes.
+    """Run lint, the changed-Markdown Prettier gate and tests before committing or pushing resolver changes.
 
     A missing ``uv`` is a structured failure naming it (lint and tests unmeasured), never an exception.
     """
     lint_res = run_cmd(["uv", "run", "task", "lint"], cwd=repo_dir, check=False)
     if lint_res.returncode != 0:
         return False, False, verification_error("lint", lint_res, _bounded_error_context)
-    markdown = run_markdown_gate(
-        repo_dir, lambda args: run_cmd(args, cwd=repo_dir, check=False), _RESOLVER_PATHSPEC
-    )
+    markdown = run_markdown_gate(repo_dir, lambda args: run_cmd(args, cwd=repo_dir, check=False), _RESOLVER_PATHSPEC)
     if markdown.error:
         return False, False, f"Resolver pre-push markdown formatting failed: {_bounded_error_context(markdown.error)}"
     if markdown.formatted:

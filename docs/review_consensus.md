@@ -60,3 +60,14 @@ no-convergence halt (including one exactly at the iteration cap), and a halt bef
 was posted and why. Dry runs, `--skip-post`, a refused or failed review and a run with no completed reviewer post
 nothing, as before. `ACT-POST` is written only when a post was actually attempted, and a failed attempt still writes its
 failure row and ends the loop as `post_failed`.
+
+## Resolver pre-push verification
+
+Before the resolver commits a fix it runs, in order: `uv run task lint`, a Prettier check of the Markdown files it
+changed, and `uv run task test`. The Markdown check is the one CI's `lint-md` runs (`npx prettier --check`), limited to
+changed files and using the target repository's own Prettier configuration. When it fails, the resolver runs
+`npx prettier --write` on just those files, re-checks, and the formatting lands in the same fix commit. A file that
+still fails is named in the halt message (`Resolver pre-push markdown formatting failed: ...`). A change with no
+Markdown starts no Prettier process, and unrelated Markdown files are never touched. The review-loop image bakes in
+Prettier; a missing `npx` is a failure that names it, never a silent skip. `lint-json`, `lint-yaml` and `lint-shell`
+need tools the image lacks and stay CI-only, which `tests/test_resolver_lint_parity.py` records.

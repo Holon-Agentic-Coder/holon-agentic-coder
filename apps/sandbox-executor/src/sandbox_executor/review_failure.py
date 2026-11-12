@@ -8,6 +8,7 @@ gives one, and decides whether that reset is near enough to wait out. Everything
 from __future__ import annotations
 
 import enum
+import logging
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -30,7 +31,7 @@ _QUOTA_STATUSES = {PreflightStatus.QUOTA_EXHAUSTED}
 _AUTH_STATUSES = {PreflightStatus.NOT_LOGGED_IN, PreflightStatus.EXPIRED_KEY}
 _RETRY_AFTER_RE = re.compile(r"retry-after\W+(\d{1,6})\b", re.IGNORECASE)
 _RELATIVE_RE = re.compile(
-    r"(?:in|after)\s+(?:(\d{1,3})\s*(?:h|hours?|hrs?))?\s*(?:(\d{1,3})\s*(?:m|mins?|minutes?))?\s*"
+    r"\b(?:in|after)\s+(?:(\d{1,3})\s*(?:h|hours?|hrs?))?\s*(?:(\d{1,3})\s*(?:m|mins?|minutes?))?\s*"
     r"(?:(\d{1,3})\s*(?:s|secs?|seconds?))?\b",
     re.IGNORECASE,
 )
@@ -164,6 +165,32 @@ def wait_ceiling(env: Mapping[str, str]) -> float:
     return max(0.0, value)
 
 
+def missing_report_reason(turn: TurnResult) -> str:
+    """Diagnostic failure reason for a turn that wrote no report."""
+    failure = classify_failure(turn, datetime.now(UTC))
+    if turn.returncode != 0:
+        detail = f"{describe(failure)}: {failure.excerpt}" if failure.excerpt else describe(failure)
+        return f"the reviewer exited with code {turn.returncode} ({detail})"
+    if failure.excerpt:
+        return f"the reviewer wrote no report (output: {failure.excerpt})"
+    return "the reviewer wrote no report"
+
+
+def log_failed_turn(logger: logging.Logger, turn: TurnResult) -> None:
+    """Log a failed turn's classified stop reason and redacted runner output."""
+    failure = classify_failure(turn, datetime.now(UTC))
+    logger.warning("Reviewer agent command failed with code %d (stop reason: %s).", turn.returncode, describe(failure))
+    if failure.excerpt:
+        logger.warning("Runner output (redacted): %s", failure.excerpt)
+
+
+def retry_wait(turn: TurnResult, env: Mapping[str, str]) -> float | None:
+    """Seconds to wait before one retry when ``turn`` failed on a quota reset within the ceiling."""
+    if turn.returncode == 0:
+        return None
+    return quota_wait_seconds(classify_failure(turn, datetime.now(UTC)), wait_ceiling(env))
+
+
 class OnceSleeper:
     """Sleep callable that records whether it has been used, so an ensemble waits for at most one quota reset."""
 
@@ -171,6 +198,10 @@ class OnceSleeper:
         self._sleep = sleep
         self.used = False
 
-    def __call__(self, seconds: float) -> None:
+    def try_wait(self, seconds: float) -> bool:
+        """Sleep and return True unless a wait already happened."""
+        if self.used:
+            return False
         self.used = True
         self._sleep(seconds)
+        return True

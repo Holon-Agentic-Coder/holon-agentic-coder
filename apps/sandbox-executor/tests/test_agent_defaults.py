@@ -182,3 +182,20 @@ def test_cli_reexports_image_mapping():
     from sandbox_executor import cli
 
     assert cli.AGENT_IMAGE_MAPPING is AGENT_IMAGE_MAPPING
+
+
+def test_claude_api_key_detection_uses_the_secrets_file_not_holon_agent_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    bundle = tmp_path / "bundle.json"
+    bundle.write_text("{}", encoding="utf-8")
+    env = {"HOLON_AGENT_KEY": "fake-generic", "HOLON_SECRET_BUNDLE_PATH": str(bundle)}
+    assert agent_defaults._detect_api_key_present("claude", env) is False
+    assert agent_defaults._detect_api_key_present("pi", env) is True
+
+    secrets = tmp_path / ".holon" / "secrets" / "claude-oauth-token"
+    secrets.parent.mkdir(parents=True)
+    secrets.write_text("  \n", encoding="utf-8")
+    assert agent_defaults._detect_api_key_present("claude", {}) is False
+    secrets.write_text("fake-claude-value\n", encoding="utf-8")
+    secrets.chmod(0o600)
+    assert agent_defaults._detect_api_key_present("claude", {}) is True

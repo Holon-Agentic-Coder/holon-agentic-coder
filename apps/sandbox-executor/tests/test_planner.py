@@ -807,8 +807,8 @@ def test_agent_cmd_echo_masks_settings_json_before_truncation():
     argv = ["claude", "--model", "claude-opus-5-5", "--settings", settings_blob, "-p", "x" * 500]
     shown = planner.format_agent_cmd_for_display(argv)
     assert_no_fragment(shown, value)
-    assert shown.startswith("claude --model claude-opus-5-5 --settings ")
-    assert "CLAUDE_CODE_OAUTH_TOKEN" in shown
+    assert shown.startswith("claude --model claude-opus-5-5 --settings <redacted> -p ")
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in shown
     assert shown.endswith("x" * 100 + "...")
 
 

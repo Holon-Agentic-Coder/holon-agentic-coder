@@ -65,6 +65,7 @@ class TestAgentRunner(unittest.TestCase):
         }
         dummy_env = {
             "HOLON_AGENT_KEY": "dummy",
+            "ANTHROPIC_API_KEY": "dummy",
         }
         with patch.dict(os.environ, dummy_env):
             # Hermetic against the ambient sandbox/host env: these add --settings/--effort flags to the commands.
@@ -105,7 +106,12 @@ class TestAgentRunner(unittest.TestCase):
         from unittest.mock import patch
 
         # 1. Claude settings
-        with patch.dict(os.environ, {"HOLON_AGENT_SETTINGS": "/path/to/settings.json", "HOLON_AGENT_KEY": "dummy"}):
+        claude_env = {
+            "HOLON_AGENT_SETTINGS": "/path/to/settings.json",
+            "HOLON_AGENT_KEY": "dummy",
+            "ANTHROPIC_API_KEY": "dummy",
+        }
+        with patch.dict(os.environ, claude_env):
             runner = get_runner("claude")
             cmd = runner.build_cmd("claude-3", "/tmp/p", "/tmp/i", "prompt")
             self.assertIn("--settings", cmd)
@@ -151,7 +157,8 @@ class TestAgentRunner(unittest.TestCase):
         import os
         from unittest.mock import patch
 
-        with patch.dict(os.environ, {"HOLON_AGENT_KEY": "universal-token-123"}, clear=True):
+        tier_env = {"HOLON_AGENT_KEY": "universal-token-123", "ANTHROPIC_API_KEY": "universal-token-123"}
+        with patch.dict(os.environ, tier_env, clear=True):
             for agent_name in runners:
                 with self.subTest(agent=agent_name):
                     runner = get_runner(agent_name)
@@ -184,7 +191,8 @@ class TestAgentRunner(unittest.TestCase):
             with patch.dict(os.environ, env, clear=True):
                 runner = get_runner("claude")
                 runner.validate()
-                self.assertEqual(os.getenv("HOLON_AGENT_KEY"), "bundle-claude-key")
+                # The claude runner never consults HOLON_AGENT_KEY, so the bundle key is not promoted to it.
+                self.assertIsNone(os.getenv("HOLON_AGENT_KEY"))
                 self.assertTrue(os.path.exists(os.path.join(fake_home, ".config/claude/config.json")))
 
             # Test targeting non-matching agent (gemini) -> should not set HOLON_AGENT_KEY
@@ -242,8 +250,8 @@ class TestAgentRunner(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             bundle_path = os.path.join(tmpdir, "holon_auth.json")
             bundle_data = {
-                "agent_id": "claude",
-                "api_key": "bundle-claude-key",
+                "agent_id": "pi",
+                "api_key": "bundle-pi-key",
             }
             with open(bundle_path, "w") as f:
                 json.dump(bundle_data, f)
@@ -252,9 +260,9 @@ class TestAgentRunner(unittest.TestCase):
             os.makedirs(fake_home, exist_ok=True)
             env = {"HOLON_SECRET_BUNDLE_PATH": bundle_path, "HOME": fake_home}
             with patch.dict(os.environ, env, clear=True):
-                runner = get_runner("claude")
+                runner = get_runner("pi")
                 runner.validate()
-                self.assertEqual(os.getenv("HOLON_AGENT_KEY"), "bundle-claude-key")
+                self.assertEqual(os.getenv("HOLON_AGENT_KEY"), "bundle-pi-key")
 
     @pytest.mark.integration_test
     def test_real_images_have_binaries(self):
@@ -584,6 +592,7 @@ CLAUDE_BYPASS = ["--allow-dangerously-skip-permissions", "--permission-mode", "b
 def claude_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     """Hermetic environment for the claude runner: dummy key, no ambient bypass, settings or secret bundle."""
     monkeypatch.setenv("HOLON_AGENT_KEY", "dummy")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy")
     for var in ("HOLON_AGENT_SKIP_PERMISSIONS", "HOLON_AGENT_SETTINGS"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("HOLON_SECRET_BUNDLE_PATH", "/nonexistent/holon_auth.json")

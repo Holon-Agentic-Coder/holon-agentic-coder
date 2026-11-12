@@ -26,6 +26,7 @@ from sandbox_executor.flow.git_refs import (
     _track_local_branch,
 )
 from sandbox_executor.flow.host_remote import fetch_base, publish_new_child_branches, remote_error
+from sandbox_executor.flow.partial_salvage import SalvageError, salvage_leftovers
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.stages.decomposition import _run_decomposed_plan, _sub_intent_depth_error
 from sandbox_executor.flow.stages.plan_decision import _over_budget_failure, _plan_budget_decision
@@ -191,6 +192,17 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
         return _stage_failure(context, FlowStage.EXECUTE, start_time, f"Execute stage failed: {base_error}")
     executor_args = [context.plan_branch, context.agent, context.model]
     if resume_partial:
+        try:
+            salvaged = salvage_leftovers(context, plan_prefix)
+        except SalvageError as exc:
+            return _stage_failure(
+                context, FlowStage.EXECUTE, start_time, f"Execute stage failed: {exc}", dispatched=False
+            )
+        if salvaged.sha:
+            context.log(
+                f"Stage 3 resume: committed {len(salvaged.files)} leftover file(s) on {salvaged.branch} ({salvaged.sha[:12]})"
+            )
+            existing_executions = _snapshot_child_branches(repo_dir, plan_prefix, "E") or existing_executions
         partial_branch = _resumable_partial_branch(repo_dir, existing_executions)
         if partial_branch:
             executor_args.append(partial_branch)

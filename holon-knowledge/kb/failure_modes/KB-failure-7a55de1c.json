@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-7a55de1c",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T07:13:10.371691+00:00",
+  "updated_ts": "2026-11-12T07:13:10.371691+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794233116-1883bbaa"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794224634-plan-owned-decomposition-with-plan-branch-children--2-nest-decomposed-children-under-the-plan-branch-m/P-1794227872-152246bc-claude-agent-claude-opus-5-5/E-1794228146-88e62c5b-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 6 finding detected: FIND-R1-006-01",
+    "symptoms": [
+      "Origin reconciliation marks a child PR as merged whatever its base, without checking baseRefName. A child PR merged into main or another branch is then skipped and the combined PR is raised without its work, which bypasses the base check that _merged_result enforces."
+    ]
+  }
+}

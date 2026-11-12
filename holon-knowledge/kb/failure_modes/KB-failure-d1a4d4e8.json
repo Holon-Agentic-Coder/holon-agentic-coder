@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-d1a4d4e8",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T07:13:10.430711+00:00",
+  "updated_ts": "2026-11-12T07:13:10.430711+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794298503-4ac66aad"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794294198-review-consensus-never-approves-past-an-open-critical/P-1794294214-0a2285cf-claude-agent-claude-opus-5-5/E-1794294472-5622c01d-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 4 finding detected: FIND-R3-004-01",
+    "symptoms": [
+      "Dirty-mergeability and MISSING_REF Stage 4 error messages omit the reviewers' final verdicts required by goal 6; append the Final verdicts suffix there too."
+    ]
+  }
+}

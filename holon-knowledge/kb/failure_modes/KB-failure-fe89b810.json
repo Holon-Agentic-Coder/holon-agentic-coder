@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-fe89b810",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T07:13:10.634328+00:00",
+  "updated_ts": "2026-11-12T07:13:10.634328+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794467114-61e10057",
+      "ACT-FIND-1794467113-e4b5c389"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794464833-scrubcreds/P-1794464849-2a9a4a6b-claude-agent-claude-sonnet-5-5/E-1794464926-c106ee4e-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 6 finding detected: FIND-R2-006-02",
+    "symptoms": [
+      "Unrelated reconcile_with_origin patch is out of scope for a credential hermeticity change."
+    ]
+  }
+}

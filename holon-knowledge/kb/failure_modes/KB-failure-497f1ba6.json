@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-497f1ba6",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T07:13:10.567214+00:00",
+  "updated_ts": "2026-11-12T07:13:10.567214+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-1794447889-e49086ec"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "test",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794447526-nofetch/P-1794447543-712b026e-claude-agent-claude-sonnet-5-5/E-1794447618-d6053952-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop executed for I-1794447526-nofetch/P-1794447543-712b026e-claude-agent-claude-sonnet-5-5/E-1794447618-d6053952-claude-agent-claude-sonnet-5-5/_",
+    "symptoms": [
+      "Consensus failed: findings=['FIND-CI-001']; Refusing to create or update a PR for 'I-1794447526-nofetch/P-1794447543-712b026e-claude-agent-claude-sonnet-5-5/E-1794447618-d6053952-claude-agent-claude-sonnet-5-5/_': could not verify the execution diff (fetching 'I-1794447526-nofetch/P-1794447543-712b026e-claude-agent-claude-sonnet-5-5/_' and 'I-1794447526-nofetch/P-1794447543-712b026e-claude-agent-claude-sonnet-5-5/E-1794447618-d6053952-claude-agent-claude-sonnet-5-5/_' from origin failed: error: cannot run ssh: No such file or directory\nfatal: unable to fork).; final verdicts: no reviewer returned a verdict"
+    ]
+  }
+}

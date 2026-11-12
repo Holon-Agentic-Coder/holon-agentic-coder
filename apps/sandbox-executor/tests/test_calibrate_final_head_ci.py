@@ -62,6 +62,7 @@ class Fakes:
             probe=self.probe,
             step_lookup=lambda check: self.steps.get(check["name"]),
             registration_timeout=0,
+            pushed_head=lambda: None,
         )
 
 

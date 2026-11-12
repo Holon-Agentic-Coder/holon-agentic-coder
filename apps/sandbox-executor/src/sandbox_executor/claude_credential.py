@@ -29,12 +29,18 @@ def classify_credential(value: str) -> str:
     return OAUTH_TOKEN_ENV if value.startswith(OAUTH_TOKEN_PREFIX) else API_KEY_ENV
 
 
+_WARNED_PATHS: set[str] = set()
+
+
 def _warn_if_loose(path: str) -> None:
+    if path in _WARNED_PATHS:
+        return
     try:
         mode = stat.S_IMODE(os.stat(path).st_mode)
     except OSError:
         return
     if mode & 0o077:
+        _WARNED_PATHS.add(path)
         print(
             f"Warning: {path} has mode {mode:04o}; expected 0600. The file is left unchanged.",
             file=sys.stderr,
@@ -54,6 +60,12 @@ def read_secrets_file() -> str | None:
         return None
     if not value:
         return None
+    if len(value.split()) != 1:
+        print(
+            f"Warning: {path} must hold a single credential token with no spaces or extra lines; the file is ignored.",
+            file=sys.stderr,
+        )
+        return None
     _warn_if_loose(path)
     return value
 
@@ -61,7 +73,9 @@ def read_secrets_file() -> str | None:
 def resolve_claude_credential(env: Mapping[str, str] | None = None) -> tuple[str, str] | None:
     """Resolve the claude credential as a ``(variable name, value)`` pair.
 
-    An explicit environment value wins (the subscription token first), else the secrets file is read.
+    An explicit environment value wins (the subscription token first), else the secrets file is read. Wherever the
+    value came from, its format decides the variable that carries it, so callers must drop both claude variable names
+    from the forwarded env before setting the pair.
     ``HOLON_AGENT_KEY`` is never consulted.
 
     Args:
@@ -74,6 +88,6 @@ def resolve_claude_credential(env: Mapping[str, str] | None = None) -> tuple[str
     for name in CLAUDE_CREDENTIAL_ENV_NAMES:
         value = (source.get(name) or "").strip()
         if value:
-            return name, value
+            return classify_credential(value), value
     from_file = read_secrets_file()
     return (classify_credential(from_file), from_file) if from_file else None

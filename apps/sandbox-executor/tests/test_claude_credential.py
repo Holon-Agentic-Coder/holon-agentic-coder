@@ -64,6 +64,16 @@ def test_explicit_environment_value_wins_and_holon_agent_key_is_ignored(home, mo
     assert claude_credential.resolve_claude_credential() == ("ANTHROPIC_API_KEY", explicit)
 
 
+def test_explicit_value_is_retyped_by_its_format_in_either_variable(home, monkeypatch):
+    oat = OAUTH_PREFIX + make_probe("env-oat")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", oat)
+    assert claude_credential.resolve_claude_credential() == ("CLAUDE_CODE_OAUTH_TOKEN", oat)
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    api = API_PREFIX + make_probe("env-api")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", api)
+    assert claude_credential.resolve_claude_credential() == ("ANTHROPIC_API_KEY", api)
+
+
 def test_holon_agent_key_alone_is_not_a_claude_credential(home, monkeypatch):
     monkeypatch.setenv("HOLON_AGENT_KEY", make_probe("generic"))
     assert claude_credential.resolve_claude_credential() is None
@@ -122,3 +132,19 @@ def test_dispatcher_claude_branch_no_longer_maps_holon_agent_key():
     assert "export ANTHROPIC_API_KEY" not in claude_branch
     for var, runner in (("PI_API_KEY", "pi"), ("OPENAI_API_KEY", "codex"), ("GEMINI_API_KEY", "gemini")):
         assert f'export {var}="${{HOLON_AGENT_KEY}}"' in text, runner
+
+
+def test_loose_mode_warns_once_per_process(home, capsys):
+    _write_secret(home, OAUTH_PREFIX + make_probe("once"), mode=0o644)
+    for _ in range(3):
+        claude_credential.read_secrets_file()
+    assert capsys.readouterr().err.count("expected 0600") == 1
+
+
+@pytest.mark.parametrize("content", ["tok en\n", "token\n# a trailing comment\n"])
+def test_multi_token_file_is_ignored_with_a_message_naming_the_path_not_the_value(home, capsys, content):
+    path = _write_secret(home, OAUTH_PREFIX + make_probe("multi") + " " + content)
+    assert claude_credential.read_secrets_file() is None
+    err = capsys.readouterr().err
+    assert str(path) in err and "single credential token" in err
+    assert_no_fragment(err, make_probe("multi"))

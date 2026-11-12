@@ -516,7 +516,7 @@ def carries_url_password(value: str) -> bool:
 
 SETTINGS_REDACTION = "<redacted>"
 _SETTINGS_FLAG = "--settings"
-_SETTINGS_VALUE_RE = re.compile(r"""(--settings(?:=|\s+))(?:'[^']*'|"[^"]*"|\S+)""")
+_SETTINGS_VALUE_RE = re.compile(r"""(--settings(?:=|\s+))(?:'[^']*'|"(?:\\.|[^"\\])*"|\S+)""")
 
 
 def _redact_settings_values(args: list[str]) -> list[str]:

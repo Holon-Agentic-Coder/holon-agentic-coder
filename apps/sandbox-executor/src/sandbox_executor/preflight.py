@@ -25,7 +25,11 @@ from typing import Any
 
 from sandbox_executor import local_llm
 from sandbox_executor.agent_defaults import AGENT_IMAGE_MAPPING, normalise_agent_id
-from sandbox_executor.claude_credential import SECRETS_FILE_DISPLAY, resolve_claude_credential
+from sandbox_executor.claude_credential import (
+    CLAUDE_CREDENTIAL_ENV_NAMES,
+    SECRETS_FILE_DISPLAY,
+    resolve_claude_credential,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +302,8 @@ def build_probe_docker_cmd(
         env.pop("HOLON_AGENT_KEY", None)
         claude_credential = resolve_claude_credential()
         if claude_credential:
+            for name in CLAUDE_CREDENTIAL_ENV_NAMES:
+                env.pop(name, None)
             env[claude_credential[0]] = claude_credential[1]
     env["HOLON_AGENT_ID"] = agent_id
     env[SKIP_ENV_VAR] = "1"

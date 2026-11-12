@@ -65,6 +65,7 @@ class TestAgentRunner(unittest.TestCase):
         }
         dummy_env = {
             "HOLON_AGENT_KEY": "dummy",
+            "ANTHROPIC_API_KEY": "dummy",
         }
         with patch.dict(os.environ, dummy_env):
             # Hermetic against the ambient sandbox/host env: these add --settings/--effort flags to the commands.
@@ -105,7 +106,12 @@ class TestAgentRunner(unittest.TestCase):
         from unittest.mock import patch
 
         # 1. Claude settings
-        with patch.dict(os.environ, {"HOLON_AGENT_SETTINGS": "/path/to/settings.json", "HOLON_AGENT_KEY": "dummy"}):
+        claude_env = {
+            "HOLON_AGENT_SETTINGS": "/path/to/settings.json",
+            "HOLON_AGENT_KEY": "dummy",
+            "ANTHROPIC_API_KEY": "dummy",
+        }
+        with patch.dict(os.environ, claude_env):
             runner = get_runner("claude")
             cmd = runner.build_cmd("claude-3", "/tmp/p", "/tmp/i", "prompt")
             self.assertIn("--settings", cmd)
@@ -151,7 +157,8 @@ class TestAgentRunner(unittest.TestCase):
         import os
         from unittest.mock import patch
 
-        with patch.dict(os.environ, {"HOLON_AGENT_KEY": "universal-token-123"}, clear=True):
+        tier_env = {"HOLON_AGENT_KEY": "universal-token-123", "ANTHROPIC_API_KEY": "universal-token-123"}
+        with patch.dict(os.environ, tier_env, clear=True):
             for agent_name in runners:
                 with self.subTest(agent=agent_name):
                     runner = get_runner(agent_name)
@@ -585,6 +592,7 @@ CLAUDE_BYPASS = ["--allow-dangerously-skip-permissions", "--permission-mode", "b
 def claude_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     """Hermetic environment for the claude runner: dummy key, no ambient bypass, settings or secret bundle."""
     monkeypatch.setenv("HOLON_AGENT_KEY", "dummy")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy")
     for var in ("HOLON_AGENT_SKIP_PERMISSIONS", "HOLON_AGENT_SETTINGS"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("HOLON_SECRET_BUNDLE_PATH", "/nonexistent/holon_auth.json")

@@ -32,8 +32,7 @@ def probe_env(monkeypatch, tmp_path):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("HOLON_AGENT_KEY", "sk-test-very-secret-value")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api-test-very-secret-value")
-    for name in ("CLAUDE_CODE_OAUTH_TOKEN",):
-        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     return tmp_path
 
 
@@ -815,3 +814,35 @@ def test_checkpoint_without_attribution_resumes_with_legacy_default():
 def test_module_constants():
     assert preflight.SKIP_ENV_VAR == "HOLON_SKIP_PREFLIGHT"
     assert preflight.TIMEOUT_ENV_VAR == "HOLON_PREFLIGHT_TIMEOUT"
+
+
+def test_probe_discovers_the_secrets_file_and_drops_a_stale_holon_agent_key(
+    probe_env, monkeypatch, isolated_env_file_dir
+):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("HOLON_AGENT_KEY", make_probe("stale"))
+    value = "sk-ant-" + "oat" + make_probe("file")
+    secrets = probe_env / ".holon" / "secrets" / "claude-oauth-token"
+    secrets.parent.mkdir(parents=True)
+    secrets.write_text(value + "\n", encoding="utf-8")
+    secrets.chmod(0o600)
+    seen = {}
+
+    assert run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=_record_probe(seen)).ok
+
+    assert f"CLAUDE_CODE_OAUTH_TOKEN={value}" in seen["lines"]
+    assert not any(line.startswith(("HOLON_AGENT_KEY=", "ANTHROPIC_API_KEY=")) for line in seen["lines"])
+    assert value not in " ".join(seen["cmd"])
+
+
+def test_probe_remaps_a_mis_named_explicit_token_and_drops_the_wrong_variable(
+    probe_env, monkeypatch, isolated_env_file_dir
+):
+    value = "sk-ant-" + "oat" + make_probe("mis")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", value)
+    seen = {}
+
+    assert run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=_record_probe(seen)).ok
+
+    assert f"CLAUDE_CODE_OAUTH_TOKEN={value}" in seen["lines"]
+    assert not any(line.startswith("ANTHROPIC_API_KEY=") for line in seen["lines"])

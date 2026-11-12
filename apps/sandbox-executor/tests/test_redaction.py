@@ -440,6 +440,14 @@ def test_redact_command_replaces_the_whole_settings_value_in_every_form(secret_b
     assert redact_command(["claude", "--settings", blob, "-p", "go"]) == "claude --settings <redacted> -p go"
 
 
+def test_redact_command_settings_value_with_escaped_quotes_leaks_no_tail() -> None:
+    secret = make_probe("escaped")
+    script = 'exec claude --settings "{\\"env\\":{\\"K\\":\\"' + secret + '\\"}}" -p go'
+    line = redact_command(["sh", "-c", script])
+    assert_no_fragment(line, secret)
+    assert line.endswith("--settings <redacted> -p go")
+
+
 def test_claude_credential_variable_values_are_swept_from_echoes(monkeypatch) -> None:
     for name in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"):
         value = make_probe("cred")

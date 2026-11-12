@@ -44,7 +44,7 @@ from sandbox_executor.agent_runner import (
 )
 from sandbox_executor.budgets import stage_budget_handdown_env
 from sandbox_executor.calibration import run_calibrate
-from sandbox_executor.claude_credential import resolve_claude_credential
+from sandbox_executor.claude_credential import CLAUDE_CREDENTIAL_ENV_NAMES, resolve_claude_credential
 from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
 from sandbox_executor.flow import (
     SKIP_PUSH_DISPATCH_ERROR,
@@ -1215,6 +1215,8 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
         env_to_forward.pop("HOLON_AGENT_KEY", None)
         claude_credential = resolve_claude_credential()
         if claude_credential:
+            for name in CLAUDE_CREDENTIAL_ENV_NAMES:
+                env_to_forward.pop(name, None)
             env_to_forward[claude_credential[0]] = claude_credential[1]
 
     # Inside a timed host stage (holon flow), hand the container the time this stage has left so its own ceiling fires

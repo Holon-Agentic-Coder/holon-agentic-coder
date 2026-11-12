@@ -22,7 +22,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from sandbox_executor.claude_credential import secrets_file_path
+from sandbox_executor.claude_credential import read_secrets_file
 
 logger = logging.getLogger(__name__)
 
@@ -260,7 +260,7 @@ def _detect_api_key_present(norm: str, env: Mapping[str, str]) -> bool:
     if norm != "claude" and (os.path.isfile(bundle_path) or _is_set(env.get("HOLON_AGENT_KEY"))):
         return True
 
-    if norm == "claude" and os.path.isfile(secrets_file_path()):
+    if norm == "claude" and read_secrets_file() is not None:
         return True
 
     runner_env_keys: dict[str, tuple[str, ...]] = {

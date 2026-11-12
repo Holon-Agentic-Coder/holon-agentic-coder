@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from sandbox_executor.entrypoint.execution_workspace import workspace_mounted
 from sandbox_executor.git import changed_paths, run_git
 from sandbox_executor.redaction import redact_agent_secrets
 
@@ -132,10 +133,10 @@ def _resolve_pr(repo_dir: str, target: str, run_gh: RunGh) -> ReviewTarget:
 
 
 def _resolve_branch(repo_dir: str, branch: str) -> ReviewTarget:
-    """Resolve a branch to its full tip SHA, reusing the flow's fetch-then-resolve logic."""
+    """Resolve a branch to its full tip SHA, reusing the flow's resolve logic (fetching first only on the host)."""
     from sandbox_executor.flow import _resolve_review_commit
 
-    short_sha = _resolve_review_commit(repo_dir, branch, fetch=True)
+    short_sha = _resolve_review_commit(repo_dir, branch, fetch=not workspace_mounted())
     if not short_sha or short_sha == branch:
         raise ReviewTargetError(f"branch '{branch}' could not be resolved to a commit")
     proc = run_git(["rev-parse", "--verify", f"{short_sha}^{{commit}}"], cwd=repo_dir, check=False)
@@ -182,18 +183,25 @@ def _fetched_branch_ref(repo_dir: str, branch: str, role: str) -> tuple[str | No
     """Return ``(ref, "")`` for ``branch`` as origin has it, or ``(None, reason)`` when it is unusable.
 
     With an 'origin' remote the branch is fetched first and a failed fetch is a reason to refuse, so a
-    stale cached or unpushed local copy never decides the verdict (as for execution branches). Without
-    an 'origin' remote there is nothing to fetch, so the local branch is used as it is.
+    stale cached or unpushed local copy never decides the verdict (as for execution branches). In a
+    mounted role container nothing is fetched (it has no ssh): the ref the host fetched must exist.
+    Without an 'origin' remote there is nothing to fetch, so the local branch is used as it is.
     """
-    from sandbox_executor.flow import _fetch_refspecs_error, _has_origin_remote, _resolve_branch_ref
+    from sandbox_executor.flow.git_refs import _fetch_refspecs_error, _has_origin_remote, _resolve_branch_ref
 
-    if _has_origin_remote(repo_dir):
+    has_origin = _has_origin_remote(repo_dir)
+    mounted = has_origin and workspace_mounted()
+    if has_origin and not mounted:
         refspec = f"+refs/heads/{branch}:refs/remotes/origin/{branch}"
         error = _fetch_refspecs_error(repo_dir, [refspec])
         if error is not None:
             return None, f"{role} '{branch}' could not be fetched from origin: {error}"
     ref = _resolve_branch_ref(repo_dir, branch, prefer_remote=True)
-    return ref, "" if ref else f"{role} '{branch}' could not be resolved"
+    if mounted and (ref is None or not ref.startswith("refs/remotes/origin/")):
+        return None, f"{role} '{branch}' is not fetched from origin; the host must fetch it before dispatch"
+    if ref is None:
+        return None, f"{role} '{branch}' could not be resolved"
+    return ref, ""
 
 
 def _base_ref(repo_dir: str, base_branch: str) -> tuple[str | None, str]:
@@ -202,12 +210,12 @@ def _base_ref(repo_dir: str, base_branch: str) -> tuple[str | None, str]:
 
 
 def _pr_head_ref(repo_dir: str, sha: str) -> str | None:
-    """Return a PR head SHA once it is present, fetching it from origin when it is not there yet."""
+    """Return a PR head SHA once it is present, fetching it from origin on the host when it is not there yet."""
     from sandbox_executor.flow import _has_origin_remote
 
     if _commit_exists(repo_dir, sha):
         return sha
-    if _has_origin_remote(repo_dir):
+    if _has_origin_remote(repo_dir) and not workspace_mounted():
         run_git(["fetch", "--no-tags", "origin", sha], cwd=repo_dir, check=False, timeout=300)
     return sha if _commit_exists(repo_dir, sha) else None
 

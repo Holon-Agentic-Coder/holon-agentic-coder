@@ -75,7 +75,7 @@ def _resolve_review_commit(repo_dir: str, review_target: str, fetch: bool = True
     the review target, never from an unrelated 'HEAD': a branch is fetched from origin and its tip used
     (the local branch only when origin cannot be read), and a PR number or URL resolves to the PR head
     through gh. Only a 'HEAD' target, or a PR whose head gh cannot report, reads the checkout. With
-    fetch=False (dry runs) the already-fetched origin tracking ref is used without contacting origin.
+    fetch=False (dry runs, or a role container where the host fetched) the origin tracking ref is used as it is.
 
     Returns:
         str: The short commit SHA, or the target name itself when a branch target does not resolve.

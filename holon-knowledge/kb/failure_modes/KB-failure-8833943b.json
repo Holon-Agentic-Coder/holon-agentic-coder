@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-8833943b",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T09:27:17.862203+00:00",
+  "updated_ts": "2026-11-12T09:27:17.862203+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794459272-5b14d85a",
+      "ACT-FIND-1794459271-aad4bed4"
+    ],
+    "success_count": 0,
+    "failure_count": 4,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794458330-stubfetch/P-1794458347-aa9e9dfa-claude-agent-claude-sonnet-5-5/E-1794458626-bd9b5cc1-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 4 executions with identical context.",
+    "action": "Review Loop iteration 2 finding detected: FIND-R3-002-02",
+    "symptoms": [
+      "Unused monkeypatch parameter in the insteadOf test; remove it."
+    ]
+  }
+}

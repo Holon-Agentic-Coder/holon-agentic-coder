@@ -11,7 +11,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 from typing import Any, ClassVar
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from sandbox_executor import flow as flow_module
@@ -189,9 +189,10 @@ class TestChildLoopWithStubbedPipelines:
         intent_data: dict[str, Any],
         row: dict[str, Any],
         child_results: dict[str, StageResult] | None = None,
+        reconcile: Mock | None = None,
         **ctx_kw,
     ) -> tuple[StageResult, FlowContext, list[FlowContext]]:
-        """Run _run_decomposed_plan with each child pipeline, the merge and the integration replaced by stubs."""
+        """Run _run_decomposed_plan with each child pipeline, the merge, the integration and origin stubbed."""
         ctx = FlowContext(token_reduce=False, intent_data=intent_data, **ctx_kw)
         children: list[FlowContext] = []
         done = child_results or cls._READY
@@ -212,6 +213,8 @@ class TestChildLoopWithStubbedPipelines:
             patch("sandbox_executor.flow.stages.children.integrate_children", side_effect=integrated),
             patch("sandbox_executor.flow.stages.children.save_checkpoint"),
             patch("sandbox_executor.flow.stages.children._fetch_refspecs_error", return_value=None),
+            # Origin reconciliation fetches from the real origin, which is unreachable in the review-loop container.
+            patch("sandbox_executor.flow.stages.children.reconcile_with_origin", reconcile or Mock(return_value=[])),
         ):
             res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", row, base)
         return res, ctx, children
@@ -256,7 +259,8 @@ class TestChildLoopWithStubbedPipelines:
             "plan_branch": "I-1-parent/P-2-agent-model/_",
             "sub_intents": [{"goal": "Add the parser"}, {"description": "Add the flag\n- detail"}, "not-an-item"],
         }
-        res, ctx, children = self._run_children({"slug": "parent", "labels": labels}, row)
+        with patch("sandbox_executor.flow.stages.children.reconcile_with_origin", return_value=[]):
+            res, ctx, children = self._run_children({"slug": "parent", "labels": labels}, row)
 
         assert res.status == StageStatus.SUCCESS
         # A context without plan_branch (a checkpoint) still nests the children under the recorded plan branch.
@@ -328,6 +332,7 @@ class TestChildLoopWithStubbedPipelines:
                 patch.object(PipelineEngine, "run", return_value=self._READY),
                 patch("sandbox_executor.flow.stages.children.save_checkpoint"),
                 patch("sandbox_executor.flow.stages.children._fetch_refspecs_error", return_value=None),
+                patch("sandbox_executor.flow.stages.children.reconcile_with_origin", return_value=[]),
             ):
                 res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", self._ROW, {"execution_id": "E-1"})
         # No execution branch was recorded by the stubbed child, so the expected head is empty and fails closed.
@@ -395,6 +400,7 @@ class TestChildLoopWithStubbedPipelines:
         with (
             patch.object(PipelineEngine, "run", autospec=True, side_effect=boom),
             patch("sandbox_executor.flow.stages.children._fetch_refspecs_error", return_value=None),
+            patch("sandbox_executor.flow.stages.children.reconcile_with_origin", return_value=[]),
             patch("sandbox_executor.flow.stages.children.save_checkpoint") as save,
         ):
             res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", self._ROW, {"execution_id": "E-1"})
@@ -418,10 +424,10 @@ class TestChildLoopWithStubbedPipelines:
             progress[0].update(status="merged", execution_branch="I-1/E-1/_", pr_number=5, merge_commit="m0")
             return []
 
-        with patch(
-            "sandbox_executor.flow.stages.children.reconcile_with_origin", side_effect=origin_has_child_one
-        ) as reconcile:
-            res, _ctx, children = self._run_children({"slug": "parent"}, row, intent_branch="I-1-parent/_")
+        reconcile = Mock(side_effect=origin_has_child_one)
+        res, _ctx, children = self._run_children(
+            {"slug": "parent"}, row, intent_branch="I-1-parent/_", reconcile=reconcile
+        )
 
         reconcile.assert_called_once()
         assert res.status == StageStatus.SUCCESS
@@ -440,12 +446,10 @@ class TestChildLoopWithStubbedPipelines:
         assert [e["status"] for e in res.payload["children_progress"]] == ["pending"]
 
     def test_skip_review_refusal_does_no_origin_lookup_and_keeps_its_message(self):
-        with patch(
-            "sandbox_executor.flow.stages.children.reconcile_with_origin", side_effect=RuntimeError("origin down")
-        ) as reconcile:
-            res, _ctx, children = self._run_children(
-                {"slug": "parent"}, self._ROW, intent_branch="I-1-parent/_", skip_review=True
-            )
+        reconcile = Mock(side_effect=RuntimeError("origin down"))
+        res, _ctx, children = self._run_children(
+            {"slug": "parent"}, self._ROW, intent_branch="I-1-parent/_", skip_review=True, reconcile=reconcile
+        )
 
         reconcile.assert_not_called()
         assert res.status == StageStatus.FAILED

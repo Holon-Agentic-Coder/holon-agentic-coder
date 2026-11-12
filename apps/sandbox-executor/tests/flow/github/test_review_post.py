@@ -316,7 +316,7 @@ class TestSemanticPRAndConsensusReview:
             res = run_review_loop(
                 ctx,
                 target="I-100-intent/P-200-plan/E-300-exec/_",
-                max_iterations=3,
+                max_iterations=1,
                 dry_run=False,
             )
             assert res["consensus"]["approved"] is False

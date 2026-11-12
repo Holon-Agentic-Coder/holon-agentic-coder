@@ -36,7 +36,9 @@ docker run --rm \
 
 ### Claude Agent (`claude-agent`)
 
-Claude Code requires an Anthropic API key to authenticate:
+Claude Code authenticates with an Anthropic API key (`ANTHROPIC_API_KEY`, `sk-ant-api...`) or a subscription token from
+`claude setup-token` (`CLAUDE_CODE_OAUTH_TOKEN`, `sk-ant-oat...`). Holon also discovers either from
+`~/.holon/secrets/claude-oauth-token` and never uses `HOLON_AGENT_KEY` for claude:
 
 ```bash
 docker run --rm \

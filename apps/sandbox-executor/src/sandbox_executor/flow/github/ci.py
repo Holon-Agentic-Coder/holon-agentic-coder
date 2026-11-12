@@ -47,7 +47,7 @@ def probe_ci_checks(
     if shutil.which("gh") and clean_target:
         gh_env = {**os.environ, **(proxy_env or {}), "DOCKER_CLI_HINTS": "false"}
         try:
-            cmd = ["gh", "pr", "checks", clean_target, "--json", "bucket,name,state,event,workflow"]
+            cmd = ["gh", "pr", "checks", clean_target, "--json", "bucket,name,state,event,workflow,link"]
             proc = subprocess.run(
                 cmd,
                 cwd=repo_dir,

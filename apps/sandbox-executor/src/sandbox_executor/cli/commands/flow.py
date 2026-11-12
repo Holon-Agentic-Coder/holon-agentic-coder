@@ -23,7 +23,7 @@ from sandbox_executor.cli.options import (
     _TOKEN_REDUCE_HELP,
     add_target_worktree_option,
 )
-from sandbox_executor.flow import FlowContext, FlowStage
+from sandbox_executor.flow import FlowContext, FlowStage, format_final_head_ci
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 
 logger = logging.getLogger(__name__)
@@ -287,6 +287,9 @@ def _report_flow_summary(context: Any, result_dict: dict[str, Any], json_output:
         print(f"  {res.summary_line()}" if res else f"  {st}: not run")
         if res and res.status.value == "failed" and res.error:
             print(f"    -> Error: {cli.redact_cli_error(res.error)}")
+        final_head_ci = res.payload.get("final_head_ci") if res else None
+        if st == "calibrate" and final_head_ci and final_head_ci.get("state") != "skipped":
+            print(f"    {format_final_head_ci(final_head_ci)}")
     print("========================================================\n")
     decomposition_lines = cli.format_decomposition_summary(context.stage_results.get("execute"))
     for line in decomposition_lines:

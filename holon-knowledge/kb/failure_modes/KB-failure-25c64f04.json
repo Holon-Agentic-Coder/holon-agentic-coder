@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-25c64f04",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T08:55:05.718947+00:00",
+  "updated_ts": "2026-11-12T08:55:05.718947+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794457448-c8017769",
+      "ACT-FIND-1794457446-9b1c3233"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794456550-calci/P-1794456566-07246b8e-claude-agent-claude-sonnet-5-5/E-1794456668-1b420850-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 2 finding detected: FIND-R2-002-02",
+    "symptoms": [
+      "The CLI imports the formatter from a deep flow submodule, and the KNOWN_UNEXPORTED additions are unsorted; expose it via the package and sort the list."
+    ]
+  }
+}

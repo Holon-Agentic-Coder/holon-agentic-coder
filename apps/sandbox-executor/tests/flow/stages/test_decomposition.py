@@ -27,6 +27,7 @@ from tests.flow.helpers import SUB_INTENT_LIST, BudgetRoleAgents, _all_intent_ro
 from tests.flow.lookup_patch import patch_lookup_sites
 
 
+@pytest.mark.usefixtures("no_origin_reconcile")
 class TestEntropyBudgetHandoffInFlow:
     """Intent goal 4: no Stage 3 halt, budget handoff, bounded re-planning and sequential child pipelines."""
 

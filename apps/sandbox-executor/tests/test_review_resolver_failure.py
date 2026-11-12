@@ -26,7 +26,7 @@ from sandbox_executor.resolver_result import (
     resolver_error_text,
 )
 from sandbox_executor.review_ensemble import ConsensusVerdict, ReviewerVerdict, serialize_review_outcome
-from sandbox_executor.review_report import FindingRow, build_review_consensus_report
+from sandbox_executor.review_report import FindingRow
 from sandbox_executor.review_target import ReviewTarget
 
 from tests.review_fakes import FakeEnsemble, clean_reviewer, install_fake_reviewers, objecting_reviewer
@@ -251,7 +251,9 @@ def test_review_loop_halts_when_the_resolver_cannot_run_uv(tmp_path: Path) -> No
     assert not [r for r in _rows(tmp_path, "ACT-RES") if r.get("review_disposition") == "applied"]
     summary = [r for r in map(json.loads, _ledger_lines(tmp_path)) if r.get("entry_type") == "summary"]
     assert "resolver failed: Resolver pre-push verification could not run" in summary[-1]["summary"]
-    assert stubs.post.call_args.kwargs["consensus_data"]["approved"] is False
+    stubs.post.assert_not_called()
+    assert not _rows(tmp_path, "ACT-POST")
+    assert any("Not posting a review consensus" in line and "halted" in line for line in ctx.logs)
 
 
 def _ledger_lines(tmp_path: Path) -> list[str]:
@@ -282,12 +284,8 @@ def test_incident_failed_resolver_never_turns_a_dissent_into_unanimous_approval(
     assert res["consensus"]["approved"] is False
     assert res["ensemble_verdict"] == str(ConsensusVerdict.CHANGES_REQUESTED)
     assert "uv" in res["resolver_error"]
-    posted = stubs.post.call_args.kwargs
-    body = build_review_consensus_report(str(tmp_path), EXEC_TARGET, posted["consensus_data"], posted["reviewers"])
-    assert "APPROVED (3/3)" not in body
-    assert "— 2/3 approved" in body.splitlines()[0]
-    assert "0 critical, 0 important and 1 nit findings" in body
-    assert "nit problem in the handler" in body
+    stubs.post.assert_not_called()
+    assert not _rows(tmp_path, "ACT-POST")
 
 
 # --- (c) a resolver container that exits non-zero halts the loop ----------------------------------------------------

@@ -79,6 +79,7 @@ from sandbox_executor.flow.github.ci import (
     probe_ci_checks,
     resolve_ci_registration_timeout,
 )
+from sandbox_executor.flow.github.ci_final_head import format_final_head_ci
 from sandbox_executor.flow.github.ci_wait import (
     CiWaitPolicy,
     CiWaitResult,
@@ -123,6 +124,13 @@ from sandbox_executor.flow.ledger_reconcile import (
     reconcile_jsonl_ledger_conflict,
     reconcile_ledger_file,
     resolve_append_only_conflict,
+)
+from sandbox_executor.flow.partial_salvage import (
+    SalvageError,
+    SalvageResult,
+    leftover_paths,
+    salvage_for_resume,
+    salvage_leftovers,
 )
 from sandbox_executor.flow.pipeline import PipelineEngine, run_flow_pipeline
 from sandbox_executor.flow.review.adjudication import _augment_pr_text_with_rejected, _filter_adjudicated_findings
@@ -245,6 +253,8 @@ __all__ = [
     "PrefixSide",
     "ResolverInput",
     "ResolverOutcome",
+    "SalvageError",
+    "SalvageResult",
     "StageResult",
     "StageStatus",
     "_append_ledger_row",
@@ -335,11 +345,13 @@ __all__ = [
     "failed_partial_head",
     "fetch_base",
     "format_decomposition_summary",
+    "format_final_head_ci",
     "format_review_git_trailers",
     "gate_ci_flags",
     "generate_semantic_pr_metadata",
     "get_default_checkpoint_path",
     "is_pending_only",
+    "leftover_paths",
     "load_checkpoint",
     "migrate_checkpoint_data",
     "new_local_child_branches",
@@ -372,6 +384,8 @@ __all__ = [
     "run_review_loop",
     "run_review_loop_cli",
     "run_review_stage",
+    "salvage_for_resume",
+    "salvage_leftovers",
     "save_checkpoint",
     "settle_pending_ci",
     "validate_intent_questions",

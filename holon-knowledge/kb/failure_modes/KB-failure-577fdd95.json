@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-577fdd95",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T08:55:05.735393+00:00",
+  "updated_ts": "2026-11-12T08:55:05.735393+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794471563-28470490",
+      "ACT-FIND-1794471558-2547e44e"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794456550-calci/P-1794456566-07246b8e-claude-agent-claude-sonnet-5-5/E-1794456668-1b420850-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 3 finding detected: FIND-R1-003-01",
+    "symptoms": [
+      "Budgets of __init__.py (+2) and github/ci_wait.py (+2) were raised without a reason recorded in the description; add one."
+    ]
+  }
+}

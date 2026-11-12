@@ -19,6 +19,7 @@ from sandbox_executor.calibration import (
 )
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _stage_failure
+from sandbox_executor.flow.github.ci_final_head import check_final_head_ci, format_final_head_ci, not_pushed_record
 from sandbox_executor.flow.review.records import _bounded_error_context
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.stages.execute import _warn_ledger_failure
@@ -282,6 +283,7 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR
         _warn_ledger_failure(context, "Stage 5 ledger reconciliation", executions_file, e)
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    pushed = False
     # A failed calibration commits nothing, so it neither pushes nor fast-forwards the /calibrated branch.
     if not context.dry_run and calibration_succeeded and context.calibrated_branch:
         if not context.skip_push:
@@ -290,8 +292,12 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR
             run_git(["checkout", context.execution_branch], cwd=repo_dir, check=False)
             run_git(["merge", "--ff-only", context.calibrated_branch], cwd=repo_dir, check=False)
             if not context.skip_push:
-                run_git(["push", "origin", context.execution_branch], cwd=repo_dir, check=False)
+                pushed = (
+                    run_git(["push", "origin", context.execution_branch], cwd=repo_dir, check=False).returncode == 0
+                )
 
+    final_head_ci = check_final_head_ci(context, repo_dir, context.execution_branch) if pushed else not_pushed_record()
+    context.log(format_final_head_ci(final_head_ci))
     if not context.dry_run and not calibration_succeeded:
         context.log(
             "Stage 5 completed with a calibration failure: nothing was committed, pushed or fast-forwarded "
@@ -310,6 +316,7 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR
             "calibrated_branch": context.calibrated_branch,
             "calibration_report": report_dict,
             "promoted_candidates": promoted_candidates,
+            "final_head_ci": final_head_ci,
         },
     )
     context.stage_results["calibrate"] = result

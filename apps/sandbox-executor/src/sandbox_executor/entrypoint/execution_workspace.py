@@ -36,6 +36,19 @@ def start_branch_from_host_fetch(repo: GitRepository, repo_dir: str, base_branch
     repo.run(["checkout", "-B", new_branch, base_tip])
 
 
+# Ledgers and execution notes are engine-owned: an interrupted run leaves them dirty and salvage never commits them.
+ENGINE_OWNED_LEDGER_PATHS = (
+    "holon-knowledge/ledger/intents.jsonl",
+    "holon-knowledge/ledger/plans.jsonl",
+    "holon-knowledge/ledger/executions.jsonl",
+)
+ENGINE_OWNED_NOTES_GLOB = "executions/E-*.md"
+_ENGINE_OWNED_EXCLUDES = (
+    *(f":(exclude){path}" for path in ENGINE_OWNED_LEDGER_PATHS),
+    f":(exclude){ENGINE_OWNED_NOTES_GLOB}",
+)
+
+
 def validate_mounted_workspace(repo: GitRepository, repo_dir: str, plan_branch: str) -> str:
     """Validate the host worktree mounted at repo_dir and return the tip of ``plan_branch`` the host fetched into it.
 
@@ -43,9 +56,9 @@ def validate_mounted_workspace(repo: GitRepository, repo_dir: str, plan_branch: 
     for the planner, the plan branch for the executor).
 
     The container never clones, fetches, resets or cleans the mount. HEAD must be a readable commit, the worktree must
-    carry no uncommitted changes (an earlier crashed run's edits stay on the host for the operator, and are never
-    swept into this execution), and the plan branch must already resolve locally, because the host fetches it before
-    dispatch.
+    carry no uncommitted changes outside the engine-owned ledgers and notes (an earlier crashed run's edits stay on the
+    host for the operator, and are never swept into this execution), and the plan branch must already resolve locally,
+    because the host fetches it before dispatch.
 
     Raises:
         RuntimeError: If any of these checks fails.
@@ -53,7 +66,7 @@ def validate_mounted_workspace(repo: GitRepository, repo_dir: str, plan_branch: 
     repo.run(["config", "--global", "--add", "safe.directory", repo_dir], check=False)
     if repo.rev_parse("HEAD^{commit}", verify=True).returncode != 0:
         raise RuntimeError(f"mounted workspace at '{repo_dir}' has no readable HEAD commit")
-    status = repo.run(["status", "--porcelain"], check=False)
+    status = repo.run(["status", "--porcelain", "--", ".", *_ENGINE_OWNED_EXCLUDES], check=False)
     if status.returncode != 0 or (status.stdout or "").strip():
         raise RuntimeError(
             f"mounted workspace at '{repo_dir}' has uncommitted changes, which are kept on the host; commit, stash or "

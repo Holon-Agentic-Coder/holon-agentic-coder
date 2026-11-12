@@ -1,6 +1,7 @@
 """Suite-wide isolation: no ambient credentials, agent-harness markers, real pre-flight probes or ``gh`` writes."""
 
 import os
+import socket
 import subprocess
 from collections.abc import Iterator
 
@@ -8,6 +9,8 @@ import pytest
 from sandbox_executor import cli
 from sandbox_executor.agent_defaults import detected_harness_markers
 
+from tests import network_guard
+from tests.credential_env import CREDENTIAL_ENV_NAMES
 from tests.gh_write_guard import guarded_popen
 from tests.hermetic_fixtures import (
     REPO_ROOT,
@@ -17,7 +20,7 @@ from tests.hermetic_fixtures import (
 from tests.worktree_fixtures import init_feature_worktree
 
 # Ambient variables that can carry a live credential or change which code path a test exercises.
-_AMBIENT_CREDENTIAL_NAMES = ("GITHUB_TOKEN", "GH_TOKEN")
+_AMBIENT_CREDENTIAL_NAMES = ("GITHUB_TOKEN", "GH_TOKEN", *CREDENTIAL_ENV_NAMES)
 _AMBIENT_PREFIX = "HOLON_"
 
 # Set by the test harness itself, never by a user: the child-suite recursion sentinels and the
@@ -95,7 +98,8 @@ def hermetic_git_config(tmp_path_factory) -> Iterator[str]:
 def no_ambient_credentials(monkeypatch):
     """Run every test without the developer's or the sandbox's own credentials.
 
-    Clears `GITHUB_TOKEN`, `GH_TOKEN` and every `HOLON_*` variable except the harness's own, and
+    Clears `GITHUB_TOKEN`, `GH_TOKEN`, every name in `tests.credential_env.CREDENTIAL_ENV_NAMES` (the Claude
+    and other runner credentials) and every `HOLON_*` variable except the harness's own, and
     limits `find_github_token` to the (now cleared) environment so no test can reach the real
     `gh auth token`. A test that needs a token sets one explicitly, through `monkeypatch.setenv` or
     `patch.dict`.
@@ -106,6 +110,24 @@ def no_ambient_credentials(monkeypatch):
         if name in _AMBIENT_CREDENTIAL_NAMES or name.startswith(_AMBIENT_PREFIX):
             monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(cli, "find_github_token", lambda: os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN"))
+
+
+@pytest.fixture(autouse=True)
+def isolated_claude_secrets_file(tmp_path_factory, monkeypatch):
+    """Keep every test off the developer's real claude credential file under the real home.
+
+    Points HOME at an empty temporary directory and makes the secrets path follow the test's own HOME when it sets one
+    (and this directory when it clears the environment, where `~` would otherwise fall back to the passwd home).
+    """
+    from sandbox_executor import claude_credential
+
+    fake_home = str(tmp_path_factory.mktemp("claude-home"))
+    monkeypatch.setenv("HOME", fake_home)
+
+    def secrets_file_path() -> str:
+        return os.path.join(os.environ.get("HOME") or fake_home, ".holon", "secrets", "claude-oauth-token")
+
+    monkeypatch.setattr(claude_credential, "secrets_file_path", secrets_file_path)
 
 
 @pytest.fixture(autouse=True)
@@ -215,6 +237,26 @@ def gh_write_guard(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
     yield blocked
     if blocked:
         pytest.fail("Unmocked gh write command(s) ran in this test: " + "; ".join(blocked), pytrace=False)
+
+
+@pytest.fixture(autouse=True)
+def network_guard_fixture(monkeypatch: pytest.MonkeyPatch, gh_write_guard: list[str]) -> Iterator[list[str]]:
+    """Fail any test that runs a git network command against a real remote or opens an inet connection.
+
+    ``git fetch``, ``pull``, ``push`` and ``ls-remote`` against a filesystem path or ``file://`` remote, loopback
+    connections and ``AF_UNIX`` sockets stay allowed. The operation is refused before it starts and the test fails at
+    teardown, even when the code under test swallows the refusal. Yields the list of blocked operations; a test that
+    expects a block clears it. Depends on ``gh_write_guard`` so its ``Popen`` wrapper is chained, not replaced.
+    """
+    blocked: list[str] = []
+    monkeypatch.setattr(subprocess, "Popen", network_guard.guarded_popen(blocked))
+    replacements = network_guard.guarded_socket_calls(blocked)
+    monkeypatch.setattr(socket.socket, "connect", replacements["socket.connect"])
+    monkeypatch.setattr(socket.socket, "connect_ex", replacements["socket.connect_ex"])
+    monkeypatch.setattr(socket, "getaddrinfo", replacements["getaddrinfo"])
+    yield blocked
+    if blocked:
+        pytest.fail("Network access ran in this test: " + "; ".join(blocked), pytrace=False)
 
 
 #: Tests (path under tests/, then a class, function or ``Class.method`` qualname) that run from `feature_worktree_cwd`.

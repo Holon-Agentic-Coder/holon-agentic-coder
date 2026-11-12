@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-16599c31",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T09:27:17.942044+00:00",
+  "updated_ts": "2026-11-12T09:27:17.942044+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794474997-8e45f726",
+      "ACT-FIND-1794474995-08c1b855"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794458330-stubfetch/P-1794458347-aa9e9dfa-claude-agent-claude-sonnet-5-5/E-1794458626-bd9b5cc1-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 6 finding detected: FIND-R3-006-01",
+    "symptoms": [
+      "git pull value options (-s/--strategy, -X/--strategy-option) are not skipped, so `git pull -s ours origin` is mistaken for a local remote and slips past the guard; add them."
+    ]
+  }
+}

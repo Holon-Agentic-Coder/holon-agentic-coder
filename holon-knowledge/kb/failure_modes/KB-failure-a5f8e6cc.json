@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-a5f8e6cc",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T11:09:55.961059+00:00",
+  "updated_ts": "2026-11-12T11:09:55.961059+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794481222-7d84b258",
+      "ACT-FIND-1794481221-cd3eb936"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794480898-mdgate/P-1794480915-c8cd81b2-claude-agent-claude-sonnet-5-5/E-1794481013-c5a9f3d0-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R3-001-01",
+    "symptoms": [
+      "The wiring assertion greps source text for string literals; assert behaviour by monkeypatching run_markdown_gate and checking _verify_before_push calls it."
+    ]
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "kb_id": "KB-pattern-df1d354e",
+  "kb_type": "pattern",
+  "version": "1.0",
+  "created_ts": "2026-11-12T07:13:10.447608+00:00",
+  "updated_ts": "2026-11-12T07:13:10.447608+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-1794465081-80a61ab0",
+      "ACT-1794461720-3dc056ee",
+      "ACT-1794452741-cf8a8cce",
+      "ACT-1794447864-666a2c99",
+      "ACT-1794447438-de4d474b"
+    ],
+    "success_count": 17,
+    "failure_count": 0,
+    "wilson_lower": 0.8156818649911564,
+    "posterior_mean": 0.9473684210526315,
+    "ladder_state": "likely-success"
+  },
+  "tags": [
+    "code",
+    "proven"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Proven approach for claude-agent:claude-sonnet-5-5",
+    "description": "Advisory (likely-success): Historical executions matching this context pattern succeeded in 17/17 (100.0%) trials (Wilson 95% lower bound: 0.82). Consider evaluating proven approach: 'Executed agent claude-agent with model claude-sonnet-5-5'.",
+    "action": "Executed agent claude-agent with model claude-sonnet-5-5"
+  }
+}

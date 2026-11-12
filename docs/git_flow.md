@@ -360,12 +360,16 @@ The guarantee has five deliberate limits:
   `ssh`: before dispatch the host fetches the plan, execution and base branches into `refs/remotes/origin/`, and the
   guard only resolves those refs. A ref the host did not fetch is `diff_unverified` with a refusal naming the branch and
   saying the host must fetch it before dispatch (a branch that exists only locally in the container is refused as well,
-  even when it resolves); a failed host fetch stops the stage before the container starts. When the guard refuses the PR
-  (`empty_diff` or `diff_unverified`), the review loop fails closed: it does not wait for CI, runs no review iteration
-  and posts no consensus, so no evidence -- not even a Stage 3 `test_pass_rate` of 1.0 or green CI on an existing PR --
-  can approve it. The loop returns `approved: false` with the refusal as its `error` (an `empty_diff` refusal appends no
-  ledger rows; a `diff_unverified` refusal appends only a `failed` "halted without consensus" summary row naming it and
-  the review action event, with no `ACT-REV`, `ACT-FIND` or `ACT-POST` rows), and Stage 4 fails with the refusal's own
+  even when it resolves); a failed host fetch stops the stage before the container starts. The execution-branch
+  comparison (`_execution_effective_diff`) follows the same rule, and no other fetch is reachable from the review-loop
+  container: the remaining `git fetch` callers are host-side code (among others: the child-branch prefix and snapshot
+  fetches of Stages 1 to 3, the merge helper, calibration, `git_flow.fetch_origin_branch`, the PR-worktree provisioning
+  fetch) or guarded by `workspace_mounted()` (`_pr_head_ref`). When the guard refuses the PR (`empty_diff` or
+  `diff_unverified`), the review loop fails closed: it does not wait for CI, runs no review iteration and posts no
+  consensus, so no evidence -- not even a Stage 3 `test_pass_rate` of 1.0 or green CI on an existing PR -- can approve
+  it. The loop returns `approved: false` with the refusal as its `error` (an `empty_diff` refusal appends no ledger
+  rows; a `diff_unverified` refusal appends only a `failed` "halted without consensus" summary row naming it and the
+  review action event, with no `ACT-REV`, `ACT-FIND` or `ACT-POST` rows), and Stage 4 fails with the refusal's own
   reason (`Autonomous review halted: Refusing to create or update a PR for ...`), never as a test failure or as
   unmeasured tests, so Stage 5 does not run. An empty diff has consensus status `rejected` and an unverifiable one
   `failed`. Dry runs never invoke the guard, dispatch no reviewer and are never approved: a clean simulation reports
@@ -466,6 +470,25 @@ When the review ends without approval, the Stage 4 error says which outcome occu
 
 `test suite reported failures` appears only when the local test run really failed. When nothing specific blocked the
 review, the error says `no specific blocker was recorded` instead of blaming the tests.
+
+#### Final-head CI check (Stage 5)
+
+Stage 5 pushes the calibration commit to the execution branch, which starts CI again on a head the reviewers did not
+vote on. After that push, and only then, Stage 5 waits for the checks on that head with the same wait facility and
+budget (`HOLON_REVIEW_CI_WAIT_SECONDS`) and records the outcome as `final_head_ci` in the stage result, the stage log
+and the flow summary:
+
+| State         | Meaning                                                                                   |
+| ------------- | ----------------------------------------------------------------------------------------- |
+| `success`     | Every check on the final head passed.                                                     |
+| `failed`      | At least one check failed; the failed check names are listed.                             |
+| `timing_gate` | Every failed job failed only in its `CI Timing Gate` step; the job names are listed.      |
+| `unknown`     | CI was not measured, or checks were still pending when the budget ran out. Never success. |
+| `skipped`     | Nothing was pushed: a dry run, `--skip-push` or a failed calibration.                     |
+
+The timing-gate distinction reads the failed steps of the job with one extra `gh run view` call; when the steps are
+unavailable the failure is reported as `failed`. The check only reports: it never fails calibration, never reruns CI,
+never changes the 300 s timing limit, and the merge stays with the human maintainer.
 
 #### Safety Halt & Merge Boundary
 
@@ -1011,6 +1034,15 @@ If all sub-intents under a parent fail:
 - Parent intent is marked as failed
 - If parent is root intent, human review requested (may choose to retry or abandon)
 - If parent is sub-intent, it is discarded automatically
+
+### 13.2a Resuming Over Interrupted Work
+
+When Stage 3 is resumed (`holon flow --checkpoint ... --from-stage execute`) and the mounted worktree holds uncommitted
+edits from an interrupted run, the host commits them onto the failed execution branch of the plan as a partial-work
+commit (`execute: <execution_id> partial work (interrupted) for plan <plan_branch>`) and records it in
+`executions.jsonl`, then resumes from that commit. The ledgers and the execution notes file are excluded, so dirty
+engine-owned files alone produce no commit. Nothing is discarded, reset or amended, and the commit stays on the
+execution branch, never on `main` or the plan branch.
 
 ### 13.3 Partial Sub-Intent Success
 

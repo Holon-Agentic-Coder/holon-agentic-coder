@@ -1,0 +1,34 @@
+{
+  "kb_id": "KB-failure-02709b37",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T07:13:10.539595+00:00",
+  "updated_ts": "2026-11-12T07:13:10.539595+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-1794452184-84c7d27f",
+      "ACT-1794452109-978266a5",
+      "ACT-1794447629-26df6e2e",
+      "ACT-1794447500-ba2747de",
+      "ACT-1794447471-2060a934"
+    ],
+    "success_count": 0,
+    "failure_count": 10,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "test",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794446637-creds/P-1794446908-d2eae989-claude-agent-claude-sonnet-5-5/E-1794447006-7a118160-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 10 executions with identical context.",
+    "action": "Review Loop executed for I-1794446637-creds/P-1794446908-d2eae989-claude-agent-claude-sonnet-5-5/E-1794447006-7a118160-claude-agent-claude-sonnet-5-5/_",
+    "symptoms": [
+      "Consensus failed: findings=['FIND-CI-005']; Refusing to create or update a PR for 'I-1794446637-creds/P-1794446908-d2eae989-claude-agent-claude-sonnet-5-5/E-1794447006-7a118160-claude-agent-claude-sonnet-5-5/_': could not verify the execution diff (fetching 'I-1794446637-creds/P-1794446908-d2eae989-claude-agent-claude-sonnet-5-5/_' and 'I-1794446637-creds/P-1794446908-d2eae989-claude-agent-claude-sonnet-5-5/E-1794447006-7a118160-claude-agent-claude-sonnet-5-5/_' from origin failed: error: cannot run ssh: No such file or directory\nfatal: unable to fork).; final verdicts: no reviewer returned a verdict"
+    ]
+  }
+}

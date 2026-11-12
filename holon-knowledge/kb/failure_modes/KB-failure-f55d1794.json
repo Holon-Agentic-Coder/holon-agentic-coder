@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-f55d1794",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T09:27:17.865220+00:00",
+  "updated_ts": "2026-11-12T09:27:17.865220+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1794459272-b43c5e41"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794458330-stubfetch/P-1794458347-aa9e9dfa-claude-agent-claude-sonnet-5-5/E-1794458626-bd9b5cc1-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 2 evaluation for I-1794458330-stubfetch/P-1794458347-aa9e9dfa-claude-agent-claude-sonnet-5-5/E-1794458626-bd9b5cc1-claude-agent-claude-sonnet-5-5/_",
+    "symptoms": [
+      "Findings detected: ['FIND-R1-002-01', 'FIND-R1-002-02', 'FIND-R2-002-01', 'FIND-R2-002-02', 'FIND-R3-002-01', 'FIND-R3-002-02']"
+    ]
+  }
+}

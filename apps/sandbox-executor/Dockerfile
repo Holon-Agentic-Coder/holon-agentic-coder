@@ -33,6 +33,10 @@ RUN dpkgArch="$(dpkg --print-architecture)" && \
     curl -fsSL "https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-${ARCH}.tar.gz" | tar -xz --strip-components=1 -C /usr/local && \
     npm install -g npm@11.18.0
 
+# Bake in Prettier (the version formatting.py pins): the resolver's pre-push Markdown gate runs 'npx prettier', which
+# then resolves offline instead of downloading it inside the container.
+RUN npm install -g --no-audit --no-fund prettier@3.8.4
+
 # Install the pinned uv on the PATH of every user; the resolver's pre-push verification runs 'uv run task ...'
 COPY --from=uv-bin /uv /uvx /usr/local/bin/
 

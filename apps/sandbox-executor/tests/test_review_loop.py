@@ -1071,7 +1071,9 @@ def test_failed_post_makes_the_cli_exit_one(tmp_path, capsys):
 
     from sandbox_executor.flow import run_review_loop_cli
 
-    args = argparse.Namespace(repo_dir=str(tmp_path), target="feature/x", auto_pr=False, dry_run=False, json=False)
+    args = argparse.Namespace(
+        repo_dir=str(tmp_path), target="feature/x", auto_pr=False, dry_run=False, json=False, max_iterations=1
+    )
     (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
     stack, _verify, _post = _green_loop_patches(post={"return_value": {"dual_posted": False, "error": "HTTP 502"}})
     with stack:
@@ -1255,9 +1257,13 @@ class _LoopStubs:
 def _loop(tmp_path: Path, ensemble, *, size: int = 3, merge=None, ci=None, **ctx_kwargs):
     from sandbox_executor.flow import run_review_loop
 
+    budget = ctx_kwargs.pop("budget", 5)
+
     ctx = _ensemble_ctx(tmp_path, **ctx_kwargs)
     with _LoopStubs(merge, ci) as stubs:
-        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=5, ensemble_size=size, run_ensemble_fn=ensemble)
+        res = run_review_loop(
+            ctx, target=EXEC_TARGET, max_iterations=budget, ensemble_size=size, run_ensemble_fn=ensemble
+        )
     return res, stubs.post, ctx
 
 
@@ -1373,7 +1379,7 @@ def test_any_blocking_reviewer_outcome_stops_after_one_iteration_and_records_row
 
     results = _blocking_cases()[case]
     ensemble = FakeEnsemble(results)
-    res, post, _ = _loop(tmp_path, ensemble)
+    res, post, _ = _loop(tmp_path, ensemble, budget=1)
 
     assert res["consensus"]["approved"] is False
     assert res["ensemble_verdict"] in ("FAILED", "CHANGES_REQUESTED")
@@ -1408,7 +1414,9 @@ def test_cli_exits_one_for_every_blocking_reviewer_outcome(tmp_path, case):
 def test_changes_requested_maps_to_its_own_status_and_carries_reviewer_summaries(tmp_path):
     from tests.review_fakes import FakeEnsemble, clean_reviewer, objecting_reviewer
 
-    res, post, _ = _loop(tmp_path, FakeEnsemble([clean_reviewer(1), objecting_reviewer(2, "critical")]), size=2)
+    res, post, _ = _loop(
+        tmp_path, FakeEnsemble([clean_reviewer(1), objecting_reviewer(2, "critical")]), size=2, budget=1
+    )
 
     assert res["consensus"]["status"] == "changes_requested"
     assert res["severity"] == "critical"
@@ -1665,6 +1673,10 @@ def test_ensemble_size_help_text_and_validation(capsys):
 # --- Engine-owned loop: the iteration label versus the pass limit --------------------------------------------------
 
 
+def _leave_findings_open(target, iteration, findings, action_ids, rejected_findings):
+    return {"dispositions": [], "head_sha": target.head_sha, "pushed": False}
+
+
 def test_host_dispatch_label_flows_into_ledger_rows_and_the_posted_heading(tmp_path, monkeypatch):
     from sandbox_executor.flow import run_review_loop
     from sandbox_executor.review_ensemble import ConsensusVerdict, serialize_review_outcome
@@ -1684,7 +1696,14 @@ def test_host_dispatch_label_flows_into_ledger_rows_and_the_posted_heading(tmp_p
 
     ctx = _ensemble_ctx(tmp_path, dispatcher=fake_dispatch)
     with _LoopStubs() as stubs:
-        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=1, ensemble_size=1, first_iteration=4)
+        res = run_review_loop(
+            ctx,
+            target=EXEC_TARGET,
+            max_iterations=1,
+            ensemble_size=1,
+            first_iteration=4,
+            run_resolver_fn=_leave_findings_open,
+        )
 
     args = dispatched[0]
     assert "--iteration=4" in args

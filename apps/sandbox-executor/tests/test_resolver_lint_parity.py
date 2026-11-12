@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import tomllib
 from pathlib import Path
+
+import pytest
+from sandbox_executor.entrypoint.review_markdown_gate import MarkdownGateOutcome
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -50,11 +54,22 @@ def test_hygiene_workflow_runs_make_lint() -> None:
     assert re.search(r"run:\s*make lint\s*$", workflow, flags=re.MULTILINE)
 
 
-def test_resolver_runs_the_same_lint_task_as_ci() -> None:
+def test_resolver_runs_the_same_lint_task_as_ci(monkeypatch: pytest.MonkeyPatch) -> None:
     from sandbox_executor.entrypoint import review_loop
 
     tasks = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["taskipy"]["tasks"]
     assert "lint" in tasks
-    source = Path(review_loop.__file__).read_text(encoding="utf-8")
-    assert '["uv", "run", "task", "lint"]' in source
-    assert "run_markdown_gate" in source
+    order: list[str] = []
+
+    def fake_run_cmd(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        order.append(" ".join(args))
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    def fake_gate(*_: object) -> MarkdownGateOutcome:
+        order.append("markdown-gate")
+        return MarkdownGateOutcome()
+
+    monkeypatch.setattr(review_loop, "run_cmd", fake_run_cmd)
+    monkeypatch.setattr(review_loop, "run_markdown_gate", fake_gate)
+    review_loop._verify_before_push("/tmp")
+    assert order[:2] == ["uv run task lint", "markdown-gate"]

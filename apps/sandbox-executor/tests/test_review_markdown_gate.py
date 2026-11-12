@@ -155,3 +155,11 @@ def test_test_failure_after_clean_markdown_keeps_its_message(repo: Path, monkeyp
 def test_verification_passes_after_formatting(repo: Path, monkeypatch) -> None:
     (repo / "notes.md").write_text("changed   \n")
     assert _verify(repo, monkeypatch, 0, 0)[0] == (True, True, None)
+
+
+def test_git_status_failure_is_an_error_not_a_skip() -> None:
+    def run(args: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args, 128, "", "fatal: not a git repository")
+
+    outcome = run_markdown_gate("/tmp", run, [])
+    assert outcome.error and "git status failed" in outcome.error

@@ -41,10 +41,14 @@ class MarkdownGateOutcome:
 
 
 def changed_markdown_files(repo_dir: str, run: RunCommand, pathspec: list[str]) -> list[str]:
-    """List existing changed ``.md`` files from ``git status --porcelain -z`` within ``pathspec``."""
+    """List existing changed ``.md`` files from ``git status --porcelain -z`` within ``pathspec``.
+
+    Raises ``RuntimeError`` when git status fails, so the gate cannot silently skip.
+    """
     result = run(["git", "status", "--porcelain", "-z", "--untracked-files=all", *pathspec])
     if result.returncode != 0:
-        return []
+        detail = "\n".join(part for part in (result.stderr, result.stdout) if part).strip()
+        raise RuntimeError(f"git status failed (exit code {result.returncode}): {detail}")
     entries = (result.stdout or "").split("\0")
     files: list[str] = []
     index = 0
@@ -77,9 +81,13 @@ def _failure(step: str, result: subprocess.CompletedProcess[str], files: list[st
 
 def run_markdown_gate(repo_dir: str, run: RunCommand, pathspec: list[str]) -> MarkdownGateOutcome:
     """Check changed Markdown with Prettier; on failure format those files and re-check once."""
-    files = changed_markdown_files(repo_dir, run, pathspec)
+    listing_error: str | None = None
+    try:
+        files = changed_markdown_files(repo_dir, run, pathspec)
+    except RuntimeError as exc:
+        files, listing_error = [], str(exc)
     if not files:
-        return MarkdownGateOutcome()
+        return MarkdownGateOutcome(error=listing_error)
     checked = tuple(files)
     check = run([*PRETTIER_COMMAND, "--check", "--", *files])
     if check.returncode == 0:

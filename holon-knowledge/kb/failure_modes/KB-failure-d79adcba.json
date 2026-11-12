@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-d79adcba",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T09:55:54.120660+00:00",
+  "updated_ts": "2026-11-12T09:55:54.120660+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794476824-4aa01b42",
+      "ACT-FIND-1794476823-7d7ea108"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794476347-nopost/P-1794476365-334a8266-claude-agent-claude-sonnet-5-5/E-1794476446-ef30eb97-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R3-001-01",
+    "symptoms": [
+      "A halt (resolver error or no-convergence) exactly at the iteration cap posts nothing, which is undocumented and untested; document it and add a decide_post case."
+    ]
+  }
+}

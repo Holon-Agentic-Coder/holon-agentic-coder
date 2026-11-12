@@ -96,8 +96,10 @@ def _status(text: str) -> PreflightStatus | None:
 
 def parse_reset_time(text: str, now: datetime) -> datetime | None:
     """A future, aware reset time named in ``text`` (clock time, relative, retry-after or ISO), else None."""
-    found = _relative_reset(text, now) or _iso_reset(text) or _clock_reset(text, now)
-    return found if found is not None and found > now else None
+    for found in (_relative_reset(text, now), _iso_reset(text, now), _clock_reset(text, now)):
+        if found is not None and found > now:
+            return found
+    return None
 
 
 def _relative_reset(text: str, now: datetime) -> datetime | None:
@@ -111,15 +113,16 @@ def _relative_reset(text: str, now: datetime) -> datetime | None:
     return None
 
 
-def _iso_reset(text: str) -> datetime | None:
-    match = _ISO_RE.search(text)
-    if not match:
-        return None
-    try:
-        parsed = datetime.fromisoformat(match.group(0).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+def _iso_reset(text: str, now: datetime) -> datetime | None:
+    for match in _ISO_RE.finditer(text):
+        try:
+            parsed = datetime.fromisoformat(match.group(0).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        parsed = parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+        if parsed > now:
+            return parsed
+    return None
 
 
 def _clock_reset(text: str, now: datetime) -> datetime | None:

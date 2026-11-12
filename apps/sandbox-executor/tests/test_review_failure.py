@@ -64,6 +64,7 @@ def test_breach_is_a_timeout_and_unknown_needs_empty_output() -> None:
         ("try again in 2h 5m", 125),
         ("retry-after: 90", 1.5),
         ("available at 2026-11-12T12:30:00Z", 150),
+        ("2026-11-12T01:00:00Z usage limit reached, resets at 5pm", 7 * 60),
     ],
 )
 def test_reset_time_forms(text: str, minutes: float) -> None:

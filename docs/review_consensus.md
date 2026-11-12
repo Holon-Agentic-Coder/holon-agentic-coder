@@ -38,9 +38,9 @@ When every reviewer approved cleanly but one of these checks withheld consensus,
 A reviewer that exits non-zero without a usable report is classified by `review_failure.py` and the stop reason names
 the cause: `authentication` (missing, invalid or expired credential), `quota` (rate limit or usage limit, with the reset
 time when the message gives one), `timeout` (a turn, stall or stage budget breach), `other`, or `unknown` when the
-runner left no output at all. The log and the reviewer's failure reason carry a redacted excerpt (at most 600
-characters and 8 lines of stderr and the end of stdout); `sk-ant-` strings of any length and other credentials are
-masked before the excerpt is bounded. Because the reason reaches the flow summary, the summary names the cause too.
+runner left no output at all. The log and the reviewer's failure reason carry a redacted excerpt (at most 600 characters
+and 8 lines of stderr and the end of stdout); `sk-ant-` strings of any length and other credentials are masked before
+the excerpt is bounded. Because the reason reaches the flow summary, the summary names the cause too.
 
 A `quota` failure that names a reset time within the wait ceiling makes the ensemble wait until the reset and run that
 reviewer once more. Only one such wait happens per ensemble, and the wait is credited to the stage timer. A reset that

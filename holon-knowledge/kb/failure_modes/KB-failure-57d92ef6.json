@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-57d92ef6",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T10:35:58.960865+00:00",
+  "updated_ts": "2026-11-12T10:35:58.960865+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794479214-7a994a8c",
+      "ACT-FIND-1794479213-608b0df5"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794478300-salvage/P-1794478317-4eb07fff-claude-agent-claude-sonnet-5-5/E-1794478418-d600c349-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 3 finding detected: FIND-R2-003-01",
+    "symptoms": [
+      "A clean resume with HEAD still at an earlier salvage commit re-appends an interrupted failure row once a later executor summary lacks partial_head; limit the retry to genuinely unpublished commits."
+    ]
+  }
+}

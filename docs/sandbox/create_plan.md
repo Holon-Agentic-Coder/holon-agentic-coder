@@ -180,9 +180,9 @@ The plan used to arrive in one final stdout message, so a final message cut off 
 plan. The file on disk is now the source of truth:
 
 - **Write protocol.** `holon-config/prompts/planner.template.md` and the closing prompt instruction require the agent to
-  create `plans/P-{timestamp}-{agent}-{safe_model}.md` with its file-write tool immediately, write the header and the
-  `## Overall Plan Metrics` table first, append each `## Step` section as it is finished, then the strategy rationale,
-  justification and safety sections, and keep its final chat message to one line.
+  create `plans/{plan_id}.md` with its file-write tool immediately, write the header and the `## Overall Plan Metrics`
+  table first, append each `## Step` section as it is finished, then the strategy rationale, justification and safety
+  sections, and keep its final chat message to one line.
 - **Validation.** A plan file is _usable_ when it exists, is at least 800 bytes and the metric rows of its
   `## Overall Plan Metrics` section (up to the next `## ` heading, wherever the section sits) have numeric values for
   the five input metrics (`p_success`, `entropy`, `impact`, `cost`, `learning_value`); an `ev_pred` row is optional
@@ -224,7 +224,7 @@ Once execution completes, you should verify:
    > container (e.g., `pi-agent`, `claude-agent`, `antigravity-agent`).
 2. The generated plan markdown file is present under `plans/`:
    ```markdown
-   # plans/P-{timestamp}-{agent}-{model}.md
+   # plans/{plan_id}.md
    ```
 3. A plan entry is appended to `holon-knowledge/ledger/plans.jsonl` with parsed metrics and expected value (EV)
    calculations:
@@ -241,7 +241,7 @@ Once execution completes, you should verify:
      "learning_value": 0.0,
      "ev": 0.45,
      "created_at": "2026-06-27T13:14:15.000Z",
-     "plan_file": "plans/P-1772691068-pi-agent-gemini-3.8-flash.md",
+     "plan_file": "plans/P-1772691068-1a2b3c4d-pi-agent-gemini-3.8-flash.md",
      "status": "proposed"
    }
    ```

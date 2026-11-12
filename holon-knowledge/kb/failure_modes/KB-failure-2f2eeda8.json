@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-2f2eeda8",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T08:55:05.741891+00:00",
+  "updated_ts": "2026-11-12T08:55:05.741891+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794471671-dbed570d",
+      "ACT-FIND-1794471670-88d8038b"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794456550-calci/P-1794456566-07246b8e-claude-agent-claude-sonnet-5-5/E-1794456668-1b420850-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 4 finding detected: FIND-R2-004-01",
+    "symptoms": [
+      "timing_gate can be reported while other checks are still pending after the budget runs out; report failed or note the pending checks instead."
+    ]
+  }
+}

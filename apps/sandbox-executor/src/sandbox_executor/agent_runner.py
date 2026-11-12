@@ -11,6 +11,7 @@ from collections.abc import Callable
 from typing import Any
 
 from sandbox_executor import local_llm
+from sandbox_executor.claude_credential import CLAUDE_CREDENTIAL_ENV_NAMES, SECRETS_FILE_DISPLAY
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +240,20 @@ class AgentRunner:
     ) -> list[str]:
         raise NotImplementedError
 
+    def _missing_credentials_message(self) -> str:
+        if self.agent_id == "claude":
+            return (
+                "Error: Missing required credentials for agent 'claude'.\n"
+                f"Please write a token or API key to '{SECRETS_FILE_DISPLAY}' (from 'claude setup-token'), set "
+                "'CLAUDE_CODE_OAUTH_TOKEN' (sk-ant-oat...) or 'ANTHROPIC_API_KEY' (sk-ant-api...), or mount "
+                "session credentials. 'HOLON_AGENT_KEY' is not used for claude."
+            )
+        return (
+            f"Error: Missing required API credentials for agent '{self.agent_id}'.\n"
+            "Please set 'HOLON_AGENT_KEY', mount session credentials, or select a host-local model with "
+            f"'{local_llm.ENV_LOCAL_MODE}=1' plus a reachable endpoint."
+        )
+
     def compose_cmd(self, model_name: str, full_prompt: str) -> list[str]:
         """Assemble the agent argv without validating credentials (see :class:`StandardAgentRunner`)."""
         raise NotImplementedError
@@ -310,7 +325,7 @@ class StandardAgentRunner(AgentRunner):
                 target_agent = bundle.get("agent_id", "")
                 if not target_agent or target_agent.lower() == self.agent_id:
                     api_key = bundle.get("api_key") or bundle.get("token")
-                    if api_key:
+                    if api_key and self.agent_id != "claude":
                         os.environ["HOLON_AGENT_KEY"] = api_key
 
                     # Unpack session files into /home/holon/ if specified
@@ -437,12 +452,7 @@ class StandardAgentRunner(AgentRunner):
             has_key = any(os.getenv(k) for k in self.required_keys)
 
             if not (has_key or has_session_dir):
-                print(
-                    f"Error: Missing required API credentials for agent '{self.agent_id}'.\n"
-                    "Please set 'HOLON_AGENT_KEY', mount session credentials, or select a host-local model with "
-                    f"'{local_llm.ENV_LOCAL_MODE}=1' plus a reachable endpoint.",
-                    file=sys.stderr,
-                )
+                print(self._missing_credentials_message(), file=sys.stderr)
                 sys.exit(1)
 
     def compose_cmd(self, model_name: str, full_prompt: str) -> list[str]:
@@ -657,7 +667,7 @@ class ClaudeAgentRunner(StandardAgentRunner):
                 ],
             ),
             env_mappings=kwargs.pop("env_mappings", [EnvMapping("HOLON_AGENT_SETTINGS", "--settings")]),
-            required_keys=kwargs.pop("required_keys", ["HOLON_AGENT_KEY"]),
+            required_keys=kwargs.pop("required_keys", list(CLAUDE_CREDENTIAL_ENV_NAMES)),
             custom_validator=kwargs.pop("custom_validator", None),
             **kwargs,
         )

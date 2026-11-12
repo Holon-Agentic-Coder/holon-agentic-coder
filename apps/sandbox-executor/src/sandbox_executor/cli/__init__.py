@@ -44,6 +44,7 @@ from sandbox_executor.agent_runner import (
 )
 from sandbox_executor.budgets import stage_budget_handdown_env
 from sandbox_executor.calibration import run_calibrate
+from sandbox_executor.claude_credential import resolve_claude_credential
 from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
 from sandbox_executor.flow import (
     SKIP_PUSH_DISPATCH_ERROR,
@@ -1207,6 +1208,14 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
     # Set after the host forwarding loop so a host GITHUB_TOKEN cannot displace the chosen token.
     if gh_token:
         env_to_forward["GITHUB_TOKEN"] = gh_token
+
+    # The claude runner never takes HOLON_AGENT_KEY: its credential is an explicit claude variable or the secrets
+    # file, exported under the name its format decides. Set after the loop so a stale host value cannot displace it.
+    if local_llm.normalize_agent_id(agent_id) == "claude":
+        env_to_forward.pop("HOLON_AGENT_KEY", None)
+        claude_credential = resolve_claude_credential()
+        if claude_credential:
+            env_to_forward[claude_credential[0]] = claude_credential[1]
 
     # Inside a timed host stage (holon flow), hand the container the time this stage has left so its own ceiling fires
     # first; this replaces any forwarded host HOLON_STAGE_BUDGET_SECONDS. Every role-container dispatch goes

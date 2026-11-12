@@ -289,7 +289,13 @@ SECRET_FLAGS = {
 
 # Environment variables whose literal values `redact_env_literals` sweeps by default (the ledger and
 # agent-output path).
-DEFAULT_ENV_LITERAL_NAMES: tuple[str, ...] = ("GITHUB_TOKEN", "GH_TOKEN", "HOLON_AGENT_KEY")
+DEFAULT_ENV_LITERAL_NAMES: tuple[str, ...] = (
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "HOLON_AGENT_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+)
 
 # Variable NAMES, not patterns, whose literal values are also swept from echoed commands. The mitmweb
 # dashboard password is forwarded to the container under a name the key regex cannot recognise.
@@ -508,6 +514,31 @@ def carries_url_password(value: str) -> bool:
     return url_value_userinfo(value) is not None or redact_url_value(value) != value
 
 
+SETTINGS_REDACTION = "<redacted>"
+_SETTINGS_FLAG = "--settings"
+_SETTINGS_VALUE_RE = re.compile(r"""(--settings(?:=|\s+))(?:'[^']*'|"[^"]*"|\S+)""")
+
+
+def _redact_settings_values(args: list[str]) -> list[str]:
+    """Replace the whole value of `--settings`, secret-looking or not, with `<redacted>`.
+
+    The settings JSON can carry credentials, so no part of it may reach an echo. Covers the separate-argument and
+    `=`-joined forms and the flag inside a `sh -c` script argument.
+    """
+    out: list[str] = []
+    mask_next = False
+    for arg in args:
+        if mask_next:
+            out.append(SETTINGS_REDACTION)
+            mask_next = False
+        elif arg == _SETTINGS_FLAG:
+            out.append(arg)
+            mask_next = True
+        else:
+            out.append(_SETTINGS_VALUE_RE.sub(lambda m: f"{m.group(1)}{SETTINGS_REDACTION}", arg))
+    return out
+
+
 def redact_command_args(argv: Sequence[str]) -> list[str]:
     """Redact a command per argument with the same rules as `redact_command`.
 
@@ -522,7 +553,7 @@ def redact_command_args(argv: Sequence[str]) -> list[str]:
     """
     return [
         redact_env_literals(_PROVIDER_TOKEN_RE.sub(REDACTION_MARKER, arg), names=COMMAND_ECHO_ENV_NAMES)
-        for arg in redact_args([str(arg) for arg in argv])
+        for arg in redact_args(_redact_settings_values([str(arg) for arg in argv]))
     ]
 
 

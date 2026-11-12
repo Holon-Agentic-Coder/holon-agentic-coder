@@ -422,3 +422,27 @@ def test_redactor_masks_the_userinfo_of_a_delimited_password() -> None:
     url = f"https://alice:{sample}@{REPO}"
     assert redaction.redact_text(url) == f"https://{REDACTION_MARKER}@{REPO}"
     assert redaction.carries_url_password(url) is True
+
+
+@pytest.mark.parametrize("secret_bearing", [True, False], ids=["secret_bearing", "plain"])
+def test_redact_command_replaces_the_whole_settings_value_in_every_form(secret_bearing) -> None:
+    value = "sk-" + "ant-" + "oat01-" + make_probe("settings") if secret_bearing else "/work/conf.json"
+    blob = '{"env":{"CLAUDE_CODE_OAUTH_TOKEN":"' + value + '"}}' if secret_bearing else value
+    for argv in (
+        ["claude", "--settings", blob, "-p", "go"],
+        ["claude", f"--settings={blob}", "-p", "go"],
+        ["sh", "-c", f"exec claude --settings '{blob}' -p go"],
+    ):
+        line = redact_command(argv)
+        assert "<redacted>" in line
+        assert_no_fragment(line, value)
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in line
+    assert redact_command(["claude", "--settings", blob, "-p", "go"]) == "claude --settings <redacted> -p go"
+
+
+def test_claude_credential_variable_values_are_swept_from_echoes(monkeypatch) -> None:
+    for name in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"):
+        value = make_probe("cred")
+        monkeypatch.setenv(name, value)
+        assert_no_fragment(redact_command(["echo", f"value {value}"]), value)
+        assert redaction.is_secret_env_name(name)

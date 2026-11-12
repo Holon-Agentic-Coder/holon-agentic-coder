@@ -25,6 +25,7 @@ from typing import Any
 
 from sandbox_executor import local_llm
 from sandbox_executor.agent_defaults import AGENT_IMAGE_MAPPING, normalise_agent_id
+from sandbox_executor.claude_credential import SECRETS_FILE_DISPLAY, resolve_claude_credential
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,14 @@ SKIP_ENV_VAR = "HOLON_SKIP_PREFLIGHT"
 _EXCERPT_CHARS = 800
 _TRUTHY_ENV_VALUES = ("1", "true", "yes", "on")
 # Variables whose values are masked in a probe excerpt. HOLON_AGENT_SETTINGS can carry CLAUDE_CODE_OAUTH_TOKEN.
-_SENSITIVE_ENV_VARS = ("HOLON_AGENT_KEY", "HOLON_AGENT_SETTINGS", "GITHUB_TOKEN", "GH_TOKEN")
+_SENSITIVE_ENV_VARS = (
+    "HOLON_AGENT_KEY",
+    "HOLON_AGENT_SETTINGS",
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+)
 # Bare Anthropic API keys and OAuth tokens (sk-ant-...), which the generic sweep does not recognise on their own.
 _ANTHROPIC_TOKEN_RE = re.compile(r"sk-ant-[A-Za-z0-9_\-]+")
 
@@ -139,6 +147,13 @@ _PATTERNS: tuple[tuple[PreflightStatus, re.Pattern[str]], ...] = (
     ),
 )
 
+_CLAUDE_NOT_LOGGED_IN_HINT = (
+    f"No claude credential reached the container. Write it to {SECRETS_FILE_DISPLAY} (mode 0600), or set "
+    "CLAUDE_CODE_OAUTH_TOKEN for a subscription token (sk-ant-oat..., from 'claude setup-token'), or set "
+    "ANTHROPIC_API_KEY for an API key (sk-ant-api...). Alternatively initialise and mount the session "
+    "(see docs/executor/agent_credentials_requirements.md), or choose another runner with --agent or HOLON_AGENT."
+)
+
 _HINTS: dict[PreflightStatus, str] = {
     PreflightStatus.OK: "",
     PreflightStatus.QUOTA_EXHAUSTED: (
@@ -222,9 +237,22 @@ def redact_output(text: str) -> str:
     return redact_agent_secrets(redacted)
 
 
+def _missing_credential_message(agent: str, agent_id: str) -> str:
+    if agent_id == "claude":
+        return (
+            f"No claude credential was found: {SECRETS_FILE_DISPLAY} is missing or empty and neither "
+            "CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set. Run 'claude setup-token' to obtain a token."
+        )
+    return f"No HOLON_AGENT_KEY is set and no session credentials for '{agent}' were found to mount."
+
+
 def _has_host_credential(agent_id: str, session_mounts: list[str]) -> bool:
     """Return True when some credential could reach the container, mirroring the in-container validators."""
-    if os.getenv("HOLON_AGENT_KEY") or session_mounts:
+    if session_mounts:
+        return True
+    if agent_id == "claude":
+        return resolve_claude_credential() is not None
+    if os.getenv("HOLON_AGENT_KEY"):
         return True
     return agent_id == "codex" and os.getenv("HOLON_AGENT_OSS_MODE", "").lower() in ("true", "1")
 
@@ -266,6 +294,11 @@ def build_probe_docker_cmd(
         for key, value in os.environ.items()
         if key.startswith("HOLON_") and key != "HOLON_ROLE" and key not in RETIRED_ENV_VARS
     }
+    if agent_id == "claude":
+        env.pop("HOLON_AGENT_KEY", None)
+        claude_credential = resolve_claude_credential()
+        if claude_credential:
+            env[claude_credential[0]] = claude_credential[1]
     env["HOLON_AGENT_ID"] = agent_id
     env[SKIP_ENV_VAR] = "1"
     secret_env: dict[str, str] = {}
@@ -392,7 +425,8 @@ def run_preflight_probe(  # noqa: PLR0911
             agent,
             model,
             image,
-            output=f"No HOLON_AGENT_KEY is set and no session credentials for '{agent}' were found to mount.",
+            output=_missing_credential_message(agent, agent_id),
+            hint=_CLAUDE_NOT_LOGGED_IN_HINT if agent_id == "claude" else None,
         )
 
     container_name = f"holon-preflight-{uuid.uuid4().hex[:12]}"

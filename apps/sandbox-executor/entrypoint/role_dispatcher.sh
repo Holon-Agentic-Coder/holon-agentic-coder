@@ -17,7 +17,7 @@ if [ -f "$SECRET_BUNDLE" ]; then
             
             TARGET_AGENT_ID=$(echo "${HOLON_AGENT_ID:-}" | tr '[:upper:]' '[:lower:]' | sed 's/-agent//g' | sed 's/agent-//g')
             
-            if [ -z "$BUNDLE_AGENT_ID" ] || [ "$BUNDLE_AGENT_ID" = "$TARGET_AGENT_ID" ]; then
+            if [ "$TARGET_AGENT_ID" != "claude" ] && { [ -z "$BUNDLE_AGENT_ID" ] || [ "$BUNDLE_AGENT_ID" = "$TARGET_AGENT_ID" ]; }; then
                 API_KEY=$(jq -r '.api_key // .token // ""' "$SECRET_BUNDLE" 2>/dev/null || true)
                 if [ -n "$API_KEY" ] && [ "$API_KEY" != "null" ]; then
                     export HOLON_AGENT_KEY="$API_KEY"
@@ -29,7 +29,7 @@ if [ -f "$SECRET_BUNDLE" ]; then
     fi
 fi
 
-# Map HOLON_AGENT_KEY to legacy/vendor-specific API variables
+# Map HOLON_AGENT_KEY to legacy/vendor-specific API variables (not for claude, see below)
 if [ -n "${HOLON_AGENT_KEY:-}" ] && [ -n "${HOLON_AGENT_ID:-}" ]; then
     AGENT_ID=$(echo "${HOLON_AGENT_ID}" | tr '[:upper:]' '[:lower:]' | sed 's/-agent//g' | sed 's/agent-//g')
     case "${AGENT_ID}" in
@@ -38,7 +38,8 @@ if [ -n "${HOLON_AGENT_KEY:-}" ] && [ -n "${HOLON_AGENT_ID:-}" ]; then
             export GOOGLE_API_KEY="${HOLON_AGENT_KEY}"
             ;;
         claude)
-            export ANTHROPIC_API_KEY="${HOLON_AGENT_KEY}"
+            # The claude runner never consults HOLON_AGENT_KEY: the host exports CLAUDE_CODE_OAUTH_TOKEN or
+            # ANTHROPIC_API_KEY directly, chosen by the credential's format.
             ;;
         pi)
             export PI_API_KEY="${HOLON_AGENT_KEY}"

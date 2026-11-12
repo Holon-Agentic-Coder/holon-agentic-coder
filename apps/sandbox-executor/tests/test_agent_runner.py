@@ -184,7 +184,8 @@ class TestAgentRunner(unittest.TestCase):
             with patch.dict(os.environ, env, clear=True):
                 runner = get_runner("claude")
                 runner.validate()
-                self.assertEqual(os.getenv("HOLON_AGENT_KEY"), "bundle-claude-key")
+                # The claude runner never consults HOLON_AGENT_KEY, so the bundle key is not promoted to it.
+                self.assertIsNone(os.getenv("HOLON_AGENT_KEY"))
                 self.assertTrue(os.path.exists(os.path.join(fake_home, ".config/claude/config.json")))
 
             # Test targeting non-matching agent (gemini) -> should not set HOLON_AGENT_KEY
@@ -242,8 +243,8 @@ class TestAgentRunner(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             bundle_path = os.path.join(tmpdir, "holon_auth.json")
             bundle_data = {
-                "agent_id": "claude",
-                "api_key": "bundle-claude-key",
+                "agent_id": "pi",
+                "api_key": "bundle-pi-key",
             }
             with open(bundle_path, "w") as f:
                 json.dump(bundle_data, f)
@@ -252,9 +253,9 @@ class TestAgentRunner(unittest.TestCase):
             os.makedirs(fake_home, exist_ok=True)
             env = {"HOLON_SECRET_BUNDLE_PATH": bundle_path, "HOME": fake_home}
             with patch.dict(os.environ, env, clear=True):
-                runner = get_runner("claude")
+                runner = get_runner("pi")
                 runner.validate()
-                self.assertEqual(os.getenv("HOLON_AGENT_KEY"), "bundle-claude-key")
+                self.assertEqual(os.getenv("HOLON_AGENT_KEY"), "bundle-pi-key")
 
     @pytest.mark.integration_test
     def test_real_images_have_binaries(self):

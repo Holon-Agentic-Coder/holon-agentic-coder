@@ -530,3 +530,72 @@ def test_classify_review_diff_passes_a_branch_straight_to_the_guard(tmp_path):
 
     assert classify_review_diff(str(repo), "same", run_gh=gh)[0] is DiffVerdict.EMPTY
     assert gh.calls == []
+
+
+# --------------------------------------------------------------------------------------
+# mounted role container: no fetch, the host has fetched the refs
+# --------------------------------------------------------------------------------------
+
+
+def _mounted_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A repo with an unreachable origin URL whose origin tracking refs were 'fetched by the host'."""
+    from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
+    from sandbox_executor.flow import git_refs
+
+    repo = _repo(tmp_path)
+    _git(repo, "remote", "add", "origin", "ssh://git@example.invalid/acme/widgets.git")
+    _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    _commit(repo, "feature.py", "y = 2\n", "feature")
+    _git(repo, "update-ref", f"refs/remotes/origin/{PLAN}", "HEAD")
+    monkeypatch.setenv("HOLON_TARGET_WORKTREE", SANDBOX_WORKSPACE_MOUNT)
+    real_run_git = rt.run_git
+
+    def no_fetch(args, *a, **kw):
+        assert args[0] != "fetch", f"unexpected git fetch: {args}"
+        return real_run_git(args, *a, **kw)
+
+    monkeypatch.setattr(rt, "run_git", no_fetch)
+    monkeypatch.setattr(git_refs, "run_git", no_fetch)
+    return repo
+
+
+def test_mounted_review_resolves_prefetched_refs_without_fetching(tmp_path, monkeypatch):
+    repo = _mounted_repo(tmp_path, monkeypatch)
+
+    verdict, detail = classify_review_diff(str(repo), PLAN, "main")
+
+    assert verdict is DiffVerdict.VERIFIED, detail
+
+
+def test_mounted_review_refuses_a_branch_the_host_did_not_fetch(tmp_path, monkeypatch):
+    repo = _mounted_repo(tmp_path, monkeypatch)
+
+    verdict, detail = classify_review_diff(str(repo), "missing/branch", "main")
+
+    assert verdict is DiffVerdict.UNVERIFIED
+    assert "'missing/branch'" in detail
+    assert "host must fetch it before dispatch" in detail
+
+
+def test_mounted_review_never_fetches_a_missing_pr_head_sha(tmp_path, monkeypatch):
+    repo = _mounted_repo(tmp_path, monkeypatch)
+    target = ReviewTarget(raw="90", head_branch="feature/x", head_sha=HEAD_SHA, pr_number=90)
+
+    verdict, detail = verify_review_diff(str(repo), target, "main")
+
+    assert verdict is DiffVerdict.UNVERIFIED
+    assert "could not be resolved" in detail
+
+
+def test_host_review_still_fetches_before_resolving(tmp_path, monkeypatch):
+    repo = _mounted_repo(tmp_path, monkeypatch)
+    monkeypatch.delenv("HOLON_TARGET_WORKTREE")
+    from sandbox_executor import flow
+
+    fetched: list[list[str]] = []
+    monkeypatch.setattr(flow, "_fetch_refspecs_error", lambda _repo, refspecs: fetched.append(refspecs))
+
+    verdict, _ = classify_review_diff(str(repo), PLAN, "main")
+
+    assert verdict is DiffVerdict.VERIFIED
+    assert len(fetched) == 2

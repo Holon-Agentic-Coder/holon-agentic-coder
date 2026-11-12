@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from sandbox_executor.flow import (
     FlowContext,
     FlowStage,
@@ -422,3 +423,61 @@ def test_sandbox_workspace_mount_matches_the_container_workspace_default(monkeyp
     monkeypatch.setenv("HOLON_ROLE", "review-loop")
     monkeypatch.setenv("HOME", "/home/holon")
     assert get_workspace_dir() == SANDBOX_WORKSPACE_MOUNT
+
+
+# --------------------------------------------------------------------------------------
+# host pre-dispatch fetch of the plan, execution and base branches
+# --------------------------------------------------------------------------------------
+
+
+def _fetch_args(target: str):
+    import argparse
+
+    return argparse.Namespace(target=target, target_worktree=".", agent="claude-agent", model="m")
+
+
+def test_container_review_fetches_the_three_branches_once_before_dispatch(monkeypatch):
+    from sandbox_executor import git_flow
+    from sandbox_executor.cli.commands import review, review_fetch
+
+    exec_branch = "I-1-x/P-1-a/E-2-a/_"
+    calls: list[str] = []
+    monkeypatch.setattr(review_fetch, "_has_origin_remote", lambda _w: True)
+    monkeypatch.setattr(review_fetch, "_target_branch", lambda _w, _p: "main")
+    monkeypatch.setattr(git_flow, "fetch_origin_branch", lambda _w, branch: calls.append(branch))
+    monkeypatch.setattr(git_flow, "resolve_review_worktree", lambda *_a: "/wt")
+
+    assert review._container_review_worktree(_fetch_args(exec_branch)) == "/wt"
+    assert calls == ["I-1-x/P-1-a/_", exec_branch, "main"]
+
+
+def test_container_review_fetch_failure_stops_the_stage_before_dispatch(monkeypatch, capsys):
+    from sandbox_executor import cli, git_flow
+    from sandbox_executor.cli.commands import review, review_fetch
+
+    def failing_fetch(_w, branch):
+        raise RuntimeError(f"could not fetch branch '{branch}' from origin")
+
+    monkeypatch.setattr(review_fetch, "_has_origin_remote", lambda _w: True)
+    monkeypatch.setattr(review_fetch, "_target_branch", lambda _w, _p: "main")
+    monkeypatch.setattr(git_flow, "fetch_origin_branch", failing_fetch)
+    monkeypatch.setattr(
+        cli, "resolve_runner_and_model", lambda a, m: (type("R", (), {"value": a})(), type("R", (), {"value": m})())
+    )
+    monkeypatch.setattr(cli, "detect_holon_coherence", lambda v: v)
+    dispatched: list[object] = []
+    monkeypatch.setattr(cli, "run_docker_container", lambda *a, **k: dispatched.append(a) or 0)
+    monkeypatch.delenv("HOLON_ROLE", raising=False)
+    monkeypatch.delenv("HOLON_IN_SANDBOX", raising=False)
+    args = _fetch_args("I-1-x/P-1-a/E-2-a/_")
+    args.__dict__.update(
+        max_iterations=1, ensemble_size=1, local=False, dry_run=False, json=False, command="review-loop"
+    )
+    monkeypatch.setattr(review, "default_branch_worktree_allowed", lambda *_a: True)
+
+    with pytest.raises(SystemExit) as exc:
+        review.run(args)
+
+    assert exc.value.code == 1
+    assert not dispatched
+    assert "could not fetch branch" in capsys.readouterr().err

@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-661b57b7",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T23:03:52.770451+00:00",
+  "updated_ts": "2026-11-12T23:03:52.770451+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794524053-377fde1d",
+      "ACT-FIND-1794524051-9618bcfb"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794523620-keeppush/P-1794523636-de5c2107-claude-agent-claude-sonnet-5-5/E-1794523721-69784e3e-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R2-001-01",
+    "symptoms": [
+      "executor.py is over 1000 lines (1636) and grows by about 19 lines; move _record_sync_failure into entrypoint/sync_conflict.py."
+    ]
+  }
+}

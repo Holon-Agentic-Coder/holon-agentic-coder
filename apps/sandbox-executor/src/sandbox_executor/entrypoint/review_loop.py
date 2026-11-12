@@ -33,6 +33,7 @@ from typing import Any
 from sandbox_executor.agent_defaults import FALLBACK_AGENT, default_model_for
 from sandbox_executor.agent_runner import get_runner, get_workspace_dir
 from sandbox_executor.entrypoint.review_failure_detail import clear_full_output, with_short_summary
+from sandbox_executor.entrypoint.review_markdown_gate import run_markdown_gate
 from sandbox_executor.entrypoint.review_verification import (
     missing_tool_result,
     verification_error,
@@ -263,13 +264,20 @@ def _assert_safe_git_args(args: list[str]) -> None:
 
 
 def _verify_before_push(repo_dir: str) -> tuple[bool, bool, str | None]:
-    """Run ``uv run task lint`` and ``uv run task test`` before committing or pushing resolver changes.
+    """Run ``uv run task lint``, the changed-Markdown Prettier gate and ``uv run task test`` before committing or pushing resolver changes.
 
     A missing ``uv`` is a structured failure naming it (lint and tests unmeasured), never an exception.
     """
     lint_res = run_cmd(["uv", "run", "task", "lint"], cwd=repo_dir, check=False)
     if lint_res.returncode != 0:
         return False, False, verification_error("lint", lint_res, _bounded_error_context)
+    markdown = run_markdown_gate(
+        repo_dir, lambda args: run_cmd(args, cwd=repo_dir, check=False), _RESOLVER_PATHSPEC
+    )
+    if markdown.error:
+        return False, False, f"Resolver pre-push markdown formatting failed: {_bounded_error_context(markdown.error)}"
+    if markdown.formatted:
+        logger.info("Resolver formatted Markdown files: %s", ", ".join(markdown.formatted))
     test_env = with_short_summary(dict(os.environ))
     test_res = run_cmd(["uv", "run", "task", "test"], cwd=repo_dir, env=test_env, check=False)
     if test_res.returncode != 0:

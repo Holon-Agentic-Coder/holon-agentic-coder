@@ -165,7 +165,7 @@ def classify_final_head(
     if names:
         failed = _failed_checks_by_name(ci_status, names)
         steps = [step_lookup(c) for c in failed[:MAX_STEP_LOOKUPS]]
-        if len(failed) <= MAX_STEP_LOOKUPS and all(_timing_gate_only(s) for s in steps):
+        if len(failed) <= MAX_STEP_LOOKUPS and not ci_status.get("pending") and all(map(_timing_gate_only, steps)):
             return _record("timing_gate", timing_gate_checks=names, ci_wait=wait_record)
         return _record("failed", failed_checks=names, ci_wait=wait_record)
     if ci_status.get("pending", 0) > 0:

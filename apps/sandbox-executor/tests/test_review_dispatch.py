@@ -524,6 +524,16 @@ def test_fetch_review_branches_non_execution_head_fetches_head_and_main_only(mon
     assert calls == ["fix/E-12-thing", "main"]
 
 
+def test_fetch_review_branches_execution_shape_requires_the_underscore_final_segment(monkeypatch):
+    from sandbox_executor.cli.commands.review_fetch import fetch_review_branches
+
+    calls = _recorded_fetches(monkeypatch)
+
+    fetch_review_branches(".", "I-1-x/P-1-a/E-2-a/calibrated", None)
+
+    assert calls == ["I-1-x/P-1-a/E-2-a/calibrated", "main"]
+
+
 def test_fetch_review_branches_skips_everything_without_an_origin_remote(monkeypatch):
     from sandbox_executor.cli.commands.review_fetch import fetch_review_branches
 

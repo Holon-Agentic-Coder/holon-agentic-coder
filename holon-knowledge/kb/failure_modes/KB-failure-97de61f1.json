@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-97de61f1",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T23:03:52.758334+00:00",
+  "updated_ts": "2026-11-12T23:03:52.758334+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794524053-cfbc6c91",
+      "ACT-FIND-1794524051-4445723c"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794523620-keeppush/P-1794523636-de5c2107-claude-agent-claude-sonnet-5-5/E-1794523721-69784e3e-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R1-001-04",
+    "symptoms": [
+      "work_repo helper defined after use with an inline import; review-stage assertion is weak."
+    ]
+  }
+}

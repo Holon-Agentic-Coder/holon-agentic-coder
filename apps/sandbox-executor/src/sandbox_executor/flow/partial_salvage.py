@@ -50,7 +50,7 @@ def _excluded_pathspecs(exec_id: str | None) -> list[str]:
     paths = [os.path.join(LEDGER_DIR, name) for name in LEDGER_NAMES]
     if exec_id:
         paths.append(os.path.join("executions", f"{exec_id}.md"))
-    return ["--", ".", *(f":(exclude){path}" for path in paths)]
+    return ["--", ".", *(f":(exclude,literal){path}" for path in paths)]
 
 
 def leftover_paths(repo_dir: str, exec_id: str | None = None) -> list[str]:
@@ -66,9 +66,8 @@ def leftover_paths(repo_dir: str, exec_id: str | None = None) -> list[str]:
         ["status", "--porcelain", "-z", "--untracked-files=all", "--no-renames", *spec], cwd=repo_dir, check=False
     )
     if res.returncode != 0 or not isinstance(res.stdout, str):
-        return []
-    paths = [entry[3:] for entry in res.stdout.split("\0") if entry]
-    return paths
+        raise SalvageError(f"could not read the worktree status: {redact_agent_secrets((res.stderr or '').strip())}")
+    return [entry[3:] for entry in res.stdout.split("\0") if entry]
 
 
 def _current_branch(repo_dir: str) -> str | None:
@@ -100,7 +99,8 @@ def _commit_leftovers(repo_dir: str, plan_branch: str, exec_id: str, files: list
     run_git(["add", "--all", *spec], cwd=repo_dir)
     env = {**os.environ, **EXECUTOR_GIT_ENV}
     message = f"execute: {exec_id} partial work (interrupted) for plan {plan_branch}"
-    run_git(["commit", "-m", redact_agent_secrets(message), "--", *files], cwd=repo_dir, env=env)
+    literal = [f":(literal){f}" for f in files]
+    run_git(["commit", "-m", redact_agent_secrets(message), "--", *literal], cwd=repo_dir, env=env)
     return run_git(["rev-parse", "HEAD"], cwd=repo_dir).stdout.strip()
 
 

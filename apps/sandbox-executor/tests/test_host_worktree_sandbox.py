@@ -1062,3 +1062,15 @@ def test_g_holon_execute_reuses_an_existing_flow_worktree(repo: Path, flow_workt
 
     assert execution_worktree(_PLAN, str(flow_worktree)) == str(flow_worktree)
     assert _worktrees(repo) == before
+
+
+def test_d_executor_ignores_a_dirty_engine_owned_ledger(repo: Path, flow_worktree: Path) -> None:
+    from sandbox_executor.entrypoint import executor
+
+    tip = _push_over_budget_plan(repo)
+    git_flow.fetch_origin_branch(str(flow_worktree), _PLAN)
+    ledger = flow_worktree / "holon-knowledge" / "ledger" / "executions.jsonl"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text('{"dirty": true}\n', encoding="utf-8")
+
+    assert validate_mounted_workspace(executor._get_repo(str(flow_worktree)), str(flow_worktree), _PLAN) == tip

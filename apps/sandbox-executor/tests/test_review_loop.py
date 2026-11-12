@@ -1147,7 +1147,7 @@ def test_reviewed_commit_lookup_fetches_only_outside_a_mounted_container(tmp_pat
             return_value={"all_passed": True, "source": "github_cli"},
         ),
         patch("sandbox_executor.flow.review.loop.create_or_update_pr", return_value={"success": True}),
-        patch("sandbox_executor.flow.review.loop.workspace_is_mounted", return_value=mounted),
+        patch("sandbox_executor.flow.review.loop.workspace_mounted", return_value=mounted),
         patch("sandbox_executor.flow.review.loop._resolve_reviewed_target", return_value=(None, None)),
         patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123") as resolve,
         patch(

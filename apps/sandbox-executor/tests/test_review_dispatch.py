@@ -481,3 +481,80 @@ def test_container_review_fetch_failure_stops_the_stage_before_dispatch(monkeypa
     assert exc.value.code == 1
     assert not dispatched
     assert "could not fetch branch" in capsys.readouterr().err
+
+
+def _recorded_fetches(monkeypatch, *, origin: bool = True) -> list[str]:
+    from sandbox_executor import git_flow
+    from sandbox_executor.cli.commands import review_fetch
+
+    calls: list[str] = []
+    monkeypatch.setattr(review_fetch, "_has_origin_remote", lambda _w: origin)
+    monkeypatch.setattr(review_fetch, "target_branch", lambda _w, _p: "release")
+    monkeypatch.setattr(git_flow, "fetch_origin_branch", lambda _w, branch: calls.append(branch))
+    return calls
+
+
+def test_fetch_review_branches_pr_base_replaces_the_intent_target(monkeypatch):
+    from sandbox_executor.cli.commands.review_fetch import fetch_review_branches
+
+    calls = _recorded_fetches(monkeypatch)
+
+    fetch_review_branches(".", "I-1-x/P-1-a/E-2-a/_", "develop")
+
+    assert calls == ["I-1-x/P-1-a/_", "I-1-x/P-1-a/E-2-a/_", "develop"]
+
+
+def test_fetch_review_branches_uses_the_intent_target_without_a_pr_base(monkeypatch):
+    from sandbox_executor.cli.commands.review_fetch import fetch_review_branches
+
+    calls = _recorded_fetches(monkeypatch)
+
+    fetch_review_branches(".", "I-1-x/P-1-a/E-2-a/_", None)
+
+    assert calls[-1] == "release"
+
+
+def test_fetch_review_branches_non_execution_head_fetches_head_and_main_only(monkeypatch):
+    from sandbox_executor.cli.commands.review_fetch import fetch_review_branches
+
+    calls = _recorded_fetches(monkeypatch)
+
+    fetch_review_branches(".", "fix/E-12-thing", None)
+
+    assert calls == ["fix/E-12-thing", "main"]
+
+
+def test_fetch_review_branches_skips_everything_without_an_origin_remote(monkeypatch):
+    from sandbox_executor.cli.commands.review_fetch import fetch_review_branches
+
+    calls = _recorded_fetches(monkeypatch, origin=False)
+
+    fetch_review_branches(".", "I-1-x/P-1-a/E-2-a/_", "main")
+
+    assert calls == []
+
+
+def test_fetch_review_branches_fetches_a_shared_branch_once(monkeypatch):
+    from sandbox_executor.cli.commands.review_fetch import fetch_review_branches
+
+    calls = _recorded_fetches(monkeypatch)
+
+    fetch_review_branches(".", "main", "main")
+
+    assert calls == ["main"]
+
+
+def test_container_review_pr_target_fetches_its_head_and_base(monkeypatch):
+    from sandbox_executor import git_flow
+    from sandbox_executor.cli.commands import review
+    from sandbox_executor.review_target import ReviewTarget
+
+    calls = _recorded_fetches(monkeypatch)
+    resolved = ReviewTarget(
+        raw="7", head_branch="I-1-x/P-1-a/E-2-a/_", head_sha="0" * 40, pr_number=7, base_branch="develop"
+    )
+    monkeypatch.setattr(review, "resolve_review_target", lambda *_a: resolved)
+    monkeypatch.setattr(git_flow, "resolve_review_worktree", lambda *_a: "/wt")
+
+    assert review._container_review_worktree(_fetch_args("7")) == "/wt"
+    assert calls == ["I-1-x/P-1-a/_", "I-1-x/P-1-a/E-2-a/_", "develop"]

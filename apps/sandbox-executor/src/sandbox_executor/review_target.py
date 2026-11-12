@@ -11,7 +11,6 @@ An all-digit target is always treated as a PR number, never as a branch name.
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -20,7 +19,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
+from sandbox_executor.entrypoint.execution_workspace import workspace_mounted
 from sandbox_executor.git import changed_paths, run_git
 from sandbox_executor.redaction import redact_agent_secrets
 
@@ -77,11 +76,6 @@ class DiffVerdict(StrEnum):
     VERIFIED = "verified"
     EMPTY = "empty"
     UNVERIFIED = "unverified"
-
-
-def workspace_is_mounted() -> bool:
-    """True in a role container whose workspace is the host worktree, where the host has fetched every ref."""
-    return os.getenv("HOLON_TARGET_WORKTREE") == SANDBOX_WORKSPACE_MOUNT
 
 
 def is_pr_reference(target: str) -> bool:
@@ -142,7 +136,7 @@ def _resolve_branch(repo_dir: str, branch: str) -> ReviewTarget:
     """Resolve a branch to its full tip SHA, reusing the flow's resolve logic (fetching first only on the host)."""
     from sandbox_executor.flow import _resolve_review_commit
 
-    short_sha = _resolve_review_commit(repo_dir, branch, fetch=not workspace_is_mounted())
+    short_sha = _resolve_review_commit(repo_dir, branch, fetch=not workspace_mounted())
     if not short_sha or short_sha == branch:
         raise ReviewTargetError(f"branch '{branch}' could not be resolved to a commit")
     proc = run_git(["rev-parse", "--verify", f"{short_sha}^{{commit}}"], cwd=repo_dir, check=False)
@@ -196,7 +190,7 @@ def _fetched_branch_ref(repo_dir: str, branch: str, role: str) -> tuple[str | No
     from sandbox_executor.flow.git_refs import _fetch_refspecs_error, _has_origin_remote, _resolve_branch_ref
 
     has_origin = _has_origin_remote(repo_dir)
-    mounted = has_origin and workspace_is_mounted()
+    mounted = has_origin and workspace_mounted()
     if has_origin and not mounted:
         refspec = f"+refs/heads/{branch}:refs/remotes/origin/{branch}"
         error = _fetch_refspecs_error(repo_dir, [refspec])
@@ -221,7 +215,7 @@ def _pr_head_ref(repo_dir: str, sha: str) -> str | None:
 
     if _commit_exists(repo_dir, sha):
         return sha
-    if _has_origin_remote(repo_dir) and not workspace_is_mounted():
+    if _has_origin_remote(repo_dir) and not workspace_mounted():
         run_git(["fetch", "--no-tags", "origin", sha], cwd=repo_dir, check=False, timeout=300)
     return sha if _commit_exists(repo_dir, sha) else None
 

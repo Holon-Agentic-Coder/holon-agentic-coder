@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from sandbox_executor import review_target as rt
+from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
 from sandbox_executor.review_target import (
     PR_VIEW_FIELDS,
     DiffVerdict,
@@ -539,7 +540,6 @@ def test_classify_review_diff_passes_a_branch_straight_to_the_guard(tmp_path):
 
 def _mounted_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A repo with an unreachable origin URL whose origin tracking refs were 'fetched by the host'."""
-    from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
     from sandbox_executor.flow import git_refs
 
     repo = _repo(tmp_path)
@@ -615,7 +615,7 @@ def _lookup_fetch_flag(tmp_path, monkeypatch) -> bool:
 
 
 def test_mounted_branch_target_resolves_without_fetching(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOLON_TARGET_WORKTREE", rt.SANDBOX_WORKSPACE_MOUNT)
+    monkeypatch.setenv("HOLON_TARGET_WORKTREE", SANDBOX_WORKSPACE_MOUNT)
 
     assert _lookup_fetch_flag(tmp_path, monkeypatch) is False
 
@@ -624,3 +624,13 @@ def test_host_branch_target_resolves_with_fetching(tmp_path, monkeypatch):
     monkeypatch.delenv("HOLON_TARGET_WORKTREE", raising=False)
 
     assert _lookup_fetch_flag(tmp_path, monkeypatch) is True
+
+
+def test_mounted_review_refuses_a_branch_that_only_exists_locally(tmp_path, monkeypatch):
+    repo = _mounted_repo(tmp_path, monkeypatch)
+    _git(repo, "branch", "local/only", "HEAD")
+
+    verdict, detail = classify_review_diff(str(repo), "local/only", "main")
+
+    assert verdict is DiffVerdict.UNVERIFIED
+    assert "host must fetch it before dispatch" in detail

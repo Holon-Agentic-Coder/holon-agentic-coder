@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-74c45bd4",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T07:13:10.536912+00:00",
+  "updated_ts": "2026-11-12T07:13:10.536912+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1794447471-claude-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794446637-creds/P-1794446908-d2eae989-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop halted without consensus after 1 iteration(s): Refusing to create or update a PR for 'I-1794446637-creds/P-1794446908-d2eae989-claude-agent-claude-sonnet-5-5/E-1794447006-7a118160-claude-agent-claude-sonnet-5-5/_': could not verify the execution diff (fetching 'I-1794446637-creds/P-1794446908-d2eae989-claude-agent-claude-sonnet-5-5/_' and 'I-1794446637-creds/P-1794446908-d2eae989-claude-agent-claude-sonnet-5-5/E-1794447006-7a118160-claude-agent-claude-sonnet-5-5/_' from origin failed: error: cannot run ssh: No such file or directory\nfatal: unable to fork).; final verdicts: no reviewer returned a verdict",
+    "symptoms": []
+  }
+}

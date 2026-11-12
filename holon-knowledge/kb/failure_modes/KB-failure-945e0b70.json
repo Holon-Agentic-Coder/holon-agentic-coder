@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-945e0b70",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T07:13:10.170151+00:00",
+  "updated_ts": "2026-11-12T07:13:10.170151+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794206718-d359a290"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794205479-flow-runs-in-dedicated-worktree-not-default-branch/P-1794205494-860c0862-claude-agent-claude-opus-5-5/E-1794205767-3c799dc6-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R3-001-01",
+    "symptoms": [
+      "Grows test files already over 1,000 lines (test_cli.py, test_calibration.py, test_pipeline.py, test_review_loop.py) with fixture imports and decorators; apply the fixture without growing them."
+    ]
+  }
+}

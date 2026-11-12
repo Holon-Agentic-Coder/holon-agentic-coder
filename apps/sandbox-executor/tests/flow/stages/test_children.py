@@ -256,7 +256,8 @@ class TestChildLoopWithStubbedPipelines:
             "plan_branch": "I-1-parent/P-2-agent-model/_",
             "sub_intents": [{"goal": "Add the parser"}, {"description": "Add the flag\n- detail"}, "not-an-item"],
         }
-        res, ctx, children = self._run_children({"slug": "parent", "labels": labels}, row)
+        with patch("sandbox_executor.flow.stages.children.reconcile_with_origin", return_value=[]):
+            res, ctx, children = self._run_children({"slug": "parent", "labels": labels}, row)
 
         assert res.status == StageStatus.SUCCESS
         # A context without plan_branch (a checkpoint) still nests the children under the recorded plan branch.

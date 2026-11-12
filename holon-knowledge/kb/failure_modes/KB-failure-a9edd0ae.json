@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-a9edd0ae",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T07:13:10.498956+00:00",
+  "updated_ts": "2026-11-12T07:13:10.498956+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-RES-1794391906-0f83c10a"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794388202-retire-the-flow-move-proof-snapshot/P-1794388224-67cb4776-claude-agent-claude-sonnet-5-5/E-1794388293-4728ecc5-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 8 finding R3-F2 left open (no evidenced adjudication)",
+    "symptoms": [
+      "unevidenced rejection (out of scope): apps/sandbox-executor/tests/flow/test_package_exports.py:84 (re-exporting requires editing src flow/__init__.py, outside permitted tests/flow and docs/architecture.md scope; allowlist is a shrink-only ratchet)"
+    ]
+  }
+}

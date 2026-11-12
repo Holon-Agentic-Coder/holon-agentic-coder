@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-389c7aa6",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T07:13:10.255098+00:00",
+  "updated_ts": "2026-11-12T07:13:10.255098+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1794227055-f5e531b4"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794224634-plan-owned-decomposition-with-plan-branch-children--1-record-the-decomposition-decision-on-the-plan-ro/P-1794225025-924685ae-claude-agent-claude-opus-5-5/E-1794225351-0062997c-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 2 reviewer 2 completed",
+    "symptoms": []
+  }
+}

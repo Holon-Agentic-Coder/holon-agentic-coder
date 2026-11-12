@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-cc56e7f7",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T07:13:10.285481+00:00",
+  "updated_ts": "2026-11-12T07:13:10.285481+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794230121-2999a32c"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794224634-plan-owned-decomposition-with-plan-branch-children--2-nest-decomposed-children-under-the-plan-branch-m/P-1794227872-152246bc-claude-agent-claude-opus-5-5/E-1794228146-88e62c5b-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R1-001-03",
+    "symptoms": [
+      "File over 1,000 lines grew from 2427 to 2433 lines; keep it at size or move the decomposition summary test."
+    ]
+  }
+}

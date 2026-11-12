@@ -341,6 +341,19 @@ def _unfetched_branch_message(repo_dir: str, branches: list[str]) -> str | None:
     return None
 
 
+def _origin_refs_error(repo_dir: str, plan_branch: str, execution_branch: str) -> str | None:
+    """Fetch both branches on the host, or only check the host-fetched refs in a mounted role container."""
+    branches = [plan_branch, execution_branch]
+    if workspace_mounted():
+        return _unfetched_branch_message(repo_dir, branches)
+    fetch_error = _fetch_refspecs_error(
+        repo_dir, [f"+refs/heads/{branch}:refs/remotes/origin/{branch}" for branch in branches]
+    )
+    if fetch_error:
+        return f"fetching '{plan_branch}' and '{execution_branch}' from origin failed: {fetch_error}"
+    return None
+
+
 def _execution_effective_diff(repo_dir: str, execution_branch: str) -> tuple[bool | None, str]:
     """Check whether an execution branch changes anything relative to its parent plan branch.
 
@@ -359,15 +372,9 @@ def _execution_effective_diff(repo_dir: str, execution_branch: str) -> tuple[boo
     if plan_branch is None:
         return True, "not an execution branch"
     if _has_origin_remote(repo_dir):
-        branches = [plan_branch, execution_branch]
-        if workspace_mounted():
-            missing = _unfetched_branch_message(repo_dir, branches)
-            if missing:
-                return None, missing
-        elif fetch_error := _fetch_refspecs_error(
-            repo_dir, [f"+refs/heads/{branch}:refs/remotes/origin/{branch}" for branch in branches]
-        ):
-            return None, f"fetching '{plan_branch}' and '{execution_branch}' from origin failed: {fetch_error}"
+        origin_error = _origin_refs_error(repo_dir, plan_branch, execution_branch)
+        if origin_error:
+            return None, origin_error
         plan_ref = f"refs/remotes/origin/{plan_branch}"
         exec_ref = f"refs/remotes/origin/{execution_branch}"
         source = "origin"

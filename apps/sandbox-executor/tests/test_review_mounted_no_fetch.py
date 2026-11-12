@@ -6,7 +6,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
 from sandbox_executor import git as git_module
 from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
 from sandbox_executor.flow import _execution_effective_diff

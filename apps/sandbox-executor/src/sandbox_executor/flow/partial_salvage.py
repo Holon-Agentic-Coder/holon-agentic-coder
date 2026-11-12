@@ -146,37 +146,36 @@ def _publish_partial(context: FlowContext, target: tuple[str, str], sha: str, pl
         raise SalvageError(f"partial work committed as {sha[:12]} on '{branch}' but not recorded: {error}")
 
 
-def _unrecorded_salvage_commit(repo_dir: str, branch: str, exec_id: str) -> tuple[str, int] | None:
-    """HEAD and its file count when HEAD is this run's salvage commit and the branch ledger does not record it."""
-    head = run_git(["log", "-1", "--format=%H%x00%s"], cwd=repo_dir, check=False)
-    if head.returncode != 0 or not isinstance(head.stdout, str) or "\0" not in head.stdout:
+def _unrecorded_salvage_commit(repo_dir: str, branch: str, exec_id: str) -> tuple[str, list[str]] | None:
+    """HEAD and its files when HEAD is this run's salvage commit and no ledger row at or after it records it."""
+    head = run_git(["log", "-1", "--format=%H%x00%cI%x00%s"], cwd=repo_dir, check=False)
+    parts = head.stdout.strip().split("\0", 2) if head.returncode == 0 and isinstance(head.stdout, str) else []
+    if len(parts) != 3 or not parts[2].startswith(f"execute: {exec_id} partial work (interrupted)"):
         return None
-    sha, subject = head.stdout.strip().split("\0", 1)
-    if not subject.startswith(f"execute: {exec_id} partial work (interrupted)"):
-        return None
+    sha, committed_at = parts[:2]
     recorded = _latest_execution_summary(
         _read_ledger_rows(repo_dir, f"refs/remotes/origin/{branch}", "executions.jsonl"), exec_id
     )
-    if (recorded or {}).get("partial_head") == sha:
-        return None
-    files = run_git(["diff-tree", "--no-commit-id", "--name-only", "-r", "--root", sha], cwd=repo_dir, check=False)
-    count = len([f for f in (files.stdout or "").splitlines() if f]) if isinstance(files.stdout, str) else 0
-    return sha, count
+    try:
+        if recorded and datetime.fromisoformat(recorded["created_at"]) > datetime.fromisoformat(committed_at):
+            return None
+    except (KeyError, TypeError, ValueError):
+        pass
+    listing = run_git(["diff-tree", "--no-commit-id", "--name-only", "-r", "--root", sha], cwd=repo_dir, check=False)
+    return sha, [f for f in listing.stdout.splitlines() if f] if isinstance(listing.stdout, str) else []
 
 
 def salvage_leftovers(context: FlowContext, plan_prefix: str) -> SalvageResult:
     """Commit the worktree's leftovers as partial work, publish the branch and record it in ``executions.jsonl``.
 
     Returns an empty result, touching nothing, when only engine-owned files (or nothing) are dirty and no earlier
-    salvage commit is waiting to be published. An earlier salvage whose push or ledger append failed is retried
-    from its local commit, so a clean worktree never hides unrecorded partial work.
+    salvage commit awaits publishing; one whose push or ledger append failed is retried from its local commit.
 
     Raises:
         SalvageError: If the worktree is on the wrong branch or the commit, push or ledger append fails.
     """
     repo_dir = context.target_worktree
     if not leftover_paths(repo_dir):
-        pending = None
         try:
             branch, exec_id = _salvage_branch(repo_dir, plan_prefix)
             pending = _unrecorded_salvage_commit(repo_dir, branch, exec_id)
@@ -184,9 +183,9 @@ def salvage_leftovers(context: FlowContext, plan_prefix: str) -> SalvageResult:
             return SalvageResult()
         if pending is None:
             return SalvageResult()
-        sha, count = pending
-        _publish_partial(context, (branch, exec_id), sha, plan_prefix, count)
-        return SalvageResult(branch=branch, sha=sha)
+        sha, files = pending
+        _publish_partial(context, (branch, exec_id), sha, plan_prefix, len(files))
+        return SalvageResult(branch=branch, sha=sha, files=files)
     branch, exec_id = _salvage_branch(repo_dir, plan_prefix)
     files = leftover_paths(repo_dir, exec_id)
     if not files:

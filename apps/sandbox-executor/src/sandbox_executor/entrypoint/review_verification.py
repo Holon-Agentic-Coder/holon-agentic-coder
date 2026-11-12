@@ -39,7 +39,8 @@ def verification_error(
     """
     is_missing_tool = result.returncode == MISSING_TOOL_EXIT_CODE and MISSING_TOOL_MARKER in (result.stderr or "")
     if step == "test" and workspace and not is_missing_tool:
-        raw = "\n".join(part for part in (result.stdout, result.stderr) if part).strip() or "test failed"
+        # stderr first so the excerpt tail is the pytest summary on stdout, where the FAILED lines are.
+        raw = "\n".join(part for part in (result.stderr, result.stdout) if part).strip() or "test failed"
         return build_test_failure_message(result.returncode, raw, workspace)
     detail = bound((result.stderr or result.stdout or "").strip() or f"{step} failed")
     if is_missing_tool:

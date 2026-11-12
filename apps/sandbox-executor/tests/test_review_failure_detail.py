@@ -9,10 +9,12 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from sandbox_executor.entrypoint import review_loop
 from sandbox_executor.entrypoint.review_failure_detail import (
     MAX_NAMED_FAILURES,
     MESSAGE_MAX_CHARS,
+    clear_full_output,
     failed_test_ids,
     with_short_summary,
 )
@@ -55,6 +57,8 @@ def test_failed_names_survive_and_full_output_is_written_redacted(tmp_path: Path
 
 def test_written_file_is_git_ignored(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[3]
+    if not (repo_root / ".git").exists():
+        pytest.skip("not a git checkout")
     target = repo_root / ".holon" / "review" / "verification" / "test.log"
     proc = subprocess.run(["git", "check-ignore", "-q", str(target)], cwd=repo_root, check=False)
     assert proc.returncode == 0
@@ -88,8 +92,10 @@ def test_extraction_handles_ansi_xdist_and_duplicates() -> None:
 
 
 def test_pytest_addopts_gains_rf_unless_already_reporting() -> None:
-    assert with_short_summary({})["PYTEST_ADDOPTS"] == "-rf"
-    assert with_short_summary({"PYTEST_ADDOPTS": "-q"})["PYTEST_ADDOPTS"] == "-q -rf"
+    assert with_short_summary({})["PYTEST_ADDOPTS"] == "-rfE"
+    assert with_short_summary({"PYTEST_ADDOPTS": "-q"})["PYTEST_ADDOPTS"] == "-q -rfE"
+    assert with_short_summary({"PYTEST_ADDOPTS": "-rf"})["PYTEST_ADDOPTS"] == "-rf -rfE"
+    assert with_short_summary({"PYTEST_ADDOPTS": "-rfE"})["PYTEST_ADDOPTS"] == "-rfE"
     assert with_short_summary({"PYTEST_ADDOPTS": "-rA"})["PYTEST_ADDOPTS"] == "-rA"
 
 
@@ -97,4 +103,20 @@ def test_gate_passes_the_summary_option_to_the_test_run(tmp_path: Path) -> None:
     seen: list = []
     with patch.object(review_loop, "run_cmd", _fake_run(_long_output(), seen=seen)):
         review_loop._verify_before_push(str(tmp_path))
-    assert "-rf" in seen[-1]["PYTEST_ADDOPTS"]
+    assert "-rfE" in seen[-1]["PYTEST_ADDOPTS"]
+
+
+def test_extraction_keeps_spaced_ids_and_ignores_log_lines() -> None:
+    output = "FAILED tests/a.py::t[a b] - boom\nERROR something broke\nERROR tests/c.py - collect\n"
+    assert failed_test_ids(output) == ["tests/a.py::t[a b]", "tests/c.py"]
+
+
+def test_excerpt_tail_is_stdout_and_stale_log_cleared_on_pass(tmp_path: Path) -> None:
+    failed = subprocess.CompletedProcess(["x"], 1, stdout=_long_output(), stderr="uv warning " * 400)
+    message = verification_error("test", failed, _bounded_error_context, workspace=str(tmp_path))
+    assert "test_14" in message[-200:]
+    log = tmp_path / ".holon" / "review" / "verification" / "test.log"
+    assert log.exists()
+    clear_full_output(str(tmp_path), "test")
+    assert not log.exists()
+    clear_full_output(str(tmp_path), "test")

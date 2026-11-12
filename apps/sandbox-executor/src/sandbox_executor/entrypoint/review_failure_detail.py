@@ -4,6 +4,7 @@ The full output is redacted once, before extraction, truncation and writing, so 
 slip past the redaction patterns. The file lives under the git-ignored ``.holon/`` directory of the workspace.
 """
 
+import contextlib
 import os
 import re
 
@@ -16,7 +17,7 @@ HEAD_CHARS = 300
 VERIFICATION_DIR = os.path.join(".holon", "review", "verification")
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-_FAILED_LINE = re.compile(r"^(?:\[gw\d+\]\s*)?(?:FAILED|ERROR)\s+(\S+)")
+_FAILED_LINE = re.compile(r"^(?:\[gw\d+\]\s*)?(?:FAILED|ERROR)\s+(.+?)(?:\s+-\s.*)?$")
 
 
 def failed_test_ids(output: str) -> list[str]:
@@ -24,7 +25,8 @@ def failed_test_ids(output: str) -> list[str]:
     ids: dict[str, None] = {}
     for line in _ANSI.sub("", output).splitlines():
         match = _FAILED_LINE.match(line.strip())
-        if match:
+        # A node id contains "::" or names a .py file; this rejects captured log lines such as "ERROR something".
+        if match and ("::" in match.group(1) or ".py" in match.group(1)):
             ids.setdefault(match.group(1).rstrip(":"), None)
     return list(ids)
 
@@ -56,6 +58,12 @@ def write_full_output(workspace: str, step: str, text: str) -> str | None:
     return relative
 
 
+def clear_full_output(workspace: str, step: str) -> None:
+    """Remove a stale per-step output file left by an earlier failed run."""
+    with contextlib.suppress(OSError):
+        os.remove(os.path.join(workspace, VERIFICATION_DIR, f"{step}.log"))
+
+
 def head_and_tail(text: str, budget: int) -> str:
     """Return ``text`` unchanged when it fits ``budget``, else a short head and the tail around an omission marker."""
     if len(text) <= budget:
@@ -81,9 +89,13 @@ def build_test_failure_message(returncode: int, raw_output: str, workspace: str,
 
 
 def with_short_summary(env: dict[str, str]) -> dict[str, str]:
-    """Return ``env`` with ``-rf`` appended to ``PYTEST_ADDOPTS`` unless a ``-r`` option already reports failures."""
+    """Return ``env`` with ``-rfE`` appended to ``PYTEST_ADDOPTS`` unless ``-r`` already reports both.
+
+    ``-rfE`` keeps pytest's default ``E`` (collection and fixture errors) that a bare ``-rf`` would drop.
+    """
     addopts = env.get("PYTEST_ADDOPTS", "")
     for match in re.finditer(r"(?:^|\s)-r([A-Za-z]*)", addopts):
-        if set(match.group(1)) & set("faA"):
+        chars = set(match.group(1))
+        if "A" in chars or {"f", "E"} <= chars or {"a", "E"} <= chars:
             return env
-    return {**env, "PYTEST_ADDOPTS": f"{addopts} -rf".strip()}
+    return {**env, "PYTEST_ADDOPTS": f"{addopts} -rfE".strip()}

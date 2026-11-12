@@ -134,6 +134,6 @@ uv sync
 When the resolver's pre-push `uv run task test` fails, the halt message reads
 `Resolver pre-push test failed (exit code N); failed: <ids> (+K more); full output: <path>: <head ... tail>`. It names
 at most 10 failed test ids (about 600 characters), keeps a short head and the tail of the output, and stays within 2000
-characters. The gate sets `PYTEST_ADDOPTS` to include `-rf` unless it already reports failures. The complete output is
-redacted once, before anything is kept, and written to `.holon/review/verification/test.log` in the workspace. That
-directory is git-ignored, so it is never committed. Lint failures and missing tools keep their earlier messages.
+characters. The gate sets `PYTEST_ADDOPTS` to include `-rfE` unless it already reports failures and errors. The complete
+output is redacted once, before anything is kept, and written to `.holon/review/verification/test.log` in the workspace.
+That directory is git-ignored, so it is never committed. Lint failures and missing tools keep their earlier messages.

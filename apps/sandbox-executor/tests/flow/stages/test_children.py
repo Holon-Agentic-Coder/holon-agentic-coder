@@ -331,6 +331,7 @@ class TestChildLoopWithStubbedPipelines:
                 patch.object(PipelineEngine, "run", return_value=self._READY),
                 patch("sandbox_executor.flow.stages.children.save_checkpoint"),
                 patch("sandbox_executor.flow.stages.children._fetch_refspecs_error", return_value=None),
+                patch("sandbox_executor.flow.stages.children.reconcile_with_origin", return_value=[]),
             ):
                 res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", self._ROW, {"execution_id": "E-1"})
         # No execution branch was recorded by the stubbed child, so the expected head is empty and fails closed.
@@ -398,6 +399,7 @@ class TestChildLoopWithStubbedPipelines:
         with (
             patch.object(PipelineEngine, "run", autospec=True, side_effect=boom),
             patch("sandbox_executor.flow.stages.children._fetch_refspecs_error", return_value=None),
+            patch("sandbox_executor.flow.stages.children.reconcile_with_origin", return_value=[]),
             patch("sandbox_executor.flow.stages.children.save_checkpoint") as save,
         ):
             res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", self._ROW, {"execution_id": "E-1"})

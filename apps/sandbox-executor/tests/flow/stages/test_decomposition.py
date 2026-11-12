@@ -462,6 +462,7 @@ class TestEntropyBudgetHandoffInFlow:
         with (
             patch.object(PipelineEngine, "run", return_value={}) as run,
             patch("sandbox_executor.flow.stages.children._fetch_refspecs_error", return_value=None),
+            patch("sandbox_executor.flow.stages.children.reconcile_with_origin", return_value=[]),
         ):
             res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", row, {"execution_id": "E-1"})
 
@@ -482,6 +483,7 @@ class TestEntropyBudgetHandoffInFlow:
         with (
             patch.object(PipelineEngine, "run", return_value={}) as run,
             patch("sandbox_executor.flow.stages.children._fetch_refspecs_error", return_value="fetch timed out"),
+            patch("sandbox_executor.flow.stages.children.reconcile_with_origin", return_value=[]),
         ):
             res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", row, {"execution_id": "E-1"})
 

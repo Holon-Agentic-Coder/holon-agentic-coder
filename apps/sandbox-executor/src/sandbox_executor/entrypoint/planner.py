@@ -393,7 +393,7 @@ Include metrics in this format:
             json.dump({**intent_data, "replan_feedback": replan_feedback} if replan_feedback else intent_data, f)
 
         # Invoke AI agent
-        plan_md_rel = f"plans/P-{plan_seq}-{agent_name}-{safe_model}.md"
+        plan_md_rel = f"plans/{plan_id}.md"
         plan_md_path = os.path.join(repo_dir, plan_md_rel)
         os.makedirs(os.path.dirname(plan_md_path), exist_ok=True)
 

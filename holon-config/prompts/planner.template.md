@@ -11,7 +11,7 @@ value relative to cost, and explicitly justify that in the plan.
 3. You are encouraged to include high-entropy, exploratory steps if the potential learning value justifies the cost.
 
 Before planning, read the `world/` directory and `docs/safety.md`. You will be eliminated if you make code changes or
-fail to write the plan to `plans/P-{timestamp}-{agent}-{safe_model}.md`.
+fail to write the plan to `plans/{plan_id}.md`.
 
 Based on the following intent:
 
@@ -70,7 +70,7 @@ You will be eliminated from the selection process if you:
 
 **Write Protocol (incremental artefact):**
 
-1. Create `plans/P-{timestamp}-{agent}-{safe_model}.md` with your file-write tool immediately, before any long analysis.
+1. Create `plans/{plan_id}.md` with your file-write tool immediately, before any long analysis.
 2. Write the header and the `## Overall Plan Metrics` table first, with numeric values for every metric row. Update the
    values later if your estimates change.
 3. Append each `## Step N` section to the file as soon as it is finished, rather than holding the whole plan in memory.

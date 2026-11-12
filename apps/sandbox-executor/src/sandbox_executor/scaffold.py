@@ -190,7 +190,7 @@ Based on the following intent:
 and the current state of the project give a detailed plan. Enclose all arithmetic formulas and derivations in
 backtick code spans to maintain single-pass prettier convergence.
 
-**Write Protocol:** create `plans/P-{timestamp}-{agent}-{safe_model}.md` with your file-write tool immediately, write
+**Write Protocol:** create `plans/{plan_id}.md` with your file-write tool immediately, write
 the header and the `## Overall Plan Metrics` table first, append each step as it is finished, and keep your final chat
 message to one short confirmation line.
 

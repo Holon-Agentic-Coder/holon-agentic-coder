@@ -25,7 +25,7 @@ _GLOBAL_VALUE_OPTIONS = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--na
 # Subcommand options that take a separate value, so the value is not mistaken for the remote.
 _SUBCOMMAND_VALUE_OPTIONS = frozenset(
     {"--receive-pack", "--exec", "--upload-pack", "-o", "--push-option", "--depth", "--deepen", "--shallow-since"}
-    | {"--shallow-exclude", "--refmap", "-j", "--jobs", "--server-option", "--negotiation-tip", "--recurse-submodules"}
+    | {"--shallow-exclude", "--refmap", "-j", "--jobs", "--server-option", "--negotiation-tip"}
 )
 _SCP_LIKE = re.compile(r"^(?:[\w.+-]+@)?[\w.-]+:(?!//)")
 # The unpatched ``Popen``, for the guard's own ``git ls-remote --get-url`` probe (no network, no recursion).

@@ -87,9 +87,7 @@ def test_a_fetch_from_a_named_non_local_remote_is_refused_and_recorded(
     network_guard_fixture.clear()
 
 
-def test_an_insteadof_rewrite_to_a_real_remote_is_refused(
-    tmp_path: Path, network_guard_fixture: list[str], monkeypatch: pytest.MonkeyPatch
-):
+def test_an_insteadof_rewrite_to_a_real_remote_is_refused(tmp_path: Path, network_guard_fixture: list[str]):
     _init_repo(tmp_path)
     subprocess.run(["git", "remote", "add", "origin", "local-alias"], cwd=tmp_path, check=True)
     subprocess.run(

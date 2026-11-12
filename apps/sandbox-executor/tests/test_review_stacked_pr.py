@@ -202,7 +202,7 @@ def test_ci_probe_summary_does_not_depend_on_the_pull_request_base(
     summary = probe_ci_checks(str(tmp_path), CHILD_EXECUTION_BRANCH)
 
     assert fake_gh.calls == [
-        ["gh", "pr", "checks", CHILD_EXECUTION_BRANCH, "--json", "bucket,name,state,event,workflow"]
+        ["gh", "pr", "checks", CHILD_EXECUTION_BRANCH, "--json", "bucket,name,state,event,workflow,link"]
     ]
     assert {key: summary[key] for key in ("source", "total", "passed", "pending", "failed", "all_passed")} == {
         "source": "github_cli",

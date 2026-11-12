@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-d3e2cbdb",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T07:13:10.631541+00:00",
+  "updated_ts": "2026-11-12T07:13:10.631541+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794467114-d6e4b9ff",
+      "ACT-FIND-1794467113-544c608c"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794464833-scrubcreds/P-1794464849-2a9a4a6b-claude-agent-claude-sonnet-5-5/E-1794464926-c106ee4e-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 6 finding detected: FIND-R2-006-01",
+    "symptoms": [
+      "Unrelated lock regeneration lowers requires-python from >=3.14 to >=3.13; revert."
+    ]
+  }
+}

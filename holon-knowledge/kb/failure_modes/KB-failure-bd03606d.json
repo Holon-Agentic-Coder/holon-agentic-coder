@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-bd03606d",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T07:13:10.604251+00:00",
+  "updated_ts": "2026-11-12T07:13:10.604251+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794461796-04f14c98",
+      "ACT-FIND-1794461794-1b9f393f"
+    ],
+    "success_count": 0,
+    "failure_count": 4,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794461494-failnames/P-1794461511-3cca99da-claude-agent-claude-sonnet-5-5/E-1794461599-c7922f92-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 4 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R1-001-02",
+    "symptoms": [
+      "Function name test_failure_message starts with test_ and could be collected by pytest if imported into a test module; rename it."
+    ]
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-c69fea12",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T07:13:10.180069+00:00",
+  "updated_ts": "2026-11-12T07:13:10.180069+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794207016-894e82b1"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794205479-flow-runs-in-dedicated-worktree-not-default-branch/P-1794205494-860c0862-claude-agent-claude-opus-5-5/E-1794205767-3c799dc6-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 2 finding detected: FIND-R1-002-01",
+    "symptoms": [
+      "Resolver commit re-adds a stray apps/sandbox-executor/uv.lock that origin/main deliberately deleted in a4d6930; remove it and run uv from the repository root."
+    ]
+  }
+}

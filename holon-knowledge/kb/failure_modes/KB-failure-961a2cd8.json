@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-961a2cd8",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T07:13:10.404150+00:00",
+  "updated_ts": "2026-11-12T07:13:10.404150+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794296250-dad3aba8"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794294198-review-consensus-never-approves-past-an-open-critical/P-1794294214-0a2285cf-claude-agent-claude-opus-5-5/E-1794294472-5622c01d-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 2 finding detected: FIND-R1-002-01",
+    "symptoms": [
+      "review_disposition bullet omits that ACT-RES rows for findings left open carry a null disposition; state it in ledger_schema.md itself rather than only in review_consensus.md."
+    ]
+  }
+}

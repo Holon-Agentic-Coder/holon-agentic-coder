@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-35139ed1",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T08:55:05.694024+00:00",
+  "updated_ts": "2026-11-12T08:55:05.694024+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794457003-c8e1de45",
+      "ACT-FIND-1794457002-eddd9b27"
+    ],
+    "success_count": 0,
+    "failure_count": 4,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794456550-calci/P-1794456566-07246b8e-claude-agent-claude-sonnet-5-5/E-1794456668-1b420850-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 4 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R1-001-01",
+    "symptoms": [
+      "Probe by branch name right after the push may return the previous head's passing checks (registration wait only runs when source is not github_cli), so a stale pass can be reported as success for the unreviewed final head; verify the checks belong to the pushed SHA."
+    ]
+  }
+}

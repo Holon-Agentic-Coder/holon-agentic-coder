@@ -471,6 +471,25 @@ When the review ends without approval, the Stage 4 error says which outcome occu
 `test suite reported failures` appears only when the local test run really failed. When nothing specific blocked the
 review, the error says `no specific blocker was recorded` instead of blaming the tests.
 
+#### Final-head CI check (Stage 5)
+
+Stage 5 pushes the calibration commit to the execution branch, which starts CI again on a head the reviewers did not
+vote on. After that push, and only then, Stage 5 waits for the checks on that head with the same wait facility and
+budget (`HOLON_REVIEW_CI_WAIT_SECONDS`) and records the outcome as `final_head_ci` in the stage result, the stage log
+and the flow summary:
+
+| State         | Meaning                                                                                   |
+| ------------- | ----------------------------------------------------------------------------------------- |
+| `success`     | Every check on the final head passed.                                                     |
+| `failed`      | At least one check failed; the failed check names are listed.                             |
+| `timing_gate` | Every failed job failed only in its `CI Timing Gate` step; the job names are listed.      |
+| `unknown`     | CI was not measured, or checks were still pending when the budget ran out. Never success. |
+| `skipped`     | Nothing was pushed: a dry run, `--skip-push` or a failed calibration.                     |
+
+The timing-gate distinction reads the failed steps of the job with one extra `gh run view` call; when the steps are
+unavailable the failure is reported as `failed`. The check only reports: it never fails calibration, never reruns CI,
+never changes the 300 s timing limit, and the merge stays with the human maintainer.
+
 #### Safety Halt & Merge Boundary
 
 Merging to `main` is strictly reserved for the human maintainer. Upon successful consensus approval in Stage 4 and

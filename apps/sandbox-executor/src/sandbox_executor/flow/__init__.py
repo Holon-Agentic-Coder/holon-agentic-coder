@@ -79,6 +79,7 @@ from sandbox_executor.flow.github.ci import (
     probe_ci_checks,
     resolve_ci_registration_timeout,
 )
+from sandbox_executor.flow.github.ci_final_head import format_final_head_ci
 from sandbox_executor.flow.github.ci_wait import (
     CiWaitPolicy,
     CiWaitResult,
@@ -333,6 +334,7 @@ __all__ = [
     "failed_partial_head",
     "fetch_base",
     "format_decomposition_summary",
+    "format_final_head_ci",
     "format_review_git_trailers",
     "gate_ci_flags",
     "generate_semantic_pr_metadata",

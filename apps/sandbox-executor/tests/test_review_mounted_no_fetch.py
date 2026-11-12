@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from sandbox_executor import flow as flow_module
 from sandbox_executor import git as git_module
 from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
 from sandbox_executor.flow import _execution_effective_diff
@@ -133,9 +134,20 @@ def test_host_failed_fetch_is_unverifiable(repo: Path):
 
 
 @pytest.mark.usefixtures("mounted")
-def test_review_entry_path_in_mounted_workspace_never_fetches(repo: Path, fetch_attempts: list[list[str]]):
+def test_review_entry_path_in_mounted_workspace_never_fetches(
+    repo: Path, fetch_attempts: list[list[str]], monkeypatch: pytest.MonkeyPatch
+):
+    reached: list[str] = []
+    real = flow_module._execution_effective_diff
+
+    def spy(repo_dir, branch):
+        reached.append(branch)
+        return real(repo_dir, branch)
+
+    monkeypatch.setattr(flow_module, "_execution_effective_diff", spy)
     verdict, _detail = classify_review_diff(str(repo), EXEC, base_branch="main")
     assert verdict is DiffVerdict.VERIFIED
+    assert reached == [EXEC]
     assert fetch_attempts == []
 
 

@@ -332,12 +332,13 @@ def _has_origin_remote(repo_dir: str) -> bool:
     return run_git(["remote", "get-url", "origin"], cwd=repo_dir, check=False).returncode == 0
 
 
-def _unfetched_branch_message(repo_dir: str, branches: list[str]) -> str | None:
+def _unfetched_branch_message(repo_dir: str, branches: list[str], role: str = "") -> str | None:
     """Name the first branch whose origin tracking ref is missing (the host fetches before dispatch)."""
     for branch in branches:
         ref = f"refs/remotes/origin/{branch}"
         if run_git(["rev-parse", "--verify", "--quiet", ref], cwd=repo_dir, check=False).returncode != 0:
-            return f"'{branch}' is not fetched from origin; the host must fetch it before dispatch"
+            label = f"{role} '{branch}'" if role else f"'{branch}'"
+            return f"{label} is not fetched from origin; the host must fetch it before dispatch"
     return None
 
 

@@ -37,7 +37,8 @@ graph TD
     a host `jq` binary installed.
   - Parsing is resilient under `set -euo pipefail`: if the bundle contains malformed JSON, a warning is logged to
     `stderr` and container startup proceeds without terminating.
-  - If the bundle includes an `api_key` or `token`, it is written to the `HOLON_AGENT_KEY` environment variable.
+  - If the bundle includes an `api_key` or `token`, it is written to the `HOLON_AGENT_KEY` environment variable. The
+    `claude` runner is the exception: it never consults `HOLON_AGENT_KEY`, so a bundle key is not promoted for it.
   - If the bundle includes a `config_files` dictionary, its key-value pairs (relative paths to file contents) are
     unpacked into the sandbox user's home directory.
 
@@ -61,7 +62,10 @@ overwriting `/etc/shadow` or `/usr/bin/`).
 
 - **Source**: Environment variables forwarded directly to the container/process.
 - **Key Variables**:
-  - `HOLON_AGENT_KEY`: The primary API key or bearer token used by the agent runner.
+  - `HOLON_AGENT_KEY`: The primary API key or bearer token used by the agent runner. The `claude` runner does not use it
+    (see [`claude`](#3-claude)).
+  - `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY`: The `claude` runner's credential variables. An explicit value
+    wins over the secrets file.
   - `HOLON_AGENT_OSS_MODE`: Set to `true` or `1` to run agents in offline or open-source modes without requiring
     external API keys.
   - `HOLON_AGENT_PROVIDER`: Specifies the target model provider (e.g., `openai`, `anthropic`, `google`).
@@ -82,20 +86,20 @@ file inside the workspace:
 1. **`0600` env-file.** `run_docker_container` splits the variables it forwards. A variable goes into a temporary docker
    `--env-file`, inserted right after `docker run`, when its name is classified as secret or when its `KEY=VALUE` text
    would be altered by the shared command redactor. Secret names are `GITHUB_TOKEN`, `GH_TOKEN`, `HOLON_AGENT_KEY`,
-   `HOLON_MITM_WEB_PASSWORD` and any name the shared key regex recognises (for example `*_TOKEN`, `*_SECRET`,
-   `*_PASSWORD` and `*_API_KEY`). Credential-shaped values include any value carrying URL userinfo with a password (a
-   proxy or base URL in any scheme, or none, under any `HOLON_*` name), decided by a last-`@` userinfo rule, so a
-   password holding a raw `/`, `?` or `#` is recognised whole. `HOLON_AGENT_SETTINGS` is classified by pattern, not by
-   name: it goes into the env-file only when its value carries a credential shape (an `apiKey`, an `sk-ant-` key or an
-   OAuth token key), so a credential-free settings JSON that spans several lines still works. Everything else stays on
-   `-e`. The file is created with `mkstemp` and mode `0600` in the owner-only (`0700`) directory
-   `~/.holon/tmp/env-files`. It is removed when the run ends, whether through success, failure, an early error, an
-   exception or an interrupt. Files left behind by a killed run are swept after 24 hours. Docker reads the file on the
-   client side, so no bind mount is needed. A value containing a line break is rejected with an error that names the
-   variable but never the value, because the env-file format has no quoting. If the env-file directory or file cannot be
-   created (an `OSError`, for example a read-only or foreign-owned `~/.holon`), the run stops with a clear error and a
-   non-zero exit before `docker run`; the credentials never fall back to the argv. The
-   [readiness probe](#readiness-probe-holon-doctor) builds its container environment with the same classifier
+   `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `HOLON_MITM_WEB_PASSWORD` and any name the shared key regex
+   recognises (for example `*_TOKEN`, `*_SECRET`, `*_PASSWORD` and `*_API_KEY`). Credential-shaped values include any
+   value carrying URL userinfo with a password (a proxy or base URL in any scheme, or none, under any `HOLON_*` name),
+   decided by a last-`@` userinfo rule, so a password holding a raw `/`, `?` or `#` is recognised whole.
+   `HOLON_AGENT_SETTINGS` is classified by pattern, not by name: it goes into the env-file only when its value carries a
+   credential shape (an `apiKey`, an `sk-ant-` key or an OAuth token key), so a credential-free settings JSON that spans
+   several lines still works. Everything else stays on `-e`. The file is created with `mkstemp` and mode `0600` in the
+   owner-only (`0700`) directory `~/.holon/tmp/env-files`. It is removed when the run ends, whether through success,
+   failure, an early error, an exception or an interrupt. Files left behind by a killed run are swept after 24 hours.
+   Docker reads the file on the client side, so no bind mount is needed. A value containing a line break is rejected
+   with an error that names the variable but never the value, because the env-file format has no quoting. If the
+   env-file directory or file cannot be created (an `OSError`, for example a read-only or foreign-owned `~/.holon`), the
+   run stops with a clear error and a non-zero exit before `docker run`; the credentials never fall back to the argv.
+   The [readiness probe](#readiness-probe-holon-doctor) builds its container environment with the same classifier
    (`is_secret_env_item`) and `write_env_file`: `HOLON_AGENT_KEY` and a credential-bearing `HOLON_AGENT_SETTINGS` travel
    in a `0600` env-file that is removed once the probe returns, times out or fails. A runner flag filled from such a
    variable (`claude --settings`) is passed as a `"${HOLON_AGENT_SETTINGS}"` reference through `sh -c` and expanded
@@ -201,8 +205,18 @@ Each agent has specific command-line structures and validation routines:
   selects it, otherwise every file write is refused. They are command-line parameters only and never part of the
   `HOLON_AGENT_SETTINGS` value or any settings file. The bypass is acceptable because the claude runner only executes
   inside a sandboxed role container.
-- **Validation**: Requires `HOLON_AGENT_KEY` to be set, or active session configuration mounted to
-  `/home/holon/.config/claude`.
+- **Credential discovery**: The runner never consults `HOLON_AGENT_KEY`; `HOLON_AGENT_KEY` stays the channel for the
+  other runners. The host resolves the credential in this order: an explicit `CLAUDE_CODE_OAUTH_TOKEN`, then an explicit
+  `ANTHROPIC_API_KEY`, then the secrets file `~/.holon/secrets/claude-oauth-token` (trimmed; `0600` expected, and a
+  warning naming the path and mode, never the value, is printed when group or other bits are set). The file is left in
+  place and never modified. The value's format decides the in-container variable: an `sk-ant-oat` value (a subscription
+  token from `claude setup-token`) is exported as `CLAUDE_CODE_OAUTH_TOKEN`, and any other value, such as an
+  `sk-ant-api` key, as `ANTHROPIC_API_KEY`. The pair travels in the `0600` env-file, never on an echoed command line.
+- **Validation**: Requires `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` to be set, or active session configuration
+  mounted to `/home/holon/.config/claude`. The error names the secrets file and `claude setup-token`.
+- **Echo redaction**: The command echo replaces the entire `--settings` value with `<redacted>`, in the
+  separate-argument, `=`-joined and `sh -c` forms, so no secret-bearing JSON reaches a log. The `HOLON_AGENT_SETTINGS`
+  tunnel still carries other configuration but is not needed for authentication.
 
 ### 4. `pi`
 
@@ -238,8 +252,9 @@ Each agent has specific command-line structures and validation routines:
 `holon doctor` resolves the runner and model (see
 [Runner and model resolution](../agents.md#runner-and-model-resolution)) and sends **one minimal real prompt** ("Reply
 with the single word OK.") through that runner inside its normal container. The container gets the same session mounts,
-gateway host entries and network isolation as a real run, and the same `HOLON_AGENT_KEY` mapping by the container
-dispatcher. Credentials reach the probe container the same way as a real run's, through a `0600` `--env-file` (see
+gateway host entries and network isolation as a real run, and the same credential mapping by the container dispatcher
+(the `claude` probe carries the discovered claude variable instead of `HOLON_AGENT_KEY`). Credentials reach the probe
+container the same way as a real run's, through a `0600` `--env-file` (see
 [How the GitHub token reaches the container](#how-the-github-token-reaches-the-container)). The probe never runs git and
 writes nothing to the repository or the ledgers.
 
@@ -272,13 +287,13 @@ makes the exit code `1`, and `--json` still prints one valid document. The text 
 character the terminal cannot encode (a lone surrogate, or a non-UTF-8 byte from the environment) is printed
 backslash-escaped instead of raising `UnicodeEncodeError`; encodable text is printed unchanged.
 
-| Status            | Meaning                                                          | Remediation                                                                       |
-| ----------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `ok`              | Exit 0 with an answer; an `OK` reply wins over any logged noise. | None.                                                                             |
-| `quota_exhausted` | `429`, `RESOURCE_EXHAUSTED`, quota or rate-limit messages.       | Wait for the quota to reset, or choose another runner (`--agent`, `HOLON_AGENT`). |
-| `not_logged_in`   | No `HOLON_AGENT_KEY` and no session to mount, or a login prompt. | Set `HOLON_AGENT_KEY` or initialise and mount the session (Tier 3 above).         |
-| `expired_key`     | Expired or invalid key, `401`, `UNAUTHENTICATED`.                | Renew `HOLON_AGENT_KEY` or re-authorise the mounted session.                      |
-| `unknown`         | Anything else, including a timeout or a rejected model name.     | Read the redacted output; check `--model` / `HOLON_MODEL` and the image.          |
+| Status            | Meaning                                                          | Remediation                                                                                                                                                                                                                       |
+| ----------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ok`              | Exit 0 with an answer; an `OK` reply wins over any logged noise. | None.                                                                                                                                                                                                                             |
+| `quota_exhausted` | `429`, `RESOURCE_EXHAUSTED`, quota or rate-limit messages.       | Wait for the quota to reset, or choose another runner (`--agent`, `HOLON_AGENT`).                                                                                                                                                 |
+| `not_logged_in`   | No `HOLON_AGENT_KEY` and no session to mount, or a login prompt. | Set `HOLON_AGENT_KEY` or initialise and mount the session (Tier 3 above). For `claude`, write `~/.holon/secrets/claude-oauth-token`, or set `CLAUDE_CODE_OAUTH_TOKEN` (`sk-ant-oat...`) or `ANTHROPIC_API_KEY` (`sk-ant-api...`). |
+| `expired_key`     | Expired or invalid key, `401`, `UNAUTHENTICATED`.                | Renew `HOLON_AGENT_KEY` or re-authorise the mounted session.                                                                                                                                                                      |
+| `unknown`         | Anything else, including a timeout or a rejected model name.     | Read the redacted output; check `--model` / `HOLON_MODEL` and the image.                                                                                                                                                          |
 
 Probe output is redacted before it is printed. A timeout usually means the runner is waiting for an interactive login.
 

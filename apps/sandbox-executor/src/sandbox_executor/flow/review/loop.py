@@ -14,6 +14,7 @@ from typing import Any
 
 from sandbox_executor.agent_defaults import FALLBACK_AGENT
 from sandbox_executor.budgets import StageTimer, load_budgets, resolve_review_ci_wait_seconds
+from sandbox_executor.entrypoint.execution_workspace import workspace_mounted
 from sandbox_executor.flow.constants import CI_REGISTRATION_POLL_SECONDS
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.dispatch import _test_evidence
@@ -651,7 +652,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     current_commit_sha = (resolved_target.head_sha if resolved_target else "") or "HEAD"  # The SHA reviewers saw.
     try:
         if current_commit_sha == "HEAD":
-            current_commit_sha = _resolve_review_commit(repo_dir, review_target, fetch=not effective_dry_run)
+            current_commit_sha = _resolve_review_commit(
+                repo_dir, review_target, fetch=not (effective_dry_run or workspace_mounted())
+            )
     except Exception as exc:
         logger.debug("Could not resolve the reviewed commit for %s: %s", review_target, exc)
 

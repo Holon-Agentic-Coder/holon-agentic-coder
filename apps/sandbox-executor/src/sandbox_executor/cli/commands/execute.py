@@ -44,7 +44,7 @@ def execution_worktree(plan_branch: str, target_worktree: str | None) -> str:
     worktree = target_worktree or os.getcwd()
     # Worktrees share remote-tracking refs, so fetching here also serves a flow worktree provisioned below.
     git_flow.fetch_origin_branch(worktree, plan_branch)
-    git_flow.fetch_origin_branch(worktree, _target_branch(worktree, plan_branch))
+    git_flow.fetch_origin_branch(worktree, target_branch(worktree, plan_branch))
     if git_flow.is_default_branch_worktree(worktree, git_flow.repository_default_branch(worktree)):
         worktree = git_flow.ensure_flow_worktree_off_default(worktree, _intent_slug(worktree, plan_branch), None)
     return worktree
@@ -62,7 +62,7 @@ def _intent_slug(worktree: str, plan_branch: str) -> str:
     return str(_intent_row(worktree, plan_branch).get("slug") or slug_of_branch(plan_branch))
 
 
-def _target_branch(worktree: str, plan_branch: str) -> str:
+def target_branch(worktree: str, plan_branch: str) -> str:
     """The branch the intent targets, which the executor synchronises with before it commits."""
     return str(_intent_row(worktree, plan_branch).get("target_branch") or "main")
 

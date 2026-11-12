@@ -211,6 +211,7 @@ from sandbox_executor.flow.stages.review import (
     _checkout_execution_branch,
     run_review_stage,
 )
+from sandbox_executor.flow.stages.sync_conflict import sync_conflict_result
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.git import run_git
 from sandbox_executor.redaction import redact_agent_secrets
@@ -388,6 +389,7 @@ __all__ = [
     "salvage_leftovers",
     "save_checkpoint",
     "settle_pending_ci",
+    "sync_conflict_result",
     "validate_intent_questions",
     "wait_for_pending_ci",
 ]

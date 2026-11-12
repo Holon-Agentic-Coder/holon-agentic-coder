@@ -812,7 +812,12 @@ budget:
 - `model`: The model used for execution.
 - `status`: Execution status (e.g. `success`, `failure`, `failed`, `decomposed`, `over_budget`). Readers treat `failure`
   and `failed` as the same outcome; rows written by the empty-diff guard use `failed`. `over_budget` means the plan
-  entropy exceeded its entropy budget and the plan lists no sub-intent list, so the agent was not run.
+  entropy exceeded its entropy budget and the plan lists no sub-intent list, so the agent was not run. `sync_conflict`
+  means the pre-push merge of the target branch hit a conflict in a file other than a ledger: the merge was aborted, the
+  execution branch keeps only the executor's own commits (a fast-forward of the plan branch) and is published. It is a
+  superseding row (higher `ledger_revision`) that repeats the row it replaces, and the execute stage treats it as
+  resumable, not as a failure.
+- `conflicted_paths`: _(Only on `sync_conflict` rows)_ The paths that conflicted with the target branch.
 - `summary`: Description of execution outcome (only for terminal states).
 - `failure_reason`: _(Optional)_ Machine-readable cause of a guard failure: `empty_diff` when the execution changed
   nothing outside `holon-knowledge/ledger/`, `plans/` and `executions/` relative to its plan branch, or

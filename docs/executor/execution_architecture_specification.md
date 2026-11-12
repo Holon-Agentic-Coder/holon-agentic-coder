@@ -147,6 +147,13 @@ All modified files and ledgers are added and committed in the mounted worktree u
 container does not push: the host pushes every new execution branch after the container returns, including a failed one
 so a resume can find it. If that push fails, the commits stay on the host's local branch.
 
+Before the final commit the executor merges the fetched target branch. A conflict confined to ledgers is reconciled by
+append. A conflict in any other file (for example a file that a merged pull request deleted) aborts the merge and keeps
+the executor's own commits on the execution branch, a fast-forward of the plan branch with no merge commit. The executor
+records a superseding `sync_conflict` row naming `conflicted_paths` and exits `0`. The execute stage treats that row as
+resumable: it sets `execution_branch` in the context and checkpoint, so the flow continues from the review stage or
+hands the conflict to a resolver. Any other sync failure still records a failure and does not publish the branch.
+
 ---
 
 ## Safety & Security Policies

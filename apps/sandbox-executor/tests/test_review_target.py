@@ -590,10 +590,10 @@ def test_mounted_review_never_fetches_a_missing_pr_head_sha(tmp_path, monkeypatc
 def test_host_review_still_fetches_before_resolving(tmp_path, monkeypatch):
     repo = _mounted_repo(tmp_path, monkeypatch)
     monkeypatch.delenv("HOLON_TARGET_WORKTREE")
-    from sandbox_executor import flow
+    from sandbox_executor.flow import git_refs
 
     fetched: list[list[str]] = []
-    monkeypatch.setattr(flow, "_fetch_refspecs_error", lambda _repo, refspecs: fetched.append(refspecs))
+    monkeypatch.setattr(git_refs, "_fetch_refspecs_error", lambda _repo, refspecs: fetched.append(refspecs))
 
     verdict, _ = classify_review_diff(str(repo), PLAN, "main")
 

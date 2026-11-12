@@ -193,7 +193,7 @@ def _fetched_branch_ref(repo_dir: str, branch: str, role: str) -> tuple[str | No
     mounted role container nothing is fetched (it has no ssh): the ref the host fetched must exist.
     Without an 'origin' remote there is nothing to fetch, so the local branch is used as it is.
     """
-    from sandbox_executor.flow import _fetch_refspecs_error, _has_origin_remote, _resolve_branch_ref
+    from sandbox_executor.flow.git_refs import _fetch_refspecs_error, _has_origin_remote, _resolve_branch_ref
 
     has_origin = _has_origin_remote(repo_dir)
     mounted = workspace_is_mounted()

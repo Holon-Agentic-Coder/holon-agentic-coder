@@ -356,17 +356,21 @@ The guarantee has five deliberate limits:
   fetches the execution and plan branches and compares the origin copies the PR is opened from, and for any other branch
   it fetches both that branch and the base, so stale or unpushed local branches never decide it (a failed fetch, or a
   git command that times out, skips the PR as `diff_unverified`; only a repository without an `origin` remote compares
-  its local branches). When the guard refuses the PR (`empty_diff` or `diff_unverified`), the review loop fails closed:
-  it does not wait for CI, runs no review iteration and posts no consensus, so no evidence -- not even a Stage 3
-  `test_pass_rate` of 1.0 or green CI on an existing PR -- can approve it. The loop returns `approved: false` with the
-  refusal as its `error` (an `empty_diff` refusal appends no ledger rows; a `diff_unverified` refusal appends only a
-  `failed` "halted without consensus" summary row naming it and the review action event, with no `ACT-REV`, `ACT-FIND`
-  or `ACT-POST` rows), and Stage 4 fails with the refusal's own reason
-  (`Autonomous review halted: Refusing to create or update a PR for ...`), never as a test failure or as unmeasured
-  tests, so Stage 5 does not run. An empty diff has consensus status `rejected` and an unverifiable one `failed`. Dry
-  runs never invoke the guard, dispatch no reviewer and are never approved: a clean simulation reports `not_measured`. A
-  consensus whose post to the PR fails or raises is `post_failed` and not approved, and `holon review-loop` exits 1
-  unless the ensemble verdict is `APPROVED` and the consensus is approved and posted.
+  its local branches). Inside the mounted review-loop container the guard never fetches, because the container has no
+  `ssh`: before dispatch the host fetches the plan, execution and base branches into `refs/remotes/origin/`, and the
+  guard only resolves those refs. A ref the host did not fetch is `diff_unverified` with a refusal naming the branch and
+  saying the host must fetch it before dispatch; a failed host fetch stops the stage before the container starts. When
+  the guard refuses the PR (`empty_diff` or `diff_unverified`), the review loop fails closed: it does not wait for CI,
+  runs no review iteration and posts no consensus, so no evidence -- not even a Stage 3 `test_pass_rate` of 1.0 or green
+  CI on an existing PR -- can approve it. The loop returns `approved: false` with the refusal as its `error` (an
+  `empty_diff` refusal appends no ledger rows; a `diff_unverified` refusal appends only a `failed` "halted without
+  consensus" summary row naming it and the review action event, with no `ACT-REV`, `ACT-FIND` or `ACT-POST` rows), and
+  Stage 4 fails with the refusal's own reason (`Autonomous review halted: Refusing to create or update a PR for ...`),
+  never as a test failure or as unmeasured tests, so Stage 5 does not run. An empty diff has consensus status `rejected`
+  and an unverifiable one `failed`. Dry runs never invoke the guard, dispatch no reviewer and are never approved: a
+  clean simulation reports `not_measured`. A consensus whose post to the PR fails or raises is `post_failed` and not
+  approved, and `holon review-loop` exits 1 unless the ensemble verdict is `APPROVED` and the consensus is approved and
+  posted.
 - **Dispatch needs `origin`.** `--dry-run` validates the payload and names the branches without dispatching anything.
   `--skip-push` is rejected outside `--dry-run` -- on every run, including a `--from-stage` or `--checkpoint` resume
   from any stage -- before any stage runs, because the host fetches from and pushes to `origin` for the role containers,
@@ -426,8 +430,9 @@ The Stage 1 intent creator, Stage 2 planner, Stage 3 executor and Stage 4 review
 mounted `flow-<slug>` worktree with the same protections; none clones. No container touches the remote: roles only
 commit, the host fetches the base before each container starts and pushes the committed branch after it returns (Stage 1
 the intent branch, Stage 2 the new plan branch, Stage 3 every new execution branch including a failed one, Stage 4's
-resolver head fast-forward only). A failed host fetch or push names the operation, branch and remote. No `ssh-agent` or
-repository URL variable is involved, so an SSH `origin` works.
+resolver head fast-forward only). Before the Stage 4 review-loop container starts, the host also fetches the plan,
+execution and base branches, so the container's diff check resolves them without fetching. A failed host fetch or push
+names the operation, branch and remote. No `ssh-agent` or repository URL variable is involved, so an SSH `origin` works.
 
 #### CI wait budget and outcomes
 

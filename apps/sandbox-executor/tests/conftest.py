@@ -1,6 +1,7 @@
 """Suite-wide isolation: no ambient credentials, agent-harness markers, real pre-flight probes or ``gh`` writes."""
 
 import os
+import socket
 import subprocess
 from collections.abc import Iterator
 
@@ -8,6 +9,7 @@ import pytest
 from sandbox_executor import cli
 from sandbox_executor.agent_defaults import detected_harness_markers
 
+from tests import network_guard
 from tests.credential_env import CREDENTIAL_ENV_NAMES
 from tests.gh_write_guard import guarded_popen
 from tests.hermetic_fixtures import (
@@ -235,6 +237,26 @@ def gh_write_guard(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
     yield blocked
     if blocked:
         pytest.fail("Unmocked gh write command(s) ran in this test: " + "; ".join(blocked), pytrace=False)
+
+
+@pytest.fixture(autouse=True)
+def network_guard_fixture(monkeypatch: pytest.MonkeyPatch, gh_write_guard: list[str]) -> Iterator[list[str]]:
+    """Fail any test that runs a git network command against a real remote or opens an inet connection.
+
+    ``git fetch``, ``pull``, ``push`` and ``ls-remote`` against a filesystem path or ``file://`` remote, loopback
+    connections and ``AF_UNIX`` sockets stay allowed. The operation is refused before it starts and the test fails at
+    teardown, even when the code under test swallows the refusal. Yields the list of blocked operations; a test that
+    expects a block clears it. Depends on ``gh_write_guard`` so its ``Popen`` wrapper is chained, not replaced.
+    """
+    blocked: list[str] = []
+    monkeypatch.setattr(subprocess, "Popen", network_guard.guarded_popen(blocked))
+    replacements = network_guard.guarded_socket_calls(blocked)
+    monkeypatch.setattr(socket.socket, "connect", replacements["socket.connect"])
+    monkeypatch.setattr(socket.socket, "connect_ex", replacements["socket.connect_ex"])
+    monkeypatch.setattr(socket, "getaddrinfo", replacements["getaddrinfo"])
+    yield blocked
+    if blocked:
+        pytest.fail("Network access ran in this test: " + "; ".join(blocked), pytrace=False)
 
 
 #: Tests (path under tests/, then a class, function or ``Class.method`` qualname) that run from `feature_worktree_cwd`.

@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-df9e0f0d",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T09:27:17.807349+00:00",
+  "updated_ts": "2026-11-12T09:27:17.807349+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "E-1794458420-136f94c2-claude-agent-claude-sonnet-5-5"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794458330-stubfetch/P-1794458347-aa9e9dfa-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Execution produced no changes outside holon-knowledge/ledger/, plans/ and executions/ relative to I-1794458330-stubfetch/P-1794458347-aa9e9dfa-claude-agent-claude-sonnet-5-5/_",
+    "symptoms": []
+  }
+}

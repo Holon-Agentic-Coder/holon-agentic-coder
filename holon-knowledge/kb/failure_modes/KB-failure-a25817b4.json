@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-a25817b4",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T09:27:17.835263+00:00",
+  "updated_ts": "2026-11-12T09:27:17.835263+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1794459133-claude-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794458330-stubfetch/P-1794458347-aa9e9dfa-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop halted without consensus after 1 iteration(s): resolver failed: Resolver pre-push test failed (exit code 1): ============================= test session starts ==============================\nplatform linux -- Python 3.13.14, pytest-9.1.1, pluggy-1.6.0\nrootdir: /home/holon/.holon-sandbox/workspace\nconfigfile: pyproject.toml\ntestpaths: apps/sandbox-executor/tests\nplugins: xdist-3.8.0\ncreated: 18/18 workers\n18 workers [3663 items]\n\n........................................................................ [  1%]\n........................................................................ [  3%]\n........................................................................ [  5%]\n...................................................F.................... [  7%]\n.................................F...................................... [  9%]\n.............F.......................................................... [ 11%]\n........................................................................ [ 13%]\n........................................................................ [ 15%]\n........................................................................ [ 17%]\n........................................................................ [ 19%]\n........................................................................ [ 21%]\n.............F.......................................................... [ 23%]\n........................................................................ [ 25%]\n........................................................................ [ 27%]\n........................................................................ [ 29%]\n........................................................................ [ 31%]\n........................................................................ [ 33%]\n........................................................................ [ 35%]\n........................................................................ [ 37%]\n........................................................................ [ 39%]\n................................; not approved: reviewer 1 final verdict CHANGES_REQUESTED, reviewer 1 Testing role CHANGES, reviewer 1 Engineering role CHANGES, reviewer 2 final verdict CHANGES_REQUESTED, reviewer 3 final verdict CHANGES_REQUESTED; final verdicts: Reviewer 1 CHANGES_REQUESTED (0/0/2); Reviewer 1 Testing role CHANGES; Reviewer 1 Engineering role CHANGES; Reviewer 2 CHANGES_REQUESTED (0/0/1); Reviewer 3 CHANGES_REQUESTED (0/0/1)",
+    "symptoms": []
+  }
+}

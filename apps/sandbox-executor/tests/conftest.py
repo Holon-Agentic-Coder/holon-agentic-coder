@@ -109,6 +109,24 @@ def no_ambient_credentials(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_claude_secrets_file(tmp_path_factory, monkeypatch):
+    """Keep every test off the developer's real claude credential file under the real home.
+
+    Points HOME at an empty temporary directory and makes the secrets path follow the test's own HOME when it sets one
+    (and this directory when it clears the environment, where `~` would otherwise fall back to the passwd home).
+    """
+    from sandbox_executor import claude_credential
+
+    fake_home = str(tmp_path_factory.mktemp("claude-home"))
+    monkeypatch.setenv("HOME", fake_home)
+
+    def secrets_file_path() -> str:
+        return os.path.join(os.environ.get("HOME") or fake_home, ".holon", "secrets", "claude-oauth-token")
+
+    monkeypatch.setattr(claude_credential, "secrets_file_path", secrets_file_path)
+
+
+@pytest.fixture(autouse=True)
 def isolated_env_file_dir(tmp_path_factory, monkeypatch):
     """Keep credential env-files written by run_docker_container in a per-test temporary directory.
 

@@ -31,6 +31,8 @@ def probe_env(monkeypatch, tmp_path):
     for name in ("HOLON_ROLE", "HOLON_IN_SANDBOX", "HOLON_SKIP_PREFLIGHT", "HOLON_AGENT_SETTINGS"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("HOLON_AGENT_KEY", "sk-test-very-secret-value")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api-test-very-secret-value")
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     return tmp_path
 
 
@@ -121,11 +123,11 @@ def test_probe_runs_runner_in_its_container_and_redacts(probe_env):
 
 
 def _set_probe_values(monkeypatch):
-    """Set fake HOLON_AGENT_KEY and HOLON_AGENT_SETTINGS values."""
+    """Set fake ANTHROPIC_API_KEY and HOLON_AGENT_SETTINGS values (the claude runner ignores HOLON_AGENT_KEY)."""
     agent_probe = make_probe("key")
     settings_probe = make_probe("settings")
     settings = '{"env":{"CLAUDE_CODE_OAUTH_TOKEN":"' + settings_probe + '"}}'
-    monkeypatch.setenv("HOLON_AGENT_KEY", agent_probe)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", agent_probe)
     monkeypatch.setenv("HOLON_AGENT_SETTINGS", settings)
     return agent_probe, settings
 
@@ -157,7 +159,8 @@ def test_probe_keeps_credentials_off_the_docker_argv(probe_env, monkeypatch, iso
     assert seen["cmd"][2] == "--env-file"
     assert os.path.dirname(seen["path"]) == str(isolated_env_file_dir)
     assert seen["mode"] == 0o600
-    assert f"HOLON_AGENT_KEY={agent_probe}" in seen["lines"]
+    assert f"ANTHROPIC_API_KEY={agent_probe}" in seen["lines"]
+    assert not any(line.startswith("HOLON_AGENT_KEY=") for line in seen["lines"])
     assert f"HOLON_AGENT_SETTINGS={settings}" in seen["lines"]
     # The runner's `--settings` flag reads the variable inside the container instead of carrying the value.
     tail = seen["cmd"][seen["cmd"].index("holon/agent-claude") + 1 :]
@@ -279,11 +282,11 @@ def test_probe_returns_unknown_when_the_env_file_dir_cannot_be_created(probe_env
 
 
 def test_probe_rejects_a_multiline_credential_without_running(probe_env, monkeypatch):
-    monkeypatch.setenv("HOLON_AGENT_KEY", make_probe("line") + "\n" + make_probe("break"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", make_probe("line") + "\n" + make_probe("break"))
     runner_fn = MagicMock()
     res = run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=runner_fn)
     assert res.status is PreflightStatus.UNKNOWN
-    assert "HOLON_AGENT_KEY" in res.output_excerpt
+    assert "ANTHROPIC_API_KEY" in res.output_excerpt
     runner_fn.assert_not_called()
 
 
@@ -315,11 +318,20 @@ def test_probe_ok(probe_env):
 
 
 def test_probe_without_any_credential_reports_not_logged_in_without_calling(probe_env, monkeypatch):
-    monkeypatch.delenv("HOLON_AGENT_KEY")
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
     runner_fn = MagicMock()
     res = run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=runner_fn)
     assert res.status is PreflightStatus.NOT_LOGGED_IN
-    assert "HOLON_AGENT_KEY" in res.hint
+    assert "~/.holon/secrets/claude-oauth-token" in res.hint
+    assert "claude setup-token" in res.hint
+    assert "claude setup-token" in res.output_excerpt
+    assert "~/.holon/secrets/claude-oauth-token" in res.output_excerpt
+    assert "HOLON_AGENT_KEY" not in res.hint
+    assert (
+        res.hint.index("claude-oauth-token")
+        < res.hint.index("CLAUDE_CODE_OAUTH_TOKEN")
+        < res.hint.index("ANTHROPIC_API_KEY")
+    )
     runner_fn.assert_not_called()
 
 
@@ -802,3 +814,35 @@ def test_checkpoint_without_attribution_resumes_with_legacy_default():
 def test_module_constants():
     assert preflight.SKIP_ENV_VAR == "HOLON_SKIP_PREFLIGHT"
     assert preflight.TIMEOUT_ENV_VAR == "HOLON_PREFLIGHT_TIMEOUT"
+
+
+def test_probe_discovers_the_secrets_file_and_drops_a_stale_holon_agent_key(
+    probe_env, monkeypatch, isolated_env_file_dir
+):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("HOLON_AGENT_KEY", make_probe("stale"))
+    value = "sk-ant-" + "oat" + make_probe("file")
+    secrets = probe_env / ".holon" / "secrets" / "claude-oauth-token"
+    secrets.parent.mkdir(parents=True)
+    secrets.write_text(value + "\n", encoding="utf-8")
+    secrets.chmod(0o600)
+    seen = {}
+
+    assert run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=_record_probe(seen)).ok
+
+    assert f"CLAUDE_CODE_OAUTH_TOKEN={value}" in seen["lines"]
+    assert not any(line.startswith(("HOLON_AGENT_KEY=", "ANTHROPIC_API_KEY=")) for line in seen["lines"])
+    assert value not in " ".join(seen["cmd"])
+
+
+def test_probe_remaps_a_mis_named_explicit_token_and_drops_the_wrong_variable(
+    probe_env, monkeypatch, isolated_env_file_dir
+):
+    value = "sk-ant-" + "oat" + make_probe("mis")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", value)
+    seen = {}
+
+    assert run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=_record_probe(seen)).ok
+
+    assert f"CLAUDE_CODE_OAUTH_TOKEN={value}" in seen["lines"]
+    assert not any(line.startswith("ANTHROPIC_API_KEY=") for line in seen["lines"])

@@ -1405,6 +1405,7 @@ def leak_env(tmp_path, monkeypatch):
         "GITHUB_TOKEN": make_gh_probe(),
         "HOLON_MITM_WEB_PASSWORD": make_probe("mitmweb"),
         "HOLON_AGENT_KEY": make_probe("agentkey"),
+        "ANTHROPIC_API_KEY": make_probe("anthropickey"),
     }
     for key in list(os.environ):
         if key.startswith(("HOLON_", "GIT_")) or key in ("GITHUB_TOKEN", "GH_TOKEN"):
@@ -1472,6 +1473,31 @@ def _run_planner(repo_dir: str) -> int:
     )
 
 
+@pytest.mark.parametrize(
+    ("prefix", "expected"), [("sk-ant-" + "oat", "CLAUDE_CODE_OAUTH_TOKEN"), ("sk-ant-" + "api", "ANTHROPIC_API_KEY")]
+)
+def test_claude_container_gets_the_discovered_secrets_file_value_by_type(
+    leak_env, monkeypatch, capsys, prefix, expected
+):
+    value = prefix + make_probe("file")
+    secrets = os.path.join(os.environ["HOME"], ".holon", "secrets")
+    os.makedirs(secrets)
+    with open(os.path.join(secrets, "claude-oauth-token"), "w", encoding="utf-8") as fh:
+        fh.write(value + "\n")
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    docker = _RecordingDocker()
+    monkeypatch.setattr(cli.subprocess, "run", docker)
+
+    assert _run_planner(leak_env["repo"]) == 0
+
+    captured = capsys.readouterr()
+    assert docker.env_file_contents[expected] == value
+    assert "HOLON_AGENT_KEY" not in docker.container_env
+    assert not ({"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"} - {expected}) & set(docker.container_env)
+    for text in (captured.out, captured.err, " ".join(docker.argv)):
+        assert_no_fragment(text, value)
+
+
 def test_docker_echo_and_argv_carry_no_secret_fragment(leak_env, monkeypatch, capsys):
     docker = _RecordingDocker()
     monkeypatch.setattr(cli.subprocess, "run", docker)
@@ -1501,7 +1527,9 @@ def test_secrets_travel_in_an_owner_only_env_file_that_is_removed(leak_env, monk
     assert docker.env_dir_mode == 0o700
     assert docker.env_file_contents["GITHUB_TOKEN"] == probes["GITHUB_TOKEN"]
     assert docker.env_file_contents["HOLON_MITM_WEB_PASSWORD"] == probes["HOLON_MITM_WEB_PASSWORD"]
-    assert docker.env_file_contents["HOLON_AGENT_KEY"] == probes["HOLON_AGENT_KEY"]
+    # The claude runner never takes HOLON_AGENT_KEY; its own credential variable travels instead.
+    assert docker.env_file_contents["ANTHROPIC_API_KEY"] == probes["ANTHROPIC_API_KEY"]
+    assert "HOLON_AGENT_KEY" not in docker.container_env
     assert probes["HTTPS_PROXY"] in docker.env_file_contents["HTTPS_PROXY"]
     assert not os.path.exists(docker.env_file)
 
@@ -1646,13 +1674,13 @@ def test_agent_settings_carrying_an_api_key_travel_in_the_env_file(leak_env, mon
 
 
 def test_line_break_in_a_secret_aborts_before_docker_runs(leak_env, monkeypatch, capsys):
-    monkeypatch.setenv("HOLON_AGENT_KEY", "first-line\nINJECTED=1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "first-line\nINJECTED=1")
     monkeypatch.setattr(cli.subprocess, "run", _RecordingDocker(outcome=AssertionError("docker must not run")))
 
     assert _run_planner(leak_env["repo"]) == 1
 
     err = capsys.readouterr().err
-    assert "HOLON_AGENT_KEY" in err
+    assert "ANTHROPIC_API_KEY" in err
     assert "first-line" not in err
     assert os.listdir(cli.env_file_dir()) == []
 

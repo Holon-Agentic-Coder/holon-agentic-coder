@@ -344,6 +344,7 @@ def _run_direct(argv: list[str]) -> tuple[int, str, list[MagicMock]]:
         patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
         patch("sandbox_executor.flow.run_review_loop_cli", return_value=0) as local_review,
         patch("sandbox_executor.cli.run_docker_container", return_value=0) as docker,
+        patch("sandbox_executor.git_flow.fetch_origin_branch"),
         patch("sandbox_executor.cli.run_calibrate") as calibrate,
         patch("sys.stderr", new_callable=io.StringIO) as stderr,
         patch("sys.argv", ["holon", *argv]),

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from sandbox_executor.flow import (
     FlowContext,
     FlowStage,
@@ -422,3 +423,148 @@ def test_sandbox_workspace_mount_matches_the_container_workspace_default(monkeyp
     monkeypatch.setenv("HOLON_ROLE", "review-loop")
     monkeypatch.setenv("HOME", "/home/holon")
     assert get_workspace_dir() == SANDBOX_WORKSPACE_MOUNT
+
+
+# --------------------------------------------------------------------------------------
+# host pre-dispatch fetch of the plan, execution and base branches
+# --------------------------------------------------------------------------------------
+
+
+def _fetch_args(target: str):
+    import argparse
+
+    return argparse.Namespace(target=target, target_worktree=".", agent="claude-agent", model="m")
+
+
+def test_container_review_fetches_the_three_branches_once_before_dispatch(monkeypatch):
+    from sandbox_executor import git_flow
+    from sandbox_executor.cli.commands import review, review_fetch
+
+    exec_branch = "I-1-x/P-1-a/E-2-a/_"
+    calls: list[str] = []
+    monkeypatch.setattr(review_fetch, "_has_origin_remote", lambda _w: True)
+    monkeypatch.setattr(review_fetch, "target_branch", lambda _w, _p: "main")
+    monkeypatch.setattr(git_flow, "fetch_origin_branch", lambda _w, branch: calls.append(branch))
+    monkeypatch.setattr(git_flow, "resolve_review_worktree", lambda *_a: "/wt")
+
+    assert review._container_review_worktree(_fetch_args(exec_branch)) == "/wt"
+    assert calls == ["I-1-x/P-1-a/_", exec_branch, "main"]
+
+
+def test_container_review_fetch_failure_stops_the_stage_before_dispatch(monkeypatch, capsys):
+    from sandbox_executor import cli, git_flow
+    from sandbox_executor.cli.commands import review, review_fetch
+
+    def failing_fetch(_w, branch):
+        raise RuntimeError(f"could not fetch branch '{branch}' from origin")
+
+    monkeypatch.setattr(review_fetch, "_has_origin_remote", lambda _w: True)
+    monkeypatch.setattr(review_fetch, "target_branch", lambda _w, _p: "main")
+    monkeypatch.setattr(git_flow, "fetch_origin_branch", failing_fetch)
+    monkeypatch.setattr(
+        cli, "resolve_runner_and_model", lambda a, m: (type("R", (), {"value": a})(), type("R", (), {"value": m})())
+    )
+    monkeypatch.setattr(cli, "detect_holon_coherence", lambda v: v)
+    dispatched: list[object] = []
+    monkeypatch.setattr(cli, "run_docker_container", lambda *a, **k: dispatched.append(a) or 0)
+    monkeypatch.delenv("HOLON_ROLE", raising=False)
+    monkeypatch.delenv("HOLON_IN_SANDBOX", raising=False)
+    args = _fetch_args("I-1-x/P-1-a/E-2-a/_")
+    args.__dict__.update(
+        max_iterations=1, ensemble_size=1, local=False, dry_run=False, json=False, command="review-loop"
+    )
+    monkeypatch.setattr(review, "default_branch_worktree_allowed", lambda *_a: True)
+
+    with pytest.raises(SystemExit) as exc:
+        review.run(args)
+
+    assert exc.value.code == 1
+    assert not dispatched
+    assert "could not fetch branch" in capsys.readouterr().err
+
+
+def _recorded_fetches(monkeypatch, *, origin: bool = True) -> list[str]:
+    from sandbox_executor import git_flow
+    from sandbox_executor.cli.commands import review_fetch
+
+    calls: list[str] = []
+    monkeypatch.setattr(review_fetch, "_has_origin_remote", lambda _w: origin)
+    monkeypatch.setattr(review_fetch, "target_branch", lambda _w, _p: "release")
+    monkeypatch.setattr(git_flow, "fetch_origin_branch", lambda _w, branch: calls.append(branch))
+    return calls
+
+
+def test_fetch_review_branches_pr_base_replaces_the_intent_target(monkeypatch):
+    from sandbox_executor.cli.commands.review_fetch import fetch_review_branches
+
+    calls = _recorded_fetches(monkeypatch)
+
+    fetch_review_branches(".", "I-1-x/P-1-a/E-2-a/_", "develop")
+
+    assert calls == ["I-1-x/P-1-a/_", "I-1-x/P-1-a/E-2-a/_", "develop"]
+
+
+def test_fetch_review_branches_uses_the_intent_target_without_a_pr_base(monkeypatch):
+    from sandbox_executor.cli.commands.review_fetch import fetch_review_branches
+
+    calls = _recorded_fetches(monkeypatch)
+
+    fetch_review_branches(".", "I-1-x/P-1-a/E-2-a/_", None)
+
+    assert calls[-1] == "release"
+
+
+def test_fetch_review_branches_non_execution_head_fetches_head_and_main_only(monkeypatch):
+    from sandbox_executor.cli.commands.review_fetch import fetch_review_branches
+
+    calls = _recorded_fetches(monkeypatch)
+
+    fetch_review_branches(".", "fix/E-12-thing", None)
+
+    assert calls == ["fix/E-12-thing", "main"]
+
+
+def test_fetch_review_branches_execution_shape_requires_the_underscore_final_segment(monkeypatch):
+    from sandbox_executor.cli.commands.review_fetch import fetch_review_branches
+
+    calls = _recorded_fetches(monkeypatch)
+
+    fetch_review_branches(".", "I-1-x/P-1-a/E-2-a/calibrated", None)
+
+    assert calls == ["I-1-x/P-1-a/E-2-a/calibrated", "main"]
+
+
+def test_fetch_review_branches_skips_everything_without_an_origin_remote(monkeypatch):
+    from sandbox_executor.cli.commands.review_fetch import fetch_review_branches
+
+    calls = _recorded_fetches(monkeypatch, origin=False)
+
+    fetch_review_branches(".", "I-1-x/P-1-a/E-2-a/_", "main")
+
+    assert calls == []
+
+
+def test_fetch_review_branches_fetches_a_shared_branch_once(monkeypatch):
+    from sandbox_executor.cli.commands.review_fetch import fetch_review_branches
+
+    calls = _recorded_fetches(monkeypatch)
+
+    fetch_review_branches(".", "main", "main")
+
+    assert calls == ["main"]
+
+
+def test_container_review_pr_target_fetches_its_head_and_base(monkeypatch):
+    from sandbox_executor import git_flow
+    from sandbox_executor.cli.commands import review
+    from sandbox_executor.review_target import ReviewTarget
+
+    calls = _recorded_fetches(monkeypatch)
+    resolved = ReviewTarget(
+        raw="7", head_branch="I-1-x/P-1-a/E-2-a/_", head_sha="0" * 40, pr_number=7, base_branch="develop"
+    )
+    monkeypatch.setattr(review, "resolve_review_target", lambda *_a: resolved)
+    monkeypatch.setattr(git_flow, "resolve_review_worktree", lambda *_a: "/wt")
+
+    assert review._container_review_worktree(_fetch_args("7")) == "/wt"
+    assert calls == ["I-1-x/P-1-a/_", "I-1-x/P-1-a/E-2-a/_", "develop"]

@@ -198,6 +198,18 @@ outputs:
 - **ReDoS Prevention**: Inputs to `redact_text` exceeding 100,000 characters are safely truncated from the middle before
   regex evaluation.
 
+### Resume Salvage of Interrupted Work
+
+A killed container or a usage limit leaves the executor's edits uncommitted in the mounted worktree, and the executor
+refuses a dirty mount. On a Stage 3 resume the host therefore runs `flow/partial_salvage.py` before dispatch. When the
+worktree is on a failed `E-...` execution branch of the plan and holds tracked edits, deletions or non-ignored untracked
+files, the host commits them as `execute: <execution_id> partial work (interrupted) for plan <plan_branch>`, pushes the
+branch and appends one superseding `failure` row carrying `partial_head`. The existing partial-work lookup then finds
+the branch and the executor continues from it. The three ledgers and the execution notes file are engine-owned and never
+committed. If only those are dirty, or the worktree is clean, nothing happens. A dirty worktree on any other branch is
+refused with a message naming it. The executor still re-runs its checks, the review loop sees the final diff, and
+merging stays with the human maintainer.
+
 ### Workspace Retention Policy
 
 The flow's `flow-<slug>` worktree lives on the host, so edits, commits and logs survive a container crash. The container

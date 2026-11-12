@@ -1035,6 +1035,15 @@ If all sub-intents under a parent fail:
 - If parent is root intent, human review requested (may choose to retry or abandon)
 - If parent is sub-intent, it is discarded automatically
 
+### 13.2a Resuming Over Interrupted Work
+
+When Stage 3 is resumed (`holon flow --checkpoint ... --from-stage execute`) and the mounted worktree holds uncommitted
+edits from an interrupted run, the host commits them onto the failed execution branch of the plan as a partial-work
+commit (`execute: <execution_id> partial work (interrupted) for plan <plan_branch>`) and records it in
+`executions.jsonl`, then resumes from that commit. The ledgers and the execution notes file are excluded, so dirty
+engine-owned files alone produce no commit. Nothing is discarded, reset or amended, and the commit stays on the
+execution branch, never on `main` or the plan branch.
+
 ### 13.3 Partial Sub-Intent Success
 
 If some sub-intents succeed and others fail:

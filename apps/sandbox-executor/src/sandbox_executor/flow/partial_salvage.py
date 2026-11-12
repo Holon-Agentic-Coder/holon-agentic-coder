@@ -22,6 +22,7 @@ from sandbox_executor.flow.git_refs import (
     _fetch_branch_prefix_error,
     _latest_execution_summary,
     _read_ledger_rows,
+    _snapshot_child_branches,
 )
 from sandbox_executor.flow.host_remote import push_branch, remote_error
 from sandbox_executor.git import run_git
@@ -160,3 +161,22 @@ def salvage_leftovers(context: FlowContext, plan_prefix: str) -> SalvageResult:
     if error is not None:
         raise SalvageError(f"partial work committed as {sha[:12]} on '{branch}' but not recorded: {error}")
     return SalvageResult(branch=branch, sha=sha, files=files)
+
+
+def salvage_for_resume(context: FlowContext, plan_prefix: str, existing: set[str]) -> tuple[set[str], str | None]:
+    """Salvage leftovers before a Stage 3 resume dispatch.
+
+    Returns the execution-branch snapshot to use from here on (refreshed when a commit was made, as the branch may be
+    new on origin) and a Stage 3 failure message, or None when the resume may go on.
+    """
+    try:
+        salvaged = salvage_leftovers(context, plan_prefix)
+    except SalvageError as exc:
+        return existing, f"Execute stage failed: {exc}"
+    if not salvaged.sha:
+        return existing, None
+    context.log(
+        f"Stage 3 resume: committed {len(salvaged.files)} leftover file(s) as partial work on {salvaged.branch} "
+        f"({salvaged.sha[:12]})"
+    )
+    return _snapshot_child_branches(context.target_worktree, plan_prefix, "E") or existing, None

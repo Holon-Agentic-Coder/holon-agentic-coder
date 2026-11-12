@@ -227,7 +227,7 @@ def test_a_role_at_changes_blocks_consensus_when_every_reviewer_approved_cleanly
     install_fake_reviewers(monkeypatch, fake)
     ctx = _ensemble_ctx(tmp_path)
     with _LoopStubs() as stubs:
-        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=2, ensemble_size=3, run_ensemble_fn=fake)
+        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=1, ensemble_size=3, run_ensemble_fn=fake)
 
     assert res["consensus"]["approved"] is False
     assert res["ensemble_verdict"] == "CHANGES_REQUESTED"

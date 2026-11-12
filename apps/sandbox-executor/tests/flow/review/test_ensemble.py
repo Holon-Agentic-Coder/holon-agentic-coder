@@ -50,7 +50,7 @@ class TestReviewDataSeam:
             patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", side_effect=capture_post),
             _verified_diff(),
         ):
-            res = run_review_loop(ctx, auto_pr=False, ensemble_size=1)
+            res = run_review_loop(ctx, auto_pr=False, ensemble_size=1, max_iterations=1)
 
         bodies = [entry["argv"][entry["argv"].index("--body") + 1] for entry in posted]
         assert len(bodies) == 1

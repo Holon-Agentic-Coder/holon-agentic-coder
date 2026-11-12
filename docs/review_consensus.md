@@ -50,3 +50,13 @@ kept as evidence for audit (`unevidenced rejection (<reason>): <evidence>`, carr
 finding the resolver did not adjudicate is `open` when important or critical and `rejected` (`unspecified`) when a nit.
 The reviewed finding's severity is authoritative, so a resolver cannot downgrade a finding to escape the rule. Only
 rejected nits are remembered as already adjudicated; see [Consensus integrity](#consensus-integrity).
+
+## When the review is posted
+
+The loop posts the consensus review to the pull request only on a terminal exit: a consensus approval, or the iteration
+cap (the label budget) reached with findings still open, which posts the changes-requested form once. Every other exit
+keeps the report local and posts nothing: a resolver error, a failed pre-push gate, a stage budget stop, the
+no-convergence halt (including one exactly at the iteration cap), and a halt before the cap. The loop logs that nothing
+was posted and why. Dry runs, `--skip-post`, a refused or failed review and a run with no completed reviewer post
+nothing, as before. `ACT-POST` is written only when a post was actually attempted, and a failed attempt still writes its
+failure row and ends the loop as `post_failed`.

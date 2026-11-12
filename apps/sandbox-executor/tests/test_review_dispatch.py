@@ -172,8 +172,8 @@ def test_stage4_host_integrity_dirty_merge_blocks_approval(tmp_path: Path, monke
 
     assert result.status is StageStatus.FAILED
     assert "Pull Request has merge conflicts" in (result.error or "")
-    assert mock_post.called
-    assert mock_post.call_args[1]["consensus_data"]["approved"] is False
+    # A dirty merge halts before the iteration cap: not terminal, so nothing is posted.
+    assert not mock_post.called
 
 
 def test_stage4_host_integrity_failed_ci_blocks_approval(tmp_path: Path, monkeypatch) -> None:

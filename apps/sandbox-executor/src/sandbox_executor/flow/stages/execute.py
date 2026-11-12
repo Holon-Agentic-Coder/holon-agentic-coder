@@ -30,6 +30,7 @@ from sandbox_executor.flow.partial_salvage import salvage_for_resume
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.stages.decomposition import _run_decomposed_plan, _sub_intent_depth_error
 from sandbox_executor.flow.stages.plan_decision import _over_budget_failure, _plan_budget_decision
+from sandbox_executor.flow.stages.sync_conflict import sync_conflict_result
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.git import EMPTY_DIFF_FAILURE_REASON, EMPTY_DIFF_STATUS, changed_paths, empty_diff_summary
 from sandbox_executor.knowledge import ActionIndexDatabase, CredentialRedactor, compute_context_fingerprint
@@ -288,6 +289,10 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
             return _stage_failure(context, FlowStage.EXECUTE, start_time, msg, **base_payload)
         record = {**precheck.to_plan_fields(), "plan_branch": context.plan_branch}
         return _run_decomposed_plan(context, start_time, record, base_payload)
+
+    conflict_result = sync_conflict_result(context, start_time, summary_row, base_payload)
+    if conflict_result is not None:
+        return conflict_result
 
     # Empty-diff guard: shared definition with the executor entrypoint and the review loop.
     plan_ref = _resolve_branch_ref(repo_dir, context.plan_branch)

@@ -30,7 +30,9 @@ from synthetic throughput data, and the tests that exercise them use injected cl
 `HOLON_REVIEW_CI_WAIT_SECONDS` is in seconds, not minutes, and is not part of `HOLON_STAGE_BUDGET_SECONDS`: the wait
 backs off from 15 s to a 120 s ceiling and ends once no check is pending or one has failed; `0`, negative and
 non-numeric values are invalid and keep 1800 s, and the budget applies per wait (see
-[CI wait budget and outcomes](git_flow.md#ci-wait-budget-and-outcomes)).
+[CI wait budget and outcomes](git_flow.md#ci-wait-budget-and-outcomes)). The Stage 5
+[final-head CI check](git_flow.md#final-head-ci-check-stage-5) draws on the same budget; Stage 5 is exempt from the
+over-budget downgrade, so an overrun there is logged and never fails the stage.
 
 `HOLON_STAGE_BUDGET_SECONDS` is meant for handing one exact ceiling to a single sandbox role; set it only for that
 container, because wherever it is set it applies to every stage. The host does this itself: while `holon flow` runs a

@@ -95,8 +95,15 @@ def names_missing_from_all(definitions: dict[str, str], listed: set[str]) -> lis
 KNOWN_UNEXPORTED = frozenset(
     {
         "Adjudication",
+        "FinalHeadSeams",
         "MergeResult",
         "adjudication_mismatches",
+        "check_final_head_ci",
+        "classify_final_head",
+        "format_final_head_ci",
+        "gh_step_lookup",
+        "not_pushed_record",
+        "parse_run_id",
         "apply_local_test_evidence",
         "checkpoint_exists",
         "child_checkpoint_path",

@@ -89,16 +89,18 @@ def test_mounted_missing_ref_names_branch_and_host(repo: Path, fetch_attempts: l
     has_diff, detail = _execution_effective_diff(str(repo), EXEC)
     assert has_diff is None
     assert f"'{missing}'" in detail
+    assert "is not fetched from origin" in detail
     assert "host must fetch" in detail
     assert fetch_attempts == []
 
 
 @pytest.mark.usefixtures("mounted")
-def test_mounted_reports_plan_branch_first_when_both_missing(repo: Path):
+def test_mounted_reports_plan_branch_first_when_both_missing(repo: Path, fetch_attempts: list[list[str]]):
     _git(repo, "update-ref", "-d", f"refs/remotes/origin/{PLAN}")
     _git(repo, "update-ref", "-d", f"refs/remotes/origin/{EXEC}")
     _has_diff, detail = _execution_effective_diff(str(repo), EXEC)
     assert f"'{PLAN}'" in detail
+    assert fetch_attempts == []
 
 
 @pytest.mark.usefixtures("mounted")

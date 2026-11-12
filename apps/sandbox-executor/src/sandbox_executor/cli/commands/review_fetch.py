@@ -22,10 +22,9 @@ def _plan_branch(execution_branch: str) -> str | None:
 def fetch_review_branches(worktree: str, head_branch: str, base_branch: str | None) -> None:
     """Fetch the plan, execution and base branches from origin on the host before the container is dispatched.
 
-    The base is the pull request's base when it has one, else the target branch of the intent recorded on the
-    fetched plan branch. A head that is not a flow execution branch and has no pull request base falls back to
-    'main', not the repository default branch. Without an 'origin'
-    remote there is nothing to fetch, so local-only flows keep working.
+    The base is the pull request's base when it has one, else the target branch of the intent recorded on the fetched
+    plan branch. A head that is not a flow execution branch and has no pull request base falls back to 'main', not the
+    repository default branch. Without an 'origin' remote there is nothing to fetch, so local-only flows keep working.
 
     Raises:
         RuntimeError: If a fetch fails (the redacted git error is included).

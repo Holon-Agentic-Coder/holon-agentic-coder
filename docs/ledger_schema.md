@@ -172,6 +172,10 @@ Stage 3 executor entrypoint rows (all in `executions.jsonl`, under the same `E-.
 - Its own execution summary (`entry_type: "summary"`) -- `status: "failed"` with `failure_reason: "empty_diff"` when the
   run changed nothing outside the excluded paths, or `"diff_unverified"` when that diff could not be computed -- plus a
   superseding failure summary when the branch integrity check or the pre-push sync fails.
+- On a Stage 3 resume that finds an interrupted run's uncommitted edits, the flow commits them as partial work on the
+  failed execution branch and appends one superseding summary (`status: "failure"`, `failure_reason: "interrupted"`,
+  higher `ledger_revision`, `partial_head`, `salvaged: true` and `salvaged_file_count`, a count and never contents). No
+  fourth ledger is added.
 - When action logging is enabled (`is_action_logging_enabled()`): a `command_execution` action for the agent run
   ("Executed agent ...") and a `git_mutation` action for the commit ("Committed execution changes: ..."), plus a
   `doc_update` action when markdown files are formatted and a `git_mutation` action when a corrupted repository is

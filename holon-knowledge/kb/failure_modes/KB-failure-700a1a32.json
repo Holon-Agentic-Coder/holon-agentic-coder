@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-700a1a32",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T10:35:58.967271+00:00",
+  "updated_ts": "2026-11-12T10:35:58.967271+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794479214-59222219",
+      "ACT-FIND-1794479213-24ef3ea4"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794478300-salvage/P-1794478317-4eb07fff-claude-agent-claude-sonnet-5-5/E-1794478418-d600c349-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 3 finding detected: FIND-R3-003-01",
+    "symptoms": [
+      "The retry path returns SalvageResult with no files, so salvage_for_resume logs 'committed 0 leftover file(s)'; carry the real count or reword the log."
+    ]
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "kb_id": "KB-failure-c4beba97",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T11:09:55.957828+00:00",
+  "updated_ts": "2026-11-12T11:09:55.957828+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1794481222-9743510c",
+      "ACT-REV-1794481221-4e71f8e9"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794480898-mdgate/P-1794480915-c8cd81b2-claude-agent-claude-sonnet-5-5/E-1794481013-c5a9f3d0-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 reviewer 3 completed",
+    "symptoms": []
+  }
+}

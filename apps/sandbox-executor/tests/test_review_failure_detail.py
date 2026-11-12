@@ -38,6 +38,8 @@ def _fake_run(test_output: str, lint_code: int = 0, seen: list | None = None):
             seen.append(env)
         if args[-1] == "lint":
             return subprocess.CompletedProcess(args, lint_code, stdout="", stderr="lint broke")
+        if args[0] != "uv":
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         return subprocess.CompletedProcess(args, 1, stdout=test_output, stderr="")
 
     return fake

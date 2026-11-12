@@ -182,3 +182,13 @@ class TestContainerUvExecutionNonRoot:
         result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=30)
         assert result.returncode == 0, f"uv execution failed in {image_name}: {result.stderr}"
         assert result.stdout.startswith("uv ")
+
+
+class TestDockerfilePrettierInstallation:
+    """Hermetic test: the resolver's Markdown gate runs 'npx prettier', so the image bakes in the pinned Prettier."""
+
+    def test_prettier_is_installed_globally_at_the_version_formatting_pins(self):
+        from sandbox_executor.formatting import PRETTIER_SPEC
+
+        content = DOCKERFILE_PATH.read_text(encoding="utf-8")
+        assert re.search(rf"npm install -g [^\n]*{re.escape(PRETTIER_SPEC)}\b", content)

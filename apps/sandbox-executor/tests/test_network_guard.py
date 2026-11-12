@@ -2,6 +2,7 @@
 
 import socket
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -115,16 +116,22 @@ def test_a_fetch_from_a_local_bare_remote_succeeds(tmp_path: Path, network_guard
 def test_a_connection_to_a_real_host_is_refused_and_recorded(network_guard_fixture: list[str]):
     with pytest.raises(NetworkBlockedError, match="name lookup"):
         socket.create_connection(("example.invalid", 80), timeout=1)
-    with pytest.raises(NetworkBlockedError, match="connect to"):
-        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(("192.0.2.1", 80))
-    with pytest.raises(NetworkBlockedError, match="connect to"):
-        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect_ex(("192.0.2.1", 80))
+    with (
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock,
+        pytest.raises(NetworkBlockedError, match="connect to"),
+    ):
+        sock.connect(("192.0.2.1", 80))
+    with (
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock,
+        pytest.raises(NetworkBlockedError, match="connect to"),
+    ):
+        sock.connect_ex(("192.0.2.1", 80))
 
     assert len(network_guard_fixture) == 3
     network_guard_fixture.clear()
 
 
-def test_loopback_and_unix_sockets_are_allowed(tmp_path: Path, network_guard_fixture: list[str]):
+def test_loopback_and_unix_sockets_are_allowed(network_guard_fixture: list[str]):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.bind(("127.0.0.1", 0))
         server.listen(1)
@@ -133,11 +140,13 @@ def test_loopback_and_unix_sockets_are_allowed(tmp_path: Path, network_guard_fix
             accepted.close()
             assert client.fileno() >= 0
 
-    path = str(tmp_path / "s")
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as unix_server:
-        unix_server.bind(path)
-        unix_server.listen(1)
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as unix_client:
-            unix_client.connect(path)
+    # AF_UNIX paths are limited to ~104 bytes on macOS, so avoid the long pytest tmp_path.
+    with tempfile.TemporaryDirectory(dir="/tmp") as short_dir:
+        path = str(Path(short_dir) / "s")
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as unix_server:
+            unix_server.bind(path)
+            unix_server.listen(1)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as unix_client:
+                unix_client.connect(path)
 
     assert network_guard_fixture == []

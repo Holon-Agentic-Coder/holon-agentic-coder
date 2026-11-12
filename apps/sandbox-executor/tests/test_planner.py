@@ -300,7 +300,10 @@ class _PlannerHarness:
         return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
     def committed(self):
-        return any(cmd[:2] == ["git", "commit"] for cmd in self.git_cmds)
+        n = len(planner.PLANNER_GIT_IDENTITY)
+        return any(
+            cmd[:n] == list(planner.PLANNER_GIT_IDENTITY) and cmd[n : n + 1] == ["commit"] for cmd in self.git_cmds
+        )
 
     def cleanup(self):
         self.tmp.cleanup()

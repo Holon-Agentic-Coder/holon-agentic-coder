@@ -43,9 +43,15 @@ from sandbox_executor.flow.review.ensemble import (
     _resolve_reviewed_target,
     _semantic_pr_text,
 )
+from sandbox_executor.flow.review.posting import (
+    PostFacts,
+    PostRequest,
+    decide_post,
+    log_skipped_post,
+    post_review_consensus,
+)
 from sandbox_executor.flow.review.records import (
     _bounded_error_context,
-    _posting_failure_context,
     _record_infrastructure_findings,
     _record_reviewer_rows,
     _refused_review_result,
@@ -68,7 +74,7 @@ from sandbox_executor.flow.review.verdict import (
 )
 from sandbox_executor.flow.review.workspace import reviewers_sandboxed
 from sandbox_executor.flow.stages.execute import _warn_ledger_failure
-from sandbox_executor.knowledge import CredentialRedactor, append_action_event, compute_context_fingerprint
+from sandbox_executor.knowledge import append_action_event, compute_context_fingerprint
 from sandbox_executor.ledger import (
     LedgerRewriteError,
     generate_action_id,
@@ -171,8 +177,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
 
     The empty-diff guard runs for every target whatever ``auto_pr`` is: an empty diff is rejected and an
     unverifiable one fails, before any PR, iteration or post. A dry run never measures anything, so it reports
-    ``not_measured`` and is never approved; it never dispatches a reviewer. A consensus is posted only when at least one
-    reviewer completed and no infrastructure step failed; one that cannot be posted is ``post_failed``, never approved.
+    ``not_measured`` and is never approved; it never dispatches a reviewer. A consensus is posted only
+    on a terminal exit (approval, or the label budget exhausted) when at least one reviewer completed and no
+    infrastructure step failed (see ``decide_post``); one that cannot be posted is ``post_failed``, never approved.
 
     Returns:
         dict[str, Any]: Review loop outcome dictionary.
@@ -688,64 +695,44 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "pr_number": pr_res.get("pr_number"),
     }
 
-    # Dual-post review consensus to GitHub and handle self-approval restriction
+    # Post only a terminal review: approval, or the label budget exhausted. Other exits keep the report local.
     posting_res: dict[str, Any] = {}
     post_error: str | None = None
-    if effective_dry_run or skip_post:
+    decision = decide_post(
+        PostFacts(
+            dry_run=effective_dry_run,
+            skip_post=skip_post,
+            failed=bool(pr_refusal_error or infra_error),
+            reviewer_completed=any(result.status is ReviewerStatus.COMPLETED for result in reviewers),
+            consensus_reached=consensus_reached,
+            halted_early=bool(resolver_error or no_convergence),
+            iteration=iteration,
+            last_label=last_label,
+        )
+    )
+    if decision.count_suppressed:
         suppressed_ledger_records += 1
-    elif pr_refusal_error or infra_error:
-        # A refused diff, a refused host run or a failed target, diff or ensemble has no real review to post.
-        context.log(f"[Review Loop] Not posting a review consensus for '{review_target}': the review failed.")
-    elif not any(result.status is ReviewerStatus.COMPLETED for result in reviewers):
-        context.log(f"[Review Loop] Not posting a review consensus for '{review_target}': no reviewer completed.")
-    else:
-        try:
-            posting_res = post_pr_review_consensus(
+    if decision.post:
+        post_error, posting_res = post_review_consensus(
+            post_pr_review_consensus,
+            context,
+            exec_file,
+            PostRequest(
                 repo_dir=repo_dir,
-                target=review_target,
+                review_target=review_target,
                 consensus_data=consensus_data,
                 proxy_env=proxy_env,
                 reviewers=reviewers,
                 title=resolve_report_title(context.intent_data, resolved_target, review_target),
-            )
-        except Exception as exc:
-            safe_error = CredentialRedactor.redact_text(str(exc))
-            logger.warning("Posting review consensus for %s failed: %s", review_target, safe_error)
-            context.log(f"Warning: Posting review consensus for '{review_target}' failed: {safe_error}")
-            posting_res = {"error": safe_error}
-
-        # Discrete Action 4: Review Posting Event, recorded whether or not posting succeeded
-        posted = bool(posting_res.get("dual_posted") or (posting_res.get("official_review") or {}).get("success"))
-        posting_action_record: dict[str, Any] = {
-            "action_id": generate_action_id("ACT-POST"),
-            "execution_id": f"REV-POST-{int(time.time())}",
-            "action": (
-                f"Review consensus dual-posted to GitHub for {review_target}"
-                if posted
-                else f"Review consensus posting to GitHub failed for {review_target}"
+                iteration=iteration,
             ),
-            "category": "code",
-            "target": review_target,
-            "outcome": "success" if posted else "failure",
-            "entry_type": "action",
-            "action_origin": "pr_review",
-            "review_iteration": iteration,
-            "labels": ["review", "github", "dual-post"],
-        }
-        if not posted:
-            # Successful rows keep their historical shape; failures carry the posting error.
-            posting_action_record["error_context"] = _posting_failure_context(posting_res)
-        posting_action_record["created_at"] = datetime.now(UTC).isoformat()
-        record_review_action(context, exec_file, posting_action_record)
-        if not posted:
-            # Fail closed: an approval nobody can see on the PR is not an approval.
-            post_error = f"Posting the review consensus for '{review_target}' failed: " + str(
-                posting_action_record["error_context"]
-            )
-            context.log(f"[Review Loop] {post_error}")
+        )
+        if post_error:
             consensus_reached = False
             consensus_status = "post_failed"
             approval_score = 0.0
+    else:
+        log_skipped_post(context, review_target, decision)
 
     halt_reasons: list[str] = []
     if pr_refusal_error or infra_error:

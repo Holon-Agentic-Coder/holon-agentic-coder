@@ -62,7 +62,7 @@ class TestStage4LedgerProvenance:
             patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", **posting),
             _verified_diff(),
         ):
-            result = run_review_loop(ctx, auto_pr=False)
+            result = run_review_loop(ctx, auto_pr=False, max_iterations=1)
         return ctx, result, tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
 
     def test_review_loop_appends_act_rows_to_target_repository(self, tmp_path):
@@ -188,7 +188,7 @@ class TestStage4LedgerProvenance:
                 return_value={"all_passed": True, "source": "local_tests"},
             ),
         ):
-            run_review_loop(ctx, auto_pr=False)
+            run_review_loop(ctx, auto_pr=False, max_iterations=1)
 
         assert not (tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl").exists()
         assert any("Dry run" in line and "ledger record(s) not appended" in line for line in ctx.logs)
@@ -212,7 +212,7 @@ class TestStage4LedgerProvenance:
             _verified_diff(),
             patch("sandbox_executor.knowledge.records.atomic_ledger_append", side_effect=PermissionError("denied")),
         ):
-            result = run_review_loop(ctx, auto_pr=False)
+            result = run_review_loop(ctx, auto_pr=False, max_iterations=1)
 
         assert result["consensus"]["approved"] is True
         warnings = [rec.getMessage() for rec in caplog.records if rec.levelname == "WARNING"]
@@ -245,7 +245,7 @@ class TestStage4LedgerProvenance:
                 ),
                 patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
             ):
-                run_review_loop(ctx, auto_pr=False)
+                run_review_loop(ctx, auto_pr=False, max_iterations=1)
         finally:
             ledger_dir.chmod(0o755)
 

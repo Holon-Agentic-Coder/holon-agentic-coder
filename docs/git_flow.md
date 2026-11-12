@@ -360,7 +360,10 @@ The guarantee has five deliberate limits:
   `ssh`: before dispatch the host fetches the plan, execution and base branches into `refs/remotes/origin/`, and the
   guard only resolves those refs. A ref the host did not fetch is `diff_unverified` with a refusal naming the branch and
   saying the host must fetch it before dispatch (a branch that exists only locally in the container is refused as well,
-  even when it resolves); a failed host fetch stops the stage before the container starts. When the guard refuses the PR
+  even when it resolves); a failed host fetch stops the stage before the container starts. The execution-branch
+  comparison (`_execution_effective_diff`) follows the same rule, and no other fetch is reachable from the review-loop
+  container: the remaining `git fetch` callers (the child-branch prefix and snapshot fetches of Stages 1 to 3, the
+  merge helper and calibration) are host-side code. When the guard refuses the PR
   (`empty_diff` or `diff_unverified`), the review loop fails closed: it does not wait for CI, runs no review iteration
   and posts no consensus, so no evidence -- not even a Stage 3 `test_pass_rate` of 1.0 or green CI on an existing PR --
   can approve it. The loop returns `approved: false` with the refusal as its `error` (an `empty_diff` refusal appends no

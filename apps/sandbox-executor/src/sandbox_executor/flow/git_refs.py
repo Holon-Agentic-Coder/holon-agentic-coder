@@ -12,6 +12,7 @@ import shutil
 import tempfile
 from typing import Any
 
+from sandbox_executor.entrypoint.execution_workspace import workspace_mounted
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.git import changed_paths, empty_diff_summary, run_git
 from sandbox_executor.ledger import LedgerRewriteError, atomic_ledger_append, validate_ledger_file_unique_ids
@@ -331,6 +332,15 @@ def _has_origin_remote(repo_dir: str) -> bool:
     return run_git(["remote", "get-url", "origin"], cwd=repo_dir, check=False).returncode == 0
 
 
+def _unfetched_branch_message(repo_dir: str, branches: list[str]) -> str | None:
+    """Name the first branch whose origin tracking ref is missing (the host fetches before dispatch)."""
+    for branch in branches:
+        ref = f"refs/remotes/origin/{branch}"
+        if run_git(["rev-parse", "--verify", "--quiet", ref], cwd=repo_dir, check=False).returncode != 0:
+            return f"'{branch}' is not fetched from origin; the host must fetch it before dispatch"
+    return None
+
+
 def _execution_effective_diff(repo_dir: str, execution_branch: str) -> tuple[bool | None, str]:
     """Check whether an execution branch changes anything relative to its parent plan branch.
 
@@ -349,11 +359,14 @@ def _execution_effective_diff(repo_dir: str, execution_branch: str) -> tuple[boo
     if plan_branch is None:
         return True, "not an execution branch"
     if _has_origin_remote(repo_dir):
-        fetch_error = _fetch_refspecs_error(
-            repo_dir,
-            [f"+refs/heads/{branch}:refs/remotes/origin/{branch}" for branch in (plan_branch, execution_branch)],
-        )
-        if fetch_error:
+        branches = [plan_branch, execution_branch]
+        if workspace_mounted():
+            missing = _unfetched_branch_message(repo_dir, branches)
+            if missing:
+                return None, missing
+        elif fetch_error := _fetch_refspecs_error(
+            repo_dir, [f"+refs/heads/{branch}:refs/remotes/origin/{branch}" for branch in branches]
+        ):
             return None, f"fetching '{plan_branch}' and '{execution_branch}' from origin failed: {fetch_error}"
         plan_ref = f"refs/remotes/origin/{plan_branch}"
         exec_ref = f"refs/remotes/origin/{execution_branch}"

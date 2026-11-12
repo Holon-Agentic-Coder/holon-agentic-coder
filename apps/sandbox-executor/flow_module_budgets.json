@@ -1,7 +1,7 @@
 {
   "description": "Line budgets for each module of apps/sandbox-executor/src/sandbox_executor/flow/, recorded at the post-split sizes and checked by scripts/check_flow_module_budgets.py (run by 'uv run task lint'). A module may shrink but never grow past its budget. Budgets of child_progress.py, stages/calibrate.py and stages/intent.py were raised by 1, 1 and 3 lines for the ref_names helpers that build and name the /_ and /calibrated branches. Budgets of stages/intent.py, stages/plan.py, stages/execute.py, review/resolver.py and git_refs.py were also raised for the host-side fetch and push that moved every remote operation of a stage out of the role containers (host_remote.py owns them). Budgets of stages/decomposition.py and stages/children.py were raised by 4 and 2 lines to report a child branch name that cannot fit as a Stage 3 failure and to record original_slug on shortened child intents. The budget of review/loop.py was raised by 3 lines so the reviewed-commit lookup skips the fetch in a mounted role container (the host fetches before dispatch) and imports the one shared mounted-workspace check. The budget of git_refs.py was raised by 21 lines (the last one so the unfetched-branch message takes an optional role label and review_target reuses it) so the execution-diff check skips the fetch in a mounted role container (the host fetches before dispatch) and names a branch the host did not fetch. The budget of stages/calibrate.py was raised by 7 lines for the hook of the final-head CI check (github/ci_final_head.py owns the logic). Lower a budget by hand after shrinking a module; add an entry at creation size for a new module and remove the entry of a deleted one.",
   "budgets": {
-    "__init__.py": 377,
+    "__init__.py": 379,
     "checkpoint.py": 210,
     "child_progress.py": 195,
     "constants.py": 8,
@@ -10,8 +10,8 @@
     "git_refs.py": 394,
     "github/__init__.py": 1,
     "github/ci.py": 193,
-    "github/ci_final_head.py": 174,
-    "github/ci_wait.py": 118,
+    "github/ci_final_head.py": 227,
+    "github/ci_wait.py": 120,
     "github/merge.py": 299,
     "github/pr.py": 515,
     "github/review_post.py": 216,

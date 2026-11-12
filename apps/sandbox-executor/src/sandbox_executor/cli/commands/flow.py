@@ -23,8 +23,7 @@ from sandbox_executor.cli.options import (
     _TOKEN_REDUCE_HELP,
     add_target_worktree_option,
 )
-from sandbox_executor.flow import FlowContext, FlowStage
-from sandbox_executor.flow.github.ci_final_head import format_final_head_ci
+from sandbox_executor.flow import FlowContext, FlowStage, format_final_head_ci
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 
 logger = logging.getLogger(__name__)

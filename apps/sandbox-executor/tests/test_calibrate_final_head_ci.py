@@ -171,3 +171,45 @@ def test_stage_keeps_success_and_reports_failed_final_head(tmp_path: Path) -> No
         result = run_calibrate_stage(ctx)
     assert result.status == StageStatus.SUCCESS
     assert result.payload["final_head_ci"] == failed
+
+
+def test_stale_prior_head_checks_are_not_reported_as_success(tmp_path: Path) -> None:
+    fakes = Fakes(_status([_check("hygiene", "pass")]))
+    heads = iter(["old", "old", "new"])
+    seams = FinalHeadSeams(
+        policy=CiWaitPolicy(600.0, clock=lambda: fakes.now, sleep=fakes.sleep),
+        probe=fakes.probe,
+        step_lookup=lambda check: None,
+        registration_timeout=60,
+        pushed_head=lambda: "new",
+        pr_head=lambda: next(heads),
+    )
+    record = check_final_head_ci(_ctx(tmp_path), str(tmp_path), BRANCH, seams)
+    assert record["state"] == "success"
+    assert len(fakes.sleeps) == 2
+    assert fakes.probes >= 1
+
+
+def test_pr_head_never_matching_pushed_head_is_unknown(tmp_path: Path) -> None:
+    fakes = Fakes(_status([_check("hygiene", "pass")]))
+    seams = FinalHeadSeams(
+        policy=CiWaitPolicy(600.0, clock=lambda: fakes.now, sleep=fakes.sleep),
+        probe=fakes.probe,
+        registration_timeout=20,
+        pushed_head=lambda: "new",
+        pr_head=lambda: "old",
+    )
+    record = check_final_head_ci(_ctx(tmp_path), str(tmp_path), BRANCH, seams)
+    assert record["state"] == "unknown"
+    assert fakes.probes == 0
+
+
+def test_failure_does_not_end_the_wait_while_other_checks_are_pending(tmp_path: Path) -> None:
+    fakes = Fakes(
+        _status([_check("lint", "fail"), _check("unit", "pending")]),
+        _status([_check("lint", "fail"), _check("unit", "fail")]),
+    )
+    record = _run(tmp_path, fakes)
+    assert record["state"] == "failed"
+    assert record["failed_checks"] == ["lint", "unit"]
+    assert fakes.sleeps

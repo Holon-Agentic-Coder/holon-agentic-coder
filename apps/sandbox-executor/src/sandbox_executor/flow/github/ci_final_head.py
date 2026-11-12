@@ -28,7 +28,7 @@ from sandbox_executor.flow.github.ci import (
     probe_ci_checks,
     resolve_ci_registration_timeout,
 )
-from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, settle_pending_ci
+from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, wait_for_pending_ci
 from sandbox_executor.knowledge import CredentialRedactor
 
 TIMING_GATE_STEP_PREFIX = "CI Timing Gate"
@@ -49,6 +49,8 @@ class FinalHeadSeams:
     probe: Callable[[], dict[str, Any]] | None = None
     step_lookup: StepLookup | None = None
     registration_timeout: float | None = None
+    pushed_head: Callable[[], str | None] | None = None
+    pr_head: Callable[[], str | None] | None = None
 
 
 def parse_run_id(link: str | None) -> str | None:
@@ -86,6 +88,53 @@ def gh_step_lookup(repo_dir: str, proxy_env: Mapping[str, str], run: Callable[..
         return None
 
     return lookup
+
+
+def _git_gh_head(repo_dir: str, branch: str, proxy_env: Mapping[str, str]) -> tuple[Callable[[], str | None], ...]:
+    env = {**os.environ, **proxy_env, "DOCKER_CLI_HINTS": "false"}
+
+    def _out(cmd: list[str]) -> str | None:
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=STEP_LOOKUP_TIMEOUT_SECONDS,
+                env=env,
+            )
+        except Exception:
+            return None
+        return proc.stdout.strip() or None if proc.returncode == 0 else None
+
+    return (
+        lambda: _out(["git", "rev-parse", "HEAD"]),
+        lambda: _out(["gh", "pr", "view", branch, "--json", "headRefOid", "--jq", ".headRefOid"]),
+    )
+
+
+def _wait_for_pr_head(
+    branch: str, repo_dir: str, proxy_env: Mapping[str, str], seams: FinalHeadSeams, policy: Any
+) -> None:
+    """Wait until the PR head is the pushed SHA, so checks of the previous head are never taken for the final head.
+
+    When either SHA cannot be read the head is unverifiable and the probe proceeds as before.
+    """
+    default_pushed, default_pr = _git_gh_head(repo_dir, branch, proxy_env)
+    pushed = (seams.pushed_head or default_pushed)()
+    if not pushed:
+        return
+    pr_head = seams.pr_head or default_pr
+    deadline = policy.clock() + resolve_ci_registration_timeout(seams.registration_timeout)
+    while True:
+        current = pr_head()
+        if current is None or current == pushed:
+            return
+        remaining = deadline - policy.clock()
+        if remaining <= 0:
+            raise RuntimeError("the PR head did not match the pushed head before the registration wait ran out")
+        policy.sleep(max(0.0, min(CI_REGISTRATION_POLL_SECONDS, remaining)))
 
 
 def _failed_checks_by_name(ci_status: dict[str, Any], names: list[str]) -> list[dict[str, Any]]:
@@ -134,6 +183,7 @@ def _settled_status(
     proxy_env = dict(seams.proxy_env)
     probe = seams.probe or functools.partial(probe_ci_checks, repo_dir, branch, proxy_env=proxy_env)
     policy = seams.policy or CiWaitPolicy(resolve_review_ci_wait_seconds(os.environ))
+    _wait_for_pr_head(branch, repo_dir, proxy_env, seams, policy)
     ci_status = probe()
     if ci_status.get("source") != "github_cli":
         # A push returns before GitHub registers the new runs, so give them time to appear.
@@ -142,8 +192,11 @@ def _settled_status(
             context, repo_dir, branch, proxy_env, timeout, CI_REGISTRATION_POLL_SECONDS, policy.clock, policy.sleep
         )
         ci_status = probe()
-    ci_status, waited = settle_pending_ci(context, probe, ci_status, policy, False)
-    return ci_status, waited.as_record() if waited else None
+    if ci_status.get("source") != "github_cli" or ci_status.get("pending", 0) <= 0:
+        return ci_status, None
+    # A failed check must not end the wait while others are pending: they may fail too, or hide a real test failure.
+    ci_status, waited = wait_for_pending_ci(context, probe, ci_status, policy, stop_on_failure=False)
+    return ci_status, waited.as_record()
 
 
 def check_final_head_ci(

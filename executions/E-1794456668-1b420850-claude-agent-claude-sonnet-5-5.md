@@ -3,7 +3,8 @@
 ## Summary
 
 Implementing the Stage 5 final-head CI check (`flow/github/ci_final_head.py`), its hook in `calibrate.py` and the flow
-summary, hermetic tests and docs. Complete. All gates pass except one failure that also occurs on the untouched baseline.
+summary, hermetic tests and docs. Complete. All gates pass except one failure that also occurs on the untouched
+baseline.
 
 ## Actual Metrics
 

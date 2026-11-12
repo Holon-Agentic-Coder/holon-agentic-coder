@@ -28,8 +28,27 @@ def test_planner_identity_is_passed_on_the_command_line():
     assert "config" not in identity
     assert "user.email=planner-agent@holon-agentic-coder.com" in identity
     assert "user.name=Holon Planner Agent" in identity
+    assert identity == (
+        "git",
+        "-c",
+        "user.email=planner-agent@holon-agentic-coder.com",
+        "-c",
+        "user.name=Holon Planner Agent",
+    )
 
 
+def test_intent_identity_is_passed_on_the_command_line():
+    identity = intent_creator.INTENT_GIT_IDENTITY
+    assert identity == (
+        "git",
+        "-c",
+        "user.email=intent-agent@holon-agentic-coder.com",
+        "-c",
+        "user.name=Holon Intent Agent",
+    )
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the read-only mode, so the premise cannot hold")
 def test_commit_with_the_command_line_identity_succeeds_when_the_repository_config_is_read_only(tmp_path):
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env.update(HOME=str(tmp_path / "home"), GIT_CONFIG_NOSYSTEM="1")

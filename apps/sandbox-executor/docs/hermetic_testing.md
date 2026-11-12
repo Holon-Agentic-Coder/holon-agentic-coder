@@ -149,12 +149,12 @@ The autouse fixture `no_ambient_credentials` in `tests/conftest.py` clears `GITH
 variable except the harness's own, and every name in `CREDENTIAL_ENV_NAMES` from `tests/credential_env.py`. That list is
 built from `CLAUDE_CREDENTIAL_ENV_NAMES` in production code plus the runner keys that `agent_defaults` reads, so a new
 production name is picked up automatically. A test that needs a token plants its own with `monkeypatch.setenv` or
-`patch.dict`; it never relies on the ambient value. The review-loop container carries a real Claude token, so a test that
-did rely on it would pass on a bare host and fail there.
+`patch.dict`; it never relies on the ambient value. The review-loop container carries a real Claude token, so a test
+that did rely on it would pass on a bare host and fail there.
 
-`tests/test_credential_hermeticity.py` guards the rule. For each name it runs the credential tests in a child pytest with
-that variable really set, and a probe asserts the fixture removed it. It also checks that the fixture covers every name
-in the list.
+`tests/test_credential_hermeticity.py` guards the rule. For each name it runs the credential tests in a child pytest
+with that variable really set, and a probe asserts the fixture removed it. It also checks that the fixture covers every
+name in the list.
 
 ### Session-wide test git config
 

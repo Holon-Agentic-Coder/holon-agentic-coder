@@ -61,12 +61,13 @@ def head_and_tail(text: str, budget: int) -> str:
     if len(text) <= budget:
         return text
     head = text[: min(HEAD_CHARS, budget // 3)]
-    marker = f" ... [{len(text) - budget} characters omitted] ... "
-    tail_budget = max(budget - len(head) - len(marker), 0)
+    marker_room = len(f" ... [{len(text)} characters omitted] ... ")
+    tail_budget = max(budget - len(head) - marker_room, 0)
+    marker = f" ... [{len(text) - len(head) - tail_budget} characters omitted] ... "
     return head + marker + (text[-tail_budget:] if tail_budget else "")
 
 
-def test_failure_message(returncode: int, raw_output: str, workspace: str, step: str = "test") -> str:
+def build_test_failure_message(returncode: int, raw_output: str, workspace: str, step: str = "test") -> str:
     """Build ``Resolver pre-push <step> failed (exit code N); failed: ...; full output: <path>: <excerpt>``."""
     text = CredentialRedactor.redact_text(raw_output)
     path = write_full_output(workspace, step, text)

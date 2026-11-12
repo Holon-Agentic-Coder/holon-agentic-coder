@@ -7,7 +7,7 @@ that names it, distinct from a lint or test failure, so the resolver records it 
 import subprocess
 from collections.abc import Callable
 
-from sandbox_executor.entrypoint.review_failure_detail import test_failure_message
+from sandbox_executor.entrypoint.review_failure_detail import build_test_failure_message
 
 # Exit code and stderr marker of a command whose executable could not be started (the shell's "command not found").
 MISSING_TOOL_EXIT_CODE = 127
@@ -40,7 +40,7 @@ def verification_error(
     is_missing_tool = result.returncode == MISSING_TOOL_EXIT_CODE and MISSING_TOOL_MARKER in (result.stderr or "")
     if step == "test" and workspace and not is_missing_tool:
         raw = "\n".join(part for part in (result.stdout, result.stderr) if part).strip() or "test failed"
-        return test_failure_message(result.returncode, raw, workspace)
+        return build_test_failure_message(result.returncode, raw, workspace)
     detail = bound((result.stderr or result.stdout or "").strip() or f"{step} failed")
     if is_missing_tool:
         return f"Resolver pre-push verification could not run: {detail}"

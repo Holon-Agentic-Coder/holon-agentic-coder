@@ -10,8 +10,8 @@ environment. Violating these constraints triggers automated alerts, sandbox term
 - **Prefix-Based Isolation:** Every active task must run inside its own isolated branch prefix:
   - **Root Intents:** `I-{timestamp}-{slug}/_`. Only human operators can approve merges to the canonical `main` branch.
   - **Plan Variants:** `I-{timestamp}-{slug}/P-{timestamp}-{hex}-{agent}-{model}/_`. Created off of the intent branch.
-  - **Execution Runs:** `I-{timestamp}-{slug}/P-{timestamp}-{hex}-{agent}-{model}/E-{timestamp}-{action}/_`. Created off of
-    the plan branch.
+  - **Execution Runs:** `I-{timestamp}-{slug}/P-{timestamp}-{hex}-{agent}-{model}/E-{timestamp}-{action}/_`. Created off
+    of the plan branch.
 - **Rebase Discipline:** Before any execution run or branch merge, the working branch must be rebased from its parent
   branch to prevent divergence.
 - **Commit Boundaries:** Code changes must be scoped strictly to the current active step and git branch. Agents are

@@ -49,7 +49,8 @@ from sandbox_executor.entrypoint.execution_workspace import (
     validate_mounted_workspace,
     workspace_mounted,
 )
-from sandbox_executor.entrypoint.sync_conflict import SyncConflictMessage, sync_conflict_paths, sync_conflict_row
+from sandbox_executor.entrypoint.sync_conflict import SyncConflictMessage, record_sync_failure
+from sandbox_executor.entrypoint.sync_conflict import superseding_failure_row as superseding_failure_row
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import (
@@ -960,49 +961,6 @@ def finalise_execution_notes(notes_path: str, report: ArtefactReport | None) -> 
     return False
 
 
-def superseding_failure_row(base_row: dict[str, Any], summary: str) -> dict[str, Any]:
-    """Failure summary row that supersedes ``base_row`` in the append-only ``executions.jsonl``.
-
-    Readers select the row with the highest ``ledger_revision`` and never merge fields backwards
-    (docs/ledger_schema.md, "Reader Contract for Superseding Rows"), so the new row repeats every
-    authoritative field of the row it replaces (agent output accounting, execution notes, elapsed and
-    budget seconds, sub-intents) and changes only the status, summary, timestamp and revision.
-    """
-    return {
-        **base_row,
-        "status": "failure",
-        "summary": summary,
-        "created_at": datetime.now(UTC).isoformat(),
-        "ledger_revision": int(base_row.get("ledger_revision", 1)) + 1,
-    }
-
-
-def _record_sync_failure(
-    repo: GitRepository, exec_entry: dict[str, Any], exec_id: str, ledger_dir: str, sync_msg: str
-) -> bool:
-    """Commit the row for a failed pre-push sync and return whether the execution branch is still publishable.
-
-    A non-ledger conflict keeps the executor's own commits and records a resumable ``sync_conflict`` row; any other
-    sync failure records a superseding failure and the branch is not published.
-    """
-    print(f"Error: Pre-push sync failed: {sync_msg}", file=sys.stderr)
-    conflicted_paths = sync_conflict_paths(sync_msg)
-    # Also reachable when the agent was skipped, whose exec_entry is the decomposed or over_budget row.
-    if conflicted_paths is None:
-        ledger_row = superseding_failure_row(
-            exec_entry, f"Pre-push sync failure: {sync_msg}. The branch was not published."
-        )
-        commit_msg = f"execute: record sync failure for {exec_id}"
-    else:
-        ledger_row = sync_conflict_row(superseding_failure_row(exec_entry, sync_msg), conflicted_paths, sync_msg)
-        commit_msg = f"execute: record sync conflict for {exec_id}"
-    with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as ef:
-        ef.write(json.dumps(ledger_row) + "\n")
-    repo.add("holon-knowledge/ledger/executions.jsonl", check=False)
-    repo.commit(commit_msg, check=False)
-    return conflicted_paths is not None
-
-
 def _configure_executor_identity(repo_dir: str) -> None:
     """Set the executor git identity, so the agent's own commits and the executor's commits can land.
 
@@ -1591,7 +1549,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 # The host fetched the target branch into the worktree before dispatch; no remote is read here.
                 sync_ok, sync_msg = sync_and_reconcile_pre_push(repo_dir, target_branch=target_base)
                 if not sync_ok:
-                    can_record = _record_sync_failure(repo, exec_entry, exec_id, ledger_dir, sync_msg)
+                    can_record = record_sync_failure(repo, exec_entry, exec_id, ledger_dir, sync_msg)
 
             if can_record:
                 branch_recorded = True

@@ -44,7 +44,7 @@
     "stages/intent.py": 227,
     "stages/plan.py": 210,
     "stages/plan_decision.py": 111,
-    "stages/sync_conflict.py": 35,
-    "stages/review.py": 298
+    "stages/review.py": 298,
+    "stages/sync_conflict.py": 35
   }
 }

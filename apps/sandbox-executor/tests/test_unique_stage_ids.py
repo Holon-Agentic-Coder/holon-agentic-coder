@@ -1,5 +1,6 @@
 """Tests for stage ID generation, disambiguation, and ledger uniqueness validation."""
 
+import inspect
 import json
 import re
 import tempfile
@@ -7,7 +8,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from sandbox_executor.entrypoint import planner
 from sandbox_executor.entrypoint.planner import PLAN_FILE_PATTERN, plan_file_rel
+from sandbox_executor.flow.review import loop as review_loop
 from sandbox_executor.flow.review.ids import build_review_id
 from sandbox_executor.ledger import (
     _describe_id_owner,
@@ -34,6 +37,10 @@ class TestSameSecondIds(unittest.TestCase):
 
     def test_hexless_plan_file_name_still_matches_plan_pattern(self):
         self.assertRegex("plans/P-1794446836-claude-agent-sonnet.md", PLAN_FILE_PATTERN)
+
+    def test_call_sites_use_the_hex_qualified_id_helpers(self):
+        self.assertIn("build_review_id(context.agent)", inspect.getsource(review_loop.run_review_loop))
+        self.assertIn("plan_file_rel(plan_id)", inspect.getsource(planner))
 
     def test_describe_id_owner_fallbacks(self):
         self.assertEqual(

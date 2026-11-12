@@ -69,6 +69,8 @@ class TestIntentCreator(unittest.TestCase):
         called_cmds = [" ".join(call[0][0]) for call in mock_run.call_args_list]
         self.assertEqual(remote_git_cmds(called_cmds), [])
         self.assertTrue(any(cmd.startswith("git ") and " commit -m " in cmd for cmd in called_cmds))
+        identity = "git -c user.email=intent-agent@holon-agentic-coder.com -c user.name=Holon Intent Agent commit -m "
+        self.assertTrue(any(cmd.startswith(identity) for cmd in called_cmds))
         self.assertFalse(any(cmd.startswith("git config") for cmd in called_cmds))
 
         # Check that intents.jsonl was written to

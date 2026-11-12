@@ -26,12 +26,16 @@ def missing_tool_result(args: list[str], exc: OSError) -> subprocess.CompletedPr
     return subprocess.CompletedProcess(args, MISSING_TOOL_EXIT_CODE, stdout="", stderr=detail)
 
 
-def verification_error(step: str, result: subprocess.CompletedProcess[str], bound: Callable[[str], str], workspace: str | None = None
+def verification_error(
+    step: str,
+    result: subprocess.CompletedProcess[str],
+    bound: Callable[[str], str],
+    workspace: str | None = None,
 ) -> str:
     """Describe a failed pre-push ``step``, keeping a tool that could not run apart from a real lint or test failure.
 
     ``bound`` redacts and caps the command output; the caller supplies it so this module stays free of engine imports.
-    A real test failure with a ``workspace`` names the failed tests and writes the full redacted output under ``.holon/``.
+    A real test failure with a ``workspace`` names the failed tests and writes the full output under ``.holon/``.
     """
     is_missing_tool = result.returncode == MISSING_TOOL_EXIT_CODE and MISSING_TOOL_MARKER in (result.stderr or "")
     if step == "test" and workspace and not is_missing_tool:

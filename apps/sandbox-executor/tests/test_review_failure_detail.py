@@ -80,7 +80,10 @@ def test_unwritable_holon_degrades_gracefully(tmp_path: Path) -> None:
 
 
 def test_extraction_handles_ansi_xdist_and_duplicates() -> None:
-    output = "\x1b[31mFAILED\x1b[0m tests/a.py::t1 - boom\n[gw3] FAILED tests/b.py::t2\nERROR tests/c.py\nFAILED tests/a.py::t1\n"
+    output = (
+        "\x1b[31mFAILED\x1b[0m tests/a.py::t1 - boom\n[gw3] FAILED tests/b.py::t2\nERROR tests/c.py\n"
+        "FAILED tests/a.py::t1\n"
+    )
     assert failed_test_ids(output) == ["tests/a.py::t1", "tests/b.py::t2", "tests/c.py"]
 
 

@@ -204,6 +204,11 @@ def classify_probe_output(exit_code: int | None, output: str) -> PreflightStatus
     return PreflightStatus.UNKNOWN
 
 
+def matching_statuses(text: str) -> set[PreflightStatus]:
+    """Return every failure status whose pattern matches ``text``."""
+    return {status for status, pattern in _PATTERNS if pattern.search(text)}
+
+
 def preflight_skipped_by_env(environ: Mapping[str, str] | None = None) -> bool:
     """Return True when ``HOLON_SKIP_PREFLIGHT`` is truthy."""
     env = os.environ if environ is None else environ

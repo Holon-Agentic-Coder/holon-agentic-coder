@@ -52,7 +52,7 @@ from sandbox_executor.artefacts import ArtefactSection, ArtefactSpec
 from sandbox_executor.budgets import Budgets, StageTimer, load_budgets
 from sandbox_executor.git import EMPTY_DIFF_EXCLUDES, run_git
 from sandbox_executor.redaction import redact_agent_secrets, redact_command_args
-from sandbox_executor.review_failure import classify_failure, describe, quota_wait_seconds, wait_ceiling
+from sandbox_executor.review_failure import OnceSleeper, classify_failure, describe, quota_wait_seconds, wait_ceiling
 from sandbox_executor.review_target import ReviewTarget
 from sandbox_executor.scaffold import REVIEW_LOOP_TEMPLATE
 from sandbox_executor.turns import AuthoringOutcome, TurnRunner, run_turn, supervise_authoring_turn
@@ -837,37 +837,25 @@ def run_ensemble(
     if clear_error is not None:
         return [_undispatched(request, index, agent, model, clear_error) for index in range(1, size + 1)]
     results: list[ReviewerResult] = []
-    sleep = _once(sleep)
+    once = OnceSleeper(sleep)
     for index in range(1, size + 1):
         isolation_error = _isolate(request.repo_dir, results, consequence="stopping the ensemble", level=logging.ERROR)
         if isolation_error is not None:
             results.append(_undispatched(request, index, agent, model, isolation_error))
             continue
         run = functools.partial(run_reviewer, request, index, agent, model, **seams)
-        results.append(_run_with_quota_retry(run, request, sleep, seams))
+        results.append(_run_with_quota_retry(run, request, once, seams))
     _remove_leftovers(request.repo_dir, results, iteration_rel)
     return results
 
 
-def _once(sleep: Callable[[float], None]) -> Callable[[float], None]:
-    """``sleep`` that records its first call, so an ensemble waits for at most one quota reset."""
-    used: list[float] = []
-
-    def wait_once(seconds: float) -> None:
-        used.append(seconds)
-        sleep(seconds)
-
-    wait_once.used = used  # type: ignore[attr-defined]
-    return wait_once
-
-
 def _run_with_quota_retry(
-    run: Callable[[], ReviewerResult], request: ReviewRequest, sleep: Callable[[float], None], seams: dict[str, Any]
+    run: Callable[[], ReviewerResult], request: ReviewRequest, sleep: OnceSleeper, seams: dict[str, Any]
 ) -> ReviewerResult:
     """Run one reviewer; after a quota failure with a near reset, wait and run it once more."""
     result = run()
     wait = result.retry_after_seconds
-    if result.status is not ReviewerStatus.FAILED or wait is None or getattr(sleep, "used", None):
+    if result.status is not ReviewerStatus.FAILED or wait is None or sleep.used:
         return result
     logger.warning("Reviewer %d hit a quota; waiting %.0f s for the reset before one retry.", result.index, wait)
     sleep(wait)

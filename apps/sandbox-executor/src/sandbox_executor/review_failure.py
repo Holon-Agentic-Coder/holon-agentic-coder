@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import enum
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sandbox_executor.preflight import _PATTERNS, PreflightStatus
+from sandbox_executor.preflight import PreflightStatus, matching_statuses
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.turns import TurnResult
 
@@ -86,7 +86,7 @@ def classify_failure(result: TurnResult, now: datetime) -> ReviewerFailure:
 
 def _status(text: str) -> PreflightStatus | None:
     """The preflight status whose pattern matches ``text``, authentication before quota."""
-    matched = {status for status, pattern in _PATTERNS if pattern.search(text)}
+    matched = matching_statuses(text)
     for status in (PreflightStatus.NOT_LOGGED_IN, PreflightStatus.EXPIRED_KEY, PreflightStatus.QUOTA_EXHAUSTED):
         if status in matched:
             return status
@@ -162,3 +162,15 @@ def wait_ceiling(env: Mapping[str, str]) -> float:
     except ValueError:
         return DEFAULT_WAIT_CEILING_SECONDS
     return max(0.0, value)
+
+
+class OnceSleeper:
+    """Sleep callable that records whether it has been used, so an ensemble waits for at most one quota reset."""
+
+    def __init__(self, sleep: Callable[[float], None]) -> None:
+        self._sleep = sleep
+        self.used = False
+
+    def __call__(self, seconds: float) -> None:
+        self.used = True
+        self._sleep(seconds)

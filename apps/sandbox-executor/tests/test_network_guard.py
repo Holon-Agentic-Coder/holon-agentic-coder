@@ -50,6 +50,8 @@ def test_network_subcommands_against_a_non_local_remote_are_violations(subcomman
         ["git", "-C", "/some/dir", "fetch", "ssh://git@example.invalid/r.git"],
         ["git", "-c", "http.proxy=x", "push", "--force", "-o", "ci.skip", "https://example.invalid/r.git"],
         ["/usr/bin/git", "--no-pager", "ls-remote", "--heads", "git@example.invalid:r.git"],
+        ["git", "pull", "-s", "ours", "https://example.invalid/r.git"],
+        ["git", "pull", "-X", "theirs", "https://example.invalid/r.git"],
     ],
 )
 def test_global_and_subcommand_options_are_skipped_to_find_the_remote(argv):

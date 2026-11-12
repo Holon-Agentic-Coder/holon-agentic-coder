@@ -253,6 +253,14 @@ def format_agent_cmd_for_display(cmd: list[str]) -> str:
     return " ".join(print_cmd)
 
 
+PLAN_FILE_PATTERN = r"plans/P-[^/]+\.md"
+
+
+def plan_file_rel(plan_id: str) -> str:
+    """Repo-relative plan markdown path; carries the hex-qualified plan id so same-second plans never collide."""
+    return f"plans/{plan_id}.md"
+
+
 def _unique_temp_file(prefix: str, suffix: str) -> str:
     """Create an empty, private temp file with a collision-free name and return its path (the caller removes it)."""
     fd, path = tempfile.mkstemp(prefix=prefix, suffix=suffix)
@@ -393,7 +401,7 @@ Include metrics in this format:
             json.dump({**intent_data, "replan_feedback": replan_feedback} if replan_feedback else intent_data, f)
 
         # Invoke AI agent
-        plan_md_rel = f"plans/{plan_id}.md"
+        plan_md_rel = plan_file_rel(plan_id)
         plan_md_path = os.path.join(repo_dir, plan_md_rel)
         os.makedirs(os.path.dirname(plan_md_path), exist_ok=True)
 

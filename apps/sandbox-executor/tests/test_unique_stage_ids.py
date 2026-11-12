@@ -7,8 +7,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from sandbox_executor.entrypoint.planner import PLAN_FILE_PATTERN, plan_file_rel
 from sandbox_executor.flow.review.ids import build_review_id
 from sandbox_executor.ledger import (
+    _describe_id_owner,
     _extract_parent_ref,
     build_execution_id,
     build_plan_id,
@@ -25,12 +27,23 @@ class TestSameSecondIds(unittest.TestCase):
     def test_plan_ids_and_file_names_differ_within_one_second(self):
         first = build_plan_id(1794446836, "I-1/ids", "claude-agent", "sonnet", disambiguator="aaaaaaaa")
         second = build_plan_id(1794446836, "I-1/ids", "claude-agent", "sonnet", disambiguator="bbbbbbbb")
-        self.assertNotEqual(f"plans/{first}.md", f"plans/{second}.md")
-        self.assertIn("aaaaaaaa", first)
-        self.assertRegex(f"plans/{first}.md", r"plans/P-[^/]+\.md")
+        self.assertNotEqual(plan_file_rel(first), plan_file_rel(second))
+        self.assertEqual(plan_file_rel(first), f"plans/{first}.md")
+        self.assertIn("aaaaaaaa", plan_file_rel(first))
+        self.assertRegex(plan_file_rel(first), PLAN_FILE_PATTERN)
 
     def test_hexless_plan_file_name_still_matches_plan_pattern(self):
-        self.assertRegex("plans/P-1794446836-claude-agent-sonnet.md", r"plans/P-[^/]+\.md")
+        self.assertRegex("plans/P-1794446836-claude-agent-sonnet.md", PLAN_FILE_PATTERN)
+
+    def test_describe_id_owner_fallbacks(self):
+        self.assertEqual(
+            _describe_id_owner("I-1", {"agent_name": "gamma", "timestamp": "t9"}),
+            "'I-1' (agent gamma, created_at t9)",
+        )
+        self.assertEqual(
+            _describe_id_owner("I-2", {}),
+            "'I-2' (agent unknown-agent, created_at unknown-time)",
+        )
 
     def test_review_ids_differ_within_one_second(self):
         with patch("sandbox_executor.flow.review.ids.time.time", return_value=1794446836.0):

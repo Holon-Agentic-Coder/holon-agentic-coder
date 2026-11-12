@@ -19,7 +19,7 @@
     "intent_questions.py": 112,
     "ledger_interleave.py": 112,
     "ledger_reconcile.py": 224,
-    "partial_salvage.py": 182,
+    "partial_salvage.py": 220,
     "pipeline.py": 387,
     "review/__init__.py": 1,
     "review/adjudication.py": 108,

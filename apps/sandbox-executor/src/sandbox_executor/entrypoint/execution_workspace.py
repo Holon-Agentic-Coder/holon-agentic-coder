@@ -37,11 +37,15 @@ def start_branch_from_host_fetch(repo: GitRepository, repo_dir: str, base_branch
 
 
 # Ledgers and execution notes are engine-owned: an interrupted run leaves them dirty and salvage never commits them.
+ENGINE_OWNED_LEDGER_PATHS = (
+    "holon-knowledge/ledger/intents.jsonl",
+    "holon-knowledge/ledger/plans.jsonl",
+    "holon-knowledge/ledger/executions.jsonl",
+)
+ENGINE_OWNED_NOTES_GLOB = "executions/E-*.md"
 _ENGINE_OWNED_EXCLUDES = (
-    ":(exclude)holon-knowledge/ledger/intents.jsonl",
-    ":(exclude)holon-knowledge/ledger/plans.jsonl",
-    ":(exclude)holon-knowledge/ledger/executions.jsonl",
-    ":(exclude)executions/E-*.md",
+    *(f":(exclude){path}" for path in ENGINE_OWNED_LEDGER_PATHS),
+    f":(exclude){ENGINE_OWNED_NOTES_GLOB}",
 )
 
 
@@ -52,9 +56,9 @@ def validate_mounted_workspace(repo: GitRepository, repo_dir: str, plan_branch: 
     for the planner, the plan branch for the executor).
 
     The container never clones, fetches, resets or cleans the mount. HEAD must be a readable commit, the worktree must
-    carry no uncommitted changes outside the engine-owned ledgers and notes (an
-    earlier crashed run's edits stay on the host for the operator, and are never swept into this execution), and the
-    plan branch must already resolve locally, because the host fetches it before dispatch.
+    carry no uncommitted changes outside the engine-owned ledgers and notes (an earlier crashed run's edits stay on the
+    host for the operator, and are never swept into this execution), and the plan branch must already resolve locally,
+    because the host fetches it before dispatch.
 
     Raises:
         RuntimeError: If any of these checks fails.

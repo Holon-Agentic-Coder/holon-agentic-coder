@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from sandbox_executor.entrypoint.execution_workspace import ENGINE_OWNED_LEDGER_PATHS, ENGINE_OWNED_NOTES_GLOB
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.git_refs import (
     EXECUTOR_GIT_ENV,
@@ -28,8 +29,6 @@ from sandbox_executor.flow.host_remote import push_branch, remote_error
 from sandbox_executor.git import run_git
 from sandbox_executor.redaction import redact_agent_secrets
 
-LEDGER_DIR = os.path.join("holon-knowledge", "ledger")
-LEDGER_NAMES = ("intents.jsonl", "plans.jsonl", "executions.jsonl")
 _EXECUTION_BRANCH = re.compile(r"/(E-\d+-[^/]+)/_$")
 
 
@@ -47,7 +46,7 @@ class SalvageResult:
 
 
 def _excluded_pathspecs(exec_id: str | None) -> list[str]:
-    paths = [os.path.join(LEDGER_DIR, name) for name in LEDGER_NAMES]
+    paths = list(ENGINE_OWNED_LEDGER_PATHS)
     if exec_id:
         paths.append(os.path.join("executions", f"{exec_id}.md"))
     return ["--", ".", *(f":(exclude,literal){path}" for path in paths)]
@@ -61,7 +60,7 @@ def leftover_paths(repo_dir: str, exec_id: str | None = None) -> list[str]:
     """
     spec = _excluded_pathspecs(exec_id)
     if exec_id is None:
-        spec.append(":(exclude)executions/E-*.md")
+        spec.append(f":(exclude){ENGINE_OWNED_NOTES_GLOB}")
     res = run_git(
         ["status", "--porcelain", "-z", "--untracked-files=all", "--no-renames", *spec], cwd=repo_dir, check=False
     )
@@ -132,17 +131,62 @@ def _salvage_row(context: FlowContext, branch: str, exec_id: str, sha: str, file
     return row
 
 
+def _publish_partial(context: FlowContext, target: tuple[str, str], sha: str, plan_prefix: str, count: int) -> None:
+    """Push the branch and record ``sha`` as its partial head.
+
+    Raises:
+        SalvageError: If the push or the ledger append fails; the local commit stays so a later resume retries.
+    """
+    repo_dir = context.target_worktree
+    branch, exec_id = target
+    error = remote_error(push_branch, repo_dir, branch) or _fetch_branch_prefix_error(repo_dir, plan_prefix)
+    if error is None:
+        error = _append_superseding_execution_row(context, branch, _salvage_row(context, branch, exec_id, sha, count))
+    if error is not None:
+        raise SalvageError(f"partial work committed as {sha[:12]} on '{branch}' but not recorded: {error}")
+
+
+def _unrecorded_salvage_commit(repo_dir: str, branch: str, exec_id: str) -> tuple[str, int] | None:
+    """HEAD and its file count when HEAD is this run's salvage commit and the branch ledger does not record it."""
+    head = run_git(["log", "-1", "--format=%H%x00%s"], cwd=repo_dir, check=False)
+    if head.returncode != 0 or not isinstance(head.stdout, str) or "\0" not in head.stdout:
+        return None
+    sha, subject = head.stdout.strip().split("\0", 1)
+    if not subject.startswith(f"execute: {exec_id} partial work (interrupted)"):
+        return None
+    recorded = _latest_execution_summary(
+        _read_ledger_rows(repo_dir, f"refs/remotes/origin/{branch}", "executions.jsonl"), exec_id
+    )
+    if (recorded or {}).get("partial_head") == sha:
+        return None
+    files = run_git(["diff-tree", "--no-commit-id", "--name-only", "-r", "--root", sha], cwd=repo_dir, check=False)
+    count = len([f for f in (files.stdout or "").splitlines() if f]) if isinstance(files.stdout, str) else 0
+    return sha, count
+
+
 def salvage_leftovers(context: FlowContext, plan_prefix: str) -> SalvageResult:
     """Commit the worktree's leftovers as partial work, publish the branch and record it in ``executions.jsonl``.
 
-    Returns an empty result, touching nothing, when only engine-owned files (or nothing) are dirty.
+    Returns an empty result, touching nothing, when only engine-owned files (or nothing) are dirty and no earlier
+    salvage commit is waiting to be published. An earlier salvage whose push or ledger append failed is retried
+    from its local commit, so a clean worktree never hides unrecorded partial work.
 
     Raises:
         SalvageError: If the worktree is on the wrong branch or the commit, push or ledger append fails.
     """
     repo_dir = context.target_worktree
     if not leftover_paths(repo_dir):
-        return SalvageResult()
+        pending = None
+        try:
+            branch, exec_id = _salvage_branch(repo_dir, plan_prefix)
+            pending = _unrecorded_salvage_commit(repo_dir, branch, exec_id)
+        except SalvageError:
+            return SalvageResult()
+        if pending is None:
+            return SalvageResult()
+        sha, count = pending
+        _publish_partial(context, (branch, exec_id), sha, plan_prefix, count)
+        return SalvageResult(branch=branch, sha=sha)
     branch, exec_id = _salvage_branch(repo_dir, plan_prefix)
     files = leftover_paths(repo_dir, exec_id)
     if not files:
@@ -153,13 +197,7 @@ def salvage_leftovers(context: FlowContext, plan_prefix: str) -> SalvageResult:
         raise SalvageError(
             f"could not commit the partial work on '{branch}': {redact_agent_secrets(str(exc))}"
         ) from exc
-    error = remote_error(push_branch, repo_dir, branch) or _fetch_branch_prefix_error(repo_dir, plan_prefix)
-    if error is None:
-        error = _append_superseding_execution_row(
-            context, branch, _salvage_row(context, branch, exec_id, sha, len(files))
-        )
-    if error is not None:
-        raise SalvageError(f"partial work committed as {sha[:12]} on '{branch}' but not recorded: {error}")
+    _publish_partial(context, (branch, exec_id), sha, plan_prefix, len(files))
     return SalvageResult(branch=branch, sha=sha, files=files)
 
 

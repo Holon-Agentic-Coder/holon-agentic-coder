@@ -143,7 +143,7 @@ def test_loopback_and_unix_sockets_are_allowed(network_guard_fixture: list[str])
             assert client.fileno() >= 0
 
     # AF_UNIX paths are limited to ~104 bytes on macOS, so avoid the long pytest tmp_path.
-    with tempfile.TemporaryDirectory(dir="/tmp") as short_dir:
+    with tempfile.TemporaryDirectory(dir=tempfile.gettempdir()) as short_dir:
         path = str(Path(short_dir) / "s")
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as unix_server:
             unix_server.bind(path)

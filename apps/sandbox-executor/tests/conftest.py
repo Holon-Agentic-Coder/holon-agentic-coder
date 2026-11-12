@@ -9,8 +9,8 @@ import pytest
 from sandbox_executor import cli
 from sandbox_executor.agent_defaults import detected_harness_markers
 
-from tests.credential_env import CREDENTIAL_ENV_NAMES
 from tests import network_guard
+from tests.credential_env import CREDENTIAL_ENV_NAMES
 from tests.gh_write_guard import guarded_popen
 from tests.hermetic_fixtures import (
     REPO_ROOT,

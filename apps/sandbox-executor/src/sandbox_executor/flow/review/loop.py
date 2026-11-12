@@ -43,6 +43,7 @@ from sandbox_executor.flow.review.ensemble import (
     _resolve_reviewed_target,
     _semantic_pr_text,
 )
+from sandbox_executor.flow.review.ids import build_review_id
 from sandbox_executor.flow.review.posting import (
     PostFacts,
     PostRequest,
@@ -749,7 +750,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     final_verdicts = f"final verdicts: {render_final_verdicts(reviewers)}"
 
     # Record overall summary in executions.jsonl
-    review_exec_id = f"REV-{int(time.time())}-{context.agent}"
+    review_exec_id = build_review_id(context.agent)
     summary_entry = {
         "execution_id": review_exec_id,
         "plan_branch": context.plan_branch or review_target,

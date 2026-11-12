@@ -144,6 +144,7 @@ from sandbox_executor.flow.review.ensemble import (
     _review_base_ref,
     _semantic_pr_text,
 )
+from sandbox_executor.flow.review.ids import build_review_id
 from sandbox_executor.flow.review.loop import (
     _loop_status,
     _review_window,
@@ -335,6 +336,7 @@ __all__ = [
     "_worst_severity",
     "_write_resolved_ledger",
     "build_pr_review_consensus_report",
+    "build_review_id",
     "check_and_resolve_stage_conflicts",
     "check_pr_mergeability",
     "create_or_update_pr",

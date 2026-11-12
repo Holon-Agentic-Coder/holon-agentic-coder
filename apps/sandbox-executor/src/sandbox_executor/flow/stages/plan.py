@@ -10,7 +10,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.budgets import ENV_REPLAN_FEEDBACK
-from sandbox_executor.entrypoint.planner import _sanitize_model_name, load_metrics_config, parse_metrics
+from sandbox_executor.entrypoint.planner import (
+    PLAN_FILE_PATTERN,
+    _sanitize_model_name,
+    load_metrics_config,
+    parse_metrics,
+)
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _dispatch_role, _stage_failure
 from sandbox_executor.flow.git_refs import (
@@ -155,7 +160,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
     plan_rows = [r for r in _read_ledger_rows(repo_dir, plan_ref, "plans.jsonl") if r.get("plan_id") == plan_id]
     plan_row = plan_rows[-1] if plan_rows else {}
     plan_md_rel = str(plan_row.get("plan_file") or f"plans/{plan_id}.md")
-    if not re.fullmatch(r"plans/P-[^/]+\.md", plan_md_rel):
+    if not re.fullmatch(PLAN_FILE_PATTERN, plan_md_rel):
         plan_md_rel = f"plans/{plan_id}.md"
     plan_content = _git_show_text(repo_dir, plan_ref, plan_md_rel)
     if plan_content is None:

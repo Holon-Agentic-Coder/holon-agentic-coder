@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.decomposition_rule import DecompositionDecision, InvalidPlanDecisionError, should_decompose
+from sandbox_executor.entrypoint.planner import PLAN_FILE_PATTERN
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.git_refs import _append_ledger_row, _git_show_text, _read_ledger_rows, _resolve_branch_ref
@@ -53,7 +54,7 @@ def _plan_budget_decision(context: FlowContext) -> DecompositionDecision | None:
     if recorded is not None:
         return recorded
     plan_md_rel = str(plan_row.get("plan_file") or f"plans/{plan_id}.md")
-    if not re.fullmatch(r"plans/P-[^/]+\.md", plan_md_rel):
+    if not re.fullmatch(PLAN_FILE_PATTERN, plan_md_rel):
         plan_md_rel = f"plans/{plan_id}.md"
     plan_content = _git_show_text(context.target_worktree, plan_ref, plan_md_rel) or ""
     decision = should_decompose(plan_row, plan_content, context.intent_data)

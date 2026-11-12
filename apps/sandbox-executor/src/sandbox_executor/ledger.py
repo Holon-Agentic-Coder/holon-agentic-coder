@@ -978,7 +978,7 @@ def validate_ledger_unique_ids(
     Raises:
         ValueError: If a duplicate identifier is detected across distinct parent branches/intents.
     """
-    seen: dict[str, str] = {}
+    seen: dict[str, tuple[str, dict[str, Any]]] = {}
     for record in records:
         id_val = record.get(id_key)
         if not isinstance(id_val, str) or not id_val.strip():
@@ -986,12 +986,20 @@ def validate_ledger_unique_ids(
         parent_ref = _extract_parent_ref(record, parent_key)
         if not parent_ref:
             continue
-        if id_val in seen and seen[id_val] != parent_ref:
+        if id_val in seen and seen[id_val][0] != parent_ref:
+            first_ref, first_record = seen[id_val]
             raise ValueError(
                 f"Duplicate {id_key} '{id_val}' collision detected across distinct intents/branches: "
-                f"'{seen[id_val]}' vs '{parent_ref}'"
+                f"{_describe_id_owner(first_ref, first_record)} vs {_describe_id_owner(parent_ref, record)}"
             )
-        seen[id_val] = parent_ref
+        seen.setdefault(id_val, (parent_ref, record))
+
+
+def _describe_id_owner(parent_ref: str, record: dict[str, Any]) -> str:
+    """Describe a ledger row owning an id using only its parent ref, agent and creation time."""
+    agent = record.get("agent") or record.get("agent_name") or "unknown-agent"
+    created_at = record.get("created_at") or record.get("timestamp") or "unknown-time"
+    return f"'{parent_ref}' (agent {agent}, created_at {created_at})"
 
 
 def validate_ledger_file_unique_ids(

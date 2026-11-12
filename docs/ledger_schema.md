@@ -199,6 +199,9 @@ Stage 4 and Stage 5 action rows keep their historical field order and identifier
 - `ACT-REV`, `ACT-FIND`, `ACT-RES` (historical only) and `ACT-POST` use `execution_id` values
   `REV-ITR-{iteration}-{ts}`, `REV-FIND-{iteration}-{ts}`, `REV-RES-{iteration}-{ts}` and `REV-POST-{ts}`, with
   `action_origin: "pr_review"`.
+- The review summary id is `REV-{ts}-{hex8}-{agent}`; historical `REV-{ts}-{agent}` ids stay valid. Plan files are named
+  `plans/{plan_id}.md` and `plan_file` carries the plan's 8-character hex; historical hex-less names stay valid. The
+  duplicate-id validation names both conflicting rows (parent, agent and `created_at`) in its error.
 - A per-reviewer `ACT-REV` row keeps the evaluation row's keys and adds, before `created_at`, `review_reviewer_index`,
   `review_agent`, `review_model`, `review_status` (`COMPLETED` or `FAILED`), `review_verdict` (`APPROVED`,
   `CHANGES_REQUESTED`, or `null` for a failed reviewer) and `review_counts` (`critical`, `important`, `nit`). Its

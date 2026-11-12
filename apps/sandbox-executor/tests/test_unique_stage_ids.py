@@ -5,8 +5,12 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from sandbox_executor.entrypoint.planner import PLAN_FILE_PATTERN, plan_file_rel
+from sandbox_executor.flow.review.ids import build_review_id
 from sandbox_executor.ledger import (
+    _describe_id_owner,
     _extract_parent_ref,
     build_execution_id,
     build_plan_id,
@@ -15,6 +19,68 @@ from sandbox_executor.ledger import (
     validate_ledger_unique_ids,
     validate_stage_ledger,
 )
+
+
+class TestSameSecondIds(unittest.TestCase):
+    """Ids and file names created in one second stay distinct; old formats stay valid."""
+
+    def test_plan_ids_and_file_names_differ_within_one_second(self):
+        first = build_plan_id(1794446836, "I-1/ids", "claude-agent", "sonnet", disambiguator="aaaaaaaa")
+        second = build_plan_id(1794446836, "I-1/ids", "claude-agent", "sonnet", disambiguator="bbbbbbbb")
+        self.assertNotEqual(plan_file_rel(first), plan_file_rel(second))
+        self.assertEqual(plan_file_rel(first), f"plans/{first}.md")
+        self.assertIn("aaaaaaaa", plan_file_rel(first))
+        self.assertRegex(plan_file_rel(first), PLAN_FILE_PATTERN)
+
+    def test_hexless_plan_file_name_still_matches_plan_pattern(self):
+        self.assertRegex("plans/P-1794446836-claude-agent-sonnet.md", PLAN_FILE_PATTERN)
+
+    def test_review_loop_records_its_summary_under_the_hex_qualified_review_id(self):
+        from tests.test_review_loop import _ledger, _loop
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            from tests.review_fakes import FakeEnsemble
+
+            with patch(
+                "sandbox_executor.flow.review.loop.build_review_id", return_value="REV-1-deadbeef-fake-agent"
+            ) as build:
+                _loop(Path(tmp_dir), FakeEnsemble())
+            build.assert_called_once_with("fake-agent")
+            self.assertIn("REV-1-deadbeef-fake-agent", [r.get("execution_id") for r in _ledger(Path(tmp_dir))])
+
+    def test_describe_id_owner_fallbacks(self):
+        self.assertEqual(
+            _describe_id_owner("I-1", {"agent_name": "gamma", "timestamp": "t9"}),
+            "'I-1' (agent gamma, created_at t9)",
+        )
+        self.assertEqual(
+            _describe_id_owner("I-2", {}),
+            "'I-2' (agent unknown-agent, created_at unknown-time)",
+        )
+
+    def test_review_ids_differ_within_one_second(self):
+        with patch("sandbox_executor.flow.review.ids.time.time", return_value=1794446836.0):
+            first, second = build_review_id("claude-agent"), build_review_id("claude-agent")
+        self.assertNotEqual(first, second)
+        self.assertRegex(first, r"REV-1794446836-[0-9a-f]{8}-claude-agent")
+
+    def test_old_and_new_review_ids_validate_together(self):
+        records = [
+            {"execution_id": "REV-1794446836-claude-agent", "plan_branch": "I-1/P-1/_"},
+            {"execution_id": build_review_id("claude-agent"), "plan_branch": "I-2/P-2/_"},
+        ]
+        validate_ledger_unique_ids(records, id_key="execution_id", parent_key="plan_branch")
+
+    def test_duplicate_error_names_both_owners(self):
+        records = [
+            {"plan_id": "P-x", "intent_branch": "I-100/_", "agent": "alpha", "created_at": "t1"},
+            {"plan_id": "P-x", "intent_branch": "I-200/_", "agent": "beta", "created_at": "t2"},
+        ]
+        with self.assertRaises(ValueError) as ctx:
+            validate_ledger_unique_ids(records)
+        message = str(ctx.exception)
+        for expected in ("I-100", "alpha", "t1", "I-200", "beta", "t2"):
+            self.assertIn(expected, message)
 
 
 class TestUniqueStageIDs(unittest.TestCase):

@@ -86,8 +86,8 @@ environment. Violating these constraints triggers automated alerts, sandbox term
 
 - **Prefix-Based Isolation:** Every active task must run inside its own isolated branch prefix:
   - **Root Intents:** `I-{timestamp}-{slug}/_`. Only human operators can approve merges to canonical branches.
-  - **Plan Variants:** `I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/_`. Created off of the intent branch.
-  - **Execution Runs:** `I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/E-{timestamp}-{action}/_`.
+  - **Plan Variants:** `I-{timestamp}-{slug}/P-{timestamp}-{hex}-{agent}-{model}/_`. Created off of the intent branch.
+  - **Execution Runs:** `I-{timestamp}-{slug}/P-{timestamp}-{hex}-{agent}-{model}/E-{timestamp}-{action}/_`.
     Created off of the plan branch.
 - **Rebase Discipline:** Before any execution run or branch merge, the working branch must be rebased from its parent
   branch to prevent divergence.
@@ -190,7 +190,7 @@ Based on the following intent:
 and the current state of the project give a detailed plan. Enclose all arithmetic formulas and derivations in
 backtick code spans to maintain single-pass prettier convergence.
 
-**Write Protocol:** create `plans/P-{timestamp}-{agent}-{safe_model}.md` with your file-write tool immediately, write
+**Write Protocol:** create `plans/{plan_id}.md` with your file-write tool immediately, write
 the header and the `## Overall Plan Metrics` table first, append each step as it is finished, and keep your final chat
 message to one short confirmation line.
 

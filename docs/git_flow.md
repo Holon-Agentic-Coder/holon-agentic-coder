@@ -87,8 +87,8 @@ spawned the sub-intent; nesting under the deciding node records it in the branch
 | Split decided by     | Sub-intent branch                                                                                                        |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | The intent stage     | `I-{timestamp}-{slug}/I-{timestamp}-{slug}/_`                                                                            |
-| A plan (in practice) | `I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/I-{timestamp}-{slug}/_`                                              |
-| An execution         | `I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/E-{timestamp}-{action-slug}/I-{timestamp}-{slug}/_`                  |
+| A plan (in practice) | `I-{timestamp}-{slug}/P-{timestamp}-{hex}-{agent}-{model}/I-{timestamp}-{slug}/_`                                        |
+| An execution         | `I-{timestamp}-{slug}/P-{timestamp}-{hex}-{agent}-{model}/E-{timestamp}-{action-slug}/I-{timestamp}-{slug}/_`            |
 | A review             | The reviewed plan's node or the reviewed execution's node (either is acceptable; a review has no branch node of its own) |
 
 In practice, splits are decided by a plan: the planner writes a `## Sub-intent list` in its plan, the executor records
@@ -151,7 +151,7 @@ description.
 Deeper nesting repeats the pattern. For plan-decided splits:
 
 ```
-I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/I-{timestamp}-{slug}/_
+I-{timestamp}-{slug}/P-{timestamp}-{hex}-{agent}-{model}/I-{timestamp}-{slug}/P-{timestamp}-{hex}-{agent}-{model}/I-{timestamp}-{slug}/_
 ```
 
 Example:
@@ -168,7 +168,7 @@ Plan branches are created as siblings to the `/_` node within the same intent di
 to allow for multiple competing proposals.
 
 ```
-I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/_
+I-{timestamp}-{slug}/P-{timestamp}-{hex}-{agent}-{model}/_
 ```
 
 Example:
@@ -183,7 +183,7 @@ Execution branches are branched off a specific plan, appending the action slug t
 lineage from intent to proposal to implementation.
 
 ```
-I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/E-{timestamp}-{action-slug}/_
+I-{timestamp}-{slug}/P-{timestamp}-{hex}-{agent}-{model}/E-{timestamp}-{action-slug}/_
 ```
 
 Example:

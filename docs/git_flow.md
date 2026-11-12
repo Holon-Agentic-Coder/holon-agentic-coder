@@ -360,12 +360,16 @@ The guarantee has five deliberate limits:
   `ssh`: before dispatch the host fetches the plan, execution and base branches into `refs/remotes/origin/`, and the
   guard only resolves those refs. A ref the host did not fetch is `diff_unverified` with a refusal naming the branch and
   saying the host must fetch it before dispatch (a branch that exists only locally in the container is refused as well,
-  even when it resolves); a failed host fetch stops the stage before the container starts. When the guard refuses the PR
-  (`empty_diff` or `diff_unverified`), the review loop fails closed: it does not wait for CI, runs no review iteration
-  and posts no consensus, so no evidence -- not even a Stage 3 `test_pass_rate` of 1.0 or green CI on an existing PR --
-  can approve it. The loop returns `approved: false` with the refusal as its `error` (an `empty_diff` refusal appends no
-  ledger rows; a `diff_unverified` refusal appends only a `failed` "halted without consensus" summary row naming it and
-  the review action event, with no `ACT-REV`, `ACT-FIND` or `ACT-POST` rows), and Stage 4 fails with the refusal's own
+  even when it resolves); a failed host fetch stops the stage before the container starts. The execution-branch
+  comparison (`_execution_effective_diff`) follows the same rule, and no other fetch is reachable from the review-loop
+  container: the remaining `git fetch` callers are host-side code (among others: the child-branch prefix and snapshot
+  fetches of Stages 1 to 3, the merge helper, calibration, `git_flow.fetch_origin_branch`, the PR-worktree provisioning
+  fetch) or guarded by `workspace_mounted()` (`_pr_head_ref`). When the guard refuses the PR (`empty_diff` or
+  `diff_unverified`), the review loop fails closed: it does not wait for CI, runs no review iteration and posts no
+  consensus, so no evidence -- not even a Stage 3 `test_pass_rate` of 1.0 or green CI on an existing PR -- can approve
+  it. The loop returns `approved: false` with the refusal as its `error` (an `empty_diff` refusal appends no ledger
+  rows; a `diff_unverified` refusal appends only a `failed` "halted without consensus" summary row naming it and the
+  review action event, with no `ACT-REV`, `ACT-FIND` or `ACT-POST` rows), and Stage 4 fails with the refusal's own
   reason (`Autonomous review halted: Refusing to create or update a PR for ...`), never as a test failure or as
   unmeasured tests, so Stage 5 does not run. An empty diff has consensus status `rejected` and an unverifiable one
   `failed`. Dry runs never invoke the guard, dispatch no reviewer and are never approved: a clean simulation reports

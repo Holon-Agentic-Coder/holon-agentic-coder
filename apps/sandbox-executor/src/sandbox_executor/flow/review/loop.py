@@ -93,7 +93,7 @@ from sandbox_executor.review_report import (
     review_data_summary,
     serialize_finding_disposition,
 )
-from sandbox_executor.review_target import DiffVerdict, ReviewTarget, classify_review_diff
+from sandbox_executor.review_target import DiffVerdict, ReviewTarget, classify_review_diff, workspace_is_mounted
 
 logger = logging.getLogger(__name__)
 
@@ -650,7 +650,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     current_commit_sha = (resolved_target.head_sha if resolved_target else "") or "HEAD"  # The SHA reviewers saw.
     try:
         if current_commit_sha == "HEAD":
-            current_commit_sha = _resolve_review_commit(repo_dir, review_target, fetch=not effective_dry_run)
+            current_commit_sha = _resolve_review_commit(
+                repo_dir, review_target, fetch=not (effective_dry_run or workspace_is_mounted())
+            )
     except Exception as exc:
         logger.debug("Could not resolve the reviewed commit for %s: %s", review_target, exc)
 

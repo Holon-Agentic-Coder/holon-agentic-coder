@@ -172,6 +172,32 @@ tree is read-only: a push to or commit in the template instead of the copy fails
 later tests. Only convert a fixture to a template when its setup is measurably expensive, and never one whose test
 asserts on the creation steps themselves.
 
+### Network guard
+
+The review-loop role container has no `ssh` binary and its `origin` is an ssh URL, and the resolver's pre-push gate runs
+the whole suite there. A test that fetches from, or asks GitHub about, the real origin passes on a host with network
+access and fails in the container. The autouse fixture `network_guard_fixture` in `tests/conftest.py`, backed by
+`tests/network_guard.py`, makes that failure happen on the host too.
+
+What it blocks, by wrapping `subprocess.Popen` (chained on top of the `gh` write guard) and the `socket` module:
+
+- `git fetch`, `git pull`, `git push` and `git ls-remote` whose remote resolves (through `git ls-remote --get-url`, so
+  `insteadOf` rewrites count) to anything other than a filesystem path, a `file://` URL or a loopback host.
+- `socket.connect`, `connect_ex` and `getaddrinfo` for any non-loopback `AF_INET` or `AF_INET6` target.
+
+What stays allowed: a local bare remote built in `tmp_path`, loopback connections and `AF_UNIX` sockets. There is no
+opt-out marker; a test that needs a remote builds a local one.
+
+The operation is refused before it starts and recorded, so the test fails at teardown even when the code under test
+swallows the error. A test that expects a block clears the yielded list, as in `tests/test_network_guard.py`.
+
+To stub a fetch correctly, patch the name where it is used, not where it is defined: for Stage 3, patch
+`sandbox_executor.flow.stages.children._fetch_refspecs_error` and
+`sandbox_executor.flow.stages.children.reconcile_with_origin`. The second matters as much as the first: with an
+unreachable origin, reconciliation marks every child `origin_lookup_failed`, so Stage 3 logs `resuming` rather than
+`running` and the test fails only in the container. The guard cannot see network calls that a child process other than
+`git` makes, or a call that bypasses `subprocess.Popen`.
+
 ### Parallel execution
 
 The unit selection runs under pytest-xdist with `-n auto --dist worksteal`, in `uv run task test`, in the unit workflow

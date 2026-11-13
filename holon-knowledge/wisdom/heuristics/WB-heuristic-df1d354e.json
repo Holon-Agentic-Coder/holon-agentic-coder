@@ -1,0 +1,23 @@
+{
+  "wb_id": "WB-heuristic-df1d354e",
+  "wb_type": "heuristic",
+  "version": "1.0",
+  "created_ts": "2026-11-13T05:22:34.275234+00:00",
+  "scope": "global",
+  "status": "active",
+  "ascension_evidence": {
+    "project_count": 1,
+    "total_executions": 22,
+    "wilson_lower": 0.8513451253913862,
+    "provenance": [
+      {
+        "kb_id": "KB-pattern-df1d354e"
+      }
+    ]
+  },
+  "human_approved": false,
+  "payload": {
+    "name": "Universal heuristic: claude-agent:claude-sonnet-5-5",
+    "advisory": "Advisory (proven-success): Historical executions matching this context pattern succeeded in 22/22 (100.0%) trials (Wilson 95% lower bound: 0.85). Consider evaluating proven approach: 'Executed agent claude-agent with model claude-sonnet-5-5'."
+  }
+}

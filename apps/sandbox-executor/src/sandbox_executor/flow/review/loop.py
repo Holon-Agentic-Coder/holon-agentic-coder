@@ -61,6 +61,7 @@ from sandbox_executor.flow.review.records import (
     _worst_severity,
     record_review_action,
 )
+from sandbox_executor.flow.review.rejected_attempt_record import _record_rejected_attempt
 from sandbox_executor.flow.review.resolver import (
     DispositionRecorder,
     ResolverInput,
@@ -591,6 +592,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             # Halt before adjudication: a failed pass's fallback dispositions are no rejections to filter on, and a
             # head it committed but did not push is never re-reviewed. Open findings are recorded once after the loop.
             resolver_error = _bounded_error_context(resolver_outcome.error)
+            if not effective_dry_run:
+                _record_rejected_attempt(context, exec_file, review_target, iteration, resolver_outcome)
             pending_dispositions = ()
             context.log(
                 f"[Review Loop] Halting review loop at iteration {iteration}: resolver failed: {resolver_error}"

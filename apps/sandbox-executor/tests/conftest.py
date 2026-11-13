@@ -304,3 +304,12 @@ def feature_worktree_cwd(tmp_path_factory, monkeypatch) -> str:
 def stub_executor_test_measurement(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep executor tests from running the real ``uv run task test``; a test that needs a measurement patches it."""
     monkeypatch.setattr("sandbox_executor.entrypoint.executor.measure_executor_tests", lambda *_args, **_kw: {})
+
+
+@pytest.fixture(autouse=True)
+def stub_review_local_test_measurement(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep review-loop tests from running the real ``uv run task test``: the stub is an unrunnable (unmeasured) run."""
+    from sandbox_executor.entrypoint.test_measurement import TestMeasurement
+
+    unmeasured = TestMeasurement(None, None, None, None, 127, "test task not run in this test", "")
+    monkeypatch.setattr("sandbox_executor.flow.review.local_tests.run_measurement", lambda _workspace: unmeasured)

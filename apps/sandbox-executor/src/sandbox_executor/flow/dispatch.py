@@ -6,34 +6,21 @@ equivalent to invoking the stages by hand.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
-
-
-def recorded_test_pass_rate(value: Any) -> float | None:
-    """Return a recorded test pass rate in [0, 1], or None when no usable measurement was recorded.
-
-    ``None`` means "not measured": callers must never read it as a pass.
-    """
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return None
-    rate = float(value)
-    if math.isnan(rate) or rate < 0.0 or rate > 1.0:
-        return None
-    return rate
+from sandbox_executor.flow.test_evidence import TEST_MEASUREMENT_KEYS as TEST_MEASUREMENT_KEYS
+from sandbox_executor.flow.test_evidence import _effective_exit_code, recorded_test_pass_rate
+from sandbox_executor.flow.test_evidence import _recorded_test_fields as _recorded_test_fields
 
 
 def _test_evidence(exec_result: StageResult | None) -> tuple[float | None, int]:
     """Return the Stage 3 ``(test_pass_rate, exit_code)``; the rate is None when Stage 3 measured no tests."""
     if not exec_result or not exec_result.payload:
         return None, 0
-    return recorded_test_pass_rate(exec_result.payload.get("test_pass_rate")), int(
-        exec_result.payload.get("exit_code", 0) or 0
-    )
+    return recorded_test_pass_rate(exec_result.payload.get("test_pass_rate")), _effective_exit_code(exec_result.payload)
 
 
 def _get_dispatcher(context: FlowContext) -> Callable[..., int]:

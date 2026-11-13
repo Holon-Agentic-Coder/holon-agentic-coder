@@ -581,11 +581,12 @@ def _ci_state(ci_status: Mapping[str, Any]) -> str:
 
 def _ci_summary(ci_status: Mapping[str, Any]) -> str:
     """The CI part of the Checks line; an unmeasured probe is reported as such, never as a pass."""
+    source = f" (source: {_inline(str(ci_status['test_source']), 40)})" if ci_status.get("test_source") else ""
     if not _ci_measured(ci_status):
-        return "CI unmeasured"
+        return f"CI unmeasured{source}"
     return (
         f"CI {int(ci_status.get('passed') or 0)}/{int(ci_status.get('total') or 0)} passed, "
-        f"{int(ci_status.get('failed') or 0)} failing, {int(ci_status.get('pending') or 0)} pending"
+        f"{int(ci_status.get('failed') or 0)} failing, {int(ci_status.get('pending') or 0)} pending{source}"
     )
 
 

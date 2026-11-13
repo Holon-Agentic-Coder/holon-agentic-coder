@@ -109,7 +109,7 @@ def _run_in_process_group(argv: list[str], cwd: str, timeout: float) -> subproce
 
 
 def run_test_task(workspace: str, runner: Runner | None = None, timeout: float | None = None) -> TestMeasurement:
-    """Run the project's test task in ``workspace`` and measure it; never raises, never reports a pass it did not see."""
+    """Run the project's test task in ``workspace`` and measure it; never raises or reports an unseen pass."""
     run = runner or _run_in_process_group
     limit = timeout if timeout is not None else configured_timeout()
     try:

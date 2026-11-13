@@ -18,6 +18,7 @@ from sandbox_executor.flow.review.loop import _reviewers_objected, _run_engine_r
 from sandbox_executor.flow.review.records import render_reviewer_summary_line
 from sandbox_executor.flow.review.verdict import not_approved_verdicts, render_final_verdicts
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
+from sandbox_executor.flow.test_evidence import _test_results_package
 from sandbox_executor.git import run_git
 from sandbox_executor.knowledge import ConsultEngine
 from sandbox_executor.redaction import redact_agent_secrets
@@ -165,13 +166,7 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
         "plan_branch": context.plan_branch,
         "execution_branch": context.execution_branch,
         "diff_summary": diff_summary,
-        "test_results": {
-            "exit_code": exit_code,
-            # None = not measured: Stage 3 recorded no test result, so the package never claims a pass.
-            "pass_rate": test_pass_rate,
-            "measured": test_pass_rate is not None,
-            "passed": False if exit_code != 0 else (None if test_pass_rate is None else test_pass_rate == 1.0),
-        },
+        "test_results": _test_results_package(exec_result.payload if exec_result else {}, test_pass_rate, exit_code),
         "mergeability": mergeability,
         "token_reduce": context.token_reduce,
         "proxy_active": proxy_env_active,

@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
-from sandbox_executor.flow.dispatch import _stage_failure
+from sandbox_executor.flow.dispatch import TEST_MEASUREMENT_KEYS, _stage_failure
 from sandbox_executor.flow.git_refs import (
     _append_superseding_execution_row,
     _latest_execution_summary,
@@ -31,7 +31,7 @@ def _superseding_row(summary_row: dict[str, Any], payload: dict[str, Any]) -> di
     except (TypeError, ValueError):
         prior_revision = 1
     children = [{key: entry.get(key) for key in CHILD_ROW_KEYS} for entry in payload["children_progress"]]
-    row = {k: v for k, v in summary_row.items() if k != "test_pass_rate"}
+    row = {k: v for k, v in summary_row.items() if k not in TEST_MEASUREMENT_KEYS}
     row.update(
         {
             "status": "decomposed",

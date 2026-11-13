@@ -44,13 +44,13 @@ from sandbox_executor.decomposition_rule import InvalidPlanDecisionError
 from sandbox_executor.decomposition_rule import is_placeholder_item as is_placeholder_item
 from sandbox_executor.decomposition_rule import parse_sub_intent_list as parse_sub_intent_list
 from sandbox_executor.decomposition_rule import should_decompose as should_decompose
-from sandbox_executor.entrypoint.executor_test_run import measure_executor_tests
 from sandbox_executor.entrypoint.execution_workspace import continuation_note as continuation_note
 from sandbox_executor.entrypoint.execution_workspace import (
     resolve_partial_head,
     validate_mounted_workspace,
     workspace_mounted,
 )
+from sandbox_executor.entrypoint.executor_test_run import measure_executor_tests
 from sandbox_executor.entrypoint.sync_conflict import SyncConflictMessage, record_sync_failure
 from sandbox_executor.entrypoint.sync_conflict import superseding_failure_row as superseding_failure_row
 from sandbox_executor.formatting import converge_prettier

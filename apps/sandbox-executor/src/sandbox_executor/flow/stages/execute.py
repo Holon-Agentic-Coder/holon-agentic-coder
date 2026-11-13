@@ -14,7 +14,7 @@ from typing import Any
 from sandbox_executor.decomposition_rule import DECISION_DECOMPOSED, DECISION_OVER_BUDGET, InvalidPlanDecisionError
 from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE, _sanitize_string
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
-from sandbox_executor.flow.dispatch import _dispatch_role, _stage_failure, recorded_test_pass_rate
+from sandbox_executor.flow.dispatch import TEST_MEASUREMENT_KEYS, _dispatch_role, _recorded_test_fields, _stage_failure
 from sandbox_executor.flow.git_refs import (
     _append_superseding_execution_row,
     _discover_child_branch,
@@ -332,7 +332,7 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
                 "no superseding row was written"
             )
         else:
-            superseding = {k: v for k, v in summary_row.items() if k != "test_pass_rate"}
+            superseding = {k: v for k, v in summary_row.items() if k not in TEST_MEASUREMENT_KEYS}
             try:
                 prior_revision = int(summary_row.get("ledger_revision") or 1)
             except (TypeError, ValueError):
@@ -397,7 +397,7 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
         payload={
             **base_payload,
             "changed_files": len(changed),
-            "test_pass_rate": recorded_test_pass_rate(summary_row.get("test_pass_rate")),
+            **_recorded_test_fields(summary_row),
         },
     )
     context.stage_results["execute"] = result

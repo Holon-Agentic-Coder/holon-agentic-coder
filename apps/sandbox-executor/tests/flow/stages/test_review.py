@@ -99,4 +99,6 @@ class TestStage4TestEvidence:
         ):
             res = run_review_stage(ctx)
 
-        assert res.payload["review_package"]["test_results"] == expected
+        results = res.payload["review_package"]["test_results"]
+        assert {key: results[key] for key in expected} == expected
+        assert {results[key] for key in ("source", "run_error")} == {None}

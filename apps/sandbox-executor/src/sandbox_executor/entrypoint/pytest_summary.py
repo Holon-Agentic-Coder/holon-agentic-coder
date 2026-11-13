@@ -36,6 +36,8 @@ def summary_excerpt(text: str, budget: int) -> str:
     When the summary section alone overflows the budget its head is kept (the first failed tests) and the counts line
     is still appended, so the final tally is never lost.
     """
+    if budget <= 0:
+        return ""
     if len(text) <= budget:
         return text
     counts = counts_line(text)

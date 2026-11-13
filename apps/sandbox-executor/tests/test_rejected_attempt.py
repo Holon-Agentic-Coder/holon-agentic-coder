@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -141,3 +142,25 @@ def test_result_fields_are_optional_and_ledger_row_points_at_the_patch(tmp_path:
     assert len(rows) == 1
     assert rows[0]["rejected_patch"] == ".holon/review/rejected/iter-1.patch"
     assert rows[0]["failed_tests"] == ["tests/x.py::test_a"] and json.dumps(rows[0])
+
+
+def test_non_positive_budget_yields_an_empty_excerpt() -> None:
+    assert summary_excerpt(_pytest_output(), 0) == ""
+    assert summary_excerpt("abc", -1) == ""
+
+
+def test_ledger_row_goes_through_the_real_writer(tmp_path: Path) -> None:
+    ledger = tmp_path / "executions.jsonl"
+    context = SimpleNamespace(log=lambda *a, **k: None)
+    outcome = ResolverOutcome(
+        error="boom",
+        rejected_patch=".holon/review/rejected/iter-1.patch",
+        failed_tests=("tests/x.py::test_a",),
+        test_summary=f"FAILED tests/x.py::test_a {SECRET}",
+    )
+    _record_rejected_attempt(context, str(ledger), "PR#1", 1, outcome)  # type: ignore[arg-type]
+    rows = [json.loads(line) for line in ledger.read_text().splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["rejected_patch"] == ".holon/review/rejected/iter-1.patch"
+    assert rows[0]["failed_tests"] == ["tests/x.py::test_a"]
+    assert "test_a" in rows[0]["error_context"] and SECRET not in ledger.read_text()

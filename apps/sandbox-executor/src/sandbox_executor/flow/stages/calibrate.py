@@ -211,6 +211,7 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:  # noqa: C
         raise
     except CalibrationFormatError as e:
         # Fail closed: the report and ledger stay uncommitted and nothing is pushed or fast-forwarded.
+        discard_empty_calibrated_branch(context, calibrated_created)
         return _stage_failure(
             context,
             FlowStage.CALIBRATE,

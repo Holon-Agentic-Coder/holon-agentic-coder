@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,8 +26,6 @@ GIT_ENV = {
 
 
 def git(cwd: Path, *args: str) -> str:
-    import os
-
     res = subprocess.run(
         ["git", *args], cwd=cwd, capture_output=True, text=True, check=True, env={**os.environ, **GIT_ENV}
     )

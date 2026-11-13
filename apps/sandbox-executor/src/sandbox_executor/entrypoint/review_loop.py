@@ -280,7 +280,7 @@ def _verify_before_push(repo_dir: str, iteration: int | None = None) -> tuple[bo
         return False, False, f"Resolver pre-push verification failed: {_bounded_error_context(str(exc))}"
     if lock_problem:
         return False, False, f"Resolver pre-push verification could not run: {_bounded_error_context(lock_problem)}"
-    lint_res = run_cmd(["uv", "run", "task", "lint"], cwd=repo_dir, env=frozen_env(), check=False)
+    lint_res = run_cmd(["uv", "run", "task", "lint"], cwd=repo_dir, env=frozen_env(cwd=repo_dir), check=False)
     if lint_res.returncode != 0:
         return False, False, verification_error("lint", lint_res, _bounded_error_context)
     markdown = run_markdown_gate(repo_dir, lambda args: run_cmd(args, cwd=repo_dir, check=False), _RESOLVER_PATHSPEC)
@@ -288,7 +288,7 @@ def _verify_before_push(repo_dir: str, iteration: int | None = None) -> tuple[bo
         return False, False, f"Resolver pre-push markdown formatting failed: {_bounded_error_context(markdown.error)}"
     if markdown.formatted:
         logger.info("Resolver formatted Markdown files: %s", ", ".join(markdown.formatted))
-    test_env = with_short_summary(frozen_env())
+    test_env = with_short_summary(frozen_env(cwd=repo_dir))
     test_res = run_cmd(["uv", "run", "task", "test"], cwd=repo_dir, env=test_env, check=False)
     if test_res.returncode != 0:
         return (

@@ -30,10 +30,15 @@ def _runner(returncode: int, stderr: str = ""):
     return run
 
 
-def test_frozen_env_sets_uv_frozen_without_mutating_the_base() -> None:
+def test_frozen_env_sets_uv_frozen_without_mutating_the_base(tmp_path: Path) -> None:
+    (tmp_path / "uv.lock").write_text("")
     base = {"PATH": "/bin"}
-    assert frozen_env(base) == {"PATH": "/bin", "UV_FROZEN": "1"}
+    assert frozen_env(base, str(tmp_path)) == {"PATH": "/bin", "UV_FROZEN": "1"}
     assert base == {"PATH": "/bin"}
+
+
+def test_frozen_env_leaves_a_directory_without_a_lock_alone(tmp_path: Path) -> None:
+    assert frozen_env({"PATH": "/bin"}, str(tmp_path)) == {"PATH": "/bin"}
 
 
 def test_a_current_lock_passes_the_preflight(tmp_path: Path) -> None:
@@ -57,12 +62,14 @@ def test_a_missing_uv_is_a_structured_failure_not_an_exception(tmp_path: Path) -
 
 
 def test_the_test_measurement_subprocess_is_frozen(tmp_path: Path) -> None:
+    (tmp_path / "uv.lock").write_text("")
     code = "import os; print(os.environ.get('UV_FROZEN'))"
     result = _run_in_process_group([sys.executable, "-c", code], str(tmp_path), 30)
     assert result.stdout.strip() == "1"
 
 
-def test_resolver_verification_freezes_lint_and_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolver_verification_freezes_lint_and_tests(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "uv.lock").write_text("")
     seen: list[dict[str, str] | None] = []
 
     def fake_run_cmd(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -72,7 +79,7 @@ def test_resolver_verification_freezes_lint_and_tests(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(review_loop, "run_cmd", fake_run_cmd)
     monkeypatch.setattr(review_loop, "run_markdown_gate", lambda *_: MarkdownGateOutcome())
-    review_loop._verify_before_push("/tmp")
+    review_loop._verify_before_push(str(tmp_path))
     assert len(seen) == 2 and all(env and env["UV_FROZEN"] == "1" for env in seen)
 
 

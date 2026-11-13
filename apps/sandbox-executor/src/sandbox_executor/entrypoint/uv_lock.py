@@ -26,10 +26,14 @@ class LockfileMismatchError(RuntimeError):
     """The committed ``uv.lock`` disagrees with ``pyproject.toml`` (or the interpreter) and needs regenerating."""
 
 
-def frozen_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Return a copy of ``base`` (default: the process environment) with the lock frozen."""
+def frozen_env(base: Mapping[str, str] | None = None, cwd: str | None = None) -> dict[str, str]:
+    """Return a copy of ``base`` (default: the process environment), freezing the lock when ``cwd`` has one.
+
+    A directory without ``uv.lock`` keeps the inherited environment: frozen mode would make ``uv run`` fail there.
+    """
     env = dict(os.environ if base is None else base)
-    env[FROZEN_ENV_NAME] = "1"
+    if os.path.exists(os.path.join(cwd or os.getcwd(), LOCK_FILE)):
+        env[FROZEN_ENV_NAME] = "1"
     return env
 
 

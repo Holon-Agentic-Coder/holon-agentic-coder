@@ -94,7 +94,7 @@ def _run_in_process_group(argv: list[str], cwd: str, timeout: float) -> subproce
     with subprocess.Popen(
         argv,
         cwd=cwd,
-        env=frozen_env(),
+        env=frozen_env(cwd=cwd),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

@@ -8,15 +8,12 @@ branch. Nothing here resets, forces or merges to ``main``.
 
 from __future__ import annotations
 
+from sandbox_executor.flow.calibrate_rebuild import CalibrationSyncError
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.git_refs import fast_forward_local_branch
 from sandbox_executor.flow.host_remote import DEFAULT_REMOTE, HostRemoteError, fetch_base
 from sandbox_executor.git import run_git
 from sandbox_executor.ref_names import calibration_branch
-
-
-class CalibrationSyncError(RuntimeError):
-    """The local execution ref cannot be reconciled with origin without losing commits."""
 
 
 def _rev(repo_dir: str, ref: str, run=None) -> str:

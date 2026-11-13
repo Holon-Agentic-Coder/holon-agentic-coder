@@ -74,6 +74,17 @@ was posted and why. Dry runs, `--skip-post`, a refused or failed review and a ru
 nothing, as before. `ACT-POST` is written only when a post was actually attempted, and a failed attempt still writes its
 failure row and ends the loop as `post_failed`.
 
+## Test evidence and its source
+
+The CI gate reads one test result and names where it came from, in the review evidence and on the posted `Checks` line:
+`stage_3` (the executor's own measurement in its summary row), `ci` (GitHub checks) or `review_local` (the review loop's
+own run). When no CI checks register and Stage 3 recorded no rate, the loop's `local_tests` fallback runs
+`uv run task test` in the review container after the CI-registration wait, once per head commit (the result is cached on
+the head SHA and re-measured only after the resolver pushes a fix). A dry run never runs it. `null` still means "not
+measured" and withholds consensus: a run that could not execute records its `run_error`, and a measured result, passing
+or failing, is never reported as unmeasured. A rate below `1.0`, or a non-zero exit code of a completed run, is a failed
+test result and raises `FIND-CI`.
+
 ## Approval covers one head
 
 An approved review names the head it covers and the measured CI result at that commit, on one line, for example "Covers

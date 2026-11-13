@@ -395,14 +395,20 @@ The guarantee has five deliberate limits:
   `--skip-push` is rejected outside `--dry-run` -- on every run, including a `--from-stage` or `--checkpoint` resume
   from any stage -- before any stage runs, because the host fetches from and pushes to `origin` for the role containers,
   Stage 4 opens the PR from the `origin` execution branch and Stage 5 pushes the `/calibrated` branch.
-- **Unmeasured tests are never a pass.** Stage 3 carries the executor container's recorded `test_pass_rate` from its
-  `executions.jsonl` summary row; when the row records none, it is `null` ("not measured"). Stage 4 then reports
-  `test_results` with `pass_rate: null`, `measured: false`, `passed: null`, and when no CI checks exist the review
-  loop's `local_tests` fallback reports `NOT_MEASURED` and withholds consensus instead of passing. Before its first
-  iteration the loop waits for CI checks to register on the PR (when `gh` is available; up to
-  `HOLON_CI_REGISTRATION_TIMEOUT` seconds, default 180, `0` disables the wait), without consuming review iterations or
-  writing ledger rows. If none register, the loop stops after that single iteration with consensus status `not_measured`
-  (one iteration's review rows and one summary row, not rows for every iteration), Stage 4 fails with
+- **Unmeasured tests are never a pass.** The executor container runs `uv run task test` after the agent's turn and
+  before the execution commit, and records `test_pass_rate`, the counts, `test_exit_code` and any `test_run_error` in
+  its `executions.jsonl` summary row (bounded by `HOLON_TEST_MEASUREMENT_TIMEOUT_SECONDS`, default 900). Stage 3 carries
+  them; when the row records no rate, it is `null` ("not measured"). A measured rate below `1.0`, or a non-zero test
+  exit code, is a failed test result that Stage 3 and Stage 4 treat as failed. Stage 4 reports `test_results` with its
+  `source` and counts (`pass_rate: null`, `measured: false`, `passed: null` when unmeasured). When no CI checks register
+  and Stage 3 recorded no rate, the review loop's `local_tests` fallback runs the test task in the review container
+  (once per head commit, re-measured only after the resolver pushes) and attributes the result to `review_local` in the
+  CI evidence and the posted `Checks` line (`stage_3` and `ci` are the other sources). Only when that run cannot execute
+  does the fallback report `NOT_MEASURED` and withhold consensus instead of passing. Before its first iteration the loop
+  waits for CI checks to register on the PR (when `gh` is available; up to `HOLON_CI_REGISTRATION_TIMEOUT` seconds,
+  default 180, `0` disables the wait), without consuming review iterations or writing ledger rows. If none register, the
+  loop stops after that single iteration with consensus status `not_measured` (one iteration's review rows and one
+  summary row, not rows for every iteration), Stage 4 fails with
   `test results not measured: no recorded Stage 3 test result and no CI checks`, and the pipeline halts before Stage 5
   calibration runs. Checks that registered but are still pending are waited out on their own CI wait budget (see
   [CI wait budget and outcomes](#ci-wait-budget-and-outcomes)), never the iteration's `review_iteration` budget.

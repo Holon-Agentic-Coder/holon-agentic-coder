@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-2fd2bbac",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-13T10:36:41.234438+00:00",
+  "updated_ts": "2026-11-13T10:36:41.234438+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794547428-c64f95b9",
+      "ACT-FIND-1794547426-4e0cb9a5"
+    ],
+    "success_count": 0,
+    "failure_count": 4,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794546205-measure/P-1794546221-53ff4e71-claude-agent-claude-sonnet-5-5/E-1794546302-b5a87645-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 4 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R1-001-01",
+    "symptoms": [
+      "executor.py is over 1,000 lines (1,601) and grows; move the measurement call and field merge into executor_test_run.py."
+    ]
+  }
+}

@@ -44,12 +44,14 @@ from sandbox_executor.decomposition_rule import InvalidPlanDecisionError
 from sandbox_executor.decomposition_rule import is_placeholder_item as is_placeholder_item
 from sandbox_executor.decomposition_rule import parse_sub_intent_list as parse_sub_intent_list
 from sandbox_executor.decomposition_rule import should_decompose as should_decompose
+from sandbox_executor.entrypoint.changed_markdown import changed_markdown_files
 from sandbox_executor.entrypoint.execution_workspace import continuation_note as continuation_note
 from sandbox_executor.entrypoint.execution_workspace import (
     resolve_partial_head,
     validate_mounted_workspace,
     workspace_mounted,
 )
+from sandbox_executor.entrypoint.executor_test_run import measure_executor_tests
 from sandbox_executor.entrypoint.sync_conflict import SyncConflictMessage, record_sync_failure
 from sandbox_executor.entrypoint.sync_conflict import superseding_failure_row as superseding_failure_row
 from sandbox_executor.formatting import converge_prettier
@@ -1406,21 +1408,12 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 if failure_reason:
                     print(f"Error: {summary}", file=sys.stderr)
 
+            # Measure the project's tests on the agent's finished work, before anything is staged or committed.
+            test_fields = measure_executor_tests(repo_dir, repo, exec_status)
+
             # Format modified/untracked markdown files with prettier
             try:
-                md_files: list[str] = []
-                status_res = repo.run(["status", "--porcelain"], check=False)
-                if status_res.returncode == 0:
-                    for line in status_res.stdout.splitlines():
-                        line = line.strip()
-                        if not line or len(line) < 3:
-                            continue
-                        file_part = line[2:].strip()
-                        if " -> " in file_part:
-                            file_part = file_part.split(" -> ")[1].strip()
-                        file_part = file_part.strip("\"'")
-                        if file_part.endswith(".md"):
-                            md_files.append(file_part)
+                md_files = changed_markdown_files(repo)
                 if md_files:
                     converge_prettier(md_files, repo_dir=repo_dir)
                     if is_action_logging_enabled(intent_data):
@@ -1468,6 +1461,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 "elapsed_seconds": round(stage_timer.elapsed(), 1),
                 "budget_seconds": stage_timer.budget_seconds,
             }
+            exec_entry.update(test_fields)
             if failure_reason:
                 exec_entry["failure_reason"] = failure_reason
             if salvaged_head:

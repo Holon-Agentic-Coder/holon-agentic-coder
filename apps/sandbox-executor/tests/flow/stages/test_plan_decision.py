@@ -194,6 +194,12 @@ class TestStage3ExecutesThePlanRowsDecision:
         "token_reduce",
         "changed_files",
         "test_pass_rate",
+        "tests_passed",
+        "tests_failed",
+        "tests_errored",
+        "test_exit_code",
+        "test_run_error",
+        "test_source",
     }
 
     def test_decomposed_plan_runs_the_children_the_plan_row_records(self, flow_repos, tmp_path):

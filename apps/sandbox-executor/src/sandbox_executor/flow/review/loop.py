@@ -17,7 +17,6 @@ from sandbox_executor.budgets import StageTimer, load_budgets, resolve_review_ci
 from sandbox_executor.entrypoint.execution_workspace import workspace_mounted
 from sandbox_executor.flow.constants import CI_REGISTRATION_POLL_SECONDS
 from sandbox_executor.flow.context import FlowContext
-from sandbox_executor.flow.dispatch import _test_evidence
 from sandbox_executor.flow.git_refs import _resolve_review_commit
 from sandbox_executor.flow.github.ci import (
     _ci_green,
@@ -45,6 +44,7 @@ from sandbox_executor.flow.review.ensemble import (
     _semantic_pr_text,
 )
 from sandbox_executor.flow.review.ids import build_review_id
+from sandbox_executor.flow.review.local_tests import _ReviewTestGate
 from sandbox_executor.flow.review.posting import (
     PostFacts,
     PostRequest,
@@ -211,9 +211,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             context.log(f"Warning: Failed to configure token reduction proxy in review loop: {exc}.")
             proxy_env = {}
 
-    test_pass_rate, exit_code = _test_evidence(context.stage_results.get("execute"))
-    tests_failed = exit_code != 0 or (test_pass_rate is not None and test_pass_rate < 1.0)
-
+    test_gate = _ReviewTestGate(context, repo_dir)
+    test_pass_rate, tests_failed = test_gate.stage_3_evidence
     iteration = first_label - 1
     consensus_reached = False
     last_ci_status: dict[str, Any] = {}
@@ -393,7 +392,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 )
 
             last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
-            tests_not_measured |= apply_local_test_evidence(last_ci_status, tests_failed, test_pass_rate, False, True)
+            gate_rate, tests_failed = test_gate.evidence(last_ci_status)
+            tests_not_measured |= apply_local_test_evidence(last_ci_status, tests_failed, gate_rate, False, True)
             last_ci_status, waited = settle_pending_ci(context, probe_ci, last_ci_status, ci_policy, bool(ci_wait))
             iteration_timer.credit(waited.waited_seconds if waited else 0.0)  # The wait has its own budget.
             ci_wait = waited if waited and waited.exhausted else (ci_wait if last_ci_status.get("pending", 0) else None)

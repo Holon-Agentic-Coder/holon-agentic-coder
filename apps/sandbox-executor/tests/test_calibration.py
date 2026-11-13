@@ -313,6 +313,41 @@ class TestMetricsParsing(unittest.TestCase):
                 actual, _meta = parse_actual_metrics("E-test-rate", "I-test/P-test/_", predicted)
                 self.assertEqual(actual.test_pass_rate, expected)
 
+    def test_parse_actual_metrics_reads_the_measured_rate_from_the_stage_3_summary_row(self):
+        """A summary row with the executor's measurement flows into the actuals; a null rate stays not measured."""
+        predicted = PredictedMetrics(p_success=0.98, entropy=1.2, impact=35.0, cost=4.0, learning_value=2.5, ev=31.19)
+
+        def mock_subp(cmd, **kwargs):
+            if isinstance(cmd, list) and "diff" in cmd:
+                return MagicMock(returncode=0, stdout="1 file changed, 1 insertion(+)\n")
+            return MagicMock(returncode=1, stdout="", stderr="")
+
+        measured = {
+            "test_pass_rate": 0.8,
+            "tests_passed": 8,
+            "tests_failed": 2,
+            "tests_errored": 0,
+            "test_exit_code": 1,
+        }
+        unmeasured = {"test_pass_rate": None, "test_exit_code": 127, "test_run_error": "uv was not found on PATH"}
+        for fields, expected in ((measured, 0.8), (unmeasured, None)):
+            exec_record = {
+                "execution_id": "E-test-measured",
+                "plan_branch": "I-test/P-test/_",
+                "status": "success",
+                "test_source": "stage_3",
+                **fields,
+            }
+            with (
+                self.subTest(expected=expected),
+                patch("os.path.exists", side_effect=lambda p: "executions.jsonl" in str(p)),
+                patch("builtins.open", unittest.mock.mock_open(read_data=json.dumps(exec_record) + "\n")),
+                patch("subprocess.run", side_effect=mock_subp),
+            ):
+                actual, _meta = parse_actual_metrics("E-test-measured", "I-test/P-test/_", predicted)
+                self.assertEqual(actual.test_pass_rate, expected)
+                self.assertEqual(actual.to_dict()["test_pass_rate"], expected)
+
     def test_parse_actual_metrics_selects_highest_ledger_revision_when_superseded(self):
         predicted = PredictedMetrics(p_success=0.98, entropy=1.2, impact=35.0, cost=4.0, learning_value=2.5, ev=31.19)
         rec_rev1 = {

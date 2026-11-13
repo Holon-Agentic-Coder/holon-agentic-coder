@@ -190,6 +190,17 @@ The executor prints `execute: ok (elapsed min / 45 min)` (or `failed`) when it f
 
 ---
 
+## Test Measurement
+
+After the agent exits and the empty-diff guard passes, and before anything is staged, the executor runs
+`uv run task test` in the worktree (`entrypoint/test_measurement.py`) and merges the result into its summary row:
+`test_pass_rate` (`passed / (passed + failed + errored)` from the pytest summary line), `tests_passed`, `tests_failed`,
+`tests_errored`, `test_exit_code`, `test_source: "stage_3"` and, when the tests could not run, `test_run_error`. A
+missing `uv`, a timeout (`HOLON_TEST_MEASUREMENT_TIMEOUT_SECONDS`, default 900 seconds; the process group is killed), a
+missing pytest summary or an empty run records `test_pass_rate: null` and a `test_run_error`, never a pass. Captured
+output is redacted and capped. Runs that are not a successful execution (decomposed, over budget, failed, empty diff)
+are not measured. If the test run changes tracked or untracked files, the executor logs a warning naming them.
+
 ## Empty-Diff Guard
 
 After the agent exits, the executor compares the working tree with the plan branch tip. If nothing changed outside

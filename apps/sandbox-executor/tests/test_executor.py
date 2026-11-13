@@ -525,6 +525,19 @@ class TestExecutor(unittest.TestCase):
         self.assertNotIn("failure_reason", summaries[0])
         self.assertTrue(_unscoped_add_all(argv))
 
+    def test_main_records_measured_test_fields_on_success_only(self):
+        """The summary row of a successful run carries the measurement; a failed (empty-diff) row stays unmeasured."""
+        fields = {"test_pass_rate": 0.8, "tests_passed": 8, "tests_failed": 2, "tests_errored": 0, "test_exit_code": 1}
+        with patch(
+            "sandbox_executor.entrypoint.executor.measure_executor_tests",
+            side_effect=lambda _dir, _repo, status: fields if status == "success" else {},
+        ):
+            ok, _ = self._run_main_with_agent_diff("src/app.py\0")
+            empty, _ = self._run_main_with_agent_diff("plans/P-123.md\0")
+        self.assertEqual(ok[0]["test_pass_rate"], 0.8)
+        self.assertEqual(ok[0]["test_exit_code"], 1)
+        self.assertNotIn("test_pass_rate", empty[0])
+
     def test_main_empty_diff_guard_fails_closed_without_plan_tip(self):
         """If the plan tip cannot be resolved the diff is unverifiable, so the run is recorded as failed."""
         summaries, argv = self._run_main_with_agent_diff("src/app.py\0", tip_stdout="")
@@ -1646,8 +1659,10 @@ class TestExecutor(unittest.TestCase):
                         self.assertNotIn(window, block, f"{label}: fragment {window!r} survived cut {k}")
                     if "*******" in block:
                         masked += 1
-                    if any(window in _superseded_bound_then_redact(stream, budget) for window in windows):
-                        superseded += 1
+                    # One leaking offset is the counter-example; the old pipeline is slow, so stop after it.
+                    if not superseded:
+                        old_block = _superseded_bound_then_redact(stream, budget)
+                        superseded += any(window in old_block for window in windows)
                 self.assertGreater(masked, 0, f"{label}: the anchor was never in reach, so context did not reach")
                 # The replaced ordering must demonstrably leak these shapes, or this test carries no
                 # counter-example and proves nothing about why the region redaction exists.

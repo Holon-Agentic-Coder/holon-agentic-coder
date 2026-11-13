@@ -852,6 +852,18 @@ budget:
   `{slug, intent_branch, execution_branch, pr_number, pr_url, merge_commit}` entry per child, and `integrated: true`.
   Calibration scores such a row as a success. See [Git Flow](git_flow.md#flow-equivalence-guarantee) (Stage 3, the
   combined PR) for when it is written.
+- `test_pass_rate`, `tests_passed`, `tests_failed`, `tests_errored`, `test_exit_code`, `test_run_error`, `test_source`:
+  _(Optional; only on the executor's own `success` summary row)_ The executor runs `uv run task test` after the agent's
+  turn and before the execution commit, and records the result. `test_pass_rate` is
+  `passed / (passed + failed + errored)` from the pytest summary line, in `[0, 1]`, and `tests_passed`, `tests_failed`
+  and `tests_errored` are those counts. `test_exit_code` is the exit code of the test task (separate from `exit_code`,
+  which is the agent's). `test_source` is `"stage_3"`. A run that cannot execute the tests (`uv` missing, a timeout, no
+  parsable pytest summary, or no tests collected) records `test_pass_rate: null`, null counts and a redacted
+  `test_run_error`, never a pass. `null` always means "not measured": a rate below `1.0`, or a non-zero `test_exit_code`
+  on a completed run, is a failed test result, and a rate of `1.0` is only ever read as a pass with an exit code of `0`.
+  Rows that are not a successful executed run (decomposition, over budget, failed, empty diff) carry none of these keys,
+  and a superseding row drops them all. Old readers ignore the keys. The review loop adds its own `test_source` values
+  (`"ci"`, `"review_local"`) to the review evidence, not to the ledger summary row.
 - `sub_intents`: _(Historic `decomposed` rows only)_ The plan's sub-intent list as the executor once copied it, each
   `{slug, description, goal}`. New rows never carry it and the flow no longer reads it.
 - `created_at`: Creation timestamp.

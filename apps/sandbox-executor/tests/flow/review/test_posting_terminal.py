@@ -144,6 +144,14 @@ def test_a_review_iteration_budget_breach_at_the_cap_posts_nothing(tmp_path):
     _not_posted(tmp_path, post, ctx, "halted")
 
 
+def test_an_unresolved_ref_at_the_cap_posts_nothing(tmp_path):
+    stubs = _LoopStubs(merge={"is_dirty": False, "merge_state_status": "MISSING_REF", "mergeable": "UNKNOWN"})
+    _, post, ctx = _run(tmp_path, FakeEnsemble([objecting_reviewer(1)]), max_iterations=1, stubs=stubs)
+
+    _not_posted(tmp_path, post, ctx, "halted")
+    assert "halted" in _summary_row(tmp_path)["review_post_withheld"]
+
+
 def test_a_cap_with_every_reviewer_completed_posts_once_with_no_withheld_reason(tmp_path):
     res, post, _ = _run(tmp_path, FakeEnsemble([objecting_reviewer(1)]), max_iterations=1)
 

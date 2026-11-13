@@ -170,12 +170,12 @@ def publish_calibration(context: FlowContext) -> bool:
         run_git(["push", "-u", DEFAULT_REMOTE, calibrated], cwd=repo_dir, check=False)
     if not branch:
         return False
-    run_git(["checkout", branch], cwd=repo_dir, check=False)
-    merged = run_git(["merge", "--ff-only", calibrated], cwd=repo_dir, check=False)
+    merged = run_git(["checkout", branch], cwd=repo_dir, check=False)
+    if merged.returncode == 0:
+        merged = run_git(["merge", "--ff-only", calibrated], cwd=repo_dir, check=False)
     if merged.returncode != 0:
         detail = merged.stderr.strip() if isinstance(merged.stderr, str) else ""
-        context.log(f"Warning: '{branch}' could not fast-forward onto '{calibrated}': {detail}")
+        context.log(f"Warning: '{branch}' not updated to '{calibrated}' (checkout/ff-only failed): {detail}")
         return False
-    if context.skip_push:
-        return False
-    return run_git(["push", DEFAULT_REMOTE, branch], cwd=repo_dir, check=False).returncode == 0
+    pushed = not context.skip_push and run_git(["push", DEFAULT_REMOTE, branch], cwd=repo_dir, check=False)
+    return bool(pushed) and pushed.returncode == 0

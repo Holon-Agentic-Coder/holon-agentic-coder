@@ -531,6 +531,7 @@ class TestFlowStages:
             patch("sandbox_executor.flow.stages.calibrate.run_calibrate", return_value=mock_report),
             patch("sandbox_executor.flow.calibrate_sync.run_git") as mock_git,
         ):
+            mock_git.return_value = MagicMock(returncode=0, stderr="")
             res = run_calibrate_stage(ctx)
 
         assert res.status == StageStatus.SUCCESS

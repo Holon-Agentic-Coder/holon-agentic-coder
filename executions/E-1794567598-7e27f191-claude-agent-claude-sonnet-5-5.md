@@ -29,4 +29,5 @@ guard test.
 
 - `uv run pytest` on `test_ci.py`, `test_sleep_patch.py`, `test_sleep_patch_guard.py`: 26 passed in 1.12s.
 - `uv run task test`: 3919 passed, 1 skipped in 25.59s.
-- `uv run task lint`: passed. `uv run task lint-docs`: reports pre-existing warnings in 37 other files; this record passes.
+- `uv run task lint`: passed. `uv run task lint-docs`: reports pre-existing warnings in 37 other files; this record
+  passes.

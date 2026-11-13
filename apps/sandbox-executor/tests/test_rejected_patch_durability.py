@@ -14,6 +14,7 @@ from unittest.mock import patch
 import pytest
 from sandbox_executor.entrypoint import rejected_attempt, review_loop
 from sandbox_executor.flow.review.rejected_attempt_record import _record_rejected_attempt
+from sandbox_executor.flow.review.rejected_patch_host import _persist_rejected_patch
 from sandbox_executor.flow.review.resolver import ResolverOutcome
 from sandbox_executor.resolver_result import read_container_resolver_result
 
@@ -102,8 +103,18 @@ def test_result_payload_carries_the_patch_and_the_host_writes_it_when_the_file_i
 def test_host_keeps_an_existing_patch_file(tmp_path: Path) -> None:
     (tmp_path / PATCH).parent.mkdir(parents=True)
     (tmp_path / PATCH).write_text("container copy")
-    from sandbox_executor.flow.review.rejected_patch_host import _persist_rejected_patch
-
     assert _persist_rejected_patch(str(tmp_path), 3, PATCH, "payload copy") == PATCH
     assert (tmp_path / PATCH).read_text() == "container copy"
     assert _persist_rejected_patch(str(tmp_path), 4, None, "") is None
+
+
+@pytest.mark.parametrize(
+    "bad", [str(Path("/tmp") / "evil-holon.patch"), "../../evil.patch", ".holon/review/rejected/../../evil.patch"]
+)
+def test_host_ignores_patch_path_outside_rejected_dir(tmp_path: Path, bad: str) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = _persist_rejected_patch(str(ws), 5, bad, "x")
+    assert result == ".holon/review/rejected/iter-5.patch"
+    assert (ws / result).read_text() == "x"
+    assert not (tmp_path / "evil.patch").exists()

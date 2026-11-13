@@ -213,7 +213,6 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
 
     test_gate = _ReviewTestGate(context, repo_dir)
     test_pass_rate, tests_failed = test_gate.stage_3_evidence
-
     iteration = first_label - 1
     consensus_reached = False
     last_ci_status: dict[str, Any] = {}
@@ -378,7 +377,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             # Post-review CI gate on clean review: wait for CI registration and pending checks to settle.
             if pr_allowed and test_pass_rate is None and not tests_failed and shutil.which("gh"):
                 reg_timeout = min(
-                    resolve_ci_registration_timeout(ci_registration_timeout), max(0.0, iteration_timer.remaining())
+                    resolve_ci_registration_timeout(ci_registration_timeout),
+                    max(0.0, iteration_timer.remaining()),
                 )
                 _wait_for_ci_registration(
                     context,

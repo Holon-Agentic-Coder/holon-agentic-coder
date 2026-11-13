@@ -89,6 +89,8 @@ class TestUnmeasuredTestsStopEarly:
             patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
             patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123"),
             patch("sandbox_executor.flow.github.ci.time.sleep", sleep),
+            # No real ``git rev-parse``: ``subprocess`` polls its child with the ``time.sleep`` patched above.
+            patch("sandbox_executor.flow.review.local_tests._ReviewLocalTests._head", lambda self: self._head_sha),
             _verified_diff(),
         ):
             res = run_review_loop(ctx, auto_pr=False, max_iterations=25, **kwargs)

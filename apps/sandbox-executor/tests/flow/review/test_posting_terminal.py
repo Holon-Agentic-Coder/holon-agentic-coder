@@ -137,9 +137,8 @@ def test_a_resumed_pass_with_a_failed_reviewer_turn_posts_nothing(tmp_path):
 
 def test_a_review_iteration_budget_breach_at_the_cap_posts_nothing(tmp_path):
     ticks = itertools.count(step=10_000.0)
-    res, post, ctx = _run(
-        tmp_path, FakeEnsemble([objecting_reviewer(1)]), max_iterations=1, clock=lambda: next(ticks), sleep=lambda _: None
-    )
+    ensemble = FakeEnsemble([objecting_reviewer(1)])
+    res, post, ctx = _run(tmp_path, ensemble, max_iterations=1, clock=lambda: next(ticks), sleep=lambda _: None)
 
     assert res["budget_breach"]["budget_name"] == "review_iteration"
     _not_posted(tmp_path, post, ctx, "halted")

@@ -24,3 +24,16 @@ treated as "iteration budget exhausted" and posted.
    the budget breach), confirming the gap exactly where the plan predicted. `test_loop.py` is already 382 lines, so per
    plan Step 4.6 the posting tests live in `test_posting_terminal.py` (the intent's `tests/flow/test_loop.py` does not
    exist).
+2. Step 2 (gate): `flow/review/posting.py` gained `PostFacts.verdict_terminal` and the pure helper
+   `is_terminal_verdict(verdict, reviewers)` (CHANGES_REQUESTED or APPROVED with every reviewer `COMPLETED`).
+   `decide_post` now withholds a non-terminal verdict even at the cap; the halted and failed-verdict branches share one
+   return to stay within `PLR0911`. `loop.py` passes `verdict_terminal` and widens `halted_early` to cover
+   `budget_breach`, `missing_ref` and `tests_not_measured`. Budgets: `review/loop.py` `904 -> 907`, `review/posting.py`
+   `139 -> 155`, with the reason appended to the budget file's description. No `# noqa` was added. Two existing tests in
+   `tests/test_review_loop.py` encoded the leak and were updated: the blocking-outcome matrix now expects no post for the
+   failed and unparseable reviewer cases, and the CLI post-failure test now measures its tests (`ci=_GREEN_CI`) so it
+   still reaches the post.
+3. Step 3 (local record): `log_skipped_post` already logs "Not posting a review consensus ..." with the new reason. The
+   `REV-...` summary row in `executions.jsonl` gains one optional key, `review_post_withheld` (the decision reason or
+   `null`). `docs/ledger_schema.md` imposes no closed key set on summary rows, so no schema change or new ledger was
+   needed. No `ACT-POST` row is written for a withheld post.

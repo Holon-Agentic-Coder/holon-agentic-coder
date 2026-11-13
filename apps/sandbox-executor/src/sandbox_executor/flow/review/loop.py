@@ -49,6 +49,7 @@ from sandbox_executor.flow.review.posting import (
     PostFacts,
     PostRequest,
     decide_post,
+    is_terminal_verdict,
     log_skipped_post,
     post_review_consensus,
 )
@@ -713,9 +714,10 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             failed=bool(pr_refusal_error or infra_error),
             reviewer_completed=any(result.status is ReviewerStatus.COMPLETED for result in reviewers),
             consensus_reached=consensus_reached,
-            halted_early=bool(resolver_error or no_convergence),
+            halted_early=bool(resolver_error or no_convergence or budget_breach or missing_ref or tests_not_measured),
             iteration=iteration,
             last_label=last_label,
+            verdict_terminal=is_terminal_verdict(ensemble_verdict, reviewers),
         )
     )
     if decision.count_suppressed:
@@ -780,6 +782,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "max_iterations": last_label,
         "ci_checks_summary": last_ci_status,
         "trailers": last_trailers_dict,
+        "review_post_withheld": decision.reason or None,
     }
     if effective_dry_run:
         suppressed_ledger_records += 1

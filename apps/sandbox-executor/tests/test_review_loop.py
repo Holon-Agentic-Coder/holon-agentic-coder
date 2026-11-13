@@ -956,7 +956,7 @@ def _loop_ctx(tmp_path: Path, target: str = "feature/x", dry_run: bool = False):
     return ctx
 
 
-def _green_loop_patches(verdict=None, post=None, which=None):
+def _green_loop_patches(verdict=None, post=None, which=None, ci=None):
     from contextlib import ExitStack
 
     from sandbox_executor.review_target import DiffVerdict
@@ -975,7 +975,7 @@ def _green_loop_patches(verdict=None, post=None, which=None):
     stack.enter_context(
         patch(
             "sandbox_executor.flow.review.loop.probe_ci_checks",
-            return_value={"all_passed": True, "source": "local_tests"},
+            return_value=ci or {"all_passed": True, "source": "local_tests"},
         )
     )
     stack.enter_context(patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123"))
@@ -1075,7 +1075,10 @@ def test_failed_post_makes_the_cli_exit_one(tmp_path, capsys):
         repo_dir=str(tmp_path), target="feature/x", auto_pr=False, dry_run=False, json=False, max_iterations=1
     )
     (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
-    stack, _verify, _post = _green_loop_patches(post={"return_value": {"dual_posted": False, "error": "HTTP 502"}})
+    # Measured tests: an unmeasured run keeps its report local and never attempts the post.
+    stack, _verify, _post = _green_loop_patches(
+        post={"return_value": {"dual_posted": False, "error": "HTTP 502"}}, ci=_GREEN_CI
+    )
     with stack:
         code = run_review_loop_cli(args)
 
@@ -1396,9 +1399,11 @@ def test_any_blocking_reviewer_outcome_stops_after_one_iteration_and_records_row
     failed_rows = [r for r in rows if r["review_status"] == "FAILED"]
     assert all(r["review_verdict"] is None and r["error_context"] for r in failed_rows)
     assert not _rows(tmp_path, "ACT-RES")
-    # A review is posted only when at least one reviewer completed.
-    assert post.called is bool(results)
-    assert bool(_rows(tmp_path, "ACT-POST")) is bool(results)
+    # At the cap only a terminal verdict posts: a failed or unparseable reviewer turn keeps the report local.
+    posted = res["ensemble_verdict"] == "CHANGES_REQUESTED"
+    assert posted is (case in ("changes-requested", "approved-with-a-nit"))
+    assert post.called is posted
+    assert bool(_rows(tmp_path, "ACT-POST")) is posted
 
 
 @pytest.mark.parametrize(

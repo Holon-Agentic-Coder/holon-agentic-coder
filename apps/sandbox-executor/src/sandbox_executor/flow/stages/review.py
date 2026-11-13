@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 
 from sandbox_executor.budgets import format_minutes
 from sandbox_executor.calibration import is_metadata_path
+from sandbox_executor.flow.calibrate_sync import record_starting_branch
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _stage_failure, _test_evidence
 from sandbox_executor.flow.review.ci_outcome import describe_ci_outcome
@@ -51,6 +52,7 @@ def _checkout_execution_branch(context: FlowContext) -> str | None:
     Returns:
         None when HEAD is (now) on the execution branch, otherwise the redacted reason the checkout failed.
     """
+    record_starting_branch(context)
     repo_dir = context.target_worktree
     current = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_dir, check=False)
     current_branch = current.stdout.strip() if current.returncode == 0 and isinstance(current.stdout, str) else ""

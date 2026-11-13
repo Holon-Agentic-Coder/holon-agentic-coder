@@ -154,6 +154,8 @@ class FlowContext:
     plan_branch: str | None = None
     execution_branch: str | None = None
     calibrated_branch: str | None = None
+    starting_branch: str | None = None  # Branch (or detached SHA) HEAD was on before Stage 4 or 5 moved it.
+    starting_detached: bool = False
     # The CLI always passes resolved values (see agent_defaults); these only apply to direct construction.
     agent: str = FALLBACK_AGENT
     model: str = DEFAULT_MODELS[normalise_agent_id(FALLBACK_AGENT)]

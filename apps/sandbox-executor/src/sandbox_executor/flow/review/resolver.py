@@ -165,34 +165,6 @@ def _dispatch_review_resolver(
             os.remove(result_file)
 
 
-def record_rejected_attempt(
-    context: FlowContext, exec_file: str, review_target: str, iteration: int, outcome: ResolverOutcome
-) -> None:
-    """Append one failed action row pointing at the rejected patch and test summary of a failed pre-push run.
-
-    Nothing is written when the pass kept no rejected attempt. The ledger writer redacts every string again.
-    """
-    if not (outcome.rejected_patch or outcome.failed_tests or outcome.test_summary):
-        return
-    row: dict[str, Any] = {
-        "action_id": generate_action_id("ACT-RES"),
-        "execution_id": f"REV-RES-{iteration}-{int(time.time())}",
-        "action": f"Review Loop iteration {iteration} resolver change rejected: pre-push tests failed",
-        "category": "code",
-        "target": review_target,
-        "outcome": "failure",
-        "entry_type": "action",
-        "action_origin": "pr_review",
-        "review_iteration": iteration,
-        "labels": ["review", "resolver", f"iteration-{iteration}", "rejected-attempt"],
-        "error_context": _bounded_error_context(outcome.test_summary) if outcome.test_summary else None,
-        "rejected_patch": outcome.rejected_patch,
-        "failed_tests": list(outcome.failed_tests),
-        "created_at": datetime.now(UTC).isoformat(),
-    }
-    record_review_action(context, exec_file, row)
-
-
 def _lookup_introducing_action_id(row: FindingRow, action_ids: Mapping[str, str]) -> str | None:
     """Find the ACT-FIND action_id that first introduced ``row``."""
     sig_key = str(finding_signature(row.severity, row.path, row.line, row.summary))

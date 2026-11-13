@@ -132,8 +132,20 @@ uv sync
 ## Stage 4 pre-push test failures
 
 When the resolver's pre-push `uv run task test` fails, the halt message reads
-`Resolver pre-push test failed (exit code N); failed: <ids> (+K more); full output: <path>: <head ... tail>`. It names
-at most 10 failed test ids (about 600 characters), keeps a short head and the tail of the output, and stays within 2000
-characters. The gate sets `PYTEST_ADDOPTS` to include `-rfE` unless it already reports failures and errors. The complete
-output is redacted once, before anything is kept, and written to `.holon/review/verification/test.log` in the workspace.
-That directory is git-ignored, so it is never committed. Lint failures and missing tools keep their earlier messages.
+`Resolver pre-push test failed (exit code N); failed: <ids> (+K more); full output: <path>: <excerpt>`. It names at most
+10 failed test ids (about 600 characters) and stays within 2000 characters. The excerpt is summary-first: the
+`short test summary info` section plus the final counts line (for example `2 failed, 198 passed in 12.34s`), or the tail
+of the output when there is no such section, never the progress dots at its head. The gate sets `PYTEST_ADDOPTS` to
+include `-rfE` unless it already reports failures and errors. The complete output is redacted once, before anything is
+kept, and written to `.holon/review/verification/test.log` in the workspace. That directory is git-ignored, so it is
+never committed. Lint failures and missing tools keep their earlier messages.
+
+The rejected attempt is kept too. Before the container exits, the resolver's uncommitted changes (new files included,
+the ledger and `.holon/` excluded) are saved as `.holon/review/rejected/iter-N.patch`, beside an `iter-N.json` record of
+the failing tests, the summary and the head they were made on. The workspace is bind-mounted, so the host can read both.
+The real git index is never altered: the diff uses a temporary copy of it. The patch is redacted before it is capped at
+200,000 characters and written. The resolver result carries the optional `rejected_patch`, `failed_tests` and
+`test_summary` fields, and the host appends one failed `ACT-RES` action row (label `rejected-attempt`) with
+`rejected_patch`, `failed_tests` and the summary as `error_context`. The next resolver pass on the same head gets a
+"Previous attempt failed verification" prompt section with the failing tests, the summary and the redacted, capped diff,
+and is told not to repeat that change. A passing test run clears the saved attempts.

@@ -17,7 +17,8 @@ from sandbox_executor.entrypoint.rejected_attempt import (
     capture_rejected_attempt,
     previous_failure_section,
 )
-from sandbox_executor.flow.review.resolver import ResolverOutcome, record_rejected_attempt
+from sandbox_executor.flow.review.rejected_attempt_record import _record_rejected_attempt
+from sandbox_executor.flow.review.resolver import ResolverOutcome
 from sandbox_executor.resolver_result import read_container_resolver_result
 
 SECRET = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
@@ -132,9 +133,11 @@ def test_result_fields_are_optional_and_ledger_row_points_at_the_patch(tmp_path:
         failed_tests=parsed.failed_tests,
         test_summary=parsed.test_summary,
     )
-    with patch("sandbox_executor.flow.review.resolver.record_review_action", lambda c, f, row: rows.append(row)):
-        record_rejected_attempt(object(), "ledger", "PR#1", 1, outcome)  # type: ignore[arg-type]
-        record_rejected_attempt(object(), "ledger", "PR#1", 1, ResolverOutcome())  # type: ignore[arg-type]
+    with patch(
+        "sandbox_executor.flow.review.rejected_attempt_record.record_review_action", lambda c, f, row: rows.append(row)
+    ):
+        _record_rejected_attempt(object(), "ledger", "PR#1", 1, outcome)  # type: ignore[arg-type]
+        _record_rejected_attempt(object(), "ledger", "PR#1", 1, ResolverOutcome())  # type: ignore[arg-type]
     assert len(rows) == 1
     assert rows[0]["rejected_patch"] == ".holon/review/rejected/iter-1.patch"
     assert rows[0]["failed_tests"] == ["tests/x.py::test_a"] and json.dumps(rows[0])

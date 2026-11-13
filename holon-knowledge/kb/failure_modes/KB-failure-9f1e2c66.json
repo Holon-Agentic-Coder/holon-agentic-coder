@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-9f1e2c66",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-13T12:35:44.597763+00:00",
+  "updated_ts": "2026-11-13T12:35:44.597763+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794569278-374d37d9"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794567523-savepat/P-1794567538-ea208f06-claude-agent-claude-sonnet-5-5/E-1794567627-82ed7432-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 6 finding detected: FIND-CI-006",
+    "symptoms": [
+      "Findings detected: ['FIND-CI-006']"
+    ]
+  }
+}

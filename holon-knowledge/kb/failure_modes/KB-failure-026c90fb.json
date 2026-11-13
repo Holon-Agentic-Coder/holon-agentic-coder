@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-026c90fb",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-13T12:35:44.571418+00:00",
+  "updated_ts": "2026-11-13T12:35:44.571418+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794567959-44e42846",
+      "ACT-FIND-1794567936-95585adc"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794567523-savepat/P-1794567538-ea208f06-claude-agent-claude-sonnet-5-5/E-1794567627-82ed7432-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R3-001-03",
+    "symptoms": [
+      "The host-written patch path is not written back to the iteration JSON record, which can still show patch_path null."
+    ]
+  }
+}

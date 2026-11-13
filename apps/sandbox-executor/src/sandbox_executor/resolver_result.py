@@ -67,6 +67,7 @@ class ContainerResolverResult:
     tests_passed: bool
     error: str | None
     rejected_patch: str | None = None
+    rejected_patch_text: str = ""
     failed_tests: tuple[str, ...] = ()
     test_summary: str | None = None
 
@@ -76,8 +77,10 @@ def rejected_attempt_fields(data: Mapping[str, Any]) -> dict[str, Any]:
     patch = data.get("rejected_patch")
     tests = data.get("failed_tests")
     summary = data.get("test_summary")
+    patch_text = data.get("rejected_patch_text")
     return {
         "rejected_patch": redact_agent_secrets(patch) if isinstance(patch, str) and patch else None,
+        "rejected_patch_text": redact_agent_secrets(patch_text) if isinstance(patch_text, str) else "",
         "failed_tests": tuple(redact_agent_secrets(t) for t in tests if isinstance(t, str))
         if isinstance(tests, list)
         else (),

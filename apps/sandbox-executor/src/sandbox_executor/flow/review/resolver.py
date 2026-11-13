@@ -52,6 +52,7 @@ class ResolverOutcome:
     tests_passed: bool = True
     error: str | None = None
     rejected_patch: str | None = None
+    rejected_patch_text: str = ""
     failed_tests: tuple[str, ...] = ()
     test_summary: str | None = None
 
@@ -147,6 +148,7 @@ def _dispatch_review_resolver(
             tests_passed=parsed.tests_passed,
             error=parsed.error or push_error,
             rejected_patch=parsed.rejected_patch,
+            rejected_patch_text=parsed.rejected_patch_text,
             failed_tests=parsed.failed_tests,
             test_summary=parsed.test_summary,
         )

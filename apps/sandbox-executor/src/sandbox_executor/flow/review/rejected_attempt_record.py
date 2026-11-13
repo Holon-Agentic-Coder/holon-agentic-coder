@@ -8,6 +8,7 @@ from typing import Any
 
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.review.records import _bounded_error_context, record_review_action
+from sandbox_executor.flow.review.rejected_patch_host import _persist_rejected_patch
 from sandbox_executor.flow.review.resolver import ResolverOutcome
 from sandbox_executor.ledger import generate_action_id
 
@@ -19,8 +20,11 @@ def _record_rejected_attempt(
 
     Nothing is written when the pass kept no rejected attempt. The ledger writer redacts every string again.
     """
-    if not (outcome.rejected_patch or outcome.failed_tests or outcome.test_summary):
+    if not (outcome.rejected_patch or outcome.rejected_patch_text or outcome.failed_tests or outcome.test_summary):
         return
+    patch_path = outcome.rejected_patch
+    if outcome.rejected_patch_text:
+        patch_path = _persist_rejected_patch(context.repo_dir, iteration, patch_path, outcome.rejected_patch_text)
     row: dict[str, Any] = {
         "action_id": generate_action_id("ACT-RES"),
         "execution_id": f"REV-RES-{iteration}-{int(time.time())}",
@@ -33,7 +37,7 @@ def _record_rejected_attempt(
         "review_iteration": iteration,
         "labels": ["review", "resolver", f"iteration-{iteration}", "rejected-attempt"],
         "error_context": _bounded_error_context(outcome.test_summary) if outcome.test_summary else None,
-        "rejected_patch": outcome.rejected_patch,
+        "rejected_patch": patch_path,
         "failed_tests": list(outcome.failed_tests),
         "created_at": datetime.now(UTC).isoformat(),
     }

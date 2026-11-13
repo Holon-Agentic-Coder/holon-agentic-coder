@@ -212,8 +212,10 @@ Stage 4 and Stage 5 action rows keep their historical field order and identifier
 - When a resolver pass fails its pre-push test run, the loop appends one `failure` `ACT-RES` row (`execution_id`
   `REV-RES-{iteration}-{ts}`, labels `["review", "resolver", "iteration-N", "rejected-attempt"]`). Beyond the common
   action fields it carries the optional `rejected_patch` (workspace-relative path of the redacted diff under
-  `.holon/review/rejected/`) and `failed_tests` (a list of test node ids), and the redacted test summary (the
-  `short test summary info` section and the counts line) is its `error_context`. Older rows lack these fields.
+  `.holon/review/rejected/`; the container result also carries the redacted, capped patch text, which the host writes
+  there when the container's file did not survive) and `failed_tests` (a list of test node ids), and the redacted test
+  summary (the `short test summary info` section and the counts line) is its `error_context`. Older rows lack these
+  fields.
 - `ACT-CAL` uses `execution_id` `CAL-{plan_id}-{ts}`, `category: "doc"` and labels
   `["calibration", "stage-5", plan_id]`. Beyond the common action fields it carries `plan_branch`, `execution_branch`,
   `evaluated_commit_sha`, `predicted_metrics`, `actual_metrics`, `calibration_deltas` and `calibration_report_path`.

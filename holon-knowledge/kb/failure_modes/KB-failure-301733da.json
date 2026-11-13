@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-301733da",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-13T12:35:44.675342+00:00",
+  "updated_ts": "2026-11-13T12:35:44.675342+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794572720-5dd248a6",
+      "ACT-FIND-1794572719-d1b8e063"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794567523-savepat/P-1794567538-ea208f06-claude-agent-claude-sonnet-5-5/E-1794567627-82ed7432-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 13 finding detected: FIND-R2-013-01",
+    "symptoms": [
+      "_within_rejected_dir can raise ValueError (NUL byte in realpath, mixed drives in commonpath) on untrusted container input; catch ValueError/OSError and return False."
+    ]
+  }
+}

@@ -47,6 +47,7 @@ from sandbox_executor.calibration import run_calibrate
 from sandbox_executor.claude_credential import CLAUDE_CREDENTIAL_ENV_NAMES, resolve_claude_credential
 from sandbox_executor.cli.pi_mounts import get_pi_mounts
 from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
+from sandbox_executor.entrypoint.uv_lock import frozen_env
 from sandbox_executor.flow import (
     SKIP_PUSH_DISPATCH_ERROR,
     FlowContext,
@@ -1223,7 +1224,7 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
     if workspace_mounts:
         env_to_forward["HOLON_TARGET_WORKTREE"] = SANDBOX_WORKSPACE_MOUNT
         env_to_forward["UV_PROJECT_ENVIRONMENT"] = SANDBOX_UV_PROJECT_ENVIRONMENT
-        env_to_forward["UV_FROZEN"] = "1"
+        env_to_forward.update(frozen_env({}))
 
     norm_agent_id = local_llm.normalize_agent_id(agent_id)
 

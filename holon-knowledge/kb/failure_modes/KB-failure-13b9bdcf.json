@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-13b9bdcf",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-13T13:29:55.161879+00:00",
+  "updated_ts": "2026-11-13T13:29:55.161879+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794575780-5b3d8f23",
+      "ACT-FIND-1794575777-07b50f11"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794574957-calrebld/P-1794574974-21db7508-claude-agent-claude-opus-5-5/E-1794575181-a4b61ba6-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R2-001-01",
+    "symptoms": [
+      "If only the local /calibrated ref is stale and origin's /calibrated is ahead of the head, the rebuild re-points local at start_sha, so the later push is silently rejected as non-fast-forward and origin diverges; previously this failed loudly."
+    ]
+  }
+}

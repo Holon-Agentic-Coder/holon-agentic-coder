@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from sandbox_executor.cli.commands.flow import _report_flow_summary
@@ -125,6 +126,13 @@ def test_flow_summary_names_the_calibrated_head(repos: SimpleNamespace, capsys: 
     ctx, _ = run_stage(repos)
     _report_flow_summary(ctx, {}, json_output=False)
     assert f"calibration report covers execution head {head[:12]}" in capsys.readouterr().out
+
+
+def test_failed_publish_does_not_report_a_calibrated_head(repos: SimpleNamespace) -> None:
+    push_ahead(repos)
+    with patch("sandbox_executor.flow.stages.calibrate.publish_calibration", return_value=False):
+        _, result = run_stage(repos)
+    assert result.payload["calibrated_head"] is None
 
 
 def test_flow_summary_says_a_failed_stage_5_refreshed_nothing(

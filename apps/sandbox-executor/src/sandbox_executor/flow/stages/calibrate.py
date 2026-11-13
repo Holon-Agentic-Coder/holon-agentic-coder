@@ -311,6 +311,7 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:  # noqa: C
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     pushed = False
+    publish_attempted = not context.dry_run and calibration_succeeded and bool(context.calibrated_branch)
     # A failed calibration commits nothing, so it neither pushes nor fast-forwards the /calibrated branch.
     if not context.dry_run and calibration_succeeded and context.calibrated_branch:
         pushed = publish_calibration(context)
@@ -318,7 +319,9 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:  # noqa: C
     final_head_ci = check_final_head_ci(context, repo_dir, context.execution_branch) if pushed else not_pushed_record()
     context.log(format_final_head_ci(final_head_ci))
     reverified = reverify_and_report(context, repo_dir, final_head_ci, pushed)
-    calibrated_head = start_sha if calibration_succeeded else None
+    # A report that never reached origin does not cover the head: only claim it when published or no push was due.
+    published = pushed or context.skip_push or not publish_attempted
+    calibrated_head = start_sha if calibration_succeeded and published else None
     if not context.dry_run and not calibration_succeeded:
         context.log(
             "Stage 5 completed with a calibration failure: nothing was committed, pushed or fast-forwarded "

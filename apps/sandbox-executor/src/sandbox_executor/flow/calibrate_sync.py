@@ -3,12 +3,18 @@
 Containers and out-of-band conflict resolution push to ``origin/<execution_branch>`` without moving the local ref,
 so Stage 5 syncs first. A local ref that is behind is fast-forwarded, a local ref holding commits origin lacks is
 refused, and the calibrated branch is created from the origin head so that it fast-forwards onto the execution
-branch. Nothing here resets, forces or merges to ``main``.
+branch. Nothing here resets, forces or merges to ``main``; the flow's own /calibrated branch is the only ref that may
+be replaced, and on origin only with a lease (calibrate_rebuild.py).
 """
 
 from __future__ import annotations
 
-from sandbox_executor.flow.calibrate_rebuild import CalibrationSyncError
+from sandbox_executor.flow.calibrate_rebuild import (
+    CalibrationSyncError,
+    holds_only_calibration_commits,
+    rebuild_calibrated_branch,
+    stale_calibrated_refs,
+)
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.git_refs import fast_forward_local_branch
 from sandbox_executor.flow.host_remote import DEFAULT_REMOTE, HostRemoteError, fetch_base
@@ -75,14 +81,14 @@ def sync_execution_ref(context: FlowContext) -> str | None:
 
 
 def prepare_calibrated_branch(context: FlowContext, start_sha: str | None) -> bool:
-    """Create the local /calibrated branch at ``start_sha`` unless one exists.
+    """Create the local /calibrated branch at ``start_sha`` unless one exists; rebuild the flow's own stale one.
 
     ``run_calibrate`` checks out an existing local branch, so creating it here fixes its start point.
 
     Returns:
-        True only when this call created the branch.
+        True only when this call created or rebuilt the branch.
     Raises:
-        CalibrationSyncError: If an existing /calibrated branch lacks the execution head.
+        CalibrationSyncError: If an existing /calibrated branch lacks the execution head and holds foreign commits.
     """
     branch = context.execution_branch
     if not branch or not start_sha or context.dry_run:
@@ -96,13 +102,16 @@ def prepare_calibrated_branch(context: FlowContext, start_sha: str | None) -> bo
         if res.returncode != 0:
             context.log(f"Warning: could not create '{calibrated}' at {start_sha[:12]}.")
         return res.returncode == 0
-    for existing in (local_sha, remote_sha):
-        if existing and not _is_ancestor(repo_dir, start_sha, existing):
-            raise CalibrationSyncError(
-                f"existing '{calibrated}' does not contain the execution head {start_sha[:12]}, so it cannot "
-                f"fast-forward onto '{branch}'. Delete it (`git branch -D {calibrated}`) and resume to rebuild."
-            )
-    return False
+    stale = stale_calibrated_refs(repo_dir, start_sha, local_sha, remote_sha)
+    if not any(stale):
+        return False
+    if not all(holds_only_calibration_commits(repo_dir, start_sha, sha) for sha in stale if sha):
+        raise CalibrationSyncError(
+            f"existing '{calibrated}' does not contain the execution head {start_sha[:12]}, so it cannot "
+            f"fast-forward onto '{branch}'. Delete it (`git branch -D {calibrated}`) and resume to rebuild."
+        )
+    rebuild_calibrated_branch(context, start_sha, *stale)
+    return True
 
 
 def discard_empty_calibrated_branch(context: FlowContext, created: bool) -> None:

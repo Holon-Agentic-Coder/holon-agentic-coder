@@ -11,6 +11,7 @@ from collections.abc import Callable
 from typing import Any
 
 from sandbox_executor import local_llm
+from sandbox_executor.agent_attribution import attribution_off_settings
 from sandbox_executor.claude_credential import CLAUDE_CREDENTIAL_ENV_NAMES, SECRETS_FILE_DISPLAY
 
 logger = logging.getLogger(__name__)
@@ -641,9 +642,25 @@ class PiAgentRunner(StandardAgentRunner):
 
 
 class ClaudeAgentRunner(StandardAgentRunner):
-    """Runner for Claude agent."""
+    """Runner for Claude agent; every launch carries settings that disable commit attribution."""
 
     uses_stdin: bool = True
+
+    def build_cmd(
+        self,
+        model_name: str,
+        prompt_file: str | None = None,
+        intent_file: str | None = None,
+        full_prompt: str = "",
+    ) -> list[str]:
+        """Build the launch argv with attribution disabled; the pre-flight probe (``compose_cmd``) makes no commits."""
+        cmd = super().build_cmd(model_name, prompt_file, intent_file, full_prompt)
+        value = attribution_off_settings(os.getenv("HOLON_AGENT_SETTINGS"))
+        if "--settings" in cmd:
+            cmd[cmd.index("--settings") + 1] = value
+        else:
+            cmd[cmd.index(self.model_flag) + 2 : cmd.index(self.model_flag) + 2] = ["--settings", value]
+        return cmd
 
     def __init__(
         self,

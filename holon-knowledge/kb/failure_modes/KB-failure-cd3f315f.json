@@ -1,0 +1,29 @@
+{
+  "kb_id": "KB-failure-cd3f315f",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-13T10:36:41.265779+00:00",
+  "updated_ts": "2026-11-13T10:36:41.265779+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1794561004-ac2d552a",
+      "ACT-REV-1794561002-949545b3"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794546205-measure/P-1794546221-53ff4e71-claude-agent-claude-sonnet-5-5/E-1794546302-b5a87645-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 2 reviewer 2 completed",
+    "symptoms": []
+  }
+}

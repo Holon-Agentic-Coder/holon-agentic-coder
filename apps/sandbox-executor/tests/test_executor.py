@@ -1659,8 +1659,10 @@ class TestExecutor(unittest.TestCase):
                         self.assertNotIn(window, block, f"{label}: fragment {window!r} survived cut {k}")
                     if "*******" in block:
                         masked += 1
-                    if any(window in _superseded_bound_then_redact(stream, budget) for window in windows):
-                        superseded += 1
+                    # One leaking offset is the counter-example; the old pipeline is slow, so stop after it.
+                    if not superseded:
+                        old_block = _superseded_bound_then_redact(stream, budget)
+                        superseded += any(window in old_block for window in windows)
                 self.assertGreater(masked, 0, f"{label}: the anchor was never in reach, so context did not reach")
                 # The replaced ordering must demonstrably leak these shapes, or this test carries no
                 # counter-example and proves nothing about why the region redaction exists.

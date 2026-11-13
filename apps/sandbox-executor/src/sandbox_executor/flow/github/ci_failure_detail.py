@@ -88,12 +88,12 @@ def gh_detail_lookup(
 
 
 def describe_failure(detail: Mapping[str, Any]) -> str:
-    """``name`` or ``name (CI Timing Gate, 6 min)`` for a report line."""
+    """``name`` or ``name (CI Timing Gate, 6.0 min)`` for a report line."""
     name = str(detail.get("name"))
     if not detail.get("timing_gate"):
         return name
     seconds = detail.get("duration_seconds")
-    took = f", {float(seconds) / 60:.0f} min" if isinstance(seconds, int | float) else ""
+    took = f", {float(seconds) / 60:.1f} min" if isinstance(seconds, int | float) else ""
     return f"{name} (CI Timing Gate{took})"
 
 

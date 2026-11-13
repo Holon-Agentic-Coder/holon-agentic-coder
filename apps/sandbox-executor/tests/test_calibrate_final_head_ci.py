@@ -100,7 +100,7 @@ def test_timing_gate_only_failure_fails_the_final_head_check(tmp_path: Path) -> 
     assert record["state"] == "failed"
     assert record["failed_checks"] == ["macos-unit"]
     assert record["failed_details"][0]["timing_gate"] is True
-    assert format_final_head_ci(record) == "final head CI: failed: macos-unit (CI Timing Gate, 6 min)"
+    assert format_final_head_ci(record) == "final head CI: failed: macos-unit (CI Timing Gate, 6.0 min)"
     assert "timing gate only" not in format_final_head_ci(record)
 
 
@@ -191,7 +191,7 @@ def test_stage_is_blocked_by_a_red_final_head_and_names_the_checks(tmp_path: Pat
     failed = {"state": "failed", "failed_checks": ["macos-unit"], "failed_details": [detail], "ci_wait": None}
     result = _run_stage(tmp_path, failed)
     assert result.status == StageStatus.FAILED
-    assert "macos-unit (CI Timing Gate, 6 min)" in result.error
+    assert "macos-unit (CI Timing Gate, 6.0 min)" in result.error
     assert result.payload["final_head_ci"] == failed
     assert result.payload["ci_verdict"]["verdict"] == "red"
 

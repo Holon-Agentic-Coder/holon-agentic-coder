@@ -28,7 +28,7 @@ RED_RECORD = {
 def test_red_head_names_each_failing_check_and_is_not_merge_ready() -> None:
     verdict = reverify_final_head(RED_RECORD, APPROVED, FINAL)
     assert verdict["verdict"] == "red"
-    assert "macos-unit (CI Timing Gate, 6 min)" in verdict["report"]
+    assert "macos-unit (CI Timing Gate, 6.0 min)" in verdict["report"]
     assert "Not ready to merge" in verdict["report"]
     assert "ready to merge." not in verdict["report"].replace("Not ready to merge.", "")
 

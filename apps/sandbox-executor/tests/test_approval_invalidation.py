@@ -80,7 +80,7 @@ def test_comment_names_both_heads_and_each_failing_check() -> None:
     assert "no longer stands" in body
     assert APPROVED[:7] in body
     assert FAILING[:7] in body
-    assert "macos-unit (CI Timing Gate, 6 min)" in body
+    assert "macos-unit (CI Timing Gate, 6.0 min)" in body
     assert "CI Timing Gate (Check <= 5 min)" in body
     assert "lint" in body
     assert invalidation_marker(FAILING) in body

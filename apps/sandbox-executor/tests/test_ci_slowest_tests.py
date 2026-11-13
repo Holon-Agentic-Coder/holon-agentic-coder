@@ -73,7 +73,7 @@ def test_timing_gate_only_failure_names_the_five_slowest_tests_and_never_offers_
     for i in (8, 7, 6, 5, 4):
         assert f"tests/test_{i}.py::test" in row.summary
     assert "tests/test_3.py::test" not in row.summary
-    assert "macos-unit (CI Timing Gate, 6 min)" in row.summary
+    assert "macos-unit (CI Timing Gate, 6.0 min)" in row.summary
     text = f"{row.summary} {row.recommendation}".lower()
     assert "speed up" in text
     assert "rerun" not in text.replace("do not repeat the run", "")

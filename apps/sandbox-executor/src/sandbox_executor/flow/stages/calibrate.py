@@ -328,7 +328,7 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:  # noqa: C
         context.log(f"Stage 5 completed: Calibration analysis generated on branch '{context.calibrated_branch}'.")
     else:
         context.log("Stage 5 completed: Calibration analysis generated in working tree (uncommitted).")
-    blocked = reverified["verdict"] == RED
+    blocked = reverified["verdict"] == RED  # deliberate: pending/unmeasured stays SUCCESS, logged in ci_verdict
     result = StageResult(
         stage=FlowStage.CALIBRATE,
         status=StageStatus.FAILED if blocked else StageStatus.SUCCESS,

@@ -225,7 +225,10 @@ Each agent has specific command-line structures and validation routines:
 - **Session directories**: pi >= 0.84 keeps provider definitions in `~/.pi/agent/models.json`;
   `~/.config/pi/models.json` is the legacy location. **Only `models.json` is mounted**, never the directory around it,
   because that directory also holds `auth.json`, `sessions/` and `run-history.jsonl`, which a sandboxed agent must not
-  read.
+  read. Docker would create the missing parents of that file mount as root, so pi gets scratch `tmpfs` mounts for
+  `/home/holon/.pi` and `/home/holon/.pi/agent` (and `/home/holon/.config/pi` for the legacy file) owned by uid and
+  gid 1000. They are emitted before the read-only `models.json`, even when the host has none, so pi can create its
+  sessions directory. Credentials, sessions and run history stay on the host.
 - **Validation**: Requires `HOLON_AGENT_KEY` to be set, a mounted `models.json` (`/home/holon/.pi/agent/models.json` or
   the legacy path), or host-local model mode (see [Host-Local Model Endpoints](#host-local-model-endpoints)).
 

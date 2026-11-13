@@ -66,6 +66,23 @@ class ContainerResolverResult:
     lint_passed: bool
     tests_passed: bool
     error: str | None
+    rejected_patch: str | None = None
+    failed_tests: tuple[str, ...] = ()
+    test_summary: str | None = None
+
+
+def rejected_attempt_fields(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Read the optional rejected-attempt fields of a result (absent in older results), redacted and type-checked."""
+    patch = data.get("rejected_patch")
+    tests = data.get("failed_tests")
+    summary = data.get("test_summary")
+    return {
+        "rejected_patch": redact_agent_secrets(patch) if isinstance(patch, str) and patch else None,
+        "failed_tests": tuple(redact_agent_secrets(t) for t in tests if isinstance(t, str))
+        if isinstance(tests, list)
+        else (),
+        "test_summary": redact_agent_secrets(summary) if isinstance(summary, str) and summary else None,
+    }
 
 
 def read_container_resolver_result(
@@ -94,4 +111,5 @@ def read_container_resolver_result(
         lint_passed=bool(data.get("lint_passed", True)),
         tests_passed=bool(data.get("tests_passed", True)),
         error=resolver_error_text(data.get("error"), exit_code, data.get("output_tail")),
+        **rejected_attempt_fields(data),
     )

@@ -7,6 +7,7 @@ that names it, distinct from a lint or test failure, so the resolver records it 
 import subprocess
 from collections.abc import Callable
 
+from sandbox_executor.entrypoint.rejected_attempt import capture_rejected_attempt
 from sandbox_executor.entrypoint.review_failure_detail import build_test_failure_message
 
 # Exit code and stderr marker of a command whose executable could not be started (the shell's "command not found").
@@ -31,16 +32,20 @@ def verification_error(
     result: subprocess.CompletedProcess[str],
     bound: Callable[[str], str],
     workspace: str | None = None,
+    iteration: int | None = None,
 ) -> str:
     """Describe a failed pre-push ``step``, keeping a tool that could not run apart from a real lint or test failure.
 
     ``bound`` redacts and caps the command output; the caller supplies it so this module stays free of engine imports.
-    A real test failure with a ``workspace`` names the failed tests and writes the full output under ``.holon/``.
+    A real test failure with a ``workspace`` names the failed tests and writes the full output under ``.holon/``;
+    given an ``iteration`` it also saves the rejected diff and test summary (see ``rejected_attempt``).
     """
     is_missing_tool = result.returncode == MISSING_TOOL_EXIT_CODE and MISSING_TOOL_MARKER in (result.stderr or "")
     if step == "test" and workspace and not is_missing_tool:
         # stderr first so the excerpt tail is the pytest summary on stdout, where the FAILED lines are.
         raw = "\n".join(part for part in (result.stderr, result.stdout) if part).strip() or "test failed"
+        if iteration is not None:
+            capture_rejected_attempt(workspace, iteration, raw)
         return build_test_failure_message(result.returncode, raw, workspace)
     detail = bound((result.stderr or result.stdout or "").strip() or f"{step} failed")
     if is_missing_tool:

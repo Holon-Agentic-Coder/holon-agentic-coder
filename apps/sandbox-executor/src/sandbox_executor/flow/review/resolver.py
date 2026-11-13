@@ -25,7 +25,11 @@ from sandbox_executor.flow.review.records import _bounded_error_context, record_
 from sandbox_executor.ledger import generate_action_id
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.resolver_evidence import OPEN
-from sandbox_executor.resolver_result import read_container_resolver_result, resolver_error_text
+from sandbox_executor.resolver_result import (
+    read_container_resolver_result,
+    rejected_attempt_fields,
+    resolver_error_text,
+)
 from sandbox_executor.review_report import (
     FindingDisposition,
     FindingRow,
@@ -47,6 +51,9 @@ class ResolverOutcome:
     lint_passed: bool = True
     tests_passed: bool = True
     error: str | None = None
+    rejected_patch: str | None = None
+    failed_tests: tuple[str, ...] = ()
+    test_summary: str | None = None
 
 
 @dataclass(frozen=True)
@@ -139,6 +146,9 @@ def _dispatch_review_resolver(
             lint_passed=parsed.lint_passed,
             tests_passed=parsed.tests_passed,
             error=parsed.error or push_error,
+            rejected_patch=parsed.rejected_patch,
+            failed_tests=parsed.failed_tests,
+            test_summary=parsed.test_summary,
         )
     except Exception as exc:
         dispositions = deserialize_finding_dispositions([], findings, lookup)
@@ -153,6 +163,34 @@ def _dispatch_review_resolver(
     finally:
         with contextlib.suppress(OSError):
             os.remove(result_file)
+
+
+def record_rejected_attempt(
+    context: FlowContext, exec_file: str, review_target: str, iteration: int, outcome: ResolverOutcome
+) -> None:
+    """Append one failed action row pointing at the rejected patch and test summary of a failed pre-push run.
+
+    Nothing is written when the pass kept no rejected attempt. The ledger writer redacts every string again.
+    """
+    if not (outcome.rejected_patch or outcome.failed_tests or outcome.test_summary):
+        return
+    row: dict[str, Any] = {
+        "action_id": generate_action_id("ACT-RES"),
+        "execution_id": f"REV-RES-{iteration}-{int(time.time())}",
+        "action": f"Review Loop iteration {iteration} resolver change rejected: pre-push tests failed",
+        "category": "code",
+        "target": review_target,
+        "outcome": "failure",
+        "entry_type": "action",
+        "action_origin": "pr_review",
+        "review_iteration": iteration,
+        "labels": ["review", "resolver", f"iteration-{iteration}", "rejected-attempt"],
+        "error_context": _bounded_error_context(outcome.test_summary) if outcome.test_summary else None,
+        "rejected_patch": outcome.rejected_patch,
+        "failed_tests": list(outcome.failed_tests),
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    record_review_action(context, exec_file, row)
 
 
 def _lookup_introducing_action_id(row: FindingRow, action_ids: Mapping[str, str]) -> str | None:
@@ -283,6 +321,7 @@ def _invoke_resolver_pass(
             lint_passed=bool(raw.get("lint_passed", True)),
             tests_passed=bool(raw.get("tests_passed", True)),
             error=err,
+            **rejected_attempt_fields(raw),
         )
     if isinstance(raw, Sequence):
         raw_list = [serialize_finding_disposition(d) if isinstance(d, FindingDisposition) else d for d in raw]

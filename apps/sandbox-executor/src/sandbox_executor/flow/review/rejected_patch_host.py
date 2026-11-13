@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import os
 
-from sandbox_executor.entrypoint.rejected_attempt import REJECTED_DIR
 from sandbox_executor.knowledge import CredentialRedactor
+from sandbox_executor.review_paths import REJECTED_DIR
 
 
 def _within_rejected_dir(workspace: str, patch_path: str) -> bool:

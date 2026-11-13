@@ -17,8 +17,8 @@ from dataclasses import dataclass
 from sandbox_executor.entrypoint.pytest_summary import counts_line, summary_excerpt
 from sandbox_executor.entrypoint.review_failure_detail import failed_test_ids
 from sandbox_executor.knowledge import CredentialRedactor
+from sandbox_executor.review_paths import REJECTED_DIR
 
-REJECTED_DIR = os.path.join(".holon", "review", "rejected")
 PATCH_MAX_CHARS = 200_000
 SUMMARY_MAX_CHARS = 2000
 PROMPT_PATCH_MAX_CHARS = 6000

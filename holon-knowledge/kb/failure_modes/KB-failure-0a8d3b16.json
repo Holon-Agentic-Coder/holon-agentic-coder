@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-0a8d3b16",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-13T03:50:34.790061+00:00",
+  "updated_ts": "2026-11-13T03:50:34.790061+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1794531691-bbcc97c9-claude-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794529165-calsync/P-1794529181-eabd8e76-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop halted without consensus after 2 iteration(s): not approved: reviewer 1 final verdict CHANGES_REQUESTED, reviewer 1 Engineering role CHANGES, reviewer 2 final verdict CHANGES_REQUESTED, reviewer 3 final verdict CHANGES_REQUESTED; final verdicts: Reviewer 1 CHANGES_REQUESTED (0/0/3); Reviewer 1 Engineering role CHANGES; Reviewer 2 CHANGES_REQUESTED (0/1/0); Reviewer 3 CHANGES_REQUESTED (0/0/1)",
+    "symptoms": []
+  }
+}

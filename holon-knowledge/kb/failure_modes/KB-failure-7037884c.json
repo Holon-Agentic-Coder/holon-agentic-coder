@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-7037884c",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-13T03:50:34.919849+00:00",
+  "updated_ts": "2026-11-13T03:50:34.919849+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1794541309-cf6cd841",
+      "ACT-REV-1794541308-5b6b3a62",
+      "ACT-REV-1794540558-ec0860d0",
+      "ACT-REV-1794540556-835f4e23"
+    ],
+    "success_count": 0,
+    "failure_count": 4,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794529165-calsync/P-1794529181-eabd8e76-claude-agent-claude-sonnet-5-5/E-1794529274-faa29f9e-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 4 executions with identical context.",
+    "action": "Review Loop iteration 10 reviewer 2 completed",
+    "symptoms": []
+  }
+}

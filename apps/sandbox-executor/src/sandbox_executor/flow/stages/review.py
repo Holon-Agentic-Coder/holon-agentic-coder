@@ -52,7 +52,7 @@ def _checkout_execution_branch(context: FlowContext) -> str | None:
     Returns:
         None when HEAD is (now) on the execution branch, otherwise the redacted reason the checkout failed.
     """
-    record_starting_branch(context)
+    record_starting_branch(context, run_git)
     repo_dir = context.target_worktree
     current = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_dir, check=False)
     current_branch = current.stdout.strip() if current.returncode == 0 and isinstance(current.stdout, str) else ""

@@ -154,3 +154,29 @@ def test_dry_run_touches_no_ref(repos: SimpleNamespace) -> None:
         run_stage(repos, dry_run=True)
     assert git(repos.host, "for-each-ref") == before
     assert git(repos.host, "symbolic-ref", "--short", "HEAD") == "operator-work"
+
+
+def test_recording_the_starting_branch_uses_the_callers_git_runner(tmp_path: Path) -> None:
+    from unittest.mock import MagicMock
+
+    from sandbox_executor.flow.calibrate_sync import record_starting_branch
+
+    fake = MagicMock(return_value=SimpleNamespace(returncode=0, stdout="operator-work\n"))
+    ctx = FlowContext(target_worktree=str(tmp_path), execution_branch=EXEC, agent="a", model="m")
+    with patch("sandbox_executor.flow.calibrate_sync.run_git", side_effect=AssertionError("spawned a real git")):
+        record_starting_branch(ctx, fake)
+    assert ctx.starting_branch == "operator-work"
+    fake.assert_called_once()
+
+
+def test_a_detached_head_is_resolved_through_the_callers_git_runner_too(tmp_path: Path) -> None:
+    from unittest.mock import MagicMock
+
+    from sandbox_executor.flow.calibrate_sync import record_starting_branch
+
+    answers = [SimpleNamespace(returncode=1, stdout=""), SimpleNamespace(returncode=0, stdout="abc123\n")]
+    fake = MagicMock(side_effect=answers)
+    ctx = FlowContext(target_worktree=str(tmp_path), execution_branch=EXEC, agent="a", model="m")
+    with patch("sandbox_executor.flow.calibrate_sync.run_git", side_effect=AssertionError("spawned a real git")):
+        record_starting_branch(ctx, fake)
+    assert (ctx.starting_branch, ctx.starting_detached) == ("abc123", True)

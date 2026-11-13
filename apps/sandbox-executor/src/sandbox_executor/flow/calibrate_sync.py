@@ -19,8 +19,8 @@ class CalibrationSyncError(RuntimeError):
     """The local execution ref cannot be reconciled with origin without losing commits."""
 
 
-def _rev(repo_dir: str, ref: str) -> str:
-    res = run_git(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=repo_dir, check=False)
+def _rev(repo_dir: str, ref: str, run=None) -> str:
+    res = (run or run_git)(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=repo_dir, check=False)
     return res.stdout.strip() if res.returncode == 0 and isinstance(res.stdout, str) else ""
 
 
@@ -119,16 +119,20 @@ def discard_empty_calibrated_branch(context: FlowContext, created: bool) -> None
         run_git(["branch", "-D", calibrated], cwd=repo_dir, check=False)
 
 
-def record_starting_branch(context: FlowContext) -> None:
-    """Remember the branch (or detached SHA) HEAD was on before the flow moved it; set once, never overwritten."""
+def record_starting_branch(context: FlowContext, run=None) -> None:
+    """Remember the branch (or detached SHA) HEAD was on before the flow moved it; set once, never overwritten.
+
+    ``run`` is the caller's git runner, so a stage whose tests replace its runner never spawns a real git process here.
+    """
     if context.dry_run or context.starting_branch:
         return
     repo_dir = context.target_worktree
-    head = run_git(["symbolic-ref", "--short", "-q", "HEAD"], cwd=repo_dir, check=False)
+    git = run or run_git
+    head = git(["symbolic-ref", "--short", "-q", "HEAD"], cwd=repo_dir, check=False)
     if head.returncode == 0 and head.stdout.strip():
         context.starting_branch = head.stdout.strip()
         return
-    sha = _rev(repo_dir, "HEAD")
+    sha = _rev(repo_dir, "HEAD", git)
     if sha:
         context.starting_branch = sha
         context.starting_detached = True

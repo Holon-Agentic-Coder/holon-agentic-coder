@@ -114,7 +114,7 @@ def _origin_has_branch(repo_dir: str, branch: str) -> bool:
     return res.returncode == 0
 
 
-def _fast_forward_local_branch(context: FlowContext, branch: str, target_sha: str) -> bool:
+def fast_forward_local_branch(context: FlowContext, branch: str, target_sha: str) -> bool:
     """Create or fast-forward the local branch to target_sha; never move it off unpushed local commits.
 
     A local branch whose tip is not an ancestor of target_sha (ahead of or diverged from origin) is
@@ -160,7 +160,7 @@ def _track_local_branch(context: FlowContext, branch: str) -> None:
     if not remote_sha:
         context.log(f"Warning: could not update local branch '{branch}' from origin; using origin/{branch}.")
         return
-    _fast_forward_local_branch(context, branch, remote_sha)
+    fast_forward_local_branch(context, branch, remote_sha)
 
 
 def _list_child_branches(repo_dir: str, parent_prefix: str, marker: str) -> set[str]:
@@ -316,7 +316,7 @@ def _sync_local_execution_refs(context: FlowContext, exec_branch: str, pushed_sh
     remote_ref = f"refs/remotes/origin/{exec_branch}"
     if run_git(["update-ref", remote_ref, pushed_sha], cwd=repo_dir, check=False).returncode != 0:
         context.log(f"Warning: could not update '{remote_ref}' to the pushed commit {pushed_sha[:12]}.")
-    _fast_forward_local_branch(context, exec_branch, pushed_sha)
+    fast_forward_local_branch(context, exec_branch, pushed_sha)
 
 
 def _execution_parent_plan_branch(execution_branch: str) -> str | None:

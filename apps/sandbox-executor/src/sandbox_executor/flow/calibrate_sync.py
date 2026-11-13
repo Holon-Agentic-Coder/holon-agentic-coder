@@ -9,7 +9,7 @@ branch. Nothing here resets, forces or merges to ``main``.
 from __future__ import annotations
 
 from sandbox_executor.flow.context import FlowContext
-from sandbox_executor.flow.git_refs import _fast_forward_local_branch
+from sandbox_executor.flow.git_refs import fast_forward_local_branch
 from sandbox_executor.flow.host_remote import DEFAULT_REMOTE, HostRemoteError, fetch_base
 from sandbox_executor.git import run_git
 from sandbox_executor.ref_names import calibration_branch
@@ -70,7 +70,7 @@ def sync_execution_ref(context: FlowContext) -> str | None:
         return origin_sha
     if local_sha and not _is_ancestor(repo_dir, local_sha, origin_sha):
         raise CalibrationSyncError(_divergence_message(repo_dir, branch, local_sha, origin_sha))
-    if _fast_forward_local_branch(context, branch, origin_sha):
+    if fast_forward_local_branch(context, branch, origin_sha):
         context.log(f"Stage 5 sync: fast-forwarded '{branch}' to origin head {origin_sha[:12]}.")
     else:
         context.log(f"Stage 5 sync: could not move '{branch}'; calibrating from origin head {origin_sha[:12]}.")
@@ -80,12 +80,12 @@ def sync_execution_ref(context: FlowContext) -> str | None:
 def prepare_calibrated_branch(context: FlowContext, start_sha: str | None) -> bool:
     """Create the local /calibrated branch at ``start_sha`` unless one exists.
 
+    ``run_calibrate`` checks out an existing local branch, so creating it here fixes its start point.
+
+    Returns:
+        True only when this call created the branch.
     Raises:
         CalibrationSyncError: If an existing /calibrated branch lacks the execution head.
-
-    Returns True only when this call created the branch.
-
-    ``run_calibrate`` checks out an existing local branch, so creating it here fixes its start point.
     """
     branch = context.execution_branch
     if not branch or not start_sha or context.dry_run:

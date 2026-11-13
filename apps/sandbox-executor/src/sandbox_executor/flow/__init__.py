@@ -63,7 +63,6 @@ from sandbox_executor.flow.git_refs import (
     _discover_child_branch,
     _execution_effective_diff,
     _execution_parent_plan_branch,
-    _fast_forward_local_branch,
     _fetch_branch_prefix,
     _fetch_branch_prefix_error,
     _fetch_refspecs_error,
@@ -78,6 +77,7 @@ from sandbox_executor.flow.git_refs import (
     _snapshot_child_branches,
     _sync_local_execution_refs,
     _track_local_branch,
+    fast_forward_local_branch,
 )
 from sandbox_executor.flow.github.ci import (
     CI_REGISTRATION_TIMEOUT_ENV_VAR,
@@ -291,7 +291,6 @@ __all__ = [
     "_execution_effective_diff",
     "_execution_parent_plan_branch",
     "_extract_failed_ci_check_names",
-    "_fast_forward_local_branch",
     "_fetch_branch_prefix",
     "_fetch_branch_prefix_error",
     "_fetch_refspecs_error",
@@ -355,6 +354,7 @@ __all__ = [
     "discard_empty_calibrated_branch",
     "extract_valid_ledger_rows",
     "failed_partial_head",
+    "fast_forward_local_branch",
     "fetch_base",
     "format_decomposition_summary",
     "format_final_head_ci",

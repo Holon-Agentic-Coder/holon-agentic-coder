@@ -267,3 +267,28 @@ def test_scaffold_templates_carry_code_placement_rule() -> None:
         assert missing == [], f"code placement rule phrases missing from scaffold {template_name}: {missing}"
     assert "touch set at module granularity" in normalised(PLANNER_TEMPLATE)
     assert "prefers adding focused modules over growing existing files past ~400 lines" in normalised(PLANNER_TEMPLATE)
+
+
+LOCK_DEFECT_PHRASE = (
+    "a `uv.lock` change that no `pyproject.toml` dependency or `requires-python` change explains is a defect"
+)
+
+
+def test_review_loop_template_treats_stray_lock_changes_as_a_defect() -> None:
+    template = (REPO_ROOT / "holon-config" / "prompts" / "review_loop.template.md").read_text(encoding="utf-8")
+    text = normalised(template)
+    assert LOCK_DEFECT_PHRASE in text
+    assert "git checkout {target_branch} -- uv.lock" in text
+
+
+def test_resolver_prompt_treats_stray_lock_changes_as_a_defect() -> None:
+    from sandbox_executor.entrypoint.review_loop import _build_resolver_prompt
+
+    text = normalised(_build_resolver_prompt("/r", "head", 1, [], "/d.json"))
+    assert LOCK_DEFECT_PHRASE in text
+    assert "git checkout <base> -- uv.lock" in text
+
+
+def test_executor_template_and_scaffold_treat_stray_lock_changes_as_a_defect() -> None:
+    assert LOCK_DEFECT_PHRASE in normalised(rendered_executor())
+    assert LOCK_DEFECT_PHRASE in normalised(EXECUTOR_TEMPLATE)

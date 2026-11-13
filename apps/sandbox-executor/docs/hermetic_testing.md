@@ -227,3 +227,25 @@ To debug serially, either keep xdist loaded but start no workers, or disable the
 uv run task test -n 0
 uv run pytest -p no:xdist -m "not integration_test and not stress"
 ```
+
+### The committed `uv.lock`
+
+`apps/sandbox-executor/pyproject.toml` pins `requires-python = "==3.13.*"`, matching the root project and the
+`python:3.13-slim` base image, so every interpreter writes the same bound into `apps/sandbox-executor/uv.lock`. The flow
+runs its own `uv` calls (the executor's test run, the resolver's lint and test run, and the role containers) with
+`UV_FROZEN=1`, so a stage never rewrites the lock. Frozen mode trusts the lock as it stands, so the resolver also runs
+`uv lock --check` first and fails with a `LockfileMismatchError` naming `uv.lock` and `pyproject.toml` when they
+disagree.
+
+To regenerate the lock after a deliberate `pyproject.toml` change, use the `UV_VERSION` pinned in the `Dockerfile` under
+Python 3.13, then commit the result:
+
+```bash
+cd apps/sandbox-executor
+uv lock
+uv lock --check
+```
+
+`test_uv_lock.py` runs `uv lock --check --offline` (skipped when `uv` or Python 3.13 is absent) and the `test-hygiene`
+workflow runs the same check, so a lock that needs a rewrite fails in CI. A `uv.lock` change that no `pyproject.toml`
+dependency or `requires-python` change explains is a defect: revert it with `git checkout <base> -- uv.lock`.

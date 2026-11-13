@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-e0e4d983",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-13T11:19:19.716416+00:00",
+  "updated_ts": "2026-11-13T11:19:19.716416+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794568026-39bc6652",
+      "ACT-FIND-1794568025-dc4c2850"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794567519-lockfrz/P-1794567535-986a8099-claude-agent-claude-sonnet-5-5/E-1794567625-b72a7c5b-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-CI-001",
+    "symptoms": [
+      "Findings detected: ['FIND-CI-001', 'FIND-R1-001-01']"
+    ]
+  }
+}

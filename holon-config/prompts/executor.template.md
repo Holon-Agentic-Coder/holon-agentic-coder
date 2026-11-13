@@ -16,7 +16,8 @@ codebase files.
    the measurement, and then once.
 5. Record every run's pass/fail count and pytest-reported time, plus the median, in the `## Tests Run` section of the
    execution notes, from real runs only. Never re-measure a commit that already has a recorded figure.
-6. Ensure code formatting, linting, and repo conventions are followed.
+6. Ensure code formatting, linting, and repo conventions are followed. A `uv.lock` change that no `pyproject.toml`
+   dependency or `requires-python` change explains is a defect; never commit an incidental rewrite.
 7. All generated or updated markdown documentation and execution records must use code spans (backticks) for formulas,
    arithmetic expressions, and metric notations (e.g., `EV = 0.90 * 95.0`) to avoid CommonMark emphasis parsing
    oscillations and maintain immediate single-pass prettier compatibility.

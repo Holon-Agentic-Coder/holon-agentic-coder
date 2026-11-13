@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from sandbox_executor.entrypoint.review_verification import MISSING_TOOL_EXIT_CODE, missing_tool_result
+from sandbox_executor.entrypoint.uv_lock import frozen_env
 from sandbox_executor.redaction import redact_agent_secrets
 
 TEST_COMMAND = ["uv", "run", "task", "test"]
@@ -93,6 +94,7 @@ def _run_in_process_group(argv: list[str], cwd: str, timeout: float) -> subproce
     with subprocess.Popen(
         argv,
         cwd=cwd,
+        env=frozen_env(cwd=cwd),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

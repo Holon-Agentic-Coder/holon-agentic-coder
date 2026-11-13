@@ -18,15 +18,18 @@ def _is_sleep_string(node: ast.expr) -> bool:
     )
 
 
+def _is_time_module(node: ast.expr) -> bool:
+    """``time`` or an attribute chain ending in ``.time`` such as ``module.time``."""
+    if isinstance(node, ast.Name):
+        return node.id == "time"
+    return isinstance(node, ast.Attribute) and node.attr == "time"
+
+
 def _is_time_sleep_object_patch(call: ast.Call) -> bool:
     """``patch.object(time, "sleep")`` or ``monkeypatch.setattr(time, "sleep", ...)``."""
     args = call.args
     return (
-        len(args) >= 2
-        and isinstance(args[0], ast.Name)
-        and args[0].id == "time"
-        and isinstance(args[1], ast.Constant)
-        and args[1].value == "sleep"
+        len(args) >= 2 and _is_time_module(args[0]) and isinstance(args[1], ast.Constant) and args[1].value == "sleep"
     )
 
 
@@ -63,8 +66,9 @@ def test_guard_flags_dotted_and_object_patches():
         "patch('pkg.mod.time.sleep', s)\n"
         "patch.object(time, 'sleep')\n"
         "monkeypatch.setattr(time, 'sleep', f)\n"
+        "patch.object(module.time, 'sleep')\n"
     )
-    assert find_violations(source) == [2, 3, 4]
+    assert find_violations(source) == [2, 3, 4, 5]
 
 
 def test_guard_ignores_clean_source():

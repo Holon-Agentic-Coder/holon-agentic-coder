@@ -1525,7 +1525,6 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 repo.run(["add", *add_targets], check=False)
             if exec_status == "success":
                 repo.add(all_files=True)
-
             # Log staged changes to provide visibility
             status_output = repo.run(["status", "--short"], check=False)
             print("Current git repository status:")
@@ -1538,7 +1537,6 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             if staged_check.returncode != 0:
                 _configure_executor_identity(repo_dir)
                 repo.commit(commit_msg)
-
             # Invariant: A branch with no parent must never be published, whatever the execution status.
             can_record = repo.rev_parse("HEAD^", verify=True).returncode == 0
             can_record = attribution_allows_publish(plan_tip, _entrypoint_git_runner(repo_dir)) and can_record

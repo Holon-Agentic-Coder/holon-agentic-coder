@@ -17,9 +17,9 @@ reports attribution trailers in the execution branch's own commits.
 
 ## Steps Executed
 
-1. Step 1: `--settings` takes inline JSON; keys `includeCoAuthoredBy` and `attribution` both written. Decision: merge into
-   `HOLON_AGENT_SETTINGS` (inline or file, read only). The pre-flight probe uses `compose_cmd`, which substitutes the
-   settings value by shell reference to keep credentials off argv, so attribution is applied in
+1. Step 1: `--settings` takes inline JSON; keys `includeCoAuthoredBy` and `attribution` both written. Decision: merge
+   into `HOLON_AGENT_SETTINGS` (inline or file, read only). The pre-flight probe uses `compose_cmd`, which substitutes
+   the settings value by shell reference to keep credentials off argv, so attribution is applied in
    `ClaudeAgentRunner.build_cmd` only (the probe makes no commits).
 2. Step 2: added `agent_attribution.py`; `ClaudeAgentRunner.build_cmd` override. Declared assertion updates in
    `test_agent_runner.py` (claude argv now carries `--settings`).

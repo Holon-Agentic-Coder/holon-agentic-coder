@@ -161,6 +161,7 @@ from sandbox_executor.flow.review.loop import (
     _run_engine_review_loop,
     run_review_loop,
 )
+from sandbox_executor.flow.review.posting import is_terminal_verdict
 from sandbox_executor.flow.review.records import (
     _SEVERITY_RANK,
     POSTING_ERROR_CONTEXT_MAX_CHARS,
@@ -363,6 +364,7 @@ __all__ = [
     "generate_semantic_pr_metadata",
     "get_default_checkpoint_path",
     "is_pending_only",
+    "is_terminal_verdict",
     "leftover_paths",
     "load_checkpoint",
     "migrate_checkpoint_data",

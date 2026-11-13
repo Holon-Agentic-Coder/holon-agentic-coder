@@ -48,8 +48,8 @@ from sandbox_executor.flow.review.local_tests import _ReviewTestGate
 from sandbox_executor.flow.review.posting import (
     PostFacts,
     PostRequest,
-    _is_terminal_verdict,
     decide_post,
+    is_terminal_verdict,
     log_skipped_post,
     post_review_consensus,
 )
@@ -717,7 +717,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             halted_early=bool(resolver_error or no_convergence or budget_breach or missing_ref or tests_not_measured),
             iteration=iteration,
             last_label=last_label,
-            verdict_terminal=_is_terminal_verdict(ensemble_verdict, reviewers),
+            verdict_terminal=is_terminal_verdict(ensemble_verdict, reviewers),
         )
     )
     if decision.count_suppressed:

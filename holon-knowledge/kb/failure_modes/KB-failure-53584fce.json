@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-53584fce",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-13T12:35:44.562465+00:00",
+  "updated_ts": "2026-11-13T12:35:44.562465+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794567959-7e45dfc5",
+      "ACT-FIND-1794567936-7c17fe18"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794567523-savepat/P-1794567538-ea208f06-claude-agent-claude-sonnet-5-5/E-1794567627-82ed7432-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R3-001-01",
+    "symptoms": [
+      "Container-supplied patch_path is joined to the workspace unvalidated, so an absolute or .. path writes outside the worktree; constrain it to REJECTED_DIR."
+    ]
+  }
+}

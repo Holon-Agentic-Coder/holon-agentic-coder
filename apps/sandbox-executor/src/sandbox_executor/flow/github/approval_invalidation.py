@@ -39,6 +39,7 @@ def _check_line(detail: Mapping[str, Any]) -> str:
 def render_invalidation(approved_head: str | None, failing_head: str, details: list[Mapping[str, Any]]) -> str:
     """The comment body: both heads, each failing check and, for a timing gate, its duration against the limit."""
     covered = f"`{short_sha(approved_head)}`" if approved_head else "an earlier commit"
+    marker = invalidation_marker(failing_head)
     lines = [
         "## ⚠️ Ensemble Consensus Approval no longer stands",
         "",
@@ -48,10 +49,9 @@ def render_invalidation(approved_head: str | None, failing_head: str, details: l
         "",
         "A job that exceeds its time limit is a failed check. This pull request is not verified as ready to merge; "
         "a human decides.",
-        "",
-        invalidation_marker(failing_head),
     ]
-    return CredentialRedactor.redact_text("\n".join(lines))[:MAX_COMMENT_CHARS]
+    text = CredentialRedactor.redact_text("\n".join(lines))[: MAX_COMMENT_CHARS - len(marker) - 2]
+    return f"{text}\n\n{marker}"
 
 
 def gh_comment_lister(repo_dir: str, proxy_env: Mapping[str, str] | None = None) -> CommentLister:
@@ -119,7 +119,7 @@ def invalidate_approval(
     lister: CommentLister | None = None,
     poster: CommentPoster | None = None,
 ) -> dict[str, Any]:
-    """Post the once-per-head comment for a red final head; return ``{"posted": bool, "reason": str}``."""
+    """Post the once-per-head comment for a red head (an unverified head posts none); ``{"posted", "reason"}``."""
     failing = str(reverified.get("final_head") or "")
     pr_number = approval_pr_number(context)
     if context.dry_run or context.skip_push:

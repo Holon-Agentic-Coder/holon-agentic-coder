@@ -22,7 +22,8 @@ def ci_result_at_commit(ci_status: Mapping[str, Any]) -> str:
         return f"{failed} of {total} checks failing"
     if pending:
         return f"{pending} of {total} checks still pending"
-    return f"{int(ci_status.get('passed') or total)} of {total} checks passed"
+    passed = int(ci_status.get("passed") or 0)
+    return f"{passed} of {total} checks passed" if passed > 0 else "not measured"
 
 
 def approval_stamp(commit: str, ci_status: Mapping[str, Any]) -> str:

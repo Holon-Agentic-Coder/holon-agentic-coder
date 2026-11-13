@@ -13,7 +13,7 @@
     "github/approval_invalidation.py": 138,
     "github/ci.py": 193,
     "github/ci_failure_detail.py": 102,
-    "github/ci_final_head.py": 227,
+    "github/ci_final_head.py": 190,
     "github/ci_reverify.py": 91,
     "github/ci_slowest_tests.py": 104,
     "github/ci_wait.py": 120,

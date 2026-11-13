@@ -105,6 +105,21 @@ def test_origin_only_stale_calibrated_branch_is_replaced_with_a_lease(repos: Sim
     assert git(repos.host, "rev-parse", EXEC) == git(repos.host, "rev-parse", CALIBRATED)
 
 
+def test_stale_local_with_current_origin_calibrated_follows_origin(repos: SimpleNamespace) -> None:
+    calibrated_on_origin(repos, *REPORT)
+    head = push_ahead(repos)
+    other = repos.other
+    git(other, "checkout", "-qb", CALIBRATED, head)
+    ahead = commit_as(other, "holon-knowledge/kb/k.json", "chore(calibration): record stage 5 promoted knowledge")
+    git(other, "push", "-qf", "origin", CALIBRATED)
+    git(repos.host, "fetch", "-q", "origin")
+    _, result = run_stage(repos)
+    assert result.status == StageStatus.SUCCESS
+    git(repos.host, "merge-base", "--is-ancestor", ahead, CALIBRATED)
+    assert origin_sha(repos, CALIBRATED) == git(repos.host, "rev-parse", CALIBRATED)
+    assert origin_sha(repos, EXEC) == origin_sha(repos, CALIBRATED)
+
+
 def test_flow_summary_names_the_calibrated_head(repos: SimpleNamespace, capsys: pytest.CaptureFixture[str]) -> None:
     head = push_ahead(repos)
     ctx, _ = run_stage(repos)

@@ -110,7 +110,8 @@ def prepare_calibrated_branch(context: FlowContext, start_sha: str | None) -> bo
             f"existing '{calibrated}' does not contain the execution head {start_sha[:12]}, so it cannot "
             f"fast-forward onto '{branch}'. Delete it (`git branch -D {calibrated}`) and resume to rebuild."
         )
-    rebuild_calibrated_branch(context, start_sha, *stale)
+    # A current origin /calibrated may hold calibration commits past the head; keep them so the push fast-forwards.
+    rebuild_calibrated_branch(context, remote_sha if remote_sha and not stale[1] else start_sha, *stale)
     return True
 
 

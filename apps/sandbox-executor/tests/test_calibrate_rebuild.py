@@ -52,7 +52,7 @@ def test_own_diverged_calibrated_branch_is_rebuilt_from_the_origin_head(repos: S
     git(repos.origin, "merge-base", "--is-ancestor", head, f"refs/heads/{CALIBRATED}")
     assert git(host, "rev-parse", EXEC) == git(host, "rev-parse", CALIBRATED)
     logs = "\n".join(ctx.logs)
-    assert "rebuilt" in logs and old[:12] in logs and head[:12] in logs
+    assert "re-pointed" in logs and old[:12] in logs and head[:12] in logs
     assert result.payload["calibrated_head"] == head
 
 

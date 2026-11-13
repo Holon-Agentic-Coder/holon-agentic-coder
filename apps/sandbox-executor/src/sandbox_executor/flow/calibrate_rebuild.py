@@ -93,8 +93,8 @@ def _dropped_count(repo_dir: str, start_sha: str, stale: tuple[str, str]) -> int
     return len(dropped)
 
 
-def rebuild_calibrated_branch(context: FlowContext, start_sha: str, stale_local: str, stale_remote: str) -> None:
-    """Re-point the flow's own /calibrated branch at ``start_sha`` and log the SHAs it replaced.
+def rebuild_calibrated_branch(context: FlowContext, target_sha: str, stale_local: str, stale_remote: str) -> None:
+    """Re-point the flow's own /calibrated branch at ``target_sha`` and log the SHAs it replaced.
 
     The local branch is re-pointed when stale or absent. A stale origin branch is replaced with a lease on the SHA
     inspected, except with ``skip_push``, which leaves origin untouched.
@@ -107,17 +107,17 @@ def rebuild_calibrated_branch(context: FlowContext, start_sha: str, stale_local:
     calibrated = calibration_branch(context.execution_branch or "")
     if not calibrated.endswith("/calibrated") or calibrated == context.execution_branch:
         raise CalibrationSyncError(f"refusing to rebuild '{calibrated}': it is not a /calibrated branch.")
-    dropped = _dropped_count(repo_dir, start_sha, (stale_local, stale_remote))
+    dropped = _dropped_count(repo_dir, target_sha, (stale_local, stale_remote))
     if stale_remote and not context.skip_push:
-        _replace_remote_branch(context, calibrated, start_sha, stale_remote)
+        _replace_remote_branch(context, calibrated, target_sha, stale_remote)
     if stale_local or not _git_out(repo_dir, ["rev-parse", "--verify", "--quiet", f"refs/heads/{calibrated}"]):
-        res = run_git(["branch", "-f", "--no-track", calibrated, start_sha], cwd=repo_dir, check=False)
+        res = run_git(["branch", "-f", "--no-track", calibrated, target_sha], cwd=repo_dir, check=False)
         if res.returncode != 0:
             detail = res.stderr.strip() if isinstance(res.stderr, str) else ""
-            raise CalibrationSyncError(f"could not re-point '{calibrated}' at {start_sha[:12]}: {detail}")
+            raise CalibrationSyncError(f"could not re-point '{calibrated}' at {target_sha[:12]}: {detail}")
     replaced_remote = stale_remote[:12] if stale_remote and not context.skip_push else "nothing"
     context.log(
-        f"Stage 5: rebuilt '{calibrated}' from origin head {start_sha[:12]}; replaced local "
+        f"Stage 5: re-pointed '{calibrated}' at {target_sha[:12]}; replaced local "
         f"{stale_local[:12] or 'nothing'} and origin {replaced_remote} ({dropped} calibration commit(s) not on the "
         "execution head)."
     )

@@ -1,4 +1,4 @@
-"""Failure detail of a failed pre-push test run: named failed tests, a head-and-tail excerpt and the full output file.
+"""Failure detail of a failed pre-push test run: named failed tests, a summary-first excerpt and the full output file.
 
 The full output is redacted once, before extraction, truncation and writing, so a secret cut at a boundary cannot
 slip past the redaction patterns. The file lives under the git-ignored ``.holon/`` directory of the workspace.
@@ -8,12 +8,12 @@ import contextlib
 import os
 import re
 
+from sandbox_executor.entrypoint.pytest_summary import summary_excerpt
 from sandbox_executor.knowledge import CredentialRedactor
 
 MESSAGE_MAX_CHARS = 2000
 MAX_NAMED_FAILURES = 10
 NAMES_MAX_CHARS = 600
-HEAD_CHARS = 300
 VERIFICATION_DIR = os.path.join(".holon", "review", "verification")
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -64,17 +64,6 @@ def clear_full_output(workspace: str, step: str) -> None:
         os.remove(os.path.join(workspace, VERIFICATION_DIR, f"{step}.log"))
 
 
-def head_and_tail(text: str, budget: int) -> str:
-    """Return ``text`` unchanged when it fits ``budget``, else a short head and the tail around an omission marker."""
-    if len(text) <= budget:
-        return text
-    head = text[: min(HEAD_CHARS, budget // 3)]
-    marker_room = len(f" ... [{len(text)} characters omitted] ... ")
-    tail_budget = max(budget - len(head) - marker_room, 0)
-    marker = f" ... [{len(text) - len(head) - tail_budget} characters omitted] ... "
-    return head + marker + (text[-tail_budget:] if tail_budget else "")
-
-
 def build_test_failure_message(returncode: int, raw_output: str, workspace: str, step: str = "test") -> str:
     """Build ``Resolver pre-push <step> failed (exit code N); failed: ...; full output: <path>: <excerpt>``."""
     text = CredentialRedactor.redact_text(raw_output)
@@ -85,7 +74,7 @@ def build_test_failure_message(returncode: int, raw_output: str, workspace: str,
         parts.append(names)
     parts.append(f"full output: {path}" if path else "full output file could not be written")
     prefix = "; ".join(parts) + ": "
-    return prefix + head_and_tail(text, max(MESSAGE_MAX_CHARS - len(prefix), 0))
+    return prefix + summary_excerpt(text, max(MESSAGE_MAX_CHARS - len(prefix), 0))
 
 
 def with_short_summary(env: dict[str, str]) -> dict[str, str]:

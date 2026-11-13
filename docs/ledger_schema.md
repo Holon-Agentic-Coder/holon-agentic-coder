@@ -209,6 +209,11 @@ Stage 4 and Stage 5 action rows keep their historical field order and identifier
   reviewer finding's `ACT-FIND` row carries one finding id (`FIND-R{reviewer}-{iteration}-{n}`), its `review_severity`,
   the bounded summary as `error_context`, and adds `review_reviewer_index`, `review_file` and `review_line`. Report text
   is never written to the ledger.
+- When a resolver pass fails its pre-push test run, the loop appends one `failure` `ACT-RES` row (`execution_id`
+  `REV-RES-{iteration}-{ts}`, labels `["review", "resolver", "iteration-N", "rejected-attempt"]`). Beyond the common
+  action fields it carries the optional `rejected_patch` (workspace-relative path of the redacted diff under
+  `.holon/review/rejected/`) and `failed_tests` (a list of test node ids), and the redacted test summary (the
+  `short test summary info` section and the counts line) is its `error_context`. Older rows lack these fields.
 - `ACT-CAL` uses `execution_id` `CAL-{plan_id}-{ts}`, `category: "doc"` and labels
   `["calibration", "stage-5", plan_id]`. Beyond the common action fields it carries `plan_branch`, `execution_branch`,
   `evaluated_commit_sha`, `predicted_metrics`, `actual_metrics`, `calibration_deltas` and `calibration_report_path`.

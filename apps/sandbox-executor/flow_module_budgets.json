@@ -3,7 +3,7 @@
   "budgets": {
     "__init__.py": 423,
     "calibrate_rebuild.py": 123,
-    "calibrate_sync.py": 190,
+    "calibrate_sync.py": 186,
     "checkpoint.py": 210,
     "child_progress.py": 195,
     "constants.py": 8,

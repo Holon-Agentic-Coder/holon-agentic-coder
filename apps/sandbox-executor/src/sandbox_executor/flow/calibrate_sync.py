@@ -44,17 +44,17 @@ def _fetch_execution_branch(context: FlowContext, branch: str) -> None:
     try:
         fetch_base(context.target_worktree, branch, DEFAULT_REMOTE)
     except HostRemoteError as exc:
+        if _rev(context.target_worktree, f"refs/remotes/{DEFAULT_REMOTE}/{branch}") and not context.skip_push:
+            raise CalibrationSyncError(f"could not fetch origin/{branch} ({exc}); its ref may be stale.") from exc
         context.log(f"Warning: could not fetch origin/{branch} before calibration ({exc}); sync not confirmed.")
 
 
 def sync_execution_ref(context: FlowContext) -> str | None:
-    """Fetch origin and bring the local execution ref level with it; return the SHA calibration should start from.
-
-    Returns None in a dry run or when the branch has no commit to start from. Falls back to the local SHA when
-    origin has no such branch (offline and ``--skip-push`` runs).
+    """Fetch origin, level the local execution ref with it, return the SHA calibration starts from.
+    None in a dry run or with no commit; the local SHA when origin lacks the branch.
 
     Raises:
-        CalibrationSyncError: If the local ref holds commits that origin does not have.
+        CalibrationSyncError: If the local ref holds commits origin lacks, or the fetch fails with a stale origin ref.
     """
     branch = context.execution_branch
     if context.dry_run or not branch:
@@ -64,7 +64,7 @@ def sync_execution_ref(context: FlowContext) -> str | None:
     local_sha = _rev(repo_dir, f"refs/heads/{branch}")
     origin_sha = _rev(repo_dir, f"refs/remotes/{DEFAULT_REMOTE}/{branch}")
     if not origin_sha:
-        context.log(f"Stage 5 sync: origin/{branch} not found; calibrating from the local ref.")
+        context.log(f"Stage 5 sync: origin/{branch} not found; using the local ref.")
         return local_sha or None
     if local_sha == origin_sha:
         return origin_sha

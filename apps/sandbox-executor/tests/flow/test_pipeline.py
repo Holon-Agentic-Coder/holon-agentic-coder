@@ -289,7 +289,8 @@ class TestFlowStages:
         assert cal_rows[0]["calibration_report_path"] == "plans/P-200-plan_calibration.md"
 
         # Nothing is committed on the fallback path: the row and report remain working-tree changes.
-        assert git("rev-parse", "--abbrev-ref", "HEAD").strip() == "I-100-intent/P-200-plan/E-300-exec/_"
+        # The worktree is returned to the branch it started on, carrying the uncommitted changes.
+        assert git("rev-parse", "--abbrev-ref", "HEAD").strip() == "main"
         assert git("rev-parse", "HEAD").strip() == head_before
         assert git("rev-parse", "main").strip() == head_before
         assert git("branch", "--list", "*calibrated").strip() == ""
@@ -322,7 +323,7 @@ class TestFlowStages:
 
         def failing_run_calibrate(**_kwargs):
             if scenario == "raises_after_checkout":
-                git("checkout", "-q", "-b", calibrated_branch)
+                git("checkout", "-q", "-B", calibrated_branch)
                 raise OSError("report write failed")
             raise RuntimeError("generate_calibration failed")
 
@@ -502,6 +503,7 @@ class TestFlowStages:
                 "sandbox_executor.flow.github.pr.run_git",
                 "sandbox_executor.flow.stage_conflicts.run_git",
                 "sandbox_executor.flow.stages.calibrate.run_git",
+                "sandbox_executor.flow.calibrate_sync.run_git",
                 "sandbox_executor.flow.stages.review.run_git",
             ) as mock_git,
         ):
@@ -527,7 +529,7 @@ class TestFlowStages:
             patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
             patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
             patch("sandbox_executor.flow.stages.calibrate.run_calibrate", return_value=mock_report),
-            patch("sandbox_executor.flow.stages.calibrate.run_git") as mock_git,
+            patch("sandbox_executor.flow.calibrate_sync.run_git") as mock_git,
         ):
             res = run_calibrate_stage(ctx)
 
@@ -908,6 +910,7 @@ class TestSkipPushRejectedOnEveryNonDryRun:
                 "sandbox_executor.flow.github.pr.run_git",
                 "sandbox_executor.flow.stage_conflicts.run_git",
                 "sandbox_executor.flow.stages.calibrate.run_git",
+                "sandbox_executor.flow.calibrate_sync.run_git",
                 "sandbox_executor.flow.stages.review.run_git",
             ) as git,
         ):

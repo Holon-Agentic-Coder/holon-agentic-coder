@@ -44,7 +44,7 @@ class TestStage5PromotedArtifactsCommit:
         self._setup_repo(tmp_path, execution_branch)
 
         def fake_run_calibrate(**_kwargs):
-            git("checkout", "-q", "-b", calibrated_branch)
+            git("checkout", "-q", "-B", calibrated_branch)
             (tmp_path / "plans").mkdir(exist_ok=True)
             (tmp_path / "plans" / "P-200-plan_calibration.md").write_text("# Calibration\n", encoding="utf-8")
             git("add", "plans")
@@ -102,7 +102,7 @@ class TestStage5PromotedArtifactsCommit:
         self._setup_repo(tmp_path, execution_branch)
 
         def fake_run_calibrate(**_kwargs):
-            git("checkout", "-q", "-b", calibrated_branch)
+            git("checkout", "-q", "-B", calibrated_branch)
             (tmp_path / "plans").mkdir(exist_ok=True)
             (tmp_path / "plans" / "P-200-plan_calibration.md").write_text("# Calibration\n", encoding="utf-8")
             git("add", "plans")
@@ -231,7 +231,7 @@ class TestStage5PromotedArtifactsCommit:
         git("commit", "-q", "-m", "pre-existing facts")
 
         def fake_run_calibrate(**_kwargs):
-            git("checkout", "-q", "-b", calibrated_branch)
+            git("checkout", "-q", "-B", calibrated_branch)
             (tmp_path / "plans").mkdir(exist_ok=True)
             (tmp_path / "plans" / "P-200-plan_calibration.md").write_text("# Calibration\n", encoding="utf-8")
             git("add", "plans")

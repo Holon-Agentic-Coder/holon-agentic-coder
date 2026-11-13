@@ -19,6 +19,15 @@ The engine is split into focused modules; see docs/architecture.md (Flow engine 
 from __future__ import annotations
 
 from sandbox_executor.entrypoint.planner import parse_metrics
+from sandbox_executor.flow.calibrate_sync import (
+    CalibrationSyncError,
+    discard_empty_calibrated_branch,
+    prepare_calibrated_branch,
+    publish_calibration,
+    record_starting_branch,
+    restore_starting_branch,
+    sync_execution_ref,
+)
 from sandbox_executor.flow.checkpoint import (
     CHECKPOINT_MIGRATION_REGISTRY,
     CURRENT_CHECKPOINT_SCHEMA_VERSION,
@@ -241,6 +250,7 @@ __all__ = [
     "_SECTION_AFTER_MARKER",
     "_SEVERITY_RANK",
     "_SUMMARY_STATUS_WORDS",
+    "CalibrationSyncError",
     "CiWaitPolicy",
     "CiWaitResult",
     "ConflictResolutionError",
@@ -342,6 +352,7 @@ __all__ = [
     "check_pr_mergeability",
     "create_or_update_pr",
     "describe_ci_outcome",
+    "discard_empty_calibrated_branch",
     "extract_valid_ledger_rows",
     "failed_partial_head",
     "fetch_base",
@@ -360,19 +371,23 @@ __all__ = [
     "parse_metrics",
     "pending_check_names",
     "post_pr_review_consensus",
+    "prepare_calibrated_branch",
     "probe_ci_checks",
+    "publish_calibration",
     "publish_new_child_branches",
     "push_branch",
     "push_commit",
     "reconcile_jsonl_ledger_conflict",
     "reconcile_ledger_file",
     "record_review_action",
+    "record_starting_branch",
     "recorded_test_pass_rate",
     "redact_agent_secrets",
     "remote_error",
     "render_reviewer_summary_line",
     "resolve_append_only_conflict",
     "resolve_ci_registration_timeout",
+    "restore_starting_branch",
     "review_loop_approved",
     "review_summary_lines",
     "reviewers_sandboxed",
@@ -390,6 +405,7 @@ __all__ = [
     "save_checkpoint",
     "settle_pending_ci",
     "sync_conflict_result",
+    "sync_execution_ref",
     "validate_intent_questions",
     "wait_for_pending_ci",
 ]

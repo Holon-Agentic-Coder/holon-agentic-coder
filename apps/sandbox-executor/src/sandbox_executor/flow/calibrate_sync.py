@@ -77,14 +77,16 @@ def sync_execution_ref(context: FlowContext) -> str | None:
     return origin_sha
 
 
-def prepare_calibrated_branch(context: FlowContext, start_sha: str | None) -> None:
-    """Create the local /calibrated branch at ``start_sha`` unless one already exists, warning about stale ones.
+def prepare_calibrated_branch(context: FlowContext, start_sha: str | None) -> bool:
+    """Create the local /calibrated branch at ``start_sha`` unless one exists, warning about stale ones.
+
+    Returns True only when this call created the branch.
 
     ``run_calibrate`` checks out an existing local branch, so creating it here fixes its start point.
     """
     branch = context.execution_branch
     if not branch or not start_sha or context.dry_run:
-        return
+        return False
     repo_dir = context.target_worktree
     calibrated = calibration_branch(branch)
     local_sha = _rev(repo_dir, f"refs/heads/{calibrated}")
@@ -93,14 +95,28 @@ def prepare_calibrated_branch(context: FlowContext, start_sha: str | None) -> No
         res = run_git(["branch", "--no-track", calibrated, start_sha], cwd=repo_dir, check=False)
         if res.returncode != 0:
             context.log(f"Warning: could not create '{calibrated}' at {start_sha[:12]}.")
-        return
+        return res.returncode == 0
     for existing in (local_sha, remote_sha):
         if existing and not _is_ancestor(repo_dir, start_sha, existing):
             context.log(
                 f"Warning: existing '{calibrated}' does not contain the execution head {start_sha[:12]}; "
                 f"its report may be stale. Delete it (`git branch -D {calibrated}`) and resume to rebuild."
             )
-            return
+            break
+    return False
+
+
+def discard_empty_calibrated_branch(context: FlowContext, created: bool) -> None:
+    """Delete the /calibrated branch this stage created when calibration then failed without a commit."""
+    branch = context.execution_branch
+    if not branch or not created:
+        return
+    repo_dir = context.target_worktree
+    calibrated = calibration_branch(branch)
+    tip = _rev(repo_dir, f"refs/heads/{calibrated}")
+    head = run_git(["symbolic-ref", "--short", "-q", "HEAD"], cwd=repo_dir, check=False)
+    if tip and tip == _rev(repo_dir, f"refs/heads/{branch}") and head.stdout.strip() != calibrated:
+        run_git(["branch", "-D", calibrated], cwd=repo_dir, check=False)
 
 
 def record_starting_branch(context: FlowContext) -> None:

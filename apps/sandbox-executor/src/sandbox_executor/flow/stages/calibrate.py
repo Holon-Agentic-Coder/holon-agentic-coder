@@ -19,6 +19,7 @@ from sandbox_executor.calibration import (
 )
 from sandbox_executor.flow.calibrate_sync import (
     CalibrationSyncError,
+    discard_empty_calibrated_branch,
     prepare_calibrated_branch,
     publish_calibration,
     restore_starting_branch,
@@ -170,6 +171,7 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:  # noqa: C
         return StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.FAILED, start_time=start_time, error=err)
 
     repo_dir = context.target_worktree
+    calibrated_created = False
     if not context.dry_run:
         checkout_err = _checkout_execution_branch(context)
         if checkout_err:
@@ -184,7 +186,7 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:  # noqa: C
             start_sha = sync_execution_ref(context)
         except CalibrationSyncError as e:
             return _stage_failure(context, FlowStage.CALIBRATE, start_time, f"Calibrate stage failed: {e}")
-        prepare_calibrated_branch(context, start_sha)
+        calibrated_created = prepare_calibrated_branch(context, start_sha)
         target_branch = context.intent_data.get("target_branch", "main")
         check_and_resolve_stage_conflicts(
             repo_dir, target_branch=target_branch, stage_name="calibrate", branch=context.execution_branch
@@ -217,6 +219,7 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:  # noqa: C
             f"so nothing was committed or pushed. {e}",
         )
     except Exception as e:
+        discard_empty_calibrated_branch(context, calibrated_created)
         context.log(
             f"Calibration run encountered exception: {CredentialRedactor.redact_text(str(e))}. "
             "Generating fallback report."

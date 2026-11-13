@@ -167,6 +167,7 @@ def test_stage_keeps_success_and_reports_failed_final_head(tmp_path: Path) -> No
         patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
         patch("sandbox_executor.flow.stages.calibrate.run_calibrate", return_value=report),
         patch("sandbox_executor.flow.stages.calibrate.run_git", return_value=ok),
+        patch("sandbox_executor.flow.calibrate_sync.run_git", return_value=ok),
         patch("sandbox_executor.flow.stages.calibrate.check_final_head_ci", return_value=failed),
     ):
         result = run_calibrate_stage(ctx)

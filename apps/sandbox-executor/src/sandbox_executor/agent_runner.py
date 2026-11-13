@@ -163,6 +163,9 @@ SANDBOX_WORKSPACE_MOUNT = "/home/holon/.holon-sandbox/workspace"
 #: writable by the holon user.
 SANDBOX_UV_PROJECT_ENVIRONMENT = "/home/holon/.cache/holon-venv"
 
+#: Every uv variable the dispatcher pins for a mounted worktree; ``UV_FROZEN`` keeps a stage from rewriting ``uv.lock``.
+SANDBOX_UV_ENV = {"UV_PROJECT_ENVIRONMENT": SANDBOX_UV_PROJECT_ENVIRONMENT, "UV_FROZEN": "1"}
+
 INTENT_CREATOR_ROLE = "intent-creator"
 PLANNER_ROLE = "planner"
 REVIEW_LOOP_ROLE = "review-loop"

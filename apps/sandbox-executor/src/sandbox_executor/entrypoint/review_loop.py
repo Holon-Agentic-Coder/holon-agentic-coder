@@ -43,6 +43,7 @@ from sandbox_executor.entrypoint.review_verification import (
     missing_tool_result,
     verification_error,
 )
+from sandbox_executor.entrypoint.uv_lock import LockfileMismatchError, check_lockfile, frozen_env
 from sandbox_executor.flow import (
     FlowContext,
     _bounded_error_context,
@@ -273,7 +274,13 @@ def _verify_before_push(repo_dir: str, iteration: int | None = None) -> tuple[bo
 
     A missing ``uv`` is a structured failure naming it (lint and tests unmeasured), never an exception.
     """
-    lint_res = run_cmd(["uv", "run", "task", "lint"], cwd=repo_dir, check=False)
+    try:
+        lock_problem = check_lockfile(repo_dir)
+    except LockfileMismatchError as exc:
+        return False, False, f"Resolver pre-push verification failed: {_bounded_error_context(str(exc))}"
+    if lock_problem:
+        return False, False, f"Resolver pre-push verification could not run: {_bounded_error_context(lock_problem)}"
+    lint_res = run_cmd(["uv", "run", "task", "lint"], cwd=repo_dir, env=frozen_env(cwd=repo_dir), check=False)
     if lint_res.returncode != 0:
         return False, False, verification_error("lint", lint_res, _bounded_error_context)
     markdown = run_markdown_gate(repo_dir, lambda args: run_cmd(args, cwd=repo_dir, check=False), _RESOLVER_PATHSPEC)
@@ -281,7 +288,7 @@ def _verify_before_push(repo_dir: str, iteration: int | None = None) -> tuple[bo
         return False, False, f"Resolver pre-push markdown formatting failed: {_bounded_error_context(markdown.error)}"
     if markdown.formatted:
         logger.info("Resolver formatted Markdown files: %s", ", ".join(markdown.formatted))
-    test_env = with_short_summary(dict(os.environ))
+    test_env = with_short_summary(frozen_env(cwd=repo_dir))
     test_res = run_cmd(["uv", "run", "task", "test"], cwd=repo_dir, env=test_env, check=False)
     if test_res.returncode != 0:
         return (
@@ -371,6 +378,9 @@ def _build_resolver_prompt(
         "accepted for them, and a rejection without both stays open.\n"
         "- `open`: a finding you could neither fix nor reject with evidence; it goes to the next iteration.\n"
         f"{ci_instruction}"
+        "A `uv.lock` change that no `pyproject.toml` dependency or `requires-python` change explains is a defect: "
+        "revert it with `git checkout <base> -- uv.lock`, run `uv` only with `UV_FROZEN=1`, and never "
+        "commit an incidental rewrite.\n"
         "Never force-push or rewrite git history. Do not run git commit or git push yourself; leave your edits "
         "in the working tree so the harness can verify, attach review trailers, commit, and push. "
         f"Write the JSON list of dispositions to `{dispositions_path}` "

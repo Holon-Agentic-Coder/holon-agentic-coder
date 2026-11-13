@@ -9,6 +9,7 @@ name = "holon"
 version = "0.1.0"
 description = "Isolated Docker-based executor environment for Holon Agent"
 license = { text = "Apache-2.0" }
+requires-python = "==3.13.*"
 
 [project.scripts]
 holon = "sandbox_executor.cli:main"

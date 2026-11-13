@@ -48,6 +48,12 @@ jobs:
           uv lock --check
           git diff --exit-code uv.lock
 
+      - name: Check sandbox-executor uv.lock is up to date
+        working-directory: apps/sandbox-executor
+        run: |
+          uv lock --check
+          git diff --exit-code uv.lock
+
       - name: Install dependencies
         run: uv sync --locked
 

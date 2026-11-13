@@ -39,7 +39,7 @@ from sandbox_executor.agent_runner import (
     HOST_WORKTREE_ROLES,
     INTENT_CREATOR_ROLE,
     RETIRED_ENV_VARS,
-    SANDBOX_UV_PROJECT_ENVIRONMENT,
+    SANDBOX_UV_ENV,
     SANDBOX_WORKSPACE_MOUNT,
 )
 from sandbox_executor.budgets import stage_budget_handdown_env
@@ -1222,7 +1222,7 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
     # Pin the container workspace to the host worktree mountpoint, and keep 'uv run' off the host's mounted .venv.
     if workspace_mounts:
         env_to_forward["HOLON_TARGET_WORKTREE"] = SANDBOX_WORKSPACE_MOUNT
-        env_to_forward["UV_PROJECT_ENVIRONMENT"] = SANDBOX_UV_PROJECT_ENVIRONMENT
+        env_to_forward.update(SANDBOX_UV_ENV)
 
     norm_agent_id = local_llm.normalize_agent_id(agent_id)
 

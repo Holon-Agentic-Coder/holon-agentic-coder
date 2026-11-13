@@ -10,18 +10,18 @@ from sandbox_executor.review_paths import REJECTED_DIR
 
 def _within_rejected_dir(workspace: str, patch_path: str) -> bool:
     """True when the container-supplied ``patch_path`` is relative and resolves inside the rejected directory."""
-    if os.path.isabs(patch_path):
+    try:
+        base, real = (os.path.realpath(os.path.join(workspace, p)) for p in (REJECTED_DIR, patch_path))
+        return not os.path.isabs(patch_path) and os.path.commonpath([base, real]) == base
+    except (OSError, ValueError):
         return False
-    base = os.path.realpath(os.path.join(workspace, REJECTED_DIR))
-    return os.path.commonpath([base, os.path.realpath(os.path.join(workspace, patch_path))]) == base
 
 
 def _persist_rejected_patch(workspace: str, iteration: int, patch_path: str | None, patch_text: str) -> str | None:
     """Return the workspace-relative path of the rejected patch, writing ``patch_text`` there if the file is absent.
 
     The container's own file survives only on a bind mount; the payload text makes the evidence independent of it.
-    Best-effort: a failed write leaves the container's path (or None) untouched.
-    A ``patch_path`` outside the rejected directory is ignored in favour of the default ``iter-N.patch`` name.
+    Best-effort: a failed write leaves the container's path (or None); a ``patch_path`` outside it is ignored.
     """
     if not patch_text.strip():
         return patch_path

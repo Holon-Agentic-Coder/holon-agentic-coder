@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-df9952b8",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-13T00:46:23.501752+00:00",
+  "updated_ts": "2026-11-13T00:46:23.501752+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794529950-74499063",
+      "ACT-FIND-1794529949-93812818"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794529163-attrib/P-1794529179-a03ed51a-claude-agent-claude-sonnet-5-5/E-1794529261-7bedbfa9-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 2 finding detected: FIND-R3-002-01",
+    "symptoms": [
+      "executor.py is over 1,000 lines and grows by an import and a call; move the publish gate into a helper outside the file."
+    ]
+  }
+}

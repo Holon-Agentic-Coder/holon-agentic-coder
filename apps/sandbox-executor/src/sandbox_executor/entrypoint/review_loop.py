@@ -36,6 +36,7 @@ from sandbox_executor.entrypoint.rejected_attempt import (
     clear_rejected_attempts,
     load_rejected_attempt,
     previous_failure_section,
+    read_saved_patch,
 )
 from sandbox_executor.entrypoint.review_failure_detail import clear_full_output, with_short_summary
 from sandbox_executor.entrypoint.review_markdown_gate import run_markdown_gate
@@ -554,6 +555,7 @@ def _run_resolver_mode(
         "exit_code": exit_code,
         "output_tail": bounded_output_tail(output_tail or error),
         "rejected_patch": rejected.patch_path if rejected else None,
+        "rejected_patch_text": read_saved_patch(repo_dir, rejected) if rejected else "",
         "failed_tests": list(rejected.failed_tests) if rejected else [],
         "test_summary": rejected.summary if rejected else None,
     }

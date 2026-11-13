@@ -37,9 +37,16 @@ class RejectedAttempt:
 
 
 def _git(workspace: str, args: list[str], env: dict[str, str]) -> str | None:
-    """Run git in ``workspace`` and return its stdout, or None on any failure."""
+    """Run git in ``workspace`` and return its stdout, or None on any failure.
+
+    The workspace is trusted explicitly: a container user that does not own a bind-mounted worktree would otherwise
+    make every git call fail with "dubious ownership", leaving the diff (and so the patch) empty.
+    """
+    trust = ["-c", f"safe.directory={os.path.abspath(workspace)}"]
     try:
-        proc = subprocess.run(["git", *args], cwd=workspace, env=env, capture_output=True, text=True, check=False)
+        proc = subprocess.run(
+            ["git", *trust, *args], cwd=workspace, env=env, capture_output=True, text=True, check=False
+        )
     except OSError:
         return None
     return proc.stdout if proc.returncode == 0 else None
@@ -74,10 +81,13 @@ def _cap(text: str, limit: int) -> str:
 
 def _write(workspace: str, relative: str, text: str) -> bool:
     """Write ``text`` under ``workspace``; False when it cannot be written."""
+    target = os.path.join(workspace, relative)
     try:
         os.makedirs(os.path.join(workspace, REJECTED_DIR), exist_ok=True)
-        with open(os.path.join(workspace, relative), "w", encoding="utf-8") as handle:
+        # A temporary name and an atomic replace, so a partial file is never recorded.
+        with open(target + ".tmp", "w", encoding="utf-8") as handle:
             handle.write(text)
+        os.replace(target + ".tmp", target)
     except OSError:
         return False
     return True
@@ -159,8 +169,8 @@ def latest_attempt_for_head(workspace: str, head_sha: str) -> tuple[int, Rejecte
     return None
 
 
-def _read_patch(workspace: str, attempt: RejectedAttempt) -> str:
-    """Return the saved patch redacted and capped for the prompt, or an empty string when unreadable."""
+def read_saved_patch(workspace: str, attempt: RejectedAttempt, limit: int = PATCH_MAX_CHARS) -> str:
+    """Return the saved patch redacted and capped at ``limit``, or an empty string when unreadable."""
     if not attempt.patch_path:
         return ""
     try:
@@ -168,7 +178,7 @@ def _read_patch(workspace: str, attempt: RejectedAttempt) -> str:
             text = handle.read()
     except OSError:
         return ""
-    return _cap(CredentialRedactor.redact_text(text), PROMPT_PATCH_MAX_CHARS)
+    return _cap(CredentialRedactor.redact_text(text), limit)
 
 
 def previous_failure_section(workspace: str, head_sha: str) -> str:
@@ -183,7 +193,7 @@ def previous_failure_section(workspace: str, head_sha: str) -> str:
         lines.append("Failing tests:\n" + "\n".join(f"- `{test}`" for test in attempt.failed_tests) + "\n")
     if attempt.summary:
         lines.append(f"Test summary:\n```text\n{attempt.summary}\n```\n")
-    patch = _read_patch(workspace, attempt)
+    patch = read_saved_patch(workspace, attempt, PROMPT_PATCH_MAX_CHARS)
     if patch:
         lines.append(f"Rejected diff (also saved at `{attempt.patch_path}`):\n```diff\n{patch}\n```\n")
     elif attempt.patch_path:

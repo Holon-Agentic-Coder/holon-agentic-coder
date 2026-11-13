@@ -37,6 +37,7 @@ from sandbox_executor.flow.review.adjudication import (
 )
 from sandbox_executor.flow.review.ci_evidence import apply_local_test_evidence
 from sandbox_executor.flow.review.ci_outcome import gate_ci_flags
+from sandbox_executor.flow.review.ci_timing_finding import gh_timing_seams, timing_gate_finding
 from sandbox_executor.flow.review.ensemble import (
     _dispatch_review_ensemble,
     _ensemble_iteration,
@@ -526,7 +527,10 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
 
         iter_findings = list(adjudication.actionable)
         if ci_finding:
-            ci_row = ci_failure_finding(iteration, _extract_failed_ci_check_names(last_ci_status, tests_failed))
+            failed_names = _extract_failed_ci_check_names(last_ci_status, tests_failed)
+            ci_row = timing_gate_finding(
+                iteration, last_ci_status, failed_names, gh_timing_seams(repo_dir, proxy_env or {})
+            ) or ci_failure_finding(iteration, failed_names)
             iter_findings.append(ci_row)
             if finding_action_ids is not None:
                 act_id = finding_action_ids.get(ci_row.id) or generate_action_id("ACT-FIND")

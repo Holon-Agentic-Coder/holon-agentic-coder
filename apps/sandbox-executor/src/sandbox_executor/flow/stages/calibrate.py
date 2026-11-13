@@ -186,7 +186,10 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:  # noqa: C
             start_sha = sync_execution_ref(context)
         except CalibrationSyncError as e:
             return _stage_failure(context, FlowStage.CALIBRATE, start_time, f"Calibrate stage failed: {e}")
-        calibrated_created = prepare_calibrated_branch(context, start_sha)
+        try:
+            calibrated_created = prepare_calibrated_branch(context, start_sha)
+        except CalibrationSyncError as e:
+            return _stage_failure(context, FlowStage.CALIBRATE, start_time, f"Calibrate stage failed: {e}")
         target_branch = context.intent_data.get("target_branch", "main")
         check_and_resolve_stage_conflicts(
             repo_dir, target_branch=target_branch, stage_name="calibrate", branch=context.execution_branch

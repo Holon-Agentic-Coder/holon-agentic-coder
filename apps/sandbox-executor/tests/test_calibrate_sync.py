@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 from pathlib import Path
@@ -121,6 +122,40 @@ def test_divergent_local_ref_fails_loudly_and_changes_nothing(repos: SimpleNames
     assert "git push origin" in result.error
     assert git(repos.host, "rev-parse", EXEC) == local_sha
     assert git(repos.host, "branch", "--list", CALIBRATED) == ""
+    assert git(repos.host, "symbolic-ref", "--short", "HEAD") == "operator-work"
+
+
+def test_stale_existing_calibrated_branch_fails_loudly(repos: SimpleNamespace) -> None:
+    git(repos.host, "branch", CALIBRATED, "main")
+    _, result = run_stage(repos)
+    assert result.status == StageStatus.FAILED
+    assert CALIBRATED in result.error and "does not contain the execution head" in result.error
+    assert git(repos.host, "rev-parse", CALIBRATED) == git(repos.host, "rev-parse", "main")
+    assert git(repos.host, "symbolic-ref", "--short", "HEAD") == "operator-work"
+
+
+def test_flow_ending_at_a_failed_review_restores_the_starting_branch(repos: SimpleNamespace) -> None:
+    from sandbox_executor.flow.pipeline import PipelineEngine
+    from sandbox_executor.flow.stages.review import run_review_stage
+
+    ctx = FlowContext(target_worktree=str(repos.host), execution_branch=EXEC, agent="a", model="m")
+
+    def review_then_fail(context: FlowContext):
+        loop = patch("sandbox_executor.flow.stages.review._run_engine_review_loop", side_effect=RuntimeError("boom"))
+        with loop, contextlib.suppress(RuntimeError):
+            run_review_stage(context)
+        assert git(repos.host, "symbolic-ref", "--short", "HEAD") == EXEC
+        raise RuntimeError("review failed")
+
+    engine = PipelineEngine(ctx, from_stage="review")
+    with (
+        patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+        patch.object(engine, "execute_stage", side_effect=lambda stage: review_then_fail(ctx)),
+        patch("sandbox_executor.flow.pipeline.pre_run_guard_error", return_value=None),
+        patch.object(engine, "save_checkpoint"),
+        patch("sandbox_executor.flow.pipeline.validate_stage_ledger"),
+    ):
+        engine.run()
     assert git(repos.host, "symbolic-ref", "--short", "HEAD") == "operator-work"
 
 

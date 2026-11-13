@@ -78,7 +78,10 @@ def sync_execution_ref(context: FlowContext) -> str | None:
 
 
 def prepare_calibrated_branch(context: FlowContext, start_sha: str | None) -> bool:
-    """Create the local /calibrated branch at ``start_sha`` unless one exists, warning about stale ones.
+    """Create the local /calibrated branch at ``start_sha`` unless one exists.
+
+    Raises:
+        CalibrationSyncError: If an existing /calibrated branch lacks the execution head.
 
     Returns True only when this call created the branch.
 
@@ -98,11 +101,10 @@ def prepare_calibrated_branch(context: FlowContext, start_sha: str | None) -> bo
         return res.returncode == 0
     for existing in (local_sha, remote_sha):
         if existing and not _is_ancestor(repo_dir, start_sha, existing):
-            context.log(
-                f"Warning: existing '{calibrated}' does not contain the execution head {start_sha[:12]}; "
-                f"its report may be stale. Delete it (`git branch -D {calibrated}`) and resume to rebuild."
+            raise CalibrationSyncError(
+                f"existing '{calibrated}' does not contain the execution head {start_sha[:12]}, so it cannot "
+                f"fast-forward onto '{branch}'. Delete it (`git branch -D {calibrated}`) and resume to rebuild."
             )
-            break
     return False
 
 

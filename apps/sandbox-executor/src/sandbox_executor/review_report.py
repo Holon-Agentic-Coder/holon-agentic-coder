@@ -26,6 +26,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from sandbox_executor.approval_stamp import approval_stamp
 from sandbox_executor.git import run_git
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.resolver_evidence import OPEN, UNSPECIFIED_REASON, default_disposition, settle_rejection
@@ -759,6 +760,11 @@ def _findings_section(findings: Sequence[FindingRow]) -> list[str]:
     return lines
 
 
+def _approval_stamp(repo_dir: str, consensus_data: Mapping[str, Any]) -> str:
+    """The line naming the head an approval covers and the CI result at that commit."""
+    return approval_stamp(_target_commit(repo_dir, consensus_data), consensus_data.get("ci_checks") or {})
+
+
 def _checks_line(consensus_data: Mapping[str, Any]) -> str:
     """One Checks line: the mergeability word and the CI counts (or ``CI unmeasured``)."""
     ci_summary = _ci_summary(consensus_data.get("ci_checks") or {})
@@ -827,6 +833,7 @@ def build_review_consensus_report(
         *body,
         "",
         _checks_line(consensus_data),
+        *(["", _approval_stamp(repo_dir, consensus_data)] if approved else []),
         "",
         *_breakdown(reviewers, consensus_data, configured),
         "",

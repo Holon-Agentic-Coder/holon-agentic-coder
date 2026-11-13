@@ -103,12 +103,11 @@ def gh_comment_poster(repo_dir: str, proxy_env: Mapping[str, str] | None = None)
 def approval_pr_number(context: FlowContext) -> str | None:
     """The PR number of the approval Stage 4 posted, or None when no approval was posted."""
     review = context.stage_results.get("review")
-    if review is None:
-        return None
-    consensus = review.payload.get("consensus") or {}
-    posting = review.payload.get("posting") or {}
-    number = consensus.get("pr_number") or (review.payload.get("pr") or {}).get("pr_number")
-    if not (consensus.get("approved") and posting.get("dual_posted") and number):
+    payload = review.payload if review else {}
+    consensus, posting = payload.get("consensus") or {}, payload.get("posting") or {}
+    number = consensus.get("pr_number") or (payload.get("pr") or {}).get("pr_number")
+    posted = posting.get("dual_posted") or (posting.get("official_review") or {}).get("success")
+    if not (consensus.get("approved") and posted and number):
         return None
     return str(number)
 

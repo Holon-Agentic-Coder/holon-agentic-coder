@@ -121,3 +121,10 @@ def test_approval_stamp_names_the_head_and_the_measured_ci_result() -> None:
     assert approval_stamp(FAILING, {"total": 3, "passed": 3}).startswith(f"**Covers head** `{FAILING[:7]}`")
     assert ci_result_at_commit({}) == "not measured"
     assert ci_result_at_commit({"total": 4, "failed": 1}) == "1 of 4 checks failing"
+
+
+def test_official_review_alone_counts_as_a_posted_approval() -> None:
+    context = _context(posted=False)
+    context.stage_results["review"].payload["posting"] = {"dual_posted": False, "official_review": {"success": True}}
+    fakes = Fakes([])
+    assert invalidate_approval(context, _verdict(), fakes.lister, fakes.poster)["posted"] is True

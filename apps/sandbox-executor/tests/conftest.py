@@ -298,3 +298,9 @@ def feature_worktree_cwd(tmp_path_factory, monkeypatch) -> str:
     path = init_feature_worktree(tmp_path_factory.mktemp("feature-worktree"))
     monkeypatch.chdir(path)
     return path
+
+
+@pytest.fixture(autouse=True)
+def stub_executor_test_measurement(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep executor tests from running the real ``uv run task test``; a test that needs a measurement patches it."""
+    monkeypatch.setattr("sandbox_executor.entrypoint.executor.measure_executor_tests", lambda *_args, **_kw: {})

@@ -525,6 +525,16 @@ class TestExecutor(unittest.TestCase):
         self.assertNotIn("failure_reason", summaries[0])
         self.assertTrue(_unscoped_add_all(argv))
 
+    def test_main_records_measured_test_fields_on_success_only(self):
+        """The summary row of a successful run carries the measurement; a failed (empty-diff) row stays unmeasured."""
+        fields = {"test_pass_rate": 0.8, "tests_passed": 8, "tests_failed": 2, "tests_errored": 0, "test_exit_code": 1}
+        with patch("sandbox_executor.entrypoint.executor.measure_executor_tests", return_value=fields):
+            ok, _ = self._run_main_with_agent_diff("src/app.py\0")
+            empty, _ = self._run_main_with_agent_diff("plans/P-123.md\0")
+        self.assertEqual(ok[0]["test_pass_rate"], 0.8)
+        self.assertEqual(ok[0]["test_exit_code"], 1)
+        self.assertNotIn("test_pass_rate", empty[0])
+
     def test_main_empty_diff_guard_fails_closed_without_plan_tip(self):
         """If the plan tip cannot be resolved the diff is unverifiable, so the run is recorded as failed."""
         summaries, argv = self._run_main_with_agent_diff("src/app.py\0", tip_stdout="")

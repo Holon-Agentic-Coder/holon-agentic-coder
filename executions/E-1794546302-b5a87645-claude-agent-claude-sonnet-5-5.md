@@ -15,3 +15,5 @@ In progress: measuring project tests in the executor and review loop.
 | learning_value_actual | 4.0   |
 
 ## Steps Executed
+
+- Steps 1 and 2: added `entrypoint/test_measurement.py` (pytest summary parser, bounded runner, redaction) and `tests/test_test_measurement.py`.

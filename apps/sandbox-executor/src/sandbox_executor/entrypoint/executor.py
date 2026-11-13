@@ -44,6 +44,7 @@ from sandbox_executor.decomposition_rule import InvalidPlanDecisionError
 from sandbox_executor.decomposition_rule import is_placeholder_item as is_placeholder_item
 from sandbox_executor.decomposition_rule import parse_sub_intent_list as parse_sub_intent_list
 from sandbox_executor.decomposition_rule import should_decompose as should_decompose
+from sandbox_executor.entrypoint.executor_test_run import measure_executor_tests
 from sandbox_executor.entrypoint.execution_workspace import continuation_note as continuation_note
 from sandbox_executor.entrypoint.execution_workspace import (
     resolve_partial_head,
@@ -1406,6 +1407,11 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 if failure_reason:
                     print(f"Error: {summary}", file=sys.stderr)
 
+            # Measure the project's tests on the agent's finished work, before anything is staged or committed.
+            test_fields: dict[str, Any] = {}
+            if exec_status == "success":
+                test_fields = measure_executor_tests(repo_dir, repo)
+
             # Format modified/untracked markdown files with prettier
             try:
                 md_files: list[str] = []
@@ -1468,6 +1474,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 "elapsed_seconds": round(stage_timer.elapsed(), 1),
                 "budget_seconds": stage_timer.budget_seconds,
             }
+            exec_entry.update(test_fields)
             if failure_reason:
                 exec_entry["failure_reason"] = failure_reason
             if salvaged_head:

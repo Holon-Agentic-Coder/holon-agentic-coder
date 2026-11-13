@@ -3,7 +3,12 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from sandbox_executor.attribution_check import STRICT_ENV, check_attribution, find_attribution_trailers
+from sandbox_executor.attribution_check import (
+    STRICT_ENV,
+    attribution_allows_publish,
+    check_attribution,
+    find_attribution_trailers,
+)
 
 TRAILER = "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 
@@ -81,3 +86,23 @@ def test_missing_base_or_git_error_is_silent(repo: Path) -> None:
     _commit(repo, "a", "base")
     assert check_attribution(None, _runner(repo)) == (True, "")
     assert check_attribution("no-such-ref", _runner(repo)) == (True, "")
+
+
+def test_allows_publish_warns_or_refuses(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _commit(repo, "a", "base")
+    base = _git(repo, "rev-parse", "HEAD").strip()
+    _commit(repo, "b", f"feat: x\n\n{TRAILER}")
+    monkeypatch.delenv(STRICT_ENV, raising=False)
+    assert attribution_allows_publish(base, _runner(repo)) is True
+    assert "Attribution trailers found" in capsys.readouterr().err
+    monkeypatch.setenv(STRICT_ENV, "1")
+    assert attribution_allows_publish(base, _runner(repo)) is False
+
+
+def test_non_anthropic_claude_coauthor_is_ignored(repo: Path) -> None:
+    _commit(repo, "a", "base")
+    base = _git(repo, "rev-parse", "HEAD").strip()
+    _commit(repo, "b", "feat: x\n\nCo-Authored-By: Claude Smith <claude@example.com>")
+    assert find_attribution_trailers(base, _runner(repo)) == []

@@ -18,7 +18,8 @@ def claude_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
 
 def _settings_of(cmd: list[str]) -> dict:
     assert cmd.count("--settings") == 1
-    return json.loads(cmd[cmd.index("--settings") + 1])
+    value = cmd[cmd.index("--settings") + 1]
+    return json.loads(Path(value).read_text(encoding="utf-8") if not value.startswith("{") else value)
 
 
 def test_unset_settings_pass_attribution_off(claude_env: pytest.MonkeyPatch) -> None:
@@ -43,6 +44,15 @@ def test_file_settings_are_merged_and_left_unchanged(claude_env: pytest.MonkeyPa
     assert settings["model"] == "x"
     assert settings["attribution"] == ATTRIBUTION_OFF["attribution"]
     assert path.read_text(encoding="utf-8") == original
+
+
+def test_file_settings_contents_stay_out_of_argv(claude_env: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text('{"env": {"TOKEN": "sk-secret"}}', encoding="utf-8")
+    claude_env.setenv("HOLON_AGENT_SETTINGS", str(path))
+    cmd = get_runner("claude").build_cmd("m", None, None, "p")
+    assert not any("sk-secret" in part for part in cmd)
+    assert (Path(cmd[cmd.index("--settings") + 1]).stat().st_mode & 0o077) == 0
 
 
 def test_invalid_settings_fall_back_without_leaking(caplog: pytest.LogCaptureFixture) -> None:

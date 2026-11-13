@@ -32,6 +32,7 @@ from typing import Any
 from sandbox_executor.agent_defaults import FALLBACK_AGENT, default_model_for
 from sandbox_executor.agent_runner import get_runner, get_workspace_dir
 from sandbox_executor.artefacts import EXECUTION_SPEC, ArtefactReport, execution_write_protocol
+from sandbox_executor.attribution_check import attribution_allows_publish
 from sandbox_executor.budgets import BudgetBreach, StageTimer, load_budgets
 
 # The decomposition rule lives in the neutral module; it is re-exported here so existing importers keep working.
@@ -975,16 +976,6 @@ def _configure_executor_identity(repo_dir: str) -> None:
     repo.run(["config", scope, "user.name", EXECUTOR_GIT_NAME], check=False)
 
 
-def _attribution_allows_publish(repo_dir: str, base_ref: str | None) -> bool:
-    """Print any attribution-trailer report; false only when strict mode (``HOLON_ATTRIBUTION_STRICT``) objects."""
-    from sandbox_executor.attribution_check import check_attribution
-
-    ok, report = check_attribution(base_ref, _entrypoint_git_runner(repo_dir))
-    if report:
-        print(redact_text(report), file=sys.stderr)
-    return ok
-
-
 def _salvage_pathspec(notes_rel: str) -> list[str]:
     """Pathspec for everything in the working tree except the executions ledger and this run's notes file."""
     return ["--", ".", f":(exclude){EXECUTIONS_LEDGER_REL}", f":(exclude){notes_rel}"]
@@ -1550,7 +1541,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
             # Invariant: A branch with no parent must never be published, whatever the execution status.
             can_record = repo.rev_parse("HEAD^", verify=True).returncode == 0
-            can_record = _attribution_allows_publish(repo_dir, plan_tip) and can_record
+            can_record = attribution_allows_publish(plan_tip, _entrypoint_git_runner(repo_dir)) and can_record
             if can_record:
                 target_base = (
                     os.getenv("HOLON_TARGET_BRANCH")

@@ -6,6 +6,7 @@ report into a failure.
 
 import os
 import re
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -14,7 +15,7 @@ _TRUTHY = ("1", "true", "yes", "on")
 _RECORD_SEP = "\x1e"
 _FIELD_SEP = "\x1f"
 ATTRIBUTION_PATTERN = re.compile(
-    r"^\s*(?:co-authored-by:.*(?:noreply@anthropic\.com|claude)|.*generated with \[claude code\]).*$",
+    r"^\s*(?:co-authored-by:.*noreply@anthropic\.com|.*generated with \[claude code\]).*$",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -62,3 +63,13 @@ def check_attribution(base_ref: str | None, git_runner: Callable[[list[str]], st
         return True, ""
     report = format_attribution_report(find_attribution_trailers(base_ref, git_runner))
     return not (report and attribution_is_strict()), report
+
+
+def attribution_allows_publish(base_ref: str | None, git_runner: Callable[[list[str]], str]) -> bool:
+    """Print any attribution report to stderr; false only when strict mode objects."""
+    from sandbox_executor.redaction import redact_text
+
+    ok, report = check_attribution(base_ref, git_runner)
+    if report:
+        print(redact_text(report), file=sys.stderr)
+    return ok

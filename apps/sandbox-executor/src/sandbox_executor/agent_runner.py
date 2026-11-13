@@ -646,22 +646,6 @@ class ClaudeAgentRunner(StandardAgentRunner):
 
     uses_stdin: bool = True
 
-    def build_cmd(
-        self,
-        model_name: str,
-        prompt_file: str | None = None,
-        intent_file: str | None = None,
-        full_prompt: str = "",
-    ) -> list[str]:
-        """Build the launch argv with attribution disabled; the pre-flight probe (``compose_cmd``) makes no commits."""
-        cmd = super().build_cmd(model_name, prompt_file, intent_file, full_prompt)
-        value = attribution_off_settings(os.getenv("HOLON_AGENT_SETTINGS"))
-        if "--settings" in cmd:
-            cmd[cmd.index("--settings") + 1] = value
-        else:
-            cmd[cmd.index(self.model_flag) + 2 : cmd.index(self.model_flag) + 2] = ["--settings", value]
-        return cmd
-
     def __init__(
         self,
         agent_id: str = "claude",
@@ -688,6 +672,22 @@ class ClaudeAgentRunner(StandardAgentRunner):
             custom_validator=kwargs.pop("custom_validator", None),
             **kwargs,
         )
+
+    def build_cmd(
+        self,
+        model_name: str,
+        prompt_file: str | None = None,
+        intent_file: str | None = None,
+        full_prompt: str = "",
+    ) -> list[str]:
+        """Build the launch argv with attribution disabled; the pre-flight probe (``compose_cmd``) makes no commits."""
+        cmd = super().build_cmd(model_name, prompt_file, intent_file, full_prompt)
+        value = attribution_off_settings(os.getenv("HOLON_AGENT_SETTINGS"))
+        if "--settings" in cmd:
+            cmd[cmd.index("--settings") + 1] = value
+        else:
+            cmd[cmd.index(self.model_flag) + 2 : cmd.index(self.model_flag) + 2] = ["--settings", value]
+        return cmd
 
 
 class GeminiAgentRunner(StandardAgentRunner):

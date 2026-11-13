@@ -18,6 +18,7 @@ from sandbox_executor.budgets import (
     format_minutes,
     load_budgets,
 )
+from sandbox_executor.flow.calibrate_sync import restore_starting_branch
 from sandbox_executor.flow.checkpoint import save_checkpoint
 from sandbox_executor.flow.child_progress import has_recorded_decomposition
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
@@ -273,7 +274,14 @@ class PipelineEngine:
             self.save_checkpoint()
         return result
 
-    def run(self) -> dict[str, StageResult]:  # noqa: C901, PLR0915
+    def run(self) -> dict[str, StageResult]:
+        """Execute the configured stages, then return the host worktree to the branch the flow started on."""
+        try:
+            return self._run_stages()
+        finally:
+            restore_starting_branch(self.context)
+
+    def _run_stages(self) -> dict[str, StageResult]:  # noqa: C901, PLR0915
         """Execute the configured pipeline stages sequentially."""
         start_idx = 0
         if self.from_stage:

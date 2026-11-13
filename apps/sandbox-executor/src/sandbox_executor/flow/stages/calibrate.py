@@ -17,6 +17,14 @@ from sandbox_executor.calibration import (
     record_calibration_action,
     run_calibrate,
 )
+from sandbox_executor.flow.calibrate_sync import (
+    CalibrationSyncError,
+    discard_empty_calibrated_branch,
+    prepare_calibrated_branch,
+    publish_calibration,
+    restore_starting_branch,
+    sync_execution_ref,
+)
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.github.ci_final_head import check_final_head_ci, format_final_head_ci, not_pushed_record
@@ -139,7 +147,15 @@ def _commit_stage5_promoted_artifacts(context: FlowContext, repo_dir: str, promo
         context.log(msg)
 
 
-def run_calibrate_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0912, PLR0915
+def run_calibrate_stage(context: FlowContext) -> StageResult:
+    """Execute Stage 5, then return the host worktree to the branch the flow started on."""
+    try:
+        return _calibrate_execution_branch(context)
+    finally:
+        restore_starting_branch(context)
+
+
+def _calibrate_execution_branch(context: FlowContext) -> StageResult:  # noqa: C901, PLR0912, PLR0915
     """Execute Stage 5: Post-Execution Calibration.
 
     Runs post-execution calibration analysis on the execution branch and creates
@@ -155,6 +171,7 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR
         return StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.FAILED, start_time=start_time, error=err)
 
     repo_dir = context.target_worktree
+    calibrated_created = False
     if not context.dry_run:
         checkout_err = _checkout_execution_branch(context)
         if checkout_err:
@@ -165,6 +182,14 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR
                 f"Calibrate stage failed: could not check out execution branch '{context.execution_branch}' "
                 f"before calibration: {checkout_err}",
             )
+        try:
+            start_sha = sync_execution_ref(context)
+        except CalibrationSyncError as e:
+            return _stage_failure(context, FlowStage.CALIBRATE, start_time, f"Calibrate stage failed: {e}")
+        try:
+            calibrated_created = prepare_calibrated_branch(context, start_sha)
+        except CalibrationSyncError as e:
+            return _stage_failure(context, FlowStage.CALIBRATE, start_time, f"Calibrate stage failed: {e}")
         target_branch = context.intent_data.get("target_branch", "main")
         check_and_resolve_stage_conflicts(
             repo_dir, target_branch=target_branch, stage_name="calibrate", branch=context.execution_branch
@@ -189,6 +214,7 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR
         raise
     except CalibrationFormatError as e:
         # Fail closed: the report and ledger stay uncommitted and nothing is pushed or fast-forwarded.
+        discard_empty_calibrated_branch(context, calibrated_created)
         return _stage_failure(
             context,
             FlowStage.CALIBRATE,
@@ -197,6 +223,7 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR
             f"so nothing was committed or pushed. {e}",
         )
     except Exception as e:
+        discard_empty_calibrated_branch(context, calibrated_created)
         context.log(
             f"Calibration run encountered exception: {CredentialRedactor.redact_text(str(e))}. "
             "Generating fallback report."
@@ -286,15 +313,7 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR
     pushed = False
     # A failed calibration commits nothing, so it neither pushes nor fast-forwards the /calibrated branch.
     if not context.dry_run and calibration_succeeded and context.calibrated_branch:
-        if not context.skip_push:
-            run_git(["push", "-u", "origin", context.calibrated_branch], cwd=repo_dir, check=False)
-        if context.execution_branch:
-            run_git(["checkout", context.execution_branch], cwd=repo_dir, check=False)
-            run_git(["merge", "--ff-only", context.calibrated_branch], cwd=repo_dir, check=False)
-            if not context.skip_push:
-                pushed = (
-                    run_git(["push", "origin", context.execution_branch], cwd=repo_dir, check=False).returncode == 0
-                )
+        pushed = publish_calibration(context)
 
     final_head_ci = check_final_head_ci(context, repo_dir, context.execution_branch) if pushed else not_pushed_record()
     context.log(format_final_head_ci(final_head_ci))

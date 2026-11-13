@@ -284,6 +284,22 @@ resume that enters at Stage 5. The conflict probes of Stages 2-5 name the branch
 yet), and the review records the execution branch's tip, freshly fetched from `origin`, as the reviewed commit, never
 the operator's `HEAD`.
 
+Stage 5 also syncs with `origin` before it reads or branches anything, because containers and out-of-band conflict
+resolution push to `origin/<execution_branch>` without moving the local ref (`flow/calibrate_sync.py` owns this):
+
+- **Fetch and base:** Stage 5 fetches the execution branch and fast-forwards a local ref that is behind. The
+  `/calibrated` branch is created from the `origin` head, so calibration analyses exactly the reviewed and approved
+  head. When `origin` has no such branch (a `--skip-push` run), the local ref is used.
+- **Divergence:** a local ref holding commits that `origin` lacks stops Stage 5 with an error naming the branch, both
+  SHAs and the recovery (`git push origin <branch>`, or a deliberate `git branch -f <branch> origin/<branch>`, then
+  resume). Nothing is reset, forced or overwritten.
+- **Guaranteed fast-forward:** because the `/calibrated` branch descends from the `origin` head, `merge --ff-only` onto
+  the execution branch succeeds and the report reaches the PR without a merge commit. A failure is logged, not ignored.
+  An existing `/calibrated` branch that lacks the `origin` head is reported as stale, with the command to delete it.
+- **Restored worktree:** the branch (or detached commit) that was checked out before the flow first moved `HEAD` is
+  checked out again when Stage 5 ends, including on failure. A failed restore is a warning and never changes the stage
+  result.
+
 Stage 3 never halts for a human. The executor's outcome is judged against the plan's persisted entropy budget (see
 [Turn and Stage Budgets](budgets.md#entropy-budget)):
 

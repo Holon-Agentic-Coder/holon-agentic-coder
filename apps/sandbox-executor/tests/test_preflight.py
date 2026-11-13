@@ -671,6 +671,7 @@ def test_quota_exhausted_probe_aborts_flow_before_stage_one(flow_repo, monkeypat
             "sandbox_executor.flow.github.pr.run_git",
             "sandbox_executor.flow.stage_conflicts.run_git",
             "sandbox_executor.flow.stages.calibrate.run_git",
+            "sandbox_executor.flow.calibrate_sync.run_git",
             "sandbox_executor.flow.stages.review.run_git",
         ) as flow_git,
     ):

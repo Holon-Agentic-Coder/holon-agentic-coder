@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-68cbd1d0",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-13T03:50:34.840002+00:00",
+  "updated_ts": "2026-11-13T03:50:34.840002+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794534584-01a06cdf",
+      "ACT-FIND-1794534582-fbd14eda"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794529165-calsync/P-1794529181-eabd8e76-claude-agent-claude-sonnet-5-5/E-1794529274-faa29f9e-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 4 finding detected: FIND-R2-004-02",
+    "symptoms": [
+      "A failed fetch only warns, so a stale origin ref can still be calibrated; consider failing or surfacing it."
+    ]
+  }
+}

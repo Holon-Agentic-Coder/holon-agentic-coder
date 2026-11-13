@@ -532,6 +532,8 @@ class TestEntropyBudgetHandoffInFlow:
             "plan_branch": None,
             "execution_branch": None,
             "calibrated_branch": None,
+            "starting_branch": None,
+            "starting_detached": False,
             "stage_results": {},
             "logs": [],
             "schema_version": flow_module.CURRENT_CONTEXT_SCHEMA_VERSION,

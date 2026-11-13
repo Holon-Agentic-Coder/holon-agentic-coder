@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-8ea45b83",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-13T03:50:34.744826+00:00",
+  "updated_ts": "2026-11-13T03:50:34.744826+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1794530063-a0059dcf-claude-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794529165-calsync/P-1794529181-eabd8e76-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop halted without consensus after 1 iteration(s): resolver failed: Resolver pre-push test failed (exit code 1); failed: apps/sandbox-executor/tests/flow/github/test_ci.py::TestUnmeasuredTestsStopEarly::test_guard_refusal_is_reported_as_its_own_reason_without_a_ci_wait[False-no changes outside the ledgers-empty_diff-no changes outside the ledgers]; full output: .holon/review/verification/test.log: ============================= test session starts ==============================\nplatform linux -- Python 3.13.14, pytest-9.1.1, pluggy-1.6.0\nrootdir: /home/holon/.holon-sandbox/workspace\nconfigfile: pyproject.toml\ntestpaths: apps/sandbox-executor/tests\nplugins: xdist-3.8.0\ncreated: 18/18 workers\n18 ... [59580 characters omitted] ... edger_lock.py::test_concurrent_process_appends_do_not_interleave\napps/sandbox-executor/tests/test_ledger_lock.py::test_concurrent_process_appends_do_not_interleave\napps/sandbox-executor/tests/test_ledger_lock.py::test_concurrent_process_appends_do_not_interleave\napps/sandbox-executor/tests/test_ledger_lock.py::test_concurrent_process_appends_do_not_interleave\napps/sandbox-executor/tests/test_ledger_lock.py::test_concurrent_process_appends_do_not_interleave\napps/sandbox-executor/tests/test_ledger_lock.py::test_concurrent_process_appends_do_not_interleave\napps/sandbox-executor/tests/test_ledger_lock.py::test_concurrent_process_appends_do_not_interleave\n  /usr/local/lib/python3.13/multiprocessing/popen_fork.py:73: DeprecationWarning: This process (pid=178700) is multi-threaded, use of fork() may lead to deadlocks in the child.\n    self.pid = os.fork()\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED apps/sandbox-executor/tests/flow/github/test_ci.py::TestUnmeasuredTestsStopEarly::test_guard_refusal_is_reported_as_its_own_reason_without_a_ci_wait[False-no changes outside the ledgers-empty_diff-no changes outside the ledgers]\n============ 1 failed, 3807 passed, 1 skipped, 8 warnings in 37.21s ============; not approved: reviewer 1 final verdict CHANGES_REQUESTED, reviewer 1 Engineering role CHANGES, reviewer 2 final verdict CHANGES_REQUESTED, reviewer 2 Engineering role CHANGES, reviewer 3 final verdict CHANGES_REQUESTED, reviewer 3 Engineering role CHANGES; final verdicts: Reviewer 1 CHANGES_REQUESTED (0/1/1); Reviewer 1 Engineering role CHANGES; Reviewer 2 CHANGES_REQUESTED (0/1/2); Reviewer 2 Engineering role CHANGES; Reviewer 3 CHANGES_REQUESTED (0/1/2); Reviewer 3 Engineering role CHANGES",
+    "symptoms": []
+  }
+}

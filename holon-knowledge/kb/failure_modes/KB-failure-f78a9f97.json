@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-f78a9f97",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-13T03:50:34.699763+00:00",
+  "updated_ts": "2026-11-13T03:50:34.699763+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794529800-987a824b",
+      "ACT-FIND-1794529798-0cd11504"
+    ],
+    "success_count": 0,
+    "failure_count": 3,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794529165-calsync/P-1794529181-eabd8e76-claude-agent-claude-sonnet-5-5/E-1794529274-faa29f9e-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 3 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R1-001-02",
+    "symptoms": [
+      "calibrate_sync.py budget entry is out of alphabetical order; move it before checkpoint.py."
+    ]
+  }
+}

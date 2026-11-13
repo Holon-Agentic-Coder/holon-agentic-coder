@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-768766b9",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-13T00:46:23.484257+00:00",
+  "updated_ts": "2026-11-13T00:46:23.484257+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794529950-5f2c3fc1",
+      "ACT-FIND-1794529949-83a199da"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794529163-attrib/P-1794529179-a03ed51a-claude-agent-claude-sonnet-5-5/E-1794529261-7bedbfa9-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 2 finding detected: FIND-R1-002-01",
+    "symptoms": [
+      "executor.py is already over 1,000 lines (1,596) and grows by 2 more; move the attribution gate out so the file does not grow."
+    ]
+  }
+}

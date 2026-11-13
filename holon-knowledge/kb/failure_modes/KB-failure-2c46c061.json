@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-2c46c061",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-13T00:46:23.509047+00:00",
+  "updated_ts": "2026-11-13T00:46:23.509047+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794530165-00e497ae",
+      "ACT-FIND-1794530164-b59c2d5f"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794529163-attrib/P-1794529179-a03ed51a-claude-agent-claude-sonnet-5-5/E-1794529261-7bedbfa9-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 3 finding detected: FIND-R2-003-01",
+    "symptoms": [
+      "executor.py is 1596 lines (over 1,000) and this diff grows it, inside main() which already carries complexity suppressions; move the call into a helper elsewhere."
+    ]
+  }
+}

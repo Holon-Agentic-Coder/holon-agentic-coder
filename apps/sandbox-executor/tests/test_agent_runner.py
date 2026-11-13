@@ -1,8 +1,10 @@
+import json
 import os
 import subprocess
 import unittest
 
 import pytest
+from sandbox_executor.agent_attribution import ATTRIBUTION_OFF
 from sandbox_executor.agent_runner import (
     AntigravityAgentRunner,
     StandardAgentRunner,
@@ -47,6 +49,8 @@ class TestAgentRunner(unittest.TestCase):
                 "bypassPermissions",
                 "--model",
                 "gemini-3.5-flash",
+                "--settings",
+                json.dumps(ATTRIBUTION_OFF),
                 "-p",
             ],
             "gemini": ["gemini", "--model", "gemini-3.5-flash", "-p"],
@@ -115,7 +119,8 @@ class TestAgentRunner(unittest.TestCase):
             runner = get_runner("claude")
             cmd = runner.build_cmd("claude-3", "/tmp/p", "/tmp/i", "prompt")
             self.assertIn("--settings", cmd)
-            self.assertIn("/path/to/settings.json", cmd)
+            settings = json.loads(cmd[cmd.index("--settings") + 1])
+            self.assertIs(settings["includeCoAuthoredBy"], False)
 
         # 2. Codex OSS and local provider configurations
         env = {
@@ -601,14 +606,14 @@ def claude_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
 
 def test_claude_bypass_on_by_default(claude_env: pytest.MonkeyPatch) -> None:
     cmd = get_runner("claude").build_cmd("m", "/tmp/p", "/tmp/i", "p")
-    assert cmd == ["claude", *CLAUDE_BYPASS, "--model", "m", "-p"]
+    assert cmd == ["claude", *CLAUDE_BYPASS, "--model", "m", "--settings", json.dumps(ATTRIBUTION_OFF), "-p"]
 
 
 @pytest.mark.parametrize("value", ["false", "0", "no", "off", "FALSE"])
 def test_claude_bypass_opt_out(claude_env: pytest.MonkeyPatch, value: str) -> None:
     claude_env.setenv("HOLON_AGENT_SKIP_PERMISSIONS", value)
     cmd = get_runner("claude").build_cmd("m", "/tmp/p", "/tmp/i", "p")
-    assert cmd == ["claude", "--model", "m", "-p"]
+    assert cmd == ["claude", "--model", "m", "--settings", json.dumps(ATTRIBUTION_OFF), "-p"]
     assert not set(CLAUDE_BYPASS) & set(cmd)
 
 
@@ -628,6 +633,9 @@ def test_claude_bypass_coexists_with_settings(claude_env: pytest.MonkeyPatch) ->
     assert cmd == ["claude", *CLAUDE_BYPASS, "--model", "m", "-p", "--settings", settings, "p"]
     value = cmd[cmd.index("--settings") + 1]
     assert value == settings
+    built = get_runner("claude").build_cmd("m", None, None, "p")
+    merged = json.loads(built[built.index("--settings") + 1])
+    assert merged["env"] == {"ANTHROPIC_API_KEY": "x"}
     assert "bypassPermissions" not in value and "skip-permissions" not in value
 
 

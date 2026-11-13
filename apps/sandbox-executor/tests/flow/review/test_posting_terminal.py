@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,7 @@ from sandbox_executor.flow.review.posting import PostFacts, decide_post
 
 from tests.review_fakes import FakeEnsemble, clean_reviewer, failed_reviewer, objecting_reviewer
 from tests.test_review_dispatch import EXEC_TARGET
-from tests.test_review_loop import _ensemble_ctx, _LoopStubs, _rows
+from tests.test_review_loop import _ensemble_ctx, _ledger, _LoopStubs, _rows
 
 
 def _rejecting_resolver(target, iteration, findings, action_ids, rejected_findings):
@@ -115,6 +116,55 @@ def test_no_completed_reviewer_posts_nothing(tmp_path):
     _not_posted(tmp_path, post, ctx, "")
 
 
+@pytest.mark.parametrize("reason", ["reviewer crashed", "reviewer turn timed out", "reviewer stalled"])
+def test_a_failed_reviewer_turn_at_the_cap_posts_nothing(tmp_path, reason):
+    ensemble = FakeEnsemble([clean_reviewer(1), failed_reviewer(2, reason)])
+    res, post, ctx = _run(tmp_path, ensemble, max_iterations=1, ensemble_size=2)
+
+    assert res["ensemble_verdict"] == "FAILED"
+    _not_posted(tmp_path, post, ctx, "failed verdict")
+    summary = _summary_row(tmp_path)
+    assert summary["status"] == "failed"
+    assert "failed verdict" in summary["review_post_withheld"]
+
+
+def test_a_resumed_pass_with_a_failed_reviewer_turn_posts_nothing(tmp_path):
+    ensemble = FakeEnsemble([clean_reviewer(1), failed_reviewer(2, "reviewer turn timed out")])
+    _, post, ctx = _run(tmp_path, ensemble, max_iterations=1, ensemble_size=2, first_iteration=3)
+
+    _not_posted(tmp_path, post, ctx, "failed verdict")
+
+
+def test_a_review_iteration_budget_breach_at_the_cap_posts_nothing(tmp_path):
+    ticks = itertools.count(step=10_000.0)
+    ensemble = FakeEnsemble([objecting_reviewer(1)])
+    res, post, ctx = _run(tmp_path, ensemble, max_iterations=1, clock=lambda: next(ticks), sleep=lambda _: None)
+
+    assert res["budget_breach"]["budget_name"] == "review_iteration"
+    _not_posted(tmp_path, post, ctx, "halted")
+
+
+def test_an_unresolved_ref_at_the_cap_posts_nothing(tmp_path):
+    stubs = _LoopStubs(merge={"is_dirty": False, "merge_state_status": "MISSING_REF", "mergeable": "UNKNOWN"})
+    _, post, ctx = _run(tmp_path, FakeEnsemble([objecting_reviewer(1)]), max_iterations=1, stubs=stubs)
+
+    _not_posted(tmp_path, post, ctx, "halted")
+    assert "halted" in _summary_row(tmp_path)["review_post_withheld"]
+
+
+def test_a_cap_with_every_reviewer_completed_posts_once_with_no_withheld_reason(tmp_path):
+    res, post, _ = _run(tmp_path, FakeEnsemble([objecting_reviewer(1)]), max_iterations=1)
+
+    assert res["ensemble_verdict"] == "CHANGES_REQUESTED"
+    assert post.call_count == 1
+    assert _summary_row(tmp_path)["review_post_withheld"] is None
+
+
+def _summary_row(tmp_path: Path) -> dict[str, Any]:
+    (row,) = [r for r in _ledger(tmp_path) if r.get("entry_type") == "summary"]
+    return row
+
+
 def _facts(**overrides: Any) -> PostFacts:
     base: dict[str, Any] = {
         "dry_run": False,
@@ -123,6 +173,7 @@ def _facts(**overrides: Any) -> PostFacts:
         "reviewer_completed": True,
         "consensus_reached": False,
         "halted_early": False,
+        "verdict_terminal": True,
         "iteration": 3,
         "last_label": 3,
     }
@@ -137,6 +188,9 @@ def _facts(**overrides: Any) -> PostFacts:
         ({}, True, ""),
         ({"iteration": 2}, False, "before the iteration cap"),
         ({"halted_early": True}, False, "halted"),
+        ({"verdict_terminal": False}, False, "failed verdict"),
+        ({"verdict_terminal": False, "halted_early": True}, False, "halted"),
+        ({"verdict_terminal": False, "iteration": 2}, False, "failed verdict"),
         ({"consensus_reached": True, "halted_early": True, "iteration": 1}, True, ""),
         ({"failed": True}, False, "the review failed"),
         ({"reviewer_completed": False}, False, "no reviewer completed"),

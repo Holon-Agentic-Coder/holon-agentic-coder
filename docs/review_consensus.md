@@ -69,8 +69,11 @@ rejected nits are remembered as already adjudicated; see [Consensus integrity](#
 The loop posts the consensus review to the pull request only on a terminal exit: a consensus approval, or the iteration
 cap (the label budget) reached with findings still open, which posts the changes-requested form once. Every other exit
 keeps the report local and posts nothing: a resolver error, a failed pre-push gate, a stage budget stop, the
-no-convergence halt (including one exactly at the iteration cap), and a halt before the cap. The loop logs that nothing
-was posted and why. Dry runs, `--skip-post`, a refused or failed review and a run with no completed reviewer post
+no-convergence halt (including one exactly at the iteration cap), and a halt before the cap. An iteration that halts on
+a FAILED verdict (a crashed, timed-out or stalled reviewer turn), a stage budget stop, an unresolved ref or unmeasured
+tests also keeps the report local when it lands on the last label, so a run resumed from its checkpoint posts only its
+terminal review. The loop logs that nothing was posted and why, and the `REV-...` summary row records the reason as
+`review_post_withheld`. Dry runs, `--skip-post`, a refused or failed review and a run with no completed reviewer post
 nothing, as before. `ACT-POST` is written only when a post was actually attempted, and a failed attempt still writes its
 failure row and ends the loop as `post_failed`.
 

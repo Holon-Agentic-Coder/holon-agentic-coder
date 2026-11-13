@@ -1,6 +1,6 @@
 {
   "index_version": "1.0",
-  "updated_ts": "2026-11-13T12:35:44.676124+00:00",
+  "updated_ts": "2026-11-13T13:24:04.237029+00:00",
   "entries": [
     {
       "kb_id": "KB-failure-d25f1b01",
@@ -13472,6 +13472,72 @@
       "kb_type": "failure_mode",
       "status": "active",
       "created_ts": "2026-11-13T12:35:44.675342+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-65a79496",
+      "file": "KB-failure-65a79496.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-13T13:24:04.147073+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-cc980141",
+      "file": "KB-failure-cc980141.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-13T13:24:04.219872+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-00d97072",
+      "file": "KB-failure-00d97072.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-13T13:24:04.224042+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-a0450ead",
+      "file": "KB-failure-a0450ead.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-13T13:24:04.228142+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-de261613",
+      "file": "KB-failure-de261613.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-13T13:24:04.232242+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-11eaad4a",
+      "file": "KB-failure-11eaad4a.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-13T13:24:04.236306+00:00",
       "tags": [
         "code",
         "veto"

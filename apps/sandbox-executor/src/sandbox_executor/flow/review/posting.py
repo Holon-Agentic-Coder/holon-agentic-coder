@@ -1,7 +1,8 @@
 """Stage 4 review posting: decide whether the consensus review reaches the pull request, and post it.
 
 A review is posted only when the loop ends in a terminal state: a consensus approval, or the label budget
-exhausted with findings still open. Every other exit keeps the report local.
+exhausted with findings still open. Every other exit keeps the report local, including an iteration that halts on a
+failed verdict (a crashed, timed-out or stalled reviewer turn) even when it lands on the last label.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.review.records import _posting_failure_context, record_review_action
 from sandbox_executor.knowledge import CredentialRedactor
 from sandbox_executor.ledger import generate_action_id
+from sandbox_executor.review_ensemble import ConsensusVerdict, ReviewerResult, ReviewerStatus
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +33,10 @@ class PostFacts:
     failed: bool  # A refused diff or host run, or an infrastructure error.
     reviewer_completed: bool
     consensus_reached: bool
-    halted_early: bool  # A resolver error or the no-convergence halt, even at the cap.
+    halted_early: bool  # A resolver error, a budget stop, an unresolved ref, unmeasured tests or no convergence.
     iteration: int
     last_label: int
+    verdict_terminal: bool  # CHANGES_REQUESTED or APPROVED with every reviewer completed (see is_terminal_verdict).
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,19 @@ class PostDecision:
     count_suppressed: bool = False  # Dry run and --skip-post count a suppressed ledger record.
 
 
+_HALTED = "the loop halted before a terminal state; the report is kept local"
+_FAILED_VERDICT = (
+    "the iteration halted on a failed verdict or a crashed, timed-out or stalled reviewer turn; "
+    "the report is kept local"
+)
+
+
+def is_terminal_verdict(verdict: ConsensusVerdict | None, reviewers: list[ReviewerResult]) -> bool:
+    """Whether the deciding iteration ended in a verdict worth posting: every reviewer completed and none failed."""
+    terminal = verdict in (ConsensusVerdict.CHANGES_REQUESTED, ConsensusVerdict.APPROVED)
+    return terminal and all(result.status is ReviewerStatus.COMPLETED for result in reviewers)
+
+
 def decide_post(facts: PostFacts) -> PostDecision:
     """Decide whether the consensus review is posted to the pull request."""
     if facts.dry_run or facts.skip_post:
@@ -53,8 +69,8 @@ def decide_post(facts: PostFacts) -> PostDecision:
         return PostDecision(post=False, reason="the review failed" if facts.failed else "no reviewer completed")
     if facts.consensus_reached:
         return PostDecision(post=True)
-    if facts.halted_early:
-        return PostDecision(post=False, reason="the loop halted before a terminal state; the report is kept local")
+    if facts.halted_early or not facts.verdict_terminal:
+        return PostDecision(post=False, reason=_HALTED if facts.halted_early else _FAILED_VERDICT)
     if facts.iteration < facts.last_label:
         return PostDecision(post=False, reason="the loop stopped before the iteration cap; the report is kept local")
     return PostDecision(post=True)

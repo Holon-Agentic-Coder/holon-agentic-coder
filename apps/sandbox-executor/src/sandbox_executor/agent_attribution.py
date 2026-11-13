@@ -42,11 +42,19 @@ def attribution_off_settings(existing: str | None = None) -> str:
     return _private_temp_file(text) if from_file else text
 
 
+_TEMP_FILES: dict[str, str] = {}
+
+
 def _private_temp_file(text: str) -> str:
+    """Return a private temp file holding ``text``; identical contents reuse one file for the process lifetime."""
+    cached = _TEMP_FILES.get(text)
+    if cached and os.path.exists(cached):
+        return cached
     fd, path = tempfile.mkstemp(prefix="holon-settings-", suffix=".json")
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(text)
     atexit.register(_remove_quietly, path)
+    _TEMP_FILES[text] = path
     return path
 
 

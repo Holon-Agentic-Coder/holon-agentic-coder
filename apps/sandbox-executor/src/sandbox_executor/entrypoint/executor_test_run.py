@@ -29,8 +29,13 @@ def _changed_paths(repo: Any) -> set[str]:
     return set(result.stdout.splitlines()) if result.returncode == 0 else set()
 
 
-def measure_executor_tests(workspace: str, repo: Any) -> dict[str, Any]:
-    """Run the tests in ``workspace`` and return the summary-row fields; log one redacted line and any stray changes."""
+def measure_executor_tests(workspace: str, repo: Any, exec_status: str) -> dict[str, Any]:
+    """Run the tests in ``workspace`` when the execution succeeded and return the summary-row fields.
+
+    Returns no fields for any other status. Logs one redacted line and any stray changes.
+    """
+    if exec_status != "success":
+        return {}
     before = _changed_paths(repo)
     measurement = run_test_task(workspace)
     stray = sorted(_changed_paths(repo) - before)

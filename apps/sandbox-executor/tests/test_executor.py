@@ -528,7 +528,10 @@ class TestExecutor(unittest.TestCase):
     def test_main_records_measured_test_fields_on_success_only(self):
         """The summary row of a successful run carries the measurement; a failed (empty-diff) row stays unmeasured."""
         fields = {"test_pass_rate": 0.8, "tests_passed": 8, "tests_failed": 2, "tests_errored": 0, "test_exit_code": 1}
-        with patch("sandbox_executor.entrypoint.executor.measure_executor_tests", return_value=fields):
+        with patch(
+            "sandbox_executor.entrypoint.executor.measure_executor_tests",
+            side_effect=lambda _dir, _repo, status: fields if status == "success" else {},
+        ):
             ok, _ = self._run_main_with_agent_diff("src/app.py\0")
             empty, _ = self._run_main_with_agent_diff("plans/P-123.md\0")
         self.assertEqual(ok[0]["test_pass_rate"], 0.8)

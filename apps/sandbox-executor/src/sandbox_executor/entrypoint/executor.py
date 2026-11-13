@@ -1408,9 +1408,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                     print(f"Error: {summary}", file=sys.stderr)
 
             # Measure the project's tests on the agent's finished work, before anything is staged or committed.
-            test_fields: dict[str, Any] = {}
-            if exec_status == "success":
-                test_fields = measure_executor_tests(repo_dir, repo)
+            test_fields = measure_executor_tests(repo_dir, repo, exec_status)
 
             # Format modified/untracked markdown files with prettier
             try:

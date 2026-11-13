@@ -28,7 +28,7 @@ def _fake(monkeypatch, stdout: str, returncode: int, raises: BaseException | Non
 
 def test_passing_run_fields(monkeypatch) -> None:
     _fake(monkeypatch, "5 passed in 1s", 0)
-    fields = measure_executor_tests("/w", _repo())
+    fields = measure_executor_tests("/w", _repo(), "success")
     assert fields["test_pass_rate"] == 1.0
     assert (fields["tests_passed"], fields["tests_failed"], fields["tests_errored"], fields["test_exit_code"]) == (
         5,
@@ -42,20 +42,25 @@ def test_passing_run_fields(monkeypatch) -> None:
 
 def test_failing_run_fields(monkeypatch) -> None:
     _fake(monkeypatch, "1 failed, 3 passed in 1s", 1)
-    fields = measure_executor_tests("/w", _repo())
+    fields = measure_executor_tests("/w", _repo(), "success")
     assert fields["test_pass_rate"] == 0.75
     assert fields["test_exit_code"] == 1
 
 
 def test_unrunnable_run_records_null_and_error(monkeypatch) -> None:
     _fake(monkeypatch, "", 0, raises=FileNotFoundError(2, "missing", "uv"))
-    fields = measure_executor_tests("/w", _repo())
+    fields = measure_executor_tests("/w", _repo(), "success")
     assert fields["test_pass_rate"] is None
     assert fields["test_run_error"]
 
 
-def test_fields_are_json_serialisable_keys() -> None:
+def test_unmeasured_fields_keep_null_rate_and_error() -> None:
     from sandbox_executor.entrypoint.test_measurement import TestMeasurement
 
     fields = measurement_fields(TestMeasurement(None, None, None, None, 124, "timed out", ""))
     assert fields["test_pass_rate"] is None and fields["test_run_error"] == "timed out"
+
+
+def test_non_success_status_is_not_measured(monkeypatch) -> None:
+    _fake(monkeypatch, "", 0)
+    assert measure_executor_tests("/w", _repo(), "failure") == {}

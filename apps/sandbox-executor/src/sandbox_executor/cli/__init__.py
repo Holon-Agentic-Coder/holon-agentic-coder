@@ -45,6 +45,7 @@ from sandbox_executor.agent_runner import (
 from sandbox_executor.budgets import stage_budget_handdown_env
 from sandbox_executor.calibration import run_calibrate
 from sandbox_executor.claude_credential import CLAUDE_CREDENTIAL_ENV_NAMES, resolve_claude_credential
+from sandbox_executor.cli.pi_mounts import get_pi_mounts
 from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
 from sandbox_executor.flow import (
     SKIP_PUSH_DISPATCH_ERROR,
@@ -346,12 +347,6 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:  # noqa: C901
         "codex": [
             (os.path.join(home, ".codex"), "/home/holon/.codex"),
         ],
-        # Only pi's models.json is mounted, never the whole agent directory: that directory also holds auth.json,
-        # sessions/ and run-history.jsonl, none of which a sandboxed agent needs.
-        "pi": [
-            (os.path.join(home, ".pi/agent/models.json"), "/home/holon/.pi/agent/models.json"),
-            (os.path.join(home, ".config/pi/models.json"), "/home/holon/.config/pi/models.json"),
-        ],
         "gemini": [
             (os.path.join(home, ".config/gcloud"), "/home/holon/.config/gcloud"),
         ],
@@ -361,8 +356,8 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:  # noqa: C901
     dirs = session_mapping.get(norm_agent_id, [])
     # In host-local model mode the container receives a generated agent directory whose base URLs are reachable from it,
     # so the host's own provider config is deliberately not mounted.
-    if norm_agent_id == "pi" and local_llm.local_llm_requested():
-        return mounts
+    if norm_agent_id == "pi":
+        return mounts if local_llm.local_llm_requested() else get_pi_mounts(home)
     for host_path, container_path in dirs:
         if os.path.exists(host_path):
             mounts.extend(["-v", f"{host_path}:{container_path}:ro"])

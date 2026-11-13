@@ -40,6 +40,7 @@ def get_pi_mounts(home: str) -> list[str]:
         if not os.path.exists(host_file):
             continue
         if container_dir not in _ALWAYS_WRITABLE_DIRS:
+            args.extend(_owned_tmpfs(os.path.dirname(container_dir)))
             args.extend(_owned_tmpfs(container_dir))
         args.extend(["-v", f"{host_file}:{container_dir}/models.json:ro"])
     return args

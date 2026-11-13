@@ -66,7 +66,8 @@ def test_legacy_config_location_also_gets_owned_parent(tmp_path: Path, monkeypat
 
     mounts = get_agent_session_mounts("pi")
 
-    assert f"/home/holon/.config/pi:{'uid=1000,gid=1000,mode=0700'}" in _tmpfs_specs(mounts)
+    assert "/home/holon/.config/pi:uid=1000,gid=1000,mode=0700" in _tmpfs_specs(mounts)
+    assert "/home/holon/.config:uid=1000,gid=1000,mode=0700" in _tmpfs_specs(mounts)
     assert f"{legacy}/models.json:/home/holon/.config/pi/models.json:ro" in mounts
 
 

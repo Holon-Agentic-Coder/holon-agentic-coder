@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-6b8d34e0",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-13T11:19:19.809454+00:00",
+  "updated_ts": "2026-11-13T11:19:19.809454+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794568222-6c6904e1",
+      "ACT-FIND-1794568221-ebd2680f"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794567519-lockfrz/P-1794567535-986a8099-claude-agent-claude-sonnet-5-5/E-1794567625-b72a7c5b-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 2 finding detected: FIND-R3-002-01",
+    "symptoms": [
+      "File is 1,773 lines and grows by 2 (import plus frozen_env update); place the UV_FROZEN injection in a smaller owning module."
+    ]
+  }
+}

@@ -140,6 +140,12 @@ supervision itself fails or is interrupted, and when the agent has exited but a 
 open; in that case the group gets `SIGTERM`, then `SIGKILL` if the pipes are still held after a bounded wait, and the
 output read so far is returned after a second bounded wait.
 
+## Reviewer quota wait
+
+When a reviewer fails on a quota whose message names a reset time, the review ensemble waits for it at most once per
+ensemble if the wait is within `HOLON_REVIEW_QUOTA_WAIT_SECONDS` (default `900`; `0` disables the wait). The wait is
+credited to the review stage timer, so it never counts against the stage ceiling.
+
 ## Salvage, resume and the ACT-BUDGET record
 
 1. After a breached turn, whatever the agent already wrote to its artefact is kept on disk (salvage).

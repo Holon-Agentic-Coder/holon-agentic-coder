@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-a95e28d8",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-12T23:14:45.965732+00:00",
+  "updated_ts": "2026-11-12T23:14:45.965732+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794524114-35b28d9e",
+      "ACT-FIND-1794524113-21e3ec0d"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794523617-revlog/P-1794523633-edd36e36-claude-agent-claude-sonnet-5-5/E-1794523736-a53d0213-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R2-001-03",
+    "symptoms": [
+      "_once uses a function attribute with a type: ignore; use explicit state."
+    ]
+  }
+}

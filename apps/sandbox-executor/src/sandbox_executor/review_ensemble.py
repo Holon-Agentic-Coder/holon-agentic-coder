@@ -34,13 +34,15 @@ Consensus
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
 import re
 import shutil
+import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
 
@@ -49,6 +51,7 @@ from sandbox_executor.artefacts import ArtefactSection, ArtefactSpec
 from sandbox_executor.budgets import Budgets, StageTimer, load_budgets
 from sandbox_executor.git import EMPTY_DIFF_EXCLUDES, run_git
 from sandbox_executor.redaction import redact_agent_secrets, redact_command_args
+from sandbox_executor.review_failure import OnceSleeper, log_failed_turn, missing_report_reason, retry_wait
 from sandbox_executor.review_target import ReviewTarget
 from sandbox_executor.scaffold import REVIEW_LOOP_TEMPLATE
 from sandbox_executor.turns import AuthoringOutcome, TurnRunner, run_turn, supervise_authoring_turn
@@ -272,6 +275,7 @@ class ReviewerResult:
     report_path: str
     report_text: str | None = None
     failure_reason: str | None = None
+    retry_after_seconds: float | None = None
 
     @property
     def reason(self) -> str | None:
@@ -713,33 +717,12 @@ def _log_turn_completion(outcome: AuthoringOutcome) -> None:
                 result.stop_reason or "unknown",
             )
     elif result.returncode != 0:
-        logger.warning(
-            "Reviewer agent command failed with code %d (stop reason: %s).",
-            result.returncode,
-            result.stop_reason or "unknown",
-        )
-        if result.stderr:
-            logger.warning("Stderr: %s", redact_agent_secrets(result.stderr))
+        log_failed_turn(logger, result)
 
 
 def _missing_report_reason(outcome: AuthoringOutcome) -> str:
     """Diagnostic failure reason when no report was written."""
-    if not outcome.turns:
-        return "the reviewer wrote no report"
-    turn = outcome.last
-    returncode = turn.returncode
-    stderr_raw = (turn.stderr or "").strip()
-    truncated_stderr = ""
-    if stderr_raw:
-        redacted = redact_agent_secrets(stderr_raw)
-        truncated_stderr = redacted[:300] + "..." if len(redacted) > 300 else redacted
-    if returncode != 0 and truncated_stderr:
-        return f"the reviewer exited with code {returncode}: {truncated_stderr}"
-    if returncode != 0:
-        return f"the reviewer exited with code {returncode}"
-    if truncated_stderr:
-        return f"the reviewer wrote no report (stderr: {truncated_stderr})"
-    return "the reviewer wrote no report"
+    return missing_report_reason(outcome.last) if outcome.turns else "the reviewer wrote no report"
 
 
 def _turn_failure(outcome: AuthoringOutcome, *, report_missing: bool = False) -> str | None:
@@ -773,7 +756,8 @@ def _result_from_outcome(  # noqa: PLR0913
     text = _read_report(os.path.join(repo_dir, report_rel))
     if text is None:
         reason = _turn_failure(outcome, report_missing=True) or "the reviewer wrote no report"
-        return ReviewerResult.failed(index, agent, model, report_rel, reason)
+        wait = retry_wait(outcome.last, os.environ) if outcome.breach is None and outcome.turns else None
+        return replace(ReviewerResult.failed(index, agent, model, report_rel, reason), retry_after_seconds=wait)
     try:
         parsed = parse_review_trailer(text)
     except TrailerError as error:
@@ -799,16 +783,24 @@ def _logged(result: ReviewerResult) -> ReviewerResult:
 
 
 def run_ensemble(
-    request: ReviewRequest, *, agent: str, model: str, size: int = DEFAULT_ENSEMBLE_SIZE, **seams: Any
+    request: ReviewRequest,
+    *,
+    agent: str,
+    model: str,
+    size: int = DEFAULT_ENSEMBLE_SIZE,
+    sleep: Callable[[float], None] = time.sleep,
+    **seams: Any,
 ) -> list[ReviewerResult]:
     """Run ``size`` independent reviewers (three by default) one after another and return their results in order.
 
-    ``seams`` are passed to :func:`run_reviewer`. Budgets, the stage timer and the template are resolved once, so the
-    whole ensemble shares one review-iteration ceiling. The iteration directory is cleared first; each reviewer's
-    report is held in memory and its scratch directory removed before the next reviewer starts, and the iteration
-    directory is removed at the end. If the iteration directory cannot be cleared, no reviewer is dispatched; if a
-    report cannot be removed, the remaining reviewers are not dispatched. Either way the undispatched reviewers are
-    recorded as FAILED, so the consensus fails closed. ``size < 1`` dispatches nothing.
+    ``seams`` are passed to :func:`run_reviewer`. A reviewer that fails on a quota whose reset is within the wait
+    ceiling is retried once after ``sleep``; the wait is credited to the shared stage timer, and at most one retry runs
+    per ensemble. Budgets, the stage timer and the template are resolved once, so the whole ensemble
+    shares one review-iteration ceiling. The iteration directory is cleared first; each reviewer's report is held in
+    memory and its scratch directory removed before the next reviewer starts, and the iteration directory is removed at
+    the end. If the iteration directory cannot be cleared, no reviewer is dispatched; if a report cannot be removed,
+    the remaining reviewers are not dispatched. Either way the undispatched reviewers are recorded as FAILED, so the
+    consensus fails closed. ``size < 1`` dispatches nothing.
     """
     if size < 1:
         return []
@@ -818,12 +810,20 @@ def run_ensemble(
     if clear_error is not None:
         return [_undispatched(request, index, agent, model, clear_error) for index in range(1, size + 1)]
     results: list[ReviewerResult] = []
+    once = OnceSleeper(sleep)
     for index in range(1, size + 1):
         isolation_error = _isolate(request.repo_dir, results, consequence="stopping the ensemble", level=logging.ERROR)
         if isolation_error is not None:
             results.append(_undispatched(request, index, agent, model, isolation_error))
             continue
-        results.append(run_reviewer(request, index, agent, model, **seams))
+        run = functools.partial(run_reviewer, request, index, agent, model, **seams)
+        result = run()
+        if (wait := result.retry_after_seconds) is not None and once.try_wait(wait):
+            logger.warning("Reviewer %d hit a quota; waiting %.0f s for the reset before one retry.", index, wait)
+            seams["stage_timer"].credit(wait)
+            _remove_scratch(request.repo_dir, os.path.dirname(result.report_path))
+            result = run()
+        results.append(result)
     _remove_leftovers(request.repo_dir, results, iteration_rel)
     return results
 

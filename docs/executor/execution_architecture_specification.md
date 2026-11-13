@@ -221,3 +221,17 @@ merging stays with the human maintainer.
 
 The flow's `flow-<slug>` worktree lives on the host, so edits, commits and logs survive a container crash. The container
 neither clears nor cleans it.
+
+### Commit Attribution
+
+No commit carries an attribution trailer such as `Co-Authored-By: Claude <model> <noreply@anthropic.com>`. Two measures
+enforce this in Stage 3:
+
+- `ClaudeAgentRunner.build_cmd` always passes `--settings` with `includeCoAuthoredBy` set to `false` and an empty
+  `attribution` (`commit` and `pr`), merged into any `HOLON_AGENT_SETTINGS` value (inline JSON or a file path, which is
+  read and never written). The user's own settings files and the permission flags are untouched.
+- After the execution commit, `attribution_check.py` scans the non-merge commits of `plan tip..HEAD` with `git log` and
+  prints a report for any trailer. It warns by default; set `HOLON_ATTRIBUTION_STRICT=1` to refuse publishing instead.
+
+History is never rewritten, so only new trailers are prevented; a trailer written by a manual `git commit` is detected,
+not prevented.

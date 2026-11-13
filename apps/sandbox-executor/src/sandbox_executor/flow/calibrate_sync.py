@@ -12,6 +12,7 @@ from __future__ import annotations
 from sandbox_executor.flow.calibrate_rebuild import (
     CalibrationSyncError,
     holds_only_calibration_commits,
+    is_ancestor,
     rebuild_calibrated_branch,
     stale_calibrated_refs,
 )
@@ -25,11 +26,6 @@ from sandbox_executor.ref_names import calibration_branch
 def _rev(repo_dir: str, ref: str, run=None) -> str:
     res = (run or run_git)(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=repo_dir, check=False)
     return res.stdout.strip() if res.returncode == 0 and isinstance(res.stdout, str) else ""
-
-
-def _is_ancestor(repo_dir: str, ancestor: str, descendant: str) -> bool:
-    res = run_git(["merge-base", "--is-ancestor", ancestor, descendant], cwd=repo_dir, check=False)
-    return res.returncode == 0
 
 
 def _divergence_message(repo_dir: str, branch: str, local_sha: str, origin_sha: str) -> str:
@@ -71,7 +67,7 @@ def sync_execution_ref(context: FlowContext) -> str | None:
         return local_sha or None
     if local_sha == origin_sha:
         return origin_sha
-    if local_sha and not _is_ancestor(repo_dir, local_sha, origin_sha):
+    if local_sha and not is_ancestor(repo_dir, local_sha, origin_sha):
         raise CalibrationSyncError(_divergence_message(repo_dir, branch, local_sha, origin_sha))
     if fast_forward_local_branch(context, branch, origin_sha):
         context.log(f"Stage 5 sync: fast-forwarded '{branch}' to origin head {origin_sha[:12]}.")

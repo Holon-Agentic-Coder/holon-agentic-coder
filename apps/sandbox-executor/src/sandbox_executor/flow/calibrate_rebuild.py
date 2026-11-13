@@ -29,7 +29,7 @@ def _git_out(repo_dir: str, args: list[str]) -> str | None:
     return res.stdout if res.returncode == 0 and isinstance(res.stdout, str) else None
 
 
-def _contains(repo_dir: str, ancestor: str, descendant: str) -> bool:
+def is_ancestor(repo_dir: str, ancestor: str, descendant: str) -> bool:
     return run_git(["merge-base", "--is-ancestor", ancestor, descendant], cwd=repo_dir, check=False).returncode == 0
 
 
@@ -64,7 +64,7 @@ def holds_only_calibration_commits(repo_dir: str, start_sha: str, existing_sha: 
 
 def stale_calibrated_refs(repo_dir: str, start_sha: str, local_sha: str, remote_sha: str) -> tuple[str, str]:
     """The local and remote /calibrated SHAs that do not contain ``start_sha``; '' for an absent or current ref."""
-    stale = [sha if sha and not _contains(repo_dir, start_sha, sha) else "" for sha in (local_sha, remote_sha)]
+    stale = [sha if sha and not is_ancestor(repo_dir, start_sha, sha) else "" for sha in (local_sha, remote_sha)]
     return stale[0], stale[1]
 
 

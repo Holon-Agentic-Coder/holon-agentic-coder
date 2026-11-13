@@ -1,0 +1,29 @@
+{
+  "kb_id": "KB-failure-090c05bc",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-13T05:31:33.805856+00:00",
+  "updated_ts": "2026-11-13T05:31:33.805856+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1794547338-ebe522dc",
+      "ACT-REV-1794547319-32c48a55"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794546197-chkgate/P-1794546213-1bdbac00-claude-agent-claude-sonnet-5-5/E-1794546322-f7e28c22-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 4 reviewer 3 completed",
+    "symptoms": []
+  }
+}

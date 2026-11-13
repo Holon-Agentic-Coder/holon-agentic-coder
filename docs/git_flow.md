@@ -500,17 +500,37 @@ vote on. After that push, and only then, Stage 5 waits for the checks on that he
 budget (`HOLON_REVIEW_CI_WAIT_SECONDS`) and records the outcome as `final_head_ci` in the stage result, the stage log
 and the flow summary:
 
-| State         | Meaning                                                                                   |
-| ------------- | ----------------------------------------------------------------------------------------- |
-| `success`     | Every check on the final head passed.                                                     |
-| `failed`      | At least one check failed; the failed check names are listed.                             |
-| `timing_gate` | Every failed job failed only in its `CI Timing Gate` step; the job names are listed.      |
-| `unknown`     | CI was not measured, or checks were still pending when the budget ran out. Never success. |
-| `skipped`     | Nothing was pushed: a dry run, `--skip-push` or a failed calibration.                     |
+| State     | Meaning                                                                                        |
+| --------- | ---------------------------------------------------------------------------------------------- |
+| `success` | Every check on the final head passed.                                                          |
+| `failed`  | At least one check failed, a `CI Timing Gate` step included; the names and durations are kept. |
+| `unknown` | CI was not measured, or checks were still pending when the budget ran out. Never success.      |
+| `skipped` | Nothing was pushed: a dry run, `--skip-push` or a failed calibration.                          |
 
-The timing-gate distinction reads the failed steps of the job with one extra `gh run view` call; when the steps are
-unavailable the failure is reported as `failed`. The check only reports: it never fails calibration, never reruns CI,
-never changes the 300 s timing limit, and the merge stays with the human maintainer.
+A job that exceeds its time limit is a failed check, so a timing-gate failure fails the final-head check like any other.
+The job's failed steps and duration come from one extra `gh run view` call and only annotate the failure, for example
+`final head CI: failed: macos-unit (CI Timing Gate, 6 min)`.
+
+Stage 5 then re-verifies the head it published and records `ci_verdict` in the stage result, with the approved head, the
+final head and whether the head moved:
+
+- `green` (or nothing pushed): Stage 5 ends as a success.
+- `red`: Stage 5 ends as `failed`, with an error naming each failing check. The pull request is not reported as ready to
+  merge, and a child sub-intent is not merged. The calibration commit stays pushed.
+- `unverified`: CI was not measured or was still pending. The report says "not verified" and "not merge-ready"; it is
+  never reported as ready to merge.
+
+When the verdict is `red` and Stage 4 posted an approval, Stage 5 posts one follow-up comment saying the consensus
+approval no longer stands. It names the head the approval covered, the failing head and each failing check, with the
+duration for a timing gate. A hidden marker holding the failing SHA keeps it to one comment per head; a pull request
+whose comments cannot be listed gets no comment. The approval itself names the head it covers and the measured CI result
+at that commit (for example "11 of 11 checks passed"), so a re-approval on a later green head names its own head.
+
+When the only failing check is a timing gate, the resolver finding names the slowest tests of the failing job (five at
+most, from the `ci-timing-*` artefact or the job log's `--durations` section) and says to speed them up or split the
+job. It never offers a rerun. When the tests cannot be fetched, the finding says so and points at
+`pytest --durations=10`. Stage 5 never reruns CI, never changes the 300 s timing limit, and the merge stays with the
+human maintainer.
 
 #### Safety Halt & Merge Boundary
 

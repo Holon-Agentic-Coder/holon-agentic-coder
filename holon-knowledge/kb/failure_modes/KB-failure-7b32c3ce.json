@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-7b32c3ce",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-13T05:31:33.748284+00:00",
+  "updated_ts": "2026-11-13T05:31:33.748284+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794546825-95e3b88f",
+      "ACT-FIND-1794546823-99c3a2de"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794546197-chkgate/P-1794546213-1bdbac00-claude-agent-claude-sonnet-5-5/E-1794546322-f7e28c22-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R2-001-01",
+    "symptoms": [
+      "Truncating the full body to 4000 characters can cut off the trailing dedupe marker; truncate the body before appending the marker."
+    ]
+  }
+}

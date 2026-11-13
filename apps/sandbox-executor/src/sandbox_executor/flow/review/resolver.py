@@ -25,7 +25,11 @@ from sandbox_executor.flow.review.records import _bounded_error_context, record_
 from sandbox_executor.ledger import generate_action_id
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.resolver_evidence import OPEN
-from sandbox_executor.resolver_result import read_container_resolver_result, resolver_error_text
+from sandbox_executor.resolver_result import (
+    read_container_resolver_result,
+    rejected_attempt_fields,
+    resolver_error_text,
+)
 from sandbox_executor.review_report import (
     FindingDisposition,
     FindingRow,
@@ -47,6 +51,9 @@ class ResolverOutcome:
     lint_passed: bool = True
     tests_passed: bool = True
     error: str | None = None
+    rejected_patch: str | None = None
+    failed_tests: tuple[str, ...] = ()
+    test_summary: str | None = None
 
 
 @dataclass(frozen=True)
@@ -139,6 +146,9 @@ def _dispatch_review_resolver(
             lint_passed=parsed.lint_passed,
             tests_passed=parsed.tests_passed,
             error=parsed.error or push_error,
+            rejected_patch=parsed.rejected_patch,
+            failed_tests=parsed.failed_tests,
+            test_summary=parsed.test_summary,
         )
     except Exception as exc:
         dispositions = deserialize_finding_dispositions([], findings, lookup)
@@ -283,6 +293,7 @@ def _invoke_resolver_pass(
             lint_passed=bool(raw.get("lint_passed", True)),
             tests_passed=bool(raw.get("tests_passed", True)),
             error=err,
+            **rejected_attempt_fields(raw),
         )
     if isinstance(raw, Sequence):
         raw_list = [serialize_finding_disposition(d) if isinstance(d, FindingDisposition) else d for d in raw]

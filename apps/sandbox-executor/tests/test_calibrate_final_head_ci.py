@@ -9,12 +9,11 @@ from unittest.mock import MagicMock, patch
 
 from sandbox_executor.flow import FlowContext, StageStatus
 from sandbox_executor.flow.github import ci_final_head
+from sandbox_executor.flow.github.ci_failure_detail import gh_detail_lookup, parse_run_id
 from sandbox_executor.flow.github.ci_final_head import (
     FinalHeadSeams,
     check_final_head_ci,
     format_final_head_ci,
-    gh_step_lookup,
-    parse_run_id,
 )
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy
 from sandbox_executor.flow.stages.calibrate import run_calibrate_stage
@@ -40,6 +39,13 @@ def _check(name: str, bucket: str) -> dict:
     return {"name": name, "bucket": bucket, "link": f"https://github.com/o/r/actions/runs/42/job/{name}"}
 
 
+def _detail(name: str, steps: list[str] | None, seconds: float | None = 360.0) -> dict | None:
+    if steps is None:
+        return None
+    gate = bool(steps) and all(s.startswith("CI Timing Gate") for s in steps)
+    return {"name": name, "failed_steps": steps, "duration_seconds": seconds, "timing_gate": gate}
+
+
 class Fakes:
     def __init__(self, *statuses: dict, steps: dict[str, list[str] | None] | None = None) -> None:
         self.statuses = list(statuses)
@@ -60,7 +66,7 @@ class Fakes:
         return FinalHeadSeams(
             policy=CiWaitPolicy(budget, clock=lambda: self.now, sleep=self.sleep),
             probe=self.probe,
-            step_lookup=lambda check: self.steps.get(check["name"]),
+            detail_lookup=lambda check: _detail(check["name"], self.steps.get(check["name"])),
             registration_timeout=0,
             pushed_head=lambda: None,
         )
@@ -88,13 +94,14 @@ def test_failing_test_job_lists_its_name(tmp_path: Path) -> None:
     assert "unit" in format_final_head_ci(record)
 
 
-def test_timing_gate_only_failure_is_reported_separately(tmp_path: Path) -> None:
+def test_timing_gate_only_failure_fails_the_final_head_check(tmp_path: Path) -> None:
     fakes = Fakes(_status([_check("macos-unit", "fail")]), steps={"macos-unit": [GATE]})
     record = _run(tmp_path, fakes)
-    assert record["state"] == "timing_gate"
-    assert record["timing_gate_checks"] == ["macos-unit"]
-    assert record["failed_checks"] == []
-    assert format_final_head_ci(record) == "final head CI: timing gate only: macos-unit"
+    assert record["state"] == "failed"
+    assert record["failed_checks"] == ["macos-unit"]
+    assert record["failed_details"][0]["timing_gate"] is True
+    assert format_final_head_ci(record) == "final head CI: failed: macos-unit (CI Timing Gate, 6.0 min)"
+    assert "timing gate only" not in format_final_head_ci(record)
 
 
 def test_mixed_failure_is_a_test_failure(tmp_path: Path) -> None:
@@ -145,20 +152,26 @@ def test_probe_exception_is_unknown(tmp_path: Path) -> None:
 def test_parse_run_id_and_gh_step_lookup() -> None:
     assert parse_run_id("https://github.com/o/r/actions/runs/123/job/9") == "123"
     assert parse_run_id("https://example.com") is None
-    steps = [{"name": "s", "conclusion": "success"}, {"name": "g", "conclusion": "failure"}]
-    jobs = json.dumps({"jobs": [{"name": "u", "steps": steps}]})
+    steps = [{"name": "s", "conclusion": "success"}, {"name": "CI Timing Gate (x)", "conclusion": "failure"}]
+    job = {"name": "u", "steps": steps, "startedAt": "2026-01-01T00:00:00Z", "completedAt": "2026-01-01T00:06:00Z"}
+    jobs = json.dumps({"jobs": [job]})
     run = MagicMock(return_value=SimpleNamespace(returncode=0, stdout=jobs))
-    lookup = gh_step_lookup("/tmp", {}, run)
-    assert lookup({"name": "u", "link": "https://x/actions/runs/7/job/1"}) == ["g"]
+    lookup = gh_detail_lookup("/tmp", {}, run)
+    detail = lookup({"name": "u", "link": "https://x/actions/runs/7/job/1"})
+    assert detail == {
+        "name": "u",
+        "failed_steps": ["CI Timing Gate (x)"],
+        "duration_seconds": 360.0,
+        "timing_gate": True,
+    }
     assert lookup({"name": "u", "link": "nope"}) is None
     run.side_effect = OSError("no gh")
     assert lookup({"name": "u", "link": "https://x/actions/runs/7/job/1"}) is None
 
 
-def test_stage_keeps_success_and_reports_failed_final_head(tmp_path: Path) -> None:
+def _run_stage(tmp_path: Path, record: dict) -> object:
     ctx = _ctx(tmp_path)
     ctx.target_worktree = str(tmp_path)
-    failed = {"state": "failed", "failed_checks": ["unit"], "timing_gate_checks": [], "ci_wait": None, "reason": ""}
     report = MagicMock(calibrated_branch=BRANCH + "calibrated")
     report.to_dict.return_value = {}
     ok = SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -168,11 +181,33 @@ def test_stage_keeps_success_and_reports_failed_final_head(tmp_path: Path) -> No
         patch("sandbox_executor.flow.stages.calibrate.run_calibrate", return_value=report),
         patch("sandbox_executor.flow.stages.calibrate.run_git", return_value=ok),
         patch("sandbox_executor.flow.calibrate_sync.run_git", return_value=ok),
-        patch("sandbox_executor.flow.stages.calibrate.check_final_head_ci", return_value=failed),
+        patch("sandbox_executor.flow.stages.calibrate.check_final_head_ci", return_value=record),
     ):
-        result = run_calibrate_stage(ctx)
-    assert result.status == StageStatus.SUCCESS
+        return run_calibrate_stage(ctx)
+
+
+def test_stage_is_blocked_by_a_red_final_head_and_names_the_checks(tmp_path: Path) -> None:
+    detail = _detail("macos-unit", [GATE])
+    failed = {"state": "failed", "failed_checks": ["macos-unit"], "failed_details": [detail], "ci_wait": None}
+    result = _run_stage(tmp_path, failed)
+    assert result.status == StageStatus.FAILED
+    assert "macos-unit (CI Timing Gate, 6.0 min)" in result.error
     assert result.payload["final_head_ci"] == failed
+    assert result.payload["ci_verdict"]["verdict"] == "red"
+
+
+def test_stage_succeeds_on_a_green_final_head_after_the_push(tmp_path: Path) -> None:
+    result = _run_stage(tmp_path, {"state": "success", "failed_checks": [], "ci_wait": None})
+    assert result.status == StageStatus.SUCCESS
+    assert result.payload["ci_verdict"]["verdict"] == "green"
+
+
+def test_stage_with_unverified_ci_is_never_reported_merge_ready(tmp_path: Path) -> None:
+    result = _run_stage(tmp_path, {"state": "unknown", "failed_checks": [], "reason": "pending", "ci_wait": None})
+    report = result.payload["ci_verdict"]["report"]
+    assert result.payload["ci_verdict"]["verdict"] == "unverified"
+    assert "not verified" in report
+    assert "Not merge-ready" in report
 
 
 def test_stale_prior_head_checks_are_not_reported_as_success(tmp_path: Path) -> None:
@@ -181,7 +216,7 @@ def test_stale_prior_head_checks_are_not_reported_as_success(tmp_path: Path) -> 
     seams = FinalHeadSeams(
         policy=CiWaitPolicy(600.0, clock=lambda: fakes.now, sleep=fakes.sleep),
         probe=fakes.probe,
-        step_lookup=lambda check: None,
+        detail_lookup=lambda check: None,
         registration_timeout=60,
         pushed_head=lambda: "new",
         pr_head=lambda: next(heads),

@@ -32,6 +32,11 @@ from typing import Any
 
 from sandbox_executor.agent_defaults import FALLBACK_AGENT, default_model_for
 from sandbox_executor.agent_runner import get_runner, get_workspace_dir
+from sandbox_executor.entrypoint.rejected_attempt import (
+    clear_rejected_attempts,
+    load_rejected_attempt,
+    previous_failure_section,
+)
 from sandbox_executor.entrypoint.review_failure_detail import clear_full_output, with_short_summary
 from sandbox_executor.entrypoint.review_markdown_gate import run_markdown_gate
 from sandbox_executor.entrypoint.review_verification import (
@@ -263,7 +268,7 @@ def _assert_safe_git_args(args: list[str]) -> None:
             raise ValueError(f"Forbidden history-rewriting or force-push git argument: {clean}")
 
 
-def _verify_before_push(repo_dir: str) -> tuple[bool, bool, str | None]:
+def _verify_before_push(repo_dir: str, iteration: int | None = None) -> tuple[bool, bool, str | None]:
     """Run lint, the changed-Markdown Prettier gate and tests before committing or pushing resolver changes.
 
     A missing ``uv`` is a structured failure naming it (lint and tests unmeasured), never an exception.
@@ -279,8 +284,13 @@ def _verify_before_push(repo_dir: str) -> tuple[bool, bool, str | None]:
     test_env = with_short_summary(dict(os.environ))
     test_res = run_cmd(["uv", "run", "task", "test"], cwd=repo_dir, env=test_env, check=False)
     if test_res.returncode != 0:
-        return True, False, verification_error("test", test_res, _bounded_error_context, workspace=repo_dir)
+        return (
+            True,
+            False,
+            verification_error("test", test_res, _bounded_error_context, workspace=repo_dir, iteration=iteration),
+        )
     clear_full_output(repo_dir, "test")
+    clear_rejected_attempts(repo_dir)
     return True, True, None
 
 
@@ -448,7 +458,7 @@ def _commit_resolution(
     if opts.dry_run:
         return dispositions, initial_head, False, False, None
 
-    lint_ok, tests_ok, verify_err = _verify_before_push(repo_dir)
+    lint_ok, tests_ok, verify_err = _verify_before_push(repo_dir, iteration)
     # A verification failure, a missing verification tool included, never stages, commits or pushes anything.
     if not lint_ok or not tests_ok:
         return dispositions, initial_head, lint_ok, tests_ok, verify_err
@@ -497,6 +507,7 @@ def _run_resolver_mode(
     pre_resolver_head = (_checked(["git", "rev-parse", "HEAD"], repo_dir, "resolve").stdout or "").strip()
     if findings and not args.dry_run:
         prompt = _build_resolver_prompt(repo_dir, head_branch, args.iteration, findings, dispositions_path)
+        prompt += previous_failure_section(repo_dir, pre_resolver_head)
         try:
             raw_dispositions = _run_resolver_agent(repo_dir, agent_name, model_name, prompt, dispositions_path)
         except Exception as exc:
@@ -528,6 +539,7 @@ def _run_resolver_mode(
         # Whatever escapes verification or commit, the host still gets a result with the error preserved.
         error = f"Resolver verification or commit failed: {_bounded_error_context(str(exc))}"
     exit_code = 0 if error is None else 1
+    rejected = load_rejected_attempt(repo_dir, args.iteration) if findings and not tests_ok and lint_ok else None
 
     outcome = {
         RESOLVER_RESULT_MARKER: True,
@@ -541,6 +553,9 @@ def _run_resolver_mode(
         "error": error,
         "exit_code": exit_code,
         "output_tail": bounded_output_tail(output_tail or error),
+        "rejected_patch": rejected.patch_path if rejected else None,
+        "failed_tests": list(rejected.failed_tests) if rejected else [],
+        "test_summary": rejected.summary if rejected else None,
     }
     if args.result_file:
         try:

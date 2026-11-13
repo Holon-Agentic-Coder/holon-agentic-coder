@@ -2646,7 +2646,7 @@ def test_resolver_mode_soft_resets_local_commit_and_commits_with_trailers(tmp_pa
             CommitOptions(pre_resolver_head=pre_resolver_head),
         )
 
-    mock_verify.assert_called_once_with(str(seed))
+    mock_verify.assert_called_once_with(str(seed), 1)
     assert lint_ok is True
     assert tests_ok is True
     assert err is None

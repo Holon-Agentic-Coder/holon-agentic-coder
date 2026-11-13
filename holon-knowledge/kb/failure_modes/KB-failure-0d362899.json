@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-0d362899",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-13T05:22:34.337201+00:00",
+  "updated_ts": "2026-11-13T05:22:34.337201+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794546651-d333c099",
+      "ACT-FIND-1794546649-024ffa54"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794546201-keepdiff/P-1794546217-ec4d1e6a-claude-agent-claude-sonnet-5-5/E-1794546298-5e4151be-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R1-001-01",
+    "symptoms": [
+      "Ledger row test patches record_review_action, so the real writer and run_review_loop halt path are untested; add an unmocked ledger assertion."
+    ]
+  }
+}

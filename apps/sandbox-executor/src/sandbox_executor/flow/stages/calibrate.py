@@ -28,6 +28,7 @@ from sandbox_executor.flow.calibrate_sync import (
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.github.ci_final_head import check_final_head_ci, format_final_head_ci, not_pushed_record
+from sandbox_executor.flow.github.ci_reverify import RED, blocked_error, reverify_and_report
 from sandbox_executor.flow.review.records import _bounded_error_context
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.stages.execute import _warn_ledger_failure
@@ -317,6 +318,7 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:  # noqa: C
 
     final_head_ci = check_final_head_ci(context, repo_dir, context.execution_branch) if pushed else not_pushed_record()
     context.log(format_final_head_ci(final_head_ci))
+    reverified = reverify_and_report(context, repo_dir, final_head_ci, pushed)
     if not context.dry_run and not calibration_succeeded:
         context.log(
             "Stage 5 completed with a calibration failure: nothing was committed, pushed or fast-forwarded "
@@ -326,16 +328,19 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:  # noqa: C
         context.log(f"Stage 5 completed: Calibration analysis generated on branch '{context.calibrated_branch}'.")
     else:
         context.log("Stage 5 completed: Calibration analysis generated in working tree (uncommitted).")
+    blocked = reverified["verdict"] == RED  # deliberate: pending/unmeasured stays SUCCESS, logged in ci_verdict
     result = StageResult(
         stage=FlowStage.CALIBRATE,
-        status=StageStatus.SUCCESS,
+        status=StageStatus.FAILED if blocked else StageStatus.SUCCESS,
         start_time=start_time,
         end_time=end_time,
+        error=blocked_error(reverified) if blocked else None,
         payload={
             "calibrated_branch": context.calibrated_branch,
             "calibration_report": report_dict,
             "promoted_candidates": promoted_candidates,
             "final_head_ci": final_head_ci,
+            "ci_verdict": reverified,
         },
     )
     context.stage_results["calibrate"] = result

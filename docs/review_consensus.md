@@ -85,6 +85,14 @@ measured" and withholds consensus: a run that could not execute records its `run
 or failing, is never reported as unmeasured. A rate below `1.0`, or a non-zero exit code of a completed run, is a failed
 test result and raises `FIND-CI`.
 
+## Approval covers one head
+
+An approved review names the head it covers and the measured CI result at that commit, on one line, for example "Covers
+head `abc1234`; CI at that commit: 11 of 11 checks passed." It never says "all CI checks were green" without counts.
+When Stage 5 later finds CI red on a different head, one follow-up comment says the approval no longer stands (see
+[Final-head CI check](git_flow.md#final-head-ci-check-stage-5)). A later green head needs its own approval, which names
+its own head.
+
 ## Resolver pre-push verification
 
 Before the resolver commits a fix it runs, in order: `uv run task lint`, a Prettier check of the Markdown files it

@@ -36,6 +36,7 @@ from sandbox_executor.flow.review.adjudication import (
 )
 from sandbox_executor.flow.review.ci_evidence import apply_local_test_evidence
 from sandbox_executor.flow.review.ci_outcome import gate_ci_flags
+from sandbox_executor.flow.review.ci_timing_finding import gh_timing_seams, timing_gate_finding
 from sandbox_executor.flow.review.ensemble import (
     _dispatch_review_ensemble,
     _ensemble_iteration,
@@ -61,6 +62,7 @@ from sandbox_executor.flow.review.records import (
     _worst_severity,
     record_review_action,
 )
+from sandbox_executor.flow.review.rejected_attempt_record import _record_rejected_attempt
 from sandbox_executor.flow.review.resolver import (
     DispositionRecorder,
     ResolverInput,
@@ -526,7 +528,10 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
 
         iter_findings = list(adjudication.actionable)
         if ci_finding:
-            ci_row = ci_failure_finding(iteration, _extract_failed_ci_check_names(last_ci_status, tests_failed))
+            failed_names = _extract_failed_ci_check_names(last_ci_status, tests_failed)
+            ci_row = timing_gate_finding(
+                iteration, last_ci_status, failed_names, gh_timing_seams(repo_dir, proxy_env or {})
+            ) or ci_failure_finding(iteration, failed_names)
             iter_findings.append(ci_row)
             if finding_action_ids is not None:
                 act_id = finding_action_ids.get(ci_row.id) or generate_action_id("ACT-FIND")
@@ -591,6 +596,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             # Halt before adjudication: a failed pass's fallback dispositions are no rejections to filter on, and a
             # head it committed but did not push is never re-reviewed. Open findings are recorded once after the loop.
             resolver_error = _bounded_error_context(resolver_outcome.error)
+            if not effective_dry_run:
+                _record_rejected_attempt(context, exec_file, review_target, iteration, resolver_outcome)
             pending_dispositions = ()
             context.log(
                 f"[Review Loop] Halting review loop at iteration {iteration}: resolver failed: {resolver_error}"

@@ -44,6 +44,7 @@ from sandbox_executor.decomposition_rule import InvalidPlanDecisionError
 from sandbox_executor.decomposition_rule import is_placeholder_item as is_placeholder_item
 from sandbox_executor.decomposition_rule import parse_sub_intent_list as parse_sub_intent_list
 from sandbox_executor.decomposition_rule import should_decompose as should_decompose
+from sandbox_executor.entrypoint.changed_markdown import changed_markdown_files
 from sandbox_executor.entrypoint.execution_workspace import continuation_note as continuation_note
 from sandbox_executor.entrypoint.execution_workspace import (
     resolve_partial_head,
@@ -1412,19 +1413,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
             # Format modified/untracked markdown files with prettier
             try:
-                md_files: list[str] = []
-                status_res = repo.run(["status", "--porcelain"], check=False)
-                if status_res.returncode == 0:
-                    for line in status_res.stdout.splitlines():
-                        line = line.strip()
-                        if not line or len(line) < 3:
-                            continue
-                        file_part = line[2:].strip()
-                        if " -> " in file_part:
-                            file_part = file_part.split(" -> ")[1].strip()
-                        file_part = file_part.strip("\"'")
-                        if file_part.endswith(".md"):
-                            md_files.append(file_part)
+                md_files = changed_markdown_files(repo)
                 if md_files:
                     converge_prettier(md_files, repo_dir=repo_dir)
                     if is_action_logging_enabled(intent_data):

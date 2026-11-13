@@ -36,7 +36,7 @@ class PostFacts:
     halted_early: bool  # A resolver error, a budget stop, an unresolved ref, unmeasured tests or no convergence.
     iteration: int
     last_label: int
-    verdict_terminal: bool  # CHANGES_REQUESTED or APPROVED with every reviewer completed (see is_terminal_verdict).
+    verdict_terminal: bool  # CHANGES_REQUESTED or APPROVED with every reviewer completed (see _is_terminal_verdict).
 
 
 @dataclass(frozen=True)
@@ -55,7 +55,7 @@ _FAILED_VERDICT = (
 )
 
 
-def is_terminal_verdict(verdict: ConsensusVerdict | None, reviewers: list[ReviewerResult]) -> bool:
+def _is_terminal_verdict(verdict: ConsensusVerdict | None, reviewers: list[ReviewerResult]) -> bool:
     """Whether the deciding iteration ended in a verdict worth posting: every reviewer completed and none failed."""
     terminal = verdict in (ConsensusVerdict.CHANGES_REQUESTED, ConsensusVerdict.APPROVED)
     return terminal and all(result.status is ReviewerStatus.COMPLETED for result in reviewers)

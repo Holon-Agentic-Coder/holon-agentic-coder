@@ -33,7 +33,7 @@ keeps waiting while a check has failed, so it can name every failed check); `0`,
 invalid and keep 1800 s, and the budget applies per wait (see
 [CI wait budget and outcomes](git_flow.md#ci-wait-budget-and-outcomes)). The Stage 5
 [final-head CI check](git_flow.md#final-head-ci-check-stage-5) draws on the same budget; Stage 5 is exempt from the
-over-budget downgrade, so an overrun there is logged and never fails the stage.
+over-budget downgrade, so an overrun there is logged; a red final head still ends Stage 5 as `failed`.
 
 `HOLON_STAGE_BUDGET_SECONDS` is meant for handing one exact ceiling to a single sandbox role; set it only for that
 container, because wherever it is set it applies to every stage. The host does this itself: while `holon flow` runs a

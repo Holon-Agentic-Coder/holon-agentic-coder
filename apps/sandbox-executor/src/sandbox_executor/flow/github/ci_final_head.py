@@ -1,19 +1,19 @@
 """Stage 5's report of CI on the final head: the head calibration pushed, which the reviewers did not vote on.
 
-The check only reports. It waits with the existing CI wait facility (:mod:`sandbox_executor.flow.github.ci_wait`) on
-the review CI wait budget, classifies the outcome and returns a plain record. It never fails calibration, never
-reruns CI and never touches the CI timing limit; merging stays with the human maintainer.
+The check reports; Stage 5 acts on it (:mod:`sandbox_executor.flow.github.ci_reverify`). It waits with the existing CI
+wait facility (:mod:`sandbox_executor.flow.github.ci_wait`) on the review CI wait budget, classifies the outcome and
+returns a plain record. It never reruns CI and never touches the CI timing limit; merging stays with the human
+maintainer.
 
-States: ``success``, ``failed``, ``timing_gate`` (every failed job failed only in its timing gate step), ``unknown``
-(CI was not measured or was still pending when the budget ran out) and ``skipped`` (nothing was pushed).
+States: ``success``, ``failed`` (any failed check, a timing gate included, because a job over its time limit is a
+failed check), ``unknown`` (CI was not measured or was still pending when the budget ran out) and ``skipped``
+(nothing was pushed).
 """
 
 from __future__ import annotations
 
 import functools
-import json
 import os
-import re
 import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -28,16 +28,18 @@ from sandbox_executor.flow.github.ci import (
     probe_ci_checks,
     resolve_ci_registration_timeout,
 )
+from sandbox_executor.flow.github.ci_failure_detail import (
+    MAX_STEP_LOOKUPS,
+    STEP_LOOKUP_TIMEOUT_SECONDS,
+    DetailLookup,
+    bare_detail,
+    describe_failure,
+    gh_detail_lookup,
+)
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, wait_for_pending_ci
 from sandbox_executor.knowledge import CredentialRedactor
 
-TIMING_GATE_STEP_PREFIX = "CI Timing Gate"
-STEP_LOOKUP_TIMEOUT_SECONDS = 30.0
-MAX_STEP_LOOKUPS = 5
 MAX_REASON_CHARS = 300
-_RUN_ID_PATTERN = re.compile(r"/actions/runs/(\d+)")
-
-StepLookup = Callable[[dict[str, Any]], "list[str] | None"]
 
 
 @dataclass(frozen=True)
@@ -47,47 +49,10 @@ class FinalHeadSeams:
     proxy_env: Mapping[str, str] = field(default_factory=dict)
     policy: CiWaitPolicy | None = None
     probe: Callable[[], dict[str, Any]] | None = None
-    step_lookup: StepLookup | None = None
+    detail_lookup: DetailLookup | None = None
     registration_timeout: float | None = None
     pushed_head: Callable[[], str | None] | None = None
     pr_head: Callable[[], str | None] | None = None
-
-
-def parse_run_id(link: str | None) -> str | None:
-    """The Actions run id in a check link, or None when the link is not an Actions run URL."""
-    match = _RUN_ID_PATTERN.search(str(link or ""))
-    return match.group(1) if match else None
-
-
-def gh_step_lookup(repo_dir: str, proxy_env: Mapping[str, str], run: Callable[..., Any] = subprocess.run) -> StepLookup:
-    """A lookup of the failed step names of a failed check through ``gh run view``; every error yields None."""
-    env = {**os.environ, **proxy_env, "DOCKER_CLI_HINTS": "false"}
-
-    def lookup(check: dict[str, Any]) -> list[str] | None:
-        run_id = parse_run_id(check.get("link"))
-        if run_id is None:
-            return None
-        try:
-            proc = run(
-                ["gh", "run", "view", run_id, "--json", "jobs"],
-                cwd=repo_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=STEP_LOOKUP_TIMEOUT_SECONDS,
-                env=env,
-            )
-            if proc.returncode != 0:
-                return None
-            for job in json.loads(proc.stdout).get("jobs") or []:
-                if job.get("name") == check.get("name"):
-                    steps = job.get("steps") or []
-                    return [str(s.get("name")) for s in steps if str(s.get("conclusion")).lower() == "failure"]
-        except Exception:
-            return None
-        return None
-
-    return lookup
 
 
 def _git_gh_head(repo_dir: str, branch: str, proxy_env: Mapping[str, str]) -> tuple[Callable[[], str | None], ...]:
@@ -142,12 +107,8 @@ def _failed_checks_by_name(ci_status: dict[str, Any], names: list[str]) -> list[
     return [next((c for c in checks if c.get("name") == n), {"name": n}) for n in names]
 
 
-def _timing_gate_only(failed_steps: list[str] | None) -> bool:
-    return bool(failed_steps) and all(s.startswith(TIMING_GATE_STEP_PREFIX) for s in failed_steps or [])
-
-
 def _record(state: str, reason: str = "", **extra: Any) -> dict[str, Any]:
-    return {"state": state, "failed_checks": [], "timing_gate_checks": [], "ci_wait": None, "reason": reason, **extra}
+    return {"state": state, "failed_checks": [], "failed_details": [], "ci_wait": None, "reason": reason, **extra}
 
 
 def not_pushed_record() -> dict[str, Any]:
@@ -155,19 +116,22 @@ def not_pushed_record() -> dict[str, Any]:
     return _record("skipped", "nothing pushed")
 
 
+def _failed_details(ci_status: dict[str, Any], names: list[str], detail_lookup: DetailLookup) -> list[dict[str, Any]]:
+    checks = _failed_checks_by_name(ci_status, names)
+    looked_up = [detail_lookup(c) if i < MAX_STEP_LOOKUPS else None for i, c in enumerate(checks)]
+    return [d or bare_detail(c["name"]) for c, d in zip(checks, looked_up, strict=True)]
+
+
 def classify_final_head(
-    ci_status: dict[str, Any], wait_record: dict[str, Any] | None, step_lookup: StepLookup
+    ci_status: dict[str, Any], wait_record: dict[str, Any] | None, detail_lookup: DetailLookup
 ) -> dict[str, Any]:
-    """Turn a settled CI probe into the final-head record; unknown steps always count as a plain failure."""
+    """Turn a settled CI probe into the final-head record; any failed check, a timing gate included, is ``failed``."""
     if ci_status.get("source") != "github_cli":
         return _record("unknown", "CI checks were not measured on GitHub.", ci_wait=wait_record)
     names = _extract_failed_ci_check_names(ci_status)
     if names:
-        failed = _failed_checks_by_name(ci_status, names)
-        steps = [step_lookup(c) for c in failed[:MAX_STEP_LOOKUPS]]
-        if len(failed) <= MAX_STEP_LOOKUPS and not ci_status.get("pending") and all(map(_timing_gate_only, steps)):
-            return _record("timing_gate", timing_gate_checks=names, ci_wait=wait_record)
-        return _record("failed", failed_checks=names, ci_wait=wait_record)
+        details = _failed_details(ci_status, names, detail_lookup)
+        return _record("failed", failed_checks=names, failed_details=details, ci_wait=wait_record)
     if ci_status.get("pending", 0) > 0:
         pending = ", ".join((wait_record or {}).get("pending_checks") or [])
         reason = f"CI checks were still pending when the wait budget ran out: {pending}".rstrip(": ")
@@ -208,7 +172,7 @@ def check_final_head_ci(
     seams = seams or FinalHeadSeams()
     try:
         ci_status, wait_record = _settled_status(context, repo_dir, branch, seams)
-        lookup = seams.step_lookup or gh_step_lookup(repo_dir, seams.proxy_env)
+        lookup = seams.detail_lookup or gh_detail_lookup(repo_dir, seams.proxy_env)
         return classify_final_head(ci_status, wait_record, lookup)
     except Exception as exc:
         return _record("unknown", CredentialRedactor.redact_text(str(exc))[:MAX_REASON_CHARS])
@@ -221,7 +185,6 @@ def format_final_head_ci(record: Mapping[str, Any] | None) -> str:
     if state == "success":
         return "final head CI: success"
     if state == "failed":
-        return f"final head CI: failed: {', '.join(record['failed_checks'])}"  # type: ignore[index]
-    if state == "timing_gate":
-        return f"final head CI: timing gate only: {', '.join(record['timing_gate_checks'])}"  # type: ignore[index]
+        details = record.get("failed_details") or [bare_detail(n) for n in record["failed_checks"]]  # type: ignore[index]
+        return f"final head CI: failed: {', '.join(describe_failure(d) for d in details)}"
     return f"final head CI: {state}" + (f" ({reason})" if reason else "")

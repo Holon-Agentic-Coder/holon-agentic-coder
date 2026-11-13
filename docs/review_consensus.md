@@ -74,6 +74,14 @@ was posted and why. Dry runs, `--skip-post`, a refused or failed review and a ru
 nothing, as before. `ACT-POST` is written only when a post was actually attempted, and a failed attempt still writes its
 failure row and ends the loop as `post_failed`.
 
+## Approval covers one head
+
+An approved review names the head it covers and the measured CI result at that commit, on one line, for example "Covers
+head `abc1234`; CI at that commit: 11 of 11 checks passed." It never says "all CI checks were green" without counts.
+When Stage 5 later finds CI red on a different head, one follow-up comment says the approval no longer stands (see
+[Final-head CI check](git_flow.md#final-head-ci-check-stage-5)). A later green head needs its own approval, which names
+its own head.
+
 ## Resolver pre-push verification
 
 Before the resolver commits a fix it runs, in order: `uv run task lint`, a Prettier check of the Markdown files it

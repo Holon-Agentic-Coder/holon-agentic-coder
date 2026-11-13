@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-0ab3af74",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-13T05:31:33.779165+00:00",
+  "updated_ts": "2026-11-13T05:31:33.779165+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794547001-203d8bd4",
+      "ACT-FIND-1794546999-bd4321fe"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794546197-chkgate/P-1794546213-1bdbac00-claude-agent-claude-sonnet-5-5/E-1794546322-f7e28c22-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 2 finding detected: FIND-R2-002-02",
+    "symptoms": [
+      "An unverified final head still ends Stage 5 as SUCCESS and posts no invalidation after an approval; block it or post a once-per-head notice."
+    ]
+  }
+}

@@ -1223,6 +1223,7 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
     if workspace_mounts:
         env_to_forward["HOLON_TARGET_WORKTREE"] = SANDBOX_WORKSPACE_MOUNT
         env_to_forward["UV_PROJECT_ENVIRONMENT"] = SANDBOX_UV_PROJECT_ENVIRONMENT
+        env_to_forward["UV_FROZEN"] = "1"
 
     norm_agent_id = local_llm.normalize_agent_id(agent_id)
 

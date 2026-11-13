@@ -843,6 +843,7 @@ def test_worktree_roles_add_only_the_worktree_mounts_and_pin_the_workspace(role,
         reduced = _remove_argv_pair(reduced, pair)
     reduced = _remove_argv_pair(reduced, ["-e", f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"])
     reduced = _remove_argv_pair(reduced, ["-e", f"UV_PROJECT_ENVIRONMENT={SANDBOX_UV_PROJECT_ENVIRONMENT}"])
+    reduced = _remove_argv_pair(reduced, ["-e", "UV_FROZEN=1"])
     reduced = _remove_argv_pair(reduced, ["-e", f"HOLON_ROLE={role}"])
     if role == "intent-creator":
         reduced = _remove_argv_pair(reduced, ["-v", f"{intent_file}:/tmp/intent.json"])
@@ -857,6 +858,8 @@ def test_worktree_roles_add_only_the_worktree_mounts_and_pin_the_workspace(role,
     # 'uv run' in the container must not rebuild the host's .venv inside the shared worktree.
     assert f"UV_PROJECT_ENVIRONMENT={SANDBOX_UV_PROJECT_ENVIRONMENT}" in review
     assert not SANDBOX_UV_PROJECT_ENVIRONMENT.startswith(SANDBOX_WORKSPACE_MOUNT)
+    # ...and must never rewrite the committed lock.
+    assert "UV_FROZEN=1" in review
 
 
 @pytest.mark.parametrize("role", ["intent-creator", "planner", "review-loop"])
@@ -867,6 +870,7 @@ def test_every_role_mounts_the_worktree_exactly_as_the_executor_does(role, inten
     wanted = {
         f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}",
         f"UV_PROJECT_ENVIRONMENT={SANDBOX_UV_PROJECT_ENVIRONMENT}",
+        "UV_FROZEN=1",
         *_FAKE_WORKTREE_MOUNTS[1::2],
     }
 

@@ -17,3 +17,4 @@ Started. Implementing the lockfile freeze plan.
 ## Steps Executed
 
 - Step 1: pinned `requires-python = "==3.13.*"`; regenerated lock with uv 0.13.7 (revision 5); `uv lock --check` passes in both locks.
+- Step 2: added `entrypoint/uv_lock.py` (`frozen_env`, `check_lockfile`, `LockfileMismatchError`); wired into `review_loop._verify_before_push`, `test_measurement` and the role container env (`UV_FROZEN=1`); updated the worktree sandbox argv tests.

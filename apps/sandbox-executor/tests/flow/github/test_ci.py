@@ -21,6 +21,7 @@ from sandbox_executor.flow import (
 
 from tests.flow.helpers import _verified_diff
 from tests.flow.lookup_patch import patch_lookup_sites
+from tests.flow.sleep_patch import scoped_sleep_patch
 
 
 class TestUnmeasuredTestsStopEarly:
@@ -88,8 +89,9 @@ class TestUnmeasuredTestsStopEarly:
             patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
             patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
             patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123"),
-            patch("sandbox_executor.flow.github.ci.time.sleep", sleep),
-            # No real ``git rev-parse``: ``subprocess`` polls its child with the ``time.sleep`` patched above.
+            scoped_sleep_patch("sandbox_executor.flow.github.ci", sleep),
+            scoped_sleep_patch("sandbox_executor.flow.review.loop", sleep),
+            # No real ``git rev-parse``: keep the test hermetic and fast.
             patch("sandbox_executor.flow.review.local_tests._ReviewLocalTests._head", lambda self: self._head_sha),
             _verified_diff(),
         ):
@@ -269,7 +271,7 @@ class TestUnmeasuredTestsStopEarly:
             ),
             patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
             patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123"),
-            patch("sandbox_executor.flow.review.loop.time.sleep", sleep),
+            scoped_sleep_patch("sandbox_executor.flow.review.loop", sleep),
             patch("sandbox_executor.flow.review.loop._wait_for_ci_registration", wait),
         ):
             res = run_review_stage(ctx)
@@ -326,7 +328,7 @@ class TestUnmeasuredTestsStopEarly:
             ),
             patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", post),
             patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123"),
-            patch("sandbox_executor.flow.review.loop.time.sleep"),
+            scoped_sleep_patch("sandbox_executor.flow.review.loop"),
             patch("sandbox_executor.flow.review.loop._wait_for_ci_registration"),
         ):
             res = call(ctx)

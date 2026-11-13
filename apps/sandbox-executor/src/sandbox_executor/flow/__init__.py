@@ -21,6 +21,7 @@ from __future__ import annotations
 from sandbox_executor.entrypoint.planner import parse_metrics
 from sandbox_executor.flow.calibrate_rebuild import (
     holds_only_calibration_commits,
+    is_ancestor,
     is_calibration_path,
     rebuild_calibrated_branch,
     stale_calibrated_refs,
@@ -370,6 +371,7 @@ __all__ = [
     "generate_semantic_pr_metadata",
     "get_default_checkpoint_path",
     "holds_only_calibration_commits",
+    "is_ancestor",
     "is_calibration_path",
     "is_pending_only",
     "is_terminal_verdict",

@@ -39,9 +39,9 @@ consensus model and post one short consensus review built only from what the rev
 11. **Resolver discipline**: when the resolver container runs on `CHANGES_REQUESTED`, it adjudicates every finding to
     `applied` or `rejected`, runs `uv run task lint` and `uv run task test` before pushing, commits applied fixes with
     the finding ids in the commit message, and never force-pushes or rewrites history.
-12. **Lockfile churn is a defect**: a `uv.lock` change that no `pyproject.toml` dependency or `requires-python` change explains is a defect;
-    reviewers raise it as an Important finding and the resolver reverts it with `git checkout {target_branch} -- uv.lock`,
-    never re-runs `uv` unfrozen, and never commits an incidental rewrite.
+12. **Lockfile churn is a defect**: a `uv.lock` change that no `pyproject.toml` dependency or `requires-python` change
+    explains is a defect; reviewers raise it as an Important finding and the resolver reverts it with
+    `git checkout {target_branch} -- uv.lock`, never re-runs `uv` unfrozen, and never commits an incidental rewrite.
 
 Review commits carry these RFC 2822 trailers:
 

@@ -40,13 +40,13 @@ def is_calibration_path(path: str) -> bool:
     return path.startswith("plans/") and path.count("/") == 1 and path.endswith("_calibration.md")
 
 
-def commits_missing_from_head(repo_dir: str, start_sha: str, existing_sha: str) -> list[str] | None:
+def _commits_missing_from_head(repo_dir: str, start_sha: str, existing_sha: str) -> list[str] | None:
     """The commits on ``existing_sha`` that ``start_sha`` lacks; None when git cannot tell."""
     out = _git_out(repo_dir, ["rev-list", f"{start_sha}..{existing_sha}"])
     return None if out is None else out.split()
 
 
-def is_calibration_commit(repo_dir: str, sha: str) -> bool:
+def _is_calibration_commit(repo_dir: str, sha: str) -> bool:
     """True for a non-merge commit with a ``chore(calibration): `` subject touching only calibration paths."""
     parents = _git_out(repo_dir, ["rev-list", "--parents", "-n", "1", sha])
     subject = _git_out(repo_dir, ["log", "-1", "--format=%s", sha])
@@ -58,8 +58,8 @@ def is_calibration_commit(repo_dir: str, sha: str) -> bool:
 
 def holds_only_calibration_commits(repo_dir: str, start_sha: str, existing_sha: str) -> bool:
     """True when ``existing_sha`` is an ancestor of ``start_sha`` or adds only Stage 5 calibration commits to it."""
-    missing = commits_missing_from_head(repo_dir, start_sha, existing_sha)
-    return missing is not None and all(is_calibration_commit(repo_dir, sha) for sha in missing)
+    missing = _commits_missing_from_head(repo_dir, start_sha, existing_sha)
+    return missing is not None and all(_is_calibration_commit(repo_dir, sha) for sha in missing)
 
 
 def stale_calibrated_refs(repo_dir: str, start_sha: str, local_sha: str, remote_sha: str) -> tuple[str, str]:
@@ -89,7 +89,7 @@ def _replace_remote_branch(context: FlowContext, calibrated: str, start_sha: str
 def _dropped_count(repo_dir: str, start_sha: str, stale: tuple[str, str]) -> int:
     dropped: set[str] = set()
     for sha in filter(None, stale):
-        dropped.update(commits_missing_from_head(repo_dir, start_sha, sha) or [])
+        dropped.update(_commits_missing_from_head(repo_dir, start_sha, sha) or [])
     return len(dropped)
 
 

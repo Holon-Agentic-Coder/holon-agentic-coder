@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-ba770571",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-14T12:48:13.085261+00:00",
+  "updated_ts": "2026-11-14T12:48:13.085261+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1794659618-aab0cff2",
+      "ACT-REV-1794659609-92d74512"
+    ],
+    "success_count": 0,
+    "failure_count": 3,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794657831-calbrnch/P-1794657847-a55ed825-claude-agent-claude-opus-5-5/E-1794658074-9d9b6e87-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 3 executions with identical context.",
+    "action": "Review Loop iteration 2 evaluation for I-1794657831-calbrnch/P-1794657847-a55ed825-claude-agent-claude-opus-5-5/E-1794658074-9d9b6e87-claude-agent-claude-opus-5-5/_",
+    "symptoms": [
+      "Findings detected: ['FIND-DIRTY-002']"
+    ]
+  }
+}

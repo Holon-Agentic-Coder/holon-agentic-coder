@@ -244,6 +244,11 @@ from sandbox_executor.flow.stages.review import (
     run_review_stage,
 )
 from sandbox_executor.flow.stages.sync_conflict import sync_conflict_result
+from sandbox_executor.flow.stages.touch_set_guard import (
+    superseding_failure_row,
+    touch_set_violation,
+    touch_set_violation_result,
+)
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.git import run_git
 from sandbox_executor.redaction import redact_agent_secrets
@@ -444,8 +449,11 @@ __all__ = [
     "save_checkpoint",
     "settle_pending_ci",
     "stale_calibrated_refs",
+    "superseding_failure_row",
     "sync_conflict_result",
     "sync_execution_ref",
+    "touch_set_violation",
+    "touch_set_violation_result",
     "validate_intent_questions",
     "wait_for_pending_ci",
 ]

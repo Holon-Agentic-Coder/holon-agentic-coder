@@ -58,3 +58,20 @@ out-of-set execution diff fails Stage 3 with `touch_set_violation` and returns o
 - Deviation from the touch set: `tests/conftest.py` gained an autouse `stub_stage3_admission` fixture that admits every
   Stage 3, so the existing flow tests never reach the host `gh`; the admission tests restore the real check with fake
   runners.
+
+### Step 4: enforcement after Stage 3 and one bounded re-plan
+
+- New `flow/stages/touch_set_guard.py`: `touch_set_violation` (out-of-set non-metadata files via `out_of_set_files`;
+  nothing when the plan declares no set), `touch_set_violation_result` (superseding `failed` summary row with
+  `failure_reason: "touch_set_violation"`, payload `touch_set_violation` and `replan_requested: true`) and
+  `superseding_failure_row`, the row builder moved out of the empty-diff guard so both guards share it.
+- `stages/execute.py`: the empty-diff guard now calls `superseding_failure_row`; the enforcement hook runs after the
+  container status checks (so a failed or empty execution keeps its existing handling and resume path) and before the
+  success result. The file shrank to 415 lines, inside its 416 budget.
+- `pipeline.py`: `_replan_after_over_budget` now re-plans for `over_budget` or `touch_set_violation`
+  (`_replan_requested`), sharing `MAX_REPLAN_ATTEMPTS`; `_replan_feedback` and `_replan_exhausted_error` split the text
+  so every method stays within the complexity limits, and the exhausted message names the files. Re-planning re-runs
+  Stage 3, so admission runs again before the next dispatch.
+- Deviation from the touch set: `flow/stages/children.py` passes `allow_overlap` to child intents and
+  `tests/flow/stages/test_decomposition.py` classifies the new field as inherited (its field-classification test
+  requires every `FlowContext` field to be listed).

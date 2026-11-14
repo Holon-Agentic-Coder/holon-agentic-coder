@@ -11,9 +11,12 @@ import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
-from sandbox_executor.calibration import generate_calibration
+from sandbox_executor.calibration import PredictedMetrics, generate_calibration, parse_actual_metrics
+from sandbox_executor.flow import FlowContext, StageStatus, run_calibrate_stage
+from sandbox_executor.ref_names import calibration_branch
 
 ROOT_INTENT = "I-1794000000-root/_"
 CHILD_INTENT = "I-1794000000-root--1-child/_"
@@ -110,3 +113,61 @@ def test_absent_plan_ref_degrades_with_a_warning(layout: SimpleNamespace, caplog
         report = generate_calibration(EXEC, target_worktree=str(layout.host))
     assert report.base_sha is None
     assert any(PLAN in rec.getMessage() and "first parent" in rec.getMessage() for rec in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("plan_ref", "diff_base"),
+    [("I-1-a/P-2-b/_", "plan"), ("I-9-gone/P-9-gone/_", "first_parent_fallback")],
+)
+def test_parse_actual_metrics_diff_argv_ends_with_a_separator(plan_ref: str, diff_base: str) -> None:
+    calls: list[list[str]] = []
+
+    def fake_git(args, **_kwargs):
+        calls.append(list(args))
+        verifies = args[:2] == ["rev-parse", "--verify"] and "gone" not in args[-1]
+        if args[:2] == ["rev-parse", "--verify"]:
+            return MagicMock(returncode=0 if verifies else 1, stdout=f"{'c' * 40}\n", stderr="")
+        return MagicMock(returncode=0, stdout="1\n" if args[0] in ("rev-list", "merge-base") else "", stderr="")
+
+    with (
+        patch("sandbox_executor.calibration.run_git", side_effect=fake_git),
+        patch("sandbox_executor.calibration_diff.run_git", side_effect=fake_git),
+        patch("sandbox_executor.git_revisions.run_git", side_effect=fake_git),
+        patch("sandbox_executor.calibration.read_git_file", return_value=None),
+        patch("os.path.exists", return_value=False),
+    ):
+        _actual, meta = parse_actual_metrics(EXEC_ID, plan_ref, PredictedMetrics(), execution_branch=EXEC)
+    diff = next(c for c in calls if c[0] == "diff")
+    assert diff[-1] == "--"
+    assert meta["diff_base"] == diff_base
+    if diff_base == "plan":
+        assert diff[2] == f"refs/heads/{plan_ref}...refs/heads/{EXEC}"
+        assert ["rev-list", "--count", "--merges", f"refs/heads/{plan_ref}..refs/heads/{EXEC}", "--"] in calls
+    else:
+        assert diff[2] == f"refs/heads/{EXEC}~1..refs/heads/{EXEC}"
+        assert not [c for c in calls if c[0] == "merge-base"]
+
+
+@pytest.mark.parametrize("case", ["local", "absent"])
+def test_stage_5_commits_the_report_on_a_nested_layout(layout: SimpleNamespace, case: str) -> None:
+    drop_plan_ref(layout, case)
+    git(layout.host, "checkout", "-qb", "operator-work", "main")
+    ctx = FlowContext(target_worktree=str(layout.host), execution_branch=EXEC, agent="a", model="m", skip_push=True)
+    with (
+        patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.calibrate.check_final_head_ci", return_value={"state": "success"}),
+    ):
+        result = run_calibrate_stage(ctx)
+    assert result.status == StageStatus.SUCCESS, result.error
+    calibrated = result.payload["calibrated_branch"]
+    assert calibrated == calibration_branch(EXEC)
+    assert calibrated.endswith("/calibrated")
+    report_rel = f"plans/{PLAN_ID}_calibration.md"
+    subjects = git(layout.host, "log", "--format=%s", f"refs/heads/{EXEC}").splitlines()
+    assert f"chore(calibration): add calibration report for {PLAN_ID}" in subjects
+    report = git(layout.host, "show", f"refs/heads/{EXEC}:{report_rel}")
+    assert "Fallback calibration generated" not in report
+    assert git(layout.host, "rev-parse", f"refs/heads/{EXEC}") == git(
+        layout.host, "rev-parse", f"refs/heads/{calibrated}"
+    )
+    assert git(layout.host, "symbolic-ref", "--short", "HEAD") == "operator-work"

@@ -67,3 +67,18 @@ In progress: fixing the Stage 5 `git diff` exit 128 "ambiguous argument" on nest
    | `calibrate_rebuild.py` | `merge-base --is-ancestor`, `push`, `branch`                                   | SHAs, qualified lease with `--` | already safe (audited)                                        |
    | `stages/calibrate.py`  | `rev-parse --abbrev-ref HEAD`, `add`, `commit -- <paths>`, `status -- <paths>` | no branch revisions             | already safe (audited)                                        |
    | `stages/review.py`     | Stage 4 `diff --numstat`                                                       | `<plan> <exec>` (raw names)     | qualified refs plus `--`; skipped when either is unresolvable |
+
+5. Step 5 (tests): `tests/flow/test_git_revisions.py` covers a local-only nested branch, a remote-only branch (bare and
+   `origin/` input), qualified and padded input (idempotent), full and short SHAs, missing and empty names (None), a
+   branch name that is also a worktree path, the caller's git runner and `revision_args`.
+   `tests/flow/test_calibrate_sync_refs.py` asserts the exact argv of `_divergence_message`, the `publish_calibration`
+   merge (checkout keeps the short name), the `calibrate_rebuild` `rev-list`, `rev-list --parents`, `log -1` and
+   `diff-tree` calls and the Stage 4 numstat (plus the skipped numstat for an unresolvable branch). A real-git test
+   shows a same-named tag (which git prefers to a branch) plus a colliding worktree path: the qualified count reports 2
+   local commits where the old `origin/<b>..<b>` form counted 0 against the tag.
+   `tests/flow/test_calibrate_nested_refs.py` gained a `parse_actual_metrics` argv test for both `diff_base` labels and
+   an end-to-end `run_calibrate_stage` (real `run_calibrate`, `skip_push=True`, the existing Prettier fake, conflicts
+   and final-head CI patched as in `tests/test_calibrate_sync.py`). It asserts `SUCCESS`, the `/calibrated` branch, the
+   `chore(calibration): add calibration report` commit on the fast-forwarded execution branch, a real (not fallback)
+   report and the restored starting branch. With `calibration.py` reverted to `main`, the end-to-end absent-plan case
+   fails and the local case passes, so the test pins the defect.

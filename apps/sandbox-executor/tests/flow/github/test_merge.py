@@ -19,7 +19,8 @@ from tests.flow.helpers import _git
 
 PLAN = "I-1-root/P-2-agent-model/_"
 CHILD_EXEC = "I-1-root/P-2-agent-model--1-add-the-parser/P-3-agent-model/E-4-agent-model/_"
-FORBIDDEN_FLAGS = ("--squash", "--rebase", "--auto", "--admin", "--delete-branch")
+# Never passed to ``gh pr merge``, whatever merge methods the repository allows.
+FORBIDDEN_FLAGS = ("--rebase", "--auto", "--admin", "--delete-branch")
 
 
 @pytest.mark.parametrize(
@@ -202,7 +203,116 @@ def test_a_green_mergeable_pr_is_merged_with_a_merge_commit_only(repos, tmp_path
     ]
     (call,) = gh.merge_calls()
     assert call == ["pr", "merge", str(number), "--merge", "--match-head-commit", head]
-    assert not any(flag in call for flag in FORBIDDEN_FLAGS)
+    assert not any(flag in call for flag in (*FORBIDDEN_FLAGS, "--squash"))
+
+
+@pytest.mark.parametrize("allow_squash", [True, False], ids=["both-allowed", "merge-commit-only"])
+def test_a_repository_allowing_merge_commits_still_uses_a_merge_commit(repos, tmp_path, allow_squash):
+    origin, host, _ = repos
+    gh, number = _fake(tmp_path, origin)
+    gh.allow_squash_merge = allow_squash
+    head = gh.sha(CHILD_EXEC)
+
+    result = merge_child_pr(str(host), number, PLAN, runner=gh)
+
+    assert result.merged is True
+    assert len(_git(origin, "rev-list", "--parents", "-n", "1", gh.sha(PLAN)).split()) == 3
+    assert gh.merge_calls() == [["pr", "merge", str(number), "--merge", "--match-head-commit", head]]
+
+
+def test_a_squash_only_repository_merges_the_child_with_a_squash(repos, tmp_path):
+    origin, host, _ = repos
+    gh, number = _fake(tmp_path, origin)
+    gh.allow_merge_commit = False
+    head, plan_before = gh.sha(CHILD_EXEC), gh.sha(PLAN)
+
+    result = merge_child_pr(str(host), number, PLAN, runner=gh)
+
+    assert result.merged is True and result.merge_commit == gh.sha(PLAN)
+    (call,) = gh.merge_calls()
+    assert call == ["pr", "merge", str(number), "--squash", "--match-head-commit", head]
+    assert not any(flag in call for flag in (*FORBIDDEN_FLAGS, "--merge"))
+    # A single-parent commit on top of the old plan tip that carries the child's change.
+    assert _git(origin, "rev-list", "--parents", "-n", "1", gh.sha(PLAN)).split()[1:] == [plan_before]
+    assert _git(origin, "show", f"refs/heads/{PLAN}:src/parser.py") == "PARSER = 1"
+
+
+def _assert_refused_without_writes(gh: FakeGitHub, result, fragment: str, tips: dict[str, str]) -> None:
+    assert result.merged is False and fragment in (result.reason or "")
+    assert gh.merge_calls() == []
+    assert {branch: gh.sha(branch) for branch in tips} == tips
+
+
+@pytest.mark.parametrize(
+    ("allow_merge", "allow_squash", "allow_rebase"),
+    [(False, False, False), (False, False, True), (None, "true", True)],
+    ids=["nothing-allowed", "rebase-only", "non-boolean-settings"],
+)
+def test_a_repository_allowing_neither_method_is_refused_before_any_push(
+    repos, tmp_path, allow_merge, allow_squash, allow_rebase
+):
+    origin, host, work = repos
+    # A stale child: an allowed method would first push the plan branch into its head.
+    _commit(work, PLAN, f"origin/{PLAN}", "src/sibling.py", "SIBLING = 1\n")
+    gh, number = _fake(tmp_path, origin)
+    gh.allow_merge_commit, gh.allow_squash_merge, gh.allow_rebase_merge = allow_merge, allow_squash, allow_rebase
+    tips = {branch: gh.sha(branch) for branch in ("main", PLAN, CHILD_EXEC)}
+
+    result = merge_child_pr(str(host), number, PLAN, runner=gh)
+
+    _assert_refused_without_writes(gh, result, "allows neither merge commits nor squash merges", tips)
+
+
+def _wrapped(gh: FakeGitHub, stdout: str):
+    """A runner that answers the merge-settings lookup with ``stdout`` and passes every other call to ``gh``."""
+
+    def runner(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+        if args[:1] == ["api"]:
+            gh.calls.append(list(args))
+            return subprocess.CompletedProcess(["gh", *args], 0, stdout, "")
+        return gh(args, cwd)
+
+    return runner
+
+
+@pytest.mark.parametrize(
+    ("stdout", "fragment"),
+    [
+        (None, "gh api repos/{owner}/{repo} failed: HTTP 502"),
+        ("not json", "did not return JSON"),
+        ("[]", "could not be read"),
+        ("{}", "allows neither merge commits nor squash merges"),
+    ],
+    ids=["http-error", "invalid-json", "not-an-object", "missing-fields"],
+)
+def test_a_failed_merge_method_lookup_is_refused_before_any_push(repos, tmp_path, stdout, fragment):
+    origin, host, work = repos
+    _commit(work, PLAN, f"origin/{PLAN}", "src/sibling.py", "SIBLING = 1\n")
+    gh, number = _fake(tmp_path, origin)
+    gh.repo_settings_fail = stdout is None
+    runner = gh if stdout is None else _wrapped(gh, stdout)
+    tips = {branch: gh.sha(branch) for branch in ("main", PLAN, CHILD_EXEC)}
+
+    result = merge_child_pr(str(host), number, PLAN, runner=runner)
+
+    _assert_refused_without_writes(gh, result, fragment, tips)
+    assert "no usable merge method" in (result.reason or "")
+    assert ["api", "repos/{owner}/{repo}"] in gh.calls
+
+
+@pytest.mark.parametrize(("base", "default"), [("main", "main"), ("trunk", "trunk")], ids=["main", "default-branch"])
+def test_main_and_the_default_branch_are_still_refused_on_a_squash_only_repository(repos, tmp_path, base, default):
+    origin, host, _ = repos
+    if base != "main":
+        _git(origin, "branch", base, "main")
+    gh = FakeGitHub(origin, tmp_path, default_branch=default)
+    gh.allow_merge_commit = False
+    number = gh.open_pr(CHILD_EXEC, base)
+    tips = {branch: gh.sha(branch) for branch in (base, PLAN, CHILD_EXEC)}
+
+    result = merge_child_pr(str(host), number, PLAN, runner=gh)
+
+    _assert_refused_without_writes(gh, result, f"'{base}' is main, master or the repository default branch", tips)
 
 
 def test_an_already_merged_pr_is_an_idempotent_success(repos, tmp_path):

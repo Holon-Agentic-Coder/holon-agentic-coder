@@ -49,3 +49,18 @@ existing guards are unchanged.
   unchanged (diff limited to the import, the lookup, the flag and docstrings).
 - Deviation: `merge.py` could not stay at 299 lines without unrelated reformatting, so its budget was raised by the
   exact delta (`299 + 4 = 303`) with a sentence in the budgets description, as the plan allows.
+
+### Step 4: Extend the fake `gh` and add hermetic tests
+
+- `tests/flow/fake_gh.py`: `allow_merge_commit`, `allow_squash_merge`, `allow_rebase_merge` and `repo_settings_fail`
+  settings, an `api repos/{owner}/{repo}` handler, and a `_pr_merge` that accepts exactly one allowed method, refuses
+  `--rebase`, and performs a real single-parent squash on origin for `--squash`. Defaults keep the old behaviour.
+- `tests/flow/github/test_merge.py`: `--squash` removed from `FORBIDDEN_FLAGS` and asserted per case; new tests for a
+  merge commit when allowed (both allowed and merge-only), squash-only, neither allowed (including rebase-only and
+  non-boolean settings), lookup failure (HTTP error, invalid JSON, a non-object, missing fields) with nothing pushed,
+  and `main` and the default branch still refused on a squash-only repository.
+- `tests/flow/github/test_merge_method.py` (new): pure tests of `choose_merge_flag` and stub-runner tests of
+  `lookup_merge_flag` (exact argument list, fail-closed cases, redaction of a token in stderr).
+- `tests/flow/stages/test_children.py`: a decomposed flow on a squash-only repository squashes both children and the
+  second child is cut from the first squash commit.
+- Affected tests: 226 passed in 3.48s.

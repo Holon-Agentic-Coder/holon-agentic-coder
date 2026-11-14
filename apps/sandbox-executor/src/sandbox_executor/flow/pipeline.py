@@ -32,8 +32,8 @@ from sandbox_executor.flow.stages.plan import _format_entropy, run_plan_stage
 from sandbox_executor.flow.stages.review import run_review_stage
 from sandbox_executor.flow.stages.touch_set_guard import (
     TOUCH_SET_VIOLATION,
-    _touch_set_replan_exhausted,
-    _touch_set_replan_feedback,
+    touch_set_replan_exhausted,
+    touch_set_replan_feedback,
 )
 from sandbox_executor.flow_guard import pre_run_guard_error
 from sandbox_executor.git_flow import target_worktree_problem
@@ -228,7 +228,7 @@ class PipelineEngine:
             why = "the execution changed files outside the plan's touch set"
         self.context.log(f"Stage 3: {why}; returning to Stage 2 (re-plan attempt {attempt} of {MAX_REPLAN_ATTEMPTS}).")
         if files:
-            return _touch_set_replan_feedback(str(self.context.plan_branch), list(files), attempt)
+            return touch_set_replan_feedback(str(self.context.plan_branch), list(files), attempt)
         if _sub_intent_depth_error(self.context) is None:
             request = "write a smaller plan within the budget, or add an explicit sub-intent list."
         else:
@@ -248,7 +248,7 @@ class PipelineEngine:
             return None
         attempts = self.context.replan_attempts
         if result.payload.get(TOUCH_SET_VIOLATION):
-            return _touch_set_replan_exhausted(list(result.payload[TOUCH_SET_VIOLATION]), attempts)
+            return touch_set_replan_exhausted(list(result.payload[TOUCH_SET_VIOLATION]), attempts)
         return (
             f"Execute stage failed: plan entropy {_format_entropy(result.payload.get('entropy'))} exceeds the "
             f"entropy budget {_format_entropy(result.payload.get('entropy_budget'))} after "

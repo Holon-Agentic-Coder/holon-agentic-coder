@@ -247,6 +247,8 @@ from sandbox_executor.flow.stages.review import (
 from sandbox_executor.flow.stages.sync_conflict import sync_conflict_result
 from sandbox_executor.flow.stages.touch_set_guard import (
     superseding_failure_row,
+    touch_set_replan_exhausted,
+    touch_set_replan_feedback,
     touch_set_violation,
     touch_set_violation_result,
 )
@@ -455,6 +457,8 @@ __all__ = [
     "superseding_failure_row",
     "sync_conflict_result",
     "sync_execution_ref",
+    "touch_set_replan_exhausted",
+    "touch_set_replan_feedback",
     "touch_set_violation",
     "touch_set_violation_result",
     "validate_intent_questions",

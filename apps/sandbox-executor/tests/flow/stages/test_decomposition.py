@@ -539,8 +539,7 @@ class TestEntropyBudgetHandoffInFlow:
             "logs": [],
             "schema_version": flow_module.CURRENT_CONTEXT_SCHEMA_VERSION,
             "replan_attempts": 0,
-            # A child intent runs its own Stage 4, so its review count starts afresh.
-            "review_iterations_done": 0,
+            "review_iterations_done": 0,  # A child intent runs its own Stage 4, so its review count starts afresh.
         }
         defaults = FlowContext(token_reduce=False)
         for name, value in parent_values.items():

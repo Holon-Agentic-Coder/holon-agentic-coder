@@ -44,11 +44,11 @@ Before Stage 3 snapshots branches or dispatches the executor (after the plan bud
 flow reads the active plan row's `touch_set` and compares it with every flow in flight:
 
 - **In flight:** an open pull request whose head is a flow execution branch (`I-.../P-.../E-.../_`, one
-  `gh pr list --state open` call, at most 50 pull requests), and a checkpoint (`.holon/flow/checkpoint-*.json`) in
-  another git worktree of the repository whose current stage is execute or review and whose plan branch still exists.
-  Flows of the same root intent (this run's own lineage) are excluded, and a local flow that also has a pull request is
-  listed once. Discovery runs host-side and only reads refs and checkpoint files; it never fetches, checks out or writes
-  another flow's branch.
+  `gh pr list --state open` call; more than 50 open pull requests make discovery unavailable), and a checkpoint
+  (`.holon/flow/checkpoint-*.json`) in another git worktree of the repository whose current stage is execute or review
+  and whose plan branch still exists. Flows of the same root intent (this run's own lineage) are excluded, and a local
+  flow that also has a pull request is listed once. Discovery runs host-side and only reads refs and checkpoint files;
+  it never fetches, checks out or writes another flow's branch.
 - **Compared:** this plan's declared entries against the other flow's declared entries (two literals overlap when equal,
   a literal and a directory or glob when the entry matches the literal, two directories when one contains the other, and
   a glob against a directory or glob when one literal prefix starts the other: conservative on purpose), and against the
@@ -61,20 +61,34 @@ flow reads the active plan row's `touch_set` and compares it with every flow in 
   dry run only logs the decision. Refusal never closes, merges or edits the other flow.
 
 A checkpoint left at execute or review by an abandoned run still counts as in flight while its plan branch exists;
-delete the checkpoint (or the branch) or use the override. Local flows are compared by their declared sets only.
+delete the checkpoint (or the branch) or use the override. Local flows are compared by their declared sets only, so a
+local flow without a pull request whose plan row records no touch set never conflicts (a known gap: its files are not
+known until it opens a pull request). A resumed Stage 3 (`--from-stage execute` or a `--checkpoint` resume) is admitted
+again like a fresh one, so a flow that started since can refuse it, and each admitted resume under `--allow-overlap`
+appends another override row.
 
 ## `--allow-overlap`
 
 `holon flow --allow-overlap` admits a refused plan anyway (child intents inherit the flag) and appends one
 `admission_override` row to `executions.jsonl` on the plan branch before dispatch, recording the conflicts or the reason
-(see `docs/ledger_schema.md`). If that row cannot be written the run is refused, so every overlapping execution is on
-record.
+(the other `executions.jsonl` readers skip it, since they filter on `entry_type`). If that row cannot be written the run
+is refused, so every overlapping execution is on record (the execution branch inherits the row). Fields:
+
+- `entry_type` and `kind`: both `"admission_override"`.
+- `plan_id`, `plan_branch` and `intent_id` (the intent branch): the admitted plan. No `execution_id`.
+- `conflicts`: a list of `{flow, files}`, where `flow` names the pull request and head branch (or the local branch and
+  worktree) and `files` the overlapping files or declared entries; empty when the refusal had no conflict.
+- `reason`: the refusal reason without a conflict (no touch set, discovery unavailable), otherwise `null`.
+- `recorded_by`: `"flow"`; `created_at`: an ISO 8601 UTC timestamp.
 
 ## Enforcement after Stage 3
 
 When the executor succeeds with a non-empty diff, every changed non-metadata file must match some declared entry. Files
-outside the set fail Stage 3 with `touch_set_violation`: a superseding failed summary row is appended to the execution
-branch (kept for the human), and the engine returns to Stage 2 with transient feedback asking the planner to widen the
+outside the set fail Stage 3 with `touch_set_violation`: a superseding summary row in the shape of the empty-diff guard
+row (see `docs/ledger_schema.md`: same `execution_id`, higher `ledger_revision`, `status: "failed"`,
+`failure_reason: "touch_set_violation"`, a `summary` naming the files) is appended to the execution branch (kept for the
+human), the Stage 3 payload carries `touch_set_violation` (the files), `replan_requested: true`, `container_status` and
+`superseding_row_recorded`, and the engine returns to Stage 2 with transient feedback asking the planner to widen the
 touch set to the listed files or decompose the plan. This shares the `MAX_REPLAN_ATTEMPTS` counter with the over-budget
 re-plan; once spent, Stage 3 fails with a message naming the files. The next Stage 3 runs admission again before
 dispatching. A plan admitted by `--allow-overlap` without a touch set has nothing to enforce.

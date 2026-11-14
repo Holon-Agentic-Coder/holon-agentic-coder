@@ -10,6 +10,7 @@ from typing import Any
 from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.checkpoint import save_checkpoint
 from sandbox_executor.flow.in_flight import (
+    MAX_OPEN_PULL_REQUESTS,
     AdmissionUnavailable,
     discover_in_flight_flows,
     local_in_flight_flows,
@@ -101,6 +102,14 @@ def test_gh_failure_returns_admission_unavailable(flow_repos):
     result = discover_in_flight_flows(str(host), OWN_HEAD, FakeGh([], {}, fail=True))
     assert isinstance(result, AdmissionUnavailable)
     assert "gh pr list" in result.reason and "HTTP 502" in result.reason
+
+
+def test_more_open_pull_requests_than_the_limit_fail_closed(flow_repos):
+    host, _origin = flow_repos
+    prs = [{"number": n, "headRefName": OTHER_HEAD} for n in range(1, MAX_OPEN_PULL_REQUESTS + 2)]
+    result = open_flow_pull_requests(str(host), "I-100-own", FakeGh(prs, {}))
+    assert isinstance(result, AdmissionUnavailable)
+    assert f"more than {MAX_OPEN_PULL_REQUESTS} open pull requests" in result.reason
 
 
 def test_git_failure_returns_admission_unavailable(flow_repos):

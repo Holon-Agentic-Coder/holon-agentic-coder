@@ -76,7 +76,7 @@ def touch_set_violation_result(
     return _stage_failure(context, FlowStage.EXECUTE, start_time, error, **payload)
 
 
-def _touch_set_replan_feedback(plan_branch: str, files: list[str], attempt: int) -> str:
+def touch_set_replan_feedback(plan_branch: str, files: list[str], attempt: int) -> str:
     """Transient planner feedback for a re-plan after a touch-set violation."""
     return (
         f"The execution of the previous plan '{plan_branch}' changed files outside its touch set: {', '.join(files)}. "
@@ -85,7 +85,7 @@ def _touch_set_replan_feedback(plan_branch: str, files: list[str], attempt: int)
     )
 
 
-def _touch_set_replan_exhausted(files: list[str], attempts: int) -> str:
+def touch_set_replan_exhausted(files: list[str], attempts: int) -> str:
     """Stage 3 error once the re-plans are spent and the execution still leaves its touch set."""
     return (
         f"Execute stage failed: the execution changed files outside the plan's touch set ({', '.join(files)}) after "

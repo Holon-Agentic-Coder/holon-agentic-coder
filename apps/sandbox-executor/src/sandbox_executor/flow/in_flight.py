@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 #: Runs ``git <args>`` in a directory and returns the completed process (``check=False`` semantics).
 GitRunner = Callable[[list[str], str], subprocess.CompletedProcess[str]]
 
-#: Open pull requests read per admission; more are ignored with a logged warning.
+#: Open pull requests read per admission; more make discovery unavailable (fail closed) rather than truncated.
 MAX_OPEN_PULL_REQUESTS = 50
 _IN_FLIGHT_STAGES = frozenset({FlowStage.EXECUTE, FlowStage.REVIEW})
 _EXECUTION_HEAD_RE = re.compile(r"^(?P<plan>I-\d+-\S*/P-\d+-[^/]+)/E-\d+-[^/]+/_$")
@@ -109,12 +109,12 @@ def open_flow_pull_requests(
 ) -> list[InFlightFlow] | AdmissionUnavailable:
     """Open pull requests whose head is a flow execution branch outside ``own_root``, with declared and real files."""
     gh = merge.gh_runner(run_gh)
-    fields = ["--state", "open", "--limit", str(MAX_OPEN_PULL_REQUESTS), "--json", "number,headRefName,baseRefName"]
+    fields = ["--state", "open", "--limit", str(MAX_OPEN_PULL_REQUESTS + 1), "--json", "number,headRefName,baseRefName"]
     listed = _gh_json(gh, ["pr", "list", *fields], repo_dir)
     if isinstance(listed, AdmissionUnavailable):
         return listed
-    if len(listed) >= MAX_OPEN_PULL_REQUESTS:
-        logger.warning("Admission read only the first %d open pull requests.", MAX_OPEN_PULL_REQUESTS)
+    if len(listed) > MAX_OPEN_PULL_REQUESTS:
+        return AdmissionUnavailable(f"more than {MAX_OPEN_PULL_REQUESTS} open pull requests; not all could be compared")
     flows: list[InFlightFlow] = []
     for pr in listed:
         head = str(pr.get("headRefName") or "")

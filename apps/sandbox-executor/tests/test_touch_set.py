@@ -6,8 +6,12 @@ import pytest
 from sandbox_executor.touch_set import (
     TouchSet,
     TouchSetEntry,
+    entries_overlap,
     entry_matches,
+    files_in_set,
     normalise_touch_path,
+    out_of_set_files,
+    overlapping_entries,
     parse_touch_set_section,
     score_touch_set,
 )
@@ -186,3 +190,49 @@ def test_row_round_trip():
 )
 def test_from_row_is_tolerant(value, expected):
     assert TouchSet.from_row(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "expected"),
+    [
+        ("src/app.py", "src/app.py", True),
+        ("src/app.py", "src/other.py", False),
+        ("src/app.py", "src/", True),
+        ("src/app.py", "lib/", False),
+        ("src/app.py", "src/*.py", True),
+        ("src/pkg/app.py", "src/*.py", False),
+        ("src/pkg/app.py", "src/**/*.py", True),
+        ("src/", "src/pkg/", True),
+        ("src/", "srcx/", False),
+        ("src/pkg/", "src/**", True),
+        ("docs/", "src/**", False),
+        ("src/a*.py", "src/b*.py", False),  # neither literal prefix starts the other
+        ("src/*.md", "src/b*.py", True),  # conservative: the literal prefix src/ starts src/b
+        ("src/a/*.py", "src/b/*.py", False),
+        ("apps/*/tests/", "apps/web/", True),
+        ("plans/P-1.md", "plans/", False),  # metadata never overlaps
+        ("holon-knowledge/", "holon-knowledge/ledger/plans.jsonl", False),
+    ],
+)
+def test_entries_overlap(a, b, expected):
+    assert entries_overlap(TouchSetEntry(a), TouchSetEntry(b)) is expected
+    assert entries_overlap(TouchSetEntry(b), TouchSetEntry(a)) is expected
+
+
+def test_overlapping_entries_lists_every_pair():
+    own = TouchSet((TouchSetEntry("src/"), TouchSetEntry("docs/a.md")))
+    other = TouchSet((TouchSetEntry("src/app.py"), TouchSetEntry("lib/"), TouchSetEntry("docs/**")))
+    assert overlapping_entries(own, other) == [("src/", "src/app.py"), ("docs/a.md", "docs/**")]
+
+
+def test_files_in_set_drops_metadata_and_duplicates():
+    touch_set = TouchSet((TouchSetEntry("src/"), TouchSetEntry("plans/")))
+    changed = ["./src/app.py", "src/app.py", "lib/x.py", "plans/P-1.md", "src/{old => new}.py"]
+    assert files_in_set(touch_set, changed) == ["src/app.py", "src/new.py"]
+
+
+def test_out_of_set_files_ignores_metadata():
+    touch_set = TouchSet((TouchSetEntry("src/*.py"),))
+    changed = ["src/app.py", "src/pkg/deep.py", "executions/E-1.md", "holon-knowledge/ledger/executions.jsonl"]
+    assert out_of_set_files(touch_set, changed) == ["src/pkg/deep.py"]
+    assert out_of_set_files(TouchSet(), ["plans/P-1.md"]) == []

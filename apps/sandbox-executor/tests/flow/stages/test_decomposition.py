@@ -508,6 +508,7 @@ class TestEntropyBudgetHandoffInFlow:
             "max_review_iterations": 7,
             "review_ensemble_size": 5,
             "mitm_web": True,
+            "allow_overlap": True,
             "dispatcher": dispatcher,
         }
         parent = FlowContext(

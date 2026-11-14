@@ -30,6 +30,11 @@ from sandbox_executor.flow.stages.execute import run_execute_stage
 from sandbox_executor.flow.stages.intent import run_intent_stage
 from sandbox_executor.flow.stages.plan import _format_entropy, run_plan_stage
 from sandbox_executor.flow.stages.review import run_review_stage
+from sandbox_executor.flow.stages.touch_set_guard import (
+    TOUCH_SET_VIOLATION,
+    _touch_set_replan_exhausted,
+    _touch_set_replan_feedback,
+)
 from sandbox_executor.flow_guard import pre_run_guard_error
 from sandbox_executor.git_flow import target_worktree_problem
 from sandbox_executor.ledger import validate_stage_ledger
@@ -213,39 +218,55 @@ class PipelineEngine:
         """Save active pipeline state to checkpoint file."""
         return save_checkpoint(self.context, self.checkpoint_path)
 
-    def _replan_after_over_budget(self, result: StageResult) -> StageResult:
-        """Return an over-budget plan to Stage 2 up to ``MAX_REPLAN_ATTEMPTS`` times, then fail Stage 3 clearly.
+    def _replan_feedback(self, result: StageResult) -> str:
+        """Log the return to Stage 2 and give the planner's transient feedback for a refused Stage 3 result."""
+        attempt, files = self.context.replan_attempts, result.payload.get(TOUCH_SET_VIOLATION)
+        entropy = _format_entropy(result.payload.get("entropy"))
+        budget = _format_entropy(result.payload.get("entropy_budget"))
+        why = f"plan entropy {entropy} exceeds the entropy budget {budget}"
+        if files:
+            why = "the execution changed files outside the plan's touch set"
+        self.context.log(f"Stage 3: {why}; returning to Stage 2 (re-plan attempt {attempt} of {MAX_REPLAN_ATTEMPTS}).")
+        if files:
+            return _touch_set_replan_feedback(str(self.context.plan_branch), list(files), attempt)
+        if _sub_intent_depth_error(self.context) is None:
+            request = "write a smaller plan within the budget, or add an explicit sub-intent list."
+        else:
+            # A sub-intent list here would be refused for depth, wasting the attempt: ask for one smaller plan only.
+            request = (
+                "write a smaller single plan within the budget. Do not add a sub-intent list: this intent is at "
+                f"the sub-intent depth limit of {MAX_SUB_INTENT_DEPTH}, so a sub-intent list would be refused."
+            )
+        return (
+            f"The previous plan '{self.context.plan_branch}' has entropy {entropy}, above the entropy budget "
+            f"{budget}, and lists no sub-intent list. Re-plan attempt {attempt} of {MAX_REPLAN_ATTEMPTS}: {request}"
+        )
 
-        Each attempt asks the planner, through transient feedback that is never checkpointed or written to a ledger,
-        for a plan within the budget or an explicit sub-intent list (only a smaller plan at the sub-intent depth limit,
-        where a list would be refused), and re-runs Stage 2 and Stage 3 in place.
+    def _replan_exhausted_error(self, result: StageResult) -> str | None:
+        """The Stage 3 error once the re-plans are spent, or ``None`` when ``result`` asks for no re-plan."""
+        if not _replan_requested(result):
+            return None
+        attempts = self.context.replan_attempts
+        if result.payload.get(TOUCH_SET_VIOLATION):
+            return _touch_set_replan_exhausted(list(result.payload[TOUCH_SET_VIOLATION]), attempts)
+        return (
+            f"Execute stage failed: plan entropy {_format_entropy(result.payload.get('entropy'))} exceeds the "
+            f"entropy budget {_format_entropy(result.payload.get('entropy_budget'))} after "
+            f"{attempts} re-plan attempts and the plan lists no sub-intent list."
+        )
+
+    def _replan_after_over_budget(self, result: StageResult) -> StageResult:
+        """Return a refused plan to Stage 2 up to ``MAX_REPLAN_ATTEMPTS`` times, then fail Stage 3 clearly.
+
+        A plan is refused when it is over budget, or when its execution changed files outside its touch set
+        (``touch_set_violation``); both share the one attempt counter. Each attempt asks the planner, through
+        transient feedback that is never checkpointed or written to a ledger, for a plan within the budget or an
+        explicit sub-intent list (only a smaller plan at the sub-intent depth limit, where a list would be refused),
+        or for a touch set widened to the listed files, and re-runs Stage 2 and Stage 3 (admission included) in place.
         """
-        while (
-            result.stage == FlowStage.EXECUTE
-            and result.status == StageStatus.FAILED
-            and result.payload.get("over_budget")
-            and self.context.replan_attempts < MAX_REPLAN_ATTEMPTS
-        ):
+        while _replan_requested(result) and self.context.replan_attempts < MAX_REPLAN_ATTEMPTS:
             self.context.replan_attempts += 1
-            entropy = _format_entropy(result.payload.get("entropy"))
-            budget = _format_entropy(result.payload.get("entropy_budget"))
-            self.context.log(
-                f"Stage 3: plan entropy {entropy} exceeds the entropy budget {budget}; returning to Stage 2 "
-                f"(re-plan attempt {self.context.replan_attempts} of {MAX_REPLAN_ATTEMPTS})."
-            )
-            if _sub_intent_depth_error(self.context) is None:
-                request = "write a smaller plan within the budget, or add an explicit sub-intent list."
-            else:
-                # A sub-intent list here would be refused for depth, wasting the attempt: ask for one smaller plan only.
-                request = (
-                    "write a smaller single plan within the budget. Do not add a sub-intent list: this intent is at "
-                    f"the sub-intent depth limit of {MAX_SUB_INTENT_DEPTH}, so a sub-intent list would be refused."
-                )
-            self.context.intent_data["replan_feedback"] = (
-                f"The previous plan '{self.context.plan_branch}' has entropy {entropy}, above the entropy budget "
-                f"{budget}, and lists no sub-intent list. Re-plan attempt {self.context.replan_attempts} of "
-                f"{MAX_REPLAN_ATTEMPTS}: {request}"
-            )
+            self.context.intent_data["replan_feedback"] = self._replan_feedback(result)
             self.context.plan_branch = None
             self.before_stage(FlowStage.PLAN)
             try:
@@ -261,13 +282,9 @@ class PipelineEngine:
             self.after_stage(FlowStage.EXECUTE, result)
             self.save_checkpoint()
 
-        exhausted = result.stage == FlowStage.EXECUTE and result.status == StageStatus.FAILED
-        if exhausted and result.payload.get("over_budget"):
-            result.error = (
-                f"Execute stage failed: plan entropy {_format_entropy(result.payload.get('entropy'))} exceeds the "
-                f"entropy budget {_format_entropy(result.payload.get('entropy_budget'))} after "
-                f"{self.context.replan_attempts} re-plan attempts and the plan lists no sub-intent list."
-            )
+        error = self._replan_exhausted_error(result)
+        if error is not None:
+            result.error = error
             result.payload = {**result.payload, "replan_attempts": self.context.replan_attempts}
             self.context.stage_results[FlowStage.EXECUTE.value] = result
             self.context.log(result.error)
@@ -372,6 +389,12 @@ class PipelineEngine:
                 break
 
         return self.context.stage_results
+
+
+def _replan_requested(result: StageResult) -> bool:
+    """Whether a failed Stage 3 result asks to return to Stage 2 (over budget, or a touch-set violation)."""
+    refused = result.payload.get("over_budget") or result.payload.get(TOUCH_SET_VIOLATION)
+    return result.stage == FlowStage.EXECUTE and result.status == StageStatus.FAILED and bool(refused)
 
 
 def run_flow_pipeline(

@@ -2,7 +2,7 @@
 
 Children run strictly one after another. Each child is a new intent whose ``target_branch`` and ``parent_intent_id`` are
 the plan branch, so Stage 1 cuts it from the plan branch tip on origin, which already holds every earlier child's merge
-commit. A child is merged into the plan branch (through the guarded :func:`merge_child_pr`) only after its Stage 4
+or squash commit. A child is merged into the plan branch (by the guarded :func:`merge_child_pr`) only after its Stage 4
 consensus halt and its Stage 5 calibration; the next child starts only after that merge. Progress is recorded per child
 in the Stage 3 payload and checkpointed after every change, so a resume continues where the run stopped and never
 dispatches the parent executor or a child that already has work on origin.
@@ -77,6 +77,7 @@ def _child_context(context: FlowContext, intent_data: dict[str, Any]) -> FlowCon
         max_review_iterations=context.max_review_iterations,
         review_ensemble_size=context.review_ensemble_size,
         mitm_web=context.mitm_web,
+        allow_overlap=context.allow_overlap,
         dispatcher=context.dispatcher,
     )
 

@@ -13,8 +13,9 @@ from typing import Any
 
 from sandbox_executor.decomposition_rule import DECISION_DECOMPOSED, DECISION_OVER_BUDGET, InvalidPlanDecisionError
 from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE, _sanitize_string
+from sandbox_executor.flow.admission import admission_stage_failure
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
-from sandbox_executor.flow.dispatch import TEST_MEASUREMENT_KEYS, _dispatch_role, _recorded_test_fields, _stage_failure
+from sandbox_executor.flow.dispatch import _dispatch_role, _recorded_test_fields, _stage_failure
 from sandbox_executor.flow.git_refs import (
     _append_superseding_execution_row,
     _discover_child_branch,
@@ -31,6 +32,7 @@ from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_confli
 from sandbox_executor.flow.stages.decomposition import _run_decomposed_plan, _sub_intent_depth_error
 from sandbox_executor.flow.stages.plan_decision import _over_budget_failure, _plan_budget_decision
 from sandbox_executor.flow.stages.sync_conflict import sync_conflict_result
+from sandbox_executor.flow.stages.touch_set_guard import superseding_failure_row, touch_set_violation_result
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.git import EMPTY_DIFF_FAILURE_REASON, EMPTY_DIFF_STATUS, changed_paths, empty_diff_summary
 from sandbox_executor.knowledge import ActionIndexDatabase, CredentialRedactor, compute_context_fingerprint
@@ -144,6 +146,7 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
         exec_branch = f"{plan_prefix}/{exec_id}/_"
         context.execution_branch = exec_branch
         context.log(f"Stage 3 (dry run): executor dispatch skipped; execution branch would be '{exec_branch}'.")
+        admission_stage_failure(context, start_time)  # a dry run only logs the admission decision
         result = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.SUCCESS,
@@ -178,6 +181,9 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
         depth_error = _sub_intent_depth_error(context)
         if depth_error is not None:
             return _stage_failure(context, FlowStage.EXECUTE, start_time, depth_error, dispatched=False)
+    admission_failure = admission_stage_failure(context, start_time)
+    if admission_failure is not None:
+        return admission_failure
 
     existing_executions = _snapshot_child_branches(repo_dir, plan_prefix, "E")
     if existing_executions is None:
@@ -332,19 +338,8 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
                 "no superseding row was written"
             )
         else:
-            superseding = {k: v for k, v in summary_row.items() if k not in TEST_MEASUREMENT_KEYS}
-            try:
-                prior_revision = int(summary_row.get("ledger_revision") or 1)
-            except (TypeError, ValueError):
-                prior_revision = 1
-            superseding.update(
-                {
-                    "status": EMPTY_DIFF_STATUS,
-                    "failure_reason": EMPTY_DIFF_FAILURE_REASON,
-                    "summary": guard_summary,
-                    "created_at": datetime.now(UTC).isoformat(),
-                    "ledger_revision": max(2, prior_revision + 1),
-                }
+            superseding = superseding_failure_row(
+                summary_row, EMPTY_DIFF_STATUS, EMPTY_DIFF_FAILURE_REASON, guard_summary
             )
             write_error = _append_superseding_execution_row(context, exec_branch, superseding)
             guard_payload["superseding_row_recorded"] = write_error is None
@@ -385,6 +380,10 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
             f"Execute stage failed: executor agent recorded status '{container_status}': {detail}",
             **base_payload,
         )
+
+    violation = touch_set_violation_result(context, start_time, summary_row, changed, base_payload)
+    if violation is not None:
+        return violation
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log(f"Stage 3 completed: Execution branch '{exec_branch}' changes {len(changed)} path(s).")

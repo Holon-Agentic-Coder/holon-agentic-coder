@@ -160,6 +160,7 @@ def test_score_with_zero_denominators():
     metadata_only = score_touch_set(TouchSet((TouchSetEntry("src/a.py"),)), ["plans/P-1.md", "holon-knowledge/x"])
     assert metadata_only.recall is None
     assert metadata_only.precision == 0.0
+    assert score_touch_set(TouchSet((TouchSetEntry("src/a.py"),)), ["plans/{P-1.md => P-2.md}"]).recall is None
 
 
 def test_row_round_trip():

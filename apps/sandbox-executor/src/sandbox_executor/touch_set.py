@@ -212,7 +212,7 @@ class TouchSetScore:
 
 def score_touch_set(touch_set: TouchSet, changed_paths: list[str]) -> TouchSetScore:
     """Precision: declared entries matching some changed file. Recall: changed non-metadata files covered."""
-    paths = list(dict.fromkeys(normalise_touch_path(p) for p in changed_paths if not is_metadata_path(p)))
+    paths = list(dict.fromkeys(p for p in map(normalise_touch_path, changed_paths) if not is_metadata_path(p)))
     used = [entry for entry in touch_set.entries if any(entry_matches(entry, path) for path in paths)]
     unpredicted = [path for path in paths if not any(entry_matches(entry, path) for entry in touch_set.entries)]
     entries = touch_set.entries

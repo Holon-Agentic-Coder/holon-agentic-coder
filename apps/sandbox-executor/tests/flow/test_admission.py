@@ -12,6 +12,7 @@ from sandbox_executor.calibration_ev import parse_summary_records
 from sandbox_executor.flow import FlowContext, StageStatus, admission
 from sandbox_executor.flow.admission import AdmissionDecision, check_admission, format_refusal
 from sandbox_executor.flow.git_refs import _latest_execution_summary
+from sandbox_executor.flow.stages import touch_set_guard
 from sandbox_executor.ledger import query_ledger
 
 from tests.flow.helpers import _git
@@ -111,6 +112,31 @@ def test_override_appends_exactly_one_row(own_plan, monkeypatch):
     assert row["plan_id"] == OWN_PLAN.removesuffix("/_").rsplit("/", 1)[-1] and row["intent_id"] == "I-100-own/_"
     assert row["recorded_by"] == "flow" and row["created_at"]
     assert row["conflicts"][0]["files"] == ["src/app.py"]
+
+
+def test_override_that_cannot_be_recorded_is_refused(own_plan, monkeypatch):
+    _use_real_check(monkeypatch, other_pr(["src/app.py"]))
+    monkeypatch.setattr(admission, "_append_ledger_row", lambda *args, **kwargs: "push rejected")
+    context = own_context(own_plan, allow_overlap=True)
+    result = admission.admission_stage_failure(context, "2026-11-14T00:00:00Z")
+    assert result is not None and result.status == StageStatus.FAILED
+    assert result.payload["dispatched"] is False
+    assert "could not be recorded" in str(result.error) and "push rejected" in str(result.error)
+
+
+def test_touch_set_violation_reports_an_unrecorded_superseding_row(own_plan, monkeypatch):
+    monkeypatch.setattr(touch_set_guard, "touch_set_violation", lambda context, changed: ["lib/extra.py"])
+    monkeypatch.setattr(touch_set_guard, "_append_superseding_execution_row", lambda *args: "push rejected")
+    context = own_context(own_plan)
+    summary_row = {"entry_type": "summary", "execution_id": "E-1-x", "status": "success"}
+    base_payload = {"execution_branch": "I-100-own/P-101-x/E-102-y/_", "status": "success"}
+    result = touch_set_guard.touch_set_violation_result(
+        context, "2026-11-14T00:00:00Z", summary_row, ["lib/extra.py"], base_payload
+    )
+    assert result is not None and result.status == StageStatus.FAILED
+    assert result.payload["superseding_row_recorded"] is False
+    assert result.payload["touch_set_violation"] == ["lib/extra.py"]
+    assert any("could not record the touch-set violation row" in line for line in context.logs)
 
 
 def test_dry_run_only_logs(own_plan, monkeypatch):

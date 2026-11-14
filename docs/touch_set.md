@@ -52,7 +52,8 @@ flow reads the active plan row's `touch_set` and compares it with every flow in 
 - **Compared:** this plan's declared entries against the other flow's declared entries (two literals overlap when equal,
   a literal and a directory or glob when the entry matches the literal, two directories when one contains the other, and
   a glob against a directory or glob when one literal prefix starts the other: conservative on purpose), and against the
-  real files of each pull request (`gh pr diff <n> --name-only`). Metadata never conflicts.
+  real files of each pull request (`gh pr diff <n> --name-only`). Metadata never conflicts. Since nothing is fetched, a
+  pull request whose plan branch this host does not have is compared by its diff only (a warning is logged).
 - **Refusal:** Stage 3 fails before any dispatch with a message naming each pull request and branch (or local branch and
   worktree) and the overlapping files, for example
   `Stage 3 refused: the touch set overlaps pull request #7 (branch I-.../E-.../_) on src/app.py; finish or merge that flow first, or rerun with --allow-overlap.`

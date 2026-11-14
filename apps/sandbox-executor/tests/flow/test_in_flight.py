@@ -89,12 +89,13 @@ def test_pull_requests_keep_flow_heads_outside_own_lineage(flow_repos):
     assert [call[:3] for call in gh.calls] == [["pr", "list", "--state"], ["pr", "diff", "7"]]
 
 
-def test_pull_request_without_readable_plan_row_compares_only_its_diff(flow_repos):
+def test_pull_request_without_readable_plan_row_compares_only_its_diff(flow_repos, caplog):
     host, _origin = flow_repos
     gh = FakeGh([{"number": 7, "headRefName": OTHER_HEAD}], {7: ["src/app.py"]})
     flows = discover_in_flight_flows(str(host), OWN_HEAD, gh, lambda args, cwd: _ok("worktree " + cwd))
     assert not isinstance(flows, AdmissionUnavailable)
     assert flows[0].declared is None and flows[0].changed_files == ("src/app.py",)
+    assert any(OTHER_PLAN in r.getMessage() and "only its diff" in r.getMessage() for r in caplog.records)
 
 
 def test_gh_failure_returns_admission_unavailable(flow_repos):

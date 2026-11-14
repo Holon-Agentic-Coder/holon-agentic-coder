@@ -125,6 +125,8 @@ def open_flow_pull_requests(
         if isinstance(changed, AdmissionUnavailable):
             return changed
         label = f"pull request #{pr.get('number')} (branch {head})"
+        if _resolve_branch_ref(repo_dir, plan_branch) is None:
+            logger.warning("Plan branch %s of %s is not on this host; only its diff is compared", plan_branch, label)
         flows.append(InFlightFlow(label, plan_branch, read_plan_touch_set(repo_dir, plan_branch), changed))
     return flows
 
@@ -182,9 +184,7 @@ def discover_in_flight_flows(
     if isinstance(local, AdmissionUnavailable):
         return local
     flows = list(pull_requests)
-    seen = {flow.plan_branch for flow in flows}
     for flow in local:
-        if flow.plan_branch not in seen:
-            seen.add(flow.plan_branch)
+        if flow.plan_branch not in {known.plan_branch for known in flows}:
             flows.append(flow)
     return flows

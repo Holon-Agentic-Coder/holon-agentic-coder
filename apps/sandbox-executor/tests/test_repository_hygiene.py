@@ -4,7 +4,8 @@ No tracked file may live under, or name, the directories of the tooling that dri
 top-level local-notes directory and a hidden agent-state directory), and none may cite an external task identifier
 or a review-loop finding identifier. Comments, docstrings and help text describe the behaviour they guard instead.
 
-The append-only ledgers and the ``plans/`` and ``executions/`` records are historical and are skipped. Repository-native
+The append-only ledgers, the ``plans/`` and ``executions/`` records, and the ``holon-knowledge/kb/`` entries (generated
+by calibration from review text) are historical and are skipped. Repository-native
 finding ids used as data (for example ``R1-F1`` or ``FIND-CI-001``) are not citations and never match.
 
 Allowlist (:data:`ALLOWLIST`): ``.gitignore`` may hold exactly one line naming the hidden agent-state directory, so that
@@ -25,7 +26,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-HISTORICAL_PREFIXES = ("holon-knowledge/ledger/", "plans/", "executions/")
+HISTORICAL_PREFIXES = ("holon-knowledge/ledger/", "holon-knowledge/kb/", "plans/", "executions/")
 
 # Assembled from fragments so this module never matches its own rules.
 LOCAL_NOTES_DIR = "to" + "do"
@@ -54,7 +55,7 @@ FORBIDDEN_TEXT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 
 
 def is_historical(path: str) -> bool:
-    """Whether ``path`` is an append-only ledger or a plan or execution record."""
+    """Whether ``path`` is an append-only ledger, a plan or execution record, or a generated KB entry."""
     return path.startswith(HISTORICAL_PREFIXES)
 
 

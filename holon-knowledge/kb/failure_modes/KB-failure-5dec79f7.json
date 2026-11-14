@@ -25,7 +25,7 @@
     "description": "Reproduced failure across 2 executions with identical context.",
     "action": "Review Loop iteration 1 finding detected: FIND-R1-001-01",
     "symptoms": [
-      "Dropping --exclude=.subagent/ makes the live benchmark's git clean -fdx delete the git-ignored outside-tooling agent state, even on the default non-forced path; restore the exclusion via fragments or an allowlist entry."
+      "Dropping the git clean exclusion for the outside tooling's agent-state directory makes the live benchmark's git clean -fdx delete the git-ignored outside-tooling agent state, even on the default non-forced path; restore the exclusion via fragments or an allowlist entry."
     ]
   }
 }

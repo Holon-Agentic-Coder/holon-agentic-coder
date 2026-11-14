@@ -941,7 +941,7 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
             proxy_target,
         )
         logger.error(
-            "HOLON_TOKEN_REDUCE is enabled but no proxy accepted a TCP connection at %s. Start the proxy or "
+            "HOLON_TOKEN_REDUCE is enabled but no proxy answered an HTTP proxy request at %s. Start the proxy or "
             "point HOLON_PROXY_URL at it; this run continues with DIRECT egress (no token reduction).",
             proxy_target,
         )

@@ -24,3 +24,19 @@ out-of-set execution diff fails Stage 3 with `touch_set_violation` and returns o
   normaliser with `score_touch_set`. Glob against directory or glob uses the conservative literal-prefix rule; metadata
   entries never overlap. Module docstring now names the admission and enforcement users.
 - Tests in `tests/test_touch_set.py` cover literal, directory, `*`, `**`, conservative glob and metadata cases.
+
+### Step 2: in-flight discovery (`flow/in_flight.py`, exploratory)
+
+- `open_flow_pull_requests`: one `gh pr list --state open --limit 50 --json number,headRefName,baseRefName`, keeping
+  heads shaped like a flow execution branch (`I-.../P-.../E-.../_`), then `gh pr diff <n> --name-only` per kept pull
+  request (metadata dropped). `local_in_flight_flows`: `git worktree list --porcelain`, then every
+  `.holon/flow/checkpoint-*.json` of each other worktree whose current stage is execute or review and whose plan branch
+  still resolves. `discover_in_flight_flows` excludes the run's own root intent and lists a local flow that also has an
+  open pull request once. `read_plan_touch_set` reads the newest plan row through the existing ledger read helpers.
+- Any `gh` or `git` failure returns `AdmissionUnavailable(reason)`; runners are parameters (the `gh` default is the
+  existing `github/merge.py` `run_gh` seam).
+- Learning: on fixtures (non-flow head, own-lineage head, a second worktree holding live, deleted-plan, still-planning,
+  own-lineage and unparseable checkpoints) discovery classified every case correctly, so the checkpoint half was kept.
+  Known gaps: a checkpoint left at execute or review by an abandoned run whose plan branch still exists counts as in
+  flight (false positive, overridable), and local flows compare declared sets only (no real diff). A fork head that
+  is flow-shaped is read like any other head; its plan row is usually absent locally, so only its diff is compared.

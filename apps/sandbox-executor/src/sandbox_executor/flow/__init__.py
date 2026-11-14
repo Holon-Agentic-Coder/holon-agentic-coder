@@ -229,7 +229,11 @@ from sandbox_executor.flow.stages.review import (
     run_review_stage,
 )
 from sandbox_executor.flow.stages.sync_conflict import sync_conflict_result
-from sandbox_executor.flow.touch_set import (
+from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
+from sandbox_executor.git import run_git
+from sandbox_executor.redaction import redact_agent_secrets
+from sandbox_executor.review_report import build_pr_review_consensus_report
+from sandbox_executor.touch_set import (
     TouchSet,
     TouchSetEntry,
     TouchSetScore,
@@ -238,10 +242,6 @@ from sandbox_executor.flow.touch_set import (
     parse_touch_set_section,
     score_touch_set,
 )
-from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
-from sandbox_executor.git import run_git
-from sandbox_executor.redaction import redact_agent_secrets
-from sandbox_executor.review_report import build_pr_review_consensus_report
 
 # stages.children runs child flows through PipelineEngine, but pipeline imports the stages; bind it late.
 _children.PipelineEngine = PipelineEngine

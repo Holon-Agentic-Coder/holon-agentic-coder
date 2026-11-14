@@ -32,6 +32,7 @@ from sandbox_executor.ledger import (
 )
 from sandbox_executor.redaction import redact_agent_secrets, redact_command, redact_command_args
 from sandbox_executor.ref_names import original_labels
+from sandbox_executor.touch_set import parse_touch_set_section
 from sandbox_executor.turns import record_budget_failure, run_turn, supervise_authoring_turn
 
 # The commit identity goes on the command line: a mounted host worktree's repository config is shared with the host and
@@ -285,9 +286,6 @@ def _touch_set_field(plan_md_path: str) -> dict:
 
     Advisory only: a missing section or a parse error records ``None`` and never fails the plan.
     """
-    # Imported here: flow/__init__.py imports this module, so a top-level import would cycle through it.
-    from sandbox_executor.flow.touch_set import parse_touch_set_section
-
     try:
         with open(plan_md_path, encoding="utf-8") as f:
             touch_set = parse_touch_set_section(f.read())

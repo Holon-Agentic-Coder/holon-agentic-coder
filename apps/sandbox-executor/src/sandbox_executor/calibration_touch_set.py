@@ -1,6 +1,6 @@
 """Stage 5 touch-set accuracy: score the plan's ``## Touch Set`` against the execution diff and render it.
 
-``calibration.py`` calls these two functions; the parsing and matching live in ``flow/touch_set.py``.
+``calibration.py`` calls these two functions; the parsing and matching live in ``touch_set.py``.
 """
 
 from __future__ import annotations
@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any
+
+from sandbox_executor.touch_set import TouchSet, parse_touch_set_section, score_touch_set
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +24,6 @@ def touch_set_metrics(plan_meta: dict[str, Any], changed_paths: list[str], targe
     not found and ``parse_predicted_metrics`` fell back to the markdown (its record then has no ``plan_id``). Advisory:
     a malformed row or unreadable plan file never fails calibration.
     """
-    # Imported here: calibration imports this module and the flow package imports calibration, so a top-level import
-    # would cycle through flow/__init__.py.
-    from sandbox_executor.flow.touch_set import TouchSet, parse_touch_set_section, score_touch_set
-
     try:
         if "plan_id" in plan_meta or "touch_set" in plan_meta or not plan_meta.get("plan_file"):
             touch_set = TouchSet.from_row(plan_meta.get("touch_set"))

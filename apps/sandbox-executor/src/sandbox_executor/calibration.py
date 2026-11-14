@@ -30,9 +30,11 @@ from sandbox_executor.calibration_ev import (
     parse_summary_records,
 )
 from sandbox_executor.calibration_touch_set import touch_set_metrics, touch_set_report_lines
-from sandbox_executor.git import EMPTY_DIFF_EXCLUDES, run_git
+from sandbox_executor.git import run_git
 from sandbox_executor.knowledge.records import CredentialRedactor
 from sandbox_executor.ledger import generate_action_id, try_append_action_record
+from sandbox_executor.touch_set import METADATA_PATH_PREFIXES as METADATA_PATH_PREFIXES
+from sandbox_executor.touch_set import is_metadata_path
 
 logger = logging.getLogger(__name__)
 
@@ -65,29 +67,6 @@ class CalibrationFormatError(CalibrationCommitError):
     nothing pushed" correct: the guard runs before the ACT-CAL ledger append, ``git add`` and
     ``git commit``. The message is credential-redacted.
     """
-
-
-# Paths that hold flow metadata (ledgers, plan and execution notes, checkpoints) rather than project code.
-# calibration's actual metrics and the review stage's diff summary both classify through is_metadata_path(). It extends
-# the empty-diff guard's bookkeeping list (git.EMPTY_DIFF_EXCLUDES, which already names executions/) instead of
-# repeating it, so execution notes (executions/E-*.md, committed by every execution) have one shared definition and
-# never count as code in the guard, the review diff summary or calibration.
-METADATA_PATH_PREFIXES: tuple[str, ...] = (
-    *EMPTY_DIFF_EXCLUDES,
-    "holon-knowledge/",
-    ".holon/",
-)
-
-
-def is_metadata_path(path: str) -> bool:
-    """Check if a file path points to metadata, ledger, or planning artifacts rather than project code."""
-    clean = path.strip()
-    if clean.startswith("./"):
-        clean = clean[2:]
-    clean = clean.lstrip("/")
-    if " => " in clean:
-        clean = clean.split(" => ")[-1].strip().rstrip("}").strip()
-    return any(clean.startswith(prefix) for prefix in METADATA_PATH_PREFIXES)
 
 
 @dataclass

@@ -1,9 +1,9 @@
-"""Parsing, normalising, matching and scoring of the planner's touch set (flow/touch_set.py)."""
+"""Parsing, normalising, matching and scoring of the planner's touch set (touch_set.py)."""
 
 from __future__ import annotations
 
 import pytest
-from sandbox_executor.flow.touch_set import (
+from sandbox_executor.touch_set import (
     TouchSet,
     TouchSetEntry,
     entry_matches,
@@ -75,6 +75,10 @@ def test_placeholder_first_item_gives_an_empty_set(item):
     assert parse_touch_set_section(f"## touch set\n\n- {item}\n") == TouchSet()
 
 
+def test_placeholder_item_keeps_the_real_entries_after_it():
+    assert paths(parse_touch_set_section("## Touch Set\n\n- none\n- `src/a.py`\n")) == ["src/a.py"]
+
+
 def test_item_without_backticks_takes_the_first_token():
     assert paths(parse_touch_set_section("## Touch Set\n\n- src/a.py the core module\n")) == ["src/a.py"]
 
@@ -112,6 +116,10 @@ def test_normalise_touch_path(raw, expected):
         ("src/?.py", "src/a.py", True),
         ("src/[ab].py", "src/b.py", True),
         ("src/[!ab].py", "src/b.py", False),
+        ("src/[a-c].py", "src/b.py", True),
+        ("src/[a-c].py", "src/-.py", False),
+        ("src/[!a-c].py", "src/d.py", True),
+        ("src/[c-a].py", "src/-.py", True),
         ("src/a.py", "./src/a.py", True),
     ],
 )

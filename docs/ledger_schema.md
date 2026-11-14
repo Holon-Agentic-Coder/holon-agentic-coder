@@ -137,24 +137,8 @@ historic row without the field is decided by the same rule and, in a flow run, s
 planner's fields plus the decision, a fresh `created_at`, `ledger_revision + 1`, `decision_recorded_by: "flow"`); a
 direct `holon execute`, or a flow run whose back-fill write failed, decides it in the executor.
 
-Plan row `touch_set` (optional; absent on historic rows): the files the plan expects to change, parsed from the plan's
-`## Touch Set` section by `parse_touch_set_section` (`sandbox_executor/flow/touch_set.py`) on the committed plan file.
-It is a list of objects, each with `path` (a repository-relative POSIX path, a directory ending in `/`, or a glob where
-`*` stays within one path segment and `**` spans directories) and, only when the plan named some, `symbols` (stored and
-reported, never scored). Metadata paths (`plans/`, `executions/`, `holon-knowledge/`, `.holon/`) are never listed. A
-placeholder such as `- none` records `[]`, and a plan without the section records `null`; neither fails the plan. Stage
-5 calibration scores it against the execution diff (see the `ACT-CAL` row's `touch_set_accuracy`); admission and
-enforcement will read it too. Example:
-
-```json
-{
-  "touch_set": [
-    { "path": "apps/sandbox-executor/src/sandbox_executor/flow/touch_set.py" },
-    { "path": "apps/sandbox-executor/src/sandbox_executor/calibration.py", "symbols": ["generate_calibration"] },
-    { "path": "docs/" }
-  ]
-}
-```
+Plan row `touch_set` (optional; absent on historic rows): the plan's declared touch set, a list of `{path, symbols?}`
+objects, or `null` when the plan has no `## Touch Set` section. See [touch_set.md](touch_set.md).
 
 Shortened branch names (optional fields, written only when a name was shortened to fit the 255-character ref limit; see
 `docs/git_flow.md` section 2.5.1): an intent row records `original_slug` (the unshortened slug; `slug` holds the one
@@ -238,13 +222,10 @@ Stage 4 and Stage 5 action rows keep their historical field order and identifier
 - `ACT-CAL` uses `execution_id` `CAL-{plan_id}-{ts}`, `category: "doc"` and labels
   `["calibration", "stage-5", plan_id]`. Beyond the common action fields it carries `plan_branch`, `execution_branch`,
   `evaluated_commit_sha`, `predicted_metrics`, `actual_metrics`, `calibration_deltas` and `calibration_report_path`. New
-  rows append `touch_set_accuracy` after `created_at` (the same object as the calibration report's `touch_set`):
-  `precision` (declared entries that matched at least one changed file, over declared entries), `recall` (changed
-  non-metadata files covered by some entry, over changed non-metadata files), `unpredicted_paths` and `unused_entries`.
-  `precision` or `recall` is `null` when its denominator is zero or the plan row has no touch set (the report then shows
-  `n/a`). Older rows lack the key. Each committed calibration run is a new calibration event, so re-running calibration
-  appends a new `ACT-CAL` row. A failed Stage 5 run appends an uncommitted `failure` row whose `action` states whether a
-  fallback report was written or the existing report and ledger rows were left uncommitted.
+  rows append `touch_set_accuracy` after `created_at` (see [touch_set.md](touch_set.md)); older rows lack it. Each
+  committed calibration run is a new calibration event, so re-running calibration appends a new `ACT-CAL` row. A failed
+  Stage 5 run appends an uncommitted `failure` row whose `action` states whether a fallback report was written or the
+  existing report and ledger rows were left uncommitted.
 - Failure `error_context` values that can carry external output (the `ACT-POST` posting error and the fallback `ACT-CAL`
   calibration error) are redacted, then truncated to 2000 characters.
 

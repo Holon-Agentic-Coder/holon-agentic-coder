@@ -40,10 +40,10 @@ def test_touch_set_field_never_fails_the_plan(tmp_path, capsys):
 
 
 @pytest.mark.parametrize(
-    "module", ["sandbox_executor.entrypoint.planner", "sandbox_executor.calibration", "sandbox_executor.flow.touch_set"]
+    "module", ["sandbox_executor.entrypoint.planner", "sandbox_executor.calibration", "sandbox_executor.touch_set"]
 )
 def test_importing_first_in_a_fresh_interpreter_does_not_cycle(module):
-    code = f"import {module}; from sandbox_executor.flow.touch_set import parse_touch_set_section"
+    code = f"import {module}; from sandbox_executor.touch_set import parse_touch_set_section"
     src_dir = str(Path(planner.__file__).resolve().parents[2])
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [src_dir, os.environ.get("PYTHONPATH")]))}
     result = subprocess.run(

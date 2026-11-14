@@ -4,7 +4,8 @@ The planner records the parsed set on its ``plans.jsonl`` row (``touch_set``), a
 against the execution diff (precision and recall). Admission and enforcement will read the same rows later. Format:
 one backticked repository-relative POSIX path or glob per top-level bullet, a trailing ``/`` for a whole directory,
 ``*`` within one path segment and ``**`` across directories, and an optional ``symbols: a, b`` suffix that is stored
-but never scored. Metadata paths (``is_metadata_path``) are dropped. Pure logic: no I/O.
+but never scored. Metadata paths (``is_metadata_path``, defined here and re-exported by ``calibration``) are dropped.
+Pure logic with no I/O, kept outside the flow package so the planner entrypoint and calibration import it directly.
 """
 
 from __future__ import annotations
@@ -13,7 +14,30 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from sandbox_executor.calibration import is_metadata_path
+from sandbox_executor.git import EMPTY_DIFF_EXCLUDES
+
+# Paths that hold flow metadata (ledgers, plan and execution notes, checkpoints) rather than project code.
+# calibration's actual metrics and the review stage's diff summary both classify through is_metadata_path(). It extends
+# the empty-diff guard's bookkeeping list (git.EMPTY_DIFF_EXCLUDES, which already names executions/) instead of
+# repeating it, so execution notes (executions/E-*.md, committed by every execution) have one shared definition and
+# never count as code in the guard, the review diff summary or calibration.
+METADATA_PATH_PREFIXES: tuple[str, ...] = (
+    *EMPTY_DIFF_EXCLUDES,
+    "holon-knowledge/",
+    ".holon/",
+)
+
+
+def is_metadata_path(path: str) -> bool:
+    """Check if a file path points to metadata, ledger, or planning artifacts rather than project code."""
+    clean = path.strip()
+    if clean.startswith("./"):
+        clean = clean[2:]
+    clean = clean.lstrip("/")
+    if " => " in clean:
+        clean = clean.split(" => ")[-1].strip().rstrip("}").strip()
+    return any(clean.startswith(prefix) for prefix in METADATA_PATH_PREFIXES)
+
 
 _HEADING_RE = re.compile(r"^##\s+touch\s+set\s*$", re.IGNORECASE)
 _NEXT_SECTION_RE = re.compile(r"^#{1,2}\s")
@@ -131,16 +155,14 @@ def _is_placeholder(body: str) -> bool:
 
 
 def parse_touch_set_section(plan_markdown: str) -> TouchSet | None:
-    """Parse the ``## Touch Set`` section; ``None`` when absent, an empty set for a placeholder such as ``none``."""
+    """Parse the ``## Touch Set`` section; ``None`` when absent. Placeholder items such as ``none`` are skipped."""
     items = _section_items(plan_markdown)
     if items is None:
         return None
-    if items and _is_placeholder(items[0]):
-        return TouchSet()
     entries: list[TouchSetEntry] = []
     seen: set[str] = set()
     for body in items:
-        entry = _entry_from_item(body)
+        entry = None if _is_placeholder(body) else _entry_from_item(body)
         if entry is None or entry.path in seen or is_metadata_path(entry.path):
             continue
         seen.add(entry.path)
@@ -148,10 +170,21 @@ def parse_touch_set_section(plan_markdown: str) -> TouchSet | None:
     return TouchSet(tuple(entries))
 
 
+def _class_body(body: str) -> str:
+    """Escape only the characters special inside a regex class, so ranges such as ``a-c`` keep working."""
+    return re.sub(r"([\\\[\]^&~|])", r"\\\1", body)
+
+
 def _glob_literal_or_class(token: str) -> str:
     if len(token) > 2 and token.startswith("[") and token.endswith("]"):
         body = token[1:-1]
-        return f"[^{re.escape(body[1:])}]" if body.startswith("!") else f"[{re.escape(body)}]"
+        negate, chars = (True, body[1:]) if body.startswith("!") else (False, body)
+        regex_class = f"[{'^' if negate else ''}{_class_body(chars)}]"
+        try:
+            re.compile(regex_class)
+        except re.error:  # a reversed range such as [c-a]: match its characters literally instead
+            return f"[{'^' if negate else ''}{re.escape(chars)}]"
+        return regex_class
     return re.escape(token)
 
 

@@ -3,8 +3,8 @@
 A flow is in flight when it has an open pull request whose head is a flow execution branch
 (``I-.../P-.../E-.../_``), or a checkpoint in another git worktree of this repository whose current stage is execute or
 review and whose plan branch still resolves. Each flow carries its declared touch set (the newest ``plans.jsonl`` row
-of its plan branch, read from refs only) and, for a pull request, the real changed files. Flows of this run's own root
-intent are excluded, and a local flow that also has an open pull request is listed once.
+of its plan branch, read from refs only) and, for a pull request, the real changed files. Flows of this run's root
+intent or its children (``{root}--{index}-{slug}``) are excluded; a local flow with an open pull request is listed once.
 
 Discovery runs host-side only: ``gh`` and ``git`` are injected runners (tests pass fakes), nothing is fetched, checked
 out or written, and any ``gh`` or ``git`` failure returns :class:`AdmissionUnavailable` instead of raising.
@@ -78,7 +78,7 @@ def _plan_branch_of_head(head: str) -> str | None:
 
 
 def _root_intent(branch: str) -> str:
-    return branch.split("/", 1)[0]
+    return branch.split("/", 1)[0].split("--", 1)[0]
 
 
 def _failure(command: str, result: subprocess.CompletedProcess[str]) -> AdmissionUnavailable:

@@ -24,6 +24,8 @@ from tests.flow.helpers import _git
 OTHER_PLAN = "I-200-other/P-201-aaaaaaaa-claude-agent-claude-opus-5-5/_"
 OTHER_HEAD = "I-200-other/P-201-aaaaaaaa-claude-agent-claude-opus-5-5/E-202-bbbbbbbb-claude-agent-claude-opus-5-5/_"
 OWN_HEAD = "I-100-own/P-101-cccccccc-claude-agent-claude-opus-5-5/E-102-dddddddd-claude-agent-claude-opus-5-5/_"
+CHILD_PLAN = "I-100-own--1-child/P-103-eeeeeeee-claude-agent-claude-opus-5-5/_"
+CHILD_HEAD = CHILD_PLAN.removesuffix("/_") + "/E-104-ffffffff-claude-agent-claude-opus-5-5/_"
 
 
 class FakeGh:
@@ -77,6 +79,7 @@ def test_pull_requests_keep_flow_heads_outside_own_lineage(flow_repos):
             {"number": 7, "headRefName": OTHER_HEAD, "baseRefName": "main"},
             {"number": 8, "headRefName": "feature/not-a-flow", "baseRefName": "main"},
             {"number": 9, "headRefName": OWN_HEAD, "baseRefName": "main"},
+            {"number": 10, "headRefName": CHILD_HEAD, "baseRefName": "main"},
         ],
         diffs={7: ["src/app.py", "plans/P-201.md"]},
     )
@@ -144,6 +147,8 @@ def test_local_checkpoints_keep_live_flows_only(flow_repos, tmp_path):
     write_checkpoint(second, "I-300-gone/P-301-eeeeeeee-x-y/_", executing, "deleted-plan")
     write_checkpoint(second, OTHER_PLAN, [FlowStage.INTENT], "still-planning")
     write_checkpoint(second, "I-100-own/P-101-cccccccc-claude-agent-claude-opus-5-5/_", executing, "own")
+    make_plan_branch(host, CHILD_PLAN, [{"path": "src/"}])
+    write_checkpoint(second, CHILD_PLAN, executing, "own-child")
     (second / ".holon" / "flow" / "checkpoint-broken.json").write_text("{not json", encoding="utf-8")
     (second / ".holon" / "flow" / "checkpoint-list.json").write_text("[]", encoding="utf-8")
     write_checkpoint(host, OTHER_PLAN, executing, "this-worktree")  # this run's own worktree is never read
@@ -166,3 +171,11 @@ def test_local_flow_with_an_open_pull_request_is_listed_once(flow_repos, tmp_pat
     flows = discover_in_flight_flows(str(host), OWN_HEAD, gh)
     assert not isinstance(flows, AdmissionUnavailable)
     assert [flow.label for flow in flows] == [f"pull request #7 (branch {OTHER_HEAD})"]
+
+
+def test_parent_and_child_intents_share_one_lineage(flow_repos):
+    host, _origin = flow_repos
+    gh = FakeGh([{"number": 9, "headRefName": OWN_HEAD}, {"number": 10, "headRefName": CHILD_HEAD}], {})
+    no_worktrees = lambda args, cwd: _ok("worktree " + cwd)  # noqa: E731
+    assert discover_in_flight_flows(str(host), OWN_HEAD, gh, no_worktrees) == []
+    assert discover_in_flight_flows(str(host), CHILD_HEAD, gh, no_worktrees) == []

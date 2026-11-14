@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-10ec4cae",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-14T23:00:32.136763+00:00",
+  "updated_ts": "2026-11-14T23:00:32.136763+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794618849-ec6f5e88",
+      "ACT-FIND-1794618848-d7db6ed5"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794617704-touchset/P-1794617720-cbecf7aa-claude-agent-claude-opus-5-5--1-add-the-planner-touch-set-estimate-a-touch-set-p/P-1794617990-33b5cb73-claude-agent-claude-opus-5-5/E-1794618165-976e286a-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R1-001-01",
+    "symptoms": [
+      "calibration.py (1,683 lines) and tests/test_calibration.py (1,781 lines) grow past the 1,000-line threshold; offset the call-site lines."
+    ]
+  }
+}

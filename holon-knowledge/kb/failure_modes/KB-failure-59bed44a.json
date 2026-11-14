@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-59bed44a",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-14T23:00:32.304553+00:00",
+  "updated_ts": "2026-11-14T23:00:32.304553+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794620432-50160e47",
+      "ACT-FIND-1794620431-63b6158a"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794617704-touchset/P-1794617720-cbecf7aa-claude-agent-claude-opus-5-5--1-add-the-planner-touch-set-estimate-a-touch-set-p/P-1794617990-33b5cb73-claude-agent-claude-opus-5-5/E-1794618165-976e286a-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 6 finding detected: FIND-R1-006-01",
+    "symptoms": [
+      "docs/ledger_schema.md is already over 1,000 lines and grows from 1,044 to 1,045 with the new touch_set bullet; offset the added line so the file does not grow."
+    ]
+  }
+}

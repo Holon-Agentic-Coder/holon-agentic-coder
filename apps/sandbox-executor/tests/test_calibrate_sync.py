@@ -42,6 +42,10 @@ def commit_file(repo: Path, name: str, text: str = "x") -> str:
 
 @pytest.fixture
 def repos(tmp_path: Path) -> SimpleNamespace:
+    return make_repos(tmp_path)
+
+
+def make_repos(tmp_path: Path) -> SimpleNamespace:
     """A bare origin, the host worktree (on its own branch) and a second clone that pushes ahead of it."""
     origin = tmp_path / "origin.git"
     git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
@@ -125,12 +129,13 @@ def test_divergent_local_ref_fails_loudly_and_changes_nothing(repos: SimpleNames
     assert git(repos.host, "symbolic-ref", "--short", "HEAD") == "operator-work"
 
 
-def test_stale_existing_calibrated_branch_fails_loudly(repos: SimpleNamespace) -> None:
+def test_strict_ancestor_calibrated_branch_is_rebuilt_from_the_origin_head(repos: SimpleNamespace) -> None:
     git(repos.host, "branch", CALIBRATED, "main")
+    origin_head = push_ahead(repos)
     _, result = run_stage(repos)
-    assert result.status == StageStatus.FAILED
-    assert CALIBRATED in result.error and "does not contain the execution head" in result.error
-    assert git(repos.host, "rev-parse", CALIBRATED) == git(repos.host, "rev-parse", "main")
+    assert result.status == StageStatus.SUCCESS
+    git(repos.host, "merge-base", "--is-ancestor", origin_head, CALIBRATED)
+    assert git(repos.host, "rev-parse", EXEC) == git(repos.host, "rev-parse", CALIBRATED)
     assert git(repos.host, "symbolic-ref", "--short", "HEAD") == "operator-work"
 
 

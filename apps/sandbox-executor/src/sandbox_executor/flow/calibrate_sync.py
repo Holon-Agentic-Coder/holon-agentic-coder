@@ -3,11 +3,19 @@
 Containers and out-of-band conflict resolution push to ``origin/<execution_branch>`` without moving the local ref,
 so Stage 5 syncs first. A local ref that is behind is fast-forwarded, a local ref holding commits origin lacks is
 refused, and the calibrated branch is created from the origin head so that it fast-forwards onto the execution
-branch. Nothing here resets, forces or merges to ``main``.
+branch. Nothing here resets, forces or merges to ``main``; the flow's own /calibrated branch is the only ref that may
+be replaced, and on origin only with a lease (calibrate_rebuild.py).
 """
 
 from __future__ import annotations
 
+from sandbox_executor.flow.calibrate_rebuild import (
+    CalibrationSyncError,
+    holds_only_calibration_commits,
+    is_ancestor,
+    rebuild_calibrated_branch,
+    stale_calibrated_refs,
+)
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.git_refs import fast_forward_local_branch
 from sandbox_executor.flow.host_remote import DEFAULT_REMOTE, HostRemoteError, fetch_base
@@ -15,18 +23,9 @@ from sandbox_executor.git import run_git
 from sandbox_executor.ref_names import calibration_branch
 
 
-class CalibrationSyncError(RuntimeError):
-    """The local execution ref cannot be reconciled with origin without losing commits."""
-
-
 def _rev(repo_dir: str, ref: str, run=None) -> str:
     res = (run or run_git)(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=repo_dir, check=False)
     return res.stdout.strip() if res.returncode == 0 and isinstance(res.stdout, str) else ""
-
-
-def _is_ancestor(repo_dir: str, ancestor: str, descendant: str) -> bool:
-    res = run_git(["merge-base", "--is-ancestor", ancestor, descendant], cwd=repo_dir, check=False)
-    return res.returncode == 0
 
 
 def _divergence_message(repo_dir: str, branch: str, local_sha: str, origin_sha: str) -> str:
@@ -68,7 +67,7 @@ def sync_execution_ref(context: FlowContext) -> str | None:
         return local_sha or None
     if local_sha == origin_sha:
         return origin_sha
-    if local_sha and not _is_ancestor(repo_dir, local_sha, origin_sha):
+    if local_sha and not is_ancestor(repo_dir, local_sha, origin_sha):
         raise CalibrationSyncError(_divergence_message(repo_dir, branch, local_sha, origin_sha))
     if fast_forward_local_branch(context, branch, origin_sha):
         context.log(f"Stage 5 sync: fast-forwarded '{branch}' to origin head {origin_sha[:12]}.")
@@ -78,14 +77,14 @@ def sync_execution_ref(context: FlowContext) -> str | None:
 
 
 def prepare_calibrated_branch(context: FlowContext, start_sha: str | None) -> bool:
-    """Create the local /calibrated branch at ``start_sha`` unless one exists.
+    """Create the local /calibrated branch at ``start_sha`` unless one exists; rebuild the flow's own stale one.
 
     ``run_calibrate`` checks out an existing local branch, so creating it here fixes its start point.
 
     Returns:
-        True only when this call created the branch.
+        True only when this call created or rebuilt the branch.
     Raises:
-        CalibrationSyncError: If an existing /calibrated branch lacks the execution head.
+        CalibrationSyncError: If an existing /calibrated branch lacks the execution head and holds foreign commits.
     """
     branch = context.execution_branch
     if not branch or not start_sha or context.dry_run:
@@ -99,13 +98,17 @@ def prepare_calibrated_branch(context: FlowContext, start_sha: str | None) -> bo
         if res.returncode != 0:
             context.log(f"Warning: could not create '{calibrated}' at {start_sha[:12]}.")
         return res.returncode == 0
-    for existing in (local_sha, remote_sha):
-        if existing and not _is_ancestor(repo_dir, start_sha, existing):
-            raise CalibrationSyncError(
-                f"existing '{calibrated}' does not contain the execution head {start_sha[:12]}, so it cannot "
-                f"fast-forward onto '{branch}'. Delete it (`git branch -D {calibrated}`) and resume to rebuild."
-            )
-    return False
+    stale = stale_calibrated_refs(repo_dir, start_sha, local_sha, remote_sha)
+    if not any(stale):
+        return False
+    if not all(holds_only_calibration_commits(repo_dir, start_sha, sha) for sha in stale if sha):
+        raise CalibrationSyncError(
+            f"existing '{calibrated}' does not contain the execution head {start_sha[:12]}, so it cannot "
+            f"fast-forward onto '{branch}'. Delete it (`git branch -D {calibrated}`) and resume to rebuild."
+        )
+    # A current origin /calibrated may hold calibration commits past the head; keep them so the push fast-forwards.
+    rebuild_calibrated_branch(context, remote_sha if remote_sha and not stale[1] else start_sha, *stale)
+    return True
 
 
 def discard_empty_calibrated_branch(context: FlowContext, created: bool) -> None:

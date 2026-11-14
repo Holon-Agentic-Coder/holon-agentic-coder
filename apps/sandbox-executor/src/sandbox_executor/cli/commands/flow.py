@@ -273,6 +273,14 @@ def _build_flow_context(
     return context
 
 
+def _calibrated_head_line(calibrate_result: Any) -> str:
+    """Name the execution head the calibration report covers, or say that no report was refreshed for it."""
+    head = calibrate_result.payload.get("calibrated_head")
+    if head:
+        return f"calibration report covers execution head {head[:12]}"
+    return "calibration report not refreshed for the current head"
+
+
 def _report_flow_summary(context: Any, result_dict: dict[str, Any], json_output: bool) -> None:
     result_dict.setdefault("target_worktree", context.target_worktree)
     if json_output:
@@ -287,6 +295,8 @@ def _report_flow_summary(context: Any, result_dict: dict[str, Any], json_output:
         print(f"  {res.summary_line()}" if res else f"  {st}: not run")
         if res and res.status.value == "failed" and res.error:
             print(f"    -> Error: {cli.redact_cli_error(res.error)}")
+        if st == "calibrate" and res:
+            print(f"    {_calibrated_head_line(res)}")
         final_head_ci = res.payload.get("final_head_ci") if res else None
         if st == "calibrate" and final_head_ci and final_head_ci.get("state") != "skipped":
             print(f"    {format_final_head_ci(final_head_ci)}")

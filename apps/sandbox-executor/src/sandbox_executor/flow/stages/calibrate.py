@@ -173,6 +173,7 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:  # noqa: C
 
     repo_dir = context.target_worktree
     calibrated_created = False
+    start_sha: str | None = None
     if not context.dry_run:
         checkout_err = _checkout_execution_branch(context)
         if checkout_err:
@@ -185,12 +186,10 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:  # noqa: C
             )
         try:
             start_sha = sync_execution_ref(context)
-        except CalibrationSyncError as e:
-            return _stage_failure(context, FlowStage.CALIBRATE, start_time, f"Calibrate stage failed: {e}")
-        try:
             calibrated_created = prepare_calibrated_branch(context, start_sha)
         except CalibrationSyncError as e:
-            return _stage_failure(context, FlowStage.CALIBRATE, start_time, f"Calibrate stage failed: {e}")
+            failure = f"Calibrate stage failed: {e}"
+            return _stage_failure(context, FlowStage.CALIBRATE, start_time, failure, calibrated_head=None)
         target_branch = context.intent_data.get("target_branch", "main")
         check_and_resolve_stage_conflicts(
             repo_dir, target_branch=target_branch, stage_name="calibrate", branch=context.execution_branch
@@ -312,6 +311,7 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:  # noqa: C
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     pushed = False
+    publish_attempted = not context.dry_run and calibration_succeeded and bool(context.calibrated_branch)
     # A failed calibration commits nothing, so it neither pushes nor fast-forwards the /calibrated branch.
     if not context.dry_run and calibration_succeeded and context.calibrated_branch:
         pushed = publish_calibration(context)
@@ -319,13 +319,19 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:  # noqa: C
     final_head_ci = check_final_head_ci(context, repo_dir, context.execution_branch) if pushed else not_pushed_record()
     context.log(format_final_head_ci(final_head_ci))
     reverified = reverify_and_report(context, repo_dir, final_head_ci, pushed)
+    # A report that never reached origin does not cover the head: only claim it when published or no push was due.
+    published = pushed or context.skip_push or not publish_attempted
+    calibrated_head = start_sha if calibration_succeeded and published else None
     if not context.dry_run and not calibration_succeeded:
         context.log(
             "Stage 5 completed with a calibration failure: nothing was committed, pushed or fast-forwarded "
             f"for '{context.calibrated_branch}'."
         )
     elif context.calibrated_branch:
-        context.log(f"Stage 5 completed: Calibration analysis generated on branch '{context.calibrated_branch}'.")
+        covering = f" covering execution head {calibrated_head[:12]}" if calibrated_head else ""
+        context.log(
+            f"Stage 5 completed: Calibration analysis generated on branch '{context.calibrated_branch}'{covering}."
+        )
     else:
         context.log("Stage 5 completed: Calibration analysis generated in working tree (uncommitted).")
     blocked = reverified["verdict"] == RED  # deliberate: pending/unmeasured stays SUCCESS, logged in ci_verdict
@@ -337,6 +343,7 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:  # noqa: C
         error=blocked_error(reverified) if blocked else None,
         payload={
             "calibrated_branch": context.calibrated_branch,
+            "calibrated_head": calibrated_head,
             "calibration_report": report_dict,
             "promoted_candidates": promoted_candidates,
             "final_head_ci": final_head_ci,

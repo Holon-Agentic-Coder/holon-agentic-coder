@@ -19,6 +19,13 @@ The engine is split into focused modules; see docs/architecture.md (Flow engine 
 from __future__ import annotations
 
 from sandbox_executor.entrypoint.planner import parse_metrics
+from sandbox_executor.flow.calibrate_rebuild import (
+    holds_only_calibration_commits,
+    is_ancestor,
+    is_calibration_path,
+    rebuild_calibrated_branch,
+    stale_calibrated_refs,
+)
 from sandbox_executor.flow.calibrate_sync import (
     CalibrationSyncError,
     discard_empty_calibrated_branch,
@@ -363,6 +370,9 @@ __all__ = [
     "gate_ci_flags",
     "generate_semantic_pr_metadata",
     "get_default_checkpoint_path",
+    "holds_only_calibration_commits",
+    "is_ancestor",
+    "is_calibration_path",
     "is_pending_only",
     "is_terminal_verdict",
     "leftover_paths",
@@ -379,6 +389,7 @@ __all__ = [
     "publish_new_child_branches",
     "push_branch",
     "push_commit",
+    "rebuild_calibrated_branch",
     "reconcile_jsonl_ledger_conflict",
     "reconcile_ledger_file",
     "record_review_action",
@@ -406,6 +417,7 @@ __all__ = [
     "salvage_leftovers",
     "save_checkpoint",
     "settle_pending_ci",
+    "stale_calibrated_refs",
     "sync_conflict_result",
     "sync_execution_ref",
     "validate_intent_questions",

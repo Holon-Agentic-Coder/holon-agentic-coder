@@ -25,7 +25,7 @@ from tests.flow.sleep_patch import scoped_sleep_patch
 
 
 class TestUnmeasuredTestsStopEarly:
-    """C11-N1/C11-N2: unmeasured tests wait boundedly for CI to register, then stop once with NOT_MEASURED."""
+    """Unmeasured tests wait boundedly for CI to register, then stop once with NOT_MEASURED."""
 
     LOCAL: ClassVar[dict[str, Any]] = {
         "source": "local_tests",
@@ -246,7 +246,7 @@ class TestUnmeasuredTestsStopEarly:
     def test_guard_refusal_is_reported_as_its_own_reason_without_a_ci_wait(
         self, tmp_path, has_diff, detail, reason, expected
     ):
-        """C13E-N1: a refused PR runs no tests and triggers no CI, so Stage 4 neither waits nor blames the tests."""
+        """A refused PR runs no tests and triggers no CI, so Stage 4 neither waits nor blames the tests."""
         from sandbox_executor import flow as flow_module
 
         ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": None})
@@ -291,7 +291,7 @@ class TestUnmeasuredTestsStopEarly:
             probe.assert_not_called()
             assert summaries == []
         else:
-            # C15-N1: fail closed, the refused PR is never reviewed, so only the halted summary row is written.
+            # Fail closed, the refused PR is never reviewed, so only the halted summary row is written.
             probe.assert_not_called()
             assert len(summaries) == 1
             assert summaries[0]["status"] == "failed"
@@ -345,7 +345,7 @@ class TestUnmeasuredTestsStopEarly:
 
     @pytest.mark.parametrize(("payload", "ci"), GREEN_EVIDENCE)
     def test_unverified_diff_never_approves_despite_green_evidence(self, tmp_path, payload, ci):
-        """C15-N1: the loop fails closed on diff_unverified instead of returning approved plus the refusal."""
+        """The loop fails closed on diff_unverified instead of returning approved plus the refusal."""
         res = self._refused_with_green_evidence(
             tmp_path, payload, ci, lambda ctx: run_review_loop(ctx, max_iterations=2, dry_run=False)
         )
@@ -357,7 +357,7 @@ class TestUnmeasuredTestsStopEarly:
 
     @pytest.mark.parametrize(("payload", "ci"), GREEN_EVIDENCE)
     def test_stage4_fails_on_unverified_diff_despite_green_evidence(self, tmp_path, payload, ci):
-        """C15-N1: Stage 4 fails with the refusal's reason, so Stage 5 never calibrates a refused PR."""
+        """Stage 4 fails with the refusal's reason, so Stage 5 never calibrates a refused PR."""
         res = self._refused_with_green_evidence(tmp_path, payload, ci, run_review_stage)
         assert res.status == StageStatus.FAILED
         assert res.payload["halted_for_human"] is False

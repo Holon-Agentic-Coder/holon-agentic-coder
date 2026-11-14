@@ -3532,7 +3532,7 @@ _RAW_DELIMITER_PROXY_FORMS = [
 
 @pytest.mark.parametrize("form", _RAW_DELIMITER_PROXY_FORMS)
 def test_proxy_host_port_skips_a_password_with_raw_delimiters(form):
-    """A raw `/`, `?` or `#` in the password is userinfo, never read as the host or port (R13-N1)."""
+    """A raw `/`, `?` or `#` in the password is userinfo, never read as the host or port."""
     proxy_url = form.format(a=make_probe("a"), b=make_probe("b"))
 
     assert cli._proxy_host_port(proxy_url) == ("127.0.0.1", 3128)
@@ -3603,7 +3603,7 @@ def _assert_value_withheld(text: str, head: str, value: str) -> None:
 @pytest.mark.parametrize("digits", [6, 12])
 @pytest.mark.parametrize("form", _DIGIT_HEAD_PROXY_FORMS)
 def test_detect_holon_coherence_digit_head_password_warning_withholds_value(monkeypatch, caplog, capsys, form, digits):
-    """An all-digit password head before a raw delimiter is never echoed by the Tier 3 warning (R15-N1)."""
+    """An all-digit password head before a raw delimiter is never echoed by the Tier 3 warning."""
     head = _digit_head(digits)
     proxy_url = form.format(head=head, rest=make_probe("r"))
     monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
@@ -3626,7 +3626,7 @@ def test_detect_holon_coherence_digit_head_password_warning_withholds_value(monk
 def test_attach_external_proxy_digit_head_password_messages_withhold_value(  # noqa: PLR0913
     host_paths, monkeypatch, caplog, capsys, form, digits
 ):
-    """The token-reduce warning and error for an unparseable proxy URL never echo the value (R15-N1)."""
+    """The token-reduce warning and error for an unparseable proxy URL never echo the value."""
     head = _digit_head(digits)
     proxy_url = form.format(head=head, rest=make_probe("r"))
     monkeypatch.setenv("HOLON_PROXY_URL", proxy_url)

@@ -58,7 +58,7 @@ class TestFlowRoleDispatch:
         assert ctx.plan_branch.startswith(ctx.intent_branch.removesuffix("/_") + "/P-")
         assert ctx.execution_branch.startswith(ctx.plan_branch.removesuffix("/_") + "/E-")
         assert results["execute"].payload["changed_files"] == 1
-        # The container recorded no test result, so Stage 3 reports it as not measured rather than passed (C10-N1).
+        # The container recorded no test result, so Stage 3 reports it as not measured rather than passed.
         assert results["execute"].payload["test_pass_rate"] is None
 
         # The flow authored nothing: every ledger row on origin came from a (simulated) container.
@@ -486,7 +486,7 @@ class TestFlowRoleDispatch:
         error = results["execute"].error or ""
         assert "exited with code 0" in error
         assert "container recorded status 'success'; recorded a superseding status 'failed' row" in error
-        # The local execution branch is fast-forwarded to the pushed superseding row (C6-N1).
+        # The local execution branch is fast-forwarded to the pushed superseding row.
         local_rows = _ledger_rows(host, ctx.execution_branch, "executions.jsonl")
         assert [r["status"] for r in local_rows if r.get("execution_id") == exec_id] == ["success", "failed"]
         assert _git(host, "rev-parse", ctx.execution_branch) == _git(

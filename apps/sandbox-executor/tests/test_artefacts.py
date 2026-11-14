@@ -91,7 +91,7 @@ class TestArtefacts(unittest.TestCase):
         self.assertFalse(report.usable)
 
     def test_step_table_before_the_overall_section_never_stands_in_for_it(self):
-        # C4-I1: the gate and the ledger row read the `## Overall Plan Metrics` section, wherever it sits (PR #91).
+        # The gate and the ledger row read the `## Overall Plan Metrics` section, wherever it sits (PR #91).
         step_first = (
             "# Plan for I-1\n\n## Step 1: Warm up\n\n| metric | value |\n| --- | --- |\n"
             "| p_success_pred | 0.1 |\n| entropy_pred | 9.0 |\n| impact_pred | 1.0 |\n| cost_pred | 7.0 |\n"

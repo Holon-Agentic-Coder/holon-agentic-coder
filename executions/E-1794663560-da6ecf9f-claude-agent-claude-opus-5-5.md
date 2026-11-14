@@ -60,3 +60,13 @@ review-finding identifiers with plain descriptions, and add a hermetic repositor
   and `docs/git_flow.md` name `tmp/review/`.
 - Tests re-pointed, including the symlinked-root refusal cases `("tmp", False)`, `("tmp/review", False)` and
   `("tmp/review", True)`, which still fail closed. Four modules: 233 passed.
+
+### Step 5: Replace cited identifiers with plain descriptions
+
+- 70 review-finding citations (`C<n>[A-Z]-N<n>`, `C<n>-I<n>`, `R<n>-N<n>`, `R<n>-I<n>`, PR-cycle citations and
+  `review finding N<n>`) removed from comments and docstrings in `local_llm.py`, `cli/__init__.py` and 17 test modules.
+  Leading ids were dropped and the sentence re-capitalised; trailing parentheticals were removed; the few where the id
+  was the subject were rewritten (for example "the withheld-host guard" in `local_llm.py`).
+- `.github/workflows/test-stress.yml`: the external task id became "an earlier incident".
+- Repository-native finding ids used as data (`R1-F1`, `FIND-CI-001` and so on) and `noqa` codes are untouched; no
+  assertion literal changed. The 17 Step 5 modules: 1777 passed, 632 subtests passed.

@@ -320,7 +320,7 @@ class TestRunTurn(unittest.TestCase):
         self.assertLess(h.clock.now, 330)
 
     def test_long_tool_call_within_a_turn_is_not_a_breach(self):
-        # C4-I3: the model thinks for 150 s, then runs the test suite for 190 s (a busy descendant of the runner),
+        # The model thinks for 150 s, then runs the test suite for 190 s (a busy descendant of the runner),
         # then writes its notes at 400 s and exits. Without tool progress the 300 s turn clock would fire at 300 s.
         h = Harness(exit_at=420)
         tmp = tempfile.TemporaryDirectory()
@@ -508,7 +508,7 @@ class TestRunTurn(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
 
     def test_lingering_pipe_holder_ignoring_sigterm_gets_sigkill(self):
-        # C3-N2: a descendant that ignores SIGTERM keeps the pipe open; after a bounded reader wait the group gets
+        # A descendant that ignores SIGTERM keeps the pipe open; after a bounded reader wait the group gets
         # SIGKILL, and the readers are joined again before the output is read.
         stream = TickStream()
         h = Harness(exit_at=5, stdout=stream)
@@ -727,7 +727,7 @@ class TestSuperviseAuthoringTurn(unittest.TestCase):
         self.assertIs(outcome.budget_failure, stage_breach)
 
     def test_no_reprompt_when_stage_has_no_time_left(self):
-        # C3-I1: a clean first turn that finishes at the stage ceiling must not launch a re-prompt that would breach
+        # A clean first turn that finishes at the stage ceiling must not launch a re-prompt that would breach
         # the stage budget on its first poll.
         def finish_at_ceiling():
             with open(self.path, "a", encoding="utf-8") as f:
@@ -780,7 +780,7 @@ class TestProcessSampler(unittest.TestCase):
         self.assertEqual(turns.descendant_cpu_seconds(100, lambda: table), {101: 30.5})
 
     def test_wrapper_spawned_agent_binary_is_not_tool_progress(self):
-        # C6-N2: the codex Node wrapper (100) spawns the native codex binary (101), which parents the tools.
+        # The codex Node wrapper (100) spawns the native codex binary (101), which parents the tools.
         table = {
             100: (1, 100, 1.0, 0.0),  # node wrapper ("MainThread")
             101: (100, 100, 80.0, 6.0),  # the real agent: own CPU excluded, its reaped tools' CPU kept
@@ -858,7 +858,7 @@ class FakeProcFs:
 
 
 class TestReapedChildrenProgress(unittest.TestCase):
-    """C5-N1: CPU of descendants that finished between two samples counts through ``cutime``/``cstime`` on Linux."""
+    """CPU of descendants that finished between two samples counts through ``cutime``/``cstime`` on Linux."""
 
     SHELL_PID = CHILD_PID + 1
 

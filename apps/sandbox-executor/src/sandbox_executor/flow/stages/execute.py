@@ -13,6 +13,7 @@ from typing import Any
 
 from sandbox_executor.decomposition_rule import DECISION_DECOMPOSED, DECISION_OVER_BUDGET, InvalidPlanDecisionError
 from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE, _sanitize_string
+from sandbox_executor.flow.admission import admission_stage_failure
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import TEST_MEASUREMENT_KEYS, _dispatch_role, _recorded_test_fields, _stage_failure
 from sandbox_executor.flow.git_refs import (
@@ -144,6 +145,7 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
         exec_branch = f"{plan_prefix}/{exec_id}/_"
         context.execution_branch = exec_branch
         context.log(f"Stage 3 (dry run): executor dispatch skipped; execution branch would be '{exec_branch}'.")
+        admission_stage_failure(context, start_time)  # a dry run only logs the admission decision
         result = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.SUCCESS,
@@ -178,6 +180,9 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
         depth_error = _sub_intent_depth_error(context)
         if depth_error is not None:
             return _stage_failure(context, FlowStage.EXECUTE, start_time, depth_error, dispatched=False)
+    admission_failure = admission_stage_failure(context, start_time)
+    if admission_failure is not None:
+        return admission_failure
 
     existing_executions = _snapshot_child_branches(repo_dir, plan_prefix, "E")
     if existing_executions is None:

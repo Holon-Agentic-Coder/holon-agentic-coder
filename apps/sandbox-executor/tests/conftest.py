@@ -8,6 +8,7 @@ from collections.abc import Iterator
 import pytest
 from sandbox_executor import cli
 from sandbox_executor.agent_defaults import detected_harness_markers
+from sandbox_executor.flow.admission import AdmissionDecision
 
 from tests import network_guard
 from tests.credential_env import CREDENTIAL_ENV_NAMES
@@ -298,6 +299,16 @@ def feature_worktree_cwd(tmp_path_factory, monkeypatch) -> str:
     path = init_feature_worktree(tmp_path_factory.mktemp("feature-worktree"))
     monkeypatch.chdir(path)
     return path
+
+
+@pytest.fixture(autouse=True)
+def stub_stage3_admission(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Admit every Stage 3, so no test reaches the host ``gh`` or another worktree through touch-set admission.
+
+    The admission tests (``tests/flow/test_admission.py`` and ``tests/flow/stages/test_execute_touch_set.py``) put the
+    real ``check_admission`` back with injected ``gh`` and ``git`` runners.
+    """
+    monkeypatch.setattr("sandbox_executor.flow.admission.check_admission", lambda *_a, **_k: AdmissionDecision(True))
 
 
 @pytest.fixture(autouse=True)

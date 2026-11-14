@@ -19,6 +19,13 @@ The engine is split into focused modules; see docs/architecture.md (Flow engine 
 from __future__ import annotations
 
 from sandbox_executor.entrypoint.planner import parse_metrics
+from sandbox_executor.flow.admission import (
+    AdmissionConflict,
+    AdmissionDecision,
+    admission_stage_failure,
+    check_admission,
+    format_refusal,
+)
 from sandbox_executor.flow.calibrate_rebuild import (
     holds_only_calibration_commits,
     is_ancestor,
@@ -121,6 +128,14 @@ from sandbox_executor.flow.host_remote import (
     push_branch,
     push_commit,
     remote_error,
+)
+from sandbox_executor.flow.in_flight import (
+    AdmissionUnavailable,
+    InFlightFlow,
+    discover_in_flight_flows,
+    local_in_flight_flows,
+    open_flow_pull_requests,
+    read_plan_touch_set,
 )
 from sandbox_executor.flow.intent_questions import validate_intent_questions
 from sandbox_executor.flow.ledger_reconcile import (
@@ -258,6 +273,9 @@ __all__ = [
     "_SECTION_AFTER_MARKER",
     "_SEVERITY_RANK",
     "_SUMMARY_STATUS_WORDS",
+    "AdmissionConflict",
+    "AdmissionDecision",
+    "AdmissionUnavailable",
     "CalibrationSyncError",
     "CiWaitPolicy",
     "CiWaitResult",
@@ -267,6 +285,7 @@ __all__ = [
     "FlowContext",
     "FlowStage",
     "HostRemoteError",
+    "InFlightFlow",
     "MigrationTransform",
     "PipelineEngine",
     "PrefixSide",
@@ -353,19 +372,23 @@ __all__ = [
     "_warn_ledger_failure",
     "_worst_severity",
     "_write_resolved_ledger",
+    "admission_stage_failure",
     "build_pr_review_consensus_report",
     "build_review_id",
+    "check_admission",
     "check_and_resolve_stage_conflicts",
     "check_pr_mergeability",
     "create_or_update_pr",
     "describe_ci_outcome",
     "discard_empty_calibrated_branch",
+    "discover_in_flight_flows",
     "extract_valid_ledger_rows",
     "failed_partial_head",
     "fast_forward_local_branch",
     "fetch_base",
     "format_decomposition_summary",
     "format_final_head_ci",
+    "format_refusal",
     "format_review_git_trailers",
     "gate_ci_flags",
     "generate_semantic_pr_metadata",
@@ -377,9 +400,11 @@ __all__ = [
     "is_terminal_verdict",
     "leftover_paths",
     "load_checkpoint",
+    "local_in_flight_flows",
     "migrate_checkpoint_data",
     "new_local_child_branches",
     "next_poll_interval",
+    "open_flow_pull_requests",
     "parse_metrics",
     "pending_check_names",
     "post_pr_review_consensus",
@@ -389,6 +414,7 @@ __all__ = [
     "publish_new_child_branches",
     "push_branch",
     "push_commit",
+    "read_plan_touch_set",
     "rebuild_calibrated_branch",
     "reconcile_jsonl_ledger_conflict",
     "reconcile_ledger_file",

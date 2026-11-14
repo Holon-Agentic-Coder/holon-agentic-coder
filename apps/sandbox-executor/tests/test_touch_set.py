@@ -107,6 +107,8 @@ def test_normalise_touch_path(raw, expected):
         ("src/a.py", "src/a.pyc", False),
         ("src/", "src/x/y.py", True),
         ("src/", "srcx/y.py", False),
+        ("apps/*/tests/", "apps/x/tests/flow/test_a.py", True),
+        ("apps/*/tests/", "apps/x/src/a.py", False),
         ("src/*.py", "src/a.py", True),
         ("src/*.py", "src/x/a.py", False),
         ("src/**/a.py", "src/a.py", True),

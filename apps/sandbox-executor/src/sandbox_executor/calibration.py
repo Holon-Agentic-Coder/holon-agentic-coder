@@ -30,11 +30,10 @@ from sandbox_executor.calibration_ev import (
     parse_summary_records,
 )
 from sandbox_executor.calibration_touch_set import touch_set_metrics, touch_set_report_lines
-from sandbox_executor.git import run_git
+from sandbox_executor.git import METADATA_PATH_PREFIXES as METADATA_PATH_PREFIXES
+from sandbox_executor.git import is_metadata_path, run_git
 from sandbox_executor.knowledge.records import CredentialRedactor
 from sandbox_executor.ledger import generate_action_id, try_append_action_record
-from sandbox_executor.touch_set import METADATA_PATH_PREFIXES as METADATA_PATH_PREFIXES
-from sandbox_executor.touch_set import is_metadata_path
 
 logger = logging.getLogger(__name__)
 

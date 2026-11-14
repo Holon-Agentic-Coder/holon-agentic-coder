@@ -4,7 +4,7 @@ The planner records the parsed set on its ``plans.jsonl`` row (``touch_set``), a
 against the execution diff (precision and recall). Admission and enforcement will read the same rows later. Format:
 one backticked repository-relative POSIX path or glob per top-level bullet, a trailing ``/`` for a whole directory,
 ``*`` within one path segment and ``**`` across directories, and an optional ``symbols: a, b`` suffix that is stored
-but never scored. Metadata paths (``is_metadata_path``, defined here and re-exported by ``calibration``) are dropped.
+but never scored. Metadata paths (``git.is_metadata_path``) are dropped.
 Pure logic with no I/O, kept outside the flow package so the planner entrypoint and calibration import it directly.
 """
 
@@ -14,30 +14,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from sandbox_executor.git import EMPTY_DIFF_EXCLUDES
-
-# Paths that hold flow metadata (ledgers, plan and execution notes, checkpoints) rather than project code.
-# calibration's actual metrics and the review stage's diff summary both classify through is_metadata_path(). It extends
-# the empty-diff guard's bookkeeping list (git.EMPTY_DIFF_EXCLUDES, which already names executions/) instead of
-# repeating it, so execution notes (executions/E-*.md, committed by every execution) have one shared definition and
-# never count as code in the guard, the review diff summary or calibration.
-METADATA_PATH_PREFIXES: tuple[str, ...] = (
-    *EMPTY_DIFF_EXCLUDES,
-    "holon-knowledge/",
-    ".holon/",
-)
-
-
-def is_metadata_path(path: str) -> bool:
-    """Check if a file path points to metadata, ledger, or planning artifacts rather than project code."""
-    clean = path.strip()
-    if clean.startswith("./"):
-        clean = clean[2:]
-    clean = clean.lstrip("/")
-    if " => " in clean:
-        clean = clean.split(" => ")[-1].strip().rstrip("}").strip()
-    return any(clean.startswith(prefix) for prefix in METADATA_PATH_PREFIXES)
-
+from sandbox_executor.git import is_metadata_path
 
 _HEADING_RE = re.compile(r"^##\s+touch\s+set\s*$", re.IGNORECASE)
 _NEXT_SECTION_RE = re.compile(r"^#{1,2}\s")
@@ -199,10 +176,12 @@ def _glob_regex(pattern: str) -> re.Pattern[str]:
 def entry_matches(entry: TouchSetEntry, path: str) -> bool:
     """Whether a changed repository path falls under a declared entry (directory prefix, glob or exact path)."""
     clean = normalise_touch_path(path)
-    if entry.path.endswith("/"):
-        return clean.startswith(entry.path)
+    is_dir = entry.path.endswith("/")
     if any(char in entry.path for char in _GLOB_CHARS):
-        return _glob_regex(entry.path).match(clean) is not None
+        # A directory glob such as apps/*/tests/ covers everything below each matching directory.
+        return _glob_regex(f"{entry.path}**" if is_dir else entry.path).match(clean) is not None
+    if is_dir:
+        return clean.startswith(entry.path)
     return clean == entry.path
 
 

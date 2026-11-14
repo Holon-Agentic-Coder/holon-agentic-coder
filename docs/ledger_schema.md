@@ -137,9 +137,6 @@ historic row without the field is decided by the same rule and, in a flow run, s
 planner's fields plus the decision, a fresh `created_at`, `ledger_revision + 1`, `decision_recorded_by: "flow"`); a
 direct `holon execute`, or a flow run whose back-fill write failed, decides it in the executor.
 
-Plan row `touch_set` (optional; absent on historic rows): the plan's declared touch set, a list of `{path, symbols?}`
-objects, or `null` when the plan has no `## Touch Set` section. See [touch_set.md](touch_set.md).
-
 Shortened branch names (optional fields, written only when a name was shortened to fit the 255-character ref limit; see
 `docs/git_flow.md` section 2.5.1): an intent row records `original_slug` (the unshortened slug; `slug` holds the one
 used), and a plan or execution row records `original_agent` and `original_model` (the sanitised labels before the digest
@@ -221,11 +218,9 @@ Stage 4 and Stage 5 action rows keep their historical field order and identifier
   fields.
 - `ACT-CAL` uses `execution_id` `CAL-{plan_id}-{ts}`, `category: "doc"` and labels
   `["calibration", "stage-5", plan_id]`. Beyond the common action fields it carries `plan_branch`, `execution_branch`,
-  `evaluated_commit_sha`, `predicted_metrics`, `actual_metrics`, `calibration_deltas` and `calibration_report_path`. New
-  rows append `touch_set_accuracy` after `created_at` (see [touch_set.md](touch_set.md)); older rows lack it. Each
-  committed calibration run is a new calibration event, so re-running calibration appends a new `ACT-CAL` row. A failed
-  Stage 5 run appends an uncommitted `failure` row whose `action` states whether a fallback report was written or the
-  existing report and ledger rows were left uncommitted.
+  `evaluated_commit_sha`, `predicted_metrics`, `actual_metrics`, `calibration_deltas` and `calibration_report_path` (new
+  rows add `touch_set_accuracy`, see [touch_set.md](touch_set.md)). Each committed run appends a new `ACT-CAL` row; a
+  failed Stage 5 run appends an uncommitted `failure` row whose `action` says if a fallback report was written.
 - Failure `error_context` values that can carry external output (the `ACT-POST` posting error and the fallback `ACT-CAL`
   calibration error) are redacted, then truncated to 2000 characters.
 
@@ -801,8 +796,7 @@ Appended when a plan is proposed by the planner:
 - `entropy_budget`: The resolved entropy budget the planner showed the planning agent and the executor enforces (number,
   `>= 0`; the intent row's `entropy_budget`, else `DEFAULT_ENTROPY_BUDGET` `15.0`). Always written on new rows; optional
   on historic rows (see the plan row `entropy_budget` paragraph under the stage matrix).
-- `touch_set`: The plan's declared touch set, a list of `{path, symbols?}` objects, or `null` when the plan has no
-  `## Touch Set` section; absent on historic rows (see the plan row `touch_set` paragraph under the stage matrix).
+- `touch_set`: The declared touch set (`{path, symbols?}` list, `null` without one); see [touch_set.md](touch_set.md).
 - `decomposition_decision`, `sub_intents` (only when `decomposed`): the recorded decision (see the plan row
   decomposition decision paragraph under the stage matrix); optional on historic rows.
 - `ledger_revision`, `decision_recorded_by: "flow"`: _(Only on the flow's superseding back-fill row)_ the superseded
@@ -842,7 +836,7 @@ budget:
 - `execution_notes`: Relative path of the execution notes artefact the agent was asked to write
   (`executions/{execution_id}.md`). Execution notes are flow metadata, so the empty-diff guard, calibration and the
   review stage never count them as changed code (one shared list: `git.EMPTY_DIFF_EXCLUDES`, which
-  `calibration.METADATA_PATH_PREFIXES` extends).
+  `git.METADATA_PATH_PREFIXES` extends).
 - `execution_notes_valid`: Boolean; `true` when the notes exist and are usable. Validation is report-only: `false` never
   discards the code changes, and when the agent wrote no notes only the output size (`agent_output_bytes`) is recorded.
 - `elapsed_seconds`: Wall-clock seconds the execute stage had used when the executor container wrote the summary (one

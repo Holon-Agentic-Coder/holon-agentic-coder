@@ -1,13 +1,11 @@
 """Stage 3 admission input: the flows in flight beside this one and the files they declare or change.
 
-A flow is in flight when it has an open pull request whose head is a flow execution branch
-(``I-.../P-.../E-.../_``), or a checkpoint in another git worktree of this repository whose current stage is execute or
-review and whose plan branch still resolves. Each flow carries its declared touch set (the newest ``plans.jsonl`` row
-of its plan branch, read from refs only) and, for a pull request, the real changed files. Flows of this run's root
-intent or its children (``{root}--{index}-{slug}``) are excluded; a local flow with an open pull request is listed once.
+A flow is in flight when it has an open pull request whose head is a flow execution branch (``I-.../P-.../E-.../_``),
+or a checkpoint in another git worktree whose stage is execute or review and whose plan branch still resolves. Each
+carries its declared touch set (its plan branch's newest ``plans.jsonl`` row, from refs) and, for a pull request, its
+changed files. This run's root intent and children are excluded; a local flow with an open pull request is listed once.
 
-Discovery runs host-side only: ``gh`` and ``git`` are injected runners (tests pass fakes), nothing is fetched, checked
-out or written, and any ``gh`` or ``git`` failure returns :class:`AdmissionUnavailable` instead of raising.
+Discovery is host-side and read-only via injected ``gh``/``git`` runners; failures return :class:`AdmissionUnavailable`.
 """
 
 from __future__ import annotations
@@ -27,6 +25,7 @@ from sandbox_executor.flow.context import FlowStage
 from sandbox_executor.flow.git_refs import _read_ledger_rows, _resolve_branch_ref
 from sandbox_executor.flow.github import merge
 from sandbox_executor.git import is_metadata_path, run_git
+from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.ref_names import INTENT_SUFFIX
 from sandbox_executor.touch_set import TouchSet, normalise_touch_path
 
@@ -82,7 +81,8 @@ def _root_intent(branch: str) -> str:
 
 
 def _failure(command: str, result: subprocess.CompletedProcess[str]) -> AdmissionUnavailable:
-    return AdmissionUnavailable(f"'{command}' failed: {(result.stderr or '').strip() or 'no output'}")
+    detail = redact_agent_secrets((result.stderr or "").strip())[:300]
+    return AdmissionUnavailable(f"'{command}' failed: {detail or 'no output'}")
 
 
 def _gh_json(run_gh: merge.GhRunner, args: list[str], repo_dir: str) -> list[dict[str, Any]] | AdmissionUnavailable:

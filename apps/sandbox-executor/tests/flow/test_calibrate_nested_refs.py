@@ -93,7 +93,7 @@ def layout(tmp_path: Path) -> SimpleNamespace:
 
 @pytest.mark.parametrize(
     ("case", "diff_base"),
-    [("local", "plan"), ("remote_only", "plan"), ("absent", "first_parent_fallback")],
+    [("local", "plan"), ("remote_only", "plan"), ("absent", "merge_base_fallback")],
 )
 def test_generate_calibration_on_nested_layout(layout: SimpleNamespace, case: str, diff_base: str) -> None:
     drop_plan_ref(layout, case)
@@ -102,7 +102,7 @@ def test_generate_calibration_on_nested_layout(layout: SimpleNamespace, case: st
     assert report.execution_id == EXEC_ID
     assert report.actual.files_changed == 1
     assert report.actual.insertions == 2
-    assert ("first_parent_fallback" in report.markdown_content) is (diff_base == "first_parent_fallback")
+    assert ("merge_base_fallback" in report.markdown_content) is (diff_base == "merge_base_fallback")
     if diff_base == "plan":
         assert report.base_sha == git(layout.host, "rev-parse", f"origin/{PLAN}")
 
@@ -112,20 +112,39 @@ def test_absent_plan_ref_degrades_with_a_warning(layout: SimpleNamespace, caplog
     with caplog.at_level("WARNING"):
         report = generate_calibration(EXEC, target_worktree=str(layout.host))
     assert report.base_sha is None
-    assert any(PLAN in rec.getMessage() and "first parent" in rec.getMessage() for rec in caplog.records)
+    assert any(PLAN in rec.getMessage() and CHILD_INTENT in rec.getMessage() for rec in caplog.records)
+
+
+def test_absent_plan_ref_keeps_plan_branch_ledger_match_and_skips_a_ledger_only_tip(layout: SimpleNamespace) -> None:
+    drop_plan_ref(layout, "absent")
+    git(layout.host, "checkout", "-q", EXEC)
+    row = {"entry_type": "summary", "execution_id": "E-1794000009-other-a-m", "plan_branch": PLAN, "exit_code": 0}
+    commit_file(layout.host, "holon-knowledge/ledger/executions.jsonl", json.dumps({**row, "duration": 34.0}) + "\n")
+    git(layout.host, "push", "-q", "origin", EXEC)
+    git(layout.host, "checkout", "-q", "main")
+    report = generate_calibration(EXEC, target_worktree=str(layout.host))
+    assert report.actual.duration_seconds == 34.0
+    assert (report.actual.files_changed, report.actual.insertions) == (1, 2)
+    assert "merge_base_fallback" in report.markdown_content
 
 
 @pytest.mark.parametrize(
-    ("plan_ref", "diff_base"),
-    [("I-1-a/P-2-b/_", "plan"), ("I-9-gone/P-9-gone/_", "first_parent_fallback")],
+    ("plan_ref", "missing", "diff_base", "diff_range"),
+    [
+        ("I-1-a/P-2-b/_", "gone", "plan", f"refs/heads/I-1-a/P-2-b/_...refs/heads/{EXEC}"),
+        ("I-9-gone/P-9-gone/_", "gone", "merge_base_fallback", f"refs/heads/main...refs/heads/{EXEC}"),
+        ("I-9-gone/P-9-gone/_", "gone|main", "first_parent_fallback", f"refs/heads/{EXEC}~1..refs/heads/{EXEC}"),
+    ],
 )
-def test_parse_actual_metrics_diff_argv_ends_with_a_separator(plan_ref: str, diff_base: str) -> None:
+def test_parse_actual_metrics_diff_argv_ends_with_a_separator(
+    plan_ref: str, missing: str, diff_base: str, diff_range: str
+) -> None:
     calls: list[list[str]] = []
 
     def fake_git(args, **_kwargs):
         calls.append(list(args))
-        verifies = args[:2] == ["rev-parse", "--verify"] and "gone" not in args[-1]
         if args[:2] == ["rev-parse", "--verify"]:
+            verifies = not any(word in args[-1] for word in missing.split("|"))
             return MagicMock(returncode=0 if verifies else 1, stdout=f"{'c' * 40}\n", stderr="")
         return MagicMock(returncode=0, stdout="1\n" if args[0] in ("rev-list", "merge-base") else "", stderr="")
 
@@ -138,13 +157,11 @@ def test_parse_actual_metrics_diff_argv_ends_with_a_separator(plan_ref: str, dif
     ):
         _actual, meta = parse_actual_metrics(EXEC_ID, plan_ref, PredictedMetrics(), execution_branch=EXEC)
     diff = next(c for c in calls if c[0] == "diff")
-    assert diff[-1] == "--"
+    assert diff[2:] == [diff_range, "--"]
     assert meta["diff_base"] == diff_base
     if diff_base == "plan":
-        assert diff[2] == f"refs/heads/{plan_ref}...refs/heads/{EXEC}"
         assert ["rev-list", "--count", "--merges", f"refs/heads/{plan_ref}..refs/heads/{EXEC}", "--"] in calls
     else:
-        assert diff[2] == f"refs/heads/{EXEC}~1..refs/heads/{EXEC}"
         assert not [c for c in calls if c[0] == "merge-base"]
 
 

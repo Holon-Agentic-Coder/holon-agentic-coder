@@ -22,7 +22,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.agent_defaults import LEGACY_DEFAULT_AGENT, LEGACY_DEFAULT_MODEL
-from sandbox_executor.calibration_diff import DIFF_BASE_FIRST_PARENT, DIFF_BASE_PLAN, merge_history, patch_diff_range
+from sandbox_executor.calibration_diff import (
+    DIFF_BASE_FIRST_PARENT,
+    DIFF_BASE_MERGE_BASE,
+    DIFF_BASE_PLAN,
+    merge_history,
+    patch_diff_range,
+)
 from sandbox_executor.calibration_ev import (
     evaluate_dual_ev_outcomes,
     format_dual_ev_derivation_lines,
@@ -791,11 +797,12 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
             actual.test_pass_rate = float(raw_rate)
 
     # 2. Compute patch size via git diff between plan_branch and execution_branch (fail loudly on non-zero exit)
+    fallback_refs = (extract_branch_components(plan_branch)["intent_branch"], "main") if plan_branch else ()
     base_rev, target_rev, diff_base = patch_diff_range(
-        plan_branch if execution_branch else "", target_ref, target_worktree
+        plan_branch if execution_branch else "", target_ref, target_worktree, fallback_refs
     )
     exec_meta["diff_base"] = diff_base
-    diff_range = f"{base_rev}...{target_rev}" if diff_base == DIFF_BASE_PLAN else f"{target_rev}~1..{target_rev}"
+    diff_range = f"{base_rev}...{target_rev}" if base_rev else f"{target_rev}~1..{target_rev}"
     res = run_git(
         ["diff", "--numstat", diff_range, "--"],
         cwd=target_worktree,
@@ -995,8 +1002,8 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
         report_data.get("merge_base_sha") or report_data["merged_commit_count"] > 0
     ):
         lines.append(f"- **Merged Commits:** `{report_data['merged_commit_count']}`")
-    if report_data.get("diff_base") == DIFF_BASE_FIRST_PARENT:
-        lines.append("- **Patch Size Base:** `first_parent_fallback` (plan branch unresolved)")
+    if report_data.get("diff_base") in (DIFF_BASE_MERGE_BASE, DIFF_BASE_FIRST_PARENT):
+        lines.append(f"- **Patch Size Base:** `{report_data['diff_base']}` (not measured against the plan branch)")
     lines.extend(
         [
             "",
@@ -1147,13 +1154,9 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
         try:
             resolved_plan_ref = resolve_git_ref(plan_branch, target_worktree=target_worktree)
         except Exception as e:
-            logger.warning(
-                "plan branch '%s' could not be resolved (%s); patch size measured against the execution head's "
-                "first parent",
-                plan_branch,
-                e,
-            )
-            resolved_plan_ref = ""
+            # Keep the name: ledger and dual-EV matching still need it; patch_diff_range degrades the diff base alone.
+            logger.debug("Could not resolve plan_branch '%s': %s", plan_branch, e)
+            resolved_plan_ref = plan_branch
 
     # Resolve canonical commit SHA for execution ref
     evaluated_commit_sha: str | None = None

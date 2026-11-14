@@ -3,8 +3,9 @@
 A decomposed flow calibrates nested branches such as ``I-.../P-.../E-.../_``. Every revision handed to git here is a
 fully qualified ref or a SHA, followed by ``--`` where git accepts one, so a plan branch the host cannot resolve never
 reaches ``git diff`` as a bare name (git would report exit 128 "ambiguous argument"). An unresolvable plan branch
-degrades the measurement to the execution head's first parent, labelled ``first_parent_fallback``, instead of failing
-Stage 5.
+degrades the measurement to the merge-base with a fallback branch (the intent branch, then ``main``), labelled
+``merge_base_fallback``, and only when none resolves to the execution head's first parent, labelled
+``first_parent_fallback``, instead of failing Stage 5.
 """
 
 from __future__ import annotations
@@ -18,31 +19,46 @@ from sandbox_executor.git_revisions import qualify_branch_revision, revision_arg
 logger = logging.getLogger(__name__)
 
 DIFF_BASE_PLAN = "plan"
+DIFF_BASE_MERGE_BASE = "merge_base_fallback"
 DIFF_BASE_FIRST_PARENT = "first_parent_fallback"
 
 
-def patch_diff_range(base_ref: str, target_ref: str, target_worktree: str) -> tuple[str, str, str]:
+def patch_diff_range(
+    base_ref: str, target_ref: str, target_worktree: str, fallback_refs: tuple[str, ...] = ()
+) -> tuple[str, str, str]:
     """Choose the qualified revisions the patch-size diff compares, and label how the size is measured.
 
     Both refs are qualified through ``qualify_branch_revision`` so that a nested ``.../_`` branch reaches git as
     ``refs/heads/...``, ``refs/remotes/origin/...`` or a SHA. A target that cannot be qualified (``HEAD``, a PR ref)
-    is passed through unchanged, so an unknown head still fails the diff loudly. A base that is empty, unresolvable
-    or equal to the target degrades to the target's first parent, with a warning naming the unresolved base.
+    is passed through unchanged, so an unknown head still fails the diff loudly. An unresolvable base degrades, with a
+    warning naming it, to the first of ``fallback_refs`` that resolves to a revision other than the target (the diff
+    then runs from their merge-base, so a ledger-only tip commit does not stand in for the patch); a base that is
+    empty or equal to the target, or with no usable fallback, degrades to the target's first parent.
 
     Args:
         base_ref: Plan branch (or resolved plan ref); empty when there is none to compare against.
         target_ref: Execution branch, resolved ref or SHA.
         target_worktree: Git worktree to resolve in.
+        fallback_refs: Branches to measure from, in order, when ``base_ref`` cannot be resolved.
 
     Returns:
-        ``(base revision, target revision, label)``: the label is ``DIFF_BASE_PLAN`` with a qualified base, or
-        ``DIFF_BASE_FIRST_PARENT`` with an empty base revision.
+        ``(base revision, target revision, label)``: the label is ``DIFF_BASE_PLAN`` or ``DIFF_BASE_MERGE_BASE`` with
+        a qualified base, or ``DIFF_BASE_FIRST_PARENT`` with an empty base revision.
     """
     target_rev = qualify_branch_revision(target_worktree, target_ref) or target_ref
     base_rev = qualify_branch_revision(target_worktree, base_ref) if base_ref else None
     if base_rev and base_rev != target_rev:
         return base_rev, target_rev, DIFF_BASE_PLAN
     if base_ref and not base_rev:
+        for ref in fallback_refs:
+            fallback_rev = qualify_branch_revision(target_worktree, ref) if ref else None
+            if fallback_rev and fallback_rev != target_rev:
+                logger.warning(
+                    "plan branch '%s' could not be resolved; patch size measured from the merge-base with '%s'",
+                    base_ref,
+                    ref,
+                )
+                return fallback_rev, target_rev, DIFF_BASE_MERGE_BASE
         logger.warning(
             "plan branch '%s' could not be resolved; patch size measured against the execution head's first parent",
             base_ref,

@@ -788,13 +788,7 @@ class TestAppendOnlyCalibratedBranch(unittest.TestCase):
         with patch("subprocess.run", side_effect=mock_subp):
             run_calibrate("I-1/P-2/E-3/_", target_worktree="/tmp/repo", skip_commit=False)
 
-        expected_co = [
-            "git",
-            "checkout",
-            "-b",
-            "I-1/P-2/E-3/calibrated",
-            "refs/remotes/origin/I-1/P-2/E-3/calibrated",
-        ]
+        expected_co = ["git", "checkout", "-b", "I-1/P-2/E-3/calibrated", "refs/remotes/origin/I-1/P-2/E-3/calibrated"]
         self.assertIn(expected_co, called_cmds)
 
     @patch("sandbox_executor.calibration.format_calibration_report")

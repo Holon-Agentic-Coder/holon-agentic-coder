@@ -29,7 +29,8 @@ def _rev(repo_dir: str, ref: str, run=None) -> str:
 
 
 def _divergence_message(repo_dir: str, branch: str, local_sha: str, origin_sha: str) -> str:
-    count = run_git(["rev-list", "--count", f"origin/{branch}..{branch}"], cwd=repo_dir, check=False)
+    local_range = f"refs/remotes/{DEFAULT_REMOTE}/{branch}..refs/heads/{branch}"
+    count = run_git(["rev-list", "--count", local_range, "--"], cwd=repo_dir, check=False)
     local_only = count.stdout.strip() if count.returncode == 0 else "some"
     return (
         f"local branch '{branch}' ({local_sha[:12]}) holds {local_only} commit(s) that origin/{branch} "
@@ -177,7 +178,7 @@ def publish_calibration(context: FlowContext) -> bool:
         return False
     merged = run_git(["checkout", branch], cwd=repo_dir, check=False)
     if merged.returncode == 0:
-        merged = run_git(["merge", "--ff-only", calibrated], cwd=repo_dir, check=False)
+        merged = run_git(["merge", "--ff-only", f"refs/heads/{calibrated}"], cwd=repo_dir, check=False)
     if merged.returncode != 0:
         detail = merged.stderr.strip() if isinstance(merged.stderr, str) else ""
         context.log(f"Warning: '{branch}' not updated to '{calibrated}' (checkout/ff-only failed): {detail}")

@@ -626,7 +626,7 @@ class TestActualMetricsIntegrity(unittest.TestCase):
         def mock_subp(cmd, **kwargs):
             if isinstance(cmd, list):
                 if "diff" in cmd:
-                    self.assertIn("I-test/P-test/_...exec-branch", cmd[3])
+                    self.assertEqual(cmd[3:], ["refs/heads/I-test/P-test/_...refs/heads/exec-branch", "--"])
                     return MagicMock(returncode=0, stdout="1 file changed, 10 insertions(+), 2 deletions(-)\n")
                 if "rev-parse" in cmd:
                     return MagicMock(returncode=0, stdout="base1234567890abcdef1234567890abcdef1234\n")
@@ -788,7 +788,7 @@ class TestAppendOnlyCalibratedBranch(unittest.TestCase):
         with patch("subprocess.run", side_effect=mock_subp):
             run_calibrate("I-1/P-2/E-3/_", target_worktree="/tmp/repo", skip_commit=False)
 
-        expected_co = ["git", "checkout", "-b", "I-1/P-2/E-3/calibrated", "origin/I-1/P-2/E-3/calibrated"]
+        expected_co = ["git", "checkout", "-b", "I-1/P-2/E-3/calibrated", "refs/remotes/origin/I-1/P-2/E-3/calibrated"]
         self.assertIn(expected_co, called_cmds)
 
     @patch("sandbox_executor.calibration.format_calibration_report")

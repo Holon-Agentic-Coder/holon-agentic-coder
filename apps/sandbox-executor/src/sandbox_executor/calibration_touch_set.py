@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 
 from sandbox_executor.touch_set import TouchSet, parse_touch_set_section, score_touch_set
@@ -40,7 +41,7 @@ def touch_set_metrics(
         if touch_set is None:
             return dict(_NO_TOUCH_SET)
         return score_touch_set(touch_set, list(changed_paths)).to_dict()
-    except (OSError, TypeError, ValueError) as e:
+    except (OSError, TypeError, ValueError, re.error) as e:
         logger.warning("Could not score the plan's touch set: %s", e)
         return dict(_NO_TOUCH_SET)
 

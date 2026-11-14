@@ -70,7 +70,9 @@ def test_level_three_heading_is_not_the_section():
     assert parse_touch_set_section("### Touch Set\n\n- `src/a.py`\n") is None
 
 
-@pytest.mark.parametrize("item", ["none", "None.", "`n/a`", "NA", "nil", "no files", "not applicable"])
+@pytest.mark.parametrize(
+    "item", ["none", "None.", "`n/a`", "NA", "nil", "no files", "not applicable", "_none_", "*none*", "**N/A**"]
+)
 def test_placeholder_first_item_gives_an_empty_set(item):
     assert parse_touch_set_section(f"## touch set\n\n- {item}\n") == TouchSet()
 
@@ -122,6 +124,8 @@ def test_normalise_touch_path(raw, expected):
         ("src/[a-c].py", "src/-.py", False),
         ("src/[!a-c].py", "src/d.py", True),
         ("src/[c-a].py", "src/-.py", True),
+        ("src/[!].py", "src/[!].py", True),
+        ("src/[!].py", "src/a.py", False),
         ("src/a.py", "./src/a.py", True),
     ],
 )

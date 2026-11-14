@@ -830,7 +830,7 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
     actual.files_changed = 0
     actual.insertions = 0
     actual.deletions = 0
-    # None when the diff output lists no paths (shortstat), so an unmeasured diff scores no touch set
+    # Starts empty; becomes None below for shortstat output, which lists no paths, so the touch set is not scored
     exec_meta["changed_paths"] = []
     if res.stdout.strip():
         text = res.stdout.strip()

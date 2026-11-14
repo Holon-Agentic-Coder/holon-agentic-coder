@@ -23,6 +23,8 @@ _BACKTICK_RE = re.compile(r"`([^`]+)`")
 _SYMBOLS_RE = re.compile(r"symbols\s*:\s*(?P<names>.*)$", re.IGNORECASE)
 _BRACE_RENAME_RE = re.compile(r"\{[^{}]* => ([^{}]*)\}")
 _PLACEHOLDER_WORDS = frozenset({"none", "n/a", "na", "nil", "no", "not"})
+# Wrapping quotes, brackets and code or emphasis markers stripped before the placeholder test, so _none_ is skipped.
+_PLACEHOLDER_WRAPPERS = "()[]{}<>\"'`*_~\u2018\u2019\u201c\u201d"
 _GLOB_CHARS = ("*", "?", "[")
 _GLOB_TOKEN_RE = re.compile(r"\*\*/|\*\*|\*|\?|\[[^\]/]+\]|[^*?\[]+|\[")
 _GLOB_TOKENS = {"**/": "(?:.*/)?", "**": ".*", "*": "[^/]*", "?": "[^/]"}
@@ -127,8 +129,8 @@ def _entry_from_item(body: str) -> TouchSetEntry | None:
 
 
 def _is_placeholder(body: str) -> bool:
-    words = body.strip("`").split()
-    return bool(words) and words[0].strip("`.,;:").lower() in _PLACEHOLDER_WORDS
+    words = body.strip(_PLACEHOLDER_WRAPPERS).split()
+    return bool(words) and words[0].strip(_PLACEHOLDER_WRAPPERS + ".,;:").lower() in _PLACEHOLDER_WORDS
 
 
 def parse_touch_set_section(plan_markdown: str) -> TouchSet | None:
@@ -156,6 +158,8 @@ def _glob_literal_or_class(token: str) -> str:
     if len(token) > 2 and token.startswith("[") and token.endswith("]"):
         body = token[1:-1]
         negate, chars = (True, body[1:]) if body.startswith("!") else (False, body)
+        if not chars:  # an empty class such as [!] matches its characters literally
+            return re.escape(token)
         regex_class = f"[{'^' if negate else ''}{_class_body(chars)}]"
         try:
             re.compile(regex_class)

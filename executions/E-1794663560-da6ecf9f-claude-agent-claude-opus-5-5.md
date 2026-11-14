@@ -38,3 +38,13 @@ review-finding identifiers with plain descriptions, and add a hermetic repositor
 - `test_token_reduction.py`: one `_load_ab_runner()` helper replaces seven inline loaders.
 - Docs: `token_reduction_ab_testing.md` and `mitm_telemetry_metrics_plan.md` now point at the real runner and state that
   no standalone real-API benchmark script is shipped; `token_reduction_measurement_plan.md` names `scripts/` and `tmp/`.
+
+### Step 3: Re-point the remaining local-notes path defaults
+
+- `mitm_addon.py` default `WIRE_LOG_DIR` is `tmp/mitm_wire_logs`; `.gitignore` drops the two local-notes lines
+  (`git check-ignore -v` confirms `tmp/` covers `tmp/mitm_wire_logs/x` and `tmp/cache/x`).
+- `.agents/AGENTS.md` scratch boundary names `/tmp` or the git-ignored `tmp/` directory; `test_calibration.py` probes
+  `tmp/scratch.py` (still not a metadata prefix).
+- `scripts/pre_commit_check.py` drops the spelling exemption for the retired directory.
+- Prettier `3.8.4` already flags `docs/optimisation/token_reduction_measurement_plan.md` on `main` (math reflow); left
+  unformatted to keep the change focused. The baseline `lint-docs` run flags 40 files, mostly under `plans/`.

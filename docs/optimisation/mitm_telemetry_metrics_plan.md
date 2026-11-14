@@ -91,6 +91,7 @@ real-API benchmark script is not shipped.
 
 ## 📈 Expected Outcomes
 
-1. Automated recording of Prefill TPS and Output TPS for all live A/B benchmark runs of `scripts/ab_measure_all_methods.py`.
+1. Automated recording of Prefill TPS and Output TPS for all live A/B benchmark runs of
+   `scripts/ab_measure_all_methods.py`.
 2. Standardised response headers returned to all sandbox agent containers.
 3. Empirically verified latency and throughput benchmarks across arbitrary LLM APIs and arbitrary agents.

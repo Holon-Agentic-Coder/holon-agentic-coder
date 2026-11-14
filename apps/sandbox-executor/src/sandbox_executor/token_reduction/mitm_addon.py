@@ -26,7 +26,7 @@ from sandbox_executor.token_reduction.payload_cleaner import CleaningResult, JSO
 
 logger = logging.getLogger(__name__)
 
-WIRE_LOG_DIR = os.getenv("WIRE_LOG_DIR", "todo/mitm_wire_logs")
+WIRE_LOG_DIR = os.getenv("WIRE_LOG_DIR", "tmp/mitm_wire_logs")
 CACHE_DIR = os.getenv("CACHE_DIR", os.path.expanduser("~/.holon/cache"))
 
 _MAX_SSE_BUFFER_BYTES = 50 * 1024 * 1024

@@ -26,8 +26,8 @@
   - Require `grep`, `awk`, and `sed` for text and line extraction.
   - Require `diff` and `cmp` for file comparisons.
   - Require `gh api --jq` for GitHub CLI queries and filtering.
-- **Scratch Script Boundary**: Explicitly restrict scratch scripts to `/tmp` or `todo/`, and mandate that they are
-  deleted immediately after use.
+- **Scratch Script Boundary**: Explicitly restrict scratch scripts to `/tmp` or the git-ignored `tmp/` directory, and
+  mandate that they are deleted immediately after use.
 - **No Per-Command Environment Injection**: Forbid per-command `export VAR=... &&` prefixes. Instruct agents to rely on
   standard `ENV PATH` discoverability.
 

@@ -127,6 +127,8 @@ def test_normalise_touch_path(raw, expected):
         ("src/[!].py", "src/[!].py", True),
         ("src/[!].py", "src/a.py", False),
         ("src/a.py", "./src/a.py", True),
+        ("app/[id]/page.tsx", "app/[id]/page.tsx", True),
+        ("app/[id]/page.tsx", "app/i/page.tsx", True),
     ],
 )
 def test_entry_matches(pattern, path, expected):

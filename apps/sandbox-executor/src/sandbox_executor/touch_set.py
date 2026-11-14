@@ -180,6 +180,8 @@ def _glob_regex(pattern: str) -> re.Pattern[str]:
 def entry_matches(entry: TouchSetEntry, path: str) -> bool:
     """Whether a changed repository path falls under a declared entry (directory prefix, glob or exact path)."""
     clean = normalise_touch_path(path)
+    if clean == entry.path:  # a literal path such as app/[id]/page.tsx must match itself
+        return True
     is_dir = entry.path.endswith("/")
     if any(char in entry.path for char in _GLOB_CHARS):
         # A directory glob such as apps/*/tests/ covers everything below each matching directory.

@@ -34,8 +34,8 @@ In progress: fixing the Stage 5 `git diff` exit 128 "ambiguous argument" on nest
    lines. `patch_diff_range` qualifies the plan and execution refs through `qualify_branch_revision`; a missing, empty
    or equal base degrades to the execution head's first parent (`diff_base = "first_parent_fallback"`, logged as a
    warning naming the plan branch). An unqualifiable target (`HEAD`, a PR ref) is passed through, so an unknown head
-   still fails the diff loudly. `merge_history` runs `rev-parse --verify <rev>^{commit}`, `merge-base` (no `--`; refs are
-   qualified) and `rev-list --count --merges <range> --`. `parse_actual_metrics` now runs
+   still fails the diff loudly. `merge_history` runs `rev-parse --verify <rev>^{commit}`, `merge-base` (no `--`; refs
+   are qualified) and `rev-list --count --merges <range> --`. `parse_actual_metrics` now runs
    `git diff --numstat <range> --` and records `exec_meta["diff_base"]`. `generate_calibration` passes an empty plan ref
    (with a warning) instead of the raw name when `resolve_git_ref` fails, and the report adds a `Patch Size Base` line
    only for the fallback. `run_calibrate` now fast-forwards from and starts a checkout at
@@ -43,3 +43,27 @@ In progress: fixing the Stage 5 `git diff` exit 128 "ambiguous argument" on nest
    tests in `tests/test_calibration.py` had argv-only expectation updates (the qualified diff range and the qualified
    checkout start point); no behavioural assertion changed. The Step 1 absent case now passes without `xfail` and
    asserts the fallback label and the warning.
+4. Step 4 (sweep): `qualify_branch_revision` gained an optional `run` git runner (the caller's patched runner, as
+   `calibrate_sync._rev` and `record_starting_branch` already do), so `stages/review.py` tests that replace its
+   `run_git` never spawn real git. The budget of `calibrate_sync.py` was raised by 1 line (186 to 187, with the reason
+   appended to the budget description); every other flow module stayed within budget. One existing test
+   (`tests/flow/test_pipeline.py::test_stage5_calibration_success_still_pushes`) had its argv expectation updated to the
+   qualified merge source. Audit table:
+
+   | file                   | call                                                                           | before                          | after                                                         |
+   | ---------------------- | ------------------------------------------------------------------------------ | ------------------------------- | ------------------------------------------------------------- |
+   | `calibration.py`       | patch-size `diff --numstat`                                                    | `<plan>...<exec>` (raw names)   | `refs/heads/...` or `refs/remotes/origin/...` range plus `--` |
+   | `calibration.py`       | `rev-parse` of the base                                                        | `rev-parse <plan>`              | `rev-parse --verify <qualified>^{commit}`                     |
+   | `calibration.py`       | `merge-base`                                                                   | raw names                       | qualified refs (git takes no `--` here)                       |
+   | `calibration.py`       | `rev-list --count --merges`                                                    | raw range                       | qualified range plus `--`                                     |
+   | `calibration.py`       | `run_calibrate` ff-only merge                                                  | `origin/<calibrated>`           | `refs/remotes/origin/<calibrated>`                            |
+   | `calibration.py`       | `run_calibrate` `checkout -b` start point                                      | `origin/<calibrated>`           | `refs/remotes/origin/<calibrated>` (new branch name kept)     |
+   | `calibration.py`       | `checkout <calibrated>`                                                        | short name                      | unchanged: a qualified name would detach HEAD                 |
+   | `calibrate_sync.py`    | `_divergence_message` `rev-list --count`                                       | `origin/<b>..<b>`               | `refs/remotes/origin/<b>..refs/heads/<b> --`                  |
+   | `calibrate_sync.py`    | `publish_calibration` ff-only merge                                            | `<calibrated>`                  | `refs/heads/<calibrated>`                                     |
+   | `calibrate_sync.py`    | `_rev`, `checkout`, `branch`, `push`                                           | qualified refs or short names   | already safe (audited)                                        |
+   | `calibrate_rebuild.py` | `rev-list <start>..<existing>`                                                 | SHAs, no separator              | SHAs plus `--`                                                |
+   | `calibrate_rebuild.py` | `rev-list --parents`, `log -1`, `diff-tree`                                    | SHA, no separator               | SHA plus `--`                                                 |
+   | `calibrate_rebuild.py` | `merge-base --is-ancestor`, `push`, `branch`                                   | SHAs, qualified lease with `--` | already safe (audited)                                        |
+   | `stages/calibrate.py`  | `rev-parse --abbrev-ref HEAD`, `add`, `commit -- <paths>`, `status -- <paths>` | no branch revisions             | already safe (audited)                                        |
+   | `stages/review.py`     | Stage 4 `diff --numstat`                                                       | `<plan> <exec>` (raw names)     | qualified refs plus `--`; skipped when either is unresolvable |

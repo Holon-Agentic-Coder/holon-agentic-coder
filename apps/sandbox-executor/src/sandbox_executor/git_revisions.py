@@ -10,14 +10,18 @@ fetches: a ref the host does not have is reported as None for the caller to hand
 from __future__ import annotations
 
 import re
+import subprocess
+from collections.abc import Callable
 
 from sandbox_executor.git import run_git
+
+GitRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 _SHA_PATTERN = re.compile(r"[0-9a-fA-F]{7,40}")
 
 
-def _verifies(repo_dir: str, revision: str) -> bool:
-    res = run_git(["rev-parse", "--verify", "--quiet", f"{revision}^{{commit}}"], cwd=repo_dir, check=False, timeout=30)
+def _verifies(repo_dir: str, revision: str, run: GitRunner) -> bool:
+    res = run(["rev-parse", "--verify", "--quiet", f"{revision}^{{commit}}"], cwd=repo_dir, check=False, timeout=30)
     return res.returncode == 0
 
 
@@ -34,7 +38,9 @@ def _bare_branch_name(name: str, remote: str) -> str:
     return bare
 
 
-def qualify_branch_revision(repo_dir: str, name: str, remote: str = "origin") -> str | None:
+def qualify_branch_revision(
+    repo_dir: str, name: str, remote: str = "origin", run: GitRunner | None = None
+) -> str | None:
     """Return a fully qualified, verified revision for a branch name or commit SHA.
 
     Lookup order: a 7 to 40 character hex commit SHA (returned unchanged), then ``refs/heads/<name>``, then
@@ -44,18 +50,21 @@ def qualify_branch_revision(repo_dir: str, name: str, remote: str = "origin") ->
         repo_dir: Git worktree to resolve in.
         name: Branch name, remote-tracking name, qualified ref or commit SHA.
         remote: Remote whose tracking refs are consulted.
+        run: The caller's git runner (defaults to ``run_git``), so a module whose tests replace its runner never
+            spawns a real git process here.
 
     Returns:
         The qualified ref or SHA, or None when nothing verifies as a commit. Runs read-only ``git rev-parse``
         calls; never fetches and never raises for an unknown ref.
     """
+    git = run or run_git
     bare = _bare_branch_name(name, remote)
     if not bare:
         return None
-    if _SHA_PATTERN.fullmatch(bare) and _verifies(repo_dir, bare):
+    if _SHA_PATTERN.fullmatch(bare) and _verifies(repo_dir, bare, git):
         return bare
     for candidate in (f"refs/heads/{bare}", f"refs/remotes/{remote}/{bare}"):
-        if _verifies(repo_dir, candidate):
+        if _verifies(repo_dir, candidate, git):
             return candidate
     return None
 

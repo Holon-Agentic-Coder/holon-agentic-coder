@@ -1795,8 +1795,8 @@ git rebase origin/I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-
 #### 5) Push and trigger automatic merge evaluation
 
 Once tests pass on the rebased code, the agent pushes the branch, raises its PR and merges it automatically into the
-deciding plan branch with a merge commit, with no human review (see [Git Flow](git_flow.md) Stage 3 under the flow
-equivalence guarantee):
+deciding plan branch with a merge commit (a squash on a squash-only repository), with no human review (see
+[Git Flow](git_flow.md) Stage 3 under the flow equivalence guarantee):
 
 ```bash
 # Push branch to remote

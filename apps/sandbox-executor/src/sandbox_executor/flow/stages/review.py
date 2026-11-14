@@ -20,6 +20,7 @@ from sandbox_executor.flow.review.verdict import not_approved_verdicts, render_f
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.test_evidence import _test_results_package
 from sandbox_executor.git import run_git
+from sandbox_executor.git_revisions import qualify_branch_revision, revision_args
 from sandbox_executor.knowledge import ConsultEngine
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.review_ensemble import ConsensusVerdict
@@ -121,12 +122,10 @@ def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
     diff_summary = {"files_changed": 0, "insertions": 0, "deletions": 0}
     if not context.dry_run and context.plan_branch:
         is_git = run_git(["rev-parse", "--is-inside-work-tree"], cwd=repo_dir, check=False).returncode == 0
-        if is_git:
-            stat_res = run_git(
-                ["diff", "--numstat", context.plan_branch, context.execution_branch],
-                cwd=repo_dir,
-                check=False,
-            )
+        branches = (context.plan_branch, context.execution_branch or "")
+        revs = [qualify_branch_revision(repo_dir, b, run=run_git) for b in branches] if is_git else [None]
+        if all(revs):  # an unresolvable branch keeps the zero summary instead of parsing a git error
+            stat_res = run_git(["diff", "--numstat", *revision_args(*revs)], cwd=repo_dir, check=False)
             files_changed = 0
             insertions = 0
             deletions = 0

@@ -229,6 +229,15 @@ from sandbox_executor.flow.stages.review import (
     run_review_stage,
 )
 from sandbox_executor.flow.stages.sync_conflict import sync_conflict_result
+from sandbox_executor.flow.touch_set import (
+    TouchSet,
+    TouchSetEntry,
+    TouchSetScore,
+    entry_matches,
+    normalise_touch_path,
+    parse_touch_set_section,
+    score_touch_set,
+)
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.git import run_git
 from sandbox_executor.redaction import redact_agent_secrets
@@ -276,6 +285,9 @@ __all__ = [
     "SalvageResult",
     "StageResult",
     "StageStatus",
+    "TouchSet",
+    "TouchSetEntry",
+    "TouchSetScore",
     "_append_ledger_row",
     "_append_only_union",
     "_append_superseding_execution_row",
@@ -360,6 +372,7 @@ __all__ = [
     "create_or_update_pr",
     "describe_ci_outcome",
     "discard_empty_calibrated_branch",
+    "entry_matches",
     "extract_valid_ledger_rows",
     "failed_partial_head",
     "fast_forward_local_branch",
@@ -380,7 +393,9 @@ __all__ = [
     "migrate_checkpoint_data",
     "new_local_child_branches",
     "next_poll_interval",
+    "normalise_touch_path",
     "parse_metrics",
+    "parse_touch_set_section",
     "pending_check_names",
     "post_pr_review_consensus",
     "prepare_calibrated_branch",
@@ -416,6 +431,7 @@ __all__ = [
     "salvage_for_resume",
     "salvage_leftovers",
     "save_checkpoint",
+    "score_touch_set",
     "settle_pending_ci",
     "stale_calibrated_refs",
     "sync_conflict_result",

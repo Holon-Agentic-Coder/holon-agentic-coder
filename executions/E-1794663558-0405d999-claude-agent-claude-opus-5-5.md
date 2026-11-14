@@ -2,9 +2,9 @@
 
 ## Summary
 
-Implements plan `P-1794663411-f5308cfe-claude-agent-claude-opus-5-5`: touch-set admission before Stage 3 (refusal
-naming pull requests, branches and files, with a recorded `--allow-overlap` override) and enforcement after it (an
-out-of-set execution diff fails Stage 3 with `touch_set_violation` and returns once to Stage 2).
+Implements plan `P-1794663411-f5308cfe-claude-agent-claude-opus-5-5`: touch-set admission before Stage 3 (refusal naming
+pull requests, branches and files, with a recorded `--allow-overlap` override) and enforcement after it (an out-of-set
+execution diff fails Stage 3 with `touch_set_violation` and returns once to Stage 2).
 
 ## Actual Metrics
 
@@ -38,8 +38,8 @@ out-of-set execution diff fails Stage 3 with `touch_set_violation` and returns o
 - Learning: on fixtures (non-flow head, own-lineage head, a second worktree holding live, deleted-plan, still-planning,
   own-lineage and unparseable checkpoints) discovery classified every case correctly, so the checkpoint half was kept.
   Known gaps: a checkpoint left at execute or review by an abandoned run whose plan branch still exists counts as in
-  flight (false positive, overridable), and local flows compare declared sets only (no real diff). A fork head that
-  is flow-shaped is read like any other head; its plan row is usually absent locally, so only its diff is compared.
+  flight (false positive, overridable), and local flows compare declared sets only (no real diff). A fork head that is
+  flow-shaped is read like any other head; its plan row is usually absent locally, so only its diff is compared.
 
 ### Step 3: admission decision, Stage 3 gate and `--allow-overlap`
 
@@ -81,8 +81,8 @@ out-of-set execution diff fails Stage 3 with `touch_set_violation` and returns o
 - `tests/test_touch_set.py` (Step 1 cases), `tests/flow/test_in_flight.py` (fake `gh`, a second worktree with live,
   stale, still-planning, own-lineage and unparseable checkpoints, `gh` and `git` failures),
   `tests/flow/test_admission.py` (declared-set and real-diff overlap, metadata-only overlap admitted, missing touch set
-  refused, fail-closed discovery, refusal payload, exactly one override row, dry run, ledger readers ignore the
-  override row).
+  refused, fail-closed discovery, refusal payload, exactly one override row, dry run, ledger readers ignore the override
+  row).
 - `tests/flow/stages/test_execute_touch_set.py`: through `PipelineEngine` with fake role agents whose plan rows carry a
   touch set: refusal before the executor is dispatched, `--allow-overlap` dispatching once with one override row,
   metadata-only extras passing, an out-of-set file returning to Stage 2 once and succeeding with a widened set, and a
@@ -91,3 +91,13 @@ out-of-set execution diff fails Stage 3 with `touch_set_violation` and returns o
   the context; `tests/flow/test_context.py`: `allow_overlap` round-trips and defaults to false for old checkpoints.
 - No test reaches a real `gh`, network or role container: discovery takes injected runners, and the suite-wide stub
   admits Stage 3 elsewhere.
+
+### Step 6: documentation
+
+- `docs/touch_set.md`: the "will read the same rows later" sentence is replaced by sections on Stage 3 admission (what
+  counts as in flight, what is compared, the refusal and fail-closed cases, the stale-checkpoint gap), `--allow-overlap`
+  and enforcement with the bounded re-plan.
+- `docs/ledger_schema.md`: the `admission_override` entry type of `executions.jsonl` and the `touch_set_violation`
+  superseding row and Stage 3 payload.
+- `npx prettier --check` passes on both docs and these notes; `uv run task lint-docs` still reports 38 other files that
+  were already unformatted before this execution (none touched here).

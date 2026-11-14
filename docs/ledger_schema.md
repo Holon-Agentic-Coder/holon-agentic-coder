@@ -804,7 +804,8 @@ Appended when a plan is proposed by the planner:
 
 #### Execution Ledger (`executions.jsonl`)
 
-The execution ledger contains two entry types discriminated by `entry_type`:
+The execution ledger contains summary and action entries, plus the flow's admission override rows, discriminated by
+`entry_type`:
 
 ##### 1. Summary Records (`"entry_type": "summary"`)
 
@@ -882,6 +883,12 @@ executor entrypoint (`holon execute`) writes such a run directly as `status: "fa
 than `failed`, `failure`, `decomposed` or `over_budget` (in practice `success`), it appends a superseding row (same
 `execution_id`, higher `ledger_revision`, every authoritative field repeated, `test_pass_rate` dropped) instead of
 editing the original row.
+
+Touch-set violation: when the executor succeeds but its diff changes non-metadata files that no entry of the plan row's
+`touch_set` matches, `holon flow` appends a superseding row of the same shape (`status: "failed"`,
+`failure_reason: "touch_set_violation"`, a `summary` naming the files) and fails Stage 3 with the payload fields
+`touch_set_violation` (the files), `replan_requested: true`, `container_status` and `superseding_row_recorded`. The
+engine then returns to Stage 2 (see `docs/touch_set.md`).
 
 ##### 2. Discrete Action Records (`"entry_type": "action"`)
 
@@ -1005,6 +1012,21 @@ holon ledger query --origin pr_review --review-severity critical
 # Search for specific keywords across errors and action summaries
 holon ledger query --query "git recovery"
 ```
+
+##### 3. Admission Override Records (`"entry_type": "admission_override"`)
+
+Appended by `holon flow --allow-overlap` when Stage 3 admission would have refused the plan (its touch set overlaps a
+flow in flight, it records no touch set, or the flows in flight could not be discovered) and the run went ahead. One row
+per admitted Stage 3, appended to `executions.jsonl` on the plan branch before the executor is dispatched (so the
+execution branch inherits it); the run is refused if the row cannot be written. Summary and action readers skip it,
+since they filter on `entry_type`. Fields:
+
+- `entry_type` and `kind`: both `"admission_override"`.
+- `plan_id`, `plan_branch` and `intent_id` (the intent branch): the admitted plan. No `execution_id`.
+- `conflicts`: a list of `{flow, files}`, where `flow` names the pull request and head branch (or the local branch and
+  worktree) and `files` the overlapping files or declared entries; empty when the refusal had no conflict.
+- `reason`: the refusal reason without a conflict (no touch set, discovery unavailable), otherwise `null`.
+- `recorded_by`: `"flow"`; `created_at`: an ISO 8601 UTC timestamp.
 
 ---
 

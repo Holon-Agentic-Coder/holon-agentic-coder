@@ -31,3 +31,11 @@ existing guards are unchanged.
 - `tests/flow/test_package_exports.py` requires every new public function to be in `flow.__all__`, so the two new
   public functions are re-exported from `flow/__init__.py` (its budget raised by the exact delta, as the budgets
   description records for earlier modules).
+
+### Step 2: Add the merge-method lookup module
+
+- Added `flow/github/merge_method.py` (64 lines): `choose_merge_flag` (pure, strict `is True`, merge commit preferred,
+  rebase never consulted) and `lookup_merge_flag` (one `gh api repos/{owner}/{repo}` call through the injected runner;
+  non-zero exit, empty output or invalid JSON refuses; stderr redacted). It imports nothing from `merge.py`.
+- Budgets: `github/merge_method.py: 64` added at creation size; `__init__.py` raised from 425 to 428 for the re-export
+  the package export test requires. `ruff check`, `ruff format --check` and the budget check pass.

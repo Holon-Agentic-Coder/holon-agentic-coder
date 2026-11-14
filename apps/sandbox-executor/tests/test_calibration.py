@@ -1323,9 +1323,9 @@ def test_run_calibrate_appends_and_commits_act_cal(calibration_repo):
         "calibration_deltas",
         "calibration_report_path",
         "created_at",
+        "touch_set_accuracy",
     ]
-    assert row["entry_type"] == "action"
-    assert row["action_origin"] == "calibration"
+    assert (row["entry_type"], row["action_origin"]) == ("action", "calibration")
     assert row["outcome"] == "success"
     assert row["action"] == "Calibration report generated for plan P-2"
     assert row["execution_id"].startswith("CAL-P-2-")

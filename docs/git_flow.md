@@ -316,16 +316,18 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
     context, else from the decision record; when neither is known, Stage 3 fails rather than fall back.
   - **One after another, each merged before the next.** A child is ready to merge when its own Stage 4 halted at
     consensus approval and its Stage 5 succeeded (or was skipped by flag). The flow then merges the child's PR into the
-    plan branch with `flow/github/merge.py`: merge commit only (`gh pr merge --merge --match-head-commit`), CI green and
-    `MERGEABLE`, after first merging the plan branch into the child head if it moved; a base of `main`, `master`, the
-    repository default branch or anything other than the plan branch is refused, as is a PR head that is protected or is
-    not the child's recorded execution branch (see [Safety](safety.md#sub-intent-merge-rules)). Only after that merge
-    does the next child start, so it is cut from a tip that already holds every earlier child's merge commit. The first
-    child that fails or is not ready marks its progress `failed`; one refused only by the merge guard stays
-    `review_done` with a `merge_error`, so a resume retries just the merge. Either way the parent's Stage 3 fails,
-    naming the child; later children do not start. Under `--skip-review` no child could reach its consensus halt, so a
-    decomposed Stage 3 (fresh or resumed) fails before any child is dispatched and asks for a re-run without the flag.
-    `--dry-run` and `--skip-push` likewise fail at the first child (no consensus approval, no PR number to merge).
+    plan branch with `flow/github/merge.py`: a merge commit when the repository allows it, otherwise a squash
+    (`gh pr merge --merge` or `--squash`, always with `--match-head-commit`; a failed merge-method lookup or neither
+    method allowed refuses), CI green and `MERGEABLE`, after first merging the plan branch into the child head if it
+    moved; a base of `main`, `master`, the repository default branch or anything other than the plan branch is refused,
+    as is a PR head that is protected or is not the child's recorded execution branch (see
+    [Safety](safety.md#sub-intent-merge-rules)). Only after that merge does the next child start, so it is cut from a
+    tip that already holds every earlier child's merge or squash commit. The first child that fails or is not ready
+    marks its progress `failed`; one refused only by the merge guard stays `review_done` with a `merge_error`, so a
+    resume retries just the merge. Either way the parent's Stage 3 fails, naming the child; later children do not start.
+    Under `--skip-review` no child could reach its consensus halt, so a decomposed Stage 3 (fresh or resumed) fails
+    before any child is dispatched and asks for a re-run without the flag. `--dry-run` and `--skip-push` likewise fail
+    at the first child (no consensus approval, no PR number to merge).
   - **The combined PR.** After the last child merged, Stage 3 merges the plan branch into the parent execution branch
     with a merge commit and appends a superseding `decomposed` summary row with `integrated: true`, the `plan_branch`
     and the list of `children` (slug, intent and execution branch, PR number and URL, merge commit). The parent's own
@@ -591,8 +593,9 @@ If rebase fails:
 **Trigger:** Sub-intent execution completes successfully. The agent raises the sub-intent's PR into the deciding plan or
 execution branch automatically and merges it automatically, with no human intervention. This holds for a leaf sub-intent
 and for a nested parent alike; a nested parent merges once its own sub-intents have merged into their deciding node
-inside it, and its PR carries that deciding node's branch. `holon flow` performs these merges with merge commits through
-the guarded child merge (see Stage 3 under the flow equivalence guarantee).
+inside it, and its PR carries that deciding node's branch. `holon flow` performs these merges with merge commits
+(squashes on a squash-only repository) through the guarded child merge (see Stage 3 under the flow equivalence
+guarantee).
 
 In the worked commands a leaf sub-intent's merge source is written as its intent branch (`I-.../_`), shorthand for the
 branch that carries its work and that its PR carries; a nested parent's merge source is the branch of the deciding node

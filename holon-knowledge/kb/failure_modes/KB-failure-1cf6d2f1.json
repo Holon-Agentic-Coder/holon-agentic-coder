@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-1cf6d2f1",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-14T23:00:32.314535+00:00",
+  "updated_ts": "2026-11-14T23:00:32.314535+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794620432-60ba51fe",
+      "ACT-FIND-1794620431-be1c42c3"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794617704-touchset/P-1794617720-cbecf7aa-claude-agent-claude-opus-5-5--1-add-the-planner-touch-set-estimate-a-touch-set-p/P-1794617990-33b5cb73-claude-agent-claude-opus-5-5/E-1794618165-976e286a-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 6 finding detected: FIND-R2-006-01",
+    "symptoms": [
+      "score_touch_set tests is_metadata_path on the raw numstat path, so a brace-form metadata rename such as plans/{P-1.md => P-2.md} is scored as an unpredicted code path and lowers recall; normalise before the metadata test."
+    ]
+  }
+}

@@ -466,6 +466,29 @@ EMPTY_DIFF_STATUS: str = "failed"
 EMPTY_DIFF_FAILURE_REASON: str = "empty_diff"
 
 
+# Paths that hold flow metadata (ledgers, plan and execution notes, checkpoints) rather than project code.
+# calibration's actual metrics and the review stage's diff summary both classify through is_metadata_path(). It extends
+# the empty-diff guard's bookkeeping list (EMPTY_DIFF_EXCLUDES, which already names executions/) instead of
+# repeating it, so execution notes (executions/E-*.md, committed by every execution) have one shared definition and
+# never count as code in the guard, the review diff summary or calibration.
+METADATA_PATH_PREFIXES: tuple[str, ...] = (
+    *EMPTY_DIFF_EXCLUDES,
+    "holon-knowledge/",
+    ".holon/",
+)
+
+
+def is_metadata_path(path: str) -> bool:
+    """Check if a file path points to metadata, ledger, or planning artifacts rather than project code."""
+    clean = path.strip()
+    if clean.startswith("./"):
+        clean = clean[2:]
+    clean = clean.lstrip("/")
+    if " => " in clean:
+        clean = clean.split(" => ")[-1].strip().rstrip("}").strip()
+    return any(clean.startswith(prefix) for prefix in METADATA_PATH_PREFIXES)
+
+
 def empty_diff_summary(base: str) -> str:
     """Return the ledger summary recorded when an execution changes nothing outside the excluded paths.
 

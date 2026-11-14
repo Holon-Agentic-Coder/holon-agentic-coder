@@ -1,0 +1,29 @@
+{
+  "kb_id": "KB-failure-b6c2f565",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-14T13:03:00.119333+00:00",
+  "updated_ts": "2026-11-14T13:03:00.119333+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1794660727-f3a32c8e",
+      "ACT-REV-1794660726-ee049c78"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794660290-probehttp/P-1794660305-d5b6233a-claude-agent-claude-opus-5-5/E-1794660422-9a1950d6-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 reviewer 2 completed",
+    "symptoms": []
+  }
+}

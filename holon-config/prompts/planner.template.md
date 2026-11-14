@@ -99,7 +99,10 @@ You will be eliminated from the selection process if you:
   `ledger`).
 - Add no new imports from entrypoints into the host flow engine.
 - The plan lists its touch set at module granularity and prefers adding focused modules over growing existing files past
-  ~400 lines.
+  ~400 lines. The touch set goes in a `## Touch Set` section placed after `## Plan Description & Strategy`: one
+  backticked repository-relative path or glob per top-level bullet (a trailing `/` means a whole directory, `*` stays
+  within one path segment and `**` spans directories), with an optional `symbols: a, b` suffix for very large modules.
+  Leave out `plans/`, `executions/` and `holon-knowledge/`; write `- none` when the plan changes no other file.
 
 The plan format is as below.
 
@@ -156,6 +159,10 @@ step, aggregation method, and any strong assumptions made against the world rule
 ## Plan Description & Strategy
 
 {plan_description}
+
+## Touch Set
+
+- `{repository_relative_path_or_glob}`
 
 ---
 

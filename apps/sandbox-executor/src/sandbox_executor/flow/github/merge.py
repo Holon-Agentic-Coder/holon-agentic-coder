@@ -1,10 +1,10 @@
-"""Guarded merge of a child PR into its plan branch: merge commit only, CI green and mergeable, never ``main``.
+"""Guarded merge of a child PR into its plan branch: merge commit or squash, CI green and mergeable, never ``main``.
 
 This is the only place the flow engine merges a pull request. :func:`merge_refusal_reason` is a pure, fail-closed check
 run twice per merge (before the plan branch is brought into the child and immediately before the merge): it refuses
-``main``, ``master``, the repository default branch, any base other than the expected plan branch, and a failed
-default-branch lookup. Only ``gh pr merge <n> --merge --match-head-commit <sha>`` is ever run; never ``--squash``,
-``--rebase``, ``--auto``, ``--admin`` or ``--delete-branch``. ``gh`` is reached only through an injectable runner.
+``main``, ``master``, the default branch, any base other than the expected plan branch, and a failed default-branch
+lookup. Only ``gh pr merge <n> --merge|--squash --match-head-commit <sha>`` is run (:mod:`.merge_method` picks the
+flag); never ``--rebase``, ``--auto``, ``--admin`` or ``--delete-branch``. ``gh`` is reached only through a runner.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from sandbox_executor.flow.git_refs import EXECUTOR_GIT_ENV, _fetch_refspecs_error
+from sandbox_executor.flow.github.merge_method import lookup_merge_flag
 from sandbox_executor.flow.ledger_interleave import resolve_ledger_only_conflicts
 from sandbox_executor.git import run_git
 from sandbox_executor.redaction import redact_agent_secrets
@@ -273,14 +274,14 @@ def merge_child_pr(
     runner: GhRunner | None = None,
     expected_head: str | None = None,
 ) -> MergeResult:
-    """Merge a child PR into ``plan_branch`` with a merge commit, only when every guard passes.
+    """Merge a child PR into ``plan_branch`` with the repository's allowed method, only when every guard passes.
 
-    Steps: read the PR (an already merged PR into the plan branch is an idempotent success); refuse through
-    :func:`merge_refusal_reason` and refuse a head that is protected or (when ``expected_head`` is given) is not the
-    child's execution branch; bring the plan branch into the child head when it is not already an ancestor
-    (ledger-only conflicts interleaved, anything else refused); wait, bounded, for the PR to be mergeable with green CI
-    on that head; re-read the PR and re-run the refusal check; then ``gh pr merge --merge --match-head-commit`` and
-    verify the PR reports ``MERGED``.
+    Steps: read the PR (an already merged PR into the plan branch is an idempotent success); look up the merge method
+    (:func:`lookup_merge_flag`; a failed lookup or no allowed method refuses before anything is written); refuse
+    through :func:`merge_refusal_reason` and refuse a head that is protected or not ``expected_head``; bring the plan
+    branch into the child head (ledger-only conflicts interleaved, anything else refused); wait, bounded, for the PR to
+    be mergeable with green CI on that head; re-read the PR and re-run the refusal check; then
+    ``gh pr merge <flag> --match-head-commit`` and verify the PR reports ``MERGED``.
     """
     gh = gh_runner(runner)
     pr = view_pr(repo_dir, str(pr_number), gh)
@@ -288,10 +289,13 @@ def merge_child_pr(
         return MergeResult(False, reason=f"PR #{pr_number} could not be read with gh")
     if str(pr.get("state") or "").upper() == "MERGED":
         return _merged_result(pr, plan_branch, already_merged=True)
+    flag, reason = lookup_merge_flag(repo_dir, gh)
+    if flag is None:
+        return MergeResult(False, reason=f"no usable merge method for PR #{pr_number}: {reason}")
     head_sha, reason = _verified_head(repo_dir, pr, plan_branch, expected_head, gh)
     if head_sha is None:
         return MergeResult(False, reason=reason)
-    merge = gh(["pr", "merge", str(pr_number), "--merge", "--match-head-commit", head_sha], repo_dir)
+    merge = gh(["pr", "merge", str(pr_number), flag, "--match-head-commit", head_sha], repo_dir)
     after = view_pr(repo_dir, str(pr_number), gh) or {}
     if str(after.get("state") or "").upper() != "MERGED":
         detail = redact_agent_secrets(f"{merge.stdout or ''} {merge.stderr or ''}".strip()) or "no output"

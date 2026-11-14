@@ -97,6 +97,14 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         help="Skip Stage 5 (post-execution calibration report generation).",
     )
     parser.add_argument(
+        "--allow-overlap",
+        action="store_true",
+        help=(
+            "Admit Stage 3 even when the plan's touch set overlaps a flow in flight (an open flow pull request or a "
+            "local flow at execute or review); the override is recorded in executions.jsonl on the plan branch."
+        ),
+    )
+    parser.add_argument(
         "--max-review-iterations",
         type=int,
         default=25,
@@ -233,6 +241,7 @@ def _update_flow_context(
     if args.skip_calibrate:
         context.skip_calibrate = True
         context.auto_calibrate = False
+    context.allow_overlap = bool(context.allow_overlap or getattr(args, "allow_overlap", False))
     if args.max_review_iterations is not None:
         context.max_review_iterations = args.max_review_iterations
     if args.ensemble_size is not None:
@@ -267,6 +276,7 @@ def _build_flow_context(
             review_ensemble_size=args.ensemble_size or DEFAULT_ENSEMBLE_SIZE,
             token_reduce=effective_token_reduce,
             mitm_web=args.mitm_web,
+            allow_overlap=bool(getattr(args, "allow_overlap", False)),
             **kw,
         )
     _update_flow_context(context, args, flow_agent, flow_model, effective_token_reduce)

@@ -22,6 +22,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.agent_defaults import LEGACY_DEFAULT_AGENT, LEGACY_DEFAULT_MODEL
+from sandbox_executor.calibration_diff import (
+    DIFF_BASE_FIRST_PARENT,
+    DIFF_BASE_MERGE_BASE,
+    DIFF_BASE_PLAN,
+    merge_history,
+    patch_diff_range,
+)
 from sandbox_executor.calibration_ev import (
     evaluate_dual_ev_outcomes,
     format_dual_ev_derivation_lines,
@@ -29,7 +36,9 @@ from sandbox_executor.calibration_ev import (
     is_converged_record,
     parse_summary_records,
 )
-from sandbox_executor.git import EMPTY_DIFF_EXCLUDES, run_git
+from sandbox_executor.calibration_touch_set import touch_set_metrics, touch_set_report_lines
+from sandbox_executor.git import METADATA_PATH_PREFIXES as METADATA_PATH_PREFIXES
+from sandbox_executor.git import is_metadata_path, run_git
 from sandbox_executor.knowledge.records import CredentialRedactor
 from sandbox_executor.ledger import generate_action_id, try_append_action_record
 
@@ -64,29 +73,6 @@ class CalibrationFormatError(CalibrationCommitError):
     nothing pushed" correct: the guard runs before the ACT-CAL ledger append, ``git add`` and
     ``git commit``. The message is credential-redacted.
     """
-
-
-# Paths that hold flow metadata (ledgers, plan and execution notes, checkpoints) rather than project code.
-# calibration's actual metrics and the review stage's diff summary both classify through is_metadata_path(). It extends
-# the empty-diff guard's bookkeeping list (git.EMPTY_DIFF_EXCLUDES, which already names executions/) instead of
-# repeating it, so execution notes (executions/E-*.md, committed by every execution) have one shared definition and
-# never count as code in the guard, the review diff summary or calibration.
-METADATA_PATH_PREFIXES: tuple[str, ...] = (
-    *EMPTY_DIFF_EXCLUDES,
-    "holon-knowledge/",
-    ".holon/",
-)
-
-
-def is_metadata_path(path: str) -> bool:
-    """Check if a file path points to metadata, ledger, or planning artifacts rather than project code."""
-    clean = path.strip()
-    if clean.startswith("./"):
-        clean = clean[2:]
-    clean = clean.lstrip("/")
-    if " => " in clean:
-        clean = clean.split(" => ")[-1].strip().rstrip("}").strip()
-    return any(clean.startswith(prefix) for prefix in METADATA_PATH_PREFIXES)
 
 
 @dataclass
@@ -209,6 +195,7 @@ class CalibrationReport:
     base_sha: str | None = None
     merge_base_sha: str | None = None
     merged_commit_count: int = 0
+    touch_set: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -233,6 +220,7 @@ class CalibrationReport:
             "base_sha": self.base_sha,
             "merge_base_sha": self.merge_base_sha,
             "merged_commit_count": self.merged_commit_count,
+            "touch_set": self.touch_set,
         }
 
 
@@ -790,14 +778,14 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
             actual.test_pass_rate = float(raw_rate)
 
     # 2. Compute patch size via git diff between plan_branch and execution_branch (fail loudly on non-zero exit)
-    base_ref = plan_branch if plan_branch else "HEAD~1"
-    if execution_branch and base_ref != target_ref:
-        diff_args = ["diff", "--numstat", f"{base_ref}...{target_ref}"]
-    else:
-        diff_args = ["diff", "--numstat", f"{target_ref}~1..{target_ref}"]
-
+    fallback_refs = (extract_branch_components(plan_branch)["intent_branch"], "main") if plan_branch else ()
+    base_rev, target_rev, diff_base = patch_diff_range(
+        plan_branch if execution_branch else "", target_ref, target_worktree, fallback_refs
+    )
+    exec_meta["diff_base"] = diff_base
+    diff_range = f"{base_rev}...{target_rev}" if base_rev else f"{target_rev}~1..{target_rev}"
     res = run_git(
-        diff_args,
+        ["diff", "--numstat", diff_range, "--"],
         cwd=target_worktree,
         check=False,
         timeout=30,
@@ -805,50 +793,18 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
     if res.returncode != 0:
         error_message = res.stderr.strip()
         raise RuntimeError(
-            f"Git diff failed between '{base_ref}' and '{target_ref}' with exit code {res.returncode}: {error_message}"
+            f"Git diff failed between '{base_rev or f'{target_rev}~1'}' and '{target_rev}' "
+            f"with exit code {res.returncode}: {error_message}"
         )
 
-    if execution_branch and base_ref != target_ref:
-        res_base = run_git(["rev-parse", base_ref], cwd=target_worktree, check=False, timeout=30)
-        if res_base.returncode != 0:
-            raise RuntimeError(
-                f"Git rev-parse failed for '{base_ref}' with exit code {res_base.returncode}: {res_base.stderr.strip()}"
-            )
-        base_sha = res_base.stdout.strip()
-
-        res_mb = run_git(["merge-base", base_ref, target_ref], cwd=target_worktree, check=False, timeout=30)
-        if res_mb.returncode != 0:
-            err = res_mb.stderr.strip()
-            raise RuntimeError(
-                f"Git merge-base failed between '{base_ref}' and '{target_ref}' "
-                f"with exit code {res_mb.returncode}: {err}"
-            )
-        merge_base_sha = res_mb.stdout.strip()
-
-        res_merges = run_git(
-            ["rev-list", "--count", "--merges", f"{base_ref}..{target_ref}"],
-            cwd=target_worktree,
-            check=False,
-            timeout=30,
-        )
-        if res_merges.returncode != 0:
-            err = res_merges.stderr.strip()
-            raise RuntimeError(
-                f"Git rev-list failed between '{base_ref}' and '{target_ref}' "
-                f"with exit code {res_merges.returncode}: {err}"
-            )
-        try:
-            merged_commit_count = int(res_merges.stdout.strip())
-        except ValueError:
-            merged_commit_count = 0
-
-        exec_meta["base_sha"] = base_sha
-        exec_meta["merge_base_sha"] = merge_base_sha
-        exec_meta["merged_commit_count"] = merged_commit_count
+    if diff_base == DIFF_BASE_PLAN:
+        exec_meta.update(merge_history(base_rev, target_rev, target_worktree))
 
     actual.files_changed = 0
     actual.insertions = 0
     actual.deletions = 0
+    # Starts empty; becomes None below for shortstat output, which lists no paths, so the touch set is not scored
+    exec_meta["changed_paths"] = []
     if res.stdout.strip():
         text = res.stdout.strip()
         if "\t" in text:
@@ -856,18 +812,17 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
             for line in text.splitlines():
                 parts = line.strip().split("\t")
                 if len(parts) >= 3:
-                    file_path = parts[2].strip().removeprefix("./")
-                    if " => " in file_path:
-                        file_path = file_path.split(" => ")[-1].strip().rstrip("}").strip()
-                    if is_metadata_path(file_path):
+                    if is_metadata_path(parts[2]):
                         continue
+                    exec_meta["changed_paths"].append(parts[2].strip())
                     actual.files_changed += 1
                     if parts[0] != "-":
                         actual.insertions += int(parts[0])
                     if parts[1] != "-":
                         actual.deletions += int(parts[1])
         else:
-            # Fallback for shortstat text (e.g. unit test mocks)
+            # Fallback for shortstat text (e.g. unit test mocks): no paths, so the touch set is not scored
+            exec_meta["changed_paths"] = None
             fc_m = re.search(r"(\d+)\s+file", text)
             ins_m = re.search(r"(\d+)\s+insertion", text)
             del_m = re.search(r"(\d+)\s+deletion", text)
@@ -1029,6 +984,8 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
         report_data.get("merge_base_sha") or report_data["merged_commit_count"] > 0
     ):
         lines.append(f"- **Merged Commits:** `{report_data['merged_commit_count']}`")
+    if report_data.get("diff_base") in (DIFF_BASE_MERGE_BASE, DIFF_BASE_FIRST_PARENT):
+        lines.append(f"- **Patch Size Base:** `{report_data['diff_base']}` (not measured against the plan branch)")
     lines.extend(
         [
             "",
@@ -1116,6 +1073,7 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
             "",
             "---",
             "",
+            *touch_set_report_lines(report_data),
             "## 4. Calibration Assessment",
             "",
             (
@@ -1179,6 +1137,7 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
         try:
             resolved_plan_ref = resolve_git_ref(plan_branch, target_worktree=target_worktree)
         except Exception as e:
+            # Keep the name: ledger and dual-EV matching still need it; patch_diff_range degrades the diff base alone.
             logger.debug("Could not resolve plan_branch '%s': %s", plan_branch, e)
             resolved_plan_ref = plan_branch
 
@@ -1266,6 +1225,7 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
         "base_sha": base_sha,
         "merge_base_sha": merge_base_sha,
         "merged_commit_count": merged_commit_count,
+        "diff_base": exec_meta.get("diff_base"),
         "ev_clean": actual.ev_clean,
         "ev_with_bugs": actual.ev_with_bugs,
         "p_success_clean": actual.p_success_clean,
@@ -1275,6 +1235,7 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
         "bug_ev_drag": actual.bug_ev_drag,
         "delta_ev_clean": deltas.delta_ev_clean,
         "delta_ev_with_bugs": deltas.delta_ev_with_bugs,
+        "touch_set": touch_set_metrics(plan_meta, exec_meta.get("changed_paths"), target_worktree),
     }
 
     markdown_content = format_markdown_report(report_dict)
@@ -1302,6 +1263,7 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
         base_sha=base_sha,
         merge_base_sha=merge_base_sha,
         merged_commit_count=merged_commit_count,
+        touch_set=report_dict["touch_set"],
     )
 
 
@@ -1380,6 +1342,7 @@ def record_calibration_action(  # noqa: PLR0913
         "calibration_deltas": data.get("deltas"),
         "calibration_report_path": report_rel,
         "created_at": datetime.now(UTC).isoformat(),
+        "touch_set_accuracy": data.get("touch_set"),
     }
     ledger_path = os.path.join(target_worktree, LEDGER_EXECUTIONS_REL)
     return try_append_action_record(
@@ -1573,7 +1536,7 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
                 )
             if remote_exists:
                 res_mg = run_git(
-                    ["merge", "--ff-only", f"origin/{calibrated_branch}"],
+                    ["merge", "--ff-only", f"refs/remotes/origin/{calibrated_branch}"],
                     cwd=target_worktree,
                     check=False,
                     timeout=30,
@@ -1582,7 +1545,7 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
                     logger.warning("Could not fast-forward calibrated branch to remote: %s", res_mg.stderr.strip())
         elif remote_exists:
             res_co = run_git(
-                ["checkout", "-b", calibrated_branch, f"origin/{calibrated_branch}"],
+                ["checkout", "-b", calibrated_branch, f"refs/remotes/origin/{calibrated_branch}"],
                 cwd=target_worktree,
                 check=False,
                 timeout=30,

@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-a02b77bd",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-14T12:48:13.250675+00:00",
+  "updated_ts": "2026-11-14T12:48:13.250675+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794659013-ff4b0d4d",
+      "ACT-FIND-1794659008-004b8620"
+    ],
+    "success_count": 0,
+    "failure_count": 3,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794657831-calbrnch/P-1794657847-a55ed825-claude-agent-claude-opus-5-5/E-1794658074-9d9b6e87-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 3 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R3-001-01",
+    "symptoms": [
+      "When the plan branch is unresolvable, the patch size falls back to target~1..target, which on real flows is the ledger-only 'execute: ... completed' commit, so the calibration records about 1 file changed instead of the real patch size; use a better base (such as the merge-base with the intent branch or origin/main) or leave the actuals unset."
+    ]
+  }
+}

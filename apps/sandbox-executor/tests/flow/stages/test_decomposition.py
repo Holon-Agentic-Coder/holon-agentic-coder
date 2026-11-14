@@ -508,6 +508,7 @@ class TestEntropyBudgetHandoffInFlow:
             "max_review_iterations": 7,
             "review_ensemble_size": 5,
             "mitm_web": True,
+            "allow_overlap": True,
             "dispatcher": dispatcher,
         }
         parent = FlowContext(
@@ -538,8 +539,7 @@ class TestEntropyBudgetHandoffInFlow:
             "logs": [],
             "schema_version": flow_module.CURRENT_CONTEXT_SCHEMA_VERSION,
             "replan_attempts": 0,
-            # A child intent runs its own Stage 4, so its review count starts afresh.
-            "review_iterations_done": 0,
+            "review_iterations_done": 0,  # A child intent runs its own Stage 4, so its review count starts afresh.
         }
         defaults = FlowContext(token_reduce=False)
         for name, value in parent_values.items():

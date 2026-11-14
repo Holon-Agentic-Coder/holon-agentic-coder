@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-53223b8b",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-14T23:00:32.195126+00:00",
+  "updated_ts": "2026-11-14T23:00:32.195126+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794618849-ab0921ef",
+      "ACT-FIND-1794618848-cfedef3c"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794617704-touchset/P-1794617720-cbecf7aa-claude-agent-claude-opus-5-5--1-add-the-planner-touch-set-estimate-a-touch-set-p/P-1794617990-33b5cb73-claude-agent-claude-opus-5-5/E-1794618165-976e286a-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R3-001-03",
+    "symptoms": [
+      "re.escape on a glob character class turns [a-c] into a literal set, so ranges never match; keep '-' as a range and add a test case."
+    ]
+  }
+}

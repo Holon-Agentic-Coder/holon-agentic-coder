@@ -32,6 +32,7 @@ from sandbox_executor.ledger import (
 )
 from sandbox_executor.redaction import redact_agent_secrets, redact_command, redact_command_args
 from sandbox_executor.ref_names import original_labels
+from sandbox_executor.touch_set import parse_touch_set_section
 from sandbox_executor.turns import record_budget_failure, run_turn, supervise_authoring_turn
 
 # The commit identity goes on the command line: a mounted host worktree's repository config is shared with the host and
@@ -278,6 +279,23 @@ def _plan_decision_fields(plan_entry: dict, plan_md_path: str, intent_data: dict
     with open(plan_md_path, encoding="utf-8") as f:
         plan_content = f.read()
     return should_decompose(plan_entry, plan_content, intent_data).to_plan_fields()
+
+
+def _touch_set_field(plan_md_path: str) -> dict:
+    """Return the ``touch_set`` field for the plan row: the parsed ``## Touch Set`` section, or ``None``.
+
+    Advisory only: a missing section or a parse error records ``None`` and never fails the plan.
+    """
+    try:
+        with open(plan_md_path, encoding="utf-8") as f:
+            touch_set = parse_touch_set_section(f.read())
+    except (OSError, ValueError) as e:
+        print(f"Warning: could not parse the plan's touch set: {e}", file=sys.stderr)
+        return {"touch_set": None}
+    if touch_set is None:
+        print("Warning: the plan has no '## Touch Set' section; recording touch_set as null.", file=sys.stderr)
+        return {"touch_set": None}
+    return {"touch_set": touch_set.to_row()}
 
 
 def main():  # noqa: C901, PLR0912, PLR0915
@@ -564,6 +582,7 @@ Include metrics in this format:
     except Exception as e:
         print(f"Warning: Failed to converge prettier on {plan_md_rel}: {e}", file=sys.stderr)
     plan_entry.update(_plan_decision_fields(plan_entry, plan_md_path, intent_data))
+    plan_entry.update(_touch_set_field(plan_md_path))
 
     plans_ledger_dir = os.path.join(repo_dir, "holon-knowledge/ledger")
     os.makedirs(plans_ledger_dir, exist_ok=True)

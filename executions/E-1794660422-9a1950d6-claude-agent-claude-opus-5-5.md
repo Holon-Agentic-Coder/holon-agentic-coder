@@ -30,3 +30,14 @@ Implements plan `P-1794660305-d5b6233a-claude-agent-claude-opus-5-5` for intent 
 - Sidecar failure message now reads "never answered an HTTP proxy request"; the existing test at line 330 asserted the
   old wording, so its assertion was updated in the same commit (in scope).
 - `PROXY_CONNECT_TIMEOUT_SECONDS` unchanged (still used by the unrelated port check).
+
+### Step 2: Add hermetic loopback-listener tests for the probe
+
+- Added `_LoopbackListener` (daemon accept thread on `127.0.0.1:0`, records each request, delegates the answer to a
+  handler given the 1-based connection index) and a `loopback_listener` fixture that shortens
+  `PROXY_POLL_INTERVAL_SECONDS` to `0.02` and `PROXY_PROBE_ATTEMPT_TIMEOUT_SECONDS` to `0.2` and closes every listener.
+- Tests: silent close is retried until the deadline (`False`, more than one connection, elapsed `>= 0.4` s); an
+  immediate 502 is ready and pins the `GET http://holon-proxy-readiness.invalid/ HTTP/1.1` request form; a listener
+  that answers only from its third connection (count-driven, not wall-clock) becomes ready; parametrised silent-hold
+  and non-HTTP listeners are not ready by the deadline.
+- Slowest new test `0.40` s; all five finish well under 1 s.

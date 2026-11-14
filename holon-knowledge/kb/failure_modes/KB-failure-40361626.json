@@ -1,0 +1,29 @@
+{
+  "kb_id": "KB-failure-40361626",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-14T14:00:42.414981+00:00",
+  "updated_ts": "2026-11-14T14:00:42.414981+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1794664181-d11bfe56",
+      "ACT-REV-1794664179-7b8f7490"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794663286-hygiene/P-1794663302-17aba811-claude-agent-claude-opus-5-5/E-1794663560-da6ecf9f-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 reviewer 3 completed",
+    "symptoms": []
+  }
+}

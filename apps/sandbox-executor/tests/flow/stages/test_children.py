@@ -1,9 +1,10 @@
 """End-to-end tests of the decomposed child loop against a bare origin, with fake role agents and a fake ``gh``.
 
 They prove that children nest under the plan branch (goal 8 b), run strictly one after another from its latest tip
-(8 c), are merged into it with merge commits only and never into ``main`` (8 d), and that a resume continues from the
-recorded progress without re-dispatching the parent executor or any child (8 f). ``TestChildLoopWithStubbedPipelines``
-covers the same loop with each child pipeline, the merge and the integration stubbed.
+(8 c), are merged into it with merge commits (squashes on a squash-only repository) and never into ``main`` (8 d), and
+that a resume continues from the recorded progress without re-dispatching the parent executor or any child (8 f).
+``TestChildLoopWithStubbedPipelines`` covers the same loop with each child pipeline, the merge and the integration
+stubbed.
 """
 
 from __future__ import annotations
@@ -77,6 +78,30 @@ def test_children_nest_under_the_plan_branch_and_run_one_after_another(flow_repo
     assert [call[2] for call in merge_calls] == [str(first["pr_number"]), str(second["pr_number"])]
     assert all(
         "--merge" in call and not {"--squash", "--rebase", "--delete-branch"} & set(call) for call in merge_calls
+    )
+
+
+def test_children_of_a_squash_only_repository_are_squashed_into_the_plan_branch(flow_repos, tmp_path):
+    host, origin = flow_repos
+    ctx, _agents = _decomposed_context(host, origin, tmp_path)
+
+    with decomposed_flow(origin, tmp_path) as reviews:
+        reviews.gh.allow_merge_commit = False
+        results = PipelineEngine(ctx).run()
+
+    execute = results["execute"]
+    assert execute.status == StageStatus.SUCCESS
+    first, second = execute.payload["children_progress"]
+    assert (first["status"], second["status"]) == ("merged", "merged")
+    # Each squash is a single-parent commit on the plan branch, and the second child is cut from the first squash.
+    assert _git(origin, "rev-parse", f"{second['merge_commit']}^") == first["merge_commit"]
+    assert _git(origin, "rev-parse", f"refs/heads/{second['intent_branch']}^") == first["merge_commit"]
+    for entry in (first, second):
+        assert len(_git(origin, "rev-list", "--parents", "-n", "1", entry["merge_commit"]).split()) == 2
+    merge_calls = reviews.gh.merge_calls()
+    assert len(merge_calls) == 2
+    assert all(
+        "--squash" in call and not {"--merge", "--rebase", "--delete-branch"} & set(call) for call in merge_calls
     )
 
 

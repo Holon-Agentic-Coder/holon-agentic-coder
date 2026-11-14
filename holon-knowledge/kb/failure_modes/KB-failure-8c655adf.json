@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-8c655adf",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-14T12:48:13.077919+00:00",
+  "updated_ts": "2026-11-14T12:48:13.077919+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1794659013-be162d7c",
+      "ACT-REV-1794659008-4e8067cb"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794657831-calbrnch/P-1794657847-a55ed825-claude-agent-claude-opus-5-5/E-1794658074-9d9b6e87-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 evaluation for I-1794657831-calbrnch/P-1794657847-a55ed825-claude-agent-claude-opus-5-5/E-1794658074-9d9b6e87-claude-agent-claude-opus-5-5/_",
+    "symptoms": [
+      "Findings detected: ['FIND-R1-001-01', 'FIND-R2-001-01', 'FIND-R2-001-02', 'FIND-R3-001-01']"
+    ]
+  }
+}

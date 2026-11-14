@@ -168,6 +168,8 @@ class FlowContext:
     max_review_iterations: int = 25
     review_ensemble_size: int = DEFAULT_ENSEMBLE_SIZE  # Independent reviewer agent turns per Stage 4 iteration.
     mitm_web: bool = False
+    # --allow-overlap: Stage 3 admission admits a plan that overlaps a flow in flight and records the override.
+    allow_overlap: bool = False
     stage_results: dict[str, StageResult] = field(default_factory=dict)
     logs: list[str] = field(default_factory=list)
     schema_version: int = CURRENT_CONTEXT_SCHEMA_VERSION
@@ -223,6 +225,7 @@ class FlowContext:
             "max_review_iterations": self.max_review_iterations,
             "review_ensemble_size": self.review_ensemble_size,
             "mitm_web": self.mitm_web,
+            "allow_overlap": self.allow_overlap,
             "replan_attempts": self.replan_attempts,
             "review_iterations_done": self.review_iterations_done,
             "stage_results": {k: v.to_dict() for k, v in self.stage_results.items()},
@@ -261,6 +264,7 @@ class FlowContext:
             max_review_iterations=data.get("max_review_iterations", 25),
             review_ensemble_size=int(data.get("review_ensemble_size") or DEFAULT_ENSEMBLE_SIZE),
             mitm_web=data.get("mitm_web", False),
+            allow_overlap=bool(data.get("allow_overlap", False)),
             replan_attempts=int(data.get("replan_attempts") or 0),
             review_iterations_done=int(data.get("review_iterations_done") or 0),
             stage_results=parsed_results,

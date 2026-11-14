@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-02321eec",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-14T23:00:32.329462+00:00",
+  "updated_ts": "2026-11-14T23:00:32.329462+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1794620603-ddd97c41",
+      "ACT-REV-1794620601-5915ec22"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794617704-touchset/P-1794617720-cbecf7aa-claude-agent-claude-opus-5-5--1-add-the-planner-touch-set-estimate-a-touch-set-p/P-1794617990-33b5cb73-claude-agent-claude-opus-5-5/E-1794618165-976e286a-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 7 reviewer 2 failed",
+    "symptoms": [
+      "review turn cut short: review stage budget of 75 s exceeded after 75.4 s"
+    ]
+  }
+}

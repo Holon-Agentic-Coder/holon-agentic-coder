@@ -344,9 +344,13 @@ out-of-band reviews and never pause a running flow before the merge.
 `flow/github/merge.py` is the only code path in which the flow engine merges a pull request. It merges a child's PR into
 the plan branch that listed it, and only when every rule holds:
 
-- **Merge commit only.** The only command it runs is `gh pr merge <n> --merge --match-head-commit <sha>`; never
-  `--squash`, `--rebase`, `--auto`, `--admin` or `--delete-branch`, so every child commit stays in the plan branch
-  history.
+- **Merge commit, else squash.** Before anything is written it reads the repository's allowed merge methods with
+  `gh api repos/{owner}/{repo}` (`flow/github/merge_method.py`). The only command it runs is
+  `gh pr merge <n> --merge --match-head-commit <sha>` when `allow_merge_commit` is `true`, otherwise
+  `gh pr merge <n> --squash --match-head-commit <sha>` when `allow_squash_merge` is `true`; never `--rebase`, `--auto`,
+  `--admin` or `--delete-branch`. A failed lookup, or a repository that allows neither method (a missing or non-boolean
+  setting counts as not allowed), refuses the merge. A merge commit keeps every child commit in the plan branch history;
+  a squash keeps them on the child's execution branch and PR, with one commit on the plan branch.
 - **Fail-closed base check.** A pure refusal check rejects a PR whose base is `main`, `master` or the repository default
   branch, whose base is not the expected plan branch, or whose expected plan branch is itself one of those. It reads the
   default branch from `gh repo view`; when that lookup fails the merge is refused, never guessed as `main`. The check

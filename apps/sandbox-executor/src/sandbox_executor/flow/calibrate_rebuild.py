@@ -42,15 +42,15 @@ def is_calibration_path(path: str) -> bool:
 
 def _commits_missing_from_head(repo_dir: str, start_sha: str, existing_sha: str) -> list[str] | None:
     """The commits on ``existing_sha`` that ``start_sha`` lacks; None when git cannot tell."""
-    out = _git_out(repo_dir, ["rev-list", f"{start_sha}..{existing_sha}"])
+    out = _git_out(repo_dir, ["rev-list", f"{start_sha}..{existing_sha}", "--"])
     return None if out is None else out.split()
 
 
 def _is_calibration_commit(repo_dir: str, sha: str) -> bool:
     """True for a non-merge commit with a ``chore(calibration): `` subject touching only calibration paths."""
-    parents = _git_out(repo_dir, ["rev-list", "--parents", "-n", "1", sha])
-    subject = _git_out(repo_dir, ["log", "-1", "--format=%s", sha])
-    paths = _git_out(repo_dir, ["diff-tree", "--no-commit-id", "--name-only", "-r", "--root", sha])
+    parents = _git_out(repo_dir, ["rev-list", "--parents", "-n", "1", sha, "--"])
+    subject = _git_out(repo_dir, ["log", "-1", "--format=%s", sha, "--"])
+    paths = _git_out(repo_dir, ["diff-tree", "--no-commit-id", "--name-only", "-r", "--root", sha, "--"])
     if parents is None or subject is None or paths is None or len(parents.split()) > 2:
         return False
     return subject.startswith(CALIBRATION_SUBJECT_PREFIX) and all(map(is_calibration_path, paths.splitlines()))

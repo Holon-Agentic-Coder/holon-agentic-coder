@@ -804,7 +804,7 @@ Appended when a plan is proposed by the planner:
 
 #### Execution Ledger (`executions.jsonl`)
 
-The execution ledger contains two entry types discriminated by `entry_type`:
+The execution ledger contains summary, action and admission override entries, discriminated by `entry_type`:
 
 ##### 1. Summary Records (`"entry_type": "summary"`)
 
@@ -880,8 +880,8 @@ the highest `ledger_revision` for a given `execution_id` without needing to merg
 executor entrypoint (`holon execute`) writes such a run directly as `status: "failed"` with
 `failure_reason: "empty_diff"`. If `holon flow` finds an empty execution whose newest summary row has any status other
 than `failed`, `failure`, `decomposed` or `over_budget` (in practice `success`), it appends a superseding row (same
-`execution_id`, higher `ledger_revision`, every authoritative field repeated, `test_pass_rate` dropped) instead of
-editing the original row.
+`execution_id`, higher `ledger_revision`, every authoritative field repeated, `test_pass_rate` dropped). For the
+`failure_reason: "touch_set_violation"` superseding row and `admission_override` rows see [touch_set.md](touch_set.md).
 
 ##### 2. Discrete Action Records (`"entry_type": "action"`)
 

@@ -1,4 +1,4 @@
-"""Stage 3 integration of a decomposed plan: bring the plan branch, which now holds every child's merge commit, into
+"""Stage 3 integration of a decomposed plan: bring the plan branch, which now holds every merged child's work, into
 the parent execution branch and record a superseding executions summary row listing the children.
 
 Stage 4 then raises and reviews one combined PR from the parent execution branch into the intent's ``target_branch``

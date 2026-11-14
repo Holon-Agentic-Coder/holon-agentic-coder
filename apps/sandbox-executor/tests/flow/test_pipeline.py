@@ -538,7 +538,7 @@ class TestFlowStages:
         assert res.status == StageStatus.SUCCESS
         git_calls = [call.args[0] for call in mock_git.call_args_list]
         assert ["push", "-u", "origin", mock_report.calibrated_branch] in git_calls
-        assert ["merge", "--ff-only", mock_report.calibrated_branch] in git_calls
+        assert ["merge", "--ff-only", f"refs/heads/{mock_report.calibrated_branch}"] in git_calls
 
     def test_warn_ledger_failure_redacts_credentials(self, tmp_path, caplog):
         """Non-fatal ledger failure warnings redact the exception text in both logs."""

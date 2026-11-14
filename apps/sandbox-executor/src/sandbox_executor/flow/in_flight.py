@@ -27,6 +27,7 @@ from sandbox_executor.flow.context import FlowStage
 from sandbox_executor.flow.git_refs import _read_ledger_rows, _resolve_branch_ref
 from sandbox_executor.flow.github import merge
 from sandbox_executor.git import is_metadata_path, run_git
+from sandbox_executor.ref_names import INTENT_SUFFIX
 from sandbox_executor.touch_set import TouchSet, normalise_touch_path
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ def read_plan_touch_set(repo_dir: str, plan_branch: str) -> TouchSet | None:
 
 def _plan_branch_of_head(head: str) -> str | None:
     match = _EXECUTION_HEAD_RE.match(head)
-    return f"{match.group('plan')}/_" if match else None
+    return match.group("plan") + INTENT_SUFFIX if match else None
 
 
 def _root_intent(branch: str) -> str:

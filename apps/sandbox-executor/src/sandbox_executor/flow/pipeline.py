@@ -220,20 +220,15 @@ class PipelineEngine:
 
     def _replan_feedback(self, result: StageResult) -> str:
         """Log the return to Stage 2 and give the planner's transient feedback for a refused Stage 3 result."""
-        attempt = self.context.replan_attempts
-        files = result.payload.get(TOUCH_SET_VIOLATION)
-        if files:
-            self.context.log(
-                f"Stage 3: the execution changed files outside the plan's touch set; returning to Stage 2 "
-                f"(re-plan attempt {attempt} of {MAX_REPLAN_ATTEMPTS})."
-            )
-            return _touch_set_replan_feedback(str(self.context.plan_branch), list(files), attempt)
+        attempt, files = self.context.replan_attempts, result.payload.get(TOUCH_SET_VIOLATION)
         entropy = _format_entropy(result.payload.get("entropy"))
         budget = _format_entropy(result.payload.get("entropy_budget"))
-        self.context.log(
-            f"Stage 3: plan entropy {entropy} exceeds the entropy budget {budget}; returning to Stage 2 "
-            f"(re-plan attempt {attempt} of {MAX_REPLAN_ATTEMPTS})."
-        )
+        why = f"plan entropy {entropy} exceeds the entropy budget {budget}"
+        if files:
+            why = "the execution changed files outside the plan's touch set"
+        self.context.log(f"Stage 3: {why}; returning to Stage 2 (re-plan attempt {attempt} of {MAX_REPLAN_ATTEMPTS}).")
+        if files:
+            return _touch_set_replan_feedback(str(self.context.plan_branch), list(files), attempt)
         if _sub_intent_depth_error(self.context) is None:
             request = "write a smaller plan within the budget, or add an explicit sub-intent list."
         else:

@@ -10,11 +10,11 @@ execution diff fails Stage 3 with `touch_set_violation` and returns once to Stag
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.0   |
-| entropy_actual        | 0.0   |
-| impact_actual         | 0.0   |
-| cost_actual           | 0.0   |
-| learning_value_actual | 0.0   |
+| success_actual        | 1.0   |
+| entropy_actual        | 9.5   |
+| impact_actual         | 82.0  |
+| cost_actual           | 14.0  |
+| learning_value_actual | 5.0   |
 
 ## Steps Executed
 
@@ -101,3 +101,44 @@ execution diff fails Stage 3 with `touch_set_violation` and returns once to Stag
   superseding row and Stage 3 payload.
 - `npx prettier --check` passes on both docs and these notes; `uv run task lint-docs` still reports 38 other files that
   were already unformatted before this execution (none touched here).
+
+### Step 7: budgets, lint and verification
+
+- `flow_module_budgets.json`: `admission.py` (154), `in_flight.py` (190) and `stages/touch_set_guard.py` (93) added at
+  creation size; `__init__.py`, `context.py`, `pipeline.py` and `stages/children.py` raised by 34, 4, 23 and 1 lines;
+  `stages/execute.py` lowered by 1 to 415. One explanatory sentence was added to the description. No `noqa` was added or
+  widened.
+- The first full run caught `test_no_other_module_builds_a_branch_with_a_literal_suffix`: `in_flight.py` built the plan
+  branch with a literal `/_`; it now appends `ref_names.INTENT_SUFFIX`.
+- Touch-set dogfooding by hand: every changed file is in the plan's `## Touch Set` except `flow/stages/children.py`,
+  `tests/conftest.py` and `tests/flow/stages/test_decomposition.py` (explained in Steps 3 and 4) and these notes
+  (metadata). `ledger.py`, declared, needed no change. No dependency changed, so `uv.lock` is untouched.
+
+## Tests Run
+
+Single runs only (the intent sets no timing target); every run is listed with its pytest-reported result and time.
+
+| command                                                                                            | result                           | time   |
+| -------------------------------------------------------------------------------------------------- | -------------------------------- | ------ |
+| `uv run pytest apps/sandbox-executor/tests/test_touch_set.py` (Step 1, first)                      | 1 failed, 76 passed              | 0.12s  |
+| `uv run pytest apps/sandbox-executor/tests/test_touch_set.py` (expectation fixed)                  | 78 passed                        | 0.11s  |
+| `uv run pytest apps/sandbox-executor/tests/flow/test_in_flight.py`                                 | 7 passed                         | 0.18s  |
+| execute, pipeline, context, exports, budgets and CLI tests (Step 3, `-n auto --dist worksteal`)    | 1 failed (budgets), 515 passed   | 3.13s  |
+| `uv run pytest apps/sandbox-executor/tests/flow/test_admission.py`                                 | 8 passed                         | 0.31s  |
+| `uv run pytest apps/sandbox-executor/tests/flow/test_admission.py` (ledger reader test added)      | 9 passed                         | 0.35s  |
+| `uv run pytest apps/sandbox-executor/tests/flow -n auto --dist worksteal` (Step 4)                 | 2 failed, 756 passed             | 8.58s  |
+| `uv run pytest apps/sandbox-executor/tests/flow/stages/test_decomposition.py -n auto`              | 79 passed                        | 5.04s  |
+| `uv run pytest apps/sandbox-executor/tests/flow/stages/test_execute_touch_set.py -n auto`          | 5 passed                         | 2.59s  |
+| plan Step 5 affected-test command (`-n auto --dist worksteal`)                                     | 176 passed                       | 5.23s  |
+| plan Step 5 affected-test command, after the lint fix                                              | 176 passed                       | 3.00s  |
+| `test_pipeline.py`, `test_decomposition.py` and `test_execute_touch_set.py` after the re-plan tidy | 146 passed                       | 4.47s  |
+| `test_ref_names.py` and `test_in_flight.py` after the suffix fix                                   | 35 passed                        | 0.35s  |
+| `uv run task test` (full suite, first)                                                             | 1 failed, 4109 passed, 1 skipped | 23.67s |
+| `uv run task test` (full suite, final)                                                             | 4110 passed, 1 skipped           | 23.58s |
+
+- Medians: full suite `23.625s` (two runs at different commits), plan Step 5 affected-test command `4.115s`.
+- The Step 3 and Step 4 failures were the expected module-budget check (settled in Step 7) and the field-classification
+  test of child contexts (fixed in Step 4).
+- `uv run task lint`: ruff check, ruff format check, the `uv.lock` check and the flow module budget check all pass.
+- `uv run task lint-docs`: the changed docs and these notes pass `npx prettier --check`; the task still reports 38 files
+  outside this change that were already unformatted.

@@ -48,3 +48,15 @@ review-finding identifiers with plain descriptions, and add a hermetic repositor
 - `scripts/pre_commit_check.py` drops the spelling exemption for the retired directory.
 - Prettier `3.8.4` already flags `docs/optimisation/token_reduction_measurement_plan.md` on `main` (math reflow); left
   unformatted to keep the change focused. The baseline `lint-docs` run flags 40 files, mostly under `plans/`.
+
+### Step 4: Move the review scratch root to `tmp/review`
+
+- Removed the tracked placeholder under the hidden agent-state directory and its `.prettierignore` line; `.gitignore`
+  keeps one line so outside tooling state stays untracked (the single allowlisted occurrence).
+- `review_ensemble.py`: `REVIEW_ROOT_REL = "tmp/review"`; the containment error names the parent via
+  `_REVIEW_PARENT_REL = posixpath.dirname(REVIEW_ROOT_REL)` so the text cannot drift; resolve-and-refuse logic
+  unchanged. Docstrings and the reviewer prohibition name `tmp/review/`.
+- `scaffold.py` and `review_loop.template.md` edited identically (parity test green); README, `docs/architecture.md`
+  and `docs/git_flow.md` name `tmp/review/`.
+- Tests re-pointed, including the symlinked-root refusal cases `("tmp", False)`, `("tmp/review", False)` and
+  `("tmp/review", True)`, which still fail closed. Four modules: 233 passed.

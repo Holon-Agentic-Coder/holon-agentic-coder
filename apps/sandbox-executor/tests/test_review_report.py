@@ -64,7 +64,7 @@ def _report_text(parsed: ParsedTrailer, block: object | None = None, body: str =
 def _reviewer(index: int, *findings: ReviewFinding, block: object | None = None, **kwargs) -> ReviewerResult:
     parsed = _parsed(*findings)
     text = _report_text(parsed, block, **kwargs)
-    report = f".subagent/review/iter-1/reviewer-{index}/report.md"
+    report = f"tmp/review/iter-1/reviewer-{index}/report.md"
     return ReviewerResult.completed(index, f"agent-{index}", f"model-{index}", report, text, parsed)
 
 
@@ -535,7 +535,7 @@ def test_untrusted_finding_text_cannot_break_out_of_its_row():
 def test_the_on_disk_trailer_never_appears_in_a_posted_body():
     reviewers = changes_reviewers()
     body = _report(reviewers)
-    on_disk = build_on_disk_review_report(body, _consensus(), reviewers, ".subagent/r.md")
+    on_disk = build_on_disk_review_report(body, _consensus(), reviewers, "tmp/review/r.md")
 
     for key in ("VERDICT:", "CI:", "REPORT:", "CRITICAL:", "IMPORTANT:", "NIT:", "FINDINGS:"):
         assert not [line for line in body.splitlines() if line.startswith(key)]
@@ -543,7 +543,7 @@ def test_the_on_disk_trailer_never_appears_in_a_posted_body():
     assert on_disk.rstrip().splitlines()[-7:] == [
         "VERDICT: CHANGES_REQUESTED",
         "CI: PASS",
-        "REPORT: .subagent/r.md",
+        "REPORT: tmp/review/r.md",
         "CRITICAL: 0",
         "IMPORTANT: 1",
         "NIT: 1",
@@ -554,7 +554,7 @@ def test_the_on_disk_trailer_never_appears_in_a_posted_body():
 @pytest.mark.parametrize("verdict", ["FAILED", ""], ids=["failed", "missing"])
 def test_the_trailer_fails_closed_on_a_failed_or_missing_ensemble_verdict(verdict):
     reviewers = changes_reviewers()
-    on_disk = build_on_disk_review_report("body", _consensus(ensemble_verdict=verdict), reviewers, ".subagent/r.md")
+    on_disk = build_on_disk_review_report("body", _consensus(ensemble_verdict=verdict), reviewers, "tmp/review/r.md")
 
     trailer_lines = on_disk.rstrip().splitlines()
     assert "VERDICT: CHANGES_REQUESTED" in trailer_lines

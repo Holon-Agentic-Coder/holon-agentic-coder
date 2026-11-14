@@ -448,11 +448,11 @@ works in place on the run's `flow-<slug>` worktree, bind-mounted from the host t
 `.git` pointer names; the repository config, hooks, git pointers and the whole `worktrees/` administrative directory are
 mounted read-only, so no sibling worktree's admin files are reachable, with only the mounted worktree's own admin
 directory re-mounted read-write on top. The container never clones, fetches, pushes, resets or cleans: it validates that
-HEAD is on the review branch and equals the resolved head SHA, and fails closed otherwise. Edits, logs and
-`.subagent/review/` scratch are on the host at once and survive a container crash. No Docker volume or root init
-container is involved. Canonical `ACT-REV`/`ACT-FIND`/`ACT-RES`/`ACT-POST` rows and the summary row remain host-written.
-A standalone `holon review-loop <PR>` reuses the worktree that has the PR's head branch checked out (normally
-`flow-<slug>`) and creates a `pr<N>-<slug>` worktree only when none exists. See the
+HEAD is on the review branch and equals the resolved head SHA, and fails closed otherwise. Edits, logs and `tmp/review/`
+scratch are on the host at once and survive a container crash. No Docker volume or root init container is involved.
+Canonical `ACT-REV`/`ACT-FIND`/`ACT-RES`/`ACT-POST` rows and the summary row remain host-written. A standalone
+`holon review-loop <PR>` reuses the worktree that has the PR's head branch checked out (normally `flow-<slug>`) and
+creates a `pr<N>-<slug>` worktree only when none exists. See the
 [sandbox-executor README](../apps/sandbox-executor/README.md#host-worktree-workspace). **One worktree for every stage.**
 The Stage 1 intent creator, Stage 2 planner, Stage 3 executor and Stage 4 review-loop and resolver all run in the same
 mounted `flow-<slug>` worktree with the same protections; none clones. No container touches the remote: roles only

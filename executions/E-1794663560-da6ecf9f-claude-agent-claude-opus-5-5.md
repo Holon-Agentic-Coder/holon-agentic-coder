@@ -17,3 +17,24 @@ review-finding identifiers with plain descriptions, and add a hermetic repositor
 | learning_value_actual | 0.0   |
 
 ## Steps Executed
+
+### Step 1: Re-inventory and baseline
+
+- Inventory matched the plan, with two additions: `scripts/pre_commit_check.py` carried a spelling exemption for the
+  local-notes directory, and review-finding citations also use an `-I<n>` form (for example `C23-I1`, `R1-I1`, about 20
+  occurrences in `test_pipeline.py`, `test_artefacts.py`, `test_budgets.py`, `test_calibration.py`, `test_cli.py`,
+  `test_executor.py`, `test_local_llm.py`, `test_planner.py`, `test_review_loop.py`, `test_turn_supervisor.py`). Both
+  are folded into Steps 2 and 5, and the hygiene test pattern covers `[CR]<n>[A-Z]?-[NI]<n>`.
+- Baseline on the five most affected modules: 455 passed.
+
+### Step 2: Move the A/B runner to `scripts/`
+
+- `git mv` to `scripts/ab_measure_all_methods.py`; deleted the superseded single failed run results (HTTP 404, carried
+  an upstream account id).
+- Defaults moved to `tmp/` (`tmp/mitm_wire_logs`, `tmp/cache`, `tmp/scorecard_report.md`); the workspace-reset
+  `git clean` keeps `tmp/`, `.venv` and `docs/`.
+- The script lost its spelling exemption, so `optimized` became `optimised` throughout it (identifiers and scorecard
+  labels; all call sites are internal or positional) to pass `scripts/pre_commit_check.py`.
+- `test_token_reduction.py`: one `_load_ab_runner()` helper replaces seven inline loaders.
+- Docs: `token_reduction_ab_testing.md` and `mitm_telemetry_metrics_plan.md` now point at the real runner and state that
+  no standalone real-API benchmark script is shipped; `token_reduction_measurement_plan.md` names `scripts/` and `tmp/`.

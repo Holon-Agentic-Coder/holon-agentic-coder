@@ -247,7 +247,7 @@ def reset_workspace_state(repo_root: Path, force: bool = False) -> None:
     try:
         subprocess.run(["git", "checkout", "--", "."], cwd=str(repo_root), capture_output=True, check=False)
         subprocess.run(
-            ["git", "clean", "-fdx", "--exclude=todo/", "--exclude=.venv", "--exclude=docs/", "--exclude=.subagent/"],
+            ["git", "clean", "-fdx", "--exclude=tmp/", "--exclude=.venv", "--exclude=docs/"],
             cwd=str(repo_root),
             capture_output=True,
             check=False,
@@ -335,14 +335,14 @@ def parse_wire_logs_into_result(wire_log_dir: Path, iteration: int, test_exit_co
     return result
 
 
-def generate_synthetic_iteration(iteration: int, optimized: bool) -> IterationResult:
+def generate_synthetic_iteration(iteration: int, optimised: bool) -> IterationResult:
     """Generates deterministic reference data conforming to Part 3 Efficacy Scorecard."""
     import random
 
     rng = random.Random(42 + iteration)
     jitter = rng.uniform(-0.01, 0.01)
 
-    if not optimized:
+    if not optimised:
         # Baseline Direct run
         prompt = int(262_500 * (1.0 + jitter))
         output = int(4_850 * (1.0 + jitter))
@@ -365,7 +365,7 @@ def generate_synthetic_iteration(iteration: int, optimized: bool) -> IterationRe
             wall_clock_s=42.0,
         )
     else:
-        # Fully Optimized run
+        # Fully Optimised run
         prompt = int(48_200 * (1.0 + jitter))
         output = int(3_920 * (1.0 + jitter))
         cache_read = int(37_788 * (1.0 + jitter))
@@ -392,57 +392,57 @@ def generate_synthetic_iteration(iteration: int, optimized: bool) -> IterationRe
 
 def format_scorecard(  # noqa: PLR0915
     baseline: BenchmarkSummary,
-    optimized: BenchmarkSummary,
+    optimised: BenchmarkSummary,
     task_name: str = "Refactor auth middleware & add unit tests",
     agent_harness: str = "Antigravity / Claude",
 ) -> str:
     """Generates the Markdown table matching docs/optimisation/token_reduction_measurement_plan.md."""
     b_p_mean, b_p_std = baseline.prompt_tokens_stats
-    o_p_mean, o_p_std = optimized.prompt_tokens_stats
+    o_p_mean, o_p_std = optimised.prompt_tokens_stats
     prompt_diff = o_p_mean - b_p_mean
     prompt_pct = (prompt_diff / max(1.0, b_p_mean)) * 100.0
 
     b_o_mean, b_o_std = baseline.output_tokens_stats
-    o_o_mean, o_o_std = optimized.output_tokens_stats
+    o_o_mean, o_o_std = optimised.output_tokens_stats
     output_diff = o_o_mean - b_o_mean
     output_pct = (output_diff / max(1.0, b_o_mean)) * 100.0
 
     b_t0_mean, _ = baseline.turn_0_stats
-    o_t0_mean, _ = optimized.turn_0_stats
+    o_t0_mean, _ = optimised.turn_0_stats
     t0_diff = o_t0_mean - b_t0_mean
     t0_pct = (t0_diff / max(1.0, b_t0_mean)) * 100.0
 
-    o_prune_mean, o_prune_std = optimized.pruned_bytes_stats
-    o_dups_mean, _ = optimized.duplicate_tools_stats
-    o_hit_rate, o_hit_std = optimized.cache_hit_rate_stats
-    o_cread_mean, _ = optimized.cache_read_tokens_stats
-    o_cache_hits, _ = optimized.local_cache_hits_stats
+    o_prune_mean, o_prune_std = optimised.pruned_bytes_stats
+    o_dups_mean, _ = optimised.duplicate_tools_stats
+    o_hit_rate, o_hit_std = optimised.cache_hit_rate_stats
+    o_cread_mean, _ = optimised.cache_read_tokens_stats
+    o_cache_hits, _ = optimised.local_cache_hits_stats
 
-    total_calls_mean = sum(it.total_calls for it in optimized.iterations) / max(1, len(optimized.iterations))
+    total_calls_mean = sum(it.total_calls for it in optimised.iterations) / max(1, len(optimised.iterations))
     call_pct = (o_cache_hits / max(1.0, total_calls_mean)) * 100.0
 
-    o_t1 = sum(it.tier1_tokens for it in optimized.iterations) / max(1, len(optimized.iterations))
-    o_t2 = sum(it.tier2_tokens for it in optimized.iterations) / max(1, len(optimized.iterations))
+    o_t1 = sum(it.tier1_tokens for it in optimised.iterations) / max(1, len(optimised.iterations))
+    o_t2 = sum(it.tier2_tokens for it in optimised.iterations) / max(1, len(optimised.iterations))
     tot_tokens = max(1.0, o_t1 + o_t2)
     o_t1_pct = round((o_t1 / tot_tokens) * 100)
     o_t2_pct = round((o_t2 / tot_tokens) * 100)
 
     b_cost_mean, b_cost_std = baseline.monetary_cost_stats
-    o_cost_mean, o_cost_std = optimized.monetary_cost_stats
+    o_cost_mean, o_cost_std = optimised.monetary_cost_stats
     cost_diff = o_cost_mean - b_cost_mean
     cost_pct = (cost_diff / max(0.01, b_cost_mean)) * 100.0
 
     b_pass = sum(1 for i in baseline.iterations if i.success)
-    o_pass = sum(1 for i in optimized.iterations if i.success)
+    o_pass = sum(1 for i in optimised.iterations if i.success)
     b_sr = baseline.success_rate * 100
-    o_sr = optimized.success_rate * 100
+    o_sr = optimised.success_rate * 100
     guardrail_status = (
         "**100% (Functional correctness guardrail met)**"
         if o_sr == 100.0
         else f"**{o_sr:.0f}% (Functional correctness guardrail NOT MET)**"
     )
 
-    calls_list = [it.total_calls for it in optimized.iterations if it.total_calls > 0]
+    calls_list = [it.total_calls for it in optimised.iterations if it.total_calls > 0]
     if not calls_list:
         calls_list = [it.total_calls for it in baseline.iterations if it.total_calls > 0]
     if calls_list:
@@ -462,7 +462,7 @@ def format_scorecard(  # noqa: PLR0915
         turns_meta = "- Total Turns: 18 ± 0.8"
         turns_count_str = "18"
 
-    mem_saved_list = [it.turns_saved_memory for it in optimized.iterations]
+    mem_saved_list = [it.turns_saved_memory for it in optimised.iterations]
     mem_saved_mean = sum(mem_saved_list) / max(1, len(mem_saved_list)) if mem_saved_list else 3
     mem_saved_val = round(mem_saved_mean)
 
@@ -474,17 +474,17 @@ def format_scorecard(  # noqa: PLR0915
         f"- Task: {task_name}",
         f"- Agent Harness: {agent_harness}",
         "- Sampling Temperature: 0.0 (seed: 42)",
-        f"- Iterations: N = {max(baseline.count, optimized.count)} (reported as mean ± std dev)",
+        f"- Iterations: N = {max(baseline.count, optimised.count)} (reported as mean ± std dev)",
         "- Streaming: Disabled (for Method 2 local cache evaluation)",
         turns_meta,
         "",
         "### Metrics Comparison Table",
         "",
-        "| Metric | Baseline (Direct) | Optimized (All 6 Active) | Net Impact |",
+        "| Metric | Baseline (Direct) | Optimised (All 6 Active) | Net Impact |",
         "| :--- | :--- | :--- | :--- |",
         (
             f"| **Task Success Rate / Test Pass Rate** | {b_sr:.0f}% ({b_pass}/{baseline.count} pass) | "
-            f"{o_sr:.0f}% ({o_pass}/{optimized.count} pass) | {guardrail_status} |"
+            f"{o_sr:.0f}% ({o_pass}/{optimised.count} pass) | {guardrail_status} |"
         ),
         (
             f"| **Total Prompt Tokens (Cumulative)** | {b_p_mean:,.0f} ± {b_p_std:,.0f} | "
@@ -526,7 +526,7 @@ def format_scorecard(  # noqa: PLR0915
         ),
         "",
         (
-            "> [!NOTE] **Scorecard Financial Accounting Note**: Baseline and optimized monetary costs "
+            "> [!NOTE] **Scorecard Financial Accounting Note**: Baseline and optimised monetary costs "
             "model cumulative multi-turn\n"
             f"> prompt token accumulation and cache creation write surcharges across the {turns_count_str} "
             "session turns. Illustrative rates assume\n"
@@ -541,9 +541,9 @@ def format_scorecard(  # noqa: PLR0915
 def main() -> int:  # noqa: PLR0915
     parser = argparse.ArgumentParser(description="A/B Benchmark Token Reduction Measurement")
     parser.add_argument("--iterations", "-n", type=int, default=3, help="Number of benchmark iterations (N >= 3)")
-    parser.add_argument("--wire-log-dir", type=str, default=os.getenv("WIRE_LOG_DIR", "todo/mitm_wire_logs"))
+    parser.add_argument("--wire-log-dir", type=str, default=os.getenv("WIRE_LOG_DIR", "tmp/mitm_wire_logs"))
     parser.add_argument(
-        "--cache-dir", type=str, default=None, help="Cache directory (default: todo/cache or CACHE_DIR env)"
+        "--cache-dir", type=str, default=None, help="Cache directory (default: tmp/cache or CACHE_DIR env)"
     )
     parser.add_argument("--task-name", type=str, default="Refactor auth middleware & add unit tests")
     parser.add_argument(
@@ -562,14 +562,14 @@ def main() -> int:  # noqa: PLR0915
         help="Force git reset/clean between benchmark iterations in live mode",
     )
     parser.add_argument(
-        "--output", "-o", type=str, default="todo/scorecard_report.md", help="Output scorecard markdown path"
+        "--output", "-o", type=str, default="tmp/scorecard_report.md", help="Output scorecard markdown path"
     )
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parent.parent
     wire_log_dir = (repo_root / args.wire_log_dir).resolve()
     user_specified_cache = args.cache_dir is not None
-    cache_dir_str = args.cache_dir or os.getenv("CACHE_DIR", "todo/cache")
+    cache_dir_str = args.cache_dir or os.getenv("CACHE_DIR", "tmp/cache")
     cache_path = Path(cache_dir_str)
     cache_dir = cache_path if cache_path.is_absolute() else (repo_root / cache_path).resolve()
     # Avoid deleting global ~/.holon/cache if user specified custom --cache-dir
@@ -583,18 +583,18 @@ def main() -> int:  # noqa: PLR0915
     print("\n🧹 Step 1: Executing Benchmark Pre-clean...")
     pre_clean_environment(cache_dir, wire_log_dir, clean_global_cache=clean_global_cache)
 
-    # Step 2: Run Baseline & Optimized iterations
+    # Step 2: Run Baseline & Optimised iterations
     baseline_summary = BenchmarkSummary(name="Baseline (Direct)")
-    optimized_summary = BenchmarkSummary(name="Optimized (All 6 Active)")
+    optimised_summary = BenchmarkSummary(name="Optimised (All 6 Active)")
 
     if args.synthetic:
         print("\n🔬 Step 2: Executing benchmark iterations...")
         for i in range(1, args.iterations + 1):
-            b_res = generate_synthetic_iteration(i, optimized=False)
+            b_res = generate_synthetic_iteration(i, optimised=False)
             baseline_summary.iterations.append(b_res)
 
-            o_res = generate_synthetic_iteration(i, optimized=True)
-            optimized_summary.iterations.append(o_res)
+            o_res = generate_synthetic_iteration(i, optimised=True)
+            optimised_summary.iterations.append(o_res)
             print(f"   ✓ Iteration {i}/{args.iterations} completed (Exit Code 0, Guardrail Met)")
     else:
         # Live execution path
@@ -608,15 +608,15 @@ def main() -> int:  # noqa: PLR0915
             )
         if args.command:
             cmd_tokens = shlex.split(args.command)
-            # In live benchmarking, both baseline and optimized route through the proxy sidecar
+            # In live benchmarking, both baseline and optimised route through the proxy sidecar
             # so wire logs are recorded. Baseline runs in passive monitoring mode (no payload cleaning
-            # or local response caching), while optimized runs with full reduction active.
+            # or local response caching), while optimised runs with full reduction active.
             baseline_cmd = list(cmd_tokens)
             if "--token-reduce" not in baseline_cmd:
                 baseline_cmd.append("--token-reduce")
-            optimized_cmd = list(cmd_tokens)
-            if "--token-reduce" not in optimized_cmd:
-                optimized_cmd.append("--token-reduce")
+            optimised_cmd = list(cmd_tokens)
+            if "--token-reduce" not in optimised_cmd:
+                optimised_cmd.append("--token-reduce")
         else:
             print(
                 "\n⚠️  [WARNING] No custom workload --command provided in live mode (--no-synthetic).\n"
@@ -636,7 +636,7 @@ def main() -> int:  # noqa: PLR0915
                     "apps/sandbox-executor/tests/test_token_reduction.py",
                 ]
             baseline_cmd = list(default_test_cmd)
-            optimized_cmd = list(default_test_cmd)
+            optimised_cmd = list(default_test_cmd)
 
         baseline_env = os.environ.copy()
         baseline_env["HOLON_TOKEN_REDUCE"] = "1"
@@ -644,11 +644,11 @@ def main() -> int:  # noqa: PLR0915
         baseline_env["WIRE_LOG_DIR"] = str(wire_log_dir)
         baseline_env["CACHE_DIR"] = str(cache_dir)
 
-        optimized_env = os.environ.copy()
-        optimized_env["HOLON_TOKEN_REDUCE"] = "1"
-        optimized_env["HOLON_PASSIVE_MONITORING"] = "0"
-        optimized_env["WIRE_LOG_DIR"] = str(wire_log_dir)
-        optimized_env["CACHE_DIR"] = str(cache_dir)
+        optimised_env = os.environ.copy()
+        optimised_env["HOLON_TOKEN_REDUCE"] = "1"
+        optimised_env["HOLON_PASSIVE_MONITORING"] = "0"
+        optimised_env["WIRE_LOG_DIR"] = str(wire_log_dir)
+        optimised_env["CACHE_DIR"] = str(cache_dir)
 
         for i in range(1, args.iterations + 1):
             reset_workspace_state(repo_root, force=args.force_reset_workspace)
@@ -658,16 +658,16 @@ def main() -> int:  # noqa: PLR0915
             b_res = parse_wire_logs_into_result(wire_log_dir, i, test_exit)
             baseline_summary.iterations.append(b_res)
 
-            # Optimized run (proxy egress with token reduction)
+            # Optimised run (proxy egress with token reduction)
             reset_workspace_state(repo_root, force=args.force_reset_workspace)
             pre_clean_environment(cache_dir, wire_log_dir, clean_global_cache=clean_global_cache)
-            test_exit = subprocess.run(optimized_cmd, env=optimized_env, check=False).returncode
+            test_exit = subprocess.run(optimised_cmd, env=optimised_env, check=False).returncode
             o_res = parse_wire_logs_into_result(wire_log_dir, i, test_exit)
-            optimized_summary.iterations.append(o_res)
+            optimised_summary.iterations.append(o_res)
 
     # Step 3: Format and output scorecard
     print("\n📊 Step 3: Compiling Unified Efficacy Scorecard...\n")
-    scorecard_md = format_scorecard(baseline_summary, optimized_summary, task_name=args.task_name)
+    scorecard_md = format_scorecard(baseline_summary, optimised_summary, task_name=args.task_name)
     print(scorecard_md)
 
     if args.output:

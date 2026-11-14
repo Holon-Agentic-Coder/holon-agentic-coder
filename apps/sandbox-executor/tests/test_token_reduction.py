@@ -1,12 +1,15 @@
 """Unit tests for AI Agent Token Reduction Architecture - Phase 1."""
 
+import importlib.util
 import json
 import logging
 import os
 import secrets
 import stat
 import subprocess
-from types import SimpleNamespace
+import sys
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -29,6 +32,16 @@ from sandbox_executor.token_reduction.ca_generator import generate_root_ca
 from tests.leak_assertions import assert_no_fragment, make_probe
 
 _THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60
+_AB_RUNNER_PATH = Path(__file__).resolve().parents[3] / "scripts" / "ab_measure_all_methods.py"
+
+
+def _load_ab_runner() -> ModuleType:
+    """Load the A/B benchmark runner script from ``scripts/`` as a module."""
+    spec = importlib.util.spec_from_file_location("ab_measure_all_methods", _AB_RUNNER_PATH)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _read_text(path: str) -> str:
@@ -2739,17 +2752,7 @@ def test_mitm_addon_done_and_non_200_logging(tmp_path):
 
 
 def test_ab_measure_all_methods_endpoint_fallback(tmp_path):
-    import importlib.util
-    import sys
-    from pathlib import Path
-
-    spec = importlib.util.spec_from_file_location(
-        "ab_measure_all_methods",
-        Path(__file__).resolve().parent.parent.parent.parent / "todo" / "ab_measure_all_methods.py",
-    )
-    ab_module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = ab_module
-    spec.loader.exec_module(ab_module)
+    ab_module = _load_ab_runner()
 
     # Test endpoint model resolution fallback when model is absent from request payload
     tx = {
@@ -2875,17 +2878,7 @@ def test_mitm_addon_secret_headers_extended():
 
 
 def test_ab_measure_pricing_and_cache_hit_gate(tmp_path):
-    import importlib.util
-    import sys
-    from pathlib import Path
-
-    spec = importlib.util.spec_from_file_location(
-        "ab_measure_all_methods",
-        Path(__file__).resolve().parent.parent.parent.parent / "todo" / "ab_measure_all_methods.py",
-    )
-    ab_module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = ab_module
-    spec.loader.exec_module(ab_module)
+    ab_module = _load_ab_runner()
 
     # Test frontier model pricing
     for m in [
@@ -3043,17 +3036,7 @@ def test_mitm_addon_passive_monitoring_mode(monkeypatch, tmp_path):
 
 def test_scorecard_dynamic_guardrail_status():
     """Verifies that format_scorecard dynamically reflects guardrail status when pass rate < 100%."""
-    import importlib.util
-    import sys
-    from pathlib import Path
-
-    spec = importlib.util.spec_from_file_location(
-        "ab_measure_all_methods",
-        Path(__file__).resolve().parent.parent.parent.parent / "todo" / "ab_measure_all_methods.py",
-    )
-    ab = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = ab
-    spec.loader.exec_module(ab)
+    ab = _load_ab_runner()
 
     # Case 1: 100% pass rate
     b1 = ab.BenchmarkSummary(
@@ -3255,17 +3238,7 @@ def test_non_200_transaction_logging_429_503(tmp_path, status_code):
 
 def test_ab_measure_non_dict_raw_request(tmp_path):
     """Verifies parse_wire_logs_into_result gracefully handles non-dict raw_request bodies."""
-    import importlib.util
-    import sys
-    from pathlib import Path
-
-    spec = importlib.util.spec_from_file_location(
-        "ab_measure_all_methods",
-        Path(__file__).resolve().parent.parent.parent.parent / "todo" / "ab_measure_all_methods.py",
-    )
-    ab = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = ab
-    spec.loader.exec_module(ab)
+    ab = _load_ab_runner()
 
     wire_dir = tmp_path / "str_req_logs"
     wire_dir.mkdir(parents=True, exist_ok=True)
@@ -3347,17 +3320,7 @@ def test_interceptor_subclass_override_backward_compatibility():
 
 
 def test_ab_measure_local_cache_hit_token_accounting(tmp_path):
-    import importlib.util
-    import sys
-    from pathlib import Path
-
-    spec = importlib.util.spec_from_file_location(
-        "ab_measure_all_methods",
-        Path(__file__).resolve().parent.parent.parent.parent / "todo" / "ab_measure_all_methods.py",
-    )
-    ab = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = ab
-    spec.loader.exec_module(ab)
+    ab = _load_ab_runner()
 
     wire_dir = tmp_path / "cache_hit_logs"
     wire_dir.mkdir(parents=True, exist_ok=True)
@@ -3459,17 +3422,7 @@ def test_mitm_web_password_support(host_paths, monkeypatch):
 
 
 def test_ab_measure_tier_token_accounting_on_cache_hit(tmp_path):
-    import importlib.util
-    import sys
-    from pathlib import Path
-
-    spec = importlib.util.spec_from_file_location(
-        "ab_measure_all_methods",
-        Path(__file__).resolve().parent.parent.parent.parent / "todo" / "ab_measure_all_methods.py",
-    )
-    ab = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = ab
-    spec.loader.exec_module(ab)
+    ab = _load_ab_runner()
 
     wire_dir = tmp_path / "cache_hit_tier_logs"
     wire_dir.mkdir(parents=True, exist_ok=True)
@@ -3498,17 +3451,7 @@ def test_ab_measure_tier_token_accounting_on_cache_hit(tmp_path):
 
 
 def test_check_wire_log_disk_usage(tmp_path, capsys):
-    import importlib.util
-    import sys
-    from pathlib import Path
-
-    spec = importlib.util.spec_from_file_location(
-        "ab_measure_all_methods",
-        Path(__file__).resolve().parent.parent.parent.parent / "todo" / "ab_measure_all_methods.py",
-    )
-    ab = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = ab
-    spec.loader.exec_module(ab)
+    ab = _load_ab_runner()
 
     wire_dir = tmp_path / "quota_logs"
     wire_dir.mkdir(parents=True, exist_ok=True)

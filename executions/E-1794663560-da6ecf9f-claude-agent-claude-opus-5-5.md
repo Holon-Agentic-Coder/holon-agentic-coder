@@ -70,3 +70,14 @@ review-finding identifiers with plain descriptions, and add a hermetic repositor
 - `.github/workflows/test-stress.yml`: the external task id became "an earlier incident".
 - Repository-native finding ids used as data (`R1-F1`, `FIND-CI-001` and so on) and `noqa` codes are untouched; no
   assertion literal changed. The 17 Step 5 modules: 1777 passed, 632 subtests passed.
+
+### Step 6: Hermetic repository hygiene test
+
+- New `apps/sandbox-executor/tests/test_repository_hygiene.py`: lists tracked files with `git ls-files -z` (local, as
+  `test_pre_commit_check.py` already does), skips the historical records, gitlinks, symlinks and non-UTF-8 files, and
+  reports `path:line: reason` for forbidden directory prefixes (path-like tokens only), case-insensitive external task
+  ids, and review-finding citations. Forbidden names are assembled from fragments so the module never matches itself.
+- `ALLOWLIST` holds one entry: the exact hidden-directory line in `.gitignore`.
+- 25 tests pass (real tree clean, positives, negatives such as `R1-F1`, `noqa: F401`, `beans 12`, `mytodo/`,
+  historical and allowlist skips). A temporary intent-to-add probe file naming the local-notes directory made the
+  real-tree test fail with `docs/zz_probe.md:1: local-notes directory`; the probe was removed.

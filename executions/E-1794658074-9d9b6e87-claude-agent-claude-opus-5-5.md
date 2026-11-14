@@ -2,17 +2,26 @@
 
 ## Summary
 
-In progress: fixing the Stage 5 `git diff` exit 128 "ambiguous argument" on nested sub-intent branch names.
+Stage 5 lost the calibration report on decomposed flows because `parse_actual_metrics` in `calibration.py` (not the
+`flow/stages/` modules the intent named) ran `git diff --numstat <plan>...<exec>` with the raw plan branch name when
+`resolve_git_ref` could not resolve it. A hermetic nested layout reproduced exit 128 "ambiguous argument" only when the
+child plan branch is absent everywhere; the slashes and trailing `/_` alone do not fail. The fix qualifies every
+revision (`refs/heads/...`, `refs/remotes/origin/...` or a SHA), ends revision arguments with `--` where git accepts it,
+and degrades an unresolvable plan branch to the execution head's first parent (`diff_base = "first_parent_fallback"`,
+logged and shown in the report) so Stage 5 still commits the report. New modules: `git_revisions.py` (qualification
+helper) and `calibration_diff.py` (diff range and merge history, because `calibration.py` has a no-growth line gate).
+The sweep covered `calibrate_sync.py`, `calibrate_rebuild.py`, `stages/review.py` and `run_calibrate`;
+`stages/calibrate.py` needed no change. No new dependency or `# noqa`; the budget of `calibrate_sync.py` rose by 1 line.
 
 ## Actual Metrics
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.0   |
-| entropy_actual        | 0.0   |
-| impact_actual         | 0.0   |
-| cost_actual           | 0.0   |
-| learning_value_actual | 0.0   |
+| success_actual        | 0.95  |
+| entropy_actual        | 6.0   |
+| impact_actual         | 85.0  |
+| cost_actual           | 16.0  |
+| learning_value_actual | 4.5   |
 
 ## Steps Executed
 
@@ -82,3 +91,25 @@ In progress: fixing the Stage 5 `git diff` exit 128 "ambiguous argument" on nest
    `chore(calibration): add calibration report` commit on the fast-forwarded execution branch, a real (not fallback)
    report and the restored starting branch. With `calibration.py` reverted to `main`, the end-to-end absent-plan case
    fails and the local case passes, so the test pins the defect.
+6. Step 6 (gates): affected tests, the full suite once, lint and lint-docs ran as listed below. The ledger directory
+   still holds exactly `intents.jsonl`, `plans.jsonl` and `executions.jsonl`; the only ledger changes on the branch are
+   the flow's own intent and plan appends. `uv.lock` and both `pyproject.toml` files are unchanged.
+
+## Tests Run
+
+The intent does not concern timing, so every command ran once (no repetitions, no median to report beyond the single
+run).
+
+| command                                                                                                                                                                                                                                                                                                                                                 | result                                    | pytest time |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- | ----------- |
+| `uv run pytest apps/sandbox-executor/tests/flow/test_calibrate_nested_refs.py` (Step 1, before the fix)                                                                                                                                                                                                                                                 | 3 passed, 1 xfailed                       | `0.27s`     |
+| `uv run pytest apps/sandbox-executor/tests/flow/test_git_revisions.py apps/sandbox-executor/tests/flow/test_calibrate_nested_refs.py apps/sandbox-executor/tests/flow/test_calibrate_sync_refs.py -n auto --dist worksteal`                                                                                                                             | 25 passed                                 | `2.20s`     |
+| `uv run pytest apps/sandbox-executor/tests/flow/ apps/sandbox-executor/tests/test_calibration.py apps/sandbox-executor/tests/test_calibration_dual_ev.py apps/sandbox-executor/tests/test_calibrate_sync.py apps/sandbox-executor/tests/test_calibrate_rebuild.py apps/sandbox-executor/tests/test_calibrate_final_head_ci.py -n auto --dist worksteal` | 890 passed, 8 subtests passed             | `7.77s`     |
+| `uv run task test` (full suite, once)                                                                                                                                                                                                                                                                                                                   | 4001 passed, 1 skipped                    | `23.34s`    |
+| `uv run task lint`                                                                                                                                                                                                                                                                                                                                      | passed (ruff, format, 56 flow budgets)    | n/a         |
+| `uv run task lint-docs`                                                                                                                                                                                                                                                                                                                                 | failed: 38 pre-existing files (see below) | n/a         |
+
+`uv run task lint-docs` (Prettier `3.8.4` via npx) flags 38 markdown files, 33 of them older `plans/*_calibration.md`
+reports plus `.agents/holon_flow.md`, `docs/optimisation/token_reduction_measurement_plan.md`,
+`holon-config/metrics/README.md` and two older `plans/P-179038*.md` files. None is touched by this branch; this
+execution record and the plan file pass `npx prettier --check`. Per the plan, unrelated files were not reformatted.

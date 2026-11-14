@@ -794,9 +794,8 @@ Appended when a plan is proposed by the planner:
 - `created_at`: Creation timestamp.
 - `plan_file`: Relative path to the plan markdown file.
 - `status`: Plan status (e.g. `proposed`).
-- `entropy_budget`: The resolved entropy budget shown to the planning agent and enforced by the executor (number,
-  `>= 0`; the intent row's `entropy_budget`, else `DEFAULT_ENTROPY_BUDGET` `15.0`); optional on old rows (see stage
-  matrix).
+- `entropy_budget`: Resolved budget shown to the planning agent and enforced by the executor (number, `>= 0`; the intent
+  row's `entropy_budget`, else `DEFAULT_ENTROPY_BUDGET` `15.0`); optional on old rows (see stage matrix).
 - `touch_set`: The declared touch set (`{path, symbols?}` list, `null` without one); see [touch_set.md](touch_set.md).
 - `decomposition_decision`, `sub_intents` (only when `decomposed`): the recorded decision (see the plan row
   decomposition decision paragraph under the stage matrix); optional on historic rows.

@@ -29,6 +29,7 @@ from sandbox_executor.calibration_ev import (
     is_converged_record,
     parse_summary_records,
 )
+from sandbox_executor.calibration_touch_set import touch_set_metrics, touch_set_report_lines
 from sandbox_executor.git import EMPTY_DIFF_EXCLUDES, run_git
 from sandbox_executor.knowledge.records import CredentialRedactor
 from sandbox_executor.ledger import generate_action_id, try_append_action_record
@@ -209,6 +210,7 @@ class CalibrationReport:
     base_sha: str | None = None
     merge_base_sha: str | None = None
     merged_commit_count: int = 0
+    touch_set: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -233,6 +235,7 @@ class CalibrationReport:
             "base_sha": self.base_sha,
             "merge_base_sha": self.merge_base_sha,
             "merged_commit_count": self.merged_commit_count,
+            "touch_set": self.touch_set,
         }
 
 
@@ -856,11 +859,9 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
             for line in text.splitlines():
                 parts = line.strip().split("\t")
                 if len(parts) >= 3:
-                    file_path = parts[2].strip().removeprefix("./")
-                    if " => " in file_path:
-                        file_path = file_path.split(" => ")[-1].strip().rstrip("}").strip()
-                    if is_metadata_path(file_path):
+                    if is_metadata_path(parts[2]):
                         continue
+                    exec_meta.setdefault("changed_paths", []).append(parts[2].strip())
                     actual.files_changed += 1
                     if parts[0] != "-":
                         actual.insertions += int(parts[0])
@@ -1116,6 +1117,7 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
             "",
             "---",
             "",
+            *touch_set_report_lines(report_data),
             "## 4. Calibration Assessment",
             "",
             (
@@ -1275,6 +1277,7 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
         "bug_ev_drag": actual.bug_ev_drag,
         "delta_ev_clean": deltas.delta_ev_clean,
         "delta_ev_with_bugs": deltas.delta_ev_with_bugs,
+        "touch_set": touch_set_metrics(plan_meta, exec_meta.get("changed_paths", []), target_worktree),
     }
 
     markdown_content = format_markdown_report(report_dict)
@@ -1302,6 +1305,7 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
         base_sha=base_sha,
         merge_base_sha=merge_base_sha,
         merged_commit_count=merged_commit_count,
+        touch_set=report_dict["touch_set"],
     )
 
 
@@ -1380,6 +1384,7 @@ def record_calibration_action(  # noqa: PLR0913
         "calibration_deltas": data.get("deltas"),
         "calibration_report_path": report_rel,
         "created_at": datetime.now(UTC).isoformat(),
+        "touch_set_accuracy": data.get("touch_set"),
     }
     ledger_path = os.path.join(target_worktree, LEDGER_EXECUTIONS_REL)
     return try_append_action_record(

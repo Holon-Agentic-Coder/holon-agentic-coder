@@ -30,3 +30,16 @@ In progress: implementing plan `P-1794617990-33b5cb73-claude-agent-claude-opus-5
    `entrypoint/planner.py` gained `_touch_set_field(plan_md_path)` (lazy import of `parse_touch_set_section`, a warning
    and `None` on a missing section or an `OSError` / `ValueError`), and `main()` gained a single
    `plan_entry.update(_touch_set_field(plan_md_path))` line. The pinned template tests still pass unchanged.
+3. Step 4 (calibration), done before Step 3 so the documentation names the real fields: `calibration.py` is pinned by
+   a line ratchet in `tests/test_calibration_dual_ev.py` (net growth must stay within `1684` lines), so the scoring and
+   the report section live in a new module `calibration_touch_set.py` (`touch_set_metrics`, `touch_set_report_lines`,
+   lazy import of `flow/touch_set.py`), and `calibration.py` gained only call sites (`1678 -> 1683` lines). The numstat
+   loop now passes the raw path to `is_metadata_path`, which already strips `./` and resolves a rename arrow, so the
+   duplicated three-line normalisation was replaced by one `exec_meta["changed_paths"]` append. The report dict, the
+   `CalibrationReport` (`touch_set` field, default `None`) and its `to_dict()` carry `{precision, recall,
+   unpredicted_paths, unused_entries}`; the markdown report gains a "Touch Set Accuracy" section (percentages or `n/a`,
+   lists capped at 20 with an "and N more" line) between sections 3 and 4. The `ACT-CAL` row appends one optional key,
+   `touch_set_accuracy`, after `created_at`, so the historical key order stays a prefix; the key-order assertion in
+   `tests/test_calibration.py` gained that one entry. `normalise_touch_path` also resolves the brace rename form
+   `a/{b => c}/d` that `git diff --numstat` prints, so recall is scored on real target paths (`touch_set.py` budget
+   `206`).

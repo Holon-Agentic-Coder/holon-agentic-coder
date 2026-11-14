@@ -20,6 +20,7 @@ _NEXT_SECTION_RE = re.compile(r"^#{1,2}\s")
 _ITEM_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+(?P<body>.*)$")
 _BACKTICK_RE = re.compile(r"`([^`]+)`")
 _SYMBOLS_RE = re.compile(r"symbols\s*:\s*(?P<names>.*)$", re.IGNORECASE)
+_BRACE_RENAME_RE = re.compile(r"\{[^{}]* => ([^{}]*)\}")
 _PLACEHOLDER_WORDS = frozenset({"none", "n/a", "na", "nil", "no", "not"})
 _GLOB_CHARS = ("*", "?", "[")
 _GLOB_TOKEN_RE = re.compile(r"\*\*/|\*\*|\*|\?|\[[^\]/]+\]|[^*?\[]+|\[")
@@ -77,8 +78,8 @@ def _entry_from_row_item(item: Any) -> TouchSetEntry | None:
 
 
 def normalise_touch_path(path: str) -> str:
-    """Strip whitespace and backticks, drop a leading ``./`` or ``/``, keep a rename's target, use ``/`` separators."""
-    clean = path.strip().strip("`").strip().replace("\\", "/")
+    """Strip whitespace and backticks, drop a leading ``./`` or ``/``, keep a rename's target (``a/{b => c}/d`` too)."""
+    clean = _BRACE_RENAME_RE.sub(r"\1", path.strip().strip("`").strip().replace("\\", "/")).replace("//", "/")
     if " => " in clean:
         clean = clean.split(" => ")[-1].strip().rstrip("}").strip()
     if clean.startswith("./"):

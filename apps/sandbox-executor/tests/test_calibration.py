@@ -1323,6 +1323,7 @@ def test_run_calibrate_appends_and_commits_act_cal(calibration_repo):
         "calibration_deltas",
         "calibration_report_path",
         "created_at",
+        "touch_set_accuracy",
     ]
     assert row["entry_type"] == "action"
     assert row["action_origin"] == "calibration"

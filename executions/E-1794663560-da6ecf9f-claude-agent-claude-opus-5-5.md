@@ -10,11 +10,11 @@ review-finding identifiers with plain descriptions, and add a hermetic repositor
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.0   |
-| entropy_actual        | 0.0   |
-| impact_actual         | 0.0   |
-| cost_actual           | 0.0   |
-| learning_value_actual | 0.0   |
+| success_actual        | 1.0   |
+| entropy_actual        | 9.0   |
+| impact_actual         | 70.0  |
+| cost_actual           | 13.0  |
+| learning_value_actual | 3.0   |
 
 ## Steps Executed
 
@@ -56,8 +56,8 @@ review-finding identifiers with plain descriptions, and add a hermetic repositor
 - `review_ensemble.py`: `REVIEW_ROOT_REL = "tmp/review"`; the containment error names the parent via
   `_REVIEW_PARENT_REL = posixpath.dirname(REVIEW_ROOT_REL)` so the text cannot drift; resolve-and-refuse logic
   unchanged. Docstrings and the reviewer prohibition name `tmp/review/`.
-- `scaffold.py` and `review_loop.template.md` edited identically (parity test green); README, `docs/architecture.md`
-  and `docs/git_flow.md` name `tmp/review/`.
+- `scaffold.py` and `review_loop.template.md` edited identically (parity test green); README, `docs/architecture.md` and
+  `docs/git_flow.md` name `tmp/review/`.
 - Tests re-pointed, including the symlinked-root refusal cases `("tmp", False)`, `("tmp/review", False)` and
   `("tmp/review", True)`, which still fail closed. Four modules: 233 passed.
 
@@ -78,6 +78,36 @@ review-finding identifiers with plain descriptions, and add a hermetic repositor
   reports `path:line: reason` for forbidden directory prefixes (path-like tokens only), case-insensitive external task
   ids, and review-finding citations. Forbidden names are assembled from fragments so the module never matches itself.
 - `ALLOWLIST` holds one entry: the exact hidden-directory line in `.gitignore`.
-- 25 tests pass (real tree clean, positives, negatives such as `R1-F1`, `noqa: F401`, `beans 12`, `mytodo/`,
-  historical and allowlist skips). A temporary intent-to-add probe file naming the local-notes directory made the
-  real-tree test fail with `docs/zz_probe.md:1: local-notes directory`; the probe was removed.
+- 25 tests pass (real tree clean, positives, negatives such as `R1-F1`, `noqa: F401`, `beans 12`, `mytodo/`, historical
+  and allowlist skips). A temporary intent-to-add probe file naming the local-notes directory made the real-tree test
+  fail with `docs/zz_probe.md:1: local-notes directory`; the probe was removed.
+
+### Step 7: Verification
+
+- All four acceptance criteria hold: the acceptance greps (with historical excludes) return only the allowlisted
+  `.gitignore` line; the A/B runner lives in `scripts/`; the hygiene test fails on an injected leak; tests and
+  `uv run task lint` pass.
+- `git diff --stat d4726c6 -- holon-knowledge/ledger plans` is empty (the ledger rows against `main` are the flow's own
+  intent and plan rows); `holon-knowledge/ledger` still lists exactly three ledgers; `uv.lock` is unchanged.
+
+## Tests Run
+
+| command                                                                                 | result                                | pytest time |
+| --------------------------------------------------------------------------------------- | ------------------------------------- | ----------- |
+| baseline: `uv run pytest` on five most affected modules (Step 1)                        | 455 passed, 0 failed                  | `2.63s`     |
+| `uv run pytest apps/sandbox-executor/tests/test_token_reduction.py` (Step 2)            | 222 passed, 0 failed                  | `2.14s`     |
+| `uv run pytest` on `test_calibration.py` and `test_token_reduction.py` (Step 3)         | 304 passed, 8 subtests, 0 failed      | `2.44s`     |
+| `uv run pytest` on the four scratch-root and template modules (Step 4)                  | 233 passed, 0 failed                  | `2.40s`     |
+| `uv run pytest` on the 17 Step 5 modules                                                | 1777 passed, 632 subtests, 0 failed   | `14.82s`    |
+| `uv run pytest apps/sandbox-executor/tests/test_repository_hygiene.py` (Step 6)         | 25 passed, 0 failed                   | `0.65s`     |
+| `uv run pytest -n auto --dist worksteal` on all 24 touched and related modules (Step 7) | 2094 passed, 632 subtests, 0 failed   | `15.56s`    |
+| `uv run task test` (full suite, once)                                                   | 4071 passed, 1 skipped, 0 failed      | `23.80s`    |
+| `uv run task lint`                                                                      | pass                                  | n/a         |
+| `uv run task lint-docs`                                                                 | 39 files flagged, identical to `main` | n/a         |
+
+The full suite ran once (no timing measurement required), so the median full-suite time is the single run, `23.80s`.
+
+`uv run task lint-docs` already fails on `main`: prettier `3.8.4` flags the same 39 Markdown files, mostly historical
+`plans/` and `executions/` records plus `docs/optimisation/token_reduction_measurement_plan.md`, `.agents/holon_flow.md`
+and `holon-config/metrics/README.md`. Every Markdown file this change touched was checked with prettier; none is newly
+flagged. The pre-existing failures were left alone to keep the change focused.

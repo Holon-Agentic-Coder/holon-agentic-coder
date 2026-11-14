@@ -49,3 +49,13 @@ In progress: implementing plan `P-1794617990-33b5cb73-claude-agent-claude-opus-5
    `touch_set_accuracy` (precision and recall definitions, `null` and `n/a` semantics). The calibration report fields
    are one nested `touch_set` object rather than the four flat `touch_set_*` names the plan sketched, matching the
    single `report_dict` entry of plan Step 4.3.
+5. Step 5 (tests): `tests/flow/test_touch_set.py` (section parsing, nested bullets, numbered items, wrapped `symbols:`
+   continuation lines and prettier escapes, placeholders, metadata and duplicate removal, `normalise_touch_path`
+   including brace renames, a table of `entry_matches` cases, hand-computed scores, zero denominators, row round trip
+   and tolerant `from_row`). `tests/test_planner_touch_set.py` (`_touch_set_field` with, without and with a placeholder
+   section and on a missing file, plus a fresh-interpreter import test via `sys.executable -c` for the planner,
+   calibration and the touch-set module). `tests/test_calibration_touch_set.py` (`touch_set_metrics` on a row with a
+   touch set, a historic row, malformed rows, the markdown fallback and an unreadable plan file; report lines with
+   values, the 20-item cap and `n/a`; `changed_paths` excluding metadata; and an end-to-end `generate_calibration` on a
+   temporary git repository with `precision = 1 / 2` and `recall = 1 / 2`). The rendered section was checked with
+   prettier for both the values and `n/a` layouts.

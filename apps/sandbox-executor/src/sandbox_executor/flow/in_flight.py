@@ -93,7 +93,9 @@ def _gh_json(run_gh: merge.GhRunner, args: list[str], repo_dir: str) -> list[dic
         data = json.loads(result.stdout or "[]")
     except json.JSONDecodeError:
         return AdmissionUnavailable(f"'gh {' '.join(args[:2])}' returned output that is not JSON")
-    return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+    if not isinstance(data, list):
+        return AdmissionUnavailable(f"'gh {' '.join(args[:2])}' returned JSON that is not a list")
+    return [item for item in data if isinstance(item, dict)]
 
 
 def _pull_request_diff(run_gh: merge.GhRunner, number: int, repo_dir: str) -> tuple[str, ...] | AdmissionUnavailable:
@@ -144,12 +146,10 @@ def _checkpoint_plan_branch(path: str) -> str | None:
     """The plan branch of a checkpoint whose current stage is execute or review; ``None`` for any other or bad file."""
     try:
         checkpoint = load_checkpoint(path)
-    except (OSError, ValueError, KeyError, TypeError) as exc:  # a stale or foreign file never blocks admission
-        logger.debug("Skipping unreadable checkpoint %s: %s", path, exc)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        logger.debug("Skipping unreadable checkpoint %s: %s", path, exc)  # stale or foreign: never blocks
         return None
-    if checkpoint.current_stage not in _IN_FLIGHT_STAGES:
-        return None
-    return checkpoint.context.plan_branch or None
+    return (checkpoint.context.plan_branch or None) if checkpoint.current_stage in _IN_FLIGHT_STAGES else None
 
 
 def local_in_flight_flows(

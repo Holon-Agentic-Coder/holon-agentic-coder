@@ -105,6 +105,13 @@ def test_gh_failure_returns_admission_unavailable(flow_repos):
     assert "gh pr list" in result.reason and "HTTP 502" in result.reason
 
 
+def test_gh_non_list_json_returns_admission_unavailable(flow_repos):
+    host, _origin = flow_repos
+    gh = FakeGh({"message": "rate limited"}, {})  # type: ignore[arg-type]
+    result = open_flow_pull_requests(str(host), "I-100-own", gh)
+    assert isinstance(result, AdmissionUnavailable) and "not a list" in result.reason
+
+
 def test_more_open_pull_requests_than_the_limit_fail_closed(flow_repos):
     host, _origin = flow_repos
     prs = [{"number": n, "headRefName": OTHER_HEAD} for n in range(1, MAX_OPEN_PULL_REQUESTS + 2)]
@@ -138,6 +145,7 @@ def test_local_checkpoints_keep_live_flows_only(flow_repos, tmp_path):
     write_checkpoint(second, OTHER_PLAN, [FlowStage.INTENT], "still-planning")
     write_checkpoint(second, "I-100-own/P-101-cccccccc-claude-agent-claude-opus-5-5/_", executing, "own")
     (second / ".holon" / "flow" / "checkpoint-broken.json").write_text("{not json", encoding="utf-8")
+    (second / ".holon" / "flow" / "checkpoint-list.json").write_text("[]", encoding="utf-8")
     write_checkpoint(host, OTHER_PLAN, executing, "this-worktree")  # this run's own worktree is never read
 
     flows = local_in_flight_flows(str(host), "I-100-own")

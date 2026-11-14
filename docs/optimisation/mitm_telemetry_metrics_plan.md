@@ -83,13 +83,15 @@ Compute performance metrics and inject standardised response headers into `flow.
 
 ### Phase 5: A/B Benchmark Harness Integration
 
-Update `todo/ab_benchmark_real_api.py` and `todo/ab_benchmark_holon_agent.py` to read `X-Holon-*` headers and log
-output/prefill TPS in `todo/ab_real_api_results.json` and `todo/ab_real_api_results.md`.
+Update the A/B runner `scripts/ab_measure_all_methods.py` to read `X-Holon-*` headers from the wire logs and report
+output/prefill TPS in the scorecard written to its `--output` path (default `tmp/scorecard_report.md`). A standalone
+real-API benchmark script is not shipped.
 
 ---
 
 ## 📈 Expected Outcomes
 
-1. Automated recording of Prefill TPS and Output TPS for all live network tests in `todo/`.
+1. Automated recording of Prefill TPS and Output TPS for all live A/B benchmark runs of
+   `scripts/ab_measure_all_methods.py`.
 2. Standardised response headers returned to all sandbox agent containers.
 3. Empirically verified latency and throughput benchmarks across arbitrary LLM APIs and arbitrary agents.

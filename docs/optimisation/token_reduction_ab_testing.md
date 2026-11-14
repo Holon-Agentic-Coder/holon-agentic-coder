@@ -69,46 +69,41 @@ cd holon-agentic-coder-ref/develop
 uv run pytest apps/sandbox-executor/tests/test_token_reduction.py
 ```
 
-#### Tier 2: Offline Deterministic Mocked Payload Benchmark
+#### Tier 2: Offline Deterministic Synthetic Benchmark
 
-Run in-memory payload transformation and cache matching benchmarks (zero API cost):
+Run the A/B runner in synthetic mode (zero API cost). It writes the efficacy scorecard to the `--output` path, which
+defaults to the git-ignored `tmp/scorecard_report.md`:
 
 ```bash
 cd holon-agentic-coder-ref/develop
-uv run python ../../todo/ab_benchmark_mock_api.py
+uv run python scripts/ab_measure_all_methods.py --synthetic --iterations 3 --output tmp/scorecard_report.md
 ```
 
 #### Tier 3: Live Network Socket Proxy A/B Test (Arbitrary LLM Provider APIs)
 
-Performs a raw `curl` pre-check against the target URL, spawns the Docker mitmproxy sidecar container
-(`mitmproxy/mitmproxy:12.2.3` running `mitm_addon.py`), routes real client socket traffic through the container to
-**arbitrary target LLM URLs** via a strictly required `--url` parameter (zero hardcoded default URLs), standardises on
-`HOLON_AGENT_KEY`, and outputs all structured execution logs and response payloads into the `todo/` directory
-(`todo/ab_real_api_results.json` and `todo/ab_real_api_results.md`):
-
-```bash
-export HOLON_AGENT_KEY="sk-..."
-cd holon-agentic-coder-ref/develop
-
-# Test Anthropic Endpoint
-uv run python ../../todo/ab_benchmark_real_api.py --url "https://api.anthropic.com/v1/messages" -p "Write a python function to compute fibonacci numbers."
-
-# Test OpenAI / OpenRouter Endpoint
-uv run python ../../todo/ab_benchmark_real_api.py --url "https://openrouter.ai/api/v1/chat/completions" -f payload_openai.json
-```
+A standalone real-API benchmark script (raw `curl` pre-check plus a mitmproxy sidecar against an arbitrary `--url`) is
+not shipped in this repository. Live provider traffic is measured through the Tier 4 runner, whose arms both route
+through the Docker mitmproxy sidecar (`mitmproxy/mitmproxy:12.2.3` running `mitm_addon.py`; the baseline in passive
+monitoring mode, `HOLON_PASSIVE_MONITORING=1`) and records structured transactions under the git-ignored
+`--wire-log-dir` (default `tmp/mitm_wire_logs`).
 
 #### Tier 4: End-to-End Sandbox A/B Test (Arbitrary Agents & Models)
 
-Executes containerized agent workloads in Docker sandbox across **arbitrary agent harnesses** (`antigravity`, `claude`,
+Executes containerised agent workloads in Docker sandbox across **arbitrary agent harnesses** (`antigravity`, `claude`,
 `pi`, `codex`, `gemini`) and **arbitrary models** with mitmproxy sidecar (`--token-reduce`), Root CA trust injection,
 and live container socket proxying:
 
 ```bash
 cd holon-agentic-coder-ref/develop
 
-# E2E Agent execution benchmark runner (arbitrary agent & model)
-uv run python ../../todo/ab_benchmark_holon_agent.py --plan-branch develop --agent antigravity-agent --model gemini-3.5-flash
-uv run python ../../todo/ab_benchmark_holon_agent.py --plan-branch develop --agent claude-agent --model claude-3-5-sonnet
+# E2E Agent execution benchmark runner (arbitrary agent & model); both arms append --token-reduce and route through
+# the sidecar, the baseline in passive monitoring mode (HOLON_PASSIVE_MONITORING=1)
+uv run python scripts/ab_measure_all_methods.py --no-synthetic --iterations 3 \
+  --command "uv run python -m sandbox_executor.cli execute develop --agent antigravity-agent --model gemini-3.5-flash" \
+  --output tmp/scorecard_report.md
+uv run python scripts/ab_measure_all_methods.py --no-synthetic --iterations 3 \
+  --command "uv run python -m sandbox_executor.cli execute develop --agent claude-agent --model claude-3-5-sonnet" \
+  --output tmp/scorecard_report.md
 
 # Direct Holon CLI invocation with --token-reduce
 uv run python -m sandbox_executor.cli execute develop --agent antigravity-agent --model gemini-3.5-flash --token-reduce

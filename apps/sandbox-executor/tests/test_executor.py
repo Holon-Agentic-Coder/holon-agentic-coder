@@ -3122,7 +3122,7 @@ class TestExecutorIncrementalNotes(unittest.TestCase):
         self.assertTrue(all("completed for plan" not in " ".join(c) for c in commits))
 
     def test_breached_notes_only_reprompt_after_clean_implementation_turn_is_success(self):
-        # C3-I1: the implementation turn finished cleanly; only the notes-only re-prompt breached. The code is complete,
+        # The implementation turn finished cleanly; only the notes-only re-prompt breached. The code is complete,
         # so the execution is a success, the code is staged and no ACT-BUDGET is recorded.
         partial = VALID_NOTES.split("## Tests Run")[0]
         stall = BudgetBreach("execute", "stall", 90, 91)
@@ -3160,7 +3160,7 @@ class TestExecutorIncrementalNotes(unittest.TestCase):
         self.assertEqual(run["exit_code"], 1)
 
     def test_ledger_output_and_error_context_describe_the_implementation_turn(self):
-        # C3-I2: after a re-prompt, agent_output_bytes and the command action describe the implementation turn.
+        # After a re-prompt, agent_output_bytes and the command action describe the implementation turn.
         partial = VALID_NOTES.split("## Tests Run")[0]
         impl_out = "implementation output line\n" * 20
         run = self.run_executor(

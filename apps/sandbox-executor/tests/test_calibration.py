@@ -285,7 +285,7 @@ class TestMetricsParsing(unittest.TestCase):
             self.assertEqual(actual.insertions, 40)
             self.assertEqual(actual.deletions, 5)
             self.assertEqual(actual.impact, 35.0)
-            # The row records no test result: reported as not measured, never as a pass (C10-N1).
+            # The row records no test result: reported as not measured, never as a pass.
             self.assertIsNone(actual.test_pass_rate)
             self.assertIsNone(actual.to_dict()["test_pass_rate"])
 
@@ -1091,11 +1091,11 @@ class TestCalibrationInterleavedActionLedger(unittest.TestCase):
         self.assertTrue(is_metadata_path("plans/P-1792372417-plan.md"))
         self.assertTrue(is_metadata_path("plans/P-1792372417-plan_calibration.md"))
         self.assertTrue(is_metadata_path(".holon/checkpoints/flow.json"))
-        # C7-I1: execution notes are committed by every execution and are flow metadata, not code.
+        # Execution notes are committed by every execution and are flow metadata, not code.
         self.assertTrue(is_metadata_path("executions/E-1792372417-claude-agent-claude-opus-5-5.md"))
         self.assertFalse(is_metadata_path("src/executions/runner.py"))
         self.assertFalse(is_metadata_path(".tasks/0001-task.md"))
-        self.assertFalse(is_metadata_path("todo/scratch.py"))
+        self.assertFalse(is_metadata_path("tmp/scratch.py"))
 
         self.assertFalse(is_metadata_path("src/module.py"))
         self.assertFalse(is_metadata_path("apps/sandbox-executor/src/sandbox_executor/flow.py"))
@@ -1242,7 +1242,7 @@ _HOOK_SECRET = "ghp_" + "H" * 36
 
 
 def _install_rejecting_pre_commit_hook(repo: Path, git) -> None:
-    """Install a repository-local pre-commit hook that rejects every commit (C9-N1)."""
+    """Install a repository-local pre-commit hook that rejects every commit."""
     hooks_dir = repo / ".git" / "test-hooks"
     hooks_dir.mkdir()
     hook = hooks_dir / "pre-commit"
@@ -1252,7 +1252,7 @@ def _install_rejecting_pre_commit_hook(repo: Path, git) -> None:
 
 
 def test_run_calibrate_rejected_report_commit_raises(calibration_repo, capsys):
-    """A pre-commit hook that rejects the report commit makes run_calibrate fail, redacted (C9-N1)."""
+    """A pre-commit hook that rejects the report commit makes run_calibrate fail, redacted."""
     repo, git = calibration_repo
     _install_rejecting_pre_commit_hook(repo, git)
     ledger_rel = "holon-knowledge/ledger/executions.jsonl"
@@ -1277,7 +1277,7 @@ def test_run_calibrate_rejected_report_commit_raises(calibration_repo, capsys):
 
 
 def test_cli_calibrate_rejected_report_commit_exits_non_zero(calibration_repo, capsys):
-    """`holon calibrate` exits 1 with a redacted error when the report commit is rejected (C9-N1)."""
+    """`holon calibrate` exits 1 with a redacted error when the report commit is rejected."""
     repo, git = calibration_repo
     _install_rejecting_pre_commit_hook(repo, git)
     test_args = ["holon", "calibrate", _EXEC_BRANCH, "--target-worktree", str(repo)]
@@ -1463,7 +1463,7 @@ def test_stage5_dry_run_leaves_executions_ledger_unchanged(calibration_repo):
 
 
 def test_stage5_rejected_report_commit_takes_failure_path(calibration_repo):
-    """A rejected report commit leaves every Stage 5 row uncommitted and skips push / ff (C9-N1)."""
+    """A rejected report commit leaves every Stage 5 row uncommitted and skips push / ff."""
     from sandbox_executor.flow import run_calibrate_stage
     from sandbox_executor.git import run_git as real_run_git
 

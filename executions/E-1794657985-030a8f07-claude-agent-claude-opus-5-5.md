@@ -3,8 +3,8 @@
 ## Summary
 
 Implements plan `P-1794657809-c6ebdbd6-claude-agent-claude-opus-5-5` for intent `I-1794657793-mergemth`: a child pull
-request is merged into its plan branch with a merge commit when the repository allows it, otherwise with a squash,
-read from `gh api repos/{owner}/{repo}` before anything is written. A failed lookup or no allowed method refuses; the
+request is merged into its plan branch with a merge commit when the repository allows it, otherwise with a squash, read
+from `gh api repos/{owner}/{repo}` before anything is written. A failed lookup or no allowed method refuses; the
 existing guards are unchanged.
 
 ## Actual Metrics
@@ -28,9 +28,9 @@ existing guards are unchanged.
   `tests/flow/github/test_merge.py` (`FORBIDDEN_FLAGS` includes `--squash`; exact `--merge` call asserted),
   `tests/flow/stages/test_children.py` line 79 (`--merge` and no `--squash` in the decomposed flow).
 - `github/merge.py` is 299 lines against a 299 budget; every module under `flow/` needs a budget entry.
-- `tests/flow/test_package_exports.py` requires every new public function to be in `flow.__all__`, so the two new
-  public functions are re-exported from `flow/__init__.py` (its budget raised by the exact delta, as the budgets
-  description records for earlier modules).
+- `tests/flow/test_package_exports.py` requires every new public function to be in `flow.__all__`, so the two new public
+  functions are re-exported from `flow/__init__.py` (its budget raised by the exact delta, as the budgets description
+  records for earlier modules).
 
 ### Step 2: Add the merge-method lookup module
 
@@ -43,8 +43,8 @@ existing guards are unchanged.
 ### Step 3: Use the looked-up flag in `merge_child_pr`, before anything is written
 
 - `merge_child_pr` calls `lookup_merge_flag(repo_dir, gh)` after the idempotent `MERGED` branch and before
-  `_verified_head`, so a refusal (`no usable merge method for PR #<n>: ...`) writes nothing to origin. The
-  `gh pr merge` call is `["pr", "merge", <n>, <flag>, "--match-head-commit", <head_sha>]`.
+  `_verified_head`, so a refusal (`no usable merge method for PR #<n>: ...`) writes nothing to origin. The `gh pr merge`
+  call is `["pr", "merge", <n>, <flag>, "--match-head-commit", <head_sha>]`.
 - `merge_refusal_reason`, `_guard`, `_verified_head`, `_await_ready`, `merge_into_branch` and `_merged_result` are
   unchanged (diff limited to the import, the lookup, the flag and docstrings).
 - Deviation: `merge.py` could not stay at 299 lines without unrelated reformatting, so its budget was raised by the
@@ -64,3 +64,13 @@ existing guards are unchanged.
 - `tests/flow/stages/test_children.py`: a decomposed flow on a squash-only repository squashes both children and the
   second child is cut from the first squash commit.
 - Affected tests: 226 passed in 3.48s.
+
+### Step 5: Update docstrings and documents that say "merge commit only"
+
+- `docs/safety.md`: the "Merge commit only." rule became "Merge commit, else squash.", naming the
+  `gh api repos/{owner}/{repo}` lookup, the strict `true` checks, the fail-closed refusal, the never-used flags and what
+  a squash does to the plan branch history.
+- `docs/git_flow.md`, `docs/architecture.md` and `docs/examples.md`: child PR merges now say merge commit, or squash on
+  a squash-only repository. Text about `merge_into_branch` and Stage 3 integration (local `--no-ff` merges) unchanged.
+- Docstrings of `flow/stages/integration.py` and `flow/stages/children.py` reworded with unchanged line counts.
+- A final grep for "merge commit only" and `--merge --match-head-commit` finds only the new rule in `docs/safety.md`.

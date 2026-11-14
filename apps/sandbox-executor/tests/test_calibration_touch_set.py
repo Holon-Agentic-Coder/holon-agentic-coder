@@ -35,6 +35,27 @@ def test_malformed_row_scores_none():
     assert touch_set_metrics({"plan_id": "P-2", "touch_set": [{"symbols": []}]}, ["src/a.py"], ".") == _NONE
 
 
+def test_unmeasured_diff_scores_none():
+    plan_row = {"plan_id": "P-2", "touch_set": [{"path": "src/a.py"}]}
+    assert touch_set_metrics(plan_row, None, ".") == _NONE
+
+
+def test_shortstat_diff_leaves_changed_paths_unmeasured():
+    def fake_run(cmd, **kwargs):
+        if "diff" in cmd:
+            return MagicMock(returncode=0, stdout=" 1 file changed, 2 insertions(+)", stderr="")
+        return MagicMock(returncode=1, stdout="", stderr="")
+
+    with (
+        patch("os.path.exists", return_value=False),
+        patch("sandbox_executor.calibration.read_git_file", return_value=None),
+        patch("subprocess.run", side_effect=fake_run),
+    ):
+        actual, meta = parse_actual_metrics("E-3", "", PredictedMetrics())
+    assert actual.files_changed == 1
+    assert meta["changed_paths"] is None
+
+
 def test_markdown_fallback_parses_the_plan_file(tmp_path):
     (tmp_path / "plans").mkdir()
     (tmp_path / "plans" / "P-2.md").write_text("## Touch Set\n\n- `src/a.py`\n", encoding="utf-8")

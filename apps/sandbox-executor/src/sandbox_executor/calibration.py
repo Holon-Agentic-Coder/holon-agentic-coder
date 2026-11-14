@@ -830,6 +830,8 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
     actual.files_changed = 0
     actual.insertions = 0
     actual.deletions = 0
+    # None when the diff output lists no paths (shortstat), so an unmeasured diff scores no touch set
+    exec_meta["changed_paths"] = []
     if res.stdout.strip():
         text = res.stdout.strip()
         if "\t" in text:
@@ -839,14 +841,15 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
                 if len(parts) >= 3:
                     if is_metadata_path(parts[2]):
                         continue
-                    exec_meta.setdefault("changed_paths", []).append(parts[2].strip())
+                    exec_meta["changed_paths"].append(parts[2].strip())
                     actual.files_changed += 1
                     if parts[0] != "-":
                         actual.insertions += int(parts[0])
                     if parts[1] != "-":
                         actual.deletions += int(parts[1])
         else:
-            # Fallback for shortstat text (e.g. unit test mocks)
+            # Fallback for shortstat text (e.g. unit test mocks): no paths, so the touch set is not scored
+            exec_meta["changed_paths"] = None
             fc_m = re.search(r"(\d+)\s+file", text)
             ins_m = re.search(r"(\d+)\s+insertion", text)
             del_m = re.search(r"(\d+)\s+deletion", text)
@@ -1255,7 +1258,7 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
         "bug_ev_drag": actual.bug_ev_drag,
         "delta_ev_clean": deltas.delta_ev_clean,
         "delta_ev_with_bugs": deltas.delta_ev_with_bugs,
-        "touch_set": touch_set_metrics(plan_meta, exec_meta.get("changed_paths", []), target_worktree),
+        "touch_set": touch_set_metrics(plan_meta, exec_meta.get("changed_paths"), target_worktree),
     }
 
     markdown_content = format_markdown_report(report_dict)

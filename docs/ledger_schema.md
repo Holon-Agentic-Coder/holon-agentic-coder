@@ -220,7 +220,8 @@ Stage 4 and Stage 5 action rows keep their historical field order and identifier
   `["calibration", "stage-5", plan_id]`. Beyond the common action fields it carries `plan_branch`, `execution_branch`,
   `evaluated_commit_sha`, `predicted_metrics`, `actual_metrics`, `calibration_deltas` and `calibration_report_path` (new
   rows add `touch_set_accuracy`, see [touch_set.md](touch_set.md)). Each committed run appends a new `ACT-CAL` row; a
-  failed Stage 5 run appends an uncommitted `failure` row whose `action` says if a fallback report was written.
+  failed Stage 5 run appends an uncommitted `failure` row whose `action` states whether a fallback report was written or
+  the existing report and ledger rows were left uncommitted.
 - Failure `error_context` values that can carry external output (the `ACT-POST` posting error and the fallback `ACT-CAL`
   calibration error) are redacted, then truncated to 2000 characters.
 

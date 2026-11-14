@@ -17,13 +17,20 @@ TOUCH_SET_REPORT_ITEM_CAP = 20
 _NO_TOUCH_SET: dict[str, Any] = {"precision": None, "recall": None, "unpredicted_paths": [], "unused_entries": []}
 
 
-def touch_set_metrics(plan_meta: dict[str, Any], changed_paths: list[str], target_worktree: str) -> dict[str, Any]:
+def touch_set_metrics(
+    plan_meta: dict[str, Any], changed_paths: list[str] | None, target_worktree: str
+) -> dict[str, Any]:
     """Score the plan's touch set against the execution's changed paths; ``None`` values when there is none.
+
+    ``changed_paths`` is ``None`` when the diff was not measured path by path; that scores ``None`` values too, not a
+    precision of zero.
 
     The touch set comes from the ``plans.jsonl`` row, or from the plan file's ``## Touch Set`` section when the row was
     not found and ``parse_predicted_metrics`` fell back to the markdown (its record then has no ``plan_id``). Advisory:
     a malformed row or unreadable plan file never fails calibration.
     """
+    if changed_paths is None:
+        return dict(_NO_TOUCH_SET)
     try:
         if "plan_id" in plan_meta or "touch_set" in plan_meta or not plan_meta.get("plan_file"):
             touch_set = TouchSet.from_row(plan_meta.get("touch_set"))

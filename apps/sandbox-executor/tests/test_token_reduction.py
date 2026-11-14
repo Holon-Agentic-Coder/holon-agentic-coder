@@ -327,7 +327,7 @@ def test_setup_proxy_readiness_failure_raises_without_proxy_envs(host_paths, mon
     with pytest.raises(RuntimeError) as excinfo:
         setup_token_reduction_proxy()
 
-    assert "never accepted connections" in str(excinfo.value)
+    assert "never answered an HTTP proxy request" in str(excinfo.value)
     assert "Re-run without --token-reduce" in str(excinfo.value)
     assert "docker rm -f" in fake.joined()
     assert "docker network rm" in fake.joined()

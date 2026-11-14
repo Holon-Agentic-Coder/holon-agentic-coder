@@ -140,6 +140,12 @@ PROXY_READY_TIMEOUT_SECONDS = 15.0
 PROXY_ATTACH_TIMEOUT_SECONDS = 3.0
 PROXY_POLL_INTERVAL_SECONDS = 0.5
 PROXY_CONNECT_TIMEOUT_SECONDS = 0.5
+PROXY_PROBE_ATTEMPT_TIMEOUT_SECONDS = 2.0
+# Reserved TLD (RFC 6761): the readiness request can never reach a real upstream.
+PROXY_READINESS_HOST = "holon-proxy-readiness.invalid"
+PROXY_READINESS_REQUEST = (
+    f"GET http://{PROXY_READINESS_HOST}/ HTTP/1.1\r\nHost: {PROXY_READINESS_HOST}\r\nConnection: close\r\n\r\n"
+).encode("ascii")
 _TRUTHY_ENV_VALUES = ("1", "true", "yes", "on")
 _EXPLICIT_OPT_OUT_VALUES = {"0", "false", "no", "off"}
 
@@ -629,17 +635,38 @@ def _token_reduce_opt_in(token_reduce: bool = False) -> bool:
     return os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES
 
 
+def _proxy_answers_http(host: str, port: int, timeout: float) -> bool:
+    """Send one proxy-style request and report whether the reply starts with an HTTP status line."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as connection:
+            connection.sendall(PROXY_READINESS_REQUEST)
+            data = b""
+            while len(data) < len(b"HTTP/"):
+                chunk = connection.recv(64)
+                if not chunk:
+                    break
+                data += chunk
+    except OSError:
+        return False
+    return data.startswith(b"HTTP/")
+
+
 def _wait_for_proxy(host: str, port: int, timeout: float = PROXY_READY_TIMEOUT_SECONDS) -> bool:
-    """Poll a TCP endpoint until it accepts a connection; return False if it never does."""
+    """Poll a proxy until it answers an HTTP request; return False if it never does by the deadline.
+
+    A bare TCP connect is not enough: Docker's userland proxy accepts connections on the published port
+    before mitmproxy inside the container has bound its listener. The probe therefore sends a proxy
+    request for an unresolvable host and waits for an HTTP status line (a 502 or 407 still means serving).
+    """
     deadline = time.monotonic() + timeout
     while True:
-        try:
-            with socket.create_connection((host, port), timeout=PROXY_CONNECT_TIMEOUT_SECONDS):
-                return True
-        except OSError:
-            if time.monotonic() >= deadline:
-                return False
-            time.sleep(PROXY_POLL_INTERVAL_SECONDS)
+        remaining = deadline - time.monotonic()
+        if _proxy_answers_http(host, port, min(PROXY_PROBE_ATTEMPT_TIMEOUT_SECONDS, max(remaining, 0.05))):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(PROXY_POLL_INTERVAL_SECONDS, remaining))
 
 
 def _ensure_network(network_name: str) -> bool:
@@ -864,8 +891,8 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
     if not _wait_for_proxy("127.0.0.1", host_port):
         teardown_token_reduction_proxy()
         raise RuntimeError(
-            f"mitmproxy sidecar '{container_name}' never accepted connections on 127.0.0.1:{host_port} within "
-            f"{PROXY_READY_TIMEOUT_SECONDS}s (the addon likely crashed on startup). "
+            f"mitmproxy sidecar '{container_name}' never answered an HTTP proxy request on "
+            f"127.0.0.1:{host_port} within {PROXY_READY_TIMEOUT_SECONDS}s (the addon likely crashed on startup). "
             "Re-run without --token-reduce to execute with direct egress."
         )
 

@@ -38,7 +38,6 @@ import functools
 import json
 import logging
 import os
-import posixpath
 import re
 import shutil
 import time
@@ -101,7 +100,6 @@ TRAILER_OPEN = "<!-- holon-review-trailer -->"
 TRAILER_CLOSE = "<!-- /holon-review-trailer -->"
 TEMPLATE_REL = "holon-config/prompts/review_loop.template.md"
 REVIEW_ROOT_REL = "tmp/review"
-_REVIEW_PARENT_REL = posixpath.dirname(REVIEW_ROOT_REL)
 REPORT_NAME = "report.md"
 MAX_REASON_CHARS = 500
 _AGENT_ARG_DISPLAY_LEN = 100
@@ -561,7 +559,7 @@ def _review_root(repo_dir: str) -> str:
     if root != expected:
         raise ValueError(
             f"review scratch root {REVIEW_ROOT_REL}/ does not resolve to {REVIEW_ROOT_REL}/ under the repository"
-            f" directory (a symlinked {_REVIEW_PARENT_REL} or {REVIEW_ROOT_REL} is the likely cause)"
+            f" directory (a symlinked tmp or {REVIEW_ROOT_REL} is the likely cause)"
         )
     return root
 

@@ -82,9 +82,10 @@ uv run python scripts/ab_measure_all_methods.py --synthetic --iterations 3 --out
 #### Tier 3: Live Network Socket Proxy A/B Test (Arbitrary LLM Provider APIs)
 
 A standalone real-API benchmark script (raw `curl` pre-check plus a mitmproxy sidecar against an arbitrary `--url`) is
-not shipped in this repository. Live provider traffic is measured through the Tier 4 runner, whose optimised arm routes
-through the Docker mitmproxy sidecar (`mitmproxy/mitmproxy:12.2.3` running `mitm_addon.py`) and records structured
-transactions under the git-ignored `--wire-log-dir` (default `tmp/mitm_wire_logs`).
+not shipped in this repository. Live provider traffic is measured through the Tier 4 runner, whose arms both route
+through the Docker mitmproxy sidecar (the baseline in passive monitoring mode, `HOLON_PASSIVE_MONITORING=1`)
+(`mitmproxy/mitmproxy:12.2.3` running `mitm_addon.py`) and records structured transactions under the git-ignored
+`--wire-log-dir` (default `tmp/mitm_wire_logs`).
 
 #### Tier 4: End-to-End Sandbox A/B Test (Arbitrary Agents & Models)
 
@@ -95,7 +96,8 @@ and live container socket proxying:
 ```bash
 cd holon-agentic-coder-ref/develop
 
-# E2E Agent execution benchmark runner (arbitrary agent & model); the optimised arm appends --token-reduce
+# E2E Agent execution benchmark runner (arbitrary agent & model); both arms append --token-reduce and route through
+# the sidecar, the baseline in passive monitoring mode (HOLON_PASSIVE_MONITORING=1)
 uv run python scripts/ab_measure_all_methods.py --no-synthetic --iterations 3 \
   --command "uv run python -m sandbox_executor.cli execute develop --agent antigravity-agent --model gemini-3.5-flash" \
   --output tmp/scorecard_report.md

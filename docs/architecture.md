@@ -38,9 +38,9 @@ multi-agent system that plans competitively, executes in sandboxes, and improves
 - **No direct merges from sub-intents to `main`.**
 - Below the root no human intervention is needed: the agent raises and merges every sub-intent's PR automatically, and
   only the root intent's PR to `main` stops for a human. `holon flow` cuts each child from the plan branch tip, merges
-  its PR into the plan branch with a merge commit after the child's review consensus and calibration, and raises one
-  combined PR from the parent execution branch (see [Git Flow](git_flow.md) Stage 3 under the flow equivalence
-  guarantee).
+  its PR into the plan branch with a merge commit (a squash on a squash-only repository) after the child's review
+  consensus and calibration, and raises one combined PR from the parent execution branch (see [Git Flow](git_flow.md)
+  Stage 3 under the flow equivalence guarantee).
 
 #### 5) Sandboxed exploration is allowed (including risky)
 
@@ -354,8 +354,9 @@ Curate:
 - Only the root intent's PR merges into `main`.
 - `holon flow` implements this for plan-decided splits: each child is cut from the plan branch tip after the previous
   child merged, records the plan branch as its `target_branch` and `parent_intent_id`, and is merged into it by the
-  guarded `flow/github/merge.py` (merge commit only, never `main`, `master` or the default branch). The plan branch is
-  then merged into the parent execution branch, whose PR is the combined PR (see [Git Flow](git_flow.md) Stage 3).
+  guarded `flow/github/merge.py` (merge commit when allowed, otherwise squash, never `main`, `master` or the default
+  branch). The plan branch is then merged into the parent execution branch, whose PR is the combined PR (see
+  [Git Flow](git_flow.md) Stage 3).
 
 #### Human review boundary
 

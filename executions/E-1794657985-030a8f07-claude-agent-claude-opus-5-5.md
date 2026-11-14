@@ -39,3 +39,13 @@ existing guards are unchanged.
   non-zero exit, empty output or invalid JSON refuses; stderr redacted). It imports nothing from `merge.py`.
 - Budgets: `github/merge_method.py: 64` added at creation size; `__init__.py` raised from 425 to 428 for the re-export
   the package export test requires. `ruff check`, `ruff format --check` and the budget check pass.
+
+### Step 3: Use the looked-up flag in `merge_child_pr`, before anything is written
+
+- `merge_child_pr` calls `lookup_merge_flag(repo_dir, gh)` after the idempotent `MERGED` branch and before
+  `_verified_head`, so a refusal (`no usable merge method for PR #<n>: ...`) writes nothing to origin. The
+  `gh pr merge` call is `["pr", "merge", <n>, <flag>, "--match-head-commit", <head_sha>]`.
+- `merge_refusal_reason`, `_guard`, `_verified_head`, `_await_ready`, `merge_into_branch` and `_merged_result` are
+  unchanged (diff limited to the import, the lookup, the flag and docstrings).
+- Deviation: `merge.py` could not stay at 299 lines without unrelated reformatting, so its budget was raised by the
+  exact delta (`299 + 4 = 303`) with a sentence in the budgets description, as the plan allows.

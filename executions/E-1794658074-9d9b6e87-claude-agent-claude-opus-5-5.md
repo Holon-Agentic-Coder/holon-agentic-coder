@@ -23,3 +23,8 @@ In progress: fixing the Stage 5 `git diff` exit 128 "ambiguous argument" on nest
    remote-only case resolves through `resolve_git_ref`'s fetch fallback, and the local case is the control. So the
    nested `/_` name alone does not fail; an unresolvable plan ref, passed raw to `git diff`, does. The absent case is
    marked `xfail(strict=True)` until Step 3.
+2. Step 2 (helper): added `apps/sandbox-executor/src/sandbox_executor/git_revisions.py` (outside `flow/`, so no budget
+   entry). `qualify_branch_revision(repo_dir, name, remote="origin")` strips `refs/heads/`, `refs/remotes/<remote>/` and
+   `<remote>/` prefixes, then returns a verified hex SHA, `refs/heads/<name>` or `refs/remotes/<remote>/<name>`, else
+   None. It runs only `rev-parse --verify --quiet <rev>^{commit}` and never fetches. `revision_args(*revs)` returns the
+   revisions followed by `--`. The module imports only `re` and `sandbox_executor.git`.

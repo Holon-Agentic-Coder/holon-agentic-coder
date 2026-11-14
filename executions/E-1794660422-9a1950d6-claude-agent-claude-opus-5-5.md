@@ -10,11 +10,11 @@ Implements plan `P-1794660305-d5b6233a-claude-agent-claude-opus-5-5` for intent 
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.0   |
-| entropy_actual        | 0.0   |
-| impact_actual         | 0.0   |
-| cost_actual           | 0.0   |
-| learning_value_actual | 0.0   |
+| success_actual        | 0.9   |
+| entropy_actual        | 3.5   |
+| impact_actual         | 70.0  |
+| cost_actual           | 8.0   |
+| learning_value_actual | 2.0   |
 
 ## Steps Executed
 
@@ -37,7 +37,31 @@ Implements plan `P-1794660305-d5b6233a-claude-agent-claude-opus-5-5` for intent 
   handler given the 1-based connection index) and a `loopback_listener` fixture that shortens
   `PROXY_POLL_INTERVAL_SECONDS` to `0.02` and `PROXY_PROBE_ATTEMPT_TIMEOUT_SECONDS` to `0.2` and closes every listener.
 - Tests: silent close is retried until the deadline (`False`, more than one connection, elapsed `>= 0.4` s); an
-  immediate 502 is ready and pins the `GET http://holon-proxy-readiness.invalid/ HTTP/1.1` request form; a listener
-  that answers only from its third connection (count-driven, not wall-clock) becomes ready; parametrised silent-hold
-  and non-HTTP listeners are not ready by the deadline.
+  immediate 502 is ready and pins the `GET http://holon-proxy-readiness.invalid/ HTTP/1.1` request form; a listener that
+  answers only from its third connection (count-driven, not wall-clock) becomes ready; parametrised silent-hold and
+  non-HTTP listeners are not ready by the deadline.
 - Slowest new test `0.40` s; all five finish well under 1 s.
+
+### Step 3: Validate with the full suite, lint and lint-docs
+
+- Full suite, `uv run task lint` and the scoped files all pass. `uv run task lint-docs` fails on 39 Markdown files that
+  already fail on the base commit (`.agents/holon_flow.md`, `docs/optimisation/token_reduction_measurement_plan.md`,
+  `holon-config/metrics/README.md`, two older plans and 34 `*_calibration.md` reports); they are outside the intent's
+  scope and were left untouched. This execution record is prettier-clean, and no other plan or execution record from
+  this run is flagged.
+- `git diff --stat main...HEAD` touches only `cli/__init__.py`, `tests/test_token_reduction.py` and this record (plus
+  the plan file committed by the planner); ledger changes are only the flow's own intent and plan appends; `uv.lock`
+  unchanged.
+
+## Tests Run
+
+| command                                                                                          | result                                  |
+| ------------------------------------------------------------------------------------------------ | --------------------------------------- |
+| `uv run pytest apps/sandbox-executor/tests/test_token_reduction.py -q -n auto` (after Step 1)    | 222 passed in 2.15s                     |
+| `uv run pytest apps/sandbox-executor/tests/test_token_reduction.py -q -n auto -k wait_for_proxy` | 5 passed in 2.39s                       |
+| `uv run pytest apps/sandbox-executor/tests/test_token_reduction.py -q -n auto --dist worksteal`  | 227 passed in 2.74s                     |
+| `uv run task test`                                                                               | 4019 passed, 1 skipped in 23.95s        |
+| `uv run task lint`                                                                               | pass (ruff, format, lock, budgets)      |
+| `uv run task lint-docs`                                                                          | fail: 39 pre-existing files (see above) |
+
+Each command ran once; no timing measurement was required, so no repeated runs and no median apply.

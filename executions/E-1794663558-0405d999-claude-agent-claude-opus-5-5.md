@@ -75,3 +75,19 @@ out-of-set execution diff fails Stage 3 with `touch_set_violation` and returns o
 - Deviation from the touch set: `flow/stages/children.py` passes `allow_overlap` to child intents and
   `tests/flow/stages/test_decomposition.py` classifies the new field as inherited (its field-classification test
   requires every `FlowContext` field to be listed).
+
+### Step 5: hermetic tests
+
+- `tests/test_touch_set.py` (Step 1 cases), `tests/flow/test_in_flight.py` (fake `gh`, a second worktree with live,
+  stale, still-planning, own-lineage and unparseable checkpoints, `gh` and `git` failures),
+  `tests/flow/test_admission.py` (declared-set and real-diff overlap, metadata-only overlap admitted, missing touch set
+  refused, fail-closed discovery, refusal payload, exactly one override row, dry run, ledger readers ignore the
+  override row).
+- `tests/flow/stages/test_execute_touch_set.py`: through `PipelineEngine` with fake role agents whose plan rows carry a
+  touch set: refusal before the executor is dispatched, `--allow-overlap` dispatching once with one override row,
+  metadata-only extras passing, an out-of-set file returning to Stage 2 once and succeeding with a widened set, and a
+  persistent violation failing after `MAX_REPLAN_ATTEMPTS` with the superseding `touch_set_violation` row.
+- `tests/flow/test_pipeline.py`: stubbed-stage re-plan once and the exhausted message, plus `--allow-overlap` reaching
+  the context; `tests/flow/test_context.py`: `allow_overlap` round-trips and defaults to false for old checkpoints.
+- No test reaches a real `gh`, network or role container: discovery takes injected runners, and the suite-wide stub
+  admits Stage 3 elsewhere.

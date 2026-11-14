@@ -28,9 +28,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-# Git-ignored agent state of the outside tooling; built from fragments to satisfy the repository hygiene test.
-_AGENT_STATE_DIR = "." + "sub" + "agent"
-
 # Pricing constants ($ per MTok)
 PRICING: dict[str, dict[str, float]] = {
     "claude-3-7-sonnet": {
@@ -257,7 +254,7 @@ def reset_workspace_state(repo_root: Path, force: bool = False) -> None:
                 "--exclude=tmp/",
                 "--exclude=.venv",
                 "--exclude=docs/",
-                f"--exclude={_AGENT_STATE_DIR}/",
+                "--exclude=.subagent/",
             ],
             cwd=str(repo_root),
             capture_output=True,

@@ -8,7 +8,8 @@ The append-only ledgers and the ``plans/`` and ``executions/`` records are histo
 finding ids used as data (for example ``R1-F1`` or ``FIND-CI-001``) are not citations and never match.
 
 Allowlist (:data:`ALLOWLIST`): ``.gitignore`` may hold exactly one line naming the hidden agent-state directory, so that
-outside tooling state stays untracked.
+outside tooling state stays untracked, and the workspace reset in ``scripts/ab_measure_all_methods.py`` may exclude it
+from ``git clean`` so that state survives.
 
 The tracked-file list comes from ``git ls-files`` on the local checkout (no network); the scan reads files only.
 """
@@ -34,6 +35,11 @@ FORBIDDEN_DIRS = (LOCAL_NOTES_DIR, HIDDEN_STATE_DIR)
 #: ``(path, exact line, reason)``: the only lines allowed to break a rule.
 ALLOWLIST: tuple[tuple[str, str, str], ...] = (
     (".gitignore", HIDDEN_STATE_DIR, "keeps the outside tooling's agent state untracked"),
+    (
+        "scripts/ab_measure_all_methods.py",
+        f'                "--exclude={HIDDEN_STATE_DIR}/",',
+        "keeps the workspace reset's git clean from deleting the outside tooling's agent state",
+    ),
 )
 
 _PATH_BOUNDARY = r"""(?:^|(?<=[\s"'`/=(]))"""

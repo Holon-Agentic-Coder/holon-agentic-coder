@@ -83,8 +83,8 @@ uv run python scripts/ab_measure_all_methods.py --synthetic --iterations 3 --out
 
 A standalone real-API benchmark script (raw `curl` pre-check plus a mitmproxy sidecar against an arbitrary `--url`) is
 not shipped in this repository. Live provider traffic is measured through the Tier 4 runner, whose arms both route
-through the Docker mitmproxy sidecar (the baseline in passive monitoring mode, `HOLON_PASSIVE_MONITORING=1`)
-(`mitmproxy/mitmproxy:12.2.3` running `mitm_addon.py`) and records structured transactions under the git-ignored
+through the Docker mitmproxy sidecar (`mitmproxy/mitmproxy:12.2.3` running `mitm_addon.py`; the baseline in passive
+monitoring mode, `HOLON_PASSIVE_MONITORING=1`) and records structured transactions under the git-ignored
 `--wire-log-dir` (default `tmp/mitm_wire_logs`).
 
 #### Tier 4: End-to-End Sandbox A/B Test (Arbitrary Agents & Models)

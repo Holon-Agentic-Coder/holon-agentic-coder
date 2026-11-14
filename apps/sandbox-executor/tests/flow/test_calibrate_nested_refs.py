@@ -66,8 +66,8 @@ def make_nested_layout(tmp_path: Path) -> SimpleNamespace:
         git(host, "checkout", "-qb", branch)
         commit_file(host, rel, _plan_markdown() if rel.startswith("plans/") else "intent\n")
     git(host, "checkout", "-qb", EXEC)
-    commit_file(host, "src/child.py", "print('child')\nprint('nested')\n")
     commit_file(host, "holon-knowledge/ledger/executions.jsonl", _summary_row())
+    commit_file(host, "src/child.py", "print('child')\nprint('nested')\n")
     git(host, "push", "-q", "origin", "main", ROOT_INTENT, CHILD_INTENT, PLAN, EXEC)
     git(host, "checkout", "-q", "main")
     return SimpleNamespace(origin=origin, host=host)
@@ -89,22 +89,24 @@ def layout(tmp_path: Path) -> SimpleNamespace:
 
 
 @pytest.mark.parametrize(
-    "case",
-    [
-        "local",
-        "remote_only",
-        pytest.param("absent", marks=pytest.mark.xfail(strict=True, reason="exit 128 ambiguous argument")),
-    ],
+    ("case", "diff_base"),
+    [("local", "plan"), ("remote_only", "plan"), ("absent", "first_parent_fallback")],
 )
-def test_generate_calibration_on_nested_layout(layout: SimpleNamespace, case: str) -> None:
+def test_generate_calibration_on_nested_layout(layout: SimpleNamespace, case: str, diff_base: str) -> None:
     drop_plan_ref(layout, case)
     report = generate_calibration(EXEC, target_worktree=str(layout.host))
     assert report.plan_id == PLAN_ID
     assert report.execution_id == EXEC_ID
-    assert report.actual.files_changed >= 1
+    assert report.actual.files_changed == 1
+    assert report.actual.insertions == 2
+    assert ("first_parent_fallback" in report.markdown_content) is (diff_base == "first_parent_fallback")
+    if diff_base == "plan":
+        assert report.base_sha == git(layout.host, "rev-parse", f"origin/{PLAN}")
 
 
-def test_absent_plan_ref_reproduces_the_ambiguous_argument_failure(layout: SimpleNamespace) -> None:
+def test_absent_plan_ref_degrades_with_a_warning(layout: SimpleNamespace, caplog: pytest.LogCaptureFixture) -> None:
     drop_plan_ref(layout, "absent")
-    with pytest.raises(RuntimeError, match=r"(?s)exit code 128.*ambiguous argument"):
-        generate_calibration(EXEC, target_worktree=str(layout.host))
+    with caplog.at_level("WARNING"):
+        report = generate_calibration(EXEC, target_worktree=str(layout.host))
+    assert report.base_sha is None
+    assert any(PLAN in rec.getMessage() and "first parent" in rec.getMessage() for rec in caplog.records)

@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.agent_defaults import LEGACY_DEFAULT_AGENT, LEGACY_DEFAULT_MODEL
+from sandbox_executor.calibration_diff import DIFF_BASE_FIRST_PARENT, DIFF_BASE_PLAN, merge_history, patch_diff_range
 from sandbox_executor.calibration_ev import (
     evaluate_dual_ev_outcomes,
     format_dual_ev_derivation_lines,
@@ -790,14 +791,13 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
             actual.test_pass_rate = float(raw_rate)
 
     # 2. Compute patch size via git diff between plan_branch and execution_branch (fail loudly on non-zero exit)
-    base_ref = plan_branch if plan_branch else "HEAD~1"
-    if execution_branch and base_ref != target_ref:
-        diff_args = ["diff", "--numstat", f"{base_ref}...{target_ref}"]
-    else:
-        diff_args = ["diff", "--numstat", f"{target_ref}~1..{target_ref}"]
-
+    base_rev, target_rev, diff_base = patch_diff_range(
+        plan_branch if execution_branch else "", target_ref, target_worktree
+    )
+    exec_meta["diff_base"] = diff_base
+    diff_range = f"{base_rev}...{target_rev}" if diff_base == DIFF_BASE_PLAN else f"{target_rev}~1..{target_rev}"
     res = run_git(
-        diff_args,
+        ["diff", "--numstat", diff_range, "--"],
         cwd=target_worktree,
         check=False,
         timeout=30,
@@ -805,46 +805,12 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
     if res.returncode != 0:
         error_message = res.stderr.strip()
         raise RuntimeError(
-            f"Git diff failed between '{base_ref}' and '{target_ref}' with exit code {res.returncode}: {error_message}"
+            f"Git diff failed between '{base_rev or f'{target_rev}~1'}' and '{target_rev}' "
+            f"with exit code {res.returncode}: {error_message}"
         )
 
-    if execution_branch and base_ref != target_ref:
-        res_base = run_git(["rev-parse", base_ref], cwd=target_worktree, check=False, timeout=30)
-        if res_base.returncode != 0:
-            raise RuntimeError(
-                f"Git rev-parse failed for '{base_ref}' with exit code {res_base.returncode}: {res_base.stderr.strip()}"
-            )
-        base_sha = res_base.stdout.strip()
-
-        res_mb = run_git(["merge-base", base_ref, target_ref], cwd=target_worktree, check=False, timeout=30)
-        if res_mb.returncode != 0:
-            err = res_mb.stderr.strip()
-            raise RuntimeError(
-                f"Git merge-base failed between '{base_ref}' and '{target_ref}' "
-                f"with exit code {res_mb.returncode}: {err}"
-            )
-        merge_base_sha = res_mb.stdout.strip()
-
-        res_merges = run_git(
-            ["rev-list", "--count", "--merges", f"{base_ref}..{target_ref}"],
-            cwd=target_worktree,
-            check=False,
-            timeout=30,
-        )
-        if res_merges.returncode != 0:
-            err = res_merges.stderr.strip()
-            raise RuntimeError(
-                f"Git rev-list failed between '{base_ref}' and '{target_ref}' "
-                f"with exit code {res_merges.returncode}: {err}"
-            )
-        try:
-            merged_commit_count = int(res_merges.stdout.strip())
-        except ValueError:
-            merged_commit_count = 0
-
-        exec_meta["base_sha"] = base_sha
-        exec_meta["merge_base_sha"] = merge_base_sha
-        exec_meta["merged_commit_count"] = merged_commit_count
+    if diff_base == DIFF_BASE_PLAN:
+        exec_meta.update(merge_history(base_rev, target_rev, target_worktree))
 
     actual.files_changed = 0
     actual.insertions = 0
@@ -1029,6 +995,8 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
         report_data.get("merge_base_sha") or report_data["merged_commit_count"] > 0
     ):
         lines.append(f"- **Merged Commits:** `{report_data['merged_commit_count']}`")
+    if report_data.get("diff_base") == DIFF_BASE_FIRST_PARENT:
+        lines.append("- **Patch Size Base:** `first_parent_fallback` (plan branch unresolved)")
     lines.extend(
         [
             "",
@@ -1179,8 +1147,13 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
         try:
             resolved_plan_ref = resolve_git_ref(plan_branch, target_worktree=target_worktree)
         except Exception as e:
-            logger.debug("Could not resolve plan_branch '%s': %s", plan_branch, e)
-            resolved_plan_ref = plan_branch
+            logger.warning(
+                "plan branch '%s' could not be resolved (%s); patch size measured against the execution head's "
+                "first parent",
+                plan_branch,
+                e,
+            )
+            resolved_plan_ref = ""
 
     # Resolve canonical commit SHA for execution ref
     evaluated_commit_sha: str | None = None
@@ -1266,6 +1239,7 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
         "base_sha": base_sha,
         "merge_base_sha": merge_base_sha,
         "merged_commit_count": merged_commit_count,
+        "diff_base": exec_meta.get("diff_base"),
         "ev_clean": actual.ev_clean,
         "ev_with_bugs": actual.ev_with_bugs,
         "p_success_clean": actual.p_success_clean,
@@ -1573,7 +1547,7 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
                 )
             if remote_exists:
                 res_mg = run_git(
-                    ["merge", "--ff-only", f"origin/{calibrated_branch}"],
+                    ["merge", "--ff-only", f"refs/remotes/origin/{calibrated_branch}"],
                     cwd=target_worktree,
                     check=False,
                     timeout=30,
@@ -1582,7 +1556,7 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
                     logger.warning("Could not fast-forward calibrated branch to remote: %s", res_mg.stderr.strip())
         elif remote_exists:
             res_co = run_git(
-                ["checkout", "-b", calibrated_branch, f"origin/{calibrated_branch}"],
+                ["checkout", "-b", calibrated_branch, f"refs/remotes/origin/{calibrated_branch}"],
                 cwd=target_worktree,
                 check=False,
                 timeout=30,

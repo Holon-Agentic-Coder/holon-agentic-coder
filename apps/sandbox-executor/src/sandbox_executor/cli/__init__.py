@@ -88,6 +88,8 @@ from sandbox_executor.redaction import (
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 from sandbox_executor.scaffold import init_project
 from sandbox_executor.token_reduction import generate_root_ca
+from sandbox_executor.token_reduction.proxy_readiness import PROXY_READY_TIMEOUT_SECONDS
+from sandbox_executor.token_reduction.proxy_readiness import wait_for_proxy as _wait_for_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -136,16 +138,8 @@ NO_PROXY_HOSTS = "localhost,127.0.0.1,::1,169.254.169.254"
 # mitmproxy loads its signing CA from this directory inside the sidecar image.
 MITM_PROXY_CA_DIR = "/home/mitmproxy/.mitmproxy"
 PROXY_LISTEN_PORT = 8080
-PROXY_READY_TIMEOUT_SECONDS = 15.0
 PROXY_ATTACH_TIMEOUT_SECONDS = 3.0
-PROXY_POLL_INTERVAL_SECONDS = 0.5
 PROXY_CONNECT_TIMEOUT_SECONDS = 0.5
-PROXY_PROBE_ATTEMPT_TIMEOUT_SECONDS = 2.0
-# Reserved TLD (RFC 6761): the readiness request can never reach a real upstream.
-PROXY_READINESS_HOST = "holon-proxy-readiness.invalid"
-PROXY_READINESS_REQUEST = (
-    f"GET http://{PROXY_READINESS_HOST}/ HTTP/1.1\r\nHost: {PROXY_READINESS_HOST}\r\nConnection: close\r\n\r\n"
-).encode("ascii")
 _TRUTHY_ENV_VALUES = ("1", "true", "yes", "on")
 _EXPLICIT_OPT_OUT_VALUES = {"0", "false", "no", "off"}
 
@@ -633,40 +627,6 @@ def _token_reduce_opt_in(token_reduce: bool = False) -> bool:
     if env_reduce in _TRUTHY_ENV_VALUES:
         return True
     return os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES
-
-
-def _proxy_answers_http(host: str, port: int, timeout: float) -> bool:
-    """Send one proxy-style request and report whether the reply starts with an HTTP status line."""
-    try:
-        with socket.create_connection((host, port), timeout=timeout) as connection:
-            connection.sendall(PROXY_READINESS_REQUEST)
-            data = b""
-            while len(data) < len(b"HTTP/"):
-                chunk = connection.recv(64)
-                if not chunk:
-                    break
-                data += chunk
-    except OSError:
-        return False
-    return data.startswith(b"HTTP/")
-
-
-def _wait_for_proxy(host: str, port: int, timeout: float = PROXY_READY_TIMEOUT_SECONDS) -> bool:
-    """Poll a proxy until it answers an HTTP request; return False if it never does by the deadline.
-
-    A bare TCP connect is not enough: Docker's userland proxy accepts connections on the published port
-    before mitmproxy inside the container has bound its listener. The probe therefore sends a proxy
-    request for an unresolvable host and waits for an HTTP status line (a 502 or 407 still means serving).
-    """
-    deadline = time.monotonic() + timeout
-    while True:
-        remaining = deadline - time.monotonic()
-        if _proxy_answers_http(host, port, min(PROXY_PROBE_ATTEMPT_TIMEOUT_SECONDS, max(remaining, 0.05))):
-            return True
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return False
-        time.sleep(min(PROXY_POLL_INTERVAL_SECONDS, remaining))
 
 
 def _ensure_network(network_name: str) -> bool:

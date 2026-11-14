@@ -2,17 +2,23 @@
 
 ## Summary
 
-In progress: implementing plan `P-1794617990-33b5cb73-claude-agent-claude-opus-5-5` (planner touch-set estimate).
+Implemented plan `P-1794617990-33b5cb73-claude-agent-claude-opus-5-5`. Plans now declare a `## Touch Set` section, which
+the planner prompt asks for and `flow/touch_set.py` parses. The planner records it on new `plans.jsonl` rows as
+`touch_set` (a list, `[]` for a placeholder, `null` without the section). Stage 5 calibration scores it against the
+execution diff: precision, recall, unpredicted paths and unused entries go into the report dict, `CalibrationReport`, a
+"Touch Set Accuracy" markdown section and the `ACT-CAL` row's new `touch_set_accuracy` key. `docs/ledger_schema.md`
+documents both fields. The code is advisory only: a missing or malformed touch set gives `null` or `n/a` and never fails
+a stage. No historic row is rewritten, and there is no new dependency, `uv.lock` change or `# noqa`.
 
 ## Actual Metrics
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.0   |
-| entropy_actual        | 0.0   |
-| impact_actual         | 0.0   |
-| cost_actual           | 0.0   |
-| learning_value_actual | 0.0   |
+| success_actual        | 1.0   |
+| entropy_actual        | 7.5   |
+| impact_actual         | 70.0  |
+| cost_actual           | 12.0  |
+| learning_value_actual | 4.0   |
 
 ## Steps Executed
 
@@ -59,3 +65,30 @@ In progress: implementing plan `P-1794617990-33b5cb73-claude-agent-claude-opus-5
    values, the 20-item cap and `n/a`; `changed_paths` excluding metadata; and an end-to-end `generate_calibration` on a
    temporary git repository with `precision = 1 / 2` and `recall = 1 / 2`). The rendered section was checked with
    prettier for both the values and `n/a` layouts.
+6. Step 6 (budgets, lint, touch-set check): the flow budgets were set in Steps 1 and 4 (`__init__.py` `425 -> 441`,
+   `touch_set.py` at `206`, one description sentence). `uv run task lint` passes and adds no `# noqa`. `uv.lock` is
+   unchanged. `uv run task lint-docs` reports 38 files, all of them pre-existing and outside this diff (36 historic
+   `plans/*_calibration.md` reports, `.agents/holon_flow.md`, `docs/optimisation/token_reduction_measurement_plan.md`
+   and `holon-config/metrics/README.md`). Every markdown file this execution changed passes `prettier --check`. Checking
+   the diff by hand against the plan's `## Touch Set`: all 10 declared entries were touched (precision `10 / 10 = 1.0`).
+   12 non-metadata files changed and 10 of them were declared (recall `10 / 12 = 0.83`). The two extra files:
+   `calibration_touch_set.py`, a new module forced by the `calibration.py` line ratchet in
+   `tests/test_calibration_dual_ev.py`, and `tests/test_calibration.py`, which needed one more entry in the pinned
+   `ACT-CAL` key order (plan Step 4.5 allows this adjustment).
+
+## Tests Run
+
+No repeated runs: the intent sets no timing or performance target.
+
+| command                                                                                                                                 | result                                                  |
+| --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| `uv run pytest apps/sandbox-executor/tests/flow/test_package_exports.py` (Step 1)                                                       | 98 passed in 0.17s                                      |
+| `uv run pytest apps/sandbox-executor/tests/test_prompt_templates.py apps/sandbox-executor/tests/test_planner.py` (Step 2)               | 76 passed, 15 subtests passed in 0.33s                  |
+| `uv run pytest -n auto tests/test_calibration*.py tests/flow/` (Step 4, first try)                                                      | 2 failed, 920 passed in 9.08s (ratchet and budget)      |
+| same, after moving the helpers to `calibration_touch_set.py` and fixing the budget                                                      | 1 failed, 825 passed in 7.36s (budget `205 -> 206`)     |
+| `uv run pytest tests/flow/test_touch_set.py tests/test_planner_touch_set.py` (Step 5)                                                   | 51 passed in 0.69s                                      |
+| `uv run pytest tests/test_calibration_touch_set.py` (Step 5)                                                                            | 9 passed in 0.09s                                       |
+| affected set: the three new test files, `test_package_exports.py`, `test_calibration.py`, `test_planner.py`, `test_prompt_templates.py` | 316 passed in 1.91s                                     |
+| `uv run task lint`                                                                                                                      | passed (ruff, format, flow module budgets)              |
+| `uv run task lint-docs`                                                                                                                 | 38 pre-existing files outside this diff; own files pass |
+| `uv run task test` (full suite, once)                                                                                                   | 4043 passed, 1 skipped in 22.59s                        |

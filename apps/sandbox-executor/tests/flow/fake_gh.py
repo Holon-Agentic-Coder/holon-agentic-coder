@@ -1,9 +1,11 @@
 """An in-memory GitHub for the guarded child merge: PRs over a real bare origin, driven through the ``gh`` runner seam.
 
 ``FakeGitHub`` is passed as (or patched in for) ``sandbox_executor.flow.github.merge.run_gh``. It answers the ``gh``
-commands the merge and the child progress reconciliation run, with the JSON field names ``gh`` uses, and performs
-``gh pr merge --merge`` as a real ``git merge --no-ff`` of the PR head into its base on origin. Every call is recorded,
-so tests can assert which verbs and flags were (never) used. It never reaches the network.
+commands the merge and the child progress reconciliation run, with the JSON field names ``gh`` uses. It answers
+``gh api repos/{owner}/{repo}`` with the ``allow_*`` merge settings and, like GitHub, rejects a merge method the
+repository does not allow: ``gh pr merge --merge`` is a real ``git merge --no-ff`` of the PR head into its base on
+origin and ``gh pr merge --squash`` a real single-parent squash commit; ``--rebase`` is always refused. Every call is
+recorded, so tests can assert which verbs and flags were (never) used. It never reaches the network.
 """
 
 from __future__ import annotations
@@ -30,6 +32,11 @@ class FakeGitHub:
         self.mergeable = "MERGEABLE"
         # How many ``gh pr checks`` calls report no checks before they register (CI not yet started on a new head).
         self.unregistered_checks_calls = 0
+        # The repository merge settings ``gh api repos/{owner}/{repo}`` reports; ``repo_settings_fail`` makes it fail.
+        self.allow_merge_commit: object = True
+        self.allow_squash_merge: object = True
+        self.allow_rebase_merge: object = False
+        self.repo_settings_fail = False
 
     def open_pr(self, head: str, base: str) -> int:
         """Record an open PR from ``head`` into ``base`` and return its number (101, 102, ...)."""
@@ -72,6 +79,7 @@ class FakeGitHub:
             ("pr", "checks"): self._pr_checks,
             ("pr", "merge"): self._pr_merge,
             ("repo", "view"): self._repo_view,
+            ("api", "repos/{owner}/{repo}"): self._repo_settings,
         }
         handler = handlers.get((args[0], args[1]) if len(args) >= 2 else ("", ""))
         if handler is None:
@@ -104,15 +112,41 @@ class FakeGitHub:
             return self._done(args, 1, err="HTTP 502")
         return self._done(args, 0, {"defaultBranchRef": {"name": self.default_branch}})
 
+    def _repo_settings(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        if self.repo_settings_fail:
+            return self._done(args, 1, err="HTTP 502")
+        settings = {
+            "allow_merge_commit": self.allow_merge_commit,
+            "allow_squash_merge": self.allow_squash_merge,
+            "allow_rebase_merge": self.allow_rebase_merge,
+        }
+        return self._done(args, 0, settings)
+
+    def _method_error(self, args: list[str]) -> str | None:
+        """Why GitHub would reject the merge method in ``args``, or None when exactly one allowed method is given."""
+        methods = [flag for flag in ("--merge", "--squash", "--rebase") if flag in args]
+        allowed = {"--merge": self.allow_merge_commit is True, "--squash": self.allow_squash_merge is True}
+        if len(methods) != 1 or not allowed.get(methods[0], False):
+            return f"merge method {methods} is not allowed on this repository"
+        return None
+
     def _pr_merge(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         pr = self._find(args[2])
         expected = args[args.index("--match-head-commit") + 1] if "--match-head-commit" in args else None
-        if pr is None or pr["state"] != "OPEN" or "--merge" not in args or expected != self.sha(pr["head"]):
+        if pr is None or pr["state"] != "OPEN" or expected != self.sha(pr["head"]):
             return self._done(args, 1, err="merge refused by the fake")
+        method_error = self._method_error(args)
+        if method_error:
+            return self._done(args, 1, err=method_error)
         work = self.scratch / f"merge-{pr['number']}"
         subprocess.run(["git", "clone", "-q", str(self.origin), str(work)], check=True, capture_output=True)
         _git(work, "checkout", "-q", "-B", pr["base"], f"origin/{pr['base']}")
-        _git(work, "merge", "--no-ff", "-q", "-m", f"Merge pull request #{pr['number']}", f"origin/{pr['head']}")
+        title = f"Merge pull request #{pr['number']}"
+        if "--squash" in args:
+            _git(work, "merge", "--squash", "-q", f"origin/{pr['head']}")
+            _git(work, "commit", "-q", "-m", f"{title} (squash)")
+        else:
+            _git(work, "merge", "--no-ff", "-q", "-m", title, f"origin/{pr['head']}")
         _git(work, "push", "-q", "origin", f"HEAD:refs/heads/{pr['base']}")
         pr["state"], pr["oid"] = "MERGED", _git(work, "rev-parse", "HEAD")
         return self._done(args, 0)

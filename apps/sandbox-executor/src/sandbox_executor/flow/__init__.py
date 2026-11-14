@@ -105,6 +105,7 @@ from sandbox_executor.flow.github.ci_wait import (
     settle_pending_ci,
     wait_for_pending_ci,
 )
+from sandbox_executor.flow.github.merge_method import choose_merge_flag, lookup_merge_flag
 from sandbox_executor.flow.github.pr import (
     _resolve_commit_ref,
     check_pr_mergeability,
@@ -357,6 +358,7 @@ __all__ = [
     "build_review_id",
     "check_and_resolve_stage_conflicts",
     "check_pr_mergeability",
+    "choose_merge_flag",
     "create_or_update_pr",
     "describe_ci_outcome",
     "discard_empty_calibrated_branch",
@@ -377,6 +379,7 @@ __all__ = [
     "is_terminal_verdict",
     "leftover_paths",
     "load_checkpoint",
+    "lookup_merge_flag",
     "migrate_checkpoint_data",
     "new_local_child_branches",
     "next_poll_interval",

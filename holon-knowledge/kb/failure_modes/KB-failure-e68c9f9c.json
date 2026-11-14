@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-e68c9f9c",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-14T13:03:00.115014+00:00",
+  "updated_ts": "2026-11-14T13:03:00.115014+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794660727-a1cc32e0",
+      "ACT-FIND-1794660725-59a4ee0e"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794660290-probehttp/P-1794660305-d5b6233a-claude-agent-claude-opus-5-5/E-1794660422-9a1950d6-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R1-001-02",
+    "symptoms": [
+      "Test file already over 1,000 lines grows from 3,734 to 3,824; move the loopback listener, fixture and probe tests into a new tests/test_proxy_readiness.py."
+    ]
+  }
+}

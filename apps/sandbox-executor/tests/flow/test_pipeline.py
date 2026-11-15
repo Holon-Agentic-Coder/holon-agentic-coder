@@ -118,7 +118,7 @@ class TestFlowStages:
             payload={"test_pass_rate": 1.0, "exit_code": 0},
         )
 
-        # The empty-diff guard allows the PR: only an allowed diff can reach consensus (C15-N1).
+        # The empty-diff guard allows the PR: only an allowed diff can reach consensus.
         with (
             patch_lookup_sites(
                 "sandbox_executor.flow.stage_conflicts.run_git", "sandbox_executor.flow.stages.review.run_git"
@@ -142,7 +142,7 @@ class TestFlowStages:
         assert "holon review approve" in res.payload["human_approval_command"]
 
     def test_stage4_review_diff_summary_excludes_execution_notes(self, tmp_path):
-        """C7-I1: executions/E-*.md notes are metadata, so they never count as changed code in the review package."""
+        """Notes in executions/E-*.md are metadata, so they never count as changed code in the review package."""
         ctx = FlowContext(
             repo_dir=str(tmp_path),
             plan_branch="I-100-intent/P-200-plan/_",
@@ -415,7 +415,7 @@ class TestFlowStages:
         assert sample_value not in ledger.read_text(encoding="utf-8")
 
     def test_stage5_calibrate_fallback_bounds_act_cal_error_context(self, tmp_path):
-        """A long fallback error_context is redacted before it is truncated (C10-N2)."""
+        """A long fallback error_context is redacted before it is truncated."""
         from sandbox_executor.flow import POSTING_ERROR_CONTEXT_MAX_CHARS
 
         ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
@@ -696,7 +696,7 @@ class TestStageBudgets:
         assert not (tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl").exists()
 
     def test_sub_minute_stage_ceiling_is_not_reported_as_zero_minutes(self, tmp_path):
-        # C7-N2: budget messages use the shared minutes formatter, so a 20 s ceiling reads "0.3 min", not "0 min".
+        # Budget messages use the shared minutes formatter, so a 20 s ceiling reads "0.3 min", not "0 min".
         from sandbox_executor.budgets import Budgets
 
         (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
@@ -708,7 +708,7 @@ class TestStageBudgets:
         assert "against 0 min" not in results["intent"].error
 
     def test_review_overrun_after_consensus_keeps_approval_and_runs_calibration(self, tmp_path):
-        # C3-I3: two review iterations each within budget plus PR/posting overhead exceed 2 x 120 min in total; the
+        # Two review iterations each within budget plus PR/posting overhead exceed 2 x 120 min in total; the
         # approved review is not downgraded and calibration still runs.
         (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
         ctx = FlowContext(
@@ -769,7 +769,7 @@ class TestStageBudgets:
         assert result.payload["budget_breach"]["budget_name"] == "stage"
 
     def test_timed_stage_is_the_active_host_timer_except_review(self, tmp_path):
-        # C6-I1: role containers dispatched during a stage read this timer (cli.run_docker_container hand-down).
+        # Role containers dispatched during a stage read this timer (cli.run_docker_container hand-down).
         from sandbox_executor.budgets import current_stage_timer, stage_budget_handdown_env
 
         ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "h", "goal": "H"}, dry_run=True)
@@ -893,7 +893,7 @@ class TestStageBudgets:
 
 
 class TestSkipPushRejectedOnEveryNonDryRun:
-    """C10-N2: --skip-push outside --dry-run is rejected for runs and resumes from any stage."""
+    """--skip-push outside --dry-run is rejected for runs and resumes from any stage."""
 
     @pytest.mark.parametrize("from_stage", [None, "plan", "execute", "review", "calibrate"])
     def test_engine_rejects_skip_push_before_any_stage_or_checkpoint(self, tmp_path, from_stage):

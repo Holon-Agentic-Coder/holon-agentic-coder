@@ -533,7 +533,7 @@ def test_quoted_url_ends_at_its_closing_quote(text, kept):
     assert kept in redact_text(text)
 
 
-# C17-N1: a credential-bearing value placed in a non-URL envelope or budget setting by mistake. The
+# A credential-bearing value placed in a non-URL envelope or budget setting by mistake. The
 # invalid-value messages name the variable (or the model and field) and the expected type only.
 INVALID_VALUE_ENV = (
     "HOLON_CONTEXT_RESERVE_TOKENS",
@@ -565,7 +565,7 @@ def _invalid_value_cases() -> Iterator[tuple[str, dict[str, str], dict | None, s
 
 
 def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, tmp_path):
-    """C17-N1: doctor (environment section, text and `--json`) and the run path withhold an invalid value."""
+    """Doctor (environment section, text and `--json`) and the run path withhold an invalid value."""
     from sandbox_executor.preflight import PreflightResult, PreflightStatus
 
     probe = PreflightResult(
@@ -613,7 +613,7 @@ def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, 
     assert not failures, f"{len(failures)}/{len(cases)} invalid-value cases failed, e.g. {failures[:5]}"
 
 
-# C19-N1: base URLs `urlsplit` (or its lazy port check) rejects, or that have no usable `scheme://host`.
+# Base URLs `urlsplit` (or its lazy port check) rejects, or that have no usable `scheme://host`.
 UNPARSEABLE_FORMS = {
     "bad-ipv6-bracket-port": "http://{u}127.0.0.1:9[/v1",
     "bad-ipv6-bracket-host": "http://{u}[::1/v1",
@@ -643,7 +643,7 @@ def _unparseable_cases() -> Iterator[tuple[str, str, str, bool]]:
 
 @pytest.mark.parametrize("slot", ["HOLON_LOCAL_BASE_URL", "host-baseUrl"])
 def test_doctor_survives_unparseable_base_url(slot, monkeypatch):  # noqa: C901, PLR0915
-    """C19-N1: an unparseable host-side base URL is skipped by the probe, never crashes `holon doctor`.
+    """An unparseable host-side base URL is skipped by the probe, never crashes `holon doctor`.
 
     Text and `--json` both exit 0 (the run path handles the same config), `--json` stays valid JSON with the problem
     under `environment.warnings`, the warning names only the source, and no part of the value is echoed.
@@ -691,7 +691,7 @@ def test_doctor_survives_unparseable_base_url(slot, monkeypatch):  # noqa: C901,
                         code = cli.run_doctor(doctor_args, fetch=fetch)
                     results[as_json] = (code, stdout.getvalue())
                     out.append(stdout.getvalue())
-            except Exception as exc:  # any escape is the C19-N1 crash; report the case id only
+            except Exception as exc:  # any escape is the doctor crash; report the case id only
                 failures.append(f"{case_id}:crash:{type(exc).__name__}")
                 continue
         texts.extend(out)

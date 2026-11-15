@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-b194095e",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-14T14:00:42.410290+00:00",
+  "updated_ts": "2026-11-14T14:00:42.410290+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794664181-2ae481b7",
+      "ACT-FIND-1794664179-913a4344"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794663286-hygiene/P-1794663302-17aba811-claude-agent-claude-opus-5-5/E-1794663560-da6ecf9f-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R2-001-01",
+    "symptoms": [
+      "Tier 4 text says only the optimised arm appends --token-reduce and routes through the sidecar; the runner applies it to both arms, with the baseline in passive monitoring mode. Reword lines 85 and 98."
+    ]
+  }
+}

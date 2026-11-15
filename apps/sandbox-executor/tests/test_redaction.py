@@ -289,7 +289,7 @@ def test_executor_run_cmd_redacts_before_the_250_character_clamp(
     assert f"--branch {BRANCH}" in captured.out
 
 
-# Proxy URL forms whose userinfo password must be masked, beyond `http(s)://` (review finding N2).
+# Proxy URL forms whose userinfo password must be masked, beyond `http(s)://`.
 _PROXY_URL_FORMS = [
     pytest.param("alice:{v}@proxy.corp:8080", id="schemeless"),
     pytest.param("alice:{v}@", id="schemeless-no-host"),

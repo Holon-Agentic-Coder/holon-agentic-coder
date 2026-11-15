@@ -8,7 +8,7 @@ container round trip is covered by ``test_review_workspace_integration.py``. One
 (b) the entrypoint starts on the mounted worktree with no clone, fetch, reset or clean;
 (c) files the container writes appear on the host worktree at once;
 (d) an abrupt exit (code 137) leaves uncommitted edits, untracked files and logs intact on the host;
-(e) intermediate subagent artifacts live under ``<worktree>/.subagent/review/iter-<n>/``, which git ignores;
+(e) intermediate subagent artifacts live under ``<worktree>/tmp/review/iter-<n>/``, which git ignores;
 (f) the recorded docker commands create no named volume and launch no root chown init container;
 (g) resumed runs and Stage 4 reviews reuse ``flow-<slug>`` and never create ``pr<N>-<slug>`` beside it;
 (h) the shared worktree stays the host's: no planted config.worktree, no duplicated or swept-up ledger rows.
@@ -45,8 +45,8 @@ with open(os.path.join(ws, "README.md"), "a") as f:
     f.write("uncommitted edit\\n")
 with open(os.path.join(ws, "notes.txt"), "w") as f:
     f.write("untracked scratch\\n")
-os.makedirs(os.path.join(ws, ".subagent", "review", "iter-1"), exist_ok=True)
-with open(os.path.join(ws, ".subagent", "review", "iter-1", "pytest.log"), "w") as f:
+os.makedirs(os.path.join(ws, "tmp", "review", "iter-1"), exist_ok=True)
+with open(os.path.join(ws, "tmp", "review", "iter-1", "pytest.log"), "w") as f:
     f.write("1 passed\\n")
 os._exit(137)
 """
@@ -566,25 +566,23 @@ def test_c_d_container_writes_are_on_the_host_at_once_and_survive_an_abrupt_exit
     assert f"HEAD {head}" in result.stdout
     assert (flow_worktree / "README.md").read_text(encoding="utf-8") == "seed\nuncommitted edit\n"
     assert (flow_worktree / "notes.txt").read_text(encoding="utf-8") == "untracked scratch\n"
-    assert (flow_worktree / ".subagent" / "review" / "iter-1" / "pytest.log").read_text(
-        encoding="utf-8"
-    ) == "1 passed\n"
+    assert (flow_worktree / "tmp" / "review" / "iter-1" / "pytest.log").read_text(encoding="utf-8") == "1 passed\n"
     assert _git(flow_worktree, "rev-parse", "HEAD") == head
     assert _git(flow_worktree, "diff", "--name-only") == "README.md"
     untracked = _git(flow_worktree, "ls-files", "--others").splitlines()
-    assert sorted(untracked) == [".subagent/review/iter-1/pytest.log", "notes.txt"]
+    assert sorted(untracked) == ["notes.txt", "tmp/review/iter-1/pytest.log"]
 
 
-# --- (e) intermediate artifacts under .subagent/ ---------------------------------------------------------------------
+# --- (e) intermediate artifacts under tmp/review/ --------------------------------------------------------------------
 
 
-def test_e_reviewer_artifacts_live_under_the_git_ignored_subagent_review_root() -> None:
+def test_e_reviewer_artifacts_live_under_the_git_ignored_tmp_review_root() -> None:
     from sandbox_executor.review_ensemble import REVIEW_ROOT_REL, reviewer_report_rel
 
-    assert REVIEW_ROOT_REL == ".subagent/review"
-    assert reviewer_report_rel(4, 2) == ".subagent/review/iter-4/reviewer-2/report.md"
+    assert REVIEW_ROOT_REL == "tmp/review"
+    assert reviewer_report_rel(4, 2) == "tmp/review/iter-4/reviewer-2/report.md"
     gitignore = Path(__file__).resolve().parents[3] / ".gitignore"
-    assert ".subagent" in gitignore.read_text(encoding="utf-8").splitlines()
+    assert "tmp/" in gitignore.read_text(encoding="utf-8").splitlines()
 
 
 # --- (f) recorded docker commands: no volume, no root chown ----------------------------------------------------------

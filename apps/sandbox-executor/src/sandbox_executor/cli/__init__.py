@@ -1410,7 +1410,7 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
     code = 0
     try:
         _report_budgets(env, out)
-    except Exception as exc:  # The doctor reports; it never crashes (#94 C21).
+    except Exception as exc:  # The doctor reports; it never crashes.
         print(_doctor_section_failed("budgets", exc), file=out)
         code = 1
 
@@ -1713,7 +1713,7 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
         }
         print(json.dumps(payload, indent=2))
     else:
-        # Encoding-safe: no configuration text can crash the report on a strict terminal (#94 C23).
+        # Encoding-safe: no configuration text can crash the report on a strict terminal.
         print_encodable(agent_res.describe("Agent runner"))
         print_encodable(model_res.describe("Model"))
         print_encodable(result.format_report())

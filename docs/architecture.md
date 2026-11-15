@@ -179,14 +179,13 @@ flowchart TD
     repository URL variable is needed.
 - **Review Ensemble (Stage 4)**
   - `sandbox_executor/review_ensemble.py` runs independent reviewer agent turns, each in its own scratch directory under
-    `.subagent/review/` and blind to the other reviewers' reports, parses the strict JSON trailer that ends each report,
-    and approves only by unanimity: every configured reviewer completed with `APPROVED` and zero findings, plus
-    mergeable and green CI. Any failed reviewer, zero completed reviewers or unknown CI can never approve.
-    `run_review_loop()` calls it once per iteration on the real diff (`--ensemble-size`, default 3), stops at the first
-    iteration that is not approved (there is no automatic resolver), and `sandbox_executor/review_report.py` renders the
-    posted report from the real reviewer results. Reviewer turns run only inside the sandbox: on the host the loop
-    refuses before any PR, iteration or post. See the
-    [sandbox-executor README](../apps/sandbox-executor/README.md#reviewer-ensemble).
+    `tmp/review/` and blind to the other reviewers' reports, parses the strict JSON trailer that ends each report, and
+    approves only by unanimity: every configured reviewer completed with `APPROVED` and zero findings, plus mergeable
+    and green CI. Any failed reviewer, zero completed reviewers or unknown CI can never approve. `run_review_loop()`
+    calls it once per iteration on the real diff (`--ensemble-size`, default 3), stops at the first iteration that is
+    not approved (there is no automatic resolver), and `sandbox_executor/review_report.py` renders the posted report
+    from the real reviewer results. Reviewer turns run only inside the sandbox: on the host the loop refuses before any
+    PR, iteration or post. See the [sandbox-executor README](../apps/sandbox-executor/README.md#reviewer-ensemble).
 - **Evolution Ledger (Canonical 3-Ledger Architecture)**
   - Knowledge-driven: Strictly maintains three append-only ledgers in `holon-knowledge/ledger/`:
     1. `intents.jsonl`: Intent registrations, goals, constraints, and hierarchy links.

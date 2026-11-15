@@ -272,8 +272,8 @@ consensus model and post one short consensus review built only from what the rev
 6. **Increment review**: after the first pass, review only the increment since the last reviewed commit; after a
    resolver push, the next engine iteration reviews the new head in full and any push invalidates earlier votes.
 7. **Attrition absorption**: a single failed or timed-out pass never aborts the loop; relaunch or salvage it.
-8. **Namespaced artefacts**: every artefact under `.subagent/` is scoped by repository and pull request:
-   `.subagent/<repo>_pr<N>_<purpose>_iter_<iteration>_{sha}.<ext>`, with state in `.subagent/<repo>_pr<N>_state.json`.
+8. **Namespaced artefacts**: every artefact under `tmp/review/` is scoped by repository and pull request:
+   `tmp/review/<repo>_pr<N>_<purpose>_iter_<iteration>_{sha}.<ext>`, with state in `tmp/review/<repo>_pr<N>_state.json`.
 9. **Ledger API only**: append action records to `holon-knowledge/ledger/executions.jsonl` only through
    `sandbox_executor.flow.record_review_action()` (or, without a `FlowContext`, the context-free
    `sandbox_executor.ledger.try_append_action_record(..., preserve_shape=True)`), never by writing to the file directly.
@@ -359,8 +359,8 @@ Stage 5 calibration will be added to this PR before merge. Merging remains with 
 
 ## Machine-readable on-disk trailer block
 
-Every on-disk report written to `.subagent/` closes with this trailer block as its final lines. It is written to on-disk
-reports only and never posted to the PR:
+Every on-disk report written to `tmp/review/` closes with this trailer block as its final lines. It is written to
+on-disk reports only and never posted to the PR:
 
 ```text
 VERDICT: <APPROVED | CHANGES_REQUESTED | COMMENT>
@@ -392,11 +392,11 @@ the loop instructions above:
 6. Immediately before the trailer block, add the reviewer data block described below. It is optional, but without it the
    posted review shows no roles, finding ids, recommendations or verified claims from you.
 7. Never modify code, commit, push, run `gh pr merge`, enable auto-merge or add the PR to a merge queue.
-8. Never read other files under `.subagent/review/`; other reviewers' reports are not part of your input.
+8. Never read other files under `tmp/review/`; other reviewers' reports are not part of your input.
 9. Write no file other than the report path. Make no GitHub write of any kind: no `gh pr review`, `gh pr comment`,
    `gh pr edit` or `gh api` call, and no merge or auto-merge. Append to no ledger under `holon-knowledge/ledger/`.
-10. Spawn no subagents, and write nothing under `.subagent/` outside your assigned scratch directory. The loop that runs
-    the ensemble posts the consensus and records the ledger rows itself.
+10. Spawn no subagents, and write nothing under `tmp/review/` outside your assigned scratch directory. The loop that
+    runs the ensemble posts the consensus and records the ledger rows itself.
 11. Flag growth of any file over 1,000 lines as Important, flag new inline complexity suppressions as Important, and
     check that new behaviour lives in the module that owns the data with no new entrypoint-to-engine imports.
 

@@ -38,7 +38,7 @@ class TestStage4LedgerProvenance:
             execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
             dry_run=False,
         )
-        # The local-tests fallback only passes on a recorded Stage 3 test result (C10-N1).
+        # The local-tests fallback only passes on a recorded Stage 3 test result.
         ctx.stage_results["execute"] = StageResult(
             stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"test_pass_rate": 1.0, "exit_code": 0}
         )

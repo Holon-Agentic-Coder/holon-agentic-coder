@@ -36,3 +36,10 @@ compares the combined execution branch with its merge base on the intent's targe
   branch with a merge commit, and children land on the plan branch as a merge commit or a squash
   (`flow/github/merge_method.py`). Both reach the execution branch only through merges, so `changed_paths`' own
   first-parent filter would drop them: a net diff is required.
+
+### Step 2: Net, merge-inclusive changed-path helper
+
+- Added `net_changed_paths(repo_dir, base, head, exclude, git_runner)` to `apps/sandbox-executor/src/sandbox_executor/git.py`
+  right before `has_effective_diff`. It runs one two-dot `git diff --name-only --no-renames -z <base> <head>` (reusing
+  `_NAME_ONLY_ARGS`) and filters with `_is_excluded`. `changed_paths`, `has_effective_diff`, `EMPTY_DIFF_EXCLUDES` and
+  `empty_diff_summary` are unchanged. Module docstring bullet added. `ruff check` and `ruff format --check` are clean.

@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-bf5f4e2f",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-15T22:47:41.468254+00:00",
+  "updated_ts": "2026-11-15T22:47:41.468254+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-RES-1794561217-f3b2e543"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794546205-measure/P-1794546221-53ff4e71-claude-agent-claude-sonnet-5-5/E-1794546302-b5a87645-claude-agent-claude-sonnet-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 3 resolver change rejected: pre-push tests failed",
+    "symptoms": [
+      "=========================== short test summary info ============================\nFAILED apps/sandbox-executor/tests/flow/github/test_ci.py::TestUnmeasuredTestsStopEarly::test_without_gh_unmeasured_tests_stop_after_one_iteration_without_waiting\n============ 1 failed, 3911 passed, 1 skipped, 8 warnings in 30.10s ============"
+    ]
+  }
+}

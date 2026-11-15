@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-00f753d1",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-15T22:47:41.606817+00:00",
+  "updated_ts": "2026-11-15T22:47:41.606817+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794619258-18dda847",
+      "ACT-FIND-1794619256-ffec225f"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794617704-touchset/P-1794617720-cbecf7aa-claude-agent-claude-opus-5-5--1-add-the-planner-touch-set-estimate-a-touch-set-p/P-1794617990-33b5cb73-claude-agent-claude-opus-5-5/E-1794618165-976e286a-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 2 finding detected: FIND-R2-002-01",
+    "symptoms": [
+      "File over 1,000 lines grows by 6 (1044 -> 1050); the plan-row touch_set is documented twice. Drop the duplicate paragraph so the file does not grow."
+    ]
+  }
+}

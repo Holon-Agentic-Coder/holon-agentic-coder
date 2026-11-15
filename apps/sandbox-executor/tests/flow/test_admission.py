@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import functools
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -15,15 +14,10 @@ from sandbox_executor.flow.git_refs import _latest_execution_summary
 from sandbox_executor.flow.stages import touch_set_guard
 from sandbox_executor.ledger import query_ledger
 
-from tests.flow.helpers import _git
-from tests.flow.test_in_flight import OTHER_HEAD, OTHER_PLAN, FakeGh, make_plan_branch
+from tests.flow.helpers import OTHER_HEAD, OTHER_PLAN, FakeGh, _git, make_plan_branch, no_worktrees
 
 OWN_PLAN = "I-100-own/P-101-cccccccc-claude-agent-claude-opus-5-5/_"
 REAL_CHECK = check_admission
-
-
-def no_worktrees(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.CompletedProcess(["git", *args], 0, f"worktree {cwd}\n", "")
 
 
 def own_context(host: Path, **overrides) -> FlowContext:

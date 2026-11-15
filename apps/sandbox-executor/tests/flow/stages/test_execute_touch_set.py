@@ -12,9 +12,7 @@ from sandbox_executor.budgets import MAX_REPLAN_ATTEMPTS
 from sandbox_executor.flow import PipelineEngine, StageStatus, admission
 from sandbox_executor.flow.admission import check_admission as REAL_CHECK
 
-from tests.flow.helpers import FakeRoleAgents, _dispatch_context, _ledger_rows
-from tests.flow.test_admission import no_worktrees
-from tests.flow.test_in_flight import OTHER_HEAD, FakeGh
+from tests.flow.helpers import OTHER_HEAD, FakeGh, FakeRoleAgents, _dispatch_context, _ledger_rows, no_worktrees
 
 
 class TouchSetRoleAgents(FakeRoleAgents):

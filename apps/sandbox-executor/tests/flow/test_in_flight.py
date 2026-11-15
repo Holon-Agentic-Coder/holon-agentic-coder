@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
 from pathlib import Path
-from typing import Any
 
 from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.checkpoint import save_checkpoint
@@ -19,42 +17,11 @@ from sandbox_executor.flow.in_flight import (
 )
 from sandbox_executor.touch_set import TouchSet, TouchSetEntry
 
-from tests.flow.helpers import _git
+from tests.flow.helpers import OTHER_HEAD, OTHER_PLAN, FakeGh, _git, make_plan_branch
 
-OTHER_PLAN = "I-200-other/P-201-aaaaaaaa-claude-agent-claude-opus-5-5/_"
-OTHER_HEAD = "I-200-other/P-201-aaaaaaaa-claude-agent-claude-opus-5-5/E-202-bbbbbbbb-claude-agent-claude-opus-5-5/_"
 OWN_HEAD = "I-100-own/P-101-cccccccc-claude-agent-claude-opus-5-5/E-102-dddddddd-claude-agent-claude-opus-5-5/_"
 CHILD_PLAN = "I-100-own--1-child/P-103-eeeeeeee-claude-agent-claude-opus-5-5/_"
 CHILD_HEAD = CHILD_PLAN.removesuffix("/_") + "/E-104-ffffffff-claude-agent-claude-opus-5-5/_"
-
-
-class FakeGh:
-    """Answers ``gh pr list`` and ``gh pr diff`` from fixed data; ``fail`` makes every call exit 1."""
-
-    def __init__(self, prs: list[dict[str, Any]], diffs: dict[int, list[str]], fail: bool = False):
-        self.prs, self.diffs, self.fail = prs, diffs, fail
-        self.calls: list[list[str]] = []
-
-    def __call__(self, args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
-        self.calls.append(list(args))
-        if self.fail:
-            return subprocess.CompletedProcess(["gh", *args], 1, "", "HTTP 502")
-        if args[:2] == ["pr", "list"]:
-            return subprocess.CompletedProcess(["gh", *args], 0, json.dumps(self.prs), "")
-        return subprocess.CompletedProcess(["gh", *args], 0, "\n".join(self.diffs[int(args[2])]), "")
-
-
-def make_plan_branch(host: Path, plan_branch: str, touch_set: list[dict[str, Any]] | None) -> None:
-    """Commit a plan branch whose plans.jsonl row records ``touch_set`` (omitted when None), then return to main."""
-    plan_id = plan_branch.removesuffix("/_").rsplit("/", 1)[-1]
-    _git(host, "checkout", "-q", "-b", plan_branch, "main")
-    row: dict[str, Any] = {"plan_id": plan_id, "intent_branch": plan_branch.split("/", 1)[0] + "/_"}
-    if touch_set is not None:
-        row["touch_set"] = touch_set
-    with open(host / "holon-knowledge/ledger/plans.jsonl", "a", encoding="utf-8") as f:
-        f.write(json.dumps(row) + "\n")
-    _git(host, "commit", "-qam", f"plan: {plan_id}")
-    _git(host, "checkout", "-q", "main")
 
 
 def write_checkpoint(worktree: Path, plan_branch: str, completed: list[FlowStage], slug: str) -> None:
@@ -120,7 +87,16 @@ def test_more_open_pull_requests_than_the_limit_fail_closed(flow_repos):
     prs = [{"number": n, "headRefName": OTHER_HEAD} for n in range(1, MAX_OPEN_PULL_REQUESTS + 2)]
     result = open_flow_pull_requests(str(host), "I-100-own", FakeGh(prs, {}))
     assert isinstance(result, AdmissionUnavailable)
-    assert f"more than {MAX_OPEN_PULL_REQUESTS} open pull requests" in result.reason
+    assert f"more than {MAX_OPEN_PULL_REQUESTS} open flow pull requests" in result.reason
+
+
+def test_non_flow_pull_requests_do_not_count_toward_the_limit(flow_repos):
+    host, _origin = flow_repos
+    prs = [{"number": n, "headRefName": f"feature/{n}"} for n in range(1, MAX_OPEN_PULL_REQUESTS + 2)]
+    gh = FakeGh([*prs, {"number": 999, "headRefName": OTHER_HEAD}], {999: ["src/x.py"]})
+    result = open_flow_pull_requests(str(host), "I-100-own", gh)
+    assert not isinstance(result, AdmissionUnavailable)
+    assert [flow.changed_files for flow in result] == [("src/x.py",)]
 
 
 def test_git_failure_returns_admission_unavailable(flow_repos):

@@ -74,6 +74,14 @@ def test_level_three_heading_is_not_the_section():
     assert parse_touch_set_section("### Touch Set\n\n- `src/a.py`\n") is None
 
 
+def test_fenced_code_blocks_neither_open_nor_end_the_section():
+    plan = (
+        "# Plan\n\n```markdown\n## Touch Set\n\n- `example/only.py`\n```\n\n## Touch Set\n\n- `src/a.py`\n"
+        "\n~~~\n# not a heading\n- `src/fenced.py`\n~~~\n\n- `src/b.py`\n\n## Next\n\n- `src/c.py`\n"
+    )
+    assert paths(parse_touch_set_section(plan)) == ["src/a.py", "src/b.py"]
+
+
 @pytest.mark.parametrize(
     "item", ["none", "None.", "`n/a`", "NA", "nil", "no files", "not applicable", "_none_", "*none*", "**N/A**"]
 )

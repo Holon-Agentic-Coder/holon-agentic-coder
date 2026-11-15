@@ -19,6 +19,7 @@ from sandbox_executor.git import is_metadata_path
 
 _HEADING_RE = re.compile(r"^##\s+touch\s+set\s*$", re.IGNORECASE)
 _NEXT_SECTION_RE = re.compile(r"^#{1,2}\s")
+_FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 _ITEM_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+(?P<body>.*)$")
 _BACKTICK_RE = re.compile(r"`([^`]+)`")
 _SYMBOLS_RE = re.compile(r"symbols\s*:\s*(?P<names>.*)$", re.IGNORECASE)
@@ -91,15 +92,38 @@ def normalise_touch_path(path: str) -> str:
     return clean.lstrip("/")
 
 
+def _fenced_lines(lines: list[str]) -> set[int]:
+    """Indexes of the lines inside fenced code blocks (the fence lines included), so headings there are ignored."""
+    fenced: set[int] = set()
+    fence: str | None = None
+    for index, line in enumerate(lines):
+        match = _FENCE_RE.match(line)
+        if fence is None and match:
+            fence = match.group(1)
+        elif fence is not None and match and match.group(1)[0] == fence[0] and len(match.group(1)) >= len(fence):
+            fenced.add(index)
+            fence = None
+            continue
+        if fence is not None:
+            fenced.add(index)
+    return fenced
+
+
 def _section_items(plan_markdown: str) -> list[str] | None:
     """Bodies of the top-level list items under ``## Touch Set``, or ``None`` when the heading is absent."""
     lines = plan_markdown.splitlines()
-    start = next((index for index, line in enumerate(lines) if _HEADING_RE.match(line.strip())), None)
+    fenced = _fenced_lines(lines)
+    start = next(
+        (index for index, line in enumerate(lines) if index not in fenced and _HEADING_RE.match(line.strip())), None
+    )
     if start is None:
         return None
     items: list[str] = []
     in_top_item = False
-    for line in lines[start + 1 :]:
+    for index, line in enumerate(lines[start + 1 :], start + 1):
+        if index in fenced:
+            in_top_item = False
+            continue
         if _NEXT_SECTION_RE.match(line):
             break
         match = _ITEM_RE.match(line)

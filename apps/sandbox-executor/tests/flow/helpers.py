@@ -596,3 +596,41 @@ def _reviewer_with_data_block() -> ReviewerResult:
     }
     text = f"# Review\n\n{ROLES_OPEN}\n{json.dumps(block)}\n{ROLES_CLOSE}\n{render_review_trailer(parsed)}"
     return ReviewerResult.completed(1, "fake-agent", "fake-model", "r1/report.md", text, parsed)
+
+
+# Touch-set admission fakes (tests/flow/test_in_flight.py, test_admission.py, stages/test_execute_touch_set.py).
+OTHER_PLAN = "I-200-other/P-201-aaaaaaaa-claude-agent-claude-opus-5-5/_"
+OTHER_HEAD = "I-200-other/P-201-aaaaaaaa-claude-agent-claude-opus-5-5/E-202-bbbbbbbb-claude-agent-claude-opus-5-5/_"
+
+
+class FakeGh:
+    """Answers ``gh pr list`` and ``gh pr diff`` from fixed data; ``fail`` makes every call exit 1."""
+
+    def __init__(self, prs: list[dict[str, Any]], diffs: dict[int, list[str]], fail: bool = False):
+        self.prs, self.diffs, self.fail = prs, diffs, fail
+        self.calls: list[list[str]] = []
+
+    def __call__(self, args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+        self.calls.append(list(args))
+        if self.fail:
+            return subprocess.CompletedProcess(["gh", *args], 1, "", "HTTP 502")
+        if args[:2] == ["pr", "list"]:
+            return subprocess.CompletedProcess(["gh", *args], 0, json.dumps(self.prs), "")
+        return subprocess.CompletedProcess(["gh", *args], 0, "\n".join(self.diffs[int(args[2])]), "")
+
+
+def make_plan_branch(host: Path, plan_branch: str, touch_set: list[dict[str, Any]] | None) -> None:
+    """Commit a plan branch whose plans.jsonl row records ``touch_set`` (omitted when None), then return to main."""
+    plan_id = plan_branch.removesuffix("/_").rsplit("/", 1)[-1]
+    _git(host, "checkout", "-q", "-b", plan_branch, "main")
+    row: dict[str, Any] = {"plan_id": plan_id, "intent_branch": plan_branch.split("/", 1)[0] + "/_"}
+    if touch_set is not None:
+        row["touch_set"] = touch_set
+    with open(host / "holon-knowledge/ledger/plans.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps(row) + "\n")
+    _git(host, "commit", "-qam", f"plan: {plan_id}")
+    _git(host, "checkout", "-q", "main")
+
+
+def no_worktrees(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(["git", *args], 0, f"worktree {cwd}\n", "")

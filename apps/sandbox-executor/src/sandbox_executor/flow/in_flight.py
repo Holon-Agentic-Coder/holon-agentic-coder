@@ -34,8 +34,10 @@ logger = logging.getLogger(__name__)
 #: Runs ``git <args>`` in a directory and returns the completed process (``check=False`` semantics).
 GitRunner = Callable[[list[str], str], subprocess.CompletedProcess[str]]
 
-#: Open pull requests read per admission; more make discovery unavailable (fail closed) rather than truncated.
+#: Open flow pull requests compared per admission; more make discovery unavailable (fail closed) rather than truncated.
 MAX_OPEN_PULL_REQUESTS = 50
+#: Open pull requests of any head listed per admission, before the flow heads among them are picked out.
+MAX_LISTED_PULL_REQUESTS = 1000
 _IN_FLIGHT_STAGES = frozenset({FlowStage.EXECUTE, FlowStage.REVIEW})
 _EXECUTION_HEAD_RE = re.compile(r"^(?P<plan>I-\d+-\S*/P-\d+-[^/]+)/E-\d+-[^/]+/_$")
 
@@ -111,18 +113,23 @@ def open_flow_pull_requests(
 ) -> list[InFlightFlow] | AdmissionUnavailable:
     """Open pull requests whose head is a flow execution branch outside ``own_root``, with declared and real files."""
     gh = merge.gh_runner(run_gh)
-    fields = ["--state", "open", "--limit", str(MAX_OPEN_PULL_REQUESTS + 1), "--json", "number,headRefName,baseRefName"]
+    limit = str(MAX_LISTED_PULL_REQUESTS + 1)
+    fields = ["--state", "open", "--limit", limit, "--json", "number,headRefName,baseRefName"]
     listed = _gh_json(gh, ["pr", "list", *fields], repo_dir)
     if isinstance(listed, AdmissionUnavailable):
         return listed
-    if len(listed) > MAX_OPEN_PULL_REQUESTS:
-        return AdmissionUnavailable(f"more than {MAX_OPEN_PULL_REQUESTS} open pull requests; not all could be compared")
+    if len(listed) > MAX_LISTED_PULL_REQUESTS:
+        return AdmissionUnavailable(f"more than {MAX_LISTED_PULL_REQUESTS} open pull requests; not all could be listed")
+    others = [
+        (pr, head, plan_branch)
+        for pr in listed
+        if (plan_branch := _plan_branch_of_head(head := str(pr.get("headRefName") or ""))) is not None
+        and _root_intent(head) != own_root
+    ]
+    if len(others) > MAX_OPEN_PULL_REQUESTS:
+        return AdmissionUnavailable(f"more than {MAX_OPEN_PULL_REQUESTS} open flow pull requests; not all compared")
     flows: list[InFlightFlow] = []
-    for pr in listed:
-        head = str(pr.get("headRefName") or "")
-        plan_branch = _plan_branch_of_head(head)
-        if plan_branch is None or _root_intent(head) == own_root:
-            continue
+    for pr, head, plan_branch in others:
         changed = _pull_request_diff(gh, int(pr.get("number") or 0), repo_dir)
         if isinstance(changed, AdmissionUnavailable):
             return changed

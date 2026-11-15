@@ -43,16 +43,14 @@ def _target_ref(repo_dir: str, target_branch: str, mounted: bool | None) -> tupl
         if _commit_ref(repo_dir, local_ref):
             return local_ref, ""
         return None, f"no 'origin' remote and cannot resolve '{target_branch}' locally"
+    # Deferred: git_refs imports this module.
+    from sandbox_executor.flow.git_refs import _fetch_refspecs_error, _unfetched_branch_message
+
     remote_ref = f"refs/remotes/origin/{target_branch}"
-    if not mounted:
-        refspec = f"+refs/heads/{target_branch}:{remote_ref}"
-        res = run_git(["fetch", "--no-tags", "origin", refspec], cwd=repo_dir, check=False, timeout=300)
-        if res.returncode != 0:
-            stderr = res.stderr.strip() if isinstance(res.stderr, str) else ""
-            detail = redact_agent_secrets(stderr) if stderr else f"git fetch exited with code {res.returncode}"
-            return None, f"fetching '{target_branch}' from origin failed: {detail}"
-    if not _commit_ref(repo_dir, remote_ref):
-        return None, f"'{target_branch}' is not fetched from origin; the host must fetch it before dispatch"
+    if not mounted and (fetch_error := _fetch_refspecs_error(repo_dir, [f"+refs/heads/{target_branch}:{remote_ref}"])):
+        return None, f"fetching '{target_branch}' from origin failed: {fetch_error}"
+    if unfetched := _unfetched_branch_message(repo_dir, [target_branch]):
+        return None, unfetched
     return remote_ref, ""
 
 

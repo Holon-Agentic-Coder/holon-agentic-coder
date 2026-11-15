@@ -13,6 +13,7 @@ import tempfile
 from typing import Any
 
 from sandbox_executor.entrypoint.execution_workspace import workspace_mounted
+from sandbox_executor.flow.combined_base import _combined_diff_verdict, _integrated_plan_recorded
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.git import changed_paths, empty_diff_summary, run_git
 from sandbox_executor.ledger import LedgerRewriteError, atomic_ledger_append, validate_ledger_file_unique_ids
@@ -355,14 +356,17 @@ def _origin_refs_error(repo_dir: str, plan_branch: str, execution_branch: str) -
     return None
 
 
-def _execution_effective_diff(repo_dir: str, execution_branch: str) -> tuple[bool | None, str]:
+def _execution_effective_diff(
+    repo_dir: str, execution_branch: str, target_branch: str = "main"
+) -> tuple[bool | None, str]:
     """Check whether an execution branch changes anything relative to its parent plan branch.
 
     The PR is opened from origin, so with an 'origin' remote both branches are fetched first and the
     freshly fetched origin tracking refs are compared (as ``_resolve_review_commit`` does): stale or
     unpushed local branches never decide the outcome, and a failed fetch (including a branch that was
     never pushed) is reported as unverifiable. Only a repository without an 'origin' remote falls back
-    to its local branches, and the returned detail says so.
+    to its local branches, and the returned detail says so. An execution whose ledger records the integration of
+    its decomposed plan branch is compared with its merge base on ``target_branch`` instead (combined_base.py).
 
     Returns:
         tuple[bool | None, str]: (True, detail) when it does or the target is not an execution
@@ -385,10 +389,12 @@ def _execution_effective_diff(repo_dir: str, execution_branch: str) -> tuple[boo
         if not plan_ref or not exec_ref:
             return None, f"no 'origin' remote and cannot resolve '{plan_branch}' and '{execution_branch}' locally"
         source = "local branches (no 'origin' remote)"
+    if _integrated_plan_recorded(_read_ledger_rows(repo_dir, exec_ref, "executions.jsonl"), plan_branch):
+        mounted = workspace_mounted() if source == "origin" else None
+        return _combined_diff_verdict(repo_dir, (execution_branch, exec_ref), target_branch, mounted, source)
     try:
         changed = changed_paths(repo_dir, plan_ref, exec_ref)
     except (RuntimeError, TimeoutError) as exc:
         return None, f"diff against {plan_branch} failed: {redact_agent_secrets(str(exc))}"
-    if not changed:
-        return False, f"{empty_diff_summary(plan_branch)} (compared on {source})"
-    return True, f"{len(changed)} changed path(s) on {source}"
+    empty = f"{empty_diff_summary(plan_branch)} (compared on {source})"
+    return bool(changed), f"{len(changed)} changed path(s) on {source}" if changed else empty

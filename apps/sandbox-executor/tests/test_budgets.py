@@ -70,7 +70,7 @@ class TestBudgets(unittest.TestCase):
                 self.assertEqual(budgets.stage_seconds("execute"), 2700)
 
     def test_values_above_the_bound_keep_defaults_after_conversion(self):
-        # C21-N3 (R1-N1/R2-N5): 1e308 minutes is finite but overflows to inf seconds after * 60; any value above
+        # 1e308 minutes is finite but overflows to inf seconds after * 60; any value above
         # MAX_BUDGET_SECONDS once converted is ignored with a variable-named warning, so no inf reaches arithmetic.
         plan = ENV_STAGE_BUDGET_MINUTES["plan"]
         too_many_minutes = str(MAX_BUDGET_SECONDS / 60 + 1)
@@ -96,7 +96,7 @@ class TestBudgets(unittest.TestCase):
         self.assertIn(ENV_TURN_TIMEOUT, logs.output[0])
 
     def test_invalid_stage_override_warning_names_the_real_fallback(self):
-        # C4-N2: an invalid HOLON_STAGE_BUDGET_SECONDS leaves the per-stage budgets in force; no fake -1.0 default.
+        # An invalid HOLON_STAGE_BUDGET_SECONDS leaves the per-stage budgets in force; no fake -1.0 default.
         for raw in ("abc", "0", "-3", "inf"):
             with self.subTest(raw=raw), self.assertLogs("sandbox_executor.budgets", level="WARNING") as logs:
                 budgets = load_budgets({ENV_STAGE_BUDGET_SECONDS: raw})
@@ -117,7 +117,7 @@ class TestBudgets(unittest.TestCase):
         self.assertEqual(format_stage_summary("review", "failed", 0, 450), "review: failed (0.0 min / 7.5 min)")
 
     def test_format_minutes_never_rounds_a_sub_minute_budget_to_zero(self):
-        # C7-N2: a 20 s ceiling must not print as "0 min".
+        # A 20 s ceiling must not print as "0 min".
         self.assertEqual(format_minutes(2100), "35")
         self.assertEqual(format_minutes(450), "7.5")
         self.assertEqual(format_minutes(20), "0.3")
@@ -142,14 +142,14 @@ class TestBudgets(unittest.TestCase):
 
 
 class TestStageBudgetHanddown(unittest.TestCase):
-    """C6-I1: the host hands the container the remaining stage time as HOLON_STAGE_BUDGET_SECONDS."""
+    """The host hands the container the remaining stage time as HOLON_STAGE_BUDGET_SECONDS."""
 
     def test_no_active_timer_hands_down_nothing(self):
         self.assertIsNone(current_stage_timer())
         self.assertEqual(stage_budget_handdown_env(), {})
 
     def test_non_finite_timer_hands_down_nothing(self):
-        # A timer built in code with an infinite budget must not raise OverflowError from floor(inf) (C21-N3).
+        # A timer built in code with an infinite budget must not raise OverflowError from floor(inf).
         with self.assertLogs("sandbox_executor.budgets", level="WARNING"):
             self.assertEqual(stage_budget_handdown_env(StageTimer("plan", float("inf"), clock=FakeClock())), {})
 

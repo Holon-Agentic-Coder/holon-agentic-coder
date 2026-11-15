@@ -261,8 +261,8 @@ resolver stages its fixes without `holon-knowledge/ledger/executions.jsonl`, and
 `--result-file` appends its ledger rows to container scratch: the host loop owns the worktree's ledger and records every
 pass from the result file. The entrypoint only validates the mount: HEAD must be a readable commit on the review branch
 (a branch target refuses a detached HEAD) and equal the resolved PR head SHA, otherwise preparation fails closed. Edits,
-logs and reviewer scratch under `.subagent/review/` land on the host at once and survive a container crash. No Docker
-volume is created and no root init container runs.
+logs and reviewer scratch under `tmp/review/` land on the host at once and survive a container crash. No Docker volume
+is created and no root init container runs.
 
 Every stage works the same way on the run's `flow-<slug>` worktree, with the same protections for all four roles (the
 Stage 1 intent creator, Stage 2 planner, Stage 3 executor and Stage 4 review-loop and resolver). No role container ever
@@ -315,13 +315,13 @@ only their report and run no test suite of their own, so every reviewer reads th
   trailer; `serialize_review_outcome(reviewers, consensus_verdict)` and `deserialize_review_outcome(data)` transport
   verified outcomes across the container boundary; `build_reviewer_prompt(template_text, request, report_rel)` fills
   `holon-config/prompts/review_loop.template.md`.
-- **Reviewer turns.** Each reviewer runs in a fresh scratch directory `.subagent/review/iter-<n>/reviewer-<i>/`
-  (git-ignored) under the same turn supervision as the planner (`supervise_authoring_turn`), within one shared
-  `review_iteration` budget per ensemble, and ephemeral credentials are cleaned up in a `finally`. Its prompt holds only
-  the diff, the PR description, its report path and the trailer contract. Before the next reviewer starts, the previous
-  report has been read into memory and its directory removed, so no reviewer sees another's output. A runner exception
-  (including an unknown agent), a budget breach on any turn, a missing report or an invalid trailer makes the reviewer
-  `FAILED` with a redacted reason; a `FAILED` reviewer carries no verdict and is never counted as a vote.
+- **Reviewer turns.** Each reviewer runs in a fresh scratch directory `tmp/review/iter-<n>/reviewer-<i>/` (git-ignored)
+  under the same turn supervision as the planner (`supervise_authoring_turn`), within one shared `review_iteration`
+  budget per ensemble, and ephemeral credentials are cleaned up in a `finally`. Its prompt holds only the diff, the PR
+  description, its report path and the trailer contract. Before the next reviewer starts, the previous report has been
+  read into memory and its directory removed, so no reviewer sees another's output. A runner exception (including an
+  unknown agent), a budget breach on any turn, a missing report or an invalid trailer makes the reviewer `FAILED` with a
+  redacted reason; a `FAILED` reviewer carries no verdict and is never counted as a vote.
 - **Trailer contract.** A report ends with a `<!-- holon-review-trailer -->` line, one JSON object with exactly the keys
   `verdict` (`APPROVED` or `CHANGES_REQUESTED`), `critical`, `important`, `nit` and `findings` (objects with `severity`,
   `file`, `line` and `summary`), and a final `<!-- /holon-review-trailer -->` line. Counts must equal the findings per

@@ -574,7 +574,7 @@ class TestPlannerMain(unittest.TestCase):
         self.assertEqual(h.ledger_lines("plans.jsonl"), [])
 
     def test_step_table_before_overall_section_does_not_reach_the_ledger(self):
-        # C4-I1: the gate and the plans.jsonl row both read `## Overall Plan Metrics`.
+        # The gate and the plans.jsonl row both read `## Overall Plan Metrics`.
         step_first = VALID_PLAN.replace(
             "## Overall Plan Metrics",
             "## Step 0: Survey\n\n| metric | value |\n| --- | --- |\n| p_success_pred | 0.1 |\n"
@@ -603,7 +603,7 @@ class TestPlannerMain(unittest.TestCase):
         self.assertEqual(h.ledger_lines("plans.jsonl"), [])
 
     def test_missing_ev_row_is_recomputed_not_failed(self):
-        # C3-N3: EV is recomputed from the five inputs, so a plan without an ev_pred row is valid.
+        # EV is recomputed from the five inputs, so a plan without an ev_pred row is valid.
         without_ev = VALID_PLAN.replace("| ev_pred             | 6.0   |\n", "")
         self.assertNotEqual(without_ev, VALID_PLAN)
         h = self.harness([write_file(without_ev)])

@@ -79,7 +79,7 @@ graph TD
 
 To inspect the raw traffic going out and coming back in real time:
 
-### 1. Structured Wire Logger (`todo/mitm_wire_logs/`)
+### 1. Structured Wire Logger (`tmp/mitm_wire_logs/`)
 
 Add a structured file logger to
 [`mitm_addon.py`](../../apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py) that appends full
@@ -89,12 +89,12 @@ transaction details to `${WIRE_LOG_DIR}/turn_{turn_id}_{flow_id}.json` and `${WI
   environment variable:
 
   ```python
-  WIRE_LOG_DIR = os.getenv("WIRE_LOG_DIR", "todo/mitm_wire_logs")
+  WIRE_LOG_DIR = os.getenv("WIRE_LOG_DIR", "tmp/mitm_wire_logs")
   ```
 
-  In local development, transactions default to `todo/mitm_wire_logs/`. When running inside Docker containers, pass
+  In local development, transactions default to `tmp/mitm_wire_logs/`. When running inside Docker containers, pass
   `-e WIRE_LOG_DIR=/tmp/wire_logs` so output writes directly to the mounted `/tmp/wire_logs` host volume. Ensure
-  `${WIRE_LOG_DIR}` (e.g. `todo/mitm_wire_logs/`) is explicitly included in `.gitignore` to prevent committing raw
+  `${WIRE_LOG_DIR}` (e.g. `tmp/mitm_wire_logs/`) is explicitly included in `.gitignore` to prevent committing raw
   conversation transcripts, tool outputs, and LLM payloads to source control.
 
   _Log Retention & Disk Quota Policy_: In long-running benchmark suites ($N \ge 3$ across 50+ turns), full raw
@@ -237,11 +237,11 @@ For local development and real-time request inspection, expose `mitmweb` with th
 REPO_ROOT=$(git rev-parse --show-toplevel)
 
 # Ensure log, cache, and proxy CA directories exist on host prior to container startup
-mkdir -p "${REPO_ROOT}/todo/mitm_wire_logs" "${REPO_ROOT}/todo/cache" ~/.holon/proxy-ca
+mkdir -p "${REPO_ROOT}/tmp/mitm_wire_logs" "${REPO_ROOT}/tmp/cache" ~/.holon/proxy-ca
 
 # Tip (Linux hosts): If UID/GID permissions prevent container writes (mitmproxy runs as UID 1000),
-# ensure ownership or write permissions via 'chown -R 1000:1000 todo/mitm_wire_logs todo/cache ~/.holon/proxy-ca'
-# (or 'chmod -R 775 todo/mitm_wire_logs todo/cache ~/.holon/proxy-ca'). Alternatively, add '--user $(id -u):$(id -g)'
+# ensure ownership or write permissions via 'chown -R 1000:1000 tmp/mitm_wire_logs tmp/cache ~/.holon/proxy-ca'
+# (or 'chmod -R 775 tmp/mitm_wire_logs tmp/cache ~/.holon/proxy-ca'). Alternatively, add '--user $(id -u):$(id -g)'
 # along with '-e HOME=/tmp' and mount '-v ~/.holon/proxy-ca:/tmp/.mitmproxy' (or pass '--set confdir=/tmp/.mitmproxy')
 # since mitmproxy resolves its default configuration under '$HOME/.mitmproxy'.
 
@@ -253,8 +253,8 @@ docker run --rm -it \
   -e PYTHONPATH=/tmp/src \
   -v "${REPO_ROOT}/apps/sandbox-executor/src":/tmp/src:ro \
   -v "${REPO_ROOT}/apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py":/tmp/mitm_addon.py:ro \
-  -v "${REPO_ROOT}/todo/mitm_wire_logs":/tmp/wire_logs \
-  -v "${REPO_ROOT}/todo/cache":/tmp/cache \
+  -v "${REPO_ROOT}/tmp/mitm_wire_logs":/tmp/wire_logs \
+  -v "${REPO_ROOT}/tmp/cache":/tmp/cache \
   -v ~/.holon/proxy-ca:/home/mitmproxy/.mitmproxy \
   mitmproxy/mitmproxy:12.2.3 \
   mitmweb -s /tmp/mitm_addon.py --web-host 0.0.0.0 --web-port 8081 --listen-port 8080 \
@@ -283,8 +283,8 @@ long-lived web UIs can block pipeline execution. Launch `mitmdump` in detached m
 ```bash
 # Headless detached container execution for CI/CD runner environments
 REPO_ROOT=$(git rev-parse --show-toplevel)
-mkdir -p "${REPO_ROOT}/todo/mitm_wire_logs" "${REPO_ROOT}/todo/cache" ~/.holon/proxy-ca
-chmod -R 777 "${REPO_ROOT}/todo/mitm_wire_logs" "${REPO_ROOT}/todo/cache" ~/.holon/proxy-ca 2>/dev/null || true
+mkdir -p "${REPO_ROOT}/tmp/mitm_wire_logs" "${REPO_ROOT}/tmp/cache" ~/.holon/proxy-ca
+chmod -R 777 "${REPO_ROOT}/tmp/mitm_wire_logs" "${REPO_ROOT}/tmp/cache" ~/.holon/proxy-ca 2>/dev/null || true
 docker rm -f mitmproxy-wire-logger 2>/dev/null || true
 trap 'docker rm -f mitmproxy-wire-logger >/dev/null 2>&1 || true' EXIT INT TERM
 
@@ -295,8 +295,8 @@ docker run -d --name mitmproxy-wire-logger \
   -e PYTHONPATH=/tmp/src \
   -v "${REPO_ROOT}/apps/sandbox-executor/src":/tmp/src:ro \
   -v "${REPO_ROOT}/apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py":/tmp/mitm_addon.py:ro \
-  -v "${REPO_ROOT}/todo/mitm_wire_logs":/tmp/wire_logs \
-  -v "${REPO_ROOT}/todo/cache":/tmp/cache \
+  -v "${REPO_ROOT}/tmp/mitm_wire_logs":/tmp/wire_logs \
+  -v "${REPO_ROOT}/tmp/cache":/tmp/cache \
   -v ~/.holon/proxy-ca:/home/mitmproxy/.mitmproxy \
   mitmproxy/mitmproxy:12.2.3 \
   mitmdump -s /tmp/mitm_addon.py --listen-port 8080 \
@@ -653,7 +653,7 @@ gantt
     OpenBrain trajectory turn comparison suite            :         des7, after des6, 2d
     Ringer multi-agent cost & token ledger                :         des8, after des7, 2d
     section Final Report
-    Unified A/B automated comparison script in todo/      :         des9, after des8, 2d
+    Unified A/B runner in scripts/                        :         des9, after des8, 2d
 ```
 
 > [!NOTE] **Roadmap Milestone Timelines**: Schedule dates depicted in the Gantt chart represent illustrative reference
@@ -667,9 +667,9 @@ gantt
      `cache_control_injected`) via a `CleaningResult(payload=..., stats=...)` dataclass (or provide
      `process_payload_with_stats()`) to avoid redundant post-hoc AST diffing or tree traversals.
 2. **Update [`mitm_addon.py`](../../apps/sandbox-executor/src/sandbox_executor/token_reduction/mitm_addon.py)**:
-   - Parameterize log directory using `WIRE_LOG_DIR` environment variable (default: `todo/mitm_wire_logs/`) and cache
+   - Parameterize log directory using `WIRE_LOG_DIR` environment variable (default: `tmp/mitm_wire_logs/`) and cache
      directory using `CACHE_DIR` environment variable (default: `~/.holon/cache/`) so SQLite cache persistence can be
-     mapped to host directories (`-e CACHE_DIR=/tmp/cache -v "${REPO_ROOT}/todo/cache":/tmp/cache`).
+     mapped to host directories (`-e CACHE_DIR=/tmp/cache -v "${REPO_ROOT}/tmp/cache":/tmp/cache`).
    - Implement `dump_wire_transaction()` to write full raw request, cleaned request, and response payloads to
      `${WIRE_LOG_DIR}/turn_{turn_id}_{flow_id}.json` and atomic line appends to `${WIRE_LOG_DIR}/transactions.jsonl`,
      offloaded via an asynchronous logging queue or thread pool (`asyncio.to_thread` / background worker) to prevent
@@ -697,7 +697,7 @@ gantt
    - For shared staging servers or remote testing environments, support `HOLON_MITM_WEB_PASSWORD` to secure the mitmweb
      dashboard against unauthenticated access.
 4. **Implement A/B Benchmark Script**:
-   - Provide an automated runner in `todo/ab_measure_all_methods.py` that enforces a benchmark pre-clean step:
+   - Provide an automated runner in `scripts/ab_measure_all_methods.py` that enforces a benchmark pre-clean step:
      explicitly purging or isolating the SQLite cache database (`llm_cache.db` / `~/.holon/cache/` /
      `hybrid_cache.sqlite` via parameterized `CACHE_DIR`) alongside archiving previous `${WIRE_LOG_DIR}` transaction
      logs before benchmark runs to prevent residual cache hits from distorting baseline measurements.

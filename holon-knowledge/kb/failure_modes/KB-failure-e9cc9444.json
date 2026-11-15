@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-e9cc9444",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-14T14:00:42.400828+00:00",
+  "updated_ts": "2026-11-14T14:00:42.400828+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794664181-03b64e84",
+      "ACT-FIND-1794664179-6096b11d"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794663286-hygiene/P-1794663302-17aba811-claude-agent-claude-opus-5-5/E-1794663560-da6ecf9f-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R1-001-02",
+    "symptoms": [
+      "File already over 1,000 lines grows from 1055 to 1057 (posixpath import plus _REVIEW_PARENT_REL used by one message); inline the parent name to avoid growth."
+    ]
+  }
+}

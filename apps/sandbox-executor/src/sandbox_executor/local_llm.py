@@ -168,7 +168,7 @@ def shown_authority(url: str) -> str | None:
     """The ``host[:port]`` a message may show for a configured base URL, or None when it must be withheld.
 
     The #96 message rule (:func:`sandbox_executor.redaction.trusted_url_authority`: the userinfo is removed with the
-    shared last-``@`` rule and the remaining authority is validated) plus the #94 C11-N1 guard: when the removed
+    shared last-``@`` rule and the remaining authority is validated) plus the withheld-host guard: when the removed
     userinfo itself holds a raw ``/``, ``?`` or ``#``, the text after it may be a path or query rather than the host,
     so no host is shown at all. Every local-LLM message about a base URL goes through here or :func:`redact_url`.
     """

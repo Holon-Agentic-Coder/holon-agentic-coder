@@ -11,7 +11,7 @@ from tests.flow.helpers import _verified_diff
 
 
 class TestStage4TestEvidence:
-    """C10-N1: Stage 4 never records or approves a test pass that Stage 3 did not measure."""
+    """Stage 4 never records or approves a test pass that Stage 3 did not measure."""
 
     @staticmethod
     def _ctx(tmp_path: Path, payload: dict[str, Any] | None, *, dry_run: bool = False) -> FlowContext:

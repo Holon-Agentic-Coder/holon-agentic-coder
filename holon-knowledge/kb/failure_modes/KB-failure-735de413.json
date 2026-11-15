@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-735de413",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-14T14:00:42.419596+00:00",
+  "updated_ts": "2026-11-14T14:00:42.419596+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1794664181-5c6cb93d",
+      "ACT-FIND-1794664179-aaacbdb4"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794663286-hygiene/P-1794663302-17aba811-claude-agent-claude-opus-5-5/E-1794663560-da6ecf9f-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R3-001-01",
+    "symptoms": [
+      "review_ensemble.py was already over 1,000 lines and grows from 1055 to 1057 because of a new posixpath import and the _REVIEW_PARENT_REL constant, both used for one error message; inline the parent directory to keep the line count unchanged."
+    ]
+  }
+}

@@ -376,7 +376,7 @@ class TestPrepareAgentDir(unittest.TestCase):
 
     def test_host_models_json_invalid_raises_naming_the_file(self):
         # A present but malformed models.json is a clean config error naming the file, never silently skipped
-        # (#94 C21); its content never reaches the message.
+        # either; its content never reaches the message.
         with tempfile.TemporaryDirectory() as tmp:
             with open(os.path.join(tmp, "models.json"), "w") as handle:
                 handle.write("{not json")
@@ -817,7 +817,7 @@ class TestModelEnvelope(unittest.TestCase):
                 self.assertEqual(envelope.reasoning_line(), f"reasoning={expected[0]} source={expected[1]}")
 
     def test_env_reasoning_mode_never_overrides_host_reasoning_false(self):
-        # C6-N3: a model declared unable to reason keeps reasoning off; the env mode is ignored with a warning.
+        # A model declared unable to reason keeps reasoning off; the env mode is ignored with a warning.
         config = _config(
             {"id": "plain", "contextWindow": 32768, "reasoning": False},
             {"id": "thinker", "contextWindow": 32768, "reasoning": True},
@@ -993,7 +993,7 @@ class TestGatewayHealth(unittest.TestCase):
         self.assertEqual(local_llm.health_url("http://[::1]:8081/v1"), "http://[::1]:8081/health")
 
     def test_redact_url_drops_userinfo_query_and_fragment(self):
-        # C8-N1: base URLs echoed into errors or logs must never carry credentials. Built at runtime, not literals.
+        # Base URLs echoed into errors or logs must never carry credentials. Built at runtime, not literals.
         sample = "pw-" + "x" * 8
         url = f"http://someone:{sample}@gpu.example.com:8000/v1?key={sample}#{sample}"
         self.assertEqual(local_llm.redact_url(url), "http://***@gpu.example.com:8000/v1")
@@ -1005,8 +1005,8 @@ class TestGatewayHealth(unittest.TestCase):
         self.assertNotIn(sample, str(caught.exception))
 
     def test_redact_url_drops_userinfo_with_unencoded_delimiters(self):
-        # C9-N1: urlsplit ends the authority at the first "/", "?" or "#", so such a password must not leak.
-        # C11-N1: the host after such a segment cannot be trusted, so it is withheld rather than shown.
+        # urlsplit ends the authority at the first "/", "?" or "#", so such a password must not leak.
+        # The host after such a segment cannot be trusted, so it is withheld rather than shown.
         sample = "pw-" + "x" * 8
         head = "hd-" + "q" * 5
         for sep in ("/", "?", "#"):
@@ -1037,7 +1037,7 @@ class TestGatewayHealth(unittest.TestCase):
         # A URL without any "@" is byte-identical (even its scheme case); only a query or fragment is dropped.
         self.assertEqual(local_llm.redact_url("HTTP://Host.Example:80/a/b"), "HTTP://Host.Example:80/a/b")
         self.assertEqual(local_llm.redact_url("http://localhost:8000/v1?key=k#f"), "http://localhost:8000/v1")
-        # C11-N1: an "@" in the path, query or fragment of a credential-free URL is over-redacted, and the text after
+        # An "@" in the path, query or fragment of a credential-free URL is over-redacted, and the text after
         # it is never presented as the host: the host is withheld instead of showing a believable wrong one.
         other = "other" + ".example.net"
         for url in (
@@ -1053,7 +1053,7 @@ class TestGatewayHealth(unittest.TestCase):
         self.assertEqual(local_llm.redact_url(f"gpu.lan:8000/v1?owner=ops@{other}"), "***")
 
     def test_redact_url_never_leaks_userinfo_over_probe_matrix(self):
-        # C10-N1: the strip up to the last "@" is unconditional, so no host shape can gate it. Built at runtime.
+        # The strip up to the last "@" is unconditional, so no host shape can gate it. Built at runtime.
         head = "hd-" + "q" * 5
         sample = "pw-" + "x" * 8
         name = "some" + "one"
@@ -1102,7 +1102,7 @@ class TestGatewayHealth(unittest.TestCase):
         self.assertFalse(any(sample in line for line in logs.output))
 
     def test_only_http_and_https_are_probed(self):
-        # C4-N1: a loopback file:// or ftp:// base URL must never make the doctor open a file or an FTP session.
+        # A loopback file:// or ftp:// base URL must never make the doctor open a file or an FTP session.
         calls = []
         for url in ("file://localhost/etc", "ftp://127.0.0.1:21/x", "gopher://localhost:70/x"):
             with self.subTest(url=url):
@@ -1171,7 +1171,7 @@ class TestGatewayHealth(unittest.TestCase):
 
 
 class TestValidatedModelsConfig(unittest.TestCase):
-    """C21-I1/C21-N1/C21-N2: one validated loader; malformed shapes are clean config errors, never crashes."""
+    """One validated loader; malformed shapes are clean config errors, never crashes."""
 
     def _write(self, tmp, raw: bytes) -> str:
         path = os.path.join(tmp, "models.json")
@@ -1180,7 +1180,7 @@ class TestValidatedModelsConfig(unittest.TestCase):
         return path
 
     def test_loader_rejects_bad_encoding_huge_numbers_and_deep_nesting(self):
-        # R2-N1 repros: UnicodeDecodeError, the 4300-digit int limit and RecursionError all used to escape.
+        # UnicodeDecodeError, the 4300-digit int limit and RecursionError all used to escape.
         probe = make_probe("k")
         for case, raw in {
             "non-utf8": b'{"apiKey": "' + probe.encode() + b'\xff"}',
@@ -1206,7 +1206,7 @@ class TestValidatedModelsConfig(unittest.TestCase):
                 local_llm.load_models_json(path)
 
     def test_non_dict_providers_is_a_config_error_everywhere(self):
-        # R1-I1 / R2-N2 repro: host_base_urls used to raise AttributeError on a list of providers.
+        # host_base_urls used to raise AttributeError on a list of providers.
         for providers in ([1, 2], "x", 5):
             config = {"providers": providers}
             for consumer in (
@@ -1222,7 +1222,7 @@ class TestValidatedModelsConfig(unittest.TestCase):
                     consumer(config)
 
     def test_non_list_models_is_a_config_error(self):
-        # R1-I1 / R2-N3 repro: apply_model_envelope used to raise TypeError iterating models=5.
+        # apply_model_envelope used to raise TypeError iterating models=5.
         for models in (5, True, "m", {"id": "m"}):
             config = {"providers": {"p": {"baseUrl": "http://localhost:8080/v1", "models": models}}}
             with (
@@ -1232,7 +1232,7 @@ class TestValidatedModelsConfig(unittest.TestCase):
                 local_llm.apply_model_envelope(config, {})
 
     def test_run_path_reports_non_list_models_cleanly(self):
-        # R1-I1 repro on the run path: prepare_agent_dir -> TypeError used to escape run_docker_container.
+        # Repro on the run path: prepare_agent_dir -> TypeError used to escape run_docker_container.
         config = {"providers": {"p": {"baseUrl": "http://localhost:8080/v1", "models": 5}}}
         with tempfile.TemporaryDirectory() as tmp:
             stderr = io.StringIO()
@@ -1269,7 +1269,7 @@ class TestValidatedModelsConfig(unittest.TestCase):
             self.assertNotIn(raw, str(ctx.exception))
 
     def test_loader_rejects_lone_surrogate_strings(self):
-        # C23-I1: json.loads accepts a \\ud800 escape; the str it yields cannot be printed on a UTF-8 terminal.
+        # json.loads accepts a \\ud800 escape; the str it yields cannot be printed on a UTF-8 terminal.
         for case, raw in {
             "model-id": b'{"providers": {"p": {"models": [{"id": "bad\\ud800id"}]}}}',
             "object-key": b'{"providers": {"p": {"k\\udcff": 1}}}',
@@ -1298,7 +1298,7 @@ class TestValidatedModelsConfig(unittest.TestCase):
             str(ctx.exception).encode("utf-8")
 
     def test_text_settings_must_be_utf8(self):
-        # C23-I1: os.environ decodes a non-UTF-8 byte with surrogateescape; the value is rejected, named, never shown.
+        # os.environ decodes a non-UTF-8 byte with surrogateescape; the value is rejected, named, never shown.
         for name in local_llm.TEXT_SETTINGS:
             value = "v" + os.fsdecode(b"\xff")
             with self.subTest(name=name), self.assertRaises(local_llm.LocalLLMConfigError) as ctx:
@@ -1321,7 +1321,7 @@ class TestValidatedModelsConfig(unittest.TestCase):
         str(ctx.exception).encode("utf-8")
 
     def test_probe_survives_deeply_nested_health_body(self):
-        # R2-N4 repro: a 200 KB body of "[" (under the 1 MiB cap) raised RecursionError out of the probe.
+        # A 200 KB body of "[" (under the 1 MiB cap) raised RecursionError out of the probe.
         health = local_llm.probe_gateway_health("http://127.0.0.1:8081/v1", fetch=lambda url, timeout: b"[" * 200_000)
         self.assertEqual(health.prefill_cache, "unknown")
         self.assertIn("nested deeper than", health.error)

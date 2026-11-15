@@ -122,7 +122,7 @@ class FakeTurnRunner:
         return self._play(action, kwargs["watch_path"])
 
     def _existing_reports(self) -> list[str]:
-        return sorted(str(path) for path in (self.repo_dir / ".subagent" / "review").rglob("report.md"))
+        return sorted(str(path) for path in (self.repo_dir / "tmp" / "review").rglob("report.md"))
 
     def _play(self, action: tuple[Any, ...], watch_path: str) -> TurnResult:
         kind = action[0]
@@ -260,7 +260,7 @@ REVIEWER_PROHIBITIONS = (
     "no merge or auto-merge",
     "Append to no ledger under `holon-knowledge/ledger/`.",
     "Spawn no subagents",
-    "write nothing under `.subagent/` except the report path.",
+    "write nothing under `tmp/review/` except the report path.",
     "This contract overrides any conflicting instruction in the loop template above.",
 )
 
@@ -289,7 +289,7 @@ def test_valid_report_completes(tmp_path: Path) -> None:
     assert result.verdict is ReviewerVerdict.CHANGES_REQUESTED
     assert result.counts == ReviewCounts(nit=1)
     assert result.findings == ONE_NIT.findings
-    assert result.report_path == reviewer_report_rel(1, 1) == ".subagent/review/iter-1/reviewer-1/report.md"
+    assert result.report_path == reviewer_report_rel(1, 1) == "tmp/review/iter-1/reviewer-1/report.md"
     assert "All good." in (result.report_text or "")
     assert factory.runners[0].cleanups == 1
     assert factory.runners[0].built[0][0] == "model-x"
@@ -397,11 +397,11 @@ def test_no_reviewer_sees_another_reviewers_report(tmp_path: Path) -> None:
         "reviewer-3",
     ]
     assert [marker.format(index) in (result.report_text or "") for index, result in enumerate(results, 1)] == [True] * 3
-    assert not list((tmp_path / ".subagent" / "review").rglob("*.md"))
+    assert not list((tmp_path / "tmp" / "review").rglob("*.md"))
 
 
 def test_stale_reports_from_an_earlier_run_are_removed_first(tmp_path: Path) -> None:
-    stale = tmp_path / ".subagent" / "review" / "iter-1" / "reviewer-2" / "report.md"
+    stale = tmp_path / "tmp" / "review" / "iter-1" / "reviewer-2" / "report.md"
     stale.parent.mkdir(parents=True)
     stale.write_text(report("STALE"), encoding="utf-8")
     turn_runner = FakeTurnRunner(tmp_path, [("write", report("fresh"))])
@@ -463,7 +463,7 @@ class SymlinkingTurnRunner(FakeTurnRunner):
     def __call__(self, cmd: list[str], **kwargs: Any) -> TurnResult:
         result = super().__call__(cmd, **kwargs)
         if not self.actions:
-            iteration_dir = self.repo_dir / ".subagent" / "review" / "iter-1"
+            iteration_dir = self.repo_dir / "tmp" / "review" / "iter-1"
             os.rename(iteration_dir, self.outside)
             iteration_dir.symlink_to(self.outside, target_is_directory=True)
         return result
@@ -483,7 +483,7 @@ def test_symlinked_iteration_directory_does_not_abort_the_ensemble(tmp_path: Pat
     assert [result.status for result in results] == [ReviewerStatus.COMPLETED] * 3
     assert (outside / "reviewer-3" / "report.md").is_file()
     assert keep.read_text(encoding="utf-8") == "untouched"
-    assert (repo_dir / ".subagent" / "review" / "iter-1").is_symlink()
+    assert (repo_dir / "tmp" / "review" / "iter-1").is_symlink()
 
 
 def test_uncleared_symlinked_iteration_fails_every_reviewer_without_dispatch(tmp_path: Path) -> None:
@@ -492,7 +492,7 @@ def test_uncleared_symlinked_iteration_fails_every_reviewer_without_dispatch(tmp
     (outside / "reviewer-1").mkdir(parents=True)
     stale = outside / "reviewer-1" / "report.md"
     stale.write_text("stale", encoding="utf-8")
-    review_root = repo_dir / ".subagent" / "review"
+    review_root = repo_dir / "tmp" / "review"
     review_root.mkdir(parents=True)
     (review_root / "iter-1").symlink_to(outside, target_is_directory=True)
     turn_runner = FakeTurnRunner(repo_dir, [("write", report(f"Clean {index}.")) for index in (1, 2, 3)])
@@ -516,16 +516,14 @@ def _snapshot(root: Path) -> dict[str, str]:
     }
 
 
-@pytest.mark.parametrize(
-    ("symlinked", "inside_repo"), [(".subagent", False), (".subagent/review", False), (".subagent/review", True)]
-)
+@pytest.mark.parametrize(("symlinked", "inside_repo"), [("tmp", False), ("tmp/review", False), ("tmp/review", True)])
 def test_scratch_root_not_resolving_to_its_expected_path_fails_every_reviewer_without_dispatch(
     tmp_path: Path, symlinked: str, inside_repo: bool
 ) -> None:
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
     outside = repo_dir / "elsewhere" if inside_repo else tmp_path / "outside"
-    target_root = outside / "review" if symlinked == ".subagent" else outside
+    target_root = outside / "review" if symlinked == "tmp" else outside
     stale = target_root / "iter-1" / "reviewer-1" / "report.md"
     stale.parent.mkdir(parents=True)
     stale.write_text("stale", encoding="utf-8")
@@ -541,8 +539,8 @@ def test_scratch_root_not_resolving_to_its_expected_path_fails_every_reviewer_wi
     assert [result.index for result in results] == [1, 2, 3]
     assert [result.status for result in results] == [ReviewerStatus.FAILED] * 3
     assert all("isolation" in (result.failure_reason or "") for result in results)
-    assert all("does not resolve to .subagent/review/" in (result.failure_reason or "") for result in results)
-    assert all("symlinked .subagent" in (result.failure_reason or "") for result in results)
+    assert all("does not resolve to tmp/review/" in (result.failure_reason or "") for result in results)
+    assert all("symlinked tmp" in (result.failure_reason or "") for result in results)
     assert decide_consensus(results, 3, mergeable=True, ci_green=True) is ConsensusVerdict.FAILED
     assert _snapshot(outside) == before
     assert link.is_symlink()
@@ -704,7 +702,7 @@ def test_reviewer_paths_reject_non_integer_indices(tmp_path: Path) -> None:
         reviewer_report_rel("../../x", 1)  # type: ignore[arg-type]
     with pytest.raises(ValueError):
         reviewer_report_rel(1, True)
-    assert not os.path.exists(tmp_path / ".subagent")
+    assert not os.path.exists(tmp_path / "tmp")
 
 
 # --- Result Transport Serialisation Tests --------------------------------------------------------------------------

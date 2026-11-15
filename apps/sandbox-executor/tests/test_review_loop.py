@@ -532,14 +532,14 @@ class TestReviewLoopEmptyDiffGuard:
         res, mock_pr = self._run(repo)
         mock_pr.assert_not_called()
         assert res["pr"]["reason"] == "diff_unverified"
-        # C15-N1: green CI cannot turn the refusal into approval; the loop fails closed with the refusal as its error.
+        # Green CI cannot turn the refusal into approval; the loop fails closed with the refusal as its error.
         assert res["consensus"]["approved"] is False
         assert res["consensus"]["iterations"] == 0
         assert "could not verify the execution diff" in res["error"]
 
 
 class TestReviewLoopEmptyDiffGuardOrigin:
-    """The review-loop guard judges the branches on origin, which is what the PR is opened from (C8-I1)."""
+    """The review-loop guard judges the branches on origin, which is what the PR is opened from."""
 
     PLAN = TestReviewLoopEmptyDiffGuard.PLAN
     EXEC = TestReviewLoopEmptyDiffGuard.EXEC

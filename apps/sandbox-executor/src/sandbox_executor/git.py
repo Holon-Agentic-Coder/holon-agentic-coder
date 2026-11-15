@@ -9,6 +9,7 @@ Provides typed, robust Git interaction utilities:
 - branch_exists: Check existence of local and remote tracking branches.
 - changed_paths / has_effective_diff: Shared definition of an "empty execution" (no changes outside
   holon-knowledge/ledger/, plans/ and executions/), used by the executor entrypoint, flow Stage 3 and the review loop.
+- net_changed_paths: Merge-inclusive variant for a combined decomposed execution branch compared with its merge base.
 """
 
 from __future__ import annotations
@@ -558,6 +559,42 @@ def changed_paths(
     else:
         raw = git(["diff", *_NAME_ONLY_ARGS, base, "--"]).split("\0")
         raw += git(["ls-files", "--others", "--exclude-standard", "-z"]).split("\0")
+    return sorted({p for p in raw if p and not _is_excluded(p, exclude)})
+
+
+def net_changed_paths(
+    repo_dir: str,
+    base: str,
+    head: str,
+    exclude: tuple[str, ...] = EMPTY_DIFF_EXCLUDES,
+    git_runner: GitRunner | None = None,
+) -> list[str]:
+    """List paths the net ``base..head`` diff changes, counting content that arrived through merges.
+
+    Unlike ``changed_paths`` there is deliberately no filter on head's own first-parent commits: a combined
+    decomposed execution branch receives its children's work only through merges, and that work is exactly what
+    must count. The caller must therefore pass a base that already excludes target-branch syncs, such as the merge
+    base of the target branch and head. Rename detection is disabled, as in ``changed_paths``.
+
+    Args:
+        repo_dir: Path to Git repository.
+        base: Base revision, normally a merge-base commit SHA.
+        head: Head revision to compare.
+        exclude: Repository-relative path prefixes to ignore (default: ledgers, plans and execution notes).
+        git_runner: Optional Git command runner (see changed_paths).
+
+    Returns:
+        list[str]: Sorted, de-duplicated repository-relative paths outside the excluded prefixes.
+
+    Raises:
+        RuntimeError: If the Git command fails, so callers fail closed.
+    """
+
+    def _default_runner(args: list[str]) -> str:
+        return GitRepository(repo_dir).run(args).stdout
+
+    git = git_runner or _default_runner
+    raw = git(["diff", *_NAME_ONLY_ARGS, base, head]).split("\0")
     return sorted({p for p in raw if p and not _is_excluded(p, exclude)})
 
 

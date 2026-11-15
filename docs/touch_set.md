@@ -44,11 +44,12 @@ Before Stage 3 snapshots branches or dispatches the executor (after the plan bud
 flow reads the active plan row's `touch_set` and compares it with every flow in flight:
 
 - **In flight:** an open pull request whose head is a flow execution branch (`I-.../P-.../E-.../_`, one
-  `gh pr list --state open` call; more than 50 open pull requests make discovery unavailable), and a checkpoint
-  (`.holon/flow/checkpoint-*.json`) in another git worktree of the repository whose current stage is execute or review
-  and whose plan branch still exists. Flows of the same root intent (this run's own lineage) are excluded, and a local
-  flow that also has a pull request is listed once. Discovery runs host-side and only reads refs and checkpoint files;
-  it never fetches, checks out or writes another flow's branch.
+  `gh pr list --state open` call; more than 50 open flow pull requests outside this lineage, or more than 1000 open pull
+  requests in all, make discovery unavailable), and a checkpoint (`.holon/flow/checkpoint-*.json`) in another git
+  worktree of the repository whose current stage is execute or review and whose plan branch still exists. Flows of the
+  same root intent (this run's own lineage) are excluded, and a local flow that also has a pull request is listed once.
+  Discovery runs host-side and only reads refs and checkpoint files; it never fetches, checks out or writes another
+  flow's branch.
 - **Compared:** this plan's declared entries against the other flow's declared entries (two literals overlap when equal,
   a literal and a directory or glob when the entry matches the literal, two directories when one contains the other, and
   a glob against a directory or glob when one literal prefix starts the other: conservative on purpose), and against the

@@ -36,7 +36,9 @@ from sandbox_executor.calibration_ev import (
     is_converged_record,
     parse_summary_records,
 )
-from sandbox_executor.git import EMPTY_DIFF_EXCLUDES, run_git
+from sandbox_executor.calibration_touch_set import touch_set_metrics, touch_set_report_lines
+from sandbox_executor.git import METADATA_PATH_PREFIXES as METADATA_PATH_PREFIXES
+from sandbox_executor.git import is_metadata_path, run_git
 from sandbox_executor.knowledge.records import CredentialRedactor
 from sandbox_executor.ledger import generate_action_id, try_append_action_record
 
@@ -71,29 +73,6 @@ class CalibrationFormatError(CalibrationCommitError):
     nothing pushed" correct: the guard runs before the ACT-CAL ledger append, ``git add`` and
     ``git commit``. The message is credential-redacted.
     """
-
-
-# Paths that hold flow metadata (ledgers, plan and execution notes, checkpoints) rather than project code.
-# calibration's actual metrics and the review stage's diff summary both classify through is_metadata_path(). It extends
-# the empty-diff guard's bookkeeping list (git.EMPTY_DIFF_EXCLUDES, which already names executions/) instead of
-# repeating it, so execution notes (executions/E-*.md, committed by every execution) have one shared definition and
-# never count as code in the guard, the review diff summary or calibration.
-METADATA_PATH_PREFIXES: tuple[str, ...] = (
-    *EMPTY_DIFF_EXCLUDES,
-    "holon-knowledge/",
-    ".holon/",
-)
-
-
-def is_metadata_path(path: str) -> bool:
-    """Check if a file path points to metadata, ledger, or planning artifacts rather than project code."""
-    clean = path.strip()
-    if clean.startswith("./"):
-        clean = clean[2:]
-    clean = clean.lstrip("/")
-    if " => " in clean:
-        clean = clean.split(" => ")[-1].strip().rstrip("}").strip()
-    return any(clean.startswith(prefix) for prefix in METADATA_PATH_PREFIXES)
 
 
 @dataclass
@@ -216,6 +195,7 @@ class CalibrationReport:
     base_sha: str | None = None
     merge_base_sha: str | None = None
     merged_commit_count: int = 0
+    touch_set: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -240,6 +220,7 @@ class CalibrationReport:
             "base_sha": self.base_sha,
             "merge_base_sha": self.merge_base_sha,
             "merged_commit_count": self.merged_commit_count,
+            "touch_set": self.touch_set,
         }
 
 
@@ -822,6 +803,8 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
     actual.files_changed = 0
     actual.insertions = 0
     actual.deletions = 0
+    # Starts empty; becomes None below for shortstat output, which lists no paths, so the touch set is not scored
+    exec_meta["changed_paths"] = []
     if res.stdout.strip():
         text = res.stdout.strip()
         if "\t" in text:
@@ -829,18 +812,17 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
             for line in text.splitlines():
                 parts = line.strip().split("\t")
                 if len(parts) >= 3:
-                    file_path = parts[2].strip().removeprefix("./")
-                    if " => " in file_path:
-                        file_path = file_path.split(" => ")[-1].strip().rstrip("}").strip()
-                    if is_metadata_path(file_path):
+                    if is_metadata_path(parts[2]):
                         continue
+                    exec_meta["changed_paths"].append(parts[2].strip())
                     actual.files_changed += 1
                     if parts[0] != "-":
                         actual.insertions += int(parts[0])
                     if parts[1] != "-":
                         actual.deletions += int(parts[1])
         else:
-            # Fallback for shortstat text (e.g. unit test mocks)
+            # Fallback for shortstat text (e.g. unit test mocks): no paths, so the touch set is not scored
+            exec_meta["changed_paths"] = None
             fc_m = re.search(r"(\d+)\s+file", text)
             ins_m = re.search(r"(\d+)\s+insertion", text)
             del_m = re.search(r"(\d+)\s+deletion", text)
@@ -1100,6 +1082,9 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
                 "execution lifecycle and delivered verified post-execution analysis."
             ),
             "",
+            "---",
+            "",
+            *touch_set_report_lines(report_data),
         ]
     )
     return "\n".join(lines)
@@ -1252,6 +1237,7 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
         "bug_ev_drag": actual.bug_ev_drag,
         "delta_ev_clean": deltas.delta_ev_clean,
         "delta_ev_with_bugs": deltas.delta_ev_with_bugs,
+        "touch_set": touch_set_metrics(plan_meta, exec_meta.get("changed_paths"), target_worktree),
     }
 
     markdown_content = format_markdown_report(report_dict)
@@ -1279,6 +1265,7 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
         base_sha=base_sha,
         merge_base_sha=merge_base_sha,
         merged_commit_count=merged_commit_count,
+        touch_set=report_dict["touch_set"],
     )
 
 
@@ -1357,6 +1344,7 @@ def record_calibration_action(  # noqa: PLR0913
         "calibration_deltas": data.get("deltas"),
         "calibration_report_path": report_rel,
         "created_at": datetime.now(UTC).isoformat(),
+        "touch_set_accuracy": data.get("touch_set"),
     }
     ledger_path = os.path.join(target_worktree, LEDGER_EXECUTIONS_REL)
     return try_append_action_record(

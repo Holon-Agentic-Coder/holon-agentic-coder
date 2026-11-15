@@ -269,6 +269,13 @@ def test_scaffold_templates_carry_code_placement_rule() -> None:
     assert "prefers adding focused modules over growing existing files past ~400 lines" in normalised(PLANNER_TEMPLATE)
 
 
+@pytest.mark.parametrize("template_text", [PLANNER_TEMPLATE, rendered_planner()], ids=["scaffold", "shipped"])
+def test_planner_templates_request_touch_set_section(template_text: str) -> None:
+    text = normalised(template_text)
+    assert "the touch set goes in a `## touch set` section" in text
+    assert "\n## touch set\n" in template_text.lower()
+
+
 LOCK_DEFECT_PHRASE = (
     "a `uv.lock` change that no `pyproject.toml` dependency or `requires-python` change explains is a defect"
 )

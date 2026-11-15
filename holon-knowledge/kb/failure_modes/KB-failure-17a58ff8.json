@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-17a58ff8",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-15T22:47:41.556491+00:00",
+  "updated_ts": "2026-11-15T22:47:41.556491+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1794620797-e2695cd1",
+      "ACT-REV-1794620795-b0ee42fb",
+      "ACT-REV-1794618849-ec3341c9",
+      "ACT-REV-1794618848-7fcc4157"
+    ],
+    "success_count": 0,
+    "failure_count": 4,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794617704-touchset/P-1794617720-cbecf7aa-claude-agent-claude-opus-5-5--1-add-the-planner-touch-set-estimate-a-touch-set-p/P-1794617990-33b5cb73-claude-agent-claude-opus-5-5/E-1794618165-976e286a-claude-agent-claude-opus-5-5/_",
+    "description": "Reproduced failure across 4 executions with identical context.",
+    "action": "Review Loop iteration 1 reviewer 2 completed",
+    "symptoms": []
+  }
+}

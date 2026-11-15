@@ -77,6 +77,7 @@ def _child_context(context: FlowContext, intent_data: dict[str, Any]) -> FlowCon
         max_review_iterations=context.max_review_iterations,
         review_ensemble_size=context.review_ensemble_size,
         mitm_web=context.mitm_web,
+        allow_overlap=context.allow_overlap,
         dispatcher=context.dispatcher,
     )
 

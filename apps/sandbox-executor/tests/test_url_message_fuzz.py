@@ -200,8 +200,9 @@ def _doctor(value: str) -> list[str]:
     for host_config in (None, _host_config(value)):
         for fetch in _fetchers(texts):
             with (
-                patch.object(local_llm, "host_models_json", return_value=host_config),
-                patch.object(cli, "run_preflight_probe", return_value=probe),
+                # Plain stand-ins, not MagicMocks: building a mock per call dominated this matrix's runtime.
+                patch.object(local_llm, "host_models_json", lambda *_a, host_config=host_config, **_k: host_config),
+                patch.object(cli, "run_preflight_probe", lambda *_a, **_k: probe),
                 _captured(env) as out,
             ):
                 cli.report_budgets_and_envelope(fetch=fetch)
@@ -277,16 +278,24 @@ def _leaks(texts: list[str], credential: str) -> bool:
     return any(needle[i : i + FRAGMENT_LEN] in haystack for i in range(len(needle) - FRAGMENT_LEN + 1))
 
 
+@pytest.mark.parametrize("prefix", sorted(PREFIXES))
 @pytest.mark.parametrize("entry_point", sorted(ENTRY_POINTS))
-def test_no_credential_fragment_in_any_message(entry_point, monkeypatch):
-    """Every matrix case leaves no credential fragment in logs, stdout, stderr or exception text."""
+def test_no_credential_fragment_in_any_message(entry_point, prefix, monkeypatch):
+    """Every matrix case leaves no credential fragment in logs, stdout, stderr or exception text.
+
+    Each test runs one URL prefix's slice of the matrix, so the parallel runner can spread the slices across workers.
+    """
     monkeypatch.setattr(cli.shutil, "which", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli.socket, "create_connection", _refuse)
     monkeypatch.setattr(cli, "generate_root_ca", lambda: pytest.fail("must not generate a CA"))
+    # `_captured` swaps in an exact environment per case; starting from an empty one keeps each swap cheap.
+    for name in list(os.environ):
+        monkeypatch.delenv(name)
     run = ENTRY_POINTS[entry_point]
-    failures = [case_id for case_id, value, credential in matrix() if _leaks(run(value), credential)]
+    cases = [case for case in matrix() if case[0].startswith(f"{prefix}/")]
+    failures = [case_id for case_id, value, credential in cases if _leaks(run(value), credential)]
     assert not failures, (
-        f"{len(failures)}/{MATRIX_SIZE} cases leaked a credential fragment, e.g. {failures[:5]} ALL={failures}"
+        f"{len(failures)}/{len(cases)} cases leaked a credential fragment, e.g. {failures[:5]} ALL={failures}"
     )
 
 
@@ -575,6 +584,8 @@ def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, 
     monkeypatch.setattr(cli, "get_agent_session_mounts", lambda agent_id: [])
     monkeypatch.setattr(cli.git_flow, "sandbox_worktree_mounts", lambda *args, **kwargs: [])
     monkeypatch.setattr(cli, "get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {}))
+    for name in list(os.environ):
+        monkeypatch.delenv(name)
     failures: list[str] = []
     cases = list(_invalid_value_cases())
     for case_id, env, host_config, credential in cases:
@@ -583,8 +594,8 @@ def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, 
         rejected = "TIMEOUT" not in case_id and "BUDGET" not in case_id
         docker = _DockerRecorder()
         with (
-            patch.object(local_llm, "host_models_json", return_value=host_config),
-            patch.object(cli, "run_preflight_probe", return_value=probe),
+            patch.object(local_llm, "host_models_json", lambda *_a, host_config=host_config, **_k: host_config),
+            patch.object(cli, "run_preflight_probe", lambda *_a, **_k: probe),
             patch.object(cli.subprocess, "run", docker),
             _captured({**env, "HOME": str(tmp_path)}) as out,
         ):

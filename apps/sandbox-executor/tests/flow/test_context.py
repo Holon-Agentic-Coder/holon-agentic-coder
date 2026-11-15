@@ -118,6 +118,7 @@ class TestFlowDataModels:
             max_review_iterations=5,
             mitm_web=True,
             token_reduce=True,
+            allow_overlap=True,
         )
         d = ctx.to_dict()
         assert d["skip_review"] is True
@@ -132,6 +133,7 @@ class TestFlowDataModels:
         assert reconstructed.max_review_iterations == 5
         assert reconstructed.mitm_web is True
         assert reconstructed.token_reduce is True
+        assert d["allow_overlap"] is True and reconstructed.allow_overlap is True
 
     def test_legacy_checkpoint_loading_defaults(self):
         legacy_data = {
@@ -145,6 +147,7 @@ class TestFlowDataModels:
         assert ctx.max_review_iterations == 25
         assert ctx.mitm_web is False
         assert ctx.token_reduce is False
+        assert ctx.allow_overlap is False
 
     def test_atomic_checkpoint_save_and_load(self, tmp_path):
         ctx = FlowContext(

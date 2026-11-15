@@ -1,0 +1,90 @@
+"""Empty-diff base for a combined (decomposed) execution branch.
+
+In plan-owned decomposition every child pull request is merged into the plan branch, and Stage 3 then merges that plan
+branch into the parent execution branch and records an ``integrated`` summary row in ``executions.jsonl``. The plan
+branch has absorbed the children, so a diff against it shows only bookkeeping. Such a branch is compared instead with
+its merge base on the intent's target branch, using a net (merge-inclusive) diff, because the children's work reaches
+the execution branch only through merges. Every unverifiable case fails closed (verdict None).
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from sandbox_executor.git import empty_diff_summary, net_changed_paths, run_git
+from sandbox_executor.redaction import redact_agent_secrets
+
+
+def _integrated_plan_recorded(rows: list[dict[str, Any]], plan_branch: str) -> bool:
+    """Return True when an executions.jsonl summary row records the integration of ``plan_branch`` with children."""
+    return any(
+        row.get("entry_type") == "summary"
+        and row.get("integrated") is True
+        and row.get("plan_branch") == plan_branch
+        and isinstance(row.get("children"), list)
+        and bool(row.get("children"))
+        for row in rows
+    )
+
+
+def _commit_ref(repo_dir: str, ref: str) -> bool:
+    """Return True when ``ref`` names a commit in ``repo_dir``."""
+    return run_git(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=repo_dir, check=False).returncode == 0
+
+
+def _target_ref(repo_dir: str, target_branch: str, mounted: bool | None) -> tuple[str | None, str]:
+    """Return ``(ref, "")`` for the target branch, or ``(None, reason)`` when it cannot be used.
+
+    ``mounted`` is None for a repository without an 'origin' remote (the local branch is used), True in a mounted role
+    container (the host-fetched tracking ref is only checked) and False on the host (the target is fetched first).
+    """
+    if mounted is None:
+        local_ref = f"refs/heads/{target_branch}"
+        if _commit_ref(repo_dir, local_ref):
+            return local_ref, ""
+        return None, f"no 'origin' remote and cannot resolve '{target_branch}' locally"
+    remote_ref = f"refs/remotes/origin/{target_branch}"
+    if not mounted:
+        refspec = f"+refs/heads/{target_branch}:{remote_ref}"
+        res = run_git(["fetch", "--no-tags", "origin", refspec], cwd=repo_dir, check=False, timeout=300)
+        if res.returncode != 0:
+            stderr = res.stderr.strip() if isinstance(res.stderr, str) else ""
+            detail = redact_agent_secrets(stderr) if stderr else f"git fetch exited with code {res.returncode}"
+            return None, f"fetching '{target_branch}' from origin failed: {detail}"
+    if not _commit_ref(repo_dir, remote_ref):
+        return None, f"'{target_branch}' is not fetched from origin; the host must fetch it before dispatch"
+    return remote_ref, ""
+
+
+def _combined_diff_verdict(
+    repo_dir: str, branches: tuple[str, str], target_branch: str, mounted: bool | None, source: str
+) -> tuple[bool | None, str]:
+    """Compare a combined execution branch with its merge base on the target branch.
+
+    Args:
+        repo_dir: Repository to inspect.
+        branches: The derived plan branch name and the resolved execution ref.
+        target_branch: The intent's target branch (``main``, or the parent plan branch of a nested intent).
+        mounted: How to resolve the target (see ``_target_ref``).
+        source: Where the refs were read, for the detail text.
+
+    Returns:
+        tuple[bool | None, str]: (True, detail) when implementation paths changed, (False, summary) when only
+        bookkeeping changed, and (None, reason) when it cannot be verified.
+    """
+    plan_branch, exec_ref = branches
+    target_ref, problem = _target_ref(repo_dir, target_branch, mounted)
+    if target_ref is None:
+        return None, problem
+    res = run_git(["merge-base", target_ref, exec_ref], cwd=repo_dir, check=False)
+    base_sha = res.stdout.strip() if res.returncode == 0 and isinstance(res.stdout, str) else ""
+    if not base_sha:
+        return None, f"no merge base between '{target_branch}' and '{plan_branch}'"
+    try:
+        changed = net_changed_paths(repo_dir, base_sha, exec_ref)
+    except (RuntimeError, TimeoutError) as exc:
+        return None, f"diff against {target_branch}@{base_sha[:12]} failed: {redact_agent_secrets(str(exc))}"
+    label = f"{target_branch}@{base_sha[:12]} (merge base of '{plan_branch}' with {target_branch})"
+    if not changed:
+        return False, f"{empty_diff_summary(label)} (compared on {source})"
+    return True, f"{len(changed)} changed path(s) against {label} on {source}"

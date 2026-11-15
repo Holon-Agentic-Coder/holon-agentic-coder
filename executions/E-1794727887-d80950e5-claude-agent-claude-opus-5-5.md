@@ -43,3 +43,23 @@ compares the combined execution branch with its merge base on the intent's targe
   right before `has_effective_diff`. It runs one two-dot `git diff --name-only --no-renames -z <base> <head>` (reusing
   `_NAME_ONLY_ARGS`) and filters with `_is_excluded`. `changed_paths`, `has_effective_diff`, `EMPTY_DIFF_EXCLUDES` and
   `empty_diff_summary` are unchanged. Module docstring bullet added. `ruff check` and `ruff format --check` are clean.
+
+### Step 3: Route the guard for integrated executions
+
+- New `apps/sandbox-executor/src/sandbox_executor/flow/combined_base.py` (90 lines; imports only
+  `sandbox_executor.git` and `sandbox_executor.redaction`): `_integrated_plan_recorded` (summary row with
+  `integrated: true`, the exact derived `plan_branch` and a non-empty `children` list), `_target_ref` (host: fetch the
+  target; mounted: only check the host-fetched tracking ref; no origin: local branch) and `_combined_diff_verdict`
+  (`git merge-base <target_ref> <exec_ref>`, then `net_changed_paths`, with the base label
+  `<target>@<sha12> (merge base of '<plan branch>' with <target>)`). Every unresolvable case returns `None`.
+- `flow/git_refs.py`: `_execution_effective_diff` gained `target_branch: str = "main"` and three lines that route an
+  integrated execution to `_combined_diff_verdict`. The last two returns were folded into one (identical strings) to
+  stay within ruff `PLR0911`. Net growth 6 lines (394 to 400).
+- `review_target.py` `_classify_target_diff` passes `target_branch=base_branch`. `flow/review/loop.py` already passes
+  the intent's `target_branch` to `classify_review_diff` (line ~249) and reaches the guard by no other route, so it is
+  unchanged.
+- `flow_module_budgets.json`: `combined_base.py: 90` added, `git_refs.py` raised from 394 to 400, one description
+  sentence appended. No `flow/__init__.py` change (private names).
+- Guardrail run: `uv run pytest apps/sandbox-executor/tests/test_review_mounted_no_fetch.py
+  apps/sandbox-executor/tests/test_review_loop.py apps/sandbox-executor/tests/test_review_target.py
+  apps/sandbox-executor/tests/flow -n auto --dist worksteal`: 962 passed in 8.73s.

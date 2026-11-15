@@ -282,7 +282,7 @@ def _classify_target_diff(repo_dir: str, target: ReviewTarget | str, base_branch
     if isinstance(target, str) and is_pr_reference(branch):
         return DiffVerdict.UNVERIFIED, f"pull request '{branch}' was not resolved to a head commit"
     if isinstance(target, str) and _execution_parent_plan_branch(branch) is not None:
-        has_diff, detail = _execution_effective_diff(repo_dir, branch)
+        has_diff, detail = _execution_effective_diff(repo_dir, branch, target_branch=base_branch)
         verdict = {True: DiffVerdict.VERIFIED, False: DiffVerdict.EMPTY}.get(has_diff, DiffVerdict.UNVERIFIED)
         return verdict, detail
     if isinstance(target, ReviewTarget) and target.base_branch:

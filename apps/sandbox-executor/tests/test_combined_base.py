@@ -109,7 +109,7 @@ def test_combined_execution_with_merged_children_passes(tmp_path: Path, squash: 
     has_diff, detail = _execution_effective_diff(str(_host(tmp_path)), EXEC, target_branch="main")
     assert has_diff is True
     assert detail == (
-        f"1 changed path(s) against main@{_merge_base(seed)[:12]} (merge base of '{PLAN}' with main) on origin"
+        f"1 changed path(s) against main@{_merge_base(seed)[:12]} (merge base of '{EXEC}' with main) on origin"
     )
 
 
@@ -119,7 +119,7 @@ def test_combined_execution_with_only_bookkeeping_is_refused(tmp_path: Path) -> 
     assert has_diff is False
     assert detail.startswith(f"{EMPTY_PREFIX}main@")
     assert _merge_base(seed)[:12] in detail
-    assert PLAN in detail
+    assert EXEC in detail
     assert detail.endswith("(compared on origin)")
 
 
@@ -174,7 +174,7 @@ def test_missing_merge_base_is_unverifiable(tmp_path: Path) -> None:
     _git(seed, "push", "-q", "origin", "orphan")
     has_diff, reason = _execution_effective_diff(str(_host(tmp_path)), EXEC, target_branch="orphan")
     assert has_diff is None
-    assert reason == f"no merge base between 'orphan' and '{PLAN}'"
+    assert reason == f"no merge base between 'orphan' and '{EXEC}'"
 
 
 def test_local_branches_without_origin_use_local_target(tmp_path: Path) -> None:

@@ -391,7 +391,7 @@ def _execution_effective_diff(
         source = "local branches (no 'origin' remote)"
     if _integrated_plan_recorded(_read_ledger_rows(repo_dir, exec_ref, "executions.jsonl"), plan_branch):
         mounted = workspace_mounted() if source == "origin" else None
-        return _combined_diff_verdict(repo_dir, (plan_branch, exec_ref), target_branch, mounted, source)
+        return _combined_diff_verdict(repo_dir, (execution_branch, exec_ref), target_branch, mounted, source)
     try:
         changed = changed_paths(repo_dir, plan_ref, exec_ref)
     except (RuntimeError, TimeoutError) as exc:

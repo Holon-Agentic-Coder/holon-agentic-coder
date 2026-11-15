@@ -61,7 +61,7 @@ def _combined_diff_verdict(
 
     Args:
         repo_dir: Repository to inspect.
-        branches: The derived plan branch name and the resolved execution ref.
+        branches: The execution branch name and its resolved ref (the ref compared with the target).
         target_branch: The intent's target branch (``main``, or the parent plan branch of a nested intent).
         mounted: How to resolve the target (see ``_target_ref``).
         source: Where the refs were read, for the detail text.
@@ -70,19 +70,19 @@ def _combined_diff_verdict(
         tuple[bool | None, str]: (True, detail) when implementation paths changed, (False, summary) when only
         bookkeeping changed, and (None, reason) when it cannot be verified.
     """
-    plan_branch, exec_ref = branches
+    exec_branch, exec_ref = branches
     target_ref, problem = _target_ref(repo_dir, target_branch, mounted)
     if target_ref is None:
         return None, problem
     res = run_git(["merge-base", target_ref, exec_ref], cwd=repo_dir, check=False)
     base_sha = res.stdout.strip() if res.returncode == 0 and isinstance(res.stdout, str) else ""
     if not base_sha:
-        return None, f"no merge base between '{target_branch}' and '{plan_branch}'"
+        return None, f"no merge base between '{target_branch}' and '{exec_branch}'"
     try:
         changed = net_changed_paths(repo_dir, base_sha, exec_ref)
     except (RuntimeError, TimeoutError) as exc:
         return None, f"diff against {target_branch}@{base_sha[:12]} failed: {redact_agent_secrets(str(exc))}"
-    label = f"{target_branch}@{base_sha[:12]} (merge base of '{plan_branch}' with {target_branch})"
+    label = f"{target_branch}@{base_sha[:12]} (merge base of '{exec_branch}' with {target_branch})"
     if not changed:
         return False, f"{empty_diff_summary(label)} (compared on {source})"
     return True, f"{len(changed)} changed path(s) against {label} on {source}"

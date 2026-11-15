@@ -75,7 +75,7 @@ def test_report_lines_with_values_cap_long_lists():
         "unused_entries": ["docs/"],
     }
     text = "\n".join(touch_set_report_lines({"touch_set": score}))
-    assert "## Touch Set Accuracy" in text
+    assert "## 5. Touch Set Accuracy" in text
     assert "`50.0%`" in text
     assert "`25.0%`" in text
     assert "- `src/m19.py`" in text
@@ -86,7 +86,7 @@ def test_report_lines_with_values_cap_long_lists():
 
 def test_report_lines_without_a_touch_set_show_na():
     lines = touch_set_report_lines({"touch_set": _NONE})
-    assert lines.count("## Touch Set Accuracy") == 1
+    assert lines.count("## 5. Touch Set Accuracy") == 1
     assert sum("n/a" in line for line in lines) == 2
     assert not any("outside the touch set" in line for line in lines)
     assert touch_set_report_lines({}) == lines
@@ -150,5 +150,5 @@ def test_generate_calibration_reports_touch_set_accuracy(touch_set_repo):
         "unused_entries": ["docs/"],
     }
     assert report.to_dict()["touch_set"] == report.touch_set
-    assert "## Touch Set Accuracy" in report.markdown_content
+    assert "## 5. Touch Set Accuracy" in report.markdown_content
     assert "- `src/extra.py`" in report.markdown_content

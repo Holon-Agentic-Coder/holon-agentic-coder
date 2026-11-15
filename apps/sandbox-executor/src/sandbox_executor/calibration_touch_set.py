@@ -61,13 +61,13 @@ def touch_set_report_lines(report_data: dict[str, Any]) -> list[str]:
         return "n/a" if value is None else f"`{value * 100:.1f}%`"
 
     lines = [
-        "## Touch Set Accuracy",
+        "## 5. Touch Set Accuracy",
         "",
         f"- **Precision (declared entries the diff touched):** {percent(score.get('precision'))}",
         f"- **Recall (changed files the touch set covered):** {percent(score.get('recall'))}",
     ]
     if score.get("precision") is None and score.get("recall") is None and not score.get("unpredicted_paths"):
-        return [*lines, "", "---", ""]
+        return [*lines, ""]
     return [
         *lines,
         "",
@@ -78,7 +78,5 @@ def touch_set_report_lines(report_data: dict[str, Any]) -> list[str]:
         "Declared entries the diff did not touch:",
         "",
         *_capped_code_bullets(list(score.get("unused_entries") or [])),
-        "",
-        "---",
         "",
     ]

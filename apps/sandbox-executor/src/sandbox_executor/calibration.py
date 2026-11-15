@@ -1073,7 +1073,6 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
             "",
             "---",
             "",
-            *touch_set_report_lines(report_data),
             "## 4. Calibration Assessment",
             "",
             (
@@ -1083,6 +1082,9 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
                 "execution lifecycle and delivered verified post-execution analysis."
             ),
             "",
+            "---",
+            "",
+            *touch_set_report_lines(report_data),
         ]
     )
     return "\n".join(lines)

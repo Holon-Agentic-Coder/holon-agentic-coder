@@ -204,7 +204,19 @@ message to one short confirmation line.
   `ledger`).
 - Add no new imports from entrypoints into the host flow engine.
 - The plan lists its touch set at module granularity and prefers adding focused modules over growing existing files
-  past ~400 lines.
+  past ~400 lines. The touch set goes in a `## Touch Set` section placed after `## Plan Description & Strategy`: one
+  backticked repository-relative path or glob per top-level bullet (a trailing `/` means a whole directory, `*` stays
+  within one path segment and `**` spans directories), with an optional `symbols: a, b` suffix for very large modules.
+  Leave out `plans/`, `executions/` and `holon-knowledge/`; write `- none` when the plan changes no other file.
+
+The touch set section format is as below.
+
+```markdown
+## Touch Set
+
+- `src/package/module.py`
+- `tests/`
+```
 """
 
 EXECUTOR_TEMPLATE = """You are an autonomous execution agent operating directly inside the repository workspace at

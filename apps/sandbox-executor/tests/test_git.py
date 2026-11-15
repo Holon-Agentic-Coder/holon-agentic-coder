@@ -14,6 +14,7 @@ from sandbox_executor.git import (
     get_diff_numstat,
     get_head_commit,
     has_effective_diff,
+    net_changed_paths,
     resolve_ref,
     run_git,
 )
@@ -227,6 +228,32 @@ def test_has_effective_diff_reverted_change_is_empty(plan_repo: Path) -> None:
     _write(plan_repo, "src/app.py", "print('hi')\n")
     _commit_all(plan_repo, "revert")
     assert has_effective_diff(str(plan_repo), "plan", "exec") is False
+
+
+def test_net_changed_paths_counts_content_merged_in(plan_repo: Path) -> None:
+    """Work that reaches head only through a merge counts, unlike in changed_paths."""
+    base = _git(plan_repo, "rev-parse", "plan")
+    _git(plan_repo, "checkout", "-q", "-b", "child", "plan")
+    _write(plan_repo, "src/feature.py", "f = 1\n")
+    _commit_all(plan_repo, "child work")
+    _git(plan_repo, "checkout", "-q", "exec")
+    _write(plan_repo, "holon-knowledge/ledger/executions.jsonl", '{"status": "decomposed"}\n')
+    _commit_all(plan_repo, "ledger only")
+    _git(plan_repo, "merge", "-q", "--no-ff", "child", "-m", "integrate child")
+    assert changed_paths(str(plan_repo), base, "exec") == []
+    assert net_changed_paths(str(plan_repo), base, "exec") == ["src/feature.py"]
+
+
+def test_net_changed_paths_excludes_bookkeeping_and_reports_renamed_source(plan_repo: Path) -> None:
+    """Excluded prefixes are ignored and a move into executions/ reports the removed source path."""
+    _write(plan_repo, "plans/P-2.md", "# Plan\n")
+    _write(plan_repo, "executions/E-1.md", "# Notes\n")
+    _commit_all(plan_repo, "bookkeeping")
+    assert net_changed_paths(str(plan_repo), "plan", "exec") == []
+    _git(plan_repo, "mv", "src/app.py", "executions/app.py")
+    _commit_all(plan_repo, "move")
+    assert net_changed_paths(str(plan_repo), "plan", "exec") == ["src/app.py"]
+    assert net_changed_paths(str(plan_repo), "plan", "exec") == changed_paths(str(plan_repo), "plan", "exec")
 
 
 def test_suite_git_config_is_the_hermetic_test_config(hermetic_git_config: str, tmp_path: Path) -> None:

@@ -63,3 +63,17 @@ compares the combined execution branch with its merge base on the intent's targe
 - Guardrail run: `uv run pytest apps/sandbox-executor/tests/test_review_mounted_no_fetch.py
   apps/sandbox-executor/tests/test_review_loop.py apps/sandbox-executor/tests/test_review_target.py
   apps/sandbox-executor/tests/flow -n auto --dist worksteal`: 962 passed in 8.73s.
+
+### Step 4: Hermetic tests
+
+- New `apps/sandbox-executor/tests/test_combined_base.py` (11 tests, local bare origin and `tmp_path` only): merged
+  children pass (merge and squash variants, detail names `main@<sha12>`); bookkeeping-only children refused with the
+  merge-base summary ending `(compared on origin)`; plain execution unchanged (old `False` summary and old
+  `"1 changed path(s) on origin"`); an integrated row naming another plan branch, or with no children, keeps the plan
+  base; an unfetched host fetches plan, execution and target itself; a mounted container without the target ref and an
+  orphan target are unverifiable; the no-origin local path; and `classify_review_diff(repo, EXEC, "main")` is
+  `DiffVerdict.VERIFIED`.
+- `apps/sandbox-executor/tests/test_git.py`: two `net_changed_paths` tests (merged-in content counts where
+  `changed_paths` does not; exclusions and a rename into `executions/` match `changed_paths`).
+- Revert check (not committed): with the routing disabled in `git_refs.py`, 8 of the 11 new tests fail; the 3 that
+  still pass are the plain-path and non-matching-row tests, which pin the unchanged behaviour.

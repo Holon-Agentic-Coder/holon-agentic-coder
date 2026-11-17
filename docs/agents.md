@@ -257,8 +257,8 @@ This ensures:
 - **Isolation:** Agents cannot interfere with each other.
 - **Consistency:** Single source of truth (ledger + KB).
 
-Work items live in the repository's own beads (`bd`) issue tracker; see
-[`issue_tracking.md`](issue_tracking.md) for the agent workflow and the narrow issue-data write exception.
+Work items live in the repository's own beads (`bd`) issue tracker; see [`issue_tracking.md`](issue_tracking.md) for the
+agent workflow and the narrow issue-data write exception.
 
 ### Agent-to-human communication (via review packages)
 

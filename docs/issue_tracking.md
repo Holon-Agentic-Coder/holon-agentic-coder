@@ -34,8 +34,8 @@ Issue data lives in the Dolt database, not in source files, and moves between cl
 `bd dolt pull` against the git ref `refs/dolt/data`. Source branches never carry issue-data changes.
 
 With `dolt.local-only: true` committed, remote Dolt sync is disabled inside sandboxes: `bd dolt push`, `bd dolt pull`
-and `bd sync` report remote sync as disabled, and `bd dolt remote add` is refused. Issue edits made in a sandbox stay
-in the clone's local Dolt database until a context with sync access publishes them on `refs/dolt/data`.
+and `bd sync` report remote sync as disabled, and `bd dolt remote add` is refused. Issue edits made in a sandbox stay in
+the clone's local Dolt database until a context with sync access publishes them on `refs/dolt/data`.
 
 ### Two concurrent flow branches
 
@@ -45,8 +45,8 @@ source changes:
 1. Each flow claims its own issues (`bd update <id> --claim`) and edits issue data only through `bd` commands.
 2. Issue data merges at the Dolt data layer on `refs/dolt/data`, never through source-branch merges: pull before
    publishing (`bd dolt pull`, then `bd dolt push`), and bd reconciles concurrent issue edits in Dolt.
-3. Because neither flow commits issue data to its source branch, rebases and merges of the flow branches never
-   conflict on tracker state.
+3. Because neither flow commits issue data to its source branch, rebases and merges of the flow branches never conflict
+   on tracker state.
 
 ## The narrow write-path exception
 

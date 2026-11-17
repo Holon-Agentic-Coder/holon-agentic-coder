@@ -62,3 +62,13 @@ Execution notes so far:
   environment), so it is intentionally left unchanged, as the plan allows.
 - No image build was attempted (network-isolated sandbox); correctness is enforced textually by Step 4's tests and at
   the next real image build.
+
+### Step 3: Agent guidance for issue tracking
+
+- Created `docs/issue_tracking.md`: committed vs ignored tracker state (`.beads/config.yaml` tracked;
+  `.beads/embeddeddolt/` and `node_id` never committed; no `issues.jsonl` snapshots), the agent workflow (`bd ready`,
+  `bd update <id> --claim`, `bd create`, `bd close`), sync via `refs/dolt/data` only, the two-concurrent-flow-branches
+  procedure (issue data merges at the Dolt data layer, never via source branches), and the write-path exception stated
+  as the intent's closed list: exactly `refs/dolt/data` plus `.beads/` data, never source files.
+- Added a pointer sentence in `docs/agents.md` (agent communication section) and an entry in its related-documents
+  list; no other changes to that document.

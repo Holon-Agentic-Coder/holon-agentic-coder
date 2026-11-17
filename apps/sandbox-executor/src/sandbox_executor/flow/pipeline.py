@@ -147,6 +147,16 @@ class PipelineEngine:
             self.context.log(result.error)
         return result
 
+    def _rerun_if_calibrate(self, stage: FlowStage, result: StageResult) -> StageResult:
+        """Pass a completed Stage 5 through the head-move rerun trigger; any other stage returns unchanged.
+
+        Catches a head that moved during the stage's own CI wait; an unmoved head is a no-op. Runs before
+        ``after_stage``/``save_checkpoint``, so the checkpoint records the refreshed result.
+        """
+        if stage != FlowStage.CALIBRATE:
+            return result
+        return rerun_calibration(self.context, result, run_calibrate_stage)
+
     def before_stage(self, stage: FlowStage) -> None:
         """Lifecycle hook invoked before executing a stage."""
         self.context.log(f"--> [Flow Engine] Entering stage: {stage.value.upper()}")
@@ -353,9 +363,7 @@ class PipelineEngine:
             self.before_stage(stage)
             result = self.timed_execute_stage(stage)
 
-            if stage == FlowStage.CALIBRATE:
-                # Catches a head that moved during the stage's own CI wait; an unmoved head is a no-op.
-                result = rerun_calibration(self.context, result, run_calibrate_stage)
+            result = self._rerun_if_calibrate(stage, result)
             self.after_stage(stage, result)
             self.save_checkpoint()
 

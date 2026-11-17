@@ -29,7 +29,9 @@ CAL_SUBJECT = f"chore(calibration): add calibration report for {PLAN_ID}"
 CAL_REPORT_REL = f"plans/{PLAN_ID}_calibration.md"
 
 
-def commit_calibration(repo: Path, rel: str = CAL_REPORT_REL, subject: str = CAL_SUBJECT, text: str = "report\n") -> str:
+def commit_calibration(
+    repo: Path, rel: str = CAL_REPORT_REL, subject: str = CAL_SUBJECT, text: str = "report\n"
+) -> str:
     """A commit in Stage 5's own shape: a calibration subject touching only calibration paths."""
     path = repo / rel
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -236,7 +238,7 @@ def test_a_rerun_does_not_loop_on_its_own_calibration_commits(repos: SimpleNames
 def test_a_head_that_outruns_both_attempts_marks_the_payload_stale(repos: SimpleNamespace) -> None:
     from sandbox_executor.cli.commands.flow import _calibrated_head_line
 
-    ctx, result, calls, _ = calibrated_flow(repos)
+    ctx, result, _, _ = calibrated_flow(repos)
     new_head = move_head(repos)
     attempts: list[str] = []
     never_catching_up = lambda context: attempts.append("stage") or result  # noqa: E731
@@ -250,7 +252,7 @@ def test_a_head_that_outruns_both_attempts_marks_the_payload_stale(repos: Simple
 
 
 def test_the_stale_signal_posts_once_per_pair_and_clears_after_the_rerun(repos: SimpleNamespace) -> None:
-    ctx, result, calls, run = calibrated_flow(repos)
+    ctx, result, _, run = calibrated_flow(repos)
     approve_pr(ctx)
     seams, posted = recording_seams()
     move_head(repos)
@@ -266,7 +268,7 @@ def test_the_stale_signal_posts_once_per_pair_and_clears_after_the_rerun(repos: 
 
 
 def test_a_still_stale_head_never_duplicates_the_stale_comment(repos: SimpleNamespace) -> None:
-    ctx, result, calls, _ = calibrated_flow(repos)
+    ctx, result, _, _ = calibrated_flow(repos)
     approve_pr(ctx)
     seams, posted = recording_seams()
     move_head(repos)
@@ -286,7 +288,7 @@ def test_flow_summary_renders_covering_and_unrefreshed_states() -> None:
 def test_the_review_gate_posts_the_signal_and_reruns_inside_a_calibrated_flow(repos: SimpleNamespace) -> None:
     ctx, _, calls, run = calibrated_flow(repos)
     approve_pr(ctx)
-    seams, posted = recording_seams()
+    seams, _ = recording_seams()
     new_head = move_head(repos)
     record = review_calibration_freshness(ctx, "7", run_stage=run, seams=seams)
     assert (record["moved"], record["rerun"]) == (True, True)

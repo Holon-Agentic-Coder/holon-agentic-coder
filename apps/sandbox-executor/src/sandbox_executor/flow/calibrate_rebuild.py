@@ -46,7 +46,7 @@ def _commits_missing_from_head(repo_dir: str, start_sha: str, existing_sha: str)
     return None if out is None else out.split()
 
 
-def _is_calibration_commit(repo_dir: str, sha: str) -> bool:
+def is_calibration_commit(repo_dir: str, sha: str) -> bool:
     """True for a non-merge commit with a ``chore(calibration): `` subject touching only calibration paths."""
     parents = _git_out(repo_dir, ["rev-list", "--parents", "-n", "1", sha, "--"])
     subject = _git_out(repo_dir, ["log", "-1", "--format=%s", sha, "--"])
@@ -59,7 +59,7 @@ def _is_calibration_commit(repo_dir: str, sha: str) -> bool:
 def holds_only_calibration_commits(repo_dir: str, start_sha: str, existing_sha: str) -> bool:
     """True when ``existing_sha`` is an ancestor of ``start_sha`` or adds only Stage 5 calibration commits to it."""
     missing = _commits_missing_from_head(repo_dir, start_sha, existing_sha)
-    return missing is not None and all(_is_calibration_commit(repo_dir, sha) for sha in missing)
+    return missing is not None and all(is_calibration_commit(repo_dir, sha) for sha in missing)
 
 
 def stale_calibrated_refs(repo_dir: str, start_sha: str, local_sha: str, remote_sha: str) -> tuple[str, str]:

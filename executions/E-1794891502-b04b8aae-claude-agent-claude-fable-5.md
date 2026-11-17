@@ -56,6 +56,25 @@ site: after the `decide_post` posting block in `flow/review/loop.py`, keyed on `
 `(evaluated_sha, current_head)` pair: `<!-- holon-calibration-stale:<evaluated>:<head> -->`; cleared
 comment marker `<!-- holon-calibration-refreshed:<head> -->`.
 
+### Step 2: Build `flow/calibrate_rerun.py` (IMPLEMENTATION)
+
+- New module `flow/calibrate_rerun.py`: `HeadMoveCheck` / `RerunSeams` dataclasses,
+  `head_move_since_calibration` (the predicate per the Step 1 spec), `report_staleness` (reads the
+  report at the branch tip via `read_git_file`, resolves the origin head after a tolerant fetch),
+  `post_stale_signal` plus a private refreshed-signal poster (marker-de-duplicated, best-effort),
+  `rerun_calibration` (bounded by `MAX_RERUN_ATTEMPTS = 2`, no-op on an unmoved head, sets
+  `calibration_stale`/`stale_reason` when the head outruns both attempts) and
+  `review_calibration_freshness` (the review loop's gate; stale posts the signal, and reruns only
+  in-flow: `auto_calibrate` with a successful prior Stage 5 result).
+- Promoted `calibrate_rebuild._is_calibration_commit` to the public `is_calibration_commit`
+  (pure rename; both call sites updated, module size unchanged).
+- Added `ci_reverify.rerun_note` so the reverify module stays the single owner of the head-moved
+  wording in the refreshed `ci_verdict` report.
+- Exported the new public names from `flow/__init__.py` (package-exports guard requires it).
+- Predicate unit tests in `tests/test_calibrate_rerun.py`: equal heads, abbreviated SHA,
+  calibration-only, mixed, calibration-subject-on-foreign-path, merge commit, force-push
+  non-ancestor, unknown SHA.
+
 ## Tests Run
 
 (pending)

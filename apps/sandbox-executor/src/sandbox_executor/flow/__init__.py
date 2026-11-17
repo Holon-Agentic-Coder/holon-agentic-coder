@@ -29,9 +29,19 @@ from sandbox_executor.flow.admission import (
 from sandbox_executor.flow.calibrate_rebuild import (
     holds_only_calibration_commits,
     is_ancestor,
+    is_calibration_commit,
     is_calibration_path,
     rebuild_calibrated_branch,
     stale_calibrated_refs,
+)
+from sandbox_executor.flow.calibrate_rerun import (
+    HeadMoveCheck,
+    RerunSeams,
+    head_move_since_calibration,
+    post_stale_signal,
+    report_staleness,
+    rerun_calibration,
+    review_calibration_freshness,
 )
 from sandbox_executor.flow.calibrate_sync import (
     CalibrationSyncError,
@@ -103,6 +113,7 @@ from sandbox_executor.flow.github.ci import (
     resolve_ci_registration_timeout,
 )
 from sandbox_executor.flow.github.ci_final_head import format_final_head_ci
+from sandbox_executor.flow.github.ci_reverify import rerun_note
 from sandbox_executor.flow.github.ci_wait import (
     CiWaitPolicy,
     CiWaitResult,
@@ -292,6 +303,7 @@ __all__ = [
     "FlowCheckpoint",
     "FlowContext",
     "FlowStage",
+    "HeadMoveCheck",
     "HostRemoteError",
     "InFlightFlow",
     "MigrationTransform",
@@ -299,6 +311,7 @@ __all__ = [
     "PrefixSide",
     "ResolverInput",
     "ResolverOutcome",
+    "RerunSeams",
     "SalvageError",
     "SalvageResult",
     "StageResult",
@@ -402,8 +415,10 @@ __all__ = [
     "gate_ci_flags",
     "generate_semantic_pr_metadata",
     "get_default_checkpoint_path",
+    "head_move_since_calibration",
     "holds_only_calibration_commits",
     "is_ancestor",
+    "is_calibration_commit",
     "is_calibration_path",
     "is_pending_only",
     "is_terminal_verdict",
@@ -418,6 +433,7 @@ __all__ = [
     "parse_metrics",
     "pending_check_names",
     "post_pr_review_consensus",
+    "post_stale_signal",
     "prepare_calibrated_branch",
     "probe_ci_checks",
     "publish_calibration",
@@ -434,9 +450,13 @@ __all__ = [
     "redact_agent_secrets",
     "remote_error",
     "render_reviewer_summary_line",
+    "report_staleness",
+    "rerun_calibration",
+    "rerun_note",
     "resolve_append_only_conflict",
     "resolve_ci_registration_timeout",
     "restore_starting_branch",
+    "review_calibration_freshness",
     "review_loop_approved",
     "review_summary_lines",
     "reviewers_sandboxed",

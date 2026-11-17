@@ -75,6 +75,12 @@ def reverify_final_head(record: Mapping[str, Any], approved_head: str | None, fi
     }
 
 
+def rerun_note(reverified: Mapping[str, Any], refreshed_head: str | None) -> dict[str, Any]:
+    """The re-verification record after a head move made Stage 5 rerun: the report names the rerun and the new head."""
+    note = f"The head moved after calibration; a Stage 5 rerun refreshed the report to {short_sha(refreshed_head)}."
+    return {**reverified, "report": f"{note} {reverified.get('report') or ''}".strip()}
+
+
 def blocked_error(reverified: Mapping[str, Any]) -> str:
     """The Stage 5 error of a red final head."""
     covered = reverified.get("approved_head")

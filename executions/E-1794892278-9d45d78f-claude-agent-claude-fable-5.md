@@ -72,3 +72,20 @@ Execution notes so far:
   as the intent's closed list: exactly `refs/dolt/data` plus `.beads/` data, never source files.
 - Added a pointer sentence in `docs/agents.md` (agent communication section) and an entry in its related-documents
   list; no other changes to that document.
+
+### Step 4: Hermetic tests in the new declared module
+
+- Created `apps/sandbox-executor/tests/test_beads_integration.py` (the module the prior attempt wrote undeclared; this
+  plan declares it in the touch set). Five groups: committed config shape (`issue_prefix: hac`, `dolt.local-only`,
+  `node_id` absent — asserted textually because the workspace carries no YAML library and the plan forbids new
+  dependencies), the `.gitignore` entry, the Dockerfile pin (`ARG BD_VERSION` concrete semver, checksum-verified
+  install in the `holon-base` stage, trailing in-build `bd version` smoke check, bake-file variable), hygiene
+  non-collision (`hac-1`, `hac-0042`, `hac-1a2b` and prose forms through the imported
+  `find_hygiene_violations` helper of `test_repository_hygiene.py`, which stays unmodified, plus clean scans of
+  `.beads/config.yaml` and `docs/issue_tracking.md`), and a skip-if-bd-missing fully-offline create/claim/close
+  round-trip in a temporary repository (isolated `HOME`, `BD_DOLT_LOCAL_ONLY=true`).
+- Importing the hygiene helper via `from tests.test_repository_hygiene import ...` worked cleanly (the suite's
+  established convention), so the planned fallback of re-declaring patterns locally was not needed.
+- First targeted run: `uv run pytest apps/sandbox-executor/tests/test_beads_integration.py
+apps/sandbox-executor/tests/test_repository_hygiene.py` → 42 passed, 1 skipped (the bd smoke test; no binary in the
+  sandbox) in 0.47s.

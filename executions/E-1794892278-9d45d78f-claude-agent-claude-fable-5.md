@@ -37,4 +37,28 @@ Execution notes so far:
 
 ## Steps Executed
 
-(appended as steps complete)
+### Step 1: Probe bd offline and commit the tracker config
+
+- Probe: `command -v bd` found no binary in the sandbox, so `.beads/config.yaml` was hand-authored to the documented
+  shape instead of being taken from `bd init` output. Learning recorded: target-repository sandboxes cannot assume a
+  host bd; bootstrap must tolerate authoring the config directly.
+- Wrote `.beads/config.yaml` with `issue_prefix: hac` (bd stores the prefix without the dash; rendered ids are
+  `hac-...`), `dolt.local-only: true`, and no `node_id` key; a header comment states the `refs/dolt/data` sync rule and
+  the no-snapshot rule.
+- Appended `.beads/embeddeddolt/` to the root `.gitignore` before any other tracker artefact could exist.
+- `git status` confirmed only `.beads/config.yaml`, `.gitignore` and this record changed.
+
+### Step 2: Pin bd in the agent images
+
+- `apps/sandbox-executor/Dockerfile`: added top-of-file `ARG BD_VERSION=1.3.4` next to `UV_VERSION` (v1.3.4 is the
+  latest published beads release, verified against the upstream release feed at execution time), and an install step in
+  the `holon-base` stage following the existing Node.js dpkg-arch pattern: download
+  `beads_${BD_VERSION}_linux_${ARCH}.tar.gz` plus the release's `checksums.txt`, verify with `sha256sum -c`, extract
+  and install the `bd` binary (tolerating root-level or one-directory-deep layout, as the upstream installer does), and
+  finish with an in-build `bd version` smoke check so a broken install fails the layer.
+- `apps/sandbox-executor/docker-bake.hcl`: exposed an overridable `BD_VERSION` variable; when empty (the default), no
+  arg is passed, keeping the Dockerfile's `ARG BD_VERSION` default as the single pin.
+- `apps/sandbox-executor/build_all_images.sh` forwards no build args today (bake reads its variables from the
+  environment), so it is intentionally left unchanged, as the plan allows.
+- No image build was attempted (network-isolated sandbox); correctness is enforced textually by Step 4's tests and at
+  the next real image build.

@@ -75,6 +75,14 @@ comment marker `<!-- holon-calibration-refreshed:<head> -->`.
   calibration-only, mixed, calibration-subject-on-foreign-path, merge commit, force-push
   non-ancestor, unknown SHA.
 
+### Step 3: Stale signal (IMPLEMENTATION)
+
+- The marker-de-duplicated PR comments and the `calibration_stale`/`stale_reason` payload flags landed
+  inside `flow/calibrate_rerun.py` with Step 2 (one module owns the signal).
+- `cli/commands/flow.py` `_calibrated_head_line` now renders three states: STALE (covers `<sha>`, the
+  pull request head is `<sha>` — not ready to merge on this report), covering, and not refreshed. The
+  flow's report-back never says "covers" while stale.
+
 ## Tests Run
 
 (pending)

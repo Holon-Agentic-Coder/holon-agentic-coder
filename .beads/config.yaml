@@ -1,0 +1,7 @@
+# Beads (bd) tracker configuration for this repository. Issue ids look like hac-1a2b.
+# Issue data lives in the gitignored .beads/embeddeddolt/ database and syncs over the
+# git ref refs/dolt/data only; never commit issues.jsonl snapshots. node_id is
+# per-clone machine state and must never be added to this tracked file.
+issue_prefix: hac
+dolt:
+  local-only: true

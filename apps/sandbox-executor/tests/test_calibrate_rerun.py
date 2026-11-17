@@ -295,11 +295,39 @@ def test_the_review_gate_posts_the_signal_and_reruns_inside_a_calibrated_flow(re
     seams, _ = recording_seams()
     new_head = move_head(repos)
     record = review_calibration_freshness(ctx, "7", run_stage=run, seams=seams)
-    assert (record["moved"], record["rerun"]) == (True, True)
+    assert (record["moved"], record["rerun"], record["rerun_status"]) == (True, True, "success")
+    assert "rerun_error" not in record and "rerun_stale" not in record
     assert record["current_head"] == new_head
     assert record["signal"]["posted"] is True
     assert len(calls) == 2
     assert report_staleness(ctx).moved is False
+
+
+def test_the_review_gate_records_a_failed_rerun_outcome(repos: SimpleNamespace) -> None:
+    ctx, _, _, _ = calibrated_flow(repos)
+    approve_pr(ctx)
+    seams, _ = recording_seams()
+    move_head(repos)
+
+    def failing(context: FlowContext) -> StageResult:
+        return StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.FAILED, error="calibrate blew up")
+
+    record = review_calibration_freshness(ctx, "7", run_stage=failing, seams=seams)
+    assert (record["rerun"], record["rerun_status"]) == (True, "failed")
+    assert record["rerun_error"] == "calibrate blew up"
+
+
+def test_the_review_gate_records_a_rerun_the_head_outran_as_stale(repos: SimpleNamespace) -> None:
+    ctx, _, _, _ = calibrated_flow(repos)
+    approve_pr(ctx)
+    seams, _ = recording_seams()
+    move_head(repos)
+
+    def never_catching_up(context: FlowContext) -> StageResult:
+        return StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS)
+
+    record = review_calibration_freshness(ctx, "7", run_stage=never_catching_up, seams=seams)
+    assert (record["rerun"], record["rerun_status"], record["rerun_stale"]) == (True, "success", True)
 
 
 def test_the_review_gate_signals_only_without_a_prior_stage5_result(repos: SimpleNamespace) -> None:

@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from sandbox_executor.calibration import extract_branch_components, parse_evaluated_commit_sha, read_git_file
@@ -266,11 +266,7 @@ def review_calibration_freshness(
         check = report_staleness(context, seams)
         if not check.moved:
             return None
-        record: dict[str, Any] = {
-            "moved": True,
-            "evaluated_sha": check.evaluated_sha,
-            "current_head": check.current_head,
-            "reason": check.reason,
+        record: dict[str, Any] = asdict(check) | {
             "signal": post_stale_signal(context, check, seams, pr_number=pr_number),
             "rerun": False,
         }
@@ -278,7 +274,10 @@ def review_calibration_freshness(
         if context.auto_calibrate and prior is not None and prior.status is StageStatus.SUCCESS:
             stage = run_stage or _flow_run_stage()
             refreshed = rerun_calibration(context, prior, stage, seams=seams, pr_number=pr_number)
-            record["rerun"] = refreshed is not prior
+            if refreshed is not prior:  # a rerun ran: record its outcome, so a failed refresh is never mistaken for one
+                record["rerun"], record["rerun_status"] = True, refreshed.status.value
+                extras = {"rerun_error": refreshed.error, "rerun_stale": refreshed.payload.get("calibration_stale")}
+                record.update({key: value for key, value in extras.items() if value})
     except Exception as exc:  # the gate informs; it never fails the review loop
         logger.warning("Calibration freshness gate failed: %s", exc)
         return None

@@ -83,6 +83,20 @@ comment marker `<!-- holon-calibration-refreshed:<head> -->`.
   pull request head is `<sha>` — not ready to merge on this report), covering, and not refreshed. The
   flow's report-back never says "covers" while stale.
 
+### Step 4: Wire the triggers (IMPLEMENTATION)
+
+- `flow/pipeline.py`: both Stage 5 sites (the generic stage loop and the HALTED_FOR_HUMAN
+  auto-calibrate block) pass the completed result through `rerun_calibration(context, result,
+  run_calibrate_stage)` before `after_stage`/`save_checkpoint`, so the checkpoint records the
+  refreshed `calibrated_head`. An unmoved head (the common case: Stage 5's own commits are
+  discounted) is a no-op; a failed rerun propagates through the unchanged FAILED path.
+- `flow/review/loop.py`: after the `decide_post` posting block, one call to
+  `review_calibration_freshness(context, pr_number)`; the record lands in the loop result as
+  `calibration_freshness`. A standalone review loop posts the stale signal only (no prior Stage 5
+  result in the context), per the plan's narrowed standalone trigger.
+- `github/ci_reverify.py` owns the rerun wording via `rerun_note` (landed in Step 2); no change to
+  `stages/calibrate.py` was needed — the rerun wrapper sets the staleness payload keys itself.
+
 ## Tests Run
 
 (pending)

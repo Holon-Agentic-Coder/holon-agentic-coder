@@ -18,6 +18,7 @@ from sandbox_executor.budgets import (
     format_minutes,
     load_budgets,
 )
+from sandbox_executor.flow.calibrate_rerun import rerun_calibration
 from sandbox_executor.flow.calibrate_sync import restore_starting_branch
 from sandbox_executor.flow.checkpoint import save_checkpoint
 from sandbox_executor.flow.child_progress import has_recorded_decomposition
@@ -352,6 +353,9 @@ class PipelineEngine:
             self.before_stage(stage)
             result = self.timed_execute_stage(stage)
 
+            if stage == FlowStage.CALIBRATE:
+                # Catches a head that moved during the stage's own CI wait; an unmoved head is a no-op.
+                result = rerun_calibration(self.context, result, run_calibrate_stage)
             self.after_stage(stage, result)
             self.save_checkpoint()
 
@@ -370,6 +374,7 @@ class PipelineEngine:
                         cal_stage = FlowStage.CALIBRATE
                         self.before_stage(cal_stage)
                         cal_result = self.timed_execute_stage(cal_stage)
+                        cal_result = rerun_calibration(self.context, cal_result, run_calibrate_stage)
                         self.after_stage(cal_stage, cal_result)
                         self.save_checkpoint()
                     elif self.context.skip_calibrate:

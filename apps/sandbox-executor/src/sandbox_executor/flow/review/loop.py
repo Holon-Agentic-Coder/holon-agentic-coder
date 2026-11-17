@@ -15,6 +15,7 @@ from typing import Any
 from sandbox_executor.agent_defaults import FALLBACK_AGENT
 from sandbox_executor.budgets import StageTimer, load_budgets, resolve_review_ci_wait_seconds
 from sandbox_executor.entrypoint.execution_workspace import workspace_mounted
+from sandbox_executor.flow.calibrate_rerun import review_calibration_freshness
 from sandbox_executor.flow.constants import CI_REGISTRATION_POLL_SECONDS
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.git_refs import _resolve_review_commit
@@ -744,6 +745,10 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     else:
         log_skipped_post(context, review_target, decision)
 
+    # Every re-run and resolver push flows through here: a stale calibration report posts its signal (and, in-flow,
+    # reruns Stage 5) before the loop reports; calibrate_rerun.py owns the logic and never raises.
+    calibration_freshness = review_calibration_freshness(context, str(pr_res.get("pr_number") or "") or None)
+
     halt_reasons: list[str] = []
     if pr_refusal_error or infra_error:
         halt_reasons.append(_bounded_error_context(str(pr_refusal_error or infra_error)))
@@ -858,6 +863,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "no_convergence": no_convergence,
         "consensus_blockers": list(blockers),
         "resolver_error": resolver_error,
+        "calibration_freshness": calibration_freshness,
     }
     if pr_refusal_error or infra_error or post_error or resolver_error:
         loop_result["error"] = pr_refusal_error or infra_error or post_error or f"resolver failed: {resolver_error}"

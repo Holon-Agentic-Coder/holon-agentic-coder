@@ -2,7 +2,7 @@
 
 A calibration report covers exactly one execution head. When the pull request head moves after Stage 5 (a conflict
 merge with main, a resolver push, a review-loop re-run), the report no longer names the head that merges, so the two
-re-entrant trigger sites (the pipeline's Stage 5 block and the review loop's pre-posting gate) call into this module:
+re-entrant trigger sites (the pipeline's Stage 5 block and the review loop's report-back gate) call into this module:
 it detects the move, posts a de-duplicated stale comment on the pull request and reruns Stage 5, bounded by
 ``MAX_RERUN_ATTEMPTS``. Invariant: a calibration commit is never, by itself, a head move — Stage 5's own report,
 reconciliation and promotion commits are discounted, so a rerun can never trigger another rerun (the no-loop
@@ -186,7 +186,7 @@ def post_stale_signal(
     body = (
         "## ⚠️ Calibration report is stale\n\n"
         f"The calibration report covers `{short_sha(check.evaluated_sha)}` but the pull request head is "
-        f"`{short_sha(check.current_head)}` ({check.reason}). Stage 5 is rerunning; do not merge on this report."
+        f"`{short_sha(check.current_head)}` ({check.reason}). Stage 5 must rerun; do not merge on this report."
     )
     return _post_marked_comment(context, pr_number, body, _stale_marker(check), seams or RerunSeams())
 
@@ -255,7 +255,7 @@ def review_calibration_freshness(
     run_stage: Callable[[FlowContext], StageResult] | None = None,
     seams: RerunSeams | None = None,
 ) -> dict[str, Any] | None:
-    """The review loop's pre-posting gate: a stale report posts the stale signal and, in-flow, reruns Stage 5.
+    """The review loop's report-back gate, after the consensus post: post the stale signal and, in-flow, rerun Stage 5.
 
     The rerun fires only when this flow already calibrated (``auto_calibrate`` with a successful Stage 5 result); a
     standalone review loop posts the signal alone, which still marks the pull request. Never raises, and returns

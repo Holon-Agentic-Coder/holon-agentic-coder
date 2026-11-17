@@ -159,9 +159,12 @@ def _refreshed_marker(head: str) -> str:
 
 
 def _post_marked_comment(
-    context: FlowContext, pr_number: str, body: str, marker: str, seams: RerunSeams
+    context: FlowContext, pr_number: str | None, body: str, marker: str, seams: RerunSeams
 ) -> dict[str, Any]:
-    """Post ``body`` once per ``marker`` on the PR; best-effort and never raises, ``{"posted", "reason"}``."""
+    """Post ``body`` once per ``marker`` on the PR (the approval's when none is given); never raises."""
+    pr_number = pr_number or approval_pr_number(context)
+    if context.dry_run or context.skip_push or not pr_number:
+        return {"posted": False, "reason": "dry run, push skipped or no pull request"}
     repo_dir = context.target_worktree
     try:
         existing = (seams.lister or gh_comment_lister(repo_dir))(pr_number)
@@ -180,9 +183,6 @@ def post_stale_signal(
     context: FlowContext, check: HeadMoveCheck, seams: RerunSeams | None = None, pr_number: str | None = None
 ) -> dict[str, Any]:
     """Post the once-per-(evaluated, head) comment that the report is stale; the payload flag stays authoritative."""
-    pr_number = pr_number or approval_pr_number(context)
-    if context.dry_run or context.skip_push or not pr_number:
-        return {"posted": False, "reason": "dry run, push skipped or no pull request"}
     body = (
         "## ⚠️ Calibration report is stale\n\n"
         f"The calibration report covers `{short_sha(check.evaluated_sha)}` but the pull request head is "
@@ -191,11 +191,10 @@ def post_stale_signal(
     return _post_marked_comment(context, pr_number, body, _stale_marker(check), seams or RerunSeams())
 
 
-def _post_refreshed_signal(context: FlowContext, head: str, seams: RerunSeams | None) -> dict[str, Any]:
+def _post_refreshed_signal(
+    context: FlowContext, head: str, seams: RerunSeams | None, pr_number: str | None = None
+) -> dict[str, Any]:
     """Post the comment that supersedes the stale one after a successful rerun; the stale one is never deleted."""
-    pr_number = approval_pr_number(context)
-    if context.dry_run or context.skip_push or not pr_number:
-        return {"posted": False, "reason": "dry run, push skipped or no pull request"}
     body = f"Calibration refreshed: the report now covers head `{short_sha(head)}`."
     return _post_marked_comment(context, pr_number, body, _refreshed_marker(head), seams or RerunSeams())
 
@@ -205,9 +204,9 @@ def rerun_calibration(
     result: StageResult,
     run_stage: Callable[[FlowContext], StageResult],
     seams: RerunSeams | None = None,
-    max_attempts: int = MAX_RERUN_ATTEMPTS,
+    pr_number: str | None = None,
 ) -> StageResult:
-    """Rerun Stage 5 (at most ``max_attempts`` times) while the pull-request head has moved past the report.
+    """Rerun Stage 5 (at most ``MAX_RERUN_ATTEMPTS`` times) while the pull-request head has moved past the report.
 
     An unmoved head is a no-op by construction: no stage call, hence no new ledger rows and the unchanged ``result``.
     A moved head posts the stale signal, reruns ``run_stage`` (production: ``run_calibrate_stage``, which syncs to the
@@ -219,12 +218,12 @@ def rerun_calibration(
         return result
     reran = 0
     check = _safe_staleness(context, seams)
-    while check.moved and reran < max_attempts:
+    while check.moved and reran < MAX_RERUN_ATTEMPTS:
         context.log(
             f"Stage 5 rerun: the head moved after calibration (evaluated {check.evaluated_sha[:12]}, head "
-            f"{check.current_head[:12]}; {check.reason}); rerunning (attempt {reran + 1}/{max_attempts})."
+            f"{check.current_head[:12]}; {check.reason}); rerunning (attempt {reran + 1}/{MAX_RERUN_ATTEMPTS})."
         )
-        post_stale_signal(context, check, seams)
+        post_stale_signal(context, check, seams, pr_number=pr_number)
         result = run_stage(context)
         reran += 1
         if result.status is not StageStatus.SUCCESS:
@@ -238,7 +237,7 @@ def rerun_calibration(
         head = str(result.payload.get("calibrated_head") or check.evaluated_sha)
         ci_verdict = rerun_note(result.payload.get("ci_verdict") or {}, head)
         result.payload = {**result.payload, "ci_verdict": ci_verdict}
-        _post_refreshed_signal(context, head, seams)
+        _post_refreshed_signal(context, head, seams, pr_number=pr_number)
     return result
 
 
@@ -277,7 +276,8 @@ def review_calibration_freshness(
         }
         prior = context.stage_results.get("calibrate")
         if context.auto_calibrate and prior is not None and prior.status is StageStatus.SUCCESS:
-            refreshed = rerun_calibration(context, prior, run_stage or _flow_run_stage(), seams=seams)
+            stage = run_stage or _flow_run_stage()
+            refreshed = rerun_calibration(context, prior, stage, seams=seams, pr_number=pr_number)
             record["rerun"] = refreshed is not prior
     except Exception as exc:  # the gate informs; it never fails the review loop
         logger.warning("Calibration freshness gate failed: %s", exc)

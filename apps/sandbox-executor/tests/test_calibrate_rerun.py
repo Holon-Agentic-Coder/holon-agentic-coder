@@ -241,7 +241,11 @@ def test_a_head_that_outruns_both_attempts_marks_the_payload_stale(repos: Simple
     ctx, result, _, _ = calibrated_flow(repos)
     new_head = move_head(repos)
     attempts: list[str] = []
-    never_catching_up = lambda context: attempts.append("stage") or result  # noqa: E731
+
+    def never_catching_up(context: FlowContext) -> StageResult:
+        attempts.append("stage")
+        return result
+
     stale = rerun_calibration(ctx, result, never_catching_up)
     assert len(attempts) == 2  # MAX_RERUN_ATTEMPTS bounds the work
     assert stale.payload["calibration_stale"] is True
@@ -307,6 +311,37 @@ def test_the_review_gate_signals_only_without_a_prior_stage5_result(repos: Simpl
     assert (record["moved"], record["rerun"]) == (True, False)
     assert len(calls) == 1  # the standalone loop cannot run Stage 5; the signal still marks the PR
     assert len([body for body in posted if "Calibration report is stale" in body]) == 1
+
+
+def test_the_review_gate_posts_the_refreshed_comment_without_an_approved_consensus(repos: SimpleNamespace) -> None:
+    """The gate's explicit PR number reaches the refreshed comment even when no approval names the PR."""
+    ctx, _, calls, run = calibrated_flow(repos)
+    seams, posted = recording_seams()
+    move_head(repos)
+    record = review_calibration_freshness(ctx, "7", run_stage=run, seams=seams)
+    assert (record["moved"], record["rerun"]) == (True, True)
+    assert len(calls) == 2
+    assert len([body for body in posted if "Calibration report is stale" in body]) == 1
+    assert len([body for body in posted if "Calibration refreshed" in body]) == 1
+
+
+def test_posting_gate_reports_calibration_freshness(tmp_path: Path) -> None:
+    """The loop runs the calibration staleness gate after the posting decision and reports its record."""
+    from sandbox_executor.flow import run_review_loop
+
+    from tests.test_review_loop import _green_loop_patches, _loop_ctx
+
+    sentinel = {"moved": True, "rerun": False}
+    stack, _, _ = _green_loop_patches()
+    with (
+        stack,
+        patch("sandbox_executor.flow.review.loop.review_calibration_freshness", return_value=sentinel) as gate,
+    ):
+        res = run_review_loop(_loop_ctx(tmp_path, dry_run=True), target="feature/x", dry_run=True, max_iterations=1)
+
+    gate.assert_called_once()
+    assert gate.call_args.args[1] is None  # no PR was created, so the gate gets no PR number
+    assert res["calibration_freshness"] is sentinel
 
 
 def test_the_review_gate_is_silent_without_a_report_or_a_pr(repos: SimpleNamespace) -> None:

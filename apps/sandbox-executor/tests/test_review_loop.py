@@ -1099,23 +1099,6 @@ def test_dry_run_is_never_approved(tmp_path):
     assert res["consensus"]["status"] == "not_measured"
 
 
-def test_posting_gate_reports_calibration_freshness(tmp_path):
-    """The loop runs the calibration staleness gate after the posting decision and reports its record."""
-    from sandbox_executor.flow import run_review_loop
-
-    sentinel = {"moved": True, "rerun": False}
-    stack, _, _ = _green_loop_patches()
-    with (
-        stack,
-        patch("sandbox_executor.flow.review.loop.review_calibration_freshness", return_value=sentinel) as gate,
-    ):
-        res = run_review_loop(_loop_ctx(tmp_path, dry_run=True), target="feature/x", dry_run=True, max_iterations=1)
-
-    gate.assert_called_once()
-    assert gate.call_args.args[1] is None  # no PR was created, so the gate gets no PR number
-    assert res["calibration_freshness"] is sentinel
-
-
 def test_approved_loop_never_merges(tmp_path, gh_write_guard):
     """A full approved loop through the real posting code issues no merge or auto-merge gh command."""
     from sandbox_executor.flow import run_review_loop

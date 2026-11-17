@@ -97,6 +97,34 @@ comment marker `<!-- holon-calibration-refreshed:<head> -->`.
 - `github/ci_reverify.py` owns the rerun wording via `rerun_note` (landed in Step 2); no change to
   `stages/calibrate.py` was needed — the rerun wrapper sets the staleness payload keys itself.
 
+### Step 5: Hermetic pytest coverage (TEST)
+
+Extended `tests/test_calibrate_rerun.py` on the `test_calibrate_sync.py` harness (bare origin, host
+worktree, pushing clone; a realistic fake `run_calibrate` committing the report with
+`- **Evaluated Commit SHA:**` plus an ACT-CAL ledger row in Stage 5's own commit shape), covering all
+four acceptance behaviours:
+
+1. Move → rerun: a resolver-style push after calibration makes `rerun_calibration` run the stage a
+   second time; the rewritten report's evaluated SHA equals the new origin head, exactly one new
+   ACT-CAL row per run, old ledger content a strict prefix of the new (rows appended, never rewritten),
+   and the `ci_verdict` report names the rerun.
+2. Unmoved → no-op: same result object back, zero stage calls, `for-each-ref` and the ledger
+   byte-identical.
+3. No loop: after a rerun, only calibration commits follow the evaluated SHA, the predicate reports
+   unmoved and no third run happens; a head that outruns both attempts stops at `MAX_RERUN_ATTEMPTS`
+   with `calibration_stale` set and the STALE summary line rendered.
+4. Stale-signal lifecycle: with recording fakes, the stale comment posts once per
+   `(evaluated, head)` pair (deduped on repeat checks and on a still-stale second attempt), the
+   refreshed comment supersedes it after the rerun, and `_calibrated_head_line` renders all three
+   states.
+
+Plus: review-gate tests (in-flow rerun, standalone signal-only, silent without report/PR),
+double-trigger benignity (both sites on one move → exactly one rerun), a pipeline wiring test (the
+Stage 5 result passes through `rerun_calibration` and the refreshed result reaches
+`context.stage_results`), and a loop wiring test in `tests/test_review_loop.py`
+(`calibration_freshness` in the loop result; the gate gets the PR number). No existing assertion was
+modified; test changes are additive, as declared in the plan.
+
 ## Tests Run
 
 (pending)

@@ -2,7 +2,8 @@
 
 Ingests predicted plan metrics and actual execution telemetry to compute
 calibration errors, Expected Value deltas, entropy factors, and generates
-markdown calibration reports conforming to `plans/P-{plan_id}_calibration.md`.
+markdown calibration reports written beside the plan file (`plans/{intent}/{plan id}_calibration.md`; the flat
+pre-migration `plans/{plan id}_calibration.md` shape stays readable).
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from sandbox_executor import plan_paths
 from sandbox_executor.agent_defaults import LEGACY_DEFAULT_AGENT, LEGACY_DEFAULT_MODEL
 from sandbox_executor.calibration_diff import (
     DIFF_BASE_FIRST_PARENT,
@@ -658,30 +660,40 @@ def _parse_plan_markdown_content(content: str, predicted: PredictedMetrics) -> N
 
 
 def _parse_predicted_from_plans_ledger(
-    plan_id: str, target_worktree: str
+    plan_id: str, target_worktree: str, plan_branch: str = ""
 ) -> tuple[PredictedMetrics, dict[str, Any]] | None:
     plans_jsonl = os.path.join(target_worktree, "holon-knowledge", "ledger", "plans.jsonl")
     if not os.path.exists(plans_jsonl):
         return None
+    intent_prefix = plan_branch.removesuffix("/_").strip("/").rsplit("/", 1)[0] if plan_branch else ""
     with contextlib.suppress(Exception), open(plans_jsonl, encoding="utf-8") as f:
         for line in f:
             if not line.strip():
                 continue
             with contextlib.suppress(json.JSONDecodeError, ValueError):
                 record = json.loads(line)
-                if record.get("plan_id") == plan_id or plan_id in record.get("plan_branch", ""):
-                    predicted = PredictedMetrics()
-                    for field in ("p_success", "entropy", "impact", "cost", "learning_value", "ev"):
-                        if field in record:
-                            setattr(predicted, field, float(record[field]))
-                    return predicted, record
+                if record.get("plan_id") != plan_id and plan_id not in record.get("plan_branch", ""):
+                    continue
+                # Keyed on the (intent, plan id) pair whenever the plan branch is known; a bare plan id resolves
+                # only when no other intent carries it, which holds for every pre-migration row.
+                row_intent = str(record.get("intent_branch") or "").removesuffix("/_").strip("/")
+                if intent_prefix and row_intent and row_intent != intent_prefix:
+                    continue
+                predicted = PredictedMetrics()
+                for field in ("p_success", "entropy", "impact", "cost", "learning_value", "ev"):
+                    if field in record:
+                        setattr(predicted, field, float(record[field]))
+                return predicted, record
     return None
 
 
 def _parse_predicted_from_plan_markdown(
-    plan_id: str, target_worktree: str
+    plan_id: str, target_worktree: str, plan_branch: str = ""
 ) -> tuple[PredictedMetrics, dict[str, Any]] | None:
-    candidates = [
+    candidates = []
+    if plan_branch:
+        candidates.append(os.path.join(target_worktree, plan_paths.plan_file_rel(plan_branch)))
+    candidates += [
         os.path.join(target_worktree, "plans", f"{plan_id}.md"),
         os.path.join(target_worktree, f"{plan_id}.md"),
     ]
@@ -696,11 +708,17 @@ def _parse_predicted_from_plan_markdown(
     return None
 
 
-def parse_predicted_metrics(plan_id: str, target_worktree: str = ".") -> tuple[PredictedMetrics, dict[str, Any]]:
-    """Parse predicted plan metrics from plans.jsonl or plans/P-{plan_id}.md."""
+def parse_predicted_metrics(
+    plan_id: str, target_worktree: str = ".", plan_branch: str = ""
+) -> tuple[PredictedMetrics, dict[str, Any]]:
+    """Parse predicted plan metrics from plans.jsonl or the plan markdown.
+
+    ``plan_branch`` keys the lookup on (intent, plan id) and resolves the nested ``plans/{intent}/{plan id}.md``
+    path; the flat ``plans/{plan id}.md`` shape stays readable for old-generation lookups without a branch.
+    """
     return (
-        _parse_predicted_from_plans_ledger(plan_id, target_worktree)
-        or _parse_predicted_from_plan_markdown(plan_id, target_worktree)
+        _parse_predicted_from_plans_ledger(plan_id, target_worktree, plan_branch)
+        or _parse_predicted_from_plan_markdown(plan_id, target_worktree, plan_branch)
         or (PredictedMetrics(), {})
     )
 
@@ -945,6 +963,23 @@ def compute_calibration_deltas(
     return deltas, accuracy_ratings, bias_directions
 
 
+def calibration_report_rel_for(plan_id: str, plan_branch: str, target_worktree: str = ".") -> str:
+    """The report path beside the plan file, keyed by the plan branch; both generations stay resolvable.
+
+    A known plan branch gives the nested ``plans/{intent}/{plan id}_calibration.md`` path, unless the plan file still
+    sits flat (an unmigrated old-generation tree), in which case the report sits flat beside it. With no usable
+    branch the flat legacy path is used.
+    """
+    bare = (plan_branch or "").removesuffix("/_").strip("/")
+    if not bare or bare.rsplit("/", 1)[-1] != plan_id:
+        return plan_paths.legacy_calibration_report_rel(plan_id)
+    nested_plan = os.path.join(target_worktree, plan_paths.plan_file_rel(bare))
+    flat_plan = os.path.join(target_worktree, plan_paths.legacy_plan_file_rel(plan_id))
+    if not os.path.exists(nested_plan) and os.path.exists(flat_plan):
+        return plan_paths.legacy_calibration_report_rel(plan_id)
+    return plan_paths.calibration_report_rel(bare)
+
+
 def format_markdown_report(report_data: dict[str, Any]) -> str:
     """Format structured markdown report conforming to reference calibration schema."""
     plan_id = report_data["plan_id"]
@@ -965,10 +1000,13 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
     lambda_val = report_data.get("lambda", 0.3)
     mu_val = report_data.get("mu", 0.5)
 
+    plan_branch_bare = str(report_data.get("plan_branch") or "").removesuffix("/_").strip("/")
+    plan_file_display = f"plans/{plan_branch_bare}.md" if plan_branch_bare else f"plans/{plan_id}.md"
     lines = [
         f"# Plan Calibration Report: {plan_id}",
         "",
-        f"- **Plan Reference:** [`plans/{plan_id}.md`]({plan_id}.md)",
+        # The link target is relative: the plan file sits beside the report in both generations.
+        f"- **Plan Reference:** [`{plan_file_display}`]({plan_id}.md)",
         f"- **Execution ID:** `{execution_id}`",
         f"- **Execution Branch:** `{execution_branch}`",
         f"- **Intent Branch:** `{intent_branch}`",
@@ -1171,7 +1209,7 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
         raw_branch = raw_branch[len("refs/heads/") :]
     calibrated_branch = f"{raw_branch}/calibrated"
 
-    predicted, plan_meta = parse_predicted_metrics(plan_id, target_worktree=target_worktree)
+    predicted, plan_meta = parse_predicted_metrics(plan_id, target_worktree=target_worktree, plan_branch=plan_branch)
     actual, exec_meta = parse_actual_metrics(
         execution_id,
         resolved_plan_ref,
@@ -1574,11 +1612,10 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
                     f"Failed to create calibrated branch '{calibrated_branch}' from '{start_point}': {err_msg}"
                 )
 
-    # 2. Write calibration markdown report to plans/P-{plan_id}_calibration.md
-    plans_dir = os.path.join(target_worktree, "plans")
-    os.makedirs(plans_dir, exist_ok=True)
-    report_rel = f"plans/{report.plan_id}_calibration.md"
+    # 2. Write the calibration markdown report beside the plan file (plans/{intent}/{plan id}_calibration.md)
+    report_rel = calibration_report_rel_for(report.plan_id, report.plan_branch, target_worktree)
     report_path = os.path.join(target_worktree, report_rel)
+    os.makedirs(os.path.dirname(report_path), exist_ok=True)
 
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report.markdown_content)

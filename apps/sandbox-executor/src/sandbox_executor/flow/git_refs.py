@@ -248,12 +248,21 @@ def _read_ledger_rows(repo_dir: str, ref: str, ledger_name: str) -> list[dict[st
     return rows
 
 
-def _latest_execution_summary(rows: list[dict[str, Any]], execution_id: str) -> dict[str, Any] | None:
-    """Return the authoritative summary row for an execution: highest ledger_revision, then latest written."""
+def _latest_execution_summary(
+    rows: list[dict[str, Any]], execution_id: str, plan_branch: str | None = None
+) -> dict[str, Any] | None:
+    """Return the authoritative summary row for an execution: highest ledger_revision, then latest written.
+
+    Pass ``plan_branch`` whenever it is known: an execution id alone is not a key (two plans can carry same-named
+    executions from the same second), so the rows are then filtered to that plan's pair.
+    """
+    wanted_plan = plan_branch.removesuffix("/_").strip("/") if plan_branch else None
     best: tuple[int, int] | None = None
     chosen: dict[str, Any] | None = None
     for idx, row in enumerate(rows):
         if row.get("entry_type") != "summary" or row.get("execution_id") != execution_id:
+            continue
+        if wanted_plan and str(row.get("plan_branch") or "").removesuffix("/_").strip("/") != wanted_plan:
             continue
         try:
             revision = int(row.get("ledger_revision") or 1)

@@ -68,8 +68,16 @@ def read_plan_touch_set(repo_dir: str, plan_branch: str) -> TouchSet | None:
     plan_ref = _resolve_branch_ref(repo_dir, plan_branch)
     if not plan_ref:
         return None
-    plan_id = plan_branch.removesuffix("/_").rsplit("/", 1)[-1]
-    rows = [row for row in _read_ledger_rows(repo_dir, plan_ref, "plans.jsonl") if row.get("plan_id") == plan_id]
+    plan_prefix = plan_branch.removesuffix("/_")
+    plan_id = plan_prefix.rsplit("/", 1)[-1]
+    intent_prefix = plan_prefix.rsplit("/", 1)[0]
+    # Keyed on the (intent, plan id) pair: the same plan id under another intent is a different plan.
+    rows = [
+        row
+        for row in _read_ledger_rows(repo_dir, plan_ref, "plans.jsonl")
+        if row.get("plan_id") == plan_id
+        and str(row.get("intent_branch") or "").removesuffix("/_").strip("/") == intent_prefix
+    ]
     return TouchSet.from_row(rows[-1].get("touch_set")) if rows else None
 
 

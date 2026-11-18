@@ -53,7 +53,8 @@ def _record_integration_row(context: FlowContext, payload: dict[str, Any]) -> st
     """Append the superseding summary row unless the execution's latest row already records the integration."""
     exec_branch, exec_id = str(payload["execution_branch"]), str(payload.get("execution_id") or "")
     rows = _read_ledger_rows(context.target_worktree, f"refs/remotes/origin/{exec_branch}", "executions.jsonl")
-    latest = _latest_execution_summary(rows, exec_id) or {"entry_type": "summary", "execution_id": exec_id}
+    plan_branch = exec_branch.removesuffix("/_").rsplit("/", 1)[0]
+    latest = _latest_execution_summary(rows, exec_id, plan_branch) or {"entry_type": "summary", "execution_id": exec_id}
     if latest.get("integrated"):
         return None
     return _append_superseding_execution_row(context, exec_branch, _superseding_row(latest, payload))

@@ -18,7 +18,7 @@ from sandbox_executor.flow.checkpoint import get_default_checkpoint_path
 from sandbox_executor.flow.context import FlowContext, StageResult
 from sandbox_executor.flow.git_refs import _fetch_branch_prefix_error, _list_child_branches, _origin_has_branch
 from sandbox_executor.flow.github.merge import GhRunner, _merged_result, gh_runner
-from sandbox_executor.ref_names import FitResult, fit_child_intent_branch
+from sandbox_executor.ref_names import FitResult, fit_child_intent_branch, truncate_slug
 
 PROGRESS_KEY = "children_progress"
 PENDING = "pending"
@@ -42,6 +42,8 @@ def _child_intent_branch(parent_branch: str, index: int, slug: str) -> FitResult
     it cannot collide with another intent, and the same list always derives the same name for the same child.
     """
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", slug).strip("-").lower() or f"sub-intent-{index}"
+    # Engine-derived child slugs respect the 32-character limit, cut at a word boundary.
+    slug = truncate_slug(slug)
     return fit_child_intent_branch(parent_branch, index, slug)
 
 

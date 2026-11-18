@@ -66,6 +66,39 @@ sanctioned route; the runtime guard is untouched and still rejects non-exempt re
 `resolve_root_intent_branch`); container side `entrypoint/intent_creator.py:main` before
 `start_branch_from_host_fetch`. Doctor: `cli/__init__.py:run_doctor`.
 
+### Step 2: Agent ticker registry with doctor and intent-time enforcement
+
+`AGENT_TICKERS` (`claude = CLA`, `antigravity = ANA`, `pi = PIA`) and `ticker_for_agent` (typed
+`MissingAgentTickerError`, no fallback) added to `agent_defaults.py`. `holon doctor` rejects a
+tickerless runner by name before the preflight probe; `run_intent_stage` refuses one before any
+branch name is resolved or created. Tests in `test_agent_defaults.py` cover the three fixed
+tickers, uniqueness, the three-uppercase-letter format, doctor rejection and intent-time rejection
+with no branch created. `uv run pytest apps/sandbox-executor/tests/test_agent_defaults.py`: 50
+passed.
+
+### Step 3: Pure model-code derivation function
+
+`plan_paths.model_code`: drops everything before `/`, first letter of each alphabetic word
+upper-cased, version words kept whole with consecutive ones dot-joined, invalid ref characters
+stripped, never empty. All seven required mappings pass as a parametrised test; fuzzed names
+(including `qwen2.5-coder:32b`) and every historical model label in `plans.jsonl` validate with
+`git check-ref-format --allow-onelevel`. No lookup table exists.
+
+### Step 4: Gen-3 ID builders, three-generation parser, collision rule
+
+New module `apps/sandbox-executor/src/sandbox_executor/plan_paths.py` (ref_names.py would have
+exceeded the ~400-line sizing rule): `new_stage_id` / `uncollided_stage_id` build
+`P-/E-{epoch}-{ticker}-{model code}` with no hex; a same-parent taken name bumps the epoch by one
+second (at most 5 bumps) or raises `DuplicateStageNameError`, never overwriting.
+`parse_stage_id` classifies all three generations (8-char lowercase hex second field = gen 2,
+three uppercase letters = gen 3, else gen 1) and exposes `generation` on the result; a fuzz test
+classifies 100% of real ledger IDs as gen 1/2. `ledger.build_plan_id` / `build_execution_id` now
+take an `exists` callback (planner checks plan file + (intent, plan) ledger pair + local ref;
+executor checks (plan, execution) pair + local ref) and measure ref-limit room.
+`ref_names.py` lost the hex/label fitting machinery (`fit_plan_id`, `fit_execution_id`,
+`original_labels`); `ensure_chain_fits` measures gen-3 segments (`MAX_STAGE_SEGMENT_LENGTH`).
+`test_plan_paths.py` and rewritten `test_ref_names.py` / `test_unique_stage_ids.py`: 90 passed.
+
 ## Tests Run
 
 (pending)

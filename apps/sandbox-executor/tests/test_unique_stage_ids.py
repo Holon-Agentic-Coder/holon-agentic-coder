@@ -1,4 +1,4 @@
-"""Tests for stage ID generation, disambiguation, and ledger uniqueness validation."""
+"""Tests for stage ID generation, same-second collision handling, and pair-keyed ledger validation."""
 
 import json
 import re
@@ -7,33 +7,48 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sandbox_executor.entrypoint.planner import PLAN_FILE_PATTERN, plan_file_rel
+from sandbox_executor.entrypoint.planner import PLAN_FILE_PATTERN
 from sandbox_executor.flow.review.ids import build_review_id
 from sandbox_executor.ledger import (
     _describe_id_owner,
     _extract_parent_ref,
     build_execution_id,
     build_plan_id,
-    build_stage_disambiguator,
     validate_ledger_file_unique_ids,
     validate_ledger_unique_ids,
     validate_stage_ledger,
 )
+from sandbox_executor.plan_paths import DuplicateStageNameError, plan_file_rel
 
 
 class TestSameSecondIds(unittest.TestCase):
-    """Ids and file names created in one second stay distinct; old formats stay valid."""
+    """Same-second names under one parent never overwrite; same names under different parents are legal."""
 
-    def test_plan_ids_and_file_names_differ_within_one_second(self):
-        first = build_plan_id(1794446836, "I-1/ids", "claude-agent", "sonnet", disambiguator="aaaaaaaa")
-        second = build_plan_id(1794446836, "I-1/ids", "claude-agent", "sonnet", disambiguator="bbbbbbbb")
-        self.assertNotEqual(plan_file_rel(first), plan_file_rel(second))
-        self.assertEqual(plan_file_rel(first), f"plans/{first}.md")
-        self.assertIn("aaaaaaaa", plan_file_rel(first))
-        self.assertRegex(plan_file_rel(first), PLAN_FILE_PATTERN)
+    def test_two_intents_planned_in_the_same_second_produce_distinct_plan_files(self):
+        plan_id = build_plan_id(1794446836, "I-1-alpha/_", "claude-agent", "claude-sonnet-5-5")
+        same_id = build_plan_id(1794446836, "I-2-beta/_", "claude-agent", "claude-sonnet-5-5")
+        self.assertEqual(plan_id, same_id)  # the id repeats; the intent-keyed paths differ
+        first = plan_file_rel(f"I-1-alpha/{plan_id}")
+        second = plan_file_rel(f"I-2-beta/{same_id}")
+        self.assertNotEqual(first, second)
+        self.assertRegex(first, PLAN_FILE_PATTERN)
+        self.assertRegex(second, PLAN_FILE_PATTERN)
 
-    def test_hexless_plan_file_name_still_matches_plan_pattern(self):
+    def test_same_second_same_parent_bumps_the_epoch_instead_of_overwriting(self):
+        taken = {"P-1794446836-CLA-CS5.5"}
+        second = build_plan_id(1794446836, "I-1-alpha/_", "claude-agent", "claude-sonnet-5-5", exists=taken.__contains__)
+        self.assertEqual(second, "P-1794446837-CLA-CS5.5")
+
+    def test_exhausted_epoch_bumps_fail_clearly_and_never_overwrite(self):
+        with self.assertRaises(DuplicateStageNameError) as ctx:
+            build_execution_id(1794446836, "I-1-a/P-1-x/_", "claude-agent", "claude-sonnet-5-5", exists=lambda _: True)
+        self.assertIn("E-1794446836-CLA-CS5.5", str(ctx.exception))
+        self.assertIn("refusing to overwrite", str(ctx.exception))
+
+    def test_old_generation_file_names_still_match_the_plan_pattern(self):
         self.assertRegex("plans/P-1794446836-claude-agent-sonnet.md", PLAN_FILE_PATTERN)
+        self.assertRegex("plans/P-1794446836-abcdef12-claude-agent-sonnet.md", PLAN_FILE_PATTERN)
+        self.assertRegex("plans/I-1-alpha/P-1794446836-CLA-CS5.5.md", PLAN_FILE_PATTERN)
 
     def test_review_loop_records_its_summary_under_the_hex_qualified_review_id(self):
         from tests.test_review_loop import _ledger, _loop
@@ -71,87 +86,55 @@ class TestSameSecondIds(unittest.TestCase):
         ]
         validate_ledger_unique_ids(records, id_key="execution_id", parent_key="plan_branch")
 
-    def test_duplicate_error_names_both_owners(self):
+    def test_duplicate_pair_error_names_both_owners(self):
         records = [
             {"plan_id": "P-x", "intent_branch": "I-100/_", "agent": "alpha", "created_at": "t1"},
-            {"plan_id": "P-x", "intent_branch": "I-200/_", "agent": "beta", "created_at": "t2"},
+            {"plan_id": "P-x", "intent_branch": "I-100/_", "agent": "beta", "created_at": "t2"},
         ]
         with self.assertRaises(ValueError) as ctx:
             validate_ledger_unique_ids(records)
         message = str(ctx.exception)
-        for expected in ("I-100", "alpha", "t1", "I-200", "beta", "t2"):
+        for expected in ("I-100", "alpha", "t1", "beta", "t2"):
             self.assertIn(expected, message)
 
 
-class TestUniqueStageIDs(unittest.TestCase):
-    def test_disambiguator_uniqueness_across_rapid_invocations(self):
-        """Disambiguator values generated in a tight loop for the same branch must be unique and 8-hex."""
-        parent_branch = "I-1794182541-unique-plan-and-execution-ids/_"
-        count = 100
-        disambiguators = [build_stage_disambiguator(parent_branch) for _ in range(count)]
-
-        self.assertEqual(len(set(disambiguators)), count)
-        for dis in disambiguators:
-            self.assertTrue(re.fullmatch(r"^[0-9a-f]{8}$", dis), f"Invalid disambiguator format: {dis}")
-
-    def test_disambiguator_uniqueness_across_different_branches(self):
-        """Disambiguators generated for differing parent branches must differ."""
-        dis1 = build_stage_disambiguator("I-100-alpha/_")
-        dis2 = build_stage_disambiguator("I-200-beta/_")
-        self.assertNotEqual(dis1, dis2)
-
+class TestGenerationThreeIds(unittest.TestCase):
     def test_stage_id_builders_structure(self):
-        """build_plan_id and build_execution_id must conform to stage ID schema and preserve suffix."""
-        plan_id = build_plan_id(
-            1794182557,
-            "I-1794182541-unique-plan-and-execution-ids/_",
-            "antigravity-agent",
-            "gemini-3.8-flash-medium",
-            disambiguator="abcdef12",
-        )
-        self.assertEqual(plan_id, "P-1794182557-abcdef12-antigravity-agent-gemini-3.8-flash-medium")
+        """build_plan_id and build_execution_id produce P-/E-{epoch}-{ticker}-{model code} with no hex."""
+        plan_id = build_plan_id(1794182557, "I-1794182541-shortref/_", "claude-agent", "claude-sonnet-5-5")
+        self.assertEqual(plan_id, "P-1794182557-CLA-CS5.5")
 
         exec_id = build_execution_id(
             1794182857,
-            "I-1794182541-unique-plan-and-execution-ids/P-1794182557-abcdef12-antigravity-agent-gemini-3.8-flash-medium/_",
+            f"I-1794182541-shortref/{plan_id}/_",
             "antigravity-agent",
             "gemini-3.8-flash-medium",
-            disambiguator="12345678",
         )
-        self.assertEqual(exec_id, "E-1794182857-12345678-antigravity-agent-gemini-3.8-flash-medium")
-
-        # Dynamic disambiguator generation
-        auto_plan_id = build_plan_id(
-            1794182557,
-            "I-1794182541-unique-plan-and-execution-ids/_",
-            "agent/runner",
-            "model/v1.0",
-        )
-        pattern = r"^P-1794182557-[0-9a-f]{8}-agent_runner-model_v1\.0$"
-        self.assertRegex(auto_plan_id, pattern)
+        self.assertEqual(exec_id, "E-1794182857-ANA-G3.8FM")
+        self.assertIsNone(re.search(r"-[0-9a-f]{8}-", plan_id))
 
     def test_flow_branch_discovery_suffix_matching(self):
-        """flow.py branch discovery relies on branch ending with preferred suffix."""
-        agent = "antigravity-agent"
-        model = "gemini-3.8-flash-medium"
-        preferred_suffix = f"-{agent}-{model}"
-
-        plan_id = build_plan_id(1234567890, "I-123/_", agent, model)
+        """Branch discovery relies on the branch ending with the ticker-and-model-code suffix."""
+        plan_id = build_plan_id(1234567890, "I-123/_", "pi-agent", "claude-opus-5-5")
         branch = f"I-123/{plan_id}/_"
-        self.assertTrue(branch.removesuffix("/_").endswith(preferred_suffix))
+        self.assertTrue(branch.removesuffix("/_").endswith("-PIA-CO5.5"))
 
         other_branch = "I-123/P-1234567890-abcdef12-other-agent-other-model/_"
-        self.assertFalse(other_branch.removesuffix("/_").endswith(preferred_suffix))
+        self.assertFalse(other_branch.removesuffix("/_").endswith("-PIA-CO5.5"))
 
     def test_partial_branch_regex_matching(self):
-        """flow.py _resumable_partial_branch regex extracts timestamp sequence from 5-segment branch."""
-        branch = "I-123/P-456-dis1-agent-model/E-1794182857-12345678-antigravity-agent-gemini-3.8-flash-medium/_"
-        match = re.search(r"/E-(\d+)-[^/]+/_$", branch)
-        self.assertIsNotNone(match)
-        self.assertEqual(match.group(1), "1794182857")
+        """_resumable_partial_branch's regex extracts the epoch from both old and new generation branches."""
+        for branch in (
+            "I-123/P-456-dis1-agent-model/E-1794182857-12345678-antigravity-agent-gemini-3.8-flash-medium/_",
+            "I-123/P-456-CLA-CF5/E-1794182857-CLA-CF5/_",
+        ):
+            match = re.search(r"/E-(\d+)-[^/]+/_$", branch)
+            self.assertIsNotNone(match)
+            self.assertEqual(match.group(1), "1794182857")
 
-    def test_ledger_unique_ids_validation_success(self):
-        """Unique plan and execution IDs pass validation cleanly."""
+
+class TestPairKeyedLedgerValidation(unittest.TestCase):
+    def test_unique_pairs_pass_validation(self):
         records = [
             {"plan_id": "P-1", "intent_branch": "I-100/_"},
             {"plan_id": "P-2", "intent_branch": "I-200/_"},
@@ -159,47 +142,41 @@ class TestUniqueStageIDs(unittest.TestCase):
         ]
         validate_ledger_unique_ids(records, id_key="plan_id", parent_key="intent_branch")
 
-    def test_ledger_unique_ids_validation_duplicate_rejected(self):
-        """validate_ledger_unique_ids raises ValueError on duplicate ID across distinct parents."""
+    def test_same_id_under_different_intents_is_legal(self):
+        """Two intents planned in the same second by the same runner and model legally share a plan id."""
         records = [
-            {"plan_id": "P-duplicate", "intent_branch": "I-100/_"},
-            {"plan_id": "P-duplicate", "intent_branch": "I-200/_"},
-        ]
-        with self.assertRaises(ValueError) as ctx:
-            validate_ledger_unique_ids(records, id_key="plan_id", parent_key="intent_branch")
-        self.assertIn("Duplicate plan_id 'P-duplicate' collision detected", str(ctx.exception))
-
-    def test_ledger_unique_ids_validation_idempotent_duplicate_permitted(self):
-        """Identical plan_id under the same intent branch is accepted as idempotent update."""
-        records = [
-            {"plan_id": "P-1", "intent_branch": "I-100/_", "status": "proposed"},
-            {"plan_id": "P-1", "intent_branch": "I-100/_", "status": "approved"},
+            {"plan_id": "P-1794446836-CLA-CS5.5", "intent_branch": "I-100-alpha/_"},
+            {"plan_id": "P-1794446836-CLA-CS5.5", "intent_branch": "I-200-beta/_"},
         ]
         validate_ledger_unique_ids(records, id_key="plan_id", parent_key="intent_branch")
 
-    def test_extract_parent_ref_plan_branch_collision_detection(self):
-        """_extract_parent_ref distinguishes plans under the same intent for plan_branch parent."""
-        rec1 = {
-            "execution_id": "E-colliding",
-            "plan_branch": "I-100/P-plan-1/_",
-        }
-        rec2 = {
-            "execution_id": "E-colliding",
-            "plan_branch": "I-100/P-plan-2/_",
-        }
-
-        ref1 = _extract_parent_ref(rec1, "plan_branch")
-        ref2 = _extract_parent_ref(rec2, "plan_branch")
-        self.assertNotEqual(ref1, ref2)
-        self.assertEqual(ref1, "P-plan-1")
-        self.assertEqual(ref2, "P-plan-2")
-
+    def test_repeated_intent_and_plan_pair_is_rejected(self):
+        records = [
+            {"plan_id": "P-duplicate", "intent_branch": "I-100/_"},
+            {"plan_id": "P-duplicate", "intent_branch": "I-100/_"},
+        ]
         with self.assertRaises(ValueError) as ctx:
-            validate_ledger_unique_ids([rec1, rec2], id_key="execution_id", parent_key="plan_branch")
-        self.assertIn("Duplicate execution_id 'E-colliding' collision detected", str(ctx.exception))
+            validate_ledger_unique_ids(records, id_key="plan_id", parent_key="intent_branch")
+        self.assertIn("Duplicate plan_id 'P-duplicate' repeated under the same parent", str(ctx.exception))
+
+    def test_superseding_revision_of_the_same_pair_is_legal(self):
+        """The flow's back-filled decision row repeats the pair with a bumped ledger_revision."""
+        records = [
+            {"plan_id": "P-1", "intent_branch": "I-100/_", "status": "proposed"},
+            {"plan_id": "P-1", "intent_branch": "I-100/_", "status": "proposed", "ledger_revision": 2},
+        ]
+        validate_ledger_unique_ids(records, id_key="plan_id", parent_key="intent_branch")
+
+    def test_extract_parent_ref_keeps_the_full_parent_branch(self):
+        """Plans nested under plans key on their full parent path, not just one segment."""
+        rec1 = {"execution_id": "E-colliding", "plan_branch": "I-100/P-plan-1/_"}
+        rec2 = {"execution_id": "E-colliding", "plan_branch": "I-100/P-plan-2/_"}
+        self.assertEqual(_extract_parent_ref(rec1, "plan_branch"), "I-100/P-plan-1")
+        self.assertEqual(_extract_parent_ref(rec2, "plan_branch"), "I-100/P-plan-2")
+        # Different parents: the repeated execution id is legal under the pair keying.
+        validate_ledger_unique_ids([rec1, rec2], id_key="execution_id", parent_key="plan_branch")
 
     def test_extract_parent_ref_fallbacks(self):
-        """_extract_parent_ref supports fallback keys plan_id and intent_id."""
         rec_plan = {"plan_id": "P-12345"}
         self.assertEqual(_extract_parent_ref(rec_plan, "plan_branch"), "P-12345")
 
@@ -207,8 +184,7 @@ class TestUniqueStageIDs(unittest.TestCase):
         self.assertEqual(_extract_parent_ref(rec_intent, "intent_branch"), "I-67890")
 
     def test_validate_ledger_file_unique_ids(self):
-        """validate_ledger_file_unique_ids validates file contents and ignores non-existent files."""
-        # Non-existent file does not raise
+        """File validation rejects a repeated pair and ignores non-existent files."""
         validate_ledger_file_unique_ids("/non/existent/path/ledger.jsonl")
 
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -216,15 +192,14 @@ class TestUniqueStageIDs(unittest.TestCase):
             ledger_file.write_text(
                 json.dumps({"plan_id": "P-1", "intent_branch": "I-100/_"})
                 + "\n"
-                + json.dumps({"plan_id": "P-1", "intent_branch": "I-200/_"})
+                + json.dumps({"plan_id": "P-1", "intent_branch": "I-100/_"})
                 + "\n"
             )
             with self.assertRaises(ValueError):
                 validate_ledger_file_unique_ids(str(ledger_file), id_key="plan_id", parent_key="intent_branch")
 
-    def test_validate_stage_ledger_success_and_collision(self):
-        """validate_stage_ledger validates plan and execution stage ledgers correctly."""
-        # Non-existent files/directories do not raise
+    def test_validate_stage_ledger_pair_semantics(self):
+        """The plan stage rejects a repeated pair; the execute stage is guarded at creation time instead."""
         validate_stage_ledger("/non/existent/path", "plan")
         validate_stage_ledger("/non/existent/path", "execute")
 
@@ -232,45 +207,34 @@ class TestUniqueStageIDs(unittest.TestCase):
             ledger_dir = Path(tmp_dir) / "holon-knowledge" / "ledger"
             ledger_dir.mkdir(parents=True, exist_ok=True)
 
-            # Valid plans ledger
             plans_file = ledger_dir / "plans.jsonl"
-            plans_file.write_text(
-                json.dumps({"plan_id": "P-1", "intent_branch": "I-100/_"})
-                + "\n"
-                + json.dumps({"plan_id": "P-2", "intent_branch": "I-200/_"})
-                + "\n"
-            )
-            validate_stage_ledger(tmp_dir, "plan")
-
-            # Duplicate plan_id across distinct intents raises
             plans_file.write_text(
                 json.dumps({"plan_id": "P-dup", "intent_branch": "I-100/_"})
                 + "\n"
                 + json.dumps({"plan_id": "P-dup", "intent_branch": "I-200/_"})
                 + "\n"
             )
+            validate_stage_ledger(tmp_dir, "plan")  # same id under different intents is legal
+
+            plans_file.write_text(
+                json.dumps({"plan_id": "P-dup", "intent_branch": "I-100/_"})
+                + "\n"
+                + json.dumps({"plan_id": "P-dup", "intent_branch": "I-100/_"})
+                + "\n"
+            )
             with self.assertRaises(ValueError):
                 validate_stage_ledger(tmp_dir, "plan")
 
-            # Valid executions ledger
+            # The historical executions ledger carries repeated pairs without revision bumps, so the execute
+            # stage runs no whole-file pair check; creation-time 'exists' checks guard new names instead.
             execs_file = ledger_dir / "executions.jsonl"
-            execs_file.write_text(
-                json.dumps({"execution_id": "E-1", "plan_branch": "I-100/P-1/_"})
-                + "\n"
-                + json.dumps({"execution_id": "E-2", "plan_branch": "I-100/P-2/_"})
-                + "\n"
-            )
-            validate_stage_ledger(tmp_dir, "execute")
-
-            # Duplicate execution_id across distinct plans raises
             execs_file.write_text(
                 json.dumps({"execution_id": "E-dup", "plan_branch": "I-100/P-1/_"})
                 + "\n"
-                + json.dumps({"execution_id": "E-dup", "plan_branch": "I-100/P-2/_"})
+                + json.dumps({"execution_id": "E-dup", "plan_branch": "I-100/P-1/_"})
                 + "\n"
             )
-            with self.assertRaises(ValueError):
-                validate_stage_ledger(tmp_dir, "execute")
+            validate_stage_ledger(tmp_dir, "execute")
 
 
 if __name__ == "__main__":

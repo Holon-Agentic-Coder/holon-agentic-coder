@@ -93,7 +93,14 @@ def main():  # noqa: PLR0915
 
         import time
 
-        branch = resolve_root_intent_branch(intent_data, slug_clean, int(time.time()), "", "")
+        from sandbox_executor.ref_names import SlugTooLongError
+
+        try:
+            # A supplied root slug over the 32-character limit is rejected here, before any branch is created.
+            branch = resolve_root_intent_branch(intent_data, slug_clean, int(time.time()))
+        except SlugTooLongError as exc:
+            print(f"Error: {exc}")
+            sys.exit(1)
         intent_data["branch"] = branch
 
     intent_branch = f"{branch}/_"

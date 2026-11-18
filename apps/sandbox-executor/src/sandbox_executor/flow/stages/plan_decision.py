@@ -19,6 +19,7 @@ from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.git_refs import _append_ledger_row, _git_show_text, _read_ledger_rows, _resolve_branch_ref
 from sandbox_executor.flow.stages.plan import _format_entropy
+from sandbox_executor.plan_paths import plan_file_rel
 
 
 def _plan_budget_decision(context: FlowContext) -> DecompositionDecision | None:
@@ -38,9 +39,15 @@ def _plan_budget_decision(context: FlowContext) -> DecompositionDecision | None:
     plan_ref = _resolve_branch_ref(context.target_worktree, context.plan_branch)
     if not plan_ref:
         return None
-    plan_id = context.plan_branch.removesuffix("/_").rsplit("/", 1)[-1]
+    plan_prefix = context.plan_branch.removesuffix("/_")
+    plan_id = plan_prefix.rsplit("/", 1)[-1]
+    intent_prefix = plan_prefix.rsplit("/", 1)[0]
+    # Keyed on the (intent, plan id) pair: the same plan id under another intent is a different plan.
     rows = [
-        r for r in _read_ledger_rows(context.target_worktree, plan_ref, "plans.jsonl") if r.get("plan_id") == plan_id
+        r
+        for r in _read_ledger_rows(context.target_worktree, plan_ref, "plans.jsonl")
+        if r.get("plan_id") == plan_id
+        and str(r.get("intent_branch") or "").removesuffix("/_").strip("/") == intent_prefix
     ]
     if not rows:
         return None
@@ -53,9 +60,9 @@ def _plan_budget_decision(context: FlowContext) -> DecompositionDecision | None:
         ) from exc
     if recorded is not None:
         return recorded
-    plan_md_rel = str(plan_row.get("plan_file") or f"plans/{plan_id}.md")
+    plan_md_rel = str(plan_row.get("plan_file") or plan_file_rel(plan_prefix))
     if not re.fullmatch(PLAN_FILE_PATTERN, plan_md_rel):
-        plan_md_rel = f"plans/{plan_id}.md"
+        plan_md_rel = plan_file_rel(plan_prefix)
     plan_content = _git_show_text(context.target_worktree, plan_ref, plan_md_rel) or ""
     decision = should_decompose(plan_row, plan_content, context.intent_data)
     _backfill_plan_row(context, plan_row, decision)

@@ -26,7 +26,12 @@ from sandbox_executor.flow.intent_questions import validate_intent_questions
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.knowledge import ConsultEngine
-from sandbox_executor.ref_names import RefTooLongError, resolve_root_intent_branch
+from sandbox_executor.ref_names import (
+    RefTooLongError,
+    SlugTooLongError,
+    resolve_root_intent_branch,
+    truncate_slug,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -112,17 +117,18 @@ def run_intent_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
 
     description = raw_desc or goal or "No description provided"
 
-    # Sanitise slug
+    # Sanitise slug: an engine-derived slug is cut to the 32-character limit at a word boundary; a supplied slug is
+    # the operator's and is rejected below (SlugTooLongError) rather than silently truncated.
     if not raw_slug:
         candidate = (goal or description or "task")[:40]
-        raw_slug = re.sub(r"[^a-zA-Z0-9]+", "-", candidate).strip("-").lower()
+        raw_slug = truncate_slug(re.sub(r"[^a-zA-Z0-9]+", "-", candidate).strip("-").lower())
     else:
         raw_slug = re.sub(r"[^a-zA-Z0-9]+", "-", raw_slug).strip("-").lower()
 
     # The intent creator expects the bare branch prefix and appends '/_' itself.
     try:
-        branch = resolve_root_intent_branch(intent_data, raw_slug, int(time.time()), context.agent, context.model)
-    except RefTooLongError as e:
+        branch = resolve_root_intent_branch(intent_data, raw_slug, int(time.time()))
+    except (RefTooLongError, SlugTooLongError) as e:
         return _stage_failure(context, FlowStage.INTENT, start_time, f"Intent stage failed: {e}")
     intent_data["branch"] = branch
     intent_data["target_branch"] = target_branch

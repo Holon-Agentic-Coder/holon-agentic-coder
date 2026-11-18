@@ -42,7 +42,9 @@ ENGINE_OWNED_LEDGER_PATHS = (
     "holon-knowledge/ledger/plans.jsonl",
     "holon-knowledge/ledger/executions.jsonl",
 )
-ENGINE_OWNED_NOTES_GLOB = "executions/E-*.md"
+# Matches notes keyed on their full path (``executions/{intent}/{plan}/E-*.md``) and the flat pre-nesting shape
+# (``executions/E-*.md``): git pathspec wildcards match directory separators, so one pattern covers both.
+ENGINE_OWNED_NOTES_GLOB = "executions/*E-*.md"
 _ENGINE_OWNED_EXCLUDES = (
     *(f":(exclude){path}" for path in ENGINE_OWNED_LEDGER_PATHS),
     f":(exclude){ENGINE_OWNED_NOTES_GLOB}",

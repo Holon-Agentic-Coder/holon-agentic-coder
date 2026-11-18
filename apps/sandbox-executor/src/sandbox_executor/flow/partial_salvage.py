@@ -46,10 +46,12 @@ class SalvageResult:
 
 
 def _excluded_pathspecs(exec_id: str | None) -> list[str]:
-    paths = list(ENGINE_OWNED_LEDGER_PATHS)
+    spec = ["--", ".", *(f":(exclude,literal){path}" for path in ENGINE_OWNED_LEDGER_PATHS)]
     if exec_id:
-        paths.append(os.path.join("executions", f"{exec_id}.md"))
-    return ["--", ".", *(f":(exclude,literal){path}" for path in paths)]
+        # The notes file mirrors the execution branch (executions/{intent}/{plan}/{exec id}.md); the wildcard also
+        # covers the flat pre-nesting shape, since git pathspec wildcards match directory separators.
+        spec.append(f":(exclude)executions/*{exec_id}.md")
+    return spec
 
 
 def leftover_paths(repo_dir: str, exec_id: str | None = None) -> list[str]:
@@ -105,7 +107,7 @@ def _commit_leftovers(repo_dir: str, plan_branch: str, exec_id: str, files: list
 
 def _salvage_row(context: FlowContext, branch: str, exec_id: str, sha: str, file_count: int) -> dict[str, Any]:
     local = _read_ledger_rows(context.target_worktree, f"refs/remotes/origin/{branch}", "executions.jsonl")
-    prior = _latest_execution_summary(local, exec_id) or {}
+    prior = _latest_execution_summary(local, exec_id, context.plan_branch) or {}
     try:
         revision = int(prior.get("ledger_revision") or 0) + 1
     except (TypeError, ValueError):
@@ -153,8 +155,9 @@ def _unrecorded_salvage_commit(repo_dir: str, branch: str, exec_id: str) -> tupl
     if len(parts) != 3 or not parts[2].startswith(f"execute: {exec_id} partial work (interrupted)"):
         return None
     sha, committed_at = parts[:2]
+    plan_branch = branch.removesuffix("/_").rsplit("/", 1)[0]
     recorded = _latest_execution_summary(
-        _read_ledger_rows(repo_dir, f"refs/remotes/origin/{branch}", "executions.jsonl"), exec_id
+        _read_ledger_rows(repo_dir, f"refs/remotes/origin/{branch}", "executions.jsonl"), exec_id, plan_branch
     )
     try:
         if recorded and datetime.fromisoformat(recorded["created_at"]) > datetime.fromisoformat(committed_at):

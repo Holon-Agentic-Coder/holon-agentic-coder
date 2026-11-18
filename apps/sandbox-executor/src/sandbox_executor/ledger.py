@@ -2,9 +2,7 @@
 
 import contextlib
 import errno
-import hashlib
 import io
-import itertools
 import json
 import logging
 import os
@@ -19,7 +17,13 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal, TextIO
 
-from sandbox_executor.ref_names import fit_execution_id, fit_plan_id
+from sandbox_executor.plan_paths import uncollided_stage_id
+from sandbox_executor.ref_names import (
+    MAX_REF_LENGTH,
+    MAX_STAGE_SEGMENT_LENGTH,
+    RefTooLongError,
+    measured_length,
+)
 
 try:
     import fcntl
@@ -46,9 +50,6 @@ def generate_action_id(prefix: str = "ACT") -> str:
     return f"{prefix}-{ts}-{suffix}"
 
 
-_disambiguator_counter = itertools.count()
-
-
 def _sanitize_string(name: str, fallback: str = "unknown") -> str:
     """Sanitise an identifier component for safe use in branch names and filenames."""
     s = re.sub(r"\s+", "-", name.replace("/", "_"))
@@ -64,15 +65,13 @@ def _sanitize_model_name(model_name: str) -> str:
     return _sanitize_string(model_name, fallback="unknown-model")
 
 
-def build_stage_disambiguator(parent_ref: str) -> str:
-    """Generate a deterministic 8-character lowercase hex disambiguator.
-
-    Derived from the parent branch/intent, high-resolution nanosecond timestamp,
-    and process ID.
-    """
-    clean_ref = parent_ref.removesuffix("/_").rstrip("/")
-    seed = f"{clean_ref}:{time.time_ns()}:{time.perf_counter_ns()}:{os.getpid()}:{next(_disambiguator_counter)}"
-    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
+def _ensure_stage_segment_fits(parent_branch: str, name: str, room_below: int) -> str:
+    """Return ``name``, raising ``RefTooLongError`` when ``{parent}/{name}`` cannot fit with ``room_below`` extra."""
+    parent = parent_branch.removesuffix("/_").rstrip("/")
+    length = measured_length(f"{parent}/{name}", extra=room_below)
+    if length > MAX_REF_LENGTH:
+        raise RefTooLongError(MAX_REF_LENGTH, length, "parent")
+    return name
 
 
 def build_plan_id(
@@ -80,15 +79,16 @@ def build_plan_id(
     parent_branch: str,
     agent: str,
     model: str,
-    disambiguator: str | None = None,
+    exists: Callable[[str], bool] | None = None,
 ) -> str:
-    """Build a deterministic, collision-resistant plan identifier.
+    """Build a generation 3 plan identifier ``P-{plan_seq}-{ticker}-{model code}``, with no hex.
 
-    Format: P-{plan_seq}-{disambiguator}-{safe_agent}-{safe_model}
+    ``exists`` answers whether a candidate name is already taken under ``parent_branch`` (a plan file, a ledger row
+    for that intent, or a ref); a taken name gets the next second's epoch or fails clearly, never an overwrite. Room
+    for the execution segment below the plan branch is measured before the name is returned.
     """
-    safe_agent, safe_model = _sanitize_string(agent, fallback="unknown-agent"), _sanitize_model_name(model)
-    dis = disambiguator or build_stage_disambiguator(parent_branch)
-    return fit_plan_id(parent_branch, plan_seq, dis, safe_agent, safe_model).name
+    name = uncollided_stage_id("P", plan_seq, agent, model, exists)
+    return _ensure_stage_segment_fits(parent_branch, name, room_below=MAX_STAGE_SEGMENT_LENGTH)
 
 
 def build_execution_id(
@@ -96,15 +96,15 @@ def build_execution_id(
     parent_branch: str,
     agent: str,
     model: str,
-    disambiguator: str | None = None,
+    exists: Callable[[str], bool] | None = None,
 ) -> str:
-    """Build a deterministic, collision-resistant execution identifier.
+    """Build a generation 3 execution identifier ``E-{exec_seq}-{ticker}-{model code}``, with no hex.
 
-    Format: E-{exec_seq}-{disambiguator}-{safe_agent}-{safe_model}
+    ``exists`` answers whether a candidate name is already taken under ``parent_branch`` (a ledger row for that plan,
+    or a ref); a taken name gets the next second's epoch or fails clearly, never an overwrite.
     """
-    safe_agent, safe_model = _sanitize_string(agent, fallback="unknown-agent"), _sanitize_model_name(model)
-    dis = disambiguator or build_stage_disambiguator(parent_branch)
-    return fit_execution_id(parent_branch, exec_seq, dis, safe_agent, safe_model).name
+    name = uncollided_stage_id("E", exec_seq, agent, model, exists)
+    return _ensure_stage_segment_fits(parent_branch, name, room_below=0)
 
 
 @dataclass
@@ -631,9 +631,9 @@ def append_summary_record(ledger_path: str, record: SummaryRecord | dict[str, An
     with atomic_ledger_append(ledger_path) as f:
         f.write(json.dumps(data) + "\n")
 
-    if os.path.exists(ledger_path):
-        validate_ledger_file_unique_ids(ledger_path, id_key="execution_id", parent_key="plan_branch")
-
+    # Execution names are guarded at creation time (``build_execution_id`` with its ``exists`` check): the historical
+    # ledger carries superseding summary rows that repeat a (plan, execution) pair without a revision bump, so the
+    # whole-file pair check applies to plans only.
     return data
 
 
@@ -938,7 +938,7 @@ def format_query_results_table(records: list[dict[str, Any]]) -> str:
 
 
 def _extract_parent_ref(record: dict[str, Any], parent_key: str) -> str | None:
-    """Extract and normalise the root parent intent or branch identifier from a record."""
+    """Extract and normalise the full parent branch (intent or plan) a record is keyed under."""
     parent_raw = record.get(parent_key)
     if not isinstance(parent_raw, str):
         if parent_key == "plan_branch":
@@ -950,17 +950,14 @@ def _extract_parent_ref(record: dict[str, Any], parent_key: str) -> str | None:
         parent_raw = record.get(fallback_key)
     if not isinstance(parent_raw, str) or not parent_raw.strip():
         return None
-    cleaned = parent_raw.removesuffix("/_").strip("/")
-    parts = cleaned.split("/")
-    if parent_key == "plan_branch":
-        for part in parts:
-            if part.startswith("P-"):
-                return part
-        return cleaned if cleaned else None
-    for part in parts:
-        if part.startswith("I-"):
-            return part
-    return parts[0] if parts else None
+    return parent_raw.removesuffix("/_").strip("/") or None
+
+
+def _record_revision(record: dict[str, Any]) -> int:
+    try:
+        return int(record.get("ledger_revision") or 1)
+    except (TypeError, ValueError):
+        return 1
 
 
 def validate_ledger_unique_ids(
@@ -968,7 +965,11 @@ def validate_ledger_unique_ids(
     id_key: str = "plan_id",
     parent_key: str = "intent_branch",
 ) -> None:
-    """Validate that identifier values do not collide across distinct intents or parent branches.
+    """Validate that no (parent, identifier) pair is created twice.
+
+    Identifiers are keyed by their parent: the same identifier under two different parents is legal (two intents
+    planned in the same second by the same runner and model), but a repeated (parent, identifier) pair must be a
+    superseding revision (``ledger_revision`` above 1), never a second creation row.
 
     Args:
         records: An iterable of ledger record dictionaries.
@@ -976,9 +977,9 @@ def validate_ledger_unique_ids(
         parent_key: The dictionary key for the parent reference (e.g. 'intent_branch' or 'plan_branch').
 
     Raises:
-        ValueError: If a duplicate identifier is detected across distinct parent branches/intents.
+        ValueError: If a (parent, identifier) pair has more than one creation row.
     """
-    seen: dict[str, tuple[str, dict[str, Any]]] = {}
+    seen: dict[tuple[str, str], dict[str, Any]] = {}
     for record in records:
         id_val = record.get(id_key)
         if not isinstance(id_val, str) or not id_val.strip():
@@ -986,13 +987,15 @@ def validate_ledger_unique_ids(
         parent_ref = _extract_parent_ref(record, parent_key)
         if not parent_ref:
             continue
-        if id_val in seen and seen[id_val][0] != parent_ref:
-            first_ref, first_record = seen[id_val]
+        if _record_revision(record) > 1:
+            continue
+        key = (parent_ref, id_val)
+        if key in seen:
             raise ValueError(
-                f"Duplicate {id_key} '{id_val}' collision detected across distinct intents/branches: "
-                f"{_describe_id_owner(first_ref, first_record)} vs {_describe_id_owner(parent_ref, record)}"
+                f"Duplicate {id_key} '{id_val}' repeated under the same parent: "
+                f"{_describe_id_owner(parent_ref, seen[key])} vs {_describe_id_owner(parent_ref, record)}"
             )
-        seen.setdefault(id_val, (parent_ref, record))
+        seen[key] = record
 
 
 def _describe_id_owner(parent_ref: str, record: dict[str, Any]) -> str:
@@ -1023,6 +1026,54 @@ def validate_ledger_file_unique_ids(
     validate_ledger_unique_ids(records, id_key=id_key, parent_key=parent_key)
 
 
+def plan_rows_for(ledger_path: str, intent_branch: str, plan_id: str) -> list[dict[str, Any]]:
+    """Read the ``plans.jsonl`` rows keyed by the (intent, plan id) pair, in file order.
+
+    Both keys are required: a bare plan id is never a key, because two intents planned in the same second by the same
+    runner and model legally share one. The newest matching row (the last) supersedes earlier ones.
+    """
+    if not os.path.exists(ledger_path):
+        return []
+    wanted = intent_branch.removesuffix("/_").strip("/")
+    rows: list[dict[str, Any]] = []
+    with open(ledger_path, encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if rec.get("plan_id") != plan_id:
+                continue
+            rec_intent = str(rec.get("intent_branch") or "").removesuffix("/_").strip("/")
+            if rec_intent == wanted:
+                rows.append(rec)
+    return rows
+
+
+def execution_rows_for(ledger_path: str, plan_branch: str, execution_id: str) -> list[dict[str, Any]]:
+    """Read the ``executions.jsonl`` summary rows keyed by the (plan, execution id) pair, in file order."""
+    if not os.path.exists(ledger_path):
+        return []
+    wanted = plan_branch.removesuffix("/_").strip("/")
+    rows: list[dict[str, Any]] = []
+    with open(ledger_path, encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if rec.get("execution_id") != execution_id:
+                continue
+            rec_plan = str(rec.get("plan_branch") or "").removesuffix("/_").strip("/")
+            if rec_plan == wanted:
+                rows.append(rec)
+    return rows
+
+
 def validate_stage_ledger(repo_dir: str | None, stage: Any) -> None:
     """Validate stage ledger uniqueness for a completed stage (e.g., plan or execute)."""
     base_dir = repo_dir or "."
@@ -1031,6 +1082,4 @@ def validate_stage_ledger(repo_dir: str | None, stage: Any) -> None:
     if stage_name == "plan":
         ledger_path = os.path.join(base_dir, "holon-knowledge", "ledger", "plans.jsonl")
         validate_ledger_file_unique_ids(ledger_path, id_key="plan_id", parent_key="intent_branch")
-    elif stage_name == "execute":
-        ledger_path = os.path.join(base_dir, "holon-knowledge", "ledger", "executions.jsonl")
-        validate_ledger_file_unique_ids(ledger_path, id_key="execution_id", parent_key="plan_branch")
+    # The execute stage has no whole-file pair check: see ``append_summary_record``.

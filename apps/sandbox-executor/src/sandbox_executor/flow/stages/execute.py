@@ -52,7 +52,12 @@ def failed_partial_head(repo_dir: str, ref: str, execution_id: str) -> str | Non
     Both failure statuses count: ``failure`` (a budget breach, an agent error or any other failure) and
     ``EMPTY_DIFF_STATUS`` (an empty or unverified diff), since either row can carry salvaged partial work.
     """
-    row = _latest_execution_summary(_read_ledger_rows(repo_dir, ref, "executions.jsonl"), execution_id) or {}
+    exec_branch = ref.removeprefix("refs/remotes/origin/").removeprefix("refs/heads/")
+    plan_branch = exec_branch.removesuffix("/_").rsplit("/", 1)[0]
+    row = (
+        _latest_execution_summary(_read_ledger_rows(repo_dir, ref, "executions.jsonl"), execution_id, plan_branch)
+        or {}
+    )
     partial_head = row.get("partial_head")
     if row.get("status") in ("failure", EMPTY_DIFF_STATUS) and isinstance(partial_head, str) and partial_head:
         return partial_head
@@ -259,7 +264,9 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
     context.execution_branch = exec_branch
     _track_local_branch(context, exec_branch)
     exec_ref = f"refs/remotes/origin/{exec_branch}"
-    summary_row = _latest_execution_summary(_read_ledger_rows(repo_dir, exec_ref, "executions.jsonl"), exec_id)
+    summary_row = _latest_execution_summary(
+        _read_ledger_rows(repo_dir, exec_ref, "executions.jsonl"), exec_id, context.plan_branch
+    )
     container_status = str(summary_row.get("status")) if summary_row else None
     base_payload: dict[str, Any] = {
         "execution_id": exec_id,

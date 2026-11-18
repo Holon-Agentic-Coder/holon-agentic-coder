@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sandbox_executor.budgets import DEFAULT_ENTROPY_BUDGET, resolve_entropy_budget
+from sandbox_executor.ref_names import truncate_slug
 
 # Decision values returned by should_decompose().
 DECISION_EXECUTE = "execute"
@@ -305,7 +306,9 @@ def _sub_intent_dicts(items: list[tuple[str, list[str]]]) -> list[dict[str, Any]
         if is_placeholder_item(text) or not any(c.isalnum() for c in text):
             # Placeholders and punctuation-only items name no child work.
             continue
-        base = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:48].strip("-") or "sub-intent"
+        cleaned = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+        # Engine-derived slugs are cut to the 32-character limit at a word boundary (ref_names.truncate_slug).
+        base = (truncate_slug(cleaned) if cleaned else "") or "sub-intent"
         count = seen.get(base, 0) + 1
         seen[base] = count
         slug = base if count == 1 else f"{base}-{count}"

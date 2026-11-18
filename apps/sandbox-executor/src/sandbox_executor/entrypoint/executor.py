@@ -59,15 +59,16 @@ from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import (
     ActionRecord,
     LedgerRewriteError,
-    _sanitize_model_name,
     append_action_record,
     atomic_ledger_append,
     build_execution_id,
+    execution_rows_for,
     extract_action_provenance_from_commit,
     format_commit_trailers,
     generate_action_id,
     suppress_ledger_failures,
 )
+from sandbox_executor.plan_paths import execution_notes_rel
 
 # The redactors live in the shared module; they are re-exported here so existing importers of
 # `sandbox_executor.entrypoint.executor` keep working unchanged.
@@ -80,7 +81,6 @@ from sandbox_executor.redaction import redact_args as redact_args
 from sandbox_executor.redaction import redact_command_args
 from sandbox_executor.redaction import redact_env_literals as redact_env_literals
 from sandbox_executor.redaction import redact_text as redact_text
-from sandbox_executor.ref_names import original_labels
 from sandbox_executor.turns import AuthoringOutcome, record_budget_failure, run_turn, supervise_authoring_turn
 
 _MAX_PRINT_LEN: int = 5000
@@ -892,7 +892,7 @@ def build_execution_prompt(  # noqa: PLR0913
         "{plan_branch}": plan_branch,
         "{intent_id}": str(intent_data.get("intent_id") or intent_data.get("branch") or "unknown"),
         "{exec_id}": exec_id,
-        "{notes_path}": f"executions/{exec_id}.md",
+        "{notes_path}": execution_notes_rel(f"{plan_branch.removesuffix('/_')}/{exec_id}"),
         "{intent_json}": intent_json,
     }
     for key, value in replacements.items():
@@ -1060,8 +1060,18 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         mounted_plan_tip = validate_mounted_workspace(repo, repo_dir, plan_branch)
 
         exec_seq = int(time.time())
-        safe_agent, safe_model = _sanitize_string(agent_name, "unknown-agent"), _sanitize_model_name(model_name)
-        exec_id = build_execution_id(exec_seq, plan_branch_prefix, safe_agent, safe_model)
+        executions_ledger = os.path.join(repo_dir, "holon-knowledge/ledger/executions.jsonl")
+
+        def _execution_name_taken(name: str) -> bool:
+            """True when ``name`` is already taken under this plan: a ledger row for the pair, or a local ref."""
+            if execution_rows_for(executions_ledger, plan_branch_prefix, name):
+                return True
+            ref = f"refs/heads/{plan_branch_prefix}/{name}/_"
+            return repo.run(["show-ref", "--verify", "--quiet", ref], check=False).returncode == 0
+
+        exec_id = build_execution_id(
+            exec_seq, plan_branch_prefix, agent_name, model_name, exists=_execution_name_taken
+        )
         exec_branch = f"{plan_branch_prefix}/{exec_id}/_"
 
         # Plan branch tip: the base the empty-diff guard compares the agent's work against, even on a resume.
@@ -1087,8 +1097,10 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
         check_and_resolve_stage_conflicts(repo_dir=repo_dir, target_branch="main", stage_name="execute")
 
-        # Load plan data from plans.jsonl
+        # Load plan data from plans.jsonl, keyed on the (intent, plan id) pair, never on the bare plan id.
         plans_file_path = os.path.join(repo_dir, "holon-knowledge/ledger/plans.jsonl")
+        plan_lookup_id = plan_branch_prefix.rsplit("/", 1)[-1]
+        plan_intent_prefix = plan_branch_prefix.rsplit("/", 1)[0]
         plan_data = None
         if os.path.exists(plans_file_path):
             with open(plans_file_path) as f:
@@ -1097,10 +1109,8 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                         continue
                     try:
                         data = json.loads(line)
-                        plan_id = data.get("plan_id")
-                        if isinstance(plan_id, str) and (
-                            plan_branch_prefix.split("/")[-1] == plan_id or plan_branch_prefix.endswith("/" + plan_id)
-                        ):
+                        row_intent = str(data.get("intent_branch") or "").removesuffix("/_").strip("/")
+                        if data.get("plan_id") == plan_lookup_id and row_intent == plan_intent_prefix:
                             # The newest matching row wins, so a superseding row the flow back-filled is read.
                             plan_data = data
                     except Exception as e:
@@ -1162,7 +1172,6 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 "agent": agent_name,
                 "agent_version": runner.get_version(),
                 "model": model_name,
-                **original_labels(exec_id, safe_agent, safe_model),
                 "status": decision.decision,
                 "entropy": decision.entropy,
                 "entropy_budget": decision.entropy_budget,
@@ -1217,7 +1226,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             print(f"Executing plan {plan_branch} using agent {agent_name}...")
             prompt_file = os.path.join(tempfile.gettempdir(), f"exec_prompt-{exec_seq}.md")
             intent_file = os.path.join(tempfile.gettempdir(), f"exec_intent-{exec_seq}.json")
-            notes_rel = f"executions/{exec_id}.md"
+            notes_rel = execution_notes_rel(exec_branch)
             notes_path = os.path.join(repo_dir, notes_rel)
             base_prompt = build_execution_prompt(repo_dir, plan_branch, plan_data, plan_content, intent_data, exec_id)
             if partial_branch and partial_head:
@@ -1449,7 +1458,6 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 "agent": agent_name,
                 "agent_version": runner.get_version(),
                 "model": model_name,
-                **original_labels(exec_id, safe_agent, safe_model),
                 "status": exec_status,
                 "summary": summary,
                 "created_at": timestamp_str,

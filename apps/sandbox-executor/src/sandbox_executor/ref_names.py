@@ -13,7 +13,12 @@ original text, so two different long inputs never collide and the same input alw
 shortenable part at its minimum raises ``RefTooLongError``.
 
 An intent branch is shortened only when it exceeds the limit on its own or leaves no room for a plan and an execution
-segment below it with their labels at their shortest; ``ensure_chain_fits`` checks the real labels at creation time.
+segment below it; ``ensure_chain_fits`` measures a generation 3 segment (``/P-{epoch}-{ticker}-{model code}``, see
+``sandbox_executor.plan_paths``) with the model code at its documented bound. Slugs are capped at
+``MAX_SLUG_LENGTH`` (32) characters: a supplied root slug over the cap is rejected (``SlugTooLongError``), an
+engine-derived slug is cut at a word boundary (``truncate_slug``). With those names a root intent and two levels of
+nested child intents, each with a 32-character slug, fit the ref limit with no shortening; deeper nesting falls back
+to the slug shortening below.
 """
 
 from __future__ import annotations
@@ -28,9 +33,13 @@ INTENT_SUFFIX = "/_"
 CALIBRATION_SUFFIX = "/calibrated"
 MAX_BRANCH_LENGTH = MAX_REF_LENGTH - len(REF_PREFIX)
 DIGEST_LENGTH = 6
+MAX_SLUG_LENGTH = 32
 
 _TIMESTAMP_LENGTH = 10
-_DISAMBIGUATOR_LENGTH = 8
+_TICKER_LENGTH = 3
+# Upper bound on a model code's length for room-below measurements (plan_paths.MODEL_CODE_BOUND; the real codes are
+# far shorter, e.g. ``CS5.5``). plan_paths is not imported here to keep this module free of the ticker registry.
+_MODEL_CODE_BOUND = 12
 
 
 class RefTooLongError(ValueError):
@@ -119,46 +128,54 @@ def fit_parts(parts: list[Part], extra: int = 0, limit: int = MAX_REF_LENGTH) ->
     return FitResult("".join(p.text for p in current), originals)
 
 
-def _segment_parts(parent: str, head: str, agent: str, model: str, weight: int) -> list[Part]:
-    return [
-        Part("parent", parent.removesuffix(INTENT_SUFFIX).rstrip("/")),
-        Part("segment", head),
-        Part("agent", agent, shortenable=True, weight=weight),
-        Part("separator", "-"),
-        Part("model", model, shortenable=True, weight=weight),
-    ]
+# A generation 3 stage segment at its longest: ``/P-{epoch}-{ticker}-{model code}`` with the code at its bound.
+MAX_STAGE_SEGMENT_LENGTH = len("/P-") + _TIMESTAMP_LENGTH + 1 + _TICKER_LENGTH + 1 + _MODEL_CODE_BOUND
 
 
-_SEGMENT_FIXED_LENGTH = len("/E-") + _TIMESTAMP_LENGTH + 1 + _DISAMBIGUATOR_LENGTH + 1 + 1
-_MIN_SEGMENT_LENGTH = _SEGMENT_FIXED_LENGTH + 2 * DIGEST_LENGTH
+class SlugTooLongError(ValueError):
+    """A supplied root or child intent slug exceeds :data:`MAX_SLUG_LENGTH` characters."""
+
+    def __init__(self, slug: str, length: int | None = None) -> None:
+        self.slug = slug
+        self.limit = MAX_SLUG_LENGTH
+        self.length = len(slug) if length is None else length
+        super().__init__(
+            f"slug too long: '{slug}' is {self.length} characters, over the limit of {self.limit}; "
+            f"supply a slug of at most {self.limit} characters"
+        )
 
 
-def fit_plan_id(parent: str, seq: int, dis: str, agent: str, model: str) -> FitResult:
-    """Fit ``P-{seq}-{dis}-{agent}-{model}`` below ``parent``, leaving room for the execution segment under it."""
-    parts = _segment_parts(parent, f"/P-{seq}-{dis}-", agent, model, weight=2)
-    result = fit_parts(parts, extra=_SEGMENT_FIXED_LENGTH)
-    return _segment_result(result, parent)
+def validate_slug_length(slug: str) -> str:
+    """Return ``slug`` unchanged, raising :class:`SlugTooLongError` when it exceeds the 32-character limit."""
+    if len(slug) > MAX_SLUG_LENGTH:
+        raise SlugTooLongError(slug)
+    return slug
 
 
-def fit_execution_id(parent: str, seq: int, dis: str, agent: str, model: str) -> FitResult:
-    """Fit ``E-{seq}-{dis}-{agent}-{model}`` below the plan branch ``parent``."""
-    result = fit_parts(_segment_parts(parent, f"/E-{seq}-{dis}-", agent, model, weight=1))
-    return _segment_result(result, parent)
+def truncate_slug(slug: str, limit: int = MAX_SLUG_LENGTH) -> str:
+    """Cut an engine-derived slug to at most ``limit`` characters at a word boundary.
 
-
-def _segment_result(result: FitResult, parent: str) -> FitResult:
-    """Strip the parent off the joined name, leaving the bare plan or execution identifier."""
-    parent_length = len(parent.removesuffix(INTENT_SUFFIX).rstrip("/")) + 1
-    return FitResult(result.name[parent_length:], result.originals)
+    The cut lands on the last ``-`` at or before ``limit``; with no boundary the slug is hard-cut at ``limit``. The
+    result is never empty for a non-empty input.
+    """
+    if len(slug) <= limit:
+        return slug
+    cut = slug[:limit]
+    if slug[limit] == "-":
+        # The cut already lands on a boundary: the limit-th character starts a new word.
+        return cut.strip("-") or cut
+    head, boundary, _ = cut.rpartition("-")
+    truncated = head if boundary and head.strip("-") else cut
+    return truncated.strip("-") or cut.strip("-") or cut
 
 
 def _fit_intent_parts(parts: list[Part]) -> FitResult:
     """Fit an intent name alone; shorten further only when no plan and execution could fit below the fitted name."""
     result = fit_parts(parts)
     try:
-        ensure_chain_fits(result.name, "0" * DIGEST_LENGTH, "0" * DIGEST_LENGTH)
+        ensure_chain_fits(result.name)
     except RefTooLongError:
-        return fit_parts(parts, extra=2 * _MIN_SEGMENT_LENGTH)
+        return fit_parts(parts, extra=2 * MAX_STAGE_SEGMENT_LENGTH)
     return result
 
 
@@ -178,44 +195,38 @@ def fit_child_intent_branch(parent: str, index: int, slug: str) -> FitResult:
     )
 
 
-def ensure_chain_fits(intent_bare: str, agent: str, model: str) -> None:
-    """Raise ``RefTooLongError`` unless a plan and execution below ``intent_bare`` fit with every label shortened."""
-    seq, dis = 10 ** (_TIMESTAMP_LENGTH - 1), "0" * _DISAMBIGUATOR_LENGTH
-    plan = fit_plan_id(intent_bare, seq, dis, agent, model)
-    fit_execution_id(f"{intent_bare}/{plan.name}", seq, dis, agent, model)
+def ensure_chain_fits(intent_bare: str) -> None:
+    """Raise ``RefTooLongError`` unless a generation 3 plan and execution segment fit below ``intent_bare``."""
+    length = measured_length(intent_bare, extra=2 * MAX_STAGE_SEGMENT_LENGTH)
+    if length > MAX_REF_LENGTH:
+        raise RefTooLongError(MAX_REF_LENGTH, length, "parent")
 
 
-def resolve_root_intent_branch(intent_data: dict[str, Any], slug: str, seq: int, agent: str, model: str) -> str:
+def resolve_root_intent_branch(intent_data: dict[str, Any], slug: str, seq: int) -> str:
     """Return the bare root intent branch, recording the slug used (and the original when shortened) in the payload.
 
-    A recorded ``branch`` is used as it is, but is still measured against the current labels, so a resume whose labels
-    changed may fail here, before any branch exists. Either way the plan and execution branches that will nest below
-    it, with the configured agent and model labels, are measured first, so an impossible name fails early.
+    A supplied slug over :data:`MAX_SLUG_LENGTH` characters is rejected here, before any branch exists; derive and
+    truncate engine slugs with :func:`truncate_slug` before calling. A recorded ``branch`` is used as it is, but is
+    still measured, so the plan and execution branches that will nest below it fit; an impossible name fails early.
     """
     recorded = intent_data.get("branch")
     if recorded:
         branch = str(recorded).removesuffix(INTENT_SUFFIX)
         intent_data["slug"] = slug
     else:
+        validate_slug_length(slug)
         fitted = fit_root_intent_branch(seq, slug)
         branch = fitted.name
         intent_data["slug"] = branch.split("-", 2)[2]
         if "slug" in fitted.originals:
             intent_data["original_slug"] = fitted.originals["slug"]
-    ensure_chain_fits(branch, str(agent or ""), str(model or ""))
+    ensure_chain_fits(branch)
     return branch
 
 
 def calibration_branch(execution_branch: str) -> str:
     """Return ``{execution branch}/calibrated`` for a ``.../_`` execution branch."""
     return execution_branch.strip().removesuffix(INTENT_SUFFIX).rstrip("/") + CALIBRATION_SUFFIX
-
-
-def original_labels(identifier: str, agent: str, model: str) -> dict[str, str]:
-    """Ledger fields recording the unshortened labels, or nothing when ``identifier`` carries them as they are."""
-    if identifier.endswith(f"-{agent}-{model}"):
-        return {}
-    return {"original_agent": agent, "original_model": model}
 
 
 def is_over_limit_rejection(output: str) -> bool:

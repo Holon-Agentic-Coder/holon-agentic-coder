@@ -17,6 +17,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from sandbox_executor import plan_paths
 from sandbox_executor.calibration import extract_branch_components, parse_evaluated_commit_sha, read_git_file
 from sandbox_executor.flow.calibrate_rebuild import is_ancestor, is_calibration_commit
 from sandbox_executor.flow.context import FlowContext, StageResult, StageStatus
@@ -125,14 +126,25 @@ def report_staleness(context: FlowContext, seams: RerunSeams | None = None) -> H
     branch = context.execution_branch
     if context.dry_run or not branch:
         return HeadMoveCheck(False, reason="dry run or no execution branch")
-    plan_id = extract_branch_components(branch).get("plan_id")
+    components = extract_branch_components(branch)
+    plan_id = components.get("plan_id")
     if not plan_id:
         return HeadMoveCheck(False, reason=f"no plan id in '{branch}'")
     current = (seams.head_resolver or _origin_head)(context)
     if not current:
         return HeadMoveCheck(False, reason=f"the head of '{branch}' could not be resolved")
-    report_rel = f"plans/{plan_id}_calibration.md"
-    content = (seams.report_reader or _report_content)(context, report_rel)
+    # The report sits beside the plan file, mirrored from the plan branch; the flat pre-migration path is the
+    # old-generation fallback so both generations stay calibratable.
+    plan_branch_bare = str(components.get("plan_branch") or "").removesuffix("/_").strip("/")
+    candidates = [plan_paths.legacy_calibration_report_rel(plan_id)]
+    if plan_branch_bare:
+        candidates.insert(0, plan_paths.calibration_report_rel(plan_branch_bare))
+    report_rel, content = candidates[-1], None
+    for candidate in candidates:
+        content = (seams.report_reader or _report_content)(context, candidate)
+        if content is not None:
+            report_rel = candidate
+            break
     if content is None:
         return HeadMoveCheck(False, current_head=current, reason=f"no calibration report at {report_rel}")
     evaluated = parse_evaluated_commit_sha(content)

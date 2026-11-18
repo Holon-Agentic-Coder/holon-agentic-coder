@@ -761,8 +761,14 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                         try:
                             d = json.loads(line)
                             pid = d.get("plan_id", "")
-                            if pid and pid in head_branch:
-                                plan_branch = d.get("plan_branch") or pid
+                            row_intent = str(d.get("intent_branch") or "").removesuffix("/_").strip("/")
+                            # Keyed on the (intent, plan id) pair: the head branch must carry both segments.
+                            if (
+                                pid
+                                and row_intent
+                                and f"{row_intent}/{pid}" in head_branch.removesuffix("/_")
+                            ):
+                                plan_branch = d.get("plan_branch") or f"{row_intent}/{pid}"
                         except json.JSONDecodeError:
                             continue
         except Exception as exc:

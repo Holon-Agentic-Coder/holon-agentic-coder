@@ -13,6 +13,7 @@ from sandbox_executor.calibration import (
     LEDGER_EXECUTIONS_REL,
     CalibrationFormatError,
     calibration_commit_env,
+    calibration_report_rel_for,
     format_calibration_report,
     record_calibration_action,
     run_calibrate,
@@ -235,10 +236,10 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:  # noqa: C
             if part.startswith("P-"):
                 plan_id = part
                 break
-        plans_dir = os.path.join(repo_dir, "plans")
-        os.makedirs(plans_dir, exist_ok=True)
-        report_rel = f"plans/{plan_id}_calibration.md"
+        plan_branch = str(context.plan_branch or "")
+        report_rel = calibration_report_rel_for(plan_id, plan_branch, repo_dir)
         report_path = os.path.join(repo_dir, report_rel)
+        os.makedirs(os.path.dirname(report_path), exist_ok=True)
         fallback_report_written = not os.path.exists(report_path)
         if fallback_report_written:
             with open(report_path, "w", encoding="utf-8") as f:

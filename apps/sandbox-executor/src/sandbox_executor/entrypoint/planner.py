@@ -25,13 +25,13 @@ from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import (
     _sanitize_model_name,
-    _sanitize_string,
     atomic_ledger_append,
     build_plan_id,
+    plan_rows_for,
     validate_ledger_file_unique_ids,
 )
+from sandbox_executor.plan_paths import plan_file_rel
 from sandbox_executor.redaction import redact_agent_secrets, redact_command, redact_command_args
-from sandbox_executor.ref_names import original_labels
 from sandbox_executor.touch_set import parse_touch_set_section
 from sandbox_executor.turns import record_budget_failure, run_turn, supervise_authoring_turn
 
@@ -254,12 +254,22 @@ def format_agent_cmd_for_display(cmd: list[str]) -> str:
     return " ".join(print_cmd)
 
 
-PLAN_FILE_PATTERN = r"plans/P-[^/]+\.md"
+# A plan file lives at ``plans/{intent}/{plan id}.md`` mirroring its branch nesting (``plan_paths.plan_file_rel``);
+# the flat ``plans/P-*.md`` shape is the pre-migration generation and stays readable.
+PLAN_FILE_PATTERN = r"plans/(?:[^/]+/)*P-[^/]+\.md"
 
 
-def plan_file_rel(plan_id: str) -> str:
-    """Repo-relative plan markdown path; carries the hex-qualified plan id so same-second plans never collide."""
-    return f"plans/{plan_id}.md"
+def _plan_name_taken(repo_dir: str, intent_branch_prefix: str, plans_ledger_path: str, plan_id: str) -> bool:
+    """True when ``plan_id`` is already taken under this intent: a plan file, a ledger row for the pair, or a ref."""
+    if os.path.exists(os.path.join(repo_dir, plan_file_rel(f"{intent_branch_prefix}/{plan_id}"))):
+        return True
+    if plan_rows_for(plans_ledger_path, intent_branch_prefix, plan_id):
+        return True
+    ref = f"refs/heads/{intent_branch_prefix}/{plan_id}/_"
+    probe = subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", ref], cwd=repo_dir, capture_output=True, text=True
+    )
+    return probe.returncode == 0
 
 
 def _unique_temp_file(prefix: str, suffix: str) -> str:
@@ -319,7 +329,16 @@ def main():  # noqa: C901, PLR0912, PLR0915
 
     plan_seq = int(time.time())
     safe_model = _sanitize_model_name(model_name)
-    plan_id = build_plan_id(plan_seq, intent_branch_prefix, agent_name, safe_model)
+    plans_ledger_rel = "holon-knowledge/ledger/plans.jsonl"
+    plan_id = build_plan_id(
+        plan_seq,
+        intent_branch_prefix,
+        agent_name,
+        model_name,
+        exists=lambda name: _plan_name_taken(
+            repo_dir, intent_branch_prefix, os.path.join(repo_dir, plans_ledger_rel), name
+        ),
+    )
     plan_branch = f"{intent_branch_prefix}/{plan_id}/_"
 
     # The host fetched the intent branch into the mounted worktree; the plan branch starts from it, locally.
@@ -418,8 +437,8 @@ Include metrics in this format:
         with open(intent_file, "w") as f:
             json.dump({**intent_data, "replan_feedback": replan_feedback} if replan_feedback else intent_data, f)
 
-        # Invoke AI agent
-        plan_md_rel = plan_file_rel(plan_id)
+        # Invoke AI agent; the plan file mirrors the plan branch under plans/ (keyed by its intent, never flat).
+        plan_md_rel = plan_file_rel(f"{intent_branch_prefix}/{plan_id}")
         plan_md_path = os.path.join(repo_dir, plan_md_rel)
         os.makedirs(os.path.dirname(plan_md_path), exist_ok=True)
 
@@ -573,7 +592,6 @@ Include metrics in this format:
         "plan_file": plan_md_rel,
         "status": "proposed",
         "entropy_budget": entropy_budget,
-        **original_labels(plan_id, _sanitize_string(agent_name, "unknown-agent"), safe_model),
     }
 
     # Format plan markdown before the ledger append, so the recorded decision is parsed from the committed file
@@ -587,6 +605,14 @@ Include metrics in this format:
     plans_ledger_dir = os.path.join(repo_dir, "holon-knowledge/ledger")
     os.makedirs(plans_ledger_dir, exist_ok=True)
     plans_ledger_path = os.path.join(plans_ledger_dir, "plans.jsonl")
+    # The duplicate check is keyed on the (intent, plan id) pair; a repeated pair fails before anything is appended.
+    if plan_rows_for(plans_ledger_path, intent_branch_prefix, plan_id):
+        print(
+            f"Error: duplicate plan: '{intent_branch_prefix}' already records a plan row for '{plan_id}'; "
+            "refusing to append a second creation row for the same intent-and-plan pair.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     with atomic_ledger_append(plans_ledger_path) as lf:
         lf.write(json.dumps(plan_entry) + "\n")
     validate_ledger_file_unique_ids(plans_ledger_path, id_key="plan_id", parent_key="intent_branch")

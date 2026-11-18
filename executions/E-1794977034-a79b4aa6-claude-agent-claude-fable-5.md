@@ -51,4 +51,26 @@ Additional execution-time constraint found: `tests/flow/test_package_exports.py`
 off-limits. Consequence: every new helper added in Step 3/4 is module-private (`_`-prefixed); only the existing
 `FinalHeadSeams` dataclass (already in `KNOWN_UNEXPORTED`) gains fields.
 
+### Step 2: Rewire test-unit.yml onto the baseline-comparison timing gate (CONFIG)
+
+`.github/workflows/test-unit.yml` now mirrors the proven `test-stress.yml` wiring of `scripts/ci_timing_gate.py`:
+
+- A "Record job start time" step before checkout writes `CI_TIMING_START` so the whole job is measured, consistent
+  with how `main` baseline records are produced.
+- The two `./.github/actions/ci-timing-gate` composite steps are replaced by one step named
+  `CI Timing Gate (compare with main)` (the `CI Timing Gate` prefix keeps `ci_failure_detail.failure_detail`
+  tagging its failures `timing_gate`), running `compare` on `pull_request` events and `record` otherwise, with
+  `--runs 5 --tolerance 0.5 --ceiling 600 --junit unit-report.xml` and the override label forwarded.
+- Per-OS minimum delta via `matrix.include`: `timing-min-delta` 120 for `ubuntu-latest` (script default), 150 for
+  `macos-latest` — strictly above the observed `370.2 - 235 = 135.2` s same-code swing, so the recorded noise
+  cases (312.7 s, 332.0 s, 370.2 s against any plausible baseline median of 235–306 s) pass, while a real
+  slowdown (for example 480 s against a 280 s median: `480 > 280 * 1.5 = 420` and `480 - 280 = 200 > 150`) still
+  fails, and anything over the label-proof `--ceiling 600` fails unconditionally (fail-closed).
+- An "Upload timing record" step gated on pushes to `main` publishes `ci-timing-test-unit-unit-<os>`
+  (`retention-days: 30`, `if-no-files-found: error`), keying baselines per workflow/job/runner OS so macOS is only
+  ever compared with macOS.
+- Triggers (including `labeled`/`unlabeled`), permissions (`actions: read` for the artefact fetch), concurrency
+  and the test step itself are unchanged. `.github/actions/ci-timing-gate/action.yml` and
+  `scripts/check_ci_runtime_budget.py` are untouched; four other workflows still use them.
+
 ## Tests Run

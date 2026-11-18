@@ -118,4 +118,34 @@ ineligible there because no approved head exists — fail-closed default confirm
 All 31 existing tests across `test_ci_reverify.py`, `test_approval_invalidation.py` and
 `test_calibrate_final_head_ci.py` pass unmodified.
 
+### Step 5: Hermetic tests for the new measure and the rerun semantics (TEST)
+
+Declared test-file changes (world ruleset rule 3; all additive except the one obsolete-contract update declared in
+Step 1):
+
+- `test_ci_timing_gate.py` (modified): new macOS-threshold cases with `Thresholds(min_delta=150)` — every recorded
+  noise duration (312.7, 332.0, 370.2 s) passes against every plausible baseline median (235, 280, 306 s); a real
+  slowdown (480 s against a 280 s median) fails; 601 s fails on the ceiling under every baseline and even with the
+  override label; cold start passes 370.2 s but not 601 s. A new workflow-contract test
+  `test_unit_workflow_compares_with_main_per_runner_os` pins the `CI Timing Gate` step-name prefix, the per-OS
+  `timing-min-delta` values (120/150), `--ceiling 600`, the override label, compare-on-pull-request mode, the
+  start-before-checkout ordering and the `ci-timing-test-unit-unit-<os>` artefact gated on `main` pushes.
+  `test_every_workflow_wires_start_and_check_steps` now lists the 4 workflows that still use the composite action
+  (`test-unit.yml` removed — the assertion the intent made obsolete; no behavioural assertion weakened).
+- `test_final_head_timing_rerun.py` (new, 8 tests): through `FinalHeadSeams` fakes only — passing rerun yields a
+  `success` record with `timing_rerun.outcome = success`, one dispatch, GREEN from `reverify_and_report` with the
+  rerun clause and no invalidation call; a second failure yields `failed`, RED and the invalidation path; a
+  code-changing diff, a non-timing failure, a mixed timing+test failure, an unknown approved head, an unreadable
+  or empty diff and a missing run id each dispatch nothing and leave the record without a `timing_rerun` key; a
+  failed dispatch keeps the original record (`attempted: false`, no re-probe); checks that never re-register get
+  exactly one dispatch and a `failed` outcome after the registration window.
+- `test_ci_reverify.py` (additive): the report clause appears exactly when `timing_rerun.attempted` is true,
+  byte-identical report otherwise; the note is copied into the reverified mapping.
+- `test_approval_invalidation.py` (additive): the comment line "The failed job was automatically rerun once and
+  failed again." appears exactly when a rerun was attempted, byte-identical body otherwise, and flows through
+  `invalidate_approval` end-to-end.
+- `test_calibrate_final_head_ci.py`: unchanged — the additive seam defaults kept all 17 tests passing.
+
+All fakes are deterministic (injected clocks and sleeps, no network, no subprocesses).
+
 ## Tests Run

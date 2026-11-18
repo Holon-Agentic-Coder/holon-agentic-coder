@@ -39,6 +39,7 @@ from sandbox_executor.calibration_ev import (
 from sandbox_executor.calibration_touch_set import touch_set_metrics, touch_set_report_lines
 from sandbox_executor.git import METADATA_PATH_PREFIXES as METADATA_PATH_PREFIXES
 from sandbox_executor.git import is_metadata_path, run_git
+from sandbox_executor.plan_paths import legacy_calibration_report, legacy_plan_file, plan_file_paths
 from sandbox_executor.knowledge.records import CredentialRedactor
 from sandbox_executor.ledger import generate_action_id, try_append_action_record
 
@@ -622,6 +623,18 @@ def extract_branch_components(branch_str: str) -> dict[str, str]:
     return components
 
 
+def calibration_report_rel(plan_branch: str, plan_id: str) -> str:
+    """The calibration report path beside its plan file, keyed on the intent via the plan branch.
+
+    An unknown or unparsable plan branch (an old-generation bare-id invocation) falls back to the flat
+    old-generation path ``plans/{plan id}_calibration.md``.
+    """
+    if plan_branch:
+        with contextlib.suppress(ValueError):
+            return plan_file_paths(plan_branch)[1]
+    return legacy_calibration_report(plan_id)
+
+
 def load_metrics_physics(target_worktree: str = ".") -> tuple[float, float]:
     """Load lambda (entropy penalty) and mu (learning value weight) from config."""
     default_lambda = 0.3
@@ -657,32 +670,52 @@ def _parse_plan_markdown_content(content: str, predicted: PredictedMetrics) -> N
                     setattr(predicted, name, float(m.group(2).strip()))
 
 
+def _predicted_from_plan_record(record: dict[str, Any]) -> tuple[PredictedMetrics, dict[str, Any]]:
+    predicted = PredictedMetrics()
+    for field in ("p_success", "entropy", "impact", "cost", "learning_value", "ev"):
+        if field in record:
+            setattr(predicted, field, float(record[field]))
+    return predicted, record
+
+
 def _parse_predicted_from_plans_ledger(
-    plan_id: str, target_worktree: str
+    plan_id: str, target_worktree: str, intent_prefix: str = ""
 ) -> tuple[PredictedMetrics, dict[str, Any]] | None:
+    """The plan's ledger row, keyed on (intent, plan id) when the intent is known.
+
+    A row whose recorded intent does not match is the bare-id fallback, kept only so old-generation lookups
+    without an intent still resolve.
+    """
     plans_jsonl = os.path.join(target_worktree, "holon-knowledge", "ledger", "plans.jsonl")
     if not os.path.exists(plans_jsonl):
         return None
+    fallback: dict[str, Any] | None = None
     with contextlib.suppress(Exception), open(plans_jsonl, encoding="utf-8") as f:
         for line in f:
             if not line.strip():
                 continue
             with contextlib.suppress(json.JSONDecodeError, ValueError):
                 record = json.loads(line)
-                if record.get("plan_id") == plan_id or plan_id in record.get("plan_branch", ""):
-                    predicted = PredictedMetrics()
-                    for field in ("p_success", "entropy", "impact", "cost", "learning_value", "ev"):
-                        if field in record:
-                            setattr(predicted, field, float(record[field]))
-                    return predicted, record
-    return None
+                if record.get("plan_id") != plan_id and plan_id not in record.get("plan_branch", ""):
+                    continue
+                row_intent = str(record.get("intent_branch") or "").removesuffix("/_").strip("/")
+                if intent_prefix and row_intent == intent_prefix:
+                    return _predicted_from_plan_record(record)
+                if fallback is None:
+                    fallback = record
+    return _predicted_from_plan_record(fallback) if fallback is not None else None
 
 
 def _parse_predicted_from_plan_markdown(
-    plan_id: str, target_worktree: str
+    plan_id: str, target_worktree: str, plan_branch: str = ""
 ) -> tuple[PredictedMetrics, dict[str, Any]] | None:
-    candidates = [
-        os.path.join(target_worktree, "plans", f"{plan_id}.md"),
+    """The plan markdown, from its nested intent-keyed path first, then the old-generation flat paths."""
+    candidates = []
+    if plan_branch:
+        with contextlib.suppress(ValueError):
+            candidates.append(os.path.join(target_worktree, plan_file_paths(plan_branch)[0]))
+    candidates += [
+        os.path.join(target_worktree, legacy_plan_file(plan_id)),
         os.path.join(target_worktree, f"{plan_id}.md"),
     ]
     for candidate in candidates:
@@ -696,11 +729,21 @@ def _parse_predicted_from_plan_markdown(
     return None
 
 
-def parse_predicted_metrics(plan_id: str, target_worktree: str = ".") -> tuple[PredictedMetrics, dict[str, Any]]:
-    """Parse predicted plan metrics from plans.jsonl or plans/P-{plan_id}.md."""
+def parse_predicted_metrics(
+    plan_id: str, target_worktree: str = ".", plan_branch: str = ""
+) -> tuple[PredictedMetrics, dict[str, Any]]:
+    """Parse predicted plan metrics from plans.jsonl or the plan markdown, keyed on the intent and plan id.
+
+    Args:
+        plan_id: The plan identifier (any generation).
+        target_worktree: Path to the target git worktree directory.
+        plan_branch: The plan's branch (e.g. ``I-.../P-.../_``) carrying the intent; empty only for bare-id
+            old-generation lookups, which fall back to the first plan-id match.
+    """
+    intent_prefix = plan_branch.removesuffix("/_").strip("/").rsplit("/", 1)[0] if "/" in plan_branch else ""
     return (
-        _parse_predicted_from_plans_ledger(plan_id, target_worktree)
-        or _parse_predicted_from_plan_markdown(plan_id, target_worktree)
+        _parse_predicted_from_plans_ledger(plan_id, target_worktree, intent_prefix)
+        or _parse_predicted_from_plan_markdown(plan_id, target_worktree, plan_branch)
         or (PredictedMetrics(), {})
     )
 
@@ -965,10 +1008,12 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
     lambda_val = report_data.get("lambda", 0.3)
     mu_val = report_data.get("mu", 0.5)
 
+    plan_file_label = report_data.get("plan_file") or legacy_plan_file(plan_id)
     lines = [
         f"# Plan Calibration Report: {plan_id}",
         "",
-        f"- **Plan Reference:** [`plans/{plan_id}.md`]({plan_id}.md)",
+        # The report sits beside the plan file, so the relative link is the plan's file name either way.
+        f"- **Plan Reference:** [`{plan_file_label}`]({plan_id}.md)",
         f"- **Execution ID:** `{execution_id}`",
         f"- **Execution Branch:** `{execution_branch}`",
         f"- **Intent Branch:** `{intent_branch}`",
@@ -1171,7 +1216,7 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
         raw_branch = raw_branch[len("refs/heads/") :]
     calibrated_branch = f"{raw_branch}/calibrated"
 
-    predicted, plan_meta = parse_predicted_metrics(plan_id, target_worktree=target_worktree)
+    predicted, plan_meta = parse_predicted_metrics(plan_id, target_worktree=target_worktree, plan_branch=plan_branch)
     actual, exec_meta = parse_actual_metrics(
         execution_id,
         resolved_plan_ref,
@@ -1206,6 +1251,7 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
     report_dict: dict[str, Any] = {
         "plan_id": plan_id,
         "execution_id": execution_id,
+        "plan_file": plan_meta.get("plan_file"),
         "intent_branch": intent_branch,
         "plan_branch": plan_branch,
         "execution_branch": execution_branch,
@@ -1574,11 +1620,10 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
                     f"Failed to create calibrated branch '{calibrated_branch}' from '{start_point}': {err_msg}"
                 )
 
-    # 2. Write calibration markdown report to plans/P-{plan_id}_calibration.md
-    plans_dir = os.path.join(target_worktree, "plans")
-    os.makedirs(plans_dir, exist_ok=True)
-    report_rel = f"plans/{report.plan_id}_calibration.md"
+    # 2. Write the calibration markdown report beside the plan file, nested under the plan's intent
+    report_rel = calibration_report_rel(report.plan_branch, report.plan_id)
     report_path = os.path.join(target_worktree, report_rel)
+    os.makedirs(os.path.dirname(report_path), exist_ok=True)
 
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report.markdown_content)

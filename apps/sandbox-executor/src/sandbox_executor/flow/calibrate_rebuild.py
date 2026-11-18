@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from sandbox_executor.calibration import LEDGER_EXECUTIONS_REL
 from sandbox_executor.flow.context import FlowContext
+from sandbox_executor.plan_paths import is_calibration_report_path
 from sandbox_executor.flow.host_remote import DEFAULT_REMOTE
 from sandbox_executor.git import run_git
 from sandbox_executor.ref_names import calibration_branch
@@ -37,7 +38,7 @@ def is_calibration_path(path: str) -> bool:
     """True for a path Stage 5 commits: a plans/ calibration report, the executions ledger, kb or wisdom files."""
     if path == LEDGER_EXECUTIONS_REL or path.startswith(CALIBRATION_DIR_PREFIXES):
         return True
-    return path.startswith("plans/") and path.count("/") == 1 and path.endswith("_calibration.md")
+    return is_calibration_report_path(path)
 
 
 def _commits_missing_from_head(repo_dir: str, start_sha: str, existing_sha: str) -> list[str] | None:

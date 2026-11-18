@@ -424,6 +424,7 @@ Include metrics in this format:
         "parent_intent_id": intent_data.get("parent_intent_id", "NONE"),
         "description": intent_data.get("description", ""),
         "plan_id": plan_id,
+        "plan_file": plan_file_rel(plan_branch),
         "date": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
         "intent_json": json.dumps(intent_data, indent=2),
         "safe_model": safe_model,

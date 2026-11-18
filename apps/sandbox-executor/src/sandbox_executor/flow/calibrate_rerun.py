@@ -17,7 +17,13 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from sandbox_executor.calibration import extract_branch_components, parse_evaluated_commit_sha, read_git_file
+from sandbox_executor.calibration import (
+    calibration_report_rel,
+    extract_branch_components,
+    parse_evaluated_commit_sha,
+    read_git_file,
+)
+from sandbox_executor.plan_paths import legacy_calibration_report
 from sandbox_executor.flow.calibrate_rebuild import is_ancestor, is_calibration_commit
 from sandbox_executor.flow.context import FlowContext, StageResult, StageStatus
 from sandbox_executor.flow.github.approval_invalidation import (
@@ -125,14 +131,20 @@ def report_staleness(context: FlowContext, seams: RerunSeams | None = None) -> H
     branch = context.execution_branch
     if context.dry_run or not branch:
         return HeadMoveCheck(False, reason="dry run or no execution branch")
-    plan_id = extract_branch_components(branch).get("plan_id")
+    components = extract_branch_components(branch)
+    plan_id = components.get("plan_id")
     if not plan_id:
         return HeadMoveCheck(False, reason=f"no plan id in '{branch}'")
     current = (seams.head_resolver or _origin_head)(context)
     if not current:
         return HeadMoveCheck(False, reason=f"the head of '{branch}' could not be resolved")
-    report_rel = f"plans/{plan_id}_calibration.md"
+    # The nested intent-keyed report first; the flat path is the old-generation fallback.
+    report_rel = calibration_report_rel(components.get("plan_branch", ""), plan_id)
     content = (seams.report_reader or _report_content)(context, report_rel)
+    legacy_rel = legacy_calibration_report(plan_id)
+    if content is None and report_rel != legacy_rel:
+        report_rel = legacy_rel
+        content = (seams.report_reader or _report_content)(context, report_rel)
     if content is None:
         return HeadMoveCheck(False, current_head=current, reason=f"no calibration report at {report_rel}")
     evaluated = parse_evaluated_commit_sha(content)

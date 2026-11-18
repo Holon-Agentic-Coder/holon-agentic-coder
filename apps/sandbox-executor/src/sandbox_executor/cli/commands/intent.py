@@ -47,7 +47,20 @@ def _flow_slug(payload: dict[str, Any]) -> str:
 
 def run(args: argparse.Namespace) -> int | None:
     """Execute the intent command: fetch the target branch on the host, run the container, push the new branch."""
+    from sandbox_executor.agent_defaults import MissingAgentTickerError, ticker_for
+
     payload = _payload(args.intent_file)
+    # A runner without a ticker is refused here, before any worktree or branch exists; there is no fallback.
+    try:
+        agent_value = cli.resolve_agent_runner(getattr(args, "agent", None), log=False).value
+    except Exception:
+        agent_value = None  # an unresolved runner is reported by the dispatch below, as before
+    if agent_value is not None:
+        try:
+            ticker_for(agent_value)
+        except MissingAgentTickerError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
     try:
         worktree = prepare_worktree(
             str(payload.get("target_branch") or "main"), args.target_worktree, _flow_slug(payload)

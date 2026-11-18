@@ -9,7 +9,9 @@ from sandbox_executor.agent_defaults import (
     DEFAULT_MODELS,
     LEGACY_DEFAULT_AGENT,
     LEGACY_DEFAULT_MODEL,
+    AGENT_TICKERS,
     MissingAgentRunnerError,
+    MissingAgentTickerError,
     MissingModelError,
     UnmappedAgentRunnerError,
     canonical_agent_name,
@@ -18,6 +20,7 @@ from sandbox_executor.agent_defaults import (
     normalise_agent_id,
     resolve_agent_runner,
     resolve_model,
+    ticker_for,
 )
 
 
@@ -199,3 +202,56 @@ def test_claude_api_key_detection_uses_the_secrets_file_not_holon_agent_key(tmp_
     secrets.write_text("fake-claude-value\n", encoding="utf-8")
     secrets.chmod(0o600)
     assert agent_defaults._detect_api_key_present("claude", {}) is True
+
+
+# ---------------------------------------------------------------------------
+# Agent tickers: the three fixed registrations, uniqueness, format, and the rejections
+# ---------------------------------------------------------------------------
+
+
+def test_the_three_flow_runners_have_their_fixed_tickers():
+    assert AGENT_TICKERS == {"claude": "CLA", "antigravity": "ANA", "pi": "PIA"}
+    assert ticker_for("claude-agent") == "CLA"
+    assert ticker_for("antigravity-agent") == "ANA"
+    assert ticker_for("pi-agent") == "PIA"
+
+
+def test_tickers_are_exactly_three_uppercase_letters():
+    import re
+
+    for runner_id, ticker in AGENT_TICKERS.items():
+        assert re.fullmatch(r"[A-Z]{3}", ticker), f"{runner_id} ticker '{ticker}' is not three uppercase letters"
+
+
+def test_no_two_runners_share_a_ticker():
+    tickers = list(AGENT_TICKERS.values())
+    assert len(set(tickers)) == len(tickers), f"duplicate ticker among {tickers}"
+
+
+@pytest.mark.parametrize("runner", ["codex-agent", "gemini-agent", "opencode-agent"])
+def test_a_runner_without_a_ticker_is_rejected_naming_the_runner(runner):
+    with pytest.raises(MissingAgentTickerError, match=runner):
+        ticker_for(runner)
+
+
+def test_doctor_reports_a_tickerless_runner_and_exits_nonzero(capsys):
+    import argparse
+
+    from sandbox_executor.cli import run_doctor
+
+    args = argparse.Namespace(agent="codex-agent", model="gpt-5-codex", json=False, timeout=None, target_worktree=".")
+    assert run_doctor(args) == 1
+    err = capsys.readouterr().err
+    assert "codex-agent" in err and "ticker" in err
+
+
+def test_doctor_json_reports_a_tickerless_runner(capsys):
+    import argparse
+    import json
+
+    from sandbox_executor.cli import run_doctor
+
+    args = argparse.Namespace(agent="codex-agent", model="gpt-5-codex", json=True, timeout=None, target_worktree=".")
+    assert run_doctor(args) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert "codex-agent" in payload["error"] and "ticker" in payload["error"]

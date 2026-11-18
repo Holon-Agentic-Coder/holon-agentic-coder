@@ -199,6 +199,34 @@ class TestMetricsParsing(unittest.TestCase):
             self.assertEqual(pred.ev, 58.26)
             self.assertEqual(meta["plan_id"], "P-test-123")
 
+    def test_same_second_plans_of_two_intents_resolve_separately(self):
+        """Two intents planned in the same second share a generation-3 plan ID; calibration keys on the intent."""
+        shared_id = "P-1794567531-CLA-CS5.5"
+        rows = [
+            {"plan_id": shared_id, "intent_branch": "I-1794567515-alpha/_", "p_success": 0.9, "ev": 10.0},
+            {"plan_id": shared_id, "intent_branch": "I-1794567515-beta/_", "p_success": 0.5, "ev": 20.0},
+        ]
+        jsonl_content = "".join(json.dumps(r) + "\n" for r in rows)
+        with (
+            patch("os.path.exists", side_effect=lambda p: "plans.jsonl" in str(p)),
+            patch("builtins.open", unittest.mock.mock_open(read_data=jsonl_content)),
+        ):
+            pred_a, meta_a = parse_predicted_metrics(shared_id, intent_branch="I-1794567515-alpha/_")
+            pred_b, meta_b = parse_predicted_metrics(shared_id, intent_branch="I-1794567515-beta")
+        self.assertEqual((pred_a.p_success, meta_a["intent_branch"]), (0.9, "I-1794567515-alpha/_"))
+        self.assertEqual((pred_b.p_success, meta_b["intent_branch"]), (0.5, "I-1794567515-beta/_"))
+
+    def test_old_generation_rows_still_resolve_without_an_intent_match(self):
+        """Both pre-ticker generations keep calibrating: a bare-ID row match is the fallback."""
+        for old_id in ("P-1787048480-antigravity-agent-gemini-3.5-flash", "P-1794294214-0a2285cf-claude-agent-x"):
+            row = {"plan_id": old_id, "intent_branch": "I-1787048466-old/_", "p_success": 0.8}
+            with (
+                patch("os.path.exists", side_effect=lambda p: "plans.jsonl" in str(p)),
+                patch("builtins.open", unittest.mock.mock_open(read_data=json.dumps(row) + "\n")),
+            ):
+                pred, meta = parse_predicted_metrics(old_id, intent_branch="I-renamed-since/_")
+            self.assertEqual((pred.p_success, meta["plan_id"]), (0.8, old_id))
+
     def test_parse_predicted_metrics_from_markdown(self):
         md_content = """# Plan
 

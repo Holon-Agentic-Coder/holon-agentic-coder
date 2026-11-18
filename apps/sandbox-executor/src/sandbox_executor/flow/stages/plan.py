@@ -10,9 +10,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.budgets import ENV_REPLAN_FEEDBACK
+from sandbox_executor.agent_defaults import MissingAgentTickerError, ticker_for
 from sandbox_executor.entrypoint.planner import (
     PLAN_FILE_PATTERN,
-    _sanitize_model_name,
     load_metrics_config,
     parse_metrics,
 )
@@ -31,6 +31,7 @@ from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_confli
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.knowledge import ConsultEngine
 from sandbox_executor.ledger import build_plan_id
+from sandbox_executor.plan_paths import model_code, plan_file_paths
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +53,11 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
         return StageResult(stage=FlowStage.PLAN, status=StageStatus.FAILED, start_time=start_time, error=err)
 
     intent_prefix = context.intent_branch.removesuffix("/_").rstrip("/")
-    safe_model = _sanitize_model_name(context.model)
     repo_dir = context.target_worktree
+    try:
+        dispatched_suffix = f"-{ticker_for(context.agent)}-{model_code(context.model)}"
+    except MissingAgentTickerError as exc:
+        return _stage_failure(context, FlowStage.PLAN, start_time, f"Plan stage failed: {exc}")
 
     # Pre-planning wisdom consult
     consulted_ids: list[str] = []
@@ -72,7 +76,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
 
     if context.dry_run:
         # Validation only: name the branch the planner would create, without dispatching or writing anything.
-        plan_id = build_plan_id(int(time.time()), intent_prefix, context.agent, safe_model)
+        plan_id = build_plan_id(int(time.time()), intent_prefix, context.agent, context.model)
         plan_branch = f"{intent_prefix}/{plan_id}/_"
         context.plan_branch = plan_branch
         context.log(f"Stage 2 (dry run): planner dispatch skipped; plan branch would be '{plan_branch}'.")
@@ -84,7 +88,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
             payload={
                 "plan_id": plan_id,
                 "plan_branch": plan_branch,
-                "plan_file": f"plans/{plan_id}.md",
+                "plan_file": plan_file_paths(plan_branch)[0],
                 "metrics": {},
                 "consulted_knowledge_ids": consulted_ids,
                 "dry_run": True,
@@ -148,7 +152,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
         intent_prefix,
         "P",
         before=existing_plans,
-        preferred_suffix=f"-{context.agent}-{safe_model}",
+        preferred_suffix=dispatched_suffix,
     )
     if ambiguity:
         return _stage_failure(context, FlowStage.PLAN, start_time, f"Plan stage failed: {ambiguity}.")
@@ -159,9 +163,9 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
     plan_ref = f"refs/remotes/origin/{plan_branch}"
     plan_rows = [r for r in _read_ledger_rows(repo_dir, plan_ref, "plans.jsonl") if r.get("plan_id") == plan_id]
     plan_row = plan_rows[-1] if plan_rows else {}
-    plan_md_rel = str(plan_row.get("plan_file") or f"plans/{plan_id}.md")
+    plan_md_rel = str(plan_row.get("plan_file") or plan_file_paths(plan_branch)[0])
     if not re.fullmatch(PLAN_FILE_PATTERN, plan_md_rel):
-        plan_md_rel = f"plans/{plan_id}.md"
+        plan_md_rel = plan_file_paths(plan_branch)[0]
     plan_content = _git_show_text(repo_dir, plan_ref, plan_md_rel)
     if plan_content is None:
         return _stage_failure(context, FlowStage.PLAN, start_time, no_plan_error, plan_branch=plan_branch)

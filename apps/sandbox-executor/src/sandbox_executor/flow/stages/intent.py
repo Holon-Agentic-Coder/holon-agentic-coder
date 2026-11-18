@@ -24,8 +24,15 @@ from sandbox_executor.flow.host_remote import fetch_base, push_branch, remote_er
 from sandbox_executor.flow.intent_questions import validate_intent_questions
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
+from sandbox_executor.agent_defaults import MissingAgentTickerError, ticker_for
 from sandbox_executor.knowledge import ConsultEngine
-from sandbox_executor.ref_names import RefTooLongError, resolve_root_intent_branch
+from sandbox_executor.ref_names import (
+    RefTooLongError,
+    SlugTooLongError,
+    resolve_root_intent_branch,
+    truncate_slug,
+    validate_slug_length,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,12 +112,25 @@ def run_intent_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
 
     description = raw_desc or goal or "No description provided"
 
-    # Sanitise slug
+    # A runner without a ticker cannot name the plan and execution branches below this intent, so it is refused
+    # here, before any branch exists.
+    try:
+        ticker_for(context.agent)
+    except MissingAgentTickerError as exc:
+        return _stage_failure(context, FlowStage.INTENT, start_time, f"Intent stage failed: {exc}")
+
+    # Sanitise slug: a supplied root slug over the limit is rejected; an engine-derived one is cut at a word
+    # boundary.
     if not raw_slug:
         candidate = (goal or description or "task")[:40]
-        raw_slug = re.sub(r"[^a-zA-Z0-9]+", "-", candidate).strip("-").lower()
+        raw_slug = truncate_slug(re.sub(r"[^a-zA-Z0-9]+", "-", candidate).strip("-").lower())
     else:
         raw_slug = re.sub(r"[^a-zA-Z0-9]+", "-", raw_slug).strip("-").lower()
+        if not intent_data.get("branch"):
+            try:
+                validate_slug_length(raw_slug)
+            except SlugTooLongError as exc:
+                return _stage_failure(context, FlowStage.INTENT, start_time, f"Intent stage failed: {exc}")
 
     # The intent creator expects the bare branch prefix and appends '/_' itself.
     try:

@@ -19,6 +19,7 @@ from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.git_refs import _append_ledger_row, _git_show_text, _read_ledger_rows, _resolve_branch_ref
 from sandbox_executor.flow.stages.plan import _format_entropy
+from sandbox_executor.plan_paths import plan_file_paths
 
 
 def _plan_budget_decision(context: FlowContext) -> DecompositionDecision | None:
@@ -53,9 +54,9 @@ def _plan_budget_decision(context: FlowContext) -> DecompositionDecision | None:
         ) from exc
     if recorded is not None:
         return recorded
-    plan_md_rel = str(plan_row.get("plan_file") or f"plans/{plan_id}.md")
+    plan_md_rel = str(plan_row.get("plan_file") or plan_file_paths(context.plan_branch)[0])
     if not re.fullmatch(PLAN_FILE_PATTERN, plan_md_rel):
-        plan_md_rel = f"plans/{plan_id}.md"
+        plan_md_rel = plan_file_paths(context.plan_branch)[0]
     plan_content = _git_show_text(context.target_worktree, plan_ref, plan_md_rel) or ""
     decision = should_decompose(plan_row, plan_content, context.intent_data)
     _backfill_plan_row(context, plan_row, decision)

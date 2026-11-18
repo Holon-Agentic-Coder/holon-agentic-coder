@@ -43,6 +43,38 @@ AGENT_IMAGE_MAPPING: dict[str, str] = {
     "opencode": "holon/agent-opencode",
 }
 
+# Ticker per runner that may run a flow: exactly three uppercase letters, used in plan and execution names
+# (``P-{epoch}-{ticker}-{model code}``). A ticker is never reassigned or reused; runners without one
+# (codex, gemini, opencode) are deliberately absent and are refused at intent time and by ``holon doctor``.
+AGENT_TICKERS: dict[str, str] = {
+    "claude": "CLA",
+    "antigravity": "ANA",
+    "pi": "PIA",
+}
+
+
+class MissingAgentTickerError(ValueError):
+    """Raised when the resolved agent runner has no ticker in :data:`AGENT_TICKERS`.
+
+    There is no fallback and no derivation: a runner without a ticker may not open an intent or run a flow.
+    """
+
+
+def ticker_for(agent: str) -> str:
+    """Return the three-uppercase-letter ticker of a runner, or raise naming the runner.
+
+    Raises:
+        MissingAgentTickerError: If the runner declares no ticker; the message names the runner.
+    """
+    ticker = AGENT_TICKERS.get(normalise_agent_id(agent))
+    if ticker is None:
+        declared = ", ".join(f"{rid}-agent ({tick})" for rid, tick in sorted(AGENT_TICKERS.items()))
+        raise MissingAgentTickerError(
+            f"Agent runner '{canonical_agent_name(agent)}' has no ticker, so it may not run a flow. "
+            f"Runners with tickers: {declared}."
+        )
+    return ticker
+
 # Default model per normalised runner id. The antigravity entry is the label carried by every successful agy run in the
 # ledger (agy accepts it together with ``--effort``); the old ``gemini-3.5-flash`` default is rejected by current agy.
 # The other entries are best-effort and can be overridden with ``--model`` or ``HOLON_MODEL``; ``holon doctor``

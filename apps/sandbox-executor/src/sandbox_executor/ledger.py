@@ -2,9 +2,7 @@
 
 import contextlib
 import errno
-import hashlib
 import io
-import itertools
 import json
 import logging
 import os
@@ -19,7 +17,9 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal, TextIO
 
-from sandbox_executor.ref_names import fit_execution_id, fit_plan_id
+from sandbox_executor.agent_defaults import ticker_for
+from sandbox_executor.plan_paths import execution_segment, model_code, plan_segment
+from sandbox_executor.ref_names import ensure_segment_fits
 
 try:
     import fcntl
@@ -46,9 +46,6 @@ def generate_action_id(prefix: str = "ACT") -> str:
     return f"{prefix}-{ts}-{suffix}"
 
 
-_disambiguator_counter = itertools.count()
-
-
 def _sanitize_string(name: str, fallback: str = "unknown") -> str:
     """Sanitise an identifier component for safe use in branch names and filenames."""
     s = re.sub(r"\s+", "-", name.replace("/", "_"))
@@ -64,15 +61,43 @@ def _sanitize_model_name(model_name: str) -> str:
     return _sanitize_string(model_name, fallback="unknown-model")
 
 
-def build_stage_disambiguator(parent_ref: str) -> str:
-    """Generate a deterministic 8-character lowercase hex disambiguator.
+class DuplicateFlowIdError(ValueError):
+    """A plan or execution with this name already exists under the same parent, even after epoch bumps."""
 
-    Derived from the parent branch/intent, high-resolution nanosecond timestamp,
-    and process ID.
+
+#: How many one-second epoch bumps a same-second collision may take before creation fails.
+MAX_SAME_SECOND_BUMPS = 5
+
+_SegmentBuilder = Callable[[int, str, str], str]
+_ExistsCheck = Callable[[str], bool]
+
+
+def _build_segment_id(
+    build: _SegmentBuilder,
+    seq: int,
+    parent_branch: str,
+    agent: str,
+    model: str,
+    exists: _ExistsCheck | None,
+    reserve_below: int = 0,
+) -> str:
+    """Name a gen-3 segment under ``parent_branch``, bumping the epoch past same-second collisions.
+
+    Raises:
+        DuplicateFlowIdError: Every candidate up to :data:`MAX_SAME_SECOND_BUMPS` bumps already exists.
+        MissingAgentTickerError: The runner declares no ticker.
+        RefTooLongError: The name cannot fit the ref limit under ``parent_branch``.
     """
-    clean_ref = parent_ref.removesuffix("/_").rstrip("/")
-    seed = f"{clean_ref}:{time.time_ns()}:{time.perf_counter_ns()}:{os.getpid()}:{next(_disambiguator_counter)}"
-    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
+    ticker, code = ticker_for(agent), model_code(model)
+    for bump in range(MAX_SAME_SECOND_BUMPS + 1):
+        candidate = build(seq + bump, ticker, code)
+        ensure_segment_fits(parent_branch, candidate, reserve_below=reserve_below)
+        if exists is None or not exists(candidate):
+            return candidate
+    raise DuplicateFlowIdError(
+        f"duplicate under '{parent_branch}': '{build(seq, ticker, code)}' and the next {MAX_SAME_SECOND_BUMPS} "
+        "epoch bumps all exist already; refusing to overwrite"
+    )
 
 
 def build_plan_id(
@@ -80,15 +105,15 @@ def build_plan_id(
     parent_branch: str,
     agent: str,
     model: str,
-    disambiguator: str | None = None,
+    exists: _ExistsCheck | None = None,
 ) -> str:
-    """Build a deterministic, collision-resistant plan identifier.
+    """Build a plan identifier ``P-{plan_seq}-{ticker}-{model code}`` under ``parent_branch``.
 
-    Format: P-{plan_seq}-{disambiguator}-{safe_agent}-{safe_model}
+    ``exists`` is the parent-scoped collision check (plan file, ledger row for this parent, or ref); a taken name
+    gets its epoch bumped by one second, deterministically, rather than ever overwriting.
     """
-    safe_agent, safe_model = _sanitize_string(agent, fallback="unknown-agent"), _sanitize_model_name(model)
-    dis = disambiguator or build_stage_disambiguator(parent_branch)
-    return fit_plan_id(parent_branch, plan_seq, dis, safe_agent, safe_model).name
+    reserve = 1 + len(execution_segment(plan_seq, ticker_for(agent), model_code(model)))
+    return _build_segment_id(plan_segment, plan_seq, parent_branch, agent, model, exists, reserve_below=reserve)
 
 
 def build_execution_id(
@@ -96,15 +121,14 @@ def build_execution_id(
     parent_branch: str,
     agent: str,
     model: str,
-    disambiguator: str | None = None,
+    exists: _ExistsCheck | None = None,
 ) -> str:
-    """Build a deterministic, collision-resistant execution identifier.
+    """Build an execution identifier ``E-{exec_seq}-{ticker}-{model code}`` under the plan ``parent_branch``.
 
-    Format: E-{exec_seq}-{disambiguator}-{safe_agent}-{safe_model}
+    ``exists`` is the parent-scoped collision check; a taken name gets its epoch bumped by one second rather
+    than ever overwriting.
     """
-    safe_agent, safe_model = _sanitize_string(agent, fallback="unknown-agent"), _sanitize_model_name(model)
-    dis = disambiguator or build_stage_disambiguator(parent_branch)
-    return fit_execution_id(parent_branch, exec_seq, dis, safe_agent, safe_model).name
+    return _build_segment_id(execution_segment, exec_seq, parent_branch, agent, model, exists)
 
 
 @dataclass
@@ -963,12 +987,21 @@ def _extract_parent_ref(record: dict[str, Any], parent_key: str) -> str | None:
     return parts[0] if parts else None
 
 
+_ARTEFACT_KEYS: dict[str, str] = {"plan_id": "plan_file", "execution_id": "execution_file"}
+
+
 def validate_ledger_unique_ids(
     records: Iterable[dict[str, Any]],
     id_key: str = "plan_id",
     parent_key: str = "intent_branch",
 ) -> None:
-    """Validate that identifier values do not collide across distinct intents or parent branches.
+    """Validate that no (parent, identifier) pair names two different artefacts.
+
+    Every lookup is keyed on the parent and the identifier together, so the same identifier under two distinct
+    intents (two intents planned in the same second by the same runner and model) is legal. Rows repeating a pair
+    are superseding re-records of one plan or execution and stay legal; the pair is a duplicate only when two of
+    its rows claim different artefact files (``plan_file`` / ``execution_file``), which would mean two creations
+    shared one name.
 
     Args:
         records: An iterable of ledger record dictionaries.
@@ -976,23 +1009,27 @@ def validate_ledger_unique_ids(
         parent_key: The dictionary key for the parent reference (e.g. 'intent_branch' or 'plan_branch').
 
     Raises:
-        ValueError: If a duplicate identifier is detected across distinct parent branches/intents.
+        ValueError: If one (parent, identifier) pair points at two different artefact files.
     """
-    seen: dict[str, tuple[str, dict[str, Any]]] = {}
+    artefact_key = _ARTEFACT_KEYS.get(id_key, "plan_file")
+    seen: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {}
     for record in records:
         id_val = record.get(id_key)
         if not isinstance(id_val, str) or not id_val.strip():
             continue
         parent_ref = _extract_parent_ref(record, parent_key)
-        if not parent_ref:
+        artefact = record.get(artefact_key)
+        if not parent_ref or not isinstance(artefact, str) or not artefact.strip():
             continue
-        if id_val in seen and seen[id_val][0] != parent_ref:
-            first_ref, first_record = seen[id_val]
+        pair = (parent_ref, id_val)
+        if pair in seen and seen[pair][0] != artefact:
+            first_artefact, first_record = seen[pair]
             raise ValueError(
-                f"Duplicate {id_key} '{id_val}' collision detected across distinct intents/branches: "
-                f"{_describe_id_owner(first_ref, first_record)} vs {_describe_id_owner(parent_ref, record)}"
+                f"Duplicate {id_key} '{id_val}' under the same parent names two files "
+                f"('{first_artefact}' vs '{artefact}'): {_describe_id_owner(parent_ref, first_record)} vs "
+                f"{_describe_id_owner(parent_ref, record)}"
             )
-        seen.setdefault(id_val, (parent_ref, record))
+        seen.setdefault(pair, (artefact, record))
 
 
 def _describe_id_owner(parent_ref: str, record: dict[str, Any]) -> str:

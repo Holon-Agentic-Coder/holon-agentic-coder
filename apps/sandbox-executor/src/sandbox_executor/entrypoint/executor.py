@@ -59,7 +59,6 @@ from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import (
     ActionRecord,
     LedgerRewriteError,
-    _sanitize_model_name,
     append_action_record,
     atomic_ledger_append,
     build_execution_id,
@@ -1060,8 +1059,17 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         mounted_plan_tip = validate_mounted_workspace(repo, repo_dir, plan_branch)
 
         exec_seq = int(time.time())
-        safe_agent, safe_model = _sanitize_string(agent_name, "unknown-agent"), _sanitize_model_name(model_name)
-        exec_id = build_execution_id(exec_seq, plan_branch_prefix, safe_agent, safe_model)
+
+        def _execution_name_taken(candidate: str) -> bool:
+            """Parent-scoped collision check: an execution branch of this name already exists under the plan."""
+            probe = repo.run(
+                ["rev-parse", "--verify", "--quiet", f"refs/heads/{plan_branch_prefix}/{candidate}/_"], check=False
+            )
+            return probe.returncode == 0
+
+        exec_id = build_execution_id(
+            exec_seq, plan_branch_prefix, agent_name, model_name, exists=_execution_name_taken
+        )
         exec_branch = f"{plan_branch_prefix}/{exec_id}/_"
 
         # Plan branch tip: the base the empty-diff guard compares the agent's work against, even on a resume.
@@ -1087,9 +1095,14 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
         check_and_resolve_stage_conflicts(repo_dir=repo_dir, target_branch="main", stage_name="execute")
 
-        # Load plan data from plans.jsonl
+        # Load plan data from plans.jsonl, keyed on the intent and the plan id together: the same plan id under
+        # another intent is a different plan. Rows whose recorded intent does not match are the bare-id fallback,
+        # used only when no intent-scoped row exists (old-generation rows with partial branch records).
         plans_file_path = os.path.join(repo_dir, "holon-knowledge/ledger/plans.jsonl")
+        plan_lookup_id = plan_branch_prefix.rsplit("/", 1)[-1]
+        plan_parent_prefix = plan_branch_prefix.rsplit("/", 1)[0] if "/" in plan_branch_prefix else ""
         plan_data = None
+        plan_data_bare = None
         if os.path.exists(plans_file_path):
             with open(plans_file_path) as f:
                 for line_no, line in enumerate(f, start=1):
@@ -1097,14 +1110,17 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                         continue
                     try:
                         data = json.loads(line)
-                        plan_id = data.get("plan_id")
-                        if isinstance(plan_id, str) and (
-                            plan_branch_prefix.split("/")[-1] == plan_id or plan_branch_prefix.endswith("/" + plan_id)
-                        ):
-                            # The newest matching row wins, so a superseding row the flow back-filled is read.
+                        if data.get("plan_id") != plan_lookup_id:
+                            continue
+                        row_intent = str(data.get("intent_branch") or "").removesuffix("/_").strip("/")
+                        # The newest matching row wins, so a superseding row the flow back-filled is read.
+                        if row_intent and row_intent == plan_parent_prefix:
                             plan_data = data
+                        else:
+                            plan_data_bare = data
                     except Exception as e:
                         print(f"Warning: skipping line {line_no} in plans.jsonl: {e}", file=sys.stderr)
+        plan_data = plan_data or plan_data_bare
 
         if not plan_data:
             plan_data = {

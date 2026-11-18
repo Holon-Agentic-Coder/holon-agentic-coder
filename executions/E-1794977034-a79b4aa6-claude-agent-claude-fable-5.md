@@ -102,4 +102,20 @@ off-limits. Consequence: every new helper added in Step 3/4 is module-private (`
 All 17 existing tests in `test_calibrate_final_head_ci.py` pass unmodified (the timing-gate-only case stays
 ineligible there because no approved head exists — fail-closed default confirmed).
 
+### Step 4: Surface the rerun in the Stage 5 verdict and the invalidation comment (IMPLEMENTATION)
+
+- `flow/github/ci_reverify.py` (97 → 105 lines): `reverify_final_head` copies the record's `timing_rerun` note
+  into the reverified mapping, and the private `_timing_rerun_clause` adds " after one automatic rerun of the
+  timing gate" to the GREEN/RED report line exactly when a rerun was attempted. Verdict mapping is unchanged:
+  `success` → GREEN, `failed` → RED; a record without the key renders byte-identical output.
+- `flow/github/approval_invalidation.py` (137 → 156 lines): `render_invalidation` takes an optional fourth
+  `timing_rerun` argument (passed by `invalidate_approval` from the reverified mapping) and, when a rerun was
+  attempted and the head still failed, adds the line "The failed job was automatically rerun once and failed
+  again." Marker, once-per-head and redaction behaviour unchanged.
+- Budgets raised accordingly in `flow_module_budgets.json` (`github/ci_reverify.py` 105,
+  `github/approval_invalidation.py` 156), covered by the Step 3 description note.
+
+All 31 existing tests across `test_ci_reverify.py`, `test_approval_invalidation.py` and
+`test_calibrate_final_head_ci.py` pass unmodified.
+
 ## Tests Run

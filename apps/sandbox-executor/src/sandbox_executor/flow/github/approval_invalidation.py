@@ -36,10 +36,23 @@ def _check_line(detail: Mapping[str, Any]) -> str:
     return f"- {describe_failure(detail)}" + (f"; failed step: {steps}" if steps else "")
 
 
-def render_invalidation(approved_head: str | None, failing_head: str, details: list[Mapping[str, Any]]) -> str:
-    """The comment body: both heads, each failing check and, for a timing gate, its duration against the limit."""
+def render_invalidation(
+    approved_head: str | None,
+    failing_head: str,
+    details: list[Mapping[str, Any]],
+    timing_rerun: Mapping[str, Any] | None = None,
+) -> str:
+    """The comment body: both heads, each failing check and, for a timing gate, its duration against the limit.
+
+    When the one automatic timing-gate rerun was attempted (so the head failed twice), one line says so.
+    """
     covered = f"`{short_sha(approved_head)}`" if approved_head else "an earlier commit"
     marker = invalidation_marker(failing_head)
+    rerun_lines = (
+        ["The failed job was automatically rerun once and failed again.", ""]
+        if timing_rerun and timing_rerun.get("attempted")
+        else []
+    )
     lines = [
         "## ⚠️ Ensemble Consensus Approval no longer stands",
         "",
@@ -47,6 +60,7 @@ def render_invalidation(approved_head: str | None, failing_head: str, details: l
         "",
         *(_check_line(d) for d in details),
         "",
+        *rerun_lines,
         "A job that exceeds its time limit is a failed check. This pull request is not verified as ready to merge; "
         "a human decides.",
     ]
@@ -132,6 +146,11 @@ def invalidate_approval(
         return {"posted": False, "reason": "comments could not be listed"}
     if any(invalidation_marker(failing) in body for body in existing):
         return {"posted": False, "reason": "already posted for this head"}
-    body = render_invalidation(reverified.get("approved_head"), failing, list(reverified.get("failed_details") or []))
+    body = render_invalidation(
+        reverified.get("approved_head"),
+        failing,
+        list(reverified.get("failed_details") or []),
+        reverified.get("timing_rerun"),
+    )
     posted = (poster or gh_comment_poster(repo_dir))(pr_number, body)
     return {"posted": posted, "reason": "posted" if posted else "the comment could not be posted"}

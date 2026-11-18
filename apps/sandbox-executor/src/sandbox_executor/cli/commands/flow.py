@@ -284,8 +284,13 @@ def _build_flow_context(
 
 
 def _calibrated_head_line(calibrate_result: Any) -> str:
-    """Name the execution head the calibration report covers, or say that no report was refreshed for it."""
-    head = calibrate_result.payload.get("calibrated_head")
+    """Name the execution head the calibration report covers, or say it is stale or was not refreshed."""
+    payload = calibrate_result.payload
+    head = payload.get("calibrated_head")
+    if payload.get("calibration_stale"):
+        stale = payload.get("stale_reason") or "the pull request head moved after calibration"
+        covers = f"covers {head[:12]}, " if head else ""
+        return f"calibration report is STALE: {covers}{stale} — not ready to merge on this report"
     if head:
         return f"calibration report covers execution head {head[:12]}"
     return "calibration report not refreshed for the current head"

@@ -85,7 +85,8 @@ def test_an_engine_derived_child_slug_is_cut_to_the_limit_at_a_word_boundary():
     long_slug = "x" * 400
     first = fit_child_intent_branch("I-1-root/_", 1, long_slug)
     assert first == fit_child_intent_branch("I-1-root/_", 1, long_slug)
-    assert first.name == f"I-1-root--1-{'x' * MAX_SLUG_LENGTH}" and first.originals == {}
+    assert first.name == f"I-1-root--1-{'x' * MAX_SLUG_LENGTH}"
+    assert first.originals == {"child slug": long_slug}
     worded = fit_child_intent_branch("I-1-root/_", 1, "add-the-streaming-parser-and-the-cli-flag")
     assert worded.name == "I-1-root--1-add-the-streaming-parser-and-the"
 

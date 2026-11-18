@@ -208,13 +208,17 @@ def fit_child_intent_branch(parent: str, index: int, slug: str) -> FitResult:
     still cannot fit falls back to the digest-based slug shortening. Sibling slugs may repeat after truncation
     without colliding, because the ``--{index}-`` marker already keeps siblings distinct.
     """
-    return _fit_intent_parts(
+    truncated = truncate_slug(slug)
+    result = _fit_intent_parts(
         [
             Part("parent", parent.removesuffix(INTENT_SUFFIX)),
             Part("index", f"--{index}-"),
-            Part("child slug", truncate_slug(slug), shortenable=True),
+            Part("child slug", truncated, shortenable=True),
         ]
     )
+    if truncated != slug:
+        return FitResult(result.name, {**result.originals, "child slug": slug})
+    return result
 
 
 def ensure_chain_fits(intent_bare: str, label: str = PLACEHOLDER_STAGE_LABEL) -> None:

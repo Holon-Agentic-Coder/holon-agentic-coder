@@ -256,7 +256,7 @@ def format_agent_cmd_for_display(cmd: list[str]) -> str:
 
 # A plan file lives at ``plans/{intent}/{plan id}.md`` mirroring its branch nesting (``plan_paths.plan_file_rel``);
 # the flat ``plans/P-*.md`` shape is the pre-migration generation and stays readable.
-PLAN_FILE_PATTERN = r"plans/(?:[^/]+/)*P-[^/]+\.md"
+PLAN_FILE_PATTERN = r"plans/(?:(?!\.\.)[^/]+/)*P-[^/]+\.md"
 
 
 def _plan_name_taken(repo_dir: str, intent_branch_prefix: str, plans_ledger_path: str, plan_id: str) -> bool:

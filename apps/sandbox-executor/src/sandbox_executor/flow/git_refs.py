@@ -254,7 +254,8 @@ def _latest_execution_summary(
     """Return the authoritative summary row for an execution: highest ledger_revision, then latest written.
 
     Pass ``plan_branch`` whenever it is known: an execution id alone is not a key (two plans can carry same-named
-    executions from the same second), so the rows are then filtered to that plan's pair.
+    executions from the same second), so a row recording a different plan is never matched. A row without a
+    ``plan_branch`` still matches, as an old-generation fallback.
     """
     wanted_plan = plan_branch.removesuffix("/_").strip("/") if plan_branch else None
     best: tuple[int, int] | None = None
@@ -262,7 +263,8 @@ def _latest_execution_summary(
     for idx, row in enumerate(rows):
         if row.get("entry_type") != "summary" or row.get("execution_id") != execution_id:
             continue
-        if wanted_plan and str(row.get("plan_branch") or "").removesuffix("/_").strip("/") != wanted_plan:
+        row_plan = str(row.get("plan_branch") or "").removesuffix("/_").strip("/")
+        if wanted_plan and row_plan and row_plan != wanted_plan:
             continue
         try:
             revision = int(row.get("ledger_revision") or 1)

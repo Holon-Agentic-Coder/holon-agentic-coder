@@ -162,7 +162,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
         r
         for r in _read_ledger_rows(repo_dir, plan_ref, "plans.jsonl")
         if r.get("plan_id") == plan_id
-        and str(r.get("intent_branch") or "").removesuffix("/_").strip("/") == intent_prefix
+        and str(r.get("intent_branch") or "").removesuffix("/_").strip("/") in ("", intent_prefix)
     ]
     plan_row = plan_rows[-1] if plan_rows else {}
     plan_md_rel = str(plan_row.get("plan_file") or plan_file_rel(plan_branch))

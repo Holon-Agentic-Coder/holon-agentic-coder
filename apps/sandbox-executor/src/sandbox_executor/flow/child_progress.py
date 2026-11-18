@@ -41,10 +41,14 @@ def _child_intent_branch(parent_branch: str, index: int, slug: str) -> FitResult
     The name comes from the parent's branch and position, never the clock; a sanitised slug never contains ``--``, so
     it cannot collide with another intent, and the same list always derives the same name for the same child.
     """
-    slug = re.sub(r"[^a-zA-Z0-9]+", "-", slug).strip("-").lower() or f"sub-intent-{index}"
-    # Engine-derived child slugs respect the 32-character limit, cut at a word boundary.
-    slug = truncate_slug(slug)
-    return fit_child_intent_branch(parent_branch, index, slug)
+    cleaned = re.sub(r"[^a-zA-Z0-9]+", "-", slug).strip("-").lower() or f"sub-intent-{index}"
+    # Engine-derived child slugs respect the 32-character limit, cut at a word boundary; a cut slug records its
+    # original like any other shortening, so the progress entry keeps the full name.
+    truncated = truncate_slug(cleaned)
+    fitted = fit_child_intent_branch(parent_branch, index, truncated)
+    if truncated != cleaned and "child slug" not in fitted.originals:
+        fitted = FitResult(fitted.name, {**fitted.originals, "child slug": cleaned})
+    return fitted
 
 
 def initial_progress(items: list[dict[str, Any]], plan_branch: str) -> list[dict[str, Any]]:

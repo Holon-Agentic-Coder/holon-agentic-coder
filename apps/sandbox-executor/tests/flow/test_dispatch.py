@@ -207,8 +207,9 @@ class TestFlowRoleDispatch:
 
         assert res.status == StageStatus.SUCCESS
         mock_format.assert_not_called()  # The planner container owns formatting.
-        assert res.payload["plan_file"] == f"plans/{res.payload['plan_id']}.md"
-        assert res.payload["plan_id"].endswith("-claude-agent-claude-opus-5-5")
+        plan_prefix = str(ctx.plan_branch).removesuffix("/_")
+        assert res.payload["plan_file"] == f"plans/{plan_prefix}.md"
+        assert res.payload["plan_id"].endswith("-CLA-CO5.5")
         assert res.payload["metrics"]["ev"] == pytest.approx(35.4)
         assert "Implementation step for" not in _git(host, "show", f"{ctx.plan_branch}:{res.payload['plan_file']}")
         assert len(_ledger_rows(host, ctx.plan_branch, "plans.jsonl")) == 1
@@ -262,7 +263,7 @@ class TestFlowRoleDispatch:
 
         def concurrent_planner(role: str, args: list[str]) -> None:
             if role == "planner":
-                _push_child_branch(tmp_path, origin, args[0], "P-1-claude-agent-claude-opus-5-5")
+                _push_child_branch(tmp_path, origin, args[0], "P-1-CLA-CO5.5")
 
         agents = FakeRoleAgents(tmp_path, origin, during_dispatch=concurrent_planner)
         ctx = _dispatch_context(host, agents)
@@ -297,7 +298,7 @@ class TestFlowRoleDispatch:
 
         def concurrent_executor(role: str, args: list[str]) -> None:
             if role == "executor":
-                _push_child_branch(tmp_path, origin, args[0], "E-1-claude-agent-claude-opus-5-5")
+                _push_child_branch(tmp_path, origin, args[0], "E-1-CLA-CO5.5")
 
         agents = FakeRoleAgents(tmp_path, origin, during_dispatch=concurrent_executor)
         ctx = _dispatch_context(host, agents)

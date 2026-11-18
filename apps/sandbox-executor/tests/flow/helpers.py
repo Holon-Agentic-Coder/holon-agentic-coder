@@ -14,8 +14,8 @@ from unittest.mock import patch
 from sandbox_executor import flow as flow_module
 from sandbox_executor.budgets import resolve_entropy_budget
 from sandbox_executor.decomposition_rule import DecompositionDecision, should_decompose
-from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE, _sanitize_string
-from sandbox_executor.entrypoint.planner import _sanitize_model_name
+from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
+from sandbox_executor.plan_paths import new_stage_id, plan_file_rel
 from sandbox_executor.flow import FlowContext
 from sandbox_executor.review_ensemble import (
     ParsedTrailer,
@@ -192,11 +192,11 @@ class FakeRoleAgents:
         intent_branch, agent, model = args
         if not self.planner_writes_plan:
             return 0
-        plan_id = f"P-{self.now()}-{agent}-{_sanitize_model_name(model)}"
+        plan_id = new_stage_id("P", self.now(), agent, model)
         plan_branch = f"{intent_branch.removesuffix('/_')}/{plan_id}/_"
         _git(work, "checkout", "-q", "-B", plan_branch, f"refs/remotes/origin/{intent_branch}")
-        plan_rel = f"plans/{plan_id}.md"
-        (work / "plans").mkdir(exist_ok=True)
+        plan_rel = plan_file_rel(plan_branch)
+        (work / plan_rel).parent.mkdir(parents=True, exist_ok=True)
         plan_content = PLAN_MARKDOWN.format(intent=intent_branch, plan_id=plan_id)
         (work / plan_rel).write_text(plan_content, encoding="utf-8")
         row = {
@@ -227,7 +227,7 @@ class FakeRoleAgents:
 
     def _execute(self, work: Path, args: list[str], _kwargs: dict[str, Any]) -> int:
         plan_branch, agent, model = args
-        exec_id = f"E-{self.now()}-{_sanitize_string(agent)}-{_sanitize_string(model)}"
+        exec_id = new_stage_id("E", self.now(), agent, model)
         exec_branch = f"{plan_branch.removesuffix('/_')}/{exec_id}/_"
         _git(work, "checkout", "-q", "-B", exec_branch, f"refs/remotes/origin/{plan_branch}")
         if self.executor_mode in ("change", "change_failure"):
@@ -496,11 +496,11 @@ class BudgetRoleAgents(FakeRoleAgents):
         self.clock_offset += 1
         if self.fail_planning_for and self.fail_planning_for in intent_branch:
             return 0
-        plan_id = f"P-{self.now()}-{agent}-{_sanitize_model_name(model)}"
+        plan_id = new_stage_id("P", self.now(), agent, model)
         plan_branch = f"{intent_branch.removesuffix('/_')}/{plan_id}/_"
         _git(work, "checkout", "-q", "-B", plan_branch, f"refs/remotes/origin/{intent_branch}")
-        plan_rel = f"plans/{plan_id}.md"
-        (work / "plans").mkdir(exist_ok=True)
+        plan_rel = plan_file_rel(plan_branch)
+        (work / plan_rel).parent.mkdir(parents=True, exist_ok=True)
         plan_content = PLAN_MARKDOWN.format(intent=intent_branch, plan_id=plan_id) + extra
         (work / plan_rel).write_text(plan_content, encoding="utf-8")
         row: dict[str, Any] = {
@@ -540,7 +540,7 @@ class BudgetRoleAgents(FakeRoleAgents):
             (work / "src" / f"{plan_id.replace('-', '_')}.py").write_text(f"PLAN = {plan_id!r}\n", encoding="utf-8")
             return super()._execute(work, args, kwargs)
         agent, model = args[1], args[2]
-        exec_id = f"E-{self.now()}-{_sanitize_string(agent)}-{_sanitize_string(model)}"
+        exec_id = new_stage_id("E", self.now(), agent, model)
         exec_branch = f"{plan_branch.removesuffix('/_')}/{exec_id}/_"
         _git(work, "checkout", "-q", "-B", exec_branch, plan_ref)
         row: dict[str, Any] = {

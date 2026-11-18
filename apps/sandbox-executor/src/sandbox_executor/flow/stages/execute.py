@@ -12,7 +12,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.decomposition_rule import DECISION_DECOMPOSED, DECISION_OVER_BUDGET, InvalidPlanDecisionError
-from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE, _sanitize_string
+from sandbox_executor.agent_defaults import ticker_for_agent
+from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
 from sandbox_executor.flow.admission import admission_stage_failure
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _dispatch_role, _recorded_test_fields, _stage_failure
@@ -37,6 +38,7 @@ from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.git import EMPTY_DIFF_FAILURE_REASON, EMPTY_DIFF_STATUS, changed_paths, empty_diff_summary
 from sandbox_executor.knowledge import ActionIndexDatabase, CredentialRedactor, compute_context_fingerprint
 from sandbox_executor.ledger import build_execution_id
+from sandbox_executor.plan_paths import model_code
 from sandbox_executor.redaction import redact_agent_secrets
 
 logger = logging.getLogger(__name__)
@@ -52,8 +54,8 @@ def failed_partial_head(repo_dir: str, ref: str, execution_id: str) -> str | Non
     Both failure statuses count: ``failure`` (a budget breach, an agent error or any other failure) and
     ``EMPTY_DIFF_STATUS`` (an empty or unverified diff), since either row can carry salvaged partial work.
     """
-    exec_branch = ref.removeprefix("refs/remotes/origin/").removeprefix("refs/heads/")
-    plan_branch = exec_branch.removesuffix("/_").rsplit("/", 1)[0]
+    bare = ref.removeprefix("refs/remotes/origin/").removeprefix("refs/heads/").removesuffix("/_")
+    plan_branch = bare.rsplit("/", 1)[0] if "/" in bare and bare.rsplit("/", 1)[-1].startswith("E-") else None
     row = (
         _latest_execution_summary(_read_ledger_rows(repo_dir, ref, "executions.jsonl"), execution_id, plan_branch)
         or {}
@@ -246,7 +248,7 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
         plan_prefix,
         "E",
         before=existing_executions,
-        preferred_suffix=f"-{_sanitize_string(context.agent)}-{_sanitize_string(context.model)}",
+        preferred_suffix=f"-{ticker_for_agent(context.agent)}-{model_code(context.model)}",
     )
     if ambiguity:
         return _stage_failure(context, FlowStage.EXECUTE, start_time, f"Execute stage failed: {ambiguity}.")

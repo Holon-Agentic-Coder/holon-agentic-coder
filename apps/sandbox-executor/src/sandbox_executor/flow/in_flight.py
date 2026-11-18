@@ -76,7 +76,7 @@ def read_plan_touch_set(repo_dir: str, plan_branch: str) -> TouchSet | None:
         row
         for row in _read_ledger_rows(repo_dir, plan_ref, "plans.jsonl")
         if row.get("plan_id") == plan_id
-        and str(row.get("intent_branch") or "").removesuffix("/_").strip("/") == intent_prefix
+        and str(row.get("intent_branch") or "").removesuffix("/_").strip("/") in ("", intent_prefix)
     ]
     return TouchSet.from_row(rows[-1].get("touch_set")) if rows else None
 

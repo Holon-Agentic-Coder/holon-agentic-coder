@@ -155,7 +155,7 @@ class TestStageTargetsIgnoreOperatorHead:
         assert res.status == StageStatus.SUCCESS
         assert heads == [ctx.execution_branch]
         assert _git(host, "rev-parse", "--abbrev-ref", "HEAD") == ctx.execution_branch
-        assert list((host / "plans").glob("P-*_calibration.md")), "fallback report missing from the execution tree"
+        assert list((host / "plans").glob("**/*_calibration.md")), "fallback report missing from the execution tree"
         assert _git(host, "log", "-1", "--format=%H", "main") == main_tip
 
     def test_calibrate_stage_fails_cleanly_when_execution_branch_cannot_be_checked_out(self, flow_repos, tmp_path):

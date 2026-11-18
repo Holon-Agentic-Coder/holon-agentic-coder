@@ -47,7 +47,7 @@ def _plan_budget_decision(context: FlowContext) -> DecompositionDecision | None:
         r
         for r in _read_ledger_rows(context.target_worktree, plan_ref, "plans.jsonl")
         if r.get("plan_id") == plan_id
-        and str(r.get("intent_branch") or "").removesuffix("/_").strip("/") == intent_prefix
+        and str(r.get("intent_branch") or "").removesuffix("/_").strip("/") in ("", intent_prefix)
     ]
     if not rows:
         return None

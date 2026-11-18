@@ -1,15 +1,18 @@
 """Tests for the shared agent runner and model resolver (sandbox_executor.agent_defaults)."""
 
 import logging
+import re
 
 import pytest
 from sandbox_executor import agent_defaults
 from sandbox_executor.agent_defaults import (
     AGENT_IMAGE_MAPPING,
+    AGENT_TICKERS,
     DEFAULT_MODELS,
     LEGACY_DEFAULT_AGENT,
     LEGACY_DEFAULT_MODEL,
     MissingAgentRunnerError,
+    MissingAgentTickerError,
     MissingModelError,
     UnmappedAgentRunnerError,
     canonical_agent_name,
@@ -18,6 +21,7 @@ from sandbox_executor.agent_defaults import (
     normalise_agent_id,
     resolve_agent_runner,
     resolve_model,
+    ticker_for,
 )
 
 
@@ -199,3 +203,58 @@ def test_claude_api_key_detection_uses_the_secrets_file_not_holon_agent_key(tmp_
     secrets.write_text("fake-claude-value\n", encoding="utf-8")
     secrets.chmod(0o600)
     assert agent_defaults._detect_api_key_present("claude", {}) is True
+
+
+def test_flow_runners_declare_their_fixed_tickers():
+    assert AGENT_TICKERS == {"claude": "CLA", "antigravity": "ANA", "pi": "PIA"}
+    assert ticker_for("claude-agent") == "CLA"
+    assert ticker_for("antigravity-agent") == "ANA"
+    assert ticker_for("pi-agent") == "PIA"
+
+
+def test_tickers_are_three_uppercase_letters():
+    for ticker in AGENT_TICKERS.values():
+        assert re.fullmatch(r"[A-Z]{3}", ticker), f"invalid ticker format: {ticker}"
+
+
+def test_no_two_runners_share_a_ticker():
+    tickers = list(AGENT_TICKERS.values())
+    assert len(set(tickers)) == len(tickers), f"duplicate ticker in {AGENT_TICKERS}"
+
+
+@pytest.mark.parametrize("runner", ["codex-agent", "gemini-agent", "opencode-agent"])
+def test_a_runner_without_a_ticker_is_refused_naming_the_runner(runner):
+    with pytest.raises(MissingAgentTickerError) as exc_info:
+        ticker_for(runner)
+    message = str(exc_info.value)
+    assert runner in message
+    assert "no fallback" in message
+
+
+def test_doctor_rejects_a_tickerless_runner_naming_it(capsys):
+    from sandbox_executor import cli
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["doctor", "--agent", "codex", "--model", "gpt-5-codex"])
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "codex-agent" in captured.err
+    assert "ticker" in captured.err
+
+
+def test_intent_opening_rejects_a_tickerless_runner_before_any_branch(tmp_path):
+    from sandbox_executor.flow.context import FlowContext, StageStatus
+    from sandbox_executor.flow.stages.intent import run_intent_stage
+
+    ctx = FlowContext(
+        target_worktree=str(tmp_path),
+        dry_run=True,
+        agent="codex-agent",
+        model="gpt-5-codex",
+        intent_data={"goal": "g", "slug": "x"},
+    )
+    result = run_intent_stage(ctx)
+    assert result.status == StageStatus.FAILED
+    assert "codex-agent" in result.error and "ticker" in result.error
+    assert not ctx.intent_branch
+    assert not (tmp_path / ".git").exists()

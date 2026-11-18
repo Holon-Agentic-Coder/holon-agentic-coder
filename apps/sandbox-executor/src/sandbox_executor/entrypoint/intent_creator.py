@@ -5,6 +5,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 
+from sandbox_executor.agent_defaults import MissingAgentTickerError, ticker_for
 from sandbox_executor.agent_runner import get_workspace_dir
 from sandbox_executor.entrypoint.execution_workspace import start_branch_from_host_fetch
 from sandbox_executor.git import GitRepository
@@ -80,6 +81,15 @@ def main():  # noqa: PLR0915
     goal = intent_data.get("goal", "No goal provided")
     slug = intent_data.get("slug", "")
     branch = intent_data.get("branch")
+
+    # A runner without a ticker is refused here, before any branch is created (there is no fallback).
+    runner_name = os.environ.get("HOLON_AGENT", "").strip()
+    if runner_name:
+        try:
+            ticker_for(runner_name)
+        except MissingAgentTickerError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
 
     if not branch:
         if not slug:

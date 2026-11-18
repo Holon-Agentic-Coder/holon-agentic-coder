@@ -12,6 +12,7 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
+from sandbox_executor.agent_defaults import MissingAgentTickerError, ticker_for
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _dispatch_role, _stage_failure
 from sandbox_executor.flow.git_refs import (
@@ -104,6 +105,12 @@ def run_intent_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
         return _stage_failure(context, FlowStage.INTENT, start_time, error_msg)
 
     description = raw_desc or goal or "No description provided"
+
+    # A runner without a ticker is refused here, before any branch is created (there is no fallback).
+    try:
+        ticker_for(context.agent)
+    except MissingAgentTickerError as e:
+        return _stage_failure(context, FlowStage.INTENT, start_time, f"Intent stage failed: {e}")
 
     # Sanitise slug
     if not raw_slug:

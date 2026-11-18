@@ -57,6 +57,44 @@ DEFAULT_MODELS: dict[str, str] = {
 }
 
 
+# Agent tickers: exactly three uppercase letters, declared beside the runner definitions above. A ticker names its
+# runner in plan and execution IDs (``P-{epoch}-{ticker}-{model code}``) and is never reassigned or reused. There is
+# deliberately no fallback and no derivation: a runner without a ticker (codex-agent, gemini-agent, opencode-agent)
+# is refused by ``holon doctor`` and at intent opening, before any branch is created.
+AGENT_TICKERS: dict[str, str] = {
+    "claude": "CLA",
+    "antigravity": "ANA",
+    "pi": "PIA",
+}
+
+
+class MissingAgentTickerError(ValueError):
+    """Raised when the resolved agent runner declares no ticker in :data:`AGENT_TICKERS`."""
+
+
+def ticker_for(agent: str) -> str:
+    """Return the three-uppercase-letter ticker declared for a runner name.
+
+    Args:
+        agent: Runner name in any form accepted by :func:`normalise_agent_id`.
+
+    Returns:
+        The runner's ticker, for example ``CLA`` for ``claude-agent``.
+
+    Raises:
+        MissingAgentTickerError: If the runner declares no ticker; the message names the runner.
+    """
+    ticker = AGENT_TICKERS.get(normalise_agent_id(agent))
+    if ticker is None:
+        declared = ", ".join(f"{rid}-agent = {t}" for rid, t in sorted(AGENT_TICKERS.items()))
+        raise MissingAgentTickerError(
+            f"Agent runner '{canonical_agent_name(agent)}' declares no ticker and cannot run a flow. "
+            f"Runners with a ticker: {declared}. Declare a three-uppercase-letter ticker beside the runner's "
+            "definition in agent_defaults.py; there is no fallback."
+        )
+    return ticker
+
+
 @dataclass(frozen=True)
 class ModelCapability:
     """Capability specification for a supported runner model.

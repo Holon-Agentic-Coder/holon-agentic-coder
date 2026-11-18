@@ -26,6 +26,7 @@ from sandbox_executor.agent_defaults import (
 from sandbox_executor.agent_defaults import (
     FALLBACK_AGENT,
     MissingAgentRunnerError,
+    MissingAgentTickerError,
     MissingModelError,
     Resolution,
     UnmappedAgentRunnerError,
@@ -34,6 +35,7 @@ from sandbox_executor.agent_defaults import (
     normalise_agent_id,
     resolve_agent_runner,
     resolve_model,
+    ticker_for,
 )
 from sandbox_executor.agent_runner import (
     HOST_WORKTREE_ROLES,
@@ -1683,8 +1685,9 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
     try:
         # The text report prints both decisions on stdout, so the resolvers' INFO log would show them twice.
         agent_res = resolve_agent_runner(args.agent, log=False)
+        agent_ticker = ticker_for(agent_res.value)
         model_res = resolve_model(agent_res.value, args.model, log=False, validate=True)
-    except (UnmappedAgentRunnerError, MissingAgentRunnerError, MissingModelError) as exc:
+    except (UnmappedAgentRunnerError, MissingAgentRunnerError, MissingAgentTickerError, MissingModelError) as exc:
         if args.json:
             error_payload: dict[str, Any] = {"error": redact_cli_error(exc)}
             agent_id = getattr(args, "agent", None) or (agent_res.value if "agent_res" in locals() else None)
@@ -1706,7 +1709,12 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
     result = run_preflight_probe(agent_res.value, model_res.value, timeout=resolve_timeout(args.timeout))
     if args.json:
         payload = {
-            "agent": {"value": agent_res.value, "source": agent_res.source, "reason": agent_res.reason},
+            "agent": {
+                "value": agent_res.value,
+                "source": agent_res.source,
+                "reason": agent_res.reason,
+                "ticker": agent_ticker,
+            },
             "model": {"value": model_res.value, "source": model_res.source, "reason": model_res.reason},
             "preflight": result.to_dict(),
             "environment": environment,

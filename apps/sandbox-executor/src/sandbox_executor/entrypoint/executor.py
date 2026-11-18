@@ -1061,10 +1061,9 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
         def _execution_name_taken(candidate: str) -> bool:
             """Parent-scoped collision check: an execution branch of this name already exists under the plan."""
-            probe = repo.run(
-                ["rev-parse", "--verify", "--quiet", f"refs/heads/{plan_branch_prefix}/{candidate}/_"], check=False
-            )
-            return probe.returncode == 0
+            ref = f"refs/heads/{plan_branch_prefix}/{candidate}/_"
+            listing = repo.run(["for-each-ref", "--format=%(refname)", ref], check=False)
+            return ref in (listing.stdout or "")
 
         exec_id = build_execution_id(
             exec_seq, plan_branch_prefix, agent_name, model_name, exists=_execution_name_taken

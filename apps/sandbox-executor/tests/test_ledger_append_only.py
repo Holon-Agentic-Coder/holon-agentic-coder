@@ -525,7 +525,7 @@ def _run_executor_main(
     monkeypatch.setattr(executor_module, "validate_mounted_workspace", _validate_stub)
     monkeypatch.setattr(executor_module, "workspace_mounted", lambda: True)
     monkeypatch.setenv("HOLON_TARGET_WORKTREE", str(tmp_path))
-    monkeypatch.setattr("sys.argv", ["executor.py", "I-456/P-123/_", "agent", "model"])
+    monkeypatch.setattr("sys.argv", ["executor.py", "I-456/P-123/_", "claude-agent", "claude-opus-5-5"])
     with pytest.raises(LedgerRewriteError):
         executor_module.main()
     return commands

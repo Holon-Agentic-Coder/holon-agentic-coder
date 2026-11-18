@@ -37,7 +37,7 @@ def is_calibration_path(path: str) -> bool:
     """True for a path Stage 5 commits: a plans/ calibration report, the executions ledger, kb or wisdom files."""
     if path == LEDGER_EXECUTIONS_REL or path.startswith(CALIBRATION_DIR_PREFIXES):
         return True
-    return path.startswith("plans/") and path.count("/") == 1 and path.endswith("_calibration.md")
+    return path.startswith("plans/") and path.endswith("_calibration.md")
 
 
 def _commits_missing_from_head(repo_dir: str, start_sha: str, existing_sha: str) -> list[str] | None:

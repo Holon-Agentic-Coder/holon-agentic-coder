@@ -9,6 +9,7 @@ import os
 from datetime import UTC, datetime
 from typing import Any
 
+from sandbox_executor.plan_paths import resolve_calibration_report_rel
 from sandbox_executor.calibration import (
     LEDGER_EXECUTIONS_REL,
     CalibrationFormatError,
@@ -230,15 +231,14 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:  # noqa: C
         )
         clean = context.execution_branch.strip().rstrip("/_").rstrip("/")
         parts = clean.split("/")
-        plan_id = "P-unknown"
-        for part in parts:
+        plan_id, plan_branch = "P-unknown", ""
+        for index, part in enumerate(parts):
             if part.startswith("P-"):
-                plan_id = part
+                plan_id, plan_branch = part, "/".join(parts[: index + 1])
                 break
-        plans_dir = os.path.join(repo_dir, "plans")
-        os.makedirs(plans_dir, exist_ok=True)
-        report_rel = f"plans/{plan_id}_calibration.md"
+        report_rel = resolve_calibration_report_rel(repo_dir, plan_branch, plan_id)
         report_path = os.path.join(repo_dir, report_rel)
+        os.makedirs(os.path.dirname(report_path), exist_ok=True)
         fallback_report_written = not os.path.exists(report_path)
         if fallback_report_written:
             with open(report_path, "w", encoding="utf-8") as f:

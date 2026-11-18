@@ -30,7 +30,8 @@ from sandbox_executor.flow.host_remote import publish_new_child_branches, remote
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.knowledge import ConsultEngine
-from sandbox_executor.ledger import build_plan_id
+from sandbox_executor.ledger import build_plan_id, latest_plan_row
+from sandbox_executor.plan_paths import legacy_plan_file_rel, plan_file_rel, preferred_stage_suffixes
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
 
     if context.dry_run:
         # Validation only: name the branch the planner would create, without dispatching or writing anything.
-        plan_id = build_plan_id(int(time.time()), intent_prefix, context.agent, safe_model)
+        plan_id = build_plan_id(int(time.time()), intent_prefix, context.agent, context.model)
         plan_branch = f"{intent_prefix}/{plan_id}/_"
         context.plan_branch = plan_branch
         context.log(f"Stage 2 (dry run): planner dispatch skipped; plan branch would be '{plan_branch}'.")
@@ -84,7 +85,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
             payload={
                 "plan_id": plan_id,
                 "plan_branch": plan_branch,
-                "plan_file": f"plans/{plan_id}.md",
+                "plan_file": plan_file_rel(intent_prefix, plan_id),
                 "metrics": {},
                 "consulted_knowledge_ids": consulted_ids,
                 "dry_run": True,
@@ -148,7 +149,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
         intent_prefix,
         "P",
         before=existing_plans,
-        preferred_suffix=f"-{context.agent}-{safe_model}",
+        preferred_suffix=preferred_stage_suffixes(context.agent, context.model, safe_model),
     )
     if ambiguity:
         return _stage_failure(context, FlowStage.PLAN, start_time, f"Plan stage failed: {ambiguity}.")
@@ -157,12 +158,14 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
 
     plan_id = plan_branch.removesuffix("/_").rsplit("/", 1)[-1]
     plan_ref = f"refs/remotes/origin/{plan_branch}"
-    plan_rows = [r for r in _read_ledger_rows(repo_dir, plan_ref, "plans.jsonl") if r.get("plan_id") == plan_id]
-    plan_row = plan_rows[-1] if plan_rows else {}
-    plan_md_rel = str(plan_row.get("plan_file") or f"plans/{plan_id}.md")
+    plan_row = latest_plan_row(_read_ledger_rows(repo_dir, plan_ref, "plans.jsonl"), intent_prefix, plan_id) or {}
+    plan_md_rel = str(plan_row.get("plan_file") or plan_file_rel(intent_prefix, plan_id))
     if not re.fullmatch(PLAN_FILE_PATTERN, plan_md_rel):
-        plan_md_rel = f"plans/{plan_id}.md"
+        plan_md_rel = plan_file_rel(intent_prefix, plan_id)
     plan_content = _git_show_text(repo_dir, plan_ref, plan_md_rel)
+    if plan_content is None:  # Old-generation fallback: the flat pre-migration path keyed by the bare plan ID.
+        plan_md_rel = legacy_plan_file_rel(plan_id)
+        plan_content = _git_show_text(repo_dir, plan_ref, plan_md_rel)
     if plan_content is None:
         return _stage_failure(context, FlowStage.PLAN, start_time, no_plan_error, plan_branch=plan_branch)
 

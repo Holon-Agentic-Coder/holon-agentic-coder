@@ -12,7 +12,7 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
-from sandbox_executor.agent_defaults import MissingAgentTickerError, ticker_for
+from sandbox_executor.agent_defaults import MissingAgentTickerError
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _dispatch_role, _stage_failure
 from sandbox_executor.flow.git_refs import (
@@ -26,6 +26,7 @@ from sandbox_executor.flow.intent_questions import validate_intent_questions
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.knowledge import ConsultEngine
+from sandbox_executor.plan_paths import stage_label
 from sandbox_executor.ref_names import RefTooLongError, resolve_root_intent_branch
 
 logger = logging.getLogger(__name__)
@@ -108,9 +109,11 @@ def run_intent_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
 
     # A runner without a ticker is refused here, before any branch is created (there is no fallback).
     try:
-        ticker_for(context.agent)
+        label = stage_label(context.agent, context.model)
     except MissingAgentTickerError as e:
         return _stage_failure(context, FlowStage.INTENT, start_time, f"Intent stage failed: {e}")
+    except ValueError:
+        label = ""  # No generation-3 model code (a bare local model name); the chain is measured with the placeholder.
 
     # Sanitise slug
     if not raw_slug:
@@ -121,7 +124,7 @@ def run_intent_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
 
     # The intent creator expects the bare branch prefix and appends '/_' itself.
     try:
-        branch = resolve_root_intent_branch(intent_data, raw_slug, int(time.time()), context.agent, context.model)
+        branch = resolve_root_intent_branch(intent_data, raw_slug, int(time.time()), label)
     except RefTooLongError as e:
         return _stage_failure(context, FlowStage.INTENT, start_time, f"Intent stage failed: {e}")
     intent_data["branch"] = branch

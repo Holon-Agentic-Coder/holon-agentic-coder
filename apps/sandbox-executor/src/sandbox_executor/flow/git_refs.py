@@ -194,14 +194,14 @@ def _discover_child_branch(
     parent_prefix: str,
     marker: str,
     before: set[str],
-    preferred_suffix: str,
+    preferred_suffix: str | tuple[str, ...],
 ) -> tuple[str | None, str | None]:
     """Find the branch a role container pushed beneath a parent prefix during dispatch.
 
     Only branches absent from the pre-dispatch snapshot ('before') are candidates, so the result does
     not depend on the container clock and never adopts a stale run or a sibling that already existed.
-    A candidate must end with preferred_suffix (the runner and model that were dispatched). Exactly one
-    candidate is adopted; anything else is reported instead of guessed.
+    A candidate must end with a preferred suffix (the dispatched runner and model, in any still-valid
+    name generation). Exactly one candidate is adopted; anything else is reported instead of guessed.
 
     Returns:
         tuple[str | None, str | None]: (branch, None) on success, (None, None) when no new branch
@@ -210,11 +210,13 @@ def _discover_child_branch(
     new = sorted(_list_child_branches(repo_dir, parent_prefix, marker) - before)
     if not new:
         return None, None
-    matching = [b for b in new if b.removesuffix("/_").endswith(preferred_suffix)]
+    suffixes = (preferred_suffix,) if isinstance(preferred_suffix, str) else preferred_suffix
+    matching = [b for b in new if b.removesuffix("/_").endswith(suffixes)]
     if not matching:
+        wanted = "', '".join(s.lstrip("-") for s in suffixes)
         return None, (
             f"new {marker}-branches under {parent_prefix} do not match the dispatched runner/model "
-            f"('{preferred_suffix.lstrip('-')}'): {', '.join(new)}; refusing to adopt another run's branch"
+            f"('{wanted}'): {', '.join(new)}; refusing to adopt another run's branch"
         )
     if len(matching) > 1:
         return None, (

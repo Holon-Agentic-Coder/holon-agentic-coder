@@ -7,9 +7,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sandbox_executor.entrypoint.planner import PLAN_FILE_PATTERN, plan_file_rel
+from sandbox_executor.entrypoint.planner import PLAN_FILE_PATTERN
 from sandbox_executor.flow.review.ids import build_review_id
+from sandbox_executor.plan_paths import plan_file_rel, stage_label
 from sandbox_executor.ledger import (
+    DuplicateStageIdError,
     _describe_id_owner,
     _extract_parent_ref,
     build_execution_id,
@@ -24,16 +26,25 @@ from sandbox_executor.ledger import (
 class TestSameSecondIds(unittest.TestCase):
     """Ids and file names created in one second stay distinct; old formats stay valid."""
 
-    def test_plan_ids_and_file_names_differ_within_one_second(self):
-        first = build_plan_id(1794446836, "I-1/ids", "claude-agent", "sonnet", disambiguator="aaaaaaaa")
-        second = build_plan_id(1794446836, "I-1/ids", "claude-agent", "sonnet", disambiguator="bbbbbbbb")
-        self.assertNotEqual(plan_file_rel(first), plan_file_rel(second))
-        self.assertEqual(plan_file_rel(first), f"plans/{first}.md")
-        self.assertIn("aaaaaaaa", plan_file_rel(first))
-        self.assertRegex(plan_file_rel(first), PLAN_FILE_PATTERN)
+    def test_same_second_plans_under_one_parent_get_distinct_names_or_fail(self):
+        taken = {"P-1794446836-CLA-CS5.5"}
+        bumped = build_plan_id(1794446836, "I-1/ids", "claude-agent", "claude-sonnet-5-5", exists=taken.__contains__)
+        self.assertEqual(bumped, "P-1794446837-CLA-CS5.5")
+        self.assertNotIn(bumped, taken)
+        with self.assertRaises(DuplicateStageIdError):
+            build_plan_id(1794446836, "I-1/ids", "claude-agent", "claude-sonnet-5-5", exists=lambda name: True)
 
-    def test_hexless_plan_file_name_still_matches_plan_pattern(self):
+    def test_same_second_plans_under_different_intents_share_a_name_without_colliding(self):
+        first = build_plan_id(1794446836, "I-1-alpha", "claude-agent", "claude-sonnet-5-5")
+        second = build_plan_id(1794446836, "I-2-beta", "claude-agent", "claude-sonnet-5-5")
+        self.assertEqual(first, second)
+        self.assertNotEqual(plan_file_rel("I-1-alpha", first), plan_file_rel("I-2-beta", second))
+        self.assertRegex(plan_file_rel("I-1-alpha", first), PLAN_FILE_PATTERN)
+
+    def test_both_old_generation_file_names_still_match_plan_pattern(self):
         self.assertRegex("plans/P-1794446836-claude-agent-sonnet.md", PLAN_FILE_PATTERN)
+        self.assertRegex("plans/P-1794446836-abcdef12-claude-agent-sonnet.md", PLAN_FILE_PATTERN)
+        self.assertRegex("plans/I-1-x/P-1794446836-CLA-CS5.5.md", PLAN_FILE_PATTERN)
 
     def test_review_loop_records_its_summary_under_the_hex_qualified_review_id(self):
         from tests.test_review_loop import _ledger, _loop
@@ -101,40 +112,28 @@ class TestUniqueStageIDs(unittest.TestCase):
         self.assertNotEqual(dis1, dis2)
 
     def test_stage_id_builders_structure(self):
-        """build_plan_id and build_execution_id must conform to stage ID schema and preserve suffix."""
+        """build_plan_id and build_execution_id must produce hex-free generation-3 stage IDs."""
         plan_id = build_plan_id(
             1794182557,
             "I-1794182541-unique-plan-and-execution-ids/_",
             "antigravity-agent",
             "gemini-3.8-flash-medium",
-            disambiguator="abcdef12",
         )
-        self.assertEqual(plan_id, "P-1794182557-abcdef12-antigravity-agent-gemini-3.8-flash-medium")
+        self.assertEqual(plan_id, "P-1794182557-ANA-G3.8FM")
 
         exec_id = build_execution_id(
             1794182857,
-            "I-1794182541-unique-plan-and-execution-ids/P-1794182557-abcdef12-antigravity-agent-gemini-3.8-flash-medium/_",
+            "I-1794182541-unique-plan-and-execution-ids/P-1794182557-ANA-G3.8FM/_",
             "antigravity-agent",
             "gemini-3.8-flash-medium",
-            disambiguator="12345678",
         )
-        self.assertEqual(exec_id, "E-1794182857-12345678-antigravity-agent-gemini-3.8-flash-medium")
-
-        # Dynamic disambiguator generation
-        auto_plan_id = build_plan_id(
-            1794182557,
-            "I-1794182541-unique-plan-and-execution-ids/_",
-            "agent/runner",
-            "model/v1.0",
-        )
-        pattern = r"^P-1794182557-[0-9a-f]{8}-agent_runner-model_v1\.0$"
-        self.assertRegex(auto_plan_id, pattern)
+        self.assertEqual(exec_id, "E-1794182857-ANA-G3.8FM")
 
     def test_flow_branch_discovery_suffix_matching(self):
-        """flow.py branch discovery relies on branch ending with preferred suffix."""
+        """flow.py branch discovery relies on branch ending with a preferred suffix of either generation."""
         agent = "antigravity-agent"
         model = "gemini-3.8-flash-medium"
-        preferred_suffix = f"-{agent}-{model}"
+        preferred_suffix = f"-{stage_label(agent, model)}"
 
         plan_id = build_plan_id(1234567890, "I-123/_", agent, model)
         branch = f"I-123/{plan_id}/_"

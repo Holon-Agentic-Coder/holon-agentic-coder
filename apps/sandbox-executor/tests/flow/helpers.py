@@ -14,7 +14,8 @@ from unittest.mock import patch
 from sandbox_executor import flow as flow_module
 from sandbox_executor.budgets import resolve_entropy_budget
 from sandbox_executor.decomposition_rule import DecompositionDecision, should_decompose
-from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE, _sanitize_string
+from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
+from sandbox_executor.ledger import _sanitize_string
 from sandbox_executor.entrypoint.planner import _sanitize_model_name
 from sandbox_executor.flow import FlowContext
 from sandbox_executor.review_ensemble import (

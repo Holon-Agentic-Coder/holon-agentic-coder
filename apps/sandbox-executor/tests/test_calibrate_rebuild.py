@@ -153,7 +153,7 @@ def test_flow_summary_says_a_failed_stage_5_refreshed_nothing(
         ("holon-knowledge/kb/k.json", True),
         ("holon-knowledge/wisdom/w.json", True),
         ("plans/P-2-y.md", False),
-        ("plans/sub/P-2-y_calibration.md", False),
+        ("plans/I-1-sub/P-2-y_calibration.md", True),
         ("holon-knowledge/ledger/intents.jsonl", False),
         ("src/x.py", False),
     ],

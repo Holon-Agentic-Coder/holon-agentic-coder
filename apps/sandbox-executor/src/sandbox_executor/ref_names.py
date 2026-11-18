@@ -8,12 +8,14 @@ The calibration branch ends in ``/calibrated`` where every other branch ends in 
 bare name (a name without its ``/_`` suffix) is measured as if it ended in ``/calibrated``: ``measured_length`` is the
 length of ``refs/heads/{bare}/calibrated``. A name that fits is returned untouched. A longer one is shortened, in the
 order the caller lists its parts, by replacing the tail of a part with a 6-character hexadecimal digest of the part's
-original text, so two different long inputs never collide and the same input always gives the same name. Timestamps,
-8-character identifiers and index markers are never part of a shortenable part. A name that cannot fit even with every
-shortenable part at its minimum raises ``RefTooLongError``.
+original text, so two different long inputs never collide and the same input always gives the same name. Timestamps
+and index markers are never part of a shortenable part. A name that cannot fit even with every shortenable part at its
+minimum raises ``RefTooLongError``.
 
-An intent branch is shortened only when it exceeds the limit on its own or leaves no room for a plan and an execution
-segment below it with their labels at their shortest; ``ensure_chain_fits`` checks the real labels at creation time.
+Plan and execution segments use the short generation-3 ``{ticker}-{model code}`` stage label (see ``plan_paths``) and
+are never shortened: slug shortening and the length check carry deeper-than-two nesting. An intent branch is shortened
+only when it exceeds the limit on its own or leaves no room for a plan and an execution segment below it;
+``ensure_chain_fits`` checks the real label at creation time.
 """
 
 from __future__ import annotations
@@ -30,7 +32,6 @@ MAX_BRANCH_LENGTH = MAX_REF_LENGTH - len(REF_PREFIX)
 DIGEST_LENGTH = 6
 
 _TIMESTAMP_LENGTH = 10
-_DISAMBIGUATOR_LENGTH = 8
 
 
 class RefTooLongError(ValueError):
@@ -119,44 +120,45 @@ def fit_parts(parts: list[Part], extra: int = 0, limit: int = MAX_REF_LENGTH) ->
     return FitResult("".join(p.text for p in current), originals)
 
 
-def _segment_parts(parent: str, head: str, agent: str, model: str, weight: int) -> list[Part]:
-    return [
-        Part("parent", parent.removesuffix(INTENT_SUFFIX).rstrip("/")),
-        Part("segment", head),
-        Part("agent", agent, shortenable=True, weight=weight),
-        Part("separator", "-"),
-        Part("model", model, shortenable=True, weight=weight),
-    ]
+# Measuring label for an intent fitted before its runner and model are known: three ticker letters plus a model code
+# longer than any model name in use yields today, so a fitted intent always leaves room for its real segments.
+PLACEHOLDER_STAGE_LABEL = "XXX-" + "M" * 12
+
+_SEGMENT_FIXED_LENGTH = len("/E-") + _TIMESTAMP_LENGTH + 1
+_MIN_SEGMENT_LENGTH = _SEGMENT_FIXED_LENGTH + len(PLACEHOLDER_STAGE_LABEL)
 
 
-_SEGMENT_FIXED_LENGTH = len("/E-") + _TIMESTAMP_LENGTH + 1 + _DISAMBIGUATOR_LENGTH + 1 + 1
-_MIN_SEGMENT_LENGTH = _SEGMENT_FIXED_LENGTH + 2 * DIGEST_LENGTH
+def _clean_parent(parent: str) -> str:
+    return parent.removesuffix(INTENT_SUFFIX).rstrip("/")
 
 
-def fit_plan_id(parent: str, seq: int, dis: str, agent: str, model: str) -> FitResult:
-    """Fit ``P-{seq}-{dis}-{agent}-{model}`` below ``parent``, leaving room for the execution segment under it."""
-    parts = _segment_parts(parent, f"/P-{seq}-{dis}-", agent, model, weight=2)
-    result = fit_parts(parts, extra=_SEGMENT_FIXED_LENGTH)
-    return _segment_result(result, parent)
+def _fit_segment(parent: str, name: str, extra: int) -> FitResult:
+    """Return ``name`` as a segment below ``parent``; a chain that cannot fit raises, nothing is shortened."""
+    length = measured_length(f"{_clean_parent(parent)}/{name}", extra)
+    if length > MAX_REF_LENGTH:
+        raise RefTooLongError(MAX_REF_LENGTH, length, "parent")
+    return FitResult(name)
 
 
-def fit_execution_id(parent: str, seq: int, dis: str, agent: str, model: str) -> FitResult:
-    """Fit ``E-{seq}-{dis}-{agent}-{model}`` below the plan branch ``parent``."""
-    result = fit_parts(_segment_parts(parent, f"/E-{seq}-{dis}-", agent, model, weight=1))
-    return _segment_result(result, parent)
+def fit_plan_id(parent: str, seq: int, label: str) -> FitResult:
+    """Place ``P-{seq}-{label}`` below ``parent``, leaving room for the execution segment under it.
+
+    ``label`` is the generation-3 ``{ticker}-{model code}`` stage label; it is never shortened. A parent chain that
+    leaves no room raises :class:`RefTooLongError`.
+    """
+    return _fit_segment(parent, f"P-{seq}-{label}", _SEGMENT_FIXED_LENGTH + len(label))
 
 
-def _segment_result(result: FitResult, parent: str) -> FitResult:
-    """Strip the parent off the joined name, leaving the bare plan or execution identifier."""
-    parent_length = len(parent.removesuffix(INTENT_SUFFIX).rstrip("/")) + 1
-    return FitResult(result.name[parent_length:], result.originals)
+def fit_execution_id(parent: str, seq: int, label: str) -> FitResult:
+    """Place ``E-{seq}-{label}`` below the plan branch ``parent``; the label is never shortened."""
+    return _fit_segment(parent, f"E-{seq}-{label}", 0)
 
 
 def _fit_intent_parts(parts: list[Part]) -> FitResult:
     """Fit an intent name alone; shorten further only when no plan and execution could fit below the fitted name."""
     result = fit_parts(parts)
     try:
-        ensure_chain_fits(result.name, "0" * DIGEST_LENGTH, "0" * DIGEST_LENGTH)
+        ensure_chain_fits(result.name, PLACEHOLDER_STAGE_LABEL)
     except RefTooLongError:
         return fit_parts(parts, extra=2 * _MIN_SEGMENT_LENGTH)
     return result
@@ -178,19 +180,19 @@ def fit_child_intent_branch(parent: str, index: int, slug: str) -> FitResult:
     )
 
 
-def ensure_chain_fits(intent_bare: str, agent: str, model: str) -> None:
-    """Raise ``RefTooLongError`` unless a plan and execution below ``intent_bare`` fit with every label shortened."""
-    seq, dis = 10 ** (_TIMESTAMP_LENGTH - 1), "0" * _DISAMBIGUATOR_LENGTH
-    plan = fit_plan_id(intent_bare, seq, dis, agent, model)
-    fit_execution_id(f"{intent_bare}/{plan.name}", seq, dis, agent, model)
+def ensure_chain_fits(intent_bare: str, label: str = PLACEHOLDER_STAGE_LABEL) -> None:
+    """Raise ``RefTooLongError`` unless a plan and execution with ``label`` fit below ``intent_bare``."""
+    seq = 10 ** (_TIMESTAMP_LENGTH - 1)
+    plan = fit_plan_id(intent_bare, seq, label)
+    fit_execution_id(f"{intent_bare}/{plan.name}", seq, label)
 
 
-def resolve_root_intent_branch(intent_data: dict[str, Any], slug: str, seq: int, agent: str, model: str) -> str:
+def resolve_root_intent_branch(intent_data: dict[str, Any], slug: str, seq: int, label: str = "") -> str:
     """Return the bare root intent branch, recording the slug used (and the original when shortened) in the payload.
 
-    A recorded ``branch`` is used as it is, but is still measured against the current labels, so a resume whose labels
-    changed may fail here, before any branch exists. Either way the plan and execution branches that will nest below
-    it, with the configured agent and model labels, are measured first, so an impossible name fails early.
+    A recorded ``branch`` is used as it is, but is still measured against the current stage label, so a resume whose
+    label changed may fail here, before any branch exists. Either way the plan and execution branches that will nest
+    below it, with the runner's ``{ticker}-{model code}`` label, are measured first, so an impossible name fails early.
     """
     recorded = intent_data.get("branch")
     if recorded:
@@ -202,20 +204,13 @@ def resolve_root_intent_branch(intent_data: dict[str, Any], slug: str, seq: int,
         intent_data["slug"] = branch.split("-", 2)[2]
         if "slug" in fitted.originals:
             intent_data["original_slug"] = fitted.originals["slug"]
-    ensure_chain_fits(branch, str(agent or ""), str(model or ""))
+    ensure_chain_fits(branch, label or PLACEHOLDER_STAGE_LABEL)
     return branch
 
 
 def calibration_branch(execution_branch: str) -> str:
     """Return ``{execution branch}/calibrated`` for a ``.../_`` execution branch."""
     return execution_branch.strip().removesuffix(INTENT_SUFFIX).rstrip("/") + CALIBRATION_SUFFIX
-
-
-def original_labels(identifier: str, agent: str, model: str) -> dict[str, str]:
-    """Ledger fields recording the unshortened labels, or nothing when ``identifier`` carries them as they are."""
-    if identifier.endswith(f"-{agent}-{model}"):
-        return {}
-    return {"original_agent": agent, "original_model": model}
 
 
 def is_over_limit_rejection(output: str) -> bool:

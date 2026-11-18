@@ -75,20 +75,50 @@ def build_stage_disambiguator(parent_ref: str) -> str:
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
 
 
+class DuplicateStageIdError(ValueError):
+    """Raised when a plan or execution name is already taken under its parent and no free epoch bump remains."""
+
+
+# How many one-second epoch bumps a same-second collision may take before creation fails with a clear error.
+_MAX_SAME_SECOND_BUMPS = 60
+
+
+def _build_stage_id(
+    fit: Callable[[str, int, str], Any],
+    seq: int,
+    parent_branch: str,
+    agent: str,
+    model: str,
+    exists: Callable[[str], bool] | None,
+) -> str:
+    """Build a generation-3 stage ID, bumping the epoch by one second while ``exists`` reports the name taken."""
+    from sandbox_executor.plan_paths import stage_label
+
+    label = stage_label(agent, model)
+    for bump in range(_MAX_SAME_SECOND_BUMPS + 1):
+        name = str(fit(parent_branch, seq + bump, label).name)
+        if exists is None or not exists(name):
+            return name
+    raise DuplicateStageIdError(
+        f"duplicate stage name under '{parent_branch}': every name from epoch {seq} to {seq + _MAX_SAME_SECOND_BUMPS} "
+        f"with label '{label}' is already taken; refusing to overwrite an existing plan or execution"
+    )
+
+
 def build_plan_id(
     plan_seq: int,
     parent_branch: str,
     agent: str,
     model: str,
-    disambiguator: str | None = None,
+    exists: Callable[[str], bool] | None = None,
 ) -> str:
-    """Build a deterministic, collision-resistant plan identifier.
+    """Build a plan identifier ``P-{plan_seq}-{ticker}-{model code}`` (generation 3, no hex).
 
-    Format: P-{plan_seq}-{disambiguator}-{safe_agent}-{safe_model}
+    ``exists`` is the parent-scoped collision probe: when it reports a candidate name taken (a ledger row for this
+    parent, a plan file, or a ref), the epoch is bumped by one second deterministically; when no bump frees the name,
+    :class:`DuplicateStageIdError` is raised, so a same-second duplicate never overwrites an existing plan.
     """
-    safe_agent, safe_model = _sanitize_string(agent, fallback="unknown-agent"), _sanitize_model_name(model)
-    dis = disambiguator or build_stage_disambiguator(parent_branch)
-    return fit_plan_id(parent_branch, plan_seq, dis, safe_agent, safe_model).name
+    return _build_stage_id(fit_plan_id, plan_seq, parent_branch, agent, model, exists)
 
 
 def build_execution_id(
@@ -96,15 +126,66 @@ def build_execution_id(
     parent_branch: str,
     agent: str,
     model: str,
-    disambiguator: str | None = None,
+    exists: Callable[[str], bool] | None = None,
 ) -> str:
-    """Build a deterministic, collision-resistant execution identifier.
+    """Build an execution identifier ``E-{exec_seq}-{ticker}-{model code}`` (generation 3, no hex).
 
-    Format: E-{exec_seq}-{disambiguator}-{safe_agent}-{safe_model}
+    Same collision rule as :func:`build_plan_id`, scoped to the plan branch ``parent_branch``.
     """
-    safe_agent, safe_model = _sanitize_string(agent, fallback="unknown-agent"), _sanitize_model_name(model)
-    dis = disambiguator or build_stage_disambiguator(parent_branch)
-    return fit_execution_id(parent_branch, exec_seq, dis, safe_agent, safe_model).name
+    return _build_stage_id(fit_execution_id, exec_seq, parent_branch, agent, model, exists)
+
+
+def _normalised_branch(value: Any) -> str:
+    return str(value or "").removesuffix("/_").strip("/")
+
+
+def _ledger_pair_exists(ledger_path: str, id_key: str, parent_key: str, parent_branch: str, candidate: str) -> bool:
+    """True when a row in ``ledger_path`` already records ``candidate`` under ``parent_branch``."""
+    if not os.path.exists(ledger_path):
+        return False
+    parent = _normalised_branch(parent_branch)
+    with open(ledger_path, encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            with contextlib.suppress(json.JSONDecodeError, ValueError):
+                row = json.loads(line)
+                if row.get(id_key) == candidate and _normalised_branch(row.get(parent_key)) == parent:
+                    return True
+    return False
+
+
+def latest_plan_row(
+    rows: Iterable[dict[str, Any]], intent_prefix: str, plan_id: str
+) -> dict[str, Any] | None:
+    """The newest ``plans.jsonl`` row keyed by (intent, plan ID); a bare-ID match is the old-generation fallback."""
+    intent = _normalised_branch(intent_prefix)
+    scoped: dict[str, Any] | None = None
+    bare: dict[str, Any] | None = None
+    for row in rows:
+        if row.get("plan_id") != plan_id:
+            continue
+        if _normalised_branch(row.get("intent_branch")) == intent:
+            scoped = row
+        else:
+            bare = row
+    return scoped if scoped is not None else bare
+
+
+def plan_pair_exists(repo_dir: str, intent_branch: str, plan_id: str) -> bool:
+    """True when the (intent, plan ID) pair is already taken: a ``plans.jsonl`` row or a plan file exists for it."""
+    from sandbox_executor.plan_paths import plan_file_rel
+
+    ledger_path = os.path.join(repo_dir, "holon-knowledge", "ledger", "plans.jsonl")
+    if _ledger_pair_exists(ledger_path, "plan_id", "intent_branch", intent_branch, plan_id):
+        return True
+    return os.path.exists(os.path.join(repo_dir, plan_file_rel(intent_branch, plan_id)))
+
+
+def execution_pair_exists(repo_dir: str, plan_branch: str, execution_id: str) -> bool:
+    """True when the (plan, execution ID) pair is already taken in ``executions.jsonl``."""
+    ledger_path = os.path.join(repo_dir, "holon-knowledge", "ledger", "executions.jsonl")
+    return _ledger_pair_exists(ledger_path, "execution_id", "plan_branch", plan_branch, execution_id)
 
 
 @dataclass
@@ -963,12 +1044,25 @@ def _extract_parent_ref(record: dict[str, Any], parent_key: str) -> str | None:
     return parts[0] if parts else None
 
 
+def _shared_name_is_legal(id_val: str) -> bool:
+    """True for a generation-3 stage ID, whose hex-free name is keyed by its parent and may repeat across parents."""
+    from sandbox_executor.plan_paths import parse_stage_id
+
+    try:
+        return parse_stage_id(id_val).generation == 3
+    except ValueError:
+        return False
+
+
 def validate_ledger_unique_ids(
     records: Iterable[dict[str, Any]],
     id_key: str = "plan_id",
     parent_key: str = "intent_branch",
 ) -> None:
     """Validate that identifier values do not collide across distinct intents or parent branches.
+
+    Generation-3 IDs carry no hex and are keyed by their parent, so the cross-parent check applies only to the two
+    older generations, whose names were meant to be globally unique.
 
     Args:
         records: An iterable of ledger record dictionaries.
@@ -986,7 +1080,7 @@ def validate_ledger_unique_ids(
         parent_ref = _extract_parent_ref(record, parent_key)
         if not parent_ref:
             continue
-        if id_val in seen and seen[id_val][0] != parent_ref:
+        if id_val in seen and seen[id_val][0] != parent_ref and not _shared_name_is_legal(id_val):
             first_ref, first_record = seen[id_val]
             raise ValueError(
                 f"Duplicate {id_key} '{id_val}' collision detected across distinct intents/branches: "

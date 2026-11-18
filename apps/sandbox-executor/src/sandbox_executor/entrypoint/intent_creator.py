@@ -103,7 +103,7 @@ def main():  # noqa: PLR0915
 
         import time
 
-        branch = resolve_root_intent_branch(intent_data, slug_clean, int(time.time()), "", "")
+        branch = resolve_root_intent_branch(intent_data, slug_clean, int(time.time()))
         intent_data["branch"] = branch
 
     intent_branch = f"{branch}/_"

@@ -25,13 +25,13 @@ from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import (
     _sanitize_model_name,
-    _sanitize_string,
     atomic_ledger_append,
     build_plan_id,
+    plan_pair_exists,
     validate_ledger_file_unique_ids,
 )
+from sandbox_executor.plan_paths import plan_file_rel
 from sandbox_executor.redaction import redact_agent_secrets, redact_command, redact_command_args
-from sandbox_executor.ref_names import original_labels
 from sandbox_executor.touch_set import parse_touch_set_section
 from sandbox_executor.turns import record_budget_failure, run_turn, supervise_authoring_turn
 
@@ -254,12 +254,7 @@ def format_agent_cmd_for_display(cmd: list[str]) -> str:
     return " ".join(print_cmd)
 
 
-PLAN_FILE_PATTERN = r"plans/P-[^/]+\.md"
-
-
-def plan_file_rel(plan_id: str) -> str:
-    """Repo-relative plan markdown path; carries the hex-qualified plan id so same-second plans never collide."""
-    return f"plans/{plan_id}.md"
+PLAN_FILE_PATTERN = r"plans(?:/[^/]+)*/P-[^/]+\.md"
 
 
 def _unique_temp_file(prefix: str, suffix: str) -> str:
@@ -319,7 +314,18 @@ def main():  # noqa: C901, PLR0912, PLR0915
 
     plan_seq = int(time.time())
     safe_model = _sanitize_model_name(model_name)
-    plan_id = build_plan_id(plan_seq, intent_branch_prefix, agent_name, safe_model)
+    # The duplicate check: a candidate whose (intent, plan ID) pair is already taken bumps its epoch or fails.
+    try:
+        plan_id = build_plan_id(
+            plan_seq,
+            intent_branch_prefix,
+            agent_name,
+            model_name,
+            exists=lambda name: plan_pair_exists(repo_dir, intent_branch_prefix, name),
+        )
+    except ValueError as exc:  # No ticker, no model code or a duplicate pair: refuse before any branch is created.
+        print(f"Error: cannot name a plan for {agent_name} ({model_name}): {exc}", file=sys.stderr)
+        sys.exit(1)
     plan_branch = f"{intent_branch_prefix}/{plan_id}/_"
 
     # The host fetched the intent branch into the mounted worktree; the plan branch starts from it, locally.
@@ -419,7 +425,7 @@ Include metrics in this format:
             json.dump({**intent_data, "replan_feedback": replan_feedback} if replan_feedback else intent_data, f)
 
         # Invoke AI agent
-        plan_md_rel = plan_file_rel(plan_id)
+        plan_md_rel = plan_file_rel(intent_branch_prefix, plan_id)
         plan_md_path = os.path.join(repo_dir, plan_md_rel)
         os.makedirs(os.path.dirname(plan_md_path), exist_ok=True)
 
@@ -573,7 +579,6 @@ Include metrics in this format:
         "plan_file": plan_md_rel,
         "status": "proposed",
         "entropy_budget": entropy_budget,
-        **original_labels(plan_id, _sanitize_string(agent_name, "unknown-agent"), safe_model),
     }
 
     # Format plan markdown before the ledger append, so the recorded decision is parsed from the committed file

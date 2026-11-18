@@ -15,6 +15,8 @@ from typing import Any
 
 from sandbox_executor.decomposition_rule import DecompositionDecision, InvalidPlanDecisionError, should_decompose
 from sandbox_executor.entrypoint.planner import PLAN_FILE_PATTERN
+from sandbox_executor.ledger import latest_plan_row
+from sandbox_executor.plan_paths import legacy_plan_file_rel, plan_file_rel
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.git_refs import _append_ledger_row, _git_show_text, _read_ledger_rows, _resolve_branch_ref
@@ -38,13 +40,12 @@ def _plan_budget_decision(context: FlowContext) -> DecompositionDecision | None:
     plan_ref = _resolve_branch_ref(context.target_worktree, context.plan_branch)
     if not plan_ref:
         return None
-    plan_id = context.plan_branch.removesuffix("/_").rsplit("/", 1)[-1]
-    rows = [
-        r for r in _read_ledger_rows(context.target_worktree, plan_ref, "plans.jsonl") if r.get("plan_id") == plan_id
-    ]
-    if not rows:
+    plan_prefix = context.plan_branch.removesuffix("/_")
+    intent_prefix, _, plan_id = plan_prefix.rpartition("/")
+    rows = _read_ledger_rows(context.target_worktree, plan_ref, "plans.jsonl")
+    plan_row = latest_plan_row(rows, intent_prefix, plan_id)
+    if plan_row is None:
         return None
-    plan_row = rows[-1]
     try:
         recorded = DecompositionDecision.from_plan_row(plan_row)
     except InvalidPlanDecisionError as exc:
@@ -53,10 +54,13 @@ def _plan_budget_decision(context: FlowContext) -> DecompositionDecision | None:
         ) from exc
     if recorded is not None:
         return recorded
-    plan_md_rel = str(plan_row.get("plan_file") or f"plans/{plan_id}.md")
+    plan_md_rel = str(plan_row.get("plan_file") or plan_file_rel(intent_prefix, plan_id))
     if not re.fullmatch(PLAN_FILE_PATTERN, plan_md_rel):
-        plan_md_rel = f"plans/{plan_id}.md"
-    plan_content = _git_show_text(context.target_worktree, plan_ref, plan_md_rel) or ""
+        plan_md_rel = plan_file_rel(intent_prefix, plan_id)
+    plan_content = _git_show_text(context.target_worktree, plan_ref, plan_md_rel)
+    if plan_content is None:  # Old-generation fallback: the flat pre-migration path keyed by the bare plan ID.
+        plan_content = _git_show_text(context.target_worktree, plan_ref, legacy_plan_file_rel(plan_id))
+    plan_content = plan_content or ""
     decision = should_decompose(plan_row, plan_content, context.intent_data)
     _backfill_plan_row(context, plan_row, decision)
     return decision

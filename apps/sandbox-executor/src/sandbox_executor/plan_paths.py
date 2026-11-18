@@ -13,11 +13,14 @@ head branch names of the pull requests that carried them.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass
 
 from sandbox_executor.agent_defaults import ticker_for
+
+logger = logging.getLogger(__name__)
 
 PLANS_DIR = "plans"
 LEGACY_PLANS_SUBDIR = "legacy"
@@ -72,6 +75,17 @@ def stage_label(agent: str, model: str) -> str:
         ValueError: If the model name yields no model code.
     """
     return f"{ticker_for(agent)}-{model_code(model)}"
+
+
+def preferred_stage_suffixes(agent: str, model: str, safe_model: str) -> tuple[str, ...]:
+    """Branch suffixes that attribute a new plan or execution branch to a dispatch, newest name generation first."""
+    suffixes: list[str] = []
+    try:
+        suffixes.append(f"-{stage_label(agent, model)}")
+    except ValueError:
+        logger.debug("No generation-3 stage label for %s/%s; matching old-generation names only", agent, model)
+    suffixes.append(f"-{agent}-{safe_model}")
+    return tuple(suffixes)
 
 
 @dataclass(frozen=True)
@@ -170,6 +184,14 @@ def find_calibration_report(target_worktree: str, plan_id: str, parent_branch: s
     candidates = [calibration_report_rel(parent_branch, plan_id)] if branch_dir(parent_branch) else []
     candidates.append(legacy_calibration_report_rel(plan_id))
     return _existing_rel(target_worktree, candidates)
+
+
+def calibration_report_candidates(plan_branch: str, plan_id: str) -> list[str]:
+    """Calibration-report paths to probe for a plan: the nested path first, then the flat old-generation path."""
+    parent = plan_parent_dir(plan_branch)
+    candidates = [calibration_report_rel(parent, plan_id)] if parent else []
+    candidates.append(legacy_calibration_report_rel(plan_id))
+    return candidates
 
 
 def resolve_calibration_report_rel(target_worktree: str, plan_branch: str, plan_id: str) -> str:

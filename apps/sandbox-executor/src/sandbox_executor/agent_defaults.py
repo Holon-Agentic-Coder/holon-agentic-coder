@@ -57,6 +57,42 @@ DEFAULT_MODELS: dict[str, str] = {
 }
 
 
+# Ticker per normalised runner id: exactly three uppercase letters, declared beside the runner's other defaults.
+# A ticker names the runner in plan and execution identifiers (P-{epoch}-{ticker}-{model code}); it is never
+# reassigned or reused, and a runner without one may not run a flow. There is deliberately no entry for
+# codex-agent, gemini-agent or opencode-agent, and no fallback or derivation.
+AGENT_TICKERS: dict[str, str] = {
+    "claude": "CLA",
+    "antigravity": "ANA",
+    "pi": "PIA",
+}
+
+
+class MissingAgentTickerError(ValueError):
+    """Raised when a runner has no ticker declared in :data:`AGENT_TICKERS`.
+
+    A flow may not open an intent for such a runner; declare a three-uppercase-letter ticker beside the runner's
+    defaults in ``agent_defaults.py``. There is no fallback.
+    """
+
+
+def ticker_for_agent(agent: str) -> str:
+    """Return the three-letter ticker declared for a runner, or raise naming the runner.
+
+    Raises:
+        MissingAgentTickerError: The runner has no entry in :data:`AGENT_TICKERS`.
+    """
+    ticker = AGENT_TICKERS.get(normalise_agent_id(agent))
+    if ticker is None:
+        declared = ", ".join(f"{rid}-agent = {code}" for rid, code in sorted(AGENT_TICKERS.items()))
+        raise MissingAgentTickerError(
+            f"Agent runner '{canonical_agent_name(agent)}' has no ticker, so it may not run a flow. "
+            f"Declare a three-uppercase-letter ticker in AGENT_TICKERS (agent_defaults.py). "
+            f"Runners with tickers: {declared}."
+        )
+    return ticker
+
+
 @dataclass(frozen=True)
 class ModelCapability:
     """Capability specification for a supported runner model.

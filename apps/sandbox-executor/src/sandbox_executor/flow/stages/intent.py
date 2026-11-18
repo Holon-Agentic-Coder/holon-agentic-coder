@@ -12,6 +12,7 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
+from sandbox_executor.agent_defaults import MissingAgentTickerError, ticker_for_agent
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _dispatch_role, _stage_failure
 from sandbox_executor.flow.git_refs import (
@@ -67,6 +68,12 @@ def run_intent_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
     context.log("Starting Stage 1: Intent Creation")
 
     intent_data = dict(context.intent_data)
+
+    # A runner without a declared ticker is refused here, before any branch name is resolved or created.
+    try:
+        ticker_for_agent(context.agent)
+    except MissingAgentTickerError as exc:
+        return _stage_failure(context, FlowStage.INTENT, start_time, f"Intent stage failed: {exc}")
 
     # Pre-action wisdom consult
     consulted_ids: list[str] = []

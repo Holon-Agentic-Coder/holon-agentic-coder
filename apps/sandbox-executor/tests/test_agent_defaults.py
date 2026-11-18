@@ -6,10 +6,12 @@ import pytest
 from sandbox_executor import agent_defaults
 from sandbox_executor.agent_defaults import (
     AGENT_IMAGE_MAPPING,
+    AGENT_TICKERS,
     DEFAULT_MODELS,
     LEGACY_DEFAULT_AGENT,
     LEGACY_DEFAULT_MODEL,
     MissingAgentRunnerError,
+    MissingAgentTickerError,
     MissingModelError,
     UnmappedAgentRunnerError,
     canonical_agent_name,
@@ -18,6 +20,7 @@ from sandbox_executor.agent_defaults import (
     normalise_agent_id,
     resolve_agent_runner,
     resolve_model,
+    ticker_for_agent,
 )
 
 
@@ -182,6 +185,59 @@ def test_cli_reexports_image_mapping():
     from sandbox_executor import cli
 
     assert cli.AGENT_IMAGE_MAPPING is AGENT_IMAGE_MAPPING
+
+
+@pytest.mark.parametrize(
+    ("runner", "ticker"),
+    [("claude-agent", "CLA"), ("antigravity-agent", "ANA"), ("pi-agent", "PIA")],
+)
+def test_declared_tickers_are_fixed(runner, ticker):
+    assert ticker_for_agent(runner) == ticker
+
+
+def test_tickers_are_unique_and_exactly_three_uppercase_letters():
+    import re
+
+    assert len(set(AGENT_TICKERS.values())) == len(AGENT_TICKERS), "two runners share a ticker"
+    for ticker in AGENT_TICKERS.values():
+        assert re.fullmatch(r"[A-Z]{3}", ticker), f"ticker {ticker!r} is not three uppercase letters"
+
+
+@pytest.mark.parametrize("runner", ["codex-agent", "gemini-agent", "opencode-agent", "foo-agent"])
+def test_a_runner_without_a_ticker_is_rejected_by_name_with_no_fallback(runner):
+    with pytest.raises(MissingAgentTickerError) as caught:
+        ticker_for_agent(runner)
+    assert runner in str(caught.value)
+
+
+def test_doctor_rejects_a_tickerless_runner_by_name(capsys):
+    import argparse
+
+    from sandbox_executor.cli import run_doctor
+
+    args = argparse.Namespace(agent="codex-agent", model="gpt-5-codex", json=False, timeout=None, target_worktree=".")
+    assert run_doctor(args) == 1
+    captured = capsys.readouterr()
+    assert "codex-agent" in captured.err
+    assert "ticker" in captured.err
+
+
+def test_intent_opening_rejects_a_tickerless_runner_before_any_branch_exists(tmp_path):
+    from sandbox_executor.flow.context import FlowContext, StageStatus
+    from sandbox_executor.flow.stages.intent import run_intent_stage
+
+    ctx = FlowContext(
+        target_worktree=str(tmp_path),
+        dry_run=True,
+        agent="codex-agent",
+        model="gpt-5-codex",
+        intent_data={"goal": "g", "slug": "x"},
+    )
+    result = run_intent_stage(ctx)
+    assert result.status == StageStatus.FAILED
+    assert "codex-agent" in result.error and "ticker" in result.error
+    assert not ctx.intent_branch
+    assert not (tmp_path / ".git").exists()
 
 
 def test_claude_api_key_detection_uses_the_secrets_file_not_holon_agent_key(tmp_path, monkeypatch):

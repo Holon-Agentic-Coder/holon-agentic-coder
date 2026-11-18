@@ -56,7 +56,7 @@
     "stages/decomposition.py": 128,
     "stages/execute.py": 416,
     "stages/integration.py": 95,
-    "stages/intent.py": 242,
+    "stages/intent.py": 245,
     "stages/plan.py": 213,
     "stages/plan_decision.py": 115,
     "stages/review.py": 300,

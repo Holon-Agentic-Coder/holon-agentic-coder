@@ -31,6 +31,38 @@ CALIBRATION_SUFFIX = "/calibrated"
 MAX_BRANCH_LENGTH = MAX_REF_LENGTH - len(REF_PREFIX)
 DIGEST_LENGTH = 6
 
+# A slug is at most this long, for a root intent and for each child intent. A supplied root slug over the limit is
+# rejected at intent open; an engine-derived slug is cut at a word boundary. With generation-3 stage names, a root
+# intent plus two levels of nested child intents at this limit fits ``MAX_REF_LENGTH`` with no shortening.
+MAX_SLUG_LENGTH = 32
+
+
+class SlugTooLongError(ValueError):
+    """A supplied root slug exceeds :data:`MAX_SLUG_LENGTH`; the message gives the limit and the actual length."""
+
+    def __init__(self, slug: str) -> None:
+        self.limit = MAX_SLUG_LENGTH
+        self.length = len(slug)
+        super().__init__(
+            f"slug too long: '{slug}' is {self.length} characters, over the limit of {self.limit}. "
+            f"Supply a slug of at most {self.limit} characters."
+        )
+
+
+def truncate_slug(slug: str, limit: int = MAX_SLUG_LENGTH) -> str:
+    """Cut an engine-derived slug to ``limit`` at a word boundary (the last ``-`` at or before the limit).
+
+    A slug with no boundary inside the limit is hard-cut at ``limit``; the result is never empty.
+    """
+    if len(slug) <= limit:
+        return slug
+    cut = slug[:limit]
+    at_boundary = slug[limit] == "-" or cut.endswith("-")
+    cut = cut.rstrip("-")
+    if not at_boundary and "-" in cut:
+        cut = cut[: cut.rfind("-")].rstrip("-")
+    return cut or slug[:limit]
+
 _TIMESTAMP_LENGTH = 10
 
 
@@ -170,12 +202,17 @@ def fit_root_intent_branch(seq: int, slug: str) -> FitResult:
 
 
 def fit_child_intent_branch(parent: str, index: int, slug: str) -> FitResult:
-    """Fit ``{parent}--{index}-{slug}``; a name that fits, with room for a plan and execution below it, is unchanged."""
+    """Fit ``{parent}--{index}-{slug}``; a name that fits, with room for a plan and execution below it, is unchanged.
+
+    The engine-derived child slug is first cut to :data:`MAX_SLUG_LENGTH` at a word boundary; deeper nesting that
+    still cannot fit falls back to the digest-based slug shortening. Sibling slugs may repeat after truncation
+    without colliding, because the ``--{index}-`` marker already keeps siblings distinct.
+    """
     return _fit_intent_parts(
         [
             Part("parent", parent.removesuffix(INTENT_SUFFIX)),
             Part("index", f"--{index}-"),
-            Part("child slug", slug, shortenable=True),
+            Part("child slug", truncate_slug(slug), shortenable=True),
         ]
     )
 

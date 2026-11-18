@@ -14,6 +14,7 @@ from sandbox_executor.flow.stages.intent import run_intent_stage
 from sandbox_executor.ledger import DuplicateStageIdError, build_execution_id, build_plan_id
 from sandbox_executor.ref_names import (
     CALIBRATION_SUFFIX,
+    MAX_SLUG_LENGTH,
     MAX_BRANCH_LENGTH,
     MAX_REF_LENGTH,
     PLACEHOLDER_STAGE_LABEL,
@@ -30,6 +31,7 @@ from sandbox_executor.ref_names import (
     named_push_rejection,
     resolve_root_intent_branch,
     shorten_text,
+    truncate_slug,
 )
 
 AGENT = "claude-agent"
@@ -79,19 +81,86 @@ def test_a_name_that_fits_is_unchanged():
     assert fit_child_intent_branch("I-1-root/P-2-x/_", 1, "kid").name == "I-1-root/P-2-x--1-kid"
 
 
-def test_shortening_is_deterministic_and_keeps_the_digest_of_the_original():
+def test_an_engine_derived_child_slug_is_cut_to_the_limit_at_a_word_boundary():
     long_slug = "x" * 400
     first = fit_child_intent_branch("I-1-root/_", 1, long_slug)
     assert first == fit_child_intent_branch("I-1-root/_", 1, long_slug)
-    assert ref_names.digest(long_slug) in first.name
-    assert first.originals == {"child slug": long_slug}
-    assert "--" not in first.name.split("--1-", 1)[1]
+    assert first.name == f"I-1-root--1-{'x' * MAX_SLUG_LENGTH}" and first.originals == {}
+    worded = fit_child_intent_branch("I-1-root/_", 1, "add-the-streaming-parser-and-the-cli-flag")
+    assert worded.name == "I-1-root--1-add-the-streaming-parser-and-the"
 
 
-def test_long_slugs_sharing_a_prefix_do_not_collide():
+def test_truncated_sibling_slugs_stay_distinct_through_the_index_marker():
     shared = "y" * 300
-    names = {fit_child_intent_branch("I-1-root/_", 1, f"{shared}{tail}").name for tail in ("one", "two", "three")}
-    assert len(names) == 3
+    names = {
+        fit_child_intent_branch("I-1-root/_", i, f"{shared}{tail}").name
+        for i, tail in enumerate(("one", "two", "three"), start=1)
+    }
+    assert len(names) == 3  # The --{index}- marker keeps siblings distinct even when truncation equalises slugs.
+
+
+def test_shortening_is_deterministic_and_keeps_the_digest_of_the_original():
+    parent = "I-1-" + "r" * 150 + "/_"
+    slug = "s" * MAX_SLUG_LENGTH
+    first = fit_child_intent_branch(parent, 1, slug)
+    assert first == fit_child_intent_branch(parent, 1, slug)
+    assert ref_names.digest(slug) in first.name
+    assert first.originals == {"child slug": slug}
+
+
+@pytest.mark.parametrize(
+    ("slug", "expected"),
+    [
+        ("short", "short"),
+        ("a" * 32, "a" * 32),
+        ("a" * 33, "a" * 32),
+        ("add-the-streaming-parser-and-the-cli-flag", "add-the-streaming-parser-and-the"),
+        ("a-slug-cut-exactly-at-the-limit-" + "rest", "a-slug-cut-exactly-at-the-limit"),
+        ("-" * 40 + "tail", "-" * 32),
+    ],
+)
+def test_truncate_slug_cuts_at_a_word_boundary_and_is_never_empty(slug, expected):
+    result = truncate_slug(slug)
+    assert result == expected
+    assert result and len(result) <= MAX_SLUG_LENGTH
+
+
+def test_root_and_two_child_levels_of_limit_slugs_fit_the_ref_limit_unshortened():
+    """Acceptance: 32-character slugs at the root and two nested child levels fit 255 with no shortening."""
+    slug, label = "s" * MAX_SLUG_LENGTH, "ANA-G3.8FM"
+    root = fit_root_intent_branch(SEQ, slug)
+    assert root.originals == {}
+    branch = root.name
+    for index in (1, 2):
+        plan = fit_plan_id(branch, SEQ, label)
+        assert plan.originals == {}
+        child = fit_child_intent_branch(f"{branch}/{plan.name}", index, slug)
+        assert child.originals == {} and child.name.endswith(slug)
+        branch = child.name
+    plan = fit_plan_id(branch, SEQ, label)
+    execution = fit_execution_id(f"{branch}/{plan.name}", SEQ, label)
+    calibrated = calibration_branch(f"{branch}/{plan.name}/{execution.name}/_")
+    assert len(REF_PREFIX + calibrated) <= MAX_REF_LENGTH
+    assert slug in calibrated.rsplit("--", 1)[1]
+
+
+def test_deeper_nesting_falls_back_to_the_existing_shortening_and_length_check():
+    """Beyond two child levels the pre-existing machinery still governs: every fitted name obeys the limit and the
+    length check stops nesting with a clear error instead of emitting an oversized ref."""
+    slug, label = "s" * MAX_SLUG_LENGTH, "ANA-G3.8FM"
+    branch = fit_root_intent_branch(SEQ, slug).name
+    stopped_at = None
+    for index in range(1, 8):
+        try:
+            plan = fit_plan_id(branch, SEQ, label)
+            child = fit_child_intent_branch(f"{branch}/{plan.name}", index, slug)
+        except RefTooLongError as error:
+            stopped_at, stop_error = index, error
+            break
+        assert measured_length(child.name) <= MAX_REF_LENGTH
+        branch = child.name
+    assert stopped_at is not None and stopped_at > 2, "two child levels must fit before the length check fires"
+    assert stop_error.limit == MAX_REF_LENGTH
 
 
 def test_shorten_text_never_goes_below_digest_only_length():
@@ -265,3 +334,30 @@ def test_root_name_is_shortened_only_when_it_exceeds_the_limit_or_leaves_no_room
     at_limit = fit_root_intent_branch(SEQ, "s" * room)
     assert measured_length(at_limit.name) + 2 * ref_names._MIN_SEGMENT_LENGTH <= MAX_REF_LENGTH
     assert len(PLACEHOLDER_STAGE_LABEL) >= len("XXX-") + len("MMMMMMMMMMMM")
+
+
+def test_stage_one_rejects_a_supplied_root_slug_over_the_limit(tmp_path):
+    ctx = FlowContext(
+        target_worktree=str(tmp_path),
+        dry_run=True,
+        intent_data={"goal": "g", "slug": "s" * (MAX_SLUG_LENGTH + 1)},
+    )
+    result = run_intent_stage(ctx)
+    assert result.status == StageStatus.FAILED
+    assert "slug too long" in result.error
+    assert str(MAX_SLUG_LENGTH) in result.error and str(MAX_SLUG_LENGTH + 1) in result.error
+    assert not ctx.intent_branch
+    assert not (tmp_path / ".git").exists()
+
+
+def test_stage_one_truncates_an_engine_derived_slug_at_a_word_boundary(tmp_path):
+    ctx = FlowContext(
+        target_worktree=str(tmp_path),
+        dry_run=True,
+        intent_data={"goal": "Add the streaming parser and the CLI flag for the new nested layout"},
+    )
+    result = run_intent_stage(ctx)
+    assert result.status != StageStatus.FAILED
+    slug = ctx.intent_data["slug"]
+    assert 0 < len(slug) <= MAX_SLUG_LENGTH
+    assert not slug.endswith("-")

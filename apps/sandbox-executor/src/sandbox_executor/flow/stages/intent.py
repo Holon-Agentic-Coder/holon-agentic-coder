@@ -27,7 +27,13 @@ from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_confli
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.knowledge import ConsultEngine
 from sandbox_executor.plan_paths import stage_label
-from sandbox_executor.ref_names import RefTooLongError, resolve_root_intent_branch
+from sandbox_executor.ref_names import (
+    MAX_SLUG_LENGTH,
+    RefTooLongError,
+    SlugTooLongError,
+    resolve_root_intent_branch,
+    truncate_slug,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -115,12 +121,14 @@ def run_intent_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
     except ValueError:
         label = ""  # No generation-3 model code (a bare local model name); the chain is measured with the placeholder.
 
-    # Sanitise slug
+    # Sanitise slug: a supplied root slug over the limit is rejected; an engine-derived one is cut at a word boundary.
     if not raw_slug:
         candidate = (goal or description or "task")[:40]
-        raw_slug = re.sub(r"[^a-zA-Z0-9]+", "-", candidate).strip("-").lower()
+        raw_slug = truncate_slug(re.sub(r"[^a-zA-Z0-9]+", "-", candidate).strip("-").lower())
     else:
         raw_slug = re.sub(r"[^a-zA-Z0-9]+", "-", raw_slug).strip("-").lower()
+        if len(raw_slug) > MAX_SLUG_LENGTH and not intent_data.get("branch"):
+            return _stage_failure(context, FlowStage.INTENT, start_time, f"Intent stage failed: {SlugTooLongError(raw_slug)}")
 
     # The intent creator expects the bare branch prefix and appends '/_' itself.
     try:

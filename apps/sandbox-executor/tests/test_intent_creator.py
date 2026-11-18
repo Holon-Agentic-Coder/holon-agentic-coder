@@ -370,3 +370,32 @@ def test_run_cmd_clone_echo_and_failure_carry_no_token_fragment(clone_leak_env, 
     assert "Running: git clone --branch I-1792762862-x/_ --single-branch" in output
     assert "github.com/myorg/myrepo.git" in output
     assert "returned error: 403" in output
+
+
+def test_a_supplied_root_slug_over_32_characters_is_rejected_before_any_branch(capsys, monkeypatch, tmp_path):
+    long_slug = "a-supplied-root-slug-well-over-the-thirty-two-character-limit"
+    intent_json_data = {"description": "d", "goal": "g", "slug": long_slug}
+
+    real_open = open
+
+    def fake_open(file, *args, **kwargs):
+        if "/tmp/intent.json" in str(file):
+            handle = MagicMock()
+            handle.read.return_value = json.dumps(intent_json_data)
+            handle.__enter__ = lambda self_: handle
+            handle.__exit__ = lambda *_a: False
+            return handle
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr("os.path.exists", lambda p: True)
+    monkeypatch.setattr("sandbox_executor.entrypoint.intent_creator.get_workspace_dir", lambda: str(tmp_path))
+    with (
+        patch("sandbox_executor.entrypoint.intent_creator.start_branch_from_host_fetch") as mock_start,
+        patch("builtins.open", side_effect=fake_open),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        intent_creator.main()
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "slug too long" in captured.err and "61" in captured.err and "32" in captured.err
+    mock_start.assert_not_called()

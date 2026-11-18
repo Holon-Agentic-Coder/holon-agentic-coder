@@ -11,7 +11,7 @@ from sandbox_executor.entrypoint.execution_workspace import start_branch_from_ho
 from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import atomic_ledger_append
 from sandbox_executor.redaction import redact_agent_secrets, redact_command
-from sandbox_executor.ref_names import resolve_root_intent_branch
+from sandbox_executor.ref_names import MAX_SLUG_LENGTH, SlugTooLongError, resolve_root_intent_branch
 
 
 def run_cmd(
@@ -100,6 +100,11 @@ def main():  # noqa: PLR0915
         # Convert any space to '-' and collapse consecutive hyphens
         slug_clean = slug.replace(" ", "-")
         slug_clean = re.sub(r"-+", "-", slug_clean)
+
+        # A supplied root slug over the limit is rejected here, before any branch is created.
+        if len(slug_clean) > MAX_SLUG_LENGTH:
+            print(f"Error: {SlugTooLongError(slug_clean)}", file=sys.stderr)
+            sys.exit(1)
 
         import time
 

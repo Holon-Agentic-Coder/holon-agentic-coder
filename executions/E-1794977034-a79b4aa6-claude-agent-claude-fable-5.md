@@ -73,4 +73,33 @@ off-limits. Consequence: every new helper added in Step 3/4 is module-private (`
   and the test step itself are unchanged. `.github/actions/ci-timing-gate/action.yml` and
   `scripts/check_ci_runtime_budget.py` are untouched; four other workflows still use them.
 
+### Step 3: One automatic rerun for bookkeeping-only timing failures (IMPLEMENTATION)
+
+`flow/github/ci_final_head.py` (190 → 334 lines) implements the rerun entirely behind the existing
+`check_final_head_ci` seam, so the off-limits caller `flow/stages/calibrate.py` needs no edit:
+
+- `FinalHeadSeams` gains three additive, default-`None` fields: `rerun_dispatcher` (default `_gh_rerun`, runs
+  `gh run rerun <run-id> --failed` bounded by the step-lookup timeout, False on any error), `changed_paths`
+  (default `_git_changed_paths`, runs `git diff --name-only <approved>..HEAD --`, None on any error) and
+  `approved_head` (default `approved_head_of(context)` imported from `ci_reverify` — no import cycle, verified).
+- New private helpers (every new top-level name is `_`-prefixed, keeping `test_package_exports.py` green with the
+  off-limits `flow/__init__.py` untouched): `_FinalHeadCheck` bundles the invocation's fixed arguments so helpers
+  stay within `PLR0913 <= 5`; `_bookkeeping_only` (non-empty diff, every path under `plans/`, `executions/` or
+  `holon-knowledge/` — module constant `BOOKKEEPING_PATH_PREFIXES`); `_timing_gate_only` (non-empty
+  `failed_details`, every detail tagged `timing_gate`); `_failed_run_ids` (`parse_run_id` over the failed checks'
+  links, deduplicated, None when any link has no run id); `_eligible_run_ids` (fail-closed on every undecidable
+  input); `_wait_for_rerun_start` (polls with the policy clock/sleep until the failed checks leave the failed
+  state or the registration timeout elapses); `_retry_timing_noise` (dispatch once, wait, re-classify via the
+  settled-status wait, annotate `timing_rerun = {attempted, run_ids, outcome}`; a failed dispatch returns the
+  original record with `timing_rerun = {attempted: false, reason}`).
+- `check_final_head_ci` calls `_retry_timing_noise` exactly once after the first classification and only on a
+  `failed` state; there is no loop, so at most one rerun per invocation by construction. The never-raises outer
+  try/except and `_record`'s shape are unchanged; ineligible paths return byte-identical records.
+- Module docstring updated: it now reruns a failed job at most once under the conditions above.
+- `apps/sandbox-executor/flow_module_budgets.json`: `github/ci_final_head.py` raised 190 → 334 with the
+  convention-following description note (the declared scope amendment).
+
+All 17 existing tests in `test_calibrate_final_head_ci.py` pass unmodified (the timing-gate-only case stays
+ineligible there because no approved head exists — fail-closed default confirmed).
+
 ## Tests Run

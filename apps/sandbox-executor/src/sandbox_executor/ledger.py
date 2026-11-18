@@ -87,14 +87,10 @@ def _build_stage_id(
     fit: Callable[[str, int, str], Any],
     seq: int,
     parent_branch: str,
-    agent: str,
-    model: str,
+    label: str,
     exists: Callable[[str], bool] | None,
 ) -> str:
     """Build a generation-3 stage ID, bumping the epoch by one second while ``exists`` reports the name taken."""
-    from sandbox_executor.plan_paths import stage_label
-
-    label = stage_label(agent, model)
     for bump in range(_MAX_SAME_SECOND_BUMPS + 1):
         name = str(fit(parent_branch, seq + bump, label).name)
         if exists is None or not exists(name):
@@ -118,7 +114,9 @@ def build_plan_id(
     parent, a plan file, or a ref), the epoch is bumped by one second deterministically; when no bump frees the name,
     :class:`DuplicateStageIdError` is raised, so a same-second duplicate never overwrites an existing plan.
     """
-    return _build_stage_id(fit_plan_id, plan_seq, parent_branch, agent, model, exists)
+    from sandbox_executor.plan_paths import stage_label
+
+    return _build_stage_id(fit_plan_id, plan_seq, parent_branch, stage_label(agent, model), exists)
 
 
 def build_execution_id(
@@ -132,7 +130,9 @@ def build_execution_id(
 
     Same collision rule as :func:`build_plan_id`, scoped to the plan branch ``parent_branch``.
     """
-    return _build_stage_id(fit_execution_id, exec_seq, parent_branch, agent, model, exists)
+    from sandbox_executor.plan_paths import stage_label
+
+    return _build_stage_id(fit_execution_id, exec_seq, parent_branch, stage_label(agent, model), exists)
 
 
 def _normalised_branch(value: Any) -> str:
@@ -155,9 +155,7 @@ def _ledger_pair_exists(ledger_path: str, id_key: str, parent_key: str, parent_b
     return False
 
 
-def latest_plan_row(
-    rows: Iterable[dict[str, Any]], intent_prefix: str, plan_id: str
-) -> dict[str, Any] | None:
+def latest_plan_row(rows: Iterable[dict[str, Any]], intent_prefix: str, plan_id: str) -> dict[str, Any] | None:
     """The newest ``plans.jsonl`` row keyed by (intent, plan ID); a bare-ID match is the old-generation fallback."""
     intent = _normalised_branch(intent_prefix)
     scoped: dict[str, Any] | None = None

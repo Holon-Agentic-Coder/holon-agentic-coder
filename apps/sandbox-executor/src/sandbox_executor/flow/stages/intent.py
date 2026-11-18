@@ -128,7 +128,8 @@ def run_intent_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
     else:
         raw_slug = re.sub(r"[^a-zA-Z0-9]+", "-", raw_slug).strip("-").lower()
         if len(raw_slug) > MAX_SLUG_LENGTH and not intent_data.get("branch"):
-            return _stage_failure(context, FlowStage.INTENT, start_time, f"Intent stage failed: {SlugTooLongError(raw_slug)}")
+            error = SlugTooLongError(raw_slug)
+            return _stage_failure(context, FlowStage.INTENT, start_time, f"Intent stage failed: {error}")
 
     # The intent creator expects the bare branch prefix and appends '/_' itself.
     try:

@@ -14,9 +14,9 @@ from sandbox_executor.flow.stages.intent import run_intent_stage
 from sandbox_executor.ledger import DuplicateStageIdError, build_execution_id, build_plan_id
 from sandbox_executor.ref_names import (
     CALIBRATION_SUFFIX,
-    MAX_SLUG_LENGTH,
     MAX_BRANCH_LENGTH,
     MAX_REF_LENGTH,
+    MAX_SLUG_LENGTH,
     PLACEHOLDER_STAGE_LABEL,
     REF_PREFIX,
     RefTooLongError,

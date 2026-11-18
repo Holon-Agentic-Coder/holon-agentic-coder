@@ -63,6 +63,7 @@ def truncate_slug(slug: str, limit: int = MAX_SLUG_LENGTH) -> str:
         cut = cut[: cut.rfind("-")].rstrip("-")
     return cut or slug[:limit]
 
+
 _TIMESTAMP_LENGTH = 10
 
 

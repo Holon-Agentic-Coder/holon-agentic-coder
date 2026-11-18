@@ -18,7 +18,6 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from sandbox_executor.calibration import extract_branch_components, parse_evaluated_commit_sha, read_git_file
-from sandbox_executor.plan_paths import calibration_report_candidates, legacy_calibration_report_rel
 from sandbox_executor.flow.calibrate_rebuild import is_ancestor, is_calibration_commit
 from sandbox_executor.flow.context import FlowContext, StageResult, StageStatus
 from sandbox_executor.flow.github.approval_invalidation import (
@@ -32,6 +31,7 @@ from sandbox_executor.flow.github.ci_failure_detail import short_sha
 from sandbox_executor.flow.github.ci_reverify import rerun_note
 from sandbox_executor.flow.host_remote import DEFAULT_REMOTE, HostRemoteError, fetch_base
 from sandbox_executor.git import run_git
+from sandbox_executor.plan_paths import calibration_report_candidates
 
 logger = logging.getLogger(__name__)
 

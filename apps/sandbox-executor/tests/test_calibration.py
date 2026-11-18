@@ -1318,7 +1318,10 @@ def test_cli_calibrate_rejected_report_commit_exits_non_zero(calibration_repo, c
 
     assert excinfo.value.code == 1
     captured = capsys.readouterr()
-    assert "Error during calibration: Git commit of calibration report plans/I-1-cal/P-2_calibration.md failed" in captured.err
+    assert (
+        "Error during calibration: Git commit of calibration report plans/I-1-cal/P-2_calibration.md failed"
+        in captured.err
+    )
     assert _HOOK_SECRET not in captured.err
     assert "committed" not in captured.out
 

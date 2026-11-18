@@ -1195,7 +1195,9 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
         raw_branch = raw_branch[len("refs/heads/") :]
     calibrated_branch = f"{raw_branch}/calibrated"
 
-    predicted, plan_meta = parse_predicted_metrics(plan_id, target_worktree=target_worktree, intent_branch=intent_branch)
+    predicted, plan_meta = parse_predicted_metrics(
+        plan_id, target_worktree=target_worktree, intent_branch=intent_branch
+    )
     actual, exec_meta = parse_actual_metrics(
         execution_id,
         resolved_plan_ref,

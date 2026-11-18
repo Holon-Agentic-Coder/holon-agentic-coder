@@ -17,7 +17,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from sandbox_executor.plan_paths import CALIBRATION_FILE_SUFFIX, LEGACY_PLANS_SUBDIR, PLANS_DIR, branch_dir
+from sandbox_executor.plan_paths import LEGACY_PLANS_SUBDIR, PLANS_DIR, branch_dir
 
 PLANS_LEDGER_REL = "holon-knowledge/ledger/plans.jsonl"
 EXECUTIONS_LEDGER_REL = "holon-knowledge/ledger/executions.jsonl"
@@ -113,7 +113,7 @@ def _target_dir(plan_id: str, intent_of: dict[str, str], pr_branches: list[str])
 
 def _masked(line: str, fields: tuple[str, ...]) -> str:
     for name in fields:
-        line = re.sub(rf'("{name}":\s*)"[^"]*"', rf'\1"***"', line)
+        line = re.sub(rf'("{name}":\s*)"[^"]*"', r'\1"***"', line)
     return line
 
 
@@ -139,7 +139,8 @@ def _planned_ledger_rewrite(
                 old_value = row.get(name)
                 if isinstance(old_value, str) and old_value in moved:
                     pattern = rf'("{name}":\s*){re.escape(json.dumps(old_value))}'
-                    new_line = re.sub(pattern, lambda m: m.group(1) + json.dumps(moved[old_value]), new_line)
+                    replacement = json.dumps(moved[old_value])
+                    new_line = re.sub(pattern, lambda m, value=replacement: m.group(1) + value, new_line)
                     report.rewrites.append((ledger_rel, line_no, old_value, moved[old_value]))
         new_lines.append(new_line)
     after = "\n".join(new_lines).encode("utf-8")
@@ -166,9 +167,7 @@ def _top_level_plan_files(repo_root: Path) -> list[str]:
 
 def _git_mv(repo_root: Path, src_rel: str, dst_rel: str) -> None:
     (repo_root / dst_rel).parent.mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(
-        ["git", "mv", src_rel, dst_rel], cwd=repo_root, capture_output=True, text=True, check=False
-    )
+    result = subprocess.run(["git", "mv", src_rel, dst_rel], cwd=repo_root, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise MigrationError(f"git mv {src_rel} -> {dst_rel} failed: {result.stderr.strip()}")
 

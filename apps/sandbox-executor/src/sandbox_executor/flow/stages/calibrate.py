@@ -9,7 +9,6 @@ import os
 from datetime import UTC, datetime
 from typing import Any
 
-from sandbox_executor.plan_paths import resolve_calibration_report_rel
 from sandbox_executor.calibration import (
     LEDGER_EXECUTIONS_REL,
     CalibrationFormatError,
@@ -42,6 +41,7 @@ from sandbox_executor.knowledge import (
     reconcile_records,
 )
 from sandbox_executor.ledger import LedgerRewriteError
+from sandbox_executor.plan_paths import resolve_calibration_report_rel
 from sandbox_executor.ref_names import calibration_branch
 
 logger = logging.getLogger(__name__)

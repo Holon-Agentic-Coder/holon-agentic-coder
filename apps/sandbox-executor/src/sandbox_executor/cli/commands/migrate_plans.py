@@ -26,7 +26,9 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         default=None,
         help="File listing pull-request head branch names, one per line, for files with no ledger row.",
     )
-    parser.add_argument("--apply", action="store_true", help="Perform the moves and ledger rewrites (default: dry run).")
+    parser.add_argument(
+        "--apply", action="store_true", help="Perform the moves and ledger rewrites (default: dry run)."
+    )
     parser.set_defaults(_run=run)
 
 

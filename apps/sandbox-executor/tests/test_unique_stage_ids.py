@@ -9,7 +9,6 @@ from unittest.mock import patch
 
 from sandbox_executor.entrypoint.planner import PLAN_FILE_PATTERN
 from sandbox_executor.flow.review.ids import build_review_id
-from sandbox_executor.plan_paths import plan_file_rel, stage_label
 from sandbox_executor.ledger import (
     DuplicateStageIdError,
     _describe_id_owner,
@@ -21,6 +20,7 @@ from sandbox_executor.ledger import (
     validate_ledger_unique_ids,
     validate_stage_ledger,
 )
+from sandbox_executor.plan_paths import plan_file_rel, stage_label
 
 
 class TestSameSecondIds(unittest.TestCase):

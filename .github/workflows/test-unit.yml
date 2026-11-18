@@ -28,7 +28,10 @@ jobs:
         include:
           # Minimum absolute delta over the main baseline median before the relative gate may fail.
           # macOS runners showed a 135.2 s same-code swing (235 s vs 370.2 s), so 150 s keeps pure
-          # runner variance below the gate while a real slowdown still exceeds it.
+          # runner variance below the gate while a real slowdown still exceeds it. ubuntu runs the
+          # same suite in ~120 s with no comparable swing, so it keeps the script default of 120 s:
+          # the relative gate there deliberately fires only around a doubling, and the 600 s ceiling
+          # remains the absolute backstop on both runners.
           - os: ubuntu-latest
             timing-min-delta: 120
           - os: macos-latest

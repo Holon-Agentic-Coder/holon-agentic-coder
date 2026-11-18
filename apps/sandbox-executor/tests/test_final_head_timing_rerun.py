@@ -54,6 +54,7 @@ class RerunFakes:
         paths: list[str] | None = BOOKKEEPING,
         dispatch_ok: bool = True,
         approved: str | None = APPROVED,
+        final: str | None = FINAL,
     ) -> None:
         self.statuses = list(statuses)
         self.probes = 0
@@ -63,8 +64,9 @@ class RerunFakes:
         self.paths = paths
         self.dispatch_ok = dispatch_ok
         self.approved = approved
+        self.final = final
         self.dispatched: list[str] = []
-        self.diff_calls: list[str] = []
+        self.diff_calls: list[tuple[str, str]] = []
 
     def probe(self) -> dict:
         self.probes += 1
@@ -78,8 +80,8 @@ class RerunFakes:
         self.dispatched.append(run_id)
         return self.dispatch_ok
 
-    def changed(self, approved: str) -> list[str] | None:
-        self.diff_calls.append(approved)
+    def changed(self, approved: str, head: str) -> list[str] | None:
+        self.diff_calls.append((approved, head))
         return self.paths
 
     def seams(self, registration_timeout: float = 0.0) -> FinalHeadSeams:
@@ -89,6 +91,7 @@ class RerunFakes:
             detail_lookup=lambda check: _detail(check["name"], self.steps.get(check["name"])),
             registration_timeout=registration_timeout,
             pushed_head=lambda: None,
+            pr_head=lambda: self.final,
             rerun_dispatcher=self.rerun,
             changed_paths=self.changed,
             approved_head=lambda: self.approved,
@@ -127,7 +130,7 @@ def test_passing_rerun_turns_the_record_green_and_keeps_the_approval(tmp_path: P
     assert record["state"] == "success"
     assert record["timing_rerun"] == {"attempted": True, "run_ids": ["42"], "outcome": "success"}
     assert fakes.dispatched == ["42"]
-    assert fakes.diff_calls == [APPROVED]
+    assert fakes.diff_calls == [(APPROVED, FINAL)]
     context = _ctx(tmp_path)
     with (
         patch.object(ci_reverify, "published_head_of", return_value=FINAL),
@@ -189,6 +192,11 @@ def test_undecidable_inputs_are_fail_closed(tmp_path: Path) -> None:
     assert "timing_rerun" not in _run(tmp_path, unknown_head)
     assert unknown_head.dispatched == []
     assert unknown_head.diff_calls == []
+
+    unresolvable_head = _timing_failure(final=None)
+    assert "timing_rerun" not in _run(tmp_path, unresolvable_head)
+    assert unresolvable_head.dispatched == []
+    assert unresolvable_head.diff_calls == []
 
     unreadable_diff = _timing_failure(paths=None)
     assert "timing_rerun" not in _run(tmp_path, unreadable_diff)

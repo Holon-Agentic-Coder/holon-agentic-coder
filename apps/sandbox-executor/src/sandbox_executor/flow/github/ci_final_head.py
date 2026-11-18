@@ -62,7 +62,7 @@ class FinalHeadSeams:
     pushed_head: Callable[[], str | None] | None = None
     pr_head: Callable[[], str | None] | None = None
     rerun_dispatcher: Callable[[str], bool] | None = None
-    changed_paths: Callable[[str], list[str] | None] | None = None
+    changed_paths: Callable[[str, str], list[str] | None] | None = None
     approved_head: Callable[[], str | None] | None = None
 
 
@@ -213,14 +213,14 @@ def _gh_rerun(repo_dir: str, proxy_env: Mapping[str, str]) -> Callable[[str], bo
     return rerun
 
 
-def _git_changed_paths(repo_dir: str, proxy_env: Mapping[str, str]) -> Callable[[str], list[str] | None]:
-    """A lister of the paths changed from ``approved`` to the checked-out head; None on any error (fail-closed)."""
+def _git_changed_paths(repo_dir: str, proxy_env: Mapping[str, str]) -> Callable[[str, str], list[str] | None]:
+    """A lister of the paths changed from ``approved`` to ``head``; None on any error (fail-closed)."""
     env = {**os.environ, **proxy_env, "DOCKER_CLI_HINTS": "false"}
 
-    def changed(approved: str) -> list[str] | None:
+    def changed(approved: str, head: str) -> list[str] | None:
         try:
             proc = subprocess.run(
-                ["git", "diff", "--name-only", f"{approved}..HEAD", "--"],
+                ["git", "diff", "--name-only", f"{approved}..{head}", "--"],
                 cwd=repo_dir,
                 capture_output=True,
                 text=True,
@@ -259,6 +259,12 @@ def _failed_run_ids(ci_status: dict[str, Any], names: list[str]) -> list[str] | 
     return run_ids
 
 
+def _resolve_final_head(check: _FinalHeadCheck) -> str | None:
+    """The head CI was measured on: the PR head, or the pushed head when the PR head is unreadable."""
+    default_pushed, default_pr = _git_gh_head(check.repo_dir, check.branch, check.seams.proxy_env)
+    return (check.seams.pr_head or default_pr)() or (check.seams.pushed_head or default_pushed)()
+
+
 def _eligible_run_ids(check: _FinalHeadCheck, record: dict[str, Any], ci_status: dict[str, Any]) -> list[str] | None:
     """Run ids eligible for the one automatic rerun, or None; every undecidable input is ineligible (fail-closed)."""
     if not _timing_gate_only(record["failed_details"]):
@@ -266,7 +272,11 @@ def _eligible_run_ids(check: _FinalHeadCheck, record: dict[str, Any], ci_status:
     approved = (check.seams.approved_head or (lambda: approved_head_of(check.context)))()
     if not approved:
         return None
-    paths = (check.seams.changed_paths or _git_changed_paths(check.repo_dir, check.seams.proxy_env))(approved)
+    # Diff against the head the checks ran on, not the workspace HEAD, which may have moved since the push.
+    final = _resolve_final_head(check)
+    if not final:
+        return None
+    paths = (check.seams.changed_paths or _git_changed_paths(check.repo_dir, check.seams.proxy_env))(approved, final)
     if not _bookkeeping_only(paths):
         return None
     return _failed_run_ids(ci_status, record["failed_checks"])
@@ -289,7 +299,7 @@ def _retry_timing_noise(check: _FinalHeadCheck, record: dict[str, Any], ci_statu
     a second failure returns a ``failed`` record exactly as today, annotated with the ``timing_rerun`` note.
     """
     run_ids = _eligible_run_ids(check, record, ci_status)
-    if run_ids is None:
+    if not run_ids:
         return record
     check.context.log(f"Final-head CI: rerunning timing-gate failure on a bookkeeping-only head: {', '.join(run_ids)}")
     rerun = check.seams.rerun_dispatcher or _gh_rerun(check.repo_dir, check.seams.proxy_env)

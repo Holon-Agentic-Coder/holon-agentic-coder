@@ -323,9 +323,9 @@ All agents must:
 Plan artifacts and planning events must be recorded in the ledger and correspond to git branches:
 
 - Plan artifact branch naming: branch for work derived from a plan should follow:
-  - `I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/_` for the plan and
-    `I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/E-{timestamp}-{action-slug}/_` for its execution (see
-    [Git Flow](git_flow.md) section 2).
+  - `I-{timestamp}-{slug}/P-{timestamp}-{ticker}-{model code}/_` for the plan and
+    `I-{timestamp}-{slug}/P-{timestamp}-{ticker}-{model code}/E-{timestamp}-{ticker}-{model code}/_` for its execution
+    (see [Git Flow](git_flow.md) section 2).
 - Ledger must capture:
   - `plan_created`, `plan_predicted_metrics`, `planning_converged`, `plan_selected`, `plan_execution_started/ended`,
     `planner_agent_id`, `model_id`, `routing_reason`.

@@ -59,7 +59,7 @@ event/knowledge logging.
 │   │   ├── intents.jsonl
 │   │   ├── plans.jsonl
 │   │   └── events.jsonl
-│   ├── plans/                            # Saved execution plan markdown files
+│   ├── plans/                            # Plan markdown files, nested per intent (plans/{intent}/{plan id}.md)
 │   ├── kb/                               # Curated knowledge base patterns
 │   └── wb/                               # Universal wisdom base axioms
 │
@@ -107,7 +107,9 @@ both strict workspace isolation and cross-project knowledge sharing:
 - **Project-Specific Knowledge & State (`holon-knowledge/`):**
   - `ledger/`: The forensic timeline containing all intent creations, planning variants, decision traces, and outcome
     records for this specific codebase.
-  - `plans/`: The generated plan variants saved as Markdown reports.
+  - `plans/`: The generated plan variants saved as Markdown reports, each under its intent's directory
+    (`plans/{intent}/{plan id}.md`, mirroring the branch nesting) with its calibration report beside it; `plans/legacy/`
+    holds pre-migration files with no ledger row.
   - `kb/` (Knowledge Base): Curated rules, tactics, internal API structures, and coding patterns specific to this
     project, extracted by the Curator Agent.
 - **User/Developer-Specific Knowledge (`~/.config/holon/user/`):**

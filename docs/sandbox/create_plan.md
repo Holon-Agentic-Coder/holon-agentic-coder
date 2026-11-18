@@ -180,9 +180,9 @@ The plan used to arrive in one final stdout message, so a final message cut off 
 plan. The file on disk is now the source of truth:
 
 - **Write protocol.** `holon-config/prompts/planner.template.md` and the closing prompt instruction require the agent to
-  create `plans/{plan_id}.md` with its file-write tool immediately, write the header and the `## Overall Plan Metrics`
-  table first, append each `## Step` section as it is finished, then the strategy rationale, justification and safety
-  sections, and keep its final chat message to one line.
+  create `plans/{intent}/{plan_id}.md` with its file-write tool immediately, write the header and the
+  `## Overall Plan Metrics` table first, append each `## Step` section as it is finished, then the strategy rationale,
+  justification and safety sections, and keep its final chat message to one line.
 - **Validation.** A plan file is _usable_ when it exists, is at least 800 bytes and the metric rows of its
   `## Overall Plan Metrics` section (up to the next `## ` heading, wherever the section sits) have numeric values for
   the five input metrics (`p_success`, `entropy`, `impact`, `cost`, `learning_value`); an `ev_pred` row is optional
@@ -198,16 +198,16 @@ plan. The file on disk is now the source of truth:
   append them.
 - **Stdout fallback.** Only when the agent wrote no file at all is the plan taken from captured stdout (a fenced
   `markdown` block if present). This logs
-  `WARNING: agent did not write plans/P-...; falling back to the plan text captured from stdout`, and the result is
-  validated like any other plan.
+  `WARNING: agent did not write plans/{intent}/P-...; falling back to the plan text captured from stdout`, and the
+  result is validated like any other plan.
 - **Budget failure.** If a turn breaches a budget and no resume turn (attempted only when the salvaged plan is
   incomplete, that is not usable or missing a required section, and the stage has time left) produces a usable plan, an
   `ACT-BUDGET` action is recorded and committed together with the salvaged partial plan, and the planner exits non-zero
   (see [Turn and Stage Budgets](../budgets.md#salvage-resume-and-the-act-budget-record)).
 
 `holon flow` launches this same planner container for Stage 2 and then adopts the plan branch it pushed. If no planner
-agent produced `plans/P-*.md` on a plan branch under the intent branch, the flow stage fails; it never writes a
-placeholder plan of its own.
+agent produced its plan file under `plans/{intent}/` on a plan branch under the intent branch, the flow stage fails; it
+never writes a placeholder plan of its own.
 
 ---
 
@@ -218,19 +218,19 @@ Once execution completes, you should verify:
 1. A new remote plan branch exists:
    ```bash
    git fetch origin && git branch -r
-   # e.g., origin/I-1771890389-refactor-metrics/P-1772691068-pi-agent-gemini-3.8-flash/_
+   # e.g., origin/I-1771890389-refactor-metrics/P-1794567531-PIA-G3.8F/_
    ```
    > [!NOTE] The agent name in the branch and plan identifiers reflects the `agent_name` argument passed to the
    > container (e.g., `pi-agent`, `claude-agent`, `antigravity-agent`).
 2. The generated plan markdown file is present under `plans/`:
    ```markdown
-   # plans/{plan_id}.md
+   # plans/{intent}/{plan_id}.md
    ```
 3. A plan entry is appended to `holon-knowledge/ledger/plans.jsonl` with parsed metrics and expected value (EV)
    calculations:
    ```json
    {
-     "plan_id": "P-1772691068-pi-agent-gemini-3.8-flash",
+     "plan_id": "P-1794567531-PIA-G3.8F",
      "intent_branch": "I-1771890389-refactor-metrics/_",
      "agent": "pi-agent",
      "model": "gemini-3.8-flash",
@@ -241,7 +241,7 @@ Once execution completes, you should verify:
      "learning_value": 0.0,
      "ev": 0.45,
      "created_at": "2026-06-27T13:14:15.000Z",
-     "plan_file": "plans/P-1772691068-1a2b3c4d-pi-agent-gemini-3.8-flash.md",
+     "plan_file": "plans/I-1771890389-refactor-metrics/P-1794567531-PIA-G3.8F.md",
      "status": "proposed"
    }
    ```

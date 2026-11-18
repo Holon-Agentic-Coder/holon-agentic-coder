@@ -485,16 +485,21 @@ Detection is switched off inside a Holon sandbox (`HOLON_ROLE` or `HOLON_IN_SAND
 container's own agent rather than the operator's choice, so container entrypoints always receive the runner the host
 resolved.
 
-### Default models
+### Default models and tickers
 
-| Runner              | Default model               | Notes                                                                                   |
-| ------------------- | --------------------------- | --------------------------------------------------------------------------------------- |
-| `antigravity-agent` | `gemini-3.8-flash-medium`   | Accepted by agy together with `--effort`; the label on every successful agy ledger row. |
-| `claude-agent`      | `claude-opus-5-5`           |                                                                                         |
-| `pi-agent`          | `claude-opus-5-5`           | Depends on the configured pi provider; override with `--model` or `HOLON_MODEL`.        |
-| `codex-agent`       | `gpt-5-codex`               | Not verified against the live CLI; `holon doctor` reports a rejected model.             |
-| `gemini-agent`      | `gemini-3.8-flash`          | Not verified against the live CLI; `holon doctor` reports a rejected model.             |
-| `opencode-agent`    | `anthropic/claude-opus-5-5` | opencode expects `provider/model`; not verified against the live CLI.                   |
+A runner that may run a flow declares a ticker of exactly three uppercase letters beside its definition in
+`agent_defaults.py`; the ticker names the runner in plan and execution IDs (`P-{epoch}-{ticker}-{model code}`). A runner
+with no ticker is rejected by `holon doctor` and when an intent is opened, before any branch is created; there is no
+fallback, and a ticker is never reassigned or reused.
+
+| Runner              | Ticker | Default model               | Notes                                                                                   |
+| ------------------- | ------ | --------------------------- | --------------------------------------------------------------------------------------- |
+| `antigravity-agent` | `ANA`  | `gemini-3.8-flash-medium`   | Accepted by agy together with `--effort`; the label on every successful agy ledger row. |
+| `claude-agent`      | `CLA`  | `claude-opus-5-5`           |                                                                                         |
+| `pi-agent`          | `PIA`  | `claude-opus-5-5`           | Depends on the configured pi provider; override with `--model` or `HOLON_MODEL`.        |
+| `codex-agent`       | —      | `gpt-5-codex`               | No ticker: cannot run a flow. Not verified against the live CLI.                        |
+| `gemini-agent`      | —      | `gemini-3.8-flash`          | No ticker: cannot run a flow. Not verified against the live CLI.                        |
+| `opencode-agent`    | —      | `anthropic/claude-opus-5-5` | No ticker: cannot run a flow. opencode expects `provider/model`.                        |
 
 The previous `gemini-3.5-flash` default has been removed: current agy no longer lists it and rejects it together with
 `--effort`.

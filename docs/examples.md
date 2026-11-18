@@ -79,7 +79,7 @@ $ git checkout -b I-1771890300-bootstrap-p-success/_
 
 ```json
 {
-  "plan_id": "P-1771890301-gemini-cli-gemini-3.6-flash",
+  "plan_id": "P-1771890301-ANA-G3.8FM",
   "variant_id": "v1",
   "model": {
     "provider": "gemini",
@@ -133,7 +133,7 @@ $ git checkout -b I-1771890300-bootstrap-p-success/_
 
 ```json
 {
-  "plan_id": "P-1771890302-gemini-cli-gemini-3.6-flash",
+  "plan_id": "P-1771890302-ANA-G3.8FM",
   "variant_id": "v2",
   "model": {
     "provider": "gemini",
@@ -182,7 +182,7 @@ $ git checkout -b I-1771890300-bootstrap-p-success/_
 
 ```json
 {
-  "plan_id": "P-1771890303-gemini-cli-gemini-3.6-flash",
+  "plan_id": "P-1771890303-ANA-G3.8FM",
   "variant_id": "v3",
   "model": {
     "provider": "gemini",
@@ -239,7 +239,7 @@ $ git checkout -b I-1771890300-bootstrap-p-success/_
   "event_type": "plan_variant_created",
   "seq": 2,
   "payload": {
-    "plan_id": "P-1771890301-gemini-cli-gemini-3.6-flash",
+    "plan_id": "P-1771890301-ANA-G3.8FM",
     ...
   }
 }
@@ -247,7 +247,7 @@ $ git checkout -b I-1771890300-bootstrap-p-success/_
   "event_type": "plan_variant_created",
   "seq": 3,
   "payload": {
-    "plan_id": "P-1771890302-gemini-cli-gemini-3.6-flash",
+    "plan_id": "P-1771890302-ANA-G3.8FM",
     ...
   }
 }
@@ -255,7 +255,7 @@ $ git checkout -b I-1771890300-bootstrap-p-success/_
   "event_type": "plan_variant_created",
   "seq": 4,
   "payload": {
-    "plan_id": "P-1771890303-gemini-cli-gemini-3.6-flash",
+    "plan_id": "P-1771890303-ANA-G3.8FM",
     ...
   }
 }
@@ -283,7 +283,7 @@ $ git checkout -b I-1771890300-bootstrap-p-success/_
 
 ```json
 {
-  "plan_id": "P-1771890304-gemini-cli-gemini-3.6-flash",
+  "plan_id": "P-1771890304-ANA-G3.8FM",
   "variant_id": "v4",
   "predicted": {
     "p_success": 0.6,
@@ -315,7 +315,7 @@ $ git checkout -b I-1771890300-bootstrap-p-success/_
 
 ```json
 {
-  "plan_id": "P-1771890305-gemini-cli-gemini-3.6-flash",
+  "plan_id": "P-1771890305-ANA-G3.8FM",
   "variant_id": "v5",
   "predicted": {
     "p_success": 0.55,
@@ -356,7 +356,7 @@ $ git checkout -b I-1771890300-bootstrap-p-success/_
       "v4",
       "v5"
     ],
-    "winner_plan_id": "P-1771890304-gemini-cli-gemini-3.6-flash",
+    "winner_plan_id": "P-1771890304-ANA-G3.8FM",
     "reason": "ev_plateau"
   }
 }
@@ -364,7 +364,7 @@ $ git checkout -b I-1771890300-bootstrap-p-success/_
   "event_type": "plan_selected",
   "seq": 10,
   "payload": {
-    "plan_id": "P-1771890304-gemini-cli-gemini-3.6-flash",
+    "plan_id": "P-1771890304-ANA-G3.8FM",
     "predicted": {
       "p_success": 0.60,
       "entropy": 5.0,
@@ -635,8 +635,8 @@ $ git push origin main
 ### Scenario
 
 Human creates a root intent to "Implement metrics module". Agent decomposes into sub-intents. Each sub-intent branch
-nests under the plan that listed it (`P-1771890501-claude-code-claude-sonnet-4.6` for the root's sub-intents), so the
-branch path records which plan spawned it.
+nests under the plan that listed it (`P-1771890501-CLA-CS5.5` for the root's sub-intents), so the branch path records
+which plan spawned it.
 
 > [!NOTE] Every sub-intent, including the nested parent `I-1771890503-implement-entropy`, is cut from and merged into
 > its deciding plan branch; the agent raises and merges each sub-intent PR automatically, and only the root intent's PR
@@ -647,10 +647,10 @@ branch path records which plan spawned it.
 
 ```
 I-1771890500-implement-metrics-module (parent)
-└── P-1771890501-claude-code-claude-sonnet-4.6 (plan, decided the split)
+└── P-1771890501-CLA-CS5.5 (plan, decided the split)
     ├── I-1771890502-implement-p-success (sub-intent)
     ├── I-1771890503-implement-entropy (sub-intent)
-    │   └── P-1771890506-claude-code-claude-sonnet-4.6 (plan, decided the split)
+    │   └── P-1771890506-CLA-CS5.5 (plan, decided the split)
     │       ├── I-1771890507-define-entropy-sources (sub-sub-intent)
     │       └── I-1771890508-implement-entropy-formula (sub-sub-intent)
     ├── I-1771890504-implement-impact (sub-intent)
@@ -664,10 +664,10 @@ Each node below elides the path of the node above it with `…/`.
 ```
 main
 └── I-1771890500-implement-metrics-module/_
-    └── …/P-1771890501-claude-code-claude-sonnet-4.6/_
+    └── …/P-1771890501-CLA-CS5.5/_
         ├── …/I-1771890502-implement-p-success/_
         ├── …/I-1771890503-implement-entropy/_
-        │   └── …/P-1771890506-claude-code-claude-sonnet-4.6/_
+        │   └── …/P-1771890506-CLA-CS5.5/_
         │       ├── …/I-1771890507-define-entropy-sources/_
         │       └── …/I-1771890508-implement-entropy-formula/_
         ├── …/I-1771890504-implement-impact/_
@@ -675,7 +675,7 @@ main
 ```
 
 For example, `…/I-1771890507-define-entropy-sources/_` is
-`I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890503-implement-entropy/P-1771890506-claude-code-claude-sonnet-4.6/I-1771890507-define-entropy-sources/_`.
+`I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/I-1771890503-implement-entropy/P-1771890506-CLA-CS5.5/I-1771890507-define-entropy-sources/_`.
 
 ### Execution flow
 
@@ -701,7 +701,7 @@ $ git checkout -b I-1771890500-implement-metrics-module/_
 
 ```json
 {
-  "plan_id": "P-1771890501-claude-code-claude-sonnet-4.6",
+  "plan_id": "P-1771890501-CLA-CS5.5",
   "plan_graph": {
     "steps": [
       {
@@ -750,8 +750,8 @@ $ git checkout -b I-1771890500-implement-metrics-module/_
 **Git:** the deciding plan branch is cut from the root intent branch and pushed, so the sub-intents can be cut from it:
 
 ```bash
-$ git checkout -b I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_ I-1771890500-implement-metrics-module/_
-$ git push origin I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
+$ git checkout -b I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/_ I-1771890500-implement-metrics-module/_
+$ git push origin I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/_
 ```
 
 ---
@@ -762,12 +762,12 @@ The structure commit lands on the deciding plan branch before any sub-intent is 
 from it and the root intent's PR to `main` carries it:
 
 ```bash
-$ git checkout I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
+$ git checkout I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/_
 $ mkdir -p holon/metrics
 $ touch holon/metrics/__init__.py
 $ git add holon/metrics
 $ git commit -m "Create metrics module structure"
-$ git push origin I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
+$ git push origin I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/_
 ```
 
 ---
@@ -780,9 +780,9 @@ $ git push origin I-1771890500-implement-metrics-module/P-1771890501-claude-code
 {
   "intent_id": "I-1771890502-implement-p-success",
   "parent_intent_id": "I-1771890500-implement-metrics-module",
-  "deciding_branch": "I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_",
-  "parent_plan_id": "P-1771890501-claude-code-claude-sonnet-4.6",
-  "target_branch": "I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_",
+  "deciding_branch": "I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/_",
+  "parent_plan_id": "P-1771890501-CLA-CS5.5",
+  "target_branch": "I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/_",
   "goal": "Implement P(success) estimator",
   "constraints": {
     "entropy_budget": 37.5
@@ -794,14 +794,14 @@ $ git push origin I-1771890500-implement-metrics-module/P-1771890501-claude-code
 **Git:**
 
 ```bash
-$ git checkout -b I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890502-implement-p-success/_ origin/I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
+$ git checkout -b I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/I-1771890502-implement-p-success/_ origin/I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/_
 ```
 
 **Rebase from the deciding plan branch before execution:**
 
 ```bash
 $ git fetch origin
-$ git rebase origin/I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
+$ git rebase origin/I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/_
 ```
 
 **Execute:** (similar to Example 1)
@@ -810,15 +810,15 @@ $ git rebase origin/I-1771890500-implement-metrics-module/P-1771890501-claude-co
 
 ```bash
 $ git fetch origin
-$ git rebase origin/I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
+$ git rebase origin/I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/_
 ```
 
 **Merge into the deciding plan branch (automatic, raised and merged by the agent, no human review):**
 
 ```bash
-$ git checkout I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
-$ git merge --no-ff I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890502-implement-p-success/_
-$ git push origin I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
+$ git checkout I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/_
+$ git merge --no-ff I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/I-1771890502-implement-p-success/_
+$ git push origin I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/_
 ```
 
 **Ledger event:**
@@ -829,8 +829,8 @@ $ git push origin I-1771890500-implement-metrics-module/P-1771890501-claude-code
   "seq": 45,
   "payload": {
     "intent_id": "I-1771890502-implement-p-success",
-    "from_branch": "I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890502-implement-p-success/_",
-    "to_branch": "I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_",
+    "from_branch": "I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/I-1771890502-implement-p-success/_",
+    "to_branch": "I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/_",
     "status": "success"
   }
 }
@@ -846,9 +846,9 @@ $ git push origin I-1771890500-implement-metrics-module/P-1771890501-claude-code
 {
   "intent_id": "I-1771890503-implement-entropy",
   "parent_intent_id": "I-1771890500-implement-metrics-module",
-  "deciding_branch": "I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_",
-  "parent_plan_id": "P-1771890501-claude-code-claude-sonnet-4.6",
-  "target_branch": "I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_",
+  "deciding_branch": "I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/_",
+  "parent_plan_id": "P-1771890501-CLA-CS5.5",
+  "target_branch": "I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/_",
   "goal": "Implement entropy estimator"
 }
 ```
@@ -857,7 +857,7 @@ $ git push origin I-1771890500-implement-metrics-module/P-1771890501-claude-code
 
 ```json
 {
-  "plan_id": "P-1771890506-claude-code-claude-sonnet-4.6",
+  "plan_id": "P-1771890506-CLA-CS5.5",
   "plan_graph": {
     "sub_intents": [
       {
@@ -878,25 +878,24 @@ and pushed, so the sub-sub-intents can be cut from it:
 
 ```bash
 $ git fetch origin
-$ git checkout -b I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890503-implement-entropy/_ origin/I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
-$ git checkout -b I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890503-implement-entropy/P-1771890506-claude-code-claude-sonnet-4.6/_ I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890503-implement-entropy/_
-$ git push origin I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890503-implement-entropy/P-1771890506-claude-code-claude-sonnet-4.6/_
+$ git checkout -b I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/I-1771890503-implement-entropy/_ origin/I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/_
+$ git checkout -b I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/I-1771890503-implement-entropy/P-1771890506-CLA-CS5.5/_ I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/I-1771890503-implement-entropy/_
+$ git push origin I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/I-1771890503-implement-entropy/P-1771890506-CLA-CS5.5/_
 ```
 
 **Git branches:**
 
 ```
-I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890503-implement-entropy/_
-└── …/P-1771890506-claude-code-claude-sonnet-4.6/_
+I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/I-1771890503-implement-entropy/_
+└── …/P-1771890506-CLA-CS5.5/_
     ├── …/I-1771890507-define-entropy-sources/_
     └── …/I-1771890508-implement-entropy-formula/_
 ```
 
 **Each sub-sub-intent:**
 
-1. Is cut from, and rebases from, its deciding plan branch
-   (`…/I-1771890503-implement-entropy/P-1771890506-claude-code-claude-sonnet-4.6/_`) before execution, with
-   `target_branch` set to that plan branch
+1. Is cut from, and rebases from, its deciding plan branch (`…/I-1771890503-implement-entropy/P-1771890506-CLA-CS5.5/_`)
+   before execution, with `target_branch` set to that plan branch
 2. Executes
 3. Rebases from the deciding plan branch after execution
 4. Merges into the deciding plan branch, which is then pushed (automatic, no human review)
@@ -906,9 +905,9 @@ with both sub-sub-intents merged, and merges it automatically into the root's de
 intervention:
 
 ```bash
-$ git checkout I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
-$ git merge --no-ff I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/I-1771890503-implement-entropy/P-1771890506-claude-code-claude-sonnet-4.6/_
-$ git push origin I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
+$ git checkout I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/_
+$ git merge --no-ff I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/I-1771890503-implement-entropy/P-1771890506-CLA-CS5.5/_
+$ git push origin I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/_
 ```
 
 ---
@@ -922,12 +921,12 @@ Sub-intents 3 and 4 execute similarly, each merging automatically into the decid
 #### 7) Parent intent complete
 
 **All sub-intents merged into the deciding plan branch**
-(`I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_`), with no human step so far.
+(`I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/_`), with no human step so far.
 
 **Rebase from main:**
 
 ```bash
-$ git checkout I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
+$ git checkout I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/_
 $ git rebase origin/main
 ```
 
@@ -939,7 +938,7 @@ $ git rebase origin/main
 
 ```bash
 $ git checkout main
-$ git merge I-1771890500-implement-metrics-module/P-1771890501-claude-code-claude-sonnet-4.6/_
+$ git merge I-1771890500-implement-metrics-module/P-1771890501-CLA-CS5.5/_
 $ git push origin main
 ```
 
@@ -969,9 +968,9 @@ current flow runs sibling sub-intents one at a time.
 
 **Parent intent:** `I-1771890600-refactor-metrics`
 
-**Deciding plan:** `P-1771890601-claude-code-claude-sonnet-4.6` (both sub-intent branches nest under it, are cut from
-`I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/_` and merge back into it automatically;
-siblings build on each other through that branch)
+**Deciding plan:** `P-1771890601-CLA-CS5.5` (both sub-intent branches nest under it, are cut from
+`I-1771890600-refactor-metrics/P-1771890601-CLA-CS5.5/_` and merge back into it automatically; siblings build on each
+other through that branch)
 
 **Sub-intents (concurrent):**
 
@@ -979,19 +978,19 @@ siblings build on each other through that branch)
 - `I-1771890603-add-logging` (modifies `holon/metrics/p_success.py`)
 
 The deciding plan branch and both sub-intent branches were created and pushed to `origin` when the split was recorded,
-and `add-logging` has its own plan `P-1771890604-claude-code-claude-sonnet-4.6` and execution `E-1771890605-add-logging`
-below its node. Step 1 writes `add-caching`, a leaf, by its intent branch, the shorthand the worked commands use for the
-branch that carries a leaf sub-intent's work ([Git Flow](git_flow.md) section 4.1).
+and `add-logging` has its own plan `P-1771890604-CLA-CS5.5` and execution `E-1771890605-add-logging` below its node.
+Step 1 writes `add-caching`, a leaf, by its intent branch, the shorthand the worked commands use for the branch that
+carries a leaf sub-intent's work ([Git Flow](git_flow.md) section 4.1).
 
 ### Execution
 
 #### 1) Sub-intent `add-caching` completes first
 
 ```bash
-$ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/_
-$ git merge --no-ff I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890602-add-caching/_
+$ git checkout I-1771890600-refactor-metrics/P-1771890601-CLA-CS5.5/_
+$ git merge --no-ff I-1771890600-refactor-metrics/P-1771890601-CLA-CS5.5/I-1771890602-add-caching/_
 # Merge successful (automatic, no human review)
-$ git push origin I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/_
+$ git push origin I-1771890600-refactor-metrics/P-1771890601-CLA-CS5.5/_
 ```
 
 ---
@@ -999,13 +998,13 @@ $ git push origin I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-
 #### 2) Sub-intent `add-logging` attempts rebase after execution
 
 The rebase must replay the commits themselves, so it runs on the branch that holds them: `add-logging`'s execution
-branch (plan `P-1771890604-claude-code-claude-sonnet-4.6`, execution `E-1771890605-add-logging`), which its PR carries
-once its execution spawns a sub-intent in step 3:
+branch (plan `P-1771890604-CLA-CS5.5`, execution `E-1771890605-add-logging`), which its PR carries once its execution
+spawns a sub-intent in step 3:
 
 ```bash
-$ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/_
+$ git checkout I-1771890600-refactor-metrics/P-1771890601-CLA-CS5.5/I-1771890603-add-logging/P-1771890604-CLA-CS5.5/E-1771890605-add-logging/_
 $ git fetch origin
-$ git rebase origin/I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/_
+$ git rebase origin/I-1771890600-refactor-metrics/P-1771890601-CLA-CS5.5/_
 # CONFLICT in holon/metrics/p_success.py
 ```
 
@@ -1038,17 +1037,17 @@ $ git rebase --abort
 
 The executor of `I-1771890603-add-logging` decides this split during execution, so the reactive sub-intent nests under
 that execution:
-`I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/I-1771890606-resolve-conflict/_`.
+`I-1771890600-refactor-metrics/P-1771890601-CLA-CS5.5/I-1771890603-add-logging/P-1771890604-CLA-CS5.5/E-1771890605-add-logging/I-1771890606-resolve-conflict/_`.
 This execution-decided split illustrates the general rule only; the example's main split stays plan-decided.
 
 ```json
 {
   "intent_id": "I-1771890606-resolve-conflict",
   "parent_intent_id": "I-1771890603-add-logging",
-  "deciding_branch": "I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/_",
-  "parent_plan_id": "P-1771890604-claude-code-claude-sonnet-4.6",
+  "deciding_branch": "I-1771890600-refactor-metrics/P-1771890601-CLA-CS5.5/I-1771890603-add-logging/P-1771890604-CLA-CS5.5/E-1771890605-add-logging/_",
+  "parent_plan_id": "P-1771890604-CLA-CS5.5",
   "parent_execution_id": "E-1771890605-add-logging",
-  "target_branch": "I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/_",
+  "target_branch": "I-1771890600-refactor-metrics/P-1771890601-CLA-CS5.5/I-1771890603-add-logging/P-1771890604-CLA-CS5.5/E-1771890605-add-logging/_",
   "goal": "Resolve rebase conflict in p_success.py",
   "intent_type": "reactive",
   "trigger": "rebase_conflict"
@@ -1058,7 +1057,7 @@ This execution-decided split illustrates the general rule only; the example's ma
 **Git:** the reactive sub-intent is cut from its deciding execution branch:
 
 ```bash
-$ git checkout -b I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/I-1771890606-resolve-conflict/_ I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/_
+$ git checkout -b I-1771890600-refactor-metrics/P-1771890601-CLA-CS5.5/I-1771890603-add-logging/P-1771890604-CLA-CS5.5/E-1771890605-add-logging/I-1771890606-resolve-conflict/_ I-1771890600-refactor-metrics/P-1771890601-CLA-CS5.5/I-1771890603-add-logging/P-1771890604-CLA-CS5.5/E-1771890605-add-logging/_
 ```
 
 ---
@@ -1108,10 +1107,10 @@ The sub-intent rebases from its deciding execution branch `E-1771890605-add-logg
 branch and resolves the conflict:
 
 ```bash
-$ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/I-1771890606-resolve-conflict/_
-$ git rebase I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/_
+$ git checkout I-1771890600-refactor-metrics/P-1771890601-CLA-CS5.5/I-1771890603-add-logging/P-1771890604-CLA-CS5.5/E-1771890605-add-logging/I-1771890606-resolve-conflict/_
+$ git rebase I-1771890600-refactor-metrics/P-1771890601-CLA-CS5.5/I-1771890603-add-logging/P-1771890604-CLA-CS5.5/E-1771890605-add-logging/_
 # Up to date with the add-logging execution
-$ git merge I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/_
+$ git merge I-1771890600-refactor-metrics/P-1771890601-CLA-CS5.5/_
 # CONFLICT in holon/metrics/p_success.py
 # Manual conflict resolution by agent
 $ git add holon/metrics/p_success.py
@@ -1141,10 +1140,10 @@ $ pytest holon/metrics/test_p_success.py
 `resolve-conflict` merges automatically into its deciding execution branch, with no human review:
 
 ```bash
-$ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/_
-$ git merge --no-ff I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/I-1771890606-resolve-conflict/_
+$ git checkout I-1771890600-refactor-metrics/P-1771890601-CLA-CS5.5/I-1771890603-add-logging/P-1771890604-CLA-CS5.5/E-1771890605-add-logging/_
+$ git merge --no-ff I-1771890600-refactor-metrics/P-1771890601-CLA-CS5.5/I-1771890603-add-logging/P-1771890604-CLA-CS5.5/E-1771890605-add-logging/I-1771890606-resolve-conflict/_
 # Merge successful
-$ git push origin I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/_
+$ git push origin I-1771890600-refactor-metrics/P-1771890601-CLA-CS5.5/I-1771890603-add-logging/P-1771890604-CLA-CS5.5/E-1771890605-add-logging/_
 ```
 
 ---
@@ -1162,13 +1161,13 @@ step 5 merged that into `add-logging`'s execution branch, which therefore alread
 tip. Re-running `git rebase` would replay `add-logging`'s original commits and raise the same conflict again:
 
 ```bash
-$ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/_
-$ git merge-base --is-ancestor I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/_ HEAD
+$ git checkout I-1771890600-refactor-metrics/P-1771890601-CLA-CS5.5/I-1771890603-add-logging/P-1771890604-CLA-CS5.5/E-1771890605-add-logging/_
+$ git merge-base --is-ancestor I-1771890600-refactor-metrics/P-1771890601-CLA-CS5.5/_ HEAD
 # Exit 0: the deciding plan branch is already contained
-$ git checkout I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/_
-$ git merge --no-ff I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/I-1771890603-add-logging/P-1771890604-claude-code-claude-sonnet-4.6/E-1771890605-add-logging/_
+$ git checkout I-1771890600-refactor-metrics/P-1771890601-CLA-CS5.5/_
+$ git merge --no-ff I-1771890600-refactor-metrics/P-1771890601-CLA-CS5.5/I-1771890603-add-logging/P-1771890604-CLA-CS5.5/E-1771890605-add-logging/_
 # Merge successful (conflict already resolved)
-$ git push origin I-1771890600-refactor-metrics/P-1771890601-claude-code-claude-sonnet-4.6/_
+$ git push origin I-1771890600-refactor-metrics/P-1771890601-CLA-CS5.5/_
 ```
 
 ---
@@ -1745,12 +1744,12 @@ workflow when executing a sub-intent.
 
 - Root Intent: `I-1771890389-refactor-metrics`
   - Current Branch: `I-1771890389-refactor-metrics/_`
-- Deciding Plan: `P-1771890390-claude-code-claude-sonnet-4.6` (its `## Sub-intent list` names the sub-intent as item 2)
-  - Deciding Plan Branch: `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_` (the sub-intent's
-    branch base and merge target)
+- Deciding Plan: `P-1771890390-CLA-CS5.5` (its `## Sub-intent list` names the sub-intent as item 2)
+  - Deciding Plan Branch: `I-1771890389-refactor-metrics/P-1771890390-CLA-CS5.5/_` (the sub-intent's branch base and
+    merge target)
 - Sub-Intent: `I-1771890394-add-logging` (a leaf: it has no sub-intents of its own)
-  - Sub-Branch: `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_`
-    (nested under the deciding plan, cut from the deciding plan branch)
+  - Sub-Branch: `I-1771890389-refactor-metrics/P-1771890390-CLA-CS5.5/I-1771890394-add-logging/_` (nested under the
+    deciding plan, cut from the deciding plan branch)
 
 ### Git Command Sequence
 
@@ -1761,7 +1760,7 @@ workflow when executing a sub-intent.
 git fetch origin
 
 # Create and checkout the sub-branch rooted at the current deciding plan branch tip
-git checkout -b I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_ origin/I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
+git checkout -b I-1771890389-refactor-metrics/P-1771890390-CLA-CS5.5/I-1771890394-add-logging/_ origin/I-1771890389-refactor-metrics/P-1771890390-CLA-CS5.5/_
 ```
 
 #### 2) Write code and run tests inside the isolated sandbox
@@ -1781,15 +1780,15 @@ git commit -m "feat: add metrics logging"
 #### 4) Rebase onto the latest deciding plan branch (handling concurrency)
 
 Siblings build on each other through the deciding plan branch. If a sibling sub-intent branch was merged into
-`I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_` while `I-1771890394-add-logging` was
-executing, the agent pulls updates and rebases:
+`I-1771890389-refactor-metrics/P-1771890390-CLA-CS5.5/_` while `I-1771890394-add-logging` was executing, the agent pulls
+updates and rebases:
 
 ```bash
 # Fetch latest deciding plan branch commits
 git fetch origin
 
 # Rebase local work onto the updated deciding plan branch tip
-git rebase origin/I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
+git rebase origin/I-1771890389-refactor-metrics/P-1771890390-CLA-CS5.5/_
 ```
 
 #### 5) Push and trigger automatic merge evaluation
@@ -1800,16 +1799,16 @@ deciding plan branch with a merge commit (a squash on a squash-only repository),
 
 ```bash
 # Push branch to remote
-git push origin I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_
+git push origin I-1771890389-refactor-metrics/P-1771890390-CLA-CS5.5/I-1771890394-add-logging/_
 
 # Switch to the deciding plan branch
-git checkout I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
+git checkout I-1771890389-refactor-metrics/P-1771890390-CLA-CS5.5/_
 
 # Merge the sub-intent branch with no-fast-forward to preserve history
-git merge --no-ff I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_ -m "merge: sub-intent I-1771890394-add-logging"
+git merge --no-ff I-1771890389-refactor-metrics/P-1771890390-CLA-CS5.5/I-1771890394-add-logging/_ -m "merge: sub-intent I-1771890394-add-logging"
 
 # Push the merged deciding plan branch
-git push origin I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
+git push origin I-1771890389-refactor-metrics/P-1771890390-CLA-CS5.5/_
 ```
 
 #### 6) Branch namespace cleanup
@@ -1818,10 +1817,10 @@ The remote and local sub-branches are immediately pruned to maintain system clea
 
 ```bash
 # Delete local sub-branch
-git branch -d I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_
+git branch -d I-1771890389-refactor-metrics/P-1771890390-CLA-CS5.5/I-1771890394-add-logging/_
 
 # Delete remote sub-branch
-git push origin --delete I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_
+git push origin --delete I-1771890389-refactor-metrics/P-1771890390-CLA-CS5.5/I-1771890394-add-logging/_
 ```
 
 ---

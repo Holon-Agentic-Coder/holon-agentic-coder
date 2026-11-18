@@ -99,6 +99,7 @@ The pipeline provides crash resilience and state preservation via atomic checkpo
 - **Schema**: Preserves current stage, completed stages list, full `FlowContext` configuration, branch names, stage
   results, and timestamped logs.
 - **Resumption**:
+
   ```bash
   # Resume from last checkpoint stage
   ./holon flow --checkpoint .holon/flow/checkpoint-my-task.json
@@ -106,6 +107,7 @@ The pipeline provides crash resilience and state preservation via atomic checkpo
   # Resume from specific stage override
   ./holon flow --checkpoint .holon/flow/checkpoint-my-task.json --from-stage review
   ```
+
 - **CLI Overrides**: Explicit CLI flags (such as `--skip-review`, `--skip-calibrate`, `--token-reduce`) override loaded
   checkpoint defaults during resumption.
 

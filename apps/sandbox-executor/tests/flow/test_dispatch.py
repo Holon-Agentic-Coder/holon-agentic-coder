@@ -193,7 +193,7 @@ class TestFlowRoleDispatch:
         assert ctx.plan_branch is None
         remote_branches = _git(host, "branch", "-r")
         assert "/P-" not in remote_branches
-        assert not list(host.glob("plans/P-*.md"))
+        assert not list(host.glob("plans/**/P-*.md"))
         assert (host / "holon-knowledge/ledger/plans.jsonl").read_text(encoding="utf-8") == ""
 
     def test_stage2_adopts_planner_branch_and_metrics(self, flow_repos, tmp_path):

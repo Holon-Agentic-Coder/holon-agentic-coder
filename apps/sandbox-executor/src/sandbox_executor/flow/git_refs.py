@@ -189,6 +189,12 @@ def _snapshot_child_branches(repo_dir: str, parent_prefix: str, marker: str) -> 
     return _list_child_branches(repo_dir, parent_prefix, marker)
 
 
+def _matches_dispatch_suffix(branch: str, preferred_suffix: str) -> bool:
+    """True when the branch carries the dispatched runner/model suffix, with or without a same-second variant."""
+    bare = branch.removesuffix("/_")
+    return bare.endswith(preferred_suffix) or re.sub(r"-\d+$", "", bare).endswith(preferred_suffix)
+
+
 def _discover_child_branch(
     repo_dir: str,
     parent_prefix: str,
@@ -210,7 +216,7 @@ def _discover_child_branch(
     new = sorted(_list_child_branches(repo_dir, parent_prefix, marker) - before)
     if not new:
         return None, None
-    matching = [b for b in new if b.removesuffix("/_").endswith(preferred_suffix)]
+    matching = [b for b in new if _matches_dispatch_suffix(b, preferred_suffix)]
     if not matching:
         return None, (
             f"new {marker}-branches under {parent_prefix} do not match the dispatched runner/model "

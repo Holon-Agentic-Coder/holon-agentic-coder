@@ -59,7 +59,6 @@ from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import (
     ActionRecord,
     LedgerRewriteError,
-    _sanitize_model_name,
     append_action_record,
     atomic_ledger_append,
     build_execution_id,
@@ -80,7 +79,6 @@ from sandbox_executor.redaction import redact_args as redact_args
 from sandbox_executor.redaction import redact_command_args
 from sandbox_executor.redaction import redact_env_literals as redact_env_literals
 from sandbox_executor.redaction import redact_text as redact_text
-from sandbox_executor.ref_names import original_labels
 from sandbox_executor.turns import AuthoringOutcome, record_budget_failure, run_turn, supervise_authoring_turn
 
 _MAX_PRINT_LEN: int = 5000
@@ -468,6 +466,23 @@ def run_cmd(  # noqa: C901
 def _get_repo(repo_dir: str) -> GitRepository:
     """Return a GitRepository adapter bound to repo_dir and the executor run_cmd runner."""
     return GitRepository(repo_dir, runner=run_cmd)
+
+
+def _taken_execution_ids(repo: GitRepository, plan_branch_prefix: str) -> set[str]:
+    """Execution ids whose branches already exist under the plan, so a same-second twin derives a distinct name."""
+    taken: set[str] = set()
+    for pattern in (
+        f"refs/heads/{plan_branch_prefix}/E-*",
+        f"refs/remotes/origin/{plan_branch_prefix}/E-*",
+    ):
+        res = repo.run(["for-each-ref", "--format=%(refname)", pattern], check=False)
+        if res.returncode != 0:
+            continue
+        for ref in res.stdout.splitlines():
+            segments = ref.strip().removesuffix("/_").rstrip("/").split("/")
+            if segments and segments[-1].startswith("E-"):
+                taken.add(segments[-1])
+    return taken
 
 
 def _probe_git_repo(repo_dir: str) -> tuple[bool, str]:
@@ -1060,8 +1075,9 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         mounted_plan_tip = validate_mounted_workspace(repo, repo_dir, plan_branch)
 
         exec_seq = int(time.time())
-        safe_agent, safe_model = _sanitize_string(agent_name, "unknown-agent"), _sanitize_model_name(model_name)
-        exec_id = build_execution_id(exec_seq, plan_branch_prefix, safe_agent, safe_model)
+        exec_id = build_execution_id(
+            exec_seq, plan_branch_prefix, agent_name, model_name, taken=_taken_execution_ids(repo, plan_branch_prefix)
+        )
         exec_branch = f"{plan_branch_prefix}/{exec_id}/_"
 
         # Plan branch tip: the base the empty-diff guard compares the agent's work against, even on a resume.
@@ -1162,7 +1178,6 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 "agent": agent_name,
                 "agent_version": runner.get_version(),
                 "model": model_name,
-                **original_labels(exec_id, safe_agent, safe_model),
                 "status": decision.decision,
                 "entropy": decision.entropy,
                 "entropy_budget": decision.entropy_budget,
@@ -1449,7 +1464,6 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 "agent": agent_name,
                 "agent_version": runner.get_version(),
                 "model": model_name,
-                **original_labels(exec_id, safe_agent, safe_model),
                 "status": exec_status,
                 "summary": summary,
                 "created_at": timestamp_str,

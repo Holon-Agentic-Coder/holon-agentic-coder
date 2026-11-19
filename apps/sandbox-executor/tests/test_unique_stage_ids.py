@@ -25,12 +25,22 @@ class TestSameSecondIds(unittest.TestCase):
     """Ids and file names created in one second stay distinct; old formats stay valid."""
 
     def test_plan_ids_and_file_names_differ_within_one_second(self):
-        first = build_plan_id(1794446836, "I-1/ids", "claude-agent", "sonnet", disambiguator="aaaaaaaa")
-        second = build_plan_id(1794446836, "I-1/ids", "claude-agent", "sonnet", disambiguator="bbbbbbbb")
+        first = build_plan_id(1794446836, "I-1/ids", "claude-agent", "claude-sonnet-5-5")
+        second = build_plan_id(1794446836, "I-1/ids", "claude-agent", "claude-sonnet-5-5", taken={first})
+        self.assertNotEqual(first, second)
+        self.assertEqual(second, f"{first}-2")
         self.assertNotEqual(plan_file_rel(first), plan_file_rel(second))
         self.assertEqual(plan_file_rel(first), f"plans/{first}.md")
-        self.assertIn("aaaaaaaa", plan_file_rel(first))
         self.assertRegex(plan_file_rel(first), PLAN_FILE_PATTERN)
+        self.assertRegex(plan_file_rel(second), PLAN_FILE_PATTERN)
+
+    def test_execution_ids_differ_within_one_second(self):
+        first = build_execution_id(1794446836, "I-1/ids/P-1-CLA-CS5.5", "claude-agent", "claude-sonnet-5-5")
+        second = build_execution_id(
+            1794446836, "I-1/ids/P-1-CLA-CS5.5", "claude-agent", "claude-sonnet-5-5", taken={first}
+        )
+        self.assertEqual(first, "E-1794446836-CLA-CS5.5")
+        self.assertEqual(second, f"{first}-2")
 
     def test_hexless_plan_file_name_still_matches_plan_pattern(self):
         self.assertRegex("plans/P-1794446836-claude-agent-sonnet.md", PLAN_FILE_PATTERN)
@@ -101,46 +111,34 @@ class TestUniqueStageIDs(unittest.TestCase):
         self.assertNotEqual(dis1, dis2)
 
     def test_stage_id_builders_structure(self):
-        """build_plan_id and build_execution_id must conform to stage ID schema and preserve suffix."""
+        """build_plan_id and build_execution_id compose epoch, ticker and model code, with no hex."""
         plan_id = build_plan_id(
             1794182557,
             "I-1794182541-unique-plan-and-execution-ids/_",
             "antigravity-agent",
             "gemini-3.8-flash-medium",
-            disambiguator="abcdef12",
         )
-        self.assertEqual(plan_id, "P-1794182557-abcdef12-antigravity-agent-gemini-3.8-flash-medium")
+        self.assertEqual(plan_id, "P-1794182557-ANA-G3.8FM")
 
         exec_id = build_execution_id(
             1794182857,
-            "I-1794182541-unique-plan-and-execution-ids/P-1794182557-abcdef12-antigravity-agent-gemini-3.8-flash-medium/_",
+            "I-1794182541-unique-plan-and-execution-ids/P-1794182557-ANA-G3.8FM/_",
             "antigravity-agent",
             "gemini-3.8-flash-medium",
-            disambiguator="12345678",
         )
-        self.assertEqual(exec_id, "E-1794182857-12345678-antigravity-agent-gemini-3.8-flash-medium")
-
-        # Dynamic disambiguator generation
-        auto_plan_id = build_plan_id(
-            1794182557,
-            "I-1794182541-unique-plan-and-execution-ids/_",
-            "agent/runner",
-            "model/v1.0",
-        )
-        pattern = r"^P-1794182557-[0-9a-f]{8}-agent_runner-model_v1\.0$"
-        self.assertRegex(auto_plan_id, pattern)
+        self.assertEqual(exec_id, "E-1794182857-ANA-G3.8FM")
 
     def test_flow_branch_discovery_suffix_matching(self):
-        """flow.py branch discovery relies on branch ending with preferred suffix."""
+        """Flow branch discovery relies on the branch ending with the ticker and model code suffix."""
         agent = "antigravity-agent"
         model = "gemini-3.8-flash-medium"
-        preferred_suffix = f"-{agent}-{model}"
+        preferred_suffix = "-ANA-G3.8FM"
 
         plan_id = build_plan_id(1234567890, "I-123/_", agent, model)
         branch = f"I-123/{plan_id}/_"
         self.assertTrue(branch.removesuffix("/_").endswith(preferred_suffix))
 
-        other_branch = "I-123/P-1234567890-abcdef12-other-agent-other-model/_"
+        other_branch = "I-123/P-1234567890-CLA-CO5.5/_"
         self.assertFalse(other_branch.removesuffix("/_").endswith(preferred_suffix))
 
     def test_partial_branch_regex_matching(self):

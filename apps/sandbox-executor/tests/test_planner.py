@@ -2,6 +2,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import tempfile
 import unittest
 import uuid
@@ -631,23 +632,26 @@ class TestPlannerMain(unittest.TestCase):
         self.assertIn("falling back", h.stderr)
         self.assertEqual(len(h.ledger_lines("plans.jsonl")), 1)
 
-    def test_model_name_is_sanitised_in_branch(self):
+    def test_model_code_is_carried_in_branch(self):
         test_cases = [
-            ("gemini/3.5-flash (Medium) [Special]*?", "gemini_3.5-flash-Medium-Special"),
-            ("gemini..3.5", "gemini.3.5"),
-            (".gemini.pro.", "gemini.pro"),
-            ("gemini 3.5  flash", "gemini-3.5-flash"),
-            ("gemini\t3.5\nflash", "gemini-3.5-flash"),
-            ("a" * 70, "a" * 64),
-            ("a" * 63 + "-extra", "a" * 63),
-            ("*?($", "unknown-model"),
+            ("gemini-3.8-flash-medium", "G3.8FM"),
+            ("claude-sonnet-5-5", "CS5.5"),
+            ("anthropic/claude-opus-5-5", "CO5.5"),
+            ("gemini/3.5-flash (Medium) [Special]*?", "3.5F"),
+            ("gemini..3.5", "G"),
+            ("a" * 63 + "-extra", "AE"),
         ]
-        for model_name, expected_safe_model in test_cases:
+        for model_name, expected_code in test_cases:
             with self.subTest(model_name=model_name):
                 h = self.harness([write_file(VALID_PLAN)], model=model_name)
                 checkout_cmds = [" ".join(c) for c in h.git_cmds if c[:3] == ["git", "checkout", "-B"]]
                 self.assertTrue(checkout_cmds, f"No 'git checkout -B' command found in: {h.git_cmds}")
-                self.assertIn(expected_safe_model, checkout_cmds[0])
+                self.assertRegex(checkout_cmds[0], rf"I-12345/P-\d+-PIA-{re.escape(expected_code)}/_")
+
+    def test_a_model_name_with_no_derivable_code_fails_clearly(self):
+        h = self.harness([write_file(VALID_PLAN)], model="*?($")
+        self.assertEqual(h.exit_code, 1)
+        self.assertIn("empty model code", h.stderr)
 
     def test_converges_prettier_on_plan_file(self):
         h = self.harness([write_file(VALID_PLAN)])

@@ -25,13 +25,11 @@ from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import (
     _sanitize_model_name,
-    _sanitize_string,
     atomic_ledger_append,
     build_plan_id,
     validate_ledger_file_unique_ids,
 )
 from sandbox_executor.redaction import redact_agent_secrets, redact_command, redact_command_args
-from sandbox_executor.ref_names import original_labels
 from sandbox_executor.touch_set import parse_touch_set_section
 from sandbox_executor.turns import record_budget_failure, run_turn, supervise_authoring_turn
 
@@ -258,8 +256,29 @@ PLAN_FILE_PATTERN = r"plans/P-[^/]+\.md"
 
 
 def plan_file_rel(plan_id: str) -> str:
-    """Repo-relative plan markdown path; carries the hex-qualified plan id so same-second plans never collide."""
+    """Repo-relative plan markdown path; carries the plan id so same-second plans never collide."""
     return f"plans/{plan_id}.md"
+
+
+def _taken_plan_ids(repo_dir: str, intent_branch_prefix: str) -> set[str]:
+    """Plan ids already recorded for this intent, so a same-second twin derives a distinct variant name."""
+    ledger_path = os.path.join(repo_dir, "holon-knowledge/ledger/plans.jsonl")
+    taken: set[str] = set()
+    if not os.path.exists(ledger_path):
+        return taken
+    prefix = intent_branch_prefix.removesuffix("/_").rstrip("/")
+    with open(ledger_path, encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            recorded = str(row.get("intent_branch") or "").removesuffix("/_").rstrip("/")
+            if recorded == prefix and isinstance(row.get("plan_id"), str):
+                taken.add(row["plan_id"])
+    return taken
 
 
 def _unique_temp_file(prefix: str, suffix: str) -> str:
@@ -319,7 +338,12 @@ def main():  # noqa: C901, PLR0912, PLR0915
 
     plan_seq = int(time.time())
     safe_model = _sanitize_model_name(model_name)
-    plan_id = build_plan_id(plan_seq, intent_branch_prefix, agent_name, safe_model)
+    taken_ids = _taken_plan_ids(repo_dir, intent_branch_prefix)
+    try:
+        plan_id = build_plan_id(plan_seq, intent_branch_prefix, agent_name, model_name, taken=taken_ids)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
     plan_branch = f"{intent_branch_prefix}/{plan_id}/_"
 
     # The host fetched the intent branch into the mounted worktree; the plan branch starts from it, locally.
@@ -573,7 +597,6 @@ Include metrics in this format:
         "plan_file": plan_md_rel,
         "status": "proposed",
         "entropy_budget": entropy_budget,
-        **original_labels(plan_id, _sanitize_string(agent_name, "unknown-agent"), safe_model),
     }
 
     # Format plan markdown before the ledger append, so the recorded decision is parsed from the committed file

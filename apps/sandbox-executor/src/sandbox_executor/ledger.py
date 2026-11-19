@@ -19,7 +19,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal, TextIO
 
-from sandbox_executor.ref_names import fit_execution_id, fit_plan_id
+from sandbox_executor.naming import distinct_stage_id, stage_id
+from sandbox_executor.ref_names import ensure_stage_segment_fits
 
 try:
     import fcntl
@@ -80,15 +81,22 @@ def build_plan_id(
     parent_branch: str,
     agent: str,
     model: str,
-    disambiguator: str | None = None,
+    taken: Iterable[str] = (),
 ) -> str:
-    """Build a deterministic, collision-resistant plan identifier.
+    """Build the deterministic plan identifier ``P-{plan_seq}-{ticker}-{model code}``, with no hex.
 
-    Format: P-{plan_seq}-{disambiguator}-{safe_agent}-{safe_model}
+    A name already present in ``taken`` (the plan ids that exist under the same intent) gets the first free
+    deterministic same-second variant, so a second writer never overwrites the first. The composed branch is
+    measured against the ref limit with room for the execution segment below it.
+
+    Raises:
+        MissingTickerError: The runner declares no ticker.
+        StageIdCollisionError: Every same-second variant is taken.
+        RefTooLongError: The plan branch cannot fit the ref limit.
     """
-    safe_agent, safe_model = _sanitize_string(agent, fallback="unknown-agent"), _sanitize_model_name(model)
-    dis = disambiguator or build_stage_disambiguator(parent_branch)
-    return fit_plan_id(parent_branch, plan_seq, dis, safe_agent, safe_model).name
+    plan_id = distinct_stage_id(stage_id("P", plan_seq, agent, model), set(taken))
+    ensure_stage_segment_fits(parent_branch, plan_id, extra=len(plan_id) + 1)
+    return plan_id
 
 
 def build_execution_id(
@@ -96,15 +104,21 @@ def build_execution_id(
     parent_branch: str,
     agent: str,
     model: str,
-    disambiguator: str | None = None,
+    taken: Iterable[str] = (),
 ) -> str:
-    """Build a deterministic, collision-resistant execution identifier.
+    """Build the deterministic execution identifier ``E-{exec_seq}-{ticker}-{model code}``, with no hex.
 
-    Format: E-{exec_seq}-{disambiguator}-{safe_agent}-{safe_model}
+    A name already present in ``taken`` (the execution ids that exist under the same plan) gets the first free
+    deterministic same-second variant, so a second writer never overwrites the first.
+
+    Raises:
+        MissingTickerError: The runner declares no ticker.
+        StageIdCollisionError: Every same-second variant is taken.
+        RefTooLongError: The execution branch cannot fit the ref limit.
     """
-    safe_agent, safe_model = _sanitize_string(agent, fallback="unknown-agent"), _sanitize_model_name(model)
-    dis = disambiguator or build_stage_disambiguator(parent_branch)
-    return fit_execution_id(parent_branch, exec_seq, dis, safe_agent, safe_model).name
+    exec_id = distinct_stage_id(stage_id("E", exec_seq, agent, model), set(taken))
+    ensure_stage_segment_fits(parent_branch, exec_id)
+    return exec_id
 
 
 @dataclass

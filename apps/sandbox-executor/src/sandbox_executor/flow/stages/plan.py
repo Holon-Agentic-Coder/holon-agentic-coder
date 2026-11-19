@@ -12,7 +12,6 @@ from typing import Any
 from sandbox_executor.budgets import ENV_REPLAN_FEEDBACK
 from sandbox_executor.entrypoint.planner import (
     PLAN_FILE_PATTERN,
-    _sanitize_model_name,
     load_metrics_config,
     parse_metrics,
 )
@@ -31,6 +30,7 @@ from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_confli
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.knowledge import ConsultEngine
 from sandbox_executor.ledger import build_plan_id
+from sandbox_executor.naming import MissingTickerError, model_code, ticker_for
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +52,12 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
         return StageResult(stage=FlowStage.PLAN, status=StageStatus.FAILED, start_time=start_time, error=err)
 
     intent_prefix = context.intent_branch.removesuffix("/_").rstrip("/")
-    safe_model = _sanitize_model_name(context.model)
     repo_dir = context.target_worktree
+    try:
+        # The new plan branch ends in the runner's ticker and model code; a ticker-less runner fails before dispatch.
+        preferred_suffix = f"-{ticker_for(context.agent)}-{model_code(context.model)}"
+    except MissingTickerError as exc:
+        return _stage_failure(context, FlowStage.PLAN, start_time, f"Plan stage failed: {exc}")
 
     # Pre-planning wisdom consult
     consulted_ids: list[str] = []
@@ -72,7 +76,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
 
     if context.dry_run:
         # Validation only: name the branch the planner would create, without dispatching or writing anything.
-        plan_id = build_plan_id(int(time.time()), intent_prefix, context.agent, safe_model)
+        plan_id = build_plan_id(int(time.time()), intent_prefix, context.agent, context.model)
         plan_branch = f"{intent_prefix}/{plan_id}/_"
         context.plan_branch = plan_branch
         context.log(f"Stage 2 (dry run): planner dispatch skipped; plan branch would be '{plan_branch}'.")
@@ -148,7 +152,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
         intent_prefix,
         "P",
         before=existing_plans,
-        preferred_suffix=f"-{context.agent}-{safe_model}",
+        preferred_suffix=preferred_suffix,
     )
     if ambiguity:
         return _stage_failure(context, FlowStage.PLAN, start_time, f"Plan stage failed: {ambiguity}.")

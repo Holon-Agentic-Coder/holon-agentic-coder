@@ -102,3 +102,34 @@ normalised to the path up to its last `P-` segment.
   `qwen2.5-coder:32b` ref-validity case, duplicate-ticker failure, doctor and intent-time rejection.
 - Verified: `uv run pytest apps/sandbox-executor/tests/test_naming.py` (26 passed, 0.20s);
   `test_agent_defaults.py test_ref_names.py test_cli.py` (396 passed, 2.19s); ruff clean.
+
+### Step 3: New-format ID generation with collision safety; both old generations stay parseable
+
+- `ledger.py`: `build_plan_id`/`build_execution_id` now compose `P-{epoch}-{ticker}-{model code}` /
+  `E-{epoch}-{ticker}-{model code}` via `naming.stage_id`, derive same-second variants from a `taken`
+  set via `naming.distinct_stage_id`, and measure the composed branch with
+  `ref_names.ensure_stage_segment_fits` (plans reserve room for the execution segment below).
+- `ref_names.py`: the label-digest segment fitting (`fit_plan_id`/`fit_execution_id`,
+  `_segment_parts`) and `original_labels` are removed (no reader of `original_agent`/`original_model`
+  existed); slug shortening, `fit_parts` and the length check stay; `ensure_chain_fits` measures real
+  ticker and model-code lengths; slug helpers (`MAX_SLUG_LENGTH`, `validate_supplied_slug`,
+  `truncate_derived_slug`) added for Step 6 wiring. (The Step 6 label-digest removal landed here
+  because the same functions had to change for the new format; Step 6 wires the slug limits.)
+- `entrypoint/planner.py`: taken ids read from the intent's `plans.jsonl` rows
+  (`_taken_plan_ids`); raw model name passed to the builder; no `original_*` fields on new rows; a
+  model name with no derivable code fails clearly.
+- `entrypoint/executor.py`: `_taken_execution_ids` lists sibling `E-` branches (local and origin);
+  no `original_*` fields on new rows.
+- `flow/stages/plan.py`, `flow/stages/execute.py`: dry-run naming uses the raw model; branch
+  discovery suffix is now `-{ticker}-{model code}`; a ticker-less runner fails the stage before
+  dispatch. `flow/git_refs.py` `_matches_dispatch_suffix` accepts a same-second variant suffix.
+- `flow_module_budgets.json`: budgets raised for `git_refs.py` (+6), `stages/plan.py` (+4),
+  `stages/execute.py` (+6), `stages/intent.py` (+1) with the reason recorded in the description.
+- Tests: `test_ref_names.py` rewritten for the new arithmetic (two-level 32-char nesting fits 255
+  unshortened; deeper nesting falls back to slug shortening and the kept length check);
+  `test_unique_stage_ids.py` same-second variant tests for plans and executions;
+  `test_naming.py` parses every distinct real-ledger id as exactly one legacy generation;
+  `test_planner.py` model-code branch cases; flow fakes emit new-format names.
+- Verified: targeted suites green; full suite `-n auto --dist worksteal`: 1 failed, 4338 passed —
+  the one failure (`test_workspace_survival_stress`) clones committed HEAD and resolves at commit
+  (re-verified after commit below); ruff + format clean.

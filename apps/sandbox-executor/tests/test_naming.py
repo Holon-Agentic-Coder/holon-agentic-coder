@@ -146,6 +146,40 @@ def test_distinct_stage_id_gives_the_second_writer_a_variant_and_eventually_fail
         distinct_stage_id(base, taken)
 
 
+def _real_ledger_ids() -> set[str]:
+    """Every distinct plan and execution id recorded in the repository's real ledgers."""
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    ids: set[str] = set()
+    for name, key in (("plans.jsonl", "plan_id"), ("executions.jsonl", "execution_id")):
+        path = root / "holon-knowledge" / "ledger" / name
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            value = row.get(key)
+            if isinstance(value, str) and value[:2] in ("P-", "E-"):
+                ids.add(value)
+    return ids
+
+
+def test_every_real_ledger_id_parses_as_exactly_one_legacy_generation():
+    ids = _real_ledger_ids()
+    assert ids, "the real ledgers must provide sample ids"
+    for identifier in ids:
+        parsed = parse_stage_id(identifier)
+        assert parsed is not None, identifier
+        assert parsed.generation in (GENERATION_LEGACY_HEX, GENERATION_LEGACY_LABELS), identifier
+        assert not is_new_generation(identifier), identifier
+
+
 def test_doctor_rejects_a_runner_without_a_ticker():
     args = argparse.Namespace(agent="codex", model="gpt-5-codex", json=False, timeout=1, target_worktree=".")
     err = io.StringIO()

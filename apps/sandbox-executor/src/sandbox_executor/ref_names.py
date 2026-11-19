@@ -23,6 +23,7 @@ creation time. A slug is at most ``MAX_SLUG_LENGTH`` characters: a supplied root
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -246,13 +247,35 @@ def validate_supplied_slug(slug: str) -> str:
     return slug
 
 
-def truncate_derived_slug(slug: str) -> str:
-    """Cut an engine-derived slug (from a description or sub-intent title) to the limit at a word boundary."""
-    if len(slug) <= MAX_SLUG_LENGTH:
+def truncate_derived_slug(slug: str, limit: int = MAX_SLUG_LENGTH) -> str:
+    """Cut an engine-derived slug (from a description or sub-intent title) to ``limit`` at a word boundary."""
+    if len(slug) <= limit:
         return slug
-    head = slug[: MAX_SLUG_LENGTH + 1]
-    cut = head[:MAX_SLUG_LENGTH] if "-" not in head[1:] else head[: head.rindex("-")]
-    return cut[:MAX_SLUG_LENGTH].rstrip("-") or slug[:MAX_SLUG_LENGTH]
+    head = slug[: limit + 1]
+    cut = head[:limit] if "-" not in head[1:] else head[: head.rindex("-")]
+    return cut[:limit].rstrip("-") or slug[:limit]
+
+
+def _sanitise_slug(text: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9]+", "-", text).strip("-").lower()
+
+
+def root_intent_slug(intent_data: dict[str, Any], derive_from: str) -> str:
+    """Return the sanitised root slug of an intent being opened.
+
+    A slug supplied in the intent file over :data:`MAX_SLUG_LENGTH` characters is rejected, unless the intent already
+    records its branch (accepted when it was first opened); with no supplied slug, one is derived from ``derive_from``
+    (the goal or description) and cut to the limit at a word boundary.
+
+    Raises:
+        SlugTooLongError: The supplied slug is over the limit; raised before any branch exists.
+    """
+    supplied = str(intent_data.get("slug") or "").strip()
+    if not supplied:
+        return truncate_derived_slug(_sanitise_slug(derive_from))
+    if not intent_data.get("branch"):
+        validate_supplied_slug(supplied)
+    return _sanitise_slug(supplied)
 
 
 def is_over_limit_rejection(output: str) -> bool:

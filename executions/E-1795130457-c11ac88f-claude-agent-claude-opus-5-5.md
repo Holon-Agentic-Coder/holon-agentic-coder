@@ -86,3 +86,28 @@ redone.
   permitted, execution rows never matched across plans, ambiguous bare execution id resolves to nothing, the newer
   same-named execution row of another plan never wins.
 - Verified: full suite `-n auto --dist worksteal`: 4407 passed, 1 skipped in `18.18s`; `uv run task lint` clean.
+
+### Step 6: Remove obsolete agent/model shortening; enforce the 32-character slug limit
+
+- Already in place from Step 3 of the previous execution (re-verified by grep): the label-digest segment fitting and
+  `original_labels` are gone from `ref_names.py`, new plan and execution rows carry no `original_agent`/`original_model`
+  (readers never depended on them), and slug shortening plus the length check are kept.
+- Root slug: new `ref_names.root_intent_slug` owns the rule. A slug supplied in the intent file over 32 characters is
+  rejected when the intent is opened, with the limit and the actual length in the message, before any branch exists
+  (Stage 1 in `flow/stages/intent.py`, and `entrypoint/intent_creator.py`); an intent that already records its branch
+  (a resume) is not re-judged. A slug derived from the goal or description is cut to 32 characters at a word boundary
+  (previously a 40-character prefix of the text).
+- Child slugs: `decomposition_rule._sub_intent_dicts` cuts derived sub-intent slugs to 32 characters at a word boundary
+  (previously 48), duplicate suffix included (`truncate_derived_slug` takes a `limit`); `flow/child_progress.py` applies
+  the same cut to a recorded slug when the child branch is first derived, so an older plan row's long slug also obeys
+  the limit. Deeper nesting still falls back to the kept digest shortening (`original_slug` recorded).
+- Ref-limit acceptance test (`test_two_levels_of_32_character_nesting_fit_without_shortening`, from Step 3) computes
+  the calibrated branch of a root plus two nested child intents with 32-character slugs from the real grammar and
+  asserts it fits 255 unshortened; `test_deeper_nesting_falls_back_to_slug_shortening_and_the_length_check` covers the
+  fallback.
+- Budget: `stages/intent.py` lowered from 228 to 220.
+- Tests: Stage 1 rejection and derived-slug cut, `root_intent_slug` resume and sanitising cases
+  (`test_ref_names.py`), intent-creator rejection before any branch (`test_intent_creator.py`), sub-intent slug cut and
+  duplicate suffix within the limit (`test_executor.py`), child slug cut and deep-parent shortening
+  (`flow/test_child_progress.py`).
+- Verified: full suite `-n auto --dist worksteal`: 4414 passed, 1 skipped in `18.00s`; `uv run task lint` clean.

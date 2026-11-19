@@ -6,7 +6,6 @@ import contextlib
 import json
 import logging
 import os
-import re
 import tempfile
 import time
 from datetime import UTC, datetime
@@ -26,7 +25,7 @@ from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_confli
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.knowledge import ConsultEngine
 from sandbox_executor.naming import MissingTickerError
-from sandbox_executor.ref_names import RefTooLongError, resolve_root_intent_branch
+from sandbox_executor.ref_names import RefTooLongError, SlugTooLongError, resolve_root_intent_branch, root_intent_slug
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +86,6 @@ def run_intent_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
 
     goal = intent_data.get("goal")
     raw_desc = intent_data.get("description")
-    raw_slug = intent_data.get("slug")
     target_branch = intent_data.get("target_branch", "main")
 
     if not goal and not raw_desc:
@@ -106,17 +104,11 @@ def run_intent_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
 
     description = raw_desc or goal or "No description provided"
 
-    # Sanitise slug
-    if not raw_slug:
-        candidate = (goal or description or "task")[:40]
-        raw_slug = re.sub(r"[^a-zA-Z0-9]+", "-", candidate).strip("-").lower()
-    else:
-        raw_slug = re.sub(r"[^a-zA-Z0-9]+", "-", raw_slug).strip("-").lower()
-
-    # The intent creator expects the bare branch prefix and appends '/_' itself.
+    # The intent creator expects the bare branch prefix and appends '/_' itself; a slug over the limit fails first.
     try:
+        raw_slug = root_intent_slug(intent_data, goal or description or "task")
         branch = resolve_root_intent_branch(intent_data, raw_slug, int(time.time()), context.agent, context.model)
-    except (RefTooLongError, MissingTickerError) as e:
+    except (RefTooLongError, MissingTickerError, SlugTooLongError) as e:
         return _stage_failure(context, FlowStage.INTENT, start_time, f"Intent stage failed: {e}")
     intent_data["branch"] = branch
     intent_data["target_branch"] = target_branch

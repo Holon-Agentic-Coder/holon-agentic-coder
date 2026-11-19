@@ -30,6 +30,7 @@ from sandbox_executor.ref_names import (
     measured_length,
     named_push_rejection,
     resolve_root_intent_branch,
+    root_intent_slug,
     shorten_text,
     stage_segment_length,
     truncate_derived_slug,
@@ -214,6 +215,35 @@ def test_stage_one_fails_before_any_branch_exists(tmp_path):
     assert "255" in result.error and "characters" in result.error
     assert not ctx.intent_branch
     assert not (tmp_path / ".git").exists()
+
+
+def test_stage_one_rejects_a_supplied_root_slug_over_the_limit_before_any_branch_exists(tmp_path):
+    long_slug = "a-supplied-slug-that-is-far-too-long-for-a-branch"
+    intent = {"goal": "g", "slug": long_slug}
+    ctx = FlowContext(target_worktree=str(tmp_path), dry_run=True, agent=AGENT, model=MODEL, intent_data=intent)
+    result = run_intent_stage(ctx)
+    assert result.status == StageStatus.FAILED
+    assert f"at most {MAX_SLUG_LENGTH} characters" in result.error and f"{len(long_slug)} characters" in result.error
+    assert not ctx.intent_branch
+    assert not (tmp_path / ".git").exists()
+
+
+def test_stage_one_cuts_a_slug_derived_from_the_goal_at_a_word_boundary(tmp_path):
+    goal = "Rework the calibration report so it names every plan and execution it covers"
+    ctx = FlowContext(target_worktree=str(tmp_path), dry_run=True, agent=AGENT, model=MODEL, intent_data={"goal": goal})
+    result = run_intent_stage(ctx)
+    assert result.status == StageStatus.SUCCESS, result.error
+    slug = ctx.intent_data["slug"]
+    assert slug == "rework-the-calibration-report-so" and len(slug) <= MAX_SLUG_LENGTH
+
+
+def test_root_intent_slug_keeps_an_accepted_recorded_branch_and_sanitises_a_supplied_slug():
+    assert root_intent_slug({"slug": "Fix The Thing!"}, "ignored") == "fix-the-thing"
+    # On resume the recorded branch was accepted when the intent was opened; an older long slug is not re-judged.
+    recorded = {"slug": "s" * 40, "branch": f"I-1-{'s' * 40}"}
+    assert root_intent_slug(recorded, "ignored") == "s" * 40
+    with pytest.raises(SlugTooLongError):
+        root_intent_slug({"slug": "s" * 33}, "ignored")
 
 
 def test_push_rejection_is_named_and_other_output_passes_through():

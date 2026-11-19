@@ -3625,20 +3625,28 @@ def test_parse_sub_intent_list_builds_slug_description_and_goal():
     ]
 
 
-def test_parse_sub_intent_list_truncates_long_slugs_to_48_characters():
-    # The slug is cut to 48 characters, and a cut that lands on a hyphen leaves no trailing hyphen.
-    text = "Add " + "x" * 43 + " parser for every ledger row"
+def test_parse_sub_intent_list_cuts_long_slugs_to_32_characters_at_a_word_boundary():
+    # The slug is cut to the 32-character slug limit at a word boundary, leaving no trailing hyphen.
+    text = "Add " + "x" * 23 + " parser for every ledger row"
     (item,) = executor.parse_sub_intent_list(_section(f"- {text}"))
 
-    assert item["slug"] == "add-" + "x" * 43
+    assert item["slug"] == "add-" + "x" * 23
     assert item["goal"] == text
 
 
 def test_parse_sub_intent_list_strips_leading_hyphens_before_truncating_the_slug():
-    # Leading punctuation is dropped before the 48-character cut, so it costs no character.
+    # Leading punctuation is dropped before the 32-character cut, so it costs no character.
     (item,) = executor.parse_sub_intent_list(_section("- **Add** the parser for every ledger row and every intent row"))
 
-    assert item["slug"] == "add-the-parser-for-every-ledger-row-and-every-in"
+    assert item["slug"] == "add-the-parser-for-every-ledger"
+
+
+def test_parse_sub_intent_list_keeps_a_duplicate_suffix_within_the_slug_limit():
+    text = "Add the parser for every ledger row"
+    first, second = executor.parse_sub_intent_list(_section(f"- {text}\n- {text}"))
+
+    assert (first["slug"], second["slug"]) == ("add-the-parser-for-every-ledger", "add-the-parser-for-every-2")
+    assert max(len(first["slug"]), len(second["slug"])) <= 32
 
 
 def test_parse_sub_intent_list_falls_back_to_a_generic_slug():

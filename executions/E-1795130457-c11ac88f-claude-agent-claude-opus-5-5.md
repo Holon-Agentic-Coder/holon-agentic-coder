@@ -681,3 +681,34 @@ Rewrote 244 ledger path(s):
   plans/I-1794224634-plan-owned-decomposition-with-plan-branch-children/P-1794224651-93cef978-claude-agent-claude-opus-5-5.md
   plans/I-1794976491-shortref/P-1795087811-3604f487-claude-agent-claude-fable-5.md
 ```
+
+### Step 8: Documentation, templates, config examples and module budgets
+
+- `docs/git_flow.md`: section 1.5 no longer claims project-wide unique IDs keyed bare (plans are keyed by intent,
+  executions by full path); the branch grammar tables and examples use `P-{timestamp}-{ticker}-{model code}` and
+  `E-{timestamp}-{ticker}-{model code}`; section 2.5.1 drops the agent/model label shortening, records that tickers and
+  model codes are never shortened, adds the 32-character slug rule and the two-level nesting guarantee, and notes that
+  older rows may still carry `original_agent`/`original_model`; new section 2.5.2 documents tickers, the model-code rule
+  with the required examples, same-second variants, the two still-valid older generations (never renamed) and the
+  `plans/{intent}/` layout with the one-off migration; the stage table shows the nested plan and report paths.
+- `README.md` (plan ID section with tickers, model codes and the old generations; branch grammar and example IDs),
+  `docs/ledger_schema.md` (calibration report path, retired `original_agent`/`original_model`, the plan file layout, the
+  migration as the one exempted rewrite, the (intent, plan ID) duplicate check), `docs/sandbox/create_plan.md`,
+  `docs/sandbox/execute_plan.md`, `docs/planning_and_evaluation.md`, `docs/examples.md`, `docs/budgets.md`,
+  `docs/directory_structure.md`, `.agents/holon_flow.md`: example IDs and plan paths moved to the new scheme. The one
+  real historical plan ID cited in `docs/metrics-explained.md` stays as it is (it names an existing plan).
+- `holon-config/world/constraints.md` §1 and its scaffold twin in `scaffold.py`: only the branch-name examples changed;
+  no rule, threshold or constraint wording changed. `holon-config/prompts/planner.template.md` (in Step 4) uses the
+  `{plan_file}` placeholder; `executor.template.md`, `review_loop.template.md` and `holon-config/metrics/README.md` show
+  no plan or execution ID, branch name or plan path, so they needed no change.
+- `flow_module_budgets.json`: adjusted in Steps 4–6 only for modules whose size changed (raised `calibrate_rebuild.py`
+  +1, `git_refs.py` +1, `stages/execute.py` +2; lowered `stages/plan.py`, `stages/plan_decision.py`,
+  `stages/calibrate.py`, `stages/intent.py`), each with its reason in the description.
+- Grep gate: no `{hex}`, `{agent}-{model}`, flat `plans/P-` or `plans/{plan_id}` example remains outside the deliberate
+  older-generation notes.
+- Prettier: `npx prettier` in this sandbox resolves a cached 3.8.4 that flags 39 files; the same 39 fail on the
+  pre-migration tree (`a6943046`) under 3.8.4, so they are not caused by this change. Under the current release (3.10.1,
+  what an unpinned `npx --yes prettier` fetches) every markdown file passes once the previous execution's notes
+  (`executions/E-1795088115-...md`, which already failed before this run) were re-wrapped by Prettier (whitespace only,
+  no wording change).
+- Verified: full suite `-n auto --dist worksteal`: 4420 passed, 1 skipped in `17.97s`; `uv run task lint` clean.

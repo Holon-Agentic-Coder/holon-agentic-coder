@@ -49,8 +49,9 @@ The Holon Flow pipeline executes sequentially through five distinct lifecycle st
 
 - **Purpose**: Invoke an autonomous planning agent to produce a structured, step-by-step markdown plan with quantitative
   metrics.
-- **Git Branch**: `I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/_` branched from the intent branch.
-- **Plan File**: Persisted to `plans/P-{timestamp}-{agent}-{model}.md`.
+- **Git Branch**: `I-{timestamp}-{slug}/P-{timestamp}-{ticker}-{model code}/_` branched from the intent branch.
+- **Plan File**: Persisted to `plans/I-{timestamp}-{slug}/P-{timestamp}-{ticker}-{model code}.md` (the plan file mirrors
+  the branch nesting; its calibration report sits beside it).
 - **Telemetry & EV**: Extracts predicted plan metrics (`p_success_pred`, `entropy_pred`, `impact_pred`, `cost_pred`,
   `learning_value_pred`) and computes Expected Value (`ev_pred`).
 - **Ledger Record**: Append-only row written to `holon-knowledge/ledger/plans.jsonl`.
@@ -58,8 +59,8 @@ The Holon Flow pipeline executes sequentially through five distinct lifecycle st
 ### Stage 3: Plan Execution (`FlowStage.EXECUTE`)
 
 - **Purpose**: Execute code modifications and tests inside an isolated sandbox conforming to the plan.
-- **Git Branch**: `I-{timestamp}-{slug}/P-{timestamp}-{agent}-{model}/E-{timestamp}-{action}/_` branched from the plan
-  branch.
+- **Git Branch**: `I-{timestamp}-{slug}/P-{timestamp}-{ticker}-{model code}/E-{timestamp}-{ticker}-{model code}/_`
+  branched from the plan branch.
 - **Rebase Discipline**: Automatically rebases from the plan branch before execution to prevent divergent histories.
 - **Test Execution**: Executes `pytest` test suites and records test pass rates and exit codes.
 - **Ledger Record**: Append-only row written to `holon-knowledge/ledger/executions.jsonl`.
@@ -99,6 +100,7 @@ The pipeline provides crash resilience and state preservation via atomic checkpo
 - **Schema**: Preserves current stage, completed stages list, full `FlowContext` configuration, branch names, stage
   results, and timestamped logs.
 - **Resumption**:
+
   ```bash
   # Resume from last checkpoint stage
   ./holon flow --checkpoint .holon/flow/checkpoint-my-task.json
@@ -106,6 +108,7 @@ The pipeline provides crash resilience and state preservation via atomic checkpo
   # Resume from specific stage override
   ./holon flow --checkpoint .holon/flow/checkpoint-my-task.json --from-stage review
   ```
+
 - **CLI Overrides**: Explicit CLI flags (such as `--skip-review`, `--skip-calibrate`, `--token-reduce`) override loaded
   checkpoint defaults during resumption.
 

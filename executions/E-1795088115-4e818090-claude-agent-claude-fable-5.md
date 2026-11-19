@@ -86,3 +86,19 @@ repeated (intent, plan) pair and no plan id shared across intents; `executions.j
 (plan, execution) summary pairs from superseding rows (`ledger_revision` 1→2) and reruns, and one row
 whose `plan_branch` embeds the execution segment — the parent of an execution row is therefore
 normalised to the path up to its last `P-` segment.
+
+### Step 2: Agent tickers and the pure model-code function
+
+- `agent_defaults.py`: `AGENT_TICKERS` declared beside the runner definitions (claude = CLA,
+  antigravity = ANA, pi = PIA only; no fallback).
+- New focused module `naming.py` beside `ref_names.py`: `model_code` (pure rule, no table),
+  `ticker_for`/`agent_ticker` with `MissingTickerError` naming the runner, new-generation
+  `stage_id`, three-generation `parse_stage_id`, and `distinct_stage_id` same-second collision
+  variants (`-2` … `-9`, then `StageIdCollisionError`).
+- `cli/__init__.py` `run_doctor`: rejects a resolved runner without a ticker before the probe.
+- `ref_names.resolve_root_intent_branch`: rejects a ticker-less runner before any branch is created;
+  `flow/stages/intent.py` surfaces `MissingTickerError` as a Stage 1 failure.
+- Tests: `tests/test_naming.py` (26 tests) — the seven required mappings, the
+  `qwen2.5-coder:32b` ref-validity case, duplicate-ticker failure, doctor and intent-time rejection.
+- Verified: `uv run pytest apps/sandbox-executor/tests/test_naming.py` (26 passed, 0.20s);
+  `test_agent_defaults.py test_ref_names.py test_cli.py` (396 passed, 2.19s); ruff clean.

@@ -43,6 +43,16 @@ AGENT_IMAGE_MAPPING: dict[str, str] = {
     "opencode": "holon/agent-opencode",
 }
 
+# Agent tickers, declared beside the runner definitions: exactly three uppercase letters per runner that may run a
+# flow. A ticker is never reassigned or reused, and there is no fallback: a runner without one (codex, gemini,
+# opencode) is rejected by 'holon doctor' and when an intent is opened, before any branch is created. The ticker
+# appears only in plan and execution names; ledger rows keep the full agent and model.
+AGENT_TICKERS: dict[str, str] = {
+    "claude": "CLA",
+    "antigravity": "ANA",
+    "pi": "PIA",
+}
+
 # Default model per normalised runner id. The antigravity entry is the label carried by every successful agy run in the
 # ledger (agy accepts it together with ``--effort``); the old ``gemini-3.5-flash`` default is rejected by current agy.
 # The other entries are best-effort and can be overridden with ``--model`` or ``HOLON_MODEL``; ``holon doctor``

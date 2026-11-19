@@ -22,6 +22,8 @@ import hashlib
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from sandbox_executor.naming import ticker_for
+
 MAX_REF_LENGTH = 255
 REF_PREFIX = "refs/heads/"
 INTENT_SUFFIX = "/_"
@@ -191,7 +193,13 @@ def resolve_root_intent_branch(intent_data: dict[str, Any], slug: str, seq: int,
     A recorded ``branch`` is used as it is, but is still measured against the current labels, so a resume whose labels
     changed may fail here, before any branch exists. Either way the plan and execution branches that will nest below
     it, with the configured agent and model labels, are measured first, so an impossible name fails early.
+
+    Raises:
+        MissingTickerError: The resolved runner declares no ticker; raised before any branch is created.
     """
+    if str(agent or "").strip():
+        # A runner with no declared ticker may not name the plan and execution branches below this intent.
+        ticker_for(agent)
     recorded = intent_data.get("branch")
     if recorded:
         branch = str(recorded).removesuffix(INTENT_SUFFIX)

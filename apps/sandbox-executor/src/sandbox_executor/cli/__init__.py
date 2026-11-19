@@ -68,6 +68,7 @@ from sandbox_executor.knowledge import (
 from sandbox_executor.knowledge.consult import format_consult_results_table
 from sandbox_executor.knowledge.stats import format_stats_dashboard
 from sandbox_executor.ledger import format_query_results_table, query_ledger
+from sandbox_executor.naming import MissingTickerError, ticker_for
 from sandbox_executor.preflight import (
     PreflightResult,
     preflight_skipped_by_env,
@@ -1700,6 +1701,17 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
             print(json.dumps(error_payload, indent=2))
         else:
             print_encodable(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
+            print_encodable("\n".join(env_lines))
+        return 1
+
+    try:
+        # A runner without a declared ticker may not name a plan or execution branch; reject it before the probe.
+        ticker_for(agent_res.value)
+    except MissingTickerError as exc:
+        if args.json:
+            print(json.dumps({"error": str(exc), "environment": environment}, indent=2))
+        else:
+            print_encodable(f"Error: {exc}", file=sys.stderr)
             print_encodable("\n".join(env_lines))
         return 1
 

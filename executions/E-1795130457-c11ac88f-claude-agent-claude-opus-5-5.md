@@ -6,20 +6,33 @@
 
 ## Summary
 
-In progress. Continuation of the failed execution `E-1795088115-4e818090-claude-agent-claude-fable-5`, whose Steps 1–3
-(call-site inventory, agent tickers and model codes, hexless IDs with collision safety) are already committed on this
-branch, and whose pre-push merge conflict in `flow_module_budgets.json` was resolved by the merge commit `58949669`.
-This run continues from Step 4.
+Complete. Continuation of the failed execution `E-1795088115-4e818090-claude-agent-claude-fable-5`, whose Steps 1–3
+(call-site inventory, agent tickers and model codes, hexless IDs with collision safety) were already committed on this
+branch; its pre-push merge conflict in `flow_module_budgets.json` had been resolved by merge commit `58949669`. This run
+carried out Steps 4–9:
+
+- plan files and calibration reports now live under `plans/{intent}/`, mirroring the branch nesting (`plan_paths.py`);
+- every plan lookup is keyed on (intent, plan ID), every execution lookup on its full path, and the duplicate check
+  fails on a repeated (intent, plan ID) pair;
+- the 32-character slug limit is enforced: a supplied root slug over the limit is rejected at intent time, and derived
+  root and child slugs are cut at a word boundary;
+- the repeatable migration script moved 267 files and rewrote only the 244 exempted ledger paths, verified row by row,
+  and a second run was a byte-identical no-op;
+- documentation and examples follow the new scheme.
+
+Every acceptance criterion is met except one environment caveat: `uv run task lint-docs` passes under the current
+Prettier (3.10.1) but fails here under a cached Prettier 3.8.4 on 38 files. Those files fail identically on the
+pre-migration tree.
 
 ## Actual Metrics
 
 | metric                | value |
 | --------------------- | ----- |
-| success_actual        | 0.0   |
-| entropy_actual        | 0.0   |
-| impact_actual         | 0.0   |
-| cost_actual           | 0.0   |
-| learning_value_actual | 0.0   |
+| success_actual        | 0.9   |
+| entropy_actual        | 12.5  |
+| impact_actual         | 85.0  |
+| cost_actual           | 30.0  |
+| learning_value_actual | 6.0   |
 
 ## Steps Executed
 
@@ -712,3 +725,40 @@ Rewrote 244 ledger path(s):
   (`executions/E-1795088115-...md`, which already failed before this run) were re-wrapped by Prettier (whitespace only,
   no wording change).
 - Verified: full suite `-n auto --dist worksteal`: 4420 passed, 1 skipped in `17.97s`; `uv run task lint` clean.
+
+### Step 9: Full verification
+
+Run on the committed HEAD `5bfc3f31` (see Tests Run). No fix outside the touch set was needed.
+
+## Tests Run
+
+The intent measures no performance or timing behaviour, so each command ran once (no repetitions). All runs used
+`-n auto --dist worksteal` (`uv run task test` sets it).
+
+| run                                                                       | commit           | result                                         | pytest time |
+| ------------------------------------------------------------------------- | ---------------- | ---------------------------------------------- | ----------- |
+| baseline `uv run task test -q -x`                                         | `58949669`       | 4366 passed, 1 skipped                         | `18.07s`    |
+| Step 4 `uv run task test -q`                                              | `a5635285` (pre) | 4406 passed, 1 skipped                         | `17.58s`    |
+| Step 5 `uv run task test -q`                                              | `4c241229` (pre) | 4407 passed, 1 skipped                         | `18.18s`    |
+| Step 6 `uv run task test -q`                                              | `a6943046` (pre) | 4414 passed, 1 skipped                         | `18.00s`    |
+| Step 7 `uv run task test -q` after the real migration                     | `747af060` (pre) | 4419 passed, 2 skipped (real-plan glob, fixed) | `18.01s`    |
+| Step 8 `uv run task test -q`                                              | `5bfc3f31` (pre) | 4420 passed, 1 skipped                         | `17.97s`    |
+| Step 9 affected tests `uv run pytest -n auto --dist worksteal <20 files>` | `5bfc3f31`       | 1280 passed                                    | `8.10s`     |
+| Step 9 full suite `uv run task test`                                      | `5bfc3f31`       | 4420 passed, 1 skipped, 0 failed               | `19.09s`    |
+
+Median pytest time of the eight runs above: `18.005s`; of the seven full-suite runs: `18.01s`. A commit marked `(pre)`
+means the run was on the working tree that was then committed as that commit.
+
+- The Step 9 affected-test files: `test_plan_paths.py`, `test_naming.py`, `test_ref_names.py`,
+  `test_unique_stage_ids.py`, `test_calibration.py`, `test_calibration_dual_ev.py`, `test_calibrate_rerun.py`,
+  `test_calibrate_rebuild.py`, `test_migrate_plan_layout.py`, `test_ledger_append_only.py`, `test_planner.py`,
+  `test_executor.py`, `test_intent_creator.py`, `test_review_loop.py`, `flow/test_child_progress.py`,
+  `flow/stages/test_decomposition.py`, `flow/test_calibrate_nested_refs.py`, `flow/test_pipeline.py`, `test_cli.py`,
+  `test_agent_defaults.py`.
+- `uv run task lint` (`uv lock --check`, `git diff --exit-code uv.lock`, `ruff check`, `ruff format --check`, flow
+  module budgets): passed. `uv.lock` and `pyproject.toml` are unchanged.
+- `uv run task lint-docs`: fails in this sandbox on 38 files because `npx prettier` resolves a cached 3.8.4. The same
+  files fail on the pre-migration tree with 3.8.4. `npx --yes prettier@3.10.1 --check "**/*.md"`: all files pass.
+- Migration checks on the real tree (Step 7): the field-restricted ledger diff, every stored path existing, no flat plan
+  file left, and a second run that is a no-op leaving the tree byte-identical (hashed).
+- `scripts/pre_commit_check.py` on the staged migration: passed.
